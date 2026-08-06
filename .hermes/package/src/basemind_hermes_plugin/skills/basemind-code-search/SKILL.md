@@ -9,8 +9,8 @@ description: >-
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:382a8f924e8652b0203d61c36799473b1e7bc6523c8789e6dcfeb1dbb7b3dba4
-Source-Hash: blake3:39867fc9cb507ee62ce14995638a96ec410e32ae97a5aa89c5901e31d78f4621
+Content-Hash: blake3:280fd8db9f3b191595c33108e858cbeb3697cc049476dcf34fd11dd8f54f4d45
+Source-Hash: blake3:85c432430a8315da4f7225ca2a6f5de96b425254183a6ea753e09b49c4846455
 Schema-Version: v1
 -->
 
@@ -27,56 +27,57 @@ raw shell only when no tool covers the question.
 
 ## The discipline
 
-- **`outline` a file before you open it.** A 1000-line file becomes a 30-line table of contents.
+- **Use `code` mode `outline` before you open a file.** A 1000-line file becomes a 30-line table of contents.
   Read the actual source only once you have the exact span, then read _that range_, not the file.
-- **`search_symbols` instead of `grep` for a definition.** It matches indexed symbol names and
+- **Use `code` mode `symbols` instead of `grep` for a definition.** It matches indexed symbol names and
   returns `path:line`, skipping the comment/string/test-name noise grep drowns you in.
-- **`find_references` / `find_callers` instead of grepping call sites.** Indexed call edges, not
+- **Use `code` modes `references` / `callers` instead of grepping call sites.** Indexed call edges, not
   text matches.
-- **`workspace_grep` instead of shelling out to ripgrep** when you genuinely need regex over
+- **Use `code` mode `grep` instead of shelling out to ripgrep** when you genuinely need regex over
   content — it runs over the in-RAM index and returns capped, structured hits.
 - **Do not re-read a file basemind already mapped.** If the outline answered the question, stop.
-- **`rescan` after you edit code**, not a server reconnect. Pass `paths: [...]` to limit it.
+- **Use `admin` mode `rescan` after you edit code**, not a server reconnect. Pass `paths: [...]` to limit it.
 
 ## Tool routing
 
 | Question | MCP tool | CLI |
 |---|---|---|
-| "Where is X defined?" | `search_symbols` (substring, optional `kind`) | `basemind query symbol "X"` |
-| "Jump to the definition of X used here?" | `goto_definition` (scope-aware, from a use site) | `basemind query goto-definition F line [--column]` |
-| "What's the high-level architecture / module map?" | `architecture_map` | `basemind query architecture-map` |
-| "What's the shape of file F?" | `outline` (add `l2: true` for calls + docs) | `basemind query outline F [--l2]` |
-| "What calls X?" (any name) | `find_references` | `basemind query references "X"` |
-| "What calls this specific definition?" | `find_callers` (path + name + optional kind) | `basemind query callers F name [--kind]` |
-| "Trace the call graph from a function?" | `call_graph` (BFS, bounded by `max_depth` / `max_nodes`) | `basemind query call-graph "name" [--direction --max-depth]` |
-| "What implements / extends / inherits X?" | `find_implementations` (Rust, Python, TS/TSX, JS) | `basemind query implementations "X"` |
-| "What imports module M?" | `dependents` | `basemind query dependents "M"` |
-| "What files are indexed?" | `list_files` (filter by `language` / `path_contains`) | `basemind query list-files [--language --path-contains]` |
-| "Regex over file contents?" | `workspace_grep` | `basemind query grep "pattern" [--language --path-contains]` |
-| "What's indexed?" | `status` | `basemind query status` |
-| "Refresh the index after editing?" | `rescan` (optional `paths`) | `basemind scan` |
+| "Where is X defined?" | `code { mode: "symbols", name: "X" }` (substring, optional `kind`) | `basemind code symbols "X"` |
+| "Jump to the definition of X used here?" | `code { mode: "definition", path: F, line }` (scope-aware) | `basemind code definition F line [--column]` |
+| "What's the high-level architecture / module map?" | `graph { mode: "map" }` | `basemind graph map` |
+| "What's the shape of file F?" | `code { mode: "outline", path: F }` (add `l2: true`) | `basemind code outline F [--l2]` |
+| "What calls X?" (any name) | `code { mode: "references", name: "X" }` | `basemind code references "X"` |
+| "What calls this specific definition?" | `code { mode: "callers", path: F, name }` | `basemind code callers F name [--kind]` |
+| "Trace the call graph from a function?" | `graph { mode: "calls", name }` (bounded BFS) | `basemind graph calls "name" [--direction --max-depth]` |
+| "What implements / extends / inherits X?" | `code { mode: "implementations", trait_name: "X" }` | `basemind code implementations "X"` |
+| "What imports module M?" | `code { mode: "dependents", module: "M" }` | `basemind code dependents "M"` |
+| "What files are indexed?" | `code { mode: "files" }` (filter by language/path) | `basemind code files [--language --path-contains]` |
+| "Regex over file contents?" | `code { mode: "grep", pattern: "…" }` | `basemind code grep "pattern" [--language --path-contains]` |
+| "What's indexed?" | `admin { mode: "status" }` | `basemind admin status` |
+| "Refresh the index after editing?" | `admin { mode: "rescan", paths: […] }` | `basemind admin rescan [path…]` |
 | "Fetch the next page?" | pass `next_cursor` from the prior response as `cursor` | — |
 
 ## Examples
 
 ```text
-search_symbols { needle: "MapCache" }
+code { mode: "symbols", name: "MapCache" }
 → src/mcp/mod.rs:79:1 MapCache (struct)
   src/mcp/mod.rs:88:1 MapCache (impl)
 
-find_references { name: "process_file" }
+code { mode: "references", name: "process_file" }
 → src/scanner.rs:142:9 process_file
   src/scanner.rs:201:13 process_file
 
-outline { path: "src/mcp/tools.rs" }
-→ 21 #[tool] outline (function)
-  112 #[tool] search_symbols (function)
+code { mode: "outline", path: "src/mcp/tools.rs" }
+→ 21 code router (function)
+  112 code helper (function)
 ```
 
 ## Notes
 
-- Matching on symbol names is **substring**: `find_references("bar")` matches `Foo::bar()` and
-  `bar()` alike. There is no scope resolution — cross-check with `outline` when disambiguation matters.
+- Matching on symbol names is **substring**: `code` mode `references` with `name: "bar"` matches
+  `Foo::bar()` and `bar()` alike. There is no scope resolution — cross-check with `code` mode
+  `outline` when disambiguation matters.
 - Lists are capped (`limit`, default 100, max 1000). Index scanners use `scan_cap = limit * 8` to
   bound work on common names.
 - Needs an index in the machine-global cache (Linux `~/.local/share/basemind/`, macOS

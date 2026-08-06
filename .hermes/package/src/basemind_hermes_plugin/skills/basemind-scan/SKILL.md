@@ -9,8 +9,8 @@ description: >-
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:cc18219e899c00721ed5e0f02f82146c8441617be0230dedf851df0f1394c992
-Source-Hash: blake3:39867fc9cb507ee62ce14995638a96ec410e32ae97a5aa89c5901e31d78f4621
+Content-Hash: blake3:b4a0ddcfc424a4fd3c6a8636487d6db51dba55760df850f7fb8a361135b82cf0
+Source-Hash: blake3:85c432430a8315da4f7225ca2a6f5de96b425254183a6ea753e09b49c4846455
 Schema-Version: v1
 -->
 
@@ -53,7 +53,7 @@ Finding the binary (in order of preference):
 - Files tree-sitter doesn't recognize as code go through the document tier; anything that isn't an
   extractable document (e.g. an exotic source file) is **skipped**, not counted as a failure.
 - If a `basemind serve` MCP server is already running for this repo it holds the store lock, so a
-  CLI `scan` will fail with a lock error. Use the `rescan` MCP tool (it re-indexes in-process)
+  CLI `scan` will fail with a lock error. Use `admin { mode: "rescan" }` over MCP (it re-indexes in-process)
   instead, or stop the server first.
 - **Indexing directories outside the repo** — set `scan.extra_roots` in the repo-root `basemind.toml`
   to a list of absolute paths (e.g. a Bazel external repo cache) to index them alongside the repo.
@@ -61,7 +61,7 @@ Finding the binary (in order of preference):
   are (re-)indexed on a full `scan` only — the live watcher does not track them. Git tools (blame)
   don't apply to external files; the code map (symbols / references / outlines) and document search
   do.
-- After a successful scan, both the MCP tools and `basemind query …` have a fresh index.
+- After a successful scan, both the MCP tools and `basemind code …` have a fresh index.
 - The CLI shares the exact same machine-global cache as the MCP server — see the `basemind-cli`
   skill for the full query surface, or `basemind-code-search` / `basemind-git-history` /
   `basemind-documents` for the per-capability workflows.

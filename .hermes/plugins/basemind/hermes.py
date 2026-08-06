@@ -1,6 +1,6 @@
 # AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-# Content-Hash: blake3:ee4622d491e93cef4b66ab6911bfae9feb739f612cb0f5ac8bccebd8fff72c70
-# Source-Hash: blake3:39867fc9cb507ee62ce14995638a96ec410e32ae97a5aa89c5901e31d78f4621
+# Content-Hash: blake3:a08a5ade4f6382ce3ba5a71c55a8697845fb9825eca0c2b5150c53cf1b9e1e56
+# Source-Hash: blake3:85c432430a8315da4f7225ca2a6f5de96b425254183a6ea753e09b49c4846455
 # Schema-Version: v1
 
 """Hermes Agent plugin registration for basemind.
@@ -37,12 +37,15 @@ _COMMANDS_DIR = _PKG_DIR / "commands"
 
 _DISCIPLINE = (
     "basemind is available over MCP in this session — a tree-sitter code map + git context. "
+    "Its surface is nine domain tools — code, graph, git, memory, admin, web, agents, workspace, "
+    "and shell — each dispatched by a required mode. "
     "Prefer it over grep/read for structural and historical questions: its tools return paths, "
     "line numbers, and signatures, not file bodies, so they cost a fraction of the tokens of "
-    "reading source. Default workflow: outline a file before opening it (then read only the span "
-    "you need); search_symbols instead of grep for a definition; find_references/find_callers "
-    "instead of grepping call sites; workspace_grep instead of shelling out to ripgrep; rescan "
-    "after edits instead of reconnecting. Do not re-read a file basemind already mapped."
+    "reading source. Default workflow: use code mode outline before opening a file (then read only "
+    "the span you need); code mode symbols instead of grep for a definition; code modes references "
+    "and callers instead of grepping call sites; code mode grep instead of shelling out to ripgrep; "
+    "admin mode rescan after edits instead of reconnecting. Do not re-read a file basemind already "
+    "mapped."
 )
 
 _COMMS_TOOLS = (
@@ -50,12 +53,12 @@ _COMMS_TOOLS = (
     "docs/RAG/NER, web crawl, and parsing. You are connected to basemind agent-comms — coordinate "
     "with other agents via THREADS: scoped conversations addressed by at least two of {subject, "
     "path-glob, members}, discovered by scope (you're a member, your cwd matches the path-glob, or a "
-    "subject filter) — never globally — and joined explicitly (no auto-join). Levers: thread_list to "
-    "see threads in scope and thread_history to skim one; inbox_read to scan your inbox (front-matter "
-    "only — subject/from/id — never bodies, to stay token-frugal); message_get {message_id} to read "
-    "one body on demand; thread_start {subject, path?, members?} to open a thread; thread_post "
-    "{thread, subject, body, reply_to?} to send (always give a short subject; the body holds the "
-    "detail). Prefer posting a concise status/question over staying silent when collaborating."
+    "subject filter) — never globally — and joined explicitly (no auto-join). All coordination uses "
+    "the agents tool with a required mode: thread_list to see threads in scope and history to skim "
+    "one; inbox to scan your inbox (front-matter only — subject/from/id — never bodies, to stay "
+    "token-frugal); message with message_id to read one body on demand; thread_start with subject "
+    "plus path_glob and/or members to open a thread; post with thread, subject, body, and optional reply_to to "
+    "send. Prefer posting a concise status/question over staying silent when collaborating."
 )
 
 
@@ -137,7 +140,7 @@ def _session_start_context(cwd: str) -> str:
     if messages:
         return (
             f"{_DISCIPLINE} {_COMMS_TOOLS}\n"
-            "Recent messages (front-matter only; call message_get with an id to read a body):\n"
+            "Recent messages (front-matter only; use agents mode message with message_id to read a body):\n"
             f"{_format_lines(messages)}"
         )
     return f"{_DISCIPLINE} {_COMMS_TOOLS} No messages in your threads yet — start one to kick things off."
@@ -160,9 +163,9 @@ def _delta_context(cwd: str, session_id: str) -> str | None:
     _write_text(hwm_file, str(max_ts))
     return (
         "New basemind agent-comms message(s) since your last turn (front-matter only — call "
-        "message_get with an id to read a body):\n"
+        "agents mode message with message_id to read a body):\n"
         f"{_format_lines(fresh)}\n"
-        "Reply with thread_post {thread, subject, body, reply_to:<id>} if a response is warranted."
+        "Reply with agents mode post and thread, subject, body, and reply_to if warranted."
     )
 
 

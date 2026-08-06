@@ -6,8 +6,8 @@ argument-hint: <question about the codebase>
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:8cdc39a2516f7fe0af441ddb5d47404d8716818b40f9967a10e907690e537e38
-Source-Hash: blake3:39867fc9cb507ee62ce14995638a96ec410e32ae97a5aa89c5901e31d78f4621
+Content-Hash: blake3:39cefdc90017a956662c77b5bbdcbb598a7e054c9b81884c2d26768aa12e47c7
+Source-Hash: blake3:85c432430a8315da4f7225ca2a6f5de96b425254183a6ea753e09b49c4846455
 Schema-Version: v1
 -->
 
@@ -33,16 +33,16 @@ Route the question to the tool that answers it directly:
 
 | Example question | Tool |
 |---|---|
-| "Where is X defined?" | `search_symbols` |
-| "What calls X?" | `find_references` (any name) or `find_callers` (specific def) |
-| "What's the shape of this file?" | `outline` (add `l2: true` for calls + docs) |
-| "What changed recently?" | `recent_changes`, `commits_touching`, `symbol_history` |
-| "Who last touched this?" | `blame_file` / `blame_symbol` |
-| "Where's the churn?" | `hot_files` |
-| "Search PDFs/docs in the repo by meaning?" | `search_documents` |
-| "Recall something remembered earlier?" | `memory_get` / `memory_list` / `memory_search` |
-| "Remember this for later sessions?" | `memory_put` (delete with `memory_delete`) |
-| "Refresh the index after editing code?" | `rescan` (pass `paths: [...]` to limit the scope) |
+| "Where is X defined?" | `code` mode `symbols` |
+| "What calls X?" | `code` mode `references` (any name) or `callers` (specific definition) |
+| "What's the shape of this file?" | `code` mode `outline` (add `l2: true`) |
+| "What changed recently?" | `git` mode `recent`, `touching`, or `symbol_history` |
+| "Who last touched this?" | `git` mode `blame` or `blame_symbol` |
+| "Where's the churn?" | `git` mode `churn` |
+| "Search PDFs/docs in the repo by meaning?" | `memory` mode `documents` |
+| "Recall something remembered earlier?" | `memory` mode `get`, `list`, or `search` |
+| "Remember this for later sessions?" | `memory` mode `put` (delete with `delete`) |
+| "Refresh the index after editing code?" | `admin` mode `rescan` (`paths` limits scope) |
 
 ## Notes
 

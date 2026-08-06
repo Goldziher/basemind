@@ -10,14 +10,14 @@ description: >-
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:53bac1c108eba0ca5813bc9f76dc1e793e6dcbe9b89528f3a73d6862531d3820
-Source-Hash: blake3:39867fc9cb507ee62ce14995638a96ec410e32ae97a5aa89c5901e31d78f4621
+Content-Hash: blake3:4802a612980221e429ab0d17a26e2a80962f696fa863bbfddff268b28b0a4583
+Source-Hash: blake3:85c432430a8315da4f7225ca2a6f5de96b425254183a6ea753e09b49c4846455
 Schema-Version: v1
 -->
 
 # basemind-stats — on-demand usage dashboard
 
-Call the `telemetry_summary` MCP tool and render the result as a markdown report.
+Call `admin` mode `telemetry` and render the result as a markdown report.
 
 ## When to use
 
@@ -26,16 +26,16 @@ stats", or invokes `/bm-stats` directly. This skill is strictly user-invoked —
 
 ## How to run
 
-1. Call `telemetry_summary` with `{ "window": "today" }` (the default). If the
+1. Call `admin { "mode": "telemetry", "window": "today" }` (the default). If the
    user asks for a specific range, map it to one of `"today"`, `"1h"`, `"24h"`,
    `"all"`.
 2. Render a markdown block in this shape:
 
    ```text
    ## basemind activity (today)
-   - **N tool calls** ; top tools: outline (18), search_symbols (12), …
+   - **N tool calls** ; top operations: code:outline (18), code:symbols (12), …
    - **~K tokens saved** vs grep + Read baseline
-   - recent: outline (4ms, 312B), search_symbols (2ms, 180B), …
+   - recent: code:outline (4ms, 312B), code:symbols (2ms, 180B), …
    ```
 
 3. If `total_calls` is 0, say so plainly ("no basemind activity in the window yet").

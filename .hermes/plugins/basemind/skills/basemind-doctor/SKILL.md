@@ -9,8 +9,8 @@ description: >-
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:adec6c3eeb72a24d9c09ee89c7809151d37bf9c40592f108e30da3e0ea16f9a6
-Source-Hash: blake3:39867fc9cb507ee62ce14995638a96ec410e32ae97a5aa89c5901e31d78f4621
+Content-Hash: blake3:aac2f0263d4ef84dcaf0292a0c00c6f90c8e31d68eefbd553500bd75df5573c6
+Source-Hash: blake3:85c432430a8315da4f7225ca2a6f5de96b425254183a6ea753e09b49c4846455
 Schema-Version: v1
 -->
 
@@ -29,7 +29,7 @@ make sure the index is healthy and clear anything blocking a restart.
 ## 1. Is there an index?
 
 ```sh
-basemind query status
+basemind admin status
 ```
 
 - Errors / "no index" / `file_count: 0` with blobs present → the index is missing or lost. Build
@@ -46,7 +46,7 @@ directory under the machine-global cache (Linux `~/.local/share/basemind/`, macO
 in the repo.
 
 - If that `pid` is **alive** (`ps -p <pid>`), the server is up — use the MCP tools, or the
-  `rescan` MCP tool to refresh. Don't run a CLI `scan` (it will contend on the lock).
+  `admin { mode: "rescan" }` to refresh. Don't run a CLI `scan` (it will contend on the lock).
 - If that `pid` is **dead**, the lock is stale. The OS releases the advisory lock when a process
   dies, so a fresh `basemind scan` / `basemind serve` should just work — retry it. (You may delete
   the stale `.lock.meta` sidecar in that workspace cache dir to clear the advisory holder record.)
@@ -68,7 +68,7 @@ basemind can't relaunch its own stdio server; trigger a reconnect in your client
   plugin's launcher re-downloads/execs the binary automatically on the next connection.
 - **Cursor / others**: toggle/reconnect the basemind MCP server in the MCP settings.
 
-While disconnected, you are not blocked: use the `basemind-cli` skill (`basemind query …`,
+While disconnected, you are not blocked: use the `basemind-cli` skill (`basemind code …`,
 `basemind git …`) — it reads the same machine-global cache directly, no server required.
 
 ## Agent shells (embedded rmux daemon)
@@ -79,12 +79,12 @@ out to any external `rmux` binary, so there is nothing extra to install. The dae
 per-user socket under the data dir (`<data_dir>/basemind/shells/rmux.sock`, `0o700`), overridable
 with `BASEMIND_SHELLS_SOCKET`. It is **separate** from the comms broker daemon.
 
-- `shell_list` (MCP) enumerates sessions with liveness; a dead-but-listed session was killed or
-  exited — re-run after `shell_kill` to confirm it's gone.
+- `shell { mode: "list" }` enumerates sessions with liveness; a dead-but-listed session was killed
+  or exited — re-run after `shell { mode: "kill", session_id: "…" }` to confirm it's gone.
 - The daemon **self-terminates once it has no sessions left**, so an idle daemon disappearing is
-  expected, not a fault. A new `shell_spawn` starts a fresh one.
+  expected, not a fault. `shell` mode `spawn` starts a fresh one.
 - Sessions are independent of `serve`: they outlive a single MCP call but are torn down by
-  `shell_kill` (which also drops the comms lineage row) or when the daemon exits.
+  `shell` mode `kill` (which also drops the comms lineage row) or when the daemon exits.
 
 ## When server logs help
 

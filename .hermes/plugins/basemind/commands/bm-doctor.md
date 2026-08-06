@@ -5,8 +5,8 @@ description: Diagnose and recover basemind when it isn't working (MCP tools miss
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:bddb5b7c433220cce32a3cad1c9011d9f1fc6b05e2420bb09f7dfd280b1da2e7
-Source-Hash: blake3:39867fc9cb507ee62ce14995638a96ec410e32ae97a5aa89c5901e31d78f4621
+Content-Hash: blake3:df3f49e191ec87771c49ce500cb25d3441611a56a6bc9cacb433f25f7837f171
+Source-Hash: blake3:85c432430a8315da4f7225ca2a6f5de96b425254183a6ea753e09b49c4846455
 Schema-Version: v1
 -->
 
@@ -25,7 +25,7 @@ serve` MCP server seems dead.
 Invoke `/bm-doctor` (optional free-text detail, e.g. `/bm-doctor tools return no indexed files`).
 It runs the checks below in order:
 
-1. Check the index: `basemind query status`.
+1. Check the index: `basemind admin status`.
 2. Check for a lock-holding server: `cat .basemind/.lock.meta`.
 3. Rebuild the index if needed: `basemind scan`.
 4. Reconnect the MCP server (client-specific — this is the only way to restart it).

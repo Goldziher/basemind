@@ -6,8 +6,8 @@ argument-hint: [today|1h|24h|all]
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:134dcd4fa2a3179ed99a6d3f30537d0fbd428229cda0872f969ff0496b0f4fde
-Source-Hash: blake3:39867fc9cb507ee62ce14995638a96ec410e32ae97a5aa89c5901e31d78f4621
+Content-Hash: blake3:de8ef18a77f3c93ea82270ed4f99190e5e326150572aa185c5b5496f7b5c4df9
+Source-Hash: blake3:85c432430a8315da4f7225ca2a6f5de96b425254183a6ea753e09b49c4846455
 Schema-Version: v1
 -->
 
@@ -25,13 +25,14 @@ RAM usage.
 
 Invoke `/bm-stats` (default window `today`) or `/bm-stats <today|1h|24h|all>`. Window: $ARGUMENTS
 
-1. **Resource footprint.** MCP tool `cache_stats`, or CLI `basemind cache stats` (add `--json` to
+1. **Resource footprint.** MCP `admin { mode: "cache_stats" }`, or CLI `basemind admin cache-stats` (add `--json` to
    parse). Report: `total_bytes` (matches `du`), the per-component breakdown (blobs / views /
    git-history / lance / git-cache / telemetry / other), and process RAM (`rss_bytes` +
    `peak_rss_bytes`). If `blob_accounting_ok` is `false`, note that orphan accounting was skipped
    (stale/unreadable index — re-scan to restore it); the sizes are still accurate.
 
-2. **Activity.** MCP tool `telemetry_summary`, or CLI `basemind telemetry --window <today|1h|24h|all>`
+2. **Activity.** MCP `admin { mode: "telemetry", window: "…" }`, or CLI
+   `basemind admin telemetry --window <today|1h|24h|all>`
    (add `--json`). Report call count, the per-tool histogram, and estimated tokens saved for the
    window.
 
@@ -39,8 +40,8 @@ Invoke `/bm-stats` (default window `today`) or `/bm-stats <today|1h|24h|all>`. W
 
 ## Notes
 
-- Prefer the MCP tools when connected, but don't depend on them — the CLI reads the same data
-  with no server. If a step's MCP tool isn't available, run its CLI equivalent instead of giving up.
+- Prefer MCP when connected, but don't depend on it — the CLI reads the same data with no server.
+  If an `admin` mode isn't available, run its CLI equivalent instead of giving up.
 - If neither MCP nor CLI is reachable, say so plainly and point at `/bm-doctor`.
 - Always end with a one-sentence disclosure that the savings number is heuristic: tools without a
   realistic baseline (memory, document search, git wrappers) report 0 saved.
