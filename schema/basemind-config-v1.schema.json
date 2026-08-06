@@ -136,7 +136,7 @@
       }
     },
     "code_search": {
-      "description": "Semantic code-search tier: chunk + embed source for the `search_code` MCP tool.\nInert unless the `code-search` cargo feature is compiled in.",
+      "description": "Semantic code-search tier: chunk + embed source for the `code` tool's `semantic` mode.\nInert unless the `code-search` cargo feature is compiled in.",
       "$ref": "#/$defs/CodeSearchConfig",
       "default": {
         "enabled": true,
@@ -270,7 +270,7 @@
           "default": true
         },
         "eager_l2": {
-          "description": "When true (default), the scanner runs L2 extraction (calls + docs) inline with L1.\nL2 populates the `calls_by_callee` Fjall partition that drives `find_references` and\n`find_callers`. Flipping to `false` halves the scan budget on large repos at the cost\nof empty reference-search results until a foreground L2 pass is triggered (or the\nexisting on-demand `query::file_outline_l2` lazy path runs).",
+          "description": "When true (default), the scanner runs L2 extraction (calls + docs) inline with L1.\nL2 populates the `calls_by_callee` Fjall partition that drives the `code` tool's\n`references` and `callers` modes. Flipping to `false` halves the scan budget on large\nrepos at the cost\nof empty reference-search results until a foreground L2 pass is triggered (or the\nexisting on-demand `query::file_outline_l2` lazy path runs).",
           "type": "boolean",
           "default": true
         },
@@ -289,7 +289,7 @@
       "type": "object",
       "properties": {
         "precise_resolution": {
-          "description": "Master switch for precise, scope- and import-aware name resolution. When `true` (default),\nlanguages with a precise engine resolve references to their true definitions — JS/TS via oxc\n(`code-intel-js`), Python/Java via the stack-graphs `.tsg` engine (`code-intel-stack`) — so\n`find_references` / `find_callers` / `goto_definition` distinguish a shadowed local from an\nimport instead of matching by name. Set to `false` to fall back to fast tree-sitter `locals`\nscope binding for every language (the precise engines are skipped). Inert for languages with\nno precise engine regardless. Takes effect on files (re)analyzed after the change; run a full\n`basemind scan` to apply it to an already-indexed repo.",
+          "description": "Master switch for precise, scope- and import-aware name resolution. When `true` (default),\nlanguages with a precise engine resolve references to their true definitions — JS/TS via oxc\n(`code-intel-js`), Python/Java via the stack-graphs `.tsg` engine (`code-intel-stack`) — so\n`code` modes `references` / `callers` / `definition` distinguish a shadowed local from an\nimport instead of matching by name. Set to `false` to fall back to fast tree-sitter `locals`\nscope binding for every language (the precise engines are skipped). Inert for languages with\nno precise engine regardless. Takes effect on files (re)analyzed after the change; run a full\n`basemind scan` to apply it to an already-indexed repo.",
           "type": "boolean",
           "default": true
         }
@@ -816,7 +816,7 @@
       ]
     },
     "CodeSearchConfig": {
-      "description": "`[code_search]` table. Chunk + embed source code for the `search_code` MCP tool.",
+      "description": "`[code_search]` table. Chunk + embed source code for the `code` tool's `semantic` mode.",
       "type": "object",
       "properties": {
         "enabled": {
@@ -839,7 +839,7 @@
           "default": 200
         },
         "embed": {
-          "description": "Generate embeddings (`true`) or chunk-only without vector storage (`false`). **Default\n`false`**: local embeddings on *code* aren't worth their cost — code is embedded with a\ngeneral English model and the one real win (NL→symbol) is already served by the BM25 keyword\nlane over the same text. With embeddings off the `.chunk.msgpack` cache is still written and\nthe BM25 keyword lane still works (so `search_code` keyword search functions), but no LanceDB\nrows land — the semantic (vector) lane returns nothing and no ONNX model is downloaded. Flip\nto `true` only if you specifically want vector search over code.",
+          "description": "Generate embeddings (`true`) or chunk-only without vector storage (`false`). **Default\n`false`**: local embeddings on *code* aren't worth their cost — code is embedded with a\ngeneral English model and the one real win (NL→symbol) is already served by the BM25 keyword\nlane over the same text. With embeddings off the `.chunk.msgpack` cache is still written and\nthe BM25 keyword lane still works (so `lane: \"keyword\"` functions), but no LanceDB\nrows land — the semantic (vector) lane returns nothing and no ONNX model is downloaded. Flip\nto `true` only if you specifically want vector search over code.",
           "type": "boolean",
           "default": false
         },
@@ -853,7 +853,7 @@
           "default": []
         },
         "reranker": {
-          "description": "Optional cross-encoder rerank of the fused `search_code` hits. Reuses the same xberg reranker\nas the documents tier. Off by default — the first call downloads an ONNX model. Enable via\n`[code_search.reranker] enabled = true` or the per-query `rerank_enabled` override.",
+          "description": "Optional cross-encoder rerank of the fused `semantic` hits. Reuses the same xberg reranker\nas the documents tier. Off by default — the first call downloads an ONNX model. Enable via\n`[code_search.reranker] enabled = true` or the per-query `rerank_enabled` override.",
           "$ref": "#/$defs/RerankerConfig",
           "default": {
             "enabled": false,

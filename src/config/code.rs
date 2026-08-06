@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use super::RerankerConfig;
 
-/// `[code_search]` table. Chunk + embed source code for the `search_code` MCP tool.
+/// `[code_search]` table. Chunk + embed source code for the `code` tool's `semantic` mode.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CodeSearchConfig {
@@ -31,7 +31,7 @@ pub struct CodeSearchConfig {
     /// `false`**: local embeddings on *code* aren't worth their cost — code is embedded with a
     /// general English model and the one real win (NL→symbol) is already served by the BM25 keyword
     /// lane over the same text. With embeddings off the `.chunk.msgpack` cache is still written and
-    /// the BM25 keyword lane still works (so `search_code` keyword search functions), but no LanceDB
+    /// the BM25 keyword lane still works (so `lane: "keyword"` functions), but no LanceDB
     /// rows land — the semantic (vector) lane returns nothing and no ONNX model is downloaded. Flip
     /// to `true` only if you specifically want vector search over code.
     #[serde(default = "CodeSearchConfig::default_embed")]
@@ -43,7 +43,7 @@ pub struct CodeSearchConfig {
     #[serde(default)]
     #[schemars(inner(length(min = 1)))]
     pub embed_exclude: Vec<String>,
-    /// Optional cross-encoder rerank of the fused `search_code` hits. Reuses the same xberg reranker
+    /// Optional cross-encoder rerank of the fused `semantic` hits. Reuses the same xberg reranker
     /// as the documents tier. Off by default — the first call downloads an ONNX model. Enable via
     /// `[code_search.reranker] enabled = true` or the per-query `rerank_enabled` override.
     #[serde(default)]

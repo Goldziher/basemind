@@ -31,7 +31,7 @@ pub struct ConfigV1 {
     /// profile. Bounds basemind's footprint on constrained machines.
     #[serde(default)]
     pub resources: ResourcesConfig,
-    /// Semantic code-search tier: chunk + embed source for the `search_code` MCP tool.
+    /// Semantic code-search tier: chunk + embed source for the `code` tool's `semantic` mode.
     /// Inert unless the `code-search` cargo feature is compiled in.
     #[serde(default)]
     pub code_search: CodeSearchConfig,
@@ -92,8 +92,9 @@ pub struct ScanConfig {
     #[serde(default = "ScanConfig::default_skip_submodules")]
     pub skip_submodules: bool,
     /// When true (default), the scanner runs L2 extraction (calls + docs) inline with L1.
-    /// L2 populates the `calls_by_callee` Fjall partition that drives `find_references` and
-    /// `find_callers`. Flipping to `false` halves the scan budget on large repos at the cost
+    /// L2 populates the `calls_by_callee` Fjall partition that drives the `code` tool's
+    /// `references` and `callers` modes. Flipping to `false` halves the scan budget on large
+    /// repos at the cost
     /// of empty reference-search results until a foreground L2 pass is triggered (or the
     /// existing on-demand `query::file_outline_l2` lazy path runs).
     #[serde(default = "ScanConfig::default_eager_l2")]
@@ -176,7 +177,7 @@ pub struct CodeIntelConfig {
     /// Master switch for precise, scope- and import-aware name resolution. When `true` (default),
     /// languages with a precise engine resolve references to their true definitions — JS/TS via oxc
     /// (`code-intel-js`), Python/Java via the stack-graphs `.tsg` engine (`code-intel-stack`) — so
-    /// `find_references` / `find_callers` / `goto_definition` distinguish a shadowed local from an
+    /// `code` modes `references` / `callers` / `definition` distinguish a shadowed local from an
     /// import instead of matching by name. Set to `false` to fall back to fast tree-sitter `locals`
     /// scope binding for every language (the precise engines are skipped). Inert for languages with
     /// no precise engine regardless. Takes effect on files (re)analyzed after the change; run a full
