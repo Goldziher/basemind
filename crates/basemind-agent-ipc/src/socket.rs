@@ -30,15 +30,37 @@ const OWNER_ONLY_FILE: u32 = 0o600;
 const SOCKET_LOCK_WAIT: Duration = Duration::from_secs(15);
 /// Poll cadence while a predecessor holds the socket cleanup lock without a live listener.
 const SOCKET_LOCK_POLL: Duration = Duration::from_millis(25);
+/// Number of connect attempts before an existing daemon socket is declared stale.
+const PROBE_ATTEMPTS: usize = 4;
+/// Backoff between liveness attempts so a briefly busy daemon is not reclaimed.
+const PROBE_RETRY_BACKOFF: Duration = Duration::from_millis(100);
 
 /// Removes a daemon socket on drop only when the path still names the inode captured at creation.
 /// This prevents a shutting-down daemon from unlinking a replacement socket bound by its successor.
 #[derive(Debug)]
 pub struct SocketCleanupGuard {
     _lock: std::fs::File,
+    ownership: SocketOwnership,
+}
+
+/// Cloneable identity for checking that a daemon still owns its published socket path.
+#[derive(Clone, Debug)]
+pub struct SocketOwnership {
     path: PathBuf,
     device: u64,
     inode: u64,
+}
+
+impl SocketOwnership {
+    /// Return `true` while the path still names the socket inode captured at bind time.
+    #[must_use]
+    pub fn is_current(&self) -> bool {
+        use std::os::unix::fs::MetadataExt;
+
+        std::fs::metadata(&self.path)
+            .map(|metadata| metadata.dev() == self.device && metadata.ino() == self.inode)
+            .unwrap_or(false)
+    }
 }
 
 impl SocketCleanupGuard {
@@ -50,25 +72,28 @@ impl SocketCleanupGuard {
         let metadata = std::fs::metadata(path)?;
         Ok(Self {
             _lock: lock,
-            path: path.to_path_buf(),
-            device: metadata.dev(),
-            inode: metadata.ino(),
+            ownership: SocketOwnership {
+                path: path.to_path_buf(),
+                device: metadata.dev(),
+                inode: metadata.ino(),
+            },
         })
+    }
+
+    /// Capture a cloneable token for watchdog checks without transferring cleanup ownership.
+    #[must_use]
+    pub fn ownership(&self) -> SocketOwnership {
+        self.ownership.clone()
     }
 }
 
 impl Drop for SocketCleanupGuard {
     fn drop(&mut self) {
-        use std::os::unix::fs::MetadataExt;
-
-        let owns_path = std::fs::metadata(&self.path)
-            .map(|metadata| metadata.dev() == self.device && metadata.ino() == self.inode)
-            .unwrap_or(false);
-        if owns_path
-            && let Err(error) = std::fs::remove_file(&self.path)
+        if self.ownership.is_current()
+            && let Err(error) = std::fs::remove_file(&self.ownership.path)
             && error.kind() != std::io::ErrorKind::NotFound
         {
-            tracing::warn!(%error, socket = %self.path.display(), "agent ipc: socket cleanup failed");
+            tracing::warn!(%error, socket = %self.ownership.path.display(), "agent ipc: socket cleanup failed");
         }
     }
 }
@@ -90,7 +115,23 @@ pub fn agent_socket_path(root: &Path) -> PathBuf {
 /// busy, via the socket backlog); a stale socket file left by a dead daemon refuses it.
 #[cfg(unix)]
 pub fn probe_alive(socket_path: &Path) -> bool {
-    std::os::unix::net::UnixStream::connect(socket_path).is_ok()
+    probe_with_retries(
+        || std::os::unix::net::UnixStream::connect(socket_path).is_ok(),
+        PROBE_RETRY_BACKOFF,
+    )
+}
+
+#[cfg(unix)]
+fn probe_with_retries(mut probe_once: impl FnMut() -> bool, retry_backoff: Duration) -> bool {
+    for attempt in 0..PROBE_ATTEMPTS {
+        if probe_once() {
+            return true;
+        }
+        if attempt + 1 < PROBE_ATTEMPTS && !retry_backoff.is_zero() {
+            std::thread::sleep(retry_backoff);
+        }
+    }
+    false
 }
 
 /// Bind the daemon listener at `socket_path`, reclaiming a stale socket only after `probe` confirms
@@ -184,6 +225,8 @@ async fn acquire_bind_lock(socket_path: &Path, probe: &impl Fn(&Path) -> bool) -
 
 #[cfg(all(test, unix))]
 mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     use super::*;
 
     /// `BASEMIND_DATA_HOME` is process-global; serialize the env-mutating tests on a mutex.
@@ -273,10 +316,13 @@ mod tests {
         let socket = dir.path().join("agent.sock");
         let listener = bind_listener(&socket, probe_alive).await.expect("bind listener");
         let guard = SocketCleanupGuard::new(&socket).expect("create cleanup guard");
+        let ownership = guard.ownership();
+        assert!(ownership.is_current(), "guard initially owns the published socket");
 
         drop(listener);
         std::fs::remove_file(&socket).expect("remove original socket");
         let replacement = std::os::unix::net::UnixListener::bind(&socket).expect("bind replacement");
+        assert!(!ownership.is_current(), "replacement invalidates captured ownership");
         drop(guard);
 
         assert!(socket.exists(), "cleanup must not unlink a replacement socket");
@@ -301,5 +347,34 @@ mod tests {
             .expect("rebind completes after cleanup")
             .expect("rebind task joins")
             .expect("rebind succeeds after cleanup releases lock");
+    }
+
+    #[test]
+    fn liveness_probe_retries_transient_connect_failures() {
+        let attempts = AtomicUsize::new(0);
+
+        let alive = probe_with_retries(
+            || attempts.fetch_add(1, Ordering::SeqCst) + 1 == PROBE_ATTEMPTS,
+            Duration::ZERO,
+        );
+
+        assert!(alive, "the final permitted attempt can establish liveness");
+        assert_eq!(attempts.load(Ordering::SeqCst), PROBE_ATTEMPTS);
+    }
+
+    #[test]
+    fn liveness_probe_stops_after_the_first_success() {
+        let attempts = AtomicUsize::new(0);
+
+        let alive = probe_with_retries(
+            || {
+                attempts.fetch_add(1, Ordering::SeqCst);
+                true
+            },
+            Duration::ZERO,
+        );
+
+        assert!(alive);
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
     }
 }

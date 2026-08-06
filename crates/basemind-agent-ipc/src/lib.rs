@@ -36,8 +36,10 @@ pub use frame::MAX_FRAME_BYTES;
 #[cfg(unix)]
 pub use client::UdsAgentClient;
 #[cfg(unix)]
-pub use lifecycle::{ensure_daemon, ensure_daemon_with, spawn_detached};
+pub use lifecycle::{
+    acquire_agent_daemon_lock, agent_daemon_lock_dir, ensure_daemon, ensure_daemon_with, spawn_detached,
+};
 #[cfg(unix)]
 pub use server::{serve, serve_connection};
 #[cfg(unix)]
-pub use socket::{SocketCleanupGuard, agent_socket_path, bind_listener, probe_alive};
+pub use socket::{SocketCleanupGuard, SocketOwnership, agent_socket_path, bind_listener, probe_alive};

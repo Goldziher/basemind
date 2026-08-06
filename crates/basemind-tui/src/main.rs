@@ -30,14 +30,16 @@ mod ui;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
+use basemind::daemon_lock::DaemonLockOutcome;
 use basemind::mcp::BasemindServer;
 use basemind_agent::tools::{ShellTool, code_nav_tools, comms_tools, git_history_tools};
 use basemind_agent::{AgentClient, AgentCommand, Session, SessionStore, ToolRegistry, in_proc_channel};
 use basemind_agent_ipc::{
-    SocketCleanupGuard, UdsAgentClient, agent_socket_path, bind_listener, ensure_daemon, probe_alive, serve,
-    spawn_detached,
+    SocketCleanupGuard, SocketOwnership, UdsAgentClient, acquire_agent_daemon_lock, agent_socket_path, bind_listener,
+    ensure_daemon, probe_alive, serve, spawn_detached,
 };
 
 use crate::app::App;
@@ -46,6 +48,12 @@ use crate::config::{default_model_name, load_agent_config};
 /// The system prompt handed to the session.
 const SYSTEM_PROMPT: &str = "You are a coding assistant operating inside the basemind agent. Prefer \
     the outline and search_symbols tools over reading whole files. Be concise.";
+/// Time allowed for the session engine to flush after the daemon stops accepting clients.
+const ENGINE_SHUTDOWN_GRACE: Duration = Duration::from_secs(10);
+/// Time allowed for runtime-owned blocking work to stop before process exit.
+const RUNTIME_SHUTDOWN_GRACE: Duration = Duration::from_secs(10);
+/// Cadence for detecting that another process replaced the published daemon socket.
+const SOCKET_OWNERSHIP_CHECK_EVERY: Duration = Duration::from_secs(1);
 
 /// How the session log should be opened.
 enum Resume {
@@ -120,13 +128,22 @@ fn parse_args() -> Args {
     }
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
     // Load a local `.env` (from the CWD or a parent) before anything reads the environment, so the ~keep
     // provider keys / `BASEMIND_AGENT_MODEL` can live in a gitignored file instead of the shell. A ~keep
     // missing file is fine, and real environment variables already set always win. ~keep
     let _ = dotenvy::dotenv();
     let args = parse_args();
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .context("build TUI runtime")?;
+    let result = runtime.block_on(run_mode(args));
+    runtime.shutdown_timeout(RUNTIME_SHUTDOWN_GRACE);
+    result
+}
+
+async fn run_mode(args: Args) -> Result<()> {
     match args.mode {
         Mode::InProc => run_in_proc(args).await,
         Mode::Daemon => run_daemon(args).await,
@@ -218,32 +235,66 @@ async fn run_daemon(args: Args) -> Result<()> {
     // Claim the singleton socket before building the engine: if another daemon won a spawn race, this
     // bind fails here, before `build_engine` creates an orphaned session directory on disk. ~keep
     let socket_path = agent_socket_path(&args.root);
+    let lock_socket_path = socket_path.clone();
+    let _daemon_lock = match tokio::task::spawn_blocking(move || {
+        acquire_agent_daemon_lock(&lock_socket_path, env!("CARGO_PKG_VERSION"))
+    })
+    .await
+    .context("join agent daemon ownership acquisition")?
+    .context("acquire agent daemon ownership")?
+    {
+        DaemonLockOutcome::Acquired(lock) => lock,
+        DaemonLockOutcome::AlreadyHeld(_) => return Ok(()),
+    };
     let listener = bind_listener(&socket_path, probe_alive)
         .await
         .context("bind agent daemon socket")?;
     let _socket_cleanup = SocketCleanupGuard::new(&socket_path).context("guard agent daemon socket")?;
+    let socket_ownership = _socket_cleanup.ownership();
     eprintln!("agent daemon listening on {}", socket_path.display());
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    let signal_shutdown = shutdown_tx.clone();
     tokio::spawn(async move {
         tokio::select! {
             _ = interrupt.recv() => {}
             _ = terminate.recv() => {}
         }
-        let _ = shutdown_tx.send(true);
+        let _ = signal_shutdown.send(true);
     });
+    let ownership_shutdown = shutdown_tx;
+    tokio::spawn(watch_socket_ownership(socket_ownership, ownership_shutdown));
 
     let (session, _model, _initial_prompt) = build_engine(&args).await?;
 
     let (endpoint, template) = in_proc_channel(32, 256);
-    tokio::spawn(session.run(endpoint));
+    let mut engine = tokio::spawn(session.run(endpoint));
 
     // The template client is held here for the process's lifetime, so the engine's command channel
     // never closes between connections and the session persists across attaches. ~keep
-    serve(listener, move || template.new_client(), shutdown_rx)
-        .await
-        .context("serve agent daemon")?;
-    Ok(())
+    let serve_result = serve(listener, move || template.new_client(), shutdown_rx).await;
+    if tokio::time::timeout(ENGINE_SHUTDOWN_GRACE, &mut engine).await.is_err() {
+        tracing::warn!(
+            grace_secs = ENGINE_SHUTDOWN_GRACE.as_secs(),
+            "agent daemon: engine shutdown grace elapsed; aborting"
+        );
+        engine.abort();
+        let _ = engine.await;
+    }
+    serve_result.context("serve agent daemon")
+}
+
+async fn watch_socket_ownership(ownership: SocketOwnership, shutdown: tokio::sync::watch::Sender<bool>) {
+    let mut interval = tokio::time::interval(SOCKET_OWNERSHIP_CHECK_EVERY);
+    interval.tick().await;
+    loop {
+        interval.tick().await;
+        if !ownership.is_current() {
+            tracing::warn!("agent daemon: published socket ownership was lost; shutting down");
+            let _ = shutdown.send(true);
+            return;
+        }
+    }
 }
 
 fn install_shutdown_signals() -> Result<(tokio::signal::unix::Signal, tokio::signal::unix::Signal)> {
