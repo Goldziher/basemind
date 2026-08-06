@@ -48,12 +48,12 @@ unchanged. This means keeping the index fresh as you work costs far less than th
 ## Index lifecycle and freshness
 
 `basemind serve` answers the MCP handshake immediately and warms the code map into memory in the
-background, so a client never blocks waiting for a large repo to load. The `status` tool reports
+background, so a client never blocks waiting for a large repo to load. `admin status` reports
 `warming` (still loading) and, once done, `warm_ms`; a first-time index build similarly reports
 `indexing` / `index_build_ms`.
 
-While the server isn't fully ready, `status` and every code-map read tool may carry a `notice`
-object — `{ state, message, retry }` — instead of (or alongside) their normal result:
+While the server isn't fully ready, `admin status` and every code-map read tool may carry a
+`notice` object — `{ state, message, retry }` — instead of (or alongside) their normal result:
 
 | `state` | Meaning | `retry` |
 |---|---|---|
@@ -62,18 +62,18 @@ object — `{ state, message, retry }` — instead of (or alongside) their norma
 | `rescanning` | Incremental rescan after a file change; results are usable but may be stale. | `false` |
 
 Treat an empty or partial result carrying a `notice` as "retry shortly," not "no matches" — poll
-`status` (or just retry the call) until the notice clears.
+`admin status` (or just retry the call) until the notice clears.
 
 ## Markdown and Obsidian as first-class
 
 Markdown and Obsidian vaults are indexed like code:
 
-- **Headings** become navigable symbols — `outline` and `search_symbols` work over a notes vault.
+- **Headings** become navigable symbols — `code outline` and `code symbols` work over a notes vault.
 - **Wikilinks** (`[[Note]]`), **embeds** (`![[Note.md]]`), and standard **links** (`[text](Note.md)`)
-  all become references — so `find_references "Note"` returns that note's backlinks regardless of
+  all become references — so `code references "Note"` returns that note's backlinks regardless of
   link style.
 - **Tags** (`#project` inline or in YAML frontmatter) become references too — so
-  `find_references "#project"` lists every note carrying that tag.
+  `code references "#project"` lists every note carrying that tag.
 
 This means you can navigate your documentation and personal notes with the same tools you use for code.
 
@@ -81,11 +81,11 @@ This means you can navigate your documentation and personal notes with the same 
 
 Search and memory (semantic search over documents and stored notes) are powered by
 [LanceDB](https://github.com/lancedb/lancedb), an in-process vector database. When you call
-`search_documents`, basemind compares your query against the embeddings of every document chunk
+`memory documents`, basemind compares your query against the embeddings of every document chunk
 and returns the closest matches by meaning, not just by keywords.
 
-The shared memory store works the same way: agents can write notes to `memory_put`, and other
-agents search that memory with `memory_search` using semantic similarity.
+The shared memory store works the same way: agents can write notes with `memory put`, and other
+agents search that memory with `memory search` using semantic similarity.
 
 ```mermaid
 flowchart LR

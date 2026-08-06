@@ -188,11 +188,11 @@ use the full path from `which basemind`.
 The standalone program, for scripts, headless runs, and CI.
 [Install it](#install-the-program), then:
 
-<Code code={`basemind scan                          # index the project once
-basemind query symbol "parseQuery"     # find a symbol by name
-basemind query references "processFile" # find everywhere it's called
-basemind git blame-file src/main.rs    # who last changed each line
-basemind watch                         # keep the index fresh as files change`} lang="bash" />
+<Code code={`basemind scan                           # index the project once
+basemind code symbols "parseQuery"      # find a symbol by name
+basemind code references "processFile"  # find everywhere it's called
+basemind git blame src/main.rs          # who last changed each line
+basemind watch                          # keep the index fresh as files change`} lang="bash" />
 
 Full command list in the [CLI reference](/reference/cli/).
 

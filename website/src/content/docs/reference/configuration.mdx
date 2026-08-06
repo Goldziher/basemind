@@ -158,7 +158,7 @@ document_models = "code_only"
 
 ### `[code_search]` Section
 
-Semantic + keyword search over source chunks (`search_code` / `get_chunk`). Requires
+Semantic + keyword search over source chunks (`code` modes `semantic` / `chunk`). Requires
 `--features code-search`.
 
 ```toml
@@ -193,7 +193,7 @@ default_visibility = "group"
 |---|---|---|---|
 | `enabled` | bool | `true` | Master switch (only meaningful with the `memory` feature). |
 | `scope_strategy` | enum | `git_remote_with_fallback` | How the repo scope key is derived. `git_remote_with_fallback` shares memory across clones of the same remote; `workdir_only` keeps each clone separate. |
-| `default_visibility` | enum | `group` | Default tier when a `memory_*` call omits `visibility`. `group` is shared; `individual` is private to the calling agent. |
+| `default_visibility` | enum | `group` | Default tier when a `memory` tool call omits `visibility`. `group` is shared; `individual` is private to the calling agent. |
 
 ### `[crawl]` Section
 
@@ -210,7 +210,7 @@ allow_private_network = false
 | Key | Type | Default | Notes |
 |---|---|---|---|
 | `respect_robots_txt` | bool | `true` | Honor `robots.txt`. Turn off only for hosts you control. |
-| `max_pages` | integer | `32` | Hard cap on pages visited per `web_crawl`. |
+| `max_pages` | integer | `32` | Hard cap on pages visited per `web` mode `crawl` call. |
 | `max_depth` | integer | `2` | Maximum link-following depth from the seed URL. |
 | `max_body_size` | integer | `4194304` | Truncate response bodies above this many bytes (4 MiB). |
 | `user_agent` | string | `basemind/<version>` | Identifies the crawler to site operators. |
@@ -279,12 +279,13 @@ overrides still win over them). Useful for CI/CD where you don't want to commit 
 
 MCP tools accept one-off overrides that apply to that request only and take the highest precedence.
 These cover the documents + LLM settings — for example an `llm_api_key` or `rerank_enabled` on a
-`search_documents` / `search_code` call:
+`memory` mode `documents` / `code` mode `semantic` call:
 
 ```json
 {
-  "tool": "search_documents",
+  "tool": "memory",
   "params": {
+    "mode": "documents",
     "query": "how to authenticate",
     "llm_api_key": "sk-override..."
   }
@@ -301,12 +302,12 @@ ONNX Runtime). Opt into the rest:
 | Feature | Includes | In `full` |
 |---|---|---|
 | `documents` | PDF/Office/HTML/email/image extraction, OCR, and the RAG stack (xberg). | yes |
-| `memory` | LanceDB-backed shared memory (`memory_*` tools). | yes |
-| `crawl` | Web scraping and crawling (`web_scrape`, `web_crawl`, `web_map`); implies `documents`. | yes |
-| `code-search` | Hybrid code search — vector + BM25 + exact-symbol lanes (`search_code`, `get_chunk`). | yes |
-| `comms` | Agent-to-agent comms — threads, per-agent inbox, DMs (Unix domain sockets + Windows named pipes). | yes |
-| `shells` | Headless agent shells (`shell_spawn`, `shell_send`, …). | yes |
-| `code-intel` | Scope- and import-resolved JS/TS `find_references` / `goto_definition` (oxc). | yes |
+| `memory` | LanceDB-backed shared memory (`memory` tool). | yes |
+| `crawl` | Web scraping and crawling (`web` tool modes `scrape`, `crawl`, `map`); implies `documents`. | yes |
+| `code-search` | Hybrid code search — vector + BM25 + exact-symbol lanes (`code` tool modes `semantic`, `chunk`). | yes |
+| `comms` | Agent-to-agent comms — threads, per-agent inbox, DMs (`agents` + `workspace` tools; Unix domain sockets + Windows named pipes). | yes |
+| `shells` | Headless agent shells (`shell` tool modes `spawn`, `send`, …). | yes |
+| `code-intel` | Scope- and import-resolved JS/TS `code` tool modes `references` / `definition` (oxc). | yes |
 | `full` | `documents` + `memory` + `crawl` + `comms` + `shells` + `code-intel` + `code-search`. | — |
 
 ### Installation Examples

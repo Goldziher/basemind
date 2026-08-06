@@ -13,12 +13,17 @@ be fully headless or opened in a real terminal tab or window so you watch along.
 
 ## Tools
 
-### `shell_spawn`
+All of the following are modes of the `shell` MCP tool (`basemind shell <mode>` on the
+CLI). `basemind comms` is a separate CLI group for the comms daemon's own lifecycle
+(`daemon`/`start`/`stop`/`status`/`doctor`) — it is unrelated to shell sessions.
+
+### `shell` mode `spawn`
 
 Start a detached headless shell session.
 
 ```json
 {
+  "mode": "spawn",
   "command": "bash",
   "cwd": "/home/user/project",
   "env": {
@@ -29,14 +34,15 @@ Start a detached headless shell session.
 ```
 
 Returns a `session_id` you use in subsequent calls. The session stays alive until you
-`shell_kill` it or it exits naturally.
+`kill` it (`shell` mode `kill`) or it exits naturally.
 
-### `shell_send`
+### `shell` mode `send`
 
 Type input into a session's stdin.
 
 ```json
 {
+  "mode": "send",
   "session_id": "abc123def456",
   "text": "cargo test --all",
   "no_enter": false
@@ -45,12 +51,13 @@ Type input into a session's stdin.
 
 Set `no_enter: true` to send text without a newline, useful for interactive prompts.
 
-### `shell_capture`
+### `shell` mode `capture`
 
 Read the visible screen of a session — stdout/stderr buffer, last N lines.
 
 ```json
 {
+  "mode": "capture",
   "session_id": "abc123def456",
   "lines": 50
 }
@@ -59,30 +66,34 @@ Read the visible screen of a session — stdout/stderr buffer, last N lines.
 Returns the visible output buffer. Useful for polling session status without waiting for
 it to finish.
 
-### `shell_list`
+### `shell` mode `list`
 
 List all live sessions — returns `session_id`, `command`, `pid`, creation time.
 
 ```json
-{}
+{
+  "mode": "list"
+}
 ```
 
-### `shell_kill`
+### `shell` mode `kill`
 
 Terminate a session.
 
 ```json
 {
+  "mode": "kill",
   "session_id": "abc123def456"
 }
 ```
 
-### `shell_broadcast`
+### `shell` mode `broadcast`
 
 Send the same input to multiple sessions at once.
 
 ```json
 {
+  "mode": "broadcast",
   "text": "echo 'ready'",
   "session_ids": [
     "abc123def456",
@@ -103,18 +114,21 @@ asynchronously.
 **Run a test suite in the background:**
 
 ```json
-shell_spawn {
+shell {
+  "mode": "spawn",
   "command": "bash",
   "cwd": "/repo"
 }
 → session_id: "test-runner-001"
 
-shell_send {
+shell {
+  "mode": "send",
   "session_id": "test-runner-001",
   "text": "cargo test --release"
 }
 
-shell_capture {
+shell {
+  "mode": "capture",
   "session_id": "test-runner-001"
 }
 → "running test_outline ... ok"
@@ -123,35 +137,36 @@ shell_capture {
 **Coordinate builds across shards:**
 
 ```json
-shell_spawn { "command": "bash", "cwd": "/repo" }
+shell { "mode": "spawn", "command": "bash", "cwd": "/repo" }
 → "shard-1"
-shell_spawn { "command": "bash", "cwd": "/repo" }
+shell { "mode": "spawn", "command": "bash", "cwd": "/repo" }
 → "shard-2"
 
-shell_broadcast {
+shell {
+  "mode": "broadcast",
   "text": "cargo build --release -p basemind",
   "session_ids": ["shard-1", "shard-2"]
 }
 
 // poll each shard's output
-shell_capture { "session_id": "shard-1" }
-shell_capture { "session_id": "shard-2" }
+shell { "mode": "capture", "session_id": "shard-1" }
+shell { "mode": "capture", "session_id": "shard-2" }
 ```
 
 ## Discipline
 
-- **Use `shell_spawn` for long-running tasks.** Don't block on test suites or deployments;
-  let them run in the background.
-- **Poll with `shell_capture`, don't assume completion time.** Machine speed varies; check
-  output before proceeding.
+- **Use `shell` mode `spawn` for long-running tasks.** Don't block on test suites or
+  deployments; let them run in the background.
+- **Poll with `shell` mode `capture`, don't assume completion time.** Machine speed
+  varies; check output before proceeding.
 - **Coordinate with comms.** A background worker can post updates to a thread while an
   orchestrator polls and decides next steps.
-- **Clean up with `shell_kill`** or let sessions exit naturally. Don't accumulate idle
-  sessions.
+- **Clean up with `shell` mode `kill`** or let sessions exit naturally. Don't accumulate
+  idle sessions.
 
 <Aside type="note">
 Headless sessions have no real terminal — they buffer stdout/stderr and you read it with
-`shell_capture`. For interactive shells (passing `-it` flags) or to watch a session's
+`shell` mode `capture`. For interactive shells (passing `-it` flags) or to watch a session's
 output in real time, the agent can open a tab or window in your terminal emulator.
 </Aside>
 

@@ -24,9 +24,9 @@ When you ask "what calls `processFile`?", basemind returns 10 call sites with th
 line numbers — enough for an agent to decide whether to open each one. Re-reading the whole
 calling files would explode your context.
 
-The same discipline applies to every tool: `outline` gives you a file's structure (signatures,
-imports) before you open it, so you read only the span you need. `find_references` returns
-pointers, not source. `recent_changes` shows what happened (commits + file list), not diffs.
+The same discipline applies to every tool: `code outline` gives you a file's structure (signatures,
+imports) before you open it, so you read only the span you need. `code references` returns
+pointers, not source. `git recent` shows what happened (commits + file list), not diffs.
 
 See [How it works](/concepts/how-it-works/) to understand how basemind builds the map that makes
 this possible.
@@ -36,10 +36,10 @@ this possible.
 The plugin nudges agents toward the cheap path by default:
 
 - **Get a file's outline before opening it** — then read only the part you need.
-- **Search for a definition instead of grepping for it** — `search_symbols` vs `grep`.
-- **Look up who calls a function instead of grepping for call sites** — `find_references` vs
+- **Search for a definition instead of grepping for it** — `code symbols` vs `grep`.
+- **Look up who calls a function instead of grepping for call sites** — `code references` vs
   `grep`.
-- **Refresh the index after edits** — `rescan` instead of restarting the server.
+- **Refresh the index after edits** — `admin rescan` instead of restarting the server.
 - **Don't re-read a file basemind already mapped** — use the outline instead.
 
 ## Optional guardrails
@@ -54,8 +54,8 @@ BASEMIND_GUARD=redirect # block instead of nudge
 ```
 
 When an agent reaches for a built-in `Grep`/`Glob`-style search, `Guard` gently redirects it to
-the matching basemind tool (`workspace_grep` for patterns, `search_symbols` for names,
-`find_references` for call sites). Set `redirect` to block the command instead of nudging.
+the matching basemind mode (`code grep` for patterns, `code symbols` for names,
+`code references` for call sites). Set `redirect` to block the command instead of nudging.
 
 ### Output compressor: shrink large results
 
@@ -100,5 +100,5 @@ For prose, compression does a light cleanup: extra whitespace, filler paragraphs
 content. It reports honest before/after token counts, and the code version is exact — nothing is
 lost, just set aside.
 
-The `expand` tool brings any one symbol's full body back when an agent actually needs it:
-compress to an outline, `expand` only what you read.
+`code expand` brings any one symbol's full body back when an agent actually needs it: compress to
+an outline, then expand only what you read.

@@ -18,12 +18,15 @@ walk history directly, so results are always current.
 
 ## Core tools
 
-### `recent_changes`
+All of the following are modes of the `git` MCP tool (`basemind git <mode>` on the CLI).
+
+### `git recent`
 
 Recent commits with their affected files and summary lines.
 
 ```json
 {
+  "mode": "recent",
   "limit": 10
 }
 ```
@@ -31,12 +34,13 @@ Recent commits with their affected files and summary lines.
 Returns the newest commits first, paths modified in each, and author/message. Useful for
 "what happened in the last few hours?"
 
-### `commits_touching`
+### `git touching`
 
 All commits that modified a given path, newest-first.
 
 ```json
 {
+  "mode": "touching",
   "path": "src/scanner.rs"
 }
 ```
@@ -44,58 +48,66 @@ All commits that modified a given path, newest-first.
 Backed by a posting-list index, resolves in **~37 microseconds** on a warm repo with
 thousands of commits.
 
-### `find_commits_by_path`
+### `git by-path`
 
-Commits matching a path pattern, like glob or prefix matching.
+Commits matching a path pattern, like glob or prefix matching. The MCP mode is `by_path`;
+the CLI subcommand is `by-path`.
 
 ```json
 {
+  "mode": "by_path",
   "pattern": "src/extract/**"
 }
 ```
 
-### `blame_file`
+### `git blame`
 
 Per-line blame: who last changed each line and in which commit.
 
 ```json
 {
+  "mode": "blame",
   "path": "src/scanner.rs"
 }
 ```
 
 Returns author, commit hash, and timestamp for every line.
 
-### `blame_symbol`
+### `git blame-symbol`
 
 Blame at symbol resolution: who last changed a specific function, type, or definition, and
-when its body last changed structurally.
+when its body last changed structurally. The MCP mode is `blame_symbol`; the CLI subcommand
+is `blame-symbol`.
 
 ```json
 {
+  "mode": "blame_symbol",
   "path": "src/scanner.rs",
   "name": "process_file"
 }
 ```
 
-### `diff_file`
+### `git diff`
 
 File contents diff across revisions.
 
 ```json
 {
+  "mode": "diff",
   "path": "src/scanner.rs",
   "old": "HEAD~5",
   "new": "HEAD"
 }
 ```
 
-### `diff_outline`
+### `git diff-outline`
 
-Structural diff: which symbols were added, removed, or modified between revisions.
+Structural diff: which symbols were added, removed, or modified between revisions. The MCP
+mode is `diff_outline`; the CLI subcommand is `diff-outline`.
 
 ```json
 {
+  "mode": "diff_outline",
   "path": "src/scanner.rs",
   "old": "HEAD~10",
   "new": "HEAD"
@@ -104,13 +116,14 @@ Structural diff: which symbols were added, removed, or modified between revision
 
 Shows `+ function_name`, `- removed_type`, etc., without diffing implementation details.
 
-### `symbol_history`
+### `git symbol-history`
 
 When a symbol's body changed over time. Uses structural hashing to track modifications
-across commits.
+across commits. The MCP mode is `symbol_history`; the CLI subcommand is `symbol-history`.
 
 ```json
 {
+  "mode": "symbol_history",
   "path": "src/scanner.rs",
   "name": "process_file"
 }
@@ -119,22 +132,24 @@ across commits.
 Returns commits where this symbol's implementation changed, useful for "when was this
 function last refactored?"
 
-### `hot_files`
+### `git churn`
 
 Files ranked by churn frequency. What changes the most?
 
 ```json
 {
+  "mode": "churn",
   "limit": 20
 }
 ```
 
-### `search_git_history`
+### `git search`
 
 Full-text search over commit authors and messages across all branches.
 
 ```json
 {
+  "mode": "search",
   "pattern": "fix.*index",
   "field": "message"
 }
@@ -143,12 +158,14 @@ Full-text search over commit authors and messages across all branches.
 Search `"author"`, `"message"`, or `"all"` (default). Useful for "find commits mentioning
 the schema bump" or "what did Alice commit?"
 
-### `working_tree_status`
+### `git status`
 
 What's staged and unstaged right now — the structured equivalent of `git status`.
 
 ```json
-{}
+{
+  "mode": "status"
+}
 ```
 
 ## Performance
@@ -157,8 +174,8 @@ On a typical repo with 2,000–4,000 commits:
 
 | Query | Latency | Notes |
 |---|---|---|
-| `commits_touching` | ~37 µs | Indexed posting-list lookup |
-| `recent_changes` | ~13 µs | Newest-first list scan |
+| `git touching` | ~37 µs | Indexed posting-list lookup |
+| `git recent` | ~13 µs | Newest-first list scan |
 | Index build | 0.5–3.2 s | Depends on commit depth |
 | Index size | 6–22 % of `.git` | Space–time trade-off |
 
@@ -168,15 +185,15 @@ index is stale.
 
 ## Discipline
 
-- **Prefer these tools over shelling out to `git log`, `git blame`, `git diff`.** Structured
+- **Prefer `git` modes over shelling out to `git log`, `git blame`, `git diff`.** Structured
   results cost fewer tokens to parse.
-- **Use `recent_changes` instead of parsing `git log` output.** Get commit hashes, paths,
+- **Use `git recent` instead of parsing `git log` output.** Get commit hashes, paths,
   and timestamps directly.
-- **Use `blame_file` / `blame_symbol` instead of `git blame`.** Symbol-level blame is more
-  precise than line-level.
-- **Use `diff_outline` for structural diffs.** Skip implementation details and focus on what
-  symbols changed.
-- **Use `search_git_history` for commit message mining.** Full-text search over message and
+- **Use `git blame` / `git blame-symbol` instead of shelling out to `git blame`.**
+  Symbol-level blame is more precise than line-level.
+- **Use `git diff-outline` for structural diffs.** Skip implementation details and focus on
+  what symbols changed.
+- **Use `git search` for commit message mining.** Full-text search over message and
   author is cheaper than parsing the log.
 
 <Aside type="note">

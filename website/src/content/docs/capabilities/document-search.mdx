@@ -13,24 +13,27 @@ Web pages scraped or crawled into the same store are searchable the same way.
 
 ## Requirements
 
-- `search_documents` needs a build with `--features documents` (or `full`). The `memory_*`
-  tools are a separate feature — `--features memory` (also in `full`). Without the relevant
-  feature the tool dispatches but returns an error.
-- Web ingestion (`web_scrape`, `web_crawl`, `web_map`) needs `--features crawl`. When
-  that feature is off these tools are not registered at all.
+- The `memory` MCP tool's `documents` mode needs a build with `--features documents` (or
+  `full`). The other `memory` modes (`put`, `get`, `list`, `search`, `delete`, `audit`) are
+  gated on the separate `--features memory` (also in `full`). Without the relevant feature
+  the tool is advertised but the mode's body returns an error.
+- Web ingestion (`web` modes `scrape`, `crawl`, `map`) needs `--features crawl`. When that
+  feature is off the `web` tool is not registered at all.
 - Documents must be scanned first: `basemind scan` with the documents feature extracts
   and embeds them into `.basemind/`.
 
 ## Core tool
 
-### `search_documents`
+### `memory` mode `documents`
 
 Semantic search across PDFs, Office, HTML, email, images (OCR), and web pages. Returns
 chunk-level hits with path, matched text, byte span, vector distance, and — when enabled
-at scan time — cross-encoder rerank score, named entities, and document summary.
+at scan time — cross-encoder rerank score, named entities, and document summary. CLI:
+`basemind memory documents`.
 
 ```json
 {
+  "mode": "documents",
   "query": "how is the index schema versioned",
   "limit": 10,
   "entity_category": "PERSON",
@@ -59,12 +62,13 @@ Each hit carries:
 
 ## Web ingestion
 
-### `web_scrape`
+### `web` mode `scrape`
 
-Fetch and index a single page, adding it to the document store.
+Fetch and index a single page, adding it to the document store. CLI: `basemind web scrape`.
 
 ```json
 {
+  "mode": "scrape",
   "url": "https://docs.example.com/guide",
   "scope": "docs"
 }
@@ -73,12 +77,14 @@ Fetch and index a single page, adding it to the document store.
 Results land tagged with a `scope` (default: `web:<host>`), making them queryable the same
 way as local documents.
 
-### `web_crawl`
+### `web` mode `crawl`
 
 Follow links from a seed URL up to a configurable depth, indexing all discovered pages.
+CLI: `basemind web crawl`.
 
 ```json
 {
+  "mode": "crawl",
   "url": "https://docs.example.com/",
   "max_depth": 2,
   "max_pages": 100
@@ -91,12 +97,14 @@ and loopback hosts unless `[crawl].allow_private_network = true` is set in
 `.basemind/basemind.toml`.
 </Aside>
 
-### `web_map`
+### `web` mode `map`
 
-Discover a site's pages without fetching bodies — returns a sitemap.
+Discover a site's pages without fetching bodies — returns a sitemap. CLI: `basemind web
+map`.
 
 ```json
 {
+  "mode": "map",
   "url": "https://docs.example.com"
 }
 ```
@@ -108,33 +116,37 @@ Useful for "what pages exist on this site?" without the download cost.
 Store key–value pairs that persist across sessions and are queryable by any agent on the
 same repo (determined by normalized git origin URL). Unrelated repos keep separate memory.
 
-### `memory_put`
+### `memory` mode `put`
 
-Store a value.
+Store a value. CLI: `basemind memory put`.
 
 ```json
 {
+  "mode": "put",
   "key": "architecture_notes",
   "value": "The scanner uses rayon parallel iteration..."
 }
 ```
 
-### `memory_get` / `memory_list`
+### `memory` mode `get` / `list`
 
-Retrieve a value by exact key or list keys by prefix.
+Retrieve a value by exact key or list keys by prefix. CLI: `basemind memory get` /
+`basemind memory list`.
 
 ```json
 {
+  "mode": "get",
   "key": "architecture"
 }
 ```
 
-### `memory_search`
+### `memory` mode `search`
 
-Semantic search over stored values.
+Semantic search over stored values. CLI: `basemind memory search`.
 
 ```json
 {
+  "mode": "search",
   "query": "how is parallelism managed",
   "limit": 5
 }
@@ -155,11 +167,11 @@ enabled = true  # cross-encoder reranking for document chunks
 
 ## Discipline
 
-- **Use `search_documents` instead of opening PDFs/Office/HTML by hand.** Semantic search
-  finds passages about a topic without keyword matching.
-- **Use `web_scrape` / `web_crawl` to pull docs into the RAG store.** Once indexed, they
+- **Use `memory` mode `documents` instead of opening PDFs/Office/HTML by hand.** Semantic
+  search finds passages about a topic without keyword matching.
+- **Use `web` modes `scrape` / `crawl` to pull docs into the RAG store.** Once indexed, they
   are searchable alongside local documents.
-- **Use `memory_put` / `memory_search` for agent-generated insights.** Store findings that
+- **Use `memory` modes `put` / `search` for agent-generated insights.** Store findings that
   you want to recall in future sessions.
 - **Filter by `entity_category` or `mime_type` when the query is too broad.** Narrow results
   to a document class.

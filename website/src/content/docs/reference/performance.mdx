@@ -35,7 +35,7 @@ basemind precomputes a per-repo git-history index — posting lists mapping path
 
 Warm, in-process query latency on the same M4:
 
-| Repo | Commits | `commits_touching` | `recent_changes` | index build | index size |
+| Repo | Commits | `git touching` | `git recent` | index build | index size |
 |---|---|---|---|---|---|
 | django | 2 000 | 39 µs | 15 µs | 0.5 s | 1.7 MB (6 % of `.git`) |
 | tokio | 3 984 | 37 µs | 13 µs | 0.9 s | 2.1 MB (12 %) |
@@ -61,8 +61,8 @@ To measure: `cargo bench --bench git_history` or the git-ops block in `scripts/h
 Once the index is in memory (after `basemind serve` starts):
 
 - **Code questions** (outline, symbol search, call-graph): **< 1 ms** (in-memory hash lookup + tree walk)
-- **Reference search** (`find_references`): **a few ms** (Fjall prefix scan, bounded by `scan_cap = limit * 8`)
-- **Git history** (`commits_touching`, `blame_symbol`): **tens of µs** (posting-list lookup)
+- **Reference search** (`code` mode `references`): **a few ms** (Fjall prefix scan, bounded by `scan_cap = limit * 8`)
+- **Git history** (`git` modes `touching`, `blame_symbol`): **tens of µs** (posting-list lookup)
 - **Document search**: **~200 ms** (LanceDB KNN with embeddings)
 
 All are returned over MCP stdio, so network latency (if running remotely) adds on top.
@@ -107,15 +107,15 @@ cargo test --release --test harden -- --ignored --nocapture
 It runs:
 
 - Full scan on each repo
-- All code-map tools (symbol search, find_references, call_graph, etc.)
-- Representative git tools (blame, recent_changes, commits_touching)
+- Every `code` and `graph` mode (symbol search, `references`, `graph` mode `calls`, etc.)
+- Representative `git` modes (`blame`, `recent`, `touching`)
 - Git-history index build and query latency measurements
 
 Per-repo metrics land in `/tmp/basemind-harden-*.log`. The harness asserts canaries:
 
-- `tokio`: `find_references("spawn")` returns ≥ 200 hits
-- `django`: `find_references("get")` returns ≥ 200 hits
-- `react`: `search_symbols("useState")` returns ≥ 20 hits
+- `tokio`: `code` mode `references("spawn")` returns ≥ 200 hits
+- `django`: `code` mode `references("get")` returns ≥ 200 hits
+- `react`: `code` mode `symbols("useState")` returns ≥ 20 hits
 - `ripgrep-shallow`: shallow-clone signal surfaces (`any_truncated == true`)
 
 Regressions beyond ~20% on scan-time or index-build-time baselines should be investigated before merge.

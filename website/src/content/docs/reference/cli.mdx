@@ -5,249 +5,347 @@ description: Complete command list for the basemind command-line interface.
 
 import { Aside } from '@astrojs/starlight/components';
 
-CLI commands mirror the MCP tools 1:1 (enforced by `tests/cli_parity.rs`). Add `--json` for machine-readable output. Each tool and example below matches the MCP surface exactly.
+The CLI mirrors the MCP surface exactly: **nine domains**, each a real clap subcommand group
+(`basemind <domain> <mode>`), enforced as a strict bijection against the MCP tools by
+`tests/cli_parity.rs`. Multi-word mode names are kebab-cased on the CLI (`by_path` → `by-path`) but
+keep their snake_case spelling on the wire (MCP mode name, `--json` field names). Add `--json` to
+any tool subcommand for machine-readable output.
 
-## Query Commands
+| Domain | Gate |
+|---|---|
+| `code`, `graph`, `git`, `memory`, `admin` | always available |
+| `web` | `--features crawl` |
+| `agents`, `workspace` | `--features comms` |
+| `shell` | `--features shells` |
+
+A default `cargo install basemind` build exposes 5 domains; `--features comms` adds `agents` +
+`workspace` (7); `--features full` adds `web` + `shell` too (9). Prebuilt downloads (Homebrew, npm,
+pip, GitHub releases) ship the full 9-domain build.
+
+## `code` — code-map lookups
 
 ```bash
-basemind query outline <path> [--l2]
-basemind query symbol <needle> [--kind]
-basemind query search <needle>
-basemind query references <name>
-basemind query callers <path> <name> [--kind]
-basemind query goto-definition <path> <line> [--column]
-basemind query implementations <trait>
-basemind query call-graph <name> [--direction --max-depth]
-basemind query grep <pattern> [--language --path-contains]
-basemind query list-files [--path-contains --language]
-basemind query status
-basemind query repo-info
-basemind query dependents <module>
-basemind query search-code <query> [--limit --format]
-basemind query get-chunk <path> [--chunk-id --byte-start]
-basemind query expand <path> <name> [--kind]
+basemind code outline <path> [--l2]
+basemind code symbols <name> [--kind --limit]
+basemind code grep <pattern> [--language --path-contains --limit --no-context]
+basemind code files [--path-contains --language --limit]
+basemind code find <query> [--path-prefix --language --limit]
+basemind code definition <path> <line> [--column]
+basemind code references <name> [--limit]
+basemind code callers <path> <name> [--kind --limit]
+basemind code implementations <trait-name> [--language --limit]
+basemind code dependents <module>
+basemind code expand <path> <name> [--kind]
+basemind code semantic <query> [--limit --lane --rerank --rerank-preset --format]
+basemind code chunk <path> [--chunk-id --byte-start]
 ```
 
 | Command | Purpose |
 |---|---|
-| `outline <path> [--l2]` | A file's structure: symbols, lines, signatures. `--l2` adds calls + docs. |
-| `symbol <needle> [--kind]` | Find a symbol by name, optionally filtered by kind. |
-| `search <needle>` | Text search across indexed files. |
-| `references <name>` | Find everywhere a name is called. |
-| `callers <path> <name> [--kind]` | Find callers of one specific definition. |
-| `goto-definition <path> <line> [--column]` | Resolve a reference position to its scope-resolved definition. |
-| `implementations <trait>` | Types that implement or inherit from a name. |
-| `call-graph <name> [--direction --max-depth]` | Walk the call chain up or down. |
-| `grep <pattern> [--language --path-contains]` | Pattern search with filters. |
-| `list-files [--path-contains --language]` | List indexed files. |
-| `status` / `repo-info` | Project overview / git info (branch, HEAD, origin). |
-| `dependents <module>` | What imports a given module. |
-| `search-code <query> [--limit --format]` | Semantic (vector) search over code chunks; returns pointers. Needs `--features code-search`. |
-| `get-chunk <path> [--chunk-id --byte-start]` | Fetch one code chunk's source body (the `search-code` fetch half). |
-| `expand <path> <name> [--kind]` | A symbol's raw source body (the inverse of an outline entry). |
+| `outline <path> [--l2]` | A file's structure: symbols, lines, signatures. `--l2` adds calls + docs. Read this instead of the file. |
+| `symbols <name> [--kind --limit]` | Find a definition by name (case-sensitive substring) across every indexed file. |
+| `grep <pattern> [--language --path-contains --limit --no-context]` | Regex content search, filtered by language/path. `--no-context` suppresses the 1-line before/after context. |
+| `files [--path-contains --language --limit]` | Enumerate indexed files. |
+| `find <query> [--path-prefix --language --limit]` | Fuzzy filename/path search (fzf/fd-style), ranked by score. |
+| `definition <path> <line> [--column]` | Resolve a reference position to the definition it binds to (scope-resolved). |
+| `references <name> [--limit]` | Every call site of a name — no scope resolution. |
+| `callers <path> <name> [--kind --limit]` | Callers of one specific definition, disambiguated by path. |
+| `implementations <trait-name> [--language --limit]` | Types implementing/inheriting a trait, interface, or base class. |
+| `dependents <module>` | Files whose imports mention a module (heuristic). |
+| `expand <path> <name> [--kind]` | One symbol's raw source body — the inverse of an outline entry. |
+| `semantic <query> [--limit --lane --rerank --rerank-preset --format]` | Search code by meaning; returns pointers, fetch bodies with `chunk`. Needs `--features code-search`. |
+| `chunk <path> [--chunk-id --byte-start]` | Fetch one code chunk's source body. Needs `--features code-search`. |
 
-## Git Commands
+## `graph` — the unified code-graph
 
 ```bash
-basemind git working-tree-status
-basemind git recent-changes [--limit]
-basemind git search <pattern> [--field author|message|all] [--limit]
-basemind git commits-touching <path>
-basemind git find-commits-by-path <pattern>
-basemind git hot-files [--limit]
-basemind git diff-file <path> <old> <new>
+basemind graph calls <name> [--direction --path --max-depth --max-nodes]
+basemind graph neighbors <name> [--path --direction --depth --edges --min-confidence --max-nodes]
+basemind graph path <from> <to> [--from-path --to-path --edges --include-contains --min-confidence]
+basemind graph subgraph <name> [--path --depth --edges --min-confidence --max-nodes]
+basemind graph communities [--edges --algorithm --min-confidence --max-communities --members-per-community]
+basemind graph map [--granularity --focus --depth --edges --include-churn --churn-window --max-nodes --max-edges --max-tokens]
+basemind graph export [--format --focus --edges --algorithm --min-confidence --max-nodes --write]
+basemind graph display [--format --focus --edges --algorithm --min-confidence --max-nodes --no-open]
+basemind graph open [--format --focus --edges --algorithm --min-confidence --max-nodes --no-open]
+```
+
+| Command | Purpose |
+|---|---|
+| `calls <name> [--direction --path --max-depth --max-nodes]` | Walk the call chain up (`callers`) or down (`callees`) from one definition. |
+| `neighbors <name> [--path --direction --depth --edges --min-confidence --max-nodes]` | The n-hop neighborhood around a symbol. |
+| `path <from> <to> [--from-path --to-path --edges --include-contains --min-confidence]` | Confidence-weighted shortest path between two symbols. Containment edges excluded unless `--include-contains`. |
+| `subgraph <name> [--path --depth --edges --min-confidence --max-nodes]` | A symbol's neighborhood cut to its most central nodes. |
+| `communities [--edges --algorithm --min-confidence --max-communities --members-per-community]` | Cluster the graph into de-facto modules. `--algorithm` is `label_propagation` (default) or `louvain`. |
+| `map [--granularity --focus --depth --edges --include-churn --churn-window --max-nodes --max-edges --max-tokens]` | Whole-repo architecture: hub modules by centrality, plus dependency cycles. |
+| `export [--format --focus --edges --algorithm --min-confidence --max-nodes --write]` | Render as `node_link`/`dot`/`mermaid`/`graphml`/`cypher`/`html`/`svg`. `--write` also caches the export and prints its path. |
+| `display [--format --focus --edges --algorithm --min-confidence --max-nodes --no-open]` | Render a visual view and open it in your default desktop viewer; `--no-open` only writes + prints the path. |
+| `open [--format --focus --edges --algorithm --min-confidence --max-nodes --no-open]` | Return a live browsable URL for the interactive graph page (a `file://` export when no daemon is serving). |
+
+## `git` — git history
+
+Requires running inside a git repository.
+
+```bash
+basemind git status
+basemind git recent [--limit --no-files]
+basemind git touching <path> [--limit]
+basemind git by-path <pattern> [--window --limit]
+basemind git churn [--window --top-k]
+basemind git diff <path> <rev-old> <rev-new>
 basemind git diff-outline <path> [--rev]
-basemind git blame-file <path>
-basemind git blame-symbol <path> <name>
-basemind git symbol-history <path> <name>
+basemind git blame <path> [--line-start --line-end --rev --limit]
+basemind git blame-symbol <path> <name> [--kind --rev --limit]
+basemind git symbol-history <path> <name> [--kind --limit --hash-mode]
+basemind git search <pattern> [--field --limit]
 ```
 
 | Command | Purpose |
 |---|---|
-| `working-tree-status` | What's staged and unstaged right now. |
-| `recent-changes [--limit]` | Recent commits with their files. |
-| `search <pattern> [--field author\|message\|all] [--limit]` | Full-text search over commit history at full branch depth. |
-| `commits-touching <path>` | Commits that modified a given path. |
-| `find-commits-by-path <pattern>` | Commits matching a path pattern. |
-| `hot-files [--limit]` | The most frequently changed files. |
-| `diff-file <path> <old> <new>` | File diff across commits. |
-| `diff-outline <path> [--rev]` | Structure diff across commits. |
-| `blame-file <path>` | Who last changed each line. |
-| `blame-symbol <path> <name>` | Who last changed a symbol. |
-| `symbol-history <path> <name>` | When a symbol's body changed over time. |
+| `status` | Staged / unstaged / untracked working-tree status. |
+| `recent [--limit --no-files]` | Recent commits with paths + summaries (a recency window, not a search). `--no-files` omits the per-file change list. |
+| `touching <path> [--limit]` | Commits that modified a given path. |
+| `by-path <pattern> [--window --limit]` | Path-filtered commit log (regex over changed paths). |
+| `churn [--window --top-k]` | Churn-ranked files in a recent commit window. |
+| `diff <path> <rev-old> <rev-new>` | File content diff between two revisions. |
+| `diff-outline <path> [--rev]` | Which symbols a file gained, lost, or changed between revisions. |
+| `blame <path> [--line-start --line-end --rev --limit]` | Per-line blame for a file. |
+| `blame-symbol <path> <name> [--kind --rev --limit]` | Blame clamped to one symbol, resolved to its line span. |
+| `symbol-history <path> <name> [--kind --limit --hash-mode]` | Commits where a symbol's structural hash actually changed. |
+| `search <pattern> [--field --limit]` | Full-text search over commit messages/authors at full branch depth. `--field` is `author`, `message`, or `all` (default). |
 
-## Memory Commands
+## `memory` — shared memory, documents, and the co-change proposal queue
 
 ```bash
-basemind memory put <key> <value>
-basemind memory get <key>
-basemind memory delete <key>
-basemind memory list [--prefix]
-basemind memory search <query>
-basemind memory search-documents <query>
+basemind memory put <key> <value> [--tag --no-embed --individual]
+basemind memory get <key> [--individual]
+basemind memory list [--prefix --tag --limit --individual]
+basemind memory search <query> [--limit --tag --individual]
+basemind memory delete <key> [--individual]
+basemind memory audit [--key --individual --dry-run --limit --include-archived]
+basemind memory documents <query> [--limit --mime-type --scope]
+basemind memory mine [--window --min-support --min-confidence --max-files-per-commit]
+basemind memory proposals [--kind --limit]
+basemind memory accept <id> [--key]
+basemind memory reject <id> [--reason]
 ```
 
 | Command | Purpose |
 |---|---|
-| `put <key> <value>` | Store a value. |
-| `get <key>` | Retrieve a value. |
-| `delete <key>` | Remove a value. |
-| `list [--prefix]` | List keys, optionally by prefix. |
-| `search <query>` | Search stored values by meaning. |
-| `search-documents <query>` | Search documents and memory together. |
+| `put <key> <value> [--tag --no-embed --individual]` | Write a durable note. `--individual` uses the per-agent tier instead of shared (group). |
+| `get <key> [--individual]` | Read one memory entry by key. |
+| `list [--prefix --tag --limit --individual]` | Enumerate memory entries, newest first. |
+| `search <query> [--limit --tag --individual]` | Semantic search across stored memory. |
+| `delete <key> [--individual]` | Remove a memory entry by key. |
+| `audit [--key --individual --dry-run --limit --include-archived]` | The write history behind memory entries; refreshes verdicts and archives stale records. |
+| `documents <query> [--limit --mime-type --scope]` | Semantic search over indexed PDFs / Office / HTML instead of opening them. |
+| `mine [--window --min-support --min-confidence --max-files-per-commit]` | Derive co-change proposals from git history. |
+| `proposals [--kind --limit]` | List proposals awaiting review. |
+| `accept <id> [--key]` | Accept a proposal into memory. |
+| `reject <id> [--reason]` | Reject a proposal. |
 
-## Suggestions Commands
+## `admin` — server + cache administration
 
 ```bash
-basemind governance mine [--commits --min-count --min-confidence --max-files-per-commit]
-basemind governance proposals [--kind --limit]
-basemind governance accept <id> [--key]
-basemind governance reject <id> [--reason]
-basemind governance audit [--key --individual --dry-run --include-archived]
+basemind admin status
+basemind admin repo
+basemind admin rescan [PATH...] [--full]
+basemind admin cache-stats
+basemind admin gc
+basemind admin cache-clear [--component --confirm]
+basemind admin telemetry [--window --tool]
+basemind admin compress [--path --text --level --target-tokens --no-preserve-code]
+basemind admin delta --old <FILE> [--new <FILE>]
+basemind admin checkpoint [--text]
+basemind admin waste [--log <FILE>]
 ```
 
 | Command | Purpose |
 |---|---|
-| `mine [--commits --min-count --min-confidence --max-files-per-commit]` | Suggest notes from files that change together. |
-| `proposals [--kind --limit]` | List pending suggestions. |
-| `accept <id> [--key]` | Keep a suggestion. |
-| `reject <id> [--reason]` | Dismiss a suggestion. |
-| `audit [--key --individual --dry-run --include-archived]` | Recompute memory importance, archive stale entries. |
+| `status` | Index health for this workspace: file counts, languages, scan age. |
+| `repo` | Repository identity and layout: root, git remote, branch, view. |
+| `rescan [PATH...] [--full]` | Re-index changed files, or the whole workspace when no paths are given. |
+| `cache-stats` | On-disk size and entry counts for the machine-global cache. |
+| `gc` | Report blobs no live view references — non-destructive, deletes nothing. |
+| `cache-clear [--component --confirm]` | Delete this workspace's cached index outright. |
+| `telemetry [--window --tool]` | Aggregate recorded tool calls into a usage and token-savings summary. |
+| `compress [--path --text --level --target-tokens --no-preserve-code]` | Shrink a prior response for re-use in a smaller context: an indexed file's outline, or a prose pass read from `--text`/stdin. |
+| `delta --old <FILE> [--new <FILE>]` | What changed since a named checkpoint — a compact `+N/-M` line diff. `--new` defaults to stdin. |
+| `checkpoint [--text]` | Name the current response so a later delta can diff against it. Reads stdin when `--text` is omitted. |
+| `waste [--log <FILE>]` | Flag repeated or redundant tool calls in a JSON-Lines tool-call log. Reads stdin when `--log` is omitted. |
 
-## Cache Commands
+## `web` — on-demand web ingestion
+
+Requires `--features crawl`.
 
 ```bash
-basemind cache stats
-basemind cache gc
-basemind cache clear --component <comp>
+basemind web scrape <url> [--no-index --scope]
+basemind web crawl <url> [--max-pages --max-depth --scope]
+basemind web map <url> [--limit]
 ```
 
 | Command | Purpose |
 |---|---|
-| `stats` | Disk footprint (per-component + total, matches `du`) and process RAM. |
-| `gc` | Reclaim unused space (safe while the server runs). |
-| `clear --component <comp>` | Clear part of the cache (`blobs`, `views`, `views:<name>`, `lance`, `git-cache`, `telemetry`, `all`). |
+| `scrape <url> [--no-index --scope]` | Fetch one URL, extract markdown, and index it. `--no-index` fetches metadata only. |
+| `crawl <url> [--max-pages --max-depth --scope]` | Follow links breadth-first from a seed URL and index every page. |
+| `map <url> [--limit]` | Discover a site's URLs from its sitemap and link map without fetching bodies. |
 
-## Web Commands
+## `agents` — multi-agent coordination
+
+Requires `--features comms`. A thread is addressed by at least two of `--subject`, `--path`, and
+`--member`; `thread-start` rejects fewer than two. Every command accepts `--as-agent <id>` to act as
+a named sub-identity instead of the CLI's default agent (used for orchestrating several named
+subagents).
 
 ```bash
-basemind web scrape <url>
-basemind web crawl <seed-url>
-basemind web map <url>
+basemind agents register [--name --description --version --skill --as-agent]
+basemind agents list [--thread --as-agent]
+basemind agents thread-start [--subject --path --member --as-agent]
+basemind agents thread-list [--subject-contains --include-archived --as-agent]
+basemind agents join <thread> [--as-agent]
+basemind agents leave <thread> [--as-agent]
+basemind agents members <thread> [--as-agent]
+basemind agents add-member <thread> <member> [--as-agent]
+basemind agents remove-member <thread> <member> [--as-agent]
+basemind agents archive <thread> [--as-agent]
+basemind agents post <thread> <subject> [--body --tag --reply-to --as-agent]
+basemind agents history <thread> [--cursor --limit --since-hours --as-agent]
+basemind agents message <message-id> [--as-agent]
+basemind agents inbox [--cursor --limit --mark-read --since-hours --as-agent]
+basemind agents ack [--message-id --thread --to-seq --as-agent]
+basemind agents wait [--thread --timeout-secs --since-hours --cursor --as-agent]
 ```
 
 | Command | Purpose |
 |---|---|
-| `scrape <url>` | Fetch and index a single page. |
-| `crawl <seed-url>` | Follow links from a starting URL. |
-| `map <url>` | Discover a site's pages without fetching bodies. |
+| `register [--name --description --version --skill --as-agent]` | Publish or update this agent's identity card with the broker. |
+| `list [--thread --as-agent]` | Agents known to the broker, optionally restricted to one thread's members. |
+| `thread-start [--subject --path --member --as-agent]` | Open a thread addressed by subject, path-glob, and/or members. |
+| `thread-list [--subject-contains --include-archived --as-agent]` | Threads discoverable to you: membership, cwd path-match, or subject filter — never all threads. |
+| `join <thread> [--as-agent]` | Join a thread so its messages reach your inbox. |
+| `leave <thread> [--as-agent]` | Leave a thread you joined. |
+| `members <thread> [--as-agent]` | Who belongs to a thread. |
+| `add-member <thread> <member> [--as-agent]` | Add an agent to a thread you created. |
+| `remove-member <thread> <member> [--as-agent]` | Remove an agent from a thread you created. |
+| `archive <thread> [--as-agent]` | Close a thread; creator or human admin only. |
+| `post <thread> <subject> [--body --tag --reply-to --as-agent]` | Send a message to a thread. |
+| `history <thread> [--cursor --limit --since-hours --as-agent]` | A thread's messages as front-matter only; bodies come from `message`. |
+| `message <message-id> [--as-agent]` | Read one message body by id — the only path to a body. |
+| `inbox [--cursor --limit --mark-read --since-hours --as-agent]` | Unread messages across your joined threads, front-matter only. `--mark-read` advances read cursors. |
+| `ack [--message-id --thread --to-seq --as-agent]` | Clear messages you have read from your inbox. |
+| `wait [--thread --timeout-secs --since-hours --cursor --as-agent]` | Block until a peer posts, or the timeout elapses (default 30s, max 300s). |
 
-## Comms Commands
+## `workspace` — machine-wide repo/worktree registry
 
-A thread is addressed by at least two of `--subject`, `--path`, and `--member`; `thread-start`
-rejects fewer than two. Every verb below accepts `--as-agent <id>` to act as a named sub-identity
-instead of the CLI's default agent (used for orchestrating several named subagents).
+Requires `--features comms`. Worktree claims are advisory: they record intent in the registry but
+enforce nothing.
 
 ```bash
-basemind comms register [--name --description --version --skill]
-basemind comms agents [--thread]
-basemind comms thread-start [--subject --path --member]
-basemind comms threads [--subject-contains --include-archived]
-basemind comms join <thread>
-basemind comms leave <thread>
-basemind comms members <thread>
-basemind comms add-member <thread> <id>
-basemind comms remove-member <thread> <id>
-basemind comms archive <thread>
-basemind comms post <thread> <subject> [--body --reply-to --tag]
-basemind comms history <thread> [--cursor --limit --since-hours]
-basemind comms read <message-id>
-basemind comms inbox [--cursor --limit --mark-read --since-hours]
-basemind comms wait [--thread --timeout-secs --since-hours --cursor]
-basemind comms daemon
-basemind comms start
-basemind comms stop
-basemind comms status
+basemind workspace workspaces [--as-agent]
+basemind workspace worktrees <repo-id> [--as-agent]
+basemind workspace branches <repo-id> [--as-agent]
+basemind workspace claim <repo-id> <name> [--as-agent]
+basemind workspace release <repo-id> <name> [--as-agent]
 ```
 
 | Command | Purpose |
 |---|---|
-| `register [--name --description --version --skill]` | Register or update this agent's card with the broker. |
-| `agents [--thread]` | List agents known to the broker, optionally restricted to one thread's members. |
-| `thread-start [--subject --path --member]` | Start a thread addressed by at least two of subject / path / members. |
-| `threads [--subject-contains --include-archived]` | List threads discoverable to you (member, path match, or subject filter — never all threads). |
-| `join <thread>` | Join a thread. |
-| `leave <thread>` | Leave a thread. |
-| `members <thread>` | List a thread's members. |
-| `add-member <thread> <id>` | Add a member to a thread (creator only). |
-| `remove-member <thread> <id>` | Remove a member from a thread (creator only). |
-| `archive <thread>` | Archive a thread (creator only). |
-| `post <thread> <subject> [--body --reply-to --tag]` | Post a message to a thread. |
-| `history <thread> [--cursor --limit --since-hours]` | A thread's message history (front-matter only). |
-| `read <message-id>` | Print one message's body in full. |
-| `inbox [--cursor --limit --mark-read --since-hours]` | Your cross-thread inbox (front-matter only). `--mark-read` advances read cursors. |
-| `wait [--thread --timeout-secs --since-hours --cursor]` | Block until a peer posts to a joined thread (or one thread), or the timeout elapses (default 30s, max 300s). |
-| `daemon` | Run the broker loop in the foreground. |
-| `start` | Ensure the broker daemon is running. |
-| `stop` | Stop the broker daemon. |
-| `status` | Broker pid / version / uptime. |
+| `workspaces [--as-agent]` | Every repository the machine daemon has indexed. |
+| `worktrees <repo-id> [--as-agent]` | Git worktrees of a registered repo, with their branches and claims. |
+| `branches <repo-id> [--as-agent]` | Branches known to a registered repo. |
+| `claim <repo-id> <name> [--as-agent]` | Take ownership of a worktree so another session does not edit it. |
+| `release <repo-id> <name> [--as-agent]` | Give up a worktree claim this session holds. |
 
-## Shells Commands
+## `shell` — headless agent terminal sessions
 
 Requires `--features shells`.
 
 ```bash
-basemind shells spawn <command> [--cwd --env --title]
-basemind shells send <session-id> <text> [--no-enter]
-basemind shells capture <session-id> [--lines]
-basemind shells kill <session-id>
-basemind shells list
-basemind shells broadcast <text> --session <id>…
+basemind shell spawn <command> [--cwd --env --title]
+basemind shell send <session-id> <text> [--no-enter]
+basemind shell capture <session-id> [--lines]
+basemind shell kill <session-id>
+basemind shell list
+basemind shell broadcast <text> --session <id>… [--no-enter]
 ```
 
 | Command | Purpose |
 |---|---|
-| `spawn <command> [--cwd --env --title]` | Start a detached shell session; prints `session_id`. |
-| `send <session-id> <text> [--no-enter]` | Type into a session's stdin. |
-| `capture <session-id> [--lines]` | Read a session's visible screen. |
-| `kill <session-id>` | End a session. |
-| `list` | List live sessions. |
-| `broadcast <text> --session <id>…` | Send input to multiple sessions at once. |
+| `spawn <command> [--cwd --env --title]` | Start a detached headless shell session; prints `session_id`. |
+| `send <session-id> <text> [--no-enter]` | Type into a session's stdin. `--no-enter` omits the trailing newline. |
+| `capture <session-id> [--lines]` | Read a session's visible screen; `--lines` returns only the last N non-blank lines. |
+| `kill <session-id>` | Terminate a session. |
+| `list` | List every session the shell daemon currently hosts. |
+| `broadcast <text> --session <id>… [--no-enter]` | Type the same input into several sessions at once. |
 
-## Core Commands
+## `comms` — broker daemon lifecycle
+
+Requires `--features comms`. This is the ONLY surviving `basemind comms` surface — the messaging
+verbs it used to carry (`register`, `agents`, `thread-start`, `threads`, `join`, `post`, `read`,
+`inbox`, `wait`, …) now live under `basemind agents` (above); `comms read <id>` became
+`agents message <id>`, `comms agents` became `agents list`, `comms threads` became
+`agents thread-list`.
 
 ```bash
-basemind scan
-basemind rescan <path>
-basemind watch
-basemind serve [--no-watch]
-basemind init
-basemind lang <list|install|clean>
-basemind hook install
-basemind compress-output
-basemind delta --old <path>
-basemind checkpoint
-basemind detect-waste
-basemind telemetry
+basemind comms daemon
+basemind comms start
+basemind comms stop [--all]
+basemind comms status
+basemind comms doctor
 ```
 
 | Command | Purpose |
 |---|---|
-| `scan` | Full index of the project. |
-| `rescan <path>` | Update one path. |
-| `watch` | Keep the index fresh as files change (no server). |
-| `serve [--no-watch]` | Start the MCP server. Default keeps index fresh; `--no-watch` disables auto-refresh. |
-| `init` | Re-runnable onboarding: write `basemind.toml`, select capabilities, inject usage rules. |
-| `lang <list\|install\|clean>` | Manage downloaded language grammars. |
-| `hook install` | Add a git pre-commit hook that runs a scan. |
-| `compress-output` | Backend for output compression guardrail. |
-| `delta --old <path>` | Backend for delta-reads guardrail. |
-| `checkpoint` | Summarize a session: what was queried, tokens saved. |
-| `detect-waste` | Flag wasteful tool use. |
-| `telemetry` | What's been queried and how many tokens were saved. |
+| `daemon` | Run the broker loop in the foreground: bind the singleton socket, serve front-ends, block until shutdown. |
+| `start` | Ensure the daemon is running (spawn if needed); no-op when already alive. |
+| `stop [--all]` | Ask the running daemon to drain and stop. `--all` stops every live daemon registered on this machine, not just the current one. |
+| `status` | Report the daemon's pid / version / uptime / room + subscriber counts. |
+| `doctor` | List every live daemon on this machine (pid / comms dir / version / uptime), flag a pile-up over the ceiling, and prune dead registry entries. |
+
+## Other commands
+
+```bash
+basemind scan [--staged | --rev <REV>] [--no-git-history --rebuild-git-history]
+basemind rescan [PATH...] [--full --no-git-history --rebuild-git-history]
+basemind watch
+basemind serve [--git-cache-mem --no-git-cache-disk --no-watch]
+basemind init [--yes --with --without --rules-target --no-rules --no-usage-rules]
+basemind lang list|install|clean
+basemind hook install
+basemind cache gc|stats|clear [--component]
+basemind agent [prompt] [--resume --continue --daemon --attach --replay]
+basemind ui [--root <path>]
+basemind daemon ensure
+basemind statusline
+basemind compress-output [--family]
+basemind delta --old <FILE>
+basemind checkpoint
+basemind detect-waste
+```
+
+| Command | Purpose |
+|---|---|
+| `scan [--staged \| --rev <REV>] [--no-git-history --rebuild-git-history]` | Full index of the project. `--staged` indexes the git index instead of the working tree; `--rev` indexes a revision into a separate `rev-<sha7>` view. |
+| `rescan [PATH...] [--full --no-git-history --rebuild-git-history]` | Update one or more paths incrementally, or the whole tree with `--full`. |
+| `watch` | Long-running watcher; keeps the code map current as files change (no server). |
+| `serve [--git-cache-mem --no-git-cache-disk --no-watch]` | Ensure the daemon is up and relay this process's stdio to it as the MCP server. Default keeps the index fresh; `--no-watch` disables auto-refresh. |
+| `init [--yes --with --without --rules-target --no-rules --no-usage-rules]` | Re-runnable onboarding: write `basemind.toml`, select capabilities, inject usage rules into a rules file. |
+| `lang list\|install\|clean` | Manage downloaded tree-sitter grammars. |
+| `hook install` | Add a git pre-commit hook that runs `basemind scan --staged`. |
+| `cache gc\|stats\|clear [--component]` | Offline path directly against `.basemind/` — the only way to clear `views`/`all`, which `admin cache-clear` refuses because they back the live index. |
+| `agent [prompt] [--resume --continue --daemon --attach --replay]` | Launch the basemind agent TUI (a coding agent over the code map). |
+| `ui [--root <path>]` | Launch the basemind desktop UI (an interactive code graph over the code map). |
+| `daemon ensure` | Ensure the daemon's streamable-HTTP MCP transport is up; idempotent. Needs `--features comms`. |
+| `statusline` | Print a one-line summary of the daemon's hot workspaces, for a shell statusline. Silent and exits 0 when no daemon is running. |
+| `compress-output [--family]` | Backend for the output-compression guardrail: compress stdin (e.g. piped command output) by detected or given family. |
+| `delta --old <FILE>` | Backend for the delta-reads guardrail: diff the `--old` file against stdin, emitting a compact `+N/-M` line diff. |
+| `checkpoint` | Extract decisions/errors/changed-files from session text on stdin into a JSON checkpoint. |
+| `detect-waste` | Flag wasteful tool use from a JSON-Lines tool-call log on stdin. |
 
 <Aside type="note">
-All commands support `--json` for machine-readable output. Query and git commands take the same
-filters as their MCP counterparts (`--limit`, `--language`, `--path-contains`, …). Cursor-based
-pagination (`--cursor`) is exposed on `comms history`, `comms inbox`, and `comms wait`.
+Global flags (`--root`, `--quiet`, `--verbose`, `--no-color`, `--json`, `--view`) apply across all
+subcommands, though `--json` and `--view` only take effect on the tool subcommands (`code`, `git`,
+`graph`, `memory`, `web`, `admin`, `cache`, and — with `--features comms` — `comms`, `agents`,
+`workspace`, `daemon`; and with `--features shells` — `shell`). Cursor-based pagination
+(`--cursor`) is exposed on `agents history`, `agents inbox`, and `agents wait`.
 </Aside>

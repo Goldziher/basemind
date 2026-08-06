@@ -16,13 +16,13 @@ separate — no leakage.
 
 Any agent can:
 
-- **Write a note:** `memory_put {key: "auth-flow", value: "…"}` stores a key-value pair.
-- **Search by meaning:** `memory_search {query: "password validation"}` finds stored notes by
+- **Write a note:** `memory put {key: "auth-flow", value: "…"}` stores a key-value pair.
+- **Search by meaning:** `memory search {query: "password validation"}` finds stored notes by
   semantic similarity, even if the exact words don't match.
-- **Retrieve exact keys:** `memory_get {key: "auth-flow"}` fetches one stored note.
-- **List by prefix:** `memory_list {prefix: "auth-"}` finds all keys starting with a prefix.
-- **Delete:** `memory_delete {key: "auth-flow"}` removes a note.
-- **Audit:** `memory_audit` recomputes importance scores, archives stale entries, and refreshes
+- **Retrieve exact keys:** `memory get {key: "auth-flow"}` fetches one stored note.
+- **List by prefix:** `memory list {prefix: "auth-"}` finds all keys starting with a prefix.
+- **Delete:** `memory delete {key: "auth-flow"}` removes a note.
+- **Audit:** `memory audit` recomputes importance scores, archives stale entries, and refreshes
   verdicts on stored notes.
 
 ## What notes look like
@@ -52,14 +52,14 @@ This is a suggestion, not a stored fact — you approve before anything is kept.
 
 ### Proposal workflow
 
-1. **Mine for candidates:** `proposals_mine {commits: 10, min_count: 3}` analyzes the last 10
-   commits and finds groups of files that changed together at least 3 times. The tool returns
+1. **Mine for candidates:** `memory mine {commits: 10, min_count: 3}` analyzes the last 10
+   commits and finds groups of files that changed together at least 3 times. The mode returns
    pending suggestions.
-2. **List pending:** `proposals_list {}` shows the suggestions awaiting your decision (optional kind
-   filter).
-3. **Accept:** `proposal_accept {id: "prop-1", key: "file-pattern-migrations"}` stores a suggestion
+2. **List pending:** `memory proposals {}` shows the suggestions awaiting your decision (optional
+   kind filter).
+3. **Accept:** `memory accept {id: "prop-1", key: "file-pattern-migrations"}` stores a suggestion
    as a note under the given key.
-4. **Reject:** `proposal_reject {id: "prop-1", reason: "too noisy"}` dismisses a suggestion permanently.
+4. **Reject:** `memory reject {id: "prop-1", reason: "too noisy"}` dismisses a suggestion permanently.
 
 ## Uses
 
@@ -75,7 +75,7 @@ Shared memory is useful for:
 
 Memory search is powered by LanceDB's vector embeddings. You don't need exact keywords — search
 by meaning. If you stored "All inputs are parameterized at the database driver", you can find it
-with `memory_search {query: "SQL injection prevention"}`.
+with `memory search {query: "SQL injection prevention"}`.
 
 ## Scoping
 

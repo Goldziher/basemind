@@ -1,206 +1,216 @@
 ---
 title: MCP Tools Reference
-description: Complete catalog of basemind tools grouped by capability area.
+description: Complete catalog of basemind's nine domain tools, one section per domain.
 ---
 
 import { Aside, Badge } from '@astrojs/starlight/components';
 
-basemind exposes all tools over stdio MCP, making them available to any compatible agent. All paths are byte-precise repo-relative (`RelPath`). Lists are capped at 1000 items; by default 100. Tool descriptions state matching semantics (substring, prefix, scope-aware) and what's indexed (name-only vs scope-resolved).
+basemind exposes **nine domain tools** over stdio MCP — `code`, `graph`, `git`, `memory`, `admin`,
+`web`, `agents`, `workspace`, `shell` — each dispatching on a required `mode` rather than one tool
+per operation. The CLI mirrors the same nine groups (`basemind <domain> <mode>`), enforced as a
+strict bijection by the test suite. All paths are byte-precise repo-relative (`RelPath`). Lists are
+capped at 1000 items, 100 by default; index scans use `scan_cap = limit * 8` to bound work on common
+names. Mode descriptions state matching semantics (substring, prefix, scope-aware) and what's
+indexed (name-only vs scope-resolved) — they're the routing surface an agent searches by, so read
+them before guessing.
 
-## Code Intelligence
+## `code` — code-map lookups
 
-Query your project's structure: symbols, references, calls, and definitions across **300+ languages** via tree-sitter.
+Query your project's structure across **300+ languages** via tree-sitter: symbols, references,
+calls, and definitions.
 
-| Tool | Purpose | Matching |
+| Mode | Purpose | Matching |
 |---|---|---|
-| `outline` | Full per-file structure: symbols, line/col, signatures, imports. `l2: true` adds calls + docs. | scope-aware |
-| `search_symbols` | Find symbols by name across all indexed files, optional kind filter. | substring |
-| `find_references` | Where a name is called — all call sites of any callee matching the name. | substring |
-| `find_callers` | Who calls one specific definition (path + name + optional kind). Resolves the definition first, then runs a name-only scan. | resolves def, then name-only |
-| `goto_definition` | Resolve a reference at a source position to its definition. | scope-aware |
-| `call_graph` | Walk the call chain up or down from a symbol. `--direction` (up/down), `--max-depth`. | exact name |
-| `architecture_map` | Whole-repo overview: hub modules/files/symbols ranked by centrality (PageRank + fan-in/out) and churn, plus dependency cycles (SCCs). `granularity` (module/file/symbol), optional `focus` path-prefix. | graph-derived |
-| `find_implementations` | Types that implement or inherit from a trait/interface. | substring |
-| `find_files` | Fuzzy path search (fzf/fd-style) ranked by nucleo-matcher score. `limit`, optional `path_contains` and `language` filters. | fuzzy substring |
+| `outline` | A file's full structure: symbols, line/col, signatures, imports — read this instead of the file. | scope-aware |
+| `symbols` | Find a definition by name across every indexed file. | substring |
+| `grep` | Pattern search across the workspace, filtered by language or path. | regex |
+| `files` | Enumerate indexed files, optional `path_contains` and `language` filters. | substring |
+| `find` | Locate a file by a fuzzy fragment of its name or path (fzf/fd-style, nucleo-matcher ranked). | fuzzy substring |
+| `definition` | Resolve a reference position to the definition it binds to. | scope-aware |
+| `references` | Every call site of a name — no scope resolution; `Foo::bar()` and `bar()` both match `name="bar"`. | substring |
+| `callers` | Callers of one specific definition, disambiguated by path — resolves the definition first, then runs the same name-based scan as `references`. | resolves def, then name-only |
+| `implementations` | Types implementing or inheriting a trait, interface or base class. | substring |
 | `dependents` | Heuristic reverse lookup: what imports a given module. | import-based |
-| `workspace_grep` | Pattern search with optional language and path filters. | regex |
-| `list_files` | Enumerate indexed paths, optional `path_contains` and `language` filters. | substring |
+| `expand` | One symbol's raw source body — the inverse of an outline entry. | — |
+| `semantic` | Search code by meaning over indexed chunks; returns pointers, fetch bodies with `chunk`. Needs `--features code-search`. | vector + BM25 + symbol |
+| `chunk` | Fetch one code chunk's source body (pairs with `semantic`). | — |
 
-See [Code Intelligence capabilities](/capabilities/code-intelligence/) for detailed examples.
+See [Code Intelligence](/capabilities/code-intelligence/) and [Code Search](/capabilities/code-search/)
+for detailed examples.
 
-## Git Intelligence
+## `graph` — the unified code graph
 
-Query your repository's history, blame, diffs, and churn — powered by `gix` with a built-in history index for microsecond latency.
+Walk the typed code graph built from resolved calls, imports, and containment. Every edge carries
+provenance and confidence; every result is deterministic and bounded.
 
-| Tool | Purpose | Scope |
+| Mode | Purpose |
+|---|---|
+| `calls` | Rooted call BFS: walk the call chain up (`callers`) or down (`callees`) from one definition, depth-bounded. |
+| `neighbors` | The n-hop neighborhood around a symbol (`direction` / `edges` / `depth` / `min_confidence` / `max_nodes`). |
+| `path` | The confidence-weighted shortest path between two symbols; containment excluded unless `include_contains`. |
+| `subgraph` | A symbol's neighborhood cut to its most central nodes. |
+| `communities` | Cluster the graph into its de-facto modules (`label_propagation` default, `louvain` opt-in). |
+| `map` | Whole-repo architecture: hub modules ranked by PageRank + git churn, plus dependency cycles (SCCs). |
+| `export` | Render the graph as node-link JSON, DOT, Mermaid, GraphML, Cypher, or offline interactive HTML. |
+| `display` | Open a rendered view in a human's desktop viewer. |
+| `open` | Return a live browsable URL for the interactive graph page. Both `display` and `open` accept `open: false` to return the path/URL without launching anything. |
+
+See [Code Intelligence](/capabilities/code-intelligence/) for examples.
+
+## `git` — git history
+
+Query your repository's history, blame, diffs, and churn — powered by `gix` with a built-in history
+index for microsecond latency.
+
+| Mode | Purpose | Scope |
 |---|---|---|
-| `working_tree_status` | Staged and unstaged files right now. | — |
-| `recent_changes` | Recent commits with their file lists. | branch depth |
-| `search_git_history` | Full-text search commit authors and messages. | branch depth |
-| `commits_touching` | Commits that modified a given path. | posting-list (indexed) |
-| `find_commits_by_path` | Commits matching a path pattern. | branch depth |
-| `hot_files` | The most frequently changed files, ranked by churn. | branch depth |
-| `diff_file` | File diff across two revisions. | — |
-| `diff_outline` | Structure diff of a file across revisions. | scope-aware |
-| `blame_file` | Who last changed each line. | per-line |
-| `blame_symbol` | Who last changed a symbol's body. | per-symbol |
-| `symbol_history` | When a symbol's body changed over time. | commit walk |
+| `status` | Staged and unstaged files right now. | — |
+| `recent` | Recent commits with their touched paths and summaries. | branch depth |
+| `touching` | Commits that modified a given path. | posting-list (indexed) |
+| `by_path` | Path-filtered commit log (regex over changed paths). | branch depth |
+| `churn` | Files ranked by how often they change. | branch depth |
+| `diff` | A file's textual diff between two revisions. | — |
+| `diff_outline` | Which symbols a file gained, lost, or changed between revisions. | scope-aware |
+| `blame` | Who last changed each line of a file. | per-line |
+| `blame_symbol` | Who last changed one symbol, resolved to its line span. | per-symbol |
+| `symbol_history` | When a symbol's body actually changed, by structural hash. | commit walk |
+| `search` | Full-text search over commit messages and authors, at full branch depth. | branch depth |
 
-See [Git Intelligence capabilities](/capabilities/git-intelligence/) for examples.
+See [Git Intelligence](/capabilities/git-intelligence/) for examples.
 
-## Document Search
+## `memory` — shared memory, documents, and proposals
 
-Full-text and semantic search over **90+ document formats** — PDFs, Office files, HTML, email, and images — with built-in extraction and OCR.
+A per-repo memory agents write to and search by meaning (clones of the same repo share it, unrelated
+repos stay separate), semantic search over indexed documents, and a review queue of notes mined from
+files that change together.
 
-| Tool | Purpose |
-|---|---|
-| `search_documents` | Search PDFs, Office, HTML, images by meaning and text. Returns pointers + snippets. |
-
-See [Document Search capabilities](/capabilities/document-search/) for setup and examples.
-
-## Code Search
-
-Semantic + keyword search over indexed code chunks. Returns pointers; fetch bodies with `get_chunk`. Requires `--features code-search`.
-
-| Tool | Purpose | Modes |
+| Mode | Purpose | Scope |
 |---|---|---|
-| `search_code` | Search code by meaning, term, or symbol. `mode`: `hybrid` (RRF fusion, default), `semantic` (vector KNN), `keyword` (BM25). Optional `rerank` cross-encoder pass. | vector + BM25 + symbol |
-| `get_chunk` | Fetch one code chunk's source body (pairs with `search_code`). | — |
+| `put` | Write a durable note other sessions and agents will read. | per-repo |
+| `get` | Read one memory entry by key. | per-repo |
+| `list` | Enumerate memory entries, newest first, optional prefix/tag filter. | per-repo |
+| `search` | Semantic search across stored memory. | per-repo |
+| `delete` | Remove a memory entry by key. | per-repo |
+| `audit` | The write history behind a memory entry; also recomputes verdicts and archives stale entries. | per-repo |
+| `documents` | Semantic search over indexed PDFs, Office files, and HTML instead of opening them. Needs `--features documents` (or `full`). | per-scope |
+| `mine` | Derive co-change proposals from git history. | per-repo |
+| `proposals` | List proposals awaiting review. | per-repo |
+| `accept` | Accept a proposal into memory. | per-repo |
+| `reject` | Reject a proposal. | per-repo |
 
-See [Code Search capabilities](/capabilities/code-search/) for examples and mode details.
+See [Document Search](/capabilities/document-search/) and [Shared memory](/concepts/memory/) for
+examples.
 
-## Shared Memory
+## `admin` — server and cache administration
 
-Per-repo memory agents can read and write. Clones of the same repo share it; unrelated repos stay separate. Vectors powered by LanceDB.
+Refresh the index, inspect health and cache footprint, and shrink what an agent carries.
 
-| Tool | Purpose | Scope |
-|---|---|---|
-| `memory_put` | Store a key/value pair (text, optionally grouped). | per-repo |
-| `memory_get` | Retrieve a value by key. | per-repo |
-| `memory_delete` | Remove a key. | per-repo |
-| `memory_list` | List keys, optionally by prefix. | per-repo |
-| `memory_search` | Search stored values by meaning. | per-repo |
-| `memory_audit` | Recompute memory importance, archive stale entries, refresh verdicts. | per-repo |
-
-See [Shared memory](/concepts/memory/) for examples.
-
-## Suggestions
-
-Spot files that change together and suggest notes worth saving — you approve before anything is kept.
-
-| Tool | Purpose |
+| Mode | Purpose |
 |---|---|
-| `proposals_mine` | Suggest notes from files that change together. `--commits`, `--min-count`, `--min-confidence`, `--max-files-per-commit`. |
-| `proposals_list` | List pending suggestions, optional kind filter. |
-| `proposal_accept` | Keep a suggestion as a memory entry. |
-| `proposal_reject` | Dismiss a suggestion for good. |
+| `status` | Index health for this workspace: file counts, languages, scan age. |
+| `repo` | Repository identity and layout: root, git remote, branch, view. |
+| `rescan` | Re-index changed files, or the whole workspace when no paths are given. |
+| `cache_stats` | On-disk size and entry counts for the machine-global cache. |
+| `gc` | Report blobs no live view references — non-destructive, deletes nothing. |
+| `cache_clear` | Delete this workspace's cached index outright. |
+| `telemetry` | Aggregate recorded tool calls into a usage and token-savings summary. |
+| `compress` | Shrink a prior tool response, a file's outline, or prose for re-use in a smaller context. |
+| `delta` | What changed in a response since a named checkpoint. |
+| `checkpoint` | Name the current response so a later delta can diff against it. |
+| `waste` | Flag repeated or redundant tool calls in this session. |
 
-## Web Crawl
+## `web` — web crawl
 
-Fetch and index web pages. Results join the document search index.
+Fetch and index web pages; results join the document search index. Requires `--features crawl`.
 
-| Tool | Purpose |
+| Mode | Purpose |
 |---|---|
-| `web_scrape` | Fetch and index a single page. |
-| `web_crawl` | Follow links from a starting URL. |
-| `web_map` | Discover a site's pages without fetching bodies. |
+| `scrape` | Fetch one URL, extract markdown, and index it into the documents store. |
+| `crawl` | Follow links breadth-first from a seed URL and index every page. |
+| `map` | Discover a site's URLs from its sitemap and link map, without fetching bodies. |
 
-## Agent Comms
+See [Web Crawl](/capabilities/web-crawl/) for examples.
 
-A shared chat layer for agents on the same repo: explicit thread membership (repository, path-glob, or subject-scoped), private 2-member threads, and a recency-filtered inbox. Requires `--features comms`.
+## `agents` — multi-agent coordination
 
-| Tool | Purpose |
+A shared chat layer for agents on the same repo: threads addressed by at least two of subject /
+path-glob / members, discovered by scope (member, cwd path-match, or subject filter — never global),
+with a recency-filtered inbox. Requires `--features comms`.
+
+| Mode | Purpose |
 |---|---|
-| `thread_start` | Create a new thread, addressed by at least two of subject / path-glob / members. Required: `subject`. Optional: `path`, `members`. |
-| `thread_post` | Post a message to a thread. Required: `thread`, `subject`. Optional: `body`, `reply_to`. |
-| `thread_history` | Recent messages in a thread (front-matter only). |
-| `thread_list` | List discoverable threads and their members. |
-| `thread_join` | Join a thread explicitly. |
-| `thread_leave` | Leave a thread. |
-| `thread_members` | List current members of a thread. |
-| `thread_add_member` | Add an agent to a thread. |
-| `thread_remove_member` | Remove an agent from a thread. |
-| `thread_archive` | Archive a thread (read-only, still discoverable). |
-| `inbox_read` | Your inbox (front-matter only). |
-| `inbox_wait` | Block up to `timeout_secs` (default 30, max 300) and return as soon as a peer posts to a joined thread — or the single thread in `thread`, if set — or on timeout. Long-poll replacement for looping `inbox_read` / `thread_list`. Never marks read. |
-| `inbox_ack` | Acknowledge inbox messages so they stop resurfacing. |
-| `message_get` | Read one message in full. |
-| `agent_list` | Active agents in the comms system. |
-| `agent_register` | Set or update your agent handle. |
+| `register` | Publish or update this agent's identity card with the broker. |
+| `list` | The agents the broker knows, optionally restricted to one thread. |
+| `thread_start` | Open a thread addressed by subject, path-glob and/or members. |
+| `thread_list` | Threads discoverable to you: membership, cwd path-match, or subject. |
+| `join` | Join a thread so its messages reach your inbox. |
+| `leave` | Leave a thread you joined. |
+| `members` | Who belongs to a thread. |
+| `add_member` | Add an agent to a thread you created. |
+| `remove_member` | Remove an agent from a thread you created. |
+| `archive` | Close a thread; creator or human admin only. |
+| `post` | Send a message to a thread. |
+| `history` | A thread's messages as front-matter only; bodies come from `message`. |
+| `message` | Read one message body by id — the only path to a body. |
+| `inbox` | Unread messages across your joined threads, front-matter only. |
+| `ack` | Clear messages you have read from your inbox. |
+| `wait` | Block until a peer posts, or until the timeout elapses — a long-poll replacement for looping `inbox` / `thread_list`. |
 
-See [Agent Comms capabilities](/concepts/agent-comms/) for orchestration examples.
+See [Agent Comms](/concepts/agent-comms/) for orchestration examples.
 
-## Registry & Worktree Coordination
+## `workspace` — machine registry
 
-Coordinate across multiple repos and worktrees on the same machine. The registry is daemon-managed; claims are advisory (no locking) but help avoid collisions. Requires `--features comms`.
+Coordinate across every repo and worktree the daemon knows about on this machine. The registry is
+daemon-managed; claims are advisory (no locking) but help avoid collisions. Requires
+`--features comms`.
 
-| Tool | Purpose |
+| Mode | Purpose |
 |---|---|
-| `workspaces` | List all workspaces the daemon knows about (keyed by root path). |
-| `worktrees` | List worktrees under a workspace. |
-| `branches` | List branches in a worktree. |
-| `worktree_claim` | Advisory claim on a worktree for the current agent. No locking; collision detection is cooperative. |
-| `worktree_release` | Release a claim. |
+| `workspaces` | Every repository the machine daemon has indexed. |
+| `worktrees` | Git worktrees of this repository, with their branches and claims. |
+| `branches` | Branches known to this repository. |
+| `claim` | Take ownership of a worktree so another session does not edit it. |
+| `release` | Give up a worktree claim this session holds. |
 
-See CLI: `basemind registry` (worktree/branch listing), `basemind statusline` (current status).
+See CLI: `basemind workspace` (worktree/branch listing), `basemind statusline` (current status).
 
-## Agent Shells
+## `shell` — agent shells
 
-Let agents spawn, type into, and read terminal sessions. Requires `--features shells`.
+Let agents spawn, type into, and read terminal sessions in the background. Requires
+`--features shells`.
 
-| Tool | Purpose |
+| Mode | Purpose |
 |---|---|
-| `shell_spawn` | Start a detached shell session (`--cwd`, `--env`, `--title`). Returns `session_id`. |
-| `shell_send` | Type into a session's stdin (`--no-enter` to suppress newline). |
-| `shell_capture` | Read a session's visible screen (`--lines` to limit). |
-| `shell_list` | List live sessions. |
-| `shell_kill` | End a session. |
-| `shell_broadcast` | Send input to multiple sessions at once. |
+| `spawn` | Start a background terminal session running a command (`--cwd`, `--env`, `--title`). Returns `session_id`. |
+| `send` | Type into a live session (`--no-enter` to suppress the trailing newline). |
+| `capture` | Read back what a session has printed (`--lines` to limit). |
+| `kill` | Terminate a session. |
+| `list` | Every session the shell daemon currently hosts, with liveness. |
+| `broadcast` | Type the same input into several sessions at once. |
 
-## Token Saving
+See [Agent Shells](/capabilities/agent-shells/) for examples.
 
-Compression, expansion, and delta utilities for keeping context window efficient.
+## Metadata & pagination
 
-| Tool | Purpose |
-|---|---|
-| `compress` | Shrink code (keep shape, drop bodies) or prose. Returns honest token counts. |
-| `expand` | Fetch a symbol's full body (inverse of outline). |
-| `delta` | Show only what changed when re-reading a file. |
-| `checkpoint` | Summarize a session: what was queried, tokens saved. |
-| `detect_waste` | Flag wasteful tool use (e.g., re-reading files basemind already mapped). |
-
-## Admin
-
-Refresh the index, telemetry, and cache management.
-
-| Tool | Purpose |
-|---|---|
-| `rescan` | Update one path (or full scan if no path). |
-| `status` | Project overview: file count, languages, cache path. |
-| `repo_info` | Git info: branch, HEAD, origin remote. |
-| `telemetry_summary` | What's been queried and tokens saved. |
-| `cache_stats` | Disk footprint (per-component, matches `du`) and RAM. |
-| `cache_gc` | Reclaim unused space (safe while the server runs). |
-| `cache_clear` | Clear part of the cache by component (`views`, `blobs`, `lance`, `git-cache`, `telemetry`, `all`). |
-
-## Metadata & Pagination
-
-All list-returning tools:
+All list-returning modes:
 
 - **`limit`** parameter: 1–1000 items (default 100).
 - **`cursor`** for pagination: opaque token returned in response; pass back to continue.
-- **`any_truncated` flag**: set to `true` if the result hit the limit and more results exist.
+- **`any_truncated`** flag: set to `true` if the result hit the limit and more results exist.
 
-For index scans (symbol + reference tools), basemind internally uses `scan_cap = limit * 8` to bound work on common names.
+For index scans (`code` modes `symbols` / `references` / `callers` / `implementations`), basemind
+internally uses `scan_cap = limit * 8` to bound work on common names.
 
 <Aside>
-Tool descriptions are the routing surface for agents. Read them carefully — they describe matching semantics (substring vs. prefix), scope resolution (name-only vs. scope-aware), and what each tool trades off. This helps agents pick the right tool for the question.
+Mode descriptions are the routing surface for agents. Read them carefully — they describe matching
+semantics (substring vs. prefix), scope resolution (name-only vs. scope-aware), and what each mode
+trades off. This helps agents pick the right mode for the question.
 </Aside>
 
 ## Lifecycle notices
 
 `basemind serve` warms the code map in the background after answering the MCP handshake. While
-it isn't fully ready, `status` and every code-map read tool may include a `notice` object instead
+it isn't fully ready, `admin status` and every `code` read mode may include a `notice` object instead
 of, or alongside, their normal result:
 
 | Field | Meaning |
@@ -209,7 +219,7 @@ of, or alongside, their normal result:
 | `message` | Human/agent-readable explanation of what's happening. |
 | `retry` | `true` to retry shortly for complete results; `false` if the result is usable but may be stale. |
 
-`status` additionally reports `warming` / `warm_ms` (in-memory preload of an existing index) and
-`indexing` / `index_build_ms` (first-time index build). Treat an empty or partial result carrying
+`admin status` additionally reports `warming` / `warm_ms` (in-memory preload of an existing index)
+and `indexing` / `index_build_ms` (first-time index build). Treat an empty or partial result carrying
 a `notice` as "retry shortly," not "no matches." See
 [Index lifecycle and freshness](/concepts/how-it-works/#index-lifecycle-and-freshness) for details.

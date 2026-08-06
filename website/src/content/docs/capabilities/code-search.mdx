@@ -5,14 +5,20 @@ description: Find source code by meaning, term, or exact symbol — hybrid RRF f
 
 import { Aside, Badge, Card, CardGrid } from '@astrojs/starlight/components';
 
-`search_code` finds code by meaning, full-text term, or exact symbol match. Three lanes
-fuse results via Reciprocal Rank Fusion (RRF): vector (semantic), BM25 (keyword), and
-exact symbol. Optional cross-encoder reranking re-scores the fused results. Returns code
-pointers; fetch bodies with `get_chunk`.
+`code` mode `semantic` (`basemind code semantic` on the CLI) finds code by meaning,
+full-text term, or exact symbol match. Three lanes fuse results via Reciprocal Rank Fusion
+(RRF): vector (semantic), BM25 (keyword), and exact symbol. Optional cross-encoder
+reranking re-scores the fused results. Returns code pointers; fetch bodies with `code chunk`.
 
 <Badge text="--features code-search" /> or `--features full`
 
-## Modes
+## Lanes
+
+<Aside type="note">
+`hybrid` / `semantic` / `keyword` are retrieval lanes selected via the `lane` parameter of
+`code semantic`, not separate MCP modes or CLI subcommands — `code semantic` is the one
+mode that covers all three.
+</Aside>
 
 ### `hybrid` (default)
 
@@ -30,8 +36,9 @@ embeddings).
 
 ```json
 {
+  "mode": "semantic",
   "query": "spawn background task",
-  "mode": "hybrid",
+  "lane": "hybrid",
   "limit": 10,
   "rerank": true
 }
@@ -49,8 +56,9 @@ when you want "code that means this" regardless of naming.
 
 ```json
 {
-  "query": "spawn background task",
   "mode": "semantic",
+  "query": "spawn background task",
+  "lane": "semantic",
   "limit": 20
 }
 ```
@@ -64,25 +72,27 @@ Full-text search over code.
 
 ```json
 {
+  "mode": "semantic",
   "query": "spawn",
-  "mode": "keyword",
+  "lane": "keyword",
   "limit": 50
 }
 ```
 
 ## Fetching results
 
-`search_code` returns **pointers** with chunk ID, path, byte span, and a snippet. Fetch
-the full source body with `get_chunk`:
+`code semantic` returns **pointers** with chunk ID, path, byte span, and a snippet. Fetch
+the full source body with `code chunk`:
 
 ```json
 {
+  "mode": "chunk",
   "path": "src/scanner.rs",
   "chunk_id": "abc123"
 }
 ```
 
-Two-call pattern mirrors `search_symbols` → `expand`: cheap search returns pointers,
+Two-call pattern mirrors `code symbols` → `code expand`: cheap search returns pointers,
 then fetch only what you need.
 
 ## Configuration
@@ -100,12 +110,12 @@ preset = "bge-reranker-base"
 
 ## Discipline
 
-- **Use `search_code` for semantic queries about what code does.** "Find code that spawns
+- **Use `code semantic` for queries about what code does.** "Find code that spawns
   a background task" → semantic search.
-- **Use `keyword` mode for term search.** "Find the word `spawn`" → faster, no embeddings.
-- **Use `hybrid` mode when you want all signals.** Symbol matches win for exact names,
+- **Use the `keyword` lane for term search.** "Find the word `spawn`" → faster, no embeddings.
+- **Use the `hybrid` lane when you want all signals.** Symbol matches win for exact names,
   semantic search wins for meaning, BM25 wins for terminology.
-- **Fetch with `get_chunk` only what you need.** Search returns pointers; don't waste
+- **Fetch with `code chunk` only what you need.** Search returns pointers; don't waste
   tokens re-reading the whole file.
 - **Enable `rerank` if latency allows.** Cross-encoder reranking improves top-1 relevance
   but adds ~50–100 ms per query.

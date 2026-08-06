@@ -18,13 +18,13 @@ Navigation is **scope- and import-aware** for JavaScript/TypeScript (via oxc) an
 server. Every other language still gets fast tree-sitter scope binding.
 
 This resolves each use to the definition it actually binds to: a shadowed local isn't
-confused with an import, and `goto_definition` lands on the right target — including across
+confused with an import, and `code definition` lands on the right target — including across
 files, for Python dotted/relative imports and for JS/TS module resolution (Node resolution
 plus tsconfig `paths` aliases via `oxc_resolver`).
 
 <Aside type="note">
-Resolution **refines but never shrinks** a result set. `find_callers` reports every call site
-whose callee matches the name — the same sound floor `find_references` uses — and marks each
+Resolution **refines but never shrinks** a result set. `code callers` reports every call site
+whose callee matches the name — the same sound floor `code references` uses — and marks each
 hit `resolved` when resolution proved the binding (`resolved_total` counts them). It does
 **not** filter down to only the resolved subset: resolution can't see through a module-object
 import (`from pkg import mod` then `mod.f()`) or an unresolvable alias, so filtering would drop
@@ -40,7 +40,9 @@ Toggle with `[code_intel] precise_resolution` in `basemind.toml` (default `true`
 
 ## Core tools
 
-### `outline`
+All of the following are modes of the `code` MCP tool (`basemind code <mode>` on the CLI).
+
+### `code outline`
 
 Get a file's complete structure: symbols, signatures, line numbers, and doc comments. Add
 `l2: true` to include call sites and embedded documentation.
@@ -55,7 +57,7 @@ Get a file's complete structure: symbols, signatures, line numbers, and doc comm
 Returns a table of contents you can scan in seconds instead of reading a thousand-line file.
 Once you have the exact span, read only that range.
 
-### `search_symbols`
+### `code symbols`
 
 Find symbols by **substring** across all indexed files. Optionally filter by `kind`
 (function, class, type, etc.).
@@ -70,7 +72,7 @@ Find symbols by **substring** across all indexed files. Optionally filter by `ki
 Returns `path:line:column` and signature for each match. No scope resolution — a substring
 match is exact.
 
-### `find_references`
+### `code references`
 
 Find all call sites of any callee whose identifier matches `name`. **No scope resolution**
 — `Foo::bar()` and `bar()` both match `name="bar"`.
@@ -85,7 +87,7 @@ Find all call sites of any callee whose identifier matches `name`. **No scope re
 Backed by an indexed call-site table, returns tens of thousands of hits capped by `limit`
 (default 100, max 1000).
 
-### `find_callers`
+### `code callers`
 
 Find callers of a **specific definition** (path + name + optional kind). First resolves
 the definition, then returns all callers of that exact symbol.
@@ -98,10 +100,10 @@ the definition, then returns all callers of that exact symbol.
 }
 ```
 
-Combines definition resolution with the same name-based scan as `find_references`, so
+Combines definition resolution with the same name-based scan as `code references`, so
 results are disambiguated by location.
 
-### `goto_definition`
+### `code definition`
 
 Resolve a `path:line:column` reference to its actual definition. Intra-file resolution
 via tree-sitter `locals` across 80+ languages; JavaScript/TypeScript, Python, and Java
@@ -118,7 +120,10 @@ above.
 }
 ```
 
-### `call_graph`
+### `graph calls`
+
+A mode of the `graph` MCP tool (`basemind graph calls` on the CLI), not `code` — it walks
+the same indexed call edges but returns a chain, not a flat hit list.
 
 Walk the call chain up or down from a function, bounded by `max_depth` and `max_nodes`.
 BFS traversal over the indexed call edges.
@@ -131,7 +136,9 @@ BFS traversal over the indexed call edges.
 }
 ```
 
-### `architecture_map`
+### `graph map`
+
+Also a mode of the `graph` MCP tool (`basemind graph map` on the CLI).
 
 A deterministic, whole-repo overview built from the real call graph — no LLM. Ranks hub
 modules, files, or symbols by centrality (fixed-iteration PageRank + fan-in/out) blended with
@@ -148,7 +155,7 @@ prose.
 }
 ```
 
-### `find_implementations`
+### `code implementations`
 
 Types that implement or inherit from a given name. Rust `impl` blocks, Python `class`
 inheritance, TypeScript/JavaScript class declarations.
@@ -159,7 +166,7 @@ inheritance, TypeScript/JavaScript class declarations.
 }
 ```
 
-### `workspace_grep`
+### `code grep`
 
 Pattern search (regex) over file contents, backed by the in-RAM index. Returns capped,
 structured hits with path, line, and matching text.
@@ -176,7 +183,7 @@ Faster than shelling out to ripgrep when you already have the index in memory.
 
 ## Supporting tools
 
-### `expand`
+### `code expand`
 
 Fetch a symbol's raw source body (the inverse of an `outline` entry). Use this after an
 outline tells you the exact function to fetch.
@@ -188,7 +195,7 @@ outline tells you the exact function to fetch.
 }
 ```
 
-### `list_files`
+### `code files`
 
 Enumerate all indexed files. Filter by `language` or `path_contains`.
 
@@ -199,7 +206,7 @@ Enumerate all indexed files. Filter by `language` or `path_contains`.
 }
 ```
 
-### `dependents`
+### `code dependents`
 
 What imports or references a given module. Heuristic reverse-lookup via import statements.
 
@@ -209,24 +216,24 @@ What imports or references a given module. Heuristic reverse-lookup via import s
 }
 ```
 
-### `status` / `repo_info`
+### `admin status` / `admin repo`
 
 Overview of the indexed repo: file count by language, current branch, HEAD commit, origin
 URL, on-disk cache size, and index build time.
 
 ## Discipline
 
-- **`outline` a file before you open it.** A 1000-line file becomes a 30-line table of
+- **`code outline` a file before you open it.** A 1000-line file becomes a 30-line table of
   contents. Then read only the exact span you need.
-- **`search_symbols` instead of grep for a definition.** Returns indexed symbol names and
+- **`code symbols` instead of grep for a definition.** Returns indexed symbol names and
   positions, skipping comment/string noise.
-- **`find_references` / `find_callers` instead of grepping call sites.** Indexed call
+- **`code references` / `code callers` instead of grepping call sites.** Indexed call
   edges, not text matches.
-- **`workspace_grep` instead of shelling out to ripgrep** when you genuinely need regex —
+- **`code grep` instead of shelling out to ripgrep** when you genuinely need regex —
   it runs over the in-RAM index and returns capped, structured results.
 - **Do not re-read a file basemind already mapped.** If the outline answered the question,
   stop.
-- **`rescan` after you edit code**, not a server reconnect. Pass `paths: [...]` to limit
+- **`admin rescan` after you edit code**, not a server reconnect. Pass `paths: [...]` to limit
   it.
 
 <Aside type="note">
