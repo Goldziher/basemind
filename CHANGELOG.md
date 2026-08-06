@@ -202,6 +202,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`code semantic` silently returned nothing on a reader session.** Both non-vector retrieval lanes
+  — BM25 keyword and exact symbol-name — read fjall, whose directory lock is exclusive, so any
+  session that is not the daemon opens the store without an index and both lanes returned an empty
+  vector. That empty was indistinguishable from "searched and found nothing": the call succeeded, in
+  microseconds, with `hits: []`. A reader session now forwards the two lanes to the daemon (rankings
+  only — chunk bodies still come from content-addressed blobs the caller can already read), and a
+  daemon-hosted session reaches the same index straight through the host seam rather than dialling
+  the daemon it runs inside. When a lane genuinely cannot run, the response carries
+  `degraded_lanes` + `degraded_reason` and partial results are labelled as partial; when no lane can
+  run at all the call is an error that says so, never a bare `[]`. Keyword-lane hits also carry
+  their `matched_lanes` / `keyword_rank` provenance, which only the fused path used to set.
 - **The `multi-agent-room` skill now ships to every plugin tree.** `scripts/sync-plugin-skills.sh`
   carried a hand-maintained list of nine skills while `skills/` held ten, so `multi-agent-room` was
   copied into the Hermes bundle (generated separately by ai-rulez) but never into the Codex, Cursor

@@ -12,7 +12,7 @@
 //! consolidation. Because the whole file is `code-search`-gated and that feature is in no default
 //! test run, the breakage stayed invisible: two tests failed the moment the feature was switched on
 //! and a third "passed" only by taking its offline-SKIP branch on an unrecognized-subcommand error.
-//! Same shape as the stale `find_implementations` call sites in `tests/harden.rs` (3544daa). ~keep
+//! Same shape as the stale `find_implementations` call sites formerly in `tests/harden.rs`. ~keep
 #![cfg(feature = "code-search")]
 
 use std::process::Command;
@@ -424,6 +424,96 @@ fn search_code_hybrid_ranks_exact_symbol_first() {
     assert!(
         top.get("vector_rank").is_none(),
         "no vector lane under embed=false, so vector_rank must be absent: {top}"
+    );
+}
+
+/// A READER session — one holding no `IndexDb`, because another process owns fjall's exclusive
+/// directory lock — must not answer `lane="keyword"` with an empty hit list.
+///
+/// This is the shape of every daemon-backed session in production: the daemon is the sole fjall
+/// writer, so `serve` and the CLI open the store index-less. Both BM25 postings and the exact
+/// symbol-name lane live only in fjall, so before the read-forward both silently returned nothing —
+/// microseconds, exit 0, `hits: []` — which is indistinguishable from "this repo has no match", and
+/// `[code_search] enabled` defaults to true while the config promises the keyword lane works without
+/// embeddings. Asserting the ERROR rather than the emptiness is the whole point: an empty success is
+/// the defect, so a fix that merely annotated it would still pass a hits-based assertion. ~keep
+///
+/// Runs without `comms`, so the reader has no daemon to forward to and no daemon is spawned — the
+/// degraded path is reached deterministically and in-process.
+#[test]
+#[cfg_attr(
+    all(feature = "comms", any(unix, windows)),
+    ignore = "needs a build with no daemon to forward to; the comms build reaches the daemon instead"
+)]
+fn keyword_lane_on_a_reader_session_errors_instead_of_reporting_no_matches() {
+    basemind::store::init_isolated_cache();
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path();
+    std::fs::write(root.join("lib.rs"), FIXTURE).expect("write fixture");
+    std::fs::write(
+        root.join("basemind.toml"),
+        "\"$schema\" = \"v1\"\n\n[code_search]\nembed = false\n",
+    )
+    .expect("write config");
+
+    let scan = Command::new(bin())
+        .current_dir(root)
+        .arg("scan")
+        .output()
+        .expect("spawn scan");
+    assert!(
+        scan.status.success(),
+        "basemind scan failed: {}",
+        String::from_utf8_lossy(&scan.stderr)
+    );
+
+    // Baseline: as a WRITER (no competing lock) the lane works. Without this the test could pass
+    // because the fixture never indexed, rather than because the reader path errored. ~keep
+    let warm = Command::new(bin())
+        .current_dir(root)
+        .args(["--json", "code", "semantic", "--lane", "keyword", "config parser"])
+        .output()
+        .expect("spawn writer-session keyword search");
+    assert!(
+        warm.status.success(),
+        "writer-session keyword search must succeed: {}",
+        String::from_utf8_lossy(&warm.stderr)
+    );
+    let warm_value: serde_json::Value =
+        serde_json::from_str(&String::from_utf8_lossy(&warm.stdout)).expect("writer response is JSON");
+    assert!(
+        warm_value
+            .get("hits")
+            .and_then(|h| h.as_array())
+            .is_some_and(|h| !h.is_empty()),
+        "writer-session keyword search must find the fixture chunk, else this test proves nothing: {warm_value}"
+    );
+
+    // Take fjall's exclusive lock, exactly as the daemon does, so the CLI below opens index-less.
+    let held = basemind::store::Store::open(root, basemind::store::VIEW_WORKING).expect("hold the index lock");
+
+    let reader = Command::new(bin())
+        .current_dir(root)
+        .args(["--json", "code", "semantic", "--lane", "keyword", "config parser"])
+        .output()
+        .expect("spawn reader-session keyword search");
+
+    drop(held);
+
+    let stdout = String::from_utf8_lossy(&reader.stdout);
+    if reader.status.success() {
+        let value: serde_json::Value = serde_json::from_str(&stdout).unwrap_or(serde_json::Value::Null);
+        let hits = value.get("hits").and_then(|h| h.as_array()).map(Vec::len);
+        panic!(
+            "reader-session keyword search returned SUCCESS with {hits:?} hits — an index-less \
+             session cannot have searched the BM25 postings, so this is the silent-empty defect: \
+             {value}"
+        );
+    }
+    let stderr = String::from_utf8_lossy(&reader.stderr);
+    assert!(
+        stderr.contains("index") || stdout.contains("index"),
+        "the failure must say the index was unreachable, not just fail: stderr={stderr} stdout={stdout}"
     );
 }
 

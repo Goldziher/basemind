@@ -48,6 +48,17 @@ pub(crate) trait HostBackend: Send + Sync {
         query: crate::comms::resolved_proto::ResolvedRefQuery,
     ) -> Result<crate::comms::resolved_proto::ResolvedRefResult, String>;
 
+    /// Answer the code-search keyword (BM25) + exact (symbol-name) lanes against the workspace's
+    /// read-write fjall index. Same rationale as [`Self::host_resolved_refs`]: both lanes live only
+    /// in fjall, which an index-less serve cannot open, and a hosted stack reaches them straight
+    /// through the pool rather than dialling the daemon it is already inside.
+    #[cfg(feature = "code-search")]
+    fn host_code_search_lanes(
+        &self,
+        root: &Path,
+        query: crate::comms::code_search_proto::CodeSearchLaneQuery,
+    ) -> Result<crate::comms::code_search_proto::CodeSearchLaneResult, String>;
+
     /// Run a CORE memory operation against the workspace's read-write index. The pool's per-workspace
     /// store lock serializes same-workspace ops, so a `Put` read-modify-write is atomic without a
     /// per-key lock.

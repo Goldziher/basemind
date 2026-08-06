@@ -60,12 +60,18 @@ pub(super) async fn run_search_code(state: &ServerState, params: SearchCodeParam
     let fetch_n = if rerank_enabled { limit.max(rerank_top_k) } else { limit };
 
     let mode = params.mode.as_deref().map(str::trim).unwrap_or("hybrid");
-    let hits: Vec<CodeSearchHit> = if mode.is_empty() || mode.eq_ignore_ascii_case("hybrid") {
-        hybrid_hits(state, &params.query, fetch_n).await
+    let (hits, report): (Vec<CodeSearchHit>, LaneReport) = if mode.is_empty() || mode.eq_ignore_ascii_case("hybrid") {
+        hybrid_hits(state, &params.query, fetch_n).await?
     } else if mode.eq_ignore_ascii_case("semantic") {
-        semantic_hits(state, &params.query, fetch_n).await?
+        (
+            semantic_hits(state, &params.query, fetch_n).await?,
+            LaneReport::default(),
+        )
     } else if mode.eq_ignore_ascii_case("keyword") {
-        keyword_hits(state, &params.query, fetch_n).await
+        (
+            keyword_hits(state, &params.query, fetch_n).await?,
+            LaneReport::default(),
+        )
     } else {
         return Err(McpError::invalid_request(
             format!(
@@ -87,6 +93,8 @@ pub(super) async fn run_search_code(state: &ServerState, params: SearchCodeParam
             query: params.query,
             budgeted: budget.budgeted,
             hits: budget.items,
+            degraded_lanes: report.lanes,
+            degraded_reason: report.reason,
             elapsed_us: elapsed_us(__body),
         },
         want_toon,
@@ -97,14 +105,29 @@ pub(super) async fn run_search_code(state: &ServerState, params: SearchCodeParam
 /// on the shared `chunk_id` key. Each lane is independent — a lane that is unavailable (no embedder,
 /// read-only index) or that a non-identifier query doesn't trigger simply contributes nothing; the
 /// query never fails on a single lane. The returned hits carry the fused RRF score in `score`.
-async fn hybrid_hits(state: &ServerState, query: &str, limit: usize) -> Vec<CodeSearchHit> {
+async fn hybrid_hits(
+    state: &ServerState,
+    query: &str,
+    limit: usize,
+) -> Result<(Vec<CodeSearchHit>, LaneReport), McpError> {
     let fuse_limit = (limit * 4).clamp(limit, 200);
 
+    let mut report = LaneReport::default();
+
+    // `vector_ran` is tracked separately from `vector_ids.is_empty()`: a lane that ran and matched
+    // nothing is a real answer, a lane that failed is not, and collapsing the two is how a failed
+    // vector lane used to be reported as a complete result. With `embed` off the lane is not
+    // degraded — it was never asked to run. ~keep
+    let mut vector_ran = false;
     let vector_ids: Vec<String> = if state.shared.config.code_search.embed {
         match semantic_hits(state, query, fuse_limit).await {
-            Ok(hits) => hits.into_iter().map(|h| h.chunk_id).collect(),
+            Ok(hits) => {
+                vector_ran = true;
+                hits.into_iter().map(|h| h.chunk_id).collect()
+            }
             Err(error) => {
                 tracing::debug!(%error, "hybrid: vector lane unavailable — fusing keyword + exact only");
+                report.degrade(&["vector"], format!("the vector lane failed ({error})"));
                 Vec::new()
             }
         }
@@ -112,18 +135,28 @@ async fn hybrid_hits(state: &ServerState, query: &str, limit: usize) -> Vec<Code
         Vec::new()
     };
 
-    let store = state.shared.store.read().await;
-    let (keyword_ids, exact_ids): (Vec<String>, Vec<String>) = match store.index_db.as_ref() {
-        Some(db) => (
-            bm25_search(db, query, fuse_limit)
-                .into_iter()
-                .map(|h| h.chunk_id)
-                .collect(),
-            exact_lane_chunk_ids(&store, db, query, fuse_limit),
-        ),
-        None => (Vec::new(), Vec::new()),
-    };
+    let lanes = fjall_lanes(state, query, fuse_limit, true).await?;
+    if let Some(reason) = &lanes.degraded {
+        report.degrade(&["keyword", "exact"], reason.clone());
+    }
 
+    // A degraded-lane notice attached to an EMPTY hit list is still a success response, and a
+    // caller reads it as "no matches" — the very defect this forward removes. Partial results are
+    // only honest when some lane actually ran. ~keep
+    if lanes.degraded.is_some() && !vector_ran {
+        let reason = report.reason.clone().unwrap_or_default();
+        return Err(McpError::internal_error(
+            format!(
+                "`code` mode=\"semantic\": no lane could run — {reason}. Nothing was searched; this \
+                 is not an empty result set."
+            ),
+            None,
+        ));
+    }
+    let keyword_ids: Vec<String> = lanes.keyword.iter().map(|(id, _)| id.clone()).collect();
+    let exact_ids = lanes.exact;
+
+    let store = state.shared.store.read().await;
     let fused = rrf_fuse_detailed(
         &[
             FusionLane::new(LANE_EXACT, &exact_ids, WEIGHT_EXACT),
@@ -149,7 +182,154 @@ async fn hybrid_hits(state: &ServerState, query: &str, limit: usize) -> Vec<Code
             hits.push(hit);
         }
     }
-    hits
+    Ok((hits, report))
+}
+
+/// Which lanes did not run, and why — reported on the response so a caller can tell a partial
+/// result from a complete one. Empty means every lane the config asked for ran.
+#[derive(Default)]
+struct LaneReport {
+    lanes: Vec<String>,
+    reason: Option<String>,
+}
+
+impl LaneReport {
+    /// Record `lanes` as degraded. Reasons accumulate, because more than one lane can fail for
+    /// different causes in the same query and collapsing them would hide one.
+    fn degrade(&mut self, lanes: &[&str], reason: String) {
+        self.lanes.extend(lanes.iter().map(|l| (*l).to_string()));
+        self.reason = Some(match self.reason.take() {
+            Some(existing) => format!("{existing}; {reason}"),
+            None => reason,
+        });
+    }
+}
+
+/// The two fjall-backed lanes' rankings, plus why they could not run.
+struct LaneOutcome {
+    /// BM25 `(chunk_id, score)`, best first.
+    keyword: Vec<(String, f32)>,
+    /// Exact symbol-name lane chunk ids, best first.
+    exact: Vec<String>,
+    /// `None` when the lanes ran. `Some(reason)` when they could not — never conflated with "ran and
+    /// matched nothing", which is what the pre-forward code returned.
+    degraded: Option<String>,
+}
+
+/// Run the keyword (BM25) + exact (symbol-name) lanes, forwarding to the daemon when this session
+/// holds no `IndexDb`.
+///
+/// Both lanes read fjall, whose directory lock is exclusive, so only the daemon can serve them on a
+/// machine where it is running. A reader session forwards; a HOSTED session (running inside the
+/// daemon) must never forward, because that is the daemon dialling itself — the re-entrancy the
+/// hosted comms path had to remove. A hosted stack reaches the pool directly instead. ~keep
+async fn fjall_lanes(
+    state: &ServerState,
+    query: &str,
+    limit: usize,
+    want_exact: bool,
+) -> Result<LaneOutcome, McpError> {
+    {
+        let store = state.shared.store.read().await;
+        if let Some(db) = store.index_db.as_ref() {
+            let keyword = bm25_search(db, query, limit)
+                .into_iter()
+                .map(|hit| (hit.chunk_id, hit.score))
+                .collect();
+            let exact = if want_exact {
+                exact_lane_chunk_ids(&store, db, query, limit)
+            } else {
+                Vec::new()
+            };
+            return Ok(LaneOutcome {
+                keyword,
+                exact,
+                degraded: None,
+            });
+        }
+    }
+    forward_fjall_lanes(state, query, limit, want_exact).await
+}
+
+/// Ask the daemon — the sole fjall writer — for the two lanes' rankings. Ranking only: chunk bodies
+/// come from content-addressed blobs this session can already read, so nothing else crosses the wire.
+#[cfg(all(feature = "comms", any(unix, windows)))]
+async fn forward_fjall_lanes(
+    state: &ServerState,
+    query: &str,
+    limit: usize,
+    want_exact: bool,
+) -> Result<LaneOutcome, McpError> {
+    use crate::comms::code_search_proto::CodeSearchLaneQuery;
+
+    let request = CodeSearchLaneQuery {
+        query: query.to_string(),
+        limit: limit as u32,
+        want_exact,
+    };
+    let root = state.shared.root.clone();
+
+    // A DAEMON-HOSTED stack reaches the pool's read-write index directly through the host seam. It
+    // must never take the socket path below: that is the daemon dialling itself. Same branch order
+    // as the resolved-refs site, for the same reason. ~keep
+    if let Some(host) = state.shared.host.as_ref() {
+        let host = std::sync::Arc::clone(host);
+        let hosted = tokio::task::spawn_blocking(move || host.host_code_search_lanes(&root, request))
+            .await
+            .map_err(|join| McpError::internal_error(format!("code_search_lanes host join: {join}"), None))?;
+        return match hosted {
+            Ok(result) => Ok(LaneOutcome {
+                keyword: result.keyword,
+                exact: result.exact,
+                degraded: None,
+            }),
+            Err(error) => Ok(LaneOutcome {
+                keyword: Vec::new(),
+                exact: Vec::new(),
+                degraded: Some(format!("the hosted index read failed ({error})")),
+            }),
+        };
+    }
+
+    let mut client = match super::helpers_comms::connect_ephemeral_client(state).await {
+        Ok(client) => client,
+        Err(error) => {
+            return Ok(LaneOutcome {
+                keyword: Vec::new(),
+                exact: Vec::new(),
+                degraded: Some(format!("the daemon is unreachable ({error})")),
+            });
+        }
+    };
+    match client.code_search_lanes(root, request).await {
+        Ok(result) => Ok(LaneOutcome {
+            keyword: result.keyword,
+            exact: result.exact,
+            degraded: None,
+        }),
+        Err(error) => Ok(LaneOutcome {
+            keyword: Vec::new(),
+            exact: Vec::new(),
+            degraded: Some(format!("the daemon refused the lane read ({error})")),
+        }),
+    }
+}
+
+/// Without `comms` there is no daemon to ask, so a reader session simply has no keyword lane. Still
+/// reported as degraded rather than empty — the caller turns that into an error or a labelled
+/// partial, never a bare `[]`.
+#[cfg(not(all(feature = "comms", any(unix, windows))))]
+async fn forward_fjall_lanes(
+    _state: &ServerState,
+    _query: &str,
+    _limit: usize,
+    _want_exact: bool,
+) -> Result<LaneOutcome, McpError> {
+    Ok(LaneOutcome {
+        keyword: Vec::new(),
+        exact: Vec::new(),
+        degraded: Some("this build has no `comms` feature, so there is no daemon to read it".to_string()),
+    })
 }
 
 /// Semantic lane: embed the query and run vector KNN over the scope-filtered LanceDB `code_chunks`
@@ -189,20 +369,34 @@ async fn semantic_hits(state: &ServerState, query: &str, limit: usize) -> Result
 /// Keyword lane: native BM25 over the Fjall index, hydrating each ranked `chunk_id` into a pointer.
 /// Each hit carries a BM25 `score` (higher = better) and no `distance`. Returns an empty vec when the
 /// index is read-only (no `IndexDb` handle) — there is no keyword lane on a reader session.
-async fn keyword_hits(state: &ServerState, query: &str, limit: usize) -> Vec<CodeSearchHit> {
+async fn keyword_hits(state: &ServerState, query: &str, limit: usize) -> Result<Vec<CodeSearchHit>, McpError> {
+    let lanes = fjall_lanes(state, query, limit, false).await?;
+    // `lane: "keyword"` has no other lane to fall back on, so a degraded read is a hard error. There
+    // is no honest partial here — an empty list would claim the BM25 index was searched. ~keep
+    if let Some(reason) = lanes.degraded {
+        return Err(McpError::internal_error(
+            format!(
+                "`code` mode=\"semantic\" lane=\"keyword\": the BM25 index lives in the daemon's \
+                 fjall store and {reason}. No search ran; this is not an empty result set."
+            ),
+            None,
+        ));
+    }
     let store = state.shared.store.read().await;
-    let Some(db) = store.index_db.as_ref() else {
-        return Vec::new();
-    };
-    let raw = bm25_search(db, query, limit);
-    let mut hits = Vec::with_capacity(raw.len());
-    for hit in raw {
-        if let Some((mut ch, _text)) = hydrate_one(&store, &hit.chunk_id) {
-            ch.score = Some(hit.score);
+    let mut hits = Vec::with_capacity(lanes.keyword.len());
+    for (rank, (chunk_id, score)) in lanes.keyword.into_iter().enumerate() {
+        if let Some((mut ch, _text)) = hydrate_one(&store, &chunk_id) {
+            ch.score = Some(score);
+            // Provenance has to be set here too. `hydrate_one` leaves it empty and only the hybrid
+            // path filled it in from the RRF lane ranks, so a keyword-only hit came back claiming no
+            // lane matched it — the same "the response does not say what actually happened" problem
+            // as the silent empty, one level down. ~keep
+            ch.matched_lanes = vec![LANE_KEYWORD.to_string()];
+            ch.keyword_rank = u32::try_from(rank + 1).ok();
             hits.push(ch);
         }
     }
-    hits
+    Ok(hits)
 }
 
 /// Hydrate a ranked `chunk_id` (`<hash>:<ordinal>`) into a base `CodeSearchHit` (all score fields

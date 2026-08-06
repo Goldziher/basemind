@@ -263,6 +263,16 @@ pub(crate) struct SearchCodeResponse {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub budgeted: bool,
     pub hits: Vec<CodeSearchHit>,
+    /// Lanes that did NOT run for this query — `"keyword"` and/or `"exact"`. Non-empty means `hits`
+    /// is a PARTIAL result from the lanes that did run, not the whole picture; an empty list means
+    /// every requested lane ran. Machine-readable on purpose: a caller must be able to tell
+    /// "searched and found nothing" from "could not search", which a prose-only notice does not
+    /// allow. When NO lane runs the call is an error instead, so this is never a labelled `[]`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub degraded_lanes: Vec<String>,
+    /// Why `degraded_lanes` could not run, in one human-readable clause.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub degraded_reason: Option<String>,
     /// Server-side handler latency in microseconds — the tool body's own execution (index / vector
     /// search / graph walk + response construction), excluding MCP transport, argument
     /// deserialization, and response serialization. A first call against a cold server also

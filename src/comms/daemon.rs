@@ -761,6 +761,7 @@ impl Broker {
                 embed,
             } => Ok(self.on_rescan(root, paths, full, embed).await),
             CommsRequest::ResolvedRefs { root, query } => Ok(self.on_resolved_refs(root, query).await),
+            CommsRequest::CodeSearchLanes { root, query } => Ok(self.on_code_search_lanes(root, query).await),
             CommsRequest::GitHistory { root, op } => Ok(self.on_git_history(root, op).await),
             #[cfg(feature = "memory")]
             CommsRequest::Memory { root, scope, op } => Ok(self.on_memory(root, scope, op).await),

@@ -285,6 +285,16 @@ pub enum CommsRequest {
         /// The lookup to run against that workspace's read-write index.
         query: crate::comms::resolved_proto::ResolvedRefQuery,
     },
+    /// Forward the code-search keyword (BM25) and exact (symbol-name) lanes to the daemon. Both are
+    /// answered from fjall, which a reader `serve` cannot open, so without this they return nothing
+    /// at all — and did so silently. Ranking only; the caller hydrates bodies from blobs. A pure
+    /// read.
+    CodeSearchLanes {
+        /// Canonical workspace root, selecting the daemon's hot workspace.
+        root: std::path::PathBuf,
+        /// The lanes to run against that workspace's read-write index.
+        query: crate::comms::code_search_proto::CodeSearchLaneQuery,
+    },
     /// Report the workspaces the daemon currently holds hot (drives the statusline).
     AccessedPaths,
     /// List every registered workspace in the machine registry (git + plain). Read-only.
@@ -406,6 +416,8 @@ pub enum CommsResponse {
     },
     /// Reply to [`CommsRequest::ResolvedRefs`]: the resolved edges.
     ResolvedRefs(crate::comms::resolved_proto::ResolvedRefResult),
+    /// Reply to [`CommsRequest::CodeSearchLanes`]: ranked chunk ids for the keyword + exact lanes.
+    CodeSearchLanes(crate::comms::code_search_proto::CodeSearchLaneResult),
     /// Reply to [`CommsRequest::GitHistory`]: the sync outcome, the indexed HEAD, or a page of
     /// commits, per the op.
     GitHistory(crate::git_history::proto::GitHistoryReply),

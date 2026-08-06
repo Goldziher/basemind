@@ -17,6 +17,8 @@ pub mod client;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 mod client_forward;
 #[cfg(all(feature = "comms", any(unix, windows)))]
+pub mod code_search_proto;
+#[cfg(all(feature = "comms", any(unix, windows)))]
 pub mod cursor;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 pub mod daemon;

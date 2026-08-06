@@ -423,6 +423,18 @@ impl crate::mcp::HostBackend for WorkspacePool {
             .map_err(|error| error.to_string())
     }
 
+    #[cfg(feature = "code-search")]
+    fn host_code_search_lanes(
+        &self,
+        root: &Path,
+        query: crate::comms::code_search_proto::CodeSearchLaneQuery,
+    ) -> Result<crate::comms::code_search_proto::CodeSearchLaneResult, String> {
+        self.with_workspace(root, |store| {
+            super::daemon_forward_handlers::code_search_lanes_against(store, &query)
+        })
+        .map_err(|error| error.to_string())?
+    }
+
     fn host_resolved_refs(
         &self,
         root: &Path,

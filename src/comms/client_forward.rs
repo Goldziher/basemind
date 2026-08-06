@@ -98,6 +98,21 @@ impl CommsClient {
         }
     }
 
+    /// Forward the code-search keyword (BM25) + exact (symbol-name) lanes to the daemon — the sole
+    /// fjall writer, and therefore the only process that can read the BM25 postings and
+    /// `symbols_by_name`. Backs `code` mode `semantic` on a reader session, where both lanes would
+    /// otherwise return nothing. A pure read, so the transparent reconnect-and-retry is replay-safe.
+    pub async fn code_search_lanes(
+        &mut self,
+        root: PathBuf,
+        query: crate::comms::code_search_proto::CodeSearchLaneQuery,
+    ) -> Result<crate::comms::code_search_proto::CodeSearchLaneResult, CommsClientError> {
+        match self.request(CommsRequest::CodeSearchLanes { root, query }).await? {
+            CommsResponse::CodeSearchLanes(result) => Ok(result),
+            other => Err(self.shape_err(other, "code_search_lanes")),
+        }
+    }
+
     /// Forward a git-history operation to the daemon — the sole holder of `git-history.fjall/`
     /// (fjall's directory lock is exclusive, so no front-end may open it). Backs both the index
     /// BUILD a `daemon_writer` serve requests at startup instead of running it in-process, and the
