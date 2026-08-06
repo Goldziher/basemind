@@ -30,6 +30,12 @@ const OWNER_ONLY_DIR: u32 = 0o700;
 #[cfg(unix)]
 const OWNER_ONLY_FILE: u32 = 0o600;
 
+/// Longest bindable Unix-socket path, from `sockaddr_un.sun_path` minus its NUL terminator: 108
+/// bytes on Linux, 104 on macOS and the BSDs. A path over this can never be bound by anyone, so
+/// it is worth failing on before spawning rather than after a timeout.
+#[cfg(unix)]
+const SUN_PATH_MAX: usize = if cfg!(target_os = "linux") { 107 } else { 103 };
+
 /// How long to wait for a spawned daemon to become reachable before giving up.
 const SPAWN_READY_TIMEOUT: Duration = Duration::from_secs(5);
 /// Poll interval while waiting for a spawned daemon.
@@ -68,6 +74,23 @@ pub enum SingletonError {
     /// A spawned daemon did not become reachable in time.
     #[error("spawned comms daemon did not become ready within the timeout")]
     SpawnTimeout,
+    /// The socket path exceeds what `sockaddr_un` can hold, so no daemon can ever bind it.
+    /// Reported before spawning: waiting out the readiness timeout would blame a hang for what is
+    /// really a path-length limit, which is how this first surfaced.
+    #[cfg(unix)]
+    #[error(
+        "the comms socket path is {len} bytes, past the {limit}-byte limit a Unix socket address \
+         can hold, so no daemon can bind it: {path}. Point BASEMIND_COMMS_DIR at a shorter \
+         directory."
+    )]
+    SocketPathTooLong {
+        /// The over-long socket path.
+        path: PathBuf,
+        /// Its length in bytes.
+        len: usize,
+        /// The platform's limit.
+        limit: usize,
+    },
     /// A previous / incompatible daemon held the socket and would not stop, so we could not take
     /// over. Surfaced instead of silently talking to an incompatible daemon (which is how the
     /// pre-0.10 version-skew bug manifested as an opaque "connection closed").
@@ -245,6 +268,32 @@ pub fn bind_listener(
     }
 }
 
+/// Reject a socket path the kernel could never bind, before anything tries.
+///
+/// A `sockaddr_un` holds a fixed-size `sun_path`, so an over-long path fails at `bind` inside the
+/// spawned daemon — where the caller cannot see it. The caller then waits out the full readiness
+/// timeout and reports a hang, sending whoever hit it looking for a stuck process instead of a
+/// directory name. Checking up front turns that into one accurate sentence.
+///
+/// A no-op on Windows, whose named pipes have no equivalent ceiling.
+#[cfg(unix)]
+fn check_socket_path_len(socket_path: &Path) -> Result<(), SingletonError> {
+    let len = socket_path.as_os_str().len();
+    if len > SUN_PATH_MAX {
+        return Err(SingletonError::SocketPathTooLong {
+            path: socket_path.to_path_buf(),
+            len,
+            limit: SUN_PATH_MAX,
+        });
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn check_socket_path_len(_socket_path: &Path) -> Result<(), SingletonError> {
+    Ok(())
+}
+
 /// Ensure a daemon is running and reachable: probe-connect + ping; if that succeeds, return
 /// without doing anything. Otherwise spawn `basemind comms daemon` detached and poll the
 /// socket until it answers (or the timeout elapses).
@@ -260,6 +309,7 @@ pub async fn ensure_daemon_with(
     if is_alive(&paths.socket_path) {
         return Ok(());
     }
+    check_socket_path_len(&paths.socket_path)?;
     spawn(paths).map_err(|source| SingletonError::Io {
         path: paths.socket_path.clone(),
         source,
@@ -818,5 +868,58 @@ mod tests {
         )
         .await;
         assert!(res.is_ok(), "daemon became ready after spawn");
+    }
+
+    /// A socket path past `sun_path` can never be bound, so the caller must be told that — not
+    /// left to wait out the readiness timeout and report a hang. Asserting the error is NOT
+    /// `SpawnTimeout` is the point: that is the misleading message this replaces.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn ensure_daemon_rejects_a_socket_path_past_the_platform_limit() {
+        let comms_dir = PathBuf::from("/tmp").join("d".repeat(SUN_PATH_MAX));
+        let paths = CommsPaths {
+            socket_path: comms_socket_path(&comms_dir),
+            comms_dir,
+        };
+        let spawned = std::cell::Cell::new(false);
+        let res = ensure_daemon_with(
+            &paths,
+            |_| false,
+            |_| {
+                spawned.set(true);
+                Ok(())
+            },
+        )
+        .await;
+
+        let err = res.expect_err("an unbindable path must fail");
+        assert!(
+            matches!(err, SingletonError::SocketPathTooLong { .. }),
+            "must name the path-length limit, not blame a timeout: {err}"
+        );
+        assert!(
+            err.to_string().contains("BASEMIND_COMMS_DIR"),
+            "the message must say which knob to change: {err}"
+        );
+        assert!(!spawned.get(), "must not spawn a daemon that cannot possibly bind");
+    }
+
+    /// Pins the boundary rather than a comfortable middle: an off-by-one here would either reject
+    /// paths the kernel accepts or let through the one length that fails at `bind`.
+    #[cfg(unix)]
+    #[test]
+    fn the_guard_accepts_the_longest_bindable_path_and_rejects_one_byte_more() {
+        let at_limit = PathBuf::from("/".to_string() + &"a".repeat(SUN_PATH_MAX - 1));
+        assert_eq!(at_limit.as_os_str().len(), SUN_PATH_MAX);
+        check_socket_path_len(&at_limit).expect("a path exactly at the limit is bindable");
+
+        let over = PathBuf::from("/".to_string() + &"a".repeat(SUN_PATH_MAX));
+        assert!(
+            matches!(
+                check_socket_path_len(&over),
+                Err(SingletonError::SocketPathTooLong { .. })
+            ),
+            "one byte past the limit must be rejected"
+        );
     }
 }
