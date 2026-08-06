@@ -50,6 +50,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   shape (a test or script that ran `daemon ensure` then exited) that previously left a daemon, and its
   tens of threads, resident. Behavioural only; no schema/`RELEASE_MINOR` bump. Test binaries pin a fast
   reap so a parallel `cargo test` no longer accumulates one lingering daemon per binary.
+- **BREAKING: `basemind-agent`'s LLM-facing tool names follow the domain consolidation.** The agent
+  registered its code-map tools under the pre-consolidation flat names, so the model saw one
+  vocabulary and the MCP surface another. They are now `domain_mode` in bare snake_case:
+  `outline` → `code_outline`, `search_symbols` → `code_symbols`, `find_references` →
+  `code_references`, `find_callers` → `code_callers`, `workspace_grep` → `code_grep`, `call_graph` →
+  `graph_calls`, `recent_changes` → `git_recent`, `blame_symbol` → `git_blame_symbol`, `diff_file` →
+  `git_diff`. `shell_exec` is unchanged — it is the agent's own tool, not an MCP domain. The
+  underscore rather than the MCP surface's colon is a provider constraint, not a style choice:
+  Anthropic, OpenAI and Google all validate tool names against `^[a-zA-Z0-9_-]{1,128}$`, so
+  `code:outline` is not a legal name to register. Only saved conversations that replay a raw tool
+  name are affected. The token-savings estimator now rewrites the agent spelling to the MCP
+  telemetry key at the boundary, keyed off the real mode vocabulary in `src/mcp/mode.rs`, so each
+  baseline carries a single spelling — previously it carried both, and dropping either would have
+  silently zeroed the agent TUI's "tokens saved" readout instead of failing a test.
 - **`call_graph` is re-expressed over the shared `codegraph`.** The tool no longer maintains its own
   call scan; it projects the resolved `Calls` edges of the shared, memoized graph the other graph
   tools already read. One user-visible consequence: a call whose callee does not resolve to an

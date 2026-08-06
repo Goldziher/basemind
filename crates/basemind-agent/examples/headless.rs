@@ -21,7 +21,7 @@ use basemind_agent::{AgentCommand, AgentEvent, PermissionDecision, Session, Tool
 const DEFAULT_MODEL: &str = "anthropic/claude-sonnet-4";
 const API_KEY_ENV: &str = "ANTHROPIC_API_KEY";
 const SYSTEM_PROMPT: &str = "You are a coding assistant operating inside the basemind agent. Prefer \
-    the outline and search_symbols tools over reading whole files. Be concise.";
+    the code_outline and code_symbols tools over reading whole files. Be concise.";
 
 #[tokio::main]
 async fn main() {

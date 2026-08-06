@@ -37,15 +37,20 @@ const MAX_FINDINGS: usize = 200;
 
 /// The set of tool names treated as search/grep queries for the
 /// `repeated_query` detector. `target` is the query string for these.
-// Both spellings of basemind's own search tools are listed, not swapped: this reads tool-call logs
-// a harness already wrote, so transcripts recorded before the domain consolidation still carry the
-// bare names and must keep matching. `Grep` / `grep` are the foreign harnesses' own search tools. ~keep
+// Every spelling of basemind's own search tools is listed, not swapped: this reads tool-call logs a
+// harness already wrote, so transcripts recorded before the domain consolidation still carry the
+// pre-consolidation bare names and must keep matching. `code:*` is what the MCP surface records;
+// `code_*` is what `basemind-agent` registers with the model, since a colon is illegal in the
+// provider tool-name pattern. `Grep` / `grep` are the foreign harnesses' own search tools. ~keep
 const QUERY_TOOLS: &[&str] = &[
     "Grep",
     "grep",
     "code:grep",
     "code:symbols",
     "code:references",
+    "code_grep",
+    "code_symbols",
+    "code_references",
     "workspace_grep",
     "search_symbols",
     "find_references",

@@ -252,12 +252,12 @@ mod tests {
     fn from_json_round_trips_a_scenario() {
         let scenario = Scenario::from_json(
             r#"{ "user": "u", "turns": [ { "text": "t", "tools": [ { "id": "c1",
-                "name": "outline", "args": { "path": "src/lib.rs" } } ] } ] }"#,
+                "name": "code_outline", "args": { "path": "src/lib.rs" } } ] } ] }"#,
         )
         .expect("parses");
         assert_eq!(scenario.user, "u");
         assert_eq!(scenario.turns.len(), 1);
-        assert_eq!(scenario.turns[0].tools[0].name, "outline");
+        assert_eq!(scenario.turns[0].tools[0].name, "code_outline");
     }
 
     #[test]

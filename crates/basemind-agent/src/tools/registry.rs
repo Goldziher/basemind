@@ -68,16 +68,16 @@ mod tests {
         assert_eq!(
             names,
             vec![
-                "blame_symbol",
-                "call_graph",
-                "diff_file",
-                "find_callers",
-                "find_references",
-                "outline",
-                "recent_changes",
-                "search_symbols",
+                "code_callers",
+                "code_grep",
+                "code_outline",
+                "code_references",
+                "code_symbols",
+                "git_blame_symbol",
+                "git_diff",
+                "git_recent",
+                "graph_calls",
                 "shell_exec",
-                "workspace_grep",
             ]
         );
         assert_eq!(registry.len(), 10);

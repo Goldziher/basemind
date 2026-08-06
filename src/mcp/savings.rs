@@ -9,6 +9,8 @@
 //! text to tokenize, so it falls back to the same `bytes / 4` rule of thumb basemind's scan-cost
 //! reporting uses. Under default features the two tiers are numerically identical.
 
+use std::borrow::Cow;
+
 use serde::Serialize;
 
 /// One row's worth of "tokens saved" reasoning. The `est_tokens_saved` field is what the
@@ -40,8 +42,8 @@ fn tokens_for_text(text: &str) -> u64 {
     super::tokens::count_tokens(text)
 }
 
-/// Grep-style name search (`search_symbols`, `find_references`, `find_callers`,
-/// `find_implementations`): the agent pays for the grep output (≈ the matching hits we
+/// Grep-style name search (`code:symbols`, `code:references`, `code:callers`,
+/// `code:implementations`): the agent pays for the grep output (≈ the matching hits we
 /// already return) plus opening a few top hits to confirm them. Modelled as the response
 /// payload times this multiplier — corpus-independent, since a real `rg` emits matching
 /// lines, not whole files, and the agent reads only the top results.
@@ -66,6 +68,33 @@ const LIST_FILES_READ_MULTIPLIER: u64 = 2;
 /// response is a fraction of that. Modelled conservatively at 3× the returned payload.
 const WEB_INGEST_MULTIPLIER: u64 = 3;
 
+/// Rewrite an agent-registered tool name (`code_outline`) to the telemetry key the baseline table
+/// is written against (`code:outline`).
+///
+/// `basemind-agent` registers its LLM-facing tools under bare snake_case names because the provider
+/// tool-name pattern (`^[a-zA-Z0-9_-]{1,128}$`) rejects the colon the MCP surface uses, and it
+/// routes them through this estimator via `agent_api::estimate_tokens_saved`. The two vocabularies
+/// are otherwise the same `(domain, mode)` pairs, so one rewrite here keeps every baseline arm
+/// single-spelled. Carrying both spellings per arm is what previously made a rename able to zero
+/// the agent TUI's "tokens saved" readout in production without failing a test. A pair that is not
+/// a real domain/mode is returned unchanged and falls through to `unclassified`. ~keep
+fn canonical_key(tool: &str) -> Cow<'_, str> {
+    if tool.contains(':') {
+        return Cow::Borrowed(tool);
+    }
+    let Some((domain, mode)) = tool.split_once('_') else {
+        return Cow::Borrowed(tool);
+    };
+    let known = super::mode::domain_modes()
+        .into_iter()
+        .any(|(d, modes)| d == domain && modes.contains(&mode));
+    if known {
+        Cow::Owned(format!("{domain}:{mode}"))
+    } else {
+        Cow::Borrowed(tool)
+    }
+}
+
 /// Estimate baseline + actual tokens for one tool call from the full response **text**.
 ///
 /// The live telemetry entry point. The `actual` count routes through [`tokens_for_text`] — a
@@ -79,26 +108,16 @@ const WEB_INGEST_MULTIPLIER: u64 = 3;
 /// response payload), so this argument currently goes unused.
 pub fn estimate_from_text(tool: &str, _corpus_bytes: u64, resp_text: &str) -> SavingsRow {
     let actual = tokens_for_text(resp_text);
-    let (baseline, baseline_name) = match tool {
-        // Each code-map arm carries BOTH spellings: `code:<mode>` is what the MCP surface records
-        // after the domain consolidation, while the bare name is what `basemind-agent` still
-        // registers its LLM-facing tools under (`crates/basemind-agent/src/tools/codenav.rs`),
-        // which calls straight into `agent_api::estimate_tokens_saved`. Dropping the bare
-        // spellings would silently zero the agent TUI's "tokens saved" readout rather than fail a
-        // test. Collapse them once that surface follows the consolidation. ~keep
-        "code:outline" | "outline" => (actual.saturating_mul(5), "full_file_read"),
+    let (baseline, baseline_name) = match canonical_key(tool).as_ref() {
+        "code:outline" => (actual.saturating_mul(5), "full_file_read"),
 
-        "code:symbols" | "search_symbols" => (actual.saturating_mul(GREP_READ_MULTIPLIER), "grep_plus_read_top_hits"),
+        "code:symbols" => (actual.saturating_mul(GREP_READ_MULTIPLIER), "grep_plus_read_top_hits"),
 
-        "code:references" | "code:callers" | "find_references" | "find_callers" => {
-            (actual.saturating_mul(GREP_READ_MULTIPLIER), "grep_top_hits")
-        }
+        "code:references" | "code:callers" => (actual.saturating_mul(GREP_READ_MULTIPLIER), "grep_top_hits"),
 
-        "code:implementations" | "find_implementations" => {
-            (actual.saturating_mul(GREP_READ_MULTIPLIER), "grep_top_hits")
-        }
+        "code:implementations" => (actual.saturating_mul(GREP_READ_MULTIPLIER), "grep_top_hits"),
 
-        "code:dependents" | "dependents" => (
+        "code:dependents" => (
             actual.saturating_mul(DEPENDENTS_READ_MULTIPLIER),
             "grep_imports_top_hits",
         ),
@@ -107,7 +126,7 @@ pub fn estimate_from_text(tool: &str, _corpus_bytes: u64, resp_text: &str) -> Sa
 
         "git:symbol_history" => (actual.saturating_mul(4), "per_commit_outline_diff"),
 
-        "code:grep" | "workspace_grep" => (actual, "no_baseline"),
+        "code:grep" => (actual, "no_baseline"),
 
         // `display` and `open` join their read-only siblings here rather than staying unclassified:
         // a rendered view replaces no grep/read baseline, so "saved nothing" is the honest label.
@@ -116,7 +135,7 @@ pub fn estimate_from_text(tool: &str, _corpus_bytes: u64, resp_text: &str) -> Sa
 
         "memory:documents" => (actual.saturating_mul(DOCUMENT_READ_MULTIPLIER), "full_document_read"),
 
-        "code:files" | "list_files" => (actual.saturating_mul(LIST_FILES_READ_MULTIPLIER), "find_plus_filter"),
+        "code:files" => (actual.saturating_mul(LIST_FILES_READ_MULTIPLIER), "find_plus_filter"),
 
         "web:scrape" | "web:crawl" | "web:map" => (actual.saturating_mul(WEB_INGEST_MULTIPLIER), "manual_browse_paste"),
 
@@ -243,7 +262,7 @@ mod tests {
             "git:status",
             "git:search",
             "code:grep",
-            "workspace_grep",
+            "code_grep",
             "graph:calls",
             "graph:display",
         ] {
@@ -253,30 +272,53 @@ mod tests {
         }
     }
 
-    /// `basemind-agent` registers its LLM-facing code-map tools under the pre-consolidation bare
-    /// names and routes them through this same estimator, so both spellings must model the same
-    /// baseline. Dropping the bare arms would zero the agent TUI's "tokens saved" readout in
-    /// production without failing anything else here.
+    /// `basemind-agent` registers its LLM-facing tools under `domain_mode` (a colon is illegal in
+    /// the provider tool-name pattern) and routes them through this estimator, so the underscore
+    /// spelling must reach the same baseline as the `domain:mode` key the MCP surface records.
+    /// Without the rewrite the agent TUI's "tokens saved" readout silently reports zero.
     #[test]
-    fn bare_agent_tool_names_model_the_same_baseline_as_their_code_modes() {
+    fn agent_tool_names_model_the_same_baseline_as_their_modes() {
         let text = "a".repeat(400);
-        for (bare, mode) in [
-            ("outline", "code:outline"),
-            ("search_symbols", "code:symbols"),
-            ("find_references", "code:references"),
-            ("find_callers", "code:callers"),
-            ("find_implementations", "code:implementations"),
-            ("dependents", "code:dependents"),
-            ("workspace_grep", "code:grep"),
-            ("list_files", "code:files"),
+        for (agent, mode) in [
+            ("code_outline", "code:outline"),
+            ("code_symbols", "code:symbols"),
+            ("code_references", "code:references"),
+            ("code_callers", "code:callers"),
+            ("code_implementations", "code:implementations"),
+            ("code_dependents", "code:dependents"),
+            ("code_grep", "code:grep"),
+            ("code_files", "code:files"),
+            ("graph_calls", "graph:calls"),
+            ("git_recent", "git:recent"),
+            ("git_blame_symbol", "git:blame_symbol"),
+            ("git_diff", "git:diff"),
         ] {
-            let old = estimate_from_text(bare, 1_000_000, &text);
-            let new = estimate_from_text(mode, 1_000_000, &text);
-            assert_eq!(old.baseline, new.baseline, "{bare} and {mode} must share a baseline");
+            let via_agent = estimate_from_text(agent, 1_000_000, &text);
+            let via_mode = estimate_from_text(mode, 1_000_000, &text);
             assert_eq!(
-                old.est_tokens_saved, new.est_tokens_saved,
-                "{bare} and {mode} must estimate the same savings"
+                via_agent.baseline, via_mode.baseline,
+                "{agent} and {mode} must share a baseline"
             );
+            assert_eq!(
+                via_agent.est_tokens_saved, via_mode.est_tokens_saved,
+                "{agent} and {mode} must estimate the same savings"
+            );
+            assert_ne!(
+                via_agent.baseline, "unclassified",
+                "{agent} must resolve to a real mode, not fall through"
+            );
+        }
+    }
+
+    /// The rewrite is keyed off the real mode vocabulary, so a name that merely *looks* like
+    /// `domain_mode` must not be coerced into a baseline it was never modelled for. `shell_exec` is
+    /// the live case: `shell` is a domain but `exec` is not one of its modes.
+    #[test]
+    fn underscore_names_that_are_not_real_modes_stay_unclassified() {
+        for tool in ["shell_exec", "code_nonsense", "not_a_real_tool", "room_broadcast"] {
+            let s = estimate_from_text(tool, 1_000_000, &"a".repeat(400));
+            assert_eq!(s.baseline, "unclassified", "{tool} must not claim a baseline");
+            assert_eq!(s.est_tokens_saved, 0, "{tool} must not claim savings");
         }
     }
 

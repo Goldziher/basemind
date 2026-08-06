@@ -26,7 +26,7 @@ pub fn git_history_tools() -> Vec<Arc<dyn ToolDyn>> {
     ]
 }
 
-/// `recent_changes` — recent commits with their file lists.
+/// `git_recent` — recent commits with their file lists.
 struct RecentChangesTool;
 
 /// Arguments for [`RecentChangesTool`].
@@ -42,7 +42,7 @@ impl Tool for RecentChangesTool {
     type Args = RecentChangesArgs;
 
     fn name(&self) -> &'static str {
-        "recent_changes"
+        "git_recent"
     }
 
     fn description(&self) -> &'static str {
@@ -51,7 +51,7 @@ impl Tool for RecentChangesTool {
     }
 
     fn permission(&self, _args: &RecentChangesArgs) -> PermissionClaim {
-        PermissionClaim::read("recent_changes")
+        PermissionClaim::read("git_recent")
     }
 
     async fn execute(&self, args: RecentChangesArgs, ctx: &ToolCtx) -> Result<ToolOutput> {
@@ -70,7 +70,7 @@ impl Tool for RecentChangesTool {
     }
 }
 
-/// `blame_symbol` — per-symbol blame hunks.
+/// `git_blame_symbol` — per-symbol blame hunks.
 struct BlameSymbolTool;
 
 /// Arguments for [`BlameSymbolTool`].
@@ -93,7 +93,7 @@ impl Tool for BlameSymbolTool {
     type Args = BlameSymbolArgs;
 
     fn name(&self) -> &'static str {
-        "blame_symbol"
+        "git_blame_symbol"
     }
 
     fn description(&self) -> &'static str {
@@ -124,7 +124,7 @@ impl Tool for BlameSymbolTool {
     }
 }
 
-/// `diff_file` — a file's diff across two revisions.
+/// `git_diff` — a file's diff across two revisions.
 struct DiffFileTool;
 
 /// Arguments for [`DiffFileTool`].
@@ -143,7 +143,7 @@ impl Tool for DiffFileTool {
     type Args = DiffFileArgs;
 
     fn name(&self) -> &'static str {
-        "diff_file"
+        "git_diff"
     }
 
     fn description(&self) -> &'static str {
@@ -179,17 +179,17 @@ mod tests {
     fn git_history_tools_are_named() {
         let tools = git_history_tools();
         let names: Vec<_> = tools.iter().map(|t| t.name()).collect();
-        assert_eq!(names, vec!["recent_changes", "blame_symbol", "diff_file"]);
+        assert_eq!(names, vec!["git_recent", "git_blame_symbol", "git_diff"]);
     }
 
     #[test]
-    fn recent_changes_claims_a_static_read() {
+    fn git_recent_claims_a_static_read() {
         let claim = RecentChangesTool.permission_of(r#"{"limit":10}"#).expect("parses");
-        assert_eq!(claim, PermissionClaim::read("recent_changes"));
+        assert_eq!(claim, PermissionClaim::read("git_recent"));
     }
 
     #[test]
-    fn blame_symbol_claims_a_read_on_the_path() {
+    fn git_blame_symbol_claims_a_read_on_the_path() {
         let claim = BlameSymbolTool
             .permission_of(r#"{"path":"src/lib.rs","name":"scan"}"#)
             .expect("parses");
@@ -197,7 +197,7 @@ mod tests {
     }
 
     #[test]
-    fn diff_file_claims_a_read_on_the_path() {
+    fn git_diff_claims_a_read_on_the_path() {
         let claim = DiffFileTool
             .permission_of(r#"{"rev_old":"HEAD~1","rev_new":"HEAD","path":"src/lib.rs"}"#)
             .expect("parses");

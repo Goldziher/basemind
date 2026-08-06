@@ -43,7 +43,7 @@ pub(super) fn require_server<'a>(ctx: &'a ToolCtx, tool: &'static str) -> Result
     })
 }
 
-/// `outline` — structural outline of a file.
+/// `code_outline` — structural outline of a file.
 struct OutlineTool;
 
 /// Arguments for [`OutlineTool`].
@@ -58,7 +58,7 @@ impl Tool for OutlineTool {
     type Args = OutlineArgs;
 
     fn name(&self) -> &'static str {
-        "outline"
+        "code_outline"
     }
 
     fn description(&self) -> &'static str {
@@ -87,7 +87,7 @@ impl Tool for OutlineTool {
     }
 }
 
-/// `search_symbols` — substring search over indexed symbol names.
+/// `code_symbols` — substring search over indexed symbol names.
 struct SearchSymbolsTool;
 
 /// Arguments for [`SearchSymbolsTool`].
@@ -108,7 +108,7 @@ impl Tool for SearchSymbolsTool {
     type Args = SearchSymbolsArgs;
 
     fn name(&self) -> &'static str {
-        "search_symbols"
+        "code_symbols"
     }
 
     fn description(&self) -> &'static str {
@@ -139,7 +139,7 @@ impl Tool for SearchSymbolsTool {
     }
 }
 
-/// `find_references` — call sites of any callee matching `name`.
+/// `code_references` — call sites of any callee matching `name`.
 struct FindReferencesTool;
 
 /// Arguments for [`FindReferencesTool`].
@@ -157,7 +157,7 @@ impl Tool for FindReferencesTool {
     type Args = FindReferencesArgs;
 
     fn name(&self) -> &'static str {
-        "find_references"
+        "code_references"
     }
 
     fn description(&self) -> &'static str {
@@ -187,7 +187,7 @@ impl Tool for FindReferencesTool {
     }
 }
 
-/// `find_callers` — callers of a specific definition (path + name).
+/// `code_callers` — callers of a specific definition (path + name).
 struct FindCallersTool;
 
 /// Arguments for [`FindCallersTool`].
@@ -210,12 +210,12 @@ impl Tool for FindCallersTool {
     type Args = FindCallersArgs;
 
     fn name(&self) -> &'static str {
-        "find_callers"
+        "code_callers"
     }
 
     fn description(&self) -> &'static str {
         "Find callers of a specific definition (resolved by path + name + optional kind), then the \
-         same name-based scan as find_references. Prefer this over grepping for a function's callers."
+         same name-based scan as code_references. Prefer this over grepping for a function's callers."
     }
 
     fn permission(&self, args: &FindCallersArgs) -> PermissionClaim {
@@ -241,7 +241,7 @@ impl Tool for FindCallersTool {
     }
 }
 
-/// `call_graph` — BFS call graph rooted at a function name.
+/// `graph_calls` — BFS call graph rooted at a function name.
 struct CallGraphTool;
 
 /// Arguments for [`CallGraphTool`].
@@ -268,16 +268,16 @@ impl Tool for CallGraphTool {
     type Args = CallGraphArgs;
 
     fn name(&self) -> &'static str {
-        "call_graph"
+        "graph_calls"
     }
 
     fn description(&self) -> &'static str {
         "BFS call graph rooted at a function name: `direction=callers` (default) walks upward, \
-         `callees` walks downward. Prefer this over manually chaining find_references calls."
+         `callees` walks downward. Prefer this over manually chaining code_references calls."
     }
 
     fn permission(&self, args: &CallGraphArgs) -> PermissionClaim {
-        PermissionClaim::read(format!("call_graph:{}", args.name))
+        PermissionClaim::read(format!("graph_calls:{}", args.name))
     }
 
     async fn execute(&self, args: CallGraphArgs, ctx: &ToolCtx) -> Result<ToolOutput> {
@@ -298,7 +298,7 @@ impl Tool for CallGraphTool {
     }
 }
 
-/// `workspace_grep` — indexed regex over file contents.
+/// `code_grep` — indexed regex over file contents.
 struct WorkspaceGrepTool;
 
 /// Arguments for [`WorkspaceGrepTool`].
@@ -322,7 +322,7 @@ impl Tool for WorkspaceGrepTool {
     type Args = WorkspaceGrepArgs;
 
     fn name(&self) -> &'static str {
-        "workspace_grep"
+        "code_grep"
     }
 
     fn description(&self) -> &'static str {
@@ -366,30 +366,30 @@ mod tests {
         assert_eq!(
             names,
             vec![
-                "outline",
-                "search_symbols",
-                "find_references",
-                "find_callers",
-                "call_graph",
-                "workspace_grep",
+                "code_outline",
+                "code_symbols",
+                "code_references",
+                "code_callers",
+                "graph_calls",
+                "code_grep",
             ]
         );
     }
 
     #[test]
-    fn outline_requires_a_read_claim_on_the_path() {
+    fn code_outline_requires_a_read_claim_on_the_path() {
         let claim = OutlineTool.permission_of(r#"{"path":"src/lib.rs"}"#).expect("parses");
         assert_eq!(claim, PermissionClaim::read("src/lib.rs"));
     }
 
     #[test]
-    fn find_references_claims_a_read_on_the_name() {
+    fn code_references_claims_a_read_on_the_name() {
         let claim = FindReferencesTool.permission_of(r#"{"name":"spawn"}"#).expect("parses");
         assert_eq!(claim, PermissionClaim::read("references:spawn"));
     }
 
     #[test]
-    fn find_callers_claims_a_read_on_the_path() {
+    fn code_callers_claims_a_read_on_the_path() {
         let claim = FindCallersTool
             .permission_of(r#"{"path":"src/lib.rs","name":"scan"}"#)
             .expect("parses");
@@ -397,15 +397,15 @@ mod tests {
     }
 
     #[test]
-    fn call_graph_claims_a_read_on_the_name() {
+    fn graph_calls_claims_a_read_on_the_name() {
         let claim = CallGraphTool
             .permission_of(r#"{"name":"process_file"}"#)
             .expect("parses");
-        assert_eq!(claim, PermissionClaim::read("call_graph:process_file"));
+        assert_eq!(claim, PermissionClaim::read("graph_calls:process_file"));
     }
 
     #[test]
-    fn workspace_grep_claims_a_read_on_the_pattern() {
+    fn code_grep_claims_a_read_on_the_pattern() {
         let claim = WorkspaceGrepTool
             .permission_of(r#"{"pattern":"TODO"}"#)
             .expect("parses");
