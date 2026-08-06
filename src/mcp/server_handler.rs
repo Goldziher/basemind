@@ -178,26 +178,26 @@ impl ServerHandler for BasemindServer {
              references, callers, call graphs), git history and blame at symbol resolution, \
              full-text and semantic search, document RAG, and shared cross-session memory. The \
              index lives in a machine-global cache keyed by workspace (override \
-             BASEMIND_DATA_HOME); nothing is written into the repo, and a background daemon is the \
-             sole writer, so any number of sessions read and write concurrently.\n\
+             BASEMIND_DATA_HOME); nothing is written into the repo, and a daemon is its sole \
+             writer, so any number of sessions read and write concurrently.\n\
+             Every tool takes a required mode; read its description for the modes it offers.\n\
              basemind first, shell/grep/git fallback. These tools return paths, line numbers, and \
              signatures rather than file bodies, so they cost a fraction of the tokens of reading \
-             source. outline a file before opening it, then read only the span you need; \
-             search_symbols instead of grep for a definition; find_references or find_callers \
-             instead of grepping call sites; workspace_grep instead of ripgrep; find_files to \
-             locate a file from a name fragment; the git tools (recent_changes, blame_file, \
-             blame_symbol, diff_file, commits_touching) instead of git log or git blame; \
-             memory mode documents instead of opening PDFs and docs; web modes scrape, crawl and map \
-             for the web. Do not re-read a file basemind already mapped. Run admin mode rescan after \
-             edits instead of reconnecting; if a tool reports no indexed files, run basemind scan \
-             first.\n\
+             source. Prefer code mode outline over opening a file, then read only the span you \
+             need; code mode symbols over grep for a definition; code modes references and callers \
+             over grepping call sites; code mode grep over ripgrep; code mode find to locate a file \
+             by name; git modes recent, blame, blame_symbol, diff and touching over git log or git \
+             blame; graph modes calls, neighbors and map to see what reaches what; memory mode \
+             documents over opening PDFs; web modes scrape, crawl and map for the web. Do not \
+             re-read a file basemind already mapped. Run admin mode rescan after edits; if a tool \
+             reports no indexed files, run basemind scan first.\n\
              You may be one of several agents in this repo, so coordinate rather than assuming you \
              are alone. Coordination runs over threads: scoped conversations addressed by at least \
              two of subject, path-glob, and members, discovered by scope and never globally, and \
-             joined explicitly. On start call inbox_read and thread_list; both return front-matter \
-             only, so call message_get with an id to read a body. Post via thread_post when you \
-             begin, finish, or hit a decision, reply with reply_to to messages about your work, and \
-             poll again while you work so replies do not go stale.\n\
+             joined explicitly. On start call agents mode inbox, then mode thread_list; both return \
+             front-matter only, so use mode message with an id to read a body. Use mode post when \
+             you begin, finish, or hit a decision, reply with reply_to to messages about your work, \
+             and poll again while you work so replies do not go stale.\n\
              All paths are repository-relative with forward-slash separators. Paginate by passing a \
              response's next_cursor back as cursor.",
         )

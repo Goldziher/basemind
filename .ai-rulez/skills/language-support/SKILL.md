@@ -29,11 +29,11 @@ Use this to add a new language to basemind's extraction. Supported languages tod
 
 4. **Fixtures + smoke test**
    - Add a synthetic file under `tests/fixtures/<lang>/` exercising at least: one function def, one method, one call site, one import.
-   - Add assertions in `tests/mcp_smoke.rs` (or a new `tests/<lang>_smoke.rs`) covering outline + find_references for the fixture.
+   - Add assertions in `tests/mcp_smoke.rs` (or a new `tests/<lang>_smoke.rs`) covering `code` mode `outline` + mode `references` for the fixture.
 
 5. **Harden harness canary**
    - Pick a real OSS repo for the language (criteria: stable, ≥ a few hundred files, well-known canary symbols). Add to the repo list in `tests/harden.rs` with a clone URL + optional `--depth`.
-   - Add a `>= N` canary assertion (`find_references` or `search_symbols`) — see the `harness-canary-authoring` skill.
+   - Add a `>= N` canary assertion (`code` mode `references` or mode `symbols`) — see the `harness-canary-authoring` skill.
 
 6. **README**
    - Update the supported-languages list with the new language and file extensions.
@@ -42,4 +42,4 @@ Use this to add a new language to basemind's extraction. Supported languages tod
 
 - Tree-sitter queries are language-specific; do not copy capture names blindly between grammars (e.g. `function.definition` vs `function_definition`). Test against the fixture.
 - Don't forget the file-extension glob — extraction is silently skipped otherwise and the symptom is "tool returns 0 hits for a known symbol."
-- Eager L2 must be enabled (default) for `find_references` to populate on the new language.
+- Eager L2 must be enabled (default) for `code` mode `references` to populate on the new language.

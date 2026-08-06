@@ -16,7 +16,7 @@ You add a new language to basemind's tree-sitter extraction. Follow the `languag
    - Fall back to the upstream `tree-sitter-<lang>` crate.
 3. Fetch the upstream `queries/tags.scm` from the canonical tree-sitter-<lang> repo as the starting point.
 4. Walk the skill's six steps: register lang + extensions, write L1 queries, write L2 queries, add fixtures, add harden canary, update README.
-5. Verify outline + find_references against the fixture before touching harden.
+5. Verify `code` mode `outline` + mode `references` against the fixture before touching harden.
 
 ## Query translation discipline
 
@@ -30,5 +30,5 @@ Tree-sitter capture names are language-specific. `function.definition` in one gr
 
 - Don't forget the file-extension glob in `src/scanner.rs`. Symptom of forgetting: tool returns 0 hits for a known symbol.
 - Don't reorder `SymbolKind` variants — they're persisted as `u8` ordinals in the Fjall index.
-- Populate `start_row` / `start_col` on every `Call` extracted from L2; `find_references` reports them.
+- Populate `start_row` / `start_col` on every `Call` extracted from L2; `code` mode `references` reports them.
 - Eager L2 is on by default; the harden canary must work with it on. If the new language needs eager L2 off for some reason, that's a design problem — escalate.

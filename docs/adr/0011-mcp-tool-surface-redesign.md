@@ -170,23 +170,40 @@ schemas are, so a mode without a CLI subcommand fails the build.
 
 Both are real costs, accepted rather than solved, because MCP allows exactly one of each per tool:
 
-- **`output_schema` is dropped** on any domain whose modes return different shapes (`web`, `admin`,
-  `memory`, `workspace`). SEP-2106 allows one per tool, and expressing a union would mean nested
-  structs — which schemars emits as `$ref` into `$defs`, the construct that dropped the whole
-  registry in GH #50. The per-mode shapes are documented in the description instead.
-- **Annotations coarsen to the union of the domain's modes.** `admin` bundles the read-only `status`
-  and `repo` with `rescan` and `cache_clear`, so the tool advertises `read_only_hint: false` and
-  `destructive_hint: true` for all eleven. A host that gates by tool-level annotations will now
-  refuse `admin` mode `status` in a read-only context, where it would have allowed the old `status`
-  tool. Splitting a domain by mutability would restore the hint at the cost of reintroducing the
-  name proliferation this ADR removes, so the hint loses.
+- **`output_schema` is dropped on all nine tools**, not only the domains whose modes visibly return
+  unrelated shapes. SEP-2106 allows exactly one schema per tool, and expressing a union would mean
+  nested structs — which schemars emits as `$ref` into `$defs`, the construct that dropped the whole
+  registry in GH #50. Every `tools_<area>.rs` shim carries a `// No output_schema:` comment stating
+  its own mode count as the reason (`code`: 13 shapes, `graph`: 9, `git`: 11, `memory`: 11, `admin`:
+  11, `web`: 3, `agents`: 16, `shell`: 6, `workspace`: 3 shapes across its five modes — `workspaces`,
+  `worktrees`, and `branches` list, `claim` and `release` return the same acknowledgement shape). The
+  per-mode shapes are documented in the description instead.
+- **Annotations coarsen to the union of the domain's modes**, and the union resolves toward the side
+  effect: if any mode writes, a client that auto-approves read-only tools must not be able to trigger
+  it, so the whole tool is labelled by its least-safe mode.
+
+  `admin` bundles the read-only `status` and `repo` with `rescan` and `cache_clear`, so the tool
+  advertises `read_only_hint: false` and `destructive_hint: true` for all eleven. A host that gates
+  by tool-level annotations will now refuse `admin` mode `status` in a read-only context, where it
+  would have allowed the old `status` tool. `memory` (write + delete modes) and `agents` (`post` /
+  `join` / `register` write) land the same way: `read_only_hint: false`. `workspace` is the mild
+  case — `claim`/`release` write, so it loses `read_only_hint`, but every mode is idempotent and none
+  destroys data, so `destructive_hint` stays `false`. Splitting a domain by mutability would restore
+  the hint at the cost of reintroducing the name proliferation this ADR removes, so the hint loses.
 
   `graph` pays the same cost for a different reason: seven of its nine modes are pure reads, but
   `display` and `open` launch a viewer on the human's session by default, so the tool takes the
-  side-effecting side of the union (`read_only_hint: false`, `open_world_hint: true`). The union
-  must resolve toward the side effect — a client that auto-approves read-only tools must not be able
-  to pop a window — which means the read-only majority is labelled more conservatively than it was.
-  `open: false` is the per-call escape hatch that keeps those two modes pure.
+  side-effecting side of the union (`read_only_hint: false`, `open_world_hint: true`). `open: false`
+  is the per-call escape hatch that keeps those two modes pure.
+
+  `shell` is the sharpest case: `spawn` / `send` / `broadcast` write and `kill` terminates a process,
+  so the tool can claim neither `read_only_hint` nor `idempotent_hint`, and it advertises
+  `destructive_hint: true` even though `capture` and `list` are pure reads.
+
+  `code` and `git` are the counterexample that shows the cost is not universal: every mode in both
+  domains is a pure read (no mode writes, deletes, or launches anything), so both keep
+  `read_only_hint: true` — consolidation only coarsens a domain that actually mixes reads with
+  writes or side effects.
 
 ### Enum schemas must be hand-written
 

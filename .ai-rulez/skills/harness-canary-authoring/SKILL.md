@@ -25,7 +25,7 @@ A canary symbol or query must be:
 ## Steps
 
 1. Pick the target repo + symbol per the criteria above.
-2. Confirm the count locally: clone the repo, run `basemind scan`, call `find_references` via the MCP, note the actual count.
+2. Confirm the count locally: clone the repo, run `basemind scan`, call `code` mode `references` via the MCP, note the actual count.
 3. Set the threshold to `actual / 2` rounded down — survives ~50% churn.
 4. Add to `tests/harden.rs`:
    - The canary call in the per-repo sweep.

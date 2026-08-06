@@ -55,8 +55,8 @@ file stays under the **1000-line cap** enforced by `tests/max_lines.rs` — spli
    asserted wording from a real run; do not guess it.
 
 7. **`tests/harden.rs`** — add the mode to the per-repo sweep loop. If a canonical canary exists
-   (`find_references("spawn")` on tokio), assert a lower bound (`>=`), never equality — upstream
-   repos churn.
+   (`code` mode `references("spawn")` on tokio), assert a lower bound (`>=`), never equality —
+   upstream repos churn.
 
 8. **`README.md`** — extend the domain's row. One line, ≤ 120 chars (markdownlint cap).
 

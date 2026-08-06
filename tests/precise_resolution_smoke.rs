@@ -299,9 +299,12 @@ async fn python_cross_file_find_callers_resolves_real_call_site_not_self_referen
 
     let body = decode_text(
         &service
-            .call_tool(call_params("find_callers", json!({ "path": "mod.py", "name": "f" })))
+            .call_tool(call_params(
+                "code",
+                json!({ "mode": "callers", "path": "mod.py", "name": "f" }),
+            ))
             .await
-            .expect("find_callers"),
+            .expect("code callers"),
     );
 
     assert_eq!(

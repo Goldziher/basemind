@@ -50,7 +50,8 @@ fn scan_ceiling_secs(repo_name: &str) -> u64 {
 
 #[derive(Debug, serde::Serialize)]
 struct ToolCallRecord {
-    tool: &'static str,
+    /// `domain:mode` for a mode-dispatched tool, else the bare tool name.
+    tool: String,
     ok: bool,
     elapsed_ms: u128,
     /// Microsecond resolution — the indexed git tools are sub-millisecond, so `elapsed_ms` rounds
@@ -151,19 +152,31 @@ fn decode_text(result: &CallToolResult) -> Value {
 
 /// Call a tool and record the result. Returns the decoded JSON body if successful
 /// so per-tool drivers can chain assertions on it. Records the call either way.
+/// The label a call is recorded under: `domain:mode` for a mode-dispatched tool, else the bare
+/// name. Without this every `code` call would collapse into one `"code"` row and the harness's
+/// per-operation latency table — the thing it exists to produce — would report a single blended
+/// number for thirteen different queries.
+fn record_label(tool: &'static str, args: &Value) -> String {
+    match args.get("mode").and_then(Value::as_str) {
+        Some(mode) => format!("{tool}:{mode}"),
+        None => tool.to_string(),
+    }
+}
+
 async fn call(
     svc: &ServiceHandle,
     records: &mut Vec<ToolCallRecord>,
     tool: &'static str,
     args: Value,
 ) -> Option<Value> {
+    let label = record_label(tool, &args);
     let started = Instant::now();
     let outcome = tokio::time::timeout(TOOL_TIMEOUT, svc.call_tool(call_params(tool, &args))).await;
     let elapsed = started.elapsed();
     match outcome {
         Err(_) => {
             records.push(ToolCallRecord {
-                tool,
+                tool: label,
                 ok: false,
                 elapsed_ms: elapsed.as_millis(),
                 elapsed_us: elapsed.as_micros(),
@@ -173,7 +186,7 @@ async fn call(
         }
         Ok(Err(e)) => {
             records.push(ToolCallRecord {
-                tool,
+                tool: label,
                 ok: false,
                 elapsed_ms: elapsed.as_millis(),
                 elapsed_us: elapsed.as_micros(),
@@ -185,7 +198,7 @@ async fn call(
             let body = decode_text(&result);
             let is_error = result.is_error.unwrap_or(false);
             records.push(ToolCallRecord {
-                tool,
+                tool: label,
                 ok: !is_error,
                 elapsed_ms: elapsed.as_millis(),
                 elapsed_us: elapsed.as_micros(),
@@ -291,20 +304,26 @@ async fn drive_tools(svc: &ServiceHandle, sample: Option<&SampleFile>) -> Vec<To
     let _ = svc.list_tools(None).await;
 
     call(svc, &mut records, "admin", json!({ "mode": "status" })).await;
-    call(svc, &mut records, "list_files", json!({ "limit": 50 })).await;
-    call(svc, &mut records, "find_files", json!({ "query": "src", "limit": 50 })).await;
+    call(svc, &mut records, "code", json!({ "mode": "files", "limit": 50 })).await;
     call(
         svc,
         &mut records,
-        "search_symbols",
-        json!({ "needle": "test", "limit": 50 }),
+        "code",
+        json!({ "mode": "find", "query": "src", "limit": 50 }),
     )
     .await;
     call(
         svc,
         &mut records,
-        "workspace_grep",
-        json!({ "pattern": "fn ", "limit": 50, "include_context": false }),
+        "code",
+        json!({ "mode": "symbols", "needle": "test", "limit": 50 }),
+    )
+    .await;
+    call(
+        svc,
+        &mut records,
+        "code",
+        json!({ "mode": "grep", "pattern": "fn ", "limit": 50, "include_context": false }),
     )
     .await;
 
@@ -312,21 +331,27 @@ async fn drive_tools(svc: &ServiceHandle, sample: Option<&SampleFile>) -> Vec<To
         call(
             svc,
             &mut records,
-            "outline",
-            json!({ "path": &sample.path, "l2": false }),
+            "code",
+            json!({ "mode": "outline", "path": &sample.path, "l2": false }),
         )
         .await;
 
         call(
             svc,
             &mut records,
-            "goto_definition",
-            json!({ "path": &sample.path, "line": 1, "column": 0 }),
+            "code",
+            json!({ "mode": "definition", "path": &sample.path, "line": 1, "column": 0 }),
         )
         .await;
 
         if let Some(module) = &sample.sample_module {
-            call(svc, &mut records, "dependents", json!({ "module": module })).await;
+            call(
+                svc,
+                &mut records,
+                "code",
+                json!({ "mode": "dependents", "module": module }),
+            )
+            .await;
         }
 
         call(svc, &mut records, "git", json!({ "mode": "status" })).await;
@@ -406,8 +431,8 @@ async fn drive_tools(svc: &ServiceHandle, sample: Option<&SampleFile>) -> Vec<To
             call(
                 svc,
                 &mut records,
-                "find_references",
-                json!({ "name": sym, "limit": 100 }),
+                "code",
+                json!({ "mode": "references", "name": sym, "limit": 100 }),
             )
             .await;
             call(
@@ -444,8 +469,8 @@ async fn drive_tools(svc: &ServiceHandle, sample: Option<&SampleFile>) -> Vec<To
     call(
         svc,
         &mut records,
-        "find_implementations",
-        json!({ "trait_name": "Future", "limit": 100 }),
+        "code",
+        json!({ "mode": "implementations", "trait_name": "Future", "limit": 100 }),
     )
     .await;
 
@@ -495,8 +520,8 @@ async fn drive_tools(svc: &ServiceHandle, sample: Option<&SampleFile>) -> Vec<To
             call(
                 svc,
                 &mut records,
-                "expand",
-                json!({ "path": &sample.path, "name": sym }),
+                "code",
+                json!({ "mode": "expand", "path": &sample.path, "name": sym }),
             )
             .await;
         }
@@ -563,31 +588,31 @@ async fn drive_tools(svc: &ServiceHandle, sample: Option<&SampleFile>) -> Vec<To
     call(
         svc,
         &mut records,
-        "search_code",
-        json!({ "query": "parse the file and extract symbols" }),
+        "code",
+        json!({ "mode": "semantic", "query": "parse the file and extract symbols" }),
     )
     .await;
     call(
         svc,
         &mut records,
-        "search_code",
-        json!({ "query": "parse file extract symbols", "mode": "keyword" }),
+        "code",
+        json!({ "mode": "semantic", "query": "parse file extract symbols", "lane": "keyword" }),
     )
     .await;
     call(
         svc,
         &mut records,
-        "search_code",
-        json!({ "query": "spawn", "mode": "hybrid" }),
+        "code",
+        json!({ "mode": "semantic", "query": "spawn", "lane": "hybrid" }),
     )
     .await;
 
     let chunk_path_arg = if let Some(s) = sample {
-        json!({ "path": &s.path })
+        json!({ "mode": "chunk", "path": &s.path })
     } else {
-        json!({ "path": "src/lib.rs" })
+        json!({ "mode": "chunk", "path": "src/lib.rs" })
     };
-    call(svc, &mut records, "get_chunk", chunk_path_arg).await;
+    call(svc, &mut records, "code", chunk_path_arg).await;
 
     call(
         svc,
@@ -679,7 +704,7 @@ fn assert_passing(repo_name: &str, scan: &ScanOutcome, repo_record: &mut RepoRec
             && (r.detail.contains("requires the")
                 || r.detail.contains("tool not found")
                 || r.detail.contains("disambiguate")
-                || (r.tool == "get_chunk" && r.detail == "is_error=true"));
+                || (r.tool == "code:chunk" && r.detail == "is_error=true"));
         if !r.ok && !tolerated {
             failures.push(format!("{} failed: {}", r.tool, r.detail));
         }
@@ -1010,8 +1035,8 @@ async fn capture_canaries(svc: &ServiceHandle, repo_name: &str, repo_root: &Path
         "react" => {
             let res = svc
                 .call_tool(call_params(
-                    "search_symbols",
-                    &json!({ "needle": "useState", "limit": 20 }),
+                    "code",
+                    &json!({ "mode": "symbols", "needle": "useState", "limit": 20 }),
                 ))
                 .await;
             if let Ok(out) = res {
@@ -1045,8 +1070,8 @@ async fn capture_canaries(svc: &ServiceHandle, repo_name: &str, repo_root: &Path
         "tokio" => {
             if let Ok(out) = svc
                 .call_tool(call_params(
-                    "find_references",
-                    &json!({ "name": "spawn", "limit": 200 }),
+                    "code",
+                    &json!({ "mode": "references", "name": "spawn", "limit": 200 }),
                 ))
                 .await
             {
@@ -1059,7 +1084,10 @@ async fn capture_canaries(svc: &ServiceHandle, repo_name: &str, repo_root: &Path
                 record.canaries.insert("spawn_hits".into(), json!(hits));
             }
             if let Ok(out) = svc
-                .call_tool(call_params("find_files", &json!({ "query": "src", "limit": 200 })))
+                .call_tool(call_params(
+                    "code",
+                    &json!({ "mode": "find", "query": "src", "limit": 200 }),
+                ))
                 .await
             {
                 let body = decode_text(&out);
@@ -1181,8 +1209,8 @@ async fn capture_canaries(svc: &ServiceHandle, repo_name: &str, repo_root: &Path
             }
             if let Ok(out) = svc
                 .call_tool(call_params(
-                    "workspace_grep",
-                    &json!({ "pattern": "fn spawn", "limit": 200, "include_context": false }),
+                    "code",
+                    &json!({ "mode": "grep", "pattern": "fn spawn", "limit": 200, "include_context": false }),
                 ))
                 .await
             {
@@ -1193,8 +1221,8 @@ async fn capture_canaries(svc: &ServiceHandle, repo_name: &str, repo_root: &Path
             #[cfg(feature = "code-search")]
             if let Ok(out) = svc
                 .call_tool(call_params(
-                    "search_code",
-                    &json!({ "query": "spawn a task", "limit": 10 }),
+                    "code",
+                    &json!({ "mode": "semantic", "query": "spawn a task", "limit": 10 }),
                 ))
                 .await
             {
@@ -1210,7 +1238,10 @@ async fn capture_canaries(svc: &ServiceHandle, repo_name: &str, repo_root: &Path
         }
         "django" => {
             if let Ok(out) = svc
-                .call_tool(call_params("find_references", &json!({ "name": "get", "limit": 200 })))
+                .call_tool(call_params(
+                    "code",
+                    &json!({ "mode": "references", "name": "get", "limit": 200 }),
+                ))
                 .await
             {
                 let body = decode_text(&out);

@@ -25,13 +25,14 @@ Basemind is a single Rust crate that builds a CLI binary (`basemind`) and expose
   - `overrides.rs` — `DocumentsCliOverrides` (backs clap `#[command(flatten)]` + MCP `#[serde(flatten)]`).
   - `layered.rs` — `merge_layers` (Mcp > Cli > Env > File > Default).
   - `source.rs` — `ConfigSource` + `ProvenanceMap` ledger.
-- `mcp/` — MCP server:
+- `mcp/` — MCP server: nine domain tools (`code`, `graph`, `git`, `memory`, `web`, `agents`, `workspace`, `shell`, `admin`), each one `#[tool]` dispatching on a required `mode`.
   - `mod.rs` — server bootstrap.
-  - `tools.rs` + `tools_admin.rs` / `tools_git.rs` / `tools_memory.rs` / `tools_web.rs` — `#[tool]` shims (thin wrappers; 1000-line cap each).
-  - `helpers.rs` + `helpers_documents.rs` / `helpers_calls.rs` / `helpers_graph.rs` / `helpers_grep.rs` / `helpers_impls.rs` / `helpers_web.rs` — tool bodies, sliced by area.
-  - `memory.rs` — `search_documents` + `memory_*` over LanceDB.
-  - `types.rs` + `types_documents.rs` / `types_graph.rs` / `types_impls.rs` — `JsonSchema`-derived request/response structs.
-  - `cursor.rs`, `savings.rs`, `telemetry.rs` — pagination cursors, token-savings heuristics, telemetry sink.
+  - `mode.rs` — `define_mode!`: the mode enums, wire spellings, `telemetry_key()`, and `domain_modes()` (what `tests/cli_parity.rs` walks).
+  - `tools.rs` (`code`) + `tools_admin.rs` / `tools_comms.rs` (`agents`) / `tools_git.rs` / `tools_graph.rs` / `tools_memory.rs` / `tools_registry.rs` (`workspace`) / `tools_shells.rs` (`shell`) / `tools_web.rs` — one `#[tool]` shim per domain (thin wrapper; 1000-line cap each). Filenames predate the CLI/tool rename for `agents`/`workspace`/`shell`.
+  - `helpers.rs` + `helpers_<area>.rs` (`helpers_calls.rs` / `helpers_code.rs` / `helpers_code_search.rs` / `helpers_documents.rs` / `helpers_graph.rs` / `helpers_grep.rs` / `helpers_impls.rs` / `helpers_web.rs`, and more) — the `run_<mode>` bodies each shim dispatches to.
+  - `memory.rs` — `search_documents` + `memory_*` bodies behind the `memory` tool's modes, over LanceDB.
+  - `types.rs` + `types_<domain>.rs` — one flat `<Domain>Params` per domain (optional sibling fields per mode) + response structs, `JsonSchema`-derived.
+  - `cursor.rs`, `savings.rs`, `telemetry.rs` — pagination cursors, token-savings heuristics (keyed by `domain:mode`, plus the bare pre-consolidation spellings `basemind-agent` still uses), telemetry sink.
 - `query.rs` — read-side helpers shared between MCP tools and the CLI.
 - `git.rs` + `git_cache.rs` — `gix`-backed history / blame / churn.
 - `path.rs` — `RelPath` byte-precise repo-relative paths.

@@ -115,24 +115,27 @@ async fn serve_relays_stdio_client_to_the_daemon_hosted_router() {
         "relayed server should carry basemind's instructions: {instructions:?}"
     );
 
-    // tools/list flows through the relay and returns the full code-map surface.
+    // tools/list flows through the relay and returns the full domain surface. Asserted on the
+    // domain names rather than a count: the surface is nine tools at most by design, so a count
+    // floor would go red on the consolidation itself instead of on a broken relay.
     let tools = service.list_all_tools().await.expect("list_tools over relay");
-    assert!(
-        tools.len() >= 20,
-        "relay should expose the full tool surface, got {}",
-        tools.len()
-    );
-    assert!(
-        tools.iter().any(|t| t.name == "outline"),
-        "relayed tool listing should include `outline`"
-    );
+    let names: Vec<&str> = tools.iter().map(|t| t.name.as_ref()).collect();
+    for domain in ["code", "graph", "git", "memory", "admin"] {
+        assert!(
+            names.contains(&domain),
+            "relayed tool listing should include the always-on `{domain}` tool: {names:?}"
+        );
+    }
 
     // A real tool round-trip: outline the scanned file and confirm the symbols came back through the
     // relay from the daemon-hosted index.
     let outlined = service
-        .call_tool(call_params("outline", serde_json::json!({ "path": "a.rs" })))
+        .call_tool(call_params(
+            "code",
+            serde_json::json!({ "mode": "outline", "path": "a.rs" }),
+        ))
         .await
-        .expect("outline call over relay");
+        .expect("code outline call over relay");
     let body = decode_text(&outlined);
     let symbols = body
         .get("symbols")

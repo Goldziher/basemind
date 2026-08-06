@@ -37,7 +37,19 @@ const MAX_FINDINGS: usize = 200;
 
 /// The set of tool names treated as search/grep queries for the
 /// `repeated_query` detector. `target` is the query string for these.
-const QUERY_TOOLS: &[&str] = &["Grep", "workspace_grep", "search_symbols", "find_references", "grep"];
+// Both spellings of basemind's own search tools are listed, not swapped: this reads tool-call logs
+// a harness already wrote, so transcripts recorded before the domain consolidation still carry the
+// bare names and must keep matching. `Grep` / `grep` are the foreign harnesses' own search tools. ~keep
+const QUERY_TOOLS: &[&str] = &[
+    "Grep",
+    "grep",
+    "code:grep",
+    "code:symbols",
+    "code:references",
+    "workspace_grep",
+    "search_symbols",
+    "find_references",
+];
 
 /// A single tool invocation parsed from one JSON-Lines record.
 ///

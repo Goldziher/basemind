@@ -56,6 +56,123 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   in-repo function-like definition (an external/library call) no longer surfaces as an empty-`sites`
   callee node — `call_graph` now reports only resolved, in-repo call relationships. The `callers`
   direction is unchanged. Read-side only; no blob/index schema change.
+- **BREAKING: the 85-tool MCP surface collapses into nine domain tools, each dispatched by a
+  required `mode`.** Hosts defer MCP tools and surface them only through keyword search, so every
+  extra tool name competed for the same query, and GH #50 showed one layer's schema defect took the
+  whole registry down with it — the comms layer's schema broke code navigation, despite the two
+  sharing nothing. Nine dense tools (`code`, `graph`, `git`, `memory`, `admin`, `web`, `agents`,
+  `workspace`, `shell`) retrieve better than eighty-five thin ones, and each remaining description
+  now carries the vocabulary an agent actually searches for. `mode` is required and never defaults —
+  a default would let an agent omit it and silently get the wrong operation, which looks like an
+  empty result rather than an error. The CLI collapses onto the same nine group names as real clap
+  subcommands (`basemind code outline`, not a `--mode` flag), so every operation keeps its own
+  `--help` and argument validation; `tests/cli_parity.rs` now asserts a strict `(domain, mode)`
+  bijection between the two surfaces. All 85 operations survive with no deprecated shims — a name
+  that still answered to the old spelling would keep competing in deferred-tool search, which is the
+  cost this removes. Landed over four commits (`88cd9da` web, `6af6268` admin/memory/workspace,
+  `36919a4` git/graph, `02bf4a5` code/agents/shell); design and trade-offs in
+  [ADR-0011](docs/adr/0011-mcp-tool-surface-redesign.md). Two costs taken deliberately: no
+  `output_schema` on any of the nine tools (each domain's modes return different response shapes,
+  and SEP-2106 allows exactly one schema per tool), and per-tool annotations coarsen to the union of
+  a domain's modes, resolving toward the side effect (e.g. `shell` advertises `destructive_hint`
+  because `kill` is one of its modes, and `graph` advertises `read_only_hint: false` because
+  `display`/`open` launch a viewer, even though seven of its nine modes are pure reads).
+
+  Anyone with a saved prompt, script, or pinned tool name against the old surface needs the
+  replacement below — `<old tool>` is now `<domain>` mode `<mode>`, and every CLI invocation moves
+  from its old subcommand path to the new one. `basemind registry` is also renamed `basemind
+  workspace` (its subcommands are unchanged), and `basemind comms` now holds only the broker
+  daemon's own lifecycle (`daemon` / `start` / `stop` / `status` / `doctor`) — the agent-facing verbs
+  it used to carry (`register`, `agents`, `thread-*`, `join`, `leave`, `members`, `post`, `history`,
+  `read`, `inbox`, `wait`, plus a new `ack`) moved to `basemind agents`.
+
+  | Old MCP tool | New `domain` `mode` | Old CLI | New CLI |
+  |---|---|---|---|
+  | `outline` | `code` `outline` | `query outline <path> [--l2]` | `code outline <path> [--l2]` |
+  | `search_symbols` | `code` `symbols` | `query search <needle>` (alias `query symbol`) | `code symbols <needle>` |
+  | `workspace_grep` | `code` `grep` | `query grep <pattern>` | `code grep <pattern>` |
+  | `list_files` | `code` `files` | `query list-files` | `code files` |
+  | `find_files` | `code` `find` | `query find-files <query>` | `code find <query>` |
+  | `goto_definition` | `code` `definition` | `query goto-definition <path> <line>` | `code definition <path> <line>` |
+  | `find_references` | `code` `references` | `query references <name>` | `code references <name>` |
+  | `find_callers` | `code` `callers` | `query callers <path> <name>` | `code callers <path> <name>` |
+  | `find_implementations` | `code` `implementations` | `query implementations <trait>` | `code implementations <trait>` |
+  | `dependents` | `code` `dependents` | `query dependents <module>` | `code dependents <module>` |
+  | `expand` | `code` `expand` | `query expand <path> <name>` | `code expand <path> <name>` |
+  | `search_code` | `code` `semantic` | `query search-code <query>` | `code semantic <query>` |
+  | `get_chunk` | `code` `chunk` | `query get-chunk <path>` | `code chunk <path>` |
+  | `call_graph` | `graph` `calls` | `query call-graph <name>` | `graph calls <name>` |
+  | `neighbors` | `graph` `neighbors` | `query neighbors <name>` | `graph neighbors <name>` |
+  | `path` | `graph` `path` | `query path <from> <to>` | `graph path <from> <to>` |
+  | `subgraph` | `graph` `subgraph` | `query subgraph <name>` | `graph subgraph <name>` |
+  | `communities` | `graph` `communities` | `query communities` | `graph communities` |
+  | `architecture_map` | `graph` `map` | `query architecture-map` | `graph map` |
+  | `graph_export` | `graph` `export` | `query graph-export` | `graph export` |
+  | `display` | `graph` `display` | `query display` | `graph display` |
+  | `ui` | `graph` `open` | `query ui` | `graph open` |
+  | `working_tree_status` | `git` `status` | `git working-tree-status` | `git status` |
+  | `recent_changes` | `git` `recent` | `git recent-changes` | `git recent` |
+  | `commits_touching` | `git` `touching` | `git commits-touching <path>` | `git touching <path>` |
+  | `find_commits_by_path` | `git` `by_path` | `git find-commits-by-path <pattern>` | `git by-path <pattern>` |
+  | `hot_files` | `git` `churn` | `git hot-files` | `git churn` |
+  | `diff_file` | `git` `diff` | `git diff-file <path> <old> <new>` | `git diff <path> <old> <new>` |
+  | `diff_outline` | `git` `diff_outline` | `git diff-outline <path>` | `git diff-outline <path>` |
+  | `blame_file` | `git` `blame` | `git blame-file <path>` | `git blame <path>` |
+  | `blame_symbol` | `git` `blame_symbol` | `git blame-symbol <path> <name>` | `git blame-symbol <path> <name>` |
+  | `symbol_history` | `git` `symbol_history` | `git symbol-history <path> <name>` | `git symbol-history <path> <name>` |
+  | `search_git_history` | `git` `search` | `git search <pattern>` | `git search <pattern>` |
+  | `memory_put` | `memory` `put` | `memory put <key> <value>` | `memory put <key> <value>` |
+  | `memory_get` | `memory` `get` | `memory get <key>` | `memory get <key>` |
+  | `memory_list` | `memory` `list` | `memory list` | `memory list` |
+  | `memory_search` | `memory` `search` | `memory search <query>` | `memory search <query>` |
+  | `memory_delete` | `memory` `delete` | `memory delete <key>` | `memory delete <key>` |
+  | `memory_audit` | `memory` `audit` | `governance audit` | `memory audit` |
+  | `search_documents` | `memory` `documents` | `memory search-documents <query>` | `memory documents <query>` |
+  | `proposals_mine` | `memory` `mine` | `governance mine` | `memory mine` |
+  | `proposals_list` | `memory` `proposals` | `governance proposals` | `memory proposals` |
+  | `proposal_accept` | `memory` `accept` | `governance accept <id>` | `memory accept <id>` |
+  | `proposal_reject` | `memory` `reject` | `governance reject <id>` | `memory reject <id>` |
+  | `status` | `admin` `status` | `query status` | `admin status` |
+  | `repo_info` | `admin` `repo` | `query repo-info` | `admin repo` |
+  | `rescan` | `admin` `rescan` | `basemind rescan [paths]` | `admin rescan [paths]` |
+  | `cache_stats` | `admin` `cache_stats` | `cache stats` | `admin cache-stats` |
+  | `cache_gc` | `admin` `gc` | `cache gc` | `admin gc` |
+  | `cache_clear` | `admin` `cache_clear` | `cache clear --component <c>` | `admin cache-clear --component <c>` |
+  | `telemetry_summary` | `admin` `telemetry` | `basemind telemetry` | `admin telemetry` |
+  | `compress` | `admin` `compress` | `basemind compress-output` | `admin compress` |
+  | `delta` | `admin` `delta` | `basemind delta` | `admin delta` |
+  | `checkpoint` | `admin` `checkpoint` | `basemind checkpoint` | `admin checkpoint` |
+  | `detect_waste` | `admin` `waste` | `basemind detect-waste` | `admin waste` |
+  | `web_scrape` | `web` `scrape` | `web scrape <url>` | `web scrape <url>` |
+  | `web_crawl` | `web` `crawl` | `web crawl <seed-url>` | `web crawl <seed-url>` |
+  | `web_map` | `web` `map` | `web map <url>` | `web map <url>` |
+  | `agent_register` | `agents` `register` | `comms register --name <handle>` | `agents register --name <handle>` |
+  | `agent_list` | `agents` `list` | `comms agents [--thread]` | `agents list [--thread]` |
+  | `thread_start` | `agents` `thread_start` | `comms thread-start` | `agents thread-start` |
+  | `thread_list` | `agents` `thread_list` | `comms threads [--subject-contains]` | `agents thread-list [--subject-contains]` |
+  | `thread_join` | `agents` `join` | `comms join <thread>` | `agents join <thread>` |
+  | `thread_leave` | `agents` `leave` | `comms leave <thread>` | `agents leave <thread>` |
+  | `thread_members` | `agents` `members` | `comms members <thread>` | `agents members <thread>` |
+  | `thread_add_member` | `agents` `add_member` | `comms add-member <thread> <id>` | `agents add-member <thread> <id>` |
+  | `thread_remove_member` | `agents` `remove_member` | `comms remove-member <thread> <id>` | `agents remove-member <thread> <id>` |
+  | `thread_archive` | `agents` `archive` | `comms archive <thread>` | `agents archive <thread>` |
+  | `thread_post` | `agents` `post` | `comms post <thread> <subject>` | `agents post <thread> <subject>` |
+  | `thread_history` | `agents` `history` | `comms history <thread>` | `agents history <thread>` |
+  | `message_get` | `agents` `message` | `comms read <id>` | `agents message <id>` |
+  | `inbox_read` | `agents` `inbox` | `comms inbox [--mark-read]` | `agents inbox [--mark-read]` |
+  | `inbox_ack` | `agents` `ack` | _(new — no prior tool)_ | `agents ack` |
+  | `inbox_wait` | `agents` `wait` | `comms wait [--thread --timeout-secs]` | `agents wait [--thread --timeout-secs]` |
+  | `workspaces` | `workspace` `workspaces` | `registry workspaces` | `workspace workspaces` |
+  | `worktrees` | `workspace` `worktrees` | `registry worktrees` | `workspace worktrees` |
+  | `branches` | `workspace` `branches` | `registry branches` | `workspace branches` |
+  | `worktree_claim` | `workspace` `claim` | `registry claim` | `workspace claim` |
+  | `worktree_release` | `workspace` `release` | `registry release` | `workspace release` |
+  | `shell_spawn` | `shell` `spawn` | `shells spawn <command>` | `shell spawn <command>` |
+  | `shell_send` | `shell` `send` | `shells send <session-id> <text>` | `shell send <session-id> <text>` |
+  | `shell_capture` | `shell` `capture` | `shells capture <session-id>` | `shell capture <session-id>` |
+  | `shell_kill` | `shell` `kill` | `shells kill <session-id>` | `shell kill <session-id>` |
+  | `shell_list` | `shell` `list` | `shells list` | `shell list` |
+  | `shell_broadcast` | `shell` `broadcast` | `shells broadcast <text> --session <id>…` | `shell broadcast <text> --session <id>…` |
 
 ## [0.23.1] — 2026-07-31
 

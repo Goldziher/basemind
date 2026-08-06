@@ -63,7 +63,7 @@ code-intelligence tier (see [Code intelligence](#code-intelligence-precise-resol
 ```text
 src/
 ├── lib.rs                  — public re-exports
-├── main.rs                 — CLI entry (scan, serve, watch, query, lang, …)
+├── main.rs                 — CLI entry (scan, serve, watch, code, lang, …)
 ├── version.rs              — RELEASE_MINOR — single source of truth for schema versions
 ├── scanner.rs              — orchestrates the scan pipeline: extraction → Fjall index →
 │                             code-map persist barrier → optional enrichment lanes
@@ -132,21 +132,31 @@ src/
 │   ├── overrides.rs        — DocumentsCliOverrides — backs clap and MCP flatten
 │   ├── layered.rs          — merge_layers (Mcp > Cli > Env > File > Default)
 │   └── source.rs           — ConfigSource + ProvenanceMap ledger
-├── mcp/                    — MCP server
+├── mcp/                    — MCP server: nine domain tools (code, graph, git, memory, web,
+│                             agents, workspace, shell, admin), each one #[tool] dispatching
+│                             on a required `mode` — see "MCP surface" below
 │   ├── mod.rs, state.rs    — server bootstrap; shared ServerState
-│   ├── tools.rs            — #[tool] methods (thin wrappers; 1000-line cap)
-│   ├── tools_<area>.rs     — area-sliced tool shims: admin, archmap, code, comms,
-│   │                         compress, git, governance, memory, registry, shells, web
+│   ├── mode.rs             — define_mode!: the mode enums, wire spellings, telemetry_key(),
+│   │                         and domain_modes() (what tests/cli_parity.rs walks)
+│   ├── tools.rs            — the `code` tool shim (#[tool], thin wrapper; 1000-line cap)
+│   ├── tools_<area>.rs     — one shim per remaining domain: admin, comms (→ `agents`),
+│   │                         git, graph, memory, registry (→ `workspace`), shells
+│   │                         (→ `shell`), web — filenames predate the tool/CLI rename
 │   ├── helpers.rs          — tool bodies; shared scan / decode helpers
-│   ├── helpers_<area>.rs   — area-sliced helper bodies: admin, archmap, calls,
-│   │                         calls_scan, code, comms, compress, documents, files, git,
-│   │                         governance, graph, grep, impls, intel (goto_definition body),
-│   │                         proposals, registry, shells, telemetry, web
-│   ├── memory.rs           — search_documents + memory_* (LanceDB-backed)
-│   ├── types.rs, types_<area>.rs — JsonSchema-derived request / response structs,
-│   │                         mirroring the tools_/helpers_ area split
+│   ├── helpers_<area>.rs   — the run_<mode> dispatch bodies, area-sliced: admin, archmap,
+│   │                         calls, calls_scan, code, code_search (feature code-search),
+│   │                         comms, community, compress, documents, files, fingerprint,
+│   │                         git, git_file, governance (feature memory), graph, graphview,
+│   │                         grep, impls, intel (definition mode body), memory, proposals
+│   │                         (feature memory), registry, shells, telemetry, traverse, web
+│   ├── memory.rs           — search_documents + memory_* bodies behind the `memory` domain
+│   ├── types.rs, types_<area>.rs — one flat <Domain>Params per domain (optional sibling
+│   │                         fields per mode) + response structs, mirroring the
+│   │                         tools_/helpers_ area split
 │   ├── cursor.rs           — cursor encoding for paginated tools
-│   ├── savings.rs          — token-savings heuristics for telemetry
+│   ├── savings.rs          — token-savings heuristics, keyed by domain:mode telemetry_key()
+│   │                         plus the bare pre-consolidation spellings basemind-agent still
+│   │                         registers its LLM-facing tools under
 │   ├── telemetry.rs        — per-call telemetry.jsonl writer
 │   └── budget.rs, toon.rs, lean.rs, lenient.rs, kneedle.rs, notifications.rs,
 │       completions.rs, prompts.rs, tokens.rs, background.rs, daemon_forward.rs,
@@ -169,8 +179,12 @@ src/
 ├── textcompress/           — delta-aware text-edit compression for large file writes
 ├── web/                    — web crawl ingestion (feature crawl)
 ├── registry/                — daemon-side worktree/branch claim registry
-├── cli/                     — CLI subcommand implementations, one file per area
-│                             (admin, codemap, comms, git, governance, memory, shells, web, …)
+├── cli/                     — CLI subcommand groups, 1:1 with the nine MCP domains: admin,
+│                             agents (daemon-agent verbs), code, git, graph, memory (absorbs
+│                             the old governance mine/proposals/accept/reject/audit),
+│                             registry (the `workspace` group), shell, web;
+│                             comms_daemon.rs is `basemind comms` — daemon lifecycle only
+│                             (daemon/start/stop/status/doctor)
 ├── queries/<pack-name>.scm — hand-written extraction queries (override TSLP tags.scm)
 ├── render.rs, hashing.rs, watcher.rs                   — supporting modules
 
@@ -234,7 +248,7 @@ Key invariants:
 
 ## Code intelligence (precise resolution)
 
-basemind's default navigation (`find_references` / `find_callers`) is a name-based scan over
+basemind's default navigation (`code` modes `references` / `callers`) is a name-based scan over
 the tree-sitter code map: fast and complete, but it can't tell a shadowed local from an import
 or a same-named symbol in another scope. The `intel` tier (`src/intel/`) adds a second,
 precision layer: per-ecosystem engines that run their own parser, resolve scope and imports
@@ -276,16 +290,16 @@ oxc/stack-graphs engines are skipped and every language falls back to `locals`.
 
 ### The honest contract: name scan is the floor, resolution only annotates
 
-`find_callers` never narrows to "only the resolved subset" — it reports every call site
-`find_references` would (the same name-based, no-scope scan), so the two agree on `total` for an
+`code` mode `callers` never narrows to "only the resolved subset" — it reports every call site
+mode `references` would (the same name-based, no-scope scan), so the two agree on `total` for an
 unambiguous name; that set is the answer to "what calls this?" and is complete unless truncated.
 Resolution *annotates* each hit with `resolved: Option<bool>` (`true` = proven to bind to this
-definition) and reports `resolved_total` on the response — `find_references` itself carries no
+definition) and reports `resolved_total` on the response — mode `references` itself carries no
 `resolved` annotation, since it never resolves a definition to check against. `resolved: false`
 is not evidence a hit isn't a real caller — resolution can't see through a module-object import
 (`from pkg import mod` then `mod.f()`) or an unresolvable path alias — so a caller wanting
 completeness should trust `total`, not `resolved_total`; a caller wanting precision filters on
-`resolved`. `goto_definition`
+`resolved`. `code` mode `definition`
 (`src/mcp/helpers_intel.rs`) is the direct read surface over this tier: it resolves a
 `path:line:column` position to its definition, following one cross-file hop when the in-file
 binding is an import, and returns no `definition` (not an error) when the position holds no
@@ -312,15 +326,15 @@ Daemon-managed; all serving sessions read concurrently from a read-only handle. 
 | `symbols_by_path` | Per-file outline lookups. |
 | `symbols_by_name` | `name`-prefix range scans for symbol search. |
 | `calls_by_path` | Per-file call lookups. |
-| `calls_by_callee` | `callee`-prefix range scans — drives `find_references`. |
-| `imports_by_module` | `module`-prefix range scans — drives `dependents`. |
+| `calls_by_callee` | `callee`-prefix range scans — drives `code` mode `references`. |
+| `imports_by_module` | `module`-prefix range scans — drives `code` mode `dependents`. |
 | `imports_by_path` | Per-file import lookups. |
-| `implementations_by_trait` | `trait`-prefix range scans — drives `find_implementations`. |
+| `implementations_by_trait` | `trait`-prefix range scans — drives `code` mode `implementations`. |
 | `implementations_by_path` | Per-file implementation lookups. |
-| `refs_by_def` | Scope/import-resolved reference edges keyed by defining site — backs the `resolved` annotation on `find_callers` and the cross-file hop in `goto_definition`. |
+| `refs_by_def` | Scope/import-resolved reference edges keyed by defining site — backs the `resolved` annotation on `code` mode `callers` and the cross-file hop in mode `definition`. |
 | `refs_by_path` | `refs_by_def` companion keyed by the USE file — O(prefix) delete on re-resolve. |
 | `embeddings` | Reserved for in-Fjall vector index; LanceDB owns the live vectors. |
-| `memory_by_key` | Agent memory (`memory_put` / `memory_get`); LanceDB owns the embeddings. |
+| `memory_by_key` | Agent memory (`memory` modes `put` / `get`); LanceDB owns the embeddings. |
 
 Key shapes (length-prefixed, see `src/index/keys.rs`):
 
@@ -360,6 +374,25 @@ source.
 `basemind serve` exposes a stdio MCP server (`rmcp`). The live contract is
 `tests/mcp_smoke.rs`.
 
+The surface is **nine domain tools**, each dispatching on a required, non-defaulted `mode` — not
+one tool per verb (ADR-0011). The same nine names are the CLI groups, enforced as a strict
+`(domain, mode)` bijection by `tests/cli_parity.rs`. `src/mcp/mode.rs` (`define_mode!`) is the
+single source of the wire spellings, the CLI parity table, and the telemetry keys.
+
+| Tool / CLI group | `mode` values | Gate |
+|---|---|---|
+| `code` | outline, symbols, grep, files, find, definition, references, callers, implementations, dependents, expand, semantic, chunk | always |
+| `graph` | calls, neighbors, path, subgraph, communities, map, export, display, open | always |
+| `git` | status, recent, touching, by_path, churn, diff, diff_outline, blame, blame_symbol, symbol_history, search | always |
+| `memory` | put, get, list, search, delete, audit, documents, mine, proposals, accept, reject | always¹ |
+| `admin` | status, repo, rescan, cache_stats, gc, cache_clear, telemetry, compress, delta, checkpoint, waste | always |
+| `web` | scrape, crawl, map | `crawl` |
+| `agents` | register, list, thread_start, thread_list, join, leave, members, add_member, remove_member, archive, post, history, message, inbox, ack, wait | `comms` |
+| `workspace` | workspaces, worktrees, branches, claim, release | `comms` |
+| `shell` | spawn, send, capture, kill, list, broadcast | `shells` |
+
+¹ Advertised always, body-gated on the `memory` / `documents` features.
+
 Conventions:
 
 - All paths are `RelPath` (byte-precise, repo-relative). No arbitrary `String`
@@ -368,12 +401,18 @@ Conventions:
   `#[serde(default)]`.
 - Lists are capped (`limit`, default 100, max 1000). Index scans use
   `scan_cap = limit * 8` to bound work on common names.
-- Tool descriptions are the routing surface for agents; semantics (substring vs
-  prefix, scope-aware vs name-only) are stated honestly.
+- Mode descriptions are the routing surface for agents — hosts defer MCP tools and surface
+  them by keyword search, so the description carries the retrieval vocabulary; semantics
+  (substring vs prefix, scope-aware vs name-only) are stated honestly.
 - Tool bodies live in `src/mcp/helpers*.rs`, area-sliced (`helpers_calls.rs`,
   `helpers_documents.rs`, `helpers_graph.rs`, `helpers_grep.rs`, `helpers_impls.rs`,
   `helpers_intel.rs`, `helpers_web.rs`, and more — see [Source layout](#source-layout));
-  `tools.rs` and the `tools_<area>.rs` siblings contain `#[tool]` shims only.
+  `tools.rs` and the `tools_<area>.rs` siblings contain `#[tool]` shims only, one per domain.
+- No `output_schema` on any of the nine tools (each domain's modes return different response
+  shapes; SEP-2106 allows one per tool). Annotations coarsen to the union of a domain's modes,
+  resolving toward the side effect (e.g. `shell` advertises `destructive_hint` because `kill` is
+  one of its modes, while `code` and `git` keep `read_only_hint: true` since none of their modes
+  write). See [ADR-0011](adr/0011-mcp-tool-surface-redesign.md).
 
 ## Git layer
 
@@ -394,9 +433,9 @@ Drop the disk cache with `basemind cache clear`. Disable per-run with
 ### Git-history index
 
 A separate, repo-level Fjall store at `.basemind/git-history.fjall/` — distinct from the
-`git-cache/` blame/log tier above. It turns the history MCP tools (`commits_touching`,
-`recent_changes`, `find_commits_by_path`, `hot_files`, the `symbol_history` commit walk, and
-full-text `search_git_history`) from live history walks into posting-list lookups. Source:
+`git-cache/` blame/log tier above. It turns the `git` tool's history modes (`touching`, `recent`,
+`by_path`, `churn`, the `symbol_history` commit walk, and full-text `search`) from live history
+walks into posting-list lookups. Source:
 `src/git_history/{mod,builder,reader,fts,keys,encoding,proto,remote}.rs`.
 
 - It is repo-global (identical across the working/staged/rev views) and carries its own
@@ -448,12 +487,12 @@ cargo test --release --test harden -- --ignored --nocapture
 
 It clones 8 upstream repos under `/tmp/basemind-harden/` (`ripgrep`, `tokio`,
 `typescript`, `react`, `django`, `requests`, `gin`, plus a shallow `ripgrep`
-variant), runs `basemind scan` on each, then sweeps every MCP code-map tool plus
-a representative subset of git tools. Canary assertions catch regressions:
+variant), runs `basemind scan` on each, then sweeps every `code`/`graph` mode plus
+a representative subset of `git` modes. Canary assertions catch regressions:
 
-- **tokio**: `find_references("spawn")` returns ≥ 200 hits
-- **django**: `find_references("get")` returns ≥ 200 hits
-- **react**: `search_symbols("useState")` returns ≥ 20 hits
+- **tokio**: `code` mode `references("spawn")` returns ≥ 200 hits
+- **django**: `code` mode `references("get")` returns ≥ 200 hits
+- **react**: `code` mode `symbols("useState")` returns ≥ 20 hits
 - **ripgrep-shallow**: `any_truncated == true` (shallow-clone signal surfaces)
 
 Per-repo metrics land at `/tmp/basemind-harden-*.log`.
@@ -470,7 +509,7 @@ flowchart TB
     HK["SessionStart hook\n(boot-subscribe + inject)"]
   end
   subgraph serve["basemind serve (per session)"]
-    MT["MCP tools: memory_* + thread_*"]
+    MT["MCP tools: memory + agents"]
     CC["CommsClient (proxy)"]
     PEER["rmcp Peer (push, best-effort)"]
   end
@@ -503,15 +542,15 @@ stale sockets are reclaimed probe-before-unlink. It auto-starts on first need an
 
 Threads are registered in a central registry owned by the daemon. Each thread has explicit membership
 (list of agents) and at least one of: a subject, a scope (repo remote or path-glob), or named members.
-Agents join threads explicitly via `thread_join` or `thread_start`; no auto-join. Group scopes (path-glob,
-repo) help agents discover relevant threads, but joining is always explicit.
+Agents join threads explicitly via `agents` mode `join` or mode `thread_start`; no auto-join. Group scopes
+(path-glob, repo) help agents discover relevant threads, but joining is always explicit.
 
 ### Condensed two-tier messages
 
 A message is a front-matter envelope (`id, thread, from, ts_micros, subject, reply_to, body_len, body_sha`)
 stored in `messages_by_thread`, plus a separately-stored body in `message_body` keyed by message id.
-`thread_history` and `inbox_read` scan front-matter ONLY — never the body — to stay token-frugal;
-the body is fetched on demand by `message_get {message_id}`. Poster supplies a required short `subject`
+`agents` modes `history` and `inbox` scan front-matter ONLY — never the body — to stay token-frugal;
+the body is fetched on demand by mode `message {message_id}`. Poster supplies a required short `subject`
 plus an optional long body.
 
 ### Split memory
@@ -525,5 +564,5 @@ memory (`visibility=individual`, `owner=agent_id`) is private to one agent. Sche
 ### Worktree registry
 
 The daemon maintains an advisory registry of active worktrees and branches per workspace. Agents can
-claim a worktree+branch via `worktree_claim` and release via `worktree_release`. Claims are advisory
-(no locking); the registry helps avoid collisions and is read-only to serving sessions.
+claim a worktree+branch via `workspace` mode `claim` and release via mode `release`. Claims are
+advisory (no locking); the registry helps avoid collisions and is read-only to serving sessions.

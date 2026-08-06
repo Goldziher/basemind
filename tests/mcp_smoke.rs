@@ -208,7 +208,10 @@ async fn mcp_server_exercises_representative_tools() {
     );
 
     let outline_result = service
-        .call_tool(call_params("outline", json!({ "path": "a.rs", "l2": false })))
+        .call_tool(call_params(
+            "code",
+            json!({ "mode": "outline", "path": "a.rs", "l2": false }),
+        ))
         .await
         .expect("outline");
     assert_structured_matches_text(&outline_result);
@@ -227,7 +230,10 @@ async fn mcp_server_exercises_representative_tools() {
 
     let body = decode_text(
         &service
-            .call_tool(call_params("search_symbols", json!({ "needle": "Greet", "limit": 10 })))
+            .call_tool(call_params(
+                "code",
+                json!({ "mode": "symbols", "needle": "Greet", "limit": 10 }),
+            ))
             .await
             .expect("search_symbols"),
     );
@@ -240,7 +246,10 @@ async fn mcp_server_exercises_representative_tools() {
     );
 
     let json_result = service
-        .call_tool(call_params("search_symbols", json!({ "needle": "draw", "limit": 50 })))
+        .call_tool(call_params(
+            "code",
+            json!({ "mode": "symbols", "needle": "draw", "limit": 50 }),
+        ))
         .await
         .expect("search_symbols json");
     let json_body = decode_text(&json_result);
@@ -254,8 +263,8 @@ async fn mcp_server_exercises_representative_tools() {
 
     let toon_result = service
         .call_tool(call_params(
-            "search_symbols",
-            json!({ "needle": "draw", "limit": 50, "format": "toon" }),
+            "code",
+            json!({ "mode": "symbols", "needle": "draw", "limit": 50, "format": "toon" }),
         ))
         .await
         .expect("search_symbols toon");
@@ -412,7 +421,10 @@ async fn mcp_server_exercises_representative_tools() {
 
     let body = decode_text(
         &service
-            .call_tool(call_params("find_references", json!({ "name": "alpha", "limit": 100 })))
+            .call_tool(call_params(
+                "code",
+                json!({ "mode": "references", "name": "alpha", "limit": 100 }),
+            ))
             .await
             .expect("find_references"),
     );
@@ -436,7 +448,10 @@ async fn mcp_server_exercises_representative_tools() {
 
     let page1 = decode_text(
         &service
-            .call_tool(call_params("find_references", json!({ "name": "alpha", "limit": 2 })))
+            .call_tool(call_params(
+                "code",
+                json!({ "mode": "references", "name": "alpha", "limit": 2 }),
+            ))
             .await
             .expect("find_references page1"),
     );
@@ -450,8 +465,8 @@ async fn mcp_server_exercises_representative_tools() {
     let page2 = decode_text(
         &service
             .call_tool(call_params(
-                "find_references",
-                json!({ "name": "alpha", "limit": 2, "cursor": cursor1 }),
+                "code",
+                json!({ "mode": "references", "name": "alpha", "limit": 2, "cursor": cursor1 }),
             ))
             .await
             .expect("find_references page2"),
@@ -477,7 +492,10 @@ async fn mcp_server_exercises_representative_tools() {
 
     let body = decode_text(
         &service
-            .call_tool(call_params("find_callers", json!({ "path": "a.rs", "name": "alpha" })))
+            .call_tool(call_params(
+                "code",
+                json!({ "mode": "callers", "path": "a.rs", "name": "alpha" }),
+            ))
             .await
             .expect("find_callers"),
     );
@@ -493,8 +511,8 @@ async fn mcp_server_exercises_representative_tools() {
     let page1 = decode_text(
         &service
             .call_tool(call_params(
-                "find_callers",
-                json!({ "path": "a.rs", "name": "alpha", "limit": 2 }),
+                "code",
+                json!({ "mode": "callers", "path": "a.rs", "name": "alpha", "limit": 2 }),
             ))
             .await
             .expect("find_callers page1"),
@@ -509,8 +527,8 @@ async fn mcp_server_exercises_representative_tools() {
     let page2 = decode_text(
         &service
             .call_tool(call_params(
-                "find_callers",
-                json!({
+                "code",
+                json!({ "mode": "callers",
                     "path": "a.rs",
                     "name": "alpha",
                     "limit": 2,
@@ -530,8 +548,8 @@ async fn mcp_server_exercises_representative_tools() {
     let body = decode_text(
         &service
             .call_tool(call_params(
-                "goto_definition",
-                json!({ "path": "a.rs", "line": 1, "column": 0 }),
+                "code",
+                json!({ "mode": "definition", "path": "a.rs", "line": 1, "column": 0 }),
             ))
             .await
             .expect("goto_definition"),
@@ -770,7 +788,10 @@ async fn mcp_server_exercises_representative_tools() {
 
     let page1 = decode_text(
         &service
-            .call_tool(call_params("search_symbols", json!({ "needle": "a", "limit": 1 })))
+            .call_tool(call_params(
+                "code",
+                json!({ "mode": "symbols", "needle": "a", "limit": 1 }),
+            ))
             .await
             .expect("search_symbols page1"),
     );
@@ -784,8 +805,8 @@ async fn mcp_server_exercises_representative_tools() {
     let page2 = decode_text(
         &service
             .call_tool(call_params(
-                "search_symbols",
-                json!({ "needle": "a", "limit": 1, "cursor": cursor1 }),
+                "code",
+                json!({ "mode": "symbols", "needle": "a", "limit": 1, "cursor": cursor1 }),
             ))
             .await
             .expect("search_symbols page2"),
@@ -804,7 +825,10 @@ async fn mcp_server_exercises_representative_tools() {
 
     let unbudgeted = decode_text(
         &service
-            .call_tool(call_params("search_symbols", json!({ "needle": "a", "limit": 100 })))
+            .call_tool(call_params(
+                "code",
+                json!({ "mode": "symbols", "needle": "a", "limit": 100 }),
+            ))
             .await
             .expect("search_symbols unbudgeted"),
     );
@@ -820,8 +844,8 @@ async fn mcp_server_exercises_representative_tools() {
     let budgeted = decode_text(
         &service
             .call_tool(call_params(
-                "search_symbols",
-                json!({ "needle": "a", "limit": 100, "max_tokens": 1 }),
+                "code",
+                json!({ "mode": "symbols", "needle": "a", "limit": 100, "max_tokens": 1 }),
             ))
             .await
             .expect("search_symbols budgeted"),
@@ -852,7 +876,7 @@ async fn mcp_server_exercises_representative_tools() {
 
     let page1 = decode_text(
         &service
-            .call_tool(call_params("list_files", json!({ "limit": 4 })))
+            .call_tool(call_params("code", json!({ "mode": "files", "limit": 4 })))
             .await
             .expect("list_files page1"),
     );
@@ -865,7 +889,10 @@ async fn mcp_server_exercises_representative_tools() {
         .to_string();
     let page2 = decode_text(
         &service
-            .call_tool(call_params("list_files", json!({ "limit": 4, "cursor": cursor1 })))
+            .call_tool(call_params(
+                "code",
+                json!({ "mode": "files", "limit": 4, "cursor": cursor1 }),
+            ))
             .await
             .expect("list_files page2"),
     );
@@ -890,7 +917,10 @@ async fn mcp_server_exercises_representative_tools() {
 
     let page1 = decode_text(
         &service
-            .call_tool(call_params("search_symbols", json!({ "needle": "a", "limit": 1 })))
+            .call_tool(call_params(
+                "code",
+                json!({ "mode": "symbols", "needle": "a", "limit": 1 }),
+            ))
             .await
             .expect("search_symbols pre-rescan"),
     );
@@ -906,8 +936,8 @@ async fn mcp_server_exercises_representative_tools() {
     let stale_response = decode_text(
         &service
             .call_tool(call_params(
-                "search_symbols",
-                json!({ "needle": "a", "limit": 1, "cursor": stale_cursor }),
+                "code",
+                json!({ "mode": "symbols", "needle": "a", "limit": 1, "cursor": stale_cursor }),
             ))
             .await
             .expect("search_symbols with stale cursor"),
@@ -920,7 +950,7 @@ async fn mcp_server_exercises_representative_tools() {
 
     let page1 = decode_text(
         &service
-            .call_tool(call_params("list_files", json!({ "limit": 1 })))
+            .call_tool(call_params("code", json!({ "mode": "files", "limit": 1 })))
             .await
             .expect("list_files pre-rescan"),
     );
@@ -935,7 +965,10 @@ async fn mcp_server_exercises_representative_tools() {
         .expect("rescan");
     let stale_response = decode_text(
         &service
-            .call_tool(call_params("list_files", json!({ "limit": 1, "cursor": stale_cursor })))
+            .call_tool(call_params(
+                "code",
+                json!({ "mode": "files", "limit": 1, "cursor": stale_cursor }),
+            ))
             .await
             .expect("list_files with stale cursor"),
     );
@@ -947,7 +980,7 @@ async fn mcp_server_exercises_representative_tools() {
 
     let body = decode_text(
         &service
-            .call_tool(call_params("find_files", json!({ "query": "cy1" })))
+            .call_tool(call_params("code", json!({ "mode": "find", "query": "cy1" })))
             .await
             .expect("find_files(cy1)"),
     );
@@ -980,7 +1013,10 @@ async fn mcp_server_exercises_representative_tools() {
 
     let body = decode_text(
         &service
-            .call_tool(call_params("find_files", json!({ "query": "zzzznonexistentqueryxyz" })))
+            .call_tool(call_params(
+                "code",
+                json!({ "mode": "find", "query": "zzzznonexistentqueryxyz" }),
+            ))
             .await
             .expect("find_files(no match)"),
     );
@@ -998,8 +1034,8 @@ async fn mcp_server_exercises_representative_tools() {
     let body = decode_text(
         &service
             .call_tool(call_params(
-                "find_files",
-                json!({ "query": "rs", "language": "python" }),
+                "code",
+                json!({ "mode": "find", "query": "rs", "language": "python" }),
             ))
             .await
             .expect("find_files(language filter)"),
@@ -1012,7 +1048,7 @@ async fn mcp_server_exercises_representative_tools() {
 
     let body = decode_text(
         &service
-            .call_tool(call_params("find_files", json!({ "query": "d" })))
+            .call_tool(call_params("code", json!({ "mode": "find", "query": "d" })))
             .await
             .expect("find_files(d)"),
     );
@@ -1026,8 +1062,8 @@ async fn mcp_server_exercises_representative_tools() {
     let body = decode_text(
         &service
             .call_tool(call_params(
-                "find_references",
-                json!({ "name": "no_such_callee_anywhere" }),
+                "code",
+                json!({ "mode": "references", "name": "no_such_callee_anywhere" }),
             ))
             .await
             .expect("find_references(missing)"),
@@ -1047,8 +1083,8 @@ async fn mcp_server_exercises_representative_tools() {
     let body = decode_text(
         &service
             .call_tool(call_params(
-                "workspace_grep",
-                json!({ "pattern": "pub fn", "include_context": false }),
+                "code",
+                json!({ "mode": "grep", "pattern": "pub fn", "include_context": false }),
             ))
             .await
             .expect("workspace_grep"),
@@ -1076,8 +1112,8 @@ async fn mcp_server_exercises_representative_tools() {
     let body = decode_text(
         &service
             .call_tool(call_params(
-                "workspace_grep",
-                json!({ "pattern": "pub fn", "limit": 1, "include_context": false }),
+                "code",
+                json!({ "mode": "grep", "pattern": "pub fn", "limit": 1, "include_context": false }),
             ))
             .await
             .expect("workspace_grep(limit=1)"),
@@ -1101,7 +1137,10 @@ async fn mcp_server_exercises_representative_tools() {
     );
 
     let invalid_result = service
-        .call_tool(call_params("workspace_grep", json!({ "pattern": "[invalid_regex(" })))
+        .call_tool(call_params(
+            "code",
+            json!({ "mode": "grep", "pattern": "[invalid_regex(" }),
+        ))
         .await;
     assert!(
         invalid_result.is_err(),
@@ -1128,14 +1167,14 @@ async fn mcp_server_exercises_representative_tools() {
     #[cfg(not(feature = "code-search"))]
     {
         let sc = service
-            .call_tool(call_params("search_code", json!({ "query": "hello" })))
+            .call_tool(call_params("code", json!({ "mode": "semantic", "query": "hello" })))
             .await;
         assert!(
             sc.is_err(),
             "search_code without the code-search feature must return an MCP error"
         );
         let gc = service
-            .call_tool(call_params("get_chunk", json!({ "path": "src/lib.rs" })))
+            .call_tool(call_params("code", json!({ "mode": "chunk", "path": "src/lib.rs" })))
             .await;
         assert!(
             gc.is_err(),
@@ -1145,7 +1184,7 @@ async fn mcp_server_exercises_representative_tools() {
     #[cfg(feature = "code-search")]
     {
         let sc = service
-            .call_tool(call_params("search_code", json!({ "query": "hello" })))
+            .call_tool(call_params("code", json!({ "mode": "semantic", "query": "hello" })))
             .await;
         if let Ok(result) = &sc {
             let body = decode_text(result);
@@ -1161,7 +1200,7 @@ async fn mcp_server_exercises_representative_tools() {
         }
 
         let gc = service
-            .call_tool(call_params("get_chunk", json!({ "path": "a.rs" })))
+            .call_tool(call_params("code", json!({ "mode": "chunk", "path": "a.rs" })))
             .await;
         if let Ok(result) = &gc {
             let body = decode_text(result);
@@ -1173,8 +1212,8 @@ async fn mcp_server_exercises_representative_tools() {
 
         let kw = service
             .call_tool(call_params(
-                "search_code",
-                json!({ "query": "hello", "mode": "keyword" }),
+                "code",
+                json!({ "mode": "semantic", "query": "hello", "mode": "keyword" }),
             ))
             .await;
         if let Ok(result) = &kw {
@@ -1191,7 +1230,10 @@ async fn mcp_server_exercises_representative_tools() {
         }
 
         let bad_mode = service
-            .call_tool(call_params("search_code", json!({ "query": "hello", "mode": "bogus" })))
+            .call_tool(call_params(
+                "code",
+                json!({ "mode": "semantic", "query": "hello", "mode": "bogus" }),
+            ))
             .await;
         assert!(
             bad_mode.is_err(),
@@ -1200,8 +1242,8 @@ async fn mcp_server_exercises_representative_tools() {
 
         let hy = service
             .call_tool(call_params(
-                "search_code",
-                json!({ "query": "hello", "mode": "hybrid", "rerank": false, "rerank_preset": "bge-reranker-base" }),
+                "code",
+                json!({ "mode": "semantic", "query": "hello", "mode": "hybrid", "rerank": false, "rerank_preset": "bge-reranker-base" }),
             ))
             .await;
         if let Ok(result) = &hy {
@@ -1690,7 +1732,10 @@ async fn mcp_server_exercises_representative_tools() {
     );
 
     let _ = service
-        .call_tool(call_params("search_symbols", json!({ "needle": "Beta", "limit": 5 })))
+        .call_tool(call_params(
+            "code",
+            json!({ "mode": "symbols", "needle": "Beta", "limit": 5 }),
+        ))
         .await
         .expect("search_symbols to seed a sub-millisecond telemetry row");
 
@@ -1717,11 +1762,11 @@ async fn mcp_server_exercises_representative_tools() {
         );
     }
     const SUB_MS_TOOLS: [&str; 5] = [
-        "find_files",
-        "find_references",
-        "search_symbols",
-        "workspace_grep",
-        "outline",
+        "code:find",
+        "code:references",
+        "code:symbols",
+        "code:grep",
+        "code:outline",
     ];
     let sub_ms: Vec<u64> = recent
         .iter()
@@ -1863,8 +1908,8 @@ async fn mcp_server_exercises_representative_tools() {
     let body = decode_text(
         &service
             .call_tool(call_params(
-                "find_implementations",
-                json!({ "trait_name": "Drawable", "limit": 100 }),
+                "code",
+                json!({ "mode": "implementations", "trait_name": "Drawable", "limit": 100 }),
             ))
             .await
             .expect("find_implementations(Drawable)"),
@@ -1891,8 +1936,8 @@ async fn mcp_server_exercises_representative_tools() {
     let body = decode_text(
         &service
             .call_tool(call_params(
-                "find_implementations",
-                json!({ "trait_name": "Foo", "limit": 100 }),
+                "code",
+                json!({ "mode": "implementations", "trait_name": "Foo", "limit": 100 }),
             ))
             .await
             .expect("find_implementations(Foo)"),
@@ -1910,8 +1955,8 @@ async fn mcp_server_exercises_representative_tools() {
     let impl_page1 = decode_text(
         &service
             .call_tool(call_params(
-                "find_implementations",
-                json!({ "trait_name": "Drawable", "limit": 1 }),
+                "code",
+                json!({ "mode": "implementations", "trait_name": "Drawable", "limit": 1 }),
             ))
             .await
             .expect("find_implementations page1"),
@@ -1933,8 +1978,8 @@ async fn mcp_server_exercises_representative_tools() {
     let impl_page2 = decode_text(
         &service
             .call_tool(call_params(
-                "find_implementations",
-                json!({ "trait_name": "Drawable", "limit": 1, "cursor": impl_cursor1 }),
+                "code",
+                json!({ "mode": "implementations", "trait_name": "Drawable", "limit": 1, "cursor": impl_cursor1 }),
             ))
             .await
             .expect("find_implementations page2"),
@@ -1963,8 +2008,8 @@ async fn mcp_server_exercises_representative_tools() {
     let body = decode_text(
         &service
             .call_tool(call_params(
-                "find_implementations",
-                json!({ "trait_name": "Drawable", "language": "rust", "limit": 100 }),
+                "code",
+                json!({ "mode": "implementations", "trait_name": "Drawable", "language": "rust", "limit": 100 }),
             ))
             .await
             .expect("find_implementations(language=rust)"),
@@ -1985,7 +2030,10 @@ async fn mcp_server_exercises_representative_tools() {
 
     let body = decode_text(
         &service
-            .call_tool(call_params("find_references", json!({ "name": "lph", "limit": 100 })))
+            .call_tool(call_params(
+                "code",
+                json!({ "mode": "references", "name": "lph", "limit": 100 }),
+            ))
             .await
             .expect("find_references(substring)"),
     );
@@ -2004,8 +2052,8 @@ async fn mcp_server_exercises_representative_tools() {
     let body = decode_text(
         &service
             .call_tool(call_params(
-                "find_implementations",
-                json!({ "trait_name": "raw", "limit": 100 }),
+                "code",
+                json!({ "mode": "implementations", "trait_name": "raw", "limit": 100 }),
             ))
             .await
             .expect("find_implementations(substring)"),
@@ -2031,7 +2079,10 @@ async fn mcp_server_exercises_representative_tools() {
 
     let body = decode_text(
         &service
-            .call_tool(call_params("search_symbols", json!({ "needle": "", "limit": 100 })))
+            .call_tool(call_params(
+                "code",
+                json!({ "mode": "symbols", "needle": "", "limit": 100 }),
+            ))
             .await
             .expect("search_symbols(empty)"),
     );
@@ -2187,7 +2238,10 @@ async fn mcp_server_exercises_representative_tools() {
 
     let body = decode_text(
         &service
-            .call_tool(call_params("expand", json!({ "path": "a.rs", "name": "alpha" })))
+            .call_tool(call_params(
+                "code",
+                json!({ "mode": "expand", "path": "a.rs", "name": "alpha" }),
+            ))
             .await
             .expect("expand(path=a.rs, name=alpha)"),
     );
@@ -2222,15 +2276,18 @@ async fn mcp_server_exercises_representative_tools() {
 
     let err = service
         .call_tool(call_params(
-            "expand",
-            json!({ "path": "a.rs", "name": "nonexistent_symbol_xyz" }),
+            "code",
+            json!({ "mode": "expand", "path": "a.rs", "name": "nonexistent_symbol_xyz" }),
         ))
         .await;
     assert!(err.is_err(), "expand with unknown symbol must be rejected: {err:?}");
 
     let body = decode_text(
         &service
-            .call_tool(call_params("expand", json!({ "path": "a.rs", "symbol": "alpha" })))
+            .call_tool(call_params(
+                "code",
+                json!({ "mode": "expand", "path": "a.rs", "symbol": "alpha" }),
+            ))
             .await
             .expect("expand(path=a.rs, symbol=alpha via alias)"),
     );
@@ -3536,9 +3593,13 @@ async fn serve_auto_scan_reports_index_build_ms_on_status() {
 ///   `invoke_tool { search_symbols }` returns the same payload as a direct `search_symbols` call.
 /// * flag UNSET → the full surface is advertised unchanged (well over the three wrappers, and
 ///   `search_symbols` is callable directly).
-/// SEP-2106: every code-map tool advertises an `output_schema` on its `Tool` definition, so a
-/// client can validate the `structured_content` it already receives. Asserts the representative
-/// always-available read-only tools carry a non-`None` output schema shaped as a JSON object.
+/// SEP-2106 allows exactly ONE `output_schema` per tool, and every one of the nine domain tools has
+/// modes returning differently-shaped responses — so none of them advertises one. Expressing the
+/// union would mean nested structs, which schemars emits as `$ref` into `$defs`, the construct the
+/// Anthropic input_schema subset rejects silently and registry-wide (GH #50).
+///
+/// This asserts the absence deliberately rather than leaving it untested: a well-meaning "add the
+/// output schema back" change would look like an improvement and take the whole registry down.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn tools_advertise_output_schema() {
     let dir = build_repo();
@@ -3556,39 +3617,25 @@ async fn tools_advertise_output_schema() {
             .output_schema
             .clone()
     };
-    for name in [
-        "outline",
-        "search_symbols",
-        "find_references",
-        "find_callers",
-        "find_implementations",
-        "list_files",
-    ] {
-        let schema = schema_of(name).unwrap_or_else(|| panic!("tool {name} must advertise output_schema"));
-        assert_eq!(
-            schema.get("type").and_then(|v| v.as_str()),
-            Some("object"),
-            "tool {name} output_schema must be a JSON object schema: {schema:?}"
-        );
-    }
-
-    // `admin` (formerly `status` / `repo_info` / `rescan` / …), `git` (formerly `recent_changes` /
-    // `blame_file` / … ), and `graph` (formerly `call_graph` / `architecture_map` / …) are
-    // consolidated domain tools whose modes return differently-shaped responses; SEP-2106 allows
-    // exactly one `output_schema` per tool, so each deliberately advertises none (see the
-    // `tools_admin.rs` / `tools_git.rs` / `tools_graph.rs` module docs). This is intentional, not a
-    // regression from consolidation.
-    for domain in ["admin", "git", "graph"] {
+    for domain in ["code", "admin", "git", "graph", "memory"] {
         assert!(
-            tools
-                .iter()
-                .find(|t| t.name.as_ref() == domain)
-                .unwrap_or_else(|| panic!("`{domain}` present in full surface"))
-                .output_schema
-                .is_none(),
+            schema_of(domain).is_none(),
             "the consolidated `{domain}` tool must NOT advertise a single output_schema for its modes"
         );
     }
+
+    // Nothing on the advertised surface may carry one: the ban is a property of the surface, not a
+    // list of known offenders, so a newly added tool is covered without editing this test.
+    let with_schema: Vec<&str> = tools
+        .iter()
+        .filter(|t| t.output_schema.is_some())
+        .map(|t| t.name.as_ref())
+        .collect();
+    assert!(
+        with_schema.is_empty(),
+        "no domain tool may advertise an output_schema (SEP-2106 allows one, and each has many \
+         response shapes): {with_schema:?}"
+    );
 
     let _ = server.cancel().await;
 }
@@ -3602,14 +3649,24 @@ async fn lean_surface_is_opt_in_and_round_trips_through_invoke_tool() {
     let full = spawn_serve(root, None).await;
     let full_tools = full.list_all_tools().await.expect("list tools (full)");
     let full_names: Vec<&str> = full_tools.iter().map(|t| t.name.as_ref()).collect();
+    // The surface is nine domain tools at most (fewer when `crawl` / `comms` / `shells` are off),
+    // which is the whole point of the consolidation: hosts defer tools and surface them by keyword
+    // search, so a count that creeps back up is a regression, not growth. Asserted as a ceiling
+    // plus the always-on names, rather than a floor that a re-flattening would still satisfy.
     assert!(
-        full_tools.len() > 10,
-        "default surface should advertise the full tool set, got {}: {full_names:?}",
+        full_tools.len() <= 9,
+        "the surface must stay at nine domain tools or fewer, got {}: {full_names:?}",
         full_tools.len()
     );
+    for domain in ["code", "graph", "git", "memory", "admin"] {
+        assert!(
+            full_names.contains(&domain),
+            "default surface must advertise the always-on `{domain}` tool: {full_names:?}"
+        );
+    }
     assert!(
-        full_names.contains(&"search_symbols"),
-        "default surface lists search_symbols: {full_names:?}"
+        full_names.contains(&"code"),
+        "default surface lists the `code` domain tool: {full_names:?}"
     );
     assert!(
         !full_names.contains(&"invoke_tool"),
@@ -3625,19 +3682,12 @@ async fn lean_surface_is_opt_in_and_round_trips_through_invoke_tool() {
             .clone()
             .unwrap_or_else(|| panic!("tool {name} must carry ToolAnnotations"))
     };
-    for read_only in [
-        "outline",
-        "search_symbols",
-        "find_references",
-        "list_files",
-        "find_files",
-    ] {
-        assert_eq!(
-            annotations_of(read_only).read_only_hint,
-            Some(true),
-            "read-only tool {read_only} must advertise read_only_hint=true"
-        );
-    }
+    // `code` is the one domain whose every mode is a read, so its annotation union stays read-only.
+    assert_eq!(
+        annotations_of("code").read_only_hint,
+        Some(true),
+        "every `code` mode is a read, so the tool must advertise read_only_hint=true"
+    );
     // `admin` (formerly `rescan` / `cache_clear` / … as distinct tools) bundles both read-only modes
     // (`status`) and destructive ones (`rescan`, `cache_clear`) behind one tool, so its ONE set of
     // annotations is read_only_hint=false / destructive_hint=true for the whole tool — including its
@@ -3655,7 +3705,10 @@ async fn lean_surface_is_opt_in_and_round_trips_through_invoke_tool() {
     );
     let direct = decode_text(
         &full
-            .call_tool(call_params("search_symbols", json!({ "needle": "Greet", "limit": 10 })))
+            .call_tool(call_params(
+                "code",
+                json!({ "mode": "symbols", "needle": "Greet", "limit": 10 }),
+            ))
             .await
             .expect("direct search_symbols"),
     );
@@ -3681,19 +3734,19 @@ async fn lean_surface_is_opt_in_and_round_trips_through_invoke_tool() {
     assert!(
         listed
             .iter()
-            .any(|t| t.get("name").and_then(Value::as_str) == Some("search_symbols")),
-        "lean list_tools should surface the real search_symbols tool: {listing}"
+            .any(|t| t.get("name").and_then(Value::as_str) == Some("code")),
+        "lean list_tools should surface the real `code` domain tool: {listing}"
     );
 
     let schema = decode_text(
         &lean
-            .call_tool(call_params("get_tool_schema", json!({ "tool_name": "search_symbols" })))
+            .call_tool(call_params("get_tool_schema", json!({ "tool_name": "code" })))
             .await
             .expect("lean get_tool_schema"),
     );
     assert_eq!(
         schema.get("name").and_then(Value::as_str),
-        Some("search_symbols"),
+        Some("code"),
         "schema echoes the tool name: {schema}"
     );
     assert!(
@@ -3706,8 +3759,8 @@ async fn lean_surface_is_opt_in_and_round_trips_through_invoke_tool() {
             .call_tool(call_params(
                 "invoke_tool",
                 json!({
-                    "tool_name": "search_symbols",
-                    "tool_input": { "needle": "Greet", "limit": 10 }
+                    "tool_name": "code",
+                    "tool_input": { "mode": "symbols", "needle": "Greet", "limit": 10 }
                 }),
             ))
             .await
@@ -3722,7 +3775,7 @@ async fn lean_surface_is_opt_in_and_round_trips_through_invoke_tool() {
             .remove("elapsed_us");
         assert!(
             removed.is_some_and(|v| v.as_u64().is_some()),
-            "{label} search_symbols response must carry an `elapsed_us` reading"
+            "{label} code:symbols response must carry an `elapsed_us` reading"
         );
     }
     assert_eq!(
@@ -3791,8 +3844,8 @@ async fn prompts_are_listed_and_rendered_with_arguments() {
         })
         .collect::<String>();
     assert!(
-        body.contains("Greeter") && body.contains("search_symbols"),
-        "rendered trace-symbol must interpolate the symbol and name basemind tools, got: {body}"
+        body.contains("Greeter") && body.contains("`code` mode `symbols`"),
+        "rendered trace-symbol must interpolate the symbol and route to a real tool+mode, got: {body}"
     );
 
     let _ = server.cancel().await;
@@ -3980,7 +4033,7 @@ async fn latency_tools_report_microsecond_elapsed_us() {
 
     let search = decode_text(
         &service
-            .call_tool(call_params("search_symbols", json!({ "needle": "paged" })))
+            .call_tool(call_params("code", json!({ "mode": "symbols", "needle": "paged" })))
             .await
             .expect("search_symbols"),
     );
@@ -4001,7 +4054,10 @@ async fn latency_tools_report_microsecond_elapsed_us() {
 
     let outline = decode_text(
         &service
-            .call_tool(call_params("outline", json!({ "path": "paged.rs", "l2": true })))
+            .call_tool(call_params(
+                "code",
+                json!({ "mode": "outline", "path": "paged.rs", "l2": true }),
+            ))
             .await
             .expect("outline"),
     );
@@ -4043,7 +4099,7 @@ async fn elapsed_us_is_additive_for_older_clients() {
 
     let search = decode_text(
         &service
-            .call_tool(call_params("search_symbols", json!({ "needle": "paged" })))
+            .call_tool(call_params("code", json!({ "mode": "symbols", "needle": "paged" })))
             .await
             .expect("search_symbols"),
     );
@@ -4114,8 +4170,8 @@ async fn workspace_grep_finds_a_rare_token_past_the_old_scan_cap() {
     let body = decode_text(
         &service
             .call_tool(call_params(
-                "workspace_grep",
-                json!({ "pattern": RARE, "include_context": false }),
+                "code",
+                json!({ "mode": "grep", "pattern": RARE, "include_context": false }),
             ))
             .await
             .expect("workspace_grep"),
@@ -4168,8 +4224,8 @@ async fn paging_a_grep_one_hit_at_a_time_reconstructs_the_whole_result() {
     let whole = decode_text(
         &service
             .call_tool(call_params(
-                "workspace_grep",
-                json!({ "pattern": "pub fn", "include_context": false, "limit": 1000 }),
+                "code",
+                json!({ "mode": "grep", "pattern": "pub fn", "include_context": false, "limit": 1000 }),
             ))
             .await
             .expect("workspace_grep(unpaged)"),
@@ -4188,15 +4244,15 @@ async fn paging_a_grep_one_hit_at_a_time_reconstructs_the_whole_result() {
     let mut paged: Vec<(String, u64)> = Vec::new();
     let mut cursor: Option<String> = None;
     for _ in 0..(expected.len() + 1) {
-        let mut args = json!({ "pattern": "pub fn", "include_context": false, "limit": 1 });
+        let mut args = json!({ "mode": "grep", "pattern": "pub fn", "include_context": false, "limit": 1 });
         if let Some(c) = &cursor {
             args["cursor"] = Value::String(c.clone());
         }
         let page = decode_text(
             &service
-                .call_tool(call_params("workspace_grep", args))
+                .call_tool(call_params("code", args))
                 .await
-                .expect("workspace_grep(page)"),
+                .expect("code grep (page)"),
         );
         paged.extend(grep_keys(&page));
         match page.get("next_cursor").and_then(Value::as_str) {
@@ -4276,8 +4332,8 @@ async fn find_callers_never_reports_a_resolution_limited_subset_as_complete() {
     let references = decode_text(
         &service
             .call_tool(call_params(
-                "find_references",
-                json!({ "name": "target", "limit": 500 }),
+                "code",
+                json!({ "mode": "references", "name": "target", "limit": 500 }),
             ))
             .await
             .expect("find_references"),
@@ -4291,8 +4347,8 @@ async fn find_callers_never_reports_a_resolution_limited_subset_as_complete() {
     let callers = decode_text(
         &service
             .call_tool(call_params(
-                "find_callers",
-                json!({ "path": "pkg/mod.py", "name": "target", "limit": 500 }),
+                "code",
+                json!({ "mode": "callers", "path": "pkg/mod.py", "name": "target", "limit": 500 }),
             ))
             .await
             .expect("find_callers"),

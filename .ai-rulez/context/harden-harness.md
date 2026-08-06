@@ -19,12 +19,12 @@ cargo test --release --test harden -- --ignored --nocapture
 2. For each repo: `basemind scan`, then an **in-process git-ops measurement** (`measure_git_ops`):
    build the git-history index synchronously and time warm, microsecond-resolution indexed-vs-live
    latency for `commits_touching` (hot + rare path), `recent_changes`, and `window_commits`, plus the
-   build time and on-disk index size. Then it sweeps every MCP code-map + git tool over stdio,
-   capturing per-tool latency + result shapes.
+   build time and on-disk index size. Then it sweeps every `code`/`graph` mode plus `git` modes over
+   stdio, capturing per-mode latency + result shapes.
 3. Asserts canaries (lower bounds, scan-resistant to upstream churn):
-   - **tokio**: `find_references("spawn")` returns `>= 200` hits (capped at limit).
-   - **django**: `find_references("get")` returns `>= 200` hits.
-   - **react**: `search_symbols("useState")` returns `>= 20` hits.
+   - **tokio**: `code` mode `references("spawn")` returns `>= 200` hits (capped at limit).
+   - **django**: `code` mode `references("get")` returns `>= 200` hits.
+   - **react**: `code` mode `symbols("useState")` returns `>= 20` hits.
    - **ripgrep-shallow**: `any_truncated == true` (shallow-clone signal surfaces).
    - **every git repo**: the git-history index built (`commits > 0`), and on a repo with real history
      (`>= 1000` commits) indexed `commits_touching` is not slower than the live walk it replaces.

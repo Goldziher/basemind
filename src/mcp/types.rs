@@ -790,7 +790,8 @@ pub struct TelemetrySummaryParams {
     /// `"1h"` (last hour), `"all"` (no window).
     #[serde(default)]
     pub window: Option<String>,
-    /// Optional exact tool-name filter (e.g. `"outline"`).
+    /// Optional exact key filter, matched against the recorded `domain:mode` key
+    /// (e.g. `"code:outline"`).
     #[serde(default)]
     pub tool: Option<String>,
 }
