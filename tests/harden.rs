@@ -125,8 +125,35 @@ async fn connect(repo_root: &Path) -> ServiceHandle {
     ().serve(transport).await.expect("rmcp handshake with basemind serve")
 }
 
-/// Decode the first text-content item from a `CallToolResult` as JSON.
+/// Build a tool call, rejecting any name that is not one of the nine domain tools.
+///
+/// Every call site here is wrapped in `if let Ok(out) = …`, so an unknown tool name does not fail
+/// the call — it skips the block, leaves the canary unset, and `unwrap_or(0)` then reports zero
+/// hits. That reads as a capability regression rather than a stale test: the nine-domain
+/// consolidation left `find_implementations` and `find_callers` behind here, and the next harden
+/// run blamed the engine for returning no `Future` implementations in tokio. Panicking on an
+/// unknown name turns that silent misattribution into an immediate, obvious failure. ~keep
 fn call_params(name: &'static str, args: &Value) -> CallToolRequestParams {
+    // Checked against the fixed nine, not `mode::domain_modes()`, because that list is cfg-gated:
+    // under a default-feature build `shell` / `web` / `agents` / `workspace` are absent, and the
+    // harness calls them deliberately so it can record them as skipped. The invariant worth
+    // asserting is that the name is a domain at all, not that this build serves it. ~keep
+    const DOMAINS: [&str; 9] = [
+        "code",
+        "graph",
+        "git",
+        "memory",
+        "admin",
+        "web",
+        "agents",
+        "workspace",
+        "shell",
+    ];
+    assert!(
+        DOMAINS.contains(&name),
+        "harden calls `{name}`, which is not one of the nine domain tools — a call site was missed \
+         when the surface consolidated; an unknown tool would silently read back as a zero canary"
+    );
     let mut params = CallToolRequestParams::new(name);
     if let Some(obj) = args.as_object() {
         params = params.with_arguments(obj.clone());
@@ -1100,8 +1127,8 @@ async fn capture_canaries(svc: &ServiceHandle, repo_name: &str, repo_root: &Path
             }
             if let Ok(out) = svc
                 .call_tool(call_params(
-                    "find_implementations",
-                    &json!({ "trait_name": "Future", "limit": 200 }),
+                    "code",
+                    &json!({ "mode": "implementations", "trait_name": "Future", "limit": 200 }),
                 ))
                 .await
             {
@@ -1331,8 +1358,8 @@ async fn capture_canaries(svc: &ServiceHandle, repo_name: &str, repo_root: &Path
             }
             if let Ok(out) = svc
                 .call_tool(call_params(
-                    "find_callers",
-                    &json!({ "path": "django/utils/encoding.py", "name": "force_str", "limit": 200 }),
+                    "code",
+                    &json!({ "mode": "callers", "path": "django/utils/encoding.py", "name": "force_str", "limit": 200 }),
                 ))
                 .await
             {
