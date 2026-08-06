@@ -210,6 +210,32 @@ mod tests {
     use std::sync::mpsc;
     use std::time::Duration;
 
+    /// Block until the watcher is demonstrably live, then drain what arming produced.
+    ///
+    /// Registering a filesystem watch is asynchronous, so a test that just sleeps before its
+    /// trigger races the registration whenever the machine is busy. That race is invisible in the
+    /// negative tests below — an unarmed watcher reports nothing, which is exactly what they
+    /// assert, so they pass without having tested anything. This writes `probe.rs` under `root`
+    /// until the callback answers (proving the watch is live) and then drains pending batches, so
+    /// a following assertion measures the filter rather than the startup window.
+    fn arm_watcher(root: &Path, path_rx: &mpsc::Receiver<Vec<PathBuf>>) {
+        let probe = root.join("probe.rs");
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            assert!(std::time::Instant::now() < deadline, "watcher never armed within 30s");
+            std::fs::write(&probe, b"fn probe() {}\n").expect("write probe file");
+            match path_rx.recv_timeout(Duration::from_millis(500)) {
+                Ok(_) => break,
+                Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(mpsc::RecvTimeoutError::Disconnected) => panic!("watcher thread died"),
+            }
+        }
+        std::fs::remove_file(&probe).expect("remove probe file");
+        // Drain the arming batches (and the probe's own removal) so they cannot be mistaken for
+        // an emission the assertion under test is meant to rule out.
+        while path_rx.recv_timeout(Duration::from_millis(300)).is_ok() {}
+    }
+
     /// `watch_paths` should hand the callback the repo-relative path of a file
     /// that changes under the watched root, within a bounded window. This is the
     /// primitive the MCP serve watcher funnels into `scan_and_refresh`.
@@ -279,8 +305,11 @@ mod tests {
             })
         });
 
-        // ~keep Let the watcher arm before the rename so the create half is observed.
-        std::thread::sleep(Duration::from_millis(200));
+        // A rename is one-shot — once `before.rs` is gone the trigger cannot be retried — so
+        // unlike the sibling modify test this cannot re-fire inside the polling loop. It must
+        // know the watch is live BEFORE renaming. ~keep
+        arm_watcher(&root, &path_rx);
+
         let renamed = root.join("after.rs");
         std::fs::rename(&original, &renamed).expect("rename file");
 
@@ -323,7 +352,7 @@ mod tests {
             })
         });
 
-        std::thread::sleep(Duration::from_millis(200));
+        arm_watcher(&root, &path_rx);
         std::fs::write(root.join(crate::config::BASEMIND_DIR).join("noise.txt"), b"ignored\n")
             .expect("write basemind file");
 
@@ -337,7 +366,6 @@ mod tests {
     /// Writes under a *nested* child-repo `.basemind/` and under a gitignored path must not wake a
     /// rescan — this is the core of issue #33 (an umbrella repo's watcher must ignore a nested
     /// serve's index flushes, and gitignored churn generally).
-    #[ignore = "timing-sensitive negative assertion; flaky on CI. Filter covered by scanner_filter tests"]
     #[test]
     fn should_ignore_nested_basemind_and_gitignored_paths() {
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -359,7 +387,7 @@ mod tests {
             })
         });
 
-        std::thread::sleep(Duration::from_millis(500));
+        arm_watcher(&root, &path_rx);
         std::fs::write(
             root.join("child")
                 .join(crate::config::BASEMIND_DIR)
