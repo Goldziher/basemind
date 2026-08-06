@@ -18,15 +18,16 @@ RAM usage.
 
 Invoke `/bm-stats` (default window `today`) or `/bm-stats <today|1h|24h|all>`. Window: $ARGUMENTS
 
-1. **Resource footprint.** MCP tool `cache_stats`, or CLI `basemind cache stats` (add `--json` to
+1. **Resource footprint.** MCP tool `admin` mode `cache_stats`, or CLI
+   `basemind admin cache-stats` (add `--json` to
    parse). Report: `total_bytes` (matches `du`), the per-component breakdown (blobs / views /
    git-history / lance / git-cache / telemetry / other), and process RAM (`rss_bytes` +
    `peak_rss_bytes`). If `blob_accounting_ok` is `false`, note that orphan accounting was skipped
    (stale/unreadable index — re-scan to restore it); the sizes are still accurate.
 
-2. **Activity.** MCP tool `telemetry_summary`, or CLI `basemind telemetry --window <today|1h|24h|all>`
-   (add `--json`). Report call count, the per-tool histogram, and estimated tokens saved for the
-   window.
+2. **Activity.** MCP tool `admin` mode `telemetry`, or CLI
+   `basemind admin telemetry --window <today|1h|24h|all>` (add `--json`). Report call count, the
+   per-tool histogram, and estimated tokens saved for the window.
 
 3. **Render** both sections as a compact markdown dashboard.
 

@@ -27,8 +27,8 @@ git history & blame · shared memory · web crawl · agent-to-agent comms
 ---
 
 <!-- markdownlint-disable MD013 -->
-<p align="center"><img src="docs/media/mcp-demo.gif" alt="An agent answering from outline + find_references in a live Claude Code session" width="820"></p>
-<p align="center"><em>An agent reasoning from structure — <code>outline</code> + <code>find_references</code> in a live session, statusline tracking tokens saved.</em></p>
+<p align="center"><img src="docs/media/mcp-demo.gif" alt="An agent answering from a file outline and its call sites in a live Claude Code session" width="820"></p>
+<p align="center"><em>An agent reasoning from structure — <code>code</code> modes <code>outline</code> and <code>references</code> in a live session, statusline tracking tokens saved.</em></p>
 <!-- markdownlint-enable MD013 -->
 
 <div align="center"><sub><a href="#demos">More demos ↓</a></sub></div>
@@ -173,7 +173,7 @@ binary + MCP wiring gives you the tools; a small standalone plugin package adds 
 slash commands, and comms notifications.
 
 First [install the program](#install-the-program) (Homebrew / npm / cargo / release — **not** pip),
-then add the server to `~/.hermes/config.yaml` (this is what gives you the 60+ tools):
+then add the server to `~/.hermes/config.yaml` (this is what gives you the nine domain tools):
 
 ```yaml
 mcp_servers:
@@ -358,24 +358,24 @@ instead of one falling back read-only. See [Global cache & the daemon](#how-it-w
 
 Navigation is **scope- and import-aware** for JavaScript/TypeScript, **Python, and Java**: basemind
 resolves each use to the definition it actually binds to, so a shadowed local isn't confused with an
-import and `goto_definition` lands on the right target (including across files for imports). Every
+import and `code` mode `definition` lands on the right target (including across files for imports). Every
 other language still gets fast tree-sitter scope binding. Precise Python/Java resolution runs GitHub
 stack-graphs-style `.tsg` name-binding rules via an in-tree engine (`crates/`), with no per-language
 LSP server.
 
-Resolution **refines, but never shrinks, a result set.** `find_callers` reports every call site whose
-callee matches the name — the same sound floor `find_references` uses — and marks each hit `resolved`
+Resolution **refines, but never shrinks, a result set.** `code` mode `callers` reports every call site
+whose callee matches the name — the same sound floor mode `references` uses — and marks each hit `resolved`
 when resolution proved it binds to that definition (`resolved_total` counts them). It deliberately
 does *not* return only the resolved subset: resolution cannot see through a module-object import
 (`from pkg import mod` then `mod.f()`) or an unresolvable path alias, so filtering to it would drop
 real callers and report the remainder as complete. Filter on `resolved` when you want precision; trust
 `total` when you need completeness.
 
-Markdown and Obsidian vaults are first-class: headings become navigable symbols (so `outline` and
-`search_symbols` work over a notes vault); `[[wikilinks]]`, `![[embeds]]`, and standard
-`[text](Note.md)` links all become references — so `find_references "Note"` returns that note's
+Markdown and Obsidian vaults are first-class: headings become navigable symbols (so `code` modes
+`outline` and `symbols` work over a notes vault); `[[wikilinks]]`, `![[embeds]]`, and standard
+`[text](Note.md)` links all become references — so mode `references` on `"Note"` returns that note's
 backlinks regardless of link style; and `#tags` (inline or in YAML frontmatter) become references
-too, so `find_references "#project"` lists every note carrying that tag.
+too, so mode `references` on `"#project"` lists every note carrying that tag.
 
 ```mermaid
 flowchart LR
@@ -546,11 +546,10 @@ rather than read from disk each time.
 <summary><strong>Git history queries</strong></summary>
 
 basemind precomputes a per-repo git-history index (path → commit posting lists, stored newest-first)
-so the history tools — `commits_touching`, `recent_changes`, `hot_files`, `find_commits_by_path`,
-and `symbol_history`'s commit walk — are posting-list lookups. Warm in-process query latency on the
-same M4:
+so the history modes — `touching`, `recent`, `churn`, `by_path`, and `symbol_history`'s commit walk
+— are posting-list lookups. Warm in-process query latency on the same M4:
 
-| Repo | Commits | `commits_touching` | `recent_changes` | index build | index size |
+| Repo | Commits | `git` `touching` | `git` `recent` | index build | index size |
 |---|---|---|---|---|---|
 | django | 2 000 | 39 µs | 15 µs | 0.5 s | 1.7 MB (6 % of `.git`) |
 | tokio | 3 984 | 37 µs | 13 µs | 0.9 s | 2.1 MB (12 %) |
@@ -571,16 +570,12 @@ when history is rewritten (filter-repo / rebase / force-push). Reproduce with
 <details>
 <summary><strong>Measuring query latency (<code>elapsed_us</code>)</strong></summary>
 
-Every latency-relevant tool — the code-map tools (`outline`, `search_symbols`, `find_references`,
-`find_callers`, `find_files`, `list_files`, `workspace_grep`, `dependents`, `goto_definition`,
-`status`, `repo_info`, `call_graph`, `find_implementations`, `architecture_map`, `search_code`), the
-git tools (`recent_changes`, `commits_touching`, `find_commits_by_path`, `blame_file`,
-`blame_symbol`, `hot_files`, `diff_file`, `diff_outline`, `working_tree_status`, `symbol_history`,
-`search_git_history`), and the document / memory search tools — reports its own latency as
-**`elapsed_us`** on its response. Don't wrap the CLI in `time`; ask basemind.
+Every latency-relevant mode — all of `code` and `graph`, all of `git`, the `admin` read modes, and
+the document / memory search modes — reports its own latency as **`elapsed_us`** on its response.
+Don't wrap the CLI in `time`; ask basemind.
 
-Resolution is **microseconds** on purpose: an indexed `commits_touching` is ~37 µs, so millisecond
-granularity would round the hot path to `0`.
+Resolution is **microseconds** on purpose: an indexed `git` mode `touching` is ~37 µs, so
+millisecond granularity would round the hot path to `0`.
 
 **What `elapsed_us` includes** — the tool body's own execution: index and store lookups, git walks,
 ranking, and building the response.

@@ -11,10 +11,11 @@ Claude Code session can't be scripted).
 1. Open a fresh Claude Code session in a real repository with the basemind
    plugin connected (`/plugin marketplace add Goldziher/basemind`, then install).
 2. Ask something that triggers a code-map tool, e.g. _"where is X defined and
-   what calls it?"_ — show `search_symbols` / `find_references` / `outline`
-   returning **paths, line numbers, and signatures, not file bodies**. The point
-   is structure at a fraction of the tokens of grep + Read.
-3. Run `/bm-stats` to show the per-tool histogram and estimated tokens saved.
+   what calls it?"_ — show the `code` tool using its `symbols`, `references`,
+   and `outline` modes to return **paths, line numbers, and signatures, not file
+   bodies**. The point is structure at a fraction of the tokens of grep + Read.
+3. Run `/bm-stats` to show the per-domain/mode histogram and estimated tokens
+   saved.
 
 Keep it tight: one clear question → tool calls → the savings dashboard.
 

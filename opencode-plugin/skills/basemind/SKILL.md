@@ -15,15 +15,18 @@ repo into a content-addressed blob store + Fjall inverted index (and, when enabl
 vector store) so structural, historical, and semantic questions resolve in milliseconds —
 without you reading whole files.
 
+The MCP surface is nine domain tools — `code`, `graph`, `git`, `memory`, `admin`, `web`, `agents`,
+`workspace`, and `shell`. Every call requires a `mode`; there are no flat per-operation tools.
+
 ## Capabilities
 
 - **Code map across 300+ languages** — tree-sitter outlines, symbol search, references,
   callers, call graphs, implementations, dependents.
-- **Full-text + symbol search** — indexed regex over content (`workspace_grep`) and substring
-  symbol lookup (`search_symbols`).
+- **Full-text + symbol search** — indexed regex via `code` mode `grep` and substring lookup via
+  mode `symbols`.
 - **Git intelligence** — history, blame, and structural diffs at symbol resolution, plus churn.
 - **Document RAG over 90+ file formats** — PDFs, Office, HTML, email, images (OCR) → semantic
-  search with cross-encoder reranking (`search_documents`).
+  search with cross-encoder reranking (`memory` mode `documents`).
 - **Shared memory** — per-repo, scope-keyed key-value + semantic memory across sessions.
 - **Web crawl** — scrape / follow-link crawl into the same searchable document store.
 
@@ -33,7 +36,7 @@ This umbrella skill covers the whole surface. For focused workflows, reach for t
 
 - **`basemind-code-search`** — outlines, symbol search, references, callers, call graphs.
 - **`basemind-git-history`** — history, blame, structural diffs, churn.
-- **`basemind-documents`** — document RAG (`search_documents`), web ingestion, memory.
+- **`basemind-documents`** — document RAG (`memory` mode `documents`), web ingestion, memory.
 - **`basemind-comms`** — coordinating with other agents in the same repo over the broker.
 - **`basemind-cli`** — the same surface driven headlessly from the CLI.
 
@@ -58,15 +61,15 @@ basemind tools return **paths, line numbers, and signatures — not file bodies*
 structural answer costs a fraction of the tokens of reading source. Treat that as the
 default workflow, not an optimization:
 
-- **`outline` a file before you open it.** Read the whole file only when you have already
+- **`code` mode `outline` before you open a file.** Read the whole file only when you have already
   identified the exact span you need from the outline; then `read_file` that range, not the file.
-- **`search_symbols` instead of `grep`/`rg` for a definition.** It matches on indexed symbol
+- **`code` mode `symbols` instead of `grep`/`rg` for a definition.** It matches indexed symbol
   names and returns `path:line`, skipping the comment/string/test-name noise grep drowns you in.
-- **`find_references` / `find_callers` instead of grepping call sites.** Indexed call edges,
+- **`code` modes `references` / `callers` instead of grepping call sites.** Indexed call edges,
   not text matches.
-- **`workspace_grep` instead of shelling out to ripgrep** when you genuinely need regex over
+- **`code` mode `grep` instead of shelling out to ripgrep** when you genuinely need regex over
   content — it runs over the in-RAM index and returns capped, structured hits.
-- **`rescan` after you edit code**, not a server reconnect. Pass `paths: [...]` to limit it to
+- **`admin` mode `rescan` after you edit code**, not a server reconnect. Pass `paths: [...]` to limit it to
   the files you touched.
 - **Do not re-read a file basemind already mapped.** If the outline answered the question, stop.
 
@@ -76,41 +79,41 @@ only to see the actual implementation of a span you have already located.
 
 **basemind first, shell/grep/git fallback.** Prefer basemind over reading files, over `grep`/`rg`,
 and over naked `git`: use it for code parsing (outlines, references, callers), git history / blame /
-diffs, document extraction / RAG / keyword + entity (NER) / summary (`search_documents`), and web
-scraping / crawling / sitemaps (`web_scrape` / `web_crawl` / `web_map`). Drop to raw shell, grep, or
+diffs, document extraction / RAG / keyword + entity (NER) / summary (`memory` mode `documents`), and
+the `web` modes `scrape` / `crawl` / `map`. Drop to raw shell, grep, or
 git only when no basemind tool covers the question.
 
 ## Tool routing (copy this into your mental model)
 
 | Question | Tool |
 |---|---|
-| "Where is X defined?" | `search_symbols` (substring match, optional `kind` filter) |
-| "Jump to the definition of X used here?" | `goto_definition` (scope-aware resolution from a use site) |
-| "What's the high-level architecture / module map?" | `architecture_map` |
-| "What's the shape of file F?" | `outline` (add `l2: true` for calls + docs) |
-| "What calls X?" (any name) | `find_references` |
-| "What calls this specific definition?" | `find_callers` (path + name + optional kind) |
-| "Trace the call graph from a function?" | `call_graph` (BFS up or down, bounded by `max_depth` / `max_nodes`) |
-| "What implements / extends / inherits from X?" | `find_implementations` (Rust, Python, TS/TSX, JS) |
-| "What imports module M?" | `dependents` |
-| "What files are indexed?" | `list_files` (filter by `language` or `path_contains`) |
-| "What changed recently?" | `recent_changes`, `commits_touching`, `find_commits_by_path` |
-| "When did symbol X last change?" | `symbol_history` |
-| "Who wrote this line / symbol?" | `blame_file`, `blame_symbol` |
-| "Where's the churn?" | `hot_files` |
-| "What's dirty in the working tree?" | `working_tree_status` |
-| "What's HEAD / branch?" | `repo_info` |
-| "Show diff between revs for file F" | `diff_file`, `diff_outline` |
-| "What's indexed?" | `status` |
-| "Semantic search over PDFs / Office docs in the repo?" | `search_documents` (requires `--features documents`) |
-| "Recall something the agent stored earlier?" | `memory_get` exact, `memory_list` prefix, `memory_search` KNN |
-| "Remember this for future sessions?" | `memory_put` (delete with `memory_delete`) |
-| "Refresh the index after editing code?" | `rescan` — no MCP disconnect needed; optional `paths` arg |
+| "Where is X defined?" | `code` mode `symbols` (substring match, optional `kind` filter) |
+| "Jump to the definition of X used here?" | `code` mode `definition` (scope-aware from a use site) |
+| "What's the high-level architecture / module map?" | `graph` mode `map` |
+| "What's the shape of file F?" | `code` mode `outline` (add `l2: true` for calls + docs) |
+| "What calls X?" (any name) | `code` mode `references` |
+| "What calls this specific definition?" | `code` mode `callers` (path + name + optional kind) |
+| "Trace the call graph from a function?" | `graph` mode `calls` (bounded BFS up or down) |
+| "What implements / extends / inherits from X?" | `code` mode `implementations` |
+| "What imports module M?" | `code` mode `dependents` |
+| "What files are indexed?" | `code` mode `files` (filter by `language` or `path_contains`) |
+| "What changed recently?" | `git` modes `recent`, `touching`, or `by_path` |
+| "When did symbol X last change?" | `git` mode `symbol_history` |
+| "Who wrote this line / symbol?" | `git` mode `blame` / `blame_symbol` |
+| "Where's the churn?" | `git` mode `churn` |
+| "What's dirty in the working tree?" | `git` mode `status` |
+| "What's HEAD / branch?" | `admin` mode `repo` |
+| "Show diff between revs for file F" | `git` mode `diff` / `diff_outline` |
+| "What's indexed?" | `admin` mode `status` |
+| "Semantic search over PDFs / Office docs?" | `memory` mode `documents` |
+| "Recall something the agent stored earlier?" | `memory` mode `get` / `list` / `search` |
+| "Remember this for future sessions?" | `memory` mode `put` (delete with mode `delete`) |
+| "Refresh the index after editing code?" | `admin` mode `rescan`; optional `paths` arg |
 | "Fetch next page of results?" | Pass `next_cursor` from prior response as `cursor` |
-| "Pull this URL into RAG?" | `web_scrape` (requires `--features crawl`) — single page, robots-aware |
-| "Ingest a docs site section?" | `web_crawl` — link-following from a seed URL |
-| "What URLs exist on this site?" | `web_map` — sitemap + link discovery, no bodies fetched |
-| "How much has basemind helped today?" | `telemetry_summary` — per-tool histogram + estimated tokens saved |
+| "Pull this URL into RAG?" | `web` mode `scrape` — single page, robots-aware |
+| "Ingest a docs site section?" | `web` mode `crawl` — link-following from a seed URL |
+| "What URLs exist on this site?" | `web` mode `map` — sitemap + link discovery, no bodies fetched |
+| "How much has basemind helped today?" | `admin` mode `telemetry` |
 
 ## Setup (one-time per repo)
 
@@ -138,7 +141,7 @@ If a tool returns "no indexed files", that means `basemind scan` hasn't been run
 ### Locating a symbol
 
 ```text
-search_symbols { needle: "MapCache" }
+code { mode: "symbols", needle: "MapCache" }
 → src/mcp/mod.rs:79:1 MapCache (struct)
   src/mcp/mod.rs:88:1 MapCache (impl)
 ```
@@ -148,7 +151,7 @@ Now you know exactly where to read.
 ### Following references
 
 ```text
-find_references { name: "process_file" }
+code { mode: "references", name: "process_file" }
 → src/scanner.rs:142:9 process_file
   src/scanner.rs:201:13 process_file
   ...
@@ -159,9 +162,9 @@ No need to grep — the index already knows.
 ### Outline a file before reading
 
 ```text
-outline { path: "src/mcp/tools.rs" }
+code { mode: "outline", path: "src/mcp/tools.rs" }
 → 21 #[tool] outline (function)
-   112 #[tool] search_symbols (function)
+   112 #[tool] code (function)
    ...
 ```
 
@@ -172,20 +175,20 @@ A 1000-line file becomes a 30-line table of contents.
 - All paths are repository-relative with forward-slash separators.
 - Lists are capped (`limit`, default 100, max 1000). Index scanners use
   `scan_cap = limit * 8` to bound work on common names.
-- Matching is substring on names — `find_references("bar")` matches `Foo::bar()`
-  and `bar()` alike. There is no scope resolution; cross-check with `outline` if
+- Matching is substring on names — `code { mode: "references", name: "bar" }` matches `Foo::bar()`
+  and `bar()` alike. There is no scope resolution; cross-check with mode `outline` if
   disambiguation matters.
 - Git tools require `basemind serve` to be running inside a git repository. Outside a git repo they return a clear error.
-- Intelligence tools (`search_documents`, `memory_*`) require basemind to be built with
+- The `memory` domain's `documents` and storage modes require basemind to be built with
   `--features full` (or the individual `documents` / `memory` flags). Without them the
   tools dispatch but return an MCP error.
   Memory is scoped by the normalised `origin` remote URL (`git@github.com:Foo/bar.git` and
   `https://github.com/Foo/bar/` collapse to the same scope key) — clones of the same repo
   share memory; unrelated repos do not see each other's entries.
-- Web ingestion tools (`web_scrape`, `web_crawl`, `web_map`) require `--features crawl`.
-  When that feature is off they are NOT registered on the server at all — agents will simply
-  not see them in the tool list. Crawled pages land in the `documents` LanceDB table tagged
-  with scope `web:<host>`; `search_documents` finds them alongside every other ingested
+- The `web` modes `scrape`, `crawl`, and `map` require `--features crawl`.
+  When that feature is off the domain tool is NOT registered on the server at all — agents will
+  simply not see it. Crawled pages land in the `documents` LanceDB table tagged
+  with scope `web:<host>`; `memory` mode `documents` finds them alongside every other ingested
   document. It searches across ALL documents and has **no `scope` parameter** — you cannot
   filter results to a single host at query time.
   robots.txt is honoured by default; only `[crawl].respect_robots_txt = false` in

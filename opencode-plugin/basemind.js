@@ -28,7 +28,7 @@ function readCommsInbox(directory, limit) {
   return new Promise((resolve) => {
     const child = execFile(
       launcher,
-      ["comms", "inbox", "--root", directory, "--json", "--limit", String(limit)],
+      ["agents", "inbox", "--root", directory, "--json", "--limit", String(limit)],
       { timeout: 6000, cwd: directory },
       (error, stdout) => {
         if (error || !stdout) {
@@ -99,7 +99,7 @@ const hooks = ({ client, directory } = {}) => {
         }
         commsHighWaterMicros = Math.max(commsHighWaterMicros, ...messages.map((message) => message.ts_micros ?? 0));
         await surface(
-          `agent-comms: ${messages.length} recent message(s). Use thread_post / message_get to participate.\n${formatMessages(messages)}`,
+          `agent-comms: ${messages.length} recent message(s). Use agents mode message with message_id to read a body, or mode post with thread, subject, and body to reply.\n${formatMessages(messages)}`,
         );
         return;
       }
@@ -113,7 +113,7 @@ const hooks = ({ client, directory } = {}) => {
         }
         commsHighWaterMicros = Math.max(commsHighWaterMicros, ...fresh.map((message) => message.ts_micros ?? 0));
         await surface(
-          `agent-comms: ${fresh.length} new message(s) since last turn. Reply with thread_post {reply_to:<id>} if warranted.\n${formatMessages(fresh)}`,
+          `agent-comms: ${fresh.length} new message(s) since last turn. Reply with agents {mode:"post", thread, subject, body, reply_to:<id>} if warranted.\n${formatMessages(fresh)}`,
         );
       }
     },

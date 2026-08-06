@@ -20,7 +20,8 @@ that separately (see below). The plugin reaches basemind by shelling out to `bas
    | cargo | `cargo install basemind --features full --locked` |
    | GitHub releases | [download a binary](https://github.com/Goldziher/basemind/releases) |
 
-2. **The basemind MCP server wired into Hermes** — this is what gives Hermes the 60+ tools. Add to
+2. **The basemind MCP server wired into Hermes** — this is what gives Hermes the nine domain tools.
+   Add to
    `~/.hermes/config.yaml`:
 
    ```yaml

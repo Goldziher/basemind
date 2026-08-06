@@ -18,7 +18,7 @@ serve` MCP server seems dead.
 Invoke `/bm-doctor` (optional free-text detail, e.g. `/bm-doctor tools return no indexed files`).
 It runs the checks below in order:
 
-1. Check the index: `basemind query status`.
+1. Check the index: `basemind admin status`.
 2. Check for a lock-holding server: `cat .basemind/.lock.meta`.
 3. Rebuild the index if needed: `basemind scan`.
 4. Reconnect the MCP server (client-specific — this is the only way to restart it).

@@ -34,10 +34,10 @@ when you're scripting, batching queries, running in headless environments, or CI
 - Controlling tool routing explicitly (no agent routing decisions).
 - Clearing caches destructively (only the CLI allows `--component all`).
 
-**basemind first, shell/grep/git fallback.** Prefer `basemind query` over reading files, over
+**basemind first, shell/grep/git fallback.** Prefer `basemind code` / `graph` over reading files, over
 `grep`/`rg`, and over naked `git`: use it for code parsing (outlines, references, callers), git
 history / blame / diffs (`basemind git`), document extraction / RAG / keyword + entity (NER) /
-summary (`basemind memory search-documents`), and web scraping / crawling / sitemaps
+summary (`basemind memory documents`), and web scraping / crawling / sitemaps
 (`basemind web scrape` / `crawl` / `map`). Drop to raw shell, grep, or git only when no basemind
 command covers the question.
 
@@ -45,42 +45,43 @@ command covers the question.
 
 | Question | Command | Notes |
 |---|---|---|
-| "Where is X defined?" | `basemind query symbol "X"` | Substring match, optional `--kind` filter. |
-| "What's the shape of file F?" | `basemind query outline path/F` | Add `--l2` for calls + docs. |
-| "What calls X?" (any name) | `basemind query references "X"` | Name match, no scope resolution. |
-| "What calls this specific definition?" | `basemind query callers path name [--kind]` | Specific definition lookup. |
-| "Trace the call graph?" | `basemind query call-graph "name" [--direction --max-depth]` | BFS over calls. |
-| "What implements / extends X?" | `basemind query implementations "X"` | Rust, Python, TS/TSX, JS. |
-| "What imports module M?" | `basemind query dependents "M"` | Reverse-lookup via imports. |
-| "What files are indexed?" | `basemind query list-files [--language --path-contains]` | Filter by language/path. |
-| "What changed recently?" | `basemind git recent-changes [--limit N]` | Recent commits with paths. |
+| "Where is X defined?" | `basemind code symbols "X"` | Substring match, optional `--kind` filter. |
+| "What's the shape of file F?" | `basemind code outline path/F` | Add `--l2` for calls + docs. |
+| "What calls X?" (any name) | `basemind code references "X"` | Name match, no scope resolution. |
+| "What calls this specific definition?" | `basemind code callers path name [--kind]` | Specific definition lookup. |
+| "Trace the call graph?" | `basemind graph calls "name" [--direction --max-depth]` | BFS over calls. |
+| "What implements / extends X?" | `basemind code implementations "X"` | Rust, Python, TS/TSX, JS. |
+| "What imports module M?" | `basemind code dependents "M"` | Reverse-lookup via imports. |
+| "What files are indexed?" | `basemind code files [--language --path-contains]` | Filter by language/path. |
+| "What changed recently?" | `basemind git recent [--limit N]` | Recent commits with paths. |
 | "When did symbol X last change?" | `basemind git symbol-history path name` | Cross-commit structural hash. |
-| "Who wrote this line / symbol?" | `basemind git blame-file path` / `blame-symbol path name` | Per-line / per-symbol. |
-| "Where's the churn?" | `basemind git hot-files [--window N --top-k K]` | Churn-ranked files. |
-| "What's dirty in the working tree?" | `basemind git working-tree-status` | Staged/unstaged summary. |
-| "Diff a file between revs?" | `basemind git diff-file path old new` / `diff-outline path` | File / outline diffs. |
-| "What's indexed?" | `basemind query status` | File count, languages, cache dir. |
-| "What's HEAD / branch?" | `basemind query repo-info` | Branch, HEAD, origin. |
-| "Regex over file contents?" | `basemind query grep "pattern" [--language --path-contains]` | Full-text search. |
-| "Semantic search over docs?" | `basemind memory search-documents "query"` | Needs `documents` feature. |
+| "Who wrote this line / symbol?" | `basemind git blame path` / `blame-symbol path name` | Per-line / per-symbol. |
+| "Where's the churn?" | `basemind git churn [--window N --top-k K]` | Churn-ranked files. |
+| "What's dirty in the working tree?" | `basemind git status` | Staged/unstaged summary. |
+| "Diff a file between revs?" | `basemind git diff path old new` / `diff-outline path` | File / outline diffs. |
+| "What's indexed?" | `basemind admin status` | File count, languages, cache dir. |
+| "What's HEAD / branch?" | `basemind admin repo` | Branch, HEAD, origin. |
+| "Regex over file contents?" | `basemind code grep "pattern" [--language --path-contains]` | Full-text search. |
+| "Semantic search over docs?" | `basemind memory documents "query"` | Needs `documents` feature. |
 | "Recall something stored earlier?" | `basemind memory get "key"` / `list` / `search "q"` | KNN + exact match. |
 | "Remember this for future sessions?" | `basemind memory put "key" "value"` | Delete with `memory delete "key"`. |
-| "Cache size?" | `basemind cache stats` | On-disk size + orphan accounting. |
-| "Reclaim cache space?" | `basemind cache gc` | Reclaim orphaned blobs. Safe alongside serve. |
-| "Clear caches?" | `basemind cache clear --component blobs\|views\|all` | Destructive; use CLI not MCP. |
+| "Cache size?" | `basemind admin cache-stats` | On-disk size + orphan accounting. |
+| "What cache space is reclaimable?" | `basemind admin gc` | Report orphaned blobs without deleting them. |
+| "Clear caches?" | `basemind admin cache-clear --component blobs --confirm` | Destructive; `views` / `all` require the offline cache command. |
 | "Pull this URL into RAG?" | `basemind web scrape <url>` | Single page (requires `--features crawl`). |
 | "Ingest a docs site?" | `basemind web crawl <seed-url>` | Link-following crawl. |
 | "What URLs exist on this site?" | `basemind web map <url>` | Sitemap + link discovery. |
 | "Keep index fresh?" | `basemind watch` | Live re-index watcher; no MCP server (that's `serve`). |
 | "Refresh the index after edits?" | `basemind scan` | Full or incremental scan. |
-| "Per-tool activity summary?" | `basemind telemetry` | Histogram + estimated tokens saved. |
+| "Refresh changed paths?" | `basemind admin rescan [path…]` | Re-index in the live server. |
+| "Per-operation activity summary?" | `basemind admin telemetry` | Histogram + estimated tokens saved. |
 
 ## Output format
 
 By default, all commands return **human-readable text**. For machine consumption, add the global `--json` flag:
 
 ```bash
-basemind query symbol "parseQuery" --json
+basemind code symbols "parseQuery" --json
 ```
 
 This returns the raw `JsonSchema`-derived response structure, same as MCP.
@@ -103,7 +104,7 @@ Re-run `basemind scan` after large changes, or run `basemind watch` to keep the 
 ### Find where a symbol is defined
 
 ```bash
-basemind query symbol "MapCache"
+basemind code symbols "MapCache"
 ```
 
 Output:
@@ -116,25 +117,25 @@ src/mcp/mod.rs:88:1 MapCache (impl)
 ### Show a file's outline before opening it
 
 ```bash
-basemind query outline src/mcp/tools.rs --l2
+basemind code outline src/mcp/tools.rs --l2
 ```
 
 ### Get all references to a function
 
 ```bash
-basemind query references "process_file"
+basemind code references "process_file"
 ```
 
 ### Find all callers of a specific definition
 
 ```bash
-basemind query callers src/scanner.rs "process_file" --json
+basemind code callers src/scanner.rs "process_file" --json
 ```
 
 ### Show recent commits with changed files
 
 ```bash
-basemind git recent-changes --limit 5
+basemind git recent --limit 5
 ```
 
 ### Blame a symbol to see when its body last changed
@@ -146,9 +147,9 @@ basemind git blame-symbol src/scanner.rs "process_file"
 ### Manage cache space
 
 ```bash
-basemind cache stats
-basemind cache gc          # reclaim orphaned blobs
-basemind cache clear --component blobs  # clear blobs only
+basemind admin cache-stats
+basemind admin gc
+basemind admin cache-clear --component blobs --confirm
 ```
 
 ## Notes
@@ -156,10 +157,11 @@ basemind cache clear --component blobs  # clear blobs only
 - All paths are repository-relative with forward-slash separators.
 - The CLI opens the index read-only; safe to run alongside a live `basemind serve` process.
 - Lists are capped (`--limit`, default 100, max 1000).
-- Matching on symbol names is substring-based; `find_references("bar")` matches `Foo::bar()` and `bar()` alike.
+- Matching on symbol names is substring-based; `code` mode `references` with `name: "bar"` matches
+  `Foo::bar()` and `bar()` alike.
 - Git tools require basemind to be running inside a git repository.
-- Intelligence tools (`search_documents`, `memory_*`) require basemind to be built with `--features full`
+- `memory` modes require basemind to be built with `--features full`
   (or the individual `documents` / `memory` flags).
 - Memory is scoped by the normalized `origin` remote URL — clones of the same repo share memory;
   unrelated repos do not see each other's entries.
-- Web ingestion tools (`web_scrape`, `web_crawl`, `web_map`) require `--features crawl`.
+- `web` modes `scrape`, `crawl`, and `map` require `--features crawl`.

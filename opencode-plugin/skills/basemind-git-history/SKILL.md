@@ -21,39 +21,39 @@ rebasing, anything that mutates history).
 
 | Question | MCP tool | CLI |
 |---|---|---|
-| "What changed recently?" | `recent_changes` | `basemind git recent-changes [--limit N]` |
-| "Which commits touched path P?" | `commits_touching` | `basemind git commits-touching P` |
-| "Path-filtered commit log?" | `find_commits_by_path` | `basemind git find-commits-by-path P` |
-| "When did symbol X last change?" | `symbol_history` (cross-commit structural hash) | `basemind git symbol-history F name` |
-| "Who wrote this line?" | `blame_file` | `basemind git blame-file F` |
-| "Who wrote this symbol / when did its body change?" | `blame_symbol` | `basemind git blame-symbol F name` |
-| "Diff a file between revs?" | `diff_file` | `basemind git diff-file F old new` |
-| "What symbols did a branch add/remove?" | `diff_outline` | `basemind git diff-outline F old new` |
-| "Where's the churn?" | `hot_files` (churn-ranked) | `basemind git hot-files [--limit N]` |
-| "What's dirty in the working tree?" | `working_tree_status` (staged/unstaged) | `basemind git working-tree-status` |
-| "What's HEAD / branch / origin?" | `repo_info` | `basemind query repo-info` |
-| "Full-text search commit messages + authors?" | `search_git_history` | *(MCP only)* |
+| "What changed recently?" | `git` mode `recent` | `basemind git recent [--limit N]` |
+| "Which commits touched path P?" | `git` mode `touching` | `basemind git touching P` |
+| "Path-filtered commit log?" | `git` mode `by_path` | `basemind git by-path P` |
+| "When did symbol X last change?" | `git` mode `symbol_history` | `basemind git symbol-history F name` |
+| "Who wrote this line?" | `git` mode `blame` | `basemind git blame F` |
+| "Who wrote this symbol / when did its body change?" | `git` mode `blame_symbol` | `basemind git blame-symbol F name` |
+| "Diff a file between revs?" | `git` mode `diff` | `basemind git diff F old new` |
+| "What symbols did a branch add/remove?" | `git` mode `diff_outline` | `basemind git diff-outline F --rev old` |
+| "Where's the churn?" | `git` mode `churn` | `basemind git churn [--top-k N]` |
+| "What's dirty in the working tree?" | `git` mode `status` | `basemind git status` |
+| "What's HEAD / branch / origin?" | `admin` mode `repo` | `basemind admin repo` |
+| "Full-text search commit messages + authors?" | `git` mode `search` | `basemind git search "query"` |
 
 ## Examples
 
 ```text
-recent_changes { limit: 5 }
+git { mode: "recent", limit: 5 }
 → 612df7e chore(release): v0.15.0
   1779b99 fix(git-history,serve): address code-review findings
   ...
 
-blame_symbol { path: "src/scanner.rs", name: "process_file" }
+git { mode: "blame_symbol", path: "src/scanner.rs", name: "process_file" }
 → last touched by <author> in <commit> — body hash changed at HEAD~7
 
-diff_outline { path: "src/mcp/tools.rs", old: "HEAD~5", new: "HEAD" }
-→ + search_git_history (function)  - old_helper (function)
+git { mode: "diff_outline", path: "src/mcp/tools.rs", rev: "HEAD~5" }
+→ + git (function)  - old_helper (function)
 ```
 
 ## Notes
 
 - Git tools require `basemind serve` to be running **inside a git repository**. Outside a git repo
   they return a clear error.
-- History queries are indexed: `commits_touching` and friends resolve in tens of microseconds vs a
+- History queries are indexed: `git` mode `touching` and its siblings resolve in tens of microseconds vs a
   live walk. The index auto-builds on first use and is a fraction of the size of `.git`.
 - All paths are repository-relative with forward-slash separators. Lists are capped
   (`limit`, default 100, max 1000).

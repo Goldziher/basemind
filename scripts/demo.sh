@@ -48,10 +48,10 @@ pe() {
 }
 
 pe "basemind scan --quiet"
-pe "basemind query outline src/scanner.rs --l2"
-pe "basemind query search scan --limit 10"
-pe "basemind query references record_call --limit 8"
-pe "basemind query call-graph cmd_scan --direction callers --max-depth 3"
-pe "basemind git recent-changes --limit 5"
+pe "basemind code outline src/scanner.rs --l2"
+pe "basemind code symbols scan --limit 10"
+pe "basemind code references record_call --limit 8"
+pe "basemind graph calls cmd_scan --direction callers --max-depth 3"
+pe "basemind git recent --limit 5"
 pe "basemind git blame-symbol src/main.rs cmd_scan"
-pe "basemind telemetry --window today"
+pe "basemind admin telemetry --window today"

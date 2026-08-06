@@ -183,7 +183,7 @@ define_mode! {
         Repo => "repo", "repository identity and layout: root, git remote, branch, view";
         Rescan => "rescan", "re-index changed files, or the whole workspace when no paths are given";
         CacheStats => "cache_stats", "on-disk size and entry counts for the machine-global cache";
-        Gc => "gc", "reclaim cache space by dropping blobs no live view references";
+        Gc => "gc", "report blobs no live view references — non-destructive, it deletes nothing";
         CacheClear => "cache_clear", "delete this workspace's cached index outright";
         Telemetry => "telemetry", "aggregate recorded tool calls into a usage and token-savings summary";
         Compress => "compress", "shrink a prior tool response for re-use in a smaller context";

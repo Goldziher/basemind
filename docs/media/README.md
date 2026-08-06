@@ -5,7 +5,8 @@ the binary outputs — regenerate them.
 
 ## `demo.cast` / `demo.gif` — CLI demo
 
-The terminal demo of `basemind scan` + the query / git / telemetry surface.
+The terminal demo of `basemind scan` plus the `code`, `git`, and `admin`
+domain surfaces.
 
 - Source of truth: `demo.cast` (an [asciinema](https://asciinema.org) recording).
 - Embedded asset: `demo.gif`, rendered from the cast with
@@ -26,7 +27,7 @@ what the demo shows, then re-record. Preview without recording:
 
 ## `mcp-demo.gif` — agent (MCP) demo
 
-A live Claude Code session using the basemind MCP tools (`outline` +
-`find_references`) to answer a question from structure, not file reads. Captured
-manually (a live session can't be scripted) — see [`MCP_DEMO.md`](./MCP_DEMO.md)
-for the capture + conversion steps.
+A live Claude Code session using the basemind MCP `code` tool (`outline` and
+`references` modes) to answer a question from structure, not file reads.
+Captured manually (a live session can't be scripted) — see
+[`MCP_DEMO.md`](./MCP_DEMO.md) for the capture + conversion steps.

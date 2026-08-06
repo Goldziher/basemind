@@ -30,7 +30,7 @@ basemind scan ${ARGUMENTS:-}
 - Report files scanned / updated / skipped and elapsed time. Non-extractable files are
   **skipped**, not failures.
 - If a `basemind serve` MCP server already holds the store lock for this repo, `scan` errors on
-  the lock — use the `rescan` MCP tool instead, or stop the server first.
+  the lock — use `admin { mode: "rescan" }` over MCP instead, or stop the server first.
 
 ## See also
 

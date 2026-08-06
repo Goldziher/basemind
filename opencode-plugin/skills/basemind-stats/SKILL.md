@@ -10,7 +10,7 @@ description: >-
 
 # basemind-stats — on-demand usage dashboard
 
-Call the `telemetry_summary` MCP tool and render the result as a markdown report.
+Call the `admin` MCP tool with mode `telemetry` and render the result as a markdown report.
 
 ## When to use
 
@@ -19,16 +19,16 @@ stats", or invokes `/bm-stats` directly. This skill is strictly user-invoked —
 
 ## How to run
 
-1. Call `telemetry_summary` with `{ "window": "today" }` (the default). If the
+1. Call `admin` with `{ "mode": "telemetry", "window": "today" }` (the default). If the
    user asks for a specific range, map it to one of `"today"`, `"1h"`, `"24h"`,
    `"all"`.
 2. Render a markdown block in this shape:
 
    ```text
    ## basemind activity (today)
-   - **N tool calls** ; top tools: outline (18), search_symbols (12), …
+   - **N tool calls** ; top tools: code:outline (18), code:symbols (12), …
    - **~K tokens saved** vs grep + Read baseline
-   - recent: outline (4ms, 312B), search_symbols (2ms, 180B), …
+   - recent: code:outline (4ms, 312B), code:symbols (2ms, 180B), …
    ```
 
 3. If `total_calls` is 0, say so plainly ("no basemind activity in the window yet").
