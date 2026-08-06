@@ -31,10 +31,11 @@ esac
 
 RELEASE_DIR="target/${TRIPLE}/release"
 
-# basemind is the code-map/MCP server; basemind-tui is the agent TUI; basemind-ui is the desktop ~keep
-# UI. All ship in every per-triple archive, side by side at the archive root, so `basemind agent` ~keep
-# and `basemind ui` can re-exec their sibling binaries found next to `basemind`. ~keep
-BINARIES=(basemind basemind-tui basemind-ui)
+# The archive ships the code-map/MCP server alone. The agent TUI (`basemind-tui`) and desktop UI ~keep
+# (`basemind-ui`) are unreleased: their launcher subcommands sit behind the root crate's ~keep
+# `agent-tui` / `desktop-ui` features, which `full` omits, so a released `basemind` never looks for ~keep
+# a sibling that is not here. Add them back to this list when they ship. ~keep
+BINARIES=(basemind)
 
 for bin in "${BINARIES[@]}"; do
 	bin_path="${RELEASE_DIR}/${bin}${BINEXT}"

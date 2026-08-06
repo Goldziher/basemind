@@ -108,6 +108,14 @@ code-intel-stack = ["dep:stack-graphs", "dep:tree-sitter-graph", "dep:tree-sitte
 
 code-intel = ["code-intel-js", "code-intel-stack"]
 
+# The two interactive front-ends are not released yet. Each gates only the launcher subcommand in
+# this crate — the front-ends themselves are separate, unpublished workspace crates
+# (`crates/basemind-tui`, ratatui; `crates/basemind-ui`, tauri). Deliberately absent from `full`, so
+# neither the release archive nor the crates.io build advertises a command whose sibling binary it
+# does not ship. `cargo build --workspace` still compiles both crates, so they cannot bit-rot.
+agent-tui = []
+desktop-ui = []
+
 full = [
     "documents",
     "memory",

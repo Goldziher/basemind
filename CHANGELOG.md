@@ -22,11 +22,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   gained a `GET /ui` route alongside `POST /mcp` (both behind the `comms` feature). Both routes are
   loopback-only: on a loopback bind the front-end rejects any request whose `Host`/`:authority` is not
   a loopback name (DNS-rebinding protection), skipped only on an explicit non-loopback bind.
-- **Desktop UI launch path (ADR-0006, first slice).** A new `basemind ui` subcommand launches the
-  desktop UI front-end (`basemind-ui`) by re-exec'ing the sibling binary shipped alongside `basemind`
-  in the release archive — mirroring how `basemind agent` launches `basemind-tui`. This slice wires
-  the launch path and packaging; today the binary opens the offline, self-contained interactive HTML
-  code graph (the same ADR-0005 payload the `display` tool produces). The resident Tauri window that
+- **Desktop UI launch path (ADR-0006, first slice).** A `basemind ui` subcommand launches the desktop
+  UI front-end (`basemind-ui`) by re-exec'ing the sibling binary built alongside `basemind` —
+  mirroring how `basemind agent` launches `basemind-tui`. Both launchers are behind the `desktop-ui`
+  and `agent-tui` features and ship in no release archive yet (see Changed); build them locally to
+  use them. This slice wires the launch path; today the binary opens the offline, self-contained
+  interactive HTML code graph (the same ADR-0005 payload the `display` tool produces). The resident Tauri window that
   drives the agent client/event/command seam lands behind a `desktop` feature in a later slice, so
   default builds stay free of the per-platform webview dependency.
 - **Inline rationale extraction (ADR-0009).** L1 extraction now classifies source comments carrying
@@ -44,6 +45,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The two interactive front-ends are held back from releases.** The agent TUI (`basemind-tui`,
+  ratatui) and the desktop UI (`basemind-ui`, tauri) are not ready to ship, so the release archive now
+  contains the `basemind` binary alone, and the launcher subcommands that would re-exec them sit
+  behind two new root-crate features, `agent-tui` and `desktop-ui`, which `full` deliberately omits.
+  A released `basemind` therefore never advertises a command whose sibling binary is absent from the
+  archive. Neither crate is affected otherwise: both remain workspace members, both still build under
+  `cargo build --workspace`, the `basemind-tui` replay/PTY suite still runs in CI, and a local
+  `cargo install --path . --features full,agent-tui,desktop-ui` still gets both launchers. Nothing was
+  published from these crates before — both carry `publish = false` — so no crates.io surface changes.
 - **Daemons self-reap sooner to stop the process/memory leak class.** The idle-reap default drops
   from 30 min to 10 min, and a new **bootstrap reaper** self-terminates a daemon that no client ever
   connects to within ~2 min (env `BASEMIND_COMMS_BOOTSTRAP_SECS`) — catching the spawn-and-abandon

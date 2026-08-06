@@ -106,6 +106,17 @@ jobs:
         if: runner.os != 'Windows' && matrix.features == ''
         run: cargo test -p basemind-tui --features replay --quiet
 
+      # ~keep `agent-tui` / `desktop-ui` gate the launcher subcommands for the two unreleased
+      # ~keep front-ends, so they are in no matrix leg and in no release build — which leaves
+      # ~keep `src/agent_cmd.rs` and `src/ui_cmd.rs` (and their unit tests) compiled by nothing.
+      # ~keep This step is their only coverage; drop it when the front-ends ship and the features fold
+      # ~keep back into `full`. Reuses the `full` leg's cache by building on top of it.
+      - name: cargo clippy + test (front-end launchers)
+        if: runner.os == 'Linux' && matrix.features == 'full'
+        run: |
+          cargo clippy --bin basemind --features full,agent-tui,desktop-ui -- -D warnings
+          cargo test --bin basemind --features full,agent-tui,desktop-ui --quiet
+
       - name: cargo build --release
         run: cargo build --release --quiet --bin basemind --features "${{ matrix.features }}"
 

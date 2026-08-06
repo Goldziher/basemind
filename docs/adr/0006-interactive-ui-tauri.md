@@ -60,9 +60,12 @@ there is demand.
 The **launch path and packaging** shipped first, carrying no GUI-toolchain blast radius:
 
 - A new `crates/basemind-ui` workspace crate produces the sibling `basemind-ui` binary, and a
-  `basemind ui` subcommand (`src/ui_cmd.rs`) re-execs it from beside `basemind` in the release
-  archive — the exact pattern `basemind agent` uses for `basemind-tui`. It ships in every per-triple
-  archive via `scripts/package-release.sh` and tracks the release version in lock-step.
+  `basemind ui` subcommand (`src/ui_cmd.rs`) re-execs it from beside `basemind` — the exact pattern
+  `basemind agent` uses for `basemind-tui`. It tracks the release version in lock-step.
+- **Neither front-end ships yet.** `scripts/package-release.sh` packages `basemind` alone, and the
+  `basemind ui` / `basemind agent` launchers sit behind the root crate's `desktop-ui` / `agent-tui`
+  features, which `full` omits — so a released binary never offers a command whose sibling is absent.
+  Both go back into the archive when the window below lands and this ADR moves off **Proposed**.
 - The interactive Tauri window — driving `basemind_agent::transport::AgentClient` and rendering the
   ADR-0005 graph-view payload offline — lands behind an off-by-default `desktop` cargo feature in a
   later slice, so `cargo build --workspace` / CI and default builds stay free of the per-platform

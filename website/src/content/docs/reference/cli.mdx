@@ -313,8 +313,6 @@ basemind init [--yes --with --without --rules-target --no-rules --no-usage-rules
 basemind lang list|install|clean
 basemind hook install
 basemind cache gc|stats|clear [--component]
-basemind agent [prompt] [--resume --continue --daemon --attach --replay]
-basemind ui [--root <path>]
 basemind daemon ensure
 basemind statusline
 basemind compress-output [--family]
@@ -333,8 +331,6 @@ basemind detect-waste
 | `lang list\|install\|clean` | Manage downloaded tree-sitter grammars. |
 | `hook install` | Add a git pre-commit hook that runs `basemind scan --staged`. |
 | `cache gc\|stats\|clear [--component]` | Offline path directly against `.basemind/` — the only way to clear `views`/`all`, which `admin cache-clear` refuses because they back the live index. |
-| `agent [prompt] [--resume --continue --daemon --attach --replay]` | Launch the basemind agent TUI (a coding agent over the code map). |
-| `ui [--root <path>]` | Launch the basemind desktop UI (an interactive code graph over the code map). |
 | `daemon ensure` | Ensure the daemon's streamable-HTTP MCP transport is up; idempotent. Needs `--features comms`. |
 | `statusline` | Print a one-line summary of the daemon's hot workspaces, for a shell statusline. Silent and exits 0 when no daemon is running. |
 | `compress-output [--family]` | Backend for the output-compression guardrail: compress stdin (e.g. piped command output) by detected or given family. |

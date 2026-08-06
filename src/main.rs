@@ -10,9 +10,11 @@ use basemind::render::{self, Verbosity};
 use basemind::store::{LockHolder, Store};
 use basemind::watcher::{BatchKind, WatchBatch};
 
+#[cfg(feature = "agent-tui")]
 mod agent_cmd;
 mod comms_cli;
 mod lang_cli;
+#[cfg(feature = "desktop-ui")]
 mod ui_cmd;
 
 #[derive(Parser, Debug)]
@@ -118,9 +120,13 @@ enum Cmd {
     /// this process's stdin/stdout to it. HTTP-native clients skip this and dial the daemon URL
     /// directly (see `daemon ensure`).
     Serve(ServeArgs),
-    /// Launch the basemind agent TUI (a coding agent over the code map).
+    /// Launch the basemind agent TUI (a coding agent over the code map, needs `--features
+    /// agent-tui`).
+    #[cfg(feature = "agent-tui")]
     Agent(AgentArgs),
-    /// Launch the basemind desktop UI (an interactive code graph over the code map).
+    /// Launch the basemind desktop UI (an interactive code graph over the code map, needs
+    /// `--features desktop-ui`).
+    #[cfg(feature = "desktop-ui")]
     Ui(UiArgs),
     /// Print a compact one-line summary of the daemon's currently-hot workspaces, for a shell
     /// statusline. Fast and silent: prints nothing and exits 0 when no daemon is running.
@@ -257,6 +263,7 @@ struct ServeArgs {
     documents: DocumentsCliOverrides,
 }
 
+#[cfg(feature = "agent-tui")]
 #[derive(clap::Args, Debug)]
 struct AgentArgs {
     /// Arguments forwarded verbatim to the sibling `basemind-tui` binary: positional `[prompt]`,
@@ -266,6 +273,7 @@ struct AgentArgs {
     args: Vec<String>,
 }
 
+#[cfg(feature = "desktop-ui")]
 #[derive(clap::Args, Debug)]
 struct UiArgs {
     /// Arguments forwarded verbatim to the sibling `basemind-ui` binary (e.g. `--root <path>`). The
@@ -379,7 +387,9 @@ fn main() -> Result<()> {
         Cmd::Checkpoint(args) => basemind::textcompress::cli::run_checkpoint(&root, &args),
         Cmd::DetectWaste(args) => basemind::textcompress::cli::run_detect_waste(&args),
         Cmd::Serve(args) => cmd_serve(&root, &view, &args, json),
+        #[cfg(feature = "agent-tui")]
         Cmd::Agent(args) => agent_cmd::run(&root, &args.args),
+        #[cfg(feature = "desktop-ui")]
         Cmd::Ui(args) => ui_cmd::run(&root, &args.args),
         Cmd::Cache(action) => basemind::cli::run_cache(&root, action, json),
         // An explicit `--root` selects the per-repo line for that (resolved) workspace; bare
