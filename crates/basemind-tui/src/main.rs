@@ -47,7 +47,7 @@ use crate::config::{default_model_name, load_agent_config};
 
 /// The system prompt handed to the session.
 const SYSTEM_PROMPT: &str = "You are a coding assistant operating inside the basemind agent. Prefer \
-    the outline and search_symbols tools over reading whole files. Be concise.";
+    the code_outline and code_symbols tools over reading whole files. Be concise.";
 /// Time allowed for the session engine to flush after the daemon stops accepting clients.
 const ENGINE_SHUTDOWN_GRACE: Duration = Duration::from_secs(10);
 /// Time allowed for runtime-owned blocking work to stop before process exit.

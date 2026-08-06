@@ -26,7 +26,7 @@ pub enum TranscriptEntry {
     Tool {
         /// Provider-assigned tool-call id, used to pair a later result with this entry.
         call_id: String,
-        /// The namespaced tool name (e.g. `outline`).
+        /// The namespaced tool name (e.g. `code_outline`).
         name: String,
         /// The arguments rendered as compact JSON.
         args: String,
@@ -182,7 +182,7 @@ impl App {
             AgentEvent::ToolStarted {
                 call_id, name, args, ..
             } => {
-                if is_search_tool(&name) {
+                if is_code_map_tool(&name) {
                     self.searches = self.searches.saturating_add(1);
                 }
                 self.transcript.push(TranscriptEntry::Tool {
@@ -487,21 +487,22 @@ impl App {
     }
 }
 
-/// The basemind code-map / git tools whose calls count as "searches" in the status bar. A
-/// `shell_exec` or `room_*` call is not a code-map query, so it does not bump the counter.
-fn is_search_tool(name: &str) -> bool {
-    matches!(
-        name,
-        "outline"
-            | "search_symbols"
-            | "find_references"
-            | "find_callers"
-            | "call_graph"
-            | "workspace_grep"
-            | "recent_changes"
-            | "blame_symbol"
-            | "diff_file"
-    )
+/// The basemind code-map / git tools whose calls count as "searches" in the status bar.
+const CODE_MAP_TOOL_NAMES: &[&str] = &[
+    "code_callers",
+    "code_grep",
+    "code_outline",
+    "code_references",
+    "code_symbols",
+    "git_blame_symbol",
+    "git_diff",
+    "git_recent",
+    "graph_calls",
+];
+
+/// Whether a tool call should bump the TUI's code-map search counter.
+fn is_code_map_tool(name: &str) -> bool {
+    CODE_MAP_TOOL_NAMES.contains(&name)
 }
 
 /// Split a `/post` argument into an optional subject and the body. A leading `subject: ` (split on
@@ -521,9 +522,35 @@ fn split_post(arg: &str) -> (Option<String>, String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use basemind_agent::tools::{code_nav_tools, git_history_tools};
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::empty())
+    }
+
+    #[test]
+    fn code_map_tool_classifier_tracks_registered_agent_tools() {
+        let mut registered: Vec<_> = code_nav_tools()
+            .into_iter()
+            .chain(git_history_tools())
+            .map(|tool| tool.name())
+            .collect();
+        registered.sort_unstable();
+
+        assert_eq!(
+            registered.as_slice(),
+            CODE_MAP_TOOL_NAMES,
+            "the TUI classifier must exactly match the agent's registered code-map tools"
+        );
+        assert!(CODE_MAP_TOOL_NAMES.iter().all(|name| is_code_map_tool(name)));
+        assert!(
+            !is_code_map_tool("shell_exec"),
+            "shell execution is not a code-map lookup"
+        );
+        assert!(
+            !is_code_map_tool("room_post"),
+            "room messaging is not a code-map lookup"
+        );
     }
 
     #[test]
@@ -664,7 +691,7 @@ mod tests {
         app.apply(AgentEvent::ToolStarted {
             turn: 1,
             call_id: "call-1".into(),
-            name: "outline".into(),
+            name: "code_outline".into(),
             args: serde_json::json!({ "path": "src/lib.rs" }),
         });
         app.apply(AgentEvent::ToolResult {
@@ -674,7 +701,7 @@ mod tests {
         });
         match app.transcript.last() {
             Some(TranscriptEntry::Tool { result, name, .. }) => {
-                assert_eq!(name, "outline");
+                assert_eq!(name, "code_outline");
                 assert_eq!(result, &Some((true, "12 symbols".to_string())));
             }
             other => panic!("expected a tool entry, got {other:?}"),
