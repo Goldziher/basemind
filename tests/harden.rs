@@ -905,10 +905,6 @@ fn assert_passing(repo_name: &str, scan: &ScanOutcome, repo_record: &mut RepoRec
                     "tokio canary: graph_export(node_link) rendered {graph_export_nodes} nodes (expected ≥ 2)"
                 ));
             }
-            // Machine-independent latency guard: neighbors and architecture_map pay the same shared ~keep
-            // codegraph build, so a ratio (not an absolute-ms threshold that would be machine- ~keep
-            // dependent) catches a gross regression — rebuilding the graph several times, or an ~keep
-            // O(n²) blow-up — while the +50ms floor absorbs timer noise on sub-millisecond runs. ~keep
             let archmap_us = repo_record
                 .canaries
                 .get("archmap_module_elapsed_us")
@@ -917,14 +913,45 @@ fn assert_passing(repo_name: &str, scan: &ScanOutcome, repo_record: &mut RepoRec
                 .canaries
                 .get("neighbors_spawn_elapsed_us")
                 .and_then(Value::as_u64);
+            let cold_us = repo_record.canaries.get("graph_calls_cold_us").and_then(Value::as_u64);
+            // Both readings below are WARM. `drive_tools` sweeps every graph mode before the first
+            // canary runs, so the shared codegraph entries are already built by the time these two
+            // are timed. The ratio therefore bounds warm-against-warm — a blow-up in the neighbors
+            // projection itself, on top of a build both calls got for free — and stays machine-
+            // independent by comparing two measurements from the same run rather than an absolute
+            // millisecond threshold. It says nothing about the build, which is what the cold guard
+            // below exists for. The +50ms floor absorbs timer noise on sub-millisecond runs. ~keep
             if let (Some(archmap_us), Some(neighbors_us)) = (archmap_us, neighbors_us) {
                 let ceiling = archmap_us.saturating_mul(8).saturating_add(50_000);
                 if neighbors_us > ceiling {
                     failures.push(format!(
-                        "tokio canary: neighbors latency {neighbors_us}µs > 8× architecture_map \
-                         baseline {archmap_us}µs + 50ms ({ceiling}µs) — shared-build regression?"
+                        "tokio canary: warm neighbors latency {neighbors_us}µs > 8× warm \
+                         architecture_map baseline {archmap_us}µs + 50ms ({ceiling}µs) — \
+                         projection regression?"
                     ));
                 }
+            }
+            // Memo effectiveness — the guard the ratio above structurally cannot provide. The
+            // neighbors canary asks for the same edge-kind set as the run's one cold build, so a
+            // working memo hands it a ready graph and it lands far cheaper. When `run_call_graph`
+            // took no shared stack and never populated the memo (fixed in 6a9ff7c), every graph
+            // call paid its own full build: warm ≈ cold, and the warm-vs-warm ratio above stayed
+            // green throughout because BOTH of its inputs were equally cold. Skipped when the cold
+            // build is itself under 50ms — below that the gap is timer noise, not evidence. ~keep
+            //
+            // 4× is calibrated against both ends, on tokio: a working memo measures cold 453ms vs
+            // warm 20ms (22×, so 5× headroom), and ef2fde4 — the commit where the memo went
+            // unpopulated — measured warm 443ms against a comparable cold build, which this fails
+            // and the ratio above did not. ~keep
+            if let (Some(cold_us), Some(neighbors_us)) = (cold_us, neighbors_us)
+                && cold_us >= 50_000
+                && neighbors_us.saturating_mul(4) > cold_us
+            {
+                failures.push(format!(
+                    "tokio canary: warm neighbors {neighbors_us}µs is not materially cheaper than \
+                     the run's cold codegraph build {cold_us}µs (expected at least 4× cheaper) — \
+                     is the shared graph memo still being populated?"
+                ));
             }
             if cfg!(feature = "code-search")
                 && let Some(hits) = repo_record
@@ -1690,6 +1717,22 @@ async fn harden_repo() {
         git_history,
         canaries: BTreeMap::new(),
     };
+
+    // `drive_tools` issues `graph calls` as the session's first graph call, so it pays a COLD build
+    // of the {calls} edge-kind set (no focus) — the very memo entry the `neighbors` canary asks for
+    // later. Recording it here is the only cold baseline available: by the time `capture_canaries`
+    // runs, the sweep has warmed an entry for every edge set it uses, so every graph timing taken
+    // there is a warm one, and a memo that silently stopped working reads as perfectly normal. ~keep
+    if let Some(cold_us) = record
+        .tools
+        .iter()
+        .find(|t| t.tool == "graph:calls" && t.ok)
+        .map(|t| t.elapsed_us)
+    {
+        record
+            .canaries
+            .insert("graph_calls_cold_us".to_string(), json!(cold_us as u64));
+    }
 
     if let Some(m) = &record.git_history {
         record.canaries.insert("gh_index_commits".to_string(), json!(m.commits));
