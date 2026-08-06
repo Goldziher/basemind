@@ -132,7 +132,8 @@ fn scalar_to_string(value: &Value) -> String {
 /// - An array of objects at the top level → an aligned table.
 /// - A scalar/flat object → `key: value` lines.
 ///
-/// `tool_name` enables a few nicer special-cases (outline, search, references).
+/// `tool_name` is the `domain:mode` key the CLI dispatched (e.g. `code:outline`) and enables a few
+/// nicer special-cases.
 pub fn render_human(tool_name: &str, value: &Value, out: &mut impl Write) -> Result<()> {
     match value {
         Value::Object(map) => {
@@ -186,7 +187,7 @@ pub fn render_human(tool_name: &str, value: &Value, out: &mut impl Write) -> Res
 /// truncated grep gets mistaken for "no such symbol in the repo". So the bound gets its own line,
 /// naming the count that was withheld and the way to get it.
 fn render_grep_truncation(tool_name: &str, map: &serde_json::Map<String, Value>, out: &mut impl Write) -> Result<()> {
-    if tool_name != "workspace_grep" || map.get("truncated").and_then(Value::as_bool) != Some(true) {
+    if tool_name != "code:grep" || map.get("truncated").and_then(Value::as_bool) != Some(true) {
         return Ok(());
     }
     let shown = map.get("hits").and_then(Value::as_array).map_or(0, Vec::len);
@@ -268,7 +269,7 @@ fn render_table(tool_name: &str, items: &[Value], out: &mut impl Write) -> Resul
 /// when it handled the items, `None` to fall through to the generic table.
 fn render_special(tool_name: &str, items: &[Value], out: &mut impl Write) -> Result<Option<()>> {
     match tool_name {
-        "outline" | "search_symbols" => {
+        "code:outline" | "code:symbols" => {
             for item in items.iter().take(MAX_HUMAN_ITEMS) {
                 let Some(obj) = item.as_object() else {
                     return Ok(None);
@@ -288,7 +289,7 @@ fn render_special(tool_name: &str, items: &[Value], out: &mut impl Write) -> Res
             }
             Ok(Some(()))
         }
-        "find_references" | "find_callers" => {
+        "code:references" | "code:callers" => {
             for item in items.iter().take(MAX_HUMAN_ITEMS) {
                 let Some(obj) = item.as_object() else {
                     return Ok(None);
@@ -321,7 +322,7 @@ mod tests {
 
     fn render_grep(value: &serde_json::Value) -> String {
         let mut buf: Vec<u8> = Vec::new();
-        render_human("workspace_grep", value, &mut buf).expect("render");
+        render_human("code:grep", value, &mut buf).expect("render");
         String::from_utf8(buf).expect("utf8")
     }
 

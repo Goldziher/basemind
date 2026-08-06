@@ -1,8 +1,12 @@
-//! Param and response types for the headless agent-shell MCP tools.
+//! Param and response types for the headless agent-shell `shell` tool.
 //!
 //! These drive the embedded rmux daemon (see [`crate::shells`]): spawn a
 //! detached headless shell session, send stdin, capture the visible output, and
 //! kill it. The whole module is gated on `feature = "shells"`.
+//!
+//! [`ShellParams`] is the one advertised shape — flat, with every per-mode field an optional
+//! sibling. The per-mode structs below it are internal: the dispatcher in `helpers_shells` builds
+//! them after validating the flat params, so the bodies keep their own typed inputs.
 //!
 //! Split into its own file to keep `types.rs` under the 1000-line cap.
 
@@ -11,7 +15,71 @@
 use rmcp::schemars;
 use serde::{Deserialize, Serialize};
 
+use super::mode::ShellMode;
 use crate::path::RelPath;
+
+/// Parameters for the single `shell` tool: a required `mode` plus the union of its modes' inputs.
+///
+/// Flat by necessity — a per-mode schema union means `oneOf`, which the Anthropic `input_schema`
+/// subset rejects, silently dropping the entire tool registry (GH #50). Which fields a mode
+/// accepts is enforced in `helpers_shells::run_shell` against a per-mode allow-list.
+#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
+pub struct ShellParams {
+    /// Which operation to run.
+    pub mode: ShellMode,
+    /// `spawn` only. Command line to run in the session's initial pane, interpreted by the login
+    /// shell (e.g. `bash -lc '<command>'`). Required by that mode.
+    #[serde(default)]
+    pub command: Option<String>,
+    /// `spawn` only. Repository-relative working directory for the spawned process.
+    /// Forward-slash separated, no leading `/`.
+    #[serde(default)]
+    pub cwd: Option<RelPath>,
+    /// `spawn` only. Environment-variable overrides applied to the spawned process.
+    #[serde(default)]
+    pub env: Option<Vec<ShellEnv>>,
+    /// `spawn` only. Human-readable title for the session (advisory; address the session by the
+    /// returned `session_id`).
+    #[serde(default)]
+    pub title: Option<String>,
+    /// `send` / `capture` / `kill`. The `session_id` returned by `spawn`. Required by those modes.
+    #[serde(default)]
+    pub session_id: Option<String>,
+    /// `broadcast` only. The `session_id`s to deliver `text` to. Required by that mode.
+    #[serde(default)]
+    pub session_ids: Option<Vec<String>>,
+    /// `send` / `broadcast`. Text to write to the session's stdin. Required by those modes.
+    #[serde(default)]
+    pub text: Option<String>,
+    /// `send` / `broadcast`. When `true` (default), a trailing newline is appended so the line is
+    /// executed. Set `false` to send a raw keystroke fragment without a return.
+    #[serde(default)]
+    pub enter: Option<bool>,
+    /// `capture` only. Cap on how many trailing (most-recent) non-blank lines of the visible
+    /// screen to return. Omit to return the whole visible screen.
+    #[serde(default)]
+    pub lines: Option<usize>,
+}
+
+impl ShellParams {
+    /// A call carrying only `mode`. Callers set the fields their mode uses and leave the rest
+    /// `None`: the helper rejects a field belonging to another mode, so populating them blindly
+    /// would fail the call.
+    pub fn new(mode: ShellMode) -> Self {
+        Self {
+            mode,
+            command: None,
+            cwd: None,
+            env: None,
+            title: None,
+            session_id: None,
+            session_ids: None,
+            text: None,
+            enter: None,
+            lines: None,
+        }
+    }
+}
 
 /// One environment-variable override for a spawned shell, in `KEY` / `VALUE` form.
 ///

@@ -1,9 +1,9 @@
-//! End-to-end smoke test for the `basemind comms` CLI (thread model) against a REAL detached
+//! End-to-end smoke test for the `basemind agents` CLI (thread model) against a REAL detached
 //! broker daemon.
 //!
 //! This exercises the actual `comms daemon` process path. It is the regression guard for the
 //! "bind the socket inside the tokio runtime" fix and pins the **condensation** contract end to
-//! end: `comms history --json` for a different agent returns the message front-matter (subject)
+//! end: `agents history --json` for a different agent returns the message front-matter (subject)
 //! but NEVER the body bytes. It also covers the human-admin `archive` verb.
 //!
 //! Runs on Unix and Windows.
@@ -15,20 +15,30 @@ use std::process::Command;
 
 const BIN: &str = env!("CARGO_BIN_EXE_basemind");
 
-/// Run `basemind comms <args...>` as `agent` against the isolated `comms_dir`.
-fn comms(comms_dir: &Path, agent: &str, args: &[&str]) -> (bool, String, String) {
+/// Run `basemind <group> <args...>` as `agent` against the isolated `comms_dir`.
+fn run(group: &str, comms_dir: &Path, agent: &str, args: &[&str]) -> (bool, String, String) {
     let out = Command::new(BIN)
-        .arg("comms")
+        .arg(group)
         .args(args)
         .env("BASEMIND_COMMS_DIR", comms_dir)
         .env("BASEMIND_AGENT_ID", agent)
         .output()
-        .expect("spawn basemind comms");
+        .expect("spawn basemind");
     (
         out.status.success(),
         String::from_utf8_lossy(&out.stdout).into_owned(),
         String::from_utf8_lossy(&out.stderr).into_owned(),
     )
+}
+
+/// Broker daemon lifecycle — `basemind comms start|stop|status`.
+fn comms(comms_dir: &Path, agent: &str, args: &[&str]) -> (bool, String, String) {
+    run("comms", comms_dir, agent, args)
+}
+
+/// The agent verbs — `basemind agents <mode>`, the CLI half of the `agents` domain.
+fn agents(comms_dir: &Path, agent: &str, args: &[&str]) -> (bool, String, String) {
+    run("agents", comms_dir, agent, args)
 }
 
 /// Guard that stops the daemon on drop.
@@ -59,7 +69,7 @@ fn comms_daemon_thread_history_is_front_matter_only() {
     assert!(ok, "comms start failed: {err}");
     let _stop = Stop(&comms_dir);
 
-    let (ok, start_out, e) = comms(
+    let (ok, start_out, e) = agents(
         &comms_dir,
         "agent-alice",
         &[
@@ -78,14 +88,14 @@ fn comms_daemon_thread_history_is_front_matter_only() {
         .expect("thread id in start json")
         .to_string();
 
-    let (ok, _o, e) = comms(
+    let (ok, _o, e) = agents(
         &comms_dir,
         "agent-alice",
         &["post", "--root", &root, "--body", BODY, &thread, "Hello team"],
     );
     assert!(ok, "post failed: {e}");
 
-    let (ok, history, e) = comms(
+    let (ok, history, e) = agents(
         &comms_dir,
         "agent-bob",
         &["history", "--root", &root, &thread, "--json"],
@@ -107,7 +117,7 @@ fn comms_daemon_thread_history_is_front_matter_only() {
     let id = json_str_field(&history, "id")
         .expect("message id in history json")
         .to_string();
-    let (ok, body, e) = comms(&comms_dir, "agent-bob", &["read", "--root", &root, &id]);
+    let (ok, body, e) = agents(&comms_dir, "agent-bob", &["message", "--root", &root, &id]);
     assert!(ok, "read body failed: {e}");
     assert!(
         body.contains(BODY),
@@ -127,7 +137,7 @@ fn thread_archive_removes_from_active_listing() {
     assert!(ok, "comms start failed: {err}");
     let _stop = Stop(&comms_dir);
 
-    let (ok, start_out, e) = comms(
+    let (ok, start_out, e) = agents(
         &comms_dir,
         "agent-alice",
         &[
@@ -144,22 +154,22 @@ fn thread_archive_removes_from_active_listing() {
     assert!(ok, "thread-start failed: {e}");
     let thread = json_str_field(&start_out, "id").expect("thread id").to_string();
 
-    let (ok, _o, e) = comms(&comms_dir, "agent-alice", &["archive", "--root", &root, &thread]);
+    let (ok, _o, e) = agents(&comms_dir, "agent-alice", &["archive", "--root", &root, &thread]);
     assert!(ok, "archive failed: {e}");
 
-    let (ok, active, e) = comms(&comms_dir, "agent-alice", &["threads", "--root", &root, "--json"]);
-    assert!(ok, "threads failed: {e}");
+    let (ok, active, e) = agents(&comms_dir, "agent-alice", &["thread-list", "--root", &root, "--json"]);
+    assert!(ok, "thread-list failed: {e}");
     assert!(
         active.contains("\"total\":0"),
         "archived thread must not be in the active listing: {active}"
     );
 
-    let (ok, all, e) = comms(
+    let (ok, all, e) = agents(
         &comms_dir,
         "agent-alice",
-        &["threads", "--root", &root, "--include-archived", "--json"],
+        &["thread-list", "--root", &root, "--include-archived", "--json"],
     );
-    assert!(ok, "threads --include-archived failed: {e}");
+    assert!(ok, "thread-list --include-archived failed: {e}");
     assert!(
         all.contains(&thread),
         "include-archived must surface the archived thread: {all}"

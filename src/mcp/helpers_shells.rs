@@ -1,9 +1,10 @@
-//! Helper bodies for the headless agent-shell MCP tools.
+//! The `shell` domain dispatcher and its helper bodies.
 //!
-//! Each helper resolves the embedded [`crate::shells::ShellRuntime`] off
-//! `ServerState`, drives one rmux operation (spawn / send / capture / kill), and
-//! returns a JSON [`CallToolResult`]. The whole module is gated on
-//! `feature = "shells"`.
+//! [`run_shell`] is what the `#[tool]` shim and the CLI both call: it validates the flat
+//! [`ShellParams`] against the selected [`ShellMode`] and delegates to the per-mode body. Each
+//! body resolves the embedded [`crate::shells::ShellRuntime`] off `ServerState`, drives one rmux
+//! operation (spawn / send / capture / kill / list / broadcast), and returns a JSON
+//! [`CallToolResult`]. The whole module is gated on `feature = "shells"`.
 
 #![cfg(feature = "shells")]
 
@@ -12,10 +13,11 @@ use rmcp::model::CallToolResult;
 
 use super::ServerState;
 use super::helpers::json_result;
+use super::mode::{ShellMode, reject_unsupported};
 use super::types_shells::{
     ShellBroadcastParams, ShellBroadcastResponse, ShellCaptureParams, ShellCaptureResponse, ShellEnv, ShellKillParams,
-    ShellKillResponse, ShellListParams, ShellListResponse, ShellSendParams, ShellSendResponse, ShellSessionView,
-    ShellSpawnParams, ShellSpawnResponse,
+    ShellKillResponse, ShellListParams, ShellListResponse, ShellParams, ShellSendParams, ShellSendResponse,
+    ShellSessionView, ShellSpawnParams, ShellSpawnResponse,
 };
 use crate::shells::SessionId;
 use crate::shells::session::ShellCommand;
@@ -62,7 +64,127 @@ async fn require_session(state: &ServerState, raw: &str) -> Result<(SessionId, r
         .ok_or_else(|| unknown_session_error(raw))
 }
 
-/// `shell_spawn`: create a detached headless shell session.
+/// Fail a mode that was given a field belonging to some other mode.
+///
+/// Inverted against `allowed` rather than listing every rejected field per mode: with six modes
+/// and nine sibling fields, an explicit per-mode reject list is where a newly added field silently
+/// becomes accept-everywhere.
+fn reject_foreign_fields(mode: ShellMode, present: &[(&str, bool)], allowed: &[&str]) -> Result<(), McpError> {
+    let foreign: Vec<(&str, bool)> = present
+        .iter()
+        .filter(|(field, _)| !allowed.contains(field))
+        .copied()
+        .collect();
+    reject_unsupported(ShellMode::DOMAIN, mode.as_str(), &foreign)
+}
+
+/// Unwrap a field this mode cannot run without, naming the exact `mode`/field pair.
+fn require_field<T>(mode: ShellMode, field: &str, value: Option<T>) -> Result<T, McpError> {
+    value
+        .ok_or_else(|| McpError::invalid_params(format!("`shell` mode=\"{}\" requires `{field}`", mode.as_str()), None))
+}
+
+/// The fields each mode accepts. Everything else on [`ShellParams`] is rejected for that mode.
+fn allowed_fields(mode: ShellMode) -> &'static [&'static str] {
+    match mode {
+        ShellMode::Spawn => &["command", "cwd", "env", "title"],
+        ShellMode::Send => &["session_id", "text", "enter"],
+        ShellMode::Capture => &["session_id", "lines"],
+        ShellMode::Kill => &["session_id"],
+        ShellMode::List => &[],
+        ShellMode::Broadcast => &["session_ids", "text", "enter"],
+    }
+}
+
+/// Dispatch the single `shell` tool onto the per-operation body its `mode` selects.
+///
+/// Fields belonging to another mode are rejected rather than dropped: a silently ignored `lines`
+/// on a `send` call reads to an agent as a successful send that also captured output.
+pub(super) async fn run_shell(state: &ServerState, params: ShellParams) -> Result<CallToolResult, McpError> {
+    let ShellParams {
+        mode,
+        command,
+        cwd,
+        env,
+        title,
+        session_id,
+        session_ids,
+        text,
+        enter,
+        lines,
+    } = params;
+    let present = [
+        ("command", command.is_some()),
+        ("cwd", cwd.is_some()),
+        ("env", env.is_some()),
+        ("title", title.is_some()),
+        ("session_id", session_id.is_some()),
+        ("session_ids", session_ids.is_some()),
+        ("text", text.is_some()),
+        ("enter", enter.is_some()),
+        ("lines", lines.is_some()),
+    ];
+    reject_foreign_fields(mode, &present, allowed_fields(mode))?;
+
+    match mode {
+        ShellMode::Spawn => {
+            run_shell_spawn(
+                state,
+                ShellSpawnParams {
+                    command: require_field(mode, "command", command)?,
+                    cwd,
+                    env,
+                    title,
+                },
+            )
+            .await
+        }
+        ShellMode::Send => {
+            run_shell_send(
+                state,
+                ShellSendParams {
+                    session_id: require_field(mode, "session_id", session_id)?,
+                    text: require_field(mode, "text", text)?,
+                    enter: enter.unwrap_or(true),
+                },
+            )
+            .await
+        }
+        ShellMode::Capture => {
+            run_shell_capture(
+                state,
+                ShellCaptureParams {
+                    session_id: require_field(mode, "session_id", session_id)?,
+                    lines,
+                },
+            )
+            .await
+        }
+        ShellMode::Kill => {
+            run_shell_kill(
+                state,
+                ShellKillParams {
+                    session_id: require_field(mode, "session_id", session_id)?,
+                },
+            )
+            .await
+        }
+        ShellMode::List => run_shell_list(state, ShellListParams {}).await,
+        ShellMode::Broadcast => {
+            run_shell_broadcast(
+                state,
+                ShellBroadcastParams {
+                    session_ids: require_field(mode, "session_ids", session_ids)?,
+                    text: require_field(mode, "text", text)?,
+                    enter: enter.unwrap_or(true),
+                },
+            )
+            .await
+        }
+    }
+}
+
+/// `shell` mode `spawn`: create a detached headless shell session.
 ///
 /// When the server is built with comms enabled (`feature = "comms"`, unix), the spawn is coupled
 /// to a comms THREAD so the parent (this server) and the spawned child can talk bidirectionally: a
@@ -158,7 +280,7 @@ pub(super) async fn run_shell_spawn(state: &ServerState, params: ShellSpawnParam
 /// terminal never launched reports a running command that nobody can see — the second half of the
 /// "opens a shell but launches nothing in it" bug. The session itself is genuinely alive and may
 /// already have side effects, so it is left running rather than torn down: the error carries the
-/// `session_id` and the attach command, and `shell_list` (daemon-backed) still shows it, so every
+/// `session_id` and the attach command, and mode `list` (daemon-backed) still shows it, so every
 /// recovery path — capture, kill, manual attach — stays open.
 fn presentation_error(error: anyhow::Error, session_id: &SessionId, attach_command: &str) -> McpError {
     mcp_internal(
@@ -337,7 +459,7 @@ async fn rollback_session_room(state: &ServerState, thread_id: &str) {
     }
 }
 
-/// `shell_send`: write text (optionally with a newline) to a session's stdin.
+/// `shell` mode `send`: write text (optionally with a newline) to a session's stdin.
 pub(super) async fn run_shell_send(state: &ServerState, params: ShellSendParams) -> Result<CallToolResult, McpError> {
     let (id, name) = require_session(state, &params.session_id).await?;
     let session = state
@@ -358,7 +480,7 @@ pub(super) async fn run_shell_send(state: &ServerState, params: ShellSendParams)
     })
 }
 
-/// `shell_capture`: return the visible screen text of a session's primary pane.
+/// `shell` mode `capture`: return the visible screen text of a session's primary pane.
 pub(super) async fn run_shell_capture(
     state: &ServerState,
     params: ShellCaptureParams,
@@ -379,7 +501,7 @@ pub(super) async fn run_shell_capture(
     json_result(&ShellCaptureResponse { text })
 }
 
-/// `shell_kill`: terminate a session.
+/// `shell` mode `kill`: terminate a session.
 ///
 /// Nothing is unregistered afterwards: the daemon's live session set is the only registry, so the
 /// killed session stops resolving as soon as the daemon drops it.
@@ -404,7 +526,7 @@ pub(super) async fn run_shell_kill(state: &ServerState, params: ShellKillParams)
     })
 }
 
-/// `shell_broadcast`: send the same input to many sessions' primary panes.
+/// `shell` mode `broadcast`: send the same input to many sessions' primary panes.
 pub(super) async fn run_shell_broadcast(
     state: &ServerState,
     params: ShellBroadcastParams,
@@ -438,14 +560,14 @@ pub(super) async fn run_shell_broadcast(
     json_result(&ShellBroadcastResponse { delivered })
 }
 
-/// `shell_list`: enumerate every session the shared shell daemon currently holds, each flagged by
+/// `shell` mode `list`: enumerate every session the shared shell daemon currently holds, each flagged by
 /// its liveness.
 ///
 /// The daemon is the registry, so sessions spawned by another basemind process (a CLI invocation, a
 /// second `serve`) are listed here too, and a dead session is simply absent — `alive` is always
 /// `true`. The thread-model comms broker keeps no session-lineage keyspace, so the `parent_agent` /
 /// `child_agent` / `room_id` fields on each row stay `None`; a spawned session's coupling thread is
-/// surfaced by `shell_spawn`'s own response instead.
+/// surfaced by mode `spawn`'s own response instead.
 pub(super) async fn run_shell_list(state: &ServerState, _params: ShellListParams) -> Result<CallToolResult, McpError> {
     let runtime = state
         .shared

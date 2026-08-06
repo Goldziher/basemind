@@ -610,21 +610,32 @@ async fn drive_tools(svc: &ServiceHandle, sample: Option<&SampleFile>) -> Vec<To
     if let Some(spawned) = call(
         svc,
         &mut records,
-        "shell_spawn",
-        json!({ "command": "echo basemind-harden-shell" }),
+        "shell",
+        json!({ "mode": "spawn", "command": "echo basemind-harden-shell" }),
     )
     .await
         && let Some(session_id) = spawned.get("session_id").and_then(Value::as_str)
     {
         assert!(
             session_id.starts_with("bmsh-"),
-            "shell_spawn session_id should be a minted bmsh- id, got {session_id:?}"
+            "shell mode=spawn session_id should be a minted bmsh- id, got {session_id:?}"
         );
-        let session = json!({ "session_id": session_id });
-        call(svc, &mut records, "shell_capture", session.clone()).await;
-        call(svc, &mut records, "shell_kill", session).await;
+        call(
+            svc,
+            &mut records,
+            "shell",
+            json!({ "mode": "capture", "session_id": session_id }),
+        )
+        .await;
+        call(
+            svc,
+            &mut records,
+            "shell",
+            json!({ "mode": "kill", "session_id": session_id }),
+        )
+        .await;
     }
-    call(svc, &mut records, "shell_list", json!({})).await;
+    call(svc, &mut records, "shell", json!({ "mode": "list" })).await;
 
     records
 }

@@ -1,15 +1,168 @@
-//! Parameter + response shapes for the semantic code-search tools (`search_code`, `get_chunk`).
+//! Request shape for the consolidated `code` domain tool, plus the semantic-search payloads.
 //!
-//! The `*Params` structs are always compiled (the tool shims + CLI reference them regardless of
-//! the `code-search` feature). The response structs are gated on `code-search` since only the
-//! feature-on helper bodies build them.
+//! [`CodeParams`] is what crosses the wire: one flat parameter object with a required [`CodeMode`]
+//! selecting the lookup and every per-mode field an optional sibling. The per-operation structs
+//! ([`SearchCodeParams`] / [`GetChunkParams`] here, `OutlineParams` / `SearchSymbolsParams` /
+//! `ListFilesParams` / `FindFilesParams` / `FindReferencesParams` / `FindCallersParams` /
+//! `GotoDefinitionParams` / `WorkspaceGrepParams` in `types.rs`, `FindImplementationsParams` in
+//! `types_impls.rs`, `ExpandParams` in `types_compress.rs`) stay as the helpers' internal shapes, so
+//! the bodies keep taking exactly the arguments they always did.
+//!
+//! `CodeParams` lives here rather than in `types.rs` because that file is already within ~90 lines
+//! of the 1000-line per-file cap `tests/max_lines.rs` enforces.
+//!
+//! The response structs are gated on `code-search` since only the feature-on helper bodies build
+//! them.
 
 use rmcp::schemars;
 use serde::{Deserialize, Serialize};
 
+use super::cursor::Cursor;
+use super::mode::CodeMode;
 use crate::path::RelPath;
 
-/// Params for `search_code` — vector KNN over indexed code chunks.
+/// Wire parameters for the `code` tool.
+///
+/// Only `mode` is required. Every other field belongs to a subset of the modes and is rejected —
+/// not ignored — when passed to a mode that has no use for it (see
+/// [`super::mode::reject_unsupported`]); a mode that needs one names the exact `mode`/field pair.
+/// Per-mode defaults are resolved in the helper, not here, because they differ by mode (`limit`
+/// defaults to 100 for the symbol/reference scanners, 200 for the file listers, 10 for `semantic`).
+#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
+pub struct CodeParams {
+    /// Which lookup to run.
+    pub mode: CodeMode,
+    /// Repo-relative path of the file to act on. Required by `outline`, `definition`, `callers`,
+    /// `expand` and `chunk`.
+    #[serde(default)]
+    pub path: Option<RelPath>,
+    /// Symbol name. `symbols` matches it as a case-sensitive SUBSTRING of every indexed symbol
+    /// name; `references` matches it against captured callee identifiers (also a substring, and
+    /// name-only — `Foo::bar()` and `bar()` both match `"bar"`); `callers` and `expand` match it
+    /// exactly against the definitions in `path`. Required by those four modes.
+    #[serde(default, alias = "needle", alias = "symbol", alias = "q")]
+    pub name: Option<String>,
+    /// Free-text query. `find` matches it as a fuzzy subsequence against every indexed path;
+    /// `semantic` embeds / tokenizes it for retrieval. Required by both.
+    #[serde(default, alias = "text")]
+    pub query: Option<String>,
+    /// `grep` only. Rust regex syntax (`regex` crate). Required by that mode.
+    #[serde(default, alias = "regex", alias = "search")]
+    pub pattern: Option<String>,
+    /// `implementations` only. Trait / interface / base-class name, matched as a case-sensitive
+    /// substring. Required by that mode.
+    #[serde(default, alias = "trait", alias = "interface")]
+    pub trait_name: Option<String>,
+    /// `dependents` only. Module / import target (e.g. `"tokio::sync"`, `"react"`), matched as a
+    /// substring against each recorded import path. Required by that mode.
+    #[serde(default, alias = "import")]
+    pub module: Option<String>,
+    /// `symbols` / `callers` / `expand`. Symbol-kind filter: function, method, struct, enum, class,
+    /// interface, trait, type, const, module, macro.
+    #[serde(default)]
+    pub kind: Option<String>,
+    /// `grep` / `files` / `find` / `implementations`. Language filter (e.g. `"rust"`,
+    /// `"typescript"`), applied before matching.
+    #[serde(default)]
+    pub language: Option<String>,
+    /// `grep` / `files`. Substring filter on the repo-relative path.
+    #[serde(default)]
+    pub path_contains: Option<String>,
+    /// `find` only. Path prefix applied before fuzzy scoring (e.g. `"src/mcp/"`).
+    #[serde(default)]
+    pub path_prefix: Option<String>,
+    /// `definition` only. 1-based line of the reference identifier. Required by that mode.
+    #[serde(default, alias = "row")]
+    pub line: Option<u32>,
+    /// `definition` only. 0-based byte column of the reference within the line. Default 0.
+    #[serde(default, alias = "col")]
+    pub column: Option<u32>,
+    /// `outline` only. Also return calls + doc comments (L2). Default false; falls back to empty
+    /// lists when no L2 blob exists for the file's current content.
+    #[serde(default)]
+    pub l2: Option<bool>,
+    /// `grep` only. Include one line of context before and after each hit. Default true.
+    #[serde(default)]
+    pub include_context: Option<bool>,
+    /// Result cap, per mode: `symbols` / `grep` / `references` / `callers` / `implementations`
+    /// default 100, max 1000; `files` / `find` default 200, max 5000; `semantic` default 10,
+    /// max 100.
+    #[serde(default)]
+    pub limit: Option<u32>,
+    /// Token budget bounding the returned list (never the whole envelope). Entries are kept in
+    /// result order until the budget is hit; the rest are dropped and the response carries
+    /// `budgeted: true` plus, where the mode pages, a `next_cursor`.
+    #[serde(default, alias = "token_budget", alias = "budget")]
+    pub max_tokens: Option<u32>,
+    /// Wire format for the response: `"json"` (default) or `"toon"` — a compact tabular encoding of
+    /// the result list, far fewer tokens than JSON for large result sets.
+    #[serde(default, alias = "encoding")]
+    pub format: Option<String>,
+    /// Resume token from the previous call's `next_cursor`. Fjall-backed modes (`references`,
+    /// `callers`, `implementations`) keep cursors stable across rescans; in-memory modes
+    /// (`symbols`, `grep`, `files`, `find`) invalidate them, setting `cursor_invalidated`.
+    #[serde(default)]
+    pub cursor: Option<Cursor>,
+    /// `semantic` only. Retrieval lane: `"hybrid"` (default — RRF fusion of the vector, keyword and
+    /// exact-symbol lanes), `"semantic"` (vector KNN only), or `"keyword"` (native BM25 only).
+    /// Named `lane` rather than `mode` because `mode` selects the domain operation here.
+    #[serde(default, alias = "strategy")]
+    pub lane: Option<String>,
+    /// `semantic` only. Run the cross-encoder rerank pass over the fused hits. Defaults to the
+    /// `[code_search.reranker] enabled` config knob; the first rerank downloads an ONNX model.
+    #[serde(default, alias = "reranker_enabled")]
+    pub rerank: Option<bool>,
+    /// `semantic` only. Reranker preset name (default `bge-reranker-base`).
+    #[serde(default, alias = "reranker_preset")]
+    pub rerank_preset: Option<String>,
+    /// `semantic` only. How many top fused hits to rerank.
+    #[serde(default, alias = "reranker_top_k")]
+    pub rerank_top_k: Option<usize>,
+    /// `chunk` only. The content-addressed chunk id from a `semantic` hit.
+    #[serde(default)]
+    pub chunk_id: Option<String>,
+    /// `chunk` only. The chunk's start byte offset from a `semantic` hit — an alternative to
+    /// `chunk_id`. Both may be omitted when the file holds a single chunk.
+    #[serde(default)]
+    pub byte_start: Option<u32>,
+}
+
+impl CodeParams {
+    /// A call carrying only `mode`. Callers set the fields their mode uses and leave the rest
+    /// `None`: the helper rejects a field belonging to another mode, so populating them blindly
+    /// would fail the call.
+    pub fn new(mode: CodeMode) -> Self {
+        Self {
+            mode,
+            path: None,
+            name: None,
+            query: None,
+            pattern: None,
+            trait_name: None,
+            module: None,
+            kind: None,
+            language: None,
+            path_contains: None,
+            path_prefix: None,
+            line: None,
+            column: None,
+            l2: None,
+            include_context: None,
+            limit: None,
+            max_tokens: None,
+            format: None,
+            cursor: None,
+            lane: None,
+            rerank: None,
+            rerank_preset: None,
+            rerank_top_k: None,
+            chunk_id: None,
+            byte_start: None,
+        }
+    }
+}
+
+/// Params for the `semantic` mode — hybrid / vector / BM25 retrieval over indexed code chunks.
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct SearchCodeParams {
     #[serde(alias = "needle", alias = "pattern", alias = "q", alias = "text", alias = "search")]
@@ -59,6 +212,7 @@ pub struct GetChunkParams {
 
 /// One pointer hit from `search_code`. Deliberately carries NO body — call `get_chunk` for the
 /// source. Mirrors the `search_symbols`/`outline` → `expand` two-call token pattern.
+#[cfg(feature = "code-search")]
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub(crate) struct CodeSearchHit {
     pub path: String,
@@ -101,6 +255,7 @@ pub(crate) struct CodeSearchHit {
     pub exact_rank: Option<u32>,
 }
 
+#[cfg(feature = "code-search")]
 #[derive(Debug, Serialize, Deserialize, schemars::JsonSchema)]
 pub(crate) struct SearchCodeResponse {
     pub query: String,
@@ -118,6 +273,7 @@ pub(crate) struct SearchCodeResponse {
 }
 
 /// Response for `get_chunk` — the full chunk body plus its metadata.
+#[cfg(feature = "code-search")]
 #[derive(Debug, Serialize, Deserialize, schemars::JsonSchema)]
 pub(crate) struct GetChunkResponse {
     pub path: String,

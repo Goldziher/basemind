@@ -67,9 +67,10 @@ enum Cmd {
     Rescan(RescanArgs),
     /// Long-running watcher; keeps the code map current as files change.
     Watch,
-    /// Query the code map (outline, search, references, call-graph, …).
+    /// Read the code map: outline, symbols, grep, files, find, definition, references, callers,
+    /// implementations, dependents, expand, semantic, chunk.
     #[command(subcommand)]
-    Query(basemind::cli::codemap::QueryCmd),
+    Code(basemind::cli::code::CodeCmd),
     /// Git history / blame / diff queries.
     #[command(subcommand)]
     Git(basemind::cli::git::GitCmd),
@@ -82,11 +83,11 @@ enum Cmd {
     /// On-demand web ingestion (needs `--features crawl`).
     #[command(subcommand)]
     Web(basemind::cli::web::WebCmd),
-    /// Headless agent shells: spawn / send / capture / kill / broadcast / list
+    /// Headless agent shell sessions: spawn / send / capture / kill / list / broadcast
     /// (needs `--features shells`).
     #[cfg(all(feature = "shells", any(unix, windows)))]
     #[command(subcommand)]
-    Shells(basemind::cli::shells::ShellsCmd),
+    Shell(basemind::cli::shell::ShellCmd),
     /// Server + cache administration: status, repo, rescan, caches, telemetry, compression.
     #[command(subcommand)]
     Admin(basemind::cli::admin::AdminCmd),
@@ -133,6 +134,13 @@ enum Cmd {
         #[command(subcommand)]
         action: CommsLifecycleCmd,
     },
+    /// Multi-agent coordination: identities, scoped threads, messages, inbox (needs
+    /// `--features comms`). Talks to the broker daemon directly, like `comms`.
+    #[cfg(all(feature = "comms", any(unix, windows)))]
+    Agents {
+        #[command(subcommand)]
+        action: basemind::cli::agents::AgentsCmd,
+    },
     /// Machine-registry coordination: workspaces / worktrees / branches / advisory claims (needs
     /// `--features comms`). Talks to the broker daemon directly, like `comms`.
     #[cfg(all(feature = "comms", any(unix, windows)))]
@@ -157,13 +165,11 @@ enum DaemonCmd {
     Ensure,
 }
 
-/// Subcommands for `basemind comms`: daemon lifecycle plus the agent verbs.
+/// Subcommands for `basemind comms`: the broker daemon's lifecycle only.
 ///
-/// Lifecycle verbs (`Daemon`/`Start`/`Stop`/`Status`) manage the singleton broker process. The
-/// agent verbs (`Register`/`Agents`/`ThreadStart`/`Threads`/`Join`/`Leave`/`Members`/`AddMember`/
-/// `RemoveMember`/`Archive`/`Post`/`History`/`Read`/`Inbox`) connect to the daemon DIRECTLY via
-/// `CommsClient::ensure_and_connect` (see `cli::comms`) — they never build a full server, so they
-/// cannot clash with a running `serve`.
+/// These manage the singleton broker process (`Daemon`/`Start`/`Stop`/`Status`/`Doctor`). The agent
+/// coordination verbs it used to carry now live in their own group, `basemind agents` (see
+/// `cli::agents`).
 #[cfg(all(feature = "comms", any(unix, windows)))]
 #[derive(Subcommand, Debug)]
 enum CommsLifecycleCmd {
@@ -183,9 +189,6 @@ enum CommsLifecycleCmd {
     /// List every live daemon registered on this machine (pid / comms dir / version / uptime) and
     /// flag any pile-up over the ceiling. Prunes dead registry entries as a side effect.
     Doctor,
-    /// Agent verbs (register / rooms / post / history / inbox …) against the broker.
-    #[command(flatten)]
-    Agent(basemind::cli::comms::CommsAgentCmd),
 }
 
 #[derive(clap::Args, Debug)]
@@ -349,9 +352,9 @@ fn main() -> Result<()> {
         Cmd::Scan(args) => cmd_scan(&root, &args, verbosity, no_color),
         Cmd::Rescan(args) => cmd_rescan(&root, &args, verbosity, no_color),
         Cmd::Watch => cmd_watch(&root, verbosity, no_color),
-        Cmd::Query(q) => {
+        Cmd::Code(c) => {
             let _ = basemind::lang::ensure_grammars();
-            dispatch(basemind::cli::ToolCmd::Query(q))
+            dispatch(basemind::cli::ToolCmd::Code(c))
         }
         Cmd::Git(g) => dispatch(basemind::cli::ToolCmd::Git(g)),
         Cmd::Graph(g) => {
@@ -361,7 +364,7 @@ fn main() -> Result<()> {
         Cmd::Memory(m) => dispatch(basemind::cli::ToolCmd::Memory(m)),
         Cmd::Web(w) => dispatch(basemind::cli::ToolCmd::Web(w)),
         #[cfg(all(feature = "shells", any(unix, windows)))]
-        Cmd::Shells(s) => dispatch(basemind::cli::ToolCmd::Shells(s)),
+        Cmd::Shell(s) => dispatch(basemind::cli::ToolCmd::Shell(s)),
         Cmd::Admin(a) => dispatch(basemind::cli::ToolCmd::Admin(a)),
         Cmd::Hook { action } => match action {
             HookCmd::Install => cmd_hook_install(&root),
@@ -383,7 +386,9 @@ fn main() -> Result<()> {
         // `basemind statusline` keeps the daemon hot-workspace summary.
         Cmd::Statusline => comms_cli::cmd_statusline(cli.root.as_ref().map(|_| root.as_path())),
         #[cfg(all(feature = "comms", any(unix, windows)))]
-        Cmd::Comms { action } => comms_cli::cmd_comms(&root, action, json),
+        Cmd::Comms { action } => comms_cli::cmd_comms(action, json),
+        #[cfg(all(feature = "comms", any(unix, windows)))]
+        Cmd::Agents { action } => basemind::cli::agents::run(&root, json, action),
         #[cfg(all(feature = "comms", any(unix, windows)))]
         Cmd::Workspace { action } => basemind::cli::registry::run(&root, json, action),
         #[cfg(all(feature = "comms", any(unix, windows)))]
@@ -398,12 +403,16 @@ fn main() -> Result<()> {
 fn warn_ignored_global_flags(cmd: &Cmd, json: bool, view: &str) {
     let consumes_json = matches!(
         cmd,
-        Cmd::Query(_) | Cmd::Git(_) | Cmd::Graph(_) | Cmd::Memory(_) | Cmd::Web(_) | Cmd::Admin(_) | Cmd::Cache(_)
+        Cmd::Code(_) | Cmd::Git(_) | Cmd::Graph(_) | Cmd::Memory(_) | Cmd::Web(_) | Cmd::Admin(_) | Cmd::Cache(_)
     );
     #[cfg(all(feature = "comms", any(unix, windows)))]
-    let consumes_json = consumes_json || matches!(cmd, Cmd::Comms { .. } | Cmd::Workspace { .. } | Cmd::Daemon { .. });
+    let consumes_json = consumes_json
+        || matches!(
+            cmd,
+            Cmd::Comms { .. } | Cmd::Agents { .. } | Cmd::Workspace { .. } | Cmd::Daemon { .. }
+        );
     #[cfg(all(feature = "shells", any(unix, windows)))]
-    let consumes_json = consumes_json || matches!(cmd, Cmd::Shells(_));
+    let consumes_json = consumes_json || matches!(cmd, Cmd::Shell(_));
     let consumes_view = consumes_json || matches!(cmd, Cmd::Serve(_));
 
     if json && !consumes_json {

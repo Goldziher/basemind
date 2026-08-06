@@ -94,39 +94,39 @@ fn assert_human_contains(root: &Path, args: &[&str], needle: &str) {
 }
 
 #[test]
-fn query_outline_reports_symbols() {
+fn code_outline_reports_symbols() {
     let dir = build_and_scan();
     let root = dir.path();
     let v = assert_json_fields(
         root,
-        &["query", "outline", "a.rs"],
+        &["code", "outline", "a.rs"],
         &["path", "language", "symbols", "imports"],
     );
     let symbols = v["symbols"].as_array().expect("symbols array");
     assert_eq!(symbols.len(), 2, "expected alpha + Beta");
-    assert_human_contains(root, &["query", "outline", "a.rs"], "alpha");
+    assert_human_contains(root, &["code", "outline", "a.rs"], "alpha");
 }
 
 #[test]
-fn query_search_finds_symbol() {
+fn code_symbols_finds_symbol() {
     let dir = build_and_scan();
     let root = dir.path();
-    let v = assert_json_fields(root, &["query", "search", "alpha"], &["total", "truncated", "results"]);
+    let v = assert_json_fields(root, &["code", "symbols", "alpha"], &["total", "truncated", "results"]);
     assert_eq!(v["total"], 1);
-    assert_human_contains(root, &["query", "search", "alpha"], "alpha");
+    assert_human_contains(root, &["code", "symbols", "alpha"], "alpha");
 }
 
 #[test]
-fn query_references_finds_call_sites() {
+fn code_references_finds_call_sites() {
     let dir = build_and_scan();
     let root = dir.path();
-    let v = assert_json_fields(root, &["query", "references", "alpha"], &["name", "total", "hits"]);
+    let v = assert_json_fields(root, &["code", "references", "alpha"], &["name", "total", "hits"]);
     assert_eq!(v["total"], 2, "alpha is called twice in c.rs");
-    assert_human_contains(root, &["query", "references", "alpha"], "c.rs");
+    assert_human_contains(root, &["code", "references", "alpha"], "c.rs");
 }
 
 #[test]
-fn query_status_reports_file_count() {
+fn admin_status_reports_file_count() {
     let dir = build_and_scan();
     let root = dir.path();
     let v = assert_json_fields(
@@ -139,12 +139,12 @@ fn query_status_reports_file_count() {
 }
 
 #[test]
-fn query_list_files_enumerates() {
+fn code_files_enumerates() {
     let dir = build_and_scan();
     let root = dir.path();
-    let v = assert_json_fields(root, &["query", "list-files"], &["total", "returned", "files"]);
+    let v = assert_json_fields(root, &["code", "files"], &["total", "returned", "files"]);
     assert_eq!(v["total"], 2);
-    assert_human_contains(root, &["query", "list-files"], "a.rs");
+    assert_human_contains(root, &["code", "files"], "a.rs");
 }
 
 #[test]
@@ -179,7 +179,7 @@ fn rescan_full_reindexes_new_file() {
     let (stdout, ok) = run(root, &["rescan", "--full", "--quiet"]);
     assert!(ok, "rescan --full exited non-zero; stdout: {stdout}");
 
-    let search = assert_json_fields(root, &["query", "search", "delta"], &["total", "results"]);
+    let search = assert_json_fields(root, &["code", "symbols", "delta"], &["total", "results"]);
     assert_eq!(search["total"], 1, "rescan --full must index the new symbol");
     let status = assert_json_fields(root, &["admin", "status"], &["file_count"]);
     assert_eq!(status["file_count"], 3, "rescan --full must index the new file");
@@ -194,7 +194,7 @@ fn rescan_scoped_path_reindexes_only_that_path() {
     let (stdout, ok) = run(root, &["rescan", "d.rs", "--quiet"]);
     assert!(ok, "scoped rescan exited non-zero; stdout: {stdout}");
 
-    let search = assert_json_fields(root, &["query", "search", "delta"], &["total", "results"]);
+    let search = assert_json_fields(root, &["code", "symbols", "delta"], &["total", "results"]);
     assert_eq!(search["total"], 1, "scoped rescan must index the named path");
 }
 

@@ -168,7 +168,7 @@ def _delta_context(cwd: str, session_id: str) -> str | None:
 
 def _inbox_messages(cwd: str, limit: int):
     """Return the inbox message list (possibly empty), or ``None`` when the broker is unavailable."""
-    data = _run_basemind_json(["comms", "inbox", "--root", cwd, "--json", "--limit", str(limit)], timeout=6)
+    data = _run_basemind_json(["agents", "inbox", "--root", cwd, "--json", "--limit", str(limit)], timeout=6)
     if data is None:
         return None
     messages = data.get("messages")

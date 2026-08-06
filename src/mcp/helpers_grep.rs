@@ -26,7 +26,7 @@ use crate::path::RelPath;
 /// that the cut point is deterministic — a non-deterministic cut would corrupt cursor pagination.
 const GREP_BYTE_BUDGET: u64 = 2 * 1024 * 1024 * 1024;
 
-/// Body of the `workspace_grep` MCP tool.
+/// Body of the `code` tool's `grep` mode.
 ///
 /// Scans every indexed file that passes the `path_contains` / `language` filters — the full corpus,
 /// in parallel — reads each as UTF-8 (non-UTF-8 and unreadable files are skipped), and applies the

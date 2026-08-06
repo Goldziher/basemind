@@ -1,379 +1,654 @@
-//! Helper bodies for the code-search tools (`search_code`, `get_chunk`).
+//! The `code` domain dispatcher, plus the bodies of its `outline`, `symbols` and `dependents`
+//! modes.
 //!
-//! Gated on `feature = "code-search"`. `run_search_code` dispatches by `mode`: `hybrid` (default)
-//! fuses the vector, keyword, and exact-symbol lanes via RRF ([`hybrid_hits`]); `semantic`
-//! ([`semantic_hits`]) is vector KNN over the LanceDB `code_chunks` table; `keyword`
-//! ([`keyword_hits`]) is native BM25 over the Fjall index. An optional cross-encoder [`rerank_hits`]
-//! pass reorders the result. `run_get_chunk` is the offline fetch half — it reads the file's
-//! content-addressed `.chunk` sidecar and returns one chunk's body, no LanceDB round-trip.
+//! [`run_code`] is what the `#[tool]` shim and the CLI both call: it validates the flat
+//! [`CodeParams`] against the selected [`CodeMode`] and delegates to the per-mode body. The other
+//! bodies stay where they already lived — `helpers_files` (`files`/`find`), `helpers_grep`
+//! (`grep`), `helpers_calls` (`references`/`callers`), `helpers_impls` (`implementations`),
+//! `helpers_intel` (`definition`), `helpers_compress` (`expand`), `helpers_code_search`
+//! (`semantic`/`chunk`) — so consolidation moved the surface, not the queries.
 
 use rmcp::ErrorData as McpError;
 use rmcp::model::CallToolResult;
 
 use super::ServerState;
-use super::helpers::{elapsed_us, json_result};
-use super::memory::{embed_query, lance_store};
-use super::types_code::{CodeSearchHit, GetChunkParams, GetChunkResponse, SearchCodeParams, SearchCodeResponse};
-use crate::search::bm25::bm25_search;
-use crate::search::exact::exact_lane_chunk_ids;
-use crate::search::rrf::{
-    DEFAULT_RRF_K, FusionLane, LANE_EXACT, LANE_KEYWORD, LANE_VECTOR, WEIGHT_EXACT, WEIGHT_KEYWORD, WEIGHT_VECTOR,
-    rrf_fuse_detailed,
+use super::helpers::{
+    RefsSource, SEARCH_LIMIT_DEFAULT, SEARCH_LIMIT_MAX, elapsed_us, json_result, kind_to_str, parse_kind,
+    run_find_callers, run_find_files, run_find_implementations, run_find_references, run_list_files,
+    run_workspace_grep,
 };
-use crate::store::Store;
+use super::mode::{CodeMode, reject_unsupported};
+use super::types::{
+    CallView, DependentsResponse, DocView, FindCallersParams, FindFilesParams, FindReferencesParams,
+    GotoDefinitionParams, ImportView, ListFilesParams, OutlineParams, OutlineResponse, SearchHitView, SearchResponse,
+    SearchSymbolsParams, SymbolView, WorkspaceGrepParams,
+};
+use super::types_code::{CodeParams, GetChunkParams, SearchCodeParams};
+use super::types_compress::ExpandParams;
+use super::types_impls::FindImplementationsParams;
+use crate::query;
 
-/// Serialize a code-search response honoring the requested wire format. TOON is only available
-/// when the `documents` feature (which links `serde_toon`) is also compiled in; a `toon` request
-/// on a code-search-only build silently falls back to JSON.
-fn format_code_response<T: serde::Serialize>(value: &T, want_toon: bool) -> Result<CallToolResult, McpError> {
-    #[cfg(feature = "documents")]
-    if want_toon {
-        return super::helpers::format_response(value, crate::config::OutputFormat::Toon);
-    }
-    let _ = want_toon;
-    json_result(value)
+/// `definition`'s column default: the start of the line.
+const DEFAULT_COLUMN: u32 = 0;
+/// `grep` ships one line of context on either side of a hit unless told otherwise.
+const DEFAULT_INCLUDE_CONTEXT: bool = true;
+
+/// Fail a mode that was given a field belonging to some other mode.
+///
+/// Inverted against `allowed` rather than listing every rejected field per mode: with thirteen
+/// modes and twenty-four sibling fields, an explicit per-mode reject list is where a newly added
+/// field silently becomes accept-everywhere.
+fn reject_foreign_fields(mode: CodeMode, present: &[(&str, bool)], allowed: &[&str]) -> Result<(), McpError> {
+    let foreign: Vec<(&str, bool)> = present
+        .iter()
+        .filter(|(field, _)| !allowed.contains(field))
+        .copied()
+        .collect();
+    reject_unsupported(CodeMode::DOMAIN, mode.as_str(), &foreign)
 }
 
-/// Resolve whether the caller wants TOON output: an explicit `format` param wins; otherwise fall
-/// back to the `[documents.output] format` config knob.
-fn wants_toon(state: &ServerState, format: Option<&str>) -> bool {
-    match format.map(str::trim) {
-        Some(f) if f.eq_ignore_ascii_case("toon") => true,
-        Some(f) if f.eq_ignore_ascii_case("json") => false,
-        _ => matches!(
-            state.shared.config.documents.output.format,
-            crate::config::OutputFormat::Toon
+/// Unwrap a field this mode cannot run without, naming the exact `mode`/field pair.
+fn require_field<T>(mode: CodeMode, field: &str, value: Option<T>) -> Result<T, McpError> {
+    value.ok_or_else(|| McpError::invalid_params(format!("`code` mode=\"{}\" requires `{field}`", mode.as_str()), None))
+}
+
+/// Reported when a retrieval mode's feature is missing from this build.
+#[cfg(not(feature = "code-search"))]
+fn not_enabled(mode: CodeMode, feature: &'static str) -> Result<CallToolResult, McpError> {
+    Err(McpError::invalid_request(
+        format!(
+            "`code` mode=\"{}\" requires the `{feature}` feature, which is not compiled into this \
+             basemind binary. Rebuild with `--features {feature}` (the published release binary \
+             includes it).",
+            mode.as_str()
         ),
+        None,
+    ))
+}
+
+/// Dispatch the single `code` tool onto the per-operation helper its `mode` selects.
+///
+/// Fields belonging to another mode are rejected rather than dropped: a silently ignored
+/// `path_contains` on a `symbols` call reads to an agent as a successful scoped search.
+pub(super) async fn run_code(state: &ServerState, params: CodeParams) -> Result<CallToolResult, McpError> {
+    let CodeParams {
+        mode,
+        path,
+        name,
+        query: text_query,
+        pattern,
+        trait_name,
+        module,
+        kind,
+        language,
+        path_contains,
+        path_prefix,
+        line,
+        column,
+        l2,
+        include_context,
+        limit,
+        max_tokens,
+        format,
+        cursor,
+        lane,
+        rerank,
+        rerank_preset,
+        rerank_top_k,
+        chunk_id,
+        byte_start,
+    } = params;
+    let present = [
+        ("path", path.is_some()),
+        ("name", name.is_some()),
+        ("query", text_query.is_some()),
+        ("pattern", pattern.is_some()),
+        ("trait_name", trait_name.is_some()),
+        ("module", module.is_some()),
+        ("kind", kind.is_some()),
+        ("language", language.is_some()),
+        ("path_contains", path_contains.is_some()),
+        ("path_prefix", path_prefix.is_some()),
+        ("line", line.is_some()),
+        ("column", column.is_some()),
+        ("l2", l2.is_some()),
+        ("include_context", include_context.is_some()),
+        ("limit", limit.is_some()),
+        ("max_tokens", max_tokens.is_some()),
+        ("format", format.is_some()),
+        ("cursor", cursor.is_some()),
+        ("lane", lane.is_some()),
+        ("rerank", rerank.is_some()),
+        ("rerank_preset", rerank_preset.is_some()),
+        ("rerank_top_k", rerank_top_k.is_some()),
+        ("chunk_id", chunk_id.is_some()),
+        ("byte_start", byte_start.is_some()),
+    ];
+    reject_foreign_fields(mode, &present, allowed_fields(mode))?;
+
+    // Timed from here, matching the pre-consolidation shims: the cache-ready wait a cold server
+    // pays is part of the reported `elapsed_us` (such responses also carry a lifecycle `notice`).
+    let started = std::time::Instant::now();
+
+    match mode {
+        CodeMode::Outline => {
+            run_outline(
+                state,
+                OutlineParams {
+                    path: require_field(mode, "path", path)?,
+                    l2: l2.unwrap_or(false),
+                    max_tokens,
+                    format,
+                },
+                started,
+            )
+            .await
+        }
+        CodeMode::Symbols => {
+            run_search_symbols(
+                state,
+                SearchSymbolsParams {
+                    needle: require_field(mode, "name", name)?,
+                    kind,
+                    limit,
+                    max_tokens,
+                    format,
+                    cursor,
+                },
+                started,
+            )
+            .await
+        }
+        CodeMode::Grep => {
+            state.await_cache_ready().await;
+            run_workspace_grep(
+                state,
+                WorkspaceGrepParams {
+                    pattern: require_field(mode, "pattern", pattern)?,
+                    language,
+                    path_contains,
+                    limit,
+                    max_tokens,
+                    format,
+                    include_context: include_context.unwrap_or(DEFAULT_INCLUDE_CONTEXT),
+                    cursor,
+                },
+                started,
+            )
+        }
+        CodeMode::Files => {
+            run_list_files(
+                state,
+                ListFilesParams {
+                    path_contains,
+                    language,
+                    limit,
+                    max_tokens,
+                    format,
+                    cursor,
+                },
+            )
+            .await
+        }
+        CodeMode::Find => {
+            run_find_files(
+                state,
+                FindFilesParams {
+                    query: require_field(mode, "query", text_query)?,
+                    path_prefix,
+                    language,
+                    limit,
+                    max_tokens,
+                    format,
+                    cursor,
+                },
+            )
+            .await
+        }
+        CodeMode::Definition => {
+            super::helpers_intel::run_goto_definition(
+                state,
+                GotoDefinitionParams {
+                    path: require_field(mode, "path", path)?,
+                    line: require_field(mode, "line", line)?,
+                    column: column.unwrap_or(DEFAULT_COLUMN),
+                },
+            )
+            .await
+        }
+        CodeMode::References => {
+            let name = require_field(mode, "name", name)?;
+            state.await_cache_ready().await;
+            let store = state.shared.store.read().await;
+            let idx = store.index_db.as_ref().cloned();
+            drop(store);
+            let cache = state.shared.cache.load_full();
+            run_find_references(
+                idx.as_ref(),
+                FindReferencesParams {
+                    name,
+                    limit,
+                    max_tokens,
+                    format,
+                    cursor,
+                },
+                &cache,
+                state.lifecycle_notice(),
+                started,
+            )
+        }
+        CodeMode::Callers => {
+            let callers = FindCallersParams {
+                path: require_field(mode, "path", path)?,
+                name: require_field(mode, "name", name)?,
+                kind,
+                limit,
+                max_tokens,
+                cursor,
+            };
+            run_callers(state, callers, started).await
+        }
+        CodeMode::Implementations => {
+            let trait_name = require_field(mode, "trait_name", trait_name)?;
+            state.await_cache_ready().await;
+            let store = state.shared.store.read().await;
+            let idx = store.index_db.as_ref().cloned();
+            drop(store);
+            let cache = state.shared.cache.load_full();
+            run_find_implementations(
+                idx.as_ref(),
+                FindImplementationsParams {
+                    trait_name,
+                    language,
+                    limit,
+                    max_tokens,
+                    cursor,
+                },
+                &cache,
+                state.lifecycle_notice(),
+                started,
+            )
+        }
+        CodeMode::Dependents => run_dependents(state, require_field(mode, "module", module)?, started).await,
+        CodeMode::Expand => {
+            super::helpers_compress::run_expand(
+                state,
+                ExpandParams {
+                    path: require_field(mode, "path", path)?,
+                    name: require_field(mode, "name", name)?,
+                    kind,
+                },
+            )
+            .await
+        }
+        CodeMode::Semantic => {
+            let search = SearchCodeParams {
+                query: require_field(mode, "query", text_query)?,
+                limit,
+                max_tokens,
+                format,
+                mode: lane,
+                reranker_enabled: rerank,
+                reranker_preset: rerank_preset,
+                reranker_top_k: rerank_top_k,
+            };
+            #[cfg(feature = "code-search")]
+            {
+                super::helpers_code_search::run_search_code(state, search).await
+            }
+            #[cfg(not(feature = "code-search"))]
+            {
+                let _ = search;
+                not_enabled(mode, "code-search")
+            }
+        }
+        CodeMode::Chunk => {
+            let fetch = GetChunkParams {
+                path: require_field(mode, "path", path)?,
+                chunk_id,
+                byte_start,
+            };
+            #[cfg(feature = "code-search")]
+            {
+                super::helpers_code_search::run_get_chunk(state, fetch).await
+            }
+            #[cfg(not(feature = "code-search"))]
+            {
+                let _ = fetch;
+                not_enabled(mode, "code-search")
+            }
+        }
     }
 }
 
-pub(super) async fn run_search_code(state: &ServerState, params: SearchCodeParams) -> Result<CallToolResult, McpError> {
-    let __body = std::time::Instant::now();
-    let limit = params.limit.unwrap_or(10).min(100) as usize;
-    let want_toon = wants_toon(state, params.format.as_deref());
+/// The sibling fields each mode accepts. Everything else present on the call is rejected by
+/// [`reject_foreign_fields`], so a parameter an agent believed took effect never silently doesn't.
+fn allowed_fields(mode: CodeMode) -> &'static [&'static str] {
+    match mode {
+        CodeMode::Outline => &["path", "l2", "max_tokens", "format"],
+        CodeMode::Symbols => &["name", "kind", "limit", "max_tokens", "format", "cursor"],
+        CodeMode::Grep => &[
+            "pattern",
+            "language",
+            "path_contains",
+            "limit",
+            "max_tokens",
+            "format",
+            "include_context",
+            "cursor",
+        ],
+        CodeMode::Files => &["path_contains", "language", "limit", "max_tokens", "format", "cursor"],
+        CodeMode::Find => &[
+            "query",
+            "path_prefix",
+            "language",
+            "limit",
+            "max_tokens",
+            "format",
+            "cursor",
+        ],
+        CodeMode::Definition => &["path", "line", "column"],
+        CodeMode::References => &["name", "limit", "max_tokens", "format", "cursor"],
+        CodeMode::Callers => &["path", "name", "kind", "limit", "max_tokens", "cursor"],
+        CodeMode::Implementations => &["trait_name", "language", "limit", "max_tokens", "cursor"],
+        CodeMode::Dependents => &["module"],
+        CodeMode::Expand => &["path", "name", "kind"],
+        CodeMode::Semantic => &[
+            "query",
+            "limit",
+            "max_tokens",
+            "format",
+            "lane",
+            "rerank",
+            "rerank_preset",
+            "rerank_top_k",
+        ],
+        CodeMode::Chunk => &["path", "chunk_id", "byte_start"],
+    }
+}
 
-    let rr = &state.shared.config.code_search.reranker;
-    let rerank_enabled = params.reranker_enabled.unwrap_or(rr.enabled);
-    let rerank_preset = params.reranker_preset.clone().unwrap_or_else(|| rr.preset.clone());
-    let rerank_top_k = params.reranker_top_k.unwrap_or(rr.top_k);
-
-    let fetch_n = if rerank_enabled { limit.max(rerank_top_k) } else { limit };
-
-    let mode = params.mode.as_deref().map(str::trim).unwrap_or("hybrid");
-    let hits: Vec<CodeSearchHit> = if mode.is_empty() || mode.eq_ignore_ascii_case("hybrid") {
-        hybrid_hits(state, &params.query, fetch_n).await
-    } else if mode.eq_ignore_ascii_case("semantic") {
-        semantic_hits(state, &params.query, fetch_n).await?
-    } else if mode.eq_ignore_ascii_case("keyword") {
-        keyword_hits(state, &params.query, fetch_n).await
+/// Body of the `callers` mode. Resolves where the resolved-reference join runs before handing the
+/// scan to [`run_find_callers`]: a daemon-hosted connection resolves in-process through the pool's
+/// read-write index, a `daemon_writer` serve forwards to the daemon, and everything else reads its
+/// own store.
+async fn run_callers(
+    state: &ServerState,
+    params: FindCallersParams,
+    started: std::time::Instant,
+) -> Result<CallToolResult, McpError> {
+    state.await_cache_ready().await;
+    let store = state.shared.store.read().await;
+    let cache = state.shared.cache.load_full();
+    #[cfg(all(feature = "comms", any(unix, windows)))]
+    let refs = if let Some(host) = &state.shared.host {
+        // ~keep Daemon-hosted: resolve in-process through the pool's read-write index (fixes the
+        // ~keep Seam-B degradation) instead of dialing the daemon over its own socket.
+        RefsSource::Host {
+            host: std::sync::Arc::clone(host),
+            root: state.shared.root.clone(),
+        }
+    } else if state.shared.daemon_writer {
+        let client = super::helpers_comms::resolve_comms_client(state, None).await?;
+        RefsSource::Daemon {
+            client,
+            root: state.shared.root.clone(),
+        }
     } else {
-        return Err(McpError::invalid_request(
-            format!("search_code: unknown mode {mode:?}; valid modes are \"hybrid\", \"semantic\", or \"keyword\""),
-            None,
-        ));
+        RefsSource::Local(&store)
+    };
+    #[cfg(not(all(feature = "comms", any(unix, windows))))]
+    let refs = RefsSource::Local(&store);
+    run_find_callers(
+        &store,
+        refs,
+        &state.shared.root,
+        &cache,
+        params,
+        state.lifecycle_notice(),
+        started,
+    )
+    .await
+}
+
+/// Project an L1 filemap onto the outline response's symbol + import views.
+fn l1_views(l1: &crate::extract::FileMapL1) -> (Vec<SymbolView>, Vec<ImportView>) {
+    let symbols = l1
+        .symbols
+        .iter()
+        .map(|s| SymbolView {
+            name: s.name.clone(),
+            kind: kind_to_str(s.kind),
+            start_row: s.start_row,
+            start_col: s.start_col,
+            start_byte: s.start_byte,
+            end_byte: s.end_byte,
+            signature: s.signature.clone(),
+        })
+        .collect();
+    let imports = l1
+        .imports
+        .iter()
+        .map(|i| ImportView {
+            module: i.module.clone(),
+            raw: i.raw.clone(),
+            start_byte: i.start_byte,
+        })
+        .collect();
+    (symbols, imports)
+}
+
+/// Assemble the L1 half of an outline response. `calls` / `docs` are filled in afterwards on the
+/// `l2` path.
+fn outline_response(path: &crate::path::RelPath, l1: &crate::extract::FileMapL1) -> OutlineResponse {
+    let (symbols, imports) = l1_views(l1);
+    OutlineResponse {
+        path: path.clone(),
+        language: l1.language.clone(),
+        size_bytes: l1.size_bytes,
+        had_errors: l1.had_errors,
+        error_count: l1.error_count,
+        budgeted: false,
+        symbols,
+        imports,
+        calls: None,
+        docs: None,
+        l2_status: None,
+        notice: None,
+        elapsed_us: 0,
+    }
+}
+
+/// Body of the `outline` mode: a file's structure from the in-RAM map when it is warm, else from
+/// the content-addressed blob, plus the L2 call/doc sidecar when `l2` was requested.
+async fn run_outline(
+    state: &ServerState,
+    params: OutlineParams,
+    started: std::time::Instant,
+) -> Result<CallToolResult, McpError> {
+    let mut response = if params.l2 {
+        let store = state.shared.store.read().await;
+        let l1 = query::file_outline(&store, &params.path)
+            .map_err(|e| McpError::invalid_params(format!("file_outline({}): {e}", params.path), None))?;
+        let mut r = outline_response(&params.path, &l1);
+        let entry = store
+            .lookup(&params.path)
+            .ok_or_else(|| McpError::internal_error("file not indexed after outline succeeded", None))?;
+        match store.read_l2_by_hex(&entry.hash_hex) {
+            Ok(Some(l2)) => {
+                r.calls = Some(
+                    l2.calls
+                        .iter()
+                        .map(|c| CallView {
+                            callee: c.callee.clone(),
+                            start_byte: c.start_byte,
+                        })
+                        .collect(),
+                );
+                r.docs = Some(
+                    l2.docs
+                        .iter()
+                        .map(|d| DocView {
+                            text: d.text.clone(),
+                            start_byte: d.start_byte,
+                        })
+                        .collect(),
+                );
+            }
+            Ok(None) => {
+                r.l2_status = Some("missing — run `basemind code outline <path> --l2` to materialize");
+            }
+            Err(e) => {
+                r.l2_status = Some("error");
+                return Err(McpError::internal_error(format!("read_l2: {e}"), None));
+            }
+        }
+        r
+    } else {
+        let cache = state.shared.cache.load();
+        if let Some(l1) = cache.by_path.get(&params.path) {
+            outline_response(&params.path, l1)
+        } else {
+            let store = state.shared.store.read().await;
+            let l1 = query::file_outline(&store, &params.path)
+                .map_err(|e| McpError::invalid_params(format!("file_outline({}): {e}", params.path), None))?;
+            outline_response(&params.path, &l1)
+        }
+    };
+    response.notice = state.lifecycle_notice();
+
+    if params.max_tokens.is_some() {
+        let budgeted = super::budget::apply_budget(std::mem::take(&mut response.symbols), params.max_tokens);
+        response.symbols = budgeted.items;
+        response.budgeted = budgeted.budgeted;
+    }
+    response.elapsed_us = elapsed_us(started);
+    super::toon::format_result(&response, super::toon::ResponseFormat::parse(params.format.as_deref()))
+}
+
+/// Body of the `symbols` mode: a case-sensitive substring sweep of every indexed symbol name in the
+/// in-RAM map, bounded by [`search_max_total`](super::tools::search_max_total).
+async fn run_search_symbols(
+    state: &ServerState,
+    params: SearchSymbolsParams,
+    started: std::time::Instant,
+) -> Result<CallToolResult, McpError> {
+    use std::sync::atomic::Ordering;
+
+    state.await_cache_ready().await;
+    let format = super::toon::ResponseFormat::parse(params.format.as_deref());
+    let kind = params.kind.as_deref().map(parse_kind).transpose()?;
+    let limit = params.limit.unwrap_or(SEARCH_LIMIT_DEFAULT).min(SEARCH_LIMIT_MAX) as usize;
+    let generation = state.shared.cache_generation.load(Ordering::Relaxed);
+
+    let empty = |cursor_invalidated: bool| SearchResponse {
+        total: 0,
+        total_is_partial: false,
+        truncated: false,
+        budgeted: false,
+        results: Vec::new(),
+        next_cursor: None,
+        cursor_invalidated,
+        notice: state.lifecycle_notice(),
+        elapsed_us: elapsed_us(started),
     };
 
-    let hits = if rerank_enabled {
-        rerank_hits(state, &params.query, hits, &rerank_preset, rerank_top_k).await?
-    } else {
-        hits
+    let skip = match params.cursor.as_ref() {
+        Some(c) => {
+            let (offset, snapshot_id) = c.decode_in_memory()?;
+            if snapshot_id != generation {
+                return super::toon::format_result(&empty(true), format);
+            }
+            offset as usize
+        }
+        None => 0,
     };
 
-    let budget = super::budget::apply_budget(hits, params.max_tokens);
-    format_code_response(
-        &SearchCodeResponse {
-            query: params.query,
-            budgeted: budget.budgeted,
-            hits: budget.items,
-            elapsed_us: elapsed_us(__body),
+    if params.needle.is_empty() {
+        return super::toon::format_result(&empty(false), format);
+    }
+    let finder = memchr::memmem::Finder::new(params.needle.as_bytes());
+    let max_total = super::tools::search_max_total(limit);
+    let mut results: Vec<SearchHitView> = Vec::with_capacity(limit);
+    let mut total: usize = 0;
+    let mut seen: usize = 0;
+    let mut total_is_partial = false;
+    let cache = state.shared.cache.load_full();
+    'outer: for (path, l1) in &cache.by_path {
+        for sym in &l1.symbols {
+            if finder.find(sym.name.as_bytes()).is_none() {
+                continue;
+            }
+            if let Some(k) = kind
+                && sym.kind != k
+            {
+                continue;
+            }
+            if seen < skip {
+                seen += 1;
+                continue;
+            }
+            seen += 1;
+            total += 1;
+            if results.len() < limit {
+                results.push(SearchHitView {
+                    path: path.clone(),
+                    name: sym.name.clone(),
+                    kind: kind_to_str(sym.kind),
+                    start_row: sym.start_row,
+                    start_col: sym.start_col,
+                    signature: sym.signature.clone(),
+                });
+            }
+            if total >= max_total {
+                total_is_partial = true;
+                break 'outer;
+            }
+        }
+    }
+    let truncated = total > limit || total_is_partial;
+    let budget = super::budget::apply_budget(results, params.max_tokens);
+    let results = budget.items;
+    let budgeted = budget.budgeted;
+    let next_cursor = if total > results.len() {
+        Some(super::cursor::Cursor::encode_in_memory(
+            (skip + results.len()) as u64,
+            generation,
+        ))
+    } else {
+        None
+    };
+    super::toon::format_result(
+        &SearchResponse {
+            total,
+            total_is_partial,
+            truncated,
+            budgeted,
+            results,
+            next_cursor,
+            cursor_invalidated: false,
+            notice: state.lifecycle_notice(),
+            elapsed_us: elapsed_us(started),
         },
-        want_toon,
+        format,
     )
 }
 
-/// Hybrid lane: run the vector, keyword, and exact lanes best-effort and fuse their rankings via RRF
-/// on the shared `chunk_id` key. Each lane is independent — a lane that is unavailable (no embedder,
-/// read-only index) or that a non-identifier query doesn't trigger simply contributes nothing; the
-/// query never fails on a single lane. The returned hits carry the fused RRF score in `score`.
-async fn hybrid_hits(state: &ServerState, query: &str, limit: usize) -> Vec<CodeSearchHit> {
-    let fuse_limit = (limit * 4).clamp(limit, 200);
-
-    let vector_ids: Vec<String> = if state.shared.config.code_search.embed {
-        match semantic_hits(state, query, fuse_limit).await {
-            Ok(hits) => hits.into_iter().map(|h| h.chunk_id).collect(),
-            Err(error) => {
-                tracing::debug!(%error, "hybrid: vector lane unavailable — fusing keyword + exact only");
-                Vec::new()
-            }
-        }
-    } else {
-        Vec::new()
-    };
-
-    let store = state.shared.store.read().await;
-    let (keyword_ids, exact_ids): (Vec<String>, Vec<String>) = match store.index_db.as_ref() {
-        Some(db) => (
-            bm25_search(db, query, fuse_limit)
-                .into_iter()
-                .map(|h| h.chunk_id)
-                .collect(),
-            exact_lane_chunk_ids(&store, db, query, fuse_limit),
-        ),
-        None => (Vec::new(), Vec::new()),
-    };
-
-    let fused = rrf_fuse_detailed(
-        &[
-            FusionLane::new(LANE_EXACT, &exact_ids, WEIGHT_EXACT),
-            FusionLane::new(LANE_VECTOR, &vector_ids, WEIGHT_VECTOR),
-            FusionLane::new(LANE_KEYWORD, &keyword_ids, WEIGHT_KEYWORD),
-        ],
-        DEFAULT_RRF_K,
-    );
-
-    let mut hits = Vec::with_capacity(fused.len().min(limit));
-    for fh in fused.into_iter().take(limit) {
-        if let Some((mut hit, _text)) = hydrate_one(&store, &fh.chunk_id) {
-            hit.score = Some(fh.score);
-            hit.matched_lanes = fh.lane_ranks.iter().map(|(name, _)| name.to_string()).collect();
-            for (name, rank) in &fh.lane_ranks {
-                match *name {
-                    LANE_EXACT => hit.exact_rank = Some(*rank),
-                    LANE_VECTOR => hit.vector_rank = Some(*rank),
-                    LANE_KEYWORD => hit.keyword_rank = Some(*rank),
-                    _ => {}
-                }
-            }
-            hits.push(hit);
-        }
-    }
-    hits
-}
-
-/// Semantic lane: embed the query and run vector KNN over the scope-filtered LanceDB `code_chunks`
-/// table. Each hit carries an L2 `distance` (lower = closer) and no BM25 `score`.
-async fn semantic_hits(state: &ServerState, query: &str, limit: usize) -> Result<Vec<CodeSearchHit>, McpError> {
-    let embedding = embed_query(state, query).await?;
-    let lance = lance_store(state).await?;
-    let scope = state.shared.scope.clone();
-    let hits_raw = tokio::task::spawn_blocking(move || lance.search_code_chunks(&scope, embedding, limit))
-        .await
-        .map_err(|e| McpError::internal_error(format!("spawn_blocking: {e}"), None))?
-        .map_err(|e| McpError::internal_error(format!("search_code_chunks: {e}"), None))?;
-
-    Ok(hits_raw
-        .into_iter()
-        .map(|h| CodeSearchHit {
-            path: h.path,
-            chunk_id: h.chunk_id,
-            symbol: h.symbol,
-            kind: h.kind,
-            lang: h.lang,
-            line_start: h.line_start,
-            line_end: h.line_end,
-            byte_start: h.byte_start,
-            byte_end: h.byte_end,
-            distance: Some(h.distance),
-            score: None,
-            rerank_score: None,
-            matched_lanes: Vec::new(),
-            keyword_rank: None,
-            vector_rank: None,
-            exact_rank: None,
-        })
-        .collect())
-}
-
-/// Keyword lane: native BM25 over the Fjall index, hydrating each ranked `chunk_id` into a pointer.
-/// Each hit carries a BM25 `score` (higher = better) and no `distance`. Returns an empty vec when the
-/// index is read-only (no `IndexDb` handle) — there is no keyword lane on a reader session.
-async fn keyword_hits(state: &ServerState, query: &str, limit: usize) -> Vec<CodeSearchHit> {
-    let store = state.shared.store.read().await;
-    let Some(db) = store.index_db.as_ref() else {
-        return Vec::new();
-    };
-    let raw = bm25_search(db, query, limit);
-    let mut hits = Vec::with_capacity(raw.len());
-    for hit in raw {
-        if let Some((mut ch, _text)) = hydrate_one(&store, &hit.chunk_id) {
-            ch.score = Some(hit.score);
-            hits.push(ch);
-        }
-    }
-    hits
-}
-
-/// Hydrate a ranked `chunk_id` (`<hash>:<ordinal>`) into a base `CodeSearchHit` (all score fields
-/// `None`) plus the chunk's body text (for the optional rerank pass), via the content-addressed
-/// sidecar. `None` when the sidecar is missing or the ordinal is out of range — the caller skips it.
-fn hydrate_one(store: &Store, chunk_id: &str) -> Option<(CodeSearchHit, String)> {
-    let (hash_hex, ordinal) = chunk_id.rsplit_once(':')?;
-    let ordinal: usize = ordinal.parse().ok()?;
-    let blob = store.read_chunks_by_hex(hash_hex).ok()??;
-    let chunk = blob.chunks.get(ordinal)?;
-    let hit = CodeSearchHit {
-        path: chunk.path.clone(),
-        chunk_id: chunk_id.to_string(),
-        symbol: chunk.symbol.clone().unwrap_or_default(),
-        kind: chunk.kind.clone().unwrap_or_default(),
-        lang: chunk.lang.clone(),
-        line_start: chunk.line_start,
-        line_end: chunk.line_end,
-        byte_start: chunk.byte_start,
-        byte_end: chunk.byte_end,
-        distance: None,
-        score: None,
-        rerank_score: None,
-        matched_lanes: Vec::new(),
-        keyword_rank: None,
-        vector_rank: None,
-        exact_rank: None,
-    };
-    Some((hit, chunk.text.clone()))
-}
-
-/// Optional cross-encoder rerank of `hits`, reusing the same xberg reranker as the documents tier.
-/// Reads each hit's chunk body as the candidate text, scores against `query`, and returns the hits
-/// reordered best-first (truncated to `top_k`) with `rerank_score` set. Off-path when `hits` is
-/// empty. Errors on an unknown preset (before any model download) or an out-of-range rerank index.
-async fn rerank_hits(
+/// Body of the `dependents` mode: a heuristic reverse lookup over the in-RAM imports index.
+async fn run_dependents(
     state: &ServerState,
-    query: &str,
-    hits: Vec<CodeSearchHit>,
-    preset: &str,
-    top_k: usize,
-) -> Result<Vec<CodeSearchHit>, McpError> {
-    if hits.is_empty() {
-        return Ok(hits);
-    }
-    if xberg::get_reranker_preset(preset).is_none() {
-        return Err(McpError::invalid_params(
-            format!("unknown reranker preset: {preset:?}"),
-            None,
-        ));
-    }
-    let texts: Vec<String> = {
-        let store = state.shared.store.read().await;
-        hits.iter()
-            .map(|h| {
-                hydrate_one(&store, &h.chunk_id)
-                    .map(|(_, text)| text)
-                    .unwrap_or_default()
-            })
-            .collect()
-    };
-    let krz_config = xberg::core::config::RerankerConfig {
-        model: xberg::core::config::RerankerModelType::Preset {
-            name: preset.to_string(),
-        },
-        top_k: Some(top_k),
-        ..Default::default()
-    };
-    let reranked = xberg::rerank_async(query.to_string(), texts, &krz_config)
-        .await
-        .map_err(|e| {
-            let msg = e.to_string();
-            let kind = if msg.contains("download") || msg.contains("HuggingFace") || msg.contains("model") {
-                "rerank model load"
-            } else {
-                "rerank inference"
-            };
-            McpError::internal_error(format!("{kind}: {msg}"), None)
-        })?;
-    let original = hits;
-    reranked
-        .into_iter()
-        .map(|r| {
-            original
-                .get(r.index)
-                .cloned()
-                .map(|mut hit| {
-                    hit.rerank_score = Some(r.score);
-                    hit
-                })
-                .ok_or_else(|| {
-                    McpError::internal_error(
-                        format!(
-                            "reranker returned out-of-range index {} (got {} hits)",
-                            r.index,
-                            original.len()
-                        ),
-                        None,
-                    )
-                })
-        })
-        .collect()
-}
-
-pub(super) async fn run_get_chunk(state: &ServerState, params: GetChunkParams) -> Result<CallToolResult, McpError> {
-    let __body = std::time::Instant::now();
-    let blob = {
-        let store = state.shared.store.read().await;
-        let entry = store
-            .lookup(&params.path)
-            .ok_or_else(|| McpError::invalid_params(format!("get_chunk: file not indexed: {}", params.path), None))?;
-        let hash_hex = entry.hash_hex.clone();
-        store
-            .read_chunks_by_hex(&hash_hex)
-            .map_err(|e| McpError::internal_error(format!("get_chunk: read chunk blob: {e}"), None))?
-            .ok_or_else(|| {
-                McpError::invalid_params(
-                    format!(
-                        "get_chunk: no code chunks indexed for {} (scan with --features code-search)",
-                        params.path
-                    ),
-                    None,
-                )
-            })?
-    };
-
-    let chunks = &blob.chunks;
-    if chunks.is_empty() {
-        return Err(McpError::invalid_params(
-            format!("get_chunk: {} has no chunks", params.path),
-            None,
-        ));
-    }
-
-    let chunk = if let Some(id) = params.chunk_id.as_deref() {
-        chunks.iter().find(|c| c.chunk_id == id).ok_or_else(|| {
-            McpError::invalid_params(format!("get_chunk: chunk_id {id:?} not found in {}", params.path), None)
-        })?
-    } else if let Some(bs) = params.byte_start {
-        chunks.iter().find(|c| c.byte_start == bs).ok_or_else(|| {
-            McpError::invalid_params(
-                format!("get_chunk: no chunk at byte_start {bs} in {}", params.path),
-                None,
-            )
-        })?
-    } else if chunks.len() == 1 {
-        &chunks[0]
-    } else {
-        let ids: Vec<&str> = chunks.iter().map(|c| c.chunk_id.as_str()).collect();
-        return Err(McpError::invalid_params(
-            format!(
-                "get_chunk: {} has {} chunks; pass `chunk_id` or `byte_start` to disambiguate: {}",
-                params.path,
-                chunks.len(),
-                ids.join(", ")
-            ),
-            None,
-        ));
-    };
-
-    json_result(&GetChunkResponse {
-        path: chunk.path.clone(),
-        chunk_id: chunk.chunk_id.clone(),
-        symbol: chunk.symbol.clone(),
-        kind: chunk.kind.clone(),
-        lang: chunk.lang.clone(),
-        signature: chunk.signature.clone(),
-        doc: chunk.doc.clone(),
-        line_start: chunk.line_start,
-        line_end: chunk.line_end,
-        byte_start: chunk.byte_start,
-        byte_end: chunk.byte_end,
-        text: chunk.text.clone(),
-        elapsed_us: elapsed_us(__body),
+    module: String,
+    started: std::time::Instant,
+) -> Result<CallToolResult, McpError> {
+    state.await_cache_ready().await;
+    let paths: Vec<crate::path::RelPath> =
+        crate::extract::l3::dependents_of(&module, &state.shared.cache.load().imports_index)
+            .into_iter()
+            .map(|p| crate::path::RelPath::from(p.as_path()))
+            .collect();
+    json_result(&DependentsResponse {
+        module,
+        paths,
+        notice: state.lifecycle_notice(),
+        elapsed_us: elapsed_us(started),
     })
 }

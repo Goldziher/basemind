@@ -193,7 +193,10 @@ async fn concurrent_search_and_rescan() {
     let task_a = tokio::spawn(async move {
         for iteration in 0_u32..10 {
             let result = peer_a
-                .call_tool(call_params("search_symbols", json!({ "needle": "alp", "limit": 50 })))
+                .call_tool(call_params(
+                    "code",
+                    json!({ "mode": "symbols", "name": "alp", "limit": 50 }),
+                ))
                 .await
                 .unwrap_or_else(|error| panic!("search_symbols iteration {iteration} failed: {error}"));
             let body = decode_text(&result);
@@ -459,8 +462,8 @@ async fn second_session_resolves_find_references_from_blobs() {
 
     let result = peer2
         .call_tool(call_params(
-            "find_references",
-            json!({ "name": "alpha", "format": "json" }),
+            "code",
+            json!({ "mode": "references", "name": "alpha", "format": "json" }),
         ))
         .await
         .expect("find_references must succeed on the read-only 2nd session");
@@ -514,7 +517,10 @@ async fn second_session_resolves_call_graph_and_impls_from_blobs() {
     );
 
     let fi = peer2
-        .call_tool(call_params("find_implementations", json!({ "trait_name": "Drawable" })))
+        .call_tool(call_params(
+            "code",
+            json!({ "mode": "implementations", "trait_name": "Drawable" }),
+        ))
         .await
         .expect("find_implementations on 2nd session");
     let fi_body = decode_text(&fi);
@@ -629,7 +635,10 @@ async fn daemon_writer_serve_forwards_rescan_and_sees_fresh_symbols() {
     );
 
     let search_a = peer_a
-        .call_tool(call_params("search_symbols", json!({ "needle": "alpha", "limit": 10 })))
+        .call_tool(call_params(
+            "code",
+            json!({ "mode": "symbols", "name": "alpha", "limit": 10 }),
+        ))
         .await
         .expect("search A");
     let names_a = symbol_names(&decode_text(&search_a));
@@ -641,7 +650,10 @@ async fn daemon_writer_serve_forwards_rescan_and_sees_fresh_symbols() {
     let serve_b = spawn_daemon_writer_server(root).await;
     let peer_b = serve_b.peer().clone();
     let search_b = peer_b
-        .call_tool(call_params("search_symbols", json!({ "needle": "Beta", "limit": 10 })))
+        .call_tool(call_params(
+            "code",
+            json!({ "mode": "symbols", "name": "Beta", "limit": 10 }),
+        ))
         .await
         .expect("search B");
     let names_b = symbol_names(&decode_text(&search_b));
@@ -709,8 +721,8 @@ async fn daemon_writer_serve_resolves_cross_file_callers_through_the_daemon() {
     let body = decode_text(
         &peer
             .call_tool(call_params(
-                "find_callers",
-                json!({ "path": "lib.ts", "name": "target", "limit": 50 }),
+                "code",
+                json!({ "mode": "callers", "path": "lib.ts", "name": "target", "limit": 50 }),
             ))
             .await
             .expect("find_callers on the cross-file definition"),
@@ -768,8 +780,8 @@ async fn daemon_writer_serve_resolves_cross_file_python_callers_through_the_daem
     let body = decode_text(
         &peer
             .call_tool(call_params(
-                "find_callers",
-                json!({ "path": "lib.py", "name": "target", "limit": 50 }),
+                "code",
+                json!({ "mode": "callers", "path": "lib.py", "name": "target", "limit": 50 }),
             ))
             .await
             .expect("find_callers on the cross-file Python definition"),

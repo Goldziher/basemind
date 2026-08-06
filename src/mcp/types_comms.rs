@@ -1,21 +1,118 @@
-//! Request / response shapes for the agent-comms MCP tools.
+//! Request / response shapes for the consolidated `agents` domain tool.
+//!
+//! [`AgentsParams`] is what crosses the wire: one flat parameter object with a required
+//! [`AgentsMode`] selecting the operation and every per-mode field an optional sibling. The
+//! per-operation structs below (`ThreadPostParams`, `InboxReadParams`, …) stay as the helpers'
+//! internal shapes, so the bodies keep taking exactly the arguments they always did.
 //!
 //! Parameter structs derive `Deserialize + Serialize + JsonSchema` and use the validated
 //! [`ThreadId`](crate::comms::ids::ThreadId) / [`AgentId`](crate::comms::ids::AgentId) newtypes
 //! for identifier fields so a malformed id is rejected at the serde boundary rather than reaching
 //! the broker. Response structs serialize the broker's [`MessageMeta`] front-matter directly —
-//! history and inbox tools return front-matter ONLY; bodies come from `message_get`.
+//! modes `history` and `inbox` return front-matter ONLY; bodies come from mode `message`.
 
 #![cfg(all(feature = "comms", any(unix, windows)))]
 
 use serde::{Deserialize, Serialize};
 
+use super::mode::AgentsMode;
 use crate::comms::cursor::Cursor;
 use crate::comms::ids::{AgentId, ThreadId};
 use crate::comms::model::Thread;
 use crate::comms::protocol::SeqMeta;
 
-/// Params for `agent_register`: announce or update this agent's A2A card.
+/// Wire parameters for the `agents` tool.
+///
+/// Only `mode` is required. Every other field belongs to one or more modes and is rejected — not
+/// ignored — when passed to a mode that has no use for it (see
+/// [`super::mode::reject_unsupported`]); a mode that cannot run without one names the exact
+/// `mode`/field pair. `as_agent` is the single exception: every mode accepts it, because it selects
+/// the identity the call runs as rather than what the call does.
+#[derive(Debug, Clone, Deserialize, Serialize, schemars::JsonSchema)]
+pub struct AgentsParams {
+    /// Which operation to run.
+    pub mode: AgentsMode,
+    /// `join`, `leave`, `members`, `add_member`, `remove_member`, `archive`, `post`, `history` —
+    /// the thread to act on, required. `list`, `ack`, `wait` — an optional filter narrowing the
+    /// call to one thread.
+    #[serde(default)]
+    pub thread: Option<ThreadId>,
+    /// `add_member`, `remove_member`. The agent id to add or remove. Required by both.
+    #[serde(default)]
+    pub member: Option<AgentId>,
+    /// `thread_start` only. Additional member agent ids; you are added automatically.
+    #[serde(default)]
+    pub members: Option<Vec<AgentId>>,
+    /// `message` only. Id of the message whose body to read — the `id` of a front-matter row
+    /// returned by `history` or `inbox`. Required by that mode.
+    #[serde(default, alias = "id")]
+    pub message_id: Option<String>,
+    /// `ack` only. Message ids to acknowledge.
+    #[serde(default)]
+    pub message_ids: Option<Vec<String>>,
+    /// `ack` only. Advance `thread`'s read cursor straight to this per-thread seq. Requires
+    /// `thread`.
+    #[serde(default)]
+    pub to_seq: Option<u64>,
+    /// `thread_start` — the thread's topic string, one of the addressing dimensions. `post` — the
+    /// message's subject line, required.
+    #[serde(default)]
+    pub subject: Option<String>,
+    /// `thread_list` only. Case-sensitive substring filter over thread subjects.
+    #[serde(default)]
+    pub subject_contains: Option<String>,
+    /// `thread_start` only. A path or globset glob (e.g. `src/**`) for path-based discovery, one of
+    /// the addressing dimensions.
+    #[serde(default)]
+    pub path: Option<String>,
+    /// `post` only. Message body (markdown). Stored separately from front-matter and read back only
+    /// through mode `message`.
+    #[serde(default)]
+    pub body: Option<String>,
+    /// `post` only. Free-form tags for filtering.
+    #[serde(default)]
+    pub tags: Option<Vec<String>>,
+    /// `post` only. Id of the message this one replies to, for threading.
+    #[serde(default)]
+    pub reply_to: Option<String>,
+    /// `thread_list` only. Also return archived threads. Default false.
+    #[serde(default)]
+    pub include_archived: Option<bool>,
+    /// `inbox` only. Advance read cursors past the returned messages. Default false.
+    #[serde(default)]
+    pub mark_read: Option<bool>,
+    /// `history`, `inbox`, `wait`. Resume token from the previous page's `next_cursor`.
+    #[serde(default)]
+    pub cursor: Option<String>,
+    /// `history`, `inbox`. Page size. Default 100, max 1000.
+    #[serde(default)]
+    pub limit: Option<u32>,
+    /// `history`, `inbox`, `wait`. Only consider messages from the last N hours. Default 24; pass 0
+    /// for ALL history.
+    #[serde(default)]
+    pub since_hours: Option<u32>,
+    /// `wait` only. Seconds to block before returning `timed_out: true`. Default 30, max 300.
+    #[serde(default)]
+    pub timeout_secs: Option<u32>,
+    /// `register` only. Human-readable agent name.
+    #[serde(default)]
+    pub name: Option<String>,
+    /// `register` only. One-line description of this agent's purpose.
+    #[serde(default)]
+    pub description: Option<String>,
+    /// `register` only. Agent version string (e.g. "1.0.0").
+    #[serde(default)]
+    pub version: Option<String>,
+    /// `register` only. Skill labels advertised to peers.
+    #[serde(default)]
+    pub skills: Option<Vec<String>>,
+    /// Every mode. Sub-identity to act as; defaults to this server's own agent. Lets one
+    /// orchestrator drive many named subagents, each with its own membership and inbox.
+    #[serde(default)]
+    pub as_agent: Option<String>,
+}
+
+/// Params for mode `register`: announce or update this agent's A2A card.
 #[derive(Debug, Clone, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct AgentRegisterParams {
     /// Human-readable agent name.
@@ -36,7 +133,7 @@ pub struct AgentRegisterParams {
     pub as_agent: Option<String>,
 }
 
-/// Response for `agent_register`.
+/// Response for mode `register`.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct AgentRegisterResponse {
     /// The agent id the card was registered under.
@@ -45,7 +142,7 @@ pub(super) struct AgentRegisterResponse {
     pub registered: bool,
 }
 
-/// Params for `agent_list`: enumerate known agents, optionally restricted to one thread.
+/// Params for mode `list`: enumerate known agents, optionally restricted to one thread.
 #[derive(Debug, Clone, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct AgentListParams {
     /// Restrict to members of this thread when set.
@@ -57,7 +154,7 @@ pub struct AgentListParams {
     pub as_agent: Option<String>,
 }
 
-/// One agent row in an `agent_list` response (front-matter view of an `AgentRecord`).
+/// One agent row in a mode `list` response (front-matter view of an `AgentRecord`).
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct AgentSummary {
     /// Stable agent identity.
@@ -76,7 +173,7 @@ pub(super) struct AgentSummary {
     pub last_seen: i64,
 }
 
-/// Response for `agent_list`.
+/// Response for mode `list`.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct AgentListResponse {
     /// Number of agents returned.
@@ -85,7 +182,7 @@ pub(super) struct AgentListResponse {
     pub agents: Vec<AgentSummary>,
 }
 
-/// A thread front-matter view shared by `thread_start` and `thread_list`.
+/// A thread front-matter view shared by modes `thread_start` and `thread_list`.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct ThreadSummary {
     /// Stable thread id.
@@ -133,7 +230,7 @@ impl ThreadSummary {
     }
 }
 
-/// Params for `thread_start`: open a conversation addressed by AT LEAST TWO of `subject` /
+/// Params for mode `thread_start`: open a conversation addressed by AT LEAST TWO of `subject` /
 /// `path` / `members`. Fewer than two is rejected. The caller becomes the creator + a member.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct ThreadStartParams {
@@ -151,14 +248,14 @@ pub struct ThreadStartParams {
     pub as_agent: Option<String>,
 }
 
-/// Response for `thread_start`.
+/// Response for mode `thread_start`.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct ThreadStartResponse {
     /// The created thread.
     pub thread: ThreadSummary,
 }
 
-/// Params for `thread_list`: list threads DISCOVERABLE to this agent. No global listing — a
+/// Params for mode `thread_list`: list threads DISCOVERABLE to this agent. No global listing — a
 /// thread surfaces only when the caller is a member, its cwd matches the thread's path glob, or
 /// `subject_contains` matches. Scope context (remote + cwd) is injected by the server.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, schemars::JsonSchema)]
@@ -174,7 +271,7 @@ pub struct ThreadListParams {
     pub as_agent: Option<String>,
 }
 
-/// Response for `thread_list`.
+/// Response for mode `thread_list`.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct ThreadListResponse {
     /// Number of threads returned.
@@ -183,7 +280,7 @@ pub(super) struct ThreadListResponse {
     pub threads: Vec<ThreadSummary>,
 }
 
-/// Params for `thread_join`.
+/// Params for mode `join`.
 #[derive(Debug, Clone, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct ThreadJoinParams {
     /// The thread to join.
@@ -193,7 +290,7 @@ pub struct ThreadJoinParams {
     pub as_agent: Option<String>,
 }
 
-/// Params for `thread_leave`.
+/// Params for mode `leave`.
 #[derive(Debug, Clone, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct ThreadLeaveParams {
     /// The thread to leave.
@@ -203,7 +300,7 @@ pub struct ThreadLeaveParams {
     pub as_agent: Option<String>,
 }
 
-/// Response for `thread_join` / `thread_leave`.
+/// Response for modes `join` / `leave`.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct ThreadMembershipResponse {
     /// The thread acted on.
@@ -216,7 +313,7 @@ pub(super) struct ThreadMembershipResponse {
     pub left: bool,
 }
 
-/// Params for `thread_members`.
+/// Params for mode `members`.
 #[derive(Debug, Clone, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct ThreadMembersParams {
     /// The thread whose members to list.
@@ -226,7 +323,7 @@ pub struct ThreadMembersParams {
     pub as_agent: Option<String>,
 }
 
-/// Response for `thread_members`.
+/// Response for mode `members`.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct ThreadMembersResponse {
     /// The thread queried.
@@ -235,7 +332,7 @@ pub(super) struct ThreadMembersResponse {
     pub members: Vec<String>,
 }
 
-/// Params for `thread_add_member` / `thread_remove_member` (creator only).
+/// Params for modes `add_member` / `remove_member` (creator only).
 #[derive(Debug, Clone, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct ThreadMemberParams {
     /// The thread to modify.
@@ -247,7 +344,7 @@ pub struct ThreadMemberParams {
     pub as_agent: Option<String>,
 }
 
-/// Response for `thread_add_member` / `thread_remove_member`.
+/// Response for modes `add_member` / `remove_member`.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct ThreadMemberChangeResponse {
     /// The thread acted on.
@@ -262,7 +359,7 @@ pub(super) struct ThreadMemberChangeResponse {
     pub removed: bool,
 }
 
-/// Params for `thread_archive` (creator only).
+/// Params for mode `archive` (creator only).
 #[derive(Debug, Clone, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct ThreadArchiveParams {
     /// The thread to archive.
@@ -272,7 +369,7 @@ pub struct ThreadArchiveParams {
     pub as_agent: Option<String>,
 }
 
-/// Response for `thread_archive`.
+/// Response for mode `archive`.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct ThreadArchiveResponse {
     /// The thread archived.
@@ -281,7 +378,7 @@ pub(super) struct ThreadArchiveResponse {
     pub archived: bool,
 }
 
-/// Params for `thread_post`.
+/// Params for mode `post`.
 #[derive(Debug, Clone, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct ThreadPostParams {
     /// Target thread.
@@ -302,14 +399,14 @@ pub struct ThreadPostParams {
     pub as_agent: Option<String>,
 }
 
-/// Response for `thread_post`.
+/// Response for mode `post`.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct ThreadPostResponse {
     /// The id of the message just stored.
     pub message_id: String,
 }
 
-/// Params for `thread_history`: read a thread's front-matter, oldest-first, paginated.
+/// Params for mode `history`: read a thread's front-matter, oldest-first, paginated.
 #[derive(Debug, Clone, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct ThreadHistoryParams {
     /// The thread to read.
@@ -329,10 +426,10 @@ pub struct ThreadHistoryParams {
 }
 
 /// Front-matter view of a message. Surfaces [`MessageMeta`] front-matter plus its per-thread
-/// `seq` — NO body. Fetch the body with `message_get`.
+/// `seq` — NO body. Fetch the body with mode `message`.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct MessageFrontMatter {
-    /// Globally unique message id (pass to `message_get` or `inbox_ack`).
+    /// Globally unique message id (pass to mode `message` or mode `ack`).
     pub id: String,
     /// Thread the message was posted to.
     pub thread: String,
@@ -348,7 +445,7 @@ pub(super) struct MessageFrontMatter {
     pub tags: Vec<String>,
     /// Id of the message this one replies to, if any.
     pub reply_to: Option<String>,
-    /// Per-thread sequence number — pass as `inbox_ack`'s `to_seq` to bulk-ack up to here.
+    /// Per-thread sequence number — pass as mode `ack`'s `to_seq` to bulk-ack up to here.
     pub seq: u64,
     /// Length of the separately-stored body in bytes.
     pub body_len: u32,
@@ -376,7 +473,7 @@ impl MessageFrontMatter {
     }
 }
 
-/// Response for `thread_history`.
+/// Response for mode `history`.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct ThreadHistoryResponse {
     /// Number of messages in this page.
@@ -388,7 +485,7 @@ pub(super) struct ThreadHistoryResponse {
     pub next_cursor: Option<Cursor>,
 }
 
-/// Params for `message_get`: fetch a single message body by id.
+/// Params for mode `message`: fetch a single message body by id.
 #[derive(Debug, Clone, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct MessageGetParams {
     /// The message id (the `id` of a front-matter record).
@@ -398,7 +495,7 @@ pub struct MessageGetParams {
     pub as_agent: Option<String>,
 }
 
-/// Response for `message_get`.
+/// Response for mode `message`.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct MessageGetResponse {
     /// The message id queried.
@@ -410,7 +507,7 @@ pub(super) struct MessageGetResponse {
     pub body: Option<String>,
 }
 
-/// Params for `inbox_read`: read new front-matter across JOINED threads.
+/// Params for mode `inbox`: read new front-matter across JOINED threads.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct InboxReadParams {
     /// Resume token from a previous page's `next_cursor` (opaque string).
@@ -430,7 +527,7 @@ pub struct InboxReadParams {
     pub as_agent: Option<String>,
 }
 
-/// Response for `inbox_read`.
+/// Response for mode `inbox`.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct InboxReadResponse {
     /// Number of messages in this page.
@@ -444,7 +541,7 @@ pub(super) struct InboxReadResponse {
     pub next_cursor: Option<Cursor>,
 }
 
-/// Params for `inbox_ack`: advance this agent's per-thread read cursors past acked messages.
+/// Params for mode `ack`: advance this agent's per-thread read cursors past acked messages.
 ///
 /// Two modes, combinable:
 /// * `message_ids` — resolve each id to its `(thread, seq)`, then advance each thread's cursor.
@@ -467,7 +564,7 @@ pub struct InboxAckParams {
     pub as_agent: Option<String>,
 }
 
-/// One `(thread, new_seq)` cursor advance recorded by `inbox_ack`.
+/// One `(thread, new_seq)` cursor advance recorded by mode `ack`.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct CursorAdvance {
     /// The thread whose per-agent read cursor advanced.
@@ -476,7 +573,7 @@ pub(super) struct CursorAdvance {
     pub seq: u64,
 }
 
-/// Response for `inbox_ack`.
+/// Response for mode `ack`.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct InboxAckResponse {
     /// Number of message ids that resolved and were acked.
@@ -485,10 +582,10 @@ pub(super) struct InboxAckResponse {
     pub cursors_advanced: Vec<CursorAdvance>,
 }
 
-/// Params for `inbox_wait`: block until a peer posts to a joined thread (or the one thread named
+/// Params for mode `wait`: block until a peer posts to a joined thread (or the one thread named
 /// in `thread`), or until `timeout_secs` elapses. NEVER marks read — there is no `mark_read`
-/// param; follow up with `inbox_read(mark_read: true)` or `inbox_ack` once you've handled the
-/// page. A long-poll replacement for a caller looping `inbox_read` / `thread_list`.
+/// param; follow up with `inbox_read(mark_read: true)` or mode `ack` once you've handled the
+/// page. A long-poll replacement for a caller looping mode `inbox` / mode `thread_list`.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct InboxWaitParams {
     /// Maximum seconds to block before returning `timed_out: true` (default 30, max 300).
@@ -508,7 +605,7 @@ pub struct InboxWaitParams {
     pub as_agent: Option<String>,
 }
 
-/// Response for `inbox_wait`.
+/// Response for mode `wait`.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct InboxWaitResponse {
     /// True when the call returned because `timeout_secs` elapsed with nothing new to report.

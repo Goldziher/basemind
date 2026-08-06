@@ -9,12 +9,12 @@
 //! Layout:
 //! - `context.rs` — one-shot server construction.
 //! - `render.rs` — JSON extraction + generic human renderer.
-//! - `codemap.rs` / `git.rs` / `graph.rs` / `memory.rs` / `web.rs` / `admin.rs` — subcommand groups.
+//! - `code.rs` / `git.rs` / `graph.rs` / `memory.rs` / `web.rs` / `admin.rs` — subcommand groups.
 
 pub mod admin;
-pub mod codemap;
 #[cfg(all(feature = "comms", any(unix, windows)))]
-pub mod comms;
+pub mod agents;
+pub mod code;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 pub mod comms_daemon;
 pub mod context;
@@ -27,7 +27,7 @@ pub mod memory;
 pub mod registry;
 pub mod render;
 #[cfg(all(feature = "shells", any(unix, windows)))]
-pub mod shells;
+pub mod shell;
 pub mod web;
 
 use std::io::Write;
@@ -45,9 +45,10 @@ use crate::config::DocumentsCliOverrides;
 /// Tool subcommand groups dispatched through the in-process server.
 #[derive(Subcommand, Debug)]
 pub enum ToolCmd {
-    /// Code-map queries (outline, search, references, call-graph, …).
+    /// Code-map lookups: outline, symbols, grep, files, find, definition, references, callers,
+    /// implementations, dependents, expand, semantic, chunk.
     #[command(subcommand)]
-    Query(codemap::QueryCmd),
+    Code(code::CodeCmd),
     /// Git history / blame / diff queries.
     #[command(subcommand)]
     Git(git::GitCmd),
@@ -65,11 +66,11 @@ pub enum ToolCmd {
     /// Server + cache administration: status, repo, rescan, caches, telemetry, compression.
     #[command(subcommand)]
     Admin(admin::AdminCmd),
-    /// Headless agent shells: spawn / send / capture / kill / broadcast / list
+    /// Headless agent shell sessions: spawn / send / capture / kill / list / broadcast
     /// (needs `--features shells`).
     #[cfg(all(feature = "shells", any(unix, windows)))]
     #[command(subcommand)]
-    Shells(shells::ShellsCmd),
+    Shell(shell::ShellCmd),
 }
 
 /// Map a tool `Result<CallToolResult, McpError>` into an `anyhow::Result`,
@@ -114,14 +115,14 @@ pub fn run(
             startup_us: u64::try_from(process_started.elapsed().as_micros()).unwrap_or(u64::MAX),
         };
         match cmd {
-            ToolCmd::Query(q) => codemap::run(&server, q, &opts, &mut out).await?,
+            ToolCmd::Code(c) => code::run(&server, c, &opts, &mut out).await?,
             ToolCmd::Git(g) => git::run(&server, g, &opts, &mut out).await?,
             ToolCmd::Graph(g) => graph::run(&server, g, &opts, &mut out).await?,
             ToolCmd::Memory(m) => memory::run(&server, m, &opts, &mut out).await?,
             ToolCmd::Web(w) => web::run(&server, w, &opts, &mut out).await?,
             ToolCmd::Admin(a) => admin::run(&server, a, &opts, &mut out).await?,
             #[cfg(all(feature = "shells", any(unix, windows)))]
-            ToolCmd::Shells(s) => shells::run(&server, s, &opts, &mut out).await?,
+            ToolCmd::Shell(s) => shell::run(&server, s, &opts, &mut out).await?,
         }
         out.flush().context("flush stdout")?;
         Ok(())

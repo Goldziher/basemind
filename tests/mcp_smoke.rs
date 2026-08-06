@@ -3248,15 +3248,15 @@ async fn comms_inbox_wait_delivers_then_times_out() {
     let _ = serve.await;
 }
 
-/// End-to-end MCP contract for the headless-shell tools through a real
+/// End-to-end MCP contract for the `shell` domain tool through a real
 /// `basemind serve` child process. The child binary carries the
-/// `--__internal-daemon` intercept, so `shell_spawn` actually re-execs basemind
+/// `--__internal-daemon` intercept, so mode `spawn` actually re-execs basemind
 /// as the embedded rmux daemon. `BASEMIND_SHELLS_SOCKET` sandboxes that daemon on
 /// a per-test temp socket so parallel runs and the user's environment never
 /// collide.
 ///
-/// Proves the wired surface: `shell_spawn` → poll `shell_capture` until the
-/// sentinel appears → `shell_kill`.
+/// Proves the wired surface: `spawn` → poll `capture` until the sentinel
+/// appears → `kill`.
 #[cfg(all(feature = "shells", unix))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn shell_tools_spawn_capture_kill_through_mcp() {
@@ -3294,21 +3294,21 @@ async fn shell_tools_spawn_capture_kill_through_mcp() {
 
     let spawned = service
         .call_tool(call_params(
-            "shell_spawn",
-            json!({ "command": "echo basemind-hi; sleep 5" }),
+            "shell",
+            json!({ "mode": "spawn", "command": "echo basemind-hi; sleep 5" }),
         ))
         .await
-        .expect("shell_spawn call");
+        .expect("shell spawn call");
     let spawned = decode_text(&spawned);
     let session_id = spawned
         .get("session_id")
         .and_then(Value::as_str)
-        .expect("session_id in shell_spawn response")
+        .expect("session_id in shell spawn response")
         .to_string();
     let attach_command = spawned
         .get("attach_command")
         .and_then(Value::as_str)
-        .expect("attach_command in shell_spawn response");
+        .expect("attach_command in shell spawn response");
     assert!(
         attach_command.contains("--__internal-attach ")
             && attach_command.contains("--socket ")
@@ -3318,21 +3318,24 @@ async fn shell_tools_spawn_capture_kill_through_mcp() {
 
     let escaped = service
         .call_tool(call_params(
-            "shell_spawn",
-            json!({ "command": "true", "cwd": "../../../etc" }),
+            "shell",
+            json!({ "mode": "spawn", "command": "true", "cwd": "../../../etc" }),
         ))
         .await;
     assert!(
         escaped.is_err(),
-        "shell_spawn must reject a cwd escaping the repository root: {escaped:?}"
+        "shell mode=spawn must reject a cwd escaping the repository root: {escaped:?}"
     );
 
     let deadline = Instant::now() + Duration::from_secs(15);
     loop {
         let captured = service
-            .call_tool(call_params("shell_capture", json!({ "session_id": session_id })))
+            .call_tool(call_params(
+                "shell",
+                json!({ "mode": "capture", "session_id": session_id }),
+            ))
             .await
-            .expect("shell_capture call");
+            .expect("shell capture call");
         let text = decode_text(&captured)
             .get("text")
             .and_then(Value::as_str)
@@ -3343,26 +3346,102 @@ async fn shell_tools_spawn_capture_kill_through_mcp() {
         }
         assert!(
             Instant::now() < deadline,
-            "timed out waiting for sentinel via shell_capture; last text {text:?}"
+            "timed out waiting for sentinel via shell mode=capture; last text {text:?}"
         );
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
 
     let killed = service
-        .call_tool(call_params("shell_kill", json!({ "session_id": session_id })))
+        .call_tool(call_params(
+            "shell",
+            json!({ "mode": "kill", "session_id": session_id }),
+        ))
         .await
-        .expect("shell_kill call");
+        .expect("shell kill call");
     let killed = decode_text(&killed);
     assert_eq!(
         killed.get("killed").and_then(Value::as_bool),
         Some(true),
-        "shell_kill should report killed=true for a live session: {killed:?}"
+        "shell mode=kill should report killed=true for a live session: {killed:?}"
     );
 
     let second = service
-        .call_tool(call_params("shell_kill", json!({ "session_id": session_id })))
+        .call_tool(call_params(
+            "shell",
+            json!({ "mode": "kill", "session_id": session_id }),
+        ))
         .await;
     assert!(second.is_err(), "killing an already-forgotten session_id should error");
+
+    let _ = service.cancel().await;
+}
+
+/// Every advertised `shell` mode validates its arguments before touching the shell daemon: the
+/// mode is in the advertised schema's enum, a field belonging to another mode is refused, and a
+/// mode run without its required field names the exact `mode`/field pair.
+///
+/// No daemon is sandboxed here on purpose — every assertion is a rejection, so nothing reaches
+/// rmux. That is what makes this test cheap enough to cover all six modes.
+#[cfg(all(feature = "shells", unix))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn shell_tool_validates_every_mode_before_running_it() {
+    let dir = build_repo();
+    let root = dir.path();
+    run_scan(root);
+
+    let transport = basemind::mcp::serve_in_memory(root, "working")
+        .await
+        .expect("in-memory serve");
+    let service = ().serve(transport).await.expect("rmcp handshake");
+
+    let tools = service.list_all_tools().await.expect("list tools");
+    let shell = tools
+        .iter()
+        .find(|t| t.name == "shell")
+        .expect("the shell tool is advertised");
+    let modes = shell
+        .input_schema
+        .get("properties")
+        .and_then(Value::as_object)
+        .and_then(|p| p.get("mode"))
+        .and_then(|m| m.get("enum"))
+        .and_then(Value::as_array)
+        .expect("shell advertises a flat mode enum");
+    for expected in ["spawn", "send", "capture", "kill", "list", "broadcast"] {
+        assert!(
+            modes.iter().any(|m| m.as_str() == Some(expected)),
+            "shell mode enum is missing {expected:?}: {modes:?}"
+        );
+    }
+
+    // `lines` belongs to `capture`; silently ignoring it on a `send` would read to an agent as a
+    // send that also captured output.
+    let foreign = service
+        .call_tool(call_params(
+            "shell",
+            json!({ "mode": "send", "session_id": "bmsh-nope", "text": "x", "lines": 5 }),
+        ))
+        .await;
+    let foreign = format!("{foreign:?}");
+    assert!(
+        foreign.contains("lines"),
+        "shell mode=send must reject the capture-only `lines`: {foreign}"
+    );
+
+    for (mode, field) in [
+        ("spawn", "command"),
+        ("send", "session_id"),
+        ("capture", "session_id"),
+        ("kill", "session_id"),
+        ("broadcast", "session_ids"),
+    ] {
+        let missing = service.call_tool(call_params("shell", json!({ "mode": mode }))).await;
+        let missing = format!("{missing:?}");
+        assert!(
+            missing.contains(field) && missing.contains(mode),
+            "shell mode={mode} without `{field}` must name the pair: {missing}"
+        );
+    }
 
     let _ = service.cancel().await;
 }

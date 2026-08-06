@@ -44,15 +44,13 @@ about your code costs a small fraction of the tokens it takes to read the source
 
 | Capability | What it does | Key tools |
 |---|---|---|
-| **Code intelligence** | Find where things are defined, what calls what, who implements what, and where a name resolves to. **Precise, scope- and import-aware resolution** (JS/TS via oxc, Python & Java via in-tree [stack-graphs](#how-it-works)) layered over [300+ languages](#how-it-works). | `outline` · `search_symbols` · `find_references` · `find_callers` · `goto_definition` · `find_implementations` · `find_files` · `workspace_grep` |
+| **Code intelligence** | Read the code map instead of opening files: a file's structure (`outline`), find a definition by name (`symbols`), regex content search (`grep`), enumerate or fuzzy-find files (`files` · `find`), resolve a reference position to the definition it binds to (`definition` — **scope- and import-aware**, JS/TS via oxc, Python & Java via in-tree [stack-graphs](#how-it-works)), every call site of a name (`references`, name-only) or of one specific definition (`callers`), implementors of a trait / interface / base class (`implementations`), the reverse import lookup (`dependents`), one symbol's raw body (`expand`), and search by meaning over indexed chunks (`semantic` → `chunk`, needs `--features code-search`). Layered over [300+ languages](#how-it-works). | `code` (`outline` · `symbols` · `grep` · `files` · `find` · `definition` · `references` · `callers` · `implementations` · `dependents` · `expand` · `semantic` · `chunk`) |
 | **Code graph** | Walk the typed code-graph: who calls what and what a function reaches (`calls`), a symbol's n-hop blast radius (`neighbors`), the confidence-weighted shortest route between two symbols (`path`), a readable centrality-cut neighborhood (`subgraph`), the repo's de-facto modules (`communities`), and the whole-repo architecture ranked by PageRank + git churn with its dependency cycles (`map`). Render it as node-link JSON / DOT / Mermaid / GraphML / Cypher / offline interactive HTML / static SVG (`export`), **show it to a human** in their desktop viewer (`display`), or **open the interactive UI** at a live `http://…/ui` URL (`open`) — both take `open: false` to return the path or URL without launching anything. Every edge carries provenance + confidence; every result is deterministic and bounded. | `graph` (`calls` · `neighbors` · `path` · `subgraph` · `communities` · `map` · `export` · `display` · `open`) |
 | **Git intelligence** | Ask what changed recently, who last touched a function or a line, where the churn is, when a symbol's body actually changed, how a file's structure differs across commits, and full-text search commit authors + messages at full branch depth. | `git` (`status` · `recent` · `touching` · `by_path` · `churn` · `diff` · `diff_outline` · `blame` · `blame_symbol` · `symbol_history` · `search`) |
 | **Memory & documents** | A per-repo memory agents write to and search by meaning — clones of the same repo share it, unrelated repos stay separate — plus semantic search over PDFs, Office files, HTML, email, and images (OCR included, no extra setup), and a review queue of notes mined from files that change together, which you approve before anything is kept. | `memory` (`put` · `get` · `list` · `search` · `delete` · `audit` · `documents` · `mine` · `proposals` · `accept` · `reject`) |
-| **Code search** | Find source code by meaning, term, or symbol — `mode` picks the strategy: `hybrid` (default, RRF fusion of vector + BM25 + exact-symbol lanes), `semantic` (vector KNN), or `keyword` (native BM25); optional `rerank` cross-encoder pass. Returns pointers, fetch bodies with `get_chunk`. Needs `--features code-search`. | `search_code` · `get_chunk` |
 | **Web crawl** | Fetch a page or follow links from a starting URL; results join the document search above. | `web` (`scrape` · `crawl` · `map`) |
-| **Agent comms** | Threads for agents working the same repo: each addressed by at least two of subject / path-glob / members, discovered by scope (member, cwd path-match, or subject filter — never global), with a recency-filtered inbox. The creator manages membership and archives; idle threads auto-archive. One orchestrator can drive many named subagents (`as_agent`). | `thread_start` · `thread_post` · `thread_list` · `inbox_read` · `inbox_wait` · `agent_list` |
-| **Agent shells** | Let agents open, type into, and watch terminal sessions in the background. | `shell_spawn` · `shell_send` · `shell_capture` · `shell_list` |
-| **Token saving** | Pull back only the one function an agent needs from a file it has already outlined. | `expand` |
+| **Agent comms** | Threads for agents working the same repo: each addressed by at least two of subject / path-glob / members, discovered by scope (member, cwd path-match, or subject filter — never global), with a recency-filtered inbox. The creator manages membership and archives; idle threads auto-archive. One orchestrator can drive many named subagents (`as_agent`). | `agents` (`register` · `list` · `thread_start` · `thread_list` · `join` · `leave` · `members` · `add_member` · `remove_member` · `archive` · `post` · `history` · `message` · `inbox` · `ack` · `wait`) |
+| **Agent shells** | Let agents open, type into, and watch terminal sessions in the background. | `shell` (`spawn` · `send` · `capture` · `kill` · `list` · `broadcast`) |
 | **Admin** | Refresh the index after edits, check index health and repo identity, see what's been queried and how many tokens were saved, inspect or clean the on-disk cache, and shrink what an agent carries: a file's outline instead of its text, a diff instead of a re-read, a checkpoint instead of a transcript, plus a wasteful-tool-use report. | `admin` (`status` · `repo` · `rescan` · `cache_stats` · `gc` · `cache_clear` · `telemetry` · `compress` · `delta` · `checkpoint` · `waste`) |
 | **Machine registry** | Machine-wide repo/worktree/branch coordination, backed by the daemon's always-on registry. Advisory claims let agent sessions avoid colliding on the same worktree. | `workspace` (`workspaces` · `worktrees` · `branches` · `claim` · `release`) |
 
@@ -257,8 +255,8 @@ The standalone program, for scripts, headless runs, and CI. [Install it](#instal
 
 ```bash
 basemind scan                          # index the project once
-basemind query symbol "parseQuery"     # find a symbol by name
-basemind query references "processFile" # find everywhere it's called
+basemind code symbols "parseQuery"     # find a definition by name
+basemind code references "processFile" # find everywhere it's called
 basemind git blame-file src/main.rs    # who last changed each line
 basemind watch                         # keep the index fresh as files change
 ```
@@ -338,7 +336,7 @@ activity by type, then tokens saved, then unread messages. Adjust with
 <p align="center"><em>Searching documents by meaning, not keywords, across 90+ formats.</em></p>
 
 <p align="center"><img src="docs/demos/code-review-panel.gif" alt="Three named reviewer agents posting findings to a shared repo-scoped thread, replying to each other, and an orchestrator synthesizing a verdict over the comms CLI" width="820"></p>
-<p align="center"><em>Multi-agent code-review panel: named reviewers coordinate in a repo-scoped thread (post, reply, synthesize) — entirely over <code>basemind comms</code>.</em></p>
+<p align="center"><em>Multi-agent code-review panel: named reviewers coordinate in a repo-scoped thread (post, reply, synthesize) — entirely over <code>basemind agents</code>.</em></p>
 
 <!-- markdownlint-enable MD013 -->
 
@@ -605,14 +603,14 @@ part of a `time basemind …` measurement that was never the query — and a lon
 it once at boot, not per call:
 
 ```console
-$ basemind query search run_workspace_grep --limit 1 --json
+$ basemind code symbols run_workspace_grep --limit 1 --json
 {
   ...
   "elapsed_us": 90,        # the query
   "startup_us": 957887     # everything else a `time` wrapper would have charged to it
 }
 
-$ basemind query references parse_kind --limit 3
+$ basemind code references parse_kind --limit 3
 ...
 (6.5 ms query · 852.9 ms startup)
 ```
@@ -696,30 +694,30 @@ variables in the obvious way: `--llm-api-key` becomes `BASEMIND_LLM_API_KEY`.
 ## CLI reference
 
 <details>
-<summary><strong>Full command list</strong> — query · git · memory · suggestions · cache · web · comms · shells</summary>
+<summary><strong>Full command list</strong> — code · graph · git · memory · admin · cache · web · agents · workspace · shell</summary>
 
 CLI commands mirror the MCP tools 1:1 (enforced by `tests/cli_parity.rs`). Add `--json` for
 machine-readable output.
 
 <!-- markdownlint-disable MD013 -->
 
-**Query (`basemind query`)**
+**Code (`basemind code`)**
 
 | Command | Purpose |
 |---|---|
 | `outline <path> [--l2]` | A file's structure: symbols, lines, signatures. `--l2` adds calls + docs. |
-| `symbol <needle> [--kind]` | Find a symbol by name, optionally filtered by kind. |
-| `search <needle>` | Text search across indexed files. |
+| `symbols <name> [--kind]` | Find a definition by name, optionally filtered by kind. |
+| `grep <pattern> [--language --path-contains]` | Pattern search with filters. |
+| `files [--path-contains --language]` | List indexed files. |
+| `find <fragment>` | Locate a file by a fuzzy fragment of its name or path (fzf/fd-style). |
+| `definition <path> <line> [--column]` | Resolve a reference position to its scope-resolved definition. |
 | `references <name>` | Find everywhere a name is called. |
 | `callers <path> <name> [--kind]` | Find callers of one specific definition. |
-| `goto-definition <path> <line> [--column]` | Resolve a reference position to its scope-resolved definition. |
 | `implementations <trait>` | Types that implement or inherit from a name. |
-| `grep <pattern> [--language --path-contains]` | Pattern search with filters. |
-| `list-files [--path-contains --language]` | List indexed files. |
 | `dependents <module>` | What imports a given module. |
-| `search-code <query> [--limit --format]` | Semantic (vector) search over code chunks; returns pointers. Needs `--features code-search`. |
-| `get-chunk <path> [--chunk-id --byte-start]` | Fetch one code chunk's source body (the `search-code` fetch half). |
 | `expand <path> <name> [--kind]` | A symbol's raw source body (the inverse of an outline entry). |
+| `semantic <query> [--limit --lane --format]` | Search code by meaning; returns pointers. Needs `--features code-search`. |
+| `chunk <path> [--chunk-id --byte-start]` | Fetch one code chunk's source body (the `semantic` fetch half). |
 
 **Graph (`basemind graph`)**
 
@@ -788,21 +786,29 @@ machine-readable output.
 | `crawl <seed-url>` | Follow links from a starting URL. |
 | `map <url>` | Discover a site's pages without fetching bodies. |
 
-**Comms (`basemind comms`)**
+**Agents (`basemind agents`, `--features comms`)**
+
+Every command takes `--as-agent <ID>` to act as a named sub-identity.
 
 | Command | Purpose |
 |---|---|
-| `thread-start [--subject --path --member]` / `threads [--subject-contains]` | Start a thread (addressed by ≥2 of subject / path / members) / list threads discoverable to you. |
+| `register [--name --description --version --skill]` / `list [--thread]` | Publish your identity card / list agents the broker knows. |
+| `thread-start [--subject --path --member]` / `thread-list [--subject-contains --include-archived]` | Start a thread (addressed by ≥2 of subject / path / members) / list threads discoverable to you. |
 | `join <thread>` / `leave <thread>` / `members <thread>` | Join, leave, or list the members of a thread. |
 | `add-member <thread> <id>` / `remove-member <thread> <id>` / `archive <thread>` | Manage membership and archive a thread (creator only). |
 | `post <thread> <subject> [--body --reply-to --tag]` | Post a message to a thread. |
 | `history <thread> [--since-hours]` / `inbox [--mark-read]` / `wait [--thread --timeout-secs]` | A thread's history / your cross-thread inbox / block until a peer posts. |
-| `read <id>` | Read one message body in full. |
-| `register --name <handle>` / `agents [--thread]` | Set your handle / list active agents. |
+| `message <id>` | Read one message body in full — the only body path. |
+| `ack [--message-id … \| --thread <t> --to-seq <n>]` | Clear read messages by advancing per-thread read cursors. |
+
+**Comms daemon (`basemind comms`, `--features comms`)**
+
+| Command | Purpose |
+|---|---|
 | `daemon` / `start` / `stop [--all]` / `status` | The broker daemon: run it, ensure it, stop it (`--all` stops every live daemon on the machine), or inspect pid / version / uptime. |
 | `doctor` | List every live daemon on the machine (pid / comms dir / version / uptime), pruning dead registry entries, and flag a pile-up over the ceiling (`BASEMIND_MAX_DAEMONS`, default 8). |
 
-**Shells (`basemind shells`, `--features shells`)**
+**Shell (`basemind shell`, `--features shells`)**
 
 | Command | Purpose |
 |---|---|

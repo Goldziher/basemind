@@ -1,10 +1,12 @@
-//! Helper bodies for the agent-comms MCP tools.
+//! The `agents` domain dispatcher and the helper bodies for its sixteen modes.
 //!
-//! Each `run_<tool>` is a thin proxy: acquire the lazily-connected
-//! [`CommsClient`](crate::comms::client::CommsClient) from [`ServerState`], inject the server's
-//! resolved scope context (and identity, already baked into the connected client), call the
-//! matching client method, and `json_result` the front-matter response. History and inbox
-//! tools surface front-matter ONLY — bodies are fetched exclusively through `message_get`.
+//! [`run_agents`] is the entry the `#[tool]` shim calls: it validates the flat [`AgentsParams`]
+//! against the selected [`AgentsMode`] and delegates to the per-mode body. Each `run_<mode>` is a
+//! thin proxy: acquire the lazily-connected [`CommsClient`](crate::comms::client::CommsClient) from
+//! [`ServerState`], inject the server's resolved scope context (and identity, already baked into the
+//! connected client), call the matching client method, and `json_result` the front-matter response.
+//! Modes `history` and `inbox` surface front-matter ONLY — bodies are fetched exclusively through
+//! mode `message`.
 
 #![cfg(all(feature = "comms", any(unix, windows)))]
 
@@ -16,29 +18,30 @@ use tokio::sync::Mutex;
 
 use super::ServerState;
 use super::helpers::json_result;
+use super::mode::{AgentsMode, reject_unsupported};
 use super::types_comms::{
-    AgentListParams, AgentListResponse, AgentRegisterParams, AgentRegisterResponse, AgentSummary, CursorAdvance,
-    InboxAckParams, InboxAckResponse, InboxReadParams, InboxReadResponse, InboxWaitParams, InboxWaitResponse,
-    MessageFrontMatter, MessageGetParams, MessageGetResponse, ThreadArchiveParams, ThreadArchiveResponse,
-    ThreadHistoryParams, ThreadHistoryResponse, ThreadJoinParams, ThreadLeaveParams, ThreadListParams,
-    ThreadListResponse, ThreadMemberChangeResponse, ThreadMemberParams, ThreadMembersParams, ThreadMembersResponse,
-    ThreadMembershipResponse, ThreadPostParams, ThreadPostResponse, ThreadStartParams, ThreadStartResponse,
-    ThreadSummary,
+    AgentListParams, AgentListResponse, AgentRegisterParams, AgentRegisterResponse, AgentSummary, AgentsParams,
+    CursorAdvance, InboxAckParams, InboxAckResponse, InboxReadParams, InboxReadResponse, InboxWaitParams,
+    InboxWaitResponse, MessageFrontMatter, MessageGetParams, MessageGetResponse, ThreadArchiveParams,
+    ThreadArchiveResponse, ThreadHistoryParams, ThreadHistoryResponse, ThreadJoinParams, ThreadLeaveParams,
+    ThreadListParams, ThreadListResponse, ThreadMemberChangeResponse, ThreadMemberParams, ThreadMembersParams,
+    ThreadMembersResponse, ThreadMembershipResponse, ThreadPostParams, ThreadPostResponse, ThreadStartParams,
+    ThreadStartResponse, ThreadSummary,
 };
 use crate::comms::client::{CommsClient, scope_context_for};
 use crate::comms::ids::AgentId;
 use crate::comms::model::now_micros;
 
-/// Default page size when a comms tool omits `limit`. Mirrors the broker's `DEFAULT_LIMIT`.
+/// Default page size when a mode omits `limit`. Mirrors the broker's `DEFAULT_LIMIT`.
 const DEFAULT_LIMIT: u32 = 100;
 
-/// Default recency window for `thread_history` / `inbox_read` when the caller omits `since_hours`.
+/// Default recency window for modes `history` / `inbox` when the caller omits `since_hours`.
 const DEFAULT_SINCE_HOURS: u32 = 24;
 
-/// Default long-poll timeout for `inbox_wait` when the caller omits `timeout_secs`.
+/// Default long-poll timeout for mode `wait` when the caller omits `timeout_secs`.
 const DEFAULT_WAIT_SECS: u32 = 30;
 
-/// Hard cap on `inbox_wait`'s `timeout_secs`. Comfortably under the daemon's 30-minute idle-reap
+/// Hard cap on mode `wait`'s `timeout_secs`. Comfortably under the daemon's 30-minute idle-reap
 /// window and short enough that one outstanding wait cannot meaningfully delay a drain.
 const MAX_WAIT_SECS: u32 = 300;
 
@@ -62,7 +65,7 @@ pub(super) fn comms_err(error: impl std::fmt::Display) -> McpError {
     McpError::internal_error(format!("comms: {error}"), None)
 }
 
-/// Validate the ≥2-of-3 addressing rule for `thread_start` client-side, so the caller gets a clear
+/// Validate the ≥2-of-3 addressing rule for mode `thread_start` client-side, so the caller gets a clear
 /// error without a broker round-trip. The broker enforces the SAME rule; this is a fast pre-check.
 /// The caller (creator) is always an implicit member, so `members` counts only when it names at
 /// least one agent OTHER than the caller.
@@ -80,8 +83,8 @@ pub(super) fn validate_thread_dimensions(
         Ok(())
     } else {
         Err(comms_err(
-            "thread_start requires at least 2 of subject / path / members (a member other than \
-             yourself); supply at least two",
+            "`agents` mode=\"thread_start\" requires at least 2 of `subject` / `path` / `members` (a \
+             member other than yourself); supply at least two",
         ))
     }
 }
@@ -185,10 +188,288 @@ fn clamp_limit(limit: Option<u32>) -> u32 {
     limit.unwrap_or(DEFAULT_LIMIT).clamp(1, crate::comms::daemon::MAX_LIMIT)
 }
 
-pub(super) async fn run_agent_register(
-    state: &ServerState,
-    params: AgentRegisterParams,
-) -> Result<CallToolResult, McpError> {
+/// Fail a mode that was given a field belonging to some other mode.
+///
+/// Inverted against `allowed` rather than listing every rejected field per mode: with sixteen modes
+/// and twenty-three sibling fields, an explicit per-mode reject list is where a newly added field
+/// silently becomes accept-everywhere.
+fn reject_foreign_fields(mode: AgentsMode, present: &[(&str, bool)], allowed: &[&str]) -> Result<(), McpError> {
+    let foreign: Vec<(&str, bool)> = present
+        .iter()
+        .filter(|(field, _)| !allowed.contains(field))
+        .copied()
+        .collect();
+    reject_unsupported(AgentsMode::DOMAIN, mode.as_str(), &foreign)
+}
+
+/// Unwrap a field this mode cannot run without, naming the exact `mode`/field pair.
+fn require_field<T>(mode: AgentsMode, field: &str, value: Option<T>) -> Result<T, McpError> {
+    value.ok_or_else(|| {
+        McpError::invalid_params(
+            format!("`{}` mode=\"{}\" requires `{field}`", AgentsMode::DOMAIN, mode.as_str()),
+            None,
+        )
+    })
+}
+
+/// Dispatch the single `agents` tool onto the per-mode body its `mode` selects.
+///
+/// Validation runs before the broker connection so a malformed call costs no daemon round-trip, and
+/// fields belonging to another mode are rejected rather than dropped: a silently ignored `thread` on
+/// an `inbox` call reads to an agent as a successful single-thread read.
+pub(super) async fn run_agents(state: &ServerState, params: AgentsParams) -> Result<CallToolResult, McpError> {
+    let AgentsParams {
+        mode,
+        thread,
+        member,
+        members,
+        message_id,
+        message_ids,
+        to_seq,
+        subject,
+        subject_contains,
+        path,
+        body,
+        tags,
+        reply_to,
+        include_archived,
+        mark_read,
+        cursor,
+        limit,
+        since_hours,
+        timeout_secs,
+        name,
+        description,
+        version,
+        skills,
+        as_agent,
+    } = params;
+    // `as_agent` is deliberately absent: it selects the identity the call runs as, not what the call
+    // does, so every mode accepts it and no allow-list needs to repeat it. ~keep
+    let present = [
+        ("thread", thread.is_some()),
+        ("member", member.is_some()),
+        ("members", members.is_some()),
+        ("message_id", message_id.is_some()),
+        ("message_ids", message_ids.is_some()),
+        ("to_seq", to_seq.is_some()),
+        ("subject", subject.is_some()),
+        ("subject_contains", subject_contains.is_some()),
+        ("path", path.is_some()),
+        ("body", body.is_some()),
+        ("tags", tags.is_some()),
+        ("reply_to", reply_to.is_some()),
+        ("include_archived", include_archived.is_some()),
+        ("mark_read", mark_read.is_some()),
+        ("cursor", cursor.is_some()),
+        ("limit", limit.is_some()),
+        ("since_hours", since_hours.is_some()),
+        ("timeout_secs", timeout_secs.is_some()),
+        ("name", name.is_some()),
+        ("description", description.is_some()),
+        ("version", version.is_some()),
+        ("skills", skills.is_some()),
+    ];
+    reject_foreign_fields(mode, &present, allowed_fields(mode))?;
+
+    match mode {
+        AgentsMode::Register => {
+            run_agent_register(
+                state,
+                AgentRegisterParams {
+                    name: name.unwrap_or_default(),
+                    description: description.unwrap_or_default(),
+                    version: version.unwrap_or_default(),
+                    skills: skills.unwrap_or_default(),
+                    as_agent,
+                },
+            )
+            .await
+        }
+        AgentsMode::List => run_agent_list(state, AgentListParams { thread, as_agent }).await,
+        AgentsMode::ThreadStart => {
+            run_thread_start(
+                state,
+                ThreadStartParams {
+                    subject,
+                    path,
+                    members: members.unwrap_or_default(),
+                    as_agent,
+                },
+            )
+            .await
+        }
+        AgentsMode::ThreadList => {
+            run_thread_list(
+                state,
+                ThreadListParams {
+                    subject_contains,
+                    include_archived: include_archived.unwrap_or(false),
+                    as_agent,
+                },
+            )
+            .await
+        }
+        AgentsMode::Join => {
+            run_thread_join(
+                state,
+                ThreadJoinParams {
+                    thread: require_field(mode, "thread", thread)?,
+                    as_agent,
+                },
+            )
+            .await
+        }
+        AgentsMode::Leave => {
+            run_thread_leave(
+                state,
+                ThreadLeaveParams {
+                    thread: require_field(mode, "thread", thread)?,
+                    as_agent,
+                },
+            )
+            .await
+        }
+        AgentsMode::Members => {
+            run_thread_members(
+                state,
+                ThreadMembersParams {
+                    thread: require_field(mode, "thread", thread)?,
+                    as_agent,
+                },
+            )
+            .await
+        }
+        AgentsMode::AddMember => {
+            run_thread_add_member(
+                state,
+                ThreadMemberParams {
+                    thread: require_field(mode, "thread", thread)?,
+                    member: require_field(mode, "member", member)?,
+                    as_agent,
+                },
+            )
+            .await
+        }
+        AgentsMode::RemoveMember => {
+            run_thread_remove_member(
+                state,
+                ThreadMemberParams {
+                    thread: require_field(mode, "thread", thread)?,
+                    member: require_field(mode, "member", member)?,
+                    as_agent,
+                },
+            )
+            .await
+        }
+        AgentsMode::Archive => {
+            run_thread_archive(
+                state,
+                ThreadArchiveParams {
+                    thread: require_field(mode, "thread", thread)?,
+                    as_agent,
+                },
+            )
+            .await
+        }
+        AgentsMode::Post => {
+            run_thread_post(
+                state,
+                ThreadPostParams {
+                    thread: require_field(mode, "thread", thread)?,
+                    subject: require_field(mode, "subject", subject)?,
+                    body,
+                    tags,
+                    reply_to,
+                    as_agent,
+                },
+            )
+            .await
+        }
+        AgentsMode::History => {
+            run_thread_history(
+                state,
+                ThreadHistoryParams {
+                    thread: require_field(mode, "thread", thread)?,
+                    cursor,
+                    limit,
+                    since_hours,
+                    as_agent,
+                },
+            )
+            .await
+        }
+        AgentsMode::Message => {
+            run_message_get(
+                state,
+                MessageGetParams {
+                    message_id: require_field(mode, "message_id", message_id)?,
+                    as_agent,
+                },
+            )
+            .await
+        }
+        AgentsMode::Inbox => {
+            run_inbox_read(
+                state,
+                InboxReadParams {
+                    cursor,
+                    limit,
+                    mark_read: mark_read.unwrap_or(false),
+                    since_hours,
+                    as_agent,
+                },
+            )
+            .await
+        }
+        AgentsMode::Ack => {
+            run_inbox_ack(
+                state,
+                InboxAckParams {
+                    message_ids: message_ids.unwrap_or_default(),
+                    thread,
+                    to_seq,
+                    as_agent,
+                },
+            )
+            .await
+        }
+        AgentsMode::Wait => {
+            run_inbox_wait(
+                state,
+                InboxWaitParams {
+                    timeout_secs,
+                    thread,
+                    since_hours,
+                    cursor,
+                    as_agent,
+                },
+            )
+            .await
+        }
+    }
+}
+
+/// The sibling fields each mode accepts. Everything else present on the call is rejected by
+/// [`reject_foreign_fields`], so a parameter an agent believed took effect never silently doesn't.
+fn allowed_fields(mode: AgentsMode) -> &'static [&'static str] {
+    match mode {
+        AgentsMode::Register => &["name", "description", "version", "skills"],
+        AgentsMode::List => &["thread"],
+        AgentsMode::ThreadStart => &["subject", "path", "members"],
+        AgentsMode::ThreadList => &["subject_contains", "include_archived"],
+        AgentsMode::Join | AgentsMode::Leave | AgentsMode::Members | AgentsMode::Archive => &["thread"],
+        AgentsMode::AddMember | AgentsMode::RemoveMember => &["thread", "member"],
+        AgentsMode::Post => &["thread", "subject", "body", "tags", "reply_to"],
+        AgentsMode::History => &["thread", "cursor", "limit", "since_hours"],
+        AgentsMode::Message => &["message_id"],
+        AgentsMode::Inbox => &["cursor", "limit", "mark_read", "since_hours"],
+        AgentsMode::Ack => &["message_ids", "thread", "to_seq"],
+        AgentsMode::Wait => &["thread", "timeout_secs", "since_hours", "cursor"],
+    }
+}
+
+async fn run_agent_register(state: &ServerState, params: AgentRegisterParams) -> Result<CallToolResult, McpError> {
     let card = crate::comms::model::AgentCard {
         name: params.name,
         description: params.description,
@@ -205,7 +486,7 @@ pub(super) async fn run_agent_register(
     })
 }
 
-pub(super) async fn run_agent_list(state: &ServerState, params: AgentListParams) -> Result<CallToolResult, McpError> {
+async fn run_agent_list(state: &ServerState, params: AgentListParams) -> Result<CallToolResult, McpError> {
     let handle = resolve_comms_client(state, params.as_agent).await?;
     let mut client = handle.lock().await;
     let records = client.list_agents(params.thread).await.map_err(comms_err)?;
@@ -227,10 +508,7 @@ pub(super) async fn run_agent_list(state: &ServerState, params: AgentListParams)
     })
 }
 
-pub(super) async fn run_thread_start(
-    state: &ServerState,
-    params: ThreadStartParams,
-) -> Result<CallToolResult, McpError> {
+async fn run_thread_start(state: &ServerState, params: ThreadStartParams) -> Result<CallToolResult, McpError> {
     let creator = match &params.as_agent {
         Some(raw) => AgentId::parse(raw.clone()).map_err(|e| comms_err(format!("invalid as_agent {raw:?}: {e}")))?,
         None => AgentId::parse(state.agent_id.clone())
@@ -253,7 +531,7 @@ pub(super) async fn run_thread_start(
     })
 }
 
-pub(super) async fn run_thread_list(state: &ServerState, params: ThreadListParams) -> Result<CallToolResult, McpError> {
+async fn run_thread_list(state: &ServerState, params: ThreadListParams) -> Result<CallToolResult, McpError> {
     let (remote, cwd) = scope_context_for(&state.shared.root);
     let handle = resolve_comms_client(state, params.as_agent).await?;
     let mut client = handle.lock().await;
@@ -269,7 +547,7 @@ pub(super) async fn run_thread_list(state: &ServerState, params: ThreadListParam
     })
 }
 
-pub(super) async fn run_thread_join(state: &ServerState, params: ThreadJoinParams) -> Result<CallToolResult, McpError> {
+async fn run_thread_join(state: &ServerState, params: ThreadJoinParams) -> Result<CallToolResult, McpError> {
     let label = params.thread.as_str().to_string();
     let handle = resolve_comms_client(state, params.as_agent).await?;
     let mut client = handle.lock().await;
@@ -281,10 +559,7 @@ pub(super) async fn run_thread_join(state: &ServerState, params: ThreadJoinParam
     })
 }
 
-pub(super) async fn run_thread_leave(
-    state: &ServerState,
-    params: ThreadLeaveParams,
-) -> Result<CallToolResult, McpError> {
+async fn run_thread_leave(state: &ServerState, params: ThreadLeaveParams) -> Result<CallToolResult, McpError> {
     let label = params.thread.as_str().to_string();
     let handle = resolve_comms_client(state, params.as_agent).await?;
     let mut client = handle.lock().await;
@@ -296,10 +571,7 @@ pub(super) async fn run_thread_leave(
     })
 }
 
-pub(super) async fn run_thread_members(
-    state: &ServerState,
-    params: ThreadMembersParams,
-) -> Result<CallToolResult, McpError> {
+async fn run_thread_members(state: &ServerState, params: ThreadMembersParams) -> Result<CallToolResult, McpError> {
     let label = params.thread.as_str().to_string();
     let handle = resolve_comms_client(state, params.as_agent).await?;
     let mut client = handle.lock().await;
@@ -310,10 +582,7 @@ pub(super) async fn run_thread_members(
     })
 }
 
-pub(super) async fn run_thread_add_member(
-    state: &ServerState,
-    params: ThreadMemberParams,
-) -> Result<CallToolResult, McpError> {
+async fn run_thread_add_member(state: &ServerState, params: ThreadMemberParams) -> Result<CallToolResult, McpError> {
     let thread = params.thread.as_str().to_string();
     let member = params.member.as_str().to_string();
     let handle = resolve_comms_client(state, params.as_agent).await?;
@@ -330,10 +599,7 @@ pub(super) async fn run_thread_add_member(
     })
 }
 
-pub(super) async fn run_thread_remove_member(
-    state: &ServerState,
-    params: ThreadMemberParams,
-) -> Result<CallToolResult, McpError> {
+async fn run_thread_remove_member(state: &ServerState, params: ThreadMemberParams) -> Result<CallToolResult, McpError> {
     let thread = params.thread.as_str().to_string();
     let member = params.member.as_str().to_string();
     let handle = resolve_comms_client(state, params.as_agent).await?;
@@ -350,10 +616,7 @@ pub(super) async fn run_thread_remove_member(
     })
 }
 
-pub(super) async fn run_thread_archive(
-    state: &ServerState,
-    params: ThreadArchiveParams,
-) -> Result<CallToolResult, McpError> {
+async fn run_thread_archive(state: &ServerState, params: ThreadArchiveParams) -> Result<CallToolResult, McpError> {
     let label = params.thread.as_str().to_string();
     let handle = resolve_comms_client(state, params.as_agent).await?;
     let mut client = handle.lock().await;
@@ -364,7 +627,7 @@ pub(super) async fn run_thread_archive(
     })
 }
 
-pub(super) async fn run_thread_post(state: &ServerState, params: ThreadPostParams) -> Result<CallToolResult, McpError> {
+async fn run_thread_post(state: &ServerState, params: ThreadPostParams) -> Result<CallToolResult, McpError> {
     let body = params.body.unwrap_or_default().into_bytes();
     let tags = params.tags.unwrap_or_default();
     let handle = resolve_comms_client(state, params.as_agent).await?;
@@ -376,10 +639,7 @@ pub(super) async fn run_thread_post(state: &ServerState, params: ThreadPostParam
     json_result(&ThreadPostResponse { message_id })
 }
 
-pub(super) async fn run_thread_history(
-    state: &ServerState,
-    params: ThreadHistoryParams,
-) -> Result<CallToolResult, McpError> {
+async fn run_thread_history(state: &ServerState, params: ThreadHistoryParams) -> Result<CallToolResult, McpError> {
     let limit = clamp_limit(params.limit);
     let cursor = params.cursor.map(crate::comms::cursor::Cursor);
     let since = since_cutoff(params.since_hours);
@@ -401,7 +661,7 @@ pub(super) async fn run_thread_history(
     })
 }
 
-pub(super) async fn run_message_get(state: &ServerState, params: MessageGetParams) -> Result<CallToolResult, McpError> {
+async fn run_message_get(state: &ServerState, params: MessageGetParams) -> Result<CallToolResult, McpError> {
     let message_id = params.message_id.clone();
     let handle = resolve_comms_client(state, params.as_agent).await?;
     let mut client = handle.lock().await;
@@ -415,7 +675,7 @@ pub(super) async fn run_message_get(state: &ServerState, params: MessageGetParam
     })
 }
 
-pub(super) async fn run_inbox_read(state: &ServerState, params: InboxReadParams) -> Result<CallToolResult, McpError> {
+async fn run_inbox_read(state: &ServerState, params: InboxReadParams) -> Result<CallToolResult, McpError> {
     let limit = clamp_limit(params.limit);
     let cursor = params.cursor.map(crate::comms::cursor::Cursor);
     let since = since_cutoff(params.since_hours);
@@ -439,10 +699,12 @@ pub(super) async fn run_inbox_read(state: &ServerState, params: InboxReadParams)
     })
 }
 
-pub(super) async fn run_inbox_ack(state: &ServerState, params: InboxAckParams) -> Result<CallToolResult, McpError> {
+async fn run_inbox_ack(state: &ServerState, params: InboxAckParams) -> Result<CallToolResult, McpError> {
     let has_bulk = params.thread.is_some() && params.to_seq.is_some();
     if params.message_ids.is_empty() && !has_bulk {
-        return Err(comms_err("inbox_ack requires message_ids or a (thread, to_seq) pair"));
+        return Err(comms_err(
+            "`agents` mode=\"ack\" requires `message_ids`, or a (`thread`, `to_seq`) pair",
+        ));
     }
     let handle = resolve_comms_client(state, params.as_agent).await?;
     let mut client = handle.lock().await;
@@ -468,7 +730,7 @@ pub(super) async fn run_inbox_ack(state: &ServerState, params: InboxAckParams) -
 /// tool call for this identity (agent_list, thread_post, inbox_read, …) for the whole wait. A
 /// fresh connection per wait avoids that at the cost of one extra link + broker sink per
 /// outstanding call — an accepted trade-off (see the design brief's risk notes).
-pub(super) async fn run_inbox_wait(state: &ServerState, params: InboxWaitParams) -> Result<CallToolResult, McpError> {
+async fn run_inbox_wait(state: &ServerState, params: InboxWaitParams) -> Result<CallToolResult, McpError> {
     let timeout_secs = params.timeout_secs.unwrap_or(DEFAULT_WAIT_SECS).clamp(1, MAX_WAIT_SECS);
     let cursor = params.cursor.map(crate::comms::cursor::Cursor);
     let since = since_cutoff(params.since_hours);
@@ -508,4 +770,37 @@ pub(super) async fn run_inbox_wait(state: &ServerState, params: InboxWaitParams)
         messages,
         next_cursor,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn should_name_the_mode_and_field_when_a_required_sibling_is_missing() {
+        let error = require_field(AgentsMode::Post, "subject", None::<String>).expect_err("a bodyless post fails");
+        assert_eq!(error.message.to_string(), "`agents` mode=\"post\" requires `subject`");
+    }
+
+    #[test]
+    fn should_reject_a_field_that_belongs_to_another_mode() {
+        let error = reject_foreign_fields(
+            AgentsMode::Inbox,
+            &[("thread", true), ("limit", true)],
+            allowed_fields(AgentsMode::Inbox),
+        )
+        .expect_err("`thread` is an `ack`/`wait` field, not an `inbox` one");
+        let message = error.message.to_string();
+        assert_eq!(message, "`agents` mode `inbox` does not accept `thread`");
+    }
+
+    #[test]
+    fn should_allow_as_agent_on_every_mode_without_repeating_it_per_allow_list() {
+        for mode in AgentsMode::ALL {
+            assert!(
+                !allowed_fields(*mode).contains(&"as_agent"),
+                "`as_agent` is universal and must not be listed per mode ({mode})"
+            );
+        }
+    }
 }

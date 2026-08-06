@@ -80,15 +80,25 @@ const WEB_INGEST_MULTIPLIER: u64 = 3;
 pub fn estimate_from_text(tool: &str, _corpus_bytes: u64, resp_text: &str) -> SavingsRow {
     let actual = tokens_for_text(resp_text);
     let (baseline, baseline_name) = match tool {
-        "outline" => (actual.saturating_mul(5), "full_file_read"),
+        // Each code-map arm carries BOTH spellings: `code:<mode>` is what the MCP surface records
+        // after the domain consolidation, while the bare name is what `basemind-agent` still
+        // registers its LLM-facing tools under (`crates/basemind-agent/src/tools/codenav.rs`),
+        // which calls straight into `agent_api::estimate_tokens_saved`. Dropping the bare
+        // spellings would silently zero the agent TUI's "tokens saved" readout rather than fail a
+        // test. Collapse them once that surface follows the consolidation. ~keep
+        "code:outline" | "outline" => (actual.saturating_mul(5), "full_file_read"),
 
-        "search_symbols" => (actual.saturating_mul(GREP_READ_MULTIPLIER), "grep_plus_read_top_hits"),
+        "code:symbols" | "search_symbols" => (actual.saturating_mul(GREP_READ_MULTIPLIER), "grep_plus_read_top_hits"),
 
-        "find_references" | "find_callers" => (actual.saturating_mul(GREP_READ_MULTIPLIER), "grep_top_hits"),
+        "code:references" | "code:callers" | "find_references" | "find_callers" => {
+            (actual.saturating_mul(GREP_READ_MULTIPLIER), "grep_top_hits")
+        }
 
-        "find_implementations" => (actual.saturating_mul(GREP_READ_MULTIPLIER), "grep_top_hits"),
+        "code:implementations" | "find_implementations" => {
+            (actual.saturating_mul(GREP_READ_MULTIPLIER), "grep_top_hits")
+        }
 
-        "dependents" => (
+        "code:dependents" | "dependents" => (
             actual.saturating_mul(DEPENDENTS_READ_MULTIPLIER),
             "grep_imports_top_hits",
         ),
@@ -97,7 +107,7 @@ pub fn estimate_from_text(tool: &str, _corpus_bytes: u64, resp_text: &str) -> Sa
 
         "git:symbol_history" => (actual.saturating_mul(4), "per_commit_outline_diff"),
 
-        "workspace_grep" => (actual, "no_baseline"),
+        "code:grep" | "workspace_grep" => (actual, "no_baseline"),
 
         // `display` and `open` join their read-only siblings here rather than staying unclassified:
         // a rendered view replaces no grep/read baseline, so "saved nothing" is the honest label.
@@ -106,7 +116,7 @@ pub fn estimate_from_text(tool: &str, _corpus_bytes: u64, resp_text: &str) -> Sa
 
         "memory:documents" => (actual.saturating_mul(DOCUMENT_READ_MULTIPLIER), "full_document_read"),
 
-        "list_files" => (actual.saturating_mul(LIST_FILES_READ_MULTIPLIER), "find_plus_filter"),
+        "code:files" | "list_files" => (actual.saturating_mul(LIST_FILES_READ_MULTIPLIER), "find_plus_filter"),
 
         "web:scrape" | "web:crawl" | "web:map" => (actual.saturating_mul(WEB_INGEST_MULTIPLIER), "manual_browse_paste"),
 
@@ -163,7 +173,7 @@ mod tests {
 
     #[test]
     fn outline_baseline_is_5x_response() {
-        let s = estimate_from_text("outline", 1_000_000, &"a".repeat(400));
+        let s = estimate_from_text("code:outline", 1_000_000, &"a".repeat(400));
         assert_eq!(s.baseline_tokens, s.actual_tokens.saturating_mul(5));
         assert_eq!(s.baseline, "full_file_read");
         #[cfg(not(feature = "documents"))]
@@ -177,8 +187,8 @@ mod tests {
     #[test]
     fn search_symbols_savings_independent_of_corpus() {
         let text = "a".repeat(400);
-        let big = estimate_from_text("search_symbols", 1_000_000, &text);
-        let empty = estimate_from_text("search_symbols", 0, &text);
+        let big = estimate_from_text("code:symbols", 1_000_000, &text);
+        let empty = estimate_from_text("code:symbols", 0, &text);
         assert_eq!(big.est_tokens_saved, empty.est_tokens_saved);
         assert_grep_model(&big, "grep_plus_read_top_hits");
         #[cfg(not(feature = "documents"))]
@@ -191,7 +201,7 @@ mod tests {
 
     #[test]
     fn find_references_grep_baseline_floors_at_zero_for_empty_corpus() {
-        let s = estimate_from_text("find_references", 0, &"a".repeat(200));
+        let s = estimate_from_text("code:references", 0, &"a".repeat(200));
         assert_grep_model(&s, "grep_top_hits");
         #[cfg(not(feature = "documents"))]
         {
@@ -203,8 +213,8 @@ mod tests {
 
     #[test]
     fn grep_savings_scale_with_response_not_corpus() {
-        let small = estimate_from_text("search_symbols", 1_000_000, &"word ".repeat(80));
-        let large = estimate_from_text("search_symbols", 1_000_000, &"word ".repeat(800));
+        let small = estimate_from_text("code:symbols", 1_000_000, &"word ".repeat(80));
+        let large = estimate_from_text("code:symbols", 1_000_000, &"word ".repeat(800));
         assert!(
             large.est_tokens_saved > small.est_tokens_saved,
             "bigger response must yield bigger savings: {} !> {}",
@@ -232,6 +242,7 @@ mod tests {
             "git:blame",
             "git:status",
             "git:search",
+            "code:grep",
             "workspace_grep",
             "graph:calls",
             "graph:display",
@@ -239,6 +250,33 @@ mod tests {
             let s = estimate_from_text(tool, 1_000_000, &"a".repeat(500));
             assert_eq!(s.est_tokens_saved, 0, "{tool} must not claim savings");
             assert_eq!(s.baseline, "no_baseline", "{tool} must label no_baseline");
+        }
+    }
+
+    /// `basemind-agent` registers its LLM-facing code-map tools under the pre-consolidation bare
+    /// names and routes them through this same estimator, so both spellings must model the same
+    /// baseline. Dropping the bare arms would zero the agent TUI's "tokens saved" readout in
+    /// production without failing anything else here.
+    #[test]
+    fn bare_agent_tool_names_model_the_same_baseline_as_their_code_modes() {
+        let text = "a".repeat(400);
+        for (bare, mode) in [
+            ("outline", "code:outline"),
+            ("search_symbols", "code:symbols"),
+            ("find_references", "code:references"),
+            ("find_callers", "code:callers"),
+            ("find_implementations", "code:implementations"),
+            ("dependents", "code:dependents"),
+            ("workspace_grep", "code:grep"),
+            ("list_files", "code:files"),
+        ] {
+            let old = estimate_from_text(bare, 1_000_000, &text);
+            let new = estimate_from_text(mode, 1_000_000, &text);
+            assert_eq!(old.baseline, new.baseline, "{bare} and {mode} must share a baseline");
+            assert_eq!(
+                old.est_tokens_saved, new.est_tokens_saved,
+                "{bare} and {mode} must estimate the same savings"
+            );
         }
     }
 
@@ -258,7 +296,7 @@ mod tests {
 
     #[test]
     fn list_files_models_find_plus_filter_at_2x() {
-        let s = estimate_from_text("list_files", 1_000_000, &"a".repeat(400));
+        let s = estimate_from_text("code:files", 1_000_000, &"a".repeat(400));
         assert_eq!(s.baseline, "find_plus_filter");
         assert_eq!(s.baseline_tokens, s.actual_tokens.saturating_mul(2));
         assert_eq!(s.est_tokens_saved, s.baseline_tokens.saturating_sub(s.actual_tokens));
@@ -306,7 +344,7 @@ mod tests {
     #[cfg(not(feature = "documents"))]
     #[test]
     fn estimate_from_text_is_bytes_over_four_under_heuristic() {
-        let s = estimate_from_text("outline", 0, &"x".repeat(800));
+        let s = estimate_from_text("code:outline", 0, &"x".repeat(800));
         assert_eq!(s.actual_tokens, 200);
         assert_eq!(s.baseline_tokens, 1_000);
         assert_eq!(s.est_tokens_saved, 800);

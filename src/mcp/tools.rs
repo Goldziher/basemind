@@ -1,7 +1,13 @@
-//! `#[tool_router]` impl block for `BasemindServer`.
+//! The `code` domain tool shim for `BasemindServer`.
 //!
-//! Every `#[tool]`-annotated method below becomes a dispatchable MCP tool. Helpers live
-//! in `super::helpers`; param/response shapes in `super::types`.
+//! One tool, one required `mode` — `outline` / `symbols` / `grep` / `files` / `find` /
+//! `definition` / `references` / `callers` / `implementations` / `dependents` / `expand` /
+//! `semantic` / `chunk` — dispatched to `helpers_code::run_code`. Thin wrapper: the bodies live in
+//! `helpers_code.rs` (`outline`, `symbols`, `dependents`), `helpers_files.rs`, `helpers_grep.rs`,
+//! `helpers_calls.rs`, `helpers_impls.rs`, `helpers_intel.rs`, `helpers_compress.rs` and
+//! `helpers_code_search.rs`.
+//!
+//! The pagination / cap helpers the code-map bodies share stay here at the bottom of the file.
 
 use rmcp::ErrorData as McpError;
 use rmcp::handler::server::wrapper::Parameters;
@@ -10,590 +16,175 @@ use rmcp::tool;
 use serde_json::Value;
 
 use super::BasemindServer;
-use super::helpers::*;
+use super::helpers::{LIST_LIMIT_DEFAULT, LIST_LIMIT_MAX, record_call};
 use super::lenient::Lenient;
-use super::types::*;
-use crate::query;
+use super::mode::CodeMode;
+use super::types::{FindCallersParams, FindReferencesParams, OutlineParams, SearchSymbolsParams, WorkspaceGrepParams};
+use super::types_code::CodeParams;
 
 #[rmcp::tool_router(vis = "pub(super)", router = "tool_router_core")]
 impl BasemindServer {
-    /// File outline: symbols + imports (L1), optionally calls + docs (L2).
+    // No `output_schema`: the thirteen modes return thirteen different response shapes, and
+    // SEP-2106 allows exactly one per tool. Declaring a union would mean nested structs, which
+    // schemars emits as `$ref` into `$defs` — the construct that silently dropped the whole
+    // registry in GH #50. The per-mode shapes are documented in the description instead. ~keep
     #[tool(
-        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types::OutlineResponse>()",
-        description = "Structural outline of a file: each symbol (name, kind, start row/col) plus \
-                       imports. `l2: true` adds calls + doc comments (only if an L2 blob exists for \
-                       the current content). `max_tokens` budgets the `symbols` list (not \
-                       imports/calls/docs), setting `budgeted`. `format:\"toon\"` for compact rows. \
-                       `elapsed_us` = server-side handler latency in µs (excludes transport).",
-        annotations(read_only_hint = true, open_world_hint = false)
+        description = "Read this repository's code map instead of opening files: grep it, find \
+        where something is defined, see who calls this, locate a file by name, and pull one \
+        symbol's body. Everything is served from the index — paths, lines, columns and \
+        signatures — at a fraction of the tokens a Read or a shell `rg` costs. `mode` is \
+        required. `outline` returns one file's structure (symbols with kind + row/col + \
+        signature, plus imports) — read this INSTEAD of opening the file, then fetch only the \
+        span you need; `l2: true` adds call sites and doc comments when an L2 blob exists for \
+        the file's current content. `symbols` searches every indexed symbol NAME for `name` as \
+        a case-sensitive SUBSTRING (optional `kind` filter) — the definition finder, and the \
+        right answer to \"where is X defined\"; `total` counts matches up to a per-call cap \
+        (`limit*64`, min 2000) and sets `total_is_partial` when it stops there. `grep` is regex \
+        content search (Rust `regex` syntax) over EVERY indexed file — use it for a pattern, \
+        a string literal or a comment, and prefer `symbols` for a plain identifier; `limit` \
+        caps hits, never files, so `total_matches` is exact, and `language` / `path_contains` \
+        narrow the sweep. `files` enumerates indexed paths (`path_contains` / `language` \
+        filters). `find` is fuzzy filename search (fzf/fd-style subsequence, case-insensitive, \
+        ranked by score) — reach for it instead of `find` / `fd` / `ls -R`. `definition` \
+        resolves the reference at `path`:`line`:`column` to the definition it BINDS to — \
+        scope-resolved, not name-matched, so it never conflates same-named symbols, and it \
+        follows cross-file imports for JS/TS; `line` is 1-based, `column` 0-based bytes; a \
+        position with no resolved binding returns no `definition` rather than an error. \
+        `references` finds every call site whose callee identifier contains `name` — NAME-ONLY, \
+        no scope resolution, so `Foo::bar()` and `bar()` both match `name=\"bar\"`; that is the \
+        fast, complete floor for \"what calls this\". `callers` answers the same question for \
+        ONE specific definition: it resolves `path` + `name` (+ optional `kind`) first, echoes \
+        it as `definition`, then runs that same name scan — so `total` agrees with `references` \
+        on an unambiguous name — and additionally marks each hit `resolved` when scope/import \
+        resolution PROVED it binds to that definition (`resolved_total`). `resolved: false` is \
+        not evidence a hit isn't a caller; trust `total` for completeness before a refactor and \
+        filter on `resolved` when you want precision. `implementations` finds the types that \
+        implement / extend / inherit `trait_name` (case-sensitive substring; Rust, Python, \
+        TS/TSX, JS class + interface extends/implements — Go structural satisfaction is not \
+        detected). `dependents` is the reverse import lookup: indexed files whose imports \
+        mention `module` (heuristic substring against each recorded module path). `expand` \
+        returns one symbol's RAW SOURCE BODY resolved by `path` + `name` (+ `kind` to \
+        disambiguate an overload) — the inverse of an outline entry, and the second half of the \
+        outline-then-expand pattern. `semantic` searches code by MEANING rather than spelling: \
+        `lane` picks `hybrid` (default; RRF fusion of vector, BM25 and exact-symbol lanes, \
+        degrading gracefully when a lane is unavailable), `semantic` (vector only) or `keyword` \
+        (BM25 only); it returns POINTERS (path + line/byte range + symbol), never bodies — \
+        fetch one with `chunk`. `chunk` returns a single chunk's source by `path`, \
+        disambiguated with `chunk_id` or `byte_start`. Caps: `symbols` / `grep` / `references` \
+        / `callers` / `implementations` default `limit` 100, max 1000; `files` / `find` default \
+        200, max 5000; `semantic` default 10, max 100. The index scanners bound their work at \
+        `scan_cap = limit * 8` and flag a cut result with `total_is_partial`. `cursor` pages \
+        (`references` / `callers` / `implementations` cursors are stable across rescans; the \
+        in-memory ones set `cursor_invalidated`), `max_tokens` budgets the returned list and \
+        sets `budgeted`, and `format: \"toon\"` returns compact tabular rows. Parameters that \
+        belong to another mode are rejected, not ignored.",
+        // Every mode is a read over the local index or working tree — nothing is written and
+        // nothing outside this repository is contacted, so the union of the thirteen keeps the
+        // fully-pure hints a client may auto-approve on. ~keep
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
     )]
+    pub(crate) async fn code(
+        &self,
+        Parameters(Lenient(p)): Parameters<Lenient<CodeParams>>,
+    ) -> Result<CallToolResult, McpError> {
+        let __started = std::time::Instant::now();
+        let __key = p.mode.telemetry_key();
+        let __params_json = serde_json::to_value(&p).unwrap_or(Value::Null);
+        let __result: Result<CallToolResult, McpError> = super::helpers_code::run_code(&self.state, p).await;
+        record_call(&self.state, __key, &__params_json, __started, &__result);
+        __result
+    }
+}
+
+/// Named in-process entry points for the five code-map operations the `basemind-agent` engine
+/// exposes as its own tools, bridged through [`super::agent_api`].
+///
+/// They are deliberately NOT `#[tool]`s: the MCP registry advertises exactly one `code` tool. Each
+/// builds the same [`CodeParams`] an MCP caller would send, so telemetry, validation, and the
+/// response shape are identical to `code { mode: … }`.
+impl BasemindServer {
     pub(crate) async fn outline(
         &self,
-        Parameters(Lenient(params)): Parameters<Lenient<OutlineParams>>,
+        Parameters(Lenient(p)): Parameters<Lenient<OutlineParams>>,
     ) -> Result<CallToolResult, McpError> {
-        let __started = std::time::Instant::now();
-        let __params_json = serde_json::to_value(&params).unwrap_or(Value::Null);
-        let __result: Result<CallToolResult, McpError> = async {
-            let __body = std::time::Instant::now();
-            fn l1_views(l1: &crate::extract::FileMapL1) -> (Vec<SymbolView>, Vec<ImportView>) {
-                let symbols = l1
-                    .symbols
-                    .iter()
-                    .map(|s| SymbolView {
-                        name: s.name.clone(),
-                        kind: kind_to_str(s.kind),
-                        start_row: s.start_row,
-                        start_col: s.start_col,
-                        start_byte: s.start_byte,
-                        end_byte: s.end_byte,
-                        signature: s.signature.clone(),
-                    })
-                    .collect();
-                let imports = l1
-                    .imports
-                    .iter()
-                    .map(|i| ImportView {
-                        module: i.module.clone(),
-                        raw: i.raw.clone(),
-                        start_byte: i.start_byte,
-                    })
-                    .collect();
-                (symbols, imports)
-            }
-
-            let mut response = if params.l2 {
-                let store = self.state.shared.store.read().await;
-                let l1 = query::file_outline(&store, &params.path)
-                    .map_err(|e| McpError::invalid_params(format!("file_outline({}): {e}", params.path), None))?;
-                let (symbols, imports) = l1_views(&l1);
-                let mut r = OutlineResponse {
-                    path: params.path.clone(),
-                    language: l1.language.clone(),
-                    size_bytes: l1.size_bytes,
-                    had_errors: l1.had_errors,
-                    error_count: l1.error_count,
-                    budgeted: false,
-                    symbols,
-                    imports,
-                    calls: None,
-                    docs: None,
-                    l2_status: None,
-                    notice: None,
-                    elapsed_us: 0,
-                };
-                let entry = store
-                    .lookup(&params.path)
-                    .ok_or_else(|| McpError::internal_error("file not indexed after outline succeeded", None))?;
-                match store.read_l2_by_hex(&entry.hash_hex) {
-                    Ok(Some(l2)) => {
-                        r.calls = Some(
-                            l2.calls
-                                .iter()
-                                .map(|c| CallView {
-                                    callee: c.callee.clone(),
-                                    start_byte: c.start_byte,
-                                })
-                                .collect(),
-                        );
-                        r.docs = Some(
-                            l2.docs
-                                .iter()
-                                .map(|d| DocView {
-                                    text: d.text.clone(),
-                                    start_byte: d.start_byte,
-                                })
-                                .collect(),
-                        );
-                    }
-                    Ok(None) => {
-                        r.l2_status = Some("missing — run `basemind query outline <path> --l2` to materialize");
-                    }
-                    Err(e) => {
-                        r.l2_status = Some("error");
-                        return Err(McpError::internal_error(format!("read_l2: {e}"), None));
-                    }
-                }
-                r
-            } else {
-                let cache = self.state.shared.cache.load();
-                if let Some(l1) = cache.by_path.get(&params.path) {
-                    let (symbols, imports) = l1_views(l1);
-                    OutlineResponse {
-                        path: params.path.clone(),
-                        language: l1.language.clone(),
-                        size_bytes: l1.size_bytes,
-                        had_errors: l1.had_errors,
-                        error_count: l1.error_count,
-                        budgeted: false,
-                        symbols,
-                        imports,
-                        calls: None,
-                        docs: None,
-                        l2_status: None,
-                        notice: None,
-                        elapsed_us: 0,
-                    }
-                } else {
-                    let store = self.state.shared.store.read().await;
-                    let l1 = query::file_outline(&store, &params.path)
-                        .map_err(|e| McpError::invalid_params(format!("file_outline({}): {e}", params.path), None))?;
-                    let (symbols, imports) = l1_views(&l1);
-                    OutlineResponse {
-                        path: params.path.clone(),
-                        language: l1.language.clone(),
-                        size_bytes: l1.size_bytes,
-                        had_errors: l1.had_errors,
-                        error_count: l1.error_count,
-                        budgeted: false,
-                        symbols,
-                        imports,
-                        calls: None,
-                        docs: None,
-                        l2_status: None,
-                        notice: None,
-                        elapsed_us: 0,
-                    }
-                }
-            };
-            response.notice = self.state.lifecycle_notice();
-
-            if params.max_tokens.is_some() {
-                let budgeted = super::budget::apply_budget(std::mem::take(&mut response.symbols), params.max_tokens);
-                response.symbols = budgeted.items;
-                response.budgeted = budgeted.budgeted;
-            }
-            response.elapsed_us = elapsed_us(__body);
-            super::toon::format_result(&response, super::toon::ResponseFormat::parse(params.format.as_deref()))
-        }
-        .await;
-        record_call(&self.state, "outline", &__params_json, __started, &__result);
-        __result
+        self.code(Parameters(Lenient(CodeParams {
+            path: Some(p.path),
+            l2: Some(p.l2),
+            max_tokens: p.max_tokens,
+            format: p.format,
+            ..CodeParams::new(CodeMode::Outline)
+        })))
+        .await
     }
 
-    /// Substring search across symbol names, optionally filtered by kind.
-    #[tool(
-        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types::SearchResponse>()",
-        description = "Search indexed symbols whose name contains `needle` (case-sensitive \
-                       substring). Optional `kind` filter (function/struct/class/...). Up to \
-                       `limit` hits (default 100, max 1000): path + line/col + signature. \
-                       `total` = matches scanned up to a per-call cap (`limit*64`, min 2000), \
-                       NOT the global corpus total; `total_is_partial: true` means the cap was \
-                       hit and `total` is a lower bound. `cursor` pages results (invalidate on \
-                       rescan, `cursor_invalidated`). `max_tokens` budgets the response (sets \
-                       `budgeted` + `next_cursor`). `format:\"toon\"` for compact rows. \
-                       `elapsed_us` = server-side handler latency in µs (excludes transport).",
-        annotations(read_only_hint = true, open_world_hint = false)
-    )]
     pub(crate) async fn search_symbols(
         &self,
-        Parameters(Lenient(params)): Parameters<Lenient<SearchSymbolsParams>>,
+        Parameters(Lenient(p)): Parameters<Lenient<SearchSymbolsParams>>,
     ) -> Result<CallToolResult, McpError> {
-        let __started = std::time::Instant::now();
-        let __params_json = serde_json::to_value(&params).unwrap_or(Value::Null);
-        let __result: Result<CallToolResult, McpError> = async {
-            use std::sync::atomic::Ordering;
-
-            let __body = std::time::Instant::now();
-            self.state.await_cache_ready().await;
-            let format = super::toon::ResponseFormat::parse(params.format.as_deref());
-            let kind = params.kind.as_deref().map(parse_kind).transpose()?;
-            let limit = params.limit.unwrap_or(SEARCH_LIMIT_DEFAULT).min(SEARCH_LIMIT_MAX) as usize;
-            let generation = self.state.shared.cache_generation.load(Ordering::Relaxed);
-
-            let skip = match params.cursor.as_ref() {
-                Some(c) => {
-                    let (offset, snapshot_id) = c.decode_in_memory()?;
-                    if snapshot_id != generation {
-                        return super::toon::format_result(
-                            &SearchResponse {
-                                total: 0,
-                                total_is_partial: false,
-                                truncated: false,
-                                budgeted: false,
-                                results: Vec::new(),
-                                next_cursor: None,
-                                cursor_invalidated: true,
-                                notice: self.state.lifecycle_notice(),
-                                elapsed_us: elapsed_us(__body),
-                            },
-                            format,
-                        );
-                    }
-                    offset as usize
-                }
-                None => 0,
-            };
-
-            if params.needle.is_empty() {
-                return super::toon::format_result(
-                    &SearchResponse {
-                        total: 0,
-                        total_is_partial: false,
-                        truncated: false,
-                        budgeted: false,
-                        results: Vec::new(),
-                        next_cursor: None,
-                        cursor_invalidated: false,
-                        notice: self.state.lifecycle_notice(),
-                        elapsed_us: elapsed_us(__body),
-                    },
-                    format,
-                );
-            }
-            let finder = memchr::memmem::Finder::new(params.needle.as_bytes());
-            let max_total = search_max_total(limit);
-            let mut results: Vec<SearchHitView> = Vec::with_capacity(limit);
-            let mut total: usize = 0;
-            let mut seen: usize = 0;
-            let mut total_is_partial = false;
-            let cache = self.state.shared.cache.load_full();
-            'outer: for (path, l1) in &cache.by_path {
-                for sym in &l1.symbols {
-                    if finder.find(sym.name.as_bytes()).is_none() {
-                        continue;
-                    }
-                    if let Some(k) = kind
-                        && sym.kind != k
-                    {
-                        continue;
-                    }
-                    if seen < skip {
-                        seen += 1;
-                        continue;
-                    }
-                    seen += 1;
-                    total += 1;
-                    if results.len() < limit {
-                        results.push(SearchHitView {
-                            path: path.clone(),
-                            name: sym.name.clone(),
-                            kind: kind_to_str(sym.kind),
-                            start_row: sym.start_row,
-                            start_col: sym.start_col,
-                            signature: sym.signature.clone(),
-                        });
-                    }
-                    if total >= max_total {
-                        total_is_partial = true;
-                        break 'outer;
-                    }
-                }
-            }
-            let truncated = total > limit || total_is_partial;
-            let budget = super::budget::apply_budget(results, params.max_tokens);
-            let results = budget.items;
-            let budgeted = budget.budgeted;
-            let next_cursor = if total > results.len() {
-                Some(super::cursor::Cursor::encode_in_memory(
-                    (skip + results.len()) as u64,
-                    generation,
-                ))
-            } else {
-                None
-            };
-            super::toon::format_result(
-                &SearchResponse {
-                    total,
-                    total_is_partial,
-                    truncated,
-                    budgeted,
-                    results,
-                    next_cursor,
-                    cursor_invalidated: false,
-                    notice: self.state.lifecycle_notice(),
-                    elapsed_us: elapsed_us(__body),
-                },
-                format,
-            )
-        }
-        .await;
-        record_call(&self.state, "search_symbols", &__params_json, __started, &__result);
-        __result
+        self.code(Parameters(Lenient(CodeParams {
+            name: Some(p.needle),
+            kind: p.kind,
+            limit: p.limit,
+            max_tokens: p.max_tokens,
+            format: p.format,
+            cursor: p.cursor,
+            ..CodeParams::new(CodeMode::Symbols)
+        })))
+        .await
     }
 
-    /// List indexed files, optionally filtered by path substring and/or language.
-    #[tool(
-        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types::ListFilesResponse>()",
-        description = "List indexed files with language + size. Optional `path_contains` substring \
-                       and `language` filter (rust/python/typescript/tsx/javascript/go). Default \
-                       limit 200, max 5000 (a larger request is clamped, setting \
-                       `limit_clamped`). `cursor` pages results (invalidate on rescan, \
-                       `cursor_invalidated`). `max_tokens` budgets the response (sets `budgeted` \
-                       + `next_cursor`). `format:\"toon\"` for compact rows. \
-                       `elapsed_us` = server-side handler latency in µs (excludes transport).",
-        annotations(read_only_hint = true, open_world_hint = false)
-    )]
-    pub(crate) async fn list_files(
-        &self,
-        Parameters(params): Parameters<ListFilesParams>,
-    ) -> Result<CallToolResult, McpError> {
-        let __started = std::time::Instant::now();
-        let __params_json = serde_json::to_value(&params).unwrap_or(Value::Null);
-        let __result = run_list_files(&self.state, params).await;
-        record_call(&self.state, "list_files", &__params_json, __started, &__result);
-        __result
-    }
-
-    /// Fuzzy filename/path search over indexed paths — an fzf/fd-style replacement for shell `find`.
-    #[tool(
-        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types::FindFilesResponse>()",
-        description = "Fuzzy subsequence match of `query` against every indexed path (fzf/fd-style: \
-                       letters of `query` must appear in order, not necessarily contiguous; \
-                       case-insensitive). Ranked by `nucleo-matcher` score (path-aware bonuses for \
-                       `/`-boundary and prefix hits); non-matches are dropped, not just scored low. \
-                       Optional `path_prefix` and `language` filters are applied before scoring. \
-                       Name-only heuristic — no scope/import resolution. Default limit 200, max \
-                       5000 (a larger request is clamped, setting `limit_clamped`). `cursor` pages \
-                       results (invalidated on rescan, `cursor_invalidated`). `max_tokens` budgets \
-                       the response (sets `budgeted` + `next_cursor`). `format:\"toon\"` for compact \
-                       rows. \
-                       `elapsed_us` = server-side handler latency in µs (excludes transport).",
-        annotations(read_only_hint = true, open_world_hint = false)
-    )]
-    pub(crate) async fn find_files(
-        &self,
-        Parameters(Lenient(params)): Parameters<Lenient<FindFilesParams>>,
-    ) -> Result<CallToolResult, McpError> {
-        let __started = std::time::Instant::now();
-        let __params_json = serde_json::to_value(&params).unwrap_or(Value::Null);
-        let __result = run_find_files(&self.state, params).await;
-        record_call(&self.state, "find_files", &__params_json, __started, &__result);
-        __result
-    }
-
-    /// Heuristic reverse-dependency lookup via import statements.
-    #[tool(
-        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types::DependentsResponse>()",
-        description = "Indexed files whose imports mention `module`. Heuristic: substring match \
-                       against each import's recorded module path. \
-                       `elapsed_us` = server-side handler latency in µs (excludes transport).",
-        annotations(read_only_hint = true, open_world_hint = false)
-    )]
-    pub(crate) async fn dependents(
-        &self,
-        Parameters(Lenient(params)): Parameters<Lenient<DependentsParams>>,
-    ) -> Result<CallToolResult, McpError> {
-        let __started = std::time::Instant::now();
-        let __params_json = serde_json::to_value(&params).unwrap_or(Value::Null);
-        let __result: Result<CallToolResult, McpError> = async {
-            let __body = std::time::Instant::now();
-            self.state.await_cache_ready().await;
-            let paths: Vec<crate::path::RelPath> =
-                crate::extract::l3::dependents_of(&params.module, &self.state.shared.cache.load().imports_index)
-                    .into_iter()
-                    .map(|p| crate::path::RelPath::from(p.as_path()))
-                    .collect();
-            json_result(&DependentsResponse {
-                module: params.module.clone(),
-                paths,
-                notice: self.state.lifecycle_notice(),
-                elapsed_us: elapsed_us(__body),
-            })
-        }
-        .await;
-        record_call(&self.state, "dependents", &__params_json, __started, &__result);
-        __result
-    }
-
-    /// Incoming call sites for any callee whose identifier contains `name`.
-    #[tool(
-        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types::FindReferencesResponse>()",
-        description = "Call sites whose callee identifier contains `name` (case-sensitive \
-                       substring). Fjall-backed over L2 captures; hits are (path, line, column, \
-                       exact callee). Name-only, no scope resolution: `Foo::bar()` and `bar()` \
-                       both match name=\"bar\". Up to `limit` hits (default 100, max 1000); scan \
-                       bounded by `scan_cap = limit * 8`. Needs `eager_l2=true` (default). \
-                       `cursor` pages results. `max_tokens` budgets the response (sets `budgeted` \
-                       + `next_cursor`). `format:\"toon\"` for compact rows. \
-                       `elapsed_us` = server-side handler latency in µs (excludes transport).",
-        annotations(read_only_hint = true, open_world_hint = false)
-    )]
     pub(crate) async fn find_references(
         &self,
-        Parameters(Lenient(params)): Parameters<Lenient<FindReferencesParams>>,
+        Parameters(Lenient(p)): Parameters<Lenient<FindReferencesParams>>,
     ) -> Result<CallToolResult, McpError> {
-        let __started = std::time::Instant::now();
-        let __params_json = serde_json::to_value(&params).unwrap_or(Value::Null);
-        let __result: Result<CallToolResult, McpError> = async {
-            let __body = std::time::Instant::now();
-            self.state.await_cache_ready().await;
-            let store = self.state.shared.store.read().await;
-            let idx = store.index_db.as_ref().cloned();
-            drop(store);
-            let cache = self.state.shared.cache.load_full();
-            run_find_references(idx.as_ref(), params, &cache, self.state.lifecycle_notice(), __body)
-        }
-        .await;
-        record_call(&self.state, "find_references", &__params_json, __started, &__result);
-        __result
+        self.code(Parameters(Lenient(CodeParams {
+            name: Some(p.name),
+            limit: p.limit,
+            max_tokens: p.max_tokens,
+            format: p.format,
+            cursor: p.cursor,
+            ..CodeParams::new(CodeMode::References)
+        })))
+        .await
     }
 
-    /// Callers of a specific definition (path + name + optional kind).
-    #[tool(
-        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types::FindCallersResponse>()",
-        description = "Call sites of a specific definition (`path` + `name` + optional kind). \
-                       Resolves the definition via the symbols index (echoed in `definition`), then \
-                       reports EVERY call site whose callee matches `name` — the same name-based, \
-                       no-scope scan `find_references` runs, so the two AGREE on `total` for an \
-                       unambiguous name. That set is the answer to \"what calls this?\"; it is \
-                       complete unless `total_is_partial`. \
-                       Scope/import resolution REFINES it, never shrinks it: each hit carries \
-                       `resolved` (true = resolution PROVED it binds to this definition), and \
-                       `resolved_total` counts the proven ones. `resolved: false` is NOT evidence a \
-                       hit isn't a caller — resolution cannot see through a module-object import \
-                       (`from pkg import mod` then `mod.f()`) or an unresolvable path alias, and \
-                       every caller behind one lands there. Filter on `resolved` when you want \
-                       precision (e.g. same-name symbols in other scopes); trust `total`, not \
-                       `resolved_total`, when you need completeness — before a refactor, assume any \
-                       hit may be a real caller. Resolution can also ADD sites the name scan cannot \
-                       see (a binding renamed at the import, `import {f as g}` then `g()`). \
-                       Default limit 100, max 1000. `cursor` pages results; `max_tokens` budgets the \
-                       response (sets `budgeted` + `next_cursor`). \
-                       `elapsed_us` = server-side handler latency in µs (excludes transport).",
-        annotations(read_only_hint = true, open_world_hint = false)
-    )]
     pub(crate) async fn find_callers(
         &self,
-        Parameters(Lenient(params)): Parameters<Lenient<FindCallersParams>>,
+        Parameters(Lenient(p)): Parameters<Lenient<FindCallersParams>>,
     ) -> Result<CallToolResult, McpError> {
-        let __started = std::time::Instant::now();
-        let __params_json = serde_json::to_value(&params).unwrap_or(Value::Null);
-        let __result: Result<CallToolResult, McpError> = async {
-            let __body = std::time::Instant::now();
-            self.state.await_cache_ready().await;
-            let store = self.state.shared.store.read().await;
-            let cache = self.state.shared.cache.load_full();
-            #[cfg(all(feature = "comms", any(unix, windows)))]
-            let refs = if let Some(host) = &self.state.shared.host {
-                // ~keep Daemon-hosted: resolve in-process through the pool's read-write index (fixes the
-                // ~keep Seam-B degradation) instead of dialing the daemon over its own socket.
-                RefsSource::Host {
-                    host: std::sync::Arc::clone(host),
-                    root: self.state.shared.root.clone(),
-                }
-            } else if self.state.shared.daemon_writer {
-                let client = super::helpers_comms::resolve_comms_client(&self.state, None).await?;
-                RefsSource::Daemon {
-                    client,
-                    root: self.state.shared.root.clone(),
-                }
-            } else {
-                RefsSource::Local(&store)
-            };
-            #[cfg(not(all(feature = "comms", any(unix, windows))))]
-            let refs = RefsSource::Local(&store);
-            run_find_callers(
-                &store,
-                refs,
-                &self.state.shared.root,
-                &cache,
-                params,
-                self.state.lifecycle_notice(),
-                __body,
-            )
-            .await
-        }
-        .await;
-        record_call(&self.state, "find_callers", &__params_json, __started, &__result);
-        __result
+        self.code(Parameters(Lenient(CodeParams {
+            path: Some(p.path),
+            name: Some(p.name),
+            kind: p.kind,
+            limit: p.limit,
+            max_tokens: p.max_tokens,
+            cursor: p.cursor,
+            ..CodeParams::new(CodeMode::Callers)
+        })))
+        .await
     }
 
-    /// Resolve a reference position to its scope/import-resolved definition.
-    #[tool(
-        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types::GotoDefinitionResponse>()",
-        description = "Resolve the reference at `path`:`line`:`column` to its definition — \
-                       scope-resolved, NOT name-matched, so it never conflates same-named symbols. \
-                       Returns the definition `{path, line, column, name}` (`path` may be another \
-                       file — cross-file imports are followed for JS/TS), or omits `definition` \
-                       when the position holds no resolved binding (module-global, unresolved, or a \
-                       language without resolution coverage). `line` is 1-based, `column` 0-based \
-                       bytes; any byte inside the identifier resolves for span-aware engines (oxc \
-                       JS/TS), the tree-sitter `locals` fallback + the cross-file hop match the \
-                       identifier's start byte. The in-file hop reads the content-addressed blobs \
-                       (answers even in a read-only session); the cross-file hop reads the index — \
-                       locally, or forwarded to the machine daemon on a read-only serve. \
-                       `elapsed_us` = server-side handler latency in µs (excludes transport).",
-        annotations(read_only_hint = true, open_world_hint = false)
-    )]
-    pub(crate) async fn goto_definition(
-        &self,
-        Parameters(Lenient(params)): Parameters<Lenient<GotoDefinitionParams>>,
-    ) -> Result<CallToolResult, McpError> {
-        let __started = std::time::Instant::now();
-        let __params_json = serde_json::to_value(&params).unwrap_or(Value::Null);
-        let __result = super::helpers_intel::run_goto_definition(&self.state, params).await;
-        record_call(&self.state, "goto_definition", &__params_json, __started, &__result);
-        __result
-    }
-
-    /// Regex content search across indexed files.
-    #[tool(
-        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types::WorkspaceGrepResponse>()",
-        description = "Regex search across indexed files (`pattern` is Rust regex syntax). Returns \
-                       line + column + matched text plus optional 1-line context. Prefer \
-                       `search_symbols` for a plain substring identifier (index-backed, faster). \
-                       Scans EVERY indexed file, so a rare token is found wherever it lives; \
-                       `limit` caps hits, not files, and `total_matches` is exact. Narrow with \
-                       `language` / `path_contains` to cut the work. \
-                       Default limit 100, max 1000. `cursor` pages results \
-                       (invalidate on rescan). `max_tokens` budgets the response (sets `budgeted` \
-                       + `next_cursor`). `format:\"toon\"` for compact rows. \
-                       `elapsed_us` = server-side handler latency in µs (excludes transport).",
-        annotations(read_only_hint = true, open_world_hint = false)
-    )]
     pub(crate) async fn workspace_grep(
         &self,
-        Parameters(Lenient(params)): Parameters<Lenient<WorkspaceGrepParams>>,
+        Parameters(Lenient(p)): Parameters<Lenient<WorkspaceGrepParams>>,
     ) -> Result<CallToolResult, McpError> {
-        let __started = std::time::Instant::now();
-        let __params_json = serde_json::to_value(&params).unwrap_or(Value::Null);
-        let __result: Result<CallToolResult, McpError> = async {
-            let __body = std::time::Instant::now();
-            self.state.await_cache_ready().await;
-            run_workspace_grep(&self.state, params, __body)
-        }
-        .await;
-        record_call(&self.state, "workspace_grep", &__params_json, __started, &__result);
-        __result
-    }
-
-    /// Types / classes that implement, extend, or inherit from a name containing `trait_name`.
-    #[tool(
-        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types_impls::FindImplementationsResponse>()",
-        description = "Types that implement/extend/inherit `trait_name` (trait / interface / base \
-                       class). Returns (trait, implementor, file, line, column). `trait_name` is a \
-                       case-sensitive substring match (full-partition scan). Covers Rust, Python, \
-                       TS/TSX, JS class/interface extends/implements; Go structural satisfaction \
-                       not detected. Bounded by `scan_cap = limit * 8`. `cursor` pages results \
-                       (Fjall-backed, stable across rescans). `max_tokens` budgets the response \
-                       (sets `budgeted` + `next_cursor`). \
-                       `elapsed_us` = server-side handler latency in µs (excludes transport).",
-        annotations(read_only_hint = true, open_world_hint = false)
-    )]
-    pub(crate) async fn find_implementations(
-        &self,
-        Parameters(Lenient(params)): Parameters<Lenient<FindImplementationsParams>>,
-    ) -> Result<CallToolResult, McpError> {
-        let __started = std::time::Instant::now();
-        let __params_json = serde_json::to_value(&params).unwrap_or(Value::Null);
-        let __result: Result<CallToolResult, McpError> = async {
-            let __body = std::time::Instant::now();
-            self.state.await_cache_ready().await;
-            let store = self.state.shared.store.read().await;
-            let idx = store.index_db.as_ref().cloned();
-            drop(store);
-            let cache = self.state.shared.cache.load_full();
-            run_find_implementations(idx.as_ref(), params, &cache, self.state.lifecycle_notice(), __body)
-        }
-        .await;
-        record_call(
-            &self.state,
-            "find_implementations",
-            &__params_json,
-            __started,
-            &__result,
-        );
-        __result
+        self.code(Parameters(Lenient(CodeParams {
+            pattern: Some(p.pattern),
+            language: p.language,
+            path_contains: p.path_contains,
+            limit: p.limit,
+            max_tokens: p.max_tokens,
+            format: p.format,
+            include_context: Some(p.include_context),
+            cursor: p.cursor,
+            ..CodeParams::new(CodeMode::Grep)
+        })))
+        .await
     }
 }
 
@@ -609,7 +200,7 @@ pub(super) fn effective_list_limit(requested: Option<u32>) -> (usize, bool) {
     (asked.min(LIST_LIMIT_MAX) as usize, clamped)
 }
 
-/// The `search_symbols` scan cap: matches walked are bounded by this so a common needle
+/// The `code` mode `symbols` scan cap: matches walked are bounded by this so a common needle
 /// never scans the whole corpus. When the cap is reached, `total` is a lower bound, not the
 /// global match count — the response sets `total_is_partial` so callers don't mistake it for
 /// a true total (bug #16).

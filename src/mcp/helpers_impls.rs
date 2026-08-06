@@ -14,7 +14,7 @@ use super::cursor::Cursor;
 use super::helpers::{SEARCH_LIMIT_DEFAULT, SEARCH_LIMIT_MAX, elapsed_us, json_result};
 use super::types_impls::{FindImplementationsParams, FindImplementationsResponse, ImplementationHit};
 
-/// Body of the `find_implementations` MCP tool. Performs a full-partition scan over the
+/// Body of the `code` tool's `implementations` mode. Performs a full-partition scan over the
 /// `implementations_by_trait` Fjall partition with a case-sensitive substring filter on
 /// `trait_name`, returning up to `limit` hits with optional language filtering.
 pub(super) fn run_find_implementations(

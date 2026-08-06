@@ -158,8 +158,8 @@ async fn streamable_http_serves_initialize_and_tools_list() {
         .as_array()
         .unwrap_or_else(|| panic!("tools array present: {parsed}"));
     assert!(
-        tools.iter().any(|tool| tool["name"] == "outline"),
-        "tools/list must include the 'outline' code-map tool: {parsed}"
+        tools.iter().any(|tool| tool["name"] == "code"),
+        "tools/list must include the 'code' domain tool: {parsed}"
     );
     assert!(
         tools.len() > 5,

@@ -1,24 +1,28 @@
-//! Agent-comms CLI verbs (`basemind comms <verb>`).
+//! `basemind agents` — the CLI half of the `agents` domain.
+//!
+//! Real clap subcommands rather than a `--mode` flag, so each operation keeps its own `--help` and
+//! its own argument validation; they map one-to-one onto the MCP `agents` tool's
+//! [`AgentsMode`](crate::mcp::mode::AgentsMode) values, which is what `tests/cli_parity.rs` asserts.
 //!
 //! Unlike the code-map / memory CLI groups — which build a one-shot
 //! [`BasemindServer`](crate::mcp::BasemindServer) and call the identical `#[tool]` an MCP client
-//! would — the comms verbs connect to the user-global broker daemon DIRECTLY via
-//! [`CommsClient::ensure_and_connect`]. Building a full server here would take the repo index
-//! lock and clash with a running `basemind serve`; the daemon is a separate process, so a thin
-//! client is both correct and lock-free.
+//! would — these subcommands connect to the user-global broker daemon DIRECTLY via
+//! [`CommsClient::ensure_and_connect`]. Building a full server here would take the repo index lock
+//! and clash with a running `basemind serve`; the daemon is a separate process, so a thin client is
+//! both correct and lock-free.
 //!
-//! This is also the human-admin path: a person can inspect (`threads`, `members`, `history`) and
-//! ARCHIVE any thread they created. `--json` emits the structured response for every verb.
+//! This is also the human-admin path: a person can inspect (`thread-list`, `members`, `history`)
+//! and ARCHIVE any thread they created. `--json` emits the structured response for every mode.
 //!
-//! Multi-identity: the identity-bearing verbs accept `--as-agent <AGENT_ID>` to connect to the
-//! broker AS a named sub-identity instead of the CLI's default (`cli_agent_id`).
+//! Multi-identity: every mode accepts `--as-agent <AGENT_ID>` to connect to the broker AS a named
+//! sub-identity instead of the CLI's default (`cli_agent_id`).
 
 #![cfg(all(feature = "comms", any(unix, windows)))]
 
 use std::io::Write;
 use std::path::Path;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::Subcommand;
 use serde_json::json;
 
@@ -38,10 +42,15 @@ const DEFAULT_SINCE_HOURS: u32 = 24;
 const MICROS_PER_HOUR: i64 = 3_600_000_000;
 /// Thread-freshness window in hours: 168h = 7 days, matching the MCP `ThreadSummary` rule.
 const STALE_AFTER_HOURS: i64 = 168;
+/// Default long-poll timeout for `wait` when `--timeout-secs` is omitted.
+const DEFAULT_WAIT_SECS: u32 = 30;
+/// Hard cap on `wait`'s `--timeout-secs`, mirroring the MCP `agents` tool's `wait` cap.
+const MAX_WAIT_SECS: u32 = 300;
 
-/// Agent-comms verbs that talk to the broker daemon directly.
+/// The `agents` domain's CLI subcommands, one per MCP mode; they talk to the broker daemon
+/// directly.
 #[derive(Subcommand, Debug)]
-pub enum CommsAgentCmd {
+pub enum AgentsCmd {
     /// Register or update this agent's A2A card with the broker.
     Register {
         /// Human-readable agent name.
@@ -61,7 +70,7 @@ pub enum CommsAgentCmd {
         as_agent: Option<String>,
     },
     /// List agents known to the broker, optionally restricted to one thread's members.
-    Agents {
+    List {
         /// Restrict to members of this thread.
         #[arg(long)]
         thread: Option<String>,
@@ -85,7 +94,7 @@ pub enum CommsAgentCmd {
         as_agent: Option<String>,
     },
     /// List threads discoverable to this agent (member / path-match / subject filter).
-    Threads {
+    ThreadList {
         /// Case-sensitive substring filter over thread subjects.
         #[arg(long)]
         subject_contains: Option<String>,
@@ -167,7 +176,7 @@ pub enum CommsAgentCmd {
         #[arg(long)]
         as_agent: Option<String>,
     },
-    /// Read a thread's history (front-matter only; bodies via `read`).
+    /// Read a thread's history (front-matter only; bodies via `message`).
     History {
         /// Thread to read.
         thread: String,
@@ -185,9 +194,12 @@ pub enum CommsAgentCmd {
         as_agent: Option<String>,
     },
     /// Print a single message BODY by id (the only body path).
-    Read {
+    Message {
         /// Message id (the `id` of a front-matter row).
         message_id: String,
+        /// Act as this sub-identity instead of the CLI's default agent id.
+        #[arg(long)]
+        as_agent: Option<String>,
     },
     /// Read this agent's inbox across joined threads (front-matter only).
     Inbox {
@@ -203,6 +215,21 @@ pub enum CommsAgentCmd {
         /// Only return messages from the last N hours (default 24). Pass 0 for ALL history.
         #[arg(long)]
         since_hours: Option<u32>,
+        /// Act as this sub-identity instead of the CLI's default agent id.
+        #[arg(long)]
+        as_agent: Option<String>,
+    },
+    /// Clear read messages from your inbox by advancing per-thread read cursors.
+    Ack {
+        /// Message id to acknowledge (repeatable).
+        #[arg(long = "message-id")]
+        message_ids: Vec<String>,
+        /// Thread whose read cursor to advance in bulk; pair with `--to-seq`.
+        #[arg(long)]
+        thread: Option<String>,
+        /// Advance `--thread`'s read cursor straight to this per-thread seq.
+        #[arg(long, requires = "thread")]
+        to_seq: Option<u64>,
         /// Act as this sub-identity instead of the CLI's default agent id.
         #[arg(long)]
         as_agent: Option<String>,
@@ -227,11 +254,6 @@ pub enum CommsAgentCmd {
     },
 }
 
-/// Default long-poll timeout for `wait` when `--timeout-secs` is omitted.
-const DEFAULT_WAIT_SECS: u32 = 30;
-/// Hard cap on `wait`'s `--timeout-secs`, mirroring the MCP `inbox_wait` tool's cap.
-const MAX_WAIT_SECS: u32 = 300;
-
 /// Clamp a caller limit to `[1, MAX_LIMIT]`, defaulting when absent.
 fn clamp_limit(limit: Option<u32>) -> u32 {
     limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT)
@@ -248,14 +270,14 @@ fn since_cutoff(since_hours: Option<u32>) -> Option<i64> {
 }
 
 /// Resolve the CLI agent identity through the ONE shared resolver
-/// ([`crate::comms::identity::cli_agent_id`]) so a CLI verb and the `serve` session in the SAME
+/// ([`crate::comms::identity::cli_agent_id`]) so a CLI mode and the `serve` session in the SAME
 /// workspace share an identity — and two different workspaces never do.
 fn cli_agent_id(root: &Path) -> AgentId {
     crate::comms::identity::cli_agent_id(root)
 }
 
-/// Dispatch one comms agent verb. Builds a small current-thread runtime, then runs the verb.
-pub fn run(root: &Path, json: bool, cmd: CommsAgentCmd) -> Result<()> {
+/// Dispatch one `agents` subcommand. Builds a small current-thread runtime, then runs it.
+pub fn run(root: &Path, json: bool, cmd: AgentsCmd) -> Result<()> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -285,10 +307,10 @@ fn parse_members(raw: Vec<String>) -> Result<Vec<AgentId>> {
         .collect()
 }
 
-/// Run the verb: resolve the identity, connect, call the client method, and render to `out`.
-async fn dispatch(root: &Path, json: bool, cmd: CommsAgentCmd, out: &mut impl Write) -> Result<()> {
+/// Run the mode: resolve the identity, connect, call the client method, and render to `out`.
+async fn dispatch(root: &Path, json: bool, cmd: AgentsCmd, out: &mut impl Write) -> Result<()> {
     match cmd {
-        CommsAgentCmd::Register {
+        AgentsCmd::Register {
             name,
             description,
             version,
@@ -313,7 +335,7 @@ async fn dispatch(root: &Path, json: bool, cmd: CommsAgentCmd, out: &mut impl Wr
                 writeln!(out, "registered as {agent_id}")?;
             }
         }
-        CommsAgentCmd::Agents { thread, as_agent } => {
+        AgentsCmd::List { thread, as_agent } => {
             let mut client = connect_as(root, as_agent).await?;
             let thread = thread.map(ThreadId::parse).transpose().context("thread id")?;
             let agents = client
@@ -340,7 +362,7 @@ async fn dispatch(root: &Path, json: bool, cmd: CommsAgentCmd, out: &mut impl Wr
                 }
             }
         }
-        CommsAgentCmd::ThreadStart {
+        AgentsCmd::ThreadStart {
             subject,
             path,
             members,
@@ -354,7 +376,7 @@ async fn dispatch(root: &Path, json: bool, cmd: CommsAgentCmd, out: &mut impl Wr
                 .map_err(|e| anyhow::anyhow!("thread start: {e}"))?;
             render_thread(&thread, json, out)?;
         }
-        CommsAgentCmd::Threads {
+        AgentsCmd::ThreadList {
             subject_contains,
             include_archived,
             as_agent,
@@ -386,7 +408,7 @@ async fn dispatch(root: &Path, json: bool, cmd: CommsAgentCmd, out: &mut impl Wr
                 }
             }
         }
-        CommsAgentCmd::Join { thread, as_agent } => {
+        AgentsCmd::Join { thread, as_agent } => {
             let mut client = connect_as(root, as_agent).await?;
             let thread_id = ThreadId::parse(thread).context("thread id")?;
             let label = thread_id.as_str().to_string();
@@ -396,7 +418,7 @@ async fn dispatch(root: &Path, json: bool, cmd: CommsAgentCmd, out: &mut impl Wr
                 .map_err(|e| anyhow::anyhow!("join: {e}"))?;
             render_flag(json, out, "thread", &label, "joined")?;
         }
-        CommsAgentCmd::Leave { thread, as_agent } => {
+        AgentsCmd::Leave { thread, as_agent } => {
             let mut client = connect_as(root, as_agent).await?;
             let thread_id = ThreadId::parse(thread).context("thread id")?;
             let label = thread_id.as_str().to_string();
@@ -406,7 +428,7 @@ async fn dispatch(root: &Path, json: bool, cmd: CommsAgentCmd, out: &mut impl Wr
                 .map_err(|e| anyhow::anyhow!("leave: {e}"))?;
             render_flag(json, out, "thread", &label, "left")?;
         }
-        CommsAgentCmd::Members { thread, as_agent } => {
+        AgentsCmd::Members { thread, as_agent } => {
             let mut client = connect_as(root, as_agent).await?;
             let thread_id = ThreadId::parse(thread).context("thread id")?;
             let label = thread_id.as_str().to_string();
@@ -425,7 +447,7 @@ async fn dispatch(root: &Path, json: bool, cmd: CommsAgentCmd, out: &mut impl Wr
                 }
             }
         }
-        CommsAgentCmd::AddMember {
+        AgentsCmd::AddMember {
             thread,
             member,
             as_agent,
@@ -449,7 +471,7 @@ async fn dispatch(root: &Path, json: bool, cmd: CommsAgentCmd, out: &mut impl Wr
                 writeln!(out, "added {member_label} to {label}")?;
             }
         }
-        CommsAgentCmd::RemoveMember {
+        AgentsCmd::RemoveMember {
             thread,
             member,
             as_agent,
@@ -473,7 +495,7 @@ async fn dispatch(root: &Path, json: bool, cmd: CommsAgentCmd, out: &mut impl Wr
                 writeln!(out, "removed {member_label} from {label}")?;
             }
         }
-        CommsAgentCmd::Archive { thread, as_agent } => {
+        AgentsCmd::Archive { thread, as_agent } => {
             let mut client = connect_as(root, as_agent).await?;
             let thread_id = ThreadId::parse(thread).context("thread id")?;
             let label = thread_id.as_str().to_string();
@@ -487,7 +509,7 @@ async fn dispatch(root: &Path, json: bool, cmd: CommsAgentCmd, out: &mut impl Wr
                 writeln!(out, "archived {label}")?;
             }
         }
-        CommsAgentCmd::Post {
+        AgentsCmd::Post {
             thread,
             subject,
             body,
@@ -508,7 +530,7 @@ async fn dispatch(root: &Path, json: bool, cmd: CommsAgentCmd, out: &mut impl Wr
                 writeln!(out, "{message_id}")?;
             }
         }
-        CommsAgentCmd::History {
+        AgentsCmd::History {
             thread,
             cursor,
             limit,
@@ -528,13 +550,13 @@ async fn dispatch(root: &Path, json: bool, cmd: CommsAgentCmd, out: &mut impl Wr
                 .map_err(|e| anyhow::anyhow!("history: {e}"))?;
             render_front_matter(&messages, next_cursor.as_ref(), None, json, out)?;
         }
-        CommsAgentCmd::Read { message_id } => {
-            let mut client = connect_as(root, None).await?;
+        AgentsCmd::Message { message_id, as_agent } => {
+            let mut client = connect_as(root, as_agent).await?;
             let id = message_id.clone();
             let body = client
                 .get_body(message_id)
                 .await
-                .map_err(|e| anyhow::anyhow!("read: {e}"))?;
+                .map_err(|e| anyhow::anyhow!("message: {e}"))?;
             let text = body.map(|b| String::from_utf8_lossy(&b).into_owned());
             if json {
                 writeln!(
@@ -549,7 +571,7 @@ async fn dispatch(root: &Path, json: bool, cmd: CommsAgentCmd, out: &mut impl Wr
                 }
             }
         }
-        CommsAgentCmd::Inbox {
+        AgentsCmd::Inbox {
             cursor,
             limit,
             mark_read,
@@ -571,7 +593,35 @@ async fn dispatch(root: &Path, json: bool, cmd: CommsAgentCmd, out: &mut impl Wr
                 .map_err(|e| anyhow::anyhow!("inbox: {e}"))?;
             render_front_matter(&messages, next_cursor.as_ref(), Some(unread), json, out)?;
         }
-        CommsAgentCmd::Wait {
+        AgentsCmd::Ack {
+            message_ids,
+            thread,
+            to_seq,
+            as_agent,
+        } => {
+            if message_ids.is_empty() && to_seq.is_none() {
+                bail!("`agents ack` requires --message-id, or a (--thread, --to-seq) pair");
+            }
+            let mut client = connect_as(root, as_agent).await?;
+            let thread_id = thread.map(ThreadId::parse).transpose().context("thread id")?;
+            let (acked, cursors) = client
+                .ack_inbox(message_ids, thread_id, to_seq)
+                .await
+                .map_err(|e| anyhow::anyhow!("ack: {e}"))?;
+            if json {
+                let rows: Vec<_> = cursors
+                    .iter()
+                    .map(|(thread, seq)| json!({ "thread": thread, "seq": seq }))
+                    .collect();
+                writeln!(out, "{}", json!({ "acked": acked, "cursors_advanced": rows }))?;
+            } else {
+                writeln!(out, "acked: {acked}")?;
+                for (thread, seq) in &cursors {
+                    writeln!(out, "{thread}\t{seq}")?;
+                }
+            }
+        }
+        AgentsCmd::Wait {
             thread,
             timeout_secs,
             since_hours,
@@ -597,23 +647,7 @@ async fn dispatch(root: &Path, json: bool, cmd: CommsAgentCmd, out: &mut impl Wr
                 .await
                 .map_err(|e| anyhow::anyhow!("wait: {e}"))?;
             if json {
-                let rows: Vec<_> = messages
-                    .iter()
-                    .map(|sm| {
-                        let m = &sm.meta;
-                        json!({
-                            "id": m.id,
-                            "thread": m.thread.as_str(),
-                            "from": m.from.as_str(),
-                            "ts_micros": m.ts_micros,
-                            "subject": m.subject,
-                            "tags": m.tags,
-                            "reply_to": m.reply_to,
-                            "seq": sm.seq,
-                            "body_len": m.body_len,
-                        })
-                    })
-                    .collect();
+                let rows: Vec<_> = messages.iter().map(front_matter_json).collect();
                 let mut obj = json!({
                     "timed_out": timed_out,
                     "total": rows.len(),
@@ -682,6 +716,22 @@ fn render_thread(thread: &Thread, json: bool, out: &mut impl Write) -> Result<()
     Ok(())
 }
 
+/// JSON view of one message front-matter row (never the body).
+fn front_matter_json(sm: &SeqMeta) -> serde_json::Value {
+    let m = &sm.meta;
+    json!({
+        "id": m.id,
+        "thread": m.thread.as_str(),
+        "from": m.from.as_str(),
+        "ts_micros": m.ts_micros,
+        "subject": m.subject,
+        "tags": m.tags,
+        "reply_to": m.reply_to,
+        "seq": sm.seq,
+        "body_len": m.body_len,
+    })
+}
+
 /// Render a page of message FRONT-MATTER (never bodies). `unread` is `Some` for inbox output.
 fn render_front_matter(
     messages: &[SeqMeta],
@@ -691,23 +741,7 @@ fn render_front_matter(
     out: &mut impl Write,
 ) -> Result<()> {
     if json {
-        let rows: Vec<_> = messages
-            .iter()
-            .map(|sm| {
-                let m = &sm.meta;
-                json!({
-                    "id": m.id,
-                    "thread": m.thread.as_str(),
-                    "from": m.from.as_str(),
-                    "ts_micros": m.ts_micros,
-                    "subject": m.subject,
-                    "tags": m.tags,
-                    "reply_to": m.reply_to,
-                    "seq": sm.seq,
-                    "body_len": m.body_len,
-                })
-            })
-            .collect();
+        let rows: Vec<_> = messages.iter().map(front_matter_json).collect();
         let mut obj = json!({ "total": rows.len(), "messages": rows });
         if let Some(u) = unread {
             obj["unread"] = json!(u);

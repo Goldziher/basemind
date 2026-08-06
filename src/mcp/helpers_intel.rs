@@ -20,7 +20,7 @@ use super::types::{DefinitionLocation, GotoDefinitionParams, GotoDefinitionRespo
 use crate::intel::model::ResolvedEdge;
 use crate::path::RelPath;
 
-/// Body of the `goto_definition` MCP tool. Resolves the reference at `path`:`line`:`column` to its
+/// Body of the `code` tool's `definition` mode. Resolves the reference at `path`:`line`:`column` to its
 /// definition, following a cross-file hop when the in-file binding is an import. Returns
 /// `definition: None` (not an error) when the position holds no resolved binding.
 pub(super) async fn run_goto_definition(

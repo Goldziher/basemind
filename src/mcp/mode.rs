@@ -357,11 +357,16 @@ pub fn reject_unsupported(domain: &str, mode: &str, present: &[(&str, bool)]) ->
 pub fn domain_modes() -> Vec<(&'static str, &'static [&'static str])> {
     vec![
         (AdminMode::DOMAIN, AdminMode::ALL_MODES),
+        (CodeMode::DOMAIN, CodeMode::ALL_MODES),
         (GitMode::DOMAIN, GitMode::ALL_MODES),
         (GraphMode::DOMAIN, GraphMode::ALL_MODES),
         (MemoryMode::DOMAIN, MemoryMode::ALL_MODES),
+        #[cfg(all(feature = "shells", any(unix, windows)))]
+        (ShellMode::DOMAIN, ShellMode::ALL_MODES),
         #[cfg(feature = "crawl")]
         (WebMode::DOMAIN, WebMode::ALL_MODES),
+        #[cfg(all(feature = "comms", any(unix, windows)))]
+        (AgentsMode::DOMAIN, AgentsMode::ALL_MODES),
         #[cfg(all(feature = "comms", any(unix, windows)))]
         (WorkspaceMode::DOMAIN, WorkspaceMode::ALL_MODES),
     ]

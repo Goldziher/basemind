@@ -165,8 +165,7 @@ pub(super) fn resolve_call_line_col(
     (call.start_row + 1, call.start_col)
 }
 
-/// Body of the `find_references` MCP tool — pulled out so the `#[tool]` wrapper in
-/// `tools.rs` stays small. Takes a snapshot of the IndexDb (cheap clone) so the caller
+/// Body of the `code` tool's `references` mode. Takes a snapshot of the IndexDb (cheap clone) so the caller
 /// can release the store lock before iterating.
 pub(super) fn run_find_references(
     idx: Option<&crate::index::IndexDb>,
@@ -198,7 +197,7 @@ pub(super) fn run_find_references(
     )
 }
 
-/// Body of the `find_callers` MCP tool.
+/// Body of the `code` tool's `callers` mode.
 ///
 /// ## Semantics: the name scan is the floor, resolution is a refinement
 ///

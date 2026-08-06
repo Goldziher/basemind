@@ -15,7 +15,7 @@ use super::types::{
     FindFilesEntry, FindFilesParams, FindFilesResponse, ListFilesEntry, ListFilesParams, ListFilesResponse,
 };
 
-/// Body of the `list_files` MCP tool: enumerate indexed paths with optional substring
+/// Body of the `code` tool's `files` mode: enumerate indexed paths with optional substring
 /// (`path_contains`) and `language` filters, then paginate.
 pub(super) async fn run_list_files(state: &ServerState, params: ListFilesParams) -> Result<CallToolResult, McpError> {
     let started = std::time::Instant::now();
@@ -109,7 +109,7 @@ pub(super) async fn run_list_files(state: &ServerState, params: ListFilesParams)
     )
 }
 
-/// Body of the `find_files` MCP tool: fuzzy subsequence match over indexed paths (fzf/fd-style),
+/// Body of the `code` tool's `find` mode: fuzzy subsequence match over indexed paths (fzf/fd-style),
 /// ranked by `nucleo-matcher` score, with optional `path_prefix` / `language` pre-filters.
 ///
 /// Sourced from `MapCache::by_path` (already sorted, in-RAM, no store lock needed) — the

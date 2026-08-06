@@ -1,9 +1,10 @@
-//! Headless agent-shell tool shims for `BasemindServer`.
+//! The `shell` domain tool shim for `BasemindServer`.
 //!
-//! Each shim is a thin wrapper around its `run_*` helper in `helpers_shells.rs`,
-//! with telemetry instrumentation matching the rest of the MCP surface. The
-//! whole module is gated on `feature = "shells"` — when the feature is off these
-//! tools are never registered, so the agent does not see them in the tool list.
+//! One tool, one required `mode` — `spawn` / `send` / `capture` / `kill` / `list` / `broadcast` —
+//! dispatched to `helpers_shells::run_shell`. Thin wrapper: the bodies live in `helpers_shells.rs`.
+//! The whole module is gated on `feature = "shells"`, because every mode talks to the embedded
+//! rmux daemon: with the feature off there is no daemon and the tool is never registered rather
+//! than answering with a `not_enabled` stub.
 
 #![cfg(feature = "shells")]
 
@@ -15,148 +16,56 @@ use serde_json::Value;
 
 use super::BasemindServer;
 use super::helpers::record_call;
-use super::types_shells::{
-    ShellBroadcastParams, ShellCaptureParams, ShellKillParams, ShellListParams, ShellSendParams, ShellSpawnParams,
-};
+use super::lenient::Lenient;
+use super::types_shells::ShellParams;
 
 #[rmcp::tool_router(vis = "pub(super)", router = "tool_router_shells")]
 impl BasemindServer {
+    // No `output_schema`: the six modes return six different response shapes, and SEP-2106 allows
+    // exactly one per tool. Declaring a union would mean nested structs, which schemars emits as
+    // `$ref` into `$defs` — the construct that silently dropped the whole registry in GH #50. The
+    // per-mode shapes are documented in the description instead. ~keep
+    //
+    // The annotations are the union of the six modes': `spawn` / `send` / `broadcast` write, and
+    // `kill` terminates a process, so the tool can claim neither `read_only_hint` nor
+    // `idempotent_hint`, and it must advertise `destructive_hint` — a client that auto-approves
+    // non-destructive tools must not be able to reach `kill` through this name. ~keep
     #[tool(
-        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types_shells::ShellSpawnResponse>()",
-        description = "Spawn a detached headless shell session backed by the embedded rmux daemon \
-        and return a stable `session_id`. `command` runs through the login shell (e.g. \
-        `bash -lc '<command>'`). Optional `cwd` (repo-relative), `env` (key/value list), and \
-        `title`. The session is headless — no terminal is attached — drive it with `shell_send`, \
-        read it with `shell_capture`, and end it with `shell_kill`. The response includes an \
-        `attach_command` (`rmux attach -t <name>`) an operator can run to observe it. Needs \
-        --features shells.",
-        annotations(
-            read_only_hint = false,
-            destructive_hint = false,
-            idempotent_hint = false,
-            open_world_hint = true
-        )
-    )]
-    pub(crate) async fn shell_spawn(
-        &self,
-        Parameters(p): Parameters<ShellSpawnParams>,
-    ) -> Result<CallToolResult, McpError> {
-        let __started = std::time::Instant::now();
-        let __params_json = serde_json::to_value(&p).unwrap_or(Value::Null);
-        let __result: Result<CallToolResult, McpError> = super::helpers_shells::run_shell_spawn(&self.state, p).await;
-        record_call(&self.state, "shell_spawn", &__params_json, __started, &__result);
-        __result
-    }
-
-    #[tool(
-        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types_shells::ShellSendResponse>()",
-        description = "Write `text` to a headless shell session's stdin, addressed by `session_id` \
-        (from `shell_spawn`). When `enter` is true (default) a trailing newline is appended so the \
-        line executes; set `enter=false` to send a raw keystroke fragment. Use `shell_capture` \
-        afterward to read the result. Needs --features shells.",
-        annotations(
-            read_only_hint = false,
-            destructive_hint = false,
-            idempotent_hint = false,
-            open_world_hint = true
-        )
-    )]
-    pub(crate) async fn shell_send(
-        &self,
-        Parameters(p): Parameters<ShellSendParams>,
-    ) -> Result<CallToolResult, McpError> {
-        let __started = std::time::Instant::now();
-        let __params_json = serde_json::to_value(&p).unwrap_or(Value::Null);
-        let __result: Result<CallToolResult, McpError> = super::helpers_shells::run_shell_send(&self.state, p).await;
-        record_call(&self.state, "shell_send", &__params_json, __started, &__result);
-        __result
-    }
-
-    #[tool(
-        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types_shells::ShellCaptureResponse>()",
-        description = "Capture the currently-visible screen text of a headless shell session, \
-        addressed by `session_id`. Returns the rendered pane with trailing blank lines trimmed; \
-        pass `lines` to get only the last N non-blank rows (the most recent output). This is a \
-        screen snapshot, not a full scrollback log. Needs --features shells.",
-        annotations(read_only_hint = true, open_world_hint = true)
-    )]
-    pub(crate) async fn shell_capture(
-        &self,
-        Parameters(p): Parameters<ShellCaptureParams>,
-    ) -> Result<CallToolResult, McpError> {
-        let __started = std::time::Instant::now();
-        let __params_json = serde_json::to_value(&p).unwrap_or(Value::Null);
-        let __result: Result<CallToolResult, McpError> = super::helpers_shells::run_shell_capture(&self.state, p).await;
-        record_call(&self.state, "shell_capture", &__params_json, __started, &__result);
-        __result
-    }
-
-    #[tool(
-        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types_shells::ShellKillResponse>()",
-        description = "Kill a headless shell session by `session_id`. Returns `killed=true` when a \
-        live session was terminated, `false` when it was already gone. The session leaves the \
-        daemon's live set, so `shell_list` stops reporting it in every process, not just this one. \
-        Needs --features shells.",
+        description = "Run a long-lived background terminal session — a build, a dev server, a \
+        test watcher, a REPL — and read its output later, instead of blocking on a one-shot \
+        command. Backed by the embedded rmux daemon; nothing is attached to a terminal. `mode` is \
+        required. `spawn` starts one: `command` runs through the login shell (e.g. \
+        `bash -lc '<command>'`), with optional `cwd` (repo-relative), `env` (key/value list), and \
+        `title`; it returns a stable `session_id` — the handle every other mode addresses — plus \
+        an `attach_command` (`rmux attach -t <name>`) an operator can run to watch it. `send` \
+        types `text` into a session's stdin, appending a newline so the line executes unless \
+        `enter=false` sends a raw keystroke fragment. `capture` reads back what a session has \
+        printed: the currently-visible screen with trailing blank lines trimmed, or just the last \
+        `lines` non-blank rows — a screen SNAPSHOT, not a full scrollback log, so poll it rather \
+        than expecting every byte ever written. `kill` terminates a session and returns \
+        `killed=true` when one was live, `false` when it had already exited. `list` needs no \
+        arguments and returns every session the daemon currently hosts — the way to recover a \
+        `session_id` in a process that did not spawn it, since sessions live in the shared daemon, \
+        not in this server. `broadcast` types the same `text` into several `session_ids` at once \
+        and returns `delivered`; every id must be live, and an unknown one fails the whole \
+        broadcast before any pane is written. Parameters that belong to another mode are rejected, \
+        not ignored. Needs --features shells.",
         annotations(
             read_only_hint = false,
             destructive_hint = true,
-            idempotent_hint = true,
-            open_world_hint = true
-        )
-    )]
-    pub(crate) async fn shell_kill(
-        &self,
-        Parameters(p): Parameters<ShellKillParams>,
-    ) -> Result<CallToolResult, McpError> {
-        let __started = std::time::Instant::now();
-        let __params_json = serde_json::to_value(&p).unwrap_or(Value::Null);
-        let __result: Result<CallToolResult, McpError> = super::helpers_shells::run_shell_kill(&self.state, p).await;
-        record_call(&self.state, "shell_kill", &__params_json, __started, &__result);
-        __result
-    }
-
-    #[tool(
-        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types_shells::ShellBroadcastResponse>()",
-        description = "Broadcast the same `text` to many headless shell sessions at once, addressed \
-        by a list of `session_ids` (each from `shell_spawn`). Every id must be a known, live session \
-        of this server; an unknown id fails the whole broadcast before any pane is written. When \
-        `enter` is true (default) a trailing newline is appended so each line executes. Returns \
-        `delivered`, the number of session panes that accepted the input. Needs --features shells.",
-        annotations(
-            read_only_hint = false,
-            destructive_hint = false,
             idempotent_hint = false,
             open_world_hint = true
         )
     )]
-    pub(crate) async fn shell_broadcast(
+    pub(crate) async fn shell(
         &self,
-        Parameters(p): Parameters<ShellBroadcastParams>,
+        Parameters(Lenient(p)): Parameters<Lenient<ShellParams>>,
     ) -> Result<CallToolResult, McpError> {
         let __started = std::time::Instant::now();
+        let __key = p.mode.telemetry_key();
         let __params_json = serde_json::to_value(&p).unwrap_or(Value::Null);
-        let __result: Result<CallToolResult, McpError> =
-            super::helpers_shells::run_shell_broadcast(&self.state, p).await;
-        record_call(&self.state, "shell_broadcast", &__params_json, __started, &__result);
-        __result
-    }
-
-    #[tool(
-        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types_shells::ShellListResponse>()",
-        description = "List the headless shell sessions this server spawned, each flagged with its \
-        liveness (`alive=true` while the daemon still reports it; `false` once it has exited but the \
-        mapping lingers). Takes no arguments. Use this to discover `session_id`s for `shell_send` / \
-        `shell_capture` / `shell_broadcast` / `shell_kill`. Needs --features shells.",
-        annotations(read_only_hint = true, open_world_hint = true)
-    )]
-    pub(crate) async fn shell_list(
-        &self,
-        Parameters(p): Parameters<ShellListParams>,
-    ) -> Result<CallToolResult, McpError> {
-        let __started = std::time::Instant::now();
-        let __params_json = serde_json::to_value(&p).unwrap_or(Value::Null);
-        let __result: Result<CallToolResult, McpError> = super::helpers_shells::run_shell_list(&self.state, p).await;
-        record_call(&self.state, "shell_list", &__params_json, __started, &__result);
+        let __result: Result<CallToolResult, McpError> = super::helpers_shells::run_shell(&self.state, p).await;
+        record_call(&self.state, __key, &__params_json, __started, &__result);
         __result
     }
 }

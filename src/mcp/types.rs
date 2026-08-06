@@ -859,7 +859,6 @@ pub(super) use super::types_git::{
     HotFilesResponse, HunkView, RecentChangesResponse, SearchGitHistoryResponse, SymbolHistoryEntry,
     SymbolHistoryResponse, WorkingTreeStatusView,
 };
-pub use super::types_impls::FindImplementationsParams;
 
 #[cfg(test)]
 mod tests {
@@ -906,7 +905,7 @@ mod tests {
 
     #[test]
     fn find_implementations_accepts_trait_alias_for_trait_name() {
-        let params: super::FindImplementationsParams =
+        let params: super::super::types_impls::FindImplementationsParams =
             serde_json::from_value(serde_json::json!({ "trait": "Iterator" })).unwrap();
         assert_eq!(params.trait_name, "Iterator");
     }

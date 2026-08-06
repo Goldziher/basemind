@@ -24,7 +24,7 @@ pub enum Capability {
     GitHistory,
     /// `find_files` — fuzzy fzf/fd-style filename / path search.
     FileFinding,
-    /// `thread_post` / `inbox_read` — multi-agent thread coordination.
+    /// `agents` modes `post` / `inbox` — multi-agent thread coordination.
     AgentComms,
     /// `workspace` modes — daemon registry + worktree coordination.
     WorktreeCoordination,
@@ -102,7 +102,7 @@ impl Capability {
                 "`find` / `fd` / `ls -R` to locate a file by name",
             ),
             Capability::AgentComms => (
-                "`thread_post` / `inbox_read` / `thread_list`",
+                "`agents` (modes `post` / `inbox` / `thread_list`)",
                 "assuming you're the only agent in the repo",
             ),
             Capability::WorktreeCoordination => (

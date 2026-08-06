@@ -26,8 +26,9 @@ mod helpers_admin;
 mod helpers_archmap;
 mod helpers_calls;
 mod helpers_calls_scan;
-#[cfg(feature = "code-search")]
 mod helpers_code;
+#[cfg(feature = "code-search")]
+mod helpers_code_search;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 mod helpers_comms;
 mod helpers_community;
@@ -84,10 +85,8 @@ mod telemetry;
 mod tokens;
 mod tools;
 mod tools_admin;
-mod tools_code;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 mod tools_comms;
-mod tools_compress;
 mod tools_git;
 mod tools_graph;
 mod tools_memory;
@@ -153,8 +152,11 @@ pub mod params {
     pub(crate) use super::lenient::Lenient;
 
     pub use super::mode::AdminMode;
+    pub use super::mode::CodeMode;
     pub use super::mode::GitMode;
     pub use super::mode::GraphMode;
+    #[cfg(all(feature = "shells", any(unix, windows)))]
+    pub use super::mode::ShellMode;
     pub use super::mode::WebMode;
     pub use super::types::{
         BlameFileParams, BlameSymbolParams, CommitsTouchingParams, DependentsParams, DiffFileParams, DiffOutlineParams,
@@ -164,8 +166,7 @@ pub mod params {
         TelemetrySummaryParams, WorkingTreeStatusParams, WorkspaceGrepParams,
     };
     pub use super::types_admin::{AdminParams, CacheClearParams, CacheGcParams, CacheStatsParams};
-    pub use super::types_code::{GetChunkParams, SearchCodeParams};
-    pub use super::types_compress::ExpandParams;
+    pub use super::types_code::CodeParams;
     pub use super::types_git::GitParams;
     pub use super::types_governance::{
         MemoryAuditParams, ProposalAcceptParams, ProposalRejectParams, ProposalsListParams, ProposalsMineParams,
@@ -176,10 +177,7 @@ pub mod params {
         MemoryDeleteParams, MemoryGetParams, MemoryListParams, MemoryPutParams, MemorySearchParams, Visibility,
     };
     #[cfg(all(feature = "shells", any(unix, windows)))]
-    pub use super::types_shells::{
-        ShellBroadcastParams, ShellCaptureParams, ShellEnv, ShellKillParams, ShellListParams, ShellSendParams,
-        ShellSpawnParams,
-    };
+    pub use super::types_shells::{ShellEnv, ShellParams};
     #[cfg(feature = "crawl")]
     pub use super::types_web::WebParams;
 }
@@ -423,9 +421,7 @@ impl BasemindServer {
             + Self::tool_router_graph()
             + Self::tool_router_git()
             + Self::tool_router_memory()
-            + Self::tool_router_code()
-            + Self::tool_router_admin()
-            + Self::tool_router_compress();
+            + Self::tool_router_admin();
         #[cfg(feature = "crawl")]
         {
             router += Self::tool_router_web();

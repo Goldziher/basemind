@@ -94,7 +94,7 @@ comms_state() {
 		fi
 	fi
 
-	json="$(timeout 2 basemind comms inbox --root "$cwd" --json --limit 1 2>/dev/null || true)"
+	json="$(timeout 2 basemind agents inbox --root "$cwd" --json --limit 1 2>/dev/null || true)"
 	[[ -n "$json" ]] || return 1
 	unread="$(printf '%s' "$json" | jq -r '((.messages | length) + (.unread // 0))' 2>/dev/null | tr -cd '0-9' || true)"
 	[[ -n "$unread" ]] || unread=0
@@ -215,11 +215,10 @@ build_basemind_line() {
 			read -r calls saved code git docs mem web <<<"$(tail -n 2000 "$tel_file" 2>/dev/null |
 				jq -rs --argjson cut "$midnight_us" '
             def bucket:
-              if   (test("^(search_symbols|outline|find_references|find_callers|find_implementations|call_graph|dependents|list_files|workspace_grep|status|repo_info)$")) then "code"
-              elif (test("^(blame_|recent_changes|commits_touching|find_commits_by_path|diff_|hot_files|symbol_history|working_tree_status)")) then "git"
-              elif (.=="search_documents") then "docs"
-              elif (startswith("memory_")) then "mem"
-              elif (startswith("web_")) then "web"
+              if   (.=="memory:documents") then "docs"
+              elif (startswith("git:")) then "git"
+              elif (startswith("memory:")) then "mem"
+              elif (startswith("web:")) then "web"
               else "code" end;
             map(select(.ts_micros >= $cut))
             | { calls: length, saved: ([.[].est_tokens_saved] | add // 0) } as $tot

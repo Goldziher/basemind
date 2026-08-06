@@ -206,7 +206,7 @@ fn format_statusline(workspaces: &[basemind::comms::workspace_pool::AccessedWork
 /// runtime — the broker daemon itself uses a multi-thread runtime so concurrent links don't
 /// serialize.
 #[cfg(all(feature = "comms", any(unix, windows)))]
-pub(crate) fn cmd_comms(root: &std::path::Path, action: crate::CommsLifecycleCmd, json: bool) -> Result<()> {
+pub(crate) fn cmd_comms(action: crate::CommsLifecycleCmd, json: bool) -> Result<()> {
     match action {
         crate::CommsLifecycleCmd::Daemon => basemind::cli::comms_daemon::run(),
         crate::CommsLifecycleCmd::Start => cmd_comms_start(),
@@ -214,7 +214,6 @@ pub(crate) fn cmd_comms(root: &std::path::Path, action: crate::CommsLifecycleCmd
         crate::CommsLifecycleCmd::Stop { all: false } => cmd_comms_lifecycle_rpc(CommsRpc::Stop, json),
         crate::CommsLifecycleCmd::Status => cmd_comms_lifecycle_rpc(CommsRpc::Status, json),
         crate::CommsLifecycleCmd::Doctor => cmd_comms_doctor(json),
-        crate::CommsLifecycleCmd::Agent(cmd) => basemind::cli::comms::run(root, json, cmd),
     }
 }
 

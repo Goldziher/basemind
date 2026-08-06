@@ -6,7 +6,7 @@
 //! asserts.
 //!
 //! The registry lives in the always-on comms broker daemon (its sole writer). Like the
-//! [`comms`](super::comms) agent verbs — and unlike the code-map / memory CLI groups — these
+//! [`agents`](super::agents) group — and unlike the code-map / memory CLI groups — these
 //! subcommands connect to the daemon DIRECTLY via [`CommsClient::ensure_and_connect`] rather than
 //! building a full [`BasemindServer`](crate::mcp::BasemindServer), so they take no repo index lock
 //! and cannot clash with a running `basemind serve`.

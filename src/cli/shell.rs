@@ -1,11 +1,15 @@
-//! Headless agent-shell subcommands: 1:1 with the `shell_*` MCP tools.
+//! `basemind shell` — the CLI half of the `shell` domain.
 //!
-//! Each handler builds the matching `Shell*Params` struct and dispatches to the
-//! identical `#[tool]` method on the in-process [`BasemindServer`]. Sessions are
-//! backed by the embedded rmux daemon (an external process basemind re-execs
-//! itself as), so a session spawned from one CLI invocation survives the process
-//! exit and is addressable from the next — the same daemon a running `serve`
-//! shares. Gated on `feature = "shells"`.
+//! Real clap subcommands rather than a `--mode` flag, so each operation keeps its own `--help` and
+//! its own argument validation; they map one-to-one onto the MCP `shell` tool's [`ShellMode`]
+//! values, which is what `tests/cli_parity.rs` asserts.
+//!
+//! Sessions are backed by the embedded rmux daemon (an external process basemind re-execs itself
+//! as), so a session spawned from one CLI invocation survives the process exit and is addressable
+//! from the next — the same daemon a running `serve` shares. Gated on `feature = "shells"`.
+//!
+//! Each handler leaves every field its mode does not use `None`: the helper rejects a field
+//! belonging to another mode, so populating them blindly would fail the call.
 
 use std::io::Write;
 
@@ -19,7 +23,7 @@ use super::render::{Emit, emit};
 use super::run_tool;
 
 #[derive(Subcommand, Debug)]
-pub enum ShellsCmd {
+pub enum ShellCmd {
     /// Spawn a detached headless shell session and print its `session_id`.
     Spawn {
         /// Command line to run in the session's initial pane (via the login shell).
@@ -57,6 +61,8 @@ pub enum ShellsCmd {
         /// The `session_id` returned by `spawn`.
         session_id: String,
     },
+    /// List every session the shell daemon currently hosts, with liveness.
+    List,
     /// Write the same text to several sessions' stdin at once.
     Broadcast {
         /// Text to write to each session's stdin.
@@ -68,8 +74,6 @@ pub enum ShellsCmd {
         #[arg(long)]
         no_enter: bool,
     },
-    /// List the sessions this server has spawned, with liveness.
-    List,
 }
 
 /// Parse a `KEY=VALUE` override into a [`ShellEnv`]. The value may itself contain
@@ -84,9 +88,9 @@ fn parse_env(raw: &str) -> Result<ShellEnv> {
     })
 }
 
-pub async fn run(server: &BasemindServer, cmd: ShellsCmd, opts: &Emit, out: &mut impl Write) -> Result<()> {
-    match cmd {
-        ShellsCmd::Spawn {
+pub async fn run(server: &BasemindServer, cmd: ShellCmd, opts: &Emit, out: &mut impl Write) -> Result<()> {
+    let p = match cmd {
+        ShellCmd::Spawn {
             command,
             cwd,
             env,
@@ -97,55 +101,47 @@ pub async fn run(server: &BasemindServer, cmd: ShellsCmd, opts: &Emit, out: &mut
             } else {
                 Some(env.iter().map(|e| parse_env(e)).collect::<Result<_>>()?)
             };
-            let p = ShellSpawnParams {
-                command,
+            ShellParams {
+                command: Some(command),
                 cwd: cwd.map(|c| c.as_str().into()),
                 env,
                 title,
-            };
-            let r = run_tool("shell_spawn", server.shell_spawn(Parameters(p)).await)?;
-            emit("shell_spawn", &r, opts, out)
+                ..ShellParams::new(ShellMode::Spawn)
+            }
         }
-        ShellsCmd::Send {
+        ShellCmd::Send {
             session_id,
             text,
             no_enter,
-        } => {
-            let p = ShellSendParams {
-                session_id,
-                text,
-                enter: !no_enter,
-            };
-            let r = run_tool("shell_send", server.shell_send(Parameters(p)).await)?;
-            emit("shell_send", &r, opts, out)
-        }
-        ShellsCmd::Capture { session_id, lines } => {
-            let p = ShellCaptureParams { session_id, lines };
-            let r = run_tool("shell_capture", server.shell_capture(Parameters(p)).await)?;
-            emit("shell_capture", &r, opts, out)
-        }
-        ShellsCmd::Kill { session_id } => {
-            let p = ShellKillParams { session_id };
-            let r = run_tool("shell_kill", server.shell_kill(Parameters(p)).await)?;
-            emit("shell_kill", &r, opts, out)
-        }
-        ShellsCmd::Broadcast {
+        } => ShellParams {
+            session_id: Some(session_id),
+            text: Some(text),
+            enter: Some(!no_enter),
+            ..ShellParams::new(ShellMode::Send)
+        },
+        ShellCmd::Capture { session_id, lines } => ShellParams {
+            session_id: Some(session_id),
+            lines,
+            ..ShellParams::new(ShellMode::Capture)
+        },
+        ShellCmd::Kill { session_id } => ShellParams {
+            session_id: Some(session_id),
+            ..ShellParams::new(ShellMode::Kill)
+        },
+        ShellCmd::List => ShellParams::new(ShellMode::List),
+        ShellCmd::Broadcast {
             text,
             session_ids,
             no_enter,
-        } => {
-            let p = ShellBroadcastParams {
-                session_ids,
-                text,
-                enter: !no_enter,
-            };
-            let r = run_tool("shell_broadcast", server.shell_broadcast(Parameters(p)).await)?;
-            emit("shell_broadcast", &r, opts, out)
-        }
-        ShellsCmd::List => {
-            let p = ShellListParams {};
-            let r = run_tool("shell_list", server.shell_list(Parameters(p)).await)?;
-            emit("shell_list", &r, opts, out)
-        }
-    }
+        } => ShellParams {
+            session_ids: Some(session_ids),
+            text: Some(text),
+            enter: Some(!no_enter),
+            ..ShellParams::new(ShellMode::Broadcast)
+        },
+    };
+
+    let key = p.mode.telemetry_key();
+    let r = run_tool(key, server.shell(Parameters(Lenient(p))).await)?;
+    emit(key, &r, opts, out)
 }

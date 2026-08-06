@@ -1,8 +1,11 @@
-//! Agent-comms tool shims for `BasemindServer`.
+//! The `agents` domain tool shim for `BasemindServer`.
 //!
-//! Kept in a separate file so `tools.rs` stays under the 1000-line cap. Each shim is a thin
-//! wrapper that delegates to a `helpers_comms::run_*` body and records telemetry. The whole router
-//! is registered only under `#[cfg(feature = "comms")]`.
+//! One tool, one required `mode` — `register` / `list` / `thread_start` / `thread_list` / `join` /
+//! `leave` / `members` / `add_member` / `remove_member` / `archive` / `post` / `history` /
+//! `message` / `inbox` / `ack` / `wait` — dispatched to `helpers_comms::run_agents`. Thin wrapper:
+//! the bodies live in `helpers_comms.rs`. The whole module is gated on `feature = "comms"`, because
+//! every mode talks to the user-global broker daemon: with the feature off there is no broker and
+//! the tool is never registered rather than answering with a `not_enabled` stub.
 
 #![cfg(all(feature = "comms", any(unix, windows)))]
 
@@ -14,235 +17,50 @@ use serde_json::Value;
 
 use super::BasemindServer;
 use super::helpers::record_call;
-use super::types_comms::{
-    AgentListParams, AgentRegisterParams, InboxAckParams, InboxReadParams, InboxWaitParams, MessageGetParams,
-    ThreadArchiveParams, ThreadHistoryParams, ThreadJoinParams, ThreadLeaveParams, ThreadListParams,
-    ThreadMemberParams, ThreadMembersParams, ThreadPostParams, ThreadStartParams,
-};
+use super::lenient::Lenient;
+use super::types_comms::AgentsParams;
 
 #[rmcp::tool_router(vis = "pub(super)", router = "tool_router_comms")]
 impl BasemindServer {
+    // No `output_schema`: the sixteen modes return a dozen different response shapes, and SEP-2106
+    // allows exactly one per tool. Declaring a union would mean nested structs, which schemars emits
+    // as `$ref` into `$defs` — the construct that silently dropped the whole registry in GH #50. The
+    // per-mode shapes are documented in the description instead. ~keep
+    //
+    // The annotations are the union of the sixteen modes': `post` / `join` / `register` write, and a
+    // post is not idempotent, so the tool can claim neither `read_only_hint` nor `idempotent_hint`.
+    // Nothing here destroys data — `ack` advances a private read cursor and `archive` is
+    // reversible-by-reading. ~keep
     #[tool(
-        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types_comms::AgentRegisterResponse>()",
-        description = "Register or update this agent's A2A card (name/description/version/skills) \
-        with the user-global comms broker. Spawns the broker daemon on first use. \
-        Needs --features comms.",
-        annotations(
-            read_only_hint = false,
-            destructive_hint = false,
-            idempotent_hint = true,
-            open_world_hint = false
-        )
-    )]
-    pub(crate) async fn agent_register(
-        &self,
-        Parameters(p): Parameters<AgentRegisterParams>,
-    ) -> Result<CallToolResult, McpError> {
-        let __started = std::time::Instant::now();
-        let __params_json = serde_json::to_value(&p).unwrap_or(Value::Null);
-        let __result = super::helpers_comms::run_agent_register(&self.state, p).await;
-        record_call(&self.state, "agent_register", &__params_json, __started, &__result);
-        __result
-    }
-
-    #[tool(
-        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types_comms::AgentListResponse>()",
-        description = "List agents known to the comms broker, optionally restricted to the \
-        members of one thread. Returns front-matter (id, card fields, first/last seen). \
-        Needs --features comms.",
-        annotations(read_only_hint = true, open_world_hint = false)
-    )]
-    pub(crate) async fn agent_list(
-        &self,
-        Parameters(p): Parameters<AgentListParams>,
-    ) -> Result<CallToolResult, McpError> {
-        let __started = std::time::Instant::now();
-        let __params_json = serde_json::to_value(&p).unwrap_or(Value::Null);
-        let __result = super::helpers_comms::run_agent_list(&self.state, p).await;
-        record_call(&self.state, "agent_list", &__params_json, __started, &__result);
-        __result
-    }
-
-    #[tool(
-        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types_comms::ThreadStartResponse>()",
-        description = "Start a conversation THREAD addressed by AT LEAST TWO of `subject` (topic \
-        string), `path` (a path or globset glob like `src/**`), and `members` (explicit agent ids). \
-        Fewer than two is rejected. You become the creator and a member. Discovery is scoped — a \
-        thread is visible only to members, to agents whose cwd matches its path glob, or via a \
-        subject filter; there is no global listing and no auto-join. Needs --features comms.",
-        annotations(
-            read_only_hint = false,
-            destructive_hint = false,
-            idempotent_hint = false,
-            open_world_hint = false
-        )
-    )]
-    pub(crate) async fn thread_start(
-        &self,
-        Parameters(p): Parameters<ThreadStartParams>,
-    ) -> Result<CallToolResult, McpError> {
-        let __started = std::time::Instant::now();
-        let __params_json = serde_json::to_value(&p).unwrap_or(Value::Null);
-        let __result = super::helpers_comms::run_thread_start(&self.state, p).await;
-        record_call(&self.state, "thread_start", &__params_json, __started, &__result);
-        __result
-    }
-
-    #[tool(
-        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types_comms::ThreadListResponse>()",
-        description = "List threads DISCOVERABLE to this agent: those it is a member of, those \
-        whose path glob matches this server's cwd, or (with `subject_contains`) those whose subject \
-        contains the filter. NEVER all threads. Archived threads are excluded unless \
-        `include_archived`. Returns front-matter (id, subject, path, members, creator, active, \
-        last_activity, stale). Needs --features comms.",
-        annotations(read_only_hint = true, open_world_hint = false)
-    )]
-    pub(crate) async fn thread_list(
-        &self,
-        Parameters(p): Parameters<ThreadListParams>,
-    ) -> Result<CallToolResult, McpError> {
-        let __started = std::time::Instant::now();
-        let __params_json = serde_json::to_value(&p).unwrap_or(Value::Null);
-        let __result = super::helpers_comms::run_thread_list(&self.state, p).await;
-        record_call(&self.state, "thread_list", &__params_json, __started, &__result);
-        __result
-    }
-
-    #[tool(
-        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types_comms::ThreadMembershipResponse>()",
-        description = "Join a thread (durable membership; drives the inbox). Needs --features comms.",
-        annotations(
-            read_only_hint = false,
-            destructive_hint = false,
-            idempotent_hint = true,
-            open_world_hint = false
-        )
-    )]
-    pub(crate) async fn thread_join(
-        &self,
-        Parameters(p): Parameters<ThreadJoinParams>,
-    ) -> Result<CallToolResult, McpError> {
-        let __started = std::time::Instant::now();
-        let __params_json = serde_json::to_value(&p).unwrap_or(Value::Null);
-        let __result = super::helpers_comms::run_thread_join(&self.state, p).await;
-        record_call(&self.state, "thread_join", &__params_json, __started, &__result);
-        __result
-    }
-
-    #[tool(
-        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types_comms::ThreadMembershipResponse>()",
-        description = "Leave a thread you are a member of. Needs --features comms.",
-        annotations(
-            read_only_hint = false,
-            destructive_hint = false,
-            idempotent_hint = true,
-            open_world_hint = false
-        )
-    )]
-    pub(crate) async fn thread_leave(
-        &self,
-        Parameters(p): Parameters<ThreadLeaveParams>,
-    ) -> Result<CallToolResult, McpError> {
-        let __started = std::time::Instant::now();
-        let __params_json = serde_json::to_value(&p).unwrap_or(Value::Null);
-        let __result = super::helpers_comms::run_thread_leave(&self.state, p).await;
-        record_call(&self.state, "thread_leave", &__params_json, __started, &__result);
-        __result
-    }
-
-    #[tool(
-        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types_comms::ThreadMembersResponse>()",
-        description = "List the members of a thread. Needs --features comms.",
-        annotations(read_only_hint = true, open_world_hint = false)
-    )]
-    pub(crate) async fn thread_members(
-        &self,
-        Parameters(p): Parameters<ThreadMembersParams>,
-    ) -> Result<CallToolResult, McpError> {
-        let __started = std::time::Instant::now();
-        let __params_json = serde_json::to_value(&p).unwrap_or(Value::Null);
-        let __result = super::helpers_comms::run_thread_members(&self.state, p).await;
-        record_call(&self.state, "thread_members", &__params_json, __started, &__result);
-        __result
-    }
-
-    #[tool(
-        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types_comms::ThreadMemberChangeResponse>()",
-        description = "Add a member to a thread. Only the thread CREATOR may do this. \
-        Needs --features comms.",
-        annotations(
-            read_only_hint = false,
-            destructive_hint = false,
-            idempotent_hint = true,
-            open_world_hint = false
-        )
-    )]
-    pub(crate) async fn thread_add_member(
-        &self,
-        Parameters(p): Parameters<ThreadMemberParams>,
-    ) -> Result<CallToolResult, McpError> {
-        let __started = std::time::Instant::now();
-        let __params_json = serde_json::to_value(&p).unwrap_or(Value::Null);
-        let __result = super::helpers_comms::run_thread_add_member(&self.state, p).await;
-        record_call(&self.state, "thread_add_member", &__params_json, __started, &__result);
-        __result
-    }
-
-    #[tool(
-        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types_comms::ThreadMemberChangeResponse>()",
-        description = "Remove a member from a thread. Only the thread CREATOR may do this. \
-        Needs --features comms.",
-        annotations(
-            read_only_hint = false,
-            destructive_hint = false,
-            idempotent_hint = true,
-            open_world_hint = false
-        )
-    )]
-    pub(crate) async fn thread_remove_member(
-        &self,
-        Parameters(p): Parameters<ThreadMemberParams>,
-    ) -> Result<CallToolResult, McpError> {
-        let __started = std::time::Instant::now();
-        let __params_json = serde_json::to_value(&p).unwrap_or(Value::Null);
-        let __result = super::helpers_comms::run_thread_remove_member(&self.state, p).await;
-        record_call(
-            &self.state,
-            "thread_remove_member",
-            &__params_json,
-            __started,
-            &__result,
-        );
-        __result
-    }
-
-    #[tool(
-        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types_comms::ThreadArchiveResponse>()",
-        description = "Archive a thread. Only the thread CREATOR (or a human via the CLI) may do \
-        this; the system also auto-archives idle threads. Archived threads drop out of active \
-        listings but their history stays readable. Idempotent. Needs --features comms.",
-        annotations(
-            read_only_hint = false,
-            destructive_hint = false,
-            idempotent_hint = true,
-            open_world_hint = false
-        )
-    )]
-    pub(crate) async fn thread_archive(
-        &self,
-        Parameters(p): Parameters<ThreadArchiveParams>,
-    ) -> Result<CallToolResult, McpError> {
-        let __started = std::time::Instant::now();
-        let __params_json = serde_json::to_value(&p).unwrap_or(Value::Null);
-        let __result = super::helpers_comms::run_thread_archive(&self.state, p).await;
-        record_call(&self.state, "thread_archive", &__params_json, __started, &__result);
-        __result
-    }
-
-    #[tool(
-        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types_comms::ThreadPostResponse>()",
-        description = "Post a message (subject + optional markdown body + tags + reply_to) to a \
-        thread. Returns the new message_id. The body is stored separately from front-matter. \
+        description = "Talk to the other agents working this repository: message another agent, \
+        find out who else is here, ask a question and get a reply, and check your inbox. Use it \
+        when you start, finish, hit a decision, or are about to touch code someone else may already \
+        be changing. `mode` is required. Coordination runs over THREADS — scoped conversations, \
+        never a global chat room. `thread_start` opens one, addressed by AT LEAST TWO of `subject` \
+        (topic), `path` (a path or globset glob like `src/**`), and `members` (explicit agent ids); \
+        fewer than two is rejected, and you become the creator and a member. `thread_list` shows \
+        only the threads DISCOVERABLE to you — ones you are a member of, ones whose path glob \
+        matches this server's cwd, or (with `subject_contains`) a subject filter; there is no \
+        global listing, and archived threads are excluded unless `include_archived`. `join` a \
+        thread to route its messages into your inbox and `leave` to stop: membership is always \
+        explicit, there is NO auto-join. `post` sends a message (`thread` + `subject`, plus \
+        optional markdown `body`, `tags`, and `reply_to` to reply to a specific message) and \
+        returns its `message_id`. `history` reads one thread oldest-first and `inbox` reads what is \
+        new across every thread you joined; BOTH return FRONT-MATTER ONLY (id, from, subject, \
+        ts, age_secs, tags, seq, body_len) — the body is never included, and mode `message` fetching \
+        one `message_id` is the only path to a body, so scan the front-matter and fetch only the \
+        bodies you need. Both default to the last 24h (`since_hours`, `0` for all history) and \
+        paginate (`limit` default 100 max 1000, `cursor` from the previous `next_cursor`). `wait` \
+        long-polls up to `timeout_secs` (default 30, max 300) and returns the moment a peer posts, \
+        instead of you looping `inbox`; it never marks anything read. `ack` clears messages you \
+        have handled by ADVANCING your own per-thread read cursors (`message_ids`, and/or `thread` \
+        + `to_seq`) — it deletes nothing and touches no other agent's inbox. `register` publishes \
+        this agent's card (name / description / version / skills) so peers can see who you are, and \
+        `list` shows the agents the broker knows, optionally just one thread's members. `members` \
+        lists a thread's membership; `add_member` / `remove_member` / `archive` are creator-only \
+        (a human admin can archive too, and idle threads auto-archive). Every mode takes \
+        `as_agent` to act as a named sub-identity, so one orchestrator can drive several agents \
+        with separate inboxes. Parameters that belong to another mode are rejected, not ignored. \
         Needs --features comms.",
         annotations(
             read_only_hint = false,
@@ -251,123 +69,15 @@ impl BasemindServer {
             open_world_hint = false
         )
     )]
-    pub(crate) async fn thread_post(
+    pub(crate) async fn agents(
         &self,
-        Parameters(p): Parameters<ThreadPostParams>,
+        Parameters(Lenient(p)): Parameters<Lenient<AgentsParams>>,
     ) -> Result<CallToolResult, McpError> {
         let __started = std::time::Instant::now();
+        let __key = p.mode.telemetry_key();
         let __params_json = serde_json::to_value(&p).unwrap_or(Value::Null);
-        let __result = super::helpers_comms::run_thread_post(&self.state, p).await;
-        record_call(&self.state, "thread_post", &__params_json, __started, &__result);
-        __result
-    }
-
-    #[tool(
-        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types_comms::ThreadHistoryResponse>()",
-        description = "Read a thread's history oldest-first, FRONT-MATTER ONLY (id, from, subject, \
-        ts, age_secs, tags) — bodies are NOT included; fetch them with message_get. Defaults to the \
-        last 24h of messages; pass `since_hours` for a different window or `since_hours=0` for ALL \
-        history. Paginated: pass `cursor` from the previous response. Default 100 max 1000. \
-        Needs --features comms.",
-        annotations(read_only_hint = true, open_world_hint = false)
-    )]
-    pub(crate) async fn thread_history(
-        &self,
-        Parameters(p): Parameters<ThreadHistoryParams>,
-    ) -> Result<CallToolResult, McpError> {
-        let __started = std::time::Instant::now();
-        let __params_json = serde_json::to_value(&p).unwrap_or(Value::Null);
-        let __result = super::helpers_comms::run_thread_history(&self.state, p).await;
-        record_call(&self.state, "thread_history", &__params_json, __started, &__result);
-        __result
-    }
-
-    #[tool(
-        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types_comms::MessageGetResponse>()",
-        description = "Fetch a single message BODY by id (the only body path; history/inbox \
-        return front-matter only). Body is returned as a UTF-8 (lossy) markdown string. \
-        Needs --features comms.",
-        annotations(read_only_hint = true, open_world_hint = false)
-    )]
-    pub(crate) async fn message_get(
-        &self,
-        Parameters(p): Parameters<MessageGetParams>,
-    ) -> Result<CallToolResult, McpError> {
-        let __started = std::time::Instant::now();
-        let __params_json = serde_json::to_value(&p).unwrap_or(Value::Null);
-        let __result = super::helpers_comms::run_message_get(&self.state, p).await;
-        record_call(&self.state, "message_get", &__params_json, __started, &__result);
-        __result
-    }
-
-    #[tool(
-        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types_comms::InboxReadResponse>()",
-        description = "Read this agent's inbox: new FRONT-MATTER across all JOINED threads \
-        (bodies NOT included — use message_get). Each row carries `age_secs`. Defaults to the last \
-        24h; pass `since_hours` for a different window or `since_hours=0` for ALL unread. \
-        `mark_read=true` advances read cursors. Returns the page plus remaining unread count. \
-        Default 100 max 1000. Needs --features comms.",
-        annotations(
-            read_only_hint = false,
-            destructive_hint = false,
-            idempotent_hint = true,
-            open_world_hint = false
-        )
-    )]
-    pub(crate) async fn inbox_read(
-        &self,
-        Parameters(p): Parameters<InboxReadParams>,
-    ) -> Result<CallToolResult, McpError> {
-        let __started = std::time::Instant::now();
-        let __params_json = serde_json::to_value(&p).unwrap_or(Value::Null);
-        let __result = super::helpers_comms::run_inbox_read(&self.state, p).await;
-        record_call(&self.state, "inbox_read", &__params_json, __started, &__result);
-        __result
-    }
-
-    #[tool(
-        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types_comms::InboxAckResponse>()",
-        description = "Acknowledge inbox messages by ADVANCING this agent's per-thread read \
-        cursors — it does NOT delete anything and does NOT affect the shared log or any other \
-        agent's inbox. Two modes, combinable: pass `message_ids` to ack specific messages, and/or \
-        `thread` + `to_seq` to bulk-ack everything up to `to_seq` in one thread. At least one mode \
-        is required. Needs --features comms.",
-        annotations(
-            read_only_hint = false,
-            destructive_hint = false,
-            idempotent_hint = false,
-            open_world_hint = false
-        )
-    )]
-    pub(crate) async fn inbox_ack(
-        &self,
-        Parameters(p): Parameters<InboxAckParams>,
-    ) -> Result<CallToolResult, McpError> {
-        let __started = std::time::Instant::now();
-        let __params_json = serde_json::to_value(&p).unwrap_or(Value::Null);
-        let __result = super::helpers_comms::run_inbox_ack(&self.state, p).await;
-        record_call(&self.state, "inbox_ack", &__params_json, __started, &__result);
-        __result
-    }
-
-    #[tool(
-        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types_comms::InboxWaitResponse>()",
-        description = "Block up to `timeout_secs` (default 30, max 300) and return as soon as a \
-        peer posts to a JOINED thread — or to the single thread in `thread`, if set — or on \
-        timeout. Replaces a caller looping inbox_read / thread_list. NEVER marks read (no \
-        mark_read param); follow up with inbox_read(mark_read: true) or inbox_ack once you've \
-        handled the page. Returns `timed_out` plus the same front-matter/unread/next_cursor shape \
-        as inbox_read. Needs --features comms.",
-        annotations(read_only_hint = true, open_world_hint = false)
-    )]
-    pub(crate) async fn inbox_wait(
-        &self,
-        Parameters(p): Parameters<InboxWaitParams>,
-    ) -> Result<CallToolResult, McpError> {
-        let __started = std::time::Instant::now();
-        let __params_json = serde_json::to_value(&p).unwrap_or(Value::Null);
-        let __result = super::helpers_comms::run_inbox_wait(&self.state, p).await;
-        record_call(&self.state, "inbox_wait", &__params_json, __started, &__result);
+        let __result: Result<CallToolResult, McpError> = super::helpers_comms::run_agents(&self.state, p).await;
+        record_call(&self.state, __key, &__params_json, __started, &__result);
         __result
     }
 }
