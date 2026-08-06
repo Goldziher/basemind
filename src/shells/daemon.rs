@@ -24,10 +24,15 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 
+use crate::daemon_lock::{DaemonKind, DaemonLock, DaemonLockOutcome};
+
 const IDLE_REAP_AFTER: Duration = Duration::from_secs(10 * 60);
 const IDLE_REAP_CHECK_EVERY: Duration = Duration::from_secs(5);
 const IDLE_REAP_AFTER_ENV: &str = "BASEMIND_SHELLS_IDLE_REAP_SECS";
 const IDLE_REAP_CHECK_EVERY_ENV: &str = "BASEMIND_SHELLS_IDLE_CHECK_SECS";
+const DAEMON_DIR_EXTENSION: &str = "daemon";
+#[cfg(any(windows, test))]
+const SHELLS_LOCKS_SUBDIR: &str = "shells";
 
 #[derive(Debug, Default)]
 struct IdleReapState {
@@ -114,13 +119,31 @@ pub unsafe fn point_sdk_daemon_at(binary: &std::path::Path) {
 /// rmux's live session set. After it remains empty for ten minutes, the server
 /// shuts down cleanly. Tests and operators can override that window with
 /// `BASEMIND_SHELLS_IDLE_REAP_SECS` and the five-second polling cadence with
-/// `BASEMIND_SHELLS_IDLE_CHECK_SECS`; both accept positive whole seconds.
+/// `BASEMIND_SHELLS_IDLE_CHECK_SECS`; both accept positive whole seconds. A
+/// per-socket daemon lock is acquired before the socket bind and held through
+/// idle shutdown so concurrent re-execs converge without disturbing the owner.
 pub fn run_internal_daemon<I>(args: I) -> Result<()>
 where
     I: IntoIterator<Item = OsString>,
 {
     let socket_path = parse_socket_path(args).context("the embedded rmux daemon requires a socket path argument")?;
     validate_socket_path(&socket_path)?;
+    let daemon_dir = daemon_lock_dir(&socket_path);
+    std::fs::create_dir_all(&daemon_dir)
+        .with_context(|| format!("create embedded rmux daemon lock directory {}", daemon_dir.display()))?;
+    let _daemon_lock = match DaemonLock::acquire_kind(DaemonKind::Shells, &daemon_dir, env!("CARGO_PKG_VERSION"))
+        .with_context(|| format!("acquire embedded rmux daemon lock in {}", daemon_dir.display()))?
+    {
+        DaemonLockOutcome::Acquired(lock) => lock,
+        DaemonLockOutcome::AlreadyHeld(record) => {
+            tracing::info!(
+                holder_pid = record.as_ref().map(|holder| holder.pid),
+                daemon_dir = %daemon_dir.display(),
+                "embedded rmux daemon already running"
+            );
+            return Ok(());
+        }
+    };
 
     let config = rmux_server::DaemonConfig::new(socket_path.clone());
 
@@ -147,6 +170,24 @@ where
         server.shutdown().await.context("shut down idle embedded rmux daemon")?;
         Ok::<(), anyhow::Error>(())
     })
+}
+
+#[cfg(not(windows))]
+fn daemon_lock_dir(socket_path: &Path) -> PathBuf {
+    socket_path.with_extension(DAEMON_DIR_EXTENSION)
+}
+
+#[cfg(windows)]
+fn daemon_lock_dir(socket_path: &Path) -> PathBuf {
+    windows_daemon_lock_dir(&crate::store_layout::cache_root(), socket_path)
+}
+
+#[cfg(any(windows, test))]
+fn windows_daemon_lock_dir(cache_root: &Path, socket_path: &Path) -> PathBuf {
+    let socket_hash = crate::hashing::hex(&crate::hashing::hash_bytes(socket_path.as_os_str().as_encoded_bytes()));
+    cache_root
+        .join(SHELLS_LOCKS_SUBDIR)
+        .join(format!("{socket_hash}.{DAEMON_DIR_EXTENSION}"))
 }
 
 fn daemon_rmux(socket_path: &Path) -> rmux_sdk::Rmux {
@@ -283,6 +324,74 @@ pub(crate) fn validate_socket_path(path: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(not(windows))]
+    #[test]
+    fn daemon_lock_dir_is_dedicated_to_the_socket() {
+        assert_eq!(
+            daemon_lock_dir(Path::new("/tmp/basemind/shells/rmux.sock")),
+            PathBuf::from("/tmp/basemind/shells/rmux.daemon")
+        );
+    }
+
+    #[test]
+    fn windows_daemon_lock_dir_hashes_the_named_pipe_under_the_cache_root() {
+        let cache_root = Path::new(r"C:\Users\alice\AppData\Roaming\basemind");
+        let socket_path = Path::new(r"\\.\pipe\basemind-shells-alice");
+
+        assert_eq!(
+            windows_daemon_lock_dir(cache_root, socket_path),
+            cache_root
+                .join("shells")
+                .join("235756a7677c8cf483482227975012a1ff840203d5621bb94150a5b3f8bf57b0.daemon")
+        );
+    }
+
+    #[test]
+    fn shell_daemon_lock_allows_only_one_owner_per_socket() {
+        let directory = tempfile::tempdir().expect("create daemon test directory");
+        let machine_dir = directory.path().join("machine-daemons");
+        #[cfg(not(windows))]
+        let first_lock_dir = daemon_lock_dir(&directory.path().join("first.sock"));
+        #[cfg(not(windows))]
+        let second_lock_dir = daemon_lock_dir(&directory.path().join("second.sock"));
+        #[cfg(windows)]
+        let first_lock_dir = windows_daemon_lock_dir(directory.path(), Path::new(r"\\.\pipe\first"));
+        #[cfg(windows)]
+        let second_lock_dir = windows_daemon_lock_dir(directory.path(), Path::new(r"\\.\pipe\second"));
+        std::fs::create_dir_all(&first_lock_dir).expect("create first lock directory");
+        std::fs::create_dir_all(&second_lock_dir).expect("create second lock directory");
+
+        let first = crate::daemon_lock::DaemonLock::acquire_at(
+            crate::daemon_lock::DaemonKind::Shells,
+            &first_lock_dir,
+            env!("CARGO_PKG_VERSION"),
+            &machine_dir,
+        )
+        .expect("acquire first shell daemon lock");
+        assert!(matches!(&first, crate::daemon_lock::DaemonLockOutcome::Acquired(_)));
+
+        let contender = crate::daemon_lock::DaemonLock::acquire_at(
+            crate::daemon_lock::DaemonKind::Shells,
+            &first_lock_dir,
+            env!("CARGO_PKG_VERSION"),
+            &machine_dir,
+        )
+        .expect("contend for first shell daemon lock");
+        assert!(matches!(
+            contender,
+            crate::daemon_lock::DaemonLockOutcome::AlreadyHeld(_)
+        ));
+
+        let second = crate::daemon_lock::DaemonLock::acquire_at(
+            crate::daemon_lock::DaemonKind::Shells,
+            &second_lock_dir,
+            env!("CARGO_PKG_VERSION"),
+            &machine_dir,
+        )
+        .expect("acquire second shell daemon lock");
+        assert!(matches!(second, crate::daemon_lock::DaemonLockOutcome::Acquired(_)));
+    }
 
     #[test]
     fn empty_sessions_reap_only_after_the_idle_window() {

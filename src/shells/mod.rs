@@ -39,6 +39,10 @@ use rmux_sdk::{Rmux, RmuxBuilder, SessionName};
 use tokio::sync::OnceCell;
 
 use self::session::{ShellCommand, SpawnSpec};
+use crate::daemon_lock::{DaemonKind, count_live_daemons_of, max_live_daemons};
+
+const EXISTING_DAEMON_CONNECT_ATTEMPTS: usize = 4;
+const EXISTING_DAEMON_CONNECT_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(100);
 
 /// Stable, opaque identifier minted by basemind for one spawned shell session.
 ///
@@ -165,15 +169,36 @@ impl ShellRuntime {
     /// The SDK's daemon binary is pointed at basemind's own executable once at
     /// startup (`daemon::intercept_from_env`, single-threaded), so
     /// `connect_or_start` re-execs basemind (not a missing `rmux`) as the daemon.
-    /// The endpoint is the explicit basemind-owned socket, which bypasses the
-    /// SDK's `Default`-endpoint allowlist.
+    /// Four connect-only attempts absorb a daemon's startup window. Only after
+    /// those fail does this enforce the Shells daemon ceiling immediately before
+    /// the spawning `connect_or_start` path. The endpoint is the explicit
+    /// basemind-owned socket, which bypasses the SDK's `Default`-endpoint allowlist.
     pub async fn rmux(&self) -> Result<&Rmux> {
         self.rmux
             .get_or_try_init(|| async {
-                self.rmux_builder()
-                    .connect_or_start()
+                let mut last_connect_error = None;
+                for attempt in 1..=EXISTING_DAEMON_CONNECT_ATTEMPTS {
+                    match self.rmux_builder().connect().await {
+                        Ok(rmux) => return Ok(rmux),
+                        Err(error) => last_connect_error = Some(error),
+                    }
+                    if attempt < EXISTING_DAEMON_CONNECT_ATTEMPTS {
+                        tokio::time::sleep(EXISTING_DAEMON_CONNECT_RETRY_DELAY).await;
+                    }
+                }
+
+                let connect_error =
+                    last_connect_error.context("embedded rmux connection attempts produced no result")?;
+                let live_daemons = tokio::task::spawn_blocking(|| count_live_daemons_of(DaemonKind::Shells))
                     .await
-                    .context("connect to (or start) embedded rmux daemon")
+                    .context("join embedded rmux daemon registry count task")?;
+                enforce_shell_daemon_ceiling(live_daemons, max_live_daemons())?;
+
+                self.rmux_builder().connect_or_start().await.with_context(|| {
+                    format!(
+                        "connect to (or start) embedded rmux daemon after connect-only attempts failed: {connect_error}"
+                    )
+                })
             })
             .await
     }
@@ -293,6 +318,16 @@ impl Default for ShellRuntime {
     }
 }
 
+fn enforce_shell_daemon_ceiling(live_daemons: usize, maximum_daemons: usize) -> Result<()> {
+    if live_daemons < maximum_daemons {
+        return Ok(());
+    }
+    anyhow::bail!(
+        "refusing to start an embedded rmux daemon: {live_daemons} live shells daemons meets the limit of \
+         {maximum_daemons}; override with BASEMIND_MAX_DAEMONS"
+    )
+}
+
 /// Subdirectory under the per-user data dir that holds the shells daemon socket.
 /// Unix only — on Windows the endpoint is a named pipe with no parent dir.
 #[cfg(not(windows))]
@@ -387,6 +422,18 @@ fn sanitize_namespace(raw: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shell_daemon_ceiling_allows_capacity_below_the_limit() {
+        assert!(enforce_shell_daemon_ceiling(7, 8).is_ok());
+    }
+
+    #[test]
+    fn shell_daemon_ceiling_rejects_capacity_at_the_limit() {
+        let error = enforce_shell_daemon_ceiling(8, 8).expect_err("the ceiling must reject another daemon");
+        assert!(error.to_string().contains("8 live shells daemons"), "{error}");
+        assert!(error.to_string().contains("BASEMIND_MAX_DAEMONS"), "{error}");
+    }
 
     #[test]
     fn session_ids_are_monotonic_and_pid_scoped() {
