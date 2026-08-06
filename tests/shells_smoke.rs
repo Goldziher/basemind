@@ -11,7 +11,8 @@
 
 #![cfg(all(feature = "shells", unix))]
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
 use std::sync::Once;
 use std::time::{Duration, Instant};
 
@@ -20,6 +21,70 @@ use basemind::shells::{SessionId, ShellRuntime};
 use tempfile::TempDir;
 
 static DAEMON_ENV: Once = Once::new();
+const DAEMON_BIND_TIMEOUT: Duration = Duration::from_secs(15);
+const DAEMON_EXIT_TIMEOUT: Duration = Duration::from_secs(10);
+const DAEMON_POLL_INTERVAL: Duration = Duration::from_millis(100);
+const DAEMON_IDLE_REAP_SECS: &str = "60";
+const DAEMON_IDLE_CHECK_SECS: &str = "1";
+
+struct DaemonChild(Child);
+
+impl Drop for DaemonChild {
+    fn drop(&mut self) {
+        if !matches!(self.0.try_wait(), Ok(Some(_))) {
+            let _ = self.0.kill();
+        }
+        let _ = self.0.wait();
+    }
+}
+
+fn spawn_isolated_daemon(socket: &Path) -> DaemonChild {
+    DaemonChild(
+        Command::new(env!("CARGO_BIN_EXE_basemind"))
+            .arg("--__internal-daemon")
+            .arg(socket)
+            .env("BASEMIND_SHELLS_IDLE_REAP_SECS", DAEMON_IDLE_REAP_SECS)
+            .env("BASEMIND_SHELLS_IDLE_CHECK_SECS", DAEMON_IDLE_CHECK_SECS)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn isolated shells daemon"),
+    )
+}
+
+async fn await_daemon_bound(daemon: &mut DaemonChild, socket: &Path) {
+    let deadline = Instant::now() + DAEMON_BIND_TIMEOUT;
+    while !socket.exists() {
+        assert_eq!(
+            daemon.0.try_wait().expect("query daemon status while binding"),
+            None,
+            "daemon exited before binding {}",
+            socket.display()
+        );
+        assert!(
+            Instant::now() < deadline,
+            "daemon did not bind {} before the deadline",
+            socket.display()
+        );
+        tokio::time::sleep(DAEMON_POLL_INTERVAL).await;
+    }
+}
+
+async fn await_daemon_exit(daemon: &mut DaemonChild, trigger: &str) {
+    let deadline = Instant::now() + DAEMON_EXIT_TIMEOUT;
+    loop {
+        if let Some(status) = daemon.0.try_wait().expect("query daemon status after trigger") {
+            assert!(
+                status.success(),
+                "daemon exited unsuccessfully after {trigger}: {status}"
+            );
+            return;
+        }
+        assert!(Instant::now() < deadline, "daemon did not exit after {trigger}");
+        tokio::time::sleep(DAEMON_POLL_INTERVAL).await;
+    }
+}
 
 /// Point the SDK's daemon-binary discovery at the built `basemind` executable, which carries the
 /// `--__internal-daemon` intercept the test-harness binary lacks.
@@ -156,6 +221,37 @@ async fn shutdown_daemon(socket: &std::path::Path) {
         );
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
+}
+
+#[tokio::test]
+async fn should_exit_cleanly_after_sigterm() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let socket = dir.path().join("shells.sock");
+    let mut daemon = spawn_isolated_daemon(&socket);
+    await_daemon_bound(&mut daemon, &socket).await;
+
+    let daemon_pid = libc::pid_t::try_from(daemon.0.id()).expect("daemon pid fits pid_t");
+    // SAFETY: this PID comes from the live child owned by `daemon`; the guard reaps that exact
+    // process before the temporary socket directory is dropped.
+    let signal_result = unsafe { libc::kill(daemon_pid, libc::SIGTERM) };
+    assert_eq!(
+        signal_result,
+        0,
+        "send SIGTERM to shells daemon: {}",
+        std::io::Error::last_os_error()
+    );
+    await_daemon_exit(&mut daemon, "SIGTERM").await;
+}
+
+#[tokio::test]
+async fn should_exit_when_bound_socket_is_unlinked() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let socket = dir.path().join("shells.sock");
+    let mut daemon = spawn_isolated_daemon(&socket);
+    await_daemon_bound(&mut daemon, &socket).await;
+
+    std::fs::remove_file(&socket).expect("unlink bound daemon socket");
+    await_daemon_exit(&mut daemon, "its bound socket was unlinked").await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
