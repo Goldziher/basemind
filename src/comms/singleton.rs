@@ -37,7 +37,7 @@ const OWNER_ONLY_FILE: u32 = 0o600;
 const SUN_PATH_MAX: usize = if cfg!(target_os = "linux") { 107 } else { 103 };
 
 /// How long to wait for a spawned daemon to become reachable before giving up.
-const SPAWN_READY_TIMEOUT: Duration = Duration::from_secs(5);
+const SPAWN_READY_TIMEOUT: Duration = Duration::from_secs(10);
 /// Poll interval while waiting for a spawned daemon.
 const SPAWN_POLL_INTERVAL: Duration = Duration::from_millis(50);
 /// How long to wait for a previous / incompatible daemon to release the socket after we ask it to
@@ -315,9 +315,12 @@ pub async fn ensure_daemon_with(
         source,
     })?;
     let deadline = std::time::Instant::now() + SPAWN_READY_TIMEOUT;
-    while std::time::Instant::now() < deadline {
+    loop {
         if is_alive(&paths.socket_path) {
             return Ok(());
+        }
+        if std::time::Instant::now() >= deadline {
+            break;
         }
         tokio::time::sleep(SPAWN_POLL_INTERVAL).await;
     }
@@ -868,6 +871,16 @@ mod tests {
         )
         .await;
         assert!(res.is_ok(), "daemon became ready after spawn");
+    }
+
+    #[test]
+    fn spawn_ready_timeout_covers_a_cold_full_feature_start() {
+        const MINIMUM_COLD_START_BUDGET: Duration = Duration::from_secs(10);
+
+        assert!(
+            SPAWN_READY_TIMEOUT >= MINIMUM_COLD_START_BUDGET,
+            "the comms daemon needs at least the agent daemon's ten-second cold-start budget"
+        );
     }
 
     /// A socket path past `sun_path` can never be bound, so the caller must be told that — not
