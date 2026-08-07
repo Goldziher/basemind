@@ -202,6 +202,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Content-addressed blobs no longer consume raw msgpack size on disk (issue #49).** New `.fm`,
+  `.doc`, `.rref`, and `.chunk` blobs use zstd-1 envelopes. Filemap L1/L2 frames remain independent
+  so outline reads do not decompress calls, and chunk embedding metadata stays plain for cheap cache
+  validation. Existing uncompressed blobs remain readable and are rewritten when next produced.
 - **Agent shell capture could return an empty screen for a successful command.** The snapshot-only
   path dropped the first row for fresh CLI clients and let rmux's dead-pane row push short output
   out of `lines=N` captures. Capture now reads retained history, removes terminal synthetic and

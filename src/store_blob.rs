@@ -1,18 +1,19 @@
 //! Blob (de)framing + atomic write for the content-addressed extraction store, and the
 //! [`Store`] accessors layered over them.
 //!
-//! Each indexed source file persists one combined-filemap blob `<hash>.fm.msgpack`, framed
-//! `[l1_len: u32 LE][l1 msgpack][l2 msgpack | empty]` — the L1 outline and (when extracted
-//! eagerly) the L2 calls in a single content-addressed file. Fusing the two tiers halves the
-//! per-file blob writes (`open` + atomic `rename`) on the default eager-L2 scan; the
-//! length-prefix lets the common outline-only read decode just the L1 slice without touching
-//! L2. The doc tier (`write_blob`) stays a plain unframed msgpack blob.
+//! New blobs carry a plain `BMB1 | codec | kind | schema` prefix followed by zstd-1 payloads.
+//! Combined filemaps compress L1 and L2 as separate frames, preserving the outline-only read
+//! path's ability to decode L1 without decompressing L2. Single-map doc / resolution / chunk
+//! blobs use one compressed frame; chunk embedding metadata stays in the plain header so the
+//! unchanged-file fast path never decompresses chunk text. Readers still accept legacy raw
+//! msgpack and `[l1_len][l1][l2]` filemap blobs left by older releases.
 //!
 //! The per-tier `Store::{blob_path,read,write}_*` methods moved here from `store.rs` (which was
 //! over the 1000-line module cap): they are the blob store's read/write surface — one tier per
 //! blob suffix (`.fm` / `.doc` / `.rref` / `.chunk`) — and change for the same reason the framing
 //! does. They stay inherent methods on [`Store`], so every call site is unaffected by the move.
 
+use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
@@ -21,11 +22,40 @@ use crate::extract::SCHEMA_VER;
 use crate::extract::{FileMapL1, FileMapL2};
 use crate::hashing::{self, Hash};
 use crate::store::{Store, StoreError, check_schema};
+#[cfg(feature = "code-search")]
+use crate::store_blob_codec::read_u16;
+use crate::store_blob_codec::{
+    BlobKind, CompressedPayload, checked_u32_len, compress_payload, corrupt_blob, decompress_payload, encode_prefix,
+    envelope_prefix, read_u32,
+};
 
-/// Minimal peek struct: decode only a blob's leading `schema_ver` field. Every blob map
-/// (`FileMapL1` / `FileMapL2` / `FileMapDoc`) carries `schema_ver: u16` first; rmp-serde
-/// decodes named maps by field name and ignores the remaining (unknown-to-us) fields, so
-/// this reads the version without paying to decode the whole blob.
+const SINGLE_HEADER_LEN: usize = 16;
+const FILEMAP_HEADER_LEN: usize = 24;
+#[cfg(feature = "code-search")]
+const CHUNK_HEADER_LEN: usize = 28;
+#[cfg(feature = "code-search")]
+const MAX_PEEK_ITEMS: usize = 10_000_000;
+
+struct FileMapEnvelope<'a> {
+    l1: CompressedPayload<'a>,
+    l2: CompressedPayload<'a>,
+}
+
+#[cfg(feature = "code-search")]
+struct ChunkEnvelopePeek {
+    schema_ver: u16,
+    embedding_dim: u16,
+    embedding_model: String,
+    chunk_count: usize,
+    embedding_count: usize,
+}
+
+#[cfg(feature = "code-search")]
+struct ChunkEnvelope<'a> {
+    peek: ChunkEnvelopePeek,
+    payload: CompressedPayload<'a>,
+}
+
 #[derive(Deserialize)]
 struct BlobSchemaPeek {
     schema_ver: u16,
@@ -44,9 +74,7 @@ pub(crate) fn read_if_exists(path: &Path) -> Result<Option<Vec<u8>>, StoreError>
     }
 }
 
-/// Split a combined-filemap frame `[l1_len: u32 LE][l1][l2]` into its `(l1, l2)` byte slices.
-/// `l2` is empty when the file carries no call tier. Returns `None` when the 4-byte header is
-/// missing or claims more L1 bytes than the frame holds (corrupt / truncated blob).
+/// Split a legacy combined-filemap frame `[l1_len: u32 LE][l1][l2]` into byte slices.
 fn frame_slices(bytes: &[u8]) -> Option<(&[u8], &[u8])> {
     let header: [u8; 4] = bytes.get(0..4)?.try_into().ok()?;
     let l1_len = u32::from_le_bytes(header) as usize;
@@ -56,58 +84,244 @@ fn frame_slices(bytes: &[u8]) -> Option<(&[u8], &[u8])> {
     Some((l1, l2))
 }
 
-/// Serialize both extraction tiers into one frame. `l2 = None` yields an empty L2 slice.
+fn filemap_envelope<'a>(path: &Path, bytes: &'a [u8]) -> Result<FileMapEnvelope<'a>, StoreError> {
+    let prefix = envelope_prefix(path, bytes)?.ok_or_else(|| corrupt_blob(path))?;
+    if prefix.kind != BlobKind::FileMap {
+        return Err(corrupt_blob(path));
+    }
+    let l1_raw_len = read_u32(path, bytes, 8)?;
+    let l1_stored_len = read_u32(path, bytes, 12)?;
+    let l2_raw_len = read_u32(path, bytes, 16)?;
+    let l2_stored_len = read_u32(path, bytes, 20)?;
+    let l1_end = FILEMAP_HEADER_LEN
+        .checked_add(l1_stored_len)
+        .ok_or_else(|| corrupt_blob(path))?;
+    let l2_end = l1_end.checked_add(l2_stored_len).ok_or_else(|| corrupt_blob(path))?;
+    if l2_end != bytes.len() {
+        return Err(corrupt_blob(path));
+    }
+    Ok(FileMapEnvelope {
+        l1: CompressedPayload {
+            uncompressed_len: l1_raw_len,
+            bytes: &bytes[FILEMAP_HEADER_LEN..l1_end],
+        },
+        l2: CompressedPayload {
+            uncompressed_len: l2_raw_len,
+            bytes: &bytes[l1_end..l2_end],
+        },
+    })
+}
+
+/// Serialize both extraction tiers into separately-compressed frames. `l2 = None` yields an
+/// empty L2 frame so L1-only reads never decompress trailing call data.
 pub(crate) fn frame_filemap(l1: &FileMapL1, l2: Option<&FileMapL2>) -> Result<Vec<u8>, StoreError> {
     let l1_bytes = rmp_serde::to_vec_named(l1)?;
     let l2_bytes = match l2 {
         Some(map) => rmp_serde::to_vec_named(map)?,
         None => Vec::new(),
     };
-    let l1_len = u32::try_from(l1_bytes.len()).map_err(|_| StoreError::BlobTooLarge)?;
-    let mut out = Vec::with_capacity(4 + l1_bytes.len() + l2_bytes.len());
-    out.extend_from_slice(&l1_len.to_le_bytes());
-    out.extend_from_slice(&l1_bytes);
-    out.extend_from_slice(&l2_bytes);
+    let l1_compressed = compress_payload(&l1_bytes)?;
+    let l2_compressed = if l2_bytes.is_empty() {
+        Vec::new()
+    } else {
+        compress_payload(&l2_bytes)?
+    };
+    let mut out = Vec::with_capacity(FILEMAP_HEADER_LEN + l1_compressed.len() + l2_compressed.len());
+    encode_prefix(BlobKind::FileMap, l1.schema_ver, &mut out);
+    out.extend_from_slice(&checked_u32_len(l1_bytes.len())?.to_le_bytes());
+    out.extend_from_slice(&checked_u32_len(l1_compressed.len())?.to_le_bytes());
+    out.extend_from_slice(&checked_u32_len(l2_bytes.len())?.to_le_bytes());
+    out.extend_from_slice(&checked_u32_len(l2_compressed.len())?.to_le_bytes());
+    out.extend_from_slice(&l1_compressed);
+    out.extend_from_slice(&l2_compressed);
     Ok(out)
 }
 
-/// Decode the L1 outline from a frame, leaving the trailing L2 bytes untouched.
+/// Decode the L1 outline, leaving the separately-compressed L2 frame untouched.
 pub(crate) fn parse_filemap_l1(path: &Path, bytes: &[u8]) -> Result<FileMapL1, StoreError> {
-    let (l1, _l2) = frame_slices(bytes).ok_or_else(|| StoreError::CorruptBlob {
-        path: path.to_path_buf(),
-    })?;
-    Ok(rmp_serde::from_slice(l1)?)
+    let l1 = match envelope_prefix(path, bytes)? {
+        Some(_) => Cow::Owned(decompress_payload(path, filemap_envelope(path, bytes)?.l1)?),
+        None => Cow::Borrowed(frame_slices(bytes).ok_or_else(|| corrupt_blob(path))?.0),
+    };
+    Ok(rmp_serde::from_slice(&l1)?)
 }
 
-/// Decode the L2 calls from a frame; `Ok(None)` when the file carries no call tier.
+/// Decode the L2 calls; `Ok(None)` when the file carries no call tier.
 pub(crate) fn parse_filemap_l2(path: &Path, bytes: &[u8]) -> Result<Option<FileMapL2>, StoreError> {
-    let (_l1, l2) = frame_slices(bytes).ok_or_else(|| StoreError::CorruptBlob {
-        path: path.to_path_buf(),
-    })?;
+    let l2 = match envelope_prefix(path, bytes)? {
+        Some(_) => {
+            let envelope = filemap_envelope(path, bytes)?;
+            if envelope.l2.uncompressed_len == 0 && envelope.l2.bytes.is_empty() {
+                return Ok(None);
+            }
+            Cow::Owned(decompress_payload(path, envelope.l2)?)
+        }
+        None => Cow::Borrowed(frame_slices(bytes).ok_or_else(|| corrupt_blob(path))?.1),
+    };
     if l2.is_empty() {
-        return Ok(None);
+        Ok(None)
+    } else {
+        Ok(Some(rmp_serde::from_slice(&l2)?))
     }
-    Ok(Some(rmp_serde::from_slice(l2)?))
 }
 
-/// Cheaply read a combined-filemap blob's persisted `schema_ver` from the frame's L1 slice.
-/// Returns `None` if the blob is unreadable or malformed (treated as "not current", forcing a
-/// rewrite).
-pub(crate) fn peek_filemap_schema(path: &Path) -> Option<u16> {
-    let bytes = std::fs::read(path).ok()?;
-    let (l1, _l2) = frame_slices(&bytes)?;
-    rmp_serde::from_slice::<BlobSchemaPeek>(l1)
-        .ok()
-        .map(|peek| peek.schema_ver)
+fn encode_single_blob(bytes: &[u8], schema_ver: u16) -> Result<Vec<u8>, StoreError> {
+    let compressed = compress_payload(bytes)?;
+    let mut out = Vec::with_capacity(SINGLE_HEADER_LEN + compressed.len());
+    encode_prefix(BlobKind::Single, schema_ver, &mut out);
+    out.extend_from_slice(&checked_u32_len(bytes.len())?.to_le_bytes());
+    out.extend_from_slice(&checked_u32_len(compressed.len())?.to_le_bytes());
+    out.extend_from_slice(&compressed);
+    Ok(out)
 }
 
-/// Plain (unframed) msgpack blob peek: read only the leading `schema_ver` field. Shared by the
-/// doc tier and the resolution tier (both are unframed single-map blobs).
-fn peek_blob_schema(path: &Path) -> Option<u16> {
-    let bytes = std::fs::read(path).ok()?;
-    rmp_serde::from_slice::<BlobSchemaPeek>(&bytes)
-        .ok()
-        .map(|peek| peek.schema_ver)
+fn single_payload<'a>(path: &Path, bytes: &'a [u8], expected: BlobKind) -> Result<CompressedPayload<'a>, StoreError> {
+    let prefix = envelope_prefix(path, bytes)?.ok_or_else(|| corrupt_blob(path))?;
+    if prefix.kind != expected {
+        return Err(corrupt_blob(path));
+    }
+    let uncompressed_len = read_u32(path, bytes, 8)?;
+    let stored_len = read_u32(path, bytes, 12)?;
+    let payload_end = SINGLE_HEADER_LEN
+        .checked_add(stored_len)
+        .ok_or_else(|| corrupt_blob(path))?;
+    if payload_end != bytes.len() {
+        return Err(corrupt_blob(path));
+    }
+    Ok(CompressedPayload {
+        uncompressed_len,
+        bytes: &bytes[SINGLE_HEADER_LEN..payload_end],
+    })
+}
+
+fn decode_single_or_legacy<'a>(path: &Path, bytes: &'a [u8], expected: BlobKind) -> Result<Cow<'a, [u8]>, StoreError> {
+    match envelope_prefix(path, bytes)? {
+        Some(_) => Ok(Cow::Owned(decompress_payload(
+            path,
+            single_payload(path, bytes, expected)?,
+        )?)),
+        None => Ok(Cow::Borrowed(bytes)),
+    }
+}
+
+fn is_current_single_blob(path: &Path) -> bool {
+    let Ok(bytes) = std::fs::read(path) else {
+        return false;
+    };
+    let Ok(Some(prefix)) = envelope_prefix(path, &bytes) else {
+        return false;
+    };
+    if prefix.kind != BlobKind::Single || prefix.schema_ver != SCHEMA_VER {
+        return false;
+    }
+    let Ok(decoded) = decode_single_or_legacy(path, &bytes, BlobKind::Single) else {
+        return false;
+    };
+    rmp_serde::from_slice::<BlobSchemaPeek>(&decoded).is_ok_and(|peek| peek.schema_ver == SCHEMA_VER)
+}
+
+fn is_current_filemap_blob(path: &Path) -> bool {
+    let Ok(bytes) = std::fs::read(path) else {
+        return false;
+    };
+    let Ok(Some(prefix)) = envelope_prefix(path, &bytes) else {
+        return false;
+    };
+    if prefix.kind != BlobKind::FileMap || prefix.schema_ver != SCHEMA_VER {
+        return false;
+    }
+    let Ok(l1) = parse_filemap_l1(path, &bytes) else {
+        return false;
+    };
+    if l1.schema_ver != SCHEMA_VER {
+        return false;
+    }
+    match parse_filemap_l2(path, &bytes) {
+        Ok(Some(l2)) => l2.schema_ver == SCHEMA_VER,
+        Ok(None) => true,
+        Err(_) => false,
+    }
+}
+
+#[cfg(feature = "code-search")]
+fn encode_chunk_blob(blob: &crate::chunk::CodeChunkBlob) -> Result<Vec<u8>, StoreError> {
+    let bytes = rmp_serde::to_vec_named(blob)?;
+    let compressed = compress_payload(&bytes)?;
+    let model = blob.embedding_model.as_bytes();
+    let model_len = u16::try_from(model.len()).map_err(|_| StoreError::BlobTooLarge)?;
+    let mut out = Vec::with_capacity(CHUNK_HEADER_LEN + model.len() + compressed.len());
+    encode_prefix(BlobKind::Chunk, blob.schema_ver, &mut out);
+    out.extend_from_slice(&checked_u32_len(bytes.len())?.to_le_bytes());
+    out.extend_from_slice(&checked_u32_len(compressed.len())?.to_le_bytes());
+    out.extend_from_slice(&blob.embedding_dim.to_le_bytes());
+    out.extend_from_slice(&model_len.to_le_bytes());
+    out.extend_from_slice(&checked_u32_len(blob.chunks.len())?.to_le_bytes());
+    out.extend_from_slice(&checked_u32_len(blob.embeddings.len())?.to_le_bytes());
+    out.extend_from_slice(model);
+    out.extend_from_slice(&compressed);
+    Ok(out)
+}
+
+#[cfg(feature = "code-search")]
+fn chunk_envelope<'a>(path: &Path, bytes: &'a [u8]) -> Result<ChunkEnvelope<'a>, StoreError> {
+    let prefix = envelope_prefix(path, bytes)?.ok_or_else(|| corrupt_blob(path))?;
+    if prefix.kind != BlobKind::Chunk {
+        return Err(corrupt_blob(path));
+    }
+    let uncompressed_len = read_u32(path, bytes, 8)?;
+    let stored_len = read_u32(path, bytes, 12)?;
+    let embedding_dim = read_u16(path, bytes, 16)?;
+    let model_len = read_u16(path, bytes, 18)? as usize;
+    let chunk_count = read_u32(path, bytes, 20)?;
+    let embedding_count = read_u32(path, bytes, 24)?;
+    if chunk_count > MAX_PEEK_ITEMS || embedding_count > MAX_PEEK_ITEMS {
+        return Err(corrupt_blob(path));
+    }
+    let model_end = CHUNK_HEADER_LEN
+        .checked_add(model_len)
+        .ok_or_else(|| corrupt_blob(path))?;
+    let payload_end = model_end.checked_add(stored_len).ok_or_else(|| corrupt_blob(path))?;
+    if payload_end != bytes.len() {
+        return Err(corrupt_blob(path));
+    }
+    let embedding_model = std::str::from_utf8(&bytes[CHUNK_HEADER_LEN..model_end])
+        .map_err(|_| corrupt_blob(path))?
+        .to_string();
+    Ok(ChunkEnvelope {
+        peek: ChunkEnvelopePeek {
+            schema_ver: prefix.schema_ver,
+            embedding_dim,
+            embedding_model,
+            chunk_count,
+            embedding_count,
+        },
+        payload: CompressedPayload {
+            uncompressed_len,
+            bytes: &bytes[model_end..payload_end],
+        },
+    })
+}
+
+#[cfg(feature = "code-search")]
+fn decode_chunk_or_legacy<'a>(path: &Path, bytes: &'a [u8]) -> Result<Cow<'a, [u8]>, StoreError> {
+    match envelope_prefix(path, bytes)? {
+        Some(_) => Ok(Cow::Owned(decompress_payload(
+            path,
+            chunk_envelope(path, bytes)?.payload,
+        )?)),
+        None => Ok(Cow::Borrowed(bytes)),
+    }
+}
+
+#[cfg(feature = "code-search")]
+fn public_chunk_peek(header: ChunkEnvelopePeek) -> crate::chunk::CodeChunkBlobPeek {
+    crate::chunk::CodeChunkBlobPeek {
+        schema_ver: header.schema_ver,
+        embedding_dim: header.embedding_dim,
+        embedding_model: header.embedding_model,
+        chunks: (0..header.chunk_count).map(|_| serde::de::IgnoredAny).collect(),
+        embeddings: (0..header.embedding_count).map(|_| serde::de::IgnoredAny).collect(),
+    }
 }
 
 thread_local! {
@@ -151,25 +365,26 @@ pub(crate) fn write_bytes_atomic(path: PathBuf, bytes: &[u8]) -> Result<(), Stor
     Ok(())
 }
 
-/// Unframed single-map blob write (doc tier + resolution tier): content-addressed skip on
-/// matching schema, else serialize + atomic write. The combined-filemap blobs go through
-/// `Store::write_filemap_hex` instead.
+/// Compressed single-map blob write (doc tier + resolution tier): content-addressed skip on a
+/// current envelope, else serialize + atomic write. The combined-filemap blobs go through
+/// `Store::write_filemap_hex` instead; a legacy raw blob is rewritten on its next write.
 pub(crate) fn write_blob<T: serde::Serialize>(path: PathBuf, value: &T) -> Result<(), StoreError> {
-    if path.exists() && peek_blob_schema(&path) == Some(SCHEMA_VER) {
+    if is_current_single_blob(&path) {
         return Ok(());
     }
     let bytes = rmp_serde::to_vec_named(value)?;
-    write_bytes_atomic(path, &bytes)
+    let encoded = encode_single_blob(&bytes, SCHEMA_VER)?;
+    write_bytes_atomic(path, &encoded)
 }
 
-/// Like [`write_blob`] but always (re)writes, even when a same-schema blob already exists. The
-/// embedding payload of a chunk sidecar or a doc blob can change for the SAME content hash — a
-/// vectorless `Deferred` blob (`embedding_dim: 0`) later upgraded to an embedded `Inline` blob — so
-/// a schema-only skip would wrongly keep the unembedded blob and vector search would serve nothing.
-#[cfg(any(feature = "code-search", feature = "documents"))]
+/// Like [`write_blob`] but always (re)writes, even when a same-schema document blob already exists.
+/// A vectorless `Deferred` blob (`embedding_dim: 0`) can later be upgraded to an embedded `Inline`
+/// blob for the same content hash, so a schema-only skip would preserve stale embedding state.
+#[cfg(feature = "documents")]
 pub(crate) fn write_blob_overwrite<T: serde::Serialize>(path: PathBuf, value: &T) -> Result<(), StoreError> {
     let bytes = rmp_serde::to_vec_named(value)?;
-    write_bytes_atomic(path, &bytes)
+    let encoded = encode_single_blob(&bytes, SCHEMA_VER)?;
+    write_bytes_atomic(path, &encoded)
 }
 
 /// The blob store's read/write surface: one accessor group per content-addressed tier, all keyed
@@ -229,12 +444,13 @@ impl Store {
         }
     }
 
-    /// Write the combined-filemap blob for a file. Holds both tiers in one content-addressed
-    /// blob (`[l1_len][l1][l2|empty]`), so the default eager-L2 scan does one `open` + `write`
-    /// + atomic `rename` per file instead of two. `l2 = None` writes an L1-only frame.
+    /// Write the combined-filemap blob for a file. Holds both tiers in one content-addressed blob,
+    /// with independently compressed L1 and L2 frames, so the default eager-L2 scan does one
+    /// `open` + `write` + atomic `rename` per file without making L1-only reads decompress L2.
+    /// `l2 = None` writes an empty L2 frame.
     pub fn write_filemap_hex(&self, hash_hex: &str, l1: &FileMapL1, l2: Option<&FileMapL2>) -> Result<(), StoreError> {
         let path = self.blob_path_fm_hex(hash_hex);
-        if path.exists() && peek_filemap_schema(&path) == Some(SCHEMA_VER) {
+        if is_current_filemap_blob(&path) {
             return Ok(());
         }
         let bytes = frame_filemap(l1, l2)?;
@@ -256,14 +472,11 @@ impl Store {
     #[cfg(feature = "documents")]
     pub fn read_doc_by_hex(&self, hash_hex: &str) -> Result<Option<crate::extract::doc::FileMapDoc>, StoreError> {
         let path = self.blob_path_doc_hex(hash_hex);
-        if !path.exists() {
+        let Some(bytes) = read_if_exists(&path)? else {
             return Ok(None);
-        }
-        let bytes = std::fs::read(&path).map_err(|source| StoreError::Io {
-            path: path.clone(),
-            source,
-        })?;
-        let map: crate::extract::doc::FileMapDoc = rmp_serde::from_slice(&bytes)?;
+        };
+        let decoded = decode_single_or_legacy(&path, &bytes, BlobKind::Single)?;
+        let map: crate::extract::doc::FileMapDoc = rmp_serde::from_slice(&decoded)?;
         check_schema(map.schema_ver)?;
         Ok(Some(map))
     }
@@ -293,7 +506,7 @@ impl Store {
 
     /// Path of a file's resolution blob (`<hash>.rref.msgpack`) — the per-file code-intelligence
     /// facts (intra-file resolved edges + import/export list). A sibling of the `.fm`/`.doc`
-    /// blobs, content-addressed by source hash. Unframed single-map msgpack, like the doc tier.
+    /// blobs, content-addressed by source hash and stored as compressed single-map msgpack.
     pub fn blob_path_rref_hex(&self, hash_hex: &str) -> PathBuf {
         self.blobs_dir.join(format!("{hash_hex}.rref.msgpack"))
     }
@@ -319,14 +532,16 @@ impl Store {
         let Some(bytes) = read_if_exists(&path)? else {
             return Ok(None);
         };
-        let refs: crate::intel::model::FileResolvedRefs = rmp_serde::from_slice(&bytes)?;
+        let decoded = decode_single_or_legacy(&path, &bytes, BlobKind::Single)?;
+        let refs: crate::intel::model::FileResolvedRefs = rmp_serde::from_slice(&decoded)?;
         check_schema(refs.schema_ver)?;
         Ok(Some(refs))
     }
 
     /// Path of a file's code-chunk sidecar (`<hash>.chunk.msgpack`) — the per-file chunk list +
     /// embeddings that back the semantic code-search tier. A sibling of the `.fm`/`.doc`/`.rref`
-    /// blobs, content-addressed by source hash. Unframed single-map msgpack, like the doc tier.
+    /// blobs, content-addressed by source hash. The msgpack payload is compressed; its embedding
+    /// state remains in the plain envelope header for the unchanged-file fast path.
     #[cfg(feature = "code-search")]
     pub fn blob_path_chunk_hex(&self, hash_hex: &str) -> PathBuf {
         self.blobs_dir.join(format!("{hash_hex}.chunk.msgpack"))
@@ -339,7 +554,8 @@ impl Store {
     /// is prevented upstream by `embed_state_satisfied`, not here.
     #[cfg(feature = "code-search")]
     pub fn write_chunks_hex(&self, hash_hex: &str, blob: &crate::chunk::CodeChunkBlob) -> Result<(), StoreError> {
-        write_blob_overwrite(self.blob_path_chunk_hex(hash_hex), blob)
+        let encoded = encode_chunk_blob(blob)?;
+        write_bytes_atomic(self.blob_path_chunk_hex(hash_hex), &encoded)
     }
 
     /// Read a file's code-chunk sidecar. `Ok(None)` when the file has no chunk blob (never
@@ -351,23 +567,27 @@ impl Store {
         let Some(bytes) = read_if_exists(&path)? else {
             return Ok(None);
         };
-        let blob: crate::chunk::CodeChunkBlob = rmp_serde::from_slice(&bytes)?;
+        let decoded = decode_chunk_or_legacy(&path, &bytes)?;
+        let blob: crate::chunk::CodeChunkBlob = rmp_serde::from_slice(&decoded)?;
         check_schema(blob.schema_ver)?;
         Ok(Some(blob))
     }
 
     /// Cheaply read a chunk sidecar's embedding state without decoding the chunk text. Same contract
     /// as [`read_chunks_by_hex`](Self::read_chunks_by_hex) — `Ok(None)` when the file has no chunk
-    /// blob, a schema mismatch surfaces as an error — but decodes only the counts + embedding
-    /// dim/model via [`CodeChunkBlobPeek`](crate::chunk::CodeChunkBlobPeek), skipping the heavy
-    /// chunk/embedding element contents. Backs the `embed_state_satisfied` unchanged-file fast path.
+    /// blob, a schema mismatch surfaces as an error — but reads only the plain envelope's counts +
+    /// embedding dim/model, without decompressing the chunk/embedding payload. Legacy raw blobs use
+    /// the prior partial-msgpack decode. Backs the `embed_state_satisfied` unchanged-file fast path.
     #[cfg(feature = "code-search")]
     pub fn peek_chunk_state(&self, hash_hex: &str) -> Result<Option<crate::chunk::CodeChunkBlobPeek>, StoreError> {
         let path = self.blob_path_chunk_hex(hash_hex);
         let Some(bytes) = read_if_exists(&path)? else {
             return Ok(None);
         };
-        let peek: crate::chunk::CodeChunkBlobPeek = rmp_serde::from_slice(&bytes)?;
+        let peek = match envelope_prefix(&path, &bytes)? {
+            Some(_) => public_chunk_peek(chunk_envelope(&path, &bytes)?.peek),
+            None => rmp_serde::from_slice(&bytes)?,
+        };
         check_schema(peek.schema_ver)?;
         Ok(Some(peek))
     }
@@ -439,6 +659,108 @@ mod tests {
         );
     }
 
+    #[test]
+    fn new_filemap_blobs_use_a_compressed_self_describing_envelope() {
+        init_isolated_cache();
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open(tmp.path(), VIEW_WORKING).expect("open store");
+        let hash_hex = "c".repeat(64);
+        let mut l1 = sample_l1();
+        l1.language = "rust".repeat(1_024);
+
+        store
+            .write_filemap_hex(&hash_hex, &l1, Some(&sample_l2()))
+            .expect("write compressed filemap");
+
+        let path = store.blob_path_fm_hex(&hash_hex);
+        let persisted = std::fs::read(&path).expect("read persisted filemap");
+        let legacy = {
+            let l1_bytes = rmp_serde::to_vec_named(&l1).expect("serialize legacy L1");
+            let l2_bytes = rmp_serde::to_vec_named(&sample_l2()).expect("serialize legacy L2");
+            let mut bytes = Vec::with_capacity(4 + l1_bytes.len() + l2_bytes.len());
+            bytes.extend_from_slice(&(l1_bytes.len() as u32).to_le_bytes());
+            bytes.extend_from_slice(&l1_bytes);
+            bytes.extend_from_slice(&l2_bytes);
+            bytes
+        };
+
+        assert_eq!(&persisted[..4], b"BMB1", "new blobs carry the envelope magic");
+        assert!(
+            persisted.len() < legacy.len(),
+            "repetitive filemap payload should be smaller after compression"
+        );
+        assert_eq!(store.read_l1_by_hex(&hash_hex).unwrap(), Some(l1));
+        assert_eq!(store.read_l2_by_hex(&hash_hex).unwrap(), Some(sample_l2()));
+    }
+
+    #[test]
+    fn legacy_uncompressed_filemap_blobs_remain_readable() {
+        init_isolated_cache();
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open(tmp.path(), VIEW_WORKING).expect("open store");
+        let hash_hex = "f".repeat(64);
+        let l1 = sample_l1();
+        let l2 = sample_l2();
+        let l1_bytes = rmp_serde::to_vec_named(&l1).expect("serialize legacy L1");
+        let l2_bytes = rmp_serde::to_vec_named(&l2).expect("serialize legacy L2");
+        let mut legacy = Vec::with_capacity(4 + l1_bytes.len() + l2_bytes.len());
+        legacy.extend_from_slice(&(l1_bytes.len() as u32).to_le_bytes());
+        legacy.extend_from_slice(&l1_bytes);
+        legacy.extend_from_slice(&l2_bytes);
+        std::fs::write(store.blob_path_fm_hex(&hash_hex), legacy).expect("write legacy frame");
+
+        assert_eq!(store.read_l1_by_hex(&hash_hex).unwrap(), Some(l1));
+        assert_eq!(store.read_l2_by_hex(&hash_hex).unwrap(), Some(l2));
+    }
+
+    #[test]
+    fn filemap_l1_read_does_not_decompress_a_corrupt_l2_frame() {
+        init_isolated_cache();
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open(tmp.path(), VIEW_WORKING).expect("open store");
+        let hash_hex = "2".repeat(64);
+        let l1 = sample_l1();
+        store
+            .write_filemap_hex(&hash_hex, &l1, Some(&sample_l2()))
+            .expect("write compressed filemap");
+
+        let path = store.blob_path_fm_hex(&hash_hex);
+        let mut persisted = std::fs::read(&path).expect("read filemap bytes");
+        let last = persisted.last_mut().expect("L2 compressed frame present");
+        *last ^= 0xff;
+        std::fs::write(&path, persisted).expect("corrupt only L2 frame");
+
+        assert_eq!(store.read_l1_by_hex(&hash_hex).unwrap(), Some(l1));
+        assert!(
+            store.read_l2_by_hex(&hash_hex).is_err(),
+            "corrupt L2 must fail when requested"
+        );
+    }
+
+    #[test]
+    fn writing_a_current_filemap_repairs_a_corrupt_compressed_payload() {
+        init_isolated_cache();
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open(tmp.path(), VIEW_WORKING).expect("open store");
+        let hash_hex = "5".repeat(64);
+        let l1 = sample_l1();
+        let l2 = sample_l2();
+        store
+            .write_filemap_hex(&hash_hex, &l1, Some(&l2))
+            .expect("write filemap");
+
+        let path = store.blob_path_fm_hex(&hash_hex);
+        let mut persisted = std::fs::read(&path).expect("read filemap bytes");
+        persisted[FILEMAP_HEADER_LEN] ^= 0xff;
+        std::fs::write(&path, persisted).expect("corrupt compressed L1");
+
+        store
+            .write_filemap_hex(&hash_hex, &l1, Some(&l2))
+            .expect("repair corrupt filemap");
+        assert_eq!(store.read_l1_by_hex(&hash_hex).unwrap(), Some(l1));
+        assert_eq!(store.read_l2_by_hex(&hash_hex).unwrap(), Some(l2));
+    }
+
     /// Issue #44: a Deferred pass persists the doc blob vectorless (`embedding_dim: 0`); the later
     /// Inline pass re-extracts + embeds and writes the SAME content hash again. That second write
     /// must replace the blob — a schema-only skip keeps it vectorless forever, and every future
@@ -475,6 +797,9 @@ mod tests {
         store.write_doc(&hash, &embedded).expect("write embedded blob");
 
         let hex_buf = hashing::hex_buf(&hash);
+        let path = store.blob_path_doc_hex(hashing::hex_str(&hex_buf));
+        let persisted = std::fs::read(path).expect("read doc blob bytes");
+        assert_eq!(&persisted[..4], b"BMB1", "new document blobs carry the envelope magic");
         let read = store
             .read_doc_by_hex(hashing::hex_str(&hex_buf))
             .expect("read doc blob")
@@ -513,10 +838,111 @@ mod tests {
         });
 
         store.write_resolved_hex(&hash_hex, &refs).expect("write resolved blob");
+        let persisted = std::fs::read(store.blob_path_rref_hex(&hash_hex)).expect("read resolved blob bytes");
+        assert_eq!(
+            &persisted[..4],
+            b"BMB1",
+            "new single-map blobs carry the envelope magic"
+        );
         let read = store.read_resolved_by_hex(&hash_hex).expect("read resolved blob");
         assert_eq!(read.as_ref(), Some(&refs), "resolution blob round-trips exactly");
 
         let missing = store.read_resolved_by_hex(&"e".repeat(64)).expect("read missing");
         assert_eq!(missing, None, "absent resolution blob reads back as None");
+    }
+
+    #[test]
+    fn legacy_uncompressed_single_map_blobs_remain_readable() {
+        use crate::intel::model::FileResolvedRefs;
+
+        init_isolated_cache();
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open(tmp.path(), VIEW_WORKING).expect("open store");
+        let hash_hex = "1".repeat(64);
+        let refs = FileResolvedRefs::new("rust");
+        let legacy = rmp_serde::to_vec_named(&refs).expect("serialize legacy blob");
+        std::fs::write(store.blob_path_rref_hex(&hash_hex), legacy).expect("write legacy blob");
+
+        assert_eq!(store.read_resolved_by_hex(&hash_hex).unwrap(), Some(refs));
+    }
+
+    #[test]
+    fn writing_a_current_single_map_repairs_a_corrupt_compressed_payload() {
+        use crate::intel::model::FileResolvedRefs;
+
+        init_isolated_cache();
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open(tmp.path(), VIEW_WORKING).expect("open store");
+        let hash_hex = "6".repeat(64);
+        let refs = FileResolvedRefs::new("rust");
+        store.write_resolved_hex(&hash_hex, &refs).expect("write resolved blob");
+
+        let path = store.blob_path_rref_hex(&hash_hex);
+        let mut persisted = std::fs::read(&path).expect("read resolved bytes");
+        persisted[SINGLE_HEADER_LEN] ^= 0xff;
+        std::fs::write(&path, persisted).expect("corrupt compressed payload");
+
+        store.write_resolved_hex(&hash_hex, &refs).expect("repair corrupt blob");
+        assert_eq!(store.read_resolved_by_hex(&hash_hex).unwrap(), Some(refs));
+    }
+
+    #[cfg(feature = "code-search")]
+    #[test]
+    fn legacy_uncompressed_chunk_blobs_remain_readable_and_peekable() {
+        init_isolated_cache();
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open(tmp.path(), VIEW_WORKING).expect("open store");
+        let hash_hex = "4".repeat(64);
+        let blob = crate::chunk::CodeChunkBlob {
+            schema_ver: SCHEMA_VER,
+            embedding_dim: 768,
+            embedding_model: "balanced".to_string(),
+            chunks: Vec::new(),
+            embeddings: Vec::new(),
+        };
+        let legacy = rmp_serde::to_vec_named(&blob).expect("serialize legacy chunk blob");
+        std::fs::write(store.blob_path_chunk_hex(&hash_hex), legacy).expect("write legacy chunk blob");
+
+        assert_eq!(store.read_chunks_by_hex(&hash_hex).unwrap(), Some(blob));
+        let peek = store.peek_chunk_state(&hash_hex).unwrap().expect("legacy chunk peek");
+        assert_eq!(peek.embedding_dim, 768);
+        assert_eq!(peek.embedding_model, "balanced");
+        assert_eq!(peek.chunks.len(), 0);
+        assert_eq!(peek.embeddings.len(), 0);
+    }
+
+    #[cfg(feature = "code-search")]
+    #[test]
+    fn chunk_peek_reads_plain_metadata_without_decompressing_payload() {
+        init_isolated_cache();
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open(tmp.path(), VIEW_WORKING).expect("open store");
+        let hash_hex = "3".repeat(64);
+        let blob = crate::chunk::CodeChunkBlob {
+            schema_ver: SCHEMA_VER,
+            embedding_dim: 768,
+            embedding_model: "balanced".to_string(),
+            chunks: Vec::new(),
+            embeddings: Vec::new(),
+        };
+        store.write_chunks_hex(&hash_hex, &blob).expect("write chunk blob");
+
+        let path = store.blob_path_chunk_hex(&hash_hex);
+        let mut persisted = std::fs::read(&path).expect("read chunk blob bytes");
+        *persisted.last_mut().expect("compressed payload present") ^= 0xff;
+        std::fs::write(&path, persisted).expect("corrupt compressed chunk payload");
+
+        let peek = store
+            .peek_chunk_state(&hash_hex)
+            .expect("plain chunk metadata remains readable")
+            .expect("chunk peek present");
+        assert_eq!(peek.embedding_dim, 768);
+        assert_eq!(peek.embedding_model, "balanced");
+        assert_eq!(peek.chunks.len(), 0);
+        assert_eq!(peek.embeddings.len(), 0);
+        assert!(
+            store.read_chunks_by_hex(&hash_hex).is_err(),
+            "full read must observe corruption"
+        );
     }
 }

@@ -211,6 +211,7 @@ tree-sitter-language-pack = "1.14.1"
 tree-sitter-stack-graphs = { package = "basemind-tree-sitter-stack-graphs", version = "0.10.0", path = "crates/tree-sitter-stack-graphs", optional = true }
 url = { version = "2", features = ["serde"], optional = true }
 xberg = { version = "1.0.14", default-features = false, features = ["tokio-runtime", "simd-utf8"], optional = true }
+zstd = "0.13.3"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 mach2 = "0.6"

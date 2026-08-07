@@ -87,10 +87,18 @@ pub enum StoreError {
     Decode(#[from] rmp_serde::decode::Error),
     #[error("schema version mismatch: stored {found}, current {expected}")]
     SchemaMismatch { found: u16, expected: u16 },
-    #[error("corrupt filemap blob at {path}: malformed frame header")]
+    #[error("corrupt blob at {path}: malformed or unsupported envelope")]
     CorruptBlob { path: PathBuf },
-    #[error("filemap L1 tier exceeds the 4 GiB frame limit")]
+    #[error("blob payload exceeds the supported envelope limits")]
     BlobTooLarge,
+    #[error("zstd blob compression failed: {0}")]
+    Compression(#[source] std::io::Error),
+    #[error("zstd blob decompression failed at {path}: {source}")]
+    Decompression {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
     #[error("{}", lock_contention_message(.path, .holder))]
     Locked {
         /// The `.lock` path whose acquisition failed.

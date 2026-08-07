@@ -793,6 +793,7 @@ dependencies = [
  "url",
  "wiremock",
  "xberg",
+ "zstd",
 ]
 
 [[package]]

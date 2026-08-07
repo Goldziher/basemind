@@ -100,10 +100,10 @@ pub struct CodeChunkBlob {
 /// decide whether an unchanged file's embedding requirement is already met — without allocating the
 /// (potentially large) chunk text / `searchable_text` strings.
 ///
-/// The sidecar is a `to_vec_named` msgpack map, so serde matches these fields by name and skips the
-/// unrequested ones. The heavy `chunks` / `embeddings` fields deserialize as `Vec<IgnoredAny>`: each
-/// element is walked to preserve the count but its contents are discarded, never heap-allocated. Field
-/// names MUST stay in lock-step with [`CodeChunkBlob`].
+/// Current blob envelopes keep these values in a plain header, so the unchanged-file check does not
+/// decompress the msgpack payload. Legacy raw blobs still partially deserialize by field name; their
+/// heavy `chunks` / `embeddings` elements are walked as `IgnoredAny` to preserve counts without
+/// allocating contents. Field names MUST stay in lock-step with [`CodeChunkBlob`].
 #[derive(Debug, Deserialize)]
 pub struct CodeChunkBlobPeek {
     /// Blob schema version — checked against the current release schema, same as the full decode.
