@@ -502,16 +502,18 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let workspaces = tmp.path().join("workspaces");
         let blobs = tmp.path().join("blobs");
+        fs::create_dir_all(&workspaces).expect("mk workspaces");
         fs::create_dir_all(&blobs).expect("mk blobs");
+        let empty_footprint = cache_footprint(&workspaces, &blobs).expect("measure empty cache roots");
 
         let hot = seed_workspace_aged(&workspaces, "key-hot", &"a".repeat(64), Duration::ZERO);
 
-        let report = enforce_cache_budget_in(&workspaces, &blobs, 1, Duration::from_secs(24 * 3600))
+        let report = enforce_cache_budget_in(&workspaces, &blobs, empty_footprint, Duration::from_secs(24 * 3600))
             .expect("enforce with hot floor");
 
         assert_eq!(report.evicted, 1, "the hot floor is a preference, not a budget veto");
         assert_eq!(report.hot_evicted, 1);
-        assert!(report.total_bytes_after <= 1);
+        assert!(report.total_bytes_after <= empty_footprint);
         assert!(!hot.exists());
     }
 
