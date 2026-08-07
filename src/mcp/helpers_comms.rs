@@ -65,6 +65,20 @@ pub(super) fn comms_err(error: impl std::fmt::Display) -> McpError {
     McpError::internal_error(format!("comms: {error}"), None)
 }
 
+/// Connect this MCP state to the comms broker without probing the daemon from a request it hosts.
+async fn connect_comms_client(state: &ServerState, target: AgentId) -> Result<CommsClient, McpError> {
+    let (remote, cwd) = scope_context_for(&state.shared.root);
+    if state.shared.host.is_some() {
+        let paths = crate::comms::singleton::resolve_paths().map_err(comms_err)?;
+        return CommsClient::connect(&paths, target, remote, cwd)
+            .await
+            .map_err(comms_err);
+    }
+    CommsClient::ensure_and_connect(target, remote, cwd)
+        .await
+        .map_err(comms_err)
+}
+
 /// Validate the ≥2-of-3 addressing rule for mode `thread_start` client-side, so the caller gets a clear
 /// error without a broker round-trip. The broker enforces the SAME rule; this is a fast pre-check.
 /// The caller (creator) is always an implicit member, so `members` counts only when it names at
@@ -105,10 +119,7 @@ pub(super) async fn resolve_comms_client(
     if let Some(handle) = map.get(&target) {
         return Ok(handle.clone());
     }
-    let (remote, cwd) = scope_context_for(&state.shared.root);
-    let client = CommsClient::ensure_and_connect(target.clone(), remote, cwd)
-        .await
-        .map_err(comms_err)?;
+    let client = connect_comms_client(state, target.clone()).await?;
     let handle = Arc::new(Mutex::new(client));
     map.insert(target, handle.clone());
     Ok(handle)
@@ -123,10 +134,7 @@ pub(super) async fn resolve_comms_client(
 pub(super) async fn connect_ephemeral_client(state: &ServerState) -> Result<CommsClient, McpError> {
     let target = AgentId::parse(state.agent_id.clone())
         .map_err(|e| comms_err(format!("invalid agent id {:?}: {e}", state.agent_id)))?;
-    let (remote, cwd) = scope_context_for(&state.shared.root);
-    CommsClient::ensure_and_connect(target, remote, cwd)
-        .await
-        .map_err(comms_err)
+    connect_comms_client(state, target).await
 }
 
 /// Route a CORE memory op to the machine's sole fjall writer and return the outcome.
@@ -741,9 +749,7 @@ async fn run_inbox_wait(state: &ServerState, params: InboxWaitParams) -> Result<
         None => AgentId::parse(state.agent_id.clone())
             .map_err(|e| comms_err(format!("invalid agent id {:?}: {e}", state.agent_id)))?,
     };
-    let mut client = CommsClient::ensure_and_connect(agent, remote.clone(), cwd.clone())
-        .await
-        .map_err(comms_err)?;
+    let mut client = connect_comms_client(state, agent).await?;
 
     let (timed_out, metas, unread, next_cursor) = client
         .wait_inbox(
