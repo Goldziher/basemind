@@ -410,6 +410,7 @@ fn open_in_viewer(target: &std::ffi::OsStr) -> OpenOutcome {
 /// promptly, but `xdg-open`'s generic-desktop fallback can block until the viewer itself exits; the
 /// caller's [`OPENER_LAUNCH_TIMEOUT`] frees the response in that case (the abandoned wait finishes on
 /// the blocking pool). A non-success exit (e.g. `xdg-open` found no handler) degrades to Skipped.
+#[cfg(any(target_os = "macos", target_os = "linux", test))]
 fn spawn_opener(program: &str, args: &[&std::ffi::OsStr]) -> OpenOutcome {
     match std::process::Command::new(program)
         .args(args)

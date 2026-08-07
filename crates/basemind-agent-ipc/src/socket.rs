@@ -49,6 +49,8 @@ pub struct SocketOwnership {
     path: PathBuf,
     device: u64,
     inode: u64,
+    change_time_seconds: i64,
+    change_time_nanoseconds: i64,
 }
 
 impl SocketOwnership {
@@ -58,7 +60,12 @@ impl SocketOwnership {
         use std::os::unix::fs::MetadataExt;
 
         std::fs::metadata(&self.path)
-            .map(|metadata| metadata.dev() == self.device && metadata.ino() == self.inode)
+            .map(|metadata| {
+                metadata.dev() == self.device
+                    && metadata.ino() == self.inode
+                    && metadata.ctime() == self.change_time_seconds
+                    && metadata.ctime_nsec() == self.change_time_nanoseconds
+            })
             .unwrap_or(false)
     }
 }
@@ -76,6 +83,8 @@ impl SocketCleanupGuard {
                 path: path.to_path_buf(),
                 device: metadata.dev(),
                 inode: metadata.ino(),
+                change_time_seconds: metadata.ctime(),
+                change_time_nanoseconds: metadata.ctime_nsec(),
             },
         })
     }
@@ -316,12 +325,18 @@ mod tests {
         let socket = dir.path().join("agent.sock");
         let listener = bind_listener(&socket, probe_alive).await.expect("bind listener");
         let guard = SocketCleanupGuard::new(&socket).expect("create cleanup guard");
-        let ownership = guard.ownership();
+        let mut ownership = guard.ownership();
         assert!(ownership.is_current(), "guard initially owns the published socket");
 
         drop(listener);
         std::fs::remove_file(&socket).expect("remove original socket");
         let replacement = std::os::unix::net::UnixListener::bind(&socket).expect("bind replacement");
+        use std::os::unix::fs::MetadataExt;
+        let replacement_metadata = std::fs::metadata(&socket).expect("replacement metadata");
+        // Reproduce Linux immediately reusing the removed socket's inode on filesystems where the
+        // allocator happens to choose a different one during this test run.
+        ownership.device = replacement_metadata.dev();
+        ownership.inode = replacement_metadata.ino();
         assert!(!ownership.is_current(), "replacement invalidates captured ownership");
         drop(guard);
 

@@ -43,6 +43,7 @@ fn init_repo(main: &Path) {
     git(&["init", "-q", "-b", "main"], main);
     git(&["config", "user.email", "t@example.com"], main);
     git(&["config", "user.name", "Test"], main);
+    git(&["config", "commit.gpgsign", "false"], main);
     std::fs::write(main.join("a.rs"), b"pub fn alpha() {}\n").expect("write a.rs");
     git(&["add", "."], main);
     git(&["commit", "-qm", "init"], main);
