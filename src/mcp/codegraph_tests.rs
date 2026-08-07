@@ -614,13 +614,44 @@ fn resolved_calls_are_extracted_with_intel() {
     .expect("scan");
     let cache = MapCache::build(&store);
     let g = built(&store, &cache, EdgeKindSet::all());
-    let has_extracted_call = g
-        .edges
-        .iter()
-        .any(|e| e.kind == EdgeKind::Calls && e.provenance == Provenance::Extracted);
+    let has_extracted_call = g.edges.iter().any(|e| {
+        e.kind == EdgeKind::Calls
+            && e.provenance == Provenance::Extracted
+            && name_of("app.py", &e.from, &cache).as_deref() == Some("calls_imported_f")
+            && name_of("mod.py", &e.to, &cache).as_deref() == Some("f")
+    });
     assert!(
         has_extracted_call,
         "a resolved cross-file call should be EXTRACTED under intel features"
+    );
+}
+
+#[cfg(any(feature = "code-intel-js", feature = "code-intel-stack"))]
+#[test]
+fn resolved_call_prefers_innermost_same_named_definition() {
+    let (_dir, store, cache) = scan_repo(&[(
+        "nested.py",
+        "def target():\n    def target():\n        pass\n    target()\n",
+    )]);
+    let path = RelPath::from("nested.py");
+    let symbols = cache.by_path.get(&path).expect("nested.py map");
+    let inner_start = symbols
+        .symbols
+        .iter()
+        .filter(|symbol| symbol.name == "target")
+        .map(|symbol| symbol.start_byte)
+        .max()
+        .expect("nested target symbol");
+
+    let graph = built(&store, &cache, EdgeKindSet::all());
+    let extracted = graph
+        .edges
+        .iter()
+        .find(|edge| edge.kind == EdgeKind::Calls && edge.provenance == Provenance::Extracted)
+        .expect("resolved nested call");
+    assert!(
+        matches!(extracted.to, NodeKey::Symbol { start_byte, .. } if start_byte == inner_start),
+        "the resolver's inner identifier must map to the innermost containing L1 symbol"
     );
 }
 

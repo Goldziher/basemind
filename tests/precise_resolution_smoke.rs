@@ -135,8 +135,8 @@ async fn goto_definition(
     decode_text(
         &service
             .call_tool(call_params(
-                "goto_definition",
-                json!({ "path": path, "line": line, "column": column }),
+                "code",
+                json!({ "mode": "definition", "path": path, "line": line, "column": column }),
             ))
             .await
             .unwrap_or_else(|e| panic!("goto_definition({path}, {line}, {column}) failed: {e}")),

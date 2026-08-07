@@ -754,6 +754,29 @@ mod tests {
         assert!(db.refs_by_path.iter().next().is_none());
     }
 
+    #[cfg(any(feature = "code-intel-js", feature = "code-intel-stack"))]
+    #[test]
+    fn definition_of_prefers_cross_file_target_over_import_binding() {
+        use crate::intel::model::{FileResolvedRefs, ResolvedEdge};
+        let (_d, db) = fresh_db();
+        let importer = RelPath::from("src/app.py");
+        let target = RelPath::from("src/module.py");
+
+        let mut refs = FileResolvedRefs::new("python");
+        refs.intra.push(ResolvedEdge {
+            use_start: 100,
+            use_end: 101,
+            def_start: 4,
+            def_end: 5,
+        });
+        let mut writer = db.writer();
+        writer.upsert_resolved_file(&importer, &refs).unwrap();
+        writer.upsert_cross_file_edge(&target, 8, &importer, 100).unwrap();
+        writer.commit().unwrap();
+
+        assert_eq!(db.definition_of(&importer, 100), Some((target, 8)));
+    }
+
     #[cfg(feature = "code-search")]
     #[test]
     fn bm25_dual_partition_consistency() {

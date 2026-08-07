@@ -315,21 +315,26 @@ impl IndexDb {
     }
 
     /// The definition the use at `(use_path, use_start)` binds to — backs `goto_definition`.
-    /// `None` when the position isn't a resolved reference.
+    /// Cross-file definitions take precedence over the local import binding that an imported use
+    /// also resolves through. `None` when the position isn't a resolved reference.
     pub fn definition_of(
         &self,
         use_path: &crate::path::RelPath,
         use_start: u32,
     ) -> Option<(crate::path::RelPath, u32)> {
         let prefix = keys::refs_by_use_prefix(use_path, use_start);
+        let mut local = None;
         for guard in self.refs_by_path.prefix(prefix) {
             if let Ok((k, _)) = guard.into_inner()
                 && let Some((_use_path, _use_start, def_path, def_start)) = keys::parse_ref_by_path(&k)
             {
-                return Some((def_path, def_start));
+                if def_path != *use_path {
+                    return Some((def_path, def_start));
+                }
+                local = Some((def_path, def_start));
             }
         }
-        None
+        local
     }
 
     /// Symbols whose name starts with `name`, from the `symbols_by_name` keyspace — an index-backed

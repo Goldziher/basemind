@@ -20,7 +20,7 @@
 use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex, PoisonError};
 
-use ahash::{AHashMap, AHashSet};
+use ahash::AHashMap;
 use lru::LruCache;
 use rmcp::ErrorData as McpError;
 
@@ -440,8 +440,8 @@ fn attach_symbol(syms_by_start: &[(u32, u32)], marker: u32) -> Option<u32> {
 /// folds to the strongest tier across duplicates.
 type EdgeKey = (NodeKey, NodeKey, EdgeKind);
 
-/// Repo-wide symbol table: name → the definition sites (path, start byte, kind) carrying it.
-type DefsByName<'a> = AHashMap<&'a str, Vec<(&'a RelPath, u32, crate::extract::SymbolKind)>>;
+/// Repo-wide symbol table: name → the definition sites (path, byte span, kind) carrying it.
+type DefsByName<'a> = AHashMap<&'a str, Vec<(&'a RelPath, u32, u32, crate::extract::SymbolKind)>>;
 
 /// Stage the name-resolved edge(s) for one import/inherit reference from `from` to `name`. One
 /// candidate ⇒ INFERRED; several ⇒ AMBIGUOUS (one edge per candidate); none ⇒ a single INFERRED
@@ -462,7 +462,7 @@ fn resolve_named_edge(
             } else {
                 Provenance::Inferred
             };
-            for (dp, ds, _k) in cands {
+            for (dp, ds, _de, _k) in cands {
                 push(
                     from.clone(),
                     NodeKey::Symbol {
@@ -502,7 +502,7 @@ pub(crate) fn build(idx: Option<&IndexDb>, cache: &MapCache, opts: &BuildOpts) -
             defs_by_name
                 .entry(sym.name.as_str())
                 .or_default()
-                .push((path, sym.start_byte, sym.kind));
+                .push((path, sym.start_byte, sym.end_byte, sym.kind));
         }
     }
 
@@ -519,7 +519,6 @@ pub(crate) fn build(idx: Option<&IndexDb>, cache: &MapCache, opts: &BuildOpts) -
     };
 
     let want_calls = kinds.calls;
-    let mut proven_cache: AHashMap<(RelPath, u32), AHashSet<(RelPath, u32)>> = AHashMap::new();
     let mut scanned = 0usize;
     let mut truncated = false;
 
@@ -617,11 +616,11 @@ pub(crate) fn build(idx: Option<&IndexDb>, cache: &MapCache, opts: &BuildOpts) -
                 return false;
             }
             // Callees resolve to function-like definitions only (mirrors the call graph).
-            let cands: Vec<(&RelPath, u32)> = match defs_by_name.get(callee) {
+            let cands: Vec<(&RelPath, u32, u32)> = match defs_by_name.get(callee) {
                 Some(c) => c
                     .iter()
-                    .filter(|(_, _, k)| is_function_like(*k))
-                    .map(|(p, s, _)| (*p, *s))
+                    .filter(|(_, _, _, k)| is_function_like(*k))
+                    .map(|(p, start, end, _)| (*p, *start, *end))
                     .collect(),
                 None => Vec::new(),
             };
@@ -635,31 +634,34 @@ pub(crate) fn build(idx: Option<&IndexDb>, cache: &MapCache, opts: &BuildOpts) -
             };
             let from = enclosing(call_byte);
 
-            // A resolved binding names an exact target: if any candidate is proven for this
-            // use site, emit only the proven edge(s) as EXTRACTED and drop the rest.
-            let mut proven_any = false;
-            if let Some(index) = idx {
-                for &(dp, ds) in &cands {
-                    let uses = proven_cache
-                        .entry((dp.clone(), ds))
-                        .or_insert_with(|| index.references_to(dp, ds).into_iter().collect());
-                    if uses.contains(&(path.clone(), call_byte)) {
-                        proven_any = true;
-                        push(
-                            from.clone(),
-                            NodeKey::Symbol {
-                                path: dp.clone(),
-                                start_byte: ds,
-                            },
-                            EdgeKind::Calls,
-                            Provenance::Extracted,
-                            1,
-                        );
-                    }
-                }
+            // Resolver definition offsets point at the identifier, while L1 symbol offsets point
+            // at the whole definition node (`def`, `fn`, `function`, ...). Match the resolved byte
+            // against each candidate's span and keep the graph node keyed by its stable L1 start.
+            let proven = idx
+                .and_then(|index| index.definition_of(path, call_byte))
+                .and_then(|(def_path, def_byte)| {
+                    cands
+                        .iter()
+                        .filter(|(candidate_path, start, end)| {
+                            **candidate_path == def_path && def_byte >= *start && def_byte < *end
+                        })
+                        .max_by_key(|(_, start, _)| *start)
+                        .copied()
+                });
+            if let Some((dp, ds, _)) = proven {
+                push(
+                    from.clone(),
+                    NodeKey::Symbol {
+                        path: dp.clone(),
+                        start_byte: ds,
+                    },
+                    EdgeKind::Calls,
+                    Provenance::Extracted,
+                    1,
+                );
             }
-            if !proven_any {
-                for &(dp, ds) in &cands {
+            if proven.is_none() {
+                for &(dp, ds, _) in &cands {
                     push(
                         from.clone(),
                         NodeKey::Symbol {
