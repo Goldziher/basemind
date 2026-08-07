@@ -66,7 +66,9 @@ pub struct AgentsParams {
     #[serde(default)]
     pub path: Option<String>,
     /// `post` only. Message body (markdown). Stored separately from front-matter and read back only
-    /// through mode `message`.
+    /// through mode `message`. Omit it entirely for a subject-only post; supplying an empty or
+    /// whitespace-only body is refused, because it would be stored and read back later as
+    /// `found: true, body: ""` — indistinguishable from a failed retrieval.
     #[serde(default)]
     pub body: Option<String>,
     /// `post` only. Free-form tags for filtering.

@@ -635,7 +635,29 @@ async fn run_thread_archive(state: &ServerState, params: ThreadArchiveParams) ->
     })
 }
 
+/// Reject a `body` that was supplied but holds nothing.
+///
+/// Omitting `body` is legal — that is a deliberate subject-only post. Supplying one that is empty or
+/// whitespace-only is a caller mistake (an unresolved template, a variable that expanded to nothing),
+/// and storing it is worse than refusing it: the front-matter records `body_len: 0`, and `message`
+/// later returns `found: true, body: ""`, which reads as a failed retrieval rather than as a message
+/// that never had content. Failing at the post surfaces the mistake where it can still be corrected.
+fn reject_empty_body(body: Option<&str>) -> Result<(), McpError> {
+    if body.is_some_and(|body| body.trim().is_empty()) {
+        return Err(McpError::invalid_params(
+            format!(
+                "`{}` mode=\"{}\" was given an empty `body`; omit `body` entirely for a subject-only post",
+                AgentsMode::DOMAIN,
+                AgentsMode::Post.as_str()
+            ),
+            None,
+        ));
+    }
+    Ok(())
+}
+
 async fn run_thread_post(state: &ServerState, params: ThreadPostParams) -> Result<CallToolResult, McpError> {
+    reject_empty_body(params.body.as_deref())?;
     let body = params.body.unwrap_or_default().into_bytes();
     let tags = params.tags.unwrap_or_default();
     let handle = resolve_comms_client(state, params.as_agent).await?;
@@ -786,6 +808,27 @@ mod tests {
     fn should_name_the_mode_and_field_when_a_required_sibling_is_missing() {
         let error = require_field(AgentsMode::Post, "subject", None::<String>).expect_err("a bodyless post fails");
         assert_eq!(error.message.to_string(), "`agents` mode=\"post\" requires `subject`");
+    }
+
+    #[test]
+    fn should_reject_a_post_whose_body_was_supplied_but_empty() {
+        for empty in ["", "   ", "\n\n", " \t \n "] {
+            let error = reject_empty_body(Some(empty)).expect_err("an empty body is a caller mistake");
+            assert_eq!(
+                error.message.to_string(),
+                "`agents` mode=\"post\" was given an empty `body`; omit `body` entirely for a subject-only post",
+                "input {empty:?} must be refused with the corrective message"
+            );
+        }
+    }
+
+    #[test]
+    fn should_accept_an_omitted_body_and_any_body_with_content() {
+        reject_empty_body(None).expect("a subject-only post stays legal");
+        reject_empty_body(Some("real content")).expect("a normal body posts");
+        // Leading/trailing blanks are trimmed only to TEST emptiness — a body that merely starts
+        // with a newline still carries content and must post unchanged.
+        reject_empty_body(Some("\n# heading\n")).expect("padded content is still content");
     }
 
     #[test]
