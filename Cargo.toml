@@ -17,14 +17,14 @@ categories = ["command-line-utilities", "development-tools"]
 ignored = ["serde_toon_format"]
 [workspace]
 members = [
-    "crates/basemind-agent",
-    "crates/basemind-agent-ipc",
-    "crates/basemind-tui",
-    "crates/basemind-ui",
-    "crates/lsp-positions",
-    "crates/stack-graphs",
-    "crates/tree-sitter-graph",
-    "crates/tree-sitter-stack-graphs",
+  "crates/basemind-agent",
+  "crates/basemind-agent-ipc",
+  "crates/basemind-tui",
+  "crates/basemind-ui",
+  "crates/lsp-positions",
+  "crates/stack-graphs",
+  "crates/tree-sitter-graph",
+  "crates/tree-sitter-stack-graphs",
 ]
 
 [workspace.lints.clippy]
@@ -41,67 +41,56 @@ path = "src/main.rs"
 [features]
 default = []
 
-intelligence = [
-    "dep:xberg",
-    "dep:lancedb",
-    "dep:arrow-array",
-    "dep:arrow-schema",
-    "dep:futures",
-]
+intelligence = ["dep:xberg", "dep:lancedb", "dep:arrow-array", "dep:arrow-schema", "dep:futures"]
 
 documents = [
-    "intelligence",
-    "xberg/formats",
-    "xberg/analysis",
-    "xberg/chunking-tokenizers",
-    "xberg/embeddings",
-    "xberg/reranker",
-    "xberg/reranker-presets",
-    "xberg/ocr",
-    "xberg/paddle-ocr",
-    "xberg/layout-detection",
-    "xberg/auto-rotate",
-    "xberg/ner-onnx",
-    "xberg/keywords-yake",
-    "xberg/keywords-rake",
-    "xberg/summarization",
-    "xberg/summarization-llm",
-    "xberg/redaction",
-    "xberg/qr-codes",
-    "dep:serde_toon_format",
+  "intelligence",
+  "xberg/formats",
+  "xberg/analysis",
+  "xberg/chunking-tokenizers",
+  "xberg/embeddings",
+  "xberg/reranker",
+  "xberg/reranker-presets",
+  "xberg/ocr",
+  "xberg/paddle-ocr",
+  "xberg/layout-detection",
+  "xberg/auto-rotate",
+  "xberg/ner-onnx",
+  "xberg/keywords-yake",
+  "xberg/keywords-rake",
+  "xberg/summarization",
+  "xberg/summarization-llm",
+  "xberg/redaction",
+  "xberg/qr-codes",
+  "dep:serde_toon_format",
 ]
 
-code-search = [
-    "intelligence",
-    "xberg/embeddings",
-    "xberg/reranker",
-    "xberg/reranker-presets",
-]
+code-search = ["intelligence", "xberg/embeddings", "xberg/reranker", "xberg/reranker-presets"]
 
 memory = ["intelligence", "xberg/embeddings", "xberg/keywords", "xberg/ner-onnx"]
 
 crawl = ["documents", "dep:crawlberg", "dep:url"]
 
 comms = [
-    "dep:tokio-util",
-    "dep:hyper",
-    "dep:hyper-util",
-    "dep:http",
-    "dep:http-body-util",
-    "dep:bytes",
-    "dep:form_urlencoded",
-    "rmcp/transport-streamable-http-server",
+  "dep:tokio-util",
+  "dep:hyper",
+  "dep:hyper-util",
+  "dep:http",
+  "dep:http-body-util",
+  "dep:bytes",
+  "dep:form_urlencoded",
+  "rmcp/transport-streamable-http-server",
 ]
 
 shells = ["dep:rmux-sdk", "dep:rmux-server", "dep:rmux-client"]
 
 code-intel-js = [
-    "dep:oxc_allocator",
-    "dep:oxc_parser",
-    "dep:oxc_semantic",
-    "dep:oxc_span",
-    "dep:oxc_syntax",
-    "dep:oxc_resolver",
+  "dep:oxc_allocator",
+  "dep:oxc_parser",
+  "dep:oxc_semantic",
+  "dep:oxc_span",
+  "dep:oxc_syntax",
+  "dep:oxc_resolver",
 ]
 
 code-intel-stack = ["dep:stack-graphs", "dep:tree-sitter-graph", "dep:tree-sitter-stack-graphs"]
@@ -116,15 +105,7 @@ code-intel = ["code-intel-js", "code-intel-stack"]
 agent-tui = []
 desktop-ui = []
 
-full = [
-    "documents",
-    "memory",
-    "crawl",
-    "comms",
-    "shells",
-    "code-intel",
-    "code-search",
-]
+full = ["documents", "memory", "crawl", "comms", "shells", "code-intel", "code-search"]
 
 test-support = ["dep:tempfile"]
 
@@ -145,7 +126,7 @@ bstr = { version = "1", features = ["serde"] }
 # Streamable-HTTP MCP front-end (comms daemon only): response bodies + query parsing + hyper server. ~keep
 bytes = { version = "1", optional = true }
 clap = { version = "4", features = ["derive", "env"] }
-crawlberg = { version = "1.1.3", default-features = false, features = ["native-runtime"], optional = true }
+crawlberg = { version = "1.1.4", default-features = false, features = ["native-runtime"], optional = true }
 directories = "6"
 fjall = "3.1.8"
 form_urlencoded = { version = "1", optional = true }
@@ -190,16 +171,16 @@ streaming-iterator = "0.1"
 tempfile = { version = "3", optional = true }
 thiserror = "2"
 tokio = { version = "1", features = [
-    "rt-multi-thread",
-    "macros",
-    "signal",
-    "sync",
-    "io-util",
-    "io-std",
-    "time",
-    "net",
-    "fs",
-    "process",
+  "rt-multi-thread",
+  "macros",
+  "signal",
+  "sync",
+  "io-util",
+  "io-std",
+  "time",
+  "net",
+  "fs",
+  "process",
 ] }
 tokio-util = { version = "0.7", features = ["codec"], optional = true }
 toml = "1.1"
@@ -207,7 +188,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tree-sitter = "0.26"
 tree-sitter-graph = { package = "basemind-tree-sitter-graph", version = "0.12.0", path = "crates/tree-sitter-graph", optional = true }
-tree-sitter-language-pack = "1.14.1"
+tree-sitter-language-pack = "1.14.3"
 tree-sitter-stack-graphs = { package = "basemind-tree-sitter-stack-graphs", version = "0.10.0", path = "crates/tree-sitter-stack-graphs", optional = true }
 url = { version = "2", features = ["serde"], optional = true }
 xberg = { version = "1.0.14", default-features = false, features = ["tokio-runtime", "simd-utf8"], optional = true }

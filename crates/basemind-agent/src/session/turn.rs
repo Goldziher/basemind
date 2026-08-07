@@ -15,7 +15,7 @@ use basemind::mcp::BasemindServer;
 use futures::StreamExt;
 use liter_llm::{
     AssistantContent, AssistantMessage, ChatCompletionRequest, FinishReason, Message, StreamOptions, ToolCall,
-    ToolChoice, ToolChoiceMode, ToolMessage,
+    ToolChoice, ToolChoiceMode, ToolMessage, UserContent,
 };
 use tokio::sync::{broadcast, mpsc};
 
@@ -313,7 +313,7 @@ fn assistant_message(assembled: &AssembledTurn) -> Message {
 
 fn tool_result_message(call: &ToolCall, content: String) -> Message {
     Message::Tool(ToolMessage {
-        content,
+        content: UserContent::Text(content),
         tool_call_id: call.id.clone(),
         name: Some(call.function.name.clone()),
     })
