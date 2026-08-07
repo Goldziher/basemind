@@ -1,8 +1,8 @@
 //! Visual presentation of a spawned shell session.
 //!
 //! Headless sessions need no presentation; visual sessions are surfaced to the
-//! user per the `[shells] visual` config (default: a new tab in the already-open
-//! terminal). This module holds the per-OS launchers.
+//! user per the `[shells] visual` config (headless by default; opt into a new tab
+//! or window). This module holds the per-OS launchers.
 //!
 //! The presentation is "attach to an rmux session inside a terminal surface": we
 //! build the shell command `rmux -S <socket> attach-session -t <name>` and ask

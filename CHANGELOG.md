@@ -45,6 +45,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Agent shell sessions now default to headless presentation.** Background MCP/CLI work no longer
+  opens terminal tabs unless `[shells].visual` explicitly selects `current` or `window`.
 - **The two interactive front-ends are held back from releases.** The agent TUI (`basemind-tui`,
   ratatui) and the desktop UI (`basemind-ui`, tauri) are not ready to ship, so the release archive now
   contains the `basemind` binary alone, and the launcher subcommands that would re-exec them sit
@@ -200,6 +202,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Agent shell capture could return an empty screen for a successful command.** The snapshot-only
+  path dropped the first row for fresh CLI clients and let rmux's dead-pane row push short output
+  out of `lines=N` captures. Capture now reads retained history, removes terminal synthetic and
+  outer blank rows while preserving interior spacing, and returns a bounded recent tail, so a
+  completed one-line command remains observable until `kill`.
+- **Shared shell sessions could start in another workspace.** Relative or omitted `cwd` values were
+  interpreted from the machine-global rmux daemon's original process directory. Spawn now anchors
+  every command to the calling workspace root, and accepts `cwd = "."` as that root.
+- **A transient pane inspection could make `shell list` fail globally.** The daemon now preserves
+  the known session list and conservatively reports liveness when rmux cannot provide one pane-state
+  snapshot, rather than making every session undiscoverable. Its idle reaper uses strict liveness
+  separately, so persistent inspection failure cannot pin the daemon forever.
 - **A resident daemon running different code at the same version was invisible.** After a local
   rebuild or `cargo install --path .`, the version check compares only `MAJOR.MINOR.PATCH`, so the
   daemon left over from the previous build passes every test and is reused — answering with stale

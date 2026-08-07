@@ -33,19 +33,21 @@ impl BasemindServer {
     #[tool(
         description = "Run a long-lived background terminal session — a build, a dev server, a \
         test watcher, a REPL — and read its output later, instead of blocking on a one-shot \
-        command. Backed by the embedded rmux daemon; nothing is attached to a terminal. `mode` is \
-        required. `spawn` starts one: `command` runs through the login shell (e.g. \
-        `bash -lc '<command>'`), with optional `cwd` (repo-relative), `env` (key/value list), and \
+        command. Backed by the embedded rmux daemon; sessions are headless by default, while \
+        `[shells].visual` can opt into a terminal attachment. `mode` is required. `spawn` starts \
+        one: `command` runs through the login shell (e.g. \
+        `bash -lc '<command>'`), with optional `cwd` (repo-relative; workspace root by default), \
+        `env` (key/value list), and \
         `title`; it returns a stable `session_id` — the handle every other mode addresses — plus \
         an `attach_command` (`rmux attach -t <name>`) an operator can run to watch it. Completed \
         sessions and their pane output remain retained until an explicit `kill` or the shared \
         daemon's idle TTL expires with no live panes, so a short-lived command can still be \
         inspected after it exits. `send` types `text` into a session's stdin, \
         appending a newline so the line executes unless \
-        `enter=false` sends a raw keystroke fragment. `capture` reads back what a session has \
-        printed: the currently-visible screen with trailing blank lines trimmed, or just the last \
-        `lines` non-blank rows — a screen SNAPSHOT, not a full scrollback log, so poll it rather \
-        than expecting every byte ever written. `kill` terminates a live session or removes a \
+        `enter=false` sends a raw keystroke fragment. `capture` reads back the most recent \
+        non-blank rows from retained pane history, including output from a command that already \
+        exited; `lines` caps the rows at 500 and defaults to 50, so poll it \
+        rather than expecting every byte ever written. `kill` terminates a live session or removes a \
         retained completed session, returning `killed=true` when removal succeeds. An already-unknown \
         `session_id` is rejected. `list` needs no \
         arguments and returns every session the daemon currently hosts — the way to recover a \

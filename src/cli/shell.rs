@@ -28,7 +28,7 @@ pub enum ShellCmd {
     Spawn {
         /// Command line to run in the session's initial pane (via the login shell).
         command: String,
-        /// Repository-relative working directory (forward-slash, no leading `/`).
+        /// Repository-relative working directory (defaults to the workspace root).
         #[arg(long)]
         cwd: Option<String>,
         /// Environment override in `KEY=VALUE` form. Repeatable.
@@ -48,11 +48,11 @@ pub enum ShellCmd {
         #[arg(long)]
         no_enter: bool,
     },
-    /// Capture the visible screen of a session.
+    /// Capture recent retained output from a session.
     Capture {
         /// The `session_id` returned by `spawn`.
         session_id: String,
-        /// Return only the last N non-blank lines (omit for the whole visible screen).
+        /// Return only the last N non-blank lines, up to 500 (omit for up to 50 lines).
         #[arg(long)]
         lines: Option<usize>,
     },

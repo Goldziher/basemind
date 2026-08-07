@@ -50,7 +50,7 @@ about your code costs a small fraction of the tokens it takes to read the source
 | **Memory & documents** | A per-repo memory agents write to and search by meaning — clones of the same repo share it, unrelated repos stay separate — plus semantic search over PDFs, Office files, HTML, email, and images (OCR included, no extra setup), and a review queue of notes mined from files that change together, which you approve before anything is kept. | `memory` (`put` · `get` · `list` · `search` · `delete` · `audit` · `documents` · `mine` · `proposals` · `accept` · `reject`) |
 | **Web crawl** | Fetch a page or follow links from a starting URL; results join the document search above. | `web` (`scrape` · `crawl` · `map`) |
 | **Agent comms** | Threads for agents working the same repo: each addressed by at least two of subject / path-glob / members, discovered by scope (member, cwd path-match, or subject filter — never global), with a recency-filtered inbox. The creator manages membership and archives; idle threads auto-archive. One orchestrator can drive many named subagents (`as_agent`). | `agents` (`register` · `list` · `thread_start` · `thread_list` · `join` · `leave` · `members` · `add_member` · `remove_member` · `archive` · `post` · `history` · `message` · `inbox` · `ack` · `wait`) |
-| **Agent shells** | Let agents open, type into, and watch terminal sessions in the background. | `shell` (`spawn` · `send` · `capture` · `kill` · `list` · `broadcast`) |
+| **Agent shells** | Run headless terminal sessions in the background, capture recent retained output after commands exit, and explicitly stop sessions when their work is done. Visual terminal attachment is opt-in through `[shells].visual`. | `shell` (`spawn` · `send` · `capture` · `kill` · `list` · `broadcast`) |
 | **Admin** | Refresh the index after edits, check index health and repo identity, see what's been queried and how many tokens were saved, inspect or clean the on-disk cache, and shrink what an agent carries: a file's outline instead of its text, a diff instead of a re-read, a checkpoint instead of a transcript, plus a wasteful-tool-use report. | `admin` (`status` · `repo` · `rescan` · `cache_stats` · `gc` · `cache_clear` · `telemetry` · `compress` · `delta` · `checkpoint` · `waste`) |
 | **Machine registry** | Machine-wide repo/worktree/branch coordination, backed by the daemon's always-on registry. Advisory claims let agent sessions avoid colliding on the same worktree. | `workspace` (`workspaces` · `worktrees` · `branches` · `claim` · `release`) |
 
@@ -809,7 +809,7 @@ Every command takes `--as-agent <ID>` to act as a named sub-identity.
 |---|---|
 | `spawn <command> [--cwd --env --title]` | Start a detached headless shell session; prints a `session_id`. |
 | `send <session-id> <text> [--no-enter]` | Type into a session's stdin. |
-| `capture <session-id> [--lines]` | Read a session's visible screen. |
+| `capture <session-id> [--lines]` | Read up to 500 recent non-blank retained-output rows (50 by default). |
 | `kill <session-id>` / `list` | End a session / list live sessions. |
 | `broadcast <text> --session <id>…` | Send the same input to several sessions at once. |
 

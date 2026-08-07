@@ -187,7 +187,7 @@
       "$ref": "#/$defs/ShellsConfig",
       "default": {
         "enabled": true,
-        "visual": "current",
+        "visual": "headless",
         "terminal": "auto",
         "default_cols": 200,
         "default_rows": 50,
@@ -1012,9 +1012,9 @@
           "default": true
         },
         "visual": {
-          "description": "How a visual session is surfaced. Defaults to [`VisualMode::Current`] — a new tab in the\nterminal that is already open.",
+          "description": "How a visual session is surfaced. Defaults to [`VisualMode::Headless`] so background agent\nwork does not open terminal tabs; opt into `current` or `window` for a visible attachment.",
           "$ref": "#/$defs/VisualMode",
-          "default": "current"
+          "default": "headless"
         },
         "terminal": {
           "description": "Which terminal emulator to drive. [`TerminalChoice::Auto`] (the default) detects the\nrunning terminal from the environment and falls back gracefully.",
@@ -1049,7 +1049,7 @@
       "description": "How a visual shell session is presented to the user.",
       "oneOf": [
         {
-          "description": "Open the session as a new tab in the terminal that is already open. The default — it keeps\nthe user's window layout intact.",
+          "description": "Open the session as a new tab in the terminal that is already open.",
           "type": "string",
           "const": "current"
         },
@@ -1064,7 +1064,7 @@
           "const": "web"
         },
         {
-          "description": "Do not present the session at all; it runs headless.",
+          "description": "Do not present the session at all; it runs headless. This is the default for agent work.",
           "type": "string",
           "const": "headless"
         }

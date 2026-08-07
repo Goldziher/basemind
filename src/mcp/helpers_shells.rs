@@ -202,17 +202,7 @@ pub(super) async fn run_shell_spawn(state: &ServerState, params: ShellSpawnParam
         ));
     }
 
-    let cwd = match params.cwd {
-        Some(rel) => {
-            let raw = rel
-                .as_str()
-                .ok_or_else(|| McpError::invalid_params("cwd is not valid UTF-8", None))?;
-            let normalized = crate::path::normalize_query_path(raw, &state.shared.root)
-                .ok_or_else(|| McpError::invalid_params("cwd escapes the repository root", None))?;
-            Some(normalized)
-        }
-        None => None,
-    };
+    let cwd = resolve_shell_cwd(&state.shared.root, params.cwd).await?;
 
     let session_id = state.shared.shell_runtime.mint_session_id();
 
@@ -230,7 +220,7 @@ pub(super) async fn run_shell_spawn(state: &ServerState, params: ShellSpawnParam
         .spawn(
             session_id.clone(),
             ShellCommand::Shell(params.command),
-            cwd,
+            Some(cwd),
             environment,
             state.shared.config.shells.default_cols,
             state.shared.config.shells.default_rows,
@@ -272,6 +262,41 @@ pub(super) async fn run_shell_spawn(state: &ServerState, params: ShellSpawnParam
         child_agent,
     };
     json_result(&response)
+}
+
+async fn resolve_shell_cwd(root: &std::path::Path, cwd: Option<crate::path::RelPath>) -> Result<String, McpError> {
+    let canonical_root = tokio::fs::canonicalize(root)
+        .await
+        .map_err(|error| mcp_internal("resolve workspace root", error))?;
+    let candidate = match cwd {
+        Some(rel) => {
+            let raw = rel
+                .as_str()
+                .ok_or_else(|| McpError::invalid_params("cwd is not valid UTF-8", None))?;
+            let relative = std::path::Path::new(raw);
+            if relative.is_absolute() {
+                return Err(McpError::invalid_params("cwd must be repository-relative", None));
+            }
+            root.join(relative)
+        }
+        None => root.to_path_buf(),
+    };
+    let absolute = tokio::fs::canonicalize(candidate)
+        .await
+        .map_err(|error| McpError::invalid_params(format!("cwd cannot be resolved: {error}"), None))?;
+    let metadata = tokio::fs::metadata(&absolute)
+        .await
+        .map_err(|error| McpError::invalid_params(format!("cwd cannot be inspected: {error}"), None))?;
+    if !absolute.starts_with(&canonical_root) || !metadata.is_dir() {
+        return Err(McpError::invalid_params(
+            "cwd must resolve to a directory inside the repository root",
+            None,
+        ));
+    }
+    absolute
+        .to_str()
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| McpError::invalid_params("cwd is not valid UTF-8", None))
 }
 
 /// Turn a failed visual presentation into the error the caller sees.
@@ -485,6 +510,15 @@ pub(super) async fn run_shell_capture(
     state: &ServerState,
     params: ShellCaptureParams,
 ) -> Result<CallToolResult, McpError> {
+    if params
+        .lines
+        .is_some_and(|line_count| line_count > crate::shells::session::MAX_CAPTURE_LINES)
+    {
+        return Err(McpError::invalid_params(
+            format!("lines must be at most {}", crate::shells::session::MAX_CAPTURE_LINES),
+            None,
+        ));
+    }
     let (_id, name) = require_session(state, &params.session_id).await?;
     let session = state
         .shared
@@ -563,11 +597,12 @@ pub(super) async fn run_shell_broadcast(
 /// `shell` mode `list`: enumerate every session the shared shell daemon currently holds, each flagged by
 /// its liveness.
 ///
-/// The daemon is the registry, so sessions spawned by another basemind process (a CLI invocation, a
-/// second `serve`) are listed here too, and a dead session is simply absent — `alive` is always
-/// `true`. The thread-model comms broker keeps no session-lineage keyspace, so the `parent_agent` /
-/// `child_agent` / `room_id` fields on each row stay `None`; a spawned session's coupling thread is
-/// surfaced by mode `spawn`'s own response instead.
+/// The daemon is the registry, so sessions spawned by another basemind process (a CLI invocation or
+/// a second `serve`) are listed here too. Completed retained sessions report `alive=false`; when a
+/// transient rmux inspection cannot determine liveness, the runtime conservatively reports known
+/// sessions as live rather than failing the whole list. The thread-model comms broker keeps no
+/// session-lineage keyspace, so the `parent_agent` / `child_agent` / `room_id` fields on each row
+/// stay `None`; a spawned session's coupling thread is surfaced by mode `spawn`'s own response.
 pub(super) async fn run_shell_list(state: &ServerState, _params: ShellListParams) -> Result<CallToolResult, McpError> {
     let runtime = state
         .shared
@@ -589,4 +624,33 @@ pub(super) async fn run_shell_list(state: &ServerState, _params: ShellListParams
         .collect();
     sessions.sort_by(|a, b| a.session_id.cmp(&b.session_id));
     json_result(&ShellListResponse { sessions })
+}
+
+#[cfg(test)]
+mod cwd_tests {
+    use super::resolve_shell_cwd;
+    use crate::path::RelPath;
+
+    #[tokio::test]
+    async fn shell_cwd_rejects_absolute_path_outside_workspace() {
+        let root = tempfile::tempdir().expect("workspace tempdir");
+        let outside = tempfile::tempdir().expect("outside tempdir");
+        let result = resolve_shell_cwd(
+            root.path(),
+            Some(RelPath::from(outside.path().to_string_lossy().as_ref())),
+        )
+        .await;
+        assert!(result.is_err(), "absolute cwd outside the workspace must be rejected");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn shell_cwd_rejects_symlink_escape() {
+        let root = tempfile::tempdir().expect("workspace tempdir");
+        let outside = tempfile::tempdir().expect("outside tempdir");
+        std::os::unix::fs::symlink(outside.path(), root.path().join("outside-link")).expect("create escaping symlink");
+
+        let result = resolve_shell_cwd(root.path(), Some(RelPath::from("outside-link"))).await;
+        assert!(result.is_err(), "symlink cwd outside the workspace must be rejected");
+    }
 }

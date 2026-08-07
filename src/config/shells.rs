@@ -22,8 +22,8 @@ pub struct ShellsConfig {
     /// Master switch. Only meaningful when the `shells` cargo feature is compiled in; when
     /// `false` the shell MCP / CLI tools are wired but no session is ever spawned.
     pub enabled: bool,
-    /// How a visual session is surfaced. Defaults to [`VisualMode::Current`] — a new tab in the
-    /// terminal that is already open.
+    /// How a visual session is surfaced. Defaults to [`VisualMode::Headless`] so background agent
+    /// work does not open terminal tabs; opt into `current` or `window` for a visible attachment.
     pub visual: VisualMode,
     /// Which terminal emulator to drive. [`TerminalChoice::Auto`] (the default) detects the
     /// running terminal from the environment and falls back gracefully.
@@ -43,7 +43,7 @@ impl Default for ShellsConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            visual: VisualMode::default(),
+            visual: VisualMode::Headless,
             terminal: TerminalChoice::default(),
             default_cols: DEFAULT_COLS,
             default_rows: DEFAULT_ROWS,
@@ -56,15 +56,14 @@ impl Default for ShellsConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum VisualMode {
-    /// Open the session as a new tab in the terminal that is already open. The default — it keeps
-    /// the user's window layout intact.
-    #[default]
+    /// Open the session as a new tab in the terminal that is already open.
     Current,
     /// Open the session in a brand-new terminal window.
     Window,
     /// Surface the session over a web frontend (wired by the lead; command-building is a no-op).
     Web,
-    /// Do not present the session at all; it runs headless.
+    /// Do not present the session at all; it runs headless. This is the default for agent work.
+    #[default]
     Headless,
 }
 
@@ -104,10 +103,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn should_default_to_current_tab_in_open_terminal() {
+    fn should_default_to_headless_background_sessions() {
         let cfg = ShellsConfig::default();
         assert!(cfg.enabled);
-        assert_eq!(cfg.visual, VisualMode::Current);
+        assert_eq!(cfg.visual, VisualMode::Headless);
         assert_eq!(cfg.terminal, TerminalChoice::Auto);
         assert_eq!(cfg.default_cols, 200);
         assert_eq!(cfg.default_rows, 50);

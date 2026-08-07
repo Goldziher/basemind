@@ -51,6 +51,10 @@ impl IdleReapState {
         let empty_since = self.empty_since.get_or_insert(now);
         now.duration_since(*empty_since) >= idle_after
     }
+
+    fn observe_unknown(&mut self, now: Instant, idle_after: Duration) -> bool {
+        self.observe(true, now, idle_after)
+    }
 }
 
 /// Inspect the process arguments and, when basemind was re-execed as the
@@ -214,7 +218,7 @@ async fn wait_until_sessions_idle(
 
     loop {
         tokio::time::sleep(check_every).await;
-        let sessions = match super::session::list_session_liveness(rmux).await {
+        let sessions = match super::session::list_session_liveness_strict(rmux).await {
             Ok(sessions) => sessions,
             Err(error) => {
                 if endpoint_is_absent(socket_path).await {
@@ -222,7 +226,13 @@ async fn wait_until_sessions_idle(
                     return;
                 }
                 tracing::warn!(error = %error, "embedded rmux daemon session poll failed; retrying");
-                state.observe(false, Instant::now(), idle_after);
+                if state.observe_unknown(Instant::now(), idle_after) {
+                    tracing::info!(
+                        idle_after_secs = idle_after.as_secs(),
+                        "embedded rmux daemon liveness unavailable through idle window; shutting down"
+                    );
+                    return;
+                }
                 continue;
             }
         };
@@ -430,6 +440,17 @@ mod tests {
             idle_after
         ));
         assert!(state.observe(true, started + idle_after * 2, idle_after));
+    }
+
+    #[test]
+    fn repeated_unknown_liveness_cannot_pin_daemon() {
+        let started = std::time::Instant::now();
+        let idle_after = std::time::Duration::from_secs(10);
+        let mut state = IdleReapState::default();
+
+        assert!(!state.observe_unknown(started, idle_after));
+        assert!(!state.observe_unknown(started + idle_after - std::time::Duration::from_nanos(1), idle_after));
+        assert!(state.observe_unknown(started + idle_after, idle_after));
     }
 
     #[test]

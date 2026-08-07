@@ -3352,7 +3352,7 @@ async fn shell_tools_spawn_capture_kill_through_mcp() {
     let spawned = service
         .call_tool(call_params(
             "shell",
-            json!({ "mode": "spawn", "command": "echo basemind-hi; sleep 5" }),
+            json!({ "mode": "spawn", "command": "echo basemind-hi", "cwd": "." }),
         ))
         .await
         .expect("shell spawn call");
@@ -3386,27 +3386,52 @@ async fn shell_tools_spawn_capture_kill_through_mcp() {
 
     let deadline = Instant::now() + Duration::from_secs(15);
     loop {
-        let captured = service
-            .call_tool(call_params(
-                "shell",
-                json!({ "mode": "capture", "session_id": session_id }),
-            ))
+        let listed = service
+            .call_tool(call_params("shell", json!({ "mode": "list" })))
             .await
-            .expect("shell capture call");
-        let text = decode_text(&captured)
-            .get("text")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string();
-        if text.contains("basemind-hi") {
+            .expect("shell list call while waiting for completion");
+        let completed = decode_text(&listed)
+            .get("sessions")
+            .and_then(Value::as_array)
+            .is_some_and(|sessions| {
+                sessions.iter().any(|session| {
+                    session.get("session_id").and_then(Value::as_str) == Some(session_id.as_str())
+                        && session.get("alive").and_then(Value::as_bool) == Some(false)
+                })
+            });
+        if completed {
             break;
         }
         assert!(
             Instant::now() < deadline,
-            "timed out waiting for sentinel via shell mode=capture; last text {text:?}"
+            "timed out waiting for the one-line shell command to complete"
         );
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
+
+    let captured = service
+        .call_tool(call_params(
+            "shell",
+            json!({ "mode": "capture", "session_id": session_id, "lines": 1 }),
+        ))
+        .await
+        .expect("capture completed one-line shell command");
+    assert_eq!(
+        decode_text(&captured).get("text").and_then(Value::as_str),
+        Some("basemind-hi"),
+        "shell capture must preserve the only output row after completion"
+    );
+
+    let oversized = service
+        .call_tool(call_params(
+            "shell",
+            json!({ "mode": "capture", "session_id": session_id, "lines": 501 }),
+        ))
+        .await;
+    assert!(
+        oversized.is_err(),
+        "shell capture must reject an unbounded line request"
+    );
 
     let killed = service
         .call_tool(call_params(

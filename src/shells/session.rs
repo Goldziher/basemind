@@ -23,6 +23,13 @@ pub(crate) const DEFAULT_COLS: u16 = 200;
 /// the height; this const is the floor applied when a caller passes `0`.
 pub(crate) const DEFAULT_ROWS: u16 = 50;
 
+/// Maximum number of non-blank output rows one capture call may return.
+pub(crate) const MAX_CAPTURE_LINES: usize = 500;
+
+const CAPTURE_SCAN_FACTOR: usize = 8;
+const MAX_CAPTURE_SCAN_ROWS: usize = 1024;
+const MAX_CAPTURE_BYTES: usize = 1024 * 1024;
+
 /// How a shell session's program is specified.
 ///
 /// `Shell` runs the string through the login shell (rmux's `ProcessCommandSpec::Shell`);
@@ -93,27 +100,84 @@ pub async fn send_text(session: &Session, text: &str, enter: bool) -> Result<()>
     pane.send_text(payload).await.context("send text to rmux pane")
 }
 
-/// Capture the currently-visible text of the session's primary pane.
+/// Capture the most recent rendered output from the session's primary pane.
 ///
-/// Returns the rendered screen as a single newline-joined string. When `lines`
-/// is supplied, only the last `lines` non-leading-blank rows are returned (the
-/// most recent output), so callers can ask for a tail rather than the whole
-/// screen. Trailing all-blank rows are always trimmed.
+/// Reads retained pane history so a completed one-line command remains visible
+/// to a fresh CLI or MCP client. Leading/trailing blank rows and rmux's terminal
+/// synthetic dead-pane row are omitted while interior spacing is preserved;
+/// `lines` caps the returned non-blank rows at 500 and defaults to 50 rows.
 pub async fn capture(session: &Session, lines: Option<usize>) -> Result<String> {
+    if lines.is_some_and(|line_count| line_count > MAX_CAPTURE_LINES) {
+        anyhow::bail!("capture lines exceeds maximum of {MAX_CAPTURE_LINES}");
+    }
+    let requested_lines = lines.unwrap_or(DEFAULT_ROWS as usize);
+    if requested_lines == 0 {
+        return Ok(String::new());
+    }
+    let scan_rows = requested_lines
+        .saturating_mul(CAPTURE_SCAN_FACTOR)
+        .saturating_add(DEFAULT_ROWS as usize + 1)
+        .min(MAX_CAPTURE_SCAN_ROWS);
     let pane = session.pane(0, 0);
-    let snapshot = pane.snapshot().await.context("snapshot rmux pane for capture")?;
-    let mut rows: Vec<String> = snapshot.visible_lines();
+    let captured = pane
+        .capture_pane()
+        .start(-(scan_rows as i64))
+        .await
+        .context("capture retained rmux pane output")?;
+    let output_start = captured.stdout.len().saturating_sub(MAX_CAPTURE_BYTES);
+    let output = String::from_utf8_lossy(&captured.stdout[output_start..]);
+    Ok(render_capture_rows(&output, requested_lines))
+}
 
+fn is_dead_pane_status(row: &str) -> bool {
+    (row.starts_with("Pane is dead (status ") || row.starts_with("Pane is dead (signal ")) && row.ends_with(')')
+}
+
+fn render_capture_rows(output: &str, requested_lines: usize) -> String {
+    let mut rows: Vec<&str> = output.lines().map(str::trim_end).collect();
+    let first_nonblank = rows.iter().position(|row| !row.trim().is_empty()).unwrap_or(rows.len());
+    rows.drain(..first_nonblank);
     while rows.last().is_some_and(|row| row.trim().is_empty()) {
         rows.pop();
     }
-
-    if let Some(tail) = lines {
-        let start = rows.len().saturating_sub(tail);
-        rows.drain(..start);
+    if rows.last().is_some_and(|row| is_dead_pane_status(row)) {
+        rows.pop();
+        while rows.last().is_some_and(|row| row.trim().is_empty()) {
+            rows.pop();
+        }
     }
 
-    Ok(rows.join("\n"))
+    let mut remaining = requested_lines;
+    let start = rows
+        .iter()
+        .enumerate()
+        .rev()
+        .find_map(|(index, row)| {
+            if row.trim().is_empty() {
+                return None;
+            }
+            remaining = remaining.saturating_sub(1);
+            (remaining == 0).then_some(index)
+        })
+        .unwrap_or(0);
+    rows[start..].join("\n")
+}
+
+async fn inspect_session_liveness(rmux: &Rmux, names: &[SessionName]) -> Result<Vec<(SessionName, bool)>> {
+    let panes = rmux.find_panes().all().await.context("inspect rmux pane liveness")?;
+    Ok(names
+        .iter()
+        .cloned()
+        .map(|name| {
+            let alive = process_states_show_live(
+                panes
+                    .iter()
+                    .filter(|pane| pane.session_name == name)
+                    .map(|pane| &pane.process),
+            );
+            (name, alive)
+        })
+        .collect())
 }
 
 /// List the names of all sessions currently known to the daemon.
@@ -127,19 +191,23 @@ pub async fn list_sessions(rmux: &Rmux) -> Result<Vec<SessionName>> {
 /// A retained session is inactive only when every discovered pane has explicitly exited.
 pub async fn list_session_liveness(rmux: &Rmux) -> Result<Vec<(SessionName, bool)>> {
     let names = list_sessions(rmux).await?;
-    let panes = rmux.find_panes().all().await.context("inspect rmux pane liveness")?;
-    Ok(names
-        .into_iter()
-        .map(|name| {
-            let alive = process_states_show_live(
-                panes
-                    .iter()
-                    .filter(|pane| pane.session_name == name)
-                    .map(|pane| &pane.process),
+    match inspect_session_liveness(rmux, &names).await {
+        Ok(sessions) => Ok(sessions),
+        Err(error) => {
+            tracing::warn!(
+                error = %error,
+                session_count = names.len(),
+                "shell_list: pane liveness unavailable; reporting known sessions conservatively live"
             );
-            (name, alive)
-        })
-        .collect())
+            Ok(names.into_iter().map(|name| (name, true)).collect())
+        }
+    }
+}
+
+/// Inspect session liveness without substituting conservative user-facing values.
+pub(crate) async fn list_session_liveness_strict(rmux: &Rmux) -> Result<Vec<(SessionName, bool)>> {
+    let names = list_sessions(rmux).await?;
+    inspect_session_liveness(rmux, &names).await
 }
 
 fn process_states_show_live<'a>(states: impl Iterator<Item = &'a PaneProcessState>) -> bool {
@@ -213,5 +281,26 @@ mod tests {
         assert!(process_states_show_live(
             [PaneProcessState::Exited, PaneProcessState::Running { pid: None }].iter()
         ));
+    }
+
+    #[test]
+    fn dead_pane_status_detection_does_not_hide_normal_output() {
+        assert!(is_dead_pane_status("Pane is dead (status 0, Fri Aug  7 07:31:03 2026)"));
+        assert!(is_dead_pane_status(
+            "Pane is dead (signal 15, Fri Aug  7 07:31:03 2026)"
+        ));
+        assert!(!is_dead_pane_status("command printed: Pane is dead (status 0)"));
+    }
+
+    #[test]
+    fn capture_rows_preserve_interior_blank_lines() {
+        let output = "first\n\nsecond\nPane is dead (status 0, now)\n";
+        assert_eq!(render_capture_rows(output, 2), "first\n\nsecond");
+    }
+
+    #[test]
+    fn capture_rows_only_filter_a_terminal_dead_pane_status() {
+        let output = "Pane is dead (status 0, now)\nstill user output\n";
+        assert_eq!(render_capture_rows(output, 2), output.trim_end());
     }
 }

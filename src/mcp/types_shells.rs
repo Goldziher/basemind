@@ -55,9 +55,10 @@ pub struct ShellParams {
     /// executed. Set `false` to send a raw keystroke fragment without a return.
     #[serde(default)]
     pub enter: Option<bool>,
-    /// `capture` only. Cap on how many trailing (most-recent) non-blank lines of the visible
-    /// screen to return. Omit to return the whole visible screen.
+    /// `capture` only. Cap on trailing non-blank rows of recent retained pane output. Maximum 500;
+    /// omit to return up to 50 rows.
     #[serde(default)]
+    #[schemars(range(max = 500))]
     pub lines: Option<usize>,
 }
 
@@ -103,7 +104,7 @@ pub struct ShellSpawnParams {
     /// login shell (e.g. `bash -lc '<command>'`). Required.
     pub command: String,
     /// Optional repository-relative working directory for the spawned process.
-    /// Forward-slash separated, no leading `/`.
+    /// Forward-slash separated, no leading `/`; defaults to the workspace root.
     #[serde(default)]
     pub cwd: Option<RelPath>,
     /// Optional environment-variable overrides applied to the spawned process.
@@ -166,16 +167,17 @@ pub struct ShellSendResponse {
 pub struct ShellCaptureParams {
     /// The `session_id` returned by `shell_spawn`.
     pub session_id: String,
-    /// Optional cap on how many trailing (most-recent) non-blank lines of the
-    /// visible screen to return. Omit to return the whole visible screen.
+    /// Optional cap on trailing non-blank rows of recent retained pane output.
+    /// Maximum 500; omit to return up to 50 rows.
     #[serde(default)]
+    #[schemars(range(max = 500))]
     pub lines: Option<usize>,
 }
 
 /// Response from `shell_capture`.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub struct ShellCaptureResponse {
-    /// The captured visible screen text (trailing blank lines trimmed).
+    /// Recent pane output with outer blank rows and a terminal synthetic status row omitted.
     pub text: String,
 }
 

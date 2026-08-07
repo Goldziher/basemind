@@ -18,6 +18,7 @@ use std::time::{Duration, Instant};
 
 use basemind::shells::session::{self, ShellCommand};
 use basemind::shells::{SessionId, ShellRuntime};
+use serde_json::Value;
 use tempfile::TempDir;
 
 static DAEMON_ENV: Once = Once::new();
@@ -117,6 +118,27 @@ fn init_daemon_env() {
 fn socket_in(dir: &TempDir) -> PathBuf {
     init_daemon_env();
     dir.path().join("shells.sock")
+}
+
+async fn run_shell_cli(root: &Path, socket: &Path, args: &[&str]) -> Value {
+    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_basemind"))
+        .arg("--root")
+        .arg(root)
+        .args(args)
+        .env("BASEMIND_SHELLS_SOCKET", socket)
+        .env("BASEMIND_MAX_DAEMONS", "64")
+        .env("RMUX_SDK_TIMEOUT_MS", "60000")
+        .output()
+        .await
+        .expect("run basemind shell CLI");
+    assert!(
+        output.status.success(),
+        "shell CLI failed: status={} stdout={} stderr={}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout).expect("parse shell CLI JSON")
 }
 
 /// Spawn one long-lived interactive session and return its id + rmux name.
@@ -364,6 +386,13 @@ async fn completed_short_lived_session_remains_capturable_until_explicit_kill() 
     assert_eq!(exit_state.code, Some(0), "bare echo should exit successfully");
     await_history_marker(rmux, &name, MARKER).await;
     assert_eq!(
+        session::capture(&completed, Some(1))
+            .await
+            .expect("capture completed one-line command through the public API"),
+        MARKER,
+        "the public capture path must retain the only output line after the pane exits"
+    );
+    assert_eq!(
         runtime.resolve(&session_id).await.expect("resolve completed session"),
         Some(name.clone()),
         "completed session should remain addressable until explicitly killed"
@@ -380,6 +409,55 @@ async fn completed_short_lived_session_remains_capturable_until_explicit_kill() 
     await_gone(rmux, &name).await;
 
     shutdown_daemon(&socket).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cli_capture_keeps_completed_one_line_command_in_workspace_root() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(
+        dir.path().join("basemind.toml"),
+        b"\"$schema\" = \"v1\"\n\n[shells]\nvisual = \"headless\"\n",
+    )
+    .expect("write headless shell config");
+    let socket = dir.path().join("shells.sock");
+    let mut daemon = spawn_isolated_daemon(&socket);
+    await_daemon_bound(&mut daemon, &socket).await;
+
+    let spawned = run_shell_cli(dir.path(), &socket, &["shell", "spawn", "--json", "pwd"]).await;
+    let session_id = spawned["session_id"].as_str().expect("spawned session id");
+
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let listed = run_shell_cli(dir.path(), &socket, &["shell", "list", "--json"]).await;
+        let completed = listed["sessions"]
+            .as_array()
+            .expect("session list")
+            .iter()
+            .any(|session| session["session_id"] == session_id && session["alive"] == false);
+        if completed {
+            break;
+        }
+        assert!(Instant::now() < deadline, "one-line CLI command did not complete");
+        tokio::time::sleep(DAEMON_POLL_INTERVAL).await;
+    }
+
+    let captured = run_shell_cli(
+        dir.path(),
+        &socket,
+        &["shell", "capture", session_id, "--json", "--lines", "1"],
+    )
+    .await;
+    assert_eq!(
+        captured["text"],
+        std::fs::canonicalize(dir.path())
+            .expect("canonical workspace root")
+            .to_string_lossy()
+            .as_ref(),
+        "CLI capture must preserve row zero and spawn in the requested workspace"
+    );
+
+    let killed = run_shell_cli(dir.path(), &socket, &["shell", "kill", session_id, "--json"]).await;
+    assert_eq!(killed["killed"], true, "completed CLI session must be removable");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
