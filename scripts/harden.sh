@@ -12,6 +12,7 @@ mkdir -p "${ROOT}"
 
 export BASEMIND_DATA_HOME="${BASEMIND_DATA_HOME:-${ROOT}/cache}"
 export BASEMIND_COMMS_DIR="${BASEMIND_COMMS_DIR:-${ROOT}/comms}"
+export BASEMIND_SHELLS_SOCKET="${BASEMIND_SHELLS_SOCKET:-${ROOT}/shells/rmux.sock}"
 if [ -z "${BASEMIND_HARDEN_KEEP:-}" ]; then
 	echo "==> wiping prior global index cache at ${BASEMIND_DATA_HOME}"
 	rm -rf "${BASEMIND_DATA_HOME}"
@@ -40,6 +41,11 @@ if [ -z "${BASEMIND_HARDEN_NO_BUILD:-}" ]; then
 	echo "==> building basemind (release, features: ${FEATURES:-default})"
 	cargo build --release --quiet ${feature_args[@]+"${feature_args[@]}"} --bin basemind
 fi
+
+workspace_root="$(pwd -P)"
+target_dir="${CARGO_TARGET_DIR:-${workspace_root}/target}"
+if [[ "${target_dir}" != /* ]]; then target_dir="${workspace_root}/${target_dir}"; fi
+export RMUX_SDK_DAEMON_BINARY="${RMUX_SDK_DAEMON_BINARY:-${target_dir}/release/basemind}"
 
 failed=()
 passed=()

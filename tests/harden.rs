@@ -1026,20 +1026,21 @@ fn assert_passing(repo_name: &str, scan: &ScanOutcome, repo_record: &mut RepoRec
                 ));
             }
             if precise_resolution_expected() {
-                let resolved = repo_record
+                let resolved_total = repo_record
                     .canaries
-                    .get("force_str_resolved")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false);
+                    .get("force_str_resolved_total")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0);
                 let cross_file = repo_record
                     .canaries
                     .get("force_str_cross_file_hits")
                     .and_then(Value::as_u64)
                     .unwrap_or(0);
-                if !resolved || cross_file < 1 {
+                if resolved_total < 1 || cross_file < 1 {
                     failures.push(format!(
-                        "django canary: find_callers(force_str) precise resolution regressed — resolved={resolved}, \
-                         cross-file hits={cross_file} (expected resolved=true and ≥ 1 cross-file caller)"
+                        "django canary: `code` mode=callers(force_str) precise resolution regressed — \
+                         resolved_total={resolved_total}, resolved cross-file hits={cross_file} \
+                         (expected ≥ 1 of each)"
                     ));
                 }
             }
@@ -1391,17 +1392,24 @@ async fn capture_canaries(svc: &ServiceHandle, repo_name: &str, repo_root: &Path
                 .await
             {
                 let body = decode_text(&out);
-                let resolved = body.get("resolved").and_then(Value::as_bool).unwrap_or(false);
+                let resolved_total = body.get("resolved_total").and_then(Value::as_u64).unwrap_or(0);
+                // Cross-file AND proven: a hit is only evidence of precise resolution when the
+                // resolver bound it to this definition. `resolved: false` still names a real call
+                // site of this name, so counting it here would let the name-only floor alone keep
+                // the canary green after a resolution regression.
                 let cross_file_hits = body
                     .get("hits")
                     .and_then(Value::as_array)
                     .map(|hits| {
                         hits.iter()
                             .filter(|h| h.get("path").and_then(Value::as_str) != Some("django/utils/encoding.py"))
+                            .filter(|h| h.get("resolved").and_then(Value::as_bool) == Some(true))
                             .count() as u64
                     })
                     .unwrap_or(0);
-                record.canaries.insert("force_str_resolved".into(), json!(resolved));
+                record
+                    .canaries
+                    .insert("force_str_resolved_total".into(), json!(resolved_total));
                 record
                     .canaries
                     .insert("force_str_cross_file_hits".into(), json!(cross_file_hits));
