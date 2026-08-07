@@ -15,7 +15,13 @@ ignore = [
   "RUSTSEC-2026-0192",
   "RUSTSEC-2025-0057",
   "RUSTSEC-2026-0206",
-  # Lock-only via liter-llm 1.15.0 -> rust_decimal 1.42.1 -> optional rkyv 0.7.46.
+  # xberg 1.0.14 -> biblib 0.4.3 keeps quick-xml 0.37.5 in the full-feature graph.
+  # RUSTSEC-2026-0194 is contained by scanner_docs rejecting .enw / application/x-endnote+xml
+  # before xberg; RUSTSEC-2026-0195 is unreachable because biblib uses Reader, never NsReader.
+  # Remove both with the containment after https://github.com/xberg-io/xberg/issues/1398 ships.
+  "RUSTSEC-2026-0194",
+  "RUSTSEC-2026-0195",
+  # Lock-only via liter-llm 1.16.0 -> rust_decimal 1.42.1 -> optional rkyv 0.7.46.
   # All workspace features, targets, and dev edges enable only rust_decimal default/serde/std; rkyv is not compiled.
   # Tracking: https://github.com/paupino/rust-decimal/issues/818 and https://github.com/paupino/rust-decimal/pull/819
   "RUSTSEC-2026-0235",

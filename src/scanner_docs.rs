@@ -144,6 +144,15 @@ const BINARY_EXTENSIONS: &[&str] = &[
     "so", "dylib", "dll", "a", "o", "obj", "bin", "exe", "wasm", "class", "pyc", "pyo", "pyd", "node", "pack", "idx",
 ];
 
+/// Document formats temporarily rejected because xberg 1.0.14 routes them through biblib 0.4.3's
+/// vulnerable quick-xml 0.37 parser (RUSTSEC-2026-0194). Remove with the matching MIME guard once
+/// xberg #1398 ships its already-landed biblib 0.8 / quick-xml 0.41 dependency update.
+const UNSAFE_DOCUMENT_EXTENSIONS: &[&str] = &["enw"];
+
+/// MIME counterpart to [`UNSAFE_DOCUMENT_EXTENSIONS`]. Keeping both guards makes the rejection
+/// explicit even if xberg's extension-based MIME detection learns another EndNote XML suffix.
+const UNSAFE_DOCUMENT_MIME: &[&str] = &["application/x-endnote+xml"];
+
 /// Archive MIME denylist (belt-and-suspenders with [`ARCHIVE_EXTENSIONS`]) — catches content-typed
 /// archives xberg maps to a real archive MIME. Gated OFF by `documents.extract_archives`, mirroring
 /// the extension floor. Entries ending in `/` are prefix matches (see [`matches_mime`]).
@@ -191,14 +200,15 @@ fn binary_ext_set() -> &'static AHashSet<&'static str> {
     ext_set(&SET, BINARY_EXTENSIONS)
 }
 
-/// True when a file must be skipped by the document tier because it is a binary blob, or (unless
-/// `documents.extract_archives` is set) an archive / compressed container. True binaries and the
-/// user-configured `extension_denylist` are always rejected; the archive floor is relaxed only when
-/// the caller opts into archive extraction.
+/// True when a file must be skipped by the document tier because it is unsafe to parse, a binary
+/// blob, or (unless `documents.extract_archives` is set) an archive / compressed container. Unsafe
+/// formats, true binaries, and the user-configured `extension_denylist` are always rejected; the
+/// archive floor is relaxed only when the caller opts into archive extraction.
 fn is_denied_binary_or_archive(abs: &Path, mime_type: &str, cfg: &DocumentsConfig) -> bool {
     if let Some(ext) = abs.extension().and_then(|e| e.to_str()) {
         let ext_lower = ext.to_ascii_lowercase();
-        if binary_ext_set().contains(ext_lower.as_str())
+        if UNSAFE_DOCUMENT_EXTENSIONS.contains(&ext_lower.as_str())
+            || binary_ext_set().contains(ext_lower.as_str())
             || cfg
                 .extension_denylist
                 .iter()
@@ -211,6 +221,9 @@ fn is_denied_binary_or_archive(abs: &Path, mime_type: &str, cfg: &DocumentsConfi
         }
     }
     if BINARY_MIME.iter().any(|entry| matches_mime(entry, mime_type)) {
+        return true;
+    }
+    if UNSAFE_DOCUMENT_MIME.iter().any(|entry| matches_mime(entry, mime_type)) {
         return true;
     }
     !cfg.extract_archives && ARCHIVE_MIME.iter().any(|entry| matches_mime(entry, mime_type))
@@ -565,6 +578,10 @@ pub(crate) fn doc_scope_for<'a>(
     }
     std::borrow::Cow::Owned(format!("path:{rel}"))
 }
+
+#[cfg(test)]
+#[path = "scanner_docs_security_tests.rs"]
+mod security_tests;
 
 #[cfg(test)]
 mod tests {
