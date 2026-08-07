@@ -21,7 +21,7 @@ use std::time::{Duration, SystemTime};
 use serde::{Deserialize, Serialize};
 
 use crate::store::{CACHE_DIR, WORKSPACE_MARKER_FILE, WORKSPACES_DIR, acquire_lock, cache_root, global_blobs_dir};
-use crate::store_gc::{GcError, GcReport, dir_size, read_dir};
+use crate::store_gc::{GcError, GcReport, dir_size, gc_global_blobs_in, read_dir};
 
 /// Environment variable holding the cache byte budget in MiB. Unset ⇒
 /// [`DEFAULT_CACHE_BUDGET_MIB`]; `0` ⇒ unlimited (budget enforcement disabled).
@@ -32,10 +32,14 @@ pub const CACHE_BUDGET_ENV: &str = "BASEMIND_CACHE_BUDGET_MB";
 /// contained long before it threatens the disk.
 const DEFAULT_CACHE_BUDGET_MIB: u64 = 20 * 1024;
 
-/// A workspace touched more recently than this is never evicted by budget enforcement, no matter
-/// how far over budget the cache is — evicting a hot workspace would force an immediate full
-/// rescan and thrash.
+/// Workspaces touched more recently than this are considered only after every cold candidate.
+/// Evicting a hot workspace risks an immediate rescan, but an absolute veto would let the cache
+/// remain unbounded when hot workspaces alone exceed the configured budget.
 const BUDGET_EVICTION_HOT_FLOOR: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// Budget eviction runs under the daemon's global GC write lock, so blobs orphaned by a deliberate
+/// workspace eviction can be reclaimed immediately without racing an in-flight scan.
+const BUDGET_ORPHAN_GRACE: Duration = Duration::ZERO;
 
 /// Filename of the persisted last-GC state, in the machine-global cache root (next to `blobs/`
 /// and `workspaces/`).
@@ -71,10 +75,26 @@ pub struct GcState {
 pub struct EvictReport {
     /// Combined cache footprint (workspaces + blobs) measured before eviction.
     pub total_bytes_before: u64,
+    /// Combined cache footprint measured after the final eviction/reclamation step.
+    pub total_bytes_after: u64,
     /// Workspace dirs evicted.
     pub evicted: usize,
     /// Bytes those dirs occupied (stat'd before deletion).
     pub bytes_freed: u64,
+    /// Blob files reclaimed after workspace eviction removed their final reference.
+    pub blobs_removed: usize,
+    /// Bytes reclaimed from those orphan blobs.
+    pub blob_bytes_freed: u64,
+    /// Hot workspaces evicted after cold candidates could not satisfy the budget.
+    pub hot_evicted: usize,
+    /// Workspaces skipped because another process held their lock.
+    pub locked_skipped: usize,
+}
+
+struct EvictionCandidate {
+    activity: SystemTime,
+    hot: bool,
+    dir: PathBuf,
 }
 
 /// The configured cache byte budget: [`CACHE_BUDGET_ENV`] in MiB, defaulting to
@@ -156,9 +176,9 @@ pub(crate) fn read_gc_state_at(path: &Path) -> Option<GcState> {
 }
 
 /// Enforce the cache byte budget against the machine-global cache: when workspaces + blobs
-/// exceed `budget_bytes`, evict the coldest workspace dirs (skipping anything touched within
-/// [`BUDGET_EVICTION_HOT_FLOOR`] or locked by a live process) until the projected footprint is
-/// back under budget. The evicted dirs' blobs orphan; the caller re-sweeps to reclaim them.
+/// exceed `budget_bytes`, evict the coldest workspace dirs, then hot dirs only if necessary.
+/// Locked workspaces remain protected. Each eviction immediately reclaims blobs that lost their
+/// final reference and remeasures the real footprint before selecting another victim.
 pub fn enforce_cache_budget(budget_bytes: u64) -> Result<EvictReport, GcError> {
     enforce_cache_budget_in(
         &cache_root().join(CACHE_DIR).join(WORKSPACES_DIR),
@@ -176,64 +196,85 @@ pub(crate) fn enforce_cache_budget_in(
     budget_bytes: u64,
     hot_floor: Duration,
 ) -> Result<EvictReport, GcError> {
+    let total = cache_footprint(workspaces_dir, blobs_dir)?;
     let mut report = EvictReport {
-        total_bytes_before: dir_size_or_zero(workspaces_dir)? + dir_size_or_zero(blobs_dir)?,
+        total_bytes_before: total,
+        total_bytes_after: total,
         ..EvictReport::default()
     };
     if report.total_bytes_before <= budget_bytes {
         return Ok(report);
     }
 
-    // Coldest-first candidate list: (last activity, size, dir). Activity is the newest mtime ~keep
-    // among the root marker and each view index — the files a scan always rewrites. ~keep
-    let now = SystemTime::now();
-    let mut candidates = Vec::new();
-    if workspaces_dir.exists() {
-        for entry in read_dir(workspaces_dir)? {
-            let entry = entry.map_err(|source| GcError::Io {
-                path: workspaces_dir.to_path_buf(),
-                source,
-            })?;
-            let dir = entry.path();
-            if !dir.is_dir() {
-                continue;
-            }
-            let activity = workspace_last_activity(&dir);
-            let idle = now.duration_since(activity).unwrap_or(Duration::ZERO);
-            if idle < hot_floor {
-                continue;
-            }
-            candidates.push((activity, dir_size(&dir)?, dir));
-        }
-    }
-    candidates.sort_by_key(|(activity, _, _)| *activity);
-
-    let mut projected = report.total_bytes_before;
-    for (_, size, dir) in candidates {
-        if projected <= budget_bytes {
+    for candidate in eviction_candidates(workspaces_dir, hot_floor)? {
+        if report.total_bytes_after <= budget_bytes {
             break;
         }
-        // Same live-use guard as the orphan reaper: never evict a workspace another process ~keep
-        // holds locked. ~keep
-        let Ok(lock) = acquire_lock(&dir) else {
-            tracing::debug!(workspace = %dir.display(), "over-budget workspace is locked; skipping");
+        let Some(size) = evict_workspace(&candidate.dir)? else {
+            report.locked_skipped += 1;
             continue;
         };
-        std::fs::remove_dir_all(&dir).map_err(|source| GcError::Io {
-            path: dir.clone(),
-            source,
-        })?;
-        drop(lock);
-        projected = projected.saturating_sub(size);
+        let reclaimed = gc_global_blobs_in(workspaces_dir, blobs_dir, BUDGET_ORPHAN_GRACE)?;
         report.evicted += 1;
         report.bytes_freed += size;
+        report.blobs_removed += reclaimed.removed;
+        report.blob_bytes_freed += reclaimed.bytes_freed;
+        report.hot_evicted += usize::from(candidate.hot);
+        report.total_bytes_after = cache_footprint(workspaces_dir, blobs_dir)?;
         tracing::info!(
-            workspace = %dir.display(),
-            bytes = size,
-            "evicted cold workspace cache to enforce the size budget"
+            workspace = %candidate.dir.display(),
+            workspace_bytes = size,
+            blob_bytes = reclaimed.bytes_freed,
+            total_bytes = report.total_bytes_after,
+            "evicted workspace cache to enforce the size budget"
         );
     }
     Ok(report)
+}
+
+fn eviction_candidates(workspaces_dir: &Path, hot_floor: Duration) -> Result<Vec<EvictionCandidate>, GcError> {
+    let mut candidates = Vec::new();
+    let now = SystemTime::now();
+    if !workspaces_dir.exists() {
+        return Ok(candidates);
+    }
+    for entry in read_dir(workspaces_dir)? {
+        let entry = entry.map_err(|source| GcError::Io {
+            path: workspaces_dir.to_path_buf(),
+            source,
+        })?;
+        let dir = entry.path();
+        if !dir.is_dir() {
+            continue;
+        }
+        let activity = workspace_last_activity(&dir);
+        let idle = now.duration_since(activity).unwrap_or(Duration::ZERO);
+        candidates.push(EvictionCandidate {
+            activity,
+            hot: idle < hot_floor,
+            dir,
+        });
+    }
+    candidates.sort_by_key(|candidate| (candidate.hot, candidate.activity));
+    Ok(candidates)
+}
+
+fn evict_workspace(dir: &Path) -> Result<Option<u64>, GcError> {
+    let Ok(lock) = acquire_lock(dir) else {
+        tracing::debug!(workspace = %dir.display(), "over-budget workspace is locked; skipping");
+        return Ok(None);
+    };
+    let size = dir_size(dir)?;
+    std::fs::remove_dir_all(dir).map_err(|source| GcError::Io {
+        path: dir.to_path_buf(),
+        source,
+    })?;
+    drop(lock);
+    Ok(Some(size))
+}
+
+fn cache_footprint(workspaces_dir: &Path, blobs_dir: &Path) -> Result<u64, GcError> {
+    Ok(dir_size_or_zero(workspaces_dir)? + dir_size_or_zero(blobs_dir)?)
 }
 
 /// Newest mtime among the files a scan always rewrites (`workspace.json`, each view's
@@ -324,11 +365,12 @@ mod tests {
         assert_eq!(report.evicted, 0, "under budget must evict nothing");
         assert_eq!(report.bytes_freed, 0);
         assert!(report.total_bytes_before > 0, "footprint is measured");
+        assert_eq!(report.total_bytes_after, report.total_bytes_before);
         assert!(ws.exists(), "workspace untouched");
     }
 
     #[test]
-    fn over_budget_evicts_the_coldest_workspace_first_and_stops_at_budget() {
+    fn over_budget_prefers_a_cold_workspace_and_stops_before_a_hot_one() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let workspaces = tmp.path().join("workspaces");
         let blobs = tmp.path().join("blobs");
@@ -340,27 +382,25 @@ mod tests {
             &"a".repeat(64),
             Duration::from_secs(10 * 24 * 3600),
         );
-        let warm = seed_workspace_aged(
-            &workspaces,
-            "key-warm",
-            &"b".repeat(64),
-            Duration::from_secs(2 * 24 * 3600),
-        );
+        let warm = seed_workspace_aged(&workspaces, "key-warm", &"b".repeat(64), Duration::from_secs(60));
 
         let total = dir_size(&workspaces).expect("size");
         let one_ws = dir_size(&cold).expect("size cold");
         let budget = total - one_ws / 2;
 
-        let report = enforce_cache_budget_in(&workspaces, &blobs, budget, Duration::ZERO).expect("enforce");
+        let report =
+            enforce_cache_budget_in(&workspaces, &blobs, budget, Duration::from_secs(24 * 3600)).expect("enforce");
 
         assert_eq!(report.evicted, 1, "one eviction suffices to reach the budget");
+        assert_eq!(report.hot_evicted, 0, "the cold candidate is preferred");
+        assert!(report.total_bytes_after <= budget, "the measured footprint converged");
         assert!(!cold.exists(), "the coldest workspace is the one evicted");
         assert!(warm.exists(), "the warmer workspace survives");
         assert!(report.bytes_freed >= one_ws, "freed bytes cover the evicted tree");
     }
 
     #[test]
-    fn a_workspace_inside_the_hot_floor_is_never_evicted() {
+    fn a_hot_workspace_is_evicted_when_it_is_the_only_way_to_converge() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let workspaces = tmp.path().join("workspaces");
         let blobs = tmp.path().join("blobs");
@@ -371,8 +411,52 @@ mod tests {
         let report = enforce_cache_budget_in(&workspaces, &blobs, 1, Duration::from_secs(24 * 3600))
             .expect("enforce with hot floor");
 
-        assert_eq!(report.evicted, 0, "a hot workspace is never evicted, even over budget");
-        assert!(hot.exists());
+        assert_eq!(report.evicted, 1, "the hot floor is a preference, not a budget veto");
+        assert_eq!(report.hot_evicted, 1);
+        assert!(report.total_bytes_after <= 1);
+        assert!(!hot.exists());
+    }
+
+    #[test]
+    fn reclaiming_an_evicted_workspaces_blobs_prevents_an_extra_eviction() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let workspaces = tmp.path().join("workspaces");
+        let blobs = tmp.path().join("blobs");
+        fs::create_dir_all(&blobs).expect("mk blobs");
+
+        let cold_stem = "c".repeat(64);
+        let cold = seed_workspace_aged(&workspaces, "key-cold", &cold_stem, Duration::from_secs(10 * 24 * 3600));
+        let warm = seed_workspace_aged(
+            &workspaces,
+            "key-warm",
+            &"d".repeat(64),
+            Duration::from_secs(2 * 24 * 3600),
+        );
+        let cold_blob = blobs.join(format!("{cold_stem}.fm.msgpack"));
+        fs::write(&cold_blob, vec![7_u8; 64 * 1024]).expect("write cold workspace blob");
+
+        let total = dir_size(&workspaces).unwrap() + dir_size(&blobs).unwrap();
+        let reclaimable = dir_size(&cold).unwrap() + fs::metadata(&cold_blob).unwrap().len();
+        let budget = total - reclaimable + 1;
+
+        let report = enforce_cache_budget_in(&workspaces, &blobs, budget, Duration::ZERO).expect("enforce");
+
+        assert_eq!(
+            report.evicted, 1,
+            "blob reclamation should make a second eviction unnecessary"
+        );
+        assert_eq!(report.blobs_removed, 1);
+        assert_eq!(report.blob_bytes_freed, 64 * 1024);
+        assert!(report.total_bytes_after <= budget);
+        assert!(!cold.exists());
+        assert!(
+            !cold_blob.exists(),
+            "the evicted workspace's orphan blob is reclaimed in the same pass"
+        );
+        assert!(
+            warm.exists(),
+            "the warmer workspace survives once the measured footprint converges"
+        );
     }
 
     #[test]
@@ -388,6 +472,8 @@ mod tests {
         let report = enforce_cache_budget_in(&workspaces, &blobs, 1, Duration::ZERO).expect("enforce");
 
         assert_eq!(report.evicted, 0, "a locked workspace is never evicted");
+        assert_eq!(report.locked_skipped, 1);
+        assert!(report.total_bytes_after > 1, "the report exposes non-convergence");
         assert!(locked.exists());
     }
 

@@ -336,9 +336,8 @@ pub fn reap_gc_and_enforce_budget() -> Result<GcReport, GcError> {
         if evicted.evicted > 0 {
             report.workspaces_evicted = evicted.evicted;
             report.evicted_bytes_freed = evicted.bytes_freed;
-            let resweep = gc_global_blobs()?;
-            report.removed += resweep.removed;
-            report.bytes_freed += resweep.bytes_freed;
+            report.removed += evicted.blobs_removed;
+            report.bytes_freed += evicted.blob_bytes_freed;
         }
     }
     persist_gc_state(&report);

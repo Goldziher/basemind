@@ -202,6 +202,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Cache budget enforcement could remain over its configured limit.** Eviction now prefers cold
+  workspaces but falls back to hot ones when required, reclaims newly orphaned blobs in the same
+  pass, and remeasures the actual cache footprint before selecting another workspace.
 - **Content-addressed blobs no longer consume raw msgpack size on disk (issue #49).** New `.fm`,
   `.doc`, `.rref`, and `.chunk` blobs use zstd-1 envelopes. Filemap L1/L2 frames remain independent
   so outline reads do not decompress calls, and chunk embedding metadata stays plain for cheap cache
