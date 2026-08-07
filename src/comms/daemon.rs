@@ -879,6 +879,24 @@ impl Broker {
         }
     }
 
+    /// Drop machine-registry rows whose on-disk path is gone, returning how many were removed.
+    ///
+    /// The registry is append-only by construction: a row is written when a workspace registers and
+    /// nothing ever retires it, so every throwaway checkout and test tempdir stays forever and buries
+    /// the live repos `workspace workspaces` exists to surface. Called from the daemon's periodic
+    /// maintenance pass; a failure is logged and reported as zero rather than propagated, because a
+    /// prune is opportunistic housekeeping and must never take the daemon down.
+    pub async fn prune_missing_registry_rows(&self) -> usize {
+        let mut registry = self.machine_registry.lock().await;
+        match registry.prune_missing() {
+            Ok(removed) => removed,
+            Err(error) => {
+                tracing::warn!(%error, "comms: machine registry prune failed");
+                0
+            }
+        }
+    }
+
     /// Release an advisory worktree claim held by `claimant`.
     async fn on_worktree_release(&self, repo_id: String, name: String, claimant: String) -> CommsResponse {
         let mut registry = self.machine_registry.lock().await;

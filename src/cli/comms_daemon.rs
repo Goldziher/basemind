@@ -164,6 +164,9 @@ pub fn run() -> Result<()> {
             use crate::comms::daemon::{THREAD_IDLE_TTL, THREAD_RETENTION_TTL, WORKSPACE_HOT_TTL};
             let mut tick = tokio::time::interval(PRUNE_EVERY);
             tick.tick().await;
+            // Sweep once at startup for the same reason the blob GC does: a daemon that restarts ~keep
+            // more often than PRUNE_EVERY would otherwise never retire a single stale row. ~keep
+            prune_missing_registry_rows(&broker_for_prune).await;
             loop {
                 tick.tick().await;
                 match store_for_prune.prune_expired(crate::comms::store::MESSAGE_TTL) {
@@ -187,6 +190,7 @@ pub fn run() -> Result<()> {
                 if evicted > 0 {
                     tracing::info!(evicted, "daemon: shed idle hot workspaces from RAM");
                 }
+                prune_missing_registry_rows(&broker_for_prune).await;
             }
         });
 
@@ -300,6 +304,15 @@ impl CommsFrontendObj for NamedPipeFrontendBox {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = std::io::Result<()>> + Send>> {
         use crate::comms::transport::CommsFrontend;
         Box::pin(async move { Box::new(self.0).serve(broker, shutdown).await })
+    }
+}
+
+/// Retire machine-registry rows whose on-disk path is gone, logging only when something was
+/// actually reclaimed so a quiet machine stays quiet in the log.
+async fn prune_missing_registry_rows(broker: &Broker) {
+    let removed = broker.prune_missing_registry_rows().await;
+    if removed > 0 {
+        tracing::info!(removed, "daemon: pruned machine-registry rows whose path is gone");
     }
 }
 
