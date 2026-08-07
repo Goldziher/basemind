@@ -409,6 +409,15 @@ pub enum CommsResponse {
         scanned: usize,
         /// Files whose index entries were written or refreshed.
         updated: usize,
+        /// Documents re-extracted and re-embedded. Counted apart from `updated`, which is code-map
+        /// only: a document has no tree-sitter grammar, so without this a document-only rescan
+        /// reports `updated: 0` and reads as though nothing was refreshed.
+        ///
+        /// Additive with `#[serde(default)]` so a daemon and a client on either side of this change
+        /// still talk: an older peer simply omits the field and it decodes as 0, which is what it
+        /// would have reported anyway.
+        #[serde(default)]
+        docs_indexed: usize,
         /// Files pruned because they no longer exist.
         removed: usize,
         /// Wall-clock scan time in milliseconds.

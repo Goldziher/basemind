@@ -488,6 +488,7 @@ async fn run_rescan(
     json_result(&super::types::RescanResponse {
         scanned: stats.scanned,
         updated: stats.updated,
+        docs_indexed: stats.docs_indexed,
         removed: stats.removed,
         skipped_unchanged: stats.skipped_unchanged,
         skipped_no_lang: stats.skipped_no_lang,
@@ -502,6 +503,7 @@ async fn run_rescan(
 struct RescanStats {
     scanned: usize,
     updated: usize,
+    docs_indexed: usize,
     removed: usize,
     skipped_unchanged: usize,
     skipped_no_lang: usize,
@@ -525,6 +527,7 @@ async fn fetch_rescan_stats(
         return Ok(RescanStats {
             scanned: report.scanned,
             updated: report.updated,
+            docs_indexed: report.docs_indexed,
             removed: report.removed,
             skipped_unchanged: 0,
             skipped_no_lang: 0,
@@ -535,6 +538,7 @@ async fn fetch_rescan_stats(
     Ok(RescanStats {
         scanned: report.stats.scanned,
         updated: report.stats.updated,
+        docs_indexed: report.stats.docs_indexed,
         removed: report.stats.removed,
         skipped_unchanged: report.stats.skipped_unchanged,
         skipped_no_lang: report.stats.skipped_no_lang,

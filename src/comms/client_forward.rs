@@ -37,11 +37,13 @@ impl CommsClient {
             CommsResponse::Rescanned {
                 scanned,
                 updated,
+                docs_indexed,
                 removed,
                 elapsed_ms,
             } => Ok(RescanReport {
                 scanned,
                 updated,
+                docs_indexed,
                 removed,
                 elapsed_ms,
             }),

@@ -776,6 +776,14 @@ pub struct RescanParams {
 pub(super) struct RescanResponse {
     pub scanned: usize,
     pub updated: usize,
+    /// Documents (PDF / Office / HTML / MDX — anything with no tree-sitter grammar) re-extracted and
+    /// re-embedded this rescan.
+    ///
+    /// Reported separately from `updated`, which counts CODE-map updates only. Without this a
+    /// document-only change reconciled to nothing at all: the file was scanned and genuinely
+    /// refreshed, but landed in no reported bucket, so `scanned` exceeded the sum of the counts and
+    /// `updated: 0` read as "rescan ignored my document" when the content had in fact been updated.
+    pub docs_indexed: usize,
     pub removed: usize,
     pub skipped_unchanged: usize,
     pub skipped_no_lang: usize,

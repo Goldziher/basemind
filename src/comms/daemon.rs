@@ -825,6 +825,7 @@ impl Broker {
             Ok(Ok((stats, false))) => CommsResponse::Rescanned {
                 scanned: stats.scanned,
                 updated: stats.updated,
+                docs_indexed: stats.docs_indexed,
                 removed: stats.removed,
                 elapsed_ms: started.elapsed().as_millis() as u64,
             },

@@ -68,6 +68,7 @@ pub(super) async fn writer_rescan_and_refresh(
         return Ok(RescanReport {
             scanned: stats.scanned,
             updated: stats.updated,
+            docs_indexed: stats.docs_indexed,
             removed: stats.removed,
             elapsed_ms: 0,
         });

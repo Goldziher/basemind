@@ -31,6 +31,8 @@ pub struct RescanReport {
     pub scanned: usize,
     /// Files whose index entries were written or refreshed.
     pub updated: usize,
+    /// Documents re-extracted and re-embedded. Separate from `updated`, which is code-map only.
+    pub docs_indexed: usize,
     /// Files pruned because they no longer exist.
     pub removed: usize,
     /// Wall-clock scan time in milliseconds.
