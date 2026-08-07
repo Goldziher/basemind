@@ -198,6 +198,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   | `shell_list` | `shell` `list` | `shells list` | `shell list` |
   | `shell_broadcast` | `shell` `broadcast` | `shells broadcast <text> --session <id>…` | `shell broadcast <text> --session <id>…` |
 
+### Fixed
+
+- **A resident daemon running different code at the same version was invisible.** After a local
+  rebuild or `cargo install --path .`, the version check compares only `MAJOR.MINOR.PATCH`, so the
+  daemon left over from the previous build passes every test and is reused — answering with stale
+  code while the newly installed binary sits unused. `basemind comms status` now reports a `build=`
+  identity (a hash of the running executable, so two builds differ exactly when their bytes do) and
+  warns explicitly when the daemon's build differs from the binary asking. The build id is
+  diagnostic only: it deliberately does not trigger takeover, because two same-version binaries at
+  different paths would then reclaim the socket from each other indefinitely.
+- **`admin rescan` reported a refreshed document in no bucket at all.** A rescan that re-indexed a
+  changed PDF/Office/HTML file returned `scanned: 3, skipped_unchanged: 2, updated: 0` — the
+  document lane's work was counted by the scanner but dropped from the response, which read as
+  "nothing happened" for documents users. The response now carries `docs_indexed`. Indexed data was
+  never stale; only the accounting was.
+- **`agents post` accepted an empty `body` and stored a message with nothing to read.** An empty
+  string is now refused with an error naming the mode and pointing at the subject-only form; omitting
+  `body` entirely stays legal.
+- **The machine registry never retired a row.** Workspaces were recorded on registration and nothing
+  ever removed them, so every throwaway checkout and test tempdir accumulated forever and buried the
+  live repos `workspace workspaces` exists to surface. The daemon now prunes rows whose path is gone,
+  once at startup and on its hourly maintenance pass.
+
 ## [0.23.1] — 2026-07-31
 
 ### Fixed
