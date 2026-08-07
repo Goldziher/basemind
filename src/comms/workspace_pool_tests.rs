@@ -7,6 +7,25 @@ use std::time::Duration;
 
 use super::*;
 
+struct UnusedHistoryHost;
+
+impl crate::git_history::remote::HistoryHost for UnusedHistoryHost {
+    fn run_history(
+        &self,
+        _root: PathBuf,
+        _op: crate::git_history::proto::GitHistoryOp,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = Result<crate::git_history::proto::GitHistoryReply, crate::git_history::GitHistoryError>,
+                > + Send
+                + '_,
+        >,
+    > {
+        Box::pin(async { unreachable!("plain workspace never opens git history") })
+    }
+}
+
 /// A temp workspace holding two trivial Rust sources — enough for the scanner to index symbols.
 fn workspace_with_sources() -> tempfile::TempDir {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -249,6 +268,41 @@ fn evict_idle_zero_drops_every_entry() {
     let dropped = pool.evict_idle(Duration::ZERO);
     assert_eq!(dropped, 1, "a zero idle window evicts everything");
     assert_eq!(pool.len(), 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn idle_eviction_stops_hosted_watcher_and_releases_read_stack() {
+    const RELEASE_TIMEOUT: Duration = Duration::from_secs(2);
+    const RELEASE_POLL_INTERVAL: Duration = Duration::from_millis(20);
+
+    store::init_isolated_cache();
+    let pool = std::sync::Arc::new(WorkspacePool::new(DEFAULT_HOT_CAP));
+    let workspace = workspace_with_sources();
+    pool.rescan(workspace.path(), None, false, false, &ScanCancel::default())
+        .expect("scan workspace");
+
+    let host: std::sync::Arc<dyn crate::mcp::HostBackend> = pool.clone();
+    let history_host: std::sync::Arc<dyn crate::git_history::remote::HistoryHost> =
+        std::sync::Arc::new(UnusedHistoryHost);
+    let shared = pool
+        .get_or_build_serve_state(workspace.path(), host, history_host)
+        .await
+        .expect("build hosted read stack");
+    let weak = std::sync::Arc::downgrade(&shared);
+    drop(shared);
+
+    assert_eq!(
+        pool.evict_idle(Duration::ZERO),
+        1,
+        "workspace is removed from the hot pool"
+    );
+    tokio::time::timeout(RELEASE_TIMEOUT, async {
+        while weak.upgrade().is_some() {
+            tokio::time::sleep(RELEASE_POLL_INTERVAL).await;
+        }
+    })
+    .await
+    .expect("eviction must stop the hosted watcher and release its read stack");
 }
 
 /// Full rescans that pile up behind an identical in-flight full scan coalesce: both requests

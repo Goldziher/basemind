@@ -143,6 +143,21 @@ pub use in_memory::{serve_in_memory, serve_in_memory_lean};
 pub(crate) use shared_state::SharedReadStack;
 pub(crate) use state::{Lifecycle, MapCache, ServerState};
 
+#[cfg(all(feature = "comms", any(unix, windows)))]
+/// A daemon-owned read stack and the watcher lifetime that keeps it fresh.
+pub(crate) struct HostedReadStack {
+    _watcher: background::WatcherGuard,
+    shared: Arc<SharedReadStack>,
+}
+
+#[cfg(all(feature = "comms", any(unix, windows)))]
+impl HostedReadStack {
+    /// Clone the read stack shared by every connection to this hosted workspace.
+    pub(crate) fn shared(&self) -> Arc<SharedReadStack> {
+        Arc::clone(&self.shared)
+    }
+}
+
 /// Public re-export of every tool `*Params` type plus the `Parameters` wrapper, so the
 /// in-process CLI (`src/cli/`) can build tool arguments and call the `#[tool]` methods
 /// directly. This is the parity-by-construction surface: the CLI runs the identical tool
@@ -214,6 +229,8 @@ pub(crate) type OutlineCache = Mutex<LruCache<(gix::ObjectId, LangId), Arc<Outli
 #[derive(Clone)]
 pub struct BasemindServer {
     pub(crate) state: Arc<ServerState>,
+    /// Shared by server clones so the last session handle shuts down its filesystem watcher.
+    _watcher: Option<Arc<background::WatcherGuard>>,
     #[allow(dead_code)]
     tool_router: ToolRouter<Self>,
     /// Reusable prompt templates (`prompts/list` + `prompts/get`). Built by the
@@ -371,6 +388,7 @@ impl BasemindServer {
             log_level: std::sync::atomic::AtomicU8::new(notifications::DEFAULT_LOG_ORDINAL),
             lean: std::sync::atomic::AtomicBool::new(lean::lean_mode_enabled()),
         });
+        let mut watcher = None;
         if options.background {
             let view_is_working = {
                 match state.shared.store.try_read() {
@@ -378,11 +396,12 @@ impl BasemindServer {
                     Err(_) => false,
                 }
             };
-            if options.watch && (options.daemon_writer || !options.read_only) && view_is_working {
-                background::spawn_serve_watcher(Arc::clone(&state));
+            let watcher_guard = if options.watch && (options.daemon_writer || !options.read_only) && view_is_working {
+                background::spawn_serve_watcher(Arc::clone(&state))
             } else {
-                background::spawn_view_watcher(Arc::clone(&state));
-            }
+                background::spawn_view_watcher(Arc::clone(&state))
+            };
+            watcher = Some(Arc::new(watcher_guard));
             Self::spawn_git_history_sync(&state, &history_dir);
             if needs_initial_scan {
                 background::spawn_initial_scan(Arc::clone(&state));
@@ -398,6 +417,7 @@ impl BasemindServer {
         }
         Self {
             state,
+            _watcher: watcher,
             tool_router: router_cache::cached_tool_router(),
             prompt_router: router_cache::cached_prompt_router(),
             tasks: TaskManager::new(),
@@ -452,6 +472,7 @@ impl BasemindServer {
     pub(crate) fn from_shared(shared: Arc<SharedReadStack>, agent_id: String) -> Self {
         Self {
             state: Arc::new(ServerState::for_connection(shared, agent_id)),
+            _watcher: None,
             tool_router: router_cache::cached_tool_router(),
             prompt_router: router_cache::cached_prompt_router(),
             tasks: TaskManager::new(),
@@ -476,7 +497,7 @@ impl BasemindServer {
         root: &std::path::Path,
         host: Arc<dyn HostBackend>,
         git_history_host: Arc<dyn crate::git_history::remote::HistoryHost>,
-    ) -> anyhow::Result<Arc<SharedReadStack>> {
+    ) -> anyhow::Result<HostedReadStack> {
         use anyhow::Context as _;
 
         let view = crate::store::VIEW_WORKING;
@@ -528,7 +549,7 @@ impl BasemindServer {
         ));
         // ~keep The warden shares the stack by Arc and owns every background facility for the workspace.
         let warden = Arc::new(ServerState::for_connection(Arc::clone(&shared), agent_id));
-        background::spawn_serve_watcher(Arc::clone(&warden));
+        let watcher = background::spawn_serve_watcher(Arc::clone(&warden));
         Self::spawn_git_history_sync(&warden, &history_dir);
         if needs_initial_scan {
             background::spawn_initial_scan(Arc::clone(&warden));
@@ -536,7 +557,10 @@ impl BasemindServer {
             background::spawn_cache_warm(Arc::clone(&warden));
         }
         tracing::info!(root = %root.display(), needs_initial_scan, "daemon hosting read stack for workspace");
-        Ok(shared)
+        Ok(HostedReadStack {
+            _watcher: watcher,
+            shared,
+        })
     }
 
     /// The git-history handle this session gets, if any. Fjall's directory lock is exclusive — even a

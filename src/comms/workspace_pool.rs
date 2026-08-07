@@ -74,7 +74,7 @@ struct WorkspaceEntry {
     /// once per client. `None`/uninitialised until the first relay connection; a pure comms build
     /// without any relay client never pays for it.
     #[cfg(all(feature = "comms", any(unix, windows)))]
-    serve_state: tokio::sync::OnceCell<std::sync::Arc<crate::mcp::SharedReadStack>>,
+    serve_state: tokio::sync::OnceCell<crate::mcp::HostedReadStack>,
     /// Count of relay connections currently being served against this workspace's shared read
     /// stack. Eviction (LRU + idle sweep) skips any entry with a live connection so a hosted
     /// workspace is never dropped from under an in-flight rmcp session.
@@ -293,7 +293,7 @@ impl WorkspacePool {
                 .map_err(|join| anyhow::anyhow!("hosted read stack build panicked: {join}"))?
             })
             .await?;
-        Ok(std::sync::Arc::clone(shared))
+        Ok(shared.shared())
     }
 
     /// Register one relay connection against `root`, returning a guard that decrements the live-count

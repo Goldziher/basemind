@@ -84,6 +84,13 @@ pub fn watch_paths(
     let filter = crate::scanner_filter::IndexFilter::new(root, config)?;
 
     loop {
+        if !matches!(
+            shutdown.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        ) {
+            info!("shutdown requested; exiting watcher");
+            return Ok(());
+        }
         match rx.recv_timeout(Duration::from_millis(200)) {
             Ok(Ok(events)) => {
                 filter.clear_cache();
@@ -112,12 +119,7 @@ pub fn watch_paths(
                     warn!(error = %e, "watch error");
                 }
             }
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                if shutdown.try_recv().is_ok() {
-                    info!("shutdown requested; exiting watcher");
-                    return Ok(());
-                }
-            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
                 info!("debouncer channel closed; exiting watcher");
                 return Ok(());
@@ -278,6 +280,51 @@ mod tests {
 
         let _ = shutdown_tx.send(());
         let _ = handle.join();
+    }
+
+    #[test]
+    fn shutdown_interrupts_sustained_event_batches() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().canonicalize().expect("canonicalize tempdir");
+        let mut config = crate::config::default_for_root(&root);
+        config.watch.debounce_ms = 1;
+
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+        let (batch_tx, batch_rx) = mpsc::channel::<usize>();
+        let (done_tx, done_rx) = mpsc::channel::<()>();
+        let pulse = root.join("pulse.rs");
+        let pulse_for_thread = pulse.clone();
+        let root_for_thread = root.clone();
+        let handle = std::thread::spawn(move || {
+            let mut generation = 0usize;
+            let result = watch_paths(&root_for_thread, &config, shutdown_rx, |_paths, _kind| {
+                generation += 1;
+                let _ = batch_tx.send(generation);
+                let _ = std::fs::write(&pulse_for_thread, format!("fn pulse_{generation}() {{}}\n"));
+            });
+            let _ = done_tx.send(());
+            result
+        });
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        while batch_rx.recv_timeout(Duration::from_millis(100)).is_err() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "watcher never entered the event loop"
+            );
+            std::fs::write(&pulse, b"fn pulse_0() {}\n").expect("write initial pulse");
+        }
+        for _ in 0..3 {
+            batch_rx
+                .recv_timeout(Duration::from_secs(2))
+                .expect("sustained batch arrives");
+        }
+
+        shutdown_tx.send(()).expect("signal shutdown under load");
+        done_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("watcher must observe shutdown without waiting for a quiet receive timeout");
+        handle.join().expect("join watcher").expect("watcher succeeds");
     }
 
     /// A rename must still surface the new path. Under `NoCache` the debouncer no longer stitches

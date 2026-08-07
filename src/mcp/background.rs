@@ -1,6 +1,7 @@
 //! Detached background facilities spawned by `serve`: blob GC and the two filesystem watchers.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use super::helpers;
 use super::{MapCache, ServerState};
@@ -204,39 +205,42 @@ fn refresh_batch(
     Ok((report.stats.scanned, report.stats.updated, report.stats.removed))
 }
 
-/// Active filesystem watcher embedded in `serve` for the working view.
+const VIEW_WATCHER_DEBOUNCE: Duration = Duration::from_millis(150);
+const VIEW_WATCHER_SHUTDOWN_POLL: Duration = Duration::from_millis(200);
+
+/// Drop guard that requests shutdown of a filesystem watcher.
+pub(super) struct WatcherGuard {
+    shutdown: Option<tokio::sync::oneshot::Sender<()>>,
+}
+
+impl Drop for WatcherGuard {
+    fn drop(&mut self) {
+        if let Some(shutdown) = self.shutdown.take() {
+            let _ = shutdown.send(());
+        }
+    }
+}
+
+/// Spawn a working-tree watcher whose lifetime is controlled by the returned guard.
 ///
-/// Unlike [`spawn_view_watcher`] (which is passive — it only reacts to an
-/// external process writing `index.msgpack`), this watches the working tree
-/// directly and funnels every debounced batch of changed paths into the
-/// canonical in-process refresh, [`helpers::scan_and_refresh`]. That re-scans
-/// under serve's already-open `Store` (its `RwLock`), so we never open a second
-/// `.basemind/.lock` flock — the reason we cannot reuse `watcher::watch`, which
-/// owns its own `Store`.
-///
-/// Threading bridge: `watcher::watch_paths` runs the debouncer on a blocking std
-/// thread, but `scan_and_refresh` is async. We capture the current tokio runtime
-/// `Handle` at spawn time and `handle.block_on(...)` the refresh inside the
-/// callback. `block_on` is safe here because the callback runs on a plain OS
-/// thread with no tokio runtime entered (it's `std::thread`, not a worker), so
-/// the "cannot block the current thread from within a runtime" guard never trips.
-///
-/// Lifetime: the thread is detached and runs for the process lifetime, mirroring
-/// `spawn_view_watcher`. The `shutdown` oneshot sender is moved INTO the thread
-/// and held for its whole life (`_keep_sender_alive`), so `watch_paths`'s
-/// `shutdown.try_recv()` never sees `Disconnected` — the loop exits when the
-/// process tears down stdio and the debouncer channel closes. A failed
-/// incremental refresh is logged and swallowed so a transient scan error never
-/// kills the watcher.
-pub(super) fn spawn_serve_watcher(state: Arc<ServerState>) {
+/// Unlike [`spawn_view_watcher`], this watches source paths and bridges each debounced refresh from
+/// a blocking OS thread back through the current Tokio runtime. Dropping the guard requests
+/// shutdown and releases the watcher-owned server state.
+pub(super) fn spawn_serve_watcher(state: Arc<ServerState>) -> WatcherGuard {
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+    spawn_serve_watcher_thread(state, shutdown_rx);
+    WatcherGuard {
+        shutdown: Some(shutdown_tx),
+    }
+}
+
+fn spawn_serve_watcher_thread(state: Arc<ServerState>, shutdown_rx: tokio::sync::oneshot::Receiver<()>) {
     let root = state.shared.root.clone();
     let config = Arc::clone(&state.shared.config);
     let handle = tokio::runtime::Handle::current();
-    let (_shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
     std::thread::Builder::new()
         .name("basemind-mcp-serve-watcher".to_string())
         .spawn(move || {
-            let _keep_sender_alive = _shutdown_tx;
             tracing::info!(root = %root.display(), "serve watcher armed (live incremental rescan)");
             let result = crate::watcher::watch_paths(&root, &config, shutdown_rx, |paths, _kind| {
                 use std::sync::atomic::Ordering;
@@ -273,11 +277,16 @@ fn reopen_read_only(state: &ServerState, view: &str) -> Result<crate::store::Sto
     crate::store::Store::open_read_only(state.shared.root.as_path(), view)
 }
 
-pub(super) fn spawn_view_watcher(state: Arc<ServerState>) {
+/// Spawn a passive index watcher whose lifetime is controlled by the returned guard.
+pub(super) fn spawn_view_watcher(state: Arc<ServerState>) -> WatcherGuard {
+    let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+    let guard = WatcherGuard {
+        shutdown: Some(shutdown_tx),
+    };
     let (basemind_dir, view) = {
         let store = match state.shared.store.try_read() {
             Ok(g) => g,
-            Err(_) => return,
+            Err(_) => return guard,
         };
         (store.basemind_dir.clone(), store.view.clone())
     };
@@ -289,13 +298,12 @@ pub(super) fn spawn_view_watcher(state: Arc<ServerState>) {
         .spawn(move || {
             use notify::RecommendedWatcher;
             use notify_debouncer_full::{NoCache, new_debouncer_opt};
-            use std::time::Duration;
 
             let (tx, rx) = std::sync::mpsc::channel();
             // ~keep NoCache, not the default FileIdMap — see src/watcher.rs (issue #43). We only
             // ~keep compare event paths to `target`, so the FileId rename cache is dead weight here.
             let mut debouncer = match new_debouncer_opt::<_, RecommendedWatcher, NoCache>(
-                Duration::from_millis(150),
+                VIEW_WATCHER_DEBOUNCE,
                 None,
                 tx,
                 NoCache::new(),
@@ -313,7 +321,18 @@ pub(super) fn spawn_view_watcher(state: Arc<ServerState>) {
             }
             tracing::info!(target = %target.display(), "view watcher armed");
 
-            while let Ok(result) = rx.recv() {
+            loop {
+                if !matches!(
+                    shutdown_rx.try_recv(),
+                    Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+                ) {
+                    break;
+                }
+                let result = match rx.recv_timeout(VIEW_WATCHER_SHUTDOWN_POLL) {
+                    Ok(result) => result,
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                };
                 let events = match result {
                     Ok(e) => e,
                     Err(_) => continue,
@@ -358,4 +377,5 @@ pub(super) fn spawn_view_watcher(state: Arc<ServerState>) {
             tracing::info!("view watcher: channel closed; exiting");
         })
         .ok();
+    guard
 }
