@@ -20,8 +20,12 @@ use std::process::{Child, Command};
 use std::time::{Duration, Instant};
 
 use basemind::comms::client::CommsClient;
+use basemind::comms::http_frontend;
 use basemind::comms::ids::AgentId;
 use basemind::comms::singleton::{CommsPaths, comms_socket_path, probe_alive};
+use serde_json::{Value, json};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpStream;
 
 const BIN: &str = env!("CARGO_BIN_EXE_basemind");
 
@@ -42,6 +46,7 @@ impl Daemon {
             // Isolate the daemon's registry snapshot + index writes to the same tempdir so this ~keep
             // test never touches the real XDG cache, and a restart reloads the same state. ~keep
             .env("BASEMIND_DATA_HOME", comms_dir)
+            .env(http_frontend::HTTP_ADDR_ENV, "127.0.0.1:0")
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
@@ -112,6 +117,49 @@ async fn connect(socket: &Path, agent: &str, root: &Path) -> CommsClient {
     )
     .await
     .unwrap_or_else(|e| panic!("connect {agent}: {e}"))
+}
+
+/// Send one stateless MCP JSON-RPC call to the daemon's hosted HTTP frontend.
+async fn hosted_tool_call(addr: &str, root: &Path, agent: &str, id: usize, tool: &str, arguments: Value) -> Value {
+    let mode = arguments["mode"].as_str().unwrap_or("unknown");
+    let target = format!("/mcp?root={}&agent={agent}", root.display());
+    let body = json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "method": "tools/call",
+        "params": {"name": tool, "arguments": arguments}
+    })
+    .to_string();
+    let mut stream = TcpStream::connect(addr).await.expect("connect hosted MCP frontend");
+    let request = format!(
+        "POST {target} HTTP/1.1\r\nHost: {addr}\r\nAccept: application/json, text/event-stream\r\n\
+         Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    stream
+        .write_all(request.as_bytes())
+        .await
+        .expect("write hosted MCP request");
+    stream.flush().await.expect("flush hosted MCP request");
+
+    let mut raw = Vec::new();
+    stream.read_to_end(&mut raw).await.expect("read hosted MCP response");
+    let response = String::from_utf8_lossy(&raw);
+    let status = response
+        .split_whitespace()
+        .nth(1)
+        .and_then(|code| code.parse::<u16>().ok())
+        .unwrap_or_else(|| panic!("hosted MCP response has no status: {response}"));
+    let response_body = response.split("\r\n\r\n").nth(1).unwrap_or_default();
+    assert_eq!(status, 200, "hosted {tool}/{mode} must return 200: {response_body}");
+    assert!(
+        !response_body.contains("SpawnTimeout")
+            && !response_body.contains("spawned comms daemon")
+            && !response_body.contains("contender"),
+        "hosted {tool}/{mode} must not probe or spawn a daemon contender: {response_body}"
+    );
+    serde_json::from_str(response_body)
+        .unwrap_or_else(|error| panic!("hosted {tool}/{mode} response is not JSON ({error}): {response_body}"))
 }
 
 /// Run a git command in `cwd`, asserting success.
@@ -190,6 +238,182 @@ fn stress_knob(var: &str, default: usize) -> usize {
         .and_then(|v| v.parse().ok())
         .filter(|n| *n > 0)
         .unwrap_or(default)
+}
+
+/// Regression: stateless MCP requests hosted by the comms daemon must connect directly back to its
+/// broker. They must not enter the singleton ensure/probe path from inside the daemon, which can
+/// stall concurrent cold identities until `SpawnTimeout` while each request waits for a contender.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_cold_hosted_agents_and_workspace_calls_use_the_running_daemon() {
+    const MIN_IDENTITIES_PER_TOOL: usize = 8;
+    const MAX_IDENTITIES_PER_TOOL: usize = 32;
+    const IDENTITIES_PER_WORKER: usize = 2;
+    const COMPLETION_BOUND: Duration = Duration::from_secs(20);
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let comms_dir = tmp.path().join("comms");
+    let repo = tmp.path().join("repo");
+    init_git_repo(&repo);
+
+    let daemon = Daemon::start(&comms_dir);
+    let socket = daemon.socket().to_path_buf();
+    let mut observer = connect(&socket, "hosted-observer-before", &repo).await;
+    let daemon_pid = observer.status().await.expect("status before hosted calls").pid;
+    drop(observer);
+    let addr = http_frontend::await_http_ready(&comms_dir, Duration::from_secs(10))
+        .await
+        .expect("daemon-hosted MCP transport ready");
+
+    let worker_count = std::thread::available_parallelism().map_or(1, usize::from);
+    let identities_per_tool = worker_count
+        .saturating_mul(IDENTITIES_PER_WORKER)
+        .clamp(MIN_IDENTITIES_PER_TOOL, MAX_IDENTITIES_PER_TOOL);
+    let mut calls = tokio::task::JoinSet::new();
+    for index in 0..identities_per_tool {
+        for (tool, mode) in [("agents", "inbox"), ("workspace", "workspaces")] {
+            let addr = addr.clone();
+            let repo = repo.clone();
+            let agent = format!("hosted-{tool}-{index}");
+            calls.spawn(async move {
+                let response = hosted_tool_call(&addr, &repo, &agent, index, tool, json!({"mode": mode})).await;
+                (agent, tool, mode, response)
+            });
+        }
+    }
+
+    let responses = tokio::time::timeout(COMPLETION_BOUND, async move {
+        let mut responses = Vec::with_capacity(identities_per_tool * 2);
+        while let Some(result) = calls.join_next().await {
+            responses.push(result.expect("hosted tool task must not panic"));
+        }
+        responses
+    })
+    .await
+    .expect("all concurrent cold hosted calls must complete within the bound");
+
+    assert_eq!(responses.len(), identities_per_tool * 2);
+    for (agent, tool, mode, response) in responses {
+        assert!(
+            response.get("error").is_none() && response["result"].is_object(),
+            "hosted {tool}/{mode} for {agent} must succeed: {response}"
+        );
+        assert_ne!(
+            response["result"]["isError"],
+            Value::Bool(true),
+            "hosted {tool}/{mode} for {agent} returned a tool error: {response}"
+        );
+    }
+
+    let mut observer = connect(&socket, "hosted-observer-after", &repo).await;
+    let after_pid = observer.status().await.expect("status after hosted calls").pid;
+    assert_eq!(after_pid, daemon_pid, "hosted calls must stay on the original daemon");
+    drop(observer);
+    daemon.stop();
+}
+
+/// A keyword search served inside the daemon must read the pool's live fjall index through the
+/// in-process host seam. Forwarding over the daemon's own socket would deadlock; silently degrading
+/// would return no hits even though the indexed fixture contains an exact lexical match.
+#[cfg(feature = "code-search")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn hosted_keyword_search_reads_the_daemon_index_without_self_forwarding() {
+    const HOSTED_CALL_BOUND: Duration = Duration::from_secs(20);
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let comms_dir = tmp.path().join("comms");
+    let repo = tmp.path().join("repo");
+    std::fs::create_dir_all(&repo).expect("mkdir repo");
+    std::fs::write(
+        repo.join("lib.rs"),
+        b"pub fn parse_config(input: &str) -> usize { input.lines().count() }\n",
+    )
+    .expect("write fixture");
+    std::fs::write(
+        repo.join("basemind.toml"),
+        b"\"$schema\" = \"v1\"\n\n[code_search]\nembed = false\n",
+    )
+    .expect("write embed-disabled config");
+
+    let scan = Command::new(BIN)
+        .current_dir(&repo)
+        .env("BASEMIND_DATA_HOME", &comms_dir)
+        .arg("scan")
+        .output()
+        .expect("scan hosted keyword fixture");
+    assert!(
+        scan.status.success(),
+        "fixture scan must succeed: {}",
+        String::from_utf8_lossy(&scan.stderr)
+    );
+
+    let daemon = Daemon::start(&comms_dir);
+    let socket = daemon.socket().to_path_buf();
+    let mut observer = connect(&socket, "hosted-search-observer-before", &repo).await;
+    let daemon_pid = observer.status().await.expect("status before hosted search").pid;
+    drop(observer);
+    let addr = http_frontend::await_http_ready(&comms_dir, Duration::from_secs(10))
+        .await
+        .expect("daemon-hosted MCP transport ready");
+
+    let response = tokio::time::timeout(
+        HOSTED_CALL_BOUND,
+        hosted_tool_call(
+            &addr,
+            &repo,
+            "hosted-keyword-search",
+            1,
+            "code",
+            json!({
+                "mode": "semantic",
+                "query": "parse config",
+                "lane": "keyword",
+                "limit": 10
+            }),
+        ),
+    )
+    .await
+    .expect("hosted keyword search must complete within the bound");
+    assert!(
+        response.get("error").is_none() && response["result"].is_object(),
+        "hosted keyword search must return a successful JSON-RPC result: {response}"
+    );
+    assert_ne!(
+        response["result"]["isError"],
+        Value::Bool(true),
+        "hosted keyword search returned a tool error: {response}"
+    );
+    let result_text = response["result"]["content"]
+        .as_array()
+        .and_then(|content| content.first())
+        .and_then(|content| content["text"].as_str())
+        .unwrap_or_else(|| panic!("hosted keyword result must contain JSON text: {response}"));
+    let result: Value = serde_json::from_str(result_text)
+        .unwrap_or_else(|error| panic!("hosted keyword tool payload is not JSON ({error}): {result_text}"));
+    assert!(
+        result.get("degraded_lanes").is_none() || result["degraded_lanes"].as_array().is_some_and(Vec::is_empty),
+        "hosted keyword search must not report degraded lanes: {result}"
+    );
+    let hits = result["hits"]
+        .as_array()
+        .unwrap_or_else(|| panic!("hosted keyword response must contain hits: {result}"));
+    assert!(
+        !hits.is_empty(),
+        "hosted keyword search must find the indexed fixture: {result}"
+    );
+    assert!(
+        hits.iter().all(|hit| {
+            hit["matched_lanes"]
+                .as_array()
+                .is_some_and(|lanes| lanes.iter().any(|lane| lane == "keyword"))
+        }),
+        "every keyword-only hit must identify the keyword lane: {result}"
+    );
+
+    let mut observer = connect(&socket, "hosted-search-observer-after", &repo).await;
+    let after_pid = observer.status().await.expect("status after hosted search").pid;
+    assert_eq!(after_pid, daemon_pid, "hosted search must stay on the original daemon");
+    drop(observer);
+    daemon.stop();
 }
 
 /// Regression: concurrent FIRST-touch rescans of the same COLD workspace must all succeed. The
