@@ -136,6 +136,8 @@ pub enum GraphCmd {
         min_confidence: Option<f32>,
         #[arg(long)]
         max_nodes: Option<u32>,
+        #[arg(long)]
+        max_edges: Option<u32>,
         /// Also write the rendered export to the cache and print its path in `output_path`.
         #[arg(long)]
         write: bool,
@@ -154,6 +156,8 @@ pub enum GraphCmd {
         min_confidence: Option<f32>,
         #[arg(long)]
         max_nodes: Option<u32>,
+        #[arg(long)]
+        max_edges: Option<u32>,
         /// Only write the export and print its path; do not open a viewer.
         #[arg(long = "no-open")]
         no_open: bool,
@@ -173,6 +177,8 @@ pub enum GraphCmd {
         min_confidence: Option<f32>,
         #[arg(long)]
         max_nodes: Option<u32>,
+        #[arg(long)]
+        max_edges: Option<u32>,
         /// Only resolve/write the UI and print its URL; do not open a viewer.
         #[arg(long = "no-open")]
         no_open: bool,
@@ -291,6 +297,7 @@ pub async fn run(server: &BasemindServer, cmd: GraphCmd, opts: &Emit, out: &mut 
             algorithm,
             min_confidence,
             max_nodes,
+            max_edges,
             write,
         } => GraphParams {
             format: Some(format),
@@ -299,6 +306,7 @@ pub async fn run(server: &BasemindServer, cmd: GraphCmd, opts: &Emit, out: &mut 
             algorithm: Some(algorithm),
             min_confidence,
             max_nodes,
+            max_edges,
             write: Some(write),
             ..GraphParams::new(GraphMode::Export)
         },
@@ -309,6 +317,7 @@ pub async fn run(server: &BasemindServer, cmd: GraphCmd, opts: &Emit, out: &mut 
             algorithm,
             min_confidence,
             max_nodes,
+            max_edges,
             no_open,
         } => GraphParams {
             format: Some(format),
@@ -317,6 +326,7 @@ pub async fn run(server: &BasemindServer, cmd: GraphCmd, opts: &Emit, out: &mut 
             algorithm: Some(algorithm),
             min_confidence,
             max_nodes,
+            max_edges,
             open: Some(!no_open),
             ..GraphParams::new(GraphMode::Display)
         },
@@ -327,6 +337,7 @@ pub async fn run(server: &BasemindServer, cmd: GraphCmd, opts: &Emit, out: &mut 
             algorithm,
             min_confidence,
             max_nodes,
+            max_edges,
             no_open,
         } => GraphParams {
             format: Some(format),
@@ -335,6 +346,7 @@ pub async fn run(server: &BasemindServer, cmd: GraphCmd, opts: &Emit, out: &mut 
             algorithm: Some(algorithm),
             min_confidence,
             max_nodes,
+            max_edges,
             open: Some(!no_open),
             ..GraphParams::new(GraphMode::Open)
         },

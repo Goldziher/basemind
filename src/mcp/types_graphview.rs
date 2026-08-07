@@ -52,6 +52,9 @@ pub struct GraphExportParams {
     /// Cap on nodes in the rendered view, most central first. Default 500, max 2000.
     #[serde(default)]
     pub max_nodes: Option<u32>,
+    /// Hard cap on rendered edges. Default 200, max 2000.
+    #[serde(default)]
+    pub max_edges: Option<u32>,
     /// When true, also write the rendered content to a file in basemind's machine-global cache
     /// (`<workspace-cache>/exports/graph-<hash>.<ext>`) and return its absolute path in
     /// `output_path`. Off by default — the content is always returned inline regardless. Useful for
@@ -70,9 +73,12 @@ pub struct GraphExportResponse {
     pub node_count: u32,
     /// Edges in the rendered view.
     pub edge_count: u32,
+    /// Edges available before applying `max_edges`.
+    pub edge_count_total: u32,
     /// Communities present in the rendered view.
     pub community_count: u32,
-    /// True when the underlying scan was truncated or the view was capped by `max_nodes`.
+    /// True when the underlying scan was truncated or the view was capped by `max_nodes` /
+    /// `max_edges`.
     pub truncated: bool,
     /// Absolute path of the file written to the cache when `write` was set; omitted otherwise.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -110,6 +116,9 @@ pub struct DisplayParams {
     /// Cap on nodes in the rendered view, most central first. Default 500, max 2000.
     #[serde(default)]
     pub max_nodes: Option<u32>,
+    /// Hard cap on rendered edges. Default 2000, max 2000.
+    #[serde(default)]
+    pub max_edges: Option<u32>,
     /// When true (default), open the rendered view in the human's default viewer. Set false to only
     /// write the export and return its path — the right choice for headless automation and tests, so
     /// the tool never spawns a viewer process.
@@ -144,9 +153,12 @@ pub struct DisplayResponse {
     pub node_count: u32,
     /// Edges in the rendered view.
     pub edge_count: u32,
+    /// Edges available before applying `max_edges`.
+    pub edge_count_total: u32,
     /// Communities present in the rendered view.
     pub community_count: u32,
-    /// True when the underlying scan was truncated or the view was capped by `max_nodes`.
+    /// True when the underlying scan was truncated or the view was capped by `max_nodes` /
+    /// `max_edges`.
     pub truncated: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notice: Option<super::types::LifecycleNotice>,
@@ -181,6 +193,9 @@ pub struct UiParams {
     /// Cap on nodes in the rendered view, most central first. Default 500, max 2000.
     #[serde(default)]
     pub max_nodes: Option<u32>,
+    /// Hard cap on rendered edges. Default 2000, max 2000.
+    #[serde(default)]
+    pub max_edges: Option<u32>,
     /// When true (default), open the returned URL in the human's default viewer. Set false to only
     /// resolve/write the UI and return its `url` without launching anything — the right choice for
     /// headless automation, tests, and agents that drive the served page over a browser themselves.
@@ -214,9 +229,12 @@ pub struct UiResponse {
     pub node_count: u32,
     /// Edges in the rendered view.
     pub edge_count: u32,
+    /// Edges available before applying `max_edges`.
+    pub edge_count_total: u32,
     /// Communities present in the rendered view.
     pub community_count: u32,
-    /// True when the underlying scan was truncated or the view was capped by `max_nodes`.
+    /// True when the underlying scan was truncated or the view was capped by `max_nodes` /
+    /// `max_edges`.
     pub truncated: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notice: Option<super::types::LifecycleNotice>,

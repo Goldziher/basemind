@@ -63,6 +63,7 @@ async fn open_graph_window(root: &Path) -> Result<()> {
         algorithm: "label_propagation".to_string(),
         min_confidence: None,
         max_nodes: None,
+        max_edges: None,
         no_open: false,
     };
     let emit = Emit {

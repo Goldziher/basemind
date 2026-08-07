@@ -28,6 +28,7 @@ use super::codegraph::{self, BuildOpts, EdgeKind, EdgeKindSet, Provenance};
 use super::helpers::{elapsed_us, json_result, kind_to_str};
 use super::helpers_calls::for_each_call_in_file;
 use super::helpers_graph::is_function_like;
+use super::helpers_graphview::{DEFAULT_MAX_EXPORT_EDGES, MAX_MAX_EDGES};
 use super::kneedle::knee_cutoff;
 use super::types_archmap::{ArchEdge, ArchNode, ArchitectureMapParams, ArchitectureMapResponse, CycleCluster};
 use crate::index::IndexDb;
@@ -279,7 +280,7 @@ pub(crate) fn run_architecture_map(
     started: std::time::Instant,
 ) -> Result<CallToolResult, McpError> {
     let max_nodes = params.max_nodes.unwrap_or(60).min(300) as usize;
-    let max_edges = params.max_edges.unwrap_or(200).min(2000) as usize;
+    let max_edges = params.max_edges.unwrap_or(DEFAULT_MAX_EXPORT_EDGES).min(MAX_MAX_EDGES) as usize;
     let depth = params.depth.unwrap_or(2).max(1) as usize;
     let focus = params.focus.as_ref();
 

@@ -31,6 +31,9 @@ use crate::path::RelPath;
 const GRAPHVIEW_COMMUNITY_ITERS: u32 = 50;
 const DEFAULT_MAX_NODES: u32 = 500;
 const MAX_MAX_NODES: u32 = 2000;
+pub(super) const DEFAULT_MAX_EXPORT_EDGES: u32 = 200;
+const DEFAULT_MAX_VISUAL_EDGES: u32 = 2000;
+pub(super) const MAX_MAX_EDGES: u32 = 2000;
 
 /// Label each detected community from its members (most central first): dominant path prefix + most
 /// central member (ADR-0004). Returns a label per dense community id.
@@ -167,6 +170,25 @@ pub(super) fn build_graph_view(
     })
 }
 
+/// Rank edges by importance before applying the render cap and return the pre-cap total.
+fn cap_graph_edges(view: &mut GraphView, max_edges: usize) -> u32 {
+    view.edges.sort_by(|left, right| {
+        right
+            .weight
+            .cmp(&left.weight)
+            .then(left.from.cmp(&right.from))
+            .then(left.to.cmp(&right.to))
+            .then_with(|| left.kind.cmp(&right.kind))
+            .then_with(|| left.provenance.cmp(&right.provenance))
+    });
+    let edge_count_total = view.edges.len() as u32;
+    if view.edges.len() > max_edges {
+        view.edges.truncate(max_edges);
+        view.truncated = true;
+    }
+    edge_count_total
+}
+
 /// Sub-directory of the per-workspace cache that holds written exports (ADR-0005).
 const EXPORTS_DIR: &str = "exports";
 /// Hex prefix length of the content hash used in an export filename — 16 hex chars (64 bits) is
@@ -268,8 +290,10 @@ pub(super) fn run_graph_export(
     let kinds = kinds_from(&params.edges, false)?;
     let min_conf = params.min_confidence.unwrap_or(0.0).clamp(0.0, 1.0);
     let max_nodes = params.max_nodes.unwrap_or(DEFAULT_MAX_NODES).min(MAX_MAX_NODES) as usize;
+    let max_edges = params.max_edges.unwrap_or(DEFAULT_MAX_EXPORT_EDGES).min(MAX_MAX_EDGES) as usize;
 
-    let view = build_graph_view(shared, idx, cache, kinds, min_conf, algo, params.focus, max_nodes)?;
+    let mut view = build_graph_view(shared, idx, cache, kinds, min_conf, algo, params.focus, max_nodes)?;
+    let edge_count_total = cap_graph_edges(&mut view, max_edges);
 
     let mut comms: AHashSet<u32> = AHashSet::new();
     for node in &view.nodes {
@@ -292,6 +316,7 @@ pub(super) fn run_graph_export(
         content,
         node_count,
         edge_count,
+        edge_count_total,
         community_count,
         truncated,
         output_path,
@@ -444,8 +469,10 @@ pub(super) async fn run_display(
     let kinds = kinds_from(&params.edges, false)?;
     let min_conf = params.min_confidence.unwrap_or(0.0).clamp(0.0, 1.0);
     let max_nodes = params.max_nodes.unwrap_or(DEFAULT_MAX_NODES).min(MAX_MAX_NODES) as usize;
+    let max_edges = params.max_edges.unwrap_or(DEFAULT_MAX_VISUAL_EDGES).min(MAX_MAX_EDGES) as usize;
 
-    let view = build_graph_view(shared, idx, cache, kinds, min_conf, algo, params.focus, max_nodes)?;
+    let mut view = build_graph_view(shared, idx, cache, kinds, min_conf, algo, params.focus, max_nodes)?;
+    let edge_count_total = cap_graph_edges(&mut view, max_edges);
 
     let mut comms: AHashSet<u32> = AHashSet::new();
     for node in &view.nodes {
@@ -491,6 +518,7 @@ pub(super) async fn run_display(
         detail,
         node_count,
         edge_count,
+        edge_count_total,
         community_count,
         truncated,
         notice,
@@ -506,6 +534,7 @@ pub(super) struct UiParts {
     pub format: GraphFormat,
     pub node_count: u32,
     pub edge_count: u32,
+    pub edge_count_total: u32,
     pub community_count: u32,
     pub truncated: bool,
 }
@@ -523,6 +552,7 @@ pub(super) fn render_ui_parts(
     algorithm: &str,
     min_confidence: Option<f32>,
     max_nodes: Option<u32>,
+    max_edges: Option<u32>,
     focus: Option<RelPath>,
 ) -> Result<UiParts, McpError> {
     let format = GraphFormat::parse(format)
@@ -542,8 +572,10 @@ pub(super) fn render_ui_parts(
     let kinds = kinds_from(edges, false)?;
     let min_conf = min_confidence.unwrap_or(0.0).clamp(0.0, 1.0);
     let max_nodes = max_nodes.unwrap_or(DEFAULT_MAX_NODES).min(MAX_MAX_NODES) as usize;
+    let max_edges = max_edges.unwrap_or(DEFAULT_MAX_VISUAL_EDGES).min(MAX_MAX_EDGES) as usize;
 
-    let view = build_graph_view(shared, idx, cache, kinds, min_conf, algo, focus, max_nodes)?;
+    let mut view = build_graph_view(shared, idx, cache, kinds, min_conf, algo, focus, max_nodes)?;
+    let edge_count_total = cap_graph_edges(&mut view, max_edges);
     let mut comms: AHashSet<u32> = AHashSet::new();
     for node in &view.nodes {
         comms.insert(node.community);
@@ -554,6 +586,7 @@ pub(super) fn render_ui_parts(
         format,
         node_count: view.nodes.len() as u32,
         edge_count: view.edges.len() as u32,
+        edge_count_total,
         community_count: comms.len() as u32,
         truncated: view.truncated,
     })
@@ -584,6 +617,7 @@ pub(super) async fn run_ui(
         &params.algorithm,
         params.min_confidence,
         params.max_nodes,
+        params.max_edges,
         params.focus.clone(),
     )?;
     // Always persist so there is a stable artifact backing the `file://` fallback and any viewer open.
@@ -596,6 +630,7 @@ pub(super) async fn run_ui(
         &params.algorithm,
         params.min_confidence,
         params.max_nodes,
+        params.max_edges,
         params.focus.as_ref(),
     )
     .await
@@ -626,6 +661,7 @@ pub(super) async fn run_ui(
         detail,
         node_count: parts.node_count,
         edge_count: parts.edge_count,
+        edge_count_total: parts.edge_count_total,
         community_count: parts.community_count,
         truncated: parts.truncated,
         notice,
@@ -649,6 +685,7 @@ async fn resolve_served_ui_url(
     algorithm: &str,
     min_confidence: Option<f32>,
     max_nodes: Option<u32>,
+    max_edges: Option<u32>,
     focus: Option<&RelPath>,
 ) -> Option<String> {
     let focus: Option<&str> = match focus {
@@ -657,12 +694,30 @@ async fn resolve_served_ui_url(
     };
     #[cfg(all(feature = "comms", any(unix, windows)))]
     {
-        crate::comms::http_frontend::served_ui_url(root, format, edges, algorithm, min_confidence, max_nodes, focus)
-            .await
+        crate::comms::http_frontend::served_ui_url(
+            root,
+            format,
+            edges,
+            algorithm,
+            min_confidence,
+            max_nodes,
+            max_edges,
+            focus,
+        )
+        .await
     }
     #[cfg(not(all(feature = "comms", any(unix, windows))))]
     {
-        let _ = (root, format, edges, algorithm, min_confidence, max_nodes, focus);
+        let _ = (
+            root,
+            format,
+            edges,
+            algorithm,
+            min_confidence,
+            max_nodes,
+            max_edges,
+            focus,
+        );
         None
     }
 }
@@ -670,6 +725,30 @@ async fn resolve_served_ui_url(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn edge_cap_keeps_highest_weight_and_reports_pre_cap_total() {
+        let edge = |from, weight| GraphViewEdge {
+            from,
+            to: from + 1,
+            kind: "calls".to_string(),
+            provenance: "inferred".to_string(),
+            confidence: 0.7,
+            weight,
+        };
+        let mut view = GraphView {
+            nodes: Vec::new(),
+            edges: vec![edge(0, 1), edge(1, 9), edge(2, 5)],
+            truncated: false,
+        };
+
+        assert_eq!(cap_graph_edges(&mut view, 2), 3);
+        assert_eq!(
+            view.edges.iter().map(|edge| edge.weight).collect::<Vec<_>>(),
+            vec![9, 5]
+        );
+        assert!(view.truncated);
+    }
 
     #[test]
     fn report_for_outcome_maps_launch_and_skip_distinctly() {

@@ -51,10 +51,13 @@ impl BasemindServer {
         fan-out, and circular-dependency clusters (SCCs); ask it first when you need to learn an \
         unfamiliar codebase's shape without reading files. `export` renders the graph as \
         `format` node_link (default JSON) / dot / mermaid / graphml / cypher / html / svg, \
-        returned inline (`write: true` also persists it and returns `output_path`). `display` \
+        returned inline with `max_edges` default 200 / max 2000 (`write: true` also persists it \
+        and returns `output_path`). Edge caps keep the highest-weight edges and responses report \
+        both rendered `edge_count` and pre-cap `edge_count_total`. `display` \
         renders a visual html/svg view and opens it in the human's desktop viewer — the agent's \
         human-facing output channel; `open` returns a live browsable `url` for the interactive UI \
-        (a daemon-served http page when one is reachable, else a `file://` export). Both persist a \
+        (a daemon-served http page when one is reachable, else a `file://` export). Both visual \
+        modes accept `max_edges` default/max 2000 and persist a \
         stable `output_path` and both take `open: false` to skip launching anything, which is what \
         headless automation, tests, and browser-driving agents should pass. Across the graph modes \
         `edges` picks the lanes (all/calls/imports/inherits/both/contains; `map` defaults to \
@@ -104,6 +107,7 @@ impl BasemindServer {
         algorithm: &str,
         min_confidence: Option<f32>,
         max_nodes: Option<u32>,
+        max_edges: Option<u32>,
         focus: Option<String>,
     ) -> Result<(String, &'static str), McpError> {
         self.state.await_cache_ready().await;
@@ -120,6 +124,7 @@ impl BasemindServer {
             algorithm,
             min_confidence,
             max_nodes,
+            max_edges,
             focus.map(crate::path::RelPath::from),
         )?;
         let content_type = if matches!(parts.format, GraphFormat::Svg) {

@@ -4882,6 +4882,113 @@ async fn graph_export_renders_every_format() {
     let _ = service.cancel().await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn graph_export_bounds_unfocused_dense_views_by_default() {
+    basemind::store::init_isolated_cache();
+    let dir = TempDir::new().expect("tempdir");
+    let root = dir.path();
+    let mut source = String::new();
+    for caller in 0..32 {
+        source.push_str(&format!("pub fn function_{caller}() {{"));
+        for callee in 0..32 {
+            if caller != callee {
+                source.push_str(&format!(" function_{callee}();"));
+            }
+        }
+        source.push_str(" }\n");
+    }
+    std::fs::write(root.join("dense.rs"), source).expect("write dense graph fixture");
+    run_scan(root);
+
+    let transport = basemind::mcp::serve_in_memory(root, "working")
+        .await
+        .expect("in-memory serve");
+    let service = ().serve(transport).await.expect("rmcp handshake");
+
+    let bounded = service
+        .call_tool(call_params(
+            "graph",
+            json!({ "mode": "export", "format": "mermaid", "write": false }),
+        ))
+        .await
+        .expect("bounded graph export");
+    let body = decode_text(&bounded);
+    let edge_count = body.get("edge_count").and_then(Value::as_u64).unwrap_or(u64::MAX);
+    let edge_count_total = body.get("edge_count_total").and_then(Value::as_u64).unwrap_or(0);
+    assert!(
+        edge_count <= 200,
+        "unfocused export must apply the safe default edge cap: {body}"
+    );
+    assert!(
+        edge_count_total > edge_count,
+        "export must report the pre-cap edge total: {body}"
+    );
+    assert_eq!(
+        body.get("truncated").and_then(Value::as_bool),
+        Some(true),
+        "the response must disclose the default cap: {body}"
+    );
+
+    let explicitly_bounded = service
+        .call_tool(call_params(
+            "graph",
+            json!({
+                "mode": "export",
+                "format": "mermaid",
+                "write": false,
+                "max_edges": 7
+            }),
+        ))
+        .await
+        .expect("graph export accepts an explicit max_edges cap");
+    let body = decode_text(&explicitly_bounded);
+    let edge_count = body.get("edge_count").and_then(Value::as_u64).unwrap_or(u64::MAX);
+    let edge_count_total = body.get("edge_count_total").and_then(Value::as_u64).unwrap_or(0);
+    assert!(
+        edge_count <= 7,
+        "explicit max_edges must tighten the export cap: {body}"
+    );
+    assert!(
+        edge_count_total > edge_count,
+        "explicit cap must preserve the pre-cap total: {body}"
+    );
+    assert_eq!(
+        body.get("truncated").and_then(Value::as_bool),
+        Some(true),
+        "the response must disclose the explicit cap: {body}"
+    );
+
+    for mode in ["display", "open"] {
+        let bounded = service
+            .call_tool(call_params(
+                "graph",
+                json!({
+                    "mode": mode,
+                    "format": "svg",
+                    "open": false,
+                    "max_edges": 7
+                }),
+            ))
+            .await
+            .unwrap_or_else(|error| panic!("graph {mode} accepts max_edges: {error}"));
+        let body = decode_text(&bounded);
+        let edge_count = body.get("edge_count").and_then(Value::as_u64).unwrap_or(u64::MAX);
+        let edge_count_total = body.get("edge_count_total").and_then(Value::as_u64).unwrap_or(0);
+        assert!(edge_count <= 7, "graph {mode} must apply max_edges: {body}");
+        assert!(
+            edge_count_total > edge_count,
+            "graph {mode} must report the pre-cap total: {body}"
+        );
+        assert_eq!(
+            body.get("truncated").and_then(Value::as_bool),
+            Some(true),
+            "graph {mode} must disclose the cap: {body}"
+        );
+    }
+
+    let _ = service.cancel().await;
+}
+
 /// ADR-0007: the `display` tool renders a *visual* view, always writes it to the export cache, and
 /// (with `open: false`, the headless/test path) degrades to export-only without spawning a viewer.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

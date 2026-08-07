@@ -170,6 +170,7 @@ struct UiRenderArgs {
     algorithm: String,
     min_confidence: Option<f32>,
     max_nodes: Option<u32>,
+    max_edges: Option<u32>,
     focus: Option<String>,
 }
 
@@ -179,7 +180,7 @@ struct UiRenderArgs {
 fn parse_ui_args(query: Option<&str>) -> Option<UiRenderArgs> {
     let query = query?;
     let (mut root, mut format, mut edges, mut algorithm, mut focus) = (None, None, None, None, None);
-    let (mut min_confidence, mut max_nodes) = (None, None);
+    let (mut min_confidence, mut max_nodes, mut max_edges) = (None, None, None);
     for (key, value) in form_urlencoded::parse(query.as_bytes()) {
         match key.as_ref() {
             "root" => root = Some(value.into_owned()),
@@ -188,6 +189,7 @@ fn parse_ui_args(query: Option<&str>) -> Option<UiRenderArgs> {
             "algorithm" | "algo" => algorithm = Some(value.into_owned()),
             "min_confidence" => min_confidence = value.parse::<f32>().ok(),
             "max_nodes" => max_nodes = value.parse::<u32>().ok(),
+            "max_edges" => max_edges = value.parse::<u32>().ok(),
             "focus" => focus = Some(value.into_owned()),
             _ => {}
         }
@@ -203,6 +205,7 @@ fn parse_ui_args(query: Option<&str>) -> Option<UiRenderArgs> {
             .unwrap_or_else(|| "label_propagation".to_string()),
         min_confidence,
         max_nodes,
+        max_edges,
         focus: focus.and_then(non_blank),
     })
 }
@@ -392,6 +395,7 @@ impl HttpRouter {
                 &args.algorithm,
                 args.min_confidence,
                 args.max_nodes,
+                args.max_edges,
                 args.focus,
             )
             .await
@@ -550,6 +554,7 @@ fn build_ui_url(
     algorithm: &str,
     min_confidence: Option<f32>,
     max_nodes: Option<u32>,
+    max_edges: Option<u32>,
     focus: Option<&str>,
 ) -> String {
     let mut ser = form_urlencoded::Serializer::new(String::new());
@@ -562,6 +567,9 @@ fn build_ui_url(
     }
     if let Some(max) = max_nodes {
         ser.append_pair("max_nodes", &max.to_string());
+    }
+    if let Some(max) = max_edges {
+        ser.append_pair("max_edges", &max.to_string());
     }
     if let Some(prefix) = focus {
         ser.append_pair("focus", prefix);
@@ -580,10 +588,37 @@ pub(crate) async fn served_ui_url(
     algorithm: &str,
     min_confidence: Option<f32>,
     max_nodes: Option<u32>,
+    max_edges: Option<u32>,
     focus: Option<&str>,
 ) -> Option<String> {
     let paths = super::singleton::resolve_paths().ok()?;
-    let addr = read_portfile(&paths.comms_dir)?;
+    served_ui_url_from_comms_dir(
+        &paths.comms_dir,
+        root,
+        format,
+        edges,
+        algorithm,
+        min_confidence,
+        max_nodes,
+        max_edges,
+        focus,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn served_ui_url_from_comms_dir(
+    comms_dir: &Path,
+    root: &Path,
+    format: &str,
+    edges: &str,
+    algorithm: &str,
+    min_confidence: Option<f32>,
+    max_nodes: Option<u32>,
+    max_edges: Option<u32>,
+    focus: Option<&str>,
+) -> Option<String> {
+    let addr = read_portfile(comms_dir)?;
     // Confirm a daemon is actually answering before advertising the URL — a stale portfile (crashed
     // daemon) must degrade to the file export, not hand back a dead link. Async connect + timeout so
     // the probe never blocks the calling tokio worker (`run_ui` awaits this on a hot path).
@@ -599,6 +634,7 @@ pub(crate) async fn served_ui_url(
         algorithm,
         min_confidence,
         max_nodes,
+        max_edges,
         focus,
     ))
 }
@@ -658,6 +694,7 @@ mod tests {
             "label_propagation",
             Some(0.5),
             Some(200),
+            Some(700),
             Some("src/mcp"),
         );
         assert!(url.starts_with("http://127.0.0.1:51786/ui?"), "got {url}");
@@ -668,6 +705,7 @@ mod tests {
         assert!(url.contains("algorithm=label_propagation"), "{url}");
         assert!(url.contains("min_confidence=0.5"), "{url}");
         assert!(url.contains("max_nodes=200"), "{url}");
+        assert!(url.contains("max_edges=700"), "{url}");
         assert!(url.contains("focus=src%2Fmcp"), "{url}");
         // Round-trips back through the route parser to the same knobs.
         let query = url.split_once('?').unwrap().1;
@@ -676,16 +714,28 @@ mod tests {
         assert_eq!(args.format, "html");
         assert_eq!(args.min_confidence, Some(0.5));
         assert_eq!(args.max_nodes, Some(200));
+        assert_eq!(args.max_edges, Some(700));
         assert_eq!(args.focus.as_deref(), Some("src/mcp"));
     }
 
     #[test]
     fn build_ui_url_omits_absent_optionals() {
         let addr: SocketAddr = "127.0.0.1:51786".parse().unwrap();
-        let url = build_ui_url(&addr, Path::new("/repo"), "svg", "calls", "louvain", None, None, None);
+        let url = build_ui_url(
+            &addr,
+            Path::new("/repo"),
+            "svg",
+            "calls",
+            "louvain",
+            None,
+            None,
+            None,
+            None,
+        );
         assert!(url.contains("format=svg"), "{url}");
         assert!(!url.contains("min_confidence"), "{url}");
         assert!(!url.contains("max_nodes"), "{url}");
+        assert!(!url.contains("max_edges"), "{url}");
         assert!(!url.contains("focus"), "{url}");
     }
 
@@ -701,6 +751,7 @@ mod tests {
         assert_eq!(args.algorithm, "label_propagation");
         assert_eq!(args.min_confidence, None);
         assert_eq!(args.max_nodes, None);
+        assert_eq!(args.max_edges, None);
         assert_eq!(args.focus, None);
     }
 
@@ -726,7 +777,7 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback listener");
         let addr = listener.local_addr().expect("listener addr");
         write_portfile(comms_dir.path(), &addr).expect("write portfile");
-        let live = served_ui_url(root, "html", "all", "label_propagation", None, None, None)
+        let live = served_ui_url(root, "html", "all", "label_propagation", None, None, None, None)
             .await
             .expect("a daemon answering the probe yields a served URL");
         assert!(
@@ -746,7 +797,7 @@ mod tests {
             ephemeral.local_addr().expect("listener addr")
         };
         write_portfile(comms_dir.path(), &dead_addr).expect("rewrite portfile");
-        let dead = served_ui_url(root, "html", "all", "label_propagation", None, None, None).await;
+        let dead = served_ui_url(root, "html", "all", "label_propagation", None, None, None, None).await;
         assert!(
             dead.is_none(),
             "a stale portfile with no daemon answering degrades to None, got {dead:?}"

@@ -76,7 +76,8 @@ pub struct GraphParams {
     /// `export` / `display` / `open` default 500 / max 2000.
     #[serde(default)]
     pub max_nodes: Option<u32>,
-    /// `map` only. Hard cap on returned edges. Default 200, max 2000.
+    /// Hard cap on edges for `map` / `export` / `display` / `open`. Default 200 for `map` and
+    /// `export`, 2000 for the visual modes; max 2000.
     #[serde(default)]
     pub max_edges: Option<u32>,
     /// `map` only. Token budget for the `nodes` list; sets `budgeted` when it trims the tail.
