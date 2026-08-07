@@ -24,6 +24,7 @@ static DAEMON_ENV: Once = Once::new();
 const DAEMON_BIND_TIMEOUT: Duration = Duration::from_secs(15);
 const DAEMON_EXIT_TIMEOUT: Duration = Duration::from_secs(10);
 const DAEMON_POLL_INTERVAL: Duration = Duration::from_millis(100);
+const DAEMON_STABILITY_WINDOW: Duration = Duration::from_secs(2);
 const DAEMON_IDLE_REAP_SECS: &str = "60";
 const DAEMON_IDLE_CHECK_SECS: &str = "1";
 
@@ -39,11 +40,15 @@ impl Drop for DaemonChild {
 }
 
 fn spawn_isolated_daemon(socket: &Path) -> DaemonChild {
+    spawn_isolated_daemon_with_idle(socket, DAEMON_IDLE_REAP_SECS)
+}
+
+fn spawn_isolated_daemon_with_idle(socket: &Path, idle_reap_secs: &str) -> DaemonChild {
     DaemonChild(
         Command::new(env!("CARGO_BIN_EXE_basemind"))
             .arg("--__internal-daemon")
             .arg(socket)
-            .env("BASEMIND_SHELLS_IDLE_REAP_SECS", DAEMON_IDLE_REAP_SECS)
+            .env("BASEMIND_SHELLS_IDLE_REAP_SECS", idle_reap_secs)
             .env("BASEMIND_SHELLS_IDLE_CHECK_SECS", DAEMON_IDLE_CHECK_SECS)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -141,6 +146,30 @@ async fn await_marker(rmux: &rmux_sdk::Rmux, name: &rmux_sdk::SessionName, marke
         assert!(
             Instant::now() < deadline,
             "timed out waiting for {marker} in {name:?}; last capture was {captured:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+}
+
+/// Poll a session's full capture history until `marker` appears. A completed pane's final output
+/// may have scrolled out of the visible snapshot when rmux appends its remain-on-exit status.
+async fn await_history_marker(rmux: &rmux_sdk::Rmux, name: &rmux_sdk::SessionName, marker: &str) {
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let live = rmux.session(name.clone()).await.expect("open retained session");
+        let captured = live
+            .pane(0, 0)
+            .capture_pane()
+            .start_absolute(0)
+            .await
+            .expect("capture retained pane history");
+        let text = String::from_utf8_lossy(&captured.stdout);
+        if text.contains(marker) {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for {marker} in retained {name:?}; last capture was {text:?}"
         );
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
@@ -302,6 +331,166 @@ async fn spawn_capture_kill_roundtrip() {
     );
 
     kill_all(rmux, &[&keepalive_name]).await;
+    shutdown_daemon(&socket).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn completed_short_lived_session_remains_capturable_until_explicit_kill() {
+    const MARKER: &str = "S2-SHORT-LIVED";
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let socket = socket_in(&dir);
+    let runtime = ShellRuntime::with_socket_path(socket.clone());
+
+    let (session_id, name) = runtime
+        .spawn(
+            runtime.mint_session_id(),
+            ShellCommand::Shell(format!("echo {MARKER}")),
+            None,
+            Vec::new(),
+            200,
+            50,
+        )
+        .await
+        .expect("spawn short-lived echo session");
+
+    let rmux = runtime.rmux().await.expect("rmux handle");
+    let completed = rmux.session(name.clone()).await.expect("open short-lived session");
+    let exit_state = tokio::time::timeout(Duration::from_secs(15), completed.pane(0, 0).wait_for_exit())
+        .await
+        .expect("short-lived session should exit before the deadline")
+        .expect("observe short-lived session exit")
+        .expect("natural exit should report its status");
+    assert_eq!(exit_state.code, Some(0), "bare echo should exit successfully");
+    await_history_marker(rmux, &name, MARKER).await;
+    assert_eq!(
+        runtime.resolve(&session_id).await.expect("resolve completed session"),
+        Some(name.clone()),
+        "completed session should remain addressable until explicitly killed"
+    );
+
+    let completed = rmux
+        .session(name.clone())
+        .await
+        .expect("reopen completed session for kill");
+    assert!(
+        session::kill_session(&completed).await.expect("kill completed session"),
+        "explicitly killing a completed session should succeed"
+    );
+    await_gone(rmux, &name).await;
+
+    shutdown_daemon(&socket).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn list_marks_retained_completed_session_not_alive() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let socket = socket_in(&dir);
+    let mut daemon = spawn_isolated_daemon(&socket);
+    await_daemon_bound(&mut daemon, &socket).await;
+    let runtime = ShellRuntime::with_socket_path(socket.clone());
+
+    let (session_id, name) = runtime
+        .spawn(
+            runtime.mint_session_id(),
+            ShellCommand::Shell("exit 7".to_owned()),
+            None,
+            Vec::new(),
+            200,
+            50,
+        )
+        .await
+        .expect("spawn short-lived failing session");
+    let rmux = runtime.rmux().await.expect("rmux handle");
+    let completed = rmux.session(name.clone()).await.expect("open retained session");
+    let exit_state = tokio::time::timeout(Duration::from_secs(15), completed.pane(0, 0).wait_for_exit())
+        .await
+        .expect("short-lived session should exit before the deadline")
+        .expect("observe short-lived session exit")
+        .expect("natural exit should report its status");
+    assert_eq!(exit_state.code, Some(7));
+
+    let listed = runtime.list().await.expect("list retained completed session");
+    let info = listed
+        .iter()
+        .find(|info| info.session_id == session_id)
+        .expect("completed session remains listed");
+    assert!(
+        !info.alive,
+        "completed retained session must not be reported alive: {info:?}"
+    );
+
+    assert!(completed.kill().await.expect("remove retained completed session"));
+    shutdown_daemon(&socket).await;
+    await_daemon_exit(&mut daemon, "explicit shutdown after list assertion").await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn abandoned_completed_session_does_not_pin_daemon() {
+    const SHORT_IDLE_REAP_SECS: &str = "1";
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let socket = socket_in(&dir);
+    let mut daemon = spawn_isolated_daemon_with_idle(&socket, SHORT_IDLE_REAP_SECS);
+    await_daemon_bound(&mut daemon, &socket).await;
+    let runtime = ShellRuntime::with_socket_path(socket.clone());
+
+    let (_session_id, name) = runtime
+        .spawn(
+            runtime.mint_session_id(),
+            ShellCommand::Shell("exit 0".to_owned()),
+            None,
+            Vec::new(),
+            200,
+            50,
+        )
+        .await
+        .expect("spawn abandoned short-lived session");
+    let completed = runtime
+        .rmux()
+        .await
+        .expect("rmux handle")
+        .session(name)
+        .await
+        .expect("open abandoned session");
+    tokio::time::timeout(Duration::from_secs(15), completed.pane(0, 0).wait_for_exit())
+        .await
+        .expect("abandoned session should exit before the deadline")
+        .expect("observe abandoned session exit")
+        .expect("natural exit should report its status");
+
+    await_daemon_exit(&mut daemon, "retained session becoming inactive").await;
+    assert!(!socket.exists(), "idle daemon shutdown should remove its socket");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn killing_only_session_keeps_same_daemon_available_for_list() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let socket = socket_in(&dir);
+    let runtime = ShellRuntime::with_socket_path(socket.clone());
+
+    let (_session_id, name) = spawn_bash(&runtime).await;
+    let daemon_before = daemon_pids(&socket);
+    assert_eq!(daemon_before.len(), 1, "one daemon should own {}", socket.display());
+
+    let rmux = runtime.rmux().await.expect("rmux handle");
+    let live = rmux.session(name).await.expect("open only session for kill");
+    assert!(session::kill_session(&live).await.expect("kill only session"));
+
+    tokio::time::sleep(DAEMON_STABILITY_WINDOW).await;
+    assert_eq!(
+        daemon_pids(&socket),
+        daemon_before,
+        "killing the last session must not stop or replace the daemon"
+    );
+    assert!(socket.exists(), "the original daemon socket should remain bound");
+
+    let listed = runtime.list().await.expect("list after killing only session");
+    assert!(
+        listed.is_empty(),
+        "the daemon should remain available with no sessions: {listed:?}"
+    );
+
     shutdown_daemon(&socket).await;
 }
 

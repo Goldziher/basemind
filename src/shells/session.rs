@@ -8,7 +8,7 @@
 //! helpers) can map them to MCP errors at the boundary.
 
 use anyhow::{Context, Result};
-use rmux_sdk::{EnsureSession, Input, Pane, Rmux, RmuxError, Session, SessionName, TerminalSizeSpec};
+use rmux_sdk::{EnsureSession, Input, Pane, PaneProcessState, Rmux, RmuxError, Session, SessionName, TerminalSizeSpec};
 
 /// Fallback terminal geometry for a headless session. Wide enough that typical
 /// command output is not wrapped, tall enough to hold a screenful for snapshot
@@ -121,6 +121,35 @@ pub async fn list_sessions(rmux: &Rmux) -> Result<Vec<SessionName>> {
     rmux.list_sessions().await.context("list rmux sessions")
 }
 
+/// List retained sessions together with whether any of their panes may still be running.
+///
+/// `Unknown` is treated as live so a transient recovery snapshot cannot reap an active daemon.
+/// A retained session is inactive only when every discovered pane has explicitly exited.
+pub async fn list_session_liveness(rmux: &Rmux) -> Result<Vec<(SessionName, bool)>> {
+    let names = list_sessions(rmux).await?;
+    let panes = rmux.find_panes().all().await.context("inspect rmux pane liveness")?;
+    Ok(names
+        .into_iter()
+        .map(|name| {
+            let alive = process_states_show_live(
+                panes
+                    .iter()
+                    .filter(|pane| pane.session_name == name)
+                    .map(|pane| &pane.process),
+            );
+            (name, alive)
+        })
+        .collect())
+}
+
+fn process_states_show_live<'a>(states: impl Iterator<Item = &'a PaneProcessState>) -> bool {
+    let mut seen = false;
+    let any_may_be_live = states
+        .inspect(|_| seen = true)
+        .any(|state| !matches!(state, PaneProcessState::Exited));
+    any_may_be_live || !seen
+}
+
 /// Broadcast `text` to the primary pane of each named session at once.
 ///
 /// Resolves every `SessionName` to its first pane (`pane(0, 0)`), then delivers
@@ -166,4 +195,23 @@ pub async fn broadcast(rmux: &Rmux, names: &[SessionName], text: &str, enter: bo
 /// `false` when it was already gone.
 pub async fn kill_session(session: &Session) -> Result<bool> {
     session.kill().await.context("kill rmux session")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn missing_or_unknown_pane_state_is_conservatively_live() {
+        assert!(process_states_show_live(std::iter::empty()));
+        assert!(process_states_show_live([PaneProcessState::Unknown].iter()));
+    }
+
+    #[test]
+    fn session_is_inactive_only_when_every_observed_pane_exited() {
+        assert!(!process_states_show_live([PaneProcessState::Exited].iter()));
+        assert!(process_states_show_live(
+            [PaneProcessState::Exited, PaneProcessState::Running { pid: None }].iter()
+        ));
+    }
 }

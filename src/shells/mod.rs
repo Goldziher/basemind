@@ -78,14 +78,15 @@ impl std::fmt::Display for SessionId {
     }
 }
 
-/// One entry in a [`ShellRuntime::list`] snapshot of the daemon's live sessions.
+/// One entry in a [`ShellRuntime::list`] snapshot of the daemon's retained sessions.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ShellSessionInfo {
     /// The basemind-minted [`SessionId`] this runtime handed to the client.
     pub session_id: SessionId,
     /// The underlying rmux session name.
     pub name: SessionName,
-    /// Always `true`: dead sessions are absent from the daemon-backed snapshot.
+    /// Whether at least one pane may still be running. Completed sessions remain listed while their
+    /// output is retained for capture.
     pub alive: bool,
 }
 
@@ -299,14 +300,14 @@ impl ShellRuntime {
     /// Snapshot every session currently reported by the shared daemon.
     pub async fn list(&self) -> Result<Vec<ShellSessionInfo>> {
         let rmux = self.rmux().await?;
-        let mut live = session::list_sessions(rmux).await?;
-        live.sort_by(|left, right| left.as_str().cmp(right.as_str()));
-        Ok(live
+        let mut sessions = session::list_session_liveness(rmux).await?;
+        sessions.sort_by(|(left, _), (right, _)| left.as_str().cmp(right.as_str()));
+        Ok(sessions
             .into_iter()
-            .map(|name| ShellSessionInfo {
+            .map(|(name, alive)| ShellSessionInfo {
                 session_id: SessionId::new(name.as_str()),
                 name,
-                alive: true,
+                alive,
             })
             .collect())
     }

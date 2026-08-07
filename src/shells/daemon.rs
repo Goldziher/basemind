@@ -11,10 +11,10 @@
 //!
 //! [`run_internal_daemon`] mirrors rmux's own `run_hidden_daemon`
 //! (`/tmp/rmux` reference clone, `src/main.rs`): parse the socket path, build a
-//! [`rmux_server::DaemonConfig`] with config-file loading disabled and no web
-//! frontend, then bind + wait on a dedicated tokio runtime. The trailing config
-//! flags the SDK passes are intentionally ignored — basemind always runs the
-//! daemon with `ConfigFileSelection::Disabled` and no web port.
+//! [`rmux_server::DaemonConfig`] with a generated internal config and no web
+//! frontend, then bind + wait on a dedicated tokio runtime. The config disables
+//! rmux's default exit-on-empty behavior so basemind's own idle reaper controls
+//! daemon lifetime. Trailing config flags from the SDK are intentionally ignored.
 
 use std::ffi::OsString;
 #[cfg(not(windows))]
@@ -31,6 +31,8 @@ const IDLE_REAP_CHECK_EVERY: Duration = Duration::from_secs(5);
 const IDLE_REAP_AFTER_ENV: &str = "BASEMIND_SHELLS_IDLE_REAP_SECS";
 const IDLE_REAP_CHECK_EVERY_ENV: &str = "BASEMIND_SHELLS_IDLE_CHECK_SECS";
 const DAEMON_DIR_EXTENSION: &str = "daemon";
+const RMUX_CONFIG_FILE_NAME: &str = "rmux.conf";
+const RMUX_CONFIG: &str = "set-option -g exit-empty off\nset-option -g remain-on-exit on\n";
 #[cfg(any(windows, test))]
 const SHELLS_LOCKS_SUBDIR: &str = "shells";
 
@@ -111,8 +113,8 @@ pub unsafe fn point_sdk_daemon_at(binary: &std::path::Path) {
 /// `args` are the arguments that followed [`rmux_client::INTERNAL_DAEMON_FLAG`]
 /// on the command line: the first non-`--` argument is the Unix socket path the
 /// daemon must bind, and any subsequent `--…` flags are config selectors the SDK
-/// forwards. basemind ignores those trailing flags and always runs with config
-/// loading disabled and no web frontend.
+/// forwards. basemind ignores those trailing flags and always runs with its own
+/// generated config and no web frontend.
 ///
 /// This builds its own multi-thread tokio runtime (the daemon owns the process
 /// at this point — `main` has not yet parsed clap and never will), then polls
@@ -145,7 +147,10 @@ where
         }
     };
 
-    let config = rmux_server::DaemonConfig::new(socket_path.clone());
+    let config_path = daemon_dir.join(RMUX_CONFIG_FILE_NAME);
+    std::fs::write(&config_path, RMUX_CONFIG)
+        .with_context(|| format!("write embedded rmux daemon config {}", config_path.display()))?;
+    let config = rmux_server::DaemonConfig::new(socket_path.clone()).with_config_files(vec![config_path], false, None);
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -209,7 +214,7 @@ async fn wait_until_sessions_idle(
 
     loop {
         tokio::time::sleep(check_every).await;
-        let sessions = match rmux.list_sessions().await {
+        let sessions = match super::session::list_session_liveness(rmux).await {
             Ok(sessions) => sessions,
             Err(error) => {
                 if endpoint_is_absent(socket_path).await {
@@ -222,9 +227,11 @@ async fn wait_until_sessions_idle(
             }
         };
 
-        if state.observe(sessions.is_empty(), Instant::now(), idle_after) {
+        let has_live_session = sessions.iter().any(|(_, alive)| *alive);
+        if state.observe(!has_live_session, Instant::now(), idle_after) {
             tracing::info!(
                 idle_after_secs = idle_after.as_secs(),
+                retained_sessions = sessions.len(),
                 "embedded rmux daemon idle; shutting down"
             );
             return;

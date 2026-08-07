@@ -37,13 +37,17 @@ impl BasemindServer {
         required. `spawn` starts one: `command` runs through the login shell (e.g. \
         `bash -lc '<command>'`), with optional `cwd` (repo-relative), `env` (key/value list), and \
         `title`; it returns a stable `session_id` — the handle every other mode addresses — plus \
-        an `attach_command` (`rmux attach -t <name>`) an operator can run to watch it. `send` \
-        types `text` into a session's stdin, appending a newline so the line executes unless \
+        an `attach_command` (`rmux attach -t <name>`) an operator can run to watch it. Completed \
+        sessions and their pane output remain retained until an explicit `kill` or the shared \
+        daemon's idle TTL expires with no live panes, so a short-lived command can still be \
+        inspected after it exits. `send` types `text` into a session's stdin, \
+        appending a newline so the line executes unless \
         `enter=false` sends a raw keystroke fragment. `capture` reads back what a session has \
         printed: the currently-visible screen with trailing blank lines trimmed, or just the last \
         `lines` non-blank rows — a screen SNAPSHOT, not a full scrollback log, so poll it rather \
-        than expecting every byte ever written. `kill` terminates a session and returns \
-        `killed=true` when one was live, `false` when it had already exited. `list` needs no \
+        than expecting every byte ever written. `kill` terminates a live session or removes a \
+        retained completed session, returning `killed=true` when removal succeeds. An already-unknown \
+        `session_id` is rejected. `list` needs no \
         arguments and returns every session the daemon currently hosts — the way to recover a \
         `session_id` in a process that did not spawn it, since sessions live in the shared daemon, \
         not in this server. `broadcast` types the same `text` into several `session_ids` at once \
