@@ -765,11 +765,6 @@ mod tests {
         use std::net::TcpListener;
 
         let comms_dir = tempfile::tempdir().expect("comms tempdir");
-        // `BASEMIND_COMMS_DIR` — point it at our temp dir so the test owns the address it reads.
-        // SAFETY: set and restored within this single test; no sibling unit test reads this var.
-        let comms_env = crate::comms::singleton::COMMS_DIR_ENV;
-        let prior = std::env::var_os(comms_env);
-        unsafe { std::env::set_var(comms_env, comms_dir.path()) };
         // `root` only needs to be an existing path (it is percent-encoded into the URL, not hosted).
         let root = comms_dir.path();
 
@@ -777,9 +772,19 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback listener");
         let addr = listener.local_addr().expect("listener addr");
         write_portfile(comms_dir.path(), &addr).expect("write portfile");
-        let live = served_ui_url(root, "html", "all", "label_propagation", None, None, None, None)
-            .await
-            .expect("a daemon answering the probe yields a served URL");
+        let live = served_ui_url_from_comms_dir(
+            comms_dir.path(),
+            root,
+            "html",
+            "all",
+            "label_propagation",
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("a daemon answering the probe yields a served URL");
         assert!(
             live.starts_with(&format!("http://{addr}/ui?")),
             "served URL targets the live daemon address: {live}"
@@ -797,16 +802,21 @@ mod tests {
             ephemeral.local_addr().expect("listener addr")
         };
         write_portfile(comms_dir.path(), &dead_addr).expect("rewrite portfile");
-        let dead = served_ui_url(root, "html", "all", "label_propagation", None, None, None, None).await;
+        let dead = served_ui_url_from_comms_dir(
+            comms_dir.path(),
+            root,
+            "html",
+            "all",
+            "label_propagation",
+            None,
+            None,
+            None,
+            None,
+        )
+        .await;
         assert!(
             dead.is_none(),
             "a stale portfile with no daemon answering degrades to None, got {dead:?}"
         );
-
-        match prior {
-            // SAFETY: paired restore of the set above; same single-test scope.
-            Some(value) => unsafe { std::env::set_var(comms_env, value) },
-            None => unsafe { std::env::remove_var(comms_env) },
-        }
     }
 }
