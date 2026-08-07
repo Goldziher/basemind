@@ -10,6 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.24.0] - 2026-08-07
+
 ### Added
 
 - **Interactive UI over HTTP + the `ui` tool (ADR-0006).** A new `ui` MCP tool (and `query ui` CLI, in
@@ -45,6 +47,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Cache schema advances to 24.** Existing machine-global index, blob, and comms cache state is
+  rebuilt on the next scan after upgrading.
+- **Release dependencies are current.** `tree-sitter-language-pack` is updated to 1.14.3,
+  `crawlberg` to 1.1.4, and `liter-llm` to 1.16.0. The optional LSP bincode integration is pinned to
+  2.0.1 because the published 3.0.0 crate is an intentionally non-compiling placeholder.
 - **Agent shell sessions now default to headless presentation.** Background MCP/CLI work no longer
   opens terminal tabs unless `[shells].visual` explicitly selects `current` or `window`.
 - **The two interactive front-ends are held back from releases.** The agent TUI (`basemind-tui`,
@@ -202,6 +209,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Recycling the shared daemon no longer disconnects other agents.** `basemind comms stop` now
+  refuses with `daemon_busy` while another live relay is connected, instead of entering a bounded
+  drain that severed every stdio MCP transport after ten seconds and left hosts permanently showing
+  `Transport closed`. Once the other sessions exit, the same stop request succeeds normally.
+- **EndNote XML is rejected until xberg ships its quick-xml fix.** The document scanner now blocks
+  `.enw` / `application/x-endnote+xml` before xberg 1.0.14 can route untrusted input through
+  biblib 0.4.3's vulnerable quick-xml 0.37 attribute parser (RUSTSEC-2026-0194). The narrow guard is
+  tracked for removal in [xberg #1398](https://github.com/xberg-io/xberg/issues/1398).
+- **Resolved imported calls could remain inferred in code graphs.** The reference index now prefers
+  a terminal cross-file definition over the local import binding, and code-graph proof matches the
+  resolver's identifier byte within the outline symbol span. Python callers and goto-definition now
+  agree on the exported target.
 - **Cache budget enforcement could remain over its configured limit.** Eviction now prefers cold
   workspaces but falls back to hot ones when required, reclaims newly orphaned blobs in the same
   pass, and remeasures the actual cache footprint before selecting another workspace.
