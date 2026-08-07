@@ -870,6 +870,9 @@ async fn blob_gc_returns_starved_instead_of_hanging_behind_an_endless_rescan() {
     crate::store::init_isolated_cache();
     let (_d, broker) = temp_broker();
 
+    broker.run_blob_gc().await.expect("seed a completed sweep");
+    let completed = crate::store_gc::read_gc_state().expect("completed sweep state");
+
     let _rescan_guard = broker.blob_gc_lock.read().await;
 
     let result = broker.run_blob_gc_with_lock_timeout(Duration::from_millis(50)).await;
@@ -879,7 +882,10 @@ async fn blob_gc_returns_starved_instead_of_hanging_behind_an_endless_rescan() {
     );
     let state = crate::store_gc::read_gc_state().expect("a starved attempt must be persisted");
     assert_eq!(state.status, crate::store_gc::GcStatus::Starved);
-    assert_eq!(state.at_epoch_secs, 0, "no sweep completed");
+    assert_eq!(
+        state.at_epoch_secs, completed.at_epoch_secs,
+        "a failed attempt preserves the last completed sweep timestamp"
+    );
     assert!(state.last_attempt_epoch_secs > 0, "the failed attempt is timestamped");
     assert_eq!(state.consecutive_degraded_cycles, 1);
     assert!(
