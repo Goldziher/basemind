@@ -3,7 +3,7 @@
 //! daemon and no network**. Reuses the isolated-broker spin-up pattern from the root crate's
 //! `wait_inbox_tests` (`src/comms/frontend_inproc.rs`), driven through the [`CommsRoom`] seam via
 //! [`CommsRoom::connect_with_paths`].
-#![cfg(feature = "comms")]
+#![cfg(all(feature = "comms", unix))]
 
 use std::sync::Arc;
 use std::time::Duration;

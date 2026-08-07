@@ -28,15 +28,18 @@ mod run;
 mod ui;
 
 use std::path::{Path, PathBuf};
+#[cfg(unix)]
 use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+#[cfg(unix)]
 use basemind::daemon_lock::DaemonLockOutcome;
 use basemind::mcp::BasemindServer;
 use basemind_agent::tools::{ShellTool, code_nav_tools, comms_tools, git_history_tools};
 use basemind_agent::{AgentClient, AgentCommand, Session, SessionStore, ToolRegistry, in_proc_channel};
+#[cfg(unix)]
 use basemind_agent_ipc::{
     SocketCleanupGuard, SocketOwnership, UdsAgentClient, acquire_agent_daemon_lock, agent_socket_path, bind_listener,
     ensure_daemon, probe_alive, serve, spawn_detached,
@@ -49,10 +52,12 @@ use crate::config::{default_model_name, load_agent_config};
 const SYSTEM_PROMPT: &str = "You are a coding assistant operating inside the basemind agent. Prefer \
     the code_outline and code_symbols tools over reading whole files. Be concise.";
 /// Time allowed for the session engine to flush after the daemon stops accepting clients.
+#[cfg(unix)]
 const ENGINE_SHUTDOWN_GRACE: Duration = Duration::from_secs(10);
 /// Time allowed for runtime-owned blocking work to stop before process exit.
 const RUNTIME_SHUTDOWN_GRACE: Duration = Duration::from_secs(10);
 /// Cadence for detecting that another process replaced the published daemon socket.
+#[cfg(unix)]
 const SOCKET_OWNERSHIP_CHECK_EVERY: Duration = Duration::from_secs(1);
 
 /// How the session log should be opened.
@@ -230,6 +235,7 @@ async fn run_in_proc(args: Args) -> Result<()> {
 /// per-workspace socket. No UI; drains on SIGTERM/Ctrl-C and self-reaps after its bootstrap or idle
 /// lifecycle window. The initial prompt is ignored — prompts arrive from attaches so the session
 /// stays shared.
+#[cfg(unix)]
 async fn run_daemon(args: Args) -> Result<()> {
     let (mut interrupt, mut terminate) = install_shutdown_signals()?;
     // Claim the singleton socket before building the engine: if another daemon won a spawn race, this
@@ -284,6 +290,12 @@ async fn run_daemon(args: Args) -> Result<()> {
     serve_result.context("serve agent daemon")
 }
 
+#[cfg(not(unix))]
+async fn run_daemon(_args: Args) -> Result<()> {
+    anyhow::bail!("agent daemon mode requires Unix-domain socket support")
+}
+
+#[cfg(unix)]
 async fn watch_socket_ownership(ownership: SocketOwnership, shutdown: tokio::sync::watch::Sender<bool>) {
     let mut interval = tokio::time::interval(SOCKET_OWNERSHIP_CHECK_EVERY);
     interval.tick().await;
@@ -297,6 +309,7 @@ async fn watch_socket_ownership(ownership: SocketOwnership, shutdown: tokio::syn
     }
 }
 
+#[cfg(unix)]
 fn install_shutdown_signals() -> Result<(tokio::signal::unix::Signal, tokio::signal::unix::Signal)> {
     let interrupt =
         tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt()).context("install SIGINT handler")?;
@@ -307,6 +320,7 @@ fn install_shutdown_signals() -> Result<(tokio::signal::unix::Signal, tokio::sig
 
 /// Run the UI against a daemon-hosted engine, spawning a detached daemon first if none is running,
 /// then joining its shared session.
+#[cfg(unix)]
 async fn run_attach(args: Args) -> Result<()> {
     let socket_path = agent_socket_path(&args.root);
     ensure_daemon(&socket_path, || spawn_detached(daemon_command(&args)))
@@ -330,6 +344,11 @@ async fn run_attach(args: Args) -> Result<()> {
             .context("send initial prompt")?;
     }
     run::run(client, app).await
+}
+
+#[cfg(not(unix))]
+async fn run_attach(_args: Args) -> Result<()> {
+    anyhow::bail!("agent attach mode requires Unix-domain socket support")
 }
 
 /// The repository folder name and current git branch for the status bar. The name is the final path
@@ -363,6 +382,7 @@ fn parse_git_head(head: &str) -> String {
 
 /// The command that spawns a detached daemon for this repo: the current binary in `--daemon` mode,
 /// carrying the same root, replay, and resume selection — but never the prompt (attaches own prompts).
+#[cfg(unix)]
 fn daemon_command(args: &Args) -> Command {
     let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("basemind-tui"));
     let mut command = Command::new(exe);
@@ -384,6 +404,7 @@ fn daemon_command(args: &Args) -> Command {
 
 /// The model name to show in the status bar for an attach, matching what the daemon runs: the
 /// scripted model under `--replay`, else the configured default role's model.
+#[cfg(unix)]
 fn attach_model_name(args: &Args) -> Result<String> {
     if args.replay.is_some() {
         return Ok("mock/scripted".into());
