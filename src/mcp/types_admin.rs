@@ -143,8 +143,7 @@ pub(super) struct CacheStatsResponse {
     /// Peak resident set size of the serving process over its lifetime, in bytes; `null` when
     /// unreadable.
     pub peak_rss_bytes: Option<u64>,
-    /// Outcome of the most recent destructive GC sweep, or `null` when none has ever completed
-    /// on this machine (which, on a long-lived install, means GC is not running — investigate).
+    /// Outcome and health of the most recent destructive GC attempt, or `null` when none has run.
     pub last_gc: Option<LastGcResponse>,
 }
 
@@ -152,8 +151,16 @@ pub(super) struct CacheStatsResponse {
 /// recent destructive GC sweep.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct LastGcResponse {
-    /// When the sweep finished (seconds since the Unix epoch).
+    /// When the most recent sweep finished; `0` if no sweep has completed.
     pub at_epoch_secs: u64,
+    /// When the most recent attempt finished, including failed and starved attempts.
+    pub last_attempt_epoch_secs: u64,
+    /// Operational outcome of the most recent attempt.
+    pub status: crate::store_gc::GcStatus,
+    /// Actionable diagnosis for a degraded attempt.
+    pub detail: Option<String>,
+    /// Consecutive attempts that starved, failed, or ended over budget.
+    pub consecutive_degraded_cycles: u32,
     /// Blob files inspected.
     pub scanned: usize,
     /// Orphan blob files removed.
@@ -168,12 +175,24 @@ pub(super) struct LastGcResponse {
     pub workspaces_evicted: usize,
     /// Bytes reclaimed by those evictions.
     pub evicted_bytes_freed: u64,
+    /// Cache budget applied by the most recent completed sweep.
+    pub cache_budget_bytes: Option<u64>,
+    /// Measured cache footprint after the most recent completed budget pass.
+    pub cache_bytes_after: Option<u64>,
+    /// Hot workspaces evicted after cold candidates were exhausted.
+    pub hot_workspaces_evicted: usize,
+    /// Workspaces skipped because they were locked.
+    pub locked_workspaces_skipped: usize,
 }
 
 impl From<crate::store_gc_budget::GcState> for LastGcResponse {
     fn from(s: crate::store_gc_budget::GcState) -> Self {
         Self {
             at_epoch_secs: s.at_epoch_secs,
+            last_attempt_epoch_secs: s.last_attempt_epoch_secs,
+            status: s.status,
+            detail: s.detail,
+            consecutive_degraded_cycles: s.consecutive_degraded_cycles,
             scanned: s.scanned,
             removed: s.removed,
             bytes_freed: s.bytes_freed,
@@ -181,6 +200,10 @@ impl From<crate::store_gc_budget::GcState> for LastGcResponse {
             workspace_bytes_freed: s.workspace_bytes_freed,
             workspaces_evicted: s.workspaces_evicted,
             evicted_bytes_freed: s.evicted_bytes_freed,
+            cache_budget_bytes: s.cache_budget_bytes,
+            cache_bytes_after: s.cache_bytes_after,
+            hot_workspaces_evicted: s.hot_workspaces_evicted,
+            locked_workspaces_skipped: s.locked_workspaces_skipped,
         }
     }
 }

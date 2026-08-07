@@ -874,6 +874,19 @@ async fn blob_gc_returns_starved_instead_of_hanging_behind_an_endless_rescan() {
         matches!(result, Err(crate::store_gc::GcError::Starved(_))),
         "a sweep that cannot win the lock within its bound reports Starved, got {result:?}"
     );
+    let state = crate::store_gc::read_gc_state().expect("a starved attempt must be persisted");
+    assert_eq!(state.status, crate::store_gc::GcStatus::Starved);
+    assert_eq!(state.at_epoch_secs, 0, "no sweep completed");
+    assert!(state.last_attempt_epoch_secs > 0, "the failed attempt is timestamped");
+    assert_eq!(state.consecutive_degraded_cycles, 1);
+    assert!(
+        state
+            .detail
+            .as_deref()
+            .is_some_and(|detail| detail.contains("rescan held the store lock")),
+        "the diagnosis names the contending operation: {:?}",
+        state.detail
+    );
 }
 
 /// Every completed destructive sweep records its outcome to `gc-state.json`, so `cache_stats`
@@ -888,6 +901,8 @@ async fn a_completed_sweep_persists_gc_state() {
 
     let state = crate::store_gc::read_gc_state().expect("gc-state.json must exist after a completed sweep");
     assert!(state.at_epoch_secs > 0, "the sweep timestamp is recorded");
+    assert_eq!(state.last_attempt_epoch_secs, state.at_epoch_secs);
+    assert_eq!(state.status, crate::store_gc::GcStatus::Completed);
 }
 
 /// End-to-end correctness (not just lock timing): racing a real full rescan against the destructive

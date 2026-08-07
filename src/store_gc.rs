@@ -59,7 +59,9 @@ pub use crate::store_gc_workspace::{ReapReport, reap_orphaned_workspaces};
 
 /// Cache size-budget enforcement + persisted last-GC state — the third leg of keeping the
 /// machine-global cache bounded (and observable). Re-exported so callers see one GC surface.
-pub use crate::store_gc_budget::{GcState, cache_budget_bytes, enforce_cache_budget, persist_gc_state, read_gc_state};
+pub use crate::store_gc_budget::{
+    GcState, GcStatus, cache_budget_bytes, enforce_cache_budget, persist_gc_error, persist_gc_state, read_gc_state,
+};
 
 /// Whole-component cleanup + cache introspection — responsibility (2) in the module doc above.
 /// Lives in its own module to keep this file under the module size cap; re-exported here so
@@ -120,6 +122,18 @@ pub struct GcReport {
     /// Bytes reclaimed by those evictions. Disjoint from the other byte counters.
     #[serde(default)]
     pub evicted_bytes_freed: u64,
+    /// Cache budget applied by the daemon maintenance sweep.
+    #[serde(default)]
+    pub cache_budget_bytes: Option<u64>,
+    /// Measured cache footprint after budget enforcement.
+    #[serde(default)]
+    pub cache_bytes_after: Option<u64>,
+    /// Hot workspaces evicted after cold candidates were exhausted.
+    #[serde(default)]
+    pub hot_workspaces_evicted: usize,
+    /// Workspaces skipped by budget enforcement because they were locked.
+    #[serde(default)]
+    pub locked_workspaces_skipped: usize,
 }
 
 /// Enumerate every view's `index.msgpack` and union the hex content hashes it references.
@@ -325,14 +339,16 @@ pub fn reap_and_gc_global() -> Result<GcReport, GcError> {
 }
 
 /// The daemon's complete maintenance sweep: [`reap_and_gc_global`], then cache-budget
-/// enforcement (evicting cold workspaces when the cache exceeds
-/// [`cache_budget_bytes`], followed by a second blob sweep so the evicted workspaces' blobs are
-/// reclaimed in the same cycle), and finally persistence of the sweep's outcome to
-/// `gc-state.json` so `cache_stats` can show when GC last actually ran.
+/// enforcement (preferring cold workspaces and reclaiming their orphaned blobs in the same pass),
+/// and finally persistence of the sweep's health and budget outcome to `gc-state.json`.
 pub fn reap_gc_and_enforce_budget() -> Result<GcReport, GcError> {
     let mut report = reap_and_gc_global()?;
     if let Some(budget) = cache_budget_bytes() {
         let evicted = enforce_cache_budget(budget)?;
+        report.cache_budget_bytes = Some(budget);
+        report.cache_bytes_after = Some(evicted.total_bytes_after);
+        report.hot_workspaces_evicted = evicted.hot_evicted;
+        report.locked_workspaces_skipped = evicted.locked_skipped;
         if evicted.evicted > 0 {
             report.workspaces_evicted = evicted.evicted;
             report.evicted_bytes_freed = evicted.bytes_freed;

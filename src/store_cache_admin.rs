@@ -123,9 +123,8 @@ pub struct CacheStats {
     /// Peak resident set size of the reporting process over its lifetime, in bytes; `None` when
     /// unreadable. See [`crate::sysres`].
     pub peak_rss_bytes: Option<u64>,
-    /// Outcome of the most recent destructive GC sweep (persisted to `gc-state.json` by the
-    /// daemon). `None` means no sweep has ever completed on this machine — on a long-lived
-    /// install that is itself the red flag the field exists to surface.
+    /// Outcome and health of the most recent destructive GC attempt (persisted to
+    /// `gc-state.json` by the daemon). `None` means no attempt has been recorded on this machine.
     pub last_gc: Option<crate::store_gc_budget::GcState>,
 }
 

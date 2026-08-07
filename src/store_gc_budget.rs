@@ -8,8 +8,8 @@
 //!    workspace dirs are evicted (their blobs orphan and the next sweep reclaims them). This is
 //!    the backstop the reference-counting GC lacks: reaping only ever removes *orphans*, so a
 //!    machine that accumulates live-but-idle workspaces still grows without bound.
-//! 2. **Last-GC state** ([`persist_gc_state`] / [`read_gc_state`]). Every destructive sweep
-//!    records what it did to `gc-state.json` in the cache root, and `cache_stats` surfaces it —
+//! 2. **GC health state** ([`persist_gc_state`] / [`read_gc_state`]). Every attempt records its
+//!    status in `gc-state.json`, including starvation and failures, and `cache_stats` surfaces it
 //!    so a GC that silently stops running is observable instead of a 116 GB surprise.
 //!
 //! Split into its own module (mirroring `store_gc_workspace.rs`) to keep `store_gc.rs` under the
@@ -45,13 +45,40 @@ const BUDGET_ORPHAN_GRACE: Duration = Duration::ZERO;
 /// and `workspaces/`).
 pub const GC_STATE_FILE: &str = "gc-state.json";
 
+/// Operational outcome of the most recent GC attempt.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum GcStatus {
+    /// The sweep completed and the cache is within its configured budget.
+    #[default]
+    Completed,
+    /// The sweep completed, but protected or unavailable cache content kept it over budget.
+    OverBudget,
+    /// A rescan held the global GC lock for the full bounded wait.
+    Starved,
+    /// The sweep failed for another reason.
+    Failed,
+}
+
 /// What the most recent destructive sweep did. Persisted as JSON by [`persist_gc_state`] and
 /// surfaced by `cache_stats` so operators (and `/bm-stats` / doctor) can see whether GC is
 /// actually running — the missing observability that let the starved-GC incident go unnoticed.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct GcState {
-    /// When the sweep finished (seconds since the Unix epoch).
+    /// When the most recent sweep finished (seconds since the Unix epoch); `0` if none completed.
     pub at_epoch_secs: u64,
+    /// When the most recent attempt finished, including failed and starved attempts.
+    #[serde(default)]
+    pub last_attempt_epoch_secs: u64,
+    /// Operational outcome of the most recent attempt.
+    #[serde(default)]
+    pub status: GcStatus,
+    /// Actionable diagnosis for a degraded attempt.
+    #[serde(default)]
+    pub detail: Option<String>,
+    /// Consecutive attempts that starved, failed, or ended over budget.
+    #[serde(default)]
+    pub consecutive_degraded_cycles: u32,
     /// Blob files inspected.
     pub scanned: usize,
     /// Orphan blob files removed.
@@ -68,6 +95,18 @@ pub struct GcState {
     /// Bytes reclaimed by those evictions.
     #[serde(default)]
     pub evicted_bytes_freed: u64,
+    /// Cache budget applied by the most recent completed sweep.
+    #[serde(default)]
+    pub cache_budget_bytes: Option<u64>,
+    /// Measured cache footprint after the most recent completed budget pass.
+    #[serde(default)]
+    pub cache_bytes_after: Option<u64>,
+    /// Hot workspaces evicted after cold candidates were exhausted.
+    #[serde(default)]
+    pub hot_workspaces_evicted: usize,
+    /// Workspaces budget enforcement skipped because they were locked.
+    #[serde(default)]
+    pub locked_workspaces_skipped: usize,
 }
 
 /// Result of one budget-enforcement pass.
@@ -130,11 +169,28 @@ pub fn persist_gc_state(report: &GcReport) {
 
 /// [`persist_gc_state`] against an explicit path (tests pass a temp file).
 pub(crate) fn persist_gc_state_at(path: &Path, report: &GcReport) {
+    let now = epoch_secs();
+    let over_budget = report
+        .cache_budget_bytes
+        .zip(report.cache_bytes_after)
+        .is_some_and(|(budget, after)| after > budget);
+    let previous_degraded_cycles = read_gc_state_at(path)
+        .map(|state| state.consecutive_degraded_cycles)
+        .unwrap_or(0);
     let state = GcState {
-        at_epoch_secs: SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0),
+        at_epoch_secs: now,
+        last_attempt_epoch_secs: now,
+        status: if over_budget {
+            GcStatus::OverBudget
+        } else {
+            GcStatus::Completed
+        },
+        detail: over_budget.then(|| over_budget_detail(report)),
+        consecutive_degraded_cycles: if over_budget {
+            previous_degraded_cycles.saturating_add(1)
+        } else {
+            0
+        },
         scanned: report.scanned,
         removed: report.removed,
         bytes_freed: report.bytes_freed,
@@ -142,7 +198,49 @@ pub(crate) fn persist_gc_state_at(path: &Path, report: &GcReport) {
         workspace_bytes_freed: report.workspace_bytes_freed,
         workspaces_evicted: report.workspaces_evicted,
         evicted_bytes_freed: report.evicted_bytes_freed,
+        cache_budget_bytes: report.cache_budget_bytes,
+        cache_bytes_after: report.cache_bytes_after,
+        hot_workspaces_evicted: report.hot_workspaces_evicted,
+        locked_workspaces_skipped: report.locked_workspaces_skipped,
     };
+    write_gc_state(path, &state);
+}
+
+/// Persist a failed or starved GC attempt while preserving the last completed sweep counters.
+pub fn persist_gc_error(error: &GcError) {
+    persist_gc_error_at(&gc_state_path(), error);
+}
+
+fn persist_gc_error_at(path: &Path, error: &GcError) {
+    let mut state = read_gc_state_at(path).unwrap_or_default();
+    state.last_attempt_epoch_secs = epoch_secs();
+    state.status = match error {
+        GcError::Starved(_) => GcStatus::Starved,
+        _ => GcStatus::Failed,
+    };
+    state.detail = Some(error.to_string());
+    state.consecutive_degraded_cycles = state.consecutive_degraded_cycles.saturating_add(1);
+    write_gc_state(path, &state);
+}
+
+fn over_budget_detail(report: &GcReport) -> String {
+    let budget = report.cache_budget_bytes.unwrap_or(0);
+    let after = report.cache_bytes_after.unwrap_or(budget);
+    format!(
+        "cache remains {} bytes over budget after enforcement; {} workspace(s) were locked; retrying next cycle",
+        after.saturating_sub(budget),
+        report.locked_workspaces_skipped
+    )
+}
+
+fn epoch_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0)
+}
+
+fn write_gc_state(path: &Path, state: &GcState) {
     let write = serde_json::to_vec_pretty(&state)
         .map_err(std::io::Error::other)
         .and_then(|bytes| {
@@ -492,6 +590,7 @@ mod tests {
             workspace_bytes_freed: 2048,
             workspaces_evicted: 2,
             evicted_bytes_freed: 8192,
+            ..GcReport::default()
         };
         persist_gc_state_at(&path, &report);
 
@@ -502,9 +601,111 @@ mod tests {
         assert_eq!(state.workspaces_reaped, 1);
         assert_eq!(state.workspaces_evicted, 2);
         assert_eq!(state.evicted_bytes_freed, 8192);
+        assert_eq!(state.status, GcStatus::Completed);
+        assert_eq!(state.last_attempt_epoch_secs, state.at_epoch_secs);
+        assert_eq!(state.consecutive_degraded_cycles, 0);
 
         fs::write(&path, b"{ not json").expect("corrupt");
         assert!(read_gc_state_at(&path).is_none(), "corrupt state degrades to None");
+    }
+
+    #[test]
+    fn an_over_budget_sweep_is_persisted_as_degraded_until_a_healthy_sweep_completes() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join(GC_STATE_FILE);
+        let constrained = GcReport {
+            cache_budget_bytes: Some(100),
+            cache_bytes_after: Some(180),
+            locked_workspaces_skipped: 2,
+            hot_workspaces_evicted: 1,
+            ..GcReport::default()
+        };
+
+        persist_gc_state_at(&path, &constrained);
+
+        let degraded = read_gc_state_at(&path).expect("degraded state persisted");
+        assert_eq!(degraded.status, GcStatus::OverBudget);
+        assert_eq!(degraded.consecutive_degraded_cycles, 1);
+        assert_eq!(degraded.cache_budget_bytes, Some(100));
+        assert_eq!(degraded.cache_bytes_after, Some(180));
+        assert_eq!(degraded.locked_workspaces_skipped, 2);
+        assert_eq!(degraded.hot_workspaces_evicted, 1);
+        assert!(
+            degraded
+                .detail
+                .as_deref()
+                .is_some_and(|detail| detail.contains("80 bytes over budget")),
+            "the persisted diagnosis is actionable: {:?}",
+            degraded.detail
+        );
+
+        persist_gc_state_at(&path, &GcReport::default());
+
+        let recovered = read_gc_state_at(&path).expect("healthy state persisted");
+        assert_eq!(recovered.status, GcStatus::Completed);
+        assert_eq!(recovered.consecutive_degraded_cycles, 0);
+        assert_eq!(recovered.detail, None);
+    }
+
+    #[test]
+    fn failed_attempts_preserve_the_last_success_and_accumulate_until_recovery() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join(GC_STATE_FILE);
+        let completed = GcReport {
+            scanned: 12,
+            removed: 4,
+            bytes_freed: 4096,
+            ..GcReport::default()
+        };
+        persist_gc_state_at(&path, &completed);
+        let completed_at = read_gc_state_at(&path).expect("completed state").at_epoch_secs;
+
+        persist_gc_error_at(&path, &GcError::Starved(Duration::from_secs(300)));
+        persist_gc_error_at(&path, &GcError::Join("maintenance worker panicked".to_owned()));
+
+        let failed = read_gc_state_at(&path).expect("failed state persisted");
+        assert_eq!(failed.status, GcStatus::Failed);
+        assert_eq!(failed.consecutive_degraded_cycles, 2);
+        assert_eq!(
+            failed.at_epoch_secs, completed_at,
+            "last successful timestamp is preserved"
+        );
+        assert_eq!(failed.scanned, 12, "last successful counters are preserved");
+        assert_eq!(failed.removed, 4);
+        assert_eq!(failed.bytes_freed, 4096);
+        assert!(
+            failed
+                .detail
+                .as_deref()
+                .is_some_and(|detail| detail.contains("maintenance worker panicked")),
+            "the latest failure replaces the prior diagnosis: {:?}",
+            failed.detail
+        );
+    }
+
+    #[test]
+    fn legacy_gc_state_defaults_attempt_health_fields() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join(GC_STATE_FILE);
+        fs::write(
+            &path,
+            br#"{
+                "at_epoch_secs": 42,
+                "scanned": 5,
+                "removed": 1,
+                "bytes_freed": 128,
+                "workspaces_reaped": 0,
+                "workspace_bytes_freed": 0
+            }"#,
+        )
+        .expect("write legacy state");
+
+        let state = read_gc_state_at(&path).expect("legacy state remains readable");
+        assert_eq!(state.at_epoch_secs, 42);
+        assert_eq!(state.status, GcStatus::Completed);
+        assert_eq!(state.last_attempt_epoch_secs, 0);
+        assert_eq!(state.consecutive_degraded_cycles, 0);
+        assert_eq!(state.detail, None);
     }
 
     #[test]

@@ -660,11 +660,18 @@ impl Broker {
     ) -> Result<crate::store_gc::GcReport, crate::store_gc::GcError> {
         let _working = self.begin_work();
         let Ok(_sweep_guard) = tokio::time::timeout(lock_timeout, self.blob_gc_lock.write()).await else {
-            return Err(crate::store_gc::GcError::Starved(lock_timeout));
+            let error = crate::store_gc::GcError::Starved(lock_timeout);
+            crate::store_gc::persist_gc_error(&error);
+            return Err(error);
         };
-        tokio::task::spawn_blocking(crate::store_gc::reap_gc_and_enforce_budget)
-            .await
-            .map_err(|join| crate::store_gc::GcError::Join(join.to_string()))?
+        let result = match tokio::task::spawn_blocking(crate::store_gc::reap_gc_and_enforce_budget).await {
+            Ok(result) => result,
+            Err(join) => Err(crate::store_gc::GcError::Join(join.to_string())),
+        };
+        if let Err(error) = &result {
+            crate::store_gc::persist_gc_error(error);
+        }
+        result
     }
 
     /// Handle one request on a link. Returns the direct response.
