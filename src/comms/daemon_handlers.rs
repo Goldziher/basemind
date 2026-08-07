@@ -550,6 +550,7 @@ impl Broker {
         CommsResponse::Status(StatusReport {
             pid: std::process::id(),
             version: self.version.clone(),
+            build_id: crate::version::build_id().to_string(),
             proto_ver: PROTO_VER,
             uptime_secs: self.started.elapsed().as_secs(),
             threads: u32::try_from(threads).unwrap_or(u32::MAX),

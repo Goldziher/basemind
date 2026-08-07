@@ -322,14 +322,34 @@ fn cmd_comms_lifecycle_rpc(rpc: CommsRpc, json: bool) -> Result<()> {
                     );
                 } else {
                     println!(
-                        "pid={} version={} proto={} uptime={}s threads={} subscribers={}",
+                        "pid={} version={} build={} proto={} uptime={}s threads={} subscribers={}",
                         status.pid,
                         status.version,
+                        if status.build_id.is_empty() {
+                            "unreported"
+                        } else {
+                            &status.build_id
+                        },
                         status.proto_ver,
                         status.uptime_secs,
                         status.threads,
                         status.subscribers,
                     );
+                    // Same version, different binary: the case every version check passes and
+                    // nobody thinks to look for. Say it outright — the symptom is a daemon quietly
+                    // answering with the code it was built from, not the code just installed.
+                    let ours = basemind::version::build_id();
+                    if !status.build_id.is_empty() && status.build_id != ours {
+                        println!(
+                            "  WARNING: this daemon is running a DIFFERENT build of the same version \
+                             (daemon {} vs this binary {}).",
+                            status.build_id, ours
+                        );
+                        println!(
+                            "  It will keep answering with its own code — a version check cannot see this. \
+                             Restart it with `basemind comms stop` to pick up the current binary."
+                        );
+                    }
                 }
             }
         }

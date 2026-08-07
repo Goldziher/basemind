@@ -806,6 +806,7 @@ mod tests {
         let want = StatusReport {
             pid: 4242,
             version: "0.22.4".to_string(),
+            build_id: "deadbeef1234".to_string(),
             proto_ver: PROTO_VER,
             uptime_secs: 99,
             threads: 3,

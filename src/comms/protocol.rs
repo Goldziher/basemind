@@ -490,6 +490,12 @@ pub struct StatusReport {
     pub pid: u32,
     /// Daemon build version.
     pub version: String,
+    /// Short hash of the daemon's own executable. Distinguishes builds that share a `version`, so a
+    /// daemon left over from a previous local install can be told apart from the current binary
+    /// instead of silently passing every version check. Additive with `#[serde(default)]`: an older
+    /// daemon omits it and it decodes empty, which reads as "this daemon cannot report its build".
+    #[serde(default)]
+    pub build_id: String,
     /// Protocol version spoken.
     pub proto_ver: u32,
     /// Seconds since the daemon started.
