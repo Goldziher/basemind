@@ -3,6 +3,8 @@
 //! the 1000-line `rust-max-lines` cap. `super` here resolves to the `daemon` module.
 
 use super::*;
+use crate::comms::model::MessageBody;
+use crate::comms::store;
 
 fn temp_broker() -> (tempfile::TempDir, Arc<Broker>) {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -303,6 +305,55 @@ async fn join_post_history_and_inbox_round_trip() {
     }
 
     assert!(inbox(&broker, &mut alice, &tx).await.is_empty());
+}
+
+#[tokio::test]
+async fn history_applies_recency_before_the_page_limit() {
+    let (_d, broker) = temp_broker();
+    let (tx, _rx) = mpsc::channel(16);
+    let mut alice = hello(&broker, &tx, "alice").await;
+    let thread = start_thread(&broker, &mut alice, &tx, &["bob"]).await;
+    let cutoff = crate::comms::model::now_micros();
+
+    for (index, timestamp) in [cutoff - 2, cutoff - 1, cutoff + 1].into_iter().enumerate() {
+        let subject = format!("message-{index}");
+        let body = subject.as_bytes().to_vec();
+        let mut meta = store::build_meta(
+            format!("filtered-history-{index}"),
+            thread.clone(),
+            agent("alice"),
+            subject,
+            vec![],
+            None,
+            &body,
+        );
+        meta.ts_micros = timestamp;
+        broker
+            .store
+            .post(&thread, meta, MessageBody(body))
+            .expect("store history fixture");
+    }
+
+    match broker
+        .handle(
+            CommsRequest::ThreadHistory {
+                thread,
+                cursor: None,
+                limit: Some(2),
+                since_micros: Some(cutoff),
+            },
+            &mut alice,
+            &tx,
+        )
+        .await
+    {
+        CommsResponse::History { messages, next_cursor } => {
+            assert_eq!(messages.len(), 1, "old rows must not consume the requested page");
+            assert_eq!(messages[0].meta.subject, "message-2");
+            assert!(next_cursor.is_none());
+        }
+        other => panic!("expected History, got {other:?}"),
+    }
 }
 
 /// Inbox reflects ONLY joined threads: a message in a thread the agent has not joined never

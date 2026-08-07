@@ -329,12 +329,11 @@ impl Broker {
     ) -> Result<CommsResponse, CommsStoreError> {
         let after = decode_after(cursor.as_ref(), thread.as_str());
         let limit = clamp_limit(limit);
-        let page = self.store.history(&thread, after, limit)?;
+        let page = self.store.history_since(&thread, after, limit, since_micros)?;
         let next = page.more.then(|| Cursor::encode(thread.as_str(), page.last_seq));
         let messages = page
             .messages
             .into_iter()
-            .filter(|(_, meta)| keep_since(meta.ts_micros, since_micros))
             .map(|(seq, meta)| SeqMeta { seq, meta })
             .collect();
         Ok(CommsResponse::History {

@@ -294,6 +294,18 @@ impl CommsStore {
     /// Read a thread's history starting AFTER `after_seq` (exclusive), oldest-first, up to
     /// `limit`. Decodes ONLY [`MessageMeta`] — never the body.
     pub fn history(&self, thread: &ThreadId, after_seq: u64, limit: usize) -> Result<HistoryPage, CommsStoreError> {
+        self.history_since(thread, after_seq, limit, None)
+    }
+
+    /// Read a thread's history after `after_seq`, applying the recency cutoff before the page limit.
+    /// Old rows therefore cannot hide newer matching messages behind a full raw page.
+    pub fn history_since(
+        &self,
+        thread: &ThreadId,
+        after_seq: u64,
+        limit: usize,
+        since_micros: Option<i64>,
+    ) -> Result<HistoryPage, CommsStoreError> {
         let prefix = keys::messages_by_thread_prefix(thread.as_str());
         let mut messages = Vec::new();
         let mut last_seq = after_seq;
@@ -306,11 +318,15 @@ impl CommsStore {
             if seq <= after_seq {
                 continue;
             }
+            let meta: MessageMeta = rmp_serde::from_slice(&v)?;
+            if since_micros.is_some_and(|cutoff| meta.ts_micros < cutoff) {
+                last_seq = seq;
+                continue;
+            }
             if messages.len() >= limit {
                 more = true;
                 break;
             }
-            let meta: MessageMeta = rmp_serde::from_slice(&v)?;
             messages.push((seq, meta));
             last_seq = seq;
         }
