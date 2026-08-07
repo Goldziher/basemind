@@ -493,7 +493,9 @@ pub async fn serve_http(broker: Arc<Broker>, comms_dir: PathBuf, mut shutdown: w
                 // through and tear down the process on the first request after idle (the exact
                 // wake-from-idle case the pin exists to protect). `handle` also pins per request to
                 // refresh HTTP recency; nested counting on the atomic is fine.
-                let conn_activity = router.broker.begin_http_request();
+                let Some(conn_activity) = router.broker.try_begin_http_connection().await else {
+                    continue;
+                };
                 tokio::spawn(async move {
                     let _conn_activity = conn_activity;
                     let builder = auto::Builder::new(TokioExecutor::new());

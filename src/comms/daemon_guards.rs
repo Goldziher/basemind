@@ -24,6 +24,19 @@ impl Drop for LinkGuard {
     }
 }
 
+/// RAII refcount for one accepted MCP relay session.
+pub struct RelayGuard {
+    pub(super) broker: Arc<Broker>,
+}
+
+impl Drop for RelayGuard {
+    fn drop(&mut self) {
+        self.broker
+            .relay_count
+            .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
 /// RAII marker that a unit of daemon-internal work is in flight; see [`Broker::begin_work`].
 ///
 /// Work with a client attached is already covered by the link refcount — the client blocks on the

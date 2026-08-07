@@ -18,7 +18,7 @@ use super::daemon::Broker;
 /// construction and its drop stamp `last_http_ms` so a burst of short requests keeps the daemon
 /// warm across the gaps between them, exactly as `last_activity_ms` does for UDS links.
 pub struct HttpActivityGuard {
-    broker: Arc<Broker>,
+    pub(super) broker: Arc<Broker>,
 }
 
 impl Drop for HttpActivityGuard {

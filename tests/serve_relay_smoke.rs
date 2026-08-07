@@ -151,5 +151,33 @@ async fn serve_relays_stdio_client_to_the_daemon_hosted_router() {
         "outline over the relay should list the scanned symbols, got {names:?}"
     );
 
+    // A second client must not be able to recycle the shared daemon out from under this live relay.
+    // This is the multi-agent failure that surfaced as Codex's permanent `Transport closed`: one
+    // session installed a new build and stopped the singleton, severing every other stdio host.
+    let stop = AsyncCommand::new(bin)
+        .arg("comms")
+        .arg("stop")
+        .output()
+        .await
+        .expect("request daemon stop while relay is live");
+    assert!(
+        !stop.status.success(),
+        "stop must be refused while another relay is live"
+    );
+    let stderr = String::from_utf8_lossy(&stop.stderr);
+    assert!(
+        stderr.contains("daemon_busy"),
+        "refusal should expose the stable daemon_busy code: {stderr}"
+    );
+
+    let after_refusal = service
+        .call_tool(call_params(
+            "code",
+            serde_json::json!({ "mode": "outline", "path": "a.rs" }),
+        ))
+        .await
+        .expect("relay should remain callable after a refused stop");
+    assert_eq!(decode_text(&after_refusal)["path"], "a.rs");
+
     service.cancel().await.expect("shut down the relay client");
 }

@@ -36,6 +36,9 @@ mod daemon_handlers;
 /// read-stack resolution, connection accounting), split out of `daemon.rs` for the line cap.
 #[cfg(all(feature = "comms", any(unix, windows)))]
 pub mod daemon_http;
+/// Lifecycle admission and non-destructive user-stop handling, split out for the line cap.
+#[cfg(all(feature = "comms", any(unix, windows)))]
+mod daemon_lifecycle;
 /// The daemon lock/registry now lives at [`crate::daemon_lock`] and is shared with the other daemon
 /// families; re-exported here so the broker's historical `comms::daemon_lock::` path stays stable.
 pub use crate::daemon_lock;

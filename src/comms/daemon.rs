@@ -109,7 +109,6 @@ pub fn bootstrap_timeout() -> Duration {
 pub const DRAIN_GRACE: Duration = Duration::from_secs(10);
 /// Poll cadence while waiting out [`DRAIN_GRACE`].
 const DRAIN_POLL_EVERY: Duration = Duration::from_millis(25);
-
 /// How long a GC cycle waits for the blob-GC write lock before declaring itself starved and
 /// skipping the cycle. Every rescan holds the read side for its whole duration, so this must be
 /// long enough to outlast a legitimate big-monorepo scan yet bounded — an unbounded wait behind
@@ -119,7 +118,7 @@ const GC_LOCK_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 /// The RAII refcount guards ([`LinkGuard`], [`WorkGuard`]) live in `daemon_guards.rs` to keep this
 /// file under the module-size cap. Re-exported here so their historical path (`daemon::LinkGuard`)
 /// stays stable for the front-ends that import them.
-pub use super::daemon_guards::{LinkGuard, WorkGuard};
+pub use super::daemon_guards::{LinkGuard, RelayGuard, WorkGuard};
 
 /// How long an ACTIVE thread may sit idle before the system auto-archives it. Conservative — a
 /// thread past two weeks of silence is almost certainly done. The daemon's periodic sweep
@@ -228,6 +227,7 @@ pub struct Broker {
     scan_cancel: crate::scanner::ScanCancel,
     pub(super) subscriber_count: AtomicUsize,
     link_count: AtomicUsize,
+    pub(super) relay_count: AtomicUsize,
     /// Latches true the first time any link connects. Drives the bootstrap reaper: a daemon that
     /// stays `false` past [`BOOTSTRAP_TIMEOUT`] was spawned and abandoned (nobody ever dialed it) and
     /// self-terminates. Never reset — once a session has used the daemon, the idle window governs.
@@ -235,7 +235,7 @@ pub struct Broker {
     /// Daemon-internal work units in flight (see [`Broker::begin_work`]). Distinct from
     /// `link_count`: this covers work NO client is attached to — the blob GC above all — which the
     /// idle reaper would otherwise be free to tear down mid-sweep.
-    work_inflight: AtomicUsize,
+    pub(super) work_inflight: AtomicUsize,
     last_activity_ms: AtomicU64,
     /// In-flight streamable-HTTP requests (see [`Broker::begin_http_request`]). The HTTP front-end
     /// is stateless — nothing holds a link between requests — so `link_count` cannot represent an
@@ -293,6 +293,7 @@ impl Broker {
             scan_cancel,
             subscriber_count: AtomicUsize::new(0),
             link_count: AtomicUsize::new(0),
+            relay_count: AtomicUsize::new(0),
             ever_linked: AtomicBool::new(false),
             work_inflight: AtomicUsize::new(0),
             last_activity_ms: AtomicU64::new(0),
@@ -434,6 +435,10 @@ impl Broker {
                 let _ = relay::write_welcome(&mut stream, &decline("host_build_failed")).await;
                 return;
             }
+        };
+        let Some(_relay) = self.try_register_relay().await else {
+            let _ = relay::write_welcome(&mut stream, &decline("daemon_draining")).await;
+            return;
         };
 
         let welcome = relay::RelayWelcome {
@@ -790,10 +795,7 @@ impl Broker {
             } => Ok(self.on_worktree_release(repo_id, name, claimant).await),
             CommsRequest::Ping => Ok(CommsResponse::Pong),
             CommsRequest::Status => Ok(self.on_status().await),
-            CommsRequest::Stop => {
-                self.begin_drain().await;
-                Ok(CommsResponse::Ok)
-            }
+            CommsRequest::Stop => Ok(self.on_stop().await),
         }
     }
 
@@ -931,7 +933,7 @@ impl Broker {
     /// The tail shared by [`Broker::begin_drain`] and [`Broker::try_begin_idle_drain`]: tell every
     /// live sink we are going away, then fire the accept-loop shutdown signal. Split out so the
     /// idle path can make its decision under the registry lock without holding it across the sends.
-    async fn finish_drain(&self, sinks: Vec<mpsc::Sender<CommsOut>>) {
+    pub(super) async fn finish_drain(&self, sinks: Vec<mpsc::Sender<CommsOut>>) {
         // Trip the scan token FIRST: a mid-flight rescan must start winding down before (not ~keep
         // after) clients are told to disconnect, or the runtime teardown blocks on it. ~keep
         self.scan_cancel.cancel();

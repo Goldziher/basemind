@@ -6,6 +6,9 @@ use super::*;
 use crate::comms::model::MessageBody;
 use crate::comms::store;
 
+#[path = "daemon_lifecycle_tests.rs"]
+mod lifecycle_tests;
+
 fn temp_broker() -> (tempfile::TempDir, Arc<Broker>) {
     let dir = tempfile::tempdir().expect("tempdir");
     let store = Arc::new(CommsStore::open(dir.path()).expect("store"));
