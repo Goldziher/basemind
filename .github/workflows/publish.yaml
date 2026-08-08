@@ -365,6 +365,19 @@ jobs:
         with:
           key: ${{ matrix.triple }}
 
+      - name: Discard incomplete xberg Tesseract source cache
+        shell: bash
+        run: |
+          cache_root="target/${{ matrix.triple }}/xberg-tesseract-cache"
+          for source in leptonica tesseract; do
+            source_root="$cache_root/third_party/$source"
+            if [ -d "$source_root" ] && [ ! -f "$source_root/CMakeLists.txt" ]; then
+              echo "Removing incomplete xberg Tesseract cache: $cache_root"
+              rm -rf "$cache_root"
+              break
+            fi
+          done
+
       - name: Build release binary
         shell: bash
         run: |
