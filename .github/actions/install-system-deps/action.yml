@@ -150,8 +150,9 @@ runs:
           Add-Content -Path $env:GITHUB_ENV -Value "VCPKG_ROOT=$vcpkgRoot"
         }
 
-        # libheif-sys resolves libheif's zlib dependency through the `vcpkg` crate and emits a
-        # bare `-l zlib`, so the final basemind.exe link opens `zlib.lib` off a LIBPATH. But vcpkg
+        # libheif-sys resolves libheif's zlib dependency through the `vcpkg` crate and emits either
+        # `-l zlib` or `-l zlibstatic`, so the final basemind.exe link opens the matching import
+        # library off a LIBPATH. But vcpkg
         # builds a freshly-requested zlib into a per-port staging dir, submits it to its binary
         # cache, and cleans up — so NO zlib.lib survives on disk in the installed tree by link
         # time, and the link dies with LNK1181 (cannot open 'zlib.lib'). Build a static zlib.lib
@@ -171,11 +172,12 @@ runs:
         if ($built) {
           New-Item -ItemType Directory -Path $zlibFix -Force | Out-Null
           Copy-Item -Path $built.FullName -Destination (Join-Path $zlibFix "zlib.lib") -Force
+          Copy-Item -Path $built.FullName -Destination (Join-Path $zlibFix "zlibstatic.lib") -Force
           Add-Content -Path $env:GITHUB_ENV `
             -Value "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS=-L native=$($zlibFix -replace '\\','/')"
-          Write-Host "Built static zlib.lib from $($built.FullName) -> $zlibFix"
+          Write-Host "Built zlib.lib and zlibstatic.lib from $($built.FullName) -> $zlibFix"
         } else {
-          Write-Host "::error::Failed to build zlib.lib from source"
+          Write-Host "::error::Failed to build static zlib import libraries from source"
           Get-ChildItem -Path $zlibBuild -Recurse -Filter "*.lib" -ErrorAction SilentlyContinue |
             ForEach-Object { Write-Host "  $($_.FullName)" }
         }

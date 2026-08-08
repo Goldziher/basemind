@@ -344,6 +344,22 @@ jobs:
       - name: Install system dependencies
         uses: ./.github/actions/install-system-deps
 
+      # workflow_dispatch checks out the requested tag, whose dependency action may predate the
+      # dual-name fix. Keep this bridge in the current workflow while tagged source stays immutable.
+      - name: Ensure both Windows zlib import-library names exist
+        if: matrix.triple == 'x86_64-pc-windows-msvc'
+        shell: pwsh
+        run: |
+          $zlibFix = "C:\zlibfix"
+          $zlib = Join-Path $zlibFix "zlib.lib"
+          $zlibStatic = Join-Path $zlibFix "zlibstatic.lib"
+          if (-not (Test-Path $zlibStatic) -and (Test-Path $zlib)) {
+            Copy-Item -Path $zlib -Destination $zlibStatic -Force
+          }
+          if (-not (Test-Path $zlibStatic)) {
+            throw "zlibstatic.lib was not produced in $zlibFix"
+          }
+
       - name: Setup cache
         uses: Swatinem/rust-cache@v2
         with:
