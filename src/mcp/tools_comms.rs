@@ -59,8 +59,10 @@ impl BasemindServer {
         this agent's card (name / description / version / skills) so peers can see who you are, and \
         `list` shows the agents the broker knows, optionally just one thread's members. `members` \
         lists a thread's membership; `add_member` / `remove_member` / `archive` are creator-only \
-        (a human admin can archive too, and idle threads auto-archive). Every mode takes \
-        `as_agent` to act as a named sub-identity, so one orchestrator can drive several agents \
+        (a human admin can archive too, and idle threads auto-archive). `status` reports \
+        active/stale lifecycle counts and the last maintenance time. `cleanup` \
+        previews retention; MCP rejects `apply=true`, while CLI `--apply` is the mutation path. \
+        Every mode takes `as_agent` to act as a named sub-identity, so one orchestrator can drive several agents \
         with separate inboxes. Parameters that belong to another mode are rejected, not ignored. \
         Needs --features comms.",
         annotations(

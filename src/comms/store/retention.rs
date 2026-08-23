@@ -3,16 +3,123 @@
 use super::*;
 
 impl CommsStore {
+    /// Preview or apply every durable comms retention category except filesystem claim rows.
+    pub fn cleanup(
+        &self,
+        apply: bool,
+        message_ttl: std::time::Duration,
+        thread_idle_ttl: std::time::Duration,
+        thread_retention_ttl: std::time::Duration,
+        agent_ttl: std::time::Duration,
+    ) -> Result<crate::comms::protocol::CleanupReport, CommsStoreError> {
+        let now = now_micros();
+        let cutoff = |ttl: std::time::Duration| now.saturating_sub(i64::try_from(ttl.as_micros()).unwrap_or(i64::MAX));
+        let mut report = crate::comms::protocol::CleanupReport {
+            applied: apply,
+            ..Default::default()
+        };
+        let threads = self.list_threads()?;
+        let archived: ahash::AHashSet<&ThreadId> = threads
+            .iter()
+            .filter(|thread| !thread.active)
+            .map(|thread| &thread.id)
+            .collect();
+        let mut stale_agents = ahash::AHashSet::new();
+        for guard in self.agents.iter() {
+            let (_, value) = guard.into_inner()?;
+            let record: AgentRecord = rmp_serde::from_slice(&value)?;
+            let id = record.agent_id.as_str();
+            if record.last_seen < cutoff(agent_ttl) && id.starts_with("session-") {
+                stale_agents.insert(id.to_string());
+            }
+        }
+        report.stale_agents = stale_agents.len();
+        for guard in self.thread_members.iter() {
+            let (key, _) = guard.into_inner()?;
+            if keys::parse_thread_agent(&key).is_some_and(|(_, agent)| stale_agents.contains(&agent)) {
+                report.stale_memberships += 1;
+            }
+        }
+        for guard in self.cursors.iter() {
+            let (key, _) = guard.into_inner()?;
+            if keys::parse_cursor_key(&key).is_some_and(|(agent, _)| stale_agents.contains(&agent)) {
+                report.stale_cursors += 1;
+            }
+        }
+        for guard in self.messages_by_thread.iter() {
+            let (_, value) = guard.into_inner()?;
+            let meta: MessageMeta = rmp_serde::from_slice(&value)?;
+            report.expired_messages +=
+                usize::from(meta.ts_micros < cutoff(message_ttl) && !archived.contains(&meta.thread));
+        }
+        for thread in threads {
+            let last = if thread.last_activity > 0 {
+                thread.last_activity
+            } else {
+                thread.created_at
+            };
+            if thread.active && last < cutoff(thread_idle_ttl) {
+                report.idle_threads += 1;
+            }
+            if last < cutoff(thread_retention_ttl)
+                && (!thread.active || (thread.active && last < cutoff(thread_idle_ttl)))
+            {
+                report.archived_threads += 1;
+            }
+        }
+        if apply {
+            self.prune_expired(message_ttl)?;
+            self.archive_idle(thread_idle_ttl)?;
+            self.purge_archived(thread_retention_ttl)?;
+            self.prune_ephemeral_agents(agent_ttl)?;
+        }
+        Ok(report)
+    }
+
+    /// Count active and stale generated agents using the supplied lifecycle threshold.
+    pub fn agent_status(
+        &self,
+        ttl: std::time::Duration,
+    ) -> Result<crate::comms::protocol::AgentsStatusReport, CommsStoreError> {
+        let cutoff = now_micros().saturating_sub(i64::try_from(ttl.as_micros()).unwrap_or(i64::MAX));
+        let mut report = crate::comms::protocol::AgentsStatusReport::default();
+        for guard in self.agents.iter() {
+            let (_, value) = guard.into_inner()?;
+            let record: AgentRecord = rmp_serde::from_slice(&value)?;
+            let generated = record.agent_id.as_str().starts_with("session-");
+            if generated && record.last_seen < cutoff {
+                report.stale_agents += 1;
+            } else {
+                report.active_agents += 1;
+            }
+        }
+        for thread in self.list_threads()? {
+            if thread.active {
+                report.active_threads += 1;
+            } else {
+                report.archived_threads += 1;
+            }
+        }
+        report.last_maintenance_micros = self.last_maintenance()?;
+        Ok(report)
+    }
+
     /// Delete messages older than `now - ttl`, removing front-matter and bodies atomically.
     pub fn prune_expired(&self, ttl: std::time::Duration) -> Result<usize, CommsStoreError> {
         let ttl_micros = i64::try_from(ttl.as_micros()).unwrap_or(i64::MAX);
         let cutoff = now_micros().saturating_sub(ttl_micros);
+        let archived: ahash::AHashSet<ThreadId> = self
+            .list_threads()?
+            .into_iter()
+            .filter(|thread| !thread.active)
+            .map(|thread| thread.id)
+            .collect();
         let mut batch = self.db.batch();
         let mut pruned = 0usize;
         for guard in self.messages_by_thread.iter() {
             let (key, value) = guard.into_inner()?;
             let meta: MessageMeta = rmp_serde::from_slice(&value)?;
-            if meta.ts_micros < cutoff {
+            if meta.ts_micros < cutoff && !archived.contains(&meta.thread) {
                 batch.remove(&self.messages_by_thread, key.to_vec());
                 batch.remove(&self.message_body, meta.id.as_bytes().to_vec());
                 pruned += 1;
@@ -136,7 +243,7 @@ impl CommsStore {
             let (_, value) = guard.into_inner()?;
             let record: AgentRecord = rmp_serde::from_slice(&value)?;
             let id = record.agent_id.as_str();
-            if record.last_seen < cutoff && (id.starts_with("session-") || id.starts_with("agent-")) {
+            if record.last_seen < cutoff && id.starts_with("session-") {
                 stale.insert(id.to_string());
             }
         }

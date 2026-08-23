@@ -331,6 +331,8 @@ async fn drive_tools(svc: &ServiceHandle, sample: Option<&SampleFile>) -> Vec<To
     let _ = svc.list_tools(None).await;
 
     call(svc, &mut records, "admin", json!({ "mode": "status" })).await;
+    call(svc, &mut records, "agents", json!({ "mode": "status" })).await;
+    call(svc, &mut records, "agents", json!({ "mode": "cleanup" })).await;
     call(svc, &mut records, "code", json!({ "mode": "files", "limit": 50 })).await;
     call(
         svc,

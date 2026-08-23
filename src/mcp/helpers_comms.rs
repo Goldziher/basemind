@@ -1,4 +1,4 @@
-//! The `agents` domain dispatcher and the helper bodies for its sixteen modes.
+//! The `agents` domain dispatcher and the helper bodies for its eighteen modes.
 //!
 //! [`run_agents`] is the entry the `#[tool]` shim calls: it validates the flat [`AgentsParams`]
 //! against the selected [`AgentsMode`] and delegates to the per-mode body. Each `run_<mode>` is a
@@ -301,6 +301,12 @@ pub(super) async fn run_agents(state: &ServerState, params: AgentsParams) -> Res
         description,
         version,
         skills,
+        apply,
+        message_ttl_hours,
+        thread_idle_hours,
+        thread_retention_hours,
+        agent_ttl_hours,
+        claim_ttl_hours,
         as_agent,
     } = params;
     // `as_agent` is deliberately absent: it selects the identity the call runs as, not what the call
@@ -328,8 +334,15 @@ pub(super) async fn run_agents(state: &ServerState, params: AgentsParams) -> Res
         ("description", description.is_some()),
         ("version", version.is_some()),
         ("skills", skills.is_some()),
+        ("apply", apply.is_some()),
+        ("message_ttl_hours", message_ttl_hours.is_some()),
+        ("thread_idle_hours", thread_idle_hours.is_some()),
+        ("thread_retention_hours", thread_retention_hours.is_some()),
+        ("agent_ttl_hours", agent_ttl_hours.is_some()),
+        ("claim_ttl_hours", claim_ttl_hours.is_some()),
     ];
     reject_foreign_fields(mode, &present, allowed_fields(mode))?;
+    validate_cleanup_apply(mode, apply)?;
 
     match mode {
         AgentsMode::Register => {
@@ -506,6 +519,34 @@ pub(super) async fn run_agents(state: &ServerState, params: AgentsParams) -> Res
             )
             .await
         }
+        AgentsMode::Cleanup => {
+            let handle = resolve_comms_client(state, as_agent).await?;
+            let mut client = handle.lock().await;
+            let report = client
+                .cleanup_agents(
+                    apply.unwrap_or(false),
+                    hours_or_default(message_ttl_hours, crate::comms::store::MESSAGE_TTL),
+                    hours_or_default(thread_idle_hours, crate::comms::store::THREAD_IDLE_TTL),
+                    hours_or_default(thread_retention_hours, crate::comms::store::THREAD_RETENTION_TTL),
+                    hours_or_default(agent_ttl_hours, crate::comms::store::EPHEMERAL_AGENT_TTL),
+                    hours_or_default(claim_ttl_hours, crate::comms::identity::CLAIM_TTL),
+                )
+                .await
+                .map_err(comms_err)?;
+            json_result(&report)
+        }
+        AgentsMode::Status => {
+            let handle = resolve_comms_client(state, as_agent).await?;
+            let mut client = handle.lock().await;
+            let report = client
+                .agents_status(hours_or_default(
+                    agent_ttl_hours,
+                    crate::comms::store::EPHEMERAL_AGENT_TTL,
+                ))
+                .await
+                .map_err(comms_err)?;
+            json_result(&report)
+        }
     }
 }
 
@@ -525,7 +566,29 @@ fn allowed_fields(mode: AgentsMode) -> &'static [&'static str] {
         AgentsMode::Inbox => &["cursor", "limit", "mark_read", "since_hours"],
         AgentsMode::Ack => &["message_ids", "thread", "to_seq"],
         AgentsMode::Wait => &["thread", "timeout_secs", "since_hours", "cursor"],
+        AgentsMode::Cleanup => &[
+            "apply",
+            "message_ttl_hours",
+            "thread_idle_hours",
+            "thread_retention_hours",
+            "agent_ttl_hours",
+            "claim_ttl_hours",
+        ],
+        AgentsMode::Status => &["agent_ttl_hours"],
     }
+}
+
+fn hours_or_default(hours: Option<u32>, default: std::time::Duration) -> u64 {
+    hours.map_or(default.as_secs(), |value| u64::from(value).saturating_mul(60 * 60))
+}
+
+fn validate_cleanup_apply(mode: AgentsMode, apply: Option<bool>) -> Result<(), McpError> {
+    if mode == AgentsMode::Cleanup && apply == Some(true) {
+        return Err(comms_err(
+            "`agents` mode=\"cleanup\" is preview-only over MCP; use the CLI with `--apply`",
+        ));
+    }
+    Ok(())
 }
 
 async fn run_agent_register(state: &ServerState, params: AgentRegisterParams) -> Result<CallToolResult, McpError> {
@@ -902,5 +965,14 @@ mod tests {
                 "`as_agent` is universal and must not be listed per mode ({mode})"
             );
         }
+    }
+
+    #[test]
+    fn cleanup_rejects_apply_over_mcp_before_connecting() {
+        let error = validate_cleanup_apply(AgentsMode::Cleanup, Some(true)).expect_err("apply must be CLI-only");
+        assert_eq!(
+            error.message.to_string(),
+            "comms: `agents` mode=\"cleanup\" is preview-only over MCP; use the CLI with `--apply`"
+        );
     }
 }

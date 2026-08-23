@@ -734,6 +734,8 @@ impl Broker {
             }
             CommsRequest::Register { card } => self.on_register(session, card),
             CommsRequest::ListAgents { thread } => self.on_list_agents(thread),
+            request @ CommsRequest::Cleanup { .. } => Ok(self.on_agents_cleanup_request(request)),
+            CommsRequest::AgentsStatus { agent_ttl_secs } => Ok(self.on_agents_status(agent_ttl_secs)),
             CommsRequest::ThreadStart { subject, path, members } => {
                 self.on_thread_start(session, subject, path, members).await
             }

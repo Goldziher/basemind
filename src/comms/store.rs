@@ -38,6 +38,7 @@ use super::model::{
 mod retention;
 
 const META_SCHEMA_VER: &[u8] = b"schema_ver";
+const META_LAST_MAINTENANCE: &[u8] = b"last_maintenance_micros";
 const STORE_DIR: &str = "store.fjall";
 const LOCK_FILE: &str = ".lock";
 
@@ -128,6 +129,19 @@ pub struct CommsStore {
 }
 
 impl CommsStore {
+    /// Persist the completion time of the last successful retention apply.
+    pub fn record_maintenance(&self) -> Result<(), CommsStoreError> {
+        self.meta.insert(META_LAST_MAINTENANCE, now_micros().to_be_bytes())?;
+        Ok(())
+    }
+
+    /// Last successful retention apply, if maintenance has run.
+    pub fn last_maintenance(&self) -> Result<Option<i64>, CommsStoreError> {
+        Ok(self
+            .meta
+            .get(META_LAST_MAINTENANCE)?
+            .and_then(|value| <[u8; 8]>::try_from(value.as_ref()).ok().map(i64::from_be_bytes)))
+    }
     /// Open (or create) the comms store under `comms_dir`, taking the exclusive advisory
     /// flock. On a schema-version mismatch the `store.fjall/` directory is wiped and rebuilt
     /// empty.

@@ -17,7 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - MCP stdio sessions now reconnect through a persistent protocol-aware relay when the shared daemon
   restarts, replaying initialization and returning retryable errors for interrupted requests.
 - Agent comms now auto-register presence, deliver mailbox notices alongside ordinary MCP responses,
-  notify scoped agents about discoverable threads, and accept unambiguous short message references.
+  notify scoped agents about discoverable threads, accept unambiguous short message references, and
+  expose lifecycle status plus dry-run/apply retention cleanup.
 - Document extraction uses xberg 1.1 chunk content, offsets, language metadata, bounded extraction
   time/page limits, and basemind's shared batch embedding path. Binary builds pin the unreleased
   xberg source to an exact public Git revision for reproducibility.

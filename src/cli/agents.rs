@@ -51,6 +51,35 @@ const MAX_WAIT_SECS: u32 = 300;
 /// directly.
 #[derive(Subcommand, Debug)]
 pub enum AgentsCmd {
+    /// Preview retention cleanup by default, or apply it explicitly.
+    Cleanup {
+        /// Preview only (the default); accepted for explicit operator intent.
+        #[arg(long, conflicts_with = "apply")]
+        dry_run: bool,
+        /// Apply the reported cleanup.
+        #[arg(long)]
+        apply: bool,
+        #[arg(long)]
+        message_ttl_hours: Option<u32>,
+        #[arg(long)]
+        thread_idle_hours: Option<u32>,
+        #[arg(long)]
+        thread_retention_hours: Option<u32>,
+        #[arg(long)]
+        agent_ttl_hours: Option<u32>,
+        #[arg(long)]
+        claim_ttl_hours: Option<u32>,
+        #[arg(long)]
+        as_agent: Option<String>,
+    },
+    /// Report active/stale agents and the last successful maintenance time.
+    Status {
+        /// Override the generated-agent stale window in hours.
+        #[arg(long)]
+        agent_ttl_hours: Option<u32>,
+        #[arg(long)]
+        as_agent: Option<String>,
+    },
     /// Register or update this agent's A2A card with the broker.
     Register {
         /// Human-readable agent name.
@@ -310,6 +339,44 @@ fn parse_members(raw: Vec<String>) -> Result<Vec<AgentId>> {
 /// Run the mode: resolve the identity, connect, call the client method, and render to `out`.
 async fn dispatch(root: &Path, json: bool, cmd: AgentsCmd, out: &mut impl Write) -> Result<()> {
     match cmd {
+        AgentsCmd::Cleanup {
+            dry_run: _,
+            apply,
+            message_ttl_hours,
+            thread_idle_hours,
+            thread_retention_hours,
+            agent_ttl_hours,
+            claim_ttl_hours,
+            as_agent,
+        } => {
+            let mut client = connect_as(root, as_agent).await?;
+            let report = client
+                .cleanup_agents(
+                    apply,
+                    hours_or_default(message_ttl_hours, crate::comms::store::MESSAGE_TTL),
+                    hours_or_default(thread_idle_hours, crate::comms::store::THREAD_IDLE_TTL),
+                    hours_or_default(thread_retention_hours, crate::comms::store::THREAD_RETENTION_TTL),
+                    hours_or_default(agent_ttl_hours, crate::comms::store::EPHEMERAL_AGENT_TTL),
+                    hours_or_default(claim_ttl_hours, crate::comms::identity::CLAIM_TTL),
+                )
+                .await
+                .map_err(|error| anyhow::anyhow!("cleanup agents: {error}"))?;
+            render_serializable(&report, json, out)?;
+        }
+        AgentsCmd::Status {
+            agent_ttl_hours,
+            as_agent,
+        } => {
+            let mut client = connect_as(root, as_agent).await?;
+            let report = client
+                .agents_status(hours_or_default(
+                    agent_ttl_hours,
+                    crate::comms::store::EPHEMERAL_AGENT_TTL,
+                ))
+                .await
+                .map_err(|error| anyhow::anyhow!("agents status: {error}"))?;
+            render_serializable(&report, json, out)?;
+        }
         AgentsCmd::Register {
             name,
             description,
@@ -662,6 +729,22 @@ async fn dispatch(root: &Path, json: bool, cmd: AgentsCmd, out: &mut impl Write)
                 writeln!(out, "timed_out: {timed_out}")?;
                 render_front_matter(&messages, next_cursor.as_ref(), Some(unread), json, out)?;
             }
+        }
+    }
+    Ok(())
+}
+
+fn hours_or_default(hours: Option<u32>, default: std::time::Duration) -> u64 {
+    hours.map_or(default.as_secs(), |value| u64::from(value).saturating_mul(60 * 60))
+}
+
+fn render_serializable(value: &impl serde::Serialize, json: bool, out: &mut impl Write) -> Result<()> {
+    let value = serde_json::to_value(value)?;
+    if json {
+        writeln!(out, "{value}")?;
+    } else if let Some(fields) = value.as_object() {
+        for (name, value) in fields {
+            writeln!(out, "{name}: {value}")?;
         }
     }
     Ok(())

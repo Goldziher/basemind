@@ -18,7 +18,108 @@ use super::protocol::{CommsNotification, CommsOut, CommsResponse, PROTO_VER, Seq
 use super::scope;
 use super::store::{self, CommsStoreError, MessageReferenceResolution};
 
+pub(crate) const MIN_RETENTION_SECS: u64 = 60;
+pub(crate) const MAX_RETENTION_SECS: u64 = 365 * 24 * 60 * 60;
+
 impl Broker {
+    pub(super) fn on_agents_cleanup_request(&self, request: super::protocol::CommsRequest) -> CommsResponse {
+        let super::protocol::CommsRequest::Cleanup {
+            apply,
+            message_ttl_secs,
+            thread_idle_ttl_secs,
+            thread_retention_ttl_secs,
+            agent_ttl_secs,
+            claim_ttl_secs,
+        } = request
+        else {
+            return CommsResponse::Error {
+                code: "invalid_cleanup_request".to_string(),
+                message: "cleanup handler received another request variant".to_string(),
+            };
+        };
+        if let Err(message) = validate_retention_policy(
+            message_ttl_secs,
+            thread_idle_ttl_secs,
+            thread_retention_ttl_secs,
+            agent_ttl_secs,
+            claim_ttl_secs,
+        ) {
+            return CommsResponse::Error {
+                code: "invalid_retention_policy".to_string(),
+                message,
+            };
+        }
+        self.on_agents_cleanup(
+            apply,
+            message_ttl_secs,
+            thread_idle_ttl_secs,
+            thread_retention_ttl_secs,
+            agent_ttl_secs,
+            claim_ttl_secs,
+        )
+    }
+
+    pub(super) fn on_agents_cleanup(
+        &self,
+        apply: bool,
+        message_ttl_secs: u64,
+        thread_idle_ttl_secs: u64,
+        thread_retention_ttl_secs: u64,
+        agent_ttl_secs: u64,
+        claim_ttl_secs: u64,
+    ) -> CommsResponse {
+        let result = self.store.cleanup(
+            apply,
+            std::time::Duration::from_secs(message_ttl_secs),
+            std::time::Duration::from_secs(thread_idle_ttl_secs),
+            std::time::Duration::from_secs(thread_retention_ttl_secs),
+            std::time::Duration::from_secs(agent_ttl_secs),
+        );
+        match result {
+            Ok(mut report) => {
+                match crate::comms::identity::cleanup_expired_claims(
+                    std::time::Duration::from_secs(claim_ttl_secs),
+                    apply,
+                ) {
+                    Ok(count) => report.stale_claims = count,
+                    Err(error) => {
+                        return CommsResponse::Error {
+                            code: "claim_cleanup_error".to_string(),
+                            message: error.to_string(),
+                        };
+                    }
+                }
+                if apply && let Err(error) = self.store.record_maintenance() {
+                    return CommsResponse::Error {
+                        code: "maintenance_timestamp_error".to_string(),
+                        message: error.to_string(),
+                    };
+                }
+                CommsResponse::Cleanup(report)
+            }
+            Err(error) => CommsResponse::Error {
+                code: "cleanup_error".to_string(),
+                message: error.to_string(),
+            },
+        }
+    }
+
+    pub(super) fn on_agents_status(&self, agent_ttl_secs: u64) -> CommsResponse {
+        if !(MIN_RETENTION_SECS..=MAX_RETENTION_SECS).contains(&agent_ttl_secs) {
+            return CommsResponse::Error {
+                code: "invalid_retention_policy".to_string(),
+                message: format!("agent_ttl_secs must be between {MIN_RETENTION_SECS} and {MAX_RETENTION_SECS}"),
+            };
+        }
+        match self.store.agent_status(std::time::Duration::from_secs(agent_ttl_secs)) {
+            Ok(report) => CommsResponse::AgentsStatus(report),
+            Err(error) => CommsResponse::Error {
+                code: "status_error".to_string(),
+                message: error.to_string(),
+            },
+        }
+    }
+
     pub(super) fn on_hello(
         &self,
         agent: AgentId,
@@ -693,6 +794,32 @@ impl Broker {
             }
         }
     }
+}
+
+fn validate_retention_policy(
+    message_ttl_secs: u64,
+    thread_idle_ttl_secs: u64,
+    thread_retention_ttl_secs: u64,
+    agent_ttl_secs: u64,
+    claim_ttl_secs: u64,
+) -> Result<(), String> {
+    for (name, value) in [
+        ("message_ttl_secs", message_ttl_secs),
+        ("thread_idle_ttl_secs", thread_idle_ttl_secs),
+        ("thread_retention_ttl_secs", thread_retention_ttl_secs),
+        ("agent_ttl_secs", agent_ttl_secs),
+        ("claim_ttl_secs", claim_ttl_secs),
+    ] {
+        if !(MIN_RETENTION_SECS..=MAX_RETENTION_SECS).contains(&value) {
+            return Err(format!(
+                "{name} must be between {MIN_RETENTION_SECS} and {MAX_RETENTION_SECS}"
+            ));
+        }
+    }
+    if thread_retention_ttl_secs < thread_idle_ttl_secs {
+        return Err("thread_retention_ttl_secs must be greater than or equal to thread_idle_ttl_secs".to_string());
+    }
+    Ok(())
 }
 
 fn reference_error(reference: &str, resolution: MessageReferenceResolution) -> CommsResponse {

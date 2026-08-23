@@ -53,6 +53,26 @@ pub enum CommsRequest {
         #[serde(default)]
         thread: Option<ThreadId>,
     },
+    /// Preview or apply machine-global comms retention cleanup.
+    Cleanup {
+        /// Mutate storage when true; false is a dry-run.
+        apply: bool,
+        /// Message expiry threshold.
+        message_ttl_secs: u64,
+        /// Active-thread archive threshold.
+        thread_idle_ttl_secs: u64,
+        /// Archived-thread purge threshold.
+        thread_retention_ttl_secs: u64,
+        /// Generated-agent activity threshold.
+        agent_ttl_secs: u64,
+        /// Identity-claim refresh threshold.
+        claim_ttl_secs: u64,
+    },
+    /// Report agent lifecycle and retention status.
+    AgentsStatus {
+        /// Generated-agent activity threshold.
+        agent_ttl_secs: u64,
+    },
     /// Start a new thread addressed by AT LEAST TWO of `subject` / `path` / `members`. The
     /// calling agent becomes the creator and an implicit member. Fewer than two dimensions is
     /// rejected. Returns the created [`Thread`].
@@ -350,6 +370,10 @@ pub enum CommsResponse {
     Ok,
     /// Reply to [`CommsRequest::ListAgents`].
     Agents(Vec<super::model::AgentRecord>),
+    /// Reply to [`CommsRequest::Cleanup`].
+    Cleanup(CleanupReport),
+    /// Reply to [`CommsRequest::AgentsStatus`].
+    AgentsStatus(AgentsStatusReport),
     /// Reply to [`CommsRequest::ThreadStart`] and thread lookups.
     Thread(Thread),
     /// Reply to [`CommsRequest::ThreadList`].
@@ -504,6 +528,42 @@ pub struct StatusReport {
     pub threads: u32,
     /// Number of live notification subscribers.
     pub subscribers: u32,
+}
+
+/// Per-category retention preview or apply result.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CleanupReport {
+    /// Whether the reported rows were deleted.
+    pub applied: bool,
+    /// Generated agent records past their activity TTL.
+    pub stale_agents: usize,
+    /// Identity claim files past their refresh TTL.
+    pub stale_claims: usize,
+    /// Membership rows owned by stale generated agents.
+    pub stale_memberships: usize,
+    /// Read cursors owned by stale generated agents.
+    pub stale_cursors: usize,
+    /// Messages past their retention TTL.
+    pub expired_messages: usize,
+    /// Active threads past their archive threshold.
+    pub idle_threads: usize,
+    /// Archived threads past their purge threshold.
+    pub archived_threads: usize,
+}
+
+/// Operator-visible agent lifecycle status.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentsStatusReport {
+    /// Named or recently active generated agents.
+    pub active_agents: usize,
+    /// Generated agents past their activity TTL.
+    pub stale_agents: usize,
+    /// Threads accepting new messages.
+    pub active_threads: usize,
+    /// Archived threads still inside their recoverability window.
+    pub archived_threads: usize,
+    /// Completion time of the last applied maintenance sweep.
+    pub last_maintenance_micros: Option<i64>,
 }
 
 /// An unsolicited message the broker pushes to a subscribed link.

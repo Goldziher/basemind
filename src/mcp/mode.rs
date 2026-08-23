@@ -297,6 +297,8 @@ define_mode! {
         Inbox => "inbox", "unread messages across your joined threads, front-matter only";
         Ack => "ack", "clear messages you have read from your inbox";
         Wait => "wait", "block until a peer posts, or until the timeout elapses";
+        Cleanup => "cleanup", "preview or apply stale agent, claim, message and thread retention";
+        Status => "status", "active and stale agent counts plus the last maintenance time";
     }
 }
 

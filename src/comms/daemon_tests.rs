@@ -7,6 +7,8 @@ use crate::comms::model::MessageBody;
 use crate::comms::model::message_reference;
 use crate::comms::store;
 
+#[path = "daemon_cleanup_tests.rs"]
+mod cleanup_tests;
 #[path = "daemon_lifecycle_tests.rs"]
 mod lifecycle_tests;
 

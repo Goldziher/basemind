@@ -379,10 +379,20 @@ fn record_claim(claims_dir: &Path, id: &AgentId, root: &Path) -> Option<Identity
 /// identity or its comms registration. Malformed rows use their file mtime as a conservative
 /// fallback so a corrupt ledger cannot grow forever.
 pub fn prune_expired_claims(ttl: std::time::Duration) -> std::io::Result<usize> {
-    prune_expired_claims_in(&claims_dir(), ttl)
+    cleanup_expired_claims(ttl, true)
 }
 
+/// Count or remove expired identity-claim rows.
+pub fn cleanup_expired_claims(ttl: std::time::Duration, apply: bool) -> std::io::Result<usize> {
+    cleanup_expired_claims_in(&claims_dir(), ttl, apply)
+}
+
+#[cfg(test)]
 fn prune_expired_claims_in(dir: &Path, ttl: std::time::Duration) -> std::io::Result<usize> {
+    cleanup_expired_claims_in(dir, ttl, true)
+}
+
+fn cleanup_expired_claims_in(dir: &Path, ttl: std::time::Duration, apply: bool) -> std::io::Result<usize> {
     if !dir.exists() {
         return Ok(0);
     }
@@ -413,7 +423,9 @@ fn prune_expired_claims_in(dir: &Path, ttl: std::time::Duration) -> std::io::Res
                     .map(|duration| duration.as_secs() as i64)
             });
         if updated.is_some_and(|updated| updated < cutoff) {
-            std::fs::remove_file(path)?;
+            if apply {
+                std::fs::remove_file(path)?;
+            }
             removed += 1;
         }
     }
@@ -445,6 +457,11 @@ mod tests {
             .expect("write claim");
         }
 
+        assert_eq!(
+            cleanup_expired_claims_in(temp.path(), CLAIM_TTL, false).expect("preview"),
+            1
+        );
+        assert!(temp.path().join("stale.json").exists());
         assert_eq!(prune_expired_claims_in(temp.path(), CLAIM_TTL).expect("prune"), 1);
         assert!(!temp.path().join("stale.json").exists());
         assert!(temp.path().join("fresh.json").exists());

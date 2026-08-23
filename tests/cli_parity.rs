@@ -121,6 +121,8 @@ fn tool_to_cli() -> Vec<(&'static str, Option<&'static str>, &'static str)> {
         ("agents", Some("inbox"), "agents inbox"),
         ("agents", Some("ack"), "agents ack"),
         ("agents", Some("wait"), "agents wait"),
+        ("agents", Some("cleanup"), "agents cleanup"),
+        ("agents", Some("status"), "agents status"),
         ("workspace", Some("workspaces"), "workspace workspaces"),
         ("workspace", Some("worktrees"), "workspace worktrees"),
         ("workspace", Some("branches"), "workspace branches"),

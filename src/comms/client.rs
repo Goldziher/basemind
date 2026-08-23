@@ -19,7 +19,10 @@ use tokio_util::codec::{Decoder, Encoder, LengthDelimitedCodec};
 use super::cursor::Cursor;
 use super::ids::{AgentId, ThreadId};
 use super::model::{AgentCard, AgentRecord, Thread};
-use super::protocol::{CommsNotification, CommsOut, CommsRequest, CommsResponse, PROTO_VER, SeqMeta, StatusReport};
+use super::protocol::{
+    AgentsStatusReport, CleanupReport, CommsNotification, CommsOut, CommsRequest, CommsResponse, PROTO_VER, SeqMeta,
+    StatusReport,
+};
 use super::singleton::{self, CommsPaths};
 use super::transport::MAX_FRAME_BYTES;
 use super::workspace_pool::AccessedWorkspace;
@@ -114,6 +117,40 @@ pub struct CommsClient {
 }
 
 impl CommsClient {
+    /// Preview or apply the configured retention policy.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn cleanup_agents(
+        &mut self,
+        apply: bool,
+        message_ttl_secs: u64,
+        thread_idle_ttl_secs: u64,
+        thread_retention_ttl_secs: u64,
+        agent_ttl_secs: u64,
+        claim_ttl_secs: u64,
+    ) -> Result<CleanupReport, CommsClientError> {
+        match self
+            .request(CommsRequest::Cleanup {
+                apply,
+                message_ttl_secs,
+                thread_idle_ttl_secs,
+                thread_retention_ttl_secs,
+                agent_ttl_secs,
+                claim_ttl_secs,
+            })
+            .await?
+        {
+            CommsResponse::Cleanup(report) => Ok(report),
+            other => Err(self.shape_err(other, "cleanup_agents")),
+        }
+    }
+
+    /// Report active/stale agent counts and the last maintenance time.
+    pub async fn agents_status(&mut self, agent_ttl_secs: u64) -> Result<AgentsStatusReport, CommsClientError> {
+        match self.request(CommsRequest::AgentsStatus { agent_ttl_secs }).await? {
+            CommsResponse::AgentsStatus(report) => Ok(report),
+            other => Err(self.shape_err(other, "agents_status")),
+        }
+    }
     /// Connect to an already-running daemon at `paths` and complete the `Hello` handshake.
     /// Use [`CommsClient::ensure_and_connect`] to spawn the daemon first when needed.
     ///

@@ -300,30 +300,49 @@ async fn prune_missing_registry_rows(broker: &Broker) {
 fn run_retention_maintenance(store: &CommsStore) {
     use crate::comms::store::{EPHEMERAL_AGENT_TTL, MESSAGE_TTL, THREAD_IDLE_TTL, THREAD_RETENTION_TTL};
 
+    let mut succeeded = true;
     match store.prune_expired(MESSAGE_TTL) {
         Ok(count) if count > 0 => tracing::info!(pruned = count, "comms: pruned expired messages"),
         Ok(_) => {}
-        Err(error) => tracing::warn!(%error, "comms: message prune failed"),
+        Err(error) => {
+            succeeded = false;
+            tracing::warn!(%error, "comms: message prune failed");
+        }
     }
     match store.archive_idle(THREAD_IDLE_TTL) {
         Ok(count) if count > 0 => tracing::info!(archived = count, "comms: archived idle threads"),
         Ok(_) => {}
-        Err(error) => tracing::warn!(%error, "comms: thread archive failed"),
+        Err(error) => {
+            succeeded = false;
+            tracing::warn!(%error, "comms: thread archive failed");
+        }
     }
     match store.purge_archived(THREAD_RETENTION_TTL) {
         Ok(count) if count > 0 => tracing::info!(purged = count, "comms: purged archived threads"),
         Ok(_) => {}
-        Err(error) => tracing::warn!(%error, "comms: archived-thread purge failed"),
+        Err(error) => {
+            succeeded = false;
+            tracing::warn!(%error, "comms: archived-thread purge failed");
+        }
     }
     match store.prune_ephemeral_agents(EPHEMERAL_AGENT_TTL) {
         Ok(count) if count > 0 => tracing::info!(pruned = count, "comms: pruned stale ephemeral agents"),
         Ok(_) => {}
-        Err(error) => tracing::warn!(%error, "comms: ephemeral-agent prune failed"),
+        Err(error) => {
+            succeeded = false;
+            tracing::warn!(%error, "comms: ephemeral-agent prune failed");
+        }
     }
     match crate::comms::identity::prune_expired_claims(crate::comms::identity::CLAIM_TTL) {
         Ok(count) if count > 0 => tracing::info!(pruned = count, "comms: pruned stale identity claims"),
         Ok(_) => {}
-        Err(error) => tracing::warn!(%error, "comms: identity-claim prune failed"),
+        Err(error) => {
+            succeeded = false;
+            tracing::warn!(%error, "comms: identity-claim prune failed");
+        }
+    }
+    if succeeded && let Err(error) = store.record_maintenance() {
+        tracing::warn!(%error, "comms: record maintenance completion failed");
     }
 }
 

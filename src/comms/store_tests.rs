@@ -160,6 +160,36 @@ fn prune_expired_deletes_old_messages_and_bodies_but_keeps_recent() {
 }
 
 #[test]
+fn message_prune_preserves_recoverable_archived_thread_history() {
+    let (_d, store) = temp_store();
+    let mut thread = sample_thread("th-archived-history");
+    thread.active = false;
+    store.put_thread(&thread).expect("archive fixture");
+    let body = b"recoverable".to_vec();
+    let mut meta = build_meta(
+        "archived-message".to_string(),
+        thread.id.clone(),
+        agent_id("author"),
+        "history".to_string(),
+        vec![],
+        None,
+        &body,
+    );
+    meta.ts_micros = now_micros() - 10 * 24 * 60 * 60 * 1_000_000;
+    store
+        .post(&thread.id, meta, MessageBody(body))
+        .expect("post archived history");
+
+    assert_eq!(
+        store
+            .prune_expired(std::time::Duration::from_secs(24 * 60 * 60))
+            .unwrap(),
+        0
+    );
+    assert!(store.get_body("archived-message").expect("body").is_some());
+}
+
+#[test]
 fn post_keeps_only_the_newest_messages_per_thread() {
     let (_d, store) = temp_store();
     let thread = thread_id("th-capped");
@@ -194,7 +224,7 @@ fn active_thread_count_is_bounded() {
 fn stale_generated_agent_cards_are_pruned_but_explicit_agents_survive() {
     let (_d, store) = temp_store();
     let stale_at = now_micros() - 4 * 24 * 60 * 60 * 1_000_000;
-    for id in ["session-stale", "named-agent"] {
+    for id in ["session-stale", "named-agent", "agent-explicit"] {
         store
             .put_agent(&AgentRecord {
                 agent_id: agent_id(id),
@@ -214,6 +244,117 @@ fn stale_generated_agent_cards_are_pruned_but_explicit_agents_survive() {
             .is_none()
     );
     assert!(store.get_agent(&agent_id("named-agent")).expect("get named").is_some());
+    assert!(
+        store
+            .get_agent(&agent_id("agent-explicit"))
+            .expect("get explicit")
+            .is_some()
+    );
+}
+
+#[test]
+fn cleanup_dry_run_reports_without_mutating_then_apply_prunes() {
+    let (_d, store) = temp_store();
+    let stale_at = now_micros() - 4 * 24 * 60 * 60 * 1_000_000;
+    let id = agent_id("session-abandoned");
+    store
+        .put_agent(&AgentRecord {
+            agent_id: id.clone(),
+            card: AgentCard::default(),
+            kind: super::super::model::AgentKind::Other,
+            first_seen: stale_at,
+            last_seen: stale_at,
+        })
+        .expect("put stale agent");
+
+    let preview = store
+        .cleanup(
+            false,
+            MESSAGE_TTL,
+            THREAD_IDLE_TTL,
+            THREAD_RETENTION_TTL,
+            EPHEMERAL_AGENT_TTL,
+        )
+        .expect("preview cleanup");
+    assert!(!preview.applied);
+    assert_eq!(preview.stale_agents, 1);
+    assert!(store.get_agent(&id).expect("read after preview").is_some());
+    assert_eq!(store.last_maintenance().expect("maintenance time"), None);
+
+    let applied = store
+        .cleanup(
+            true,
+            MESSAGE_TTL,
+            THREAD_IDLE_TTL,
+            THREAD_RETENTION_TTL,
+            EPHEMERAL_AGENT_TTL,
+        )
+        .expect("apply cleanup");
+    assert!(applied.applied);
+    assert_eq!(applied.stale_agents, 1);
+    assert!(store.get_agent(&id).expect("read after apply").is_none());
+    assert_eq!(store.last_maintenance().expect("maintenance time"), None);
+}
+
+#[test]
+fn cleanup_reports_and_applies_every_store_category() {
+    let (_d, store) = temp_store();
+    let day = std::time::Duration::from_secs(24 * 60 * 60);
+    let stale_at = now_micros() - 4 * 24 * 60 * 60 * 1_000_000;
+    let stale_agent = agent_id("session-category");
+    store
+        .put_agent(&AgentRecord {
+            agent_id: stale_agent.clone(),
+            card: AgentCard::default(),
+            kind: super::super::model::AgentKind::Other,
+            first_seen: stale_at,
+            last_seen: stale_at,
+        })
+        .unwrap();
+    let mut active = sample_thread("th-category-active");
+    active.last_activity = now_micros();
+    store.put_thread(&active).unwrap();
+    store
+        .add_member(&Membership {
+            agent_id: stale_agent.clone(),
+            thread: active.id.clone(),
+            created_at: stale_at,
+        })
+        .unwrap();
+    store.set_read_cursor(&stale_agent, &active.id, 1).unwrap();
+    let body = b"expired".to_vec();
+    let mut message = build_meta(
+        "expired-category".to_string(),
+        active.id.clone(),
+        agent_id("author"),
+        "expired".to_string(),
+        vec![],
+        None,
+        &body,
+    );
+    message.ts_micros = stale_at;
+    store.post(&active.id, message, MessageBody(body)).unwrap();
+    let mut idle = sample_thread("th-category-idle");
+    idle.last_activity = stale_at;
+    store.put_thread(&idle).unwrap();
+    let mut archived = sample_thread("th-category-archived");
+    archived.active = false;
+    archived.last_activity = stale_at;
+    store.put_thread(&archived).unwrap();
+
+    let preview = store.cleanup(false, day, day, day * 2, day).unwrap();
+    assert_eq!(preview.stale_agents, 1);
+    assert_eq!(preview.stale_memberships, 1);
+    assert_eq!(preview.stale_cursors, 1);
+    assert_eq!(preview.expired_messages, 1);
+    assert_eq!(preview.idle_threads, 1);
+    assert_eq!(preview.archived_threads, 2);
+
+    store.cleanup(true, day, day, day * 2, day).unwrap();
+    assert!(store.get_agent(&stale_agent).unwrap().is_none());
+    assert!(store.get_body("expired-category").unwrap().is_none());
+    assert!(store.get_thread(&idle.id).unwrap().is_none());
+    assert!(store.get_thread(&archived.id).unwrap().is_none());
 }
 
 #[test]

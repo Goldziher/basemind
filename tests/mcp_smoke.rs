@@ -3528,6 +3528,61 @@ async fn shell_tool_validates_every_mode_before_running_it() {
     let _ = service.cancel().await;
 }
 
+/// Agent lifecycle modes stay in the flat schema and reject fields belonging to another mode
+/// before a cleanup can reach the broker.
+#[cfg(all(feature = "comms", unix))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn agents_cleanup_and_status_are_advertised_and_validate_fields() {
+    let dir = build_repo();
+    let root = dir.path();
+    run_scan(root);
+    let transport = basemind::mcp::serve_in_memory(root, "working")
+        .await
+        .expect("in-memory serve");
+    let service = ().serve(transport).await.expect("rmcp handshake");
+
+    let tools = service.list_all_tools().await.expect("list tools");
+    let agents = tools
+        .iter()
+        .find(|tool| tool.name == "agents")
+        .expect("agents advertised");
+    let modes = agents
+        .input_schema
+        .get("properties")
+        .and_then(Value::as_object)
+        .and_then(|properties| properties.get("mode"))
+        .and_then(|mode| mode.get("enum"))
+        .and_then(Value::as_array)
+        .expect("agents advertises a flat mode enum");
+    for expected in ["cleanup", "status"] {
+        assert!(
+            modes.iter().any(|mode| mode.as_str() == Some(expected)),
+            "agents mode enum is missing {expected:?}: {modes:?}"
+        );
+    }
+
+    let cleanup = service
+        .call_tool(call_params(
+            "agents",
+            json!({ "mode": "cleanup", "thread": "th-invalid" }),
+        ))
+        .await
+        .expect_err("cleanup rejects a thread filter");
+    assert!(format!("{cleanup:?}").contains("mode `cleanup` does not accept `thread`"));
+    let status = service
+        .call_tool(call_params("agents", json!({ "mode": "status", "apply": true })))
+        .await
+        .expect_err("status rejects cleanup's apply flag");
+    assert!(format!("{status:?}").contains("mode `status` does not accept `apply`"));
+    let apply = service
+        .call_tool(call_params("agents", json!({ "mode": "cleanup", "apply": true })))
+        .await
+        .expect_err("MCP cleanup is preview-only");
+    assert!(format!("{apply:?}").contains("preview-only over MCP"));
+
+    let _ = service.cancel().await;
+}
+
 /// Spawn `basemind serve` against `root`, optionally setting `BASEMIND_MCP_LEAN`, and return the
 /// connected rmcp client service.
 async fn spawn_serve(root: &Path, lean: Option<&str>) -> rmcp::service::RunningService<rmcp::RoleClient, ()> {

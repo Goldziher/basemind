@@ -108,6 +108,24 @@ pub struct AgentsParams {
     /// `register` only. Skill labels advertised to peers.
     #[serde(default)]
     pub skills: Option<Vec<String>>,
+    /// `cleanup` only. MCP cleanup is preview-only, so this must be omitted or false.
+    #[serde(default)]
+    pub apply: Option<bool>,
+    /// `cleanup` only. Override the message retention window in hours.
+    #[serde(default)]
+    pub message_ttl_hours: Option<u32>,
+    /// `cleanup` only. Override the idle-thread archive window in hours.
+    #[serde(default)]
+    pub thread_idle_hours: Option<u32>,
+    /// `cleanup` only. Override the archived-thread purge window in hours.
+    #[serde(default)]
+    pub thread_retention_hours: Option<u32>,
+    /// `cleanup` and `status`. Override the generated-agent stale window in hours.
+    #[serde(default)]
+    pub agent_ttl_hours: Option<u32>,
+    /// `cleanup` only. Override the identity-claim stale window in hours.
+    #[serde(default)]
+    pub claim_ttl_hours: Option<u32>,
     /// Every mode. Sub-identity to act as; defaults to this server's own agent. Lets one
     /// orchestrator drive many named subagents, each with its own membership and inbox.
     #[serde(default)]
