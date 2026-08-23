@@ -255,8 +255,10 @@ impl DocConfig {
         let concurrency = Some(ConcurrencyConfig {
             max_threads: Some(bounded),
         });
-        let mut security_limits = SecurityLimits::default();
-        security_limits.max_pages = Some(self.max_pages);
+        let security_limits = SecurityLimits {
+            max_pages: Some(self.max_pages),
+            ..SecurityLimits::default()
+        };
         ExtractionConfig {
             use_cache: false,
             chunking: Some(chunking),
