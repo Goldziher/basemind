@@ -12,7 +12,9 @@ use std::path::PathBuf;
 
 fn workflow() -> String {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".github/workflows/publish.yaml");
-    std::fs::read_to_string(&path).expect("read .github/workflows/publish.yaml")
+    std::fs::read_to_string(&path)
+        .expect("read .github/workflows/publish.yaml")
+        .replace("\r\n", "\n")
 }
 
 /// The body of a top-level job: from its 2-space-indented `name:` header to the next
