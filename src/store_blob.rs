@@ -786,6 +786,7 @@ mod tests {
             keywords: Vec::new(),
             entities: Vec::new(),
             summary: None,
+            language_confidences: Vec::new(),
         };
         store.write_doc(&hash, &vectorless).expect("write vectorless blob");
 

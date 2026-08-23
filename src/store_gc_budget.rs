@@ -41,6 +41,10 @@ const BUDGET_EVICTION_HOT_FLOOR: Duration = Duration::from_secs(24 * 60 * 60);
 /// workspace eviction can be reclaimed immediately without racing an in-flight scan.
 const BUDGET_ORPHAN_GRACE: Duration = Duration::ZERO;
 
+/// Workspace directory containing Lance tables. Kept feature-independent because budget cleanup
+/// may inspect caches written by a richer binary than the one currently running.
+const LANCE_WORKSPACE_DIR: &str = "lance";
+
 /// Filename of the persisted last-GC state, in the machine-global cache root (next to `blobs/`
 /// and `workspaces/`).
 pub const GC_STATE_FILE: &str = "gc-state.json";
@@ -308,22 +312,27 @@ pub(crate) fn enforce_cache_budget_in(
         if report.total_bytes_after <= budget_bytes {
             break;
         }
+        let bytes_before_candidate = report.total_bytes_after;
         let Some(size) = evict_workspace(&candidate.dir)? else {
             report.locked_skipped += 1;
             continue;
         };
         let reclaimed = gc_global_blobs_in(workspaces_dir, blobs_dir, BUDGET_ORPHAN_GRACE)?;
-        report.evicted += 1;
-        report.bytes_freed += size;
         report.blobs_removed += reclaimed.removed;
         report.blob_bytes_freed += reclaimed.bytes_freed;
-        report.hot_evicted += usize::from(candidate.hot);
         report.total_bytes_after = cache_footprint(workspaces_dir, blobs_dir)?;
+        let measured_freed = bytes_before_candidate.saturating_sub(report.total_bytes_after);
+        if size > 0 || reclaimed.bytes_freed > 0 {
+            report.evicted += 1;
+            report.bytes_freed += size;
+            report.hot_evicted += usize::from(candidate.hot);
+        }
         tracing::info!(
             workspace = %candidate.dir.display(),
             workspace_bytes = size,
             blob_bytes = reclaimed.bytes_freed,
             total_bytes = report.total_bytes_after,
+            measured_bytes_freed = measured_freed,
             "evicted workspace cache to enforce the size budget"
         );
     }
@@ -362,13 +371,44 @@ fn evict_workspace(dir: &Path) -> Result<Option<u64>, GcError> {
         tracing::debug!(workspace = %dir.display(), "over-budget workspace is locked; skipping");
         return Ok(None);
     };
-    let size = dir_size(dir)?;
-    std::fs::remove_dir_all(dir).map_err(|source| GcError::Io {
-        path: dir.to_path_buf(),
-        source,
-    })?;
+    let before = dir_size(dir)?;
+    for path in rebuildable_workspace_paths(dir) {
+        remove_cache_path(&path)?;
+    }
+    let after = dir_size(dir)?;
     drop(lock);
-    Ok(Some(size))
+    Ok(Some(before.saturating_sub(after)))
+}
+
+/// Derived state that can be rebuilt from source. Stable identity, the workspace marker, and the
+/// `memory.lance` table are intentionally absent: budget enforcement must never rotate an agent's
+/// identity or delete user-authored memory.
+fn rebuildable_workspace_paths(workspace: &Path) -> [PathBuf; 8] {
+    let lance = workspace.join(LANCE_WORKSPACE_DIR);
+    [
+        workspace.join(crate::store::VIEWS_DIR),
+        workspace.join("git-cache"),
+        workspace.join(crate::git_history::GIT_HISTORY_DIR),
+        workspace.join("status.json"),
+        workspace.join("telemetry.jsonl"),
+        lance.join("documents.lance"),
+        lance.join("code_chunks.lance"),
+        lance.join("doc_links.lance"),
+    ]
+}
+
+fn remove_cache_path(path: &Path) -> Result<(), GcError> {
+    let result = if path.is_dir() {
+        std::fs::remove_dir_all(path)
+    } else if path.exists() {
+        std::fs::remove_file(path)
+    } else {
+        return Ok(());
+    };
+    result.map_err(|source| GcError::Io {
+        path: path.to_path_buf(),
+        source,
+    })
 }
 
 fn cache_footprint(workspaces_dir: &Path, blobs_dir: &Path) -> Result<u64, GcError> {
@@ -437,6 +477,7 @@ mod tests {
         )
         .expect("write index");
         ensure_workspace_marker(&workspace_dir, workspaces_dir);
+        drop(acquire_lock(&workspace_dir).expect("seed workspace lock files"));
 
         let stamp = SystemTime::now() - age;
         for file in [workspace_dir.join(WORKSPACE_MARKER_FILE), working.join(INDEX_FILE)] {
@@ -483,8 +524,8 @@ mod tests {
         let warm = seed_workspace_aged(&workspaces, "key-warm", &"b".repeat(64), Duration::from_secs(60));
 
         let total = dir_size(&workspaces).expect("size");
-        let one_ws = dir_size(&cold).expect("size cold");
-        let budget = total - one_ws / 2;
+        let reclaimable = dir_size(&cold.join(VIEWS_DIR)).expect("size cold views");
+        let budget = total - reclaimable + 1;
 
         let report =
             enforce_cache_budget_in(&workspaces, &blobs, budget, Duration::from_secs(24 * 3600)).expect("enforce");
@@ -492,9 +533,10 @@ mod tests {
         assert_eq!(report.evicted, 1, "one eviction suffices to reach the budget");
         assert_eq!(report.hot_evicted, 0, "the cold candidate is preferred");
         assert!(report.total_bytes_after <= budget, "the measured footprint converged");
-        assert!(!cold.exists(), "the coldest workspace is the one evicted");
+        assert!(cold.exists(), "the cold workspace keeps its metadata shell");
+        assert!(!cold.join(VIEWS_DIR).exists(), "the cold workspace payload is evicted");
         assert!(warm.exists(), "the warmer workspace survives");
-        assert!(report.bytes_freed >= one_ws, "freed bytes cover the evicted tree");
+        assert!(report.bytes_freed > 0, "the rebuildable payload is reclaimed");
     }
 
     #[test]
@@ -513,8 +555,36 @@ mod tests {
 
         assert_eq!(report.evicted, 1, "the hot floor is a preference, not a budget veto");
         assert_eq!(report.hot_evicted, 1);
-        assert!(report.total_bytes_after <= empty_footprint);
-        assert!(!hot.exists());
+        assert!(
+            report.total_bytes_after < report.total_bytes_before,
+            "rebuildable bytes are reclaimed even when durable metadata prevents full convergence"
+        );
+        assert!(hot.exists(), "the workspace metadata shell preserves stable identity");
+        assert!(!hot.join(VIEWS_DIR).exists(), "only rebuildable view state is evicted");
+    }
+
+    #[test]
+    fn budget_eviction_preserves_identity_and_durable_memory() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let workspaces = tmp.path().join("workspaces");
+        let blobs = tmp.path().join("blobs");
+        fs::create_dir_all(&blobs).expect("mk blobs");
+        let workspace = seed_workspace_aged(&workspaces, "key-cold", &"a".repeat(64), Duration::from_secs(9999));
+        fs::write(workspace.join(crate::comms::identity::AGENT_ID_FILE), b"session-stable").expect("agent id");
+        let memory = workspace.join(LANCE_WORKSPACE_DIR).join("memory.lance");
+        fs::create_dir_all(&memory).expect("memory table");
+        fs::write(memory.join("data.bin"), b"durable-memory").expect("memory data");
+
+        let report = enforce_cache_budget_in(&workspaces, &blobs, 1, Duration::ZERO).expect("evict cache payload");
+
+        assert_eq!(report.evicted, 1);
+        assert_eq!(
+            fs::read_to_string(workspace.join(crate::comms::identity::AGENT_ID_FILE)).unwrap(),
+            "session-stable"
+        );
+        assert_eq!(fs::read(memory.join("data.bin")).unwrap(), b"durable-memory");
+        assert!(workspace.join(WORKSPACE_MARKER_FILE).exists(), "root marker survives");
+        assert!(!workspace.join(VIEWS_DIR).exists(), "rebuildable views are removed");
     }
 
     #[test]
@@ -536,7 +606,7 @@ mod tests {
         fs::write(&cold_blob, vec![7_u8; 64 * 1024]).expect("write cold workspace blob");
 
         let total = dir_size(&workspaces).unwrap() + dir_size(&blobs).unwrap();
-        let reclaimable = dir_size(&cold).unwrap() + fs::metadata(&cold_blob).unwrap().len();
+        let reclaimable = dir_size(&cold.join(VIEWS_DIR)).unwrap() + fs::metadata(&cold_blob).unwrap().len();
         let budget = total - reclaimable + 1;
 
         let report = enforce_cache_budget_in(&workspaces, &blobs, budget, Duration::ZERO).expect("enforce");
@@ -548,7 +618,8 @@ mod tests {
         assert_eq!(report.blobs_removed, 1);
         assert_eq!(report.blob_bytes_freed, 64 * 1024);
         assert!(report.total_bytes_after <= budget);
-        assert!(!cold.exists());
+        assert!(cold.exists(), "the evicted workspace keeps durable metadata");
+        assert!(!cold.join(VIEWS_DIR).exists());
         assert!(
             !cold_blob.exists(),
             "the evicted workspace's orphan blob is reclaimed in the same pass"

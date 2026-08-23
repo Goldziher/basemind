@@ -270,9 +270,9 @@ fn gc_blobs_in(blobs_dir: &Path, referenced: &AHashSet<String>, grace: Duration)
 /// The blob store is content-addressed and shared by every workspace, so a blob is live iff *any*
 /// workspace references it. This enumerates `cache_root()/cache/workspaces/<key>/` and unions
 /// [`collect_referenced_hashes`] over each — the complete cross-workspace live set the daemon (the
-/// sole fjall writer, which alone sees every workspace) sweeps against. An unreadable workspace
-/// index propagates the error exactly like the single-workspace collector: an incomplete live set
-/// must never drive a delete.
+/// sole fjall writer, which alone sees every workspace) sweeps against. Schema-mismatched or corrupt
+/// view caches are removed under the workspace lock and rebuilt lazily; transient I/O and lock
+/// failures still abort the sweep so an incomplete live set never drives a delete.
 pub fn collect_referenced_hashes_global() -> Result<AHashSet<String>, GcError> {
     collect_referenced_hashes_global_in(&cache_root().join(CACHE_DIR).join(WORKSPACES_DIR))
 }
@@ -294,9 +294,57 @@ pub(crate) fn collect_referenced_hashes_global_in(workspaces_dir: &Path) -> Resu
         if !workspace_dir.is_dir() {
             continue;
         }
-        referenced.extend(collect_referenced_hashes(&workspace_dir)?);
+        referenced.extend(collect_workspace_hashes_healing_stale_views(&workspace_dir)?);
     }
     Ok(referenced)
+}
+
+/// Collect one workspace's live hashes, healing view indexes that the current binary cannot read.
+///
+/// A schema-mismatched or corrupt `index.msgpack` is rebuildable cache state, not durable data. If
+/// it remains in the global mark set it blocks every workspace's GC forever. Remove only the bad
+/// view while holding the workspace lock, preserving `workspace.json`, `agent-id`, and durable
+/// memory. Transient I/O and lock failures remain fatal so an incomplete live set never drives a
+/// destructive sweep.
+fn collect_workspace_hashes_healing_stale_views(workspace_dir: &Path) -> Result<AHashSet<String>, GcError> {
+    match collect_referenced_hashes(workspace_dir) {
+        Ok(referenced) => Ok(referenced),
+        Err(GcError::Store(error)) if is_rebuildable_view_error(&error) => {
+            let _lock = acquire_lock(workspace_dir)?;
+            let views_dir = workspace_dir.join(VIEWS_DIR);
+            for entry in read_dir(&views_dir)? {
+                let entry = entry.map_err(|source| GcError::Io {
+                    path: views_dir.clone(),
+                    source,
+                })?;
+                let view_dir = entry.path();
+                if !view_dir.is_dir() || !view_dir.join(INDEX_FILE).exists() {
+                    continue;
+                }
+                if let Err(error) = read_index(&view_dir) {
+                    if !is_rebuildable_view_error(&error) {
+                        return Err(GcError::Store(error));
+                    }
+                    std::fs::remove_dir_all(&view_dir).map_err(|source| GcError::Io {
+                        path: view_dir.clone(),
+                        source,
+                    })?;
+                    tracing::warn!(
+                        workspace = %workspace_dir.display(),
+                        view = %view_dir.display(),
+                        %error,
+                        "removed unreadable rebuildable view so global GC can continue"
+                    );
+                }
+            }
+            collect_referenced_hashes(workspace_dir)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn is_rebuildable_view_error(error: &StoreError) -> bool {
+    matches!(error, StoreError::SchemaMismatch { .. } | StoreError::Decode(_))
 }
 
 /// Cross-workspace reference-counted GC over the machine-global blob store: reference-count against
@@ -846,17 +894,64 @@ mod tests {
     }
 
     #[test]
-    fn global_gc_propagates_an_unreadable_workspace_index() {
+    fn global_gc_heals_an_unreadable_workspace_index_without_blocking_other_workspaces() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let workspaces = tmp.path().join("workspaces");
-        let working = workspaces.join("key-a").join(VIEWS_DIR).join("working");
-        fs::create_dir_all(&working).expect("mk view");
-        fs::write(working.join(INDEX_FILE), b"\xff\xff not-msgpack \x00").expect("corrupt index");
+        let blobs = tmp.path().join("blobs");
+        fs::create_dir_all(&blobs).expect("mk blobs");
+        let live = "a".repeat(64);
+        let stale = "b".repeat(64);
+        seed_workspace(&workspaces, "key-live", &[&live]);
 
+        let stale_workspace = workspaces.join("key-stale");
+        let stale_view = stale_workspace.join(VIEWS_DIR).join("working");
+        fs::create_dir_all(&stale_view).expect("mk view");
+        fs::write(
+            stale_workspace.join(crate::comms::identity::AGENT_ID_FILE),
+            b"session-stable",
+        )
+        .expect("write stable identity");
+        fs::write(stale_view.join(INDEX_FILE), b"\xff\xff not-msgpack \x00").expect("corrupt index");
+        fs::write(blobs.join(format!("{live}.fm.msgpack")), b"live").expect("live blob");
+        fs::write(blobs.join(format!("{stale}.fm.msgpack")), b"stale").expect("stale blob");
+
+        let report = gc_global_blobs_in(&workspaces, &blobs, Duration::ZERO).expect("gc heals stale view");
+
+        assert_eq!(report.removed, 1, "the stale workspace no longer pins its blob");
         assert!(
-            collect_referenced_hashes_global_in(&workspaces).is_err(),
-            "an unreadable workspace index must fail the union (never drive a partial delete)"
+            blobs.join(format!("{live}.fm.msgpack")).exists(),
+            "live reference survives"
         );
+        assert!(
+            !blobs.join(format!("{stale}.fm.msgpack")).exists(),
+            "stale orphan is reclaimed"
+        );
+        assert!(!stale_view.exists(), "the unreadable rebuildable view is quarantined");
+        assert_eq!(
+            fs::read_to_string(stale_workspace.join(crate::comms::identity::AGENT_ID_FILE)).unwrap(),
+            "session-stable",
+            "healing a view must preserve stable identity metadata"
+        );
+    }
+
+    #[test]
+    fn global_gc_heals_a_mixed_release_workspace_index() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let workspaces = tmp.path().join("workspaces");
+        let stale_view = workspaces.join("key-v23").join(VIEWS_DIR).join("working");
+        fs::create_dir_all(&stale_view).expect("mk stale view");
+        let mut stale = Index::empty();
+        stale.schema_ver = crate::extract::SCHEMA_VER.saturating_sub(1);
+        fs::write(
+            stale_view.join(INDEX_FILE),
+            rmp_serde::to_vec_named(&stale).expect("encode stale index"),
+        )
+        .expect("write stale index");
+
+        let referenced = collect_referenced_hashes_global_in(&workspaces).expect("heal mixed schema");
+
+        assert!(referenced.is_empty());
+        assert!(!stale_view.exists(), "the stale view is removed for lazy rebuild");
     }
 
     #[test]
