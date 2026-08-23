@@ -43,6 +43,7 @@ use crate::daemon_lock::{DaemonKind, count_live_daemons_of, max_live_daemons};
 
 const EXISTING_DAEMON_CONNECT_ATTEMPTS: usize = 4;
 const EXISTING_DAEMON_CONNECT_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(100);
+const STARTED_DAEMON_CONNECT_ATTEMPTS: usize = 50;
 
 /// Stable, opaque identifier minted by basemind for one spawned shell session.
 ///
@@ -195,11 +196,26 @@ impl ShellRuntime {
                     .context("join embedded rmux daemon registry count task")?;
                 enforce_shell_daemon_ceiling(live_daemons, max_live_daemons())?;
 
-                self.rmux_builder().connect_or_start().await.with_context(|| {
-                    format!(
-                        "connect to (or start) embedded rmux daemon after connect-only attempts failed: {connect_error}"
-                    )
-                })
+                match self.rmux_builder().connect_or_start().await {
+                    Ok(rmux) => Ok(rmux),
+                    Err(start_error) => {
+                        // rmux may report the initial ENOENT after successfully spawning the
+                        // daemon but before its socket is bound. Under CPU pressure that startup
+                        // window can be seconds, so probe the endpoint before declaring failure.
+                        for _ in 0..STARTED_DAEMON_CONNECT_ATTEMPTS {
+                            tokio::time::sleep(EXISTING_DAEMON_CONNECT_RETRY_DELAY).await;
+                            if let Ok(rmux) = self.rmux_builder().connect().await {
+                                return Ok(rmux);
+                            }
+                        }
+                        Err(start_error).with_context(|| {
+                            format!(
+                                "connect to (or start) embedded rmux daemon after connect-only attempts failed: \
+                                 {connect_error}"
+                            )
+                        })
+                    }
+                }
             })
             .await
     }
