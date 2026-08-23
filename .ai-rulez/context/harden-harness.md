@@ -22,9 +22,12 @@ cargo test --release --test harden -- --ignored --nocapture
    build time and on-disk index size. Then it sweeps every `code`/`graph` mode plus `git` modes over
    stdio, capturing per-mode latency + result shapes.
 3. Asserts canaries (lower bounds, scan-resistant to upstream churn):
-   - **tokio**: `code` mode `references("spawn")` returns `>= 200` hits (capped at limit).
-   - **django**: `code` mode `references("get")` returns `>= 200` hits.
-   - **react**: `code` mode `symbols("useState")` returns `>= 20` hits.
+   - **tokio**: `references("spawn")` `>= 50`, `find("src")` `>= 100`, `grep("fn spawn")` `>= 20`,
+     `implementations("Future")` `>= 20`, `calls("spawn", callers, depth=2)` `>= 5` nodes,
+     `map(module)` `>= 5` nodes and `>= 1` import edge.
+   - **django**: `references("get")` `>= 50`, `git search("fixed", message)` `>= 20` commits,
+     `git touching("django/db/models/query.py")` `>= 10` commits, author search `>= 1` hit.
+   - **react**: `symbols("useState")` `> 0`.
    - **ripgrep-shallow**: `any_truncated == true` (shallow-clone signal surfaces).
    - **every git repo**: the git-history index built (`commits > 0`), and on a repo with real history
      (`>= 1000` commits) indexed `commits_touching` is not slower than the live walk it replaces.

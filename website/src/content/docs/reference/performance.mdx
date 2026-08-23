@@ -113,9 +113,15 @@ It runs:
 
 Per-repo metrics land in `/tmp/basemind-harden-*.log`. The harness asserts canaries:
 
-- `tokio`: `code` mode `references("spawn")` returns ≥ 200 hits
-- `django`: `code` mode `references("get")` returns ≥ 200 hits
-- `react`: `code` mode `symbols("useState")` returns ≥ 20 hits
+- `tokio`: `references("spawn")` ≥ 50, `find("src")` ≥ 100, `grep("fn spawn")` ≥ 20,
+  `implementations("Future")` ≥ 20, `calls("spawn", callers, depth=2)` ≥ 5 nodes,
+  `map(module)` ≥ 5 nodes and ≥ 1 import edge
+- `django`: `references("get")` ≥ 50, `git search("fixed", message)` ≥ 20 commits,
+  `git touching("django/db/models/query.py")` ≥ 10 commits, author search ≥ 1 hit
+- `react`: `symbols("useState")` > 0
 - `ripgrep-shallow`: shallow-clone signal surfaces (`any_truncated == true`)
+
+Every threshold sits well below the `limit` its capture call passes, so a canary can never be
+satisfied merely by hitting the cap — and never fails because upstream churn moved a count.
 
 Regressions beyond ~20% on scan-time or index-build-time baselines should be investigated before merge.

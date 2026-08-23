@@ -490,10 +490,17 @@ It clones 8 upstream repos under `/tmp/basemind-harden/` (`ripgrep`, `tokio`,
 variant), runs `basemind scan` on each, then sweeps every `code`/`graph` mode plus
 a representative subset of `git` modes. Canary assertions catch regressions:
 
-- **tokio**: `code` mode `references("spawn")` returns ≥ 200 hits
-- **django**: `code` mode `references("get")` returns ≥ 200 hits
-- **react**: `code` mode `symbols("useState")` returns ≥ 20 hits
+- **tokio**: `references("spawn")` ≥ 50 · `find("src")` ≥ 100 · `grep("fn spawn")` ≥ 20 ·
+  `implementations("Future")` ≥ 20 · `calls("spawn", callers, depth=2)` ≥ 5 nodes ·
+  `map(module)` ≥ 5 nodes and ≥ 1 import edge
+- **django**: `references("get")` ≥ 50 · `git search("fixed", message)` ≥ 20 commits ·
+  `git touching("django/db/models/query.py")` ≥ 10 commits · author search ≥ 1 hit
+- **react**: `symbols("useState")` > 0
 - **ripgrep-shallow**: `any_truncated == true` (shallow-clone signal surfaces)
+
+Every threshold sits well below the `limit` the capture call passes (react captures at `limit: 20`,
+django `references` at `limit: 200`), so a canary can never be satisfied merely by hitting the cap —
+and never fails because upstream churn moved a count.
 
 Per-repo metrics land at `/tmp/basemind-harden-*.log`.
 
