@@ -854,7 +854,7 @@ dependencies = [
 
 [[package]]
 name = "basemind"
-version = "0.24.0"
+version = "0.25.0"
 dependencies = [
  "ahash 0.8.12",
  "anstream",
@@ -932,7 +932,7 @@ dependencies = [
 
 [[package]]
 name = "basemind-agent"
-version = "0.24.0"
+version = "0.25.0"
 dependencies = [
  "async-trait",
  "basemind",
@@ -951,7 +951,7 @@ dependencies = [
 
 [[package]]
 name = "basemind-agent-ipc"
-version = "0.24.0"
+version = "0.25.0"
 dependencies = [
  "basemind",
  "basemind-agent",
@@ -1029,7 +1029,7 @@ dependencies = [
 
 [[package]]
 name = "basemind-tui"
-version = "0.24.0"
+version = "0.25.0"
 dependencies = [
  "anyhow",
  "basemind",
@@ -1051,7 +1051,7 @@ dependencies = [
 
 [[package]]
 name = "basemind-ui"
-version = "0.24.0"
+version = "0.25.0"
 dependencies = [
  "anyhow",
  "basemind",

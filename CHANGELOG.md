@@ -10,6 +10,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.25.0] - 2026-08-23
+
+### Added
+
+- MCP stdio sessions now reconnect through a persistent protocol-aware relay when the shared daemon
+  restarts, replaying initialization and returning retryable errors for interrupted requests.
+- Agent comms now auto-register presence, deliver mailbox notices alongside ordinary MCP responses,
+  notify scoped agents about discoverable threads, and accept unambiguous short message references.
+- Document extraction uses xberg 1.1 chunk content, offsets, language metadata, bounded extraction
+  time/page limits, and basemind's shared batch embedding path. Binary builds pin the unreleased
+  xberg source to an exact public Git revision for reproducibility.
+
+### Changed
+
+- **Cache schema advances to 25.** Existing machine-global index, blob, and comms cache state is
+  rebuilt on the next scan after upgrading.
+- Cache GC repairs corrupt or old rebuildable views instead of aborting the global sweep, enforces
+  the disk budget against rebuildable workspace data, and records degraded GC health.
+- Comms retention now bounds messages, archived threads, inactive agents, claims, and total threads;
+  stale-agent cleanup removes routing state atomically while preserving authored history.
+- Heavy MCP work is admitted through a daemon-wide concurrency limit and returns a retryable
+  `server_busy` response under sustained load.
+
+### Fixed
+
+- Inbox cursors paginate independently per thread without repeats or undercounted unread totals.
+- Message reads and acknowledgements enforce thread membership.
+- Cancelled inbox waits release their subscriptions immediately, and default MCP identities no
+  longer collide across concurrent sessions in one workspace.
+- Standalone scan and MCP processes no longer hang during shutdown when Fjall's background worker
+  teardown encounters the upstream database-drop deadlock.
+
 ## [0.24.0] - 2026-08-07
 
 ### Added
