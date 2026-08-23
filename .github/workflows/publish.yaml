@@ -31,6 +31,7 @@ jobs:
       version: ${{ steps.version.outputs.version }}
       python_version: ${{ steps.version.outputs.python_version }}
       tag: ${{ steps.version.outputs.tag }}
+      crates_publishable: ${{ steps.publishability.outputs.crates_publishable }}
       crates_exists: ${{ steps.published.outputs.crates_exists }}
       npm_exists: ${{ steps.published.outputs.npm_exists }}
       opencode_exists: ${{ steps.published.outputs.opencode_exists }}
@@ -186,6 +187,16 @@ jobs:
           fi
 
           echo "✓ All version surfaces match: $target_version"
+
+      - name: Detect source-crate publishability
+        id: publishability
+        run: |
+          crates_publishable=true
+          if grep -Eq '^[[:space:]]*[A-Za-z0-9_-]+[[:space:]]*=.*git[[:space:]]*=' Cargo.toml; then
+            crates_publishable=false
+            echo "Skipping crates.io: the binary uses a Git-pinned dependency"
+          fi
+          echo "crates_publishable=$crates_publishable" >> "$GITHUB_OUTPUT"
 
       - name: Detect already-published versions
         id: published
@@ -715,7 +726,9 @@ jobs:
     # Gate on a finalized GitHub release like the wrapper publishes do: crates.io is ~keep
     # irreversible, so don't publish source unless the platform binaries built and the ~keep
     # release promoted — keeps the surfaces atomic across a partial failure. ~keep
-    if: always() && needs.meta.outputs.crates_exists != 'true' && needs.finalize_release.result == 'success'
+    if: >-
+      always() && needs.meta.outputs.crates_publishable == 'true' &&
+      needs.meta.outputs.crates_exists != 'true' && needs.finalize_release.result == 'success'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout

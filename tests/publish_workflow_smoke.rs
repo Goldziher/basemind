@@ -66,6 +66,23 @@ fn registry_publishes_wait_for_a_finalized_release() {
     }
 }
 
+/// Binary releases with Git-pinned dependencies cannot be reconstructed by crates.io, so
+/// the source-crate publish must be skipped without blocking the platform artifacts.
+#[test]
+fn crates_publish_is_skipped_for_git_dependencies() {
+    let workflow = workflow();
+    let meta = job_block(&workflow, "meta");
+    let publish = job_block(&workflow, "publish_crates");
+    assert!(
+        meta.contains("crates_publishable=false") && meta.contains("git[[:space:]]*="),
+        "meta must detect Git dependencies in the root Cargo manifest",
+    );
+    assert!(
+        publish.contains("needs.meta.outputs.crates_publishable == 'true'"),
+        "publish_crates must skip source publication when Git dependencies are present",
+    );
+}
+
 /// Promotion (which flips the release public and lets `latest` move) must require the full
 /// platform-asset set plus checksums, not a partial draft.
 #[test]
