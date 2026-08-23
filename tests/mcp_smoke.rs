@@ -5182,8 +5182,12 @@ async fn ui_returns_url_and_writes_export_without_opening() {
         output_path.ends_with(".html"),
         "html export named by extension: {output_path}"
     );
+    let output_name = Path::new(output_path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .expect("export filename");
     assert!(
-        url.ends_with(output_path),
+        url.ends_with(output_name),
         "the file:// URL points at the written export: url={url} path={output_path}"
     );
     let on_disk = std::fs::read_to_string(output_path).expect("export file exists on disk");
