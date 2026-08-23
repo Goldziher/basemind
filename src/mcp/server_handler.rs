@@ -53,16 +53,60 @@ impl ServerHandler for BasemindServer {
         context: rmcp::service::RequestContext<rmcp::RoleServer>,
     ) -> Result<rmcp::model::CallToolResponse, rmcp::ErrorData> {
         if self.lean_enabled() {
+            let inner_name = request
+                .arguments
+                .as_ref()
+                .and_then(|arguments| arguments.get("tool_name"))
+                .and_then(serde_json::Value::as_str);
+            let inner_arguments = request
+                .arguments
+                .as_ref()
+                .and_then(|arguments| arguments.get("tool_input"))
+                .and_then(serde_json::Value::as_object);
+            let work_class = if inner_name.is_some_and(|name| tasks::is_slow_tool(name, inner_arguments)) {
+                super::admission::WorkClass::Heavy
+            } else {
+                super::admission::WorkClass::Control
+            };
+            let _admission = self
+                .heavy_admission
+                .admit(work_class)
+                .await
+                .map_err(rmcp::ErrorData::from)?;
             return lean::lean_call_tool(self, &self.tool_router, request, context).await;
         }
+        let work_class = if tasks::is_slow_tool(&request.name, request.arguments.as_ref()) {
+            super::admission::WorkClass::Heavy
+        } else {
+            super::admission::WorkClass::Control
+        };
+        let admission = self
+            .heavy_admission
+            .admit(work_class)
+            .await
+            .map_err(rmcp::ErrorData::from)?;
         let client_supports_tasks = context.client_capabilities().is_some_and(|caps| caps.supports_tasks());
         if client_supports_tasks && tasks::is_slow_tool(&request.name, request.arguments.as_ref()) {
             return Ok(rmcp::model::CallToolResponse::Task(tasks::spawn_slow_tool(
-                self, request, context,
+                self, request, context, admission,
             )));
         }
+        let should_deliver_comms = request.name != "agents";
+        let _admission = admission;
         let tcc = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
-        self.tool_router.call(tcc).await
+        let response = self.tool_router.call(tcc).await?;
+        #[cfg(all(feature = "comms", any(unix, windows)))]
+        let mut response = response;
+        #[cfg(all(feature = "comms", any(unix, windows)))]
+        if should_deliver_comms
+            && let rmcp::model::CallToolResponse::Complete(result) = &mut response
+            && let Some(notice) = super::helpers_comms::take_delivery_notice(&self.state).await
+        {
+            result.content.push(rmcp::model::ContentBlock::text(notice));
+        }
+        #[cfg(not(all(feature = "comms", any(unix, windows))))]
+        let _ = should_deliver_comms;
+        Ok(response)
     }
 
     /// SEP-2663 `tasks/get`: report the current state of a spawned task. Thin delegation to the

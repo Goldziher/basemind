@@ -8,6 +8,7 @@
 //!
 //! Transport: stdio (the canonical MCP transport). Spawn via `basemind serve`.
 
+pub(crate) mod admission;
 pub mod agent_api;
 mod background;
 mod budget;
@@ -239,6 +240,8 @@ pub struct BasemindServer {
     /// SEP-2663 Tasks extension executor. Slow tools (see [`tasks::SLOW_TOOLS`]) offload their work
     /// here for task-capable clients; cheaply cloneable and shared across every clone of the server.
     tasks: TaskManager,
+    /// Bounds allocation-heavy calls while allowing control/comms traffic to bypass the queue.
+    heavy_admission: Arc<admission::HeavyAdmission>,
 }
 
 /// Construction-time switches for [`BasemindServer`].
@@ -385,9 +388,15 @@ impl BasemindServer {
             agent_id,
             #[cfg(all(feature = "comms", any(unix, windows)))]
             comms_clients: tokio::sync::Mutex::new(ahash::AHashMap::new()),
+            #[cfg(all(feature = "comms", any(unix, windows)))]
+            delivered_notifications: tokio::sync::Mutex::new(lru::LruCache::new(
+                std::num::NonZeroUsize::new(state::DELIVERED_NOTIFICATION_CAP)
+                    .expect("notification cache capacity is non-zero"),
+            )),
             log_level: std::sync::atomic::AtomicU8::new(notifications::DEFAULT_LOG_ORDINAL),
             lean: std::sync::atomic::AtomicBool::new(lean::lean_mode_enabled()),
         });
+        Self::spawn_comms_presence(&state);
         let mut watcher = None;
         if options.background {
             let view_is_working = {
@@ -421,6 +430,7 @@ impl BasemindServer {
             tool_router: router_cache::cached_tool_router(),
             prompt_router: router_cache::cached_prompt_router(),
             tasks: TaskManager::new(),
+            heavy_admission: Arc::new(admission::HeavyAdmission::default()),
         }
     }
 
@@ -469,14 +479,42 @@ impl BasemindServer {
     /// connection's [`RelayHello`](crate::comms::relay::RelayHello), so each client keeps its own
     /// memory-owner identity even while sharing the read stack.
     #[cfg(all(feature = "comms", any(unix, windows)))]
-    pub(crate) fn from_shared(shared: Arc<SharedReadStack>, agent_id: String) -> Self {
+    pub(crate) fn from_shared(
+        shared: Arc<SharedReadStack>,
+        agent_id: String,
+        heavy_admission: Arc<admission::HeavyAdmission>,
+    ) -> Self {
+        let state = Arc::new(ServerState::for_connection(shared, agent_id));
+        Self::spawn_comms_presence(&state);
         Self {
-            state: Arc::new(ServerState::for_connection(shared, agent_id)),
+            state,
             _watcher: None,
             tool_router: router_cache::cached_tool_router(),
             prompt_router: router_cache::cached_prompt_router(),
             tasks: TaskManager::new(),
+            heavy_admission,
         }
+    }
+
+    /// Establish broker presence at MCP connection startup. Registration remains an optional card
+    /// update; the broker's `Hello` creates the routable session record.
+    fn spawn_comms_presence(state: &Arc<ServerState>) {
+        #[cfg(all(feature = "comms", any(unix, windows)))]
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            let state = Arc::clone(state);
+            runtime.spawn(async move {
+                let connected = tokio::time::timeout(
+                    std::time::Duration::from_secs(2),
+                    helpers_comms::resolve_comms_client(&state, None),
+                )
+                .await;
+                if !matches!(connected, Ok(Ok(_))) {
+                    tracing::debug!("comms presence unavailable during MCP startup");
+                }
+            });
+        }
+        #[cfg(not(all(feature = "comms", any(unix, windows))))]
+        let _ = state;
     }
 
     /// Build (once) the shared read stack the daemon hosts for one workspace, plus its single
@@ -678,6 +716,11 @@ impl BasemindServer {
                     Ok(outcome) => tracing::info!(?outcome, "git-history index sync complete"),
                     Err(error) => tracing::warn!(%error, "git-history index sync failed; tools live-walk"),
                 }
+                // Fjall 3.1 can deadlock while dropping its final database handle after a
+                // background sync (fjall-rs/fjall#260). This path is only used by a standalone
+                // MCP process; the daemon-backed path above owns and closes the shared database.
+                // Keep this clone alive until process exit so Tokio runtime shutdown cannot hang.
+                std::mem::forget(git_history);
             });
         }
     }

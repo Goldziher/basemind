@@ -26,6 +26,8 @@ use super::BasemindServer;
 /// would make offload all-or-nothing per domain (every `web` call offloaded, or none).
 pub(super) const SLOW_CALLS: &[&str] = &[
     "admin:rescan",
+    "graph:map",
+    "code:semantic",
     #[cfg(feature = "documents")]
     "memory:documents",
     #[cfg(feature = "crawl")]
@@ -78,6 +80,7 @@ pub(super) fn spawn_slow_tool(
     server: &BasemindServer,
     request: CallToolRequestParams,
     context: RequestContext<RoleServer>,
+    admission: super::admission::Admission,
 ) -> CreateTaskResult {
     let server = server.clone();
     // Clone the manager handle out so the spawned closure can move `server` wholesale (it needs the
@@ -88,6 +91,7 @@ pub(super) fn spawn_slow_tool(
             // The real work runs on a detached-on-cancel child task (see the fn-level note); the
             // outer future only races the tool's completion against cancellation.
             let mut work = tokio::spawn(async move {
+                let _admission = admission;
                 let tcc = rmcp::handler::server::tool::ToolCallContext::new(&server, request, context);
                 server.tool_router.call(tcc).await
             });

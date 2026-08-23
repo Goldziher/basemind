@@ -165,6 +165,7 @@ async fn hosted_tool_call(addr: &str, root: &Path, agent: &str, id: usize, tool:
 /// Run a git command in `cwd`, asserting success.
 fn git(args: &[&str], cwd: &Path) {
     let out = Command::new("git")
+        .args(["-c", "commit.gpgsign=false"])
         .args(args)
         .current_dir(cwd)
         .output()

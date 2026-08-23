@@ -14,6 +14,8 @@ use basemind::watcher::{BatchKind, WatchBatch};
 mod agent_cmd;
 mod comms_cli;
 mod lang_cli;
+#[cfg(all(feature = "comms", any(unix, windows)))]
+mod stdio_relay;
 #[cfg(feature = "desktop-ui")]
 mod ui_cmd;
 
@@ -536,6 +538,10 @@ fn sync_git_history_after_scan(
         }
         Err(error) => tracing::warn!(?error, "git-history index sync failed"),
     }
+    // Fjall 3.1.9 can deadlock in `DatabaseInner::drop` even after writers stop
+    // (fjall-rs/fjall#260). A scan is a short-lived helper process, so let the OS close this
+    // already-persisted database at process exit instead of risking an indefinitely wedged CLI.
+    std::mem::forget(index);
 }
 
 fn cmd_scan(root: &std::path::Path, args: &ScanArgs, verbosity: Verbosity, no_color: bool) -> Result<()> {
@@ -722,14 +728,12 @@ fn cmd_serve(root: &std::path::Path, view: &str, args: &ServeArgs, json: bool) -
     }
 }
 
-/// Thin relay body: ensure the daemon, dial its relay socket, handshake, then pump raw bytes between
-/// this process's stdin/stdout and the socket until either side closes. Once the handshake is
-/// accepted the session is committed — stdin is being forwarded to the daemon, so there is no way
-/// back to an in-process server; the pump always resolves to `Ok(())` on clean EOF.
+/// Keep the MCP host's stdio pipes alive across daemon replacement. The protocol-aware relay tracks
+/// initialization and in-flight request IDs, allowing it to reconnect without asking Codex or
+/// Claude to recreate the MCP process.
 #[cfg(all(feature = "comms", any(unix, windows)))]
 fn try_serve_relay(root: &std::path::Path, view: &str) -> Result<()> {
-    use basemind::comms::{identity, relay, singleton};
-    use tokio::io::AsyncWriteExt as _;
+    use basemind::comms::identity;
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -737,75 +741,64 @@ fn try_serve_relay(root: &std::path::Path, view: &str) -> Result<()> {
         .context("build tokio runtime")?;
 
     runtime.block_on(async move {
-        let paths = singleton::resolve_paths().context("resolve comms paths")?;
-        singleton::ensure_daemon(&paths).await.context("ensure daemon")?;
-        let mut stream = relay_connect_stream(&paths.socket_path)
-            .await
-            .context("connect to daemon socket")?;
-
-        let agent = identity::cli_agent_id(root);
-        let hello = relay::RelayHello {
-            relay_proto_ver: relay::RELAY_PROTO_VER,
-            root: root.canonicalize().unwrap_or_else(|_| root.to_path_buf()),
-            view: view.to_string(),
-            agent,
-        };
-        let welcome = relay::client_handshake(&mut stream, &hello)
-            .await
-            .context("relay handshake")?;
-        if welcome.relay_proto_ver != relay::RELAY_PROTO_VER {
-            anyhow::bail!(
-                "daemon relay-proto {} != client {}",
-                welcome.relay_proto_ver,
-                relay::RELAY_PROTO_VER
-            );
-        }
-        if !welcome.accepted {
-            anyhow::bail!("daemon declined relay: {:?}", welcome.code);
-        }
+        let agent = identity::mcp_session_agent_id(root);
+        let canonical_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+        let view = view.to_owned();
+        let stream = open_relay_connection(canonical_root.clone(), view.clone(), agent.clone()).await?;
 
         tracing::info!(
             pid = std::process::id(),
-            daemon_version = %welcome.daemon_version,
-            view,
-            root = %root.display(),
-            "basemind serve: relaying to daemon"
+            view = %view,
+            root = %canonical_root.display(),
+            "basemind serve: persistent relay connected"
         );
-        let (mut sock_rd, mut sock_wr) = tokio::io::split(stream);
-        let mut stdin = tokio::io::stdin();
-        let mut stdout = tokio::io::stdout();
-        tokio::select! {
-            client_to_daemon = tokio::io::copy(&mut stdin, &mut sock_wr) => {
-                log_pump_end("stdin->daemon", client_to_daemon);
-                let _ = sock_wr.shutdown().await;
-            }
-            daemon_to_client = tokio::io::copy(&mut sock_rd, &mut stdout) => {
-                log_pump_end("daemon->stdout", daemon_to_client);
-                let _ = stdout.flush().await;
-            }
-        }
-        tracing::info!(pid = std::process::id(), "basemind serve: relay session ended, exiting");
-        Ok(())
+        stdio_relay::run(tokio::io::stdin(), tokio::io::stdout(), stream, move || {
+            open_relay_connection(canonical_root.clone(), view.clone(), agent.clone())
+        })
+        .await
+        .context("run persistent daemon relay")
     })
 }
 
-/// Log the end of one relay pump direction, treating an expected peer-close as debug-level noise.
+#[cfg(all(feature = "comms", unix))]
+type RelayStream = tokio::net::UnixStream;
+
+#[cfg(all(feature = "comms", windows))]
+type RelayStream = tokio::net::windows::named_pipe::NamedPipeClient;
+
 #[cfg(all(feature = "comms", any(unix, windows)))]
-fn log_pump_end(direction: &str, result: std::io::Result<u64>) {
-    match result {
-        Ok(bytes) => tracing::debug!(direction, bytes, "relay pump reached EOF"),
-        Err(error)
-            if matches!(
-                error.kind(),
-                std::io::ErrorKind::BrokenPipe
-                    | std::io::ErrorKind::UnexpectedEof
-                    | std::io::ErrorKind::ConnectionReset
-            ) =>
-        {
-            tracing::debug!(direction, %error, "relay pump closed")
-        }
-        Err(error) => tracing::info!(direction, %error, "relay pump ended with error"),
+async fn open_relay_connection(
+    root: PathBuf,
+    view: String,
+    agent: basemind::comms::ids::AgentId,
+) -> Result<RelayStream> {
+    use basemind::comms::{relay, singleton};
+
+    let paths = singleton::resolve_paths().context("resolve comms paths")?;
+    singleton::ensure_daemon(&paths).await.context("ensure daemon")?;
+    let mut stream = relay_connect_stream(&paths.socket_path)
+        .await
+        .context("connect to daemon socket")?;
+    let hello = relay::RelayHello {
+        relay_proto_ver: relay::RELAY_PROTO_VER,
+        root,
+        view,
+        agent,
+    };
+    let welcome = relay::client_handshake(&mut stream, &hello)
+        .await
+        .context("relay handshake")?;
+    if welcome.relay_proto_ver != relay::RELAY_PROTO_VER {
+        anyhow::bail!(
+            "daemon relay-proto {} != client {}",
+            welcome.relay_proto_ver,
+            relay::RELAY_PROTO_VER
+        );
     }
+    if !welcome.accepted {
+        anyhow::bail!("daemon declined relay: {:?}", welcome.code);
+    }
+    Ok(stream)
 }
 
 /// Dial the daemon's relay endpoint: a Unix-domain socket on unix.
