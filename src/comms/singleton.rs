@@ -36,8 +36,9 @@ const OWNER_ONLY_FILE: u32 = 0o600;
 #[cfg(unix)]
 const SUN_PATH_MAX: usize = if cfg!(target_os = "linux") { 107 } else { 103 };
 
-/// How long to wait for a spawned daemon to become reachable before giving up.
-const SPAWN_READY_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long to wait for a spawned daemon to become reachable before giving up. Full-feature
+/// binaries can take materially longer to page in when every core and memory channel is busy.
+const SPAWN_READY_TIMEOUT: Duration = Duration::from_secs(30);
 /// Poll interval while waiting for a spawned daemon.
 const SPAWN_POLL_INTERVAL: Duration = Duration::from_millis(50);
 /// How long to wait for a previous / incompatible daemon to release the socket after we ask it to
@@ -876,7 +877,7 @@ mod tests {
 
     #[test]
     fn spawn_ready_timeout_covers_a_cold_full_feature_start() {
-        const MINIMUM_COLD_START_BUDGET: Duration = Duration::from_secs(10);
+        const MINIMUM_COLD_START_BUDGET: Duration = Duration::from_secs(30);
 
         assert!(
             SPAWN_READY_TIMEOUT >= MINIMUM_COLD_START_BUDGET,
