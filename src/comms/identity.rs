@@ -41,6 +41,8 @@ pub const AGENT_ID_FILE: &str = "agent-id";
 /// Directory holding the claim ledger, one file per agent id, under the machine-global cache root.
 /// See [`IdentityCollision`] for what it buys.
 pub const CLAIMS_DIR: &str = "agents";
+/// Collision claims are advisory and expire quickly when no resolver refreshes them.
+pub const CLAIM_TTL: std::time::Duration = std::time::Duration::from_secs(6 * 60 * 60);
 
 /// Which tier produced an [`AgentIdentity`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -186,6 +188,28 @@ impl AgentIdentity {
 /// any front-end work).
 pub fn resolve(request: &IdentityRequest<'_>) -> AgentIdentity {
     let (id, source) = resolve_id(request);
+    finish_resolution(request, id, source)
+}
+
+/// Resolve a live MCP session identity.
+///
+/// Explicit environment/config identities remain stable reconnect identities. Without an explicit
+/// identity, every call mints a distinct routing id so concurrent sessions in one workspace cannot
+/// suppress each other's messages. The persisted workspace identity remains reserved for one-shot
+/// CLI and hook continuity through [`resolve`].
+pub fn resolve_session(request: &IdentityRequest<'_>) -> AgentIdentity {
+    let validated = |candidate: Option<&str>| candidate.and_then(|value| AgentId::parse(value).ok());
+    let (id, source) = if let Some(id) = validated(request.env_agent_id.as_deref()) {
+        (id, IdentitySource::Env)
+    } else if let Some(id) = validated(request.config_agent_id.as_deref()) {
+        (id, IdentitySource::Config)
+    } else {
+        (generated_id("session"), IdentitySource::Generated)
+    };
+    finish_resolution(request, id, source)
+}
+
+fn finish_resolution(request: &IdentityRequest<'_>, id: AgentId, source: IdentitySource) -> AgentIdentity {
     let collision = record_claim(&request.paths.claims_dir, &id, request.root);
     let identity = AgentIdentity { id, source, collision };
     if let Some(warning) = identity.collision_warning() {
@@ -219,6 +243,16 @@ pub fn cli_agent_id(root: &Path) -> AgentId {
         eprintln!("warning: {warning}");
     }
     identity.into_id()
+}
+
+/// Resolve the routing identity for one live MCP transport in `root`.
+///
+/// Unlike [`cli_agent_id`], the default is deliberately ephemeral: two simultaneous transports in
+/// one checkout must remain distinct. Explicit environment/config identities retain their stable
+/// reconnect semantics.
+pub fn mcp_session_agent_id(root: &Path) -> AgentId {
+    let config_agent_id = crate::config::load(root).ok().and_then(|config| config.comms.agent_id);
+    resolve_session(&IdentityRequest::from_process(root, config_agent_id)).into_id()
 }
 
 /// The tiering itself, free of claim bookkeeping.
@@ -337,4 +371,82 @@ fn record_claim(claims_dir: &Path, id: &AgentId, root: &Path) -> Option<Identity
         let _ = std::fs::write(&path, bytes);
     }
     collision
+}
+
+/// Remove claim-ledger rows that have not been refreshed within `ttl`.
+///
+/// Claims only power collision diagnostics; deleting one never changes the stable workspace
+/// identity or its comms registration. Malformed rows use their file mtime as a conservative
+/// fallback so a corrupt ledger cannot grow forever.
+pub fn prune_expired_claims(ttl: std::time::Duration) -> std::io::Result<usize> {
+    prune_expired_claims_in(&claims_dir(), ttl)
+}
+
+fn prune_expired_claims_in(dir: &Path, ttl: std::time::Duration) -> std::io::Result<usize> {
+    if !dir.exists() {
+        return Ok(0);
+    }
+    let now = std::time::SystemTime::now();
+    let cutoff = now
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs() as i64)
+        .unwrap_or_default()
+        .saturating_sub(i64::try_from(ttl.as_secs()).unwrap_or(i64::MAX));
+    let mut removed = 0usize;
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if !path.is_file() || path.extension().and_then(|value| value.to_str()) != Some("json") {
+            continue;
+        }
+        let updated = std::fs::read(&path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<AgentClaim>(&bytes).ok())
+            .map(|claim| claim.updated_unix)
+            .or_else(|| {
+                path.metadata()
+                    .ok()?
+                    .modified()
+                    .ok()?
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .ok()
+                    .map(|duration| duration.as_secs() as i64)
+            });
+        if updated.is_some_and(|updated| updated < cutoff) {
+            std::fs::remove_file(path)?;
+            removed += 1;
+        }
+    }
+    Ok(removed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn claim_prune_removes_only_rows_older_than_the_ttl() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_secs() as i64;
+        for (name, updated_unix) in [("stale", now - 7 * 60 * 60), ("fresh", now)] {
+            let claim = AgentClaim {
+                agent_id: name.to_string(),
+                root: temp.path().join(name),
+                pid: 1,
+                updated_unix,
+            };
+            std::fs::write(
+                temp.path().join(format!("{name}.json")),
+                serde_json::to_vec(&claim).expect("encode claim"),
+            )
+            .expect("write claim");
+        }
+
+        assert_eq!(prune_expired_claims_in(temp.path(), CLAIM_TTL).expect("prune"), 1);
+        assert!(!temp.path().join("stale.json").exists());
+        assert!(temp.path().join("fresh.json").exists());
+    }
 }

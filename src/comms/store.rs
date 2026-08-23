@@ -31,7 +31,11 @@ use thiserror::Error;
 use super::COMMS_SCHEMA_VER;
 use super::ids::{AgentId, ThreadId};
 use super::keys;
-use super::model::{AgentRecord, Membership, MessageBody, MessageMeta, Thread, now_micros};
+use super::model::{
+    AgentRecord, MESSAGE_REFERENCE_PREFIX, Membership, MessageBody, MessageMeta, Thread, message_reference, now_micros,
+};
+
+mod retention;
 
 const META_SCHEMA_VER: &[u8] = b"schema_ver";
 const STORE_DIR: &str = "store.fjall";
@@ -40,7 +44,19 @@ const LOCK_FILE: &str = ".lock";
 /// Default retention for thread messages. The daemon's periodic prune sweep deletes any message
 /// (front-matter + body) whose `ts_micros` is older than this, so coordination history cannot
 /// grow without bound.
-pub const MESSAGE_TTL: std::time::Duration = std::time::Duration::from_secs(7 * 24 * 60 * 60);
+pub const MESSAGE_TTL: std::time::Duration = std::time::Duration::from_secs(3 * 24 * 60 * 60);
+/// Maximum retained messages in one hot thread, enforced atomically on every post.
+pub const MAX_MESSAGES_PER_THREAD: u64 = 1_000;
+/// Maximum concurrently active conversations in the machine-global broker.
+pub const MAX_ACTIVE_THREADS: usize = 256;
+/// Idle active threads are archived after one week.
+pub const THREAD_IDLE_TTL: std::time::Duration = std::time::Duration::from_secs(7 * 24 * 60 * 60);
+/// Archived threads and their dependent rows are permanently removed after two weeks idle.
+pub const THREAD_RETENTION_TTL: std::time::Duration = std::time::Duration::from_secs(14 * 24 * 60 * 60);
+/// Unused generated agent cards are disposable after three days without a reconnect.
+pub const EPHEMERAL_AGENT_TTL: std::time::Duration = std::time::Duration::from_secs(3 * 24 * 60 * 60);
+/// Avoid a Fjall write on every request while still keeping long-running agents fresh.
+pub const AGENT_TOUCH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// Bounded retry while acquiring the advisory flock — mirrors `crate::store::acquire_lock`.
 const LOCK_ATTEMPTS: u32 = 25;
@@ -67,9 +83,32 @@ pub enum CommsStoreError {
     /// msgpack decode failure.
     #[error("msgpack decode error: {0}")]
     Decode(#[from] rmp_serde::decode::Error),
+    /// A bounded comms resource reached its configured ceiling.
+    #[error("comms retention limit reached: {0}")]
+    Limit(&'static str),
     /// Another daemon already holds the store lock.
     #[error("another basemind comms daemon holds the lock on {0}")]
     Locked(PathBuf),
+}
+
+/// Outcome of resolving a legacy id or compact message reference.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MessageReferenceResolution {
+    /// Exactly one message matched.
+    Found {
+        /// Canonical legacy message id used by durable keyspaces.
+        message_id: String,
+        /// Thread containing the message.
+        thread: ThreadId,
+        /// Per-thread sequence number.
+        seq: u64,
+    },
+    /// The compact reference has invalid syntax.
+    Malformed,
+    /// No message matched the reference or legacy id.
+    Missing,
+    /// More than one compact hash prefix matched.
+    Ambiguous,
 }
 
 /// Handle to every comms keyspace. Cheap to clone (each `Keyspace` is internally `Arc`'d).
@@ -150,6 +189,12 @@ impl CommsStore {
 
     /// Insert or replace a thread record.
     pub fn put_thread(&self, thread: &Thread) -> Result<(), CommsStoreError> {
+        if thread.active
+            && self.get_thread(&thread.id)?.is_none()
+            && self.list_threads()?.iter().filter(|existing| existing.active).count() >= MAX_ACTIVE_THREADS
+        {
+            return Err(CommsStoreError::Limit("maximum active thread count"));
+        }
         let bytes = rmp_serde::to_vec_named(thread)?;
         self.threads.insert(keys::thread_key(thread.id.as_str()), bytes)?;
         Ok(())
@@ -287,6 +332,14 @@ impl CommsStore {
         batch.insert(&self.messages_by_thread, meta_key, meta_bytes);
         let body_bytes = rmp_serde::to_vec_named(&body)?;
         batch.insert(&self.message_body, meta.id.as_bytes().to_vec(), body_bytes);
+        if let Some(expired_seq) = seq.checked_sub(MAX_MESSAGES_PER_THREAD) {
+            let expired_key = keys::message_by_thread(thread.as_str(), expired_seq);
+            if let Some(bytes) = self.messages_by_thread.get(&expired_key)? {
+                let expired: MessageMeta = rmp_serde::from_slice(&bytes)?;
+                batch.remove(&self.messages_by_thread, expired_key);
+                batch.remove(&self.message_body, expired.id.as_bytes().to_vec());
+            }
+        }
         batch.commit()?;
         Ok((seq, meta))
     }
@@ -363,121 +416,6 @@ impl CommsStore {
         Ok(out)
     }
 
-    /// Delete every message whose `ts_micros` is older than `now - ttl`, removing both the
-    /// front-matter (`messages_by_thread`) and the body (`message_body`) in one atomic batch.
-    /// Returns the number of messages pruned.
-    pub fn prune_expired(&self, ttl: std::time::Duration) -> Result<usize, CommsStoreError> {
-        let ttl_micros = i64::try_from(ttl.as_micros()).unwrap_or(i64::MAX);
-        let cutoff = now_micros().saturating_sub(ttl_micros);
-        let mut batch = self.db.batch();
-        let mut pruned = 0usize;
-        for guard in self.messages_by_thread.iter() {
-            let (k, v) = guard.into_inner()?;
-            let meta: MessageMeta = rmp_serde::from_slice(&v)?;
-            if meta.ts_micros < cutoff {
-                batch.remove(&self.messages_by_thread, k.to_vec());
-                batch.remove(&self.message_body, meta.id.as_bytes().to_vec());
-                pruned += 1;
-            }
-        }
-        if pruned > 0 {
-            batch.commit()?;
-        }
-        Ok(pruned)
-    }
-
-    /// Archive every ACTIVE thread whose `last_activity` (or `created_at`, when it has never had a
-    /// post) is older than `now - ttl`. Returns the number of threads archived. The system's
-    /// idle-thread auto-archive — the sanctioned migration for a stale thread. Archived threads and
-    /// their history remain readable; they simply drop out of active listings.
-    pub fn archive_idle(&self, ttl: std::time::Duration) -> Result<usize, CommsStoreError> {
-        let ttl_micros = i64::try_from(ttl.as_micros()).unwrap_or(i64::MAX);
-        let cutoff = now_micros().saturating_sub(ttl_micros);
-        let mut archived = 0usize;
-        for thread in self.list_threads()? {
-            if !thread.active {
-                continue;
-            }
-            let last = if thread.last_activity > 0 {
-                thread.last_activity
-            } else {
-                thread.created_at
-            };
-            if last < cutoff {
-                let mut updated = thread;
-                updated.active = false;
-                self.put_thread(&updated)?;
-                archived += 1;
-            }
-        }
-        Ok(archived)
-    }
-
-    /// Permanently delete every ARCHIVED thread whose last activity (or creation, if it never had a
-    /// post) predates `now - older_than`, removing the thread row plus ALL of its messages, bodies,
-    /// memberships, subscriptions, read cursors, and seq counter in one atomic batch. Returns the
-    /// count of threads purged. Active threads are never touched — this is the retention tail after
-    /// [`archive_idle`](Self::archive_idle): a thread first drops out of active listings, then, once
-    /// it has been idle for the far-longer retention window, its storage is reclaimed.
-    pub fn purge_archived(&self, older_than: std::time::Duration) -> Result<usize, CommsStoreError> {
-        let ttl_micros = i64::try_from(older_than.as_micros()).unwrap_or(i64::MAX);
-        let cutoff = now_micros().saturating_sub(ttl_micros);
-        let doomed: Vec<ThreadId> = self
-            .list_threads()?
-            .into_iter()
-            .filter(|thread| !thread.active)
-            .filter(|thread| {
-                let last = if thread.last_activity > 0 {
-                    thread.last_activity
-                } else {
-                    thread.created_at
-                };
-                last < cutoff
-            })
-            .map(|thread| thread.id)
-            .collect();
-        if doomed.is_empty() {
-            return Ok(0);
-        }
-        let doomed_set: ahash::AHashSet<&str> = doomed.iter().map(ThreadId::as_str).collect();
-
-        let mut batch = self.db.batch();
-        for guard in self.messages_by_thread.iter() {
-            let (k, v) = guard.into_inner()?;
-            let Some((thread, _seq)) = keys::parse_message_by_thread(&k) else {
-                continue;
-            };
-            if doomed_set.contains(thread.as_str()) {
-                let meta: MessageMeta = rmp_serde::from_slice(&v)?;
-                batch.remove(&self.messages_by_thread, k.to_vec());
-                batch.remove(&self.message_body, meta.id.as_bytes().to_vec());
-            }
-        }
-        for guard in self.thread_members.iter() {
-            let (k, _) = guard.into_inner()?;
-            if let Some((thread, _agent)) = keys::parse_thread_agent(&k)
-                && doomed_set.contains(thread.as_str())
-            {
-                batch.remove(&self.thread_members, k.to_vec());
-                batch.remove(&self.thread_subs, k.to_vec());
-            }
-        }
-        for guard in self.cursors.iter() {
-            let (k, _) = guard.into_inner()?;
-            if let Some((_agent, thread)) = keys::parse_cursor_key(&k)
-                && doomed_set.contains(thread.as_str())
-            {
-                batch.remove(&self.cursors, k.to_vec());
-            }
-        }
-        for thread in &doomed {
-            batch.remove(&self.meta, keys::thread_seq_meta_key(thread.as_str()));
-            batch.remove(&self.threads, keys::thread_key(thread.as_str()));
-        }
-        batch.commit()?;
-        Ok(doomed.len())
-    }
-
     /// Fetch a message body by id from `message_body`. The ONLY path that touches a body.
     pub fn get_body(&self, message_id: &str) -> Result<Option<Vec<u8>>, CommsStoreError> {
         match self.message_body.get(message_id.as_bytes())? {
@@ -511,6 +449,43 @@ impl CommsStore {
             }
         }
         Ok(out)
+    }
+
+    /// Resolve either a legacy message id or an opaque `m-<hex>` reference. Compact references
+    /// accept 4–16 hash digits; shortened references must identify exactly one retained message.
+    pub fn resolve_message_reference(&self, reference: &str) -> Result<MessageReferenceResolution, CommsStoreError> {
+        let compact = reference.strip_prefix(MESSAGE_REFERENCE_PREFIX);
+        if let Some(hash_prefix) = compact
+            && (!(4..=16).contains(&hash_prefix.len()) || !hash_prefix.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        {
+            return Ok(MessageReferenceResolution::Malformed);
+        }
+
+        let mut found = None;
+        for guard in self.messages_by_thread.iter() {
+            let (key, value) = guard.into_inner()?;
+            let Some((_, seq)) = keys::parse_message_by_thread(&key) else {
+                continue;
+            };
+            let meta: MessageMeta = rmp_serde::from_slice(&value)?;
+            let matches = match compact {
+                Some(hash_prefix) => message_reference(&meta.id)[MESSAGE_REFERENCE_PREFIX.len()..]
+                    .starts_with(&hash_prefix.to_ascii_lowercase()),
+                None => meta.id == reference,
+            };
+            if !matches {
+                continue;
+            }
+            if found.is_some() {
+                return Ok(MessageReferenceResolution::Ambiguous);
+            }
+            found = Some(MessageReferenceResolution::Found {
+                message_id: meta.id,
+                thread: meta.thread,
+                seq,
+            });
+        }
+        Ok(found.unwrap_or(MessageReferenceResolution::Missing))
     }
 
     /// The agent's last-read `seq` for a thread (0 when never read).
@@ -601,358 +576,5 @@ fn acquire_lock(comms_dir: &Path) -> Result<File, CommsStoreError> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::comms::model::AgentCard;
-
-    fn temp_store() -> (tempfile::TempDir, CommsStore) {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let store = CommsStore::open(dir.path()).expect("open store");
-        (dir, store)
-    }
-
-    fn thread_id(s: &str) -> ThreadId {
-        ThreadId::parse(s).expect("thread")
-    }
-
-    fn agent_id(s: &str) -> AgentId {
-        AgentId::parse(s).expect("agent")
-    }
-
-    fn sample_thread(id: &str) -> Thread {
-        Thread {
-            id: thread_id(id),
-            subject: Some("topic".to_string()),
-            path: None,
-            members: vec![agent_id("a")],
-            creator: agent_id("a"),
-            active: true,
-            created_at: now_micros(),
-            last_activity: 0,
-        }
-    }
-
-    #[test]
-    fn post_then_history_returns_meta_and_body_is_not_loaded() {
-        let (_d, store) = temp_store();
-        let thread = thread_id("th-1");
-        store.put_thread(&sample_thread("th-1")).expect("put thread");
-
-        let body = b"the quick brown fox".to_vec();
-        let meta = build_meta(
-            "m-1".to_string(),
-            thread.clone(),
-            agent_id("agent-1"),
-            "subj".to_string(),
-            vec![],
-            None,
-            &body,
-        );
-        let (seq, _) = store
-            .post(&thread, meta.clone(), MessageBody(body.clone()))
-            .expect("post");
-        assert_eq!(seq, 1, "first message in a thread gets seq 1");
-
-        let page = store.history(&thread, 0, 10).expect("history");
-        assert_eq!(page.messages.len(), 1);
-        let (got_seq, got) = &page.messages[0];
-        assert_eq!(*got_seq, 1);
-        assert_eq!(got.id, "m-1");
-        assert_eq!(got.subject, "subj");
-        assert_eq!(got.body_len as usize, body.len());
-        assert_eq!(got.body_sha, body_hash_hex(&body));
-
-        let fetched = store.get_body("m-1").expect("get_body");
-        assert_eq!(fetched.as_deref(), Some(body.as_slice()));
-        assert_eq!(store.get_body("nope").expect("get_body"), None);
-    }
-
-    #[test]
-    fn history_paginates_by_seq() {
-        let (_d, store) = temp_store();
-        let thread = thread_id("th-1");
-        for i in 0..5u32 {
-            let body = format!("body-{i}").into_bytes();
-            let meta = build_meta(
-                format!("m-{i}"),
-                thread.clone(),
-                agent_id("a"),
-                format!("s-{i}"),
-                vec![],
-                None,
-                &body,
-            );
-            store.post(&thread, meta, MessageBody(body)).expect("post");
-        }
-        let page1 = store.history(&thread, 0, 2).expect("history");
-        assert_eq!(page1.messages.len(), 2);
-        assert!(page1.more);
-        let page2 = store.history(&thread, page1.last_seq, 2).expect("history");
-        assert_eq!(page2.messages.len(), 2);
-        assert_eq!(page2.messages[0].1.id, "m-2");
-    }
-
-    #[test]
-    fn seq_counter_persists_across_reopen() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let thread = thread_id("th-1");
-        let post = |store: &CommsStore, id: &str| {
-            let body = id.as_bytes().to_vec();
-            let meta = build_meta(
-                id.to_string(),
-                thread.clone(),
-                agent_id("a"),
-                id.to_string(),
-                vec![],
-                None,
-                &body,
-            );
-            store.post(&thread, meta, MessageBody(body)).expect("post").0
-        };
-        {
-            let store = CommsStore::open(dir.path()).expect("open");
-            assert_eq!(post(&store, "m-1"), 1);
-            assert_eq!(post(&store, "m-2"), 2);
-        }
-        {
-            let store = CommsStore::open(dir.path()).expect("reopen");
-            assert_eq!(post(&store, "m-3"), 3, "seq must continue past reopen");
-            let page = store.history(&thread, 0, 10).expect("history");
-            assert_eq!(page.messages.len(), 3);
-            let ids: Vec<&str> = page.messages.iter().map(|(_, m)| m.id.as_str()).collect();
-            assert_eq!(ids, ["m-1", "m-2", "m-3"]);
-        }
-    }
-
-    #[test]
-    fn prune_expired_deletes_old_messages_and_bodies_but_keeps_recent() {
-        let (_d, store) = temp_store();
-        let thread = thread_id("th-1");
-        let stale_body = b"stale".to_vec();
-        let mut stale = build_meta(
-            "old".to_string(),
-            thread.clone(),
-            agent_id("a"),
-            "old".to_string(),
-            vec![],
-            None,
-            &stale_body,
-        );
-        stale.ts_micros = now_micros() - 10 * 24 * 60 * 60 * 1_000_000;
-        store.post(&thread, stale, MessageBody(stale_body)).expect("post stale");
-        let fresh_body = b"fresh".to_vec();
-        let fresh = build_meta(
-            "new".to_string(),
-            thread.clone(),
-            agent_id("a"),
-            "new".to_string(),
-            vec![],
-            None,
-            &fresh_body,
-        );
-        store.post(&thread, fresh, MessageBody(fresh_body)).expect("post fresh");
-
-        let pruned = store
-            .prune_expired(std::time::Duration::from_secs(24 * 60 * 60))
-            .expect("prune");
-        assert_eq!(pruned, 1, "exactly the stale message is pruned");
-
-        let page = store.history(&thread, 0, 10).expect("history");
-        let ids: Vec<&str> = page.messages.iter().map(|(_, m)| m.id.as_str()).collect();
-        assert_eq!(ids, ["new"]);
-        assert_eq!(store.get_body("old").expect("get_body"), None);
-    }
-
-    #[test]
-    fn archive_idle_flips_only_stale_active_threads() {
-        let (_d, store) = temp_store();
-        let mut stale = sample_thread("stale");
-        stale.last_activity = now_micros() - 30 * 24 * 60 * 60 * 1_000_000;
-        store.put_thread(&stale).expect("put stale");
-        let mut fresh = sample_thread("fresh");
-        fresh.last_activity = now_micros();
-        store.put_thread(&fresh).expect("put fresh");
-
-        let archived = store
-            .archive_idle(std::time::Duration::from_secs(14 * 24 * 60 * 60))
-            .expect("archive");
-        assert_eq!(archived, 1, "only the stale thread archives");
-        assert!(!store.get_thread(&thread_id("stale")).unwrap().unwrap().active);
-        assert!(store.get_thread(&thread_id("fresh")).unwrap().unwrap().active);
-
-        assert_eq!(
-            store
-                .archive_idle(std::time::Duration::from_secs(14 * 24 * 60 * 60))
-                .expect("archive again"),
-            0
-        );
-    }
-
-    #[test]
-    fn purge_archived_reaps_stale_archived_threads_and_all_their_rows_only() {
-        let (_d, store) = temp_store();
-        let ttl = std::time::Duration::from_secs(30 * 24 * 60 * 60);
-        let sixty_days_micros = 60 * 24 * 60 * 60 * 1_000_000i64;
-
-        let stale_id = thread_id("th-stale");
-        let mut stale = sample_thread("th-stale");
-        stale.active = false;
-        stale.last_activity = now_micros() - sixty_days_micros;
-        store.put_thread(&stale).expect("put stale");
-        store
-            .add_member(&Membership {
-                agent_id: agent_id("a"),
-                thread: stale_id.clone(),
-                created_at: now_micros() - sixty_days_micros,
-            })
-            .expect("add member");
-        let body = b"stale-msg".to_vec();
-        let meta = build_meta(
-            "s-1".to_string(),
-            stale_id.clone(),
-            agent_id("a"),
-            "s".to_string(),
-            vec![],
-            None,
-            &body,
-        );
-        store.post(&stale_id, meta, MessageBody(body)).expect("post stale");
-        store.set_read_cursor(&agent_id("a"), &stale_id, 1).expect("cursor");
-
-        let mut fresh_archived = sample_thread("th-fresh-archived");
-        fresh_archived.active = false;
-        fresh_archived.last_activity = now_micros();
-        store.put_thread(&fresh_archived).expect("put fresh-archived");
-
-        let mut active_old = sample_thread("th-active-old");
-        active_old.last_activity = now_micros() - sixty_days_micros;
-        store.put_thread(&active_old).expect("put active-old");
-
-        let purged = store.purge_archived(ttl).expect("purge");
-        assert_eq!(purged, 1, "only the stale ARCHIVED thread is purged");
-
-        assert!(
-            store.get_thread(&stale_id).expect("get stale").is_none(),
-            "stale thread row deleted"
-        );
-        assert!(
-            store.get_body("s-1").expect("get body").is_none(),
-            "stale message body deleted"
-        );
-        assert_eq!(
-            store.history(&stale_id, 0, 10).expect("history").messages.len(),
-            0,
-            "stale message front-matter deleted"
-        );
-        assert!(
-            store.members(&stale_id).expect("members").is_empty(),
-            "stale membership + subs deleted"
-        );
-        assert_eq!(
-            store.read_cursor(&agent_id("a"), &stale_id).expect("cursor"),
-            0,
-            "stale read cursor deleted"
-        );
-
-        assert!(
-            store
-                .get_thread(&thread_id("th-fresh-archived"))
-                .expect("get")
-                .is_some(),
-            "recently-archived thread survives the retention window"
-        );
-        assert!(
-            store.get_thread(&thread_id("th-active-old")).expect("get").is_some(),
-            "an active thread is never purged, however stale"
-        );
-
-        assert_eq!(store.purge_archived(ttl).expect("purge again"), 0);
-    }
-
-    #[test]
-    fn membership_round_trips() {
-        let (_d, store) = temp_store();
-        let thread = thread_id("th-1");
-        let agent = agent_id("agent-1");
-        store
-            .add_member(&Membership {
-                agent_id: agent.clone(),
-                thread: thread.clone(),
-                created_at: now_micros(),
-            })
-            .expect("add");
-        assert!(store.is_member(&thread, &agent).expect("is_member"));
-        assert_eq!(store.members(&thread).expect("members"), vec![agent.clone()]);
-        assert_eq!(store.threads_for_agent(&agent).expect("threads"), vec![thread.clone()]);
-        store.remove_member(&thread, &agent).expect("remove");
-        assert!(store.members(&thread).expect("members").is_empty());
-        assert!(!store.is_member(&thread, &agent).expect("is_member"));
-    }
-
-    #[test]
-    fn read_cursor_is_monotonic() {
-        let (_d, store) = temp_store();
-        let thread = thread_id("th-1");
-        let agent = agent_id("agent-1");
-        assert_eq!(store.read_cursor(&agent, &thread).expect("read"), 0);
-        store.set_read_cursor(&agent, &thread, 5).expect("set");
-        assert_eq!(store.read_cursor(&agent, &thread).expect("read"), 5);
-        store.set_read_cursor(&agent, &thread, 3).expect("set");
-        assert_eq!(store.read_cursor(&agent, &thread).expect("read"), 5);
-    }
-
-    #[test]
-    fn resolve_ids_maps_each_id_to_its_thread_and_seq() {
-        let (_d, store) = temp_store();
-        let thread_a = thread_id("th-a");
-        let thread_b = thread_id("th-b");
-        let mk = |store: &CommsStore, thread: &ThreadId, id: &str| {
-            let body = id.as_bytes().to_vec();
-            let meta = build_meta(
-                id.to_string(),
-                thread.clone(),
-                agent_id("a"),
-                id.to_string(),
-                vec![],
-                None,
-                &body,
-            );
-            store.post(thread, meta, MessageBody(body)).expect("post").0
-        };
-        let s_a1 = mk(&store, &thread_a, "m-a1");
-        let _s_a2 = mk(&store, &thread_a, "m-a2");
-        let s_b1 = mk(&store, &thread_b, "m-b1");
-
-        let mut got = store
-            .resolve_ids(&["m-a1".to_string(), "m-b1".to_string(), "ghost".to_string()])
-            .expect("resolve_ids");
-        got.sort_by(|x, y| x.0.cmp(&y.0));
-        assert_eq!(
-            got,
-            vec![
-                ("m-a1".to_string(), thread_a.clone(), s_a1),
-                ("m-b1".to_string(), thread_b.clone(), s_b1),
-            ]
-        );
-        assert!(store.resolve_ids(&[]).expect("resolve_ids").is_empty());
-    }
-
-    #[test]
-    fn agent_records_round_trip() {
-        let (_d, store) = temp_store();
-        let rec = AgentRecord {
-            agent_id: agent_id("agent-1"),
-            card: AgentCard {
-                name: "n".to_string(),
-                description: "d".to_string(),
-                version: "1".to_string(),
-                skills: vec![],
-            },
-            kind: super::super::model::AgentKind::Cli,
-            first_seen: now_micros(),
-            last_seen: now_micros(),
-        };
-        store.put_agent(&rec).expect("put");
-        assert_eq!(store.get_agent(&agent_id("agent-1")).expect("get"), Some(rec));
-    }
-}
+#[path = "store_tests.rs"]
+mod tests;

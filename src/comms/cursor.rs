@@ -23,6 +23,10 @@ pub struct CursorPos {
     pub thread: String,
     /// Last `seq` the previous page returned. The next page starts at `seq + 1`.
     pub seq: u64,
+    /// Per-thread progress for a cross-thread inbox cursor. Empty for history cursors and legacy
+    /// inbox cursors.
+    #[serde(default)]
+    pub threads: Vec<(String, u64)>,
 }
 
 impl Cursor {
@@ -31,6 +35,7 @@ impl Cursor {
         let payload = CursorPos {
             thread: thread.to_string(),
             seq,
+            threads: Vec::new(),
         };
         let bytes = rmp_serde::to_vec_named(&payload).expect("encoding a (thread, seq) cursor never fails");
         Cursor(base64url_encode(&bytes))
@@ -40,6 +45,17 @@ impl Cursor {
     pub fn decode(&self) -> Result<CursorPos, CursorError> {
         let bytes = base64url_decode(&self.0).map_err(|_| CursorError::Malformed)?;
         rmp_serde::from_slice(&bytes).map_err(|_| CursorError::Malformed)
+    }
+
+    /// Encode progress for every thread participating in an inbox page.
+    pub fn encode_inbox(threads: Vec<(String, u64)>) -> Self {
+        let payload = CursorPos {
+            thread: String::new(),
+            seq: 0,
+            threads,
+        };
+        let bytes = rmp_serde::to_vec_named(&payload).expect("encoding inbox cursor progress never fails");
+        Cursor(base64url_encode(&bytes))
     }
 }
 

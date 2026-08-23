@@ -34,6 +34,9 @@ use crate::comms::model::now_micros;
 
 /// Default page size when a mode omits `limit`. Mirrors the broker's `DEFAULT_LIMIT`.
 const DEFAULT_LIMIT: u32 = 100;
+const DELIVERY_SCAN_LIMIT: u32 = 1_000;
+const DELIVERY_NOTICE_LIMIT: usize = 5;
+const DELIVERY_BUDGET: std::time::Duration = std::time::Duration::from_millis(200);
 
 /// Default recency window for modes `history` / `inbox` when the caller omits `since_hours`.
 const DEFAULT_SINCE_HOURS: u32 = 24;
@@ -123,6 +126,54 @@ pub(super) async fn resolve_comms_client(
     let handle = Arc::new(Mutex::new(client));
     map.insert(target, handle.clone());
     Ok(handle)
+}
+
+/// Return a bounded, exactly-once-per-session front-matter notice for an ordinary tool response.
+/// Failure and contention are deliberately silent so mailbox delivery can never make another MCP
+/// capability slow or unavailable.
+pub(super) async fn take_delivery_notice(state: &ServerState) -> Option<String> {
+    let handle = tokio::time::timeout(DELIVERY_BUDGET, resolve_comms_client(state, None))
+        .await
+        .ok()?
+        .ok()?;
+    let page = tokio::time::timeout(DELIVERY_BUDGET, async {
+        let mut client = handle.lock().await;
+        client
+            .read_inbox(None, None, None, DELIVERY_SCAN_LIMIT, false, None)
+            .await
+    })
+    .await
+    .ok()?
+    .ok()?;
+    let (messages, unread, _) = page;
+    let mut delivered = state.delivered_notifications.lock().await;
+    let unseen: Vec<_> = messages
+        .into_iter()
+        .filter(|message| !delivered.contains(&message.meta.id))
+        .collect();
+    if unseen.is_empty() {
+        return None;
+    }
+    let shown = unseen.len().min(DELIVERY_NOTICE_LIMIT);
+    let mut notice = String::from("New basemind agent-comms message(s):\n");
+    for message in unseen.iter().take(shown) {
+        delivered.put(message.meta.id.clone(), ());
+        notice.push_str(&format!(
+            "- [{}#{}] from {}: {}\n",
+            message.meta.thread.as_str(),
+            message.seq,
+            message.meta.from.as_str(),
+            message.meta.subject
+        ));
+    }
+    let overflow = unseen.len().saturating_sub(shown).saturating_add(unread as usize);
+    if overflow > 0 {
+        notice.push_str(&format!(
+            "- {overflow} more unread; use agents mode inbox to review them.\n"
+        ));
+    }
+    notice.push_str("Use agents mode message with the message id to read a body; ack only after handling it.");
+    Some(notice)
 }
 
 /// Open a fresh, un-cached broker connection for the server's own identity. Long forwarded

@@ -542,6 +542,10 @@ impl CommsClient {
                 let (rows, unread, next) = self.read_inbox(remote, cwd, cursor, limit, false, since_micros).await?;
                 Ok((false, rows, unread, next))
             }
+            // Discovery metadata is consumed directly through `subscribe_inbox` plus
+            // `poll_notification`. Keep the legacy message-only wait shape exhaustive without
+            // misreporting a live wake as a timeout.
+            Ok(Ok(Some(CommsNotification::ThreadDiscovered(_)))) => Ok((false, Vec::new(), unread, None)),
             Ok(Ok(Some(CommsNotification::Shutdown))) | Ok(Ok(None)) => Ok((true, Vec::new(), 0, None)),
             Ok(Err(err)) => Err(err),
             Err(_elapsed) => Ok((true, Vec::new(), unread, None)),

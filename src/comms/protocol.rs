@@ -514,6 +514,11 @@ pub enum CommsNotification {
     /// A new message landed in a thread this link subscribes to. Carries front-matter only;
     /// fetch the body via [`CommsRequest::GetBody`].
     Message(MessageMeta),
+    /// A new active thread matches this inbox subscriber's path scope. This carries metadata only
+    /// and does not grant membership; clients must explicitly join before reading or receiving
+    /// messages. Notifications are live-only, so reconnecting clients reconcile with
+    /// [`CommsRequest::ThreadList`].
+    ThreadDiscovered(Thread),
     /// The daemon is shutting down; the link should disconnect.
     Shutdown,
 }

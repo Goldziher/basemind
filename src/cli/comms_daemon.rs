@@ -97,13 +97,8 @@ pub fn run() -> Result<()> {
             }
             Err(error) => return Err(anyhow::anyhow!("open comms store: {error}")),
         };
-        match store.prune_expired(crate::comms::store::MESSAGE_TTL) {
-            Ok(n) if n > 0 => {
-                tracing::info!(pruned = n, "comms: pruned expired messages on startup")
-            }
-            Ok(_) => {}
-            Err(error) => tracing::warn!(%error, "comms: startup message prune failed"),
-        }
+        log_retention_policy();
+        run_retention_maintenance(&store);
         let machine_registry = match crate::registry::Registry::from_data_home() {
             Ok(registry) => registry,
             Err(error) => {
@@ -161,7 +156,7 @@ pub fn run() -> Result<()> {
         let store_for_prune = store.clone();
         let broker_for_prune = broker.clone();
         tokio::spawn(async move {
-            use crate::comms::daemon::{THREAD_IDLE_TTL, THREAD_RETENTION_TTL, WORKSPACE_HOT_TTL};
+            use crate::comms::daemon::WORKSPACE_HOT_TTL;
             let mut tick = tokio::time::interval(PRUNE_EVERY);
             tick.tick().await;
             // Sweep once at startup for the same reason the blob GC does: a daemon that restarts ~keep
@@ -169,23 +164,7 @@ pub fn run() -> Result<()> {
             prune_missing_registry_rows(&broker_for_prune).await;
             loop {
                 tick.tick().await;
-                match store_for_prune.prune_expired(crate::comms::store::MESSAGE_TTL) {
-                    Ok(n) if n > 0 => tracing::info!(pruned = n, "comms: pruned expired messages"),
-                    Ok(_) => {}
-                    Err(error) => tracing::warn!(%error, "comms: periodic message prune failed"),
-                }
-                // Thread lifecycle: auto-archive idle active threads, then reclaim the storage of ~keep
-                // threads that have been archived well past the retention window. ~keep
-                match broker_for_prune.archive_idle_threads(THREAD_IDLE_TTL) {
-                    Ok(n) if n > 0 => tracing::info!(archived = n, "comms: archived idle threads"),
-                    Ok(_) => {}
-                    Err(error) => tracing::warn!(%error, "comms: periodic thread archive failed"),
-                }
-                match broker_for_prune.purge_archived_threads(THREAD_RETENTION_TTL) {
-                    Ok(n) if n > 0 => tracing::info!(purged = n, "comms: purged expired archived threads"),
-                    Ok(_) => {}
-                    Err(error) => tracing::warn!(%error, "comms: periodic archived-thread purge failed"),
-                }
+                run_retention_maintenance(&store_for_prune);
                 let evicted = broker_for_prune.evict_idle_workspaces(WORKSPACE_HOT_TTL);
                 if evicted > 0 {
                     tracing::info!(evicted, "daemon: shed idle hot workspaces from RAM");
@@ -314,6 +293,55 @@ async fn prune_missing_registry_rows(broker: &Broker) {
     if removed > 0 {
         tracing::info!(removed, "daemon: pruned machine-registry rows whose path is gone");
     }
+}
+
+/// Apply the effective machine-global comms retention policy. Called at startup and hourly so a
+/// frequently restarted daemon still converges, and so policy is visible in structured logs.
+fn run_retention_maintenance(store: &CommsStore) {
+    use crate::comms::store::{EPHEMERAL_AGENT_TTL, MESSAGE_TTL, THREAD_IDLE_TTL, THREAD_RETENTION_TTL};
+
+    match store.prune_expired(MESSAGE_TTL) {
+        Ok(count) if count > 0 => tracing::info!(pruned = count, "comms: pruned expired messages"),
+        Ok(_) => {}
+        Err(error) => tracing::warn!(%error, "comms: message prune failed"),
+    }
+    match store.archive_idle(THREAD_IDLE_TTL) {
+        Ok(count) if count > 0 => tracing::info!(archived = count, "comms: archived idle threads"),
+        Ok(_) => {}
+        Err(error) => tracing::warn!(%error, "comms: thread archive failed"),
+    }
+    match store.purge_archived(THREAD_RETENTION_TTL) {
+        Ok(count) if count > 0 => tracing::info!(purged = count, "comms: purged archived threads"),
+        Ok(_) => {}
+        Err(error) => tracing::warn!(%error, "comms: archived-thread purge failed"),
+    }
+    match store.prune_ephemeral_agents(EPHEMERAL_AGENT_TTL) {
+        Ok(count) if count > 0 => tracing::info!(pruned = count, "comms: pruned stale ephemeral agents"),
+        Ok(_) => {}
+        Err(error) => tracing::warn!(%error, "comms: ephemeral-agent prune failed"),
+    }
+    match crate::comms::identity::prune_expired_claims(crate::comms::identity::CLAIM_TTL) {
+        Ok(count) if count > 0 => tracing::info!(pruned = count, "comms: pruned stale identity claims"),
+        Ok(_) => {}
+        Err(error) => tracing::warn!(%error, "comms: identity-claim prune failed"),
+    }
+}
+
+fn log_retention_policy() {
+    use crate::comms::store::{
+        EPHEMERAL_AGENT_TTL, MAX_ACTIVE_THREADS, MAX_MESSAGES_PER_THREAD, MESSAGE_TTL, THREAD_IDLE_TTL,
+        THREAD_RETENTION_TTL,
+    };
+    tracing::info!(
+        message_ttl_secs = MESSAGE_TTL.as_secs(),
+        max_messages_per_thread = MAX_MESSAGES_PER_THREAD,
+        thread_idle_ttl_secs = THREAD_IDLE_TTL.as_secs(),
+        thread_retention_ttl_secs = THREAD_RETENTION_TTL.as_secs(),
+        ephemeral_agent_ttl_secs = EPHEMERAL_AGENT_TTL.as_secs(),
+        claim_ttl_secs = crate::comms::identity::CLAIM_TTL.as_secs(),
+        max_active_threads = MAX_ACTIVE_THREADS,
+        "comms: effective retention policy"
+    );
 }
 
 /// One blob-GC + budget sweep, with every outcome logged: reclaim at info, a starved cycle at

@@ -193,9 +193,9 @@ pub enum AgentsCmd {
         #[arg(long)]
         as_agent: Option<String>,
     },
-    /// Print a single message BODY by id (the only body path).
+    /// Print a single message BODY by compact reference or legacy id (the only body path).
     Message {
-        /// Message id (the `id` of a front-matter row).
+        /// Compact `message_ref` (preferred) or legacy `id` from a front-matter row.
         message_id: String,
         /// Act as this sub-identity instead of the CLI's default agent id.
         #[arg(long)]
@@ -720,6 +720,7 @@ fn render_thread(thread: &Thread, json: bool, out: &mut impl Write) -> Result<()
 fn front_matter_json(sm: &SeqMeta) -> serde_json::Value {
     let m = &sm.meta;
     json!({
+        "message_ref": crate::comms::model::message_reference(&m.id),
         "id": m.id,
         "thread": m.thread.as_str(),
         "from": m.from.as_str(),
@@ -760,7 +761,14 @@ fn render_front_matter(
     } else {
         for sm in messages {
             let m = &sm.meta;
-            writeln!(out, "{}\t{}\t{}\t{}", m.subject, m.from.as_str(), m.ts_micros, m.id)?;
+            writeln!(
+                out,
+                "{}\t{}\t{}\t{}",
+                crate::comms::model::message_reference(&m.id),
+                m.subject,
+                m.from.as_str(),
+                m.ts_micros
+            )?;
         }
     }
     if let Some(c) = next_cursor {

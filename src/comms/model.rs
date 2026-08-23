@@ -31,6 +31,18 @@ use serde::{Deserialize, Serialize};
 
 use super::ids::{AgentId, ThreadId};
 
+/// Prefix used to distinguish compact message references from legacy message ids.
+pub const MESSAGE_REFERENCE_PREFIX: &str = "m-";
+/// Number of hash digits shown in front matter. Callers may use an unambiguous prefix of at least
+/// four digits when transcribing a reference by hand.
+const MESSAGE_REFERENCE_DIGITS: usize = 16;
+
+/// Derive the stable, opaque compact reference for a legacy message id.
+pub fn message_reference(message_id: &str) -> String {
+    let digest = crate::hashing::hex(&crate::hashing::hash_bytes(message_id.as_bytes()));
+    format!("{MESSAGE_REFERENCE_PREFIX}{}", &digest[..MESSAGE_REFERENCE_DIGITS])
+}
+
 /// Current time in microseconds since the unix epoch, saturating on the (effectively
 /// impossible) clock-before-epoch case. A local mirror of `crate::lance::now_micros` so the
 /// comms feature does not pull in the lance/intelligence feature just for a timestamp.

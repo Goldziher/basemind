@@ -348,7 +348,14 @@ impl HttpRouter {
 
         // The factory is called per request by rmcp; it has no access to the HTTP request, so the
         // root+agent binding is captured here and a fresh server is minted over the shared stack.
-        let factory = move || Ok(BasemindServer::from_shared(shared.clone(), agent_id.clone()));
+        let heavy_admission = Arc::clone(&self.broker.heavy_admission);
+        let factory = move || {
+            Ok(BasemindServer::from_shared(
+                shared.clone(),
+                agent_id.clone(),
+                Arc::clone(&heavy_admission),
+            ))
+        };
         let config = StreamableHttpServerConfig::default()
             .with_legacy_session_mode(false)
             .with_json_response(true)
@@ -387,7 +394,7 @@ impl HttpRouter {
             }
         };
         let agent_id = identity::cli_agent_id(&root).into_string();
-        let server = BasemindServer::from_shared(shared, agent_id);
+        let server = BasemindServer::from_shared(shared, agent_id, Arc::clone(&self.broker.heavy_admission));
         match server
             .render_ui_http(
                 &args.format,

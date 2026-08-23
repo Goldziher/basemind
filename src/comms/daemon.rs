@@ -107,7 +107,6 @@ pub fn bootstrap_timeout() -> Duration {
 /// before exiting anyway. Bounded so one wedged client cannot pin a draining daemon forever; ample
 /// for any request that is actually progressing, and the idle path normally finds zero links.
 pub const DRAIN_GRACE: Duration = Duration::from_secs(10);
-/// Poll cadence while waiting out [`DRAIN_GRACE`].
 const DRAIN_POLL_EVERY: Duration = Duration::from_millis(25);
 /// How long a GC cycle waits for the blob-GC write lock before declaring itself starved and
 /// skipping the cycle. Every rescan holds the read side for its whole duration, so this must be
@@ -115,21 +114,9 @@ const DRAIN_POLL_EVERY: Duration = Duration::from_millis(25);
 /// a runaway rescan is how the maintenance loop silently parked forever (116 GB incident).
 const GC_LOCK_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 
-/// The RAII refcount guards ([`LinkGuard`], [`WorkGuard`]) live in `daemon_guards.rs` to keep this
-/// file under the module-size cap. Re-exported here so their historical path (`daemon::LinkGuard`)
-/// stays stable for the front-ends that import them.
 pub use super::daemon_guards::{LinkGuard, RelayGuard, WorkGuard};
 
-/// How long an ACTIVE thread may sit idle before the system auto-archives it. Conservative — a
-/// thread past two weeks of silence is almost certainly done. The daemon's periodic sweep
-/// (`archive_idle`) applies this; the creator or a human can archive sooner.
-pub const THREAD_IDLE_TTL: Duration = Duration::from_secs(14 * 24 * 60 * 60);
-
-/// How long an ARCHIVED thread's storage is retained before the daemon permanently reclaims it
-/// (row + messages + members + cursors). The retention tail after [`THREAD_IDLE_TTL`]: a thread
-/// first drops out of active listings, then, once archived and untouched for this far-longer
-/// window, its storage is freed. Conservative so a thread stays recoverable well past archival.
-pub const THREAD_RETENTION_TTL: Duration = Duration::from_secs(30 * 24 * 60 * 60);
+pub use super::store::{THREAD_IDLE_TTL, THREAD_RETENTION_TTL};
 
 /// How long a hot workspace may sit unrequested before the daemon sheds it from RAM. Its on-disk
 /// cache survives; the next request re-opens it lazily.
@@ -177,6 +164,9 @@ pub(super) struct SubSink {
     /// The agent owning the subscription. `Thread` sinks retain it only for diagnostics; `Inbox`
     /// sinks use it to route by membership and to exclude the agent's own posts.
     pub(super) agent: AgentId,
+    /// Scope captured at Hello for live path-discovery notifications. Only inbox subscriptions
+    /// populate this; thread subscriptions do not need discovery routing.
+    pub(super) chain: Option<ScopeChain>,
     /// Where notifications are pushed.
     pub(super) tx: mpsc::Sender<CommsOut>,
 }
@@ -192,6 +182,8 @@ pub(super) struct Registry {
 /// The broker. Cheap to share via `Arc`; every front-end and link holds one.
 pub struct Broker {
     pub(super) store: Arc<CommsStore>,
+    /// Process-wide heavy-work gate shared by every relay and HTTP MCP connection.
+    pub(crate) heavy_admission: Arc<crate::mcp::admission::HeavyAdmission>,
     /// Hot read-write workspace indexes. The daemon is the machine's sole fjall writer; front-ends
     /// forward their scans/rescans here so concurrent read-only sessions never contend for the lock.
     pub(super) workspaces: Arc<WorkspacePool>,
@@ -280,6 +272,7 @@ impl Broker {
         let scan_cancel = workspaces.scan_cancel();
         Self {
             store,
+            heavy_admission: Arc::new(crate::mcp::admission::HeavyAdmission::default()),
             workspaces,
             git_history: std::sync::Mutex::new(AHashMap::new()),
             git_history_open_lock: Mutex::new(()),
@@ -323,6 +316,20 @@ impl Broker {
     /// Current live subscriber count.
     pub fn subscriber_count(&self) -> usize {
         self.subscriber_count.load(Ordering::Relaxed)
+    }
+
+    /// Remove every subscription owned by a transport link that has closed.
+    pub async fn remove_link_subscriptions(&self, link_tx: &mpsc::Sender<CommsOut>) {
+        let removed = {
+            let mut registry = self.registry.lock().await;
+            let before = registry.sinks.len();
+            registry.sinks.retain(|_, sink| !sink.tx.same_channel(link_tx));
+            before.saturating_sub(registry.sinks.len())
+        };
+        if removed > 0 {
+            self.subscriber_count.fetch_sub(removed, Ordering::Relaxed);
+            self.maybe_idle().await;
+        }
     }
 
     /// Record a newly connected front-end link and stamp activity.
@@ -454,7 +461,7 @@ impl Broker {
 
         let agent = hello.agent.to_string();
         tracing::info!(agent = %agent, root = %hello.root.display(), "relay: hosting rmcp session");
-        let server = crate::mcp::BasemindServer::from_shared(shared, agent);
+        let server = crate::mcp::BasemindServer::from_shared(shared, agent, Arc::clone(&self.heavy_admission));
         let (read_half, write_half) = tokio::io::split(stream);
         match rmcp::ServiceExt::serve(server, (read_half, write_half)).await {
             Ok(running) => {
@@ -687,6 +694,13 @@ impl Broker {
         link_tx: &mpsc::Sender<CommsOut>,
     ) -> CommsResponse {
         self.touch();
+        if let Some(agent) = session.agent.as_ref()
+            && let Err(error) = self
+                .store
+                .touch_agent_if_stale(agent, super::store::AGENT_TOUCH_INTERVAL)
+        {
+            tracing::warn!(%error, agent = %agent, "comms: refresh agent activity failed");
+        }
         match self.dispatch(req, session, link_tx).await {
             Ok(resp) => resp,
             Err(e) => CommsResponse::Error {
@@ -721,7 +735,7 @@ impl Broker {
             CommsRequest::Register { card } => self.on_register(session, card),
             CommsRequest::ListAgents { thread } => self.on_list_agents(thread),
             CommsRequest::ThreadStart { subject, path, members } => {
-                self.on_thread_start(session, subject, path, members)
+                self.on_thread_start(session, subject, path, members).await
             }
             CommsRequest::ThreadJoin { thread } => self.on_thread_join(session, thread),
             CommsRequest::ThreadLeave { thread } => self.on_thread_leave(session, thread),
@@ -750,7 +764,7 @@ impl Broker {
                 self.on_thread_remove_member(session, thread, member)
             }
             CommsRequest::ThreadArchive { thread } => self.on_thread_archive(session, thread),
-            CommsRequest::GetBody { message_id } => self.on_get_body(message_id),
+            CommsRequest::GetBody { message_id } => self.on_get_body(session, message_id),
             CommsRequest::Inbox {
                 cursor,
                 limit,
@@ -961,14 +975,9 @@ pub struct Session {
     pub chain: Option<ScopeChain>,
 }
 
-/// Map a [`RegistryError`](crate::registry::RegistryError) (only surfaced on a claim/release
-/// persist failure) into a stable-token error response.
-fn registry_error(error: crate::registry::RegistryError) -> CommsResponse {
-    CommsResponse::Error {
-        code: "registry_error".to_string(),
-        message: error.to_string(),
-    }
-}
+#[path = "daemon_response.rs"]
+mod response;
+use response::registry_error;
 
 #[path = "daemon_threads.rs"]
 pub(super) mod threads;

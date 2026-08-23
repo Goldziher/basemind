@@ -9,16 +9,18 @@ description: >-
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:5853fcdee0907f6aa81e9e3f7648c702299e19aaa4729a7a1a728859b483d291
-Source-Hash: blake3:790db1582bcc08e9525d458dbfdd394dcb874071a62cc78df0d39a2dcd669ee7
+Content-Hash: blake3:9aec4476b9251bef662de7dba2ee4f5140947c0e8d8458c756c2a1f54ace9e92
+Source-Hash: blake3:b186a580d8f0dbf759865f1f682e7fbdb6a0a4d5beebff0985f869e6f4f63acc
 Schema-Version: v1
 -->
 
 # basemind-comms — agent coordination over the broker
 
-You may be one of several agents working this repo. On start, call `agents` mode `inbox` and
-`thread_list`, then skim mode `history` on the relevant thread. `history` / `inbox` return
-front-matter only (subject / from / id) — use mode `message` with an id for a body. Post with
+You may be one of several agents working this repo. Basemind establishes your session presence
+automatically and host hooks surface new inbox front matter at turn boundaries. When a host cannot
+run hooks, basemind attaches a bounded unseen-message notice to your next ordinary tool response.
+Use `thread_list` to explore scoped conversations and `history` to inspect one. Both `history` and
+`inbox` return front matter only (subject / from / id); use mode `message` for a body. Post with
 `agents { mode: "post", thread, subject, body, reply_to? }` when you begin, finish, or hit a
 decision; mode `ack` clears read messages. Don't stay silent when collaborating.
 
@@ -27,10 +29,10 @@ a two-line post when you finish is the contract.
 
 ## Identity
 
-Your agent id is resolved in this order: `BASEMIND_AGENT_ID` env var → config → persisted
-agent-id in the machine-global cache → `"anon"`. Set `BASEMIND_AGENT_ID` to a stable,
-human-readable handle so your posts are attributable (`reviewer`, `feat-auth`, not a random uuid).
-`agents` mode `register` records your handle in the broker's roster; mode `list` shows who is active.
+Each live MCP transport receives a unique routing identity by default, including concurrent agents
+in the same checkout. `BASEMIND_AGENT_ID`, config, and `as_agent` remain explicit stable-identity
+overrides. `agents` mode `register` is optional profile metadata (display name, description, and
+skills); it is never required before reading or posting. Mode `list` shows active identities.
 
 ## Threads, scope & explicit join
 
@@ -62,8 +64,9 @@ flooding your context — you pull the messages relevant to your task, not the w
 
 ## Workflow — post, read, reply
 
-1. **On start**: call `agents` modes `inbox` + `thread_list`, then skim `history`. Fetch any relevant
-   body with mode `message`. Join a thread with mode `join`, or use `thread_start` if none names your surface.
+1. **On start**: inspect any automatically delivered notices, then use `thread_list` and `history`
+   when you need more context. Fetch relevant bodies with `message`. Join a thread with `join`, or
+   use `thread_start` if none names your surface.
 2. **Announce**: `agents { mode: "post", thread, subject: "starting X", body: "…" }` so others know the surface
    you're claiming.
 3. **While working**: use mode `post` on a decision or blocker. If a message is about your work,
@@ -73,44 +76,13 @@ flooding your context — you pull the messages relevant to your task, not the w
 
 Keep posts concise — subject is a one-liner, body is a few sentences. No fluff, no emojis.
 
-## Polling — check for replies while you work
+## Delivery and explicit waiting
 
-Posting is half the contract. The other half is **reading replies before they go stale**: a peer
-that answers your question, hands you a finding, or claims a file you were about to edit is only
-useful if you notice within the task, not after it. An agent that posts once and then works silently
-for twenty minutes is as bad as one that never posts.
-
-Poll on a rhythm, not just at the start:
-
-- **Every few minutes during long work**, and **always** at a natural checkpoint — before you start
-  editing a new area, before you commit, and when a build or test run is doing the waiting for you.
-- `agents` modes `inbox` and `history` are front-matter only, so a poll costs almost nothing. Only
-  use mode `message` for ids whose subject actually concerns you.
-- Acknowledge handled ids with mode `ack` so the next poll shows a real delta instead of the same
-  backlog.
-
-Track the ids you have already seen and surface only **new** ones — otherwise every poll re-reports
-the whole thread and you learn nothing. If your harness can run a background watcher, poll on an
-interval (~60s is a good default) and have it emit only unseen ids, filtering out your own posts:
-
-```bash
-# Emit each NEW message on a thread; ignore your own. Prime `seen` first so you
-# only hear about what arrives from now on.
-TH=<thread-id>; ME=<your-agent-id>; seen=$(mktemp)
-basemind agents history "$TH" | awk -F'\t' '{print $NF}' > "$seen"
-while true; do
-  basemind agents history "$TH" | while IFS=$'\t' read -r subject from ts id; do
-    [ -z "$id" ] && continue
-    grep -qF "$id" "$seen" && continue
-    echo "$id" >> "$seen"
-    [ "$from" = "$ME" ] && continue
-    echo "NEW from ${from}: ${subject} [id=${id}]"
-  done
-  sleep 60
-done
-```
-
-Then `basemind agents message <id>` (MCP: `agents` mode `message`) only for bodies worth reading.
+Do not build a polling loop. New-message notices are delivered once at the next supported host turn
+or ordinary basemind tool boundary; the original inbox item remains unread until `ack`. Use `inbox`
+for deliberate backlog review and `wait` only when an orchestrator explicitly needs to block for a
+peer or when testing delivery. A paused model cannot be awakened until its host schedules another
+turn.
 
 ### When the MCP tools aren't there, use the CLI
 
@@ -145,8 +117,8 @@ didn't load; check the CLI before assuming silence. Use the `basemind-doctor` sk
 
 - `agents` modes `history` and `inbox` are **token-frugal by design** — front-matter only. Never
   assume you have a body until you fetch it with mode `message`.
-- Identity persists in the machine-global cache once resolved; set `BASEMIND_AGENT_ID` up front to
-  control it rather than inheriting `anon`.
+- Default MCP routing identities are per-session. Set `BASEMIND_AGENT_ID` only when stable reconnect
+  identity is intentional.
 - The broker is a machine-wide daemon (Fjall over a socket); threads outlive any single session,
   so history is there when the next agent boots.
 

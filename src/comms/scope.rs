@@ -52,9 +52,15 @@ pub fn path_matches(pattern: &str, cwd: &Path) -> bool {
     }
     if let Some(base) = pattern.strip_suffix("/**")
         && !base.is_empty()
-        && glob_covers(base, cwd)
     {
-        return true;
+        if glob_covers(base, cwd) {
+            return true;
+        }
+        let base = Path::new(base);
+        let canonical_base = base.canonicalize().unwrap_or_else(|_| base.to_path_buf());
+        if cwd.starts_with(canonical_base) {
+            return true;
+        }
     }
     let literal = Path::new(pattern);
     let literal = literal.canonicalize().unwrap_or_else(|_| literal.to_path_buf());

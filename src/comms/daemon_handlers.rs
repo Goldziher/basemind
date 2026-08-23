@@ -16,7 +16,7 @@ use super::ids::{AgentId, ThreadId};
 use super::model::{AgentCard, AgentKind, AgentRecord, Membership, MessageBody, MessageMeta, Thread, now_micros};
 use super::protocol::{CommsNotification, CommsOut, CommsResponse, PROTO_VER, SeqMeta, StatusReport};
 use super::scope;
-use super::store::{self, CommsStoreError};
+use super::store::{self, CommsStoreError, MessageReferenceResolution};
 
 impl Broker {
     pub(super) fn on_hello(
@@ -100,7 +100,7 @@ impl Broker {
 
     /// Start a thread addressed by at least two of subject / path / members. The creator becomes an
     /// implicit member; any explicit members are added too. Rejects fewer than two dimensions.
-    pub(super) fn on_thread_start(
+    pub(super) async fn on_thread_start(
         &self,
         session: &Session,
         subject: Option<String>,
@@ -146,6 +146,7 @@ impl Broker {
                 created_at: now,
             })?;
         }
+        self.fan_out_discovery(&thread).await;
         Ok(CommsResponse::Thread(thread))
     }
 
@@ -309,6 +310,24 @@ impl Broker {
         if self.store.get_thread(&thread)?.is_none() {
             return Ok(unknown_thread(&thread));
         }
+        let reply_to = if let Some(reference) = reply_to {
+            let (message_id, reply_thread) = match self.store.resolve_message_reference(&reference)? {
+                MessageReferenceResolution::Found { message_id, thread, .. } => (message_id, thread),
+                resolution => return Ok(reference_error(&reference, resolution)),
+            };
+            if !self.store.is_member(&reply_thread, &agent)? {
+                return Ok(not_member(&reply_thread));
+            }
+            if reply_thread != thread {
+                return Ok(CommsResponse::Error {
+                    code: "reply_thread_mismatch".to_string(),
+                    message: "reply target belongs to another thread".to_string(),
+                });
+            }
+            Some(message_id)
+        } else {
+            None
+        };
         let id = mint_message_id(&thread, &agent);
         let meta = store::build_meta(id, thread.clone(), agent, subject, tags, reply_to, &body);
         let (_, stored) = self.store.post(&thread, meta, MessageBody(body))?;
@@ -342,8 +361,18 @@ impl Broker {
         })
     }
 
-    pub(super) fn on_get_body(&self, message_id: String) -> Result<CommsResponse, CommsStoreError> {
-        let body = self.store.get_body(&message_id)?;
+    pub(super) fn on_get_body(&self, session: &Session, message_id: String) -> Result<CommsResponse, CommsStoreError> {
+        let Some(agent) = session.agent.as_ref() else {
+            return Ok(need_hello());
+        };
+        let (canonical_id, thread) = match self.store.resolve_message_reference(&message_id)? {
+            MessageReferenceResolution::Found { message_id, thread, .. } => (message_id, thread),
+            resolution => return Ok(reference_error(&message_id, resolution)),
+        };
+        if !self.store.is_member(&thread, agent)? {
+            return Ok(not_member(&thread));
+        }
+        let body = self.store.get_body(&canonical_id)?;
         Ok(CommsResponse::Body { body })
     }
 
@@ -359,47 +388,49 @@ impl Broker {
             return Ok(need_hello());
         };
         let limit = clamp_limit(limit);
-        let resume = cursor.as_ref().and_then(|c| c.decode().ok());
+        let resume = cursor.as_ref().and_then(|value| value.decode().ok());
         let mut threads = self.store.threads_for_agent(&agent)?;
         threads.sort_by(|a, b| a.as_str().cmp(b.as_str()));
 
-        let mut collected: Vec<SeqMeta> = Vec::new();
-        let mut delivered_high: Vec<(ThreadId, u64)> = Vec::new();
-        let mut unread_remaining: u32 = 0;
-        let mut next_cursor: Option<Cursor> = None;
-
+        let mut collected = Vec::with_capacity(limit);
+        let mut unread_remaining = 0u32;
+        let mut progress = Vec::with_capacity(threads.len());
         for thread in &threads {
             let read_seq = self.store.read_cursor(&agent, thread)?;
-            let after = match &resume {
-                Some(pos) if pos.thread == thread.as_str() => pos.seq.max(read_seq),
-                _ => read_seq,
-            };
-            let remaining = limit.saturating_sub(collected.len());
-            let want = remaining.saturating_add(1).max(1);
-            let rows = self.store.history_with_seq(thread, after, want)?;
+            let cursor_seq = resume
+                .as_ref()
+                .and_then(|position| {
+                    position
+                        .threads
+                        .iter()
+                        .find(|(name, _)| name == thread.as_str())
+                        .map(|(_, seq)| *seq)
+                        .or_else(|| (position.thread == thread.as_str()).then_some(position.seq))
+                })
+                .unwrap_or_default();
+            let after = read_seq.max(cursor_seq);
+            let rows = self.store.history_with_seq(thread, after, usize::MAX)?;
+            let mut high = after;
+            let mut blocked = false;
             for (seq, meta) in rows {
-                if meta.from == agent || !keep_since(meta.ts_micros, since_micros) {
-                    upsert_high(&mut delivered_high, thread, seq);
-                    continue;
-                }
-                if collected.len() < limit {
+                let eligible = meta.from != agent && keep_since(meta.ts_micros, since_micros);
+                if eligible && collected.len() < limit {
                     collected.push(SeqMeta { seq, meta });
-                    upsert_high(&mut delivered_high, thread, seq);
-                } else {
+                    high = seq;
+                } else if eligible {
                     unread_remaining = unread_remaining.saturating_add(1);
-                    if next_cursor.is_none() {
-                        let resume_seq = highest_for(&delivered_high, thread).unwrap_or(after);
-                        next_cursor = Some(Cursor::encode(thread.as_str(), resume_seq));
-                    }
+                    blocked = true;
+                } else if !blocked {
+                    high = seq;
                 }
+            }
+            progress.push((thread.as_str().to_string(), high));
+            if mark_read && high > after {
+                self.store.set_read_cursor(&agent, thread, high)?;
             }
         }
 
-        if mark_read {
-            for (thread, seq) in &delivered_high {
-                self.store.set_read_cursor(&agent, thread, *seq)?;
-            }
-        }
+        let next_cursor = (unread_remaining > 0).then(|| Cursor::encode_inbox(progress));
 
         Ok(CommsResponse::Inbox {
             messages: collected,
@@ -429,12 +460,22 @@ impl Broker {
         let mut targets: Vec<(ThreadId, u64)> = Vec::new();
         let mut acked: u32 = 0;
         if !message_ids.is_empty() {
-            for (_, thread, seq) in self.store.resolve_ids(&message_ids)? {
+            for reference in &message_ids {
+                let (thread, seq) = match self.store.resolve_message_reference(reference)? {
+                    MessageReferenceResolution::Found { thread, seq, .. } => (thread, seq),
+                    resolution => return Ok(reference_error(reference, resolution)),
+                };
+                if !self.store.is_member(&thread, &agent)? {
+                    return Ok(not_member(&thread));
+                }
                 acked = acked.saturating_add(1);
                 upsert_high(&mut targets, &thread, seq);
             }
         }
         if let (Some(thread), Some(seq)) = (thread, to_seq) {
+            if !self.store.is_member(&thread, &agent)? {
+                return Ok(not_member(&thread));
+            }
             upsert_high(&mut targets, &thread, seq);
         }
 
@@ -479,6 +520,7 @@ impl Broker {
                 SubSink {
                     scope: SubScope::Thread(thread),
                     agent,
+                    chain: None,
                     tx: link_tx.clone(),
                 },
             );
@@ -520,6 +562,7 @@ impl Broker {
                 SubSink {
                     scope: SubScope::Inbox { thread },
                     agent,
+                    chain: session.chain.clone(),
                     tx: link_tx.clone(),
                 },
             );
@@ -601,8 +644,47 @@ impl Broker {
         }
     }
 
+    /// Notify live unfiltered inbox waiters when a newly-created thread matches their path scope.
+    /// This is deliberately metadata-only and never adds membership. The notification stream has
+    /// no durable cursor; clients reconnect by listing currently discoverable threads.
+    async fn fan_out_discovery(&self, thread: &Thread) {
+        let Some(path) = thread.path.as_deref() else {
+            return;
+        };
+        let mut dead = Vec::new();
+        {
+            let registry = self.registry.lock().await;
+            for (sub, sink) in &registry.sinks {
+                let SubScope::Inbox { thread: None } = &sink.scope else {
+                    continue;
+                };
+                if thread.members.contains(&sink.agent) {
+                    continue;
+                }
+                let Some(chain) = &sink.chain else {
+                    continue;
+                };
+                if !scope::path_matches(path, &chain.cwd) {
+                    continue;
+                }
+                let notification = CommsOut::Notification(CommsNotification::ThreadDiscovered(thread.clone()));
+                if sink.tx.try_send(notification).is_err() {
+                    dead.push(*sub);
+                }
+            }
+        }
+        if !dead.is_empty() {
+            let mut registry = self.registry.lock().await;
+            for sub in dead {
+                if registry.sinks.remove(&sub).is_some() {
+                    self.subscriber_count.fetch_sub(1, Ordering::Relaxed);
+                }
+            }
+        }
+    }
+
     /// Transition to Idle when the last subscriber leaves.
-    async fn maybe_idle(&self) {
+    pub(super) async fn maybe_idle(&self) {
         if self.subscriber_count() == 0 {
             let mut reg = self.registry.lock().await;
             if reg.state == LifecycleState::Active {
@@ -610,6 +692,19 @@ impl Broker {
                 tracing::debug!("comms: broker idle (no subscribers); socket + flock retained");
             }
         }
+    }
+}
+
+fn reference_error(reference: &str, resolution: MessageReferenceResolution) -> CommsResponse {
+    let (code, detail) = match resolution {
+        MessageReferenceResolution::Malformed => ("malformed_message_ref", "is malformed"),
+        MessageReferenceResolution::Missing => ("missing_message_ref", "does not exist"),
+        MessageReferenceResolution::Ambiguous => ("ambiguous_message_ref", "matches more than one message"),
+        MessageReferenceResolution::Found { .. } => ("invalid_message_ref", "could not be resolved"),
+    };
+    CommsResponse::Error {
+        code: code.to_string(),
+        message: format!("message reference `{reference}` {detail}"),
     }
 }
 
@@ -631,6 +726,13 @@ fn not_creator() -> CommsResponse {
     CommsResponse::Error {
         code: "not_creator".to_string(),
         message: "only the thread creator may manage membership or archive it".to_string(),
+    }
+}
+
+fn not_member(thread: &ThreadId) -> CommsResponse {
+    CommsResponse::Error {
+        code: "not_member".to_string(),
+        message: format!("agent is not a member of thread {}", thread.as_str()),
     }
 }
 
@@ -662,9 +764,4 @@ fn upsert_high(acc: &mut Vec<(ThreadId, u64)>, thread: &ThreadId, seq: u64) {
     } else {
         acc.push((thread.clone(), seq));
     }
-}
-
-/// Look up the highest delivered `seq` recorded for `thread`.
-fn highest_for(acc: &[(ThreadId, u64)], thread: &ThreadId) -> Option<u64> {
-    acc.iter().find(|(t, _)| t == thread).map(|(_, s)| *s)
 }

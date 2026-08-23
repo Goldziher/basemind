@@ -105,4 +105,5 @@ pub(crate) async fn serve_link<L: CommsLink>(broker: Arc<Broker>, mut link: L, g
             }
         }
     }
+    broker.remove_link_subscriptions(&link_tx).await;
 }

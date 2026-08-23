@@ -431,7 +431,9 @@ pub struct ThreadHistoryParams {
 /// `seq` — NO body. Fetch the body with mode `message`.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct MessageFrontMatter {
-    /// Globally unique message id (pass to mode `message` or mode `ack`).
+    /// Compact message reference (preferred for mode `message`, mode `ack`, and `reply_to`).
+    pub message_ref: String,
+    /// Globally unique legacy message id (accepted for backward compatibility).
     pub id: String,
     /// Thread the message was posted to.
     pub thread: String,
@@ -460,6 +462,7 @@ impl MessageFrontMatter {
     pub(super) fn from_seq_meta(sm: &SeqMeta, now_micros: i64) -> Self {
         let meta = &sm.meta;
         Self {
+            message_ref: crate::comms::model::message_reference(&meta.id),
             id: meta.id.clone(),
             thread: meta.thread.as_str().to_string(),
             from: meta.from.as_str().to_string(),
@@ -490,7 +493,7 @@ pub(super) struct ThreadHistoryResponse {
 /// Params for mode `message`: fetch a single message body by id.
 #[derive(Debug, Clone, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct MessageGetParams {
-    /// The message id (the `id` of a front-matter record).
+    /// Compact `message_ref` (preferred) or legacy `id` from a front-matter record.
     pub message_id: String,
     /// Optional sub-identity to act as; defaults to the server's own agent.
     #[serde(default)]

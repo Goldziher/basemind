@@ -113,6 +113,7 @@ async fn serve_link(broker: Arc<Broker>, mut link: InProcLink, link_tx: mpsc::Se
             break;
         }
     }
+    broker.remove_link_subscriptions(&link_tx).await;
 }
 
 fn current_uid() -> u32 {
@@ -376,6 +377,7 @@ mod wait_inbox_tests {
         tokio::sync::watch::Sender<bool>,
         tokio::task::JoinHandle<std::io::Result<()>>,
         tempfile::TempDir,
+        Arc<Broker>,
     ) {
         let dir = tempfile::tempdir().expect("tempdir");
         let socket_path = dir.path().join("c.sock");
@@ -392,7 +394,8 @@ mod wait_inbox_tests {
         };
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
         let frontend = UdsFrontend::from_listener(listener, socket_path.clone());
-        let serve = tokio::spawn(async move { Box::new(frontend).serve(broker, shutdown_rx).await });
+        let serving_broker = Arc::clone(&broker);
+        let serve = tokio::spawn(async move { Box::new(frontend).serve(serving_broker, shutdown_rx).await });
 
         let mut alice = CommsClient::connect(&paths, AgentId::parse("alice").expect("agent"), None, None)
             .await
@@ -411,14 +414,14 @@ mod wait_inbox_tests {
             .expect("start thread")
             .id;
 
-        (alice, bob, thread, shutdown_tx, serve, dir)
+        (alice, bob, thread, shutdown_tx, serve, dir, broker)
     }
 
     /// With nobody posting, `wait_inbox` returns `timed_out: true` close to (not well past) the
     /// requested timeout — proving the timeout path actually bounds the block.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn wait_inbox_times_out_returns_timed_out() {
-        let (mut alice, _bob, _thread, shutdown_tx, serve, _dir) = two_clients_in_a_thread().await;
+        let (mut alice, _bob, _thread, shutdown_tx, serve, _dir, _broker) = two_clients_in_a_thread().await;
 
         let started = Instant::now();
         let (timed_out, rows, _unread, _next) = alice
@@ -443,7 +446,7 @@ mod wait_inbox_tests {
     /// "subscribe first, then check" short-circuit from the design brief.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn wait_inbox_immediate_unread_returns_without_blocking() {
-        let (mut alice, mut bob, thread, shutdown_tx, serve, _dir) = two_clients_in_a_thread().await;
+        let (mut alice, mut bob, thread, shutdown_tx, serve, _dir, _broker) = two_clients_in_a_thread().await;
 
         bob.post_message(
             thread.clone(),
@@ -479,7 +482,7 @@ mod wait_inbox_tests {
     /// call promptly via the notification push, not by falling through to the timeout.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn wait_inbox_wakes_on_post_after_subscribe() {
-        let (mut alice, mut bob, thread, shutdown_tx, serve, _dir) = two_clients_in_a_thread().await;
+        let (mut alice, mut bob, thread, shutdown_tx, serve, _dir, _broker) = two_clients_in_a_thread().await;
 
         let waiter = tokio::spawn(async move {
             let started = Instant::now();
@@ -507,6 +510,35 @@ mod wait_inbox_tests {
             elapsed < Duration::from_secs(5),
             "the wake should be near-instant (~50ms), nowhere near the 30s timeout: {elapsed:?}"
         );
+
+        let _ = shutdown_tx.send(true);
+        let _ = serve.await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cancelled_wait_removes_its_subscription() {
+        let (mut alice, _bob, _thread, shutdown_tx, serve, _dir, broker) = two_clients_in_a_thread().await;
+        let waiter = tokio::spawn(async move {
+            alice
+                .wait_inbox(None, None, None, None, None, 100, Duration::from_secs(30))
+                .await
+        });
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while broker.subscriber_count() == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("wait subscription was not registered");
+
+        waiter.abort();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while broker.subscriber_count() != 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("cancelled wait leaked its subscription");
 
         let _ = shutdown_tx.send(true);
         let _ = serve.await;

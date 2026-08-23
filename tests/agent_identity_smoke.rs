@@ -98,6 +98,19 @@ fn a_cli_invocation_shares_the_persisted_id_of_the_serve_session_in_the_same_wor
     assert_eq!(persisted.trim(), served.id().as_str());
 }
 
+#[test]
+fn concurrent_default_mcp_sessions_in_one_workspace_get_distinct_routing_ids() {
+    let machine = FakeMachine::new();
+    let root = workspace();
+
+    let first = identity::resolve_session(&request(&machine, root.path()));
+    let second = identity::resolve_session(&request(&machine, root.path()));
+
+    assert_ne!(first.id(), second.id());
+    assert_eq!(first.source(), IdentitySource::Generated);
+    assert_eq!(second.source(), IdentitySource::Generated);
+}
+
 /// No root, anywhere, may yield a machine-wide shared constant.
 #[test]
 fn the_resolver_never_returns_a_shared_constant() {
