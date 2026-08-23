@@ -51,7 +51,7 @@ jobs:
             timeout_minutes: 90
           - os: windows-latest
             features: "comms shells"
-            timeout_minutes: 30
+            timeout_minutes: 60
     steps:
       - uses: actions/checkout@v4
 
