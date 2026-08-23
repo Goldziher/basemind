@@ -109,6 +109,8 @@ pub(crate) fn doc_config_from(
     embed: bool,
 ) -> DocConfig {
     DocConfig {
+        max_pages: cfg.max_pages,
+        extraction_timeout_secs: cfg.extraction_timeout_secs,
         max_characters: cfg.max_characters,
         overlap: cfg.overlap,
         embedding_preset: Some(cfg.embedding_preset.clone()),
@@ -616,6 +618,7 @@ mod tests {
             keywords: Vec::new(),
             entities: Vec::new(),
             summary: None,
+            language_confidences: Vec::new(),
         };
 
         let same = DocumentsConfig {
@@ -692,6 +695,7 @@ mod tests {
             keywords: Vec::new(),
             entities: Vec::new(),
             summary: None,
+            language_confidences: Vec::new(),
         }
     }
 
@@ -879,6 +883,18 @@ mod tests {
         assert!(doc_cfg.language.auto_detect);
         assert_eq!(doc_cfg.language.min_confidence, 0.5);
         assert!(doc_cfg.language.detect_multiple);
+    }
+
+    #[test]
+    fn doc_config_from_propagates_extraction_limits() {
+        let cfg = DocumentsConfig {
+            max_pages: 37,
+            extraction_timeout_secs: 42,
+            ..Default::default()
+        };
+        let doc_cfg = doc_config_from(&cfg, &LlmConfig::default(), &ResourcesConfig::default(), cfg.embed);
+        assert_eq!(doc_cfg.max_pages, 37);
+        assert_eq!(doc_cfg.extraction_timeout_secs, 42);
     }
 
     #[test]

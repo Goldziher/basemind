@@ -31,6 +31,14 @@ pub struct DocumentsConfig {
     #[serde(default = "DocumentsConfig::default_max_chunks_per_document")]
     #[schemars(range(min = 1))]
     pub max_chunks_per_document: usize,
+    /// Maximum pages xberg may extract from a single document.
+    #[serde(default = "DocumentsConfig::default_max_pages")]
+    #[schemars(range(min = 1))]
+    pub max_pages: usize,
+    /// Maximum wall-clock time xberg may spend extracting one document.
+    #[serde(default = "DocumentsConfig::default_extraction_timeout_secs")]
+    #[schemars(range(min = 1))]
+    pub extraction_timeout_secs: u64,
     /// Maximum chunk size in characters.
     #[serde(default = "DocumentsConfig::default_max_characters")]
     #[schemars(range(min = 64))]
@@ -112,6 +120,12 @@ impl DocumentsConfig {
     fn default_max_chunks_per_document() -> usize {
         2000
     }
+    fn default_max_pages() -> usize {
+        500
+    }
+    fn default_extraction_timeout_secs() -> u64 {
+        600
+    }
 }
 
 impl Default for DocumentsConfig {
@@ -121,6 +135,8 @@ impl Default for DocumentsConfig {
             mime_allowlist: Vec::new(),
             extension_denylist: Vec::new(),
             max_chunks_per_document: Self::default_max_chunks_per_document(),
+            max_pages: Self::default_max_pages(),
+            extraction_timeout_secs: Self::default_extraction_timeout_secs(),
             max_characters: Self::default_max_characters(),
             overlap: Self::default_overlap(),
             embedding_preset: Self::default_embedding_preset(),
@@ -491,6 +507,7 @@ impl LlmConfig {
             // adds no custom provider headers, and leaves xberg's env handling default. ~keep
             load_env: None,
             headers: None,
+            ..Default::default()
         })
     }
 }

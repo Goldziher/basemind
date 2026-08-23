@@ -1,4 +1,4 @@
-//! Supply-chain invariants for temporary advisory exceptions in `deny.toml`.
+//! Supply-chain invariants for dependency security fixes.
 
 fn packages(lock: &toml::Value) -> &[toml::Value] {
     lock.get("package")
@@ -27,16 +27,16 @@ fn direct_dependents(lock: &toml::Value, dependency: &str) -> Vec<(String, Strin
 }
 
 #[test]
-fn quick_xml_037_advisory_ignore_is_confined_to_xberg_endnote_parser() {
+fn xberg_11_removes_the_vulnerable_quick_xml_line() {
     let lock: toml::Value = toml::from_str(include_str!("../Cargo.lock")).expect("parse Cargo.lock");
     assert_eq!(
         direct_dependents(&lock, "quick-xml 0.37.5"),
-        [("biblib".to_string(), "0.4.3".to_string())],
-        "the temporary quick-xml advisory ignore may cover only biblib 0.4.3"
+        [],
+        "the vulnerable quick-xml release must not remain in the dependency graph"
     );
     assert_eq!(
         direct_dependents(&lock, "biblib"),
-        [("xberg".to_string(), "1.0.14".to_string())],
-        "the contained biblib parser may remain reachable only through xberg 1.0.14"
+        [("xberg".to_string(), "1.1.0".to_string())],
+        "biblib must remain reachable only through the reviewed xberg 1.1 dependency"
     );
 }

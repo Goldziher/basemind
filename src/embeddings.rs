@@ -127,7 +127,7 @@ impl SharedEmbedder {
     ///
     /// The call is routed through the process-wide bounded [`embed_pool`] so it
     /// cannot saturate the global rayon pool used by the code-map scanner.
-    #[cfg(feature = "code-search")]
+    #[cfg(any(feature = "code-search", feature = "documents"))]
     pub fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
         if texts.is_empty() {
             return Ok(Vec::new());

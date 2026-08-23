@@ -16,8 +16,9 @@ use std::sync::OnceLock;
 
 use serde::{Deserialize, Serialize};
 use xberg::LanguageDetectionConfig;
-use xberg::core::config::processing::{ChunkingConfig, EmbeddingConfig};
+use xberg::core::config::processing::{ChunkerType, ChunkingConfig};
 use xberg::core::config::{ConcurrencyConfig, ExtractionConfig};
+use xberg::extractors::security::SecurityLimits;
 use xberg::{ExtractInput, extract};
 
 use super::{ExtractError, SCHEMA_VER};
@@ -78,6 +79,26 @@ pub struct FileMapDoc {
     /// surface as `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary: Option<DocSummary>,
+    /// Structured language detection results reported by xberg 1.1.
+    ///
+    /// Tail field so older positional msgpack blobs remain readable.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub language_confidences: Vec<DocLanguageConfidence>,
+}
+
+/// Stable mirror of xberg's per-language confidence metadata.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, schemars::JsonSchema)]
+pub struct DocLanguageConfidence {
+    /// ISO 639-3 language code.
+    pub language: String,
+    /// Detector confidence in `[0.0, 1.0]`.
+    pub confidence: f64,
+    /// Share of analyzed document content attributed to this language.
+    pub proportion: f64,
+    /// Detected writing system, such as `Latin` or `Cyrillic`.
+    pub script: String,
+    /// Whether xberg considers this detection reliable.
+    pub reliable: bool,
 }
 
 /// Mirror of `xberg::keywords::Keyword`, narrowed to the fields we persist.
@@ -152,6 +173,8 @@ pub struct DocChunk {
 /// callsite stays readable; we translate to `ExtractionConfig` at the boundary.
 #[derive(Debug, Clone)]
 pub struct DocConfig {
+    pub max_pages: usize,
+    pub extraction_timeout_secs: u64,
     pub max_characters: usize,
     pub overlap: usize,
     pub embedding_preset: Option<String>,
@@ -180,6 +203,8 @@ pub struct DocConfig {
 impl Default for DocConfig {
     fn default() -> Self {
         Self {
+            max_pages: 500,
+            extraction_timeout_secs: 600,
             max_characters: 1000,
             overlap: 200,
             embedding_preset: Some("balanced".to_string()),
@@ -198,24 +223,16 @@ impl Default for DocConfig {
 
 impl DocConfig {
     fn to_xberg(&self) -> ExtractionConfig {
-        let no_models = matches!(self.document_models, DocumentModelProfile::None_);
         let strip_enrichment = matches!(
             self.document_models,
             DocumentModelProfile::CodeOnly | DocumentModelProfile::None_
         );
-        let embedding = if self.embed && !no_models {
-            Some(EmbeddingConfig {
-                batch_size: self.embed_batch_size,
-                ..Default::default()
-            })
-        } else {
-            None
-        };
         let chunking = ChunkingConfig {
             max_characters: self.max_characters,
             overlap: self.overlap,
-            embedding,
+            embedding: None,
             preset: self.embedding_preset.clone(),
+            chunker_type: ChunkerType::Markdown,
             ..Default::default()
         };
         let language_detection = if self.language.auto_detect {
@@ -238,7 +255,10 @@ impl DocConfig {
         let concurrency = Some(ConcurrencyConfig {
             max_threads: Some(bounded),
         });
+        let mut security_limits = SecurityLimits::default();
+        security_limits.max_pages = Some(self.max_pages);
         ExtractionConfig {
+            use_cache: false,
             chunking: Some(chunking),
             language_detection,
             keywords,
@@ -246,6 +266,8 @@ impl DocConfig {
             summarization,
             disable_ocr: strip_enrichment,
             concurrency,
+            extraction_timeout_secs: Some(self.extraction_timeout_secs),
+            security_limits: Some(security_limits),
             ..Default::default()
         }
     }
@@ -419,19 +441,44 @@ pub fn extract_doc(path: &Path, mime_type: Option<&str>, config: &DocConfig) -> 
     })?;
 
     let mut chunks: Vec<DocChunk> = Vec::new();
-    let mut embedding_dim: u16 = 0;
+    let mut dense_inputs = Vec::new();
+    let embed_requested = config.embed && !matches!(config.document_models, DocumentModelProfile::None_);
     if let Some(input_chunks) = result.chunks {
         for c in input_chunks {
-            let dim = c.embedding.as_ref().map(|v| v.len()).unwrap_or(0);
-            if dim > 0 && embedding_dim == 0 {
-                embedding_dim = u16::try_from(dim).unwrap_or(u16::MAX);
+            let (chunk, dense_input) = prepare_doc_chunk(
+                c.content,
+                c.metadata.byte_start,
+                c.metadata.byte_end,
+                c.metadata.heading_context.as_ref(),
+                embed_requested,
+            );
+            chunks.push(chunk);
+            if let Some(dense_input) = dense_input {
+                dense_inputs.push(dense_input);
             }
-            chunks.push(DocChunk {
-                byte_start: u32::try_from(c.metadata.byte_start).unwrap_or(u32::MAX),
-                byte_end: u32::try_from(c.metadata.byte_end).unwrap_or(u32::MAX),
-                text: c.content,
-                embedding: c.embedding.unwrap_or_default(),
-            });
+        }
+    }
+
+    let mut embedding_dim = 0;
+    if embed_requested && !dense_inputs.is_empty() {
+        let preset = config.embedding_preset.as_deref().unwrap_or("balanced");
+        let embedder =
+            crate::embeddings::SharedEmbedder::load(preset, config.embed_max_threads, config.embed_batch_size)
+                .map_err(|error| ExtractError::Document(format!("loading dense embedder: {error}")))?;
+        let input_refs: Vec<&str> = dense_inputs.iter().map(String::as_str).collect();
+        let vectors = embedder
+            .embed_batch(&input_refs)
+            .map_err(|error| ExtractError::Document(format!("embedding document chunks: {error}")))?;
+        if vectors.len() != chunks.len() {
+            return Err(ExtractError::Document(format!(
+                "dense embedder returned {} vectors for {} chunks",
+                vectors.len(),
+                chunks.len()
+            )));
+        }
+        embedding_dim = embedder.dim();
+        for (chunk, vector) in chunks.iter_mut().zip(vectors) {
+            chunk.embedding = vector;
         }
     }
 
@@ -473,6 +520,8 @@ pub fn extract_doc(path: &Path, mime_type: Option<&str>, config: &DocConfig) -> 
         token_count: s.token_count,
     });
 
+    let language_confidences = map_language_confidences(result.detected_language_confidences.unwrap_or_default());
+
     Ok(FileMapDoc {
         schema_ver: SCHEMA_VER,
         mime_type: result.mime_type.into_owned(),
@@ -485,7 +534,49 @@ pub fn extract_doc(path: &Path, mime_type: Option<&str>, config: &DocConfig) -> 
         keywords,
         entities,
         summary,
+        language_confidences,
     })
+}
+
+/// Dense retrieval benefits from structural heading context, while the persisted text and lexical
+/// search input must remain the exact source span described by the chunk's byte offsets.
+fn dense_retrieval_text<'a>(content: &'a str, heading_context: Option<&xberg::types::HeadingContext>) -> Cow<'a, str> {
+    match heading_context {
+        Some(context) if !context.headings.is_empty() => {
+            Cow::Owned(xberg::chunking::render_heading_breadcrumb(content, context))
+        }
+        _ => Cow::Borrowed(content),
+    }
+}
+
+fn prepare_doc_chunk(
+    content: String,
+    byte_start: usize,
+    byte_end: usize,
+    heading_context: Option<&xberg::types::HeadingContext>,
+    embed_requested: bool,
+) -> (DocChunk, Option<String>) {
+    let dense_input = embed_requested.then(|| dense_retrieval_text(&content, heading_context).into_owned());
+    let chunk = DocChunk {
+        byte_start: u32::try_from(byte_start).unwrap_or(u32::MAX),
+        byte_end: u32::try_from(byte_end).unwrap_or(u32::MAX),
+        text: content,
+        embedding: Vec::new(),
+    };
+    (chunk, dense_input)
+}
+
+fn map_language_confidences(input: Vec<xberg::types::LanguageConfidence>) -> Vec<DocLanguageConfidence> {
+    input
+        .into_iter()
+        .map(|language| DocLanguageConfidence {
+            language: language.language,
+            confidence: language.confidence,
+            proportion: language.proportion,
+            script: language.script,
+            reliable: language.reliable,
+        })
+        .collect()
 }
 
 /// Stable lowercase tag for xberg's `KeywordAlgorithm`. We avoid `Display`
@@ -539,6 +630,7 @@ fn metadata_pairs(metadata: &xberg::types::Metadata) -> Vec<(String, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use xberg::types::{HeadingContext, HeadingLevel};
 
     /// Build a `DocConfig` with every enrichment post-processor turned on so a
     /// profile that strips them is observable in `to_xberg`'s output.
@@ -569,10 +661,7 @@ mod tests {
         assert!(x.ner.is_some(), "Full keeps NER");
         assert!(x.summarization.is_some(), "Full keeps summarisation");
         assert!(!x.disable_ocr, "Full leaves OCR enabled");
-        assert!(
-            x.chunking.as_ref().and_then(|c| c.embedding.as_ref()).is_some(),
-            "Full embeds when embed = true"
-        );
+        assert!(x.chunking.as_ref().and_then(|c| c.embedding.as_ref()).is_none());
     }
 
     #[test]
@@ -583,10 +672,7 @@ mod tests {
         assert!(x.ner.is_none(), "CodeOnly forces NER off");
         assert!(x.summarization.is_none(), "CodeOnly forces summarisation off");
         assert!(x.disable_ocr, "CodeOnly disables OCR");
-        assert!(
-            x.chunking.as_ref().and_then(|c| c.embedding.as_ref()).is_some(),
-            "CodeOnly still embeds (embed = true)"
-        );
+        assert!(x.chunking.as_ref().and_then(|c| c.embedding.as_ref()).is_none());
     }
 
     #[test]
@@ -604,18 +690,101 @@ mod tests {
     }
 
     #[test]
-    fn to_xberg_threads_embed_batch_size_into_embedding_config() {
+    fn to_xberg_defers_embedding_to_basemind() {
         let cfg = DocConfig {
             embed: true,
             embed_batch_size: 8,
             ..DocConfig::default()
         };
         let x = cfg.to_xberg();
-        let batch = x
-            .chunking
-            .as_ref()
-            .and_then(|c| c.embedding.as_ref())
-            .map(|e| e.batch_size);
-        assert_eq!(batch, Some(8), "embed_batch_size flows into EmbeddingConfig.batch_size");
+        assert!(
+            x.chunking.as_ref().and_then(|c| c.embedding.as_ref()).is_none(),
+            "basemind must embed the breadcrumbed retrieval view after extraction"
+        );
+    }
+
+    #[test]
+    fn to_xberg_bounds_pages_timeout_and_disables_duplicate_cache() {
+        let cfg = DocConfig {
+            max_pages: 37,
+            extraction_timeout_secs: 42,
+            ..doc_config_all_enrichment_on(DocumentModelProfile::Full)
+        };
+
+        let xberg = cfg.to_xberg();
+        let security = xberg.security_limits.expect("security limits configured");
+        let chunking = xberg.chunking.expect("chunking configured");
+
+        assert!(
+            !xberg.use_cache,
+            "basemind's content-addressed blob cache is the only extraction cache"
+        );
+        assert_eq!(xberg.extraction_timeout_secs, Some(42));
+        assert_eq!(security.max_pages, Some(37));
+        assert_eq!(chunking.chunker_type, ChunkerType::Markdown);
+    }
+
+    #[test]
+    fn dense_retrieval_text_adds_breadcrumb_without_changing_source() {
+        let source = "## Setup\n\nInstall dependencies.".to_string();
+        let context = HeadingContext {
+            headings: vec![
+                HeadingLevel {
+                    level: 1,
+                    text: "Guide".to_string(),
+                },
+                HeadingLevel {
+                    level: 2,
+                    text: "Setup".to_string(),
+                },
+            ],
+        };
+
+        let (stored, retrieval) = prepare_doc_chunk(source, 10, 44, Some(&context), true);
+
+        assert_eq!(stored.text, "## Setup\n\nInstall dependencies.");
+        assert_eq!(stored.byte_start, 10);
+        assert_eq!(stored.byte_end, 44);
+        assert_eq!(
+            retrieval.as_deref(),
+            Some("# Guide > ## Setup\n\nInstall dependencies.")
+        );
+    }
+
+    #[test]
+    fn dense_retrieval_text_borrows_exact_source_without_heading_context() {
+        let retrieval = dense_retrieval_text("Exact source span", None);
+
+        assert!(matches!(retrieval, Cow::Borrowed("Exact source span")));
+    }
+
+    #[test]
+    fn embedding_disabled_keeps_exact_text_without_allocating_retrieval_input() {
+        let (stored, retrieval) = prepare_doc_chunk("Exact source span".to_string(), 0, 17, None, false);
+
+        assert_eq!(stored.text, "Exact source span");
+        assert!(retrieval.is_none());
+    }
+
+    #[test]
+    fn language_confidences_are_persisted_without_xberg_types() {
+        let mapped = map_language_confidences(vec![xberg::types::LanguageConfidence {
+            language: "eng".to_string(),
+            confidence: 0.98,
+            proportion: 0.75,
+            script: "Latin".to_string(),
+            reliable: true,
+        }]);
+
+        assert_eq!(
+            mapped,
+            vec![DocLanguageConfidence {
+                language: "eng".to_string(),
+                confidence: 0.98,
+                proportion: 0.75,
+                script: "Latin".to_string(),
+                reliable: true,
+            }]
+        );
     }
 }
