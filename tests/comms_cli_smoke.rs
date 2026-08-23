@@ -59,6 +59,11 @@ fn json_str_field<'a>(haystack: &'a str, field: &str) -> Option<&'a str> {
 }
 
 #[test]
+fn comms_cli_scenarios_use_real_daemons_sequentially() {
+    comms_daemon_thread_history_is_front_matter_only();
+    thread_archive_removes_from_active_listing();
+}
+
 fn comms_daemon_thread_history_is_front_matter_only() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let comms_dir = tmp.path().join("comms");
@@ -127,7 +132,6 @@ fn comms_daemon_thread_history_is_front_matter_only() {
 
 /// The human-admin `archive` verb: the creator archives a thread, and it then only shows under
 /// `threads --include-archived`.
-#[test]
 fn thread_archive_removes_from_active_listing() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let comms_dir = tmp.path().join("comms");
