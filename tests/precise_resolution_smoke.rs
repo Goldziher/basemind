@@ -526,11 +526,11 @@ async fn java_cross_file_find_callers_distinguishes_imported_method_from_decoy()
     let foo_body = decode_text(
         &service
             .call_tool(call_params(
-                "find_callers",
-                json!({ "path": "Foo.java", "name": "greet" }),
+                "code",
+                json!({ "mode": "callers", "path": "Foo.java", "name": "greet" }),
             ))
             .await
-            .expect("find_callers(Foo.java, greet)"),
+            .expect("code callers(Foo.java, greet)"),
     );
     assert_eq!(
         foo_body.get("resolved").and_then(Value::as_bool),
@@ -590,11 +590,11 @@ async fn java_cross_file_find_callers_distinguishes_imported_method_from_decoy()
     let app_body = decode_text(
         &service
             .call_tool(call_params(
-                "find_callers",
-                json!({ "path": "App.java", "name": "greet" }),
+                "code",
+                json!({ "mode": "callers", "path": "App.java", "name": "greet" }),
             ))
             .await
-            .expect("find_callers(App.java, greet) [decoy]"),
+            .expect("code callers(App.java, greet) [decoy]"),
     );
     let app_def = app_body.get("definition").expect("definition echoed");
     assert_eq!(
