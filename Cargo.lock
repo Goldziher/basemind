@@ -547,7 +547,7 @@ checksum = "82f6aeea286b8eb4dd3431a1be1b59d290ace00f5bfd8e2a159bc2a05e2c1667"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.3",
+ "syn 3.0.4",
 ]
 
 [[package]]
@@ -625,7 +625,7 @@ dependencies = [
  "derive_utils",
  "proc-macro2",
  "quote",
- "syn 3.0.3",
+ "syn 3.0.4",
 ]
 
 [[package]]
@@ -854,7 +854,7 @@ dependencies = [
 
 [[package]]
 name = "basemind"
-version = "0.25.0"
+version = "0.25.1"
 dependencies = [
  "ahash 0.8.12",
  "anstream",
@@ -932,7 +932,7 @@ dependencies = [
 
 [[package]]
 name = "basemind-agent"
-version = "0.25.0"
+version = "0.25.1"
 dependencies = [
  "async-trait",
  "basemind",
@@ -951,7 +951,7 @@ dependencies = [
 
 [[package]]
 name = "basemind-agent-ipc"
-version = "0.25.0"
+version = "0.25.1"
 dependencies = [
  "basemind",
  "basemind-agent",
@@ -1029,7 +1029,7 @@ dependencies = [
 
 [[package]]
 name = "basemind-tui"
-version = "0.25.0"
+version = "0.25.1"
 dependencies = [
  "anyhow",
  "basemind",
@@ -1051,7 +1051,7 @@ dependencies = [
 
 [[package]]
 name = "basemind-ui"
-version = "0.25.0"
+version = "0.25.1"
 dependencies = [
  "anyhow",
  "basemind",
@@ -1131,21 +1131,6 @@ checksum = "bf95709a440f45e986983918d0e8a1f30a9b1df04918fc828670606804ac3c09"
 dependencies = [
  "virtue",
 ]
-
-[[package]]
-name = "bisync"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5020822f6d6f23196ccaf55e228db36f9de1cf788052b37992e17cbc96ec41a7"
-dependencies = [
- "bisync_macros",
-]
-
-[[package]]
-name = "bisync_macros"
-version = "0.2.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d21f40d350a700f6aa107e45fb26448cf489d34794b2ba4522181dc9f1173af6"
 
 [[package]]
 name = "bit-set"
@@ -1474,7 +1459,7 @@ checksum = "fc0e56a716f1e132ff6bf4bdac1c944a3fcdc1cae65f70a4a2a1ac3b401d2d1f"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.3",
+ "syn 3.0.4",
 ]
 
 [[package]]
@@ -1903,7 +1888,7 @@ dependencies = [
  "heck 0.5.0",
  "proc-macro2",
  "quote",
- "syn 3.0.3",
+ "syn 3.0.4",
 ]
 
 [[package]]
@@ -1977,9 +1962,9 @@ dependencies = [
 
 [[package]]
 name = "combine"
-version = "4.6.7"
+version = "4.6.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ba5a308b75df32fe02788e748662718f03fde005016435c444eea572398219fd"
+checksum = "cfc320937d09e6de266b31b9afb480f197d7a861be86be7cb2ea7e5d1bfffc5e"
 dependencies = [
  "bytes",
  "memchr",
@@ -2310,9 +2295,9 @@ dependencies = [
 
 [[package]]
 name = "crawlberg"
-version = "1.3.3"
+version = "1.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "af1a2a5cc2327d1e047277c081c53922bfa76cabd2d80a0181de708ed6bf5d8d"
+checksum = "cd756a90c129c58039e58485ecd1a054940305a5f7a374d5a522421cf597c878"
 dependencies = [
  "ahash 0.8.12",
  "aho-corasick",
@@ -2334,7 +2319,7 @@ dependencies = [
  "notify",
  "opentelemetry",
  "opentelemetry-semantic-conventions",
- "quick-xml 0.41.0",
+ "quick-xml 0.42.0",
  "regex",
  "reqwest 0.13.4",
  "serde",
@@ -3538,7 +3523,7 @@ checksum = "dc05a5d33db20c784f873e84934ad94bb209a090987ac5f62fede2c178234f23"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.3",
+ "syn 3.0.4",
 ]
 
 [[package]]
@@ -3620,7 +3605,7 @@ checksum = "c6232dd377dcc64799954cbd3a9bb882e9cdc1308ccd87b1c098f1fb2eaf82a8"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.3",
+ "syn 3.0.4",
 ]
 
 [[package]]
@@ -4313,7 +4298,7 @@ checksum = "ea5190182e6915eb873ddbc16e23b711b6eb1f9c00a0d0a3a91b5f6228475225"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.3",
+ "syn 3.0.4",
 ]
 
 [[package]]
@@ -4459,7 +4444,7 @@ checksum = "9fb9654ba8355388abeb8dcb4fc62f511300867002afc858860463bdd9fe0c44"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.3",
+ "syn 3.0.4",
 ]
 
 [[package]]
@@ -4823,9 +4808,9 @@ dependencies = [
 
 [[package]]
 name = "gix"
-version = "0.87.0"
+version = "0.87.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ed40a10602b5b58cfc354da6b94e07024a49aa4c2eb8c94d07f760dfc2560f7a"
+checksum = "fdefc1465d8631807deaf504dacdeff628b978de515653b47976ca7c28ab2a7a"
 dependencies = [
  "gix-actor",
  "gix-archive",
@@ -4900,9 +4885,9 @@ dependencies = [
 
 [[package]]
 name = "gix-archive"
-version = "0.36.0"
+version = "0.36.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a09280328da683530fdbf27bd3b4d33b5fcd371606ca6ed32f4fdbbe5044bbaf"
+checksum = "1c4ef97efd3920d3525104c5f253dec94dc935f953a50055954939177aed2cdd"
 dependencies = [
  "bstr",
  "gix-date",
@@ -4939,9 +4924,9 @@ dependencies = [
 
 [[package]]
 name = "gix-blame"
-version = "0.17.0"
+version = "0.17.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "600ad18b96983639f878637d87e6cc9ee8cd422d65c431f3965332650b87fbf2"
+checksum = "54fe27f8037c58cb4b6d60fe0aacf7ee2c998633cedf4e989351c07d9a3a575d"
 dependencies = [
  "gix-commitgraph",
  "gix-date",
@@ -5058,9 +5043,9 @@ dependencies = [
 
 [[package]]
 name = "gix-diff"
-version = "0.67.0"
+version = "0.67.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dd2ca646841d0be7b2ffa1b1a25beb54401252a2a6acb59ea12a2332bf6fcd9b"
+checksum = "1b1689ff5ddeee4acfb2a43e875a1072a76d208624b15a9065c938b39cb0da2a"
 dependencies = [
  "bstr",
  "gix-attributes",
@@ -5082,9 +5067,9 @@ dependencies = [
 
 [[package]]
 name = "gix-dir"
-version = "0.29.0"
+version = "0.29.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cf803dfe1839b984e5b8ce5d4f6e2fc534511b2c2fa8ed12cb62eb6f296c359c"
+checksum = "8342d5eb0ea054ed6ef807e628e38f06dd51eceeec9529767d8b23e33eff9c09"
 dependencies = [
  "bstr",
  "gix-discover",
@@ -5276,10 +5261,21 @@ dependencies = [
 ]
 
 [[package]]
-name = "gix-mailmap"
-version = "0.34.0"
+name = "gix-macros"
+version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "91762f34a413af5391b6fa72fbbdcfac68a1e5155727cd4421e93ad56f5ecc17"
+checksum = "d3836b4b051393464a753c5a08fe19c7ce0d8b77574a92bd558972941d4553cb"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
+name = "gix-mailmap"
+version = "0.34.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1a1c6ca2f9481e5e98b3600b859bc595d46cdf3b600709d5f91b8c118ae452a1"
 dependencies = [
  "bstr",
  "gix-actor",
@@ -5289,9 +5285,9 @@ dependencies = [
 
 [[package]]
 name = "gix-merge"
-version = "0.20.0"
+version = "0.20.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a35ca3093231e4418694e4c6adb0c657a9ab9e86f673a4ca3deef3e009c7a752"
+checksum = "72fad4279c940a0fa460ffdf3a3c0e48b7ca5ccb2b08f51a02b22ffcd1efb900"
 dependencies = [
  "bstr",
  "gix-command",
@@ -5315,9 +5311,9 @@ dependencies = [
 
 [[package]]
 name = "gix-negotiate"
-version = "0.35.0"
+version = "0.35.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "603d0249455908b6e5bb25a4e7f1abd2fcd312ac20546944423038cdd19b8ee5"
+checksum = "91068ecee956121d663635b873ae87ad9c5d3f2d6788facfd12829140b39c897"
 dependencies = [
  "bitflags 2.13.1",
  "gix-commitgraph",
@@ -5329,9 +5325,9 @@ dependencies = [
 
 [[package]]
 name = "gix-note"
-version = "0.1.0"
+version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c4c34c827fb2bc1fd9be288022687e757dee201c499a70e82c86584950888d90"
+checksum = "9af6bbdb3f3c62b4920407c479af1cc0beb27fd75a762782d48baed53d330958"
 dependencies = [
  "gix-error",
  "gix-hash",
@@ -5384,9 +5380,9 @@ dependencies = [
 
 [[package]]
 name = "gix-pack"
-version = "0.74.1"
+version = "0.74.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dc598dc8c20749b179a5bccb71c031ff505069a735fed75abb15be37ab085524"
+checksum = "3d199d515cbdcf05f531f3859be9771fc12acac7b7fe0f5b581b2c1ab1c3a61e"
 dependencies = [
  "clru",
  "crossbeam-deque",
@@ -5406,9 +5402,9 @@ dependencies = [
 
 [[package]]
 name = "gix-packetline"
-version = "0.22.0"
+version = "0.22.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3766025c72319c4accdd854a18e6f0dd176c8eb0f3bc8a60a7765be2b50cabf2"
+checksum = "792bd92bea390087e6223b18d4d023decc36467de31e6b066b69b94beea1b9e2"
 dependencies = [
  "bstr",
  "faster-hex",
@@ -5458,15 +5454,15 @@ dependencies = [
 
 [[package]]
 name = "gix-protocol"
-version = "0.65.0"
+version = "0.65.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2078e698dc6ca36242f104652c3e0e7ec39ba08986e145ee3f049ad9a10bc07a"
+checksum = "68878c37ae168b474c762d70adc8a8e0f9323ed0d80444a672e2eb561fa16691"
 dependencies = [
- "bisync",
  "bstr",
  "gix-date",
  "gix-features",
  "gix-hash",
+ "gix-macros",
  "gix-ref",
  "gix-shallow",
  "gix-transport",
@@ -5508,9 +5504,9 @@ dependencies = [
 
 [[package]]
 name = "gix-refspec"
-version = "0.45.0"
+version = "0.45.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2f797c190b6ab583c3270d31b86b65a18601641a5462e685e123e4b8a1067bd6"
+checksum = "7de280d46e8fd9e4d3e7e2ab4276b965e377ba68b2b9a8fce56371015e8bb059"
 dependencies = [
  "bstr",
  "gix-hash",
@@ -5521,9 +5517,9 @@ dependencies = [
 
 [[package]]
 name = "gix-revision"
-version = "0.49.0"
+version = "0.49.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6ec3ce6e656087d142cc03ddc95713090143b4ae5f4c02301a01459610ddb663"
+checksum = "4577b864c3e134697e91564553e43230c2e401bb1bcc51cfa998edca21c95078"
 dependencies = [
  "bitflags 2.13.1",
  "bstr",
@@ -5581,9 +5577,9 @@ dependencies = [
 
 [[package]]
 name = "gix-status"
-version = "0.34.0"
+version = "0.34.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c279e233dbb4d77aa464cd658d6dd318aec4c0a6314ed7ce0c36f6123d3e47d1"
+checksum = "1401d871c01d82add5a9f654439b00722d0c632b332cd2cb63193f94327c8458"
 dependencies = [
  "bstr",
  "filetime",
@@ -5642,9 +5638,9 @@ checksum = "be3eb81d9dc914335923e50d52829c551feefd6a72d176c4130c546b67a60814"
 
 [[package]]
 name = "gix-transport"
-version = "0.59.0"
+version = "0.59.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c132cc0d212c5b22e8eb8b8b9a90fd6cf6803bc922a7ea7ab92c53b2c56dfb41"
+checksum = "b1295b6ada647b5b4ac6eb123d95a82ee80aef11a7d9db6ea9cb38dcbd411362"
 dependencies = [
  "bstr",
  "gix-command",
@@ -5729,9 +5725,9 @@ dependencies = [
 
 [[package]]
 name = "gix-worktree-state"
-version = "0.34.0"
+version = "0.34.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "66c7d5a50be27f43af23075c5fc007fd4954b97ed9e1ff6305ff0453879b5a21"
+checksum = "4c14faa5b9527823c656a033e841dde11ca5b774f1bca7a9cdc23db677e55d56"
 dependencies = [
  "bstr",
  "gix-features",
@@ -5747,9 +5743,9 @@ dependencies = [
 
 [[package]]
 name = "gix-worktree-stream"
-version = "0.36.0"
+version = "0.36.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "90fb7acf05b0b1a4927e15eb54d7d84820bea61a8a2df9248e19ba7eb91e2505"
+checksum = "de5ec0ccbab39c9994656ea031ded8ffd90b370a3cc8e360fbe3c4ebe7c64964"
 dependencies = [
  "gix-attributes",
  "gix-error",
@@ -5940,9 +5936,9 @@ dependencies = [
 
 [[package]]
 name = "h2"
-version = "0.4.18"
+version = "0.4.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "839c0e8a181239723652be9062bb56ca5bf5f64011f73b623f6f4fc59086a228"
+checksum = "ef8e5e5a340588f4452631496976cf8636d4a7ecf600239fdc27615d2530bc16"
 dependencies = [
  "atomic-waker",
  "bytes",
@@ -7169,9 +7165,9 @@ dependencies = [
 
 [[package]]
 name = "jsonschema"
-version = "0.50.0"
+version = "0.51.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7bd2225bc56c338f18465ce618e5e56fff1295fcb0a0cb338b28010193f26949"
+checksum = "152999731bfbe0bb82d561550be73b0c31a9827d6ebe3fe96ad47563703b5328"
 dependencies = [
  "ahash 0.8.12",
  "bytecount",
@@ -7200,18 +7196,18 @@ dependencies = [
 
 [[package]]
 name = "jsonschema-regex"
-version = "0.50.0"
+version = "0.51.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b11520e5257651f31068fa2c959ce28b09d8a217ffe42338bc27d690f06c0f8c"
+checksum = "8cb2e614e1c610e31e947d53156e877340c718e053cfce0dfe9b9ce7beff4d31"
 dependencies = [
  "regex-syntax",
 ]
 
 [[package]]
 name = "jsonschema-value"
-version = "0.50.0"
+version = "0.51.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ccefde026ba6e6e23002c4e1e087b5f411ef5bc90f3e7febb7cf3c498ca8b169"
+checksum = "24373bc85409cb935a46af0ffb41294c5372c08cf9b0709913d908154cd10582"
 dependencies = [
  "ahash 0.8.12",
  "bytecount",
@@ -8967,9 +8963,9 @@ dependencies = [
 
 [[package]]
 name = "nom-exif"
-version = "3.6.2"
+version = "3.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b7626860345adaf20c0d82b185ec8fc6285707c9fad9b4299c5ffa1581f6b009"
+checksum = "47a28872847c2602f03d141629a212d7a8c3b6bd8983f518862c51aa474594f8"
 dependencies = [
  "bytes",
  "chrono",
@@ -9189,7 +9185,7 @@ version = "0.7.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "680998035259dcfcafe653688bf2aa6d3e2dc05e98be6ab46afb089dc84f1df8"
 dependencies = [
- "proc-macro-crate 1.3.1",
+ "proc-macro-crate 3.5.0",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
@@ -10617,7 +10613,7 @@ version = "0.14.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "03da047801ff44bb6a4d407d4860c05fd70bb81714e6b2f3812603d5b145b042"
 dependencies = [
- "heck 0.5.0",
+ "heck 0.4.1",
  "itertools 0.13.0",
  "log",
  "multimap",
@@ -11325,14 +11321,14 @@ checksum = "92ecd8964f8453721699a1ed72037b0db49ce2f5a5138486ee89bed6f67cdf3a"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.3",
+ "syn 3.0.4",
 ]
 
 [[package]]
 name = "referencing"
-version = "0.50.0"
+version = "0.51.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3b228fc6035ae00a9008ba156c0dfc98f0b6ebc5f3c8db7ac7006dcf8e56f15a"
+checksum = "0aff997fc7eecb671a947b0f73f5ce4bcb4ad3534fd5bff2dd752718a8107525"
 dependencies = [
  "ahash 0.8.12",
  "fluent-uri",
@@ -12098,7 +12094,7 @@ dependencies = [
  "proc-macro2",
  "quote",
  "serde_derive_internals 0.30.0",
- "syn 3.0.3",
+ "syn 3.0.4",
 ]
 
 [[package]]
@@ -12232,7 +12228,7 @@ checksum = "e7a5d71263a5a7d47b41f6b3f06ba276f10cc18b0931f1799f710578e2309348"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.3",
+ "syn 3.0.4",
 ]
 
 [[package]]
@@ -12254,7 +12250,7 @@ checksum = "f852137cce035d6a4df67ccce505ff6b3e9fd3a10e3e52b24dc71e650bb1a9bd"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.3",
+ "syn 3.0.4",
 ]
 
 [[package]]
@@ -12279,7 +12275,7 @@ checksum = "8d3b1629de253c70a0508c3899572da79ca359fdab27c7920ff00406df418906"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.3",
+ "syn 3.0.4",
 ]
 
 [[package]]
@@ -12748,7 +12744,7 @@ version = "0.8.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c1c97747dbf44bb1ca44a561ece23508e99cb592e862f22222dcf42f51d1e451"
 dependencies = [
- "heck 0.5.0",
+ "heck 0.4.1",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
@@ -12760,7 +12756,7 @@ version = "0.9.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "287f59010008f0d7cf5e3b03196d666c1acc46c8d3e9cf34c28a1a7157601e72"
 dependencies = [
- "heck 0.5.0",
+ "heck 0.4.1",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
@@ -13125,9 +13121,9 @@ dependencies = [
 
 [[package]]
 name = "syn"
-version = "3.0.3"
+version = "3.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "53e9bae58849f64dfa4f5d5ae372c8341f7305f82a3868709269343628b659a3"
+checksum = "e6275cddf4610d1775e6d1fe9469b2e77d0f39fd98fb7450901b821e0c53649f"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -13666,7 +13662,7 @@ checksum = "bc04cd3e1236dd4a98afca4569f2deb3f120e5422a4023be2cb683f8486292af"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.3",
+ "syn 3.0.4",
 ]
 
 [[package]]
@@ -13863,7 +13859,7 @@ checksum = "78773a2a397f451582ce068015985c33193cf6dea8b74d2a639fe457b2f07b0e"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.3",
+ "syn 3.0.4",
 ]
 
 [[package]]
@@ -14288,9 +14284,9 @@ checksum = "009994f150cc0cd50ff54917d5bc8bffe8cad10ca10d81c34da2ec421ae61782"
 
 [[package]]
 name = "tree-sitter-language-pack"
-version = "1.15.7"
+version = "1.15.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e3dd56c9a1b0022b56cd46de281fdee177ef24eac54926085c992aa89a697cf7"
+checksum = "f18a84db3f2bfe8436cdeb67d01fe8af292077527560752ae688eb7bf9269741"
 dependencies = [
  "ahash 0.8.12",
  "cc",
@@ -15970,7 +15966,7 @@ dependencies = [
 [[package]]
 name = "xberg"
 version = "1.1.0"
-source = "git+https://github.com/xberg-io/xberg.git?rev=e8df246ca52b674a10addb0d16c6bb485c343434#e8df246ca52b674a10addb0d16c6bb485c343434"
+source = "git+https://github.com/xberg-io/xberg.git?rev=ddba546dca5ba99dad69657e30dbaca01ebd3704#ddba546dca5ba99dad69657e30dbaca01ebd3704"
 dependencies = [
  "ahash 0.8.12",
  "async-trait",
@@ -16001,6 +15997,7 @@ dependencies = [
  "hayro-jpeg2000",
  "hex",
  "hf-hub",
+ "html-escape",
  "html-to-markdown-rs",
  "icu_provider",
  "icu_segmenter",
@@ -16079,7 +16076,7 @@ dependencies = [
 [[package]]
 name = "xberg-gliner"
 version = "1.1.0"
-source = "git+https://github.com/xberg-io/xberg.git?rev=e8df246ca52b674a10addb0d16c6bb485c343434#e8df246ca52b674a10addb0d16c6bb485c343434"
+source = "git+https://github.com/xberg-io/xberg.git?rev=ddba546dca5ba99dad69657e30dbaca01ebd3704#ddba546dca5ba99dad69657e30dbaca01ebd3704"
 dependencies = [
  "getrandom 0.2.17",
  "getrandom 0.3.4",
@@ -16094,7 +16091,7 @@ dependencies = [
 [[package]]
 name = "xberg-libheif"
 version = "1.1.0"
-source = "git+https://github.com/xberg-io/xberg.git?rev=e8df246ca52b674a10addb0d16c6bb485c343434#e8df246ca52b674a10addb0d16c6bb485c343434"
+source = "git+https://github.com/xberg-io/xberg.git?rev=ddba546dca5ba99dad69657e30dbaca01ebd3704#ddba546dca5ba99dad69657e30dbaca01ebd3704"
 dependencies = [
  "cfg-if 1.0.4",
  "enumn",
@@ -16106,7 +16103,7 @@ dependencies = [
 [[package]]
 name = "xberg-libwpd"
 version = "1.1.0"
-source = "git+https://github.com/xberg-io/xberg.git?rev=e8df246ca52b674a10addb0d16c6bb485c343434#e8df246ca52b674a10addb0d16c6bb485c343434"
+source = "git+https://github.com/xberg-io/xberg.git?rev=ddba546dca5ba99dad69657e30dbaca01ebd3704#ddba546dca5ba99dad69657e30dbaca01ebd3704"
 dependencies = [
  "cc",
  "flate2",
@@ -16120,7 +16117,7 @@ dependencies = [
 [[package]]
 name = "xberg-native-pdf"
 version = "1.1.0"
-source = "git+https://github.com/xberg-io/xberg.git?rev=e8df246ca52b674a10addb0d16c6bb485c343434#e8df246ca52b674a10addb0d16c6bb485c343434"
+source = "git+https://github.com/xberg-io/xberg.git?rev=ddba546dca5ba99dad69657e30dbaca01ebd3704#ddba546dca5ba99dad69657e30dbaca01ebd3704"
 dependencies = [
  "aes 0.9.2",
  "base64 0.23.1",
@@ -16166,7 +16163,7 @@ dependencies = [
 [[package]]
 name = "xberg-paddle-ocr"
 version = "1.1.0"
-source = "git+https://github.com/xberg-io/xberg.git?rev=e8df246ca52b674a10addb0d16c6bb485c343434#e8df246ca52b674a10addb0d16c6bb485c343434"
+source = "git+https://github.com/xberg-io/xberg.git?rev=ddba546dca5ba99dad69657e30dbaca01ebd3704#ddba546dca5ba99dad69657e30dbaca01ebd3704"
 dependencies = [
  "geo-clipper",
  "geo-types",
@@ -16182,7 +16179,7 @@ dependencies = [
 [[package]]
 name = "xberg-tesseract"
 version = "1.1.0"
-source = "git+https://github.com/xberg-io/xberg.git?rev=e8df246ca52b674a10addb0d16c6bb485c343434#e8df246ca52b674a10addb0d16c6bb485c343434"
+source = "git+https://github.com/xberg-io/xberg.git?rev=ddba546dca5ba99dad69657e30dbaca01ebd3704#ddba546dca5ba99dad69657e30dbaca01ebd3704"
 dependencies = [
  "cc",
  "cmake",
@@ -16481,7 +16478,7 @@ checksum = "34df6fc39dbd26ddc9c10e6a2984476e13acce22e64e4487636ef494369225da"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.3",
+ "syn 3.0.4",
 ]
 
 [[package]]

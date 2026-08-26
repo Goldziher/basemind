@@ -315,9 +315,12 @@ impl DocConfig {
             return None;
         }
         let ngram = if self.keywords.ngram_range.len() == 2 {
-            (self.keywords.ngram_range[0], self.keywords.ngram_range[1])
+            xberg::NgramRange {
+                min: self.keywords.ngram_range[0],
+                max: self.keywords.ngram_range[1],
+            }
         } else {
-            (1, 3)
+            xberg::NgramRange { min: 1, max: 3 }
         };
         let mut kc = xberg::KeywordConfig {
             algorithm: match self.keywords.algorithm {

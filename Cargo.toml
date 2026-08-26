@@ -1,7 +1,7 @@
 
 [package]
 name = "basemind"
-version = "0.25.0"
+version = "0.25.1"
 authors = ["Na'aman Hirschfeld <nhirschfeld@gmail.com>"]
 edition = "2024"
 description = "Full AI context layer over MCP — tree-sitter code-map, document RAG (PDF/Office/HTML/email + OCR + reranker), shared agent memory, on-demand web crawl, git history + blame + per-symbol diff. 300+ languages, 10+ coding-agent harnesses, content-addressed Fjall + LanceDB."
@@ -126,13 +126,13 @@ bstr = { version = "1", features = ["serde"] }
 # Streamable-HTTP MCP front-end (comms daemon only): response bodies + query parsing + hyper server. ~keep
 bytes = { version = "1", optional = true }
 clap = { version = "4", features = ["derive", "env"] }
-crawlberg = { version = "1.3.3", default-features = false, features = ["native-runtime"], optional = true }
+crawlberg = { version = "1.4.0", default-features = false, features = ["native-runtime"], optional = true }
 directories = "6"
 fjall = "3.1.9"
 form_urlencoded = { version = "1", optional = true }
 fs2 = "0.4"
 futures = { version = "0.3", optional = true }
-gix = { version = "0.87.0", features = ["status", "blob-diff", "revision", "max-performance-safe"] }
+gix = { version = "0.87.1", features = ["status", "blob-diff", "revision", "max-performance-safe"] }
 globset = "0.4"
 hex = "0.4"
 # Loopback-TCP hyper server hosting the streamable-HTTP MCP transport (comms daemon only). ~keep
@@ -141,7 +141,7 @@ http-body-util = { version = "0.1", optional = true }
 hyper = { version = "1", features = ["server", "http1", "http2"], optional = true }
 hyper-util = { version = "0.1", features = ["server-auto", "tokio"], optional = true }
 ignore = "0.4"
-jsonschema = "0.50"
+jsonschema = "0.51"
 lancedb = { version = "0.37", optional = true }
 libc = "0.2"
 lru = "0.18.2"
@@ -188,10 +188,10 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tree-sitter = "0.26"
 tree-sitter-graph = { package = "basemind-tree-sitter-graph", version = "0.12.0", path = "crates/tree-sitter-graph", optional = true }
-tree-sitter-language-pack = "1.15.7"
+tree-sitter-language-pack = "1.15.8"
 tree-sitter-stack-graphs = { package = "basemind-tree-sitter-stack-graphs", version = "0.10.0", path = "crates/tree-sitter-stack-graphs", optional = true }
 url = { version = "2", features = ["serde"], optional = true }
-xberg = { version = "1.1.0", git = "https://github.com/xberg-io/xberg.git", rev = "e8df246ca52b674a10addb0d16c6bb485c343434", default-features = false, features = [
+xberg = { version = "1.1.0", git = "https://github.com/xberg-io/xberg.git", rev = "ddba546dca5ba99dad69657e30dbaca01ebd3704", default-features = false, features = [
   "tokio-runtime",
   "simd-utf8",
 ], optional = true }
