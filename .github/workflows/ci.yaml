@@ -50,7 +50,10 @@ jobs:
             debug: "1"
           - os: ubuntu-latest
             features: "full"
-            timeout_minutes: 60
+            # ~keep 60 was sized when this leg died early on ENOSPC; now that it runs the whole
+            # ~keep suite it needs the same budget as the other `full` leg — it passed `cargo test`
+            # ~keep and was cut off mid `cargo build --release` at exactly 60m.
+            timeout_minutes: 90
             debug: "0"
           - os: macos-latest
             features: ""
