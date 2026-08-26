@@ -22,6 +22,10 @@ env:
   # ~keep while dropping the variable/type DWARF that dominates the size.
   CARGO_PROFILE_DEV_DEBUG: "1"
   CARGO_PROFILE_TEST_DEBUG: "1"
+  # ~keep The Linux `full` leg is the tightest of the five and still hit ENOSPC at level 1 even after
+  # ~keep the purge below, so `matrix.debug` overrides it to 0 there. Panic locations
+  # ~keep (`file.rs:line:col`) come from `core::panic::Location` and survive; what is lost is line
+  # ~keep numbers inside RUST_BACKTRACE frames.
 
 jobs:
   validate:
@@ -33,6 +37,9 @@ jobs:
     name: test / ${{ matrix.os }} / ${{ matrix.features }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: ${{ matrix.timeout_minutes }}
+    env:
+      CARGO_PROFILE_DEV_DEBUG: ${{ matrix.debug }}
+      CARGO_PROFILE_TEST_DEBUG: ${{ matrix.debug }}
     strategy:
       fail-fast: false
       matrix:
@@ -40,18 +47,23 @@ jobs:
           - os: ubuntu-latest
             features: ""
             timeout_minutes: 30
+            debug: "1"
           - os: ubuntu-latest
             features: "full"
             timeout_minutes: 60
+            debug: "0"
           - os: macos-latest
             features: ""
             timeout_minutes: 30
+            debug: "1"
           - os: macos-14
             features: "full"
             timeout_minutes: 90
+            debug: "1"
           - os: windows-latest
             features: "comms shells"
             timeout_minutes: 60
+            debug: "1"
     steps:
       - uses: actions/checkout@v4
 
