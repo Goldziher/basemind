@@ -536,7 +536,7 @@ mod tests {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0)).expect("chmod 000");
+            std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).expect("chmod 000");
         }
         let mut config = crate::config::default_for_root(&root);
         config.watch.debounce_ms = 50;
@@ -555,6 +555,13 @@ mod tests {
         let result = done_rx
             .recv_timeout(Duration::from_secs(5))
             .expect("watcher thread died");
+        let _ = handle.join();
+        // Restore read/exec so the TempDir drop can remove the tree.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o700));
+        }
         assert!(
             result.is_ok(),
             "watch_paths must not fail on an unreadable directory: {result:?}"
