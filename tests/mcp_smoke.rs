@@ -1213,7 +1213,7 @@ async fn mcp_server_exercises_representative_tools() {
         let kw = service
             .call_tool(call_params(
                 "code",
-                json!({ "mode": "semantic", "query": "hello", "mode": "keyword" }),
+                json!({ "mode": "semantic", "query": "hello", "lane": "keyword" }),
             ))
             .await;
         if let Ok(result) = &kw {
@@ -1221,29 +1221,29 @@ async fn mcp_server_exercises_representative_tools() {
             assert_eq!(
                 body.get("query").and_then(Value::as_str),
                 Some("hello"),
-                "keyword search_code must echo the query field: {body}"
+                "the keyword lane must echo the query field: {body}"
             );
             assert!(
                 body.get("hits").and_then(Value::as_array).is_some(),
-                "keyword search_code response must carry a hits array: {body}"
+                "the keyword lane response must carry a hits array: {body}"
             );
         }
 
         let bad_mode = service
             .call_tool(call_params(
                 "code",
-                json!({ "mode": "semantic", "query": "hello", "mode": "bogus" }),
+                json!({ "mode": "semantic", "query": "hello", "lane": "bogus" }),
             ))
             .await;
         assert!(
             bad_mode.is_err(),
-            "search_code must reject an unknown mode with an MCP error"
+            "`code` mode=\"semantic\" must reject an unknown lane with an MCP error"
         );
 
         let hy = service
             .call_tool(call_params(
                 "code",
-                json!({ "mode": "semantic", "query": "hello", "mode": "hybrid", "rerank": false, "rerank_preset": "bge-reranker-base" }),
+                json!({ "mode": "semantic", "query": "hello", "lane": "hybrid", "rerank": false, "rerank_preset": "bge-reranker-base" }),
             ))
             .await;
         if let Ok(result) = &hy {
