@@ -1,4 +1,4 @@
-//! Cross-file `goto_definition` through the real MCP tool.
+//! Cross-file `code` mode `definition` through the real MCP tool.
 //!
 //! A use of an imported name must resolve to the definition in the file the import points at — not
 //! stop at the local import binding. The shape mirrors the monorepo case that surfaced the gap: a
@@ -74,12 +74,12 @@ async fn serve(root: &Path) -> Server {
     ().serve(transport).await.expect("rmcp handshake")
 }
 
-/// `goto_definition` at `path`:`line`:`column`; returns the `definition` object, if any.
+/// `code` mode `definition` at `path`:`line`:`column`; returns the `definition` object, if any.
 async fn goto(service: &Server, path: &str, line: u64, column: u64) -> Option<Value> {
-    let mut params = CallToolRequestParams::new("goto_definition");
-    let args = json!({ "path": path, "line": line, "column": column });
+    let mut params = CallToolRequestParams::new("code");
+    let args = json!({ "mode": "definition", "path": path, "line": line, "column": column });
     params = params.with_arguments(args.as_object().unwrap().clone());
-    let result = service.call_tool(params).await.expect("goto_definition");
+    let result = service.call_tool(params).await.expect("code definition");
     decode_text(&result).get("definition").filter(|d| !d.is_null()).cloned()
 }
 
