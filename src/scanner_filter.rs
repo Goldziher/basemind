@@ -125,6 +125,10 @@ impl Filters {
     /// irrelevant for directories (they match files), so only the exclude set + submodule
     /// pruning apply. Used by the watcher to decide which directories to register an inotify
     /// watch on, so permission-denied or excluded trees are never handed to inotify.
+    ///
+    /// Only the Linux watcher registers per-directory watches — macOS/Windows use one recursive
+    /// watch — so the gate is dead code elsewhere; `test` keeps the unit test building on any host.
+    #[cfg(any(target_os = "linux", test))]
     pub(crate) fn allows_dir(&self, rel: &str) -> bool {
         !self.excluded(rel)
     }

@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Duration;
 
+#[cfg(target_os = "linux")]
 use notify::event::CreateKind;
 use notify::{Config as NotifyConfig, EventKind, RecommendedWatcher, RecursiveMode};
 use notify_debouncer_full::{DebounceEventResult, NoCache, new_debouncer_opt};
