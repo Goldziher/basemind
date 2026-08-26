@@ -10,6 +10,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.25.1] - 2026-08-26
+
+### Changed
+
+- Dependency refresh: `xberg` repinned to the current 1.1.0 revision (EPUB chapter/metadata loss,
+  PDF reading-order and CCITT image decoding, and XML/MathML hardening fixes on the document
+  extraction path), `crawlberg` 1.3.3 → 1.4.0, `gix` 0.87.0 → 0.87.1, `jsonschema` 0.50 → 0.51, and
+  `tree-sitter-language-pack` 1.15.7 → 1.15.8.
+
 ### Fixed
 
 - The Linux file watcher no longer aborts when a directory cannot be read (permission denied).
