@@ -99,16 +99,34 @@ impl Filters {
         })
     }
 
-    pub(crate) fn allows(&self, rel: &str) -> bool {
+    /// True when `rel` is dropped by the exclude globs or a skipped submodule root — the shared
+    /// gate behind both [`Filters::allows`] (files) and [`Filters::allows_dir`] (directories).
+    fn excluded(&self, rel: &str) -> bool {
         if self.exclude.is_match(rel) {
-            return false;
+            return true;
         }
         for (root, prefix) in self.submodule_roots.iter().zip(self.submodule_prefixes.iter()) {
             if rel == root || rel.starts_with(prefix.as_str()) {
-                return false;
+                return true;
             }
         }
+        false
+    }
+
+    pub(crate) fn allows(&self, rel: &str) -> bool {
+        if self.excluded(rel) {
+            return false;
+        }
         self.include.is_match(rel)
+    }
+
+    /// Directory gate for the inotify watch registration. A directory is kept iff it is NOT
+    /// matched by any exclude glob and not under a skipped submodule root. Include globs are
+    /// irrelevant for directories (they match files), so only the exclude set + submodule
+    /// pruning apply. Used by the watcher to decide which directories to register an inotify
+    /// watch on, so permission-denied or excluded trees are never handed to inotify.
+    pub(crate) fn allows_dir(&self, rel: &str) -> bool {
+        !self.excluded(rel)
     }
 }
 
@@ -453,5 +471,34 @@ mod tests {
         });
         assert!(!filter.is_indexable(&root));
         assert!(!filter.is_indexable(Path::new("/definitely/not/under/root.rs")));
+    }
+
+    /// `allows_dir` prunes directories by exclude globs only (no include-glob gate), so the
+    /// watcher can register inotify watches on kept directories and skip excluded or unreadable
+    /// ones — the fix for the "notify error: Permission denied" crash on unreadable trees.
+    #[test]
+    fn allows_dir_prunes_by_exclude_globs_only() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().canonicalize().expect("canonicalize");
+        fs::create_dir_all(root.join(".git")).expect("mkdir .git");
+        let mut config = crate::config::default_for_root(&root);
+        config.scan.exclude = vec!["**/generated/**".to_string()];
+        let filter = IndexFilter::new(&root, &config).expect("build filter");
+        let filters = filter.filters();
+
+        // Directories under the user exclude glob are pruned. The glob `**/generated/**` matches
+        // subdirectories (a trailing segment is required), so we assert on nested paths.
+        assert!(!filters.allows_dir("generated/schema"), "excluded nested dir pruned");
+        assert!(
+            !filters.allows_dir("generated/schema/types"),
+            "deeply nested excluded dir pruned"
+        );
+        // Plain source directories are kept.
+        assert!(filters.allows_dir("src"), "kept dir");
+        assert!(filters.allows_dir("src/services"), "kept nested dir");
+        // Floor excludes prune nested dirs (the top-level dir itself is not matched by
+        // `**/X/**`, so we assert on a nested path).
+        assert!(!filters.allows_dir("node_modules/react"), "floor: node_modules/react");
+        assert!(!filters.allows_dir("target/debug"), "floor: target/debug");
     }
 }

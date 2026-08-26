@@ -10,6 +10,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- The Linux file watcher no longer aborts when a directory cannot be read (permission denied).
+  inotify watches are now registered directory-by-directory, pruned by the same gitignore +
+  exclude-glob filters a full scan uses, with registration failures downgraded to warnings.
+  Directories created after startup are re-armed on create events, and the per-directory scheme is
+  gated to Linux (macOS/Windows keep the single recursive call to avoid an FSEvents startup
+  regression).
+
 ## [0.25.0] - 2026-08-23
 
 ### Added

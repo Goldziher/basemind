@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Duration;
 
+use notify::event::CreateKind;
 use notify::{Config as NotifyConfig, EventKind, RecommendedWatcher, RecursiveMode};
 use notify_debouncer_full::{DebounceEventResult, NoCache, new_debouncer_opt};
 use thiserror::Error;
@@ -79,9 +80,60 @@ pub fn watch_paths(
         NoCache::new(),
         NotifyConfig::default(),
     )?;
-    debouncer.watch(root, RecursiveMode::Recursive)?;
 
     let filter = crate::scanner_filter::IndexFilter::new(root, config)?;
+
+    #[cfg(target_os = "linux")]
+    {
+        let filters = filter.filters();
+        // Linux inotify: register watches directory-by-directory, pruning by the same
+        // gitignore + exclude-glob filters a full scan uses. This keeps the OS-level watcher
+        // from trying to register a watch on a directory we cannot read (permission denied) or
+        // that the [scan] exclude globs / .gitignore already drop — the root cause of the
+        // "notify error: Permission denied (os error 13)" crash on unreadable trees.
+        debouncer.watch(root, RecursiveMode::NonRecursive)?;
+        let walker = crate::scanner_filter::ignore_walk_builder(
+            root,
+            config.scan.respect_gitignore,
+            config.scan.follow_symlinks,
+        )
+        .build();
+        for dent in walker {
+            // An unreadable directory (e.g. permission denied) surfaces as an iterator error;
+            // skip it so inotify never tries to register a watch on it.
+            let Ok(entry) = dent else {
+                continue;
+            };
+            if !entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                continue;
+            }
+            if entry.path() == root {
+                continue; // root already registered above
+            }
+            // Skip descending into a directory that the exclude globs or a skipped submodule
+            // root already drops.
+            let Ok(rel) = entry.path().strip_prefix(root) else {
+                continue;
+            };
+            // On Linux paths use forward slashes, so no backslash normalization is needed.
+            if !filters.allows_dir(rel.to_string_lossy().as_ref()) {
+                continue;
+            }
+            // Registering a watch can still fail (the directory was removed between the walk and
+            // the watch, or inotify limits were hit). Make it non-fatal: warn and continue.
+            if let Err(e) = debouncer.watch(entry.path(), RecursiveMode::NonRecursive) {
+                warn!(path = %entry.path().display(), error = %e, "inotify watch registration failed; continuing");
+            }
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        // macOS (FSEvents) and Windows (ReadDirectoryChangesW) support a single recursive call
+        // that auto-registers watches for directories created under an existing watch. The
+        // per-directory scheme is a ~10x startup regression on FSEvents (one stream restart per
+        // directory), so keep the single recursive call there.
+        debouncer.watch(root, RecursiveMode::Recursive)?;
+    }
 
     loop {
         if !matches!(
@@ -98,6 +150,18 @@ pub fn watch_paths(
                 for ev in events {
                     if !is_relevant(&ev.event.kind) {
                         continue;
+                    }
+                    // Linux inotify: a directory created after startup is not covered by the
+                    // frozen NonRecursive watch set. Re-arm by registering a watch on it.
+                    #[cfg(target_os = "linux")]
+                    if matches!(&ev.event.kind, EventKind::Create(CreateKind::Folder)) {
+                        for p in &ev.event.paths {
+                            if p.is_dir()
+                                && let Err(e) = debouncer.watch(p, RecursiveMode::NonRecursive)
+                            {
+                                warn!(path = %p.display(), error = %e, "inotify re-arm failed");
+                            }
+                        }
                     }
                     for p in &ev.event.paths {
                         if keep_event_path(&filter, root, p) {
@@ -452,5 +516,47 @@ mod tests {
 
         let _ = shutdown_tx.send(());
         let _ = handle.join();
+    }
+
+    /// A permission-denied directory must not break the watcher's startup. This is the entire
+    /// point of the PR: with non-fatal watch registration, an unreadable tree is skipped (with a
+    /// warning) instead of aborting `watch_paths` with a `notify error: Permission denied`.
+    ///
+    /// The reproduction only bites when the test runs as a non-root user (as in CI); as root the
+    /// `chmod 000` directory is still readable, so the test passes trivially locally but exercises
+    /// the EACCES path in CI.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn should_not_fail_startup_on_unreadable_directory() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().canonicalize().expect("canonicalize");
+        let locked = root.join("locked");
+        std::fs::create_dir_all(&locked).expect("mkdir locked");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0)).expect("chmod 000");
+        }
+        let mut config = crate::config::default_for_root(&root);
+        config.watch.debounce_ms = 50;
+
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+        let (done_tx, done_rx) = std::sync::mpsc::channel::<Result<(), WatchError>>();
+        let root_for_thread = root.clone();
+        let handle = std::thread::spawn(move || {
+            let result = watch_paths(&root_for_thread, &config, shutdown_rx, |_paths, _kind| {});
+            let _ = done_tx.send(result);
+        });
+
+        // Give the watcher a moment to arm (registering watches), then shut it down.
+        std::thread::sleep(Duration::from_millis(500));
+        let _ = shutdown_tx.send(());
+        let result = done_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("watcher thread died");
+        assert!(
+            result.is_ok(),
+            "watch_paths must not fail on an unreadable directory: {result:?}"
+        );
     }
 }
