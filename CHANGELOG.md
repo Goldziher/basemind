@@ -10,6 +10,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.25.2] - 2026-08-31
+
+### Added
+
+- `basemind comms doctor --probe` asks each comms daemon whether it can actually serve and reports
+  the verdict per row (`serving` / `LIVE BUT FAILING` / `LIVE BUT NOT RESPONDING`). The default
+  report stays RPC-free, so it remains safe to run on a wedged machine, and now states which
+  question it answered: process liveness from the pidfile registry, not health.
+- A daemon that hits an unrecoverable store error records it to `<comms_dir>/last-fatal.json`
+  before exiting. `comms doctor` reports that record — the failing method, pid, build, and age —
+  so the evidence outlives the process; `--clear-fatal` acknowledges it.
+
+### Changed
+
+- Dependency refresh: `xberg` repinned to the current 1.1.0 revision, `crawlberg` 1.4.0 → 1.4.2,
+  `fjall` 3.1.9 → 3.1.10, `jsonschema` 0.51 → 0.52, `lru` 0.18.2 → 0.18.3, `mach2` 0.6 → 0.7,
+  `tree-sitter-language-pack` 1.15.8 → 1.15.12, and `liter-llm` 1.18.1 → 1.18.4.
+
+### Fixed
+
+- A comms daemon whose store became permanently unusable held the singleton forever: it kept the
+  flock and the socket, so its pid stayed live and no replacement could take over, while every
+  request failed identically. It now releases the lock and exits non-zero on the first such error,
+  so the next `comms start` gets a clean daemon ([#61]).
+- `basemind comms stop` hung indefinitely against a daemon wedged before its accept loop, because
+  the connect never returned — the documented recovery path blocked on the very daemon it was
+  meant to reclaim. Both stop paths now time-box the RPC and escalate to the pid. A daemon that
+  answers with a deliberate refusal (`daemon_busy`, protecting the clients attached to it) is
+  reported and left running, never terminated.
+- `comms status` reported `threads: 0` when the store could not be read, which is indistinguishable
+  from a healthy empty broker. It now surfaces the store error instead.
+
+[#61]: https://github.com/Goldziher/basemind/issues/61
+
 ## [0.25.1] - 2026-08-26
 
 ### Changed
