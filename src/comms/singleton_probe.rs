@@ -179,7 +179,9 @@ pub fn force_terminate(pid: u32, _grace: Duration) -> bool {
     !pid_is_live(pid)
 }
 
-#[cfg(test)]
+// Every case here needs a real endpoint to probe, which on this side of the codebase means a Unix
+// socket; the Windows named-pipe front-end has no equivalent stub. ~keep
+#[cfg(all(test, unix))]
 mod tests {
     use std::path::PathBuf;
 
@@ -188,7 +190,6 @@ mod tests {
 
     /// Serve exactly one framed `CommsOut` reply on a fresh socket, returning its path and the
     /// server thread. Mirrors the real UDS front-end's framing (see the test above).
-    #[cfg(unix)]
     fn serve_one_reply(
         dir: &std::path::Path,
         name: &str,
@@ -214,7 +215,6 @@ mod tests {
         (socket, handle)
     }
 
-    #[cfg(unix)]
     #[test]
     fn probe_serving_separates_a_serving_daemon_from_one_that_only_holds_the_socket() {
         use crate::comms::protocol::{CommsOut, CommsResponse, StatusReport};
