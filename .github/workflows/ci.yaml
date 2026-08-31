@@ -52,8 +52,13 @@ jobs:
             features: "full"
             # ~keep 60 was sized when this leg died early on ENOSPC; now that it runs the whole
             # ~keep suite it needs the same budget as the other `full` leg — it passed `cargo test`
-            # ~keep and was cut off mid `cargo build --release` at exactly 60m.
-            timeout_minutes: 90
+            # ~keep and was cut off mid `cargo build --release` at exactly 60m. 90 then proved too
+            # ~keep tight on a COLD cache: a dependency refresh changes `Cargo.lock`, misses the
+            # ~keep rust-cache key, and rebuilds debug + release from scratch, which roughly doubles
+            # ~keep both `full` legs (Linux 38m -> 79m, macOS 55m -> past 90m). The ceiling has to
+            # ~keep cover the cold run, because a leg that times out never saves a cache and so stays
+            # ~keep cold on every retry.
+            timeout_minutes: 135
             debug: "0"
           - os: macos-latest
             features: ""
@@ -61,7 +66,8 @@ jobs:
             debug: "1"
           - os: macos-14
             features: "full"
-            timeout_minutes: 90
+            # ~keep Same cold-cache budget as the Linux `full` leg above.
+            timeout_minutes: 135
             debug: "1"
           - os: windows-latest
             features: "comms shells"
