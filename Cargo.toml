@@ -211,7 +211,14 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
 wiremock = "0.6"
 
 [profile.release]
-lto = "thin"
+# ~keep Fat, not thin. On aarch64-apple-darwin the `full` binary's `__text` reached ~161MB, and a
+# ~keep static constructor (the `ctor` crate emits into `__text_startup`, which ld64 places AFTER
+# ~keep `__text`) has to branch back into it. arm64 B/BL reaches +/-128MB and the linker cannot
+# ~keep insert an island past the end of the section, so the release link failed outright by ~1.1MB:
+# ~keep "ld: B/BL out of range -135343732". Fat LTO buys back well more than that margin.
+# ~keep `panic = "abort"` would shrink it further but is not available to us: `scanner_lanes` uses
+# ~keep `catch_unwind` to contain a panicking parse to one file instead of losing the whole scan.
+lto = "fat"
 codegen-units = 1
 
 [[bench]]

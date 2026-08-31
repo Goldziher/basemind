@@ -57,8 +57,9 @@ jobs:
             # ~keep rust-cache key, and rebuilds debug + release from scratch, which roughly doubles
             # ~keep both `full` legs (Linux 38m -> 79m, macOS 55m -> past 90m). The ceiling has to
             # ~keep cover the cold run, because a leg that times out never saves a cache and so stays
-            # ~keep cold on every retry.
-            timeout_minutes: 135
+            # ~keep cold on every retry. 180 because fat LTO (see `[profile.release]`) makes the
+            # ~keep release link markedly slower than the thin-LTO builds these numbers came from.
+            timeout_minutes: 180
             debug: "0"
           - os: macos-latest
             features: ""
@@ -67,7 +68,7 @@ jobs:
           - os: macos-14
             features: "full"
             # ~keep Same cold-cache budget as the Linux `full` leg above.
-            timeout_minutes: 135
+            timeout_minutes: 180
             debug: "1"
           - os: windows-latest
             features: "comms shells"
