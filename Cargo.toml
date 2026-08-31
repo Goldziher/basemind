@@ -211,15 +211,49 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
 wiremock = "0.6"
 
 [profile.release]
-# ~keep Fat, not thin. On aarch64-apple-darwin the `full` binary's `__text` reached ~161MB, and a
-# ~keep static constructor (the `ctor` crate emits into `__text_startup`, which ld64 places AFTER
-# ~keep `__text`) has to branch back into it. arm64 B/BL reaches +/-128MB and the linker cannot
-# ~keep insert an island past the end of the section, so the release link failed outright by ~1.1MB:
-# ~keep "ld: B/BL out of range -135343732". Fat LTO buys back well more than that margin.
-# ~keep `panic = "abort"` would shrink it further but is not available to us: `scanner_lanes` uses
-# ~keep `catch_unwind` to contain a panicking parse to one file instead of losing the whole scan.
-lto = "fat"
+lto = "thin"
 codegen-units = 1
+
+# ~keep The aarch64-apple-darwin release link sits on a hard cliff. The `full` binary's `__text`
+# ~keep reached ~161MB; `xet-runtime` (xberg -> hf-hub -> hf-xet) registers a static constructor,
+# ~keep which LLVM emits into `__text_startup`, and ld64 places that section AFTER `__text`. An
+# ~keep arm64 B/BL reaches +/-128MB and no branch island can be inserted past the end of the
+# ~keep section, so the link failed outright: "ld: B/BL out of range -135343732". The branch has to
+# ~keep span from the end of `__text` back to a callee ~26MB in, so the gap shrinks with total size
+# ~keep and clearing it needs better than a 5% cut -- a token trim would not hold.
+# ~keep The two obvious levers are both unavailable. `lto = "fat"` exhausted the 16GB on
+# ~keep ubuntu-latest and the runner was killed mid-link (exit 143). `panic = "abort"` would cut
+# ~keep more still, but `scanner_lanes` uses `catch_unwind` to contain a panicking parse to one file
+# ~keep rather than lose the whole scan.
+# ~keep So dependencies build for size. The scan hot path is exempted below and keeps opt-level 3.
+[profile.release.package."*"]
+opt-level = "s"
+
+# ~keep Measured hot path (see the scan flamegraph): tree-sitter parsing, the fjall/lsm-tree commit
+# ~keep path, and the hashing and scatter-gather around them. These stay at full speed.
+[profile.release.package.tree-sitter]
+opt-level = 3
+
+[profile.release.package.tree-sitter-language-pack]
+opt-level = 3
+
+[profile.release.package.fjall]
+opt-level = 3
+
+[profile.release.package.lsm-tree]
+opt-level = 3
+
+[profile.release.package.blake3]
+opt-level = 3
+
+[profile.release.package.memchr]
+opt-level = 3
+
+[profile.release.package.regex]
+opt-level = 3
+
+[profile.release.package.rayon]
+opt-level = 3
 
 [[bench]]
 name = "extract"
