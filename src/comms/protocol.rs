@@ -355,6 +355,55 @@ pub enum CommsRequest {
     Status,
 }
 
+impl CommsRequest {
+    /// The wire `method` spelling of this variant, matching the serde `rename_all = "snake_case"`
+    /// representation. Borrowing rather than serializing keeps it free at the call site, which
+    /// matters because the daemon names the failing request when it records a terminal store
+    /// failure — the one piece of evidence a poisoned daemon otherwise takes to the grave.
+    pub fn method(&self) -> &'static str {
+        match self {
+            Self::Hello { .. } => "hello",
+            Self::Register { .. } => "register",
+            Self::ListAgents { .. } => "list_agents",
+            Self::Cleanup { .. } => "cleanup",
+            Self::AgentsStatus { .. } => "agents_status",
+            Self::ThreadStart { .. } => "thread_start",
+            Self::ThreadJoin { .. } => "thread_join",
+            Self::ThreadLeave { .. } => "thread_leave",
+            Self::ThreadList { .. } => "thread_list",
+            Self::ThreadPost { .. } => "thread_post",
+            Self::ThreadHistory { .. } => "thread_history",
+            Self::ThreadMembers { .. } => "thread_members",
+            Self::ThreadAddMember { .. } => "thread_add_member",
+            Self::ThreadRemoveMember { .. } => "thread_remove_member",
+            Self::ThreadArchive { .. } => "thread_archive",
+            Self::GetBody { .. } => "get_body",
+            Self::Inbox { .. } => "inbox",
+            Self::AckInbox { .. } => "ack_inbox",
+            Self::Subscribe { .. } => "subscribe",
+            Self::SubscribeInbox { .. } => "subscribe_inbox",
+            Self::Unsubscribe { .. } => "unsubscribe",
+            Self::Rescan { .. } => "rescan",
+            #[cfg(feature = "memory")]
+            Self::Memory { .. } => "memory",
+            #[cfg(feature = "memory")]
+            Self::Governance { .. } => "governance",
+            Self::GitHistory { .. } => "git_history",
+            Self::ResolvedRefs { .. } => "resolved_refs",
+            Self::CodeSearchLanes { .. } => "code_search_lanes",
+            Self::AccessedPaths { .. } => "accessed_paths",
+            Self::WorkspacesList { .. } => "workspaces_list",
+            Self::WorktreesList { .. } => "worktrees_list",
+            Self::BranchesList { .. } => "branches_list",
+            Self::WorktreeClaim { .. } => "worktree_claim",
+            Self::WorktreeRelease { .. } => "worktree_release",
+            Self::Ping => "ping",
+            Self::Stop => "stop",
+            Self::Status => "status",
+        }
+    }
+}
+
 /// A response from the broker to a [`CommsRequest`].
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "result", content = "data", rename_all = "snake_case")]
@@ -610,6 +659,35 @@ mod tests {
         let bytes = rmp_serde::to_vec_named(&req).expect("encode");
         let back: CommsRequest = rmp_serde::from_slice(&bytes).expect("decode");
         assert_eq!(req, back);
+    }
+
+    #[test]
+    fn method_matches_the_serde_tag() {
+        // `method()` is a hand-written match, so it can drift from the derived `rename_all`
+        // spelling silently. Check it against what serde actually emits for a sample spanning
+        // unit variants, struct variants, and the multi-word names most at risk. ~keep
+        let samples = [
+            CommsRequest::Ping,
+            CommsRequest::Stop,
+            CommsRequest::Status,
+            CommsRequest::ListAgents { thread: None },
+            CommsRequest::ThreadJoin {
+                thread: ThreadId::parse("th-1").expect("thread"),
+            },
+            CommsRequest::ThreadRemoveMember {
+                thread: ThreadId::parse("th-1").expect("thread"),
+                member: AgentId::parse("agent-1").expect("agent"),
+            },
+            CommsRequest::GetBody {
+                message_id: "m1".to_string(),
+            },
+            CommsRequest::SubscribeInbox { thread: None },
+        ];
+        for req in samples {
+            let value = serde_json::to_value(&req).expect("serialize");
+            let tag = value.get("method").and_then(serde_json::Value::as_str).expect("tagged");
+            assert_eq!(req.method(), tag, "method() drifted from the serde tag for {req:?}");
+        }
     }
 
     #[test]

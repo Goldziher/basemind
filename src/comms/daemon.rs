@@ -32,7 +32,7 @@ use tokio::sync::watch;
 
 use super::git_history_ops::HistoryEntry;
 use super::ids::{AgentId, ThreadId};
-use super::protocol::{CommsNotification, CommsOut, CommsRequest, CommsResponse};
+use super::protocol::{CommsOut, CommsRequest, CommsResponse};
 use super::scope::ScopeChain;
 use super::store::{CommsStore, CommsStoreError};
 use super::workspace_pool::{self, WorkspacePool};
@@ -211,12 +211,20 @@ pub struct Broker {
     /// `watch` channel. `begin_drain` fires it so a `Stop` RPC (or any drain) actually breaks the
     /// front-end accept loop — not just notifies connected sinks. Absent in tests that drive the
     /// broker directly, where `begin_drain` still transitions state and notifies sinks.
-    shutdown: std::sync::OnceLock<watch::Sender<bool>>,
+    pub(super) shutdown: std::sync::OnceLock<watch::Sender<bool>>,
+    /// The comms dir this broker's store lives in, installed by the daemon entry point. Only needed
+    /// on the terminal-failure path, where it names the file the fatal error is written to. Absent
+    /// in tests that drive the broker directly, which then latch the failure without persisting it.
+    pub(super) comms_dir: std::sync::OnceLock<std::path::PathBuf>,
+    /// Latches the first terminal store failure (see [`super::store_health::is_fatal`]). Read by the
+    /// daemon entry point after the serve loop returns, so a daemon that gave up its store exits
+    /// non-zero rather than reporting a clean stop.
+    pub(super) fatal_store: AtomicBool,
     /// Cooperative cancellation for in-flight scans. Every drain route ends in `finish_drain`,
     /// which trips this FIRST — so a `Stop` RPC, SIGTERM, the idle reaper, and socket-ownership
     /// loss all interrupt a mid-scan `spawn_blocking` at per-file granularity instead of letting
     /// the runtime teardown block on it (previously only SIGKILL could end a scanning daemon).
-    scan_cancel: crate::scanner::ScanCancel,
+    pub(super) scan_cancel: crate::scanner::ScanCancel,
     pub(super) subscriber_count: AtomicUsize,
     link_count: AtomicUsize,
     pub(super) relay_count: AtomicUsize,
@@ -283,6 +291,8 @@ impl Broker {
             machine_registry: Mutex::new(machine_registry),
             blob_gc_lock: RwLock::new(()),
             shutdown: std::sync::OnceLock::new(),
+            comms_dir: std::sync::OnceLock::new(),
+            fatal_store: AtomicBool::new(false),
             scan_cancel,
             subscriber_count: AtomicUsize::new(0),
             link_count: AtomicUsize::new(0),
@@ -699,14 +709,19 @@ impl Broker {
                 .store
                 .touch_agent_if_stale(agent, super::store::AGENT_TOUCH_INTERVAL)
         {
+            self.note_store_error("touch_agent", &error).await;
             tracing::warn!(%error, agent = %agent, "comms: refresh agent activity failed");
         }
+        let method = req.method();
         match self.dispatch(req, session, link_tx).await {
             Ok(resp) => resp,
-            Err(e) => CommsResponse::Error {
-                code: "store_error".to_string(),
-                message: e.to_string(),
-            },
+            Err(e) => {
+                self.note_store_error(method, &e).await;
+                CommsResponse::Error {
+                    code: "store_error".to_string(),
+                    message: e.to_string(),
+                }
+            }
         }
     }
 
@@ -810,7 +825,7 @@ impl Broker {
                 claimant,
             } => Ok(self.on_worktree_release(repo_id, name, claimant).await),
             CommsRequest::Ping => Ok(CommsResponse::Pong),
-            CommsRequest::Status => Ok(self.on_status().await),
+            CommsRequest::Status => self.on_status().await,
             CommsRequest::Stop => Ok(self.on_stop().await),
         }
     }
@@ -931,40 +946,6 @@ impl Broker {
             Err(error) => registry_error(error),
         }
     }
-
-    /// Enter the Draining state, notify every live sink to disconnect, and fire the accept-loop
-    /// shutdown signal so the front-end stops accepting. Firing the signal is what makes a `Stop`
-    /// RPC (and SIGTERM/idle-reap/ownership-loss, which all route here) actually terminate the
-    /// daemon rather than merely notify connected clients. Idempotent — repeated drains re-send
-    /// `true`, which the watch receiver already holds.
-    pub async fn begin_drain(&self) {
-        let sinks: Vec<mpsc::Sender<CommsOut>> = {
-            let mut reg = self.registry.lock().await;
-            reg.state = LifecycleState::Draining;
-            reg.sinks.values().map(|s| s.tx.clone()).collect()
-        };
-        self.finish_drain(sinks).await;
-    }
-
-    /// The tail shared by [`Broker::begin_drain`] and [`Broker::try_begin_idle_drain`]: tell every
-    /// live sink we are going away, then fire the accept-loop shutdown signal. Split out so the
-    /// idle path can make its decision under the registry lock without holding it across the sends.
-    pub(super) async fn finish_drain(&self, sinks: Vec<mpsc::Sender<CommsOut>>) {
-        // Trip the scan token FIRST: a mid-flight rescan must start winding down before (not ~keep
-        // after) clients are told to disconnect, or the runtime teardown blocks on it. ~keep
-        self.scan_cancel.cancel();
-        for tx in sinks {
-            let _ = tx.send(CommsOut::Notification(CommsNotification::Shutdown)).await;
-        }
-        if let Some(shutdown) = self.shutdown.get() {
-            let _ = shutdown.send(true);
-        }
-    }
-
-    /// Current lifecycle state.
-    pub async fn state(&self) -> LifecycleState {
-        self.registry.lock().await.state
-    }
 }
 
 /// Per-link session context. Established by `Hello`, then read by every subsequent handler on
@@ -986,7 +967,7 @@ pub(super) mod threads;
 #[cfg(test)]
 use super::model::now_micros;
 #[cfg(test)]
-use super::protocol::{PROTO_VER, SeqMeta};
+use super::protocol::{CommsNotification, PROTO_VER, SeqMeta};
 #[cfg(test)]
 use threads::{sanitize_id, validate_dimensions};
 

@@ -108,6 +108,7 @@ pub fn run() -> Result<()> {
             }
         };
         let broker = Arc::new(Broker::with_registry(store.clone(), machine_registry));
+        broker.install_comms_dir(paths.comms_dir.clone());
 
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
         broker.install_shutdown(shutdown_tx);
@@ -237,10 +238,24 @@ pub fn run() -> Result<()> {
                 paths.socket_path.clone().into_os_string(),
             ),
         ));
+        let broker_for_exit = broker.clone();
         frontend
             .serve_obj(broker, shutdown_rx)
             .await
-            .context("comms front-end serve loop")
+            .context("comms front-end serve loop")?;
+        // A daemon that gave up because its store became permanently unusable did NOT stop cleanly.
+        // Exiting non-zero is what distinguishes it from an idle reap or a `Stop` RPC for whatever
+        // supervises the process; the drain that got us here has already released the flock and the
+        // socket, so the next `comms start` gets a clean daemon. See `Broker::hit_fatal_store_failure`.
+        if broker_for_exit.hit_fatal_store_failure() {
+            let detail = crate::comms::store_health::read(&paths.comms_dir)
+                .map(|record| record.error)
+                .unwrap_or_else(|| "see the daemon log".to_string());
+            return Err(anyhow::anyhow!(
+                "comms store is permanently unusable ({detail}); released the daemon lock and exited so a clean daemon can take over"
+            ));
+        }
+        Ok(())
     });
     // Bounded teardown instead of the implicit unbounded drop — see [`RUNTIME_SHUTDOWN_TIMEOUT`]. ~keep
     runtime.shutdown_timeout(RUNTIME_SHUTDOWN_TIMEOUT);

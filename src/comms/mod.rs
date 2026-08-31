@@ -32,11 +32,16 @@ mod daemon_forward_handlers;
 mod daemon_guards;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 mod daemon_handlers;
+/// Second `impl Broker` block: terminal-store-failure detection and the self-shutdown it triggers,
+/// split out of `daemon.rs` for the line cap.
+#[cfg(all(feature = "comms", any(unix, windows)))]
+mod daemon_health;
 /// Second `impl Broker` block: the streamable-HTTP per-request seam (activity guard, workspace
 /// read-stack resolution, connection accounting), split out of `daemon.rs` for the line cap.
 #[cfg(all(feature = "comms", any(unix, windows)))]
 pub mod daemon_http;
-/// Lifecycle admission and non-destructive user-stop handling, split out for the line cap.
+/// Lifecycle admission, the drain machinery, and non-destructive user-stop handling, split out for
+/// the line cap.
 #[cfg(all(feature = "comms", any(unix, windows)))]
 mod daemon_lifecycle;
 /// The daemon lock/registry now lives at [`crate::daemon_lock`] and is shared with the other daemon
@@ -75,6 +80,8 @@ pub mod scope;
 pub mod singleton;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 pub mod store;
+#[cfg(all(feature = "comms", any(unix, windows)))]
+pub mod store_health;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 pub mod transport;
 #[cfg(all(feature = "comms", any(unix, windows)))]

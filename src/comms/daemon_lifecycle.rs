@@ -7,7 +7,7 @@ use tokio::sync::mpsc;
 
 use super::daemon::{Broker, LifecycleState, RelayGuard};
 use super::daemon_http::HttpActivityGuard;
-use super::protocol::{CommsOut, CommsResponse};
+use super::protocol::{CommsNotification, CommsOut, CommsResponse};
 
 impl Broker {
     /// Register an established MCP relay unless shutdown has already started.
@@ -52,5 +52,39 @@ impl Broker {
         };
         self.finish_drain(sinks).await;
         CommsResponse::Ok
+    }
+
+    /// Enter the Draining state, notify every live sink to disconnect, and fire the accept-loop
+    /// shutdown signal so the front-end stops accepting. Firing the signal is what makes a `Stop`
+    /// RPC (and SIGTERM/idle-reap/ownership-loss, which all route here) actually terminate the
+    /// daemon rather than merely notify connected clients. Idempotent — repeated drains re-send
+    /// `true`, which the watch receiver already holds.
+    pub async fn begin_drain(&self) {
+        let sinks: Vec<mpsc::Sender<CommsOut>> = {
+            let mut reg = self.registry.lock().await;
+            reg.state = LifecycleState::Draining;
+            reg.sinks.values().map(|s| s.tx.clone()).collect()
+        };
+        self.finish_drain(sinks).await;
+    }
+
+    /// The tail shared by [`Broker::begin_drain`] and [`Broker::try_begin_idle_drain`]: tell every
+    /// live sink we are going away, then fire the accept-loop shutdown signal. Split out so the
+    /// idle path can make its decision under the registry lock without holding it across the sends.
+    pub(super) async fn finish_drain(&self, sinks: Vec<mpsc::Sender<CommsOut>>) {
+        // Trip the scan token FIRST: a mid-flight rescan must start winding down before (not ~keep
+        // after) clients are told to disconnect, or the runtime teardown blocks on it. ~keep
+        self.scan_cancel.cancel();
+        for tx in sinks {
+            let _ = tx.send(CommsOut::Notification(CommsNotification::Shutdown)).await;
+        }
+        if let Some(shutdown) = self.shutdown.get() {
+            let _ = shutdown.send(true);
+        }
+    }
+
+    /// Current lifecycle state.
+    pub async fn state(&self) -> LifecycleState {
+        self.registry.lock().await.state
     }
 }

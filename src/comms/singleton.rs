@@ -396,6 +396,12 @@ fn daemon_status(socket_path: &Path) -> Option<StatusReport> {
     }
 }
 
+/// Serviceability probing + forced reclaim. See [`singleton_probe`](probe) for why these are not
+/// the same question as [`probe_alive`].
+#[path = "singleton_probe.rs"]
+mod probe;
+pub use probe::{DaemonProbe, StopOutcome, force_terminate, probe_serving, request_stop_classified};
+
 /// Best-effort `Stop` request asking a daemon to drain and exit. Errors are ignored — the caller
 /// polls the socket to confirm the daemon actually went away. Public so `comms stop --all` can
 /// signal each registered daemon by its socket without opening a full [`CommsClient`] (which could

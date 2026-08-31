@@ -685,13 +685,13 @@ impl Broker {
         Ok(CommsResponse::Ok)
     }
 
-    pub(super) async fn on_status(&self) -> CommsResponse {
-        let threads = self
-            .store
-            .list_threads()
-            .map(|t| t.iter().filter(|th| th.active).count())
-            .unwrap_or(0);
-        CommsResponse::Status(StatusReport {
+    pub(super) async fn on_status(&self) -> Result<CommsResponse, CommsStoreError> {
+        // Propagate rather than `unwrap_or(0)`: a status report that answers "0 threads" when the
+        // store could not be read is the same defect the report is meant to expose — it looks like
+        // a healthy empty broker. Failing here is what lets `comms status` and `doctor --probe`
+        // tell "serving" apart from "holding the socket and refusing every request". ~keep
+        let threads = self.store.list_threads()?.iter().filter(|th| th.active).count();
+        Ok(CommsResponse::Status(StatusReport {
             pid: std::process::id(),
             version: self.version.clone(),
             build_id: crate::version::build_id().to_string(),
@@ -699,7 +699,7 @@ impl Broker {
             uptime_secs: self.started.elapsed().as_secs(),
             threads: u32::try_from(threads).unwrap_or(u32::MAX),
             subscribers: u32::try_from(self.subscriber_count()).unwrap_or(u32::MAX),
-        })
+        }))
     }
 
     /// Push a new message to every live sink that should wake for `thread`. [`SubScope::Thread`]

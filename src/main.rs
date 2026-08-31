@@ -195,8 +195,17 @@ enum CommsLifecycleCmd {
     /// Report the daemon's pid / version / uptime / room + subscriber counts.
     Status,
     /// List every live daemon registered on this machine (pid / comms dir / version / uptime) and
-    /// flag any pile-up over the ceiling. Prunes dead registry entries as a side effect.
-    Doctor,
+    /// flag any pile-up over the ceiling. Prunes dead registry entries as a side effect. Reports
+    /// process liveness only unless --probe is given.
+    Doctor {
+        /// Also ask each comms daemon whether it can actually serve, and report the verdict per
+        /// row. Off by default so the plain report stays RPC-free and safe on a wedged machine.
+        #[arg(long)]
+        probe: bool,
+        /// Acknowledge and delete the recorded fatal store error for this comms dir.
+        #[arg(long)]
+        clear_fatal: bool,
+    },
 }
 
 #[derive(clap::Args, Debug)]

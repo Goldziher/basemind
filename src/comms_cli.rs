@@ -213,11 +213,12 @@ pub(crate) fn cmd_comms(action: crate::CommsLifecycleCmd, json: bool) -> Result<
         crate::CommsLifecycleCmd::Stop { all: true } => cmd_comms_stop_all(json),
         crate::CommsLifecycleCmd::Stop { all: false } => cmd_comms_lifecycle_rpc(CommsRpc::Stop, json),
         crate::CommsLifecycleCmd::Status => cmd_comms_lifecycle_rpc(CommsRpc::Status, json),
-        crate::CommsLifecycleCmd::Doctor => cmd_comms_doctor(json),
+        crate::CommsLifecycleCmd::Doctor { probe, clear_fatal } => cmd_comms_doctor(json, probe, clear_fatal),
     }
 }
 
 #[cfg(all(feature = "comms", any(unix, windows)))]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum CommsRpc {
     Stop,
     Status,
@@ -293,27 +294,53 @@ fn cmd_comms_lifecycle_rpc(rpc: CommsRpc, json: bool) -> Result<()> {
     use basemind::comms::singleton;
 
     let paths = singleton::resolve_paths().context("resolve comms paths")?;
+    let comms_dir = paths.comms_dir.clone();
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .context("build tokio runtime")?;
 
-    runtime.block_on(async move {
+    let verdict = runtime.block_on(async move {
         let root = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
         let agent = basemind::comms::identity::cli_agent_id(&root);
-        let mut client = CommsClient::connect(&paths, agent, None, None)
-            .await
-            .map_err(|e| anyhow::anyhow!("connect to comms daemon: {e}"))?;
         match rpc {
             CommsRpc::Stop => {
-                client.stop().await.map_err(|e| anyhow::anyhow!("stop: {e}"))?;
-                if json {
-                    println!("{{\"stopped\":true}}");
-                } else {
-                    println!("comms daemon stopping");
+                // Bound the whole RPC, and never propagate its failure. A daemon that cannot answer
+                // is precisely the one an operator is trying to stop, and it fails in two ways that
+                // both used to defeat `stop`: a poisoned store fails the Hello handshake, so the
+                // command aborted before doing anything; and a daemon wedged before its accept loop
+                // never completes `connect` at all, so the command hung indefinitely. Time-box it
+                // and report what the RPC managed — the caller escalates to the pid. ~keep
+                match tokio::time::timeout(STOP_RPC_TIMEOUT, async {
+                    CommsClient::connect(&paths, agent, None, None).await?.stop().await
+                })
+                .await
+                {
+                    Ok(Ok(())) => return Ok::<StopVerdict, anyhow::Error>(StopVerdict::Accepted),
+                    // A daemon that answered with a refusal made an informed decision — `daemon_busy`
+                    // means persistent clients are still attached — so surface it and stop here. The
+                    // one exception is `store_error`: that daemon answered only to say it cannot
+                    // serve, which is the wedge the pid escalation exists for. ~keep
+                    Ok(Err(error)) => {
+                        if !is_broken_store_error(&error) {
+                            return Err(anyhow::anyhow!("stop: {error}"));
+                        }
+                        tracing::warn!(%error, "comms: daemon reports a broken store; falling back to pid reclaim");
+                        return Ok(StopVerdict::Reclaimable);
+                    }
+                    Err(_) => {
+                        tracing::warn!(
+                            timeout_secs = STOP_RPC_TIMEOUT.as_secs(),
+                            "comms: daemon did not answer the stop RPC in time; falling back to pid reclaim"
+                        );
+                        return Ok(StopVerdict::Reclaimable);
+                    }
                 }
             }
             CommsRpc::Status => {
+                let mut client = CommsClient::connect(&paths, agent, None, None)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("connect to comms daemon: {e}"))?;
                 let status = client.status().await.map_err(|e| anyhow::anyhow!("status: {e}"))?;
                 if json {
                     println!(
@@ -353,8 +380,33 @@ fn cmd_comms_lifecycle_rpc(rpc: CommsRpc, json: bool) -> Result<()> {
                 }
             }
         }
-        Ok::<(), anyhow::Error>(())
+        Ok::<StopVerdict, anyhow::Error>(StopVerdict::Accepted)
     })?;
+
+    if !matches!(rpc, CommsRpc::Stop) {
+        return Ok(());
+    }
+    // Confirm the daemon for THIS comms dir actually went away, escalating to its pid if it did not.
+    // `asked_to_stop` only records whether the RPC was accepted — a daemon can accept a Stop and
+    // still be wedged before it reaches the drain, so the pid is the thing worth verifying. ~keep
+    let ours: Vec<_> = basemind::daemon_lock::live_daemons_of(basemind::daemon_lock::DaemonKind::Comms)
+        .into_iter()
+        .filter(|record| record.dir == comms_dir)
+        .collect();
+    let forced = reclaim_unresponsive(&ours);
+    let accepted = verdict == StopVerdict::Accepted;
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({ "stopped": accepted, "force_terminated": forced })
+        );
+    } else if forced > 0 {
+        println!("comms daemon did not answer; terminated it by pid");
+    } else if accepted {
+        println!("comms daemon stopping");
+    } else {
+        println!("no live comms daemon for {}", comms_dir.display());
+    }
     Ok(())
 }
 
@@ -368,34 +420,85 @@ fn now_unix() -> i64 {
 }
 
 /// `basemind comms doctor`: enumerate the live daemons registered on this machine — every family in
-/// the shared registry, each row tagged with its `kind` — and flag a pile-up over the ceiling. Pure and cheap — reads the pidfile registry (pruning dead holders),
-/// issues no daemon RPC — so it is safe to run even when the machine is in a bad state.
+/// the shared registry, each row tagged with its `kind` — and flag a pile-up over the ceiling.
+///
+/// The default report is pure and cheap — it reads the pidfile registry (pruning dead holders) and
+/// issues no daemon RPC — so it is safe to run even when the machine is in a bad state. That
+/// property is worth keeping: a diagnostic that hangs when the daemon hangs is useless. But it means
+/// "live" here is a *process-liveness* claim, not a health claim: a daemon whose store has become
+/// unusable still holds its pid, its flock and its socket, and shows up in this list looking exactly
+/// like a healthy one. So every report says which question it answered, and `--probe` asks the other
+/// one — a bounded `Status` RPC per comms daemon, reported as a separate `serving` verdict.
 #[cfg(all(feature = "comms", any(unix, windows)))]
-fn cmd_comms_doctor(json: bool) -> Result<()> {
-    use basemind::daemon_lock;
+fn cmd_comms_doctor(json: bool, probe: bool, clear_fatal: bool) -> Result<()> {
+    use basemind::comms::{singleton, store_health};
+    use basemind::daemon_lock::{self, DaemonKind};
+
+    if clear_fatal {
+        let paths = singleton::resolve_paths().context("resolve comms paths")?;
+        let cleared = store_health::clear(&paths.comms_dir);
+        if json {
+            println!("{}", serde_json::json!({ "cleared_fatal": cleared }));
+        } else if cleared {
+            println!(
+                "cleared the recorded fatal store error for {}",
+                paths.comms_dir.display()
+            );
+        } else {
+            println!("no recorded fatal store error for {}", paths.comms_dir.display());
+        }
+        return Ok(());
+    }
 
     let daemons = daemon_lock::live_daemons();
     let ceiling = daemon_lock::max_live_daemons();
     let now = now_unix();
 
+    // Probe only the comms family: `agent` and `shells` daemons are registered in the same registry
+    // but do not speak this protocol on a comms socket, so a Status RPC there would be meaningless.
+    let verdicts: Vec<Option<singleton::DaemonProbe>> = daemons
+        .iter()
+        .map(|record| {
+            (probe && record.kind == DaemonKind::Comms)
+                .then(|| singleton::probe_serving(&singleton::comms_socket_path(&record.dir)))
+        })
+        .collect();
+
+    // Scoped to THIS comms dir, not every registered daemon's: a fatal record means the daemon that
+    // wrote it has already exited, so it never has a row above to hang off. The dir is named in the
+    // output so an operator with several comms dirs knows which one the corpse belongs to.
+    let fatal = singleton::resolve_paths()
+        .ok()
+        .and_then(|paths| store_health::read(&paths.comms_dir).map(|record| (paths.comms_dir, record)));
+
     if json {
         let items: Vec<serde_json::Value> = daemons
             .iter()
-            .map(|record| {
-                serde_json::json!({
+            .zip(&verdicts)
+            .map(|(record, verdict)| {
+                let mut row = serde_json::json!({
                     "pid": record.pid,
                     "kind": record.kind,
                     "dir": record.dir,
                     "version": record.version,
                     "uptime_secs": (now - record.started_unix).max(0),
-                })
+                });
+                if let Some(verdict) = verdict {
+                    row["reachable"] = probe_json(verdict);
+                }
+                row
             })
             .collect();
         let report = serde_json::json!({
             "count": daemons.len(),
             "ceiling": ceiling,
             "over_ceiling": daemons.len() > ceiling,
+            "checked": if probe { "registry+probe" } else { "registry" },
             "daemons": items,
+            "last_fatal_store_error": fatal.as_ref().map(|(dir, record)| serde_json::json!({
+                "comms_dir": dir,
+                "record": record,
+            })),
         });
         println!("{report}");
         return Ok(());
@@ -403,26 +506,85 @@ fn cmd_comms_doctor(json: bool) -> Result<()> {
 
     if daemons.is_empty() {
         println!("no live basemind daemons");
-        return Ok(());
+    } else {
+        println!("{} live daemon(s) (ceiling {ceiling}):", daemons.len());
+        for (record, verdict) in daemons.iter().zip(&verdicts) {
+            println!(
+                "  pid={} kind={} version={} uptime={}s{} dir={}",
+                record.pid,
+                record.kind,
+                record.version,
+                (now - record.started_unix).max(0),
+                verdict.as_ref().map(probe_label).unwrap_or_default(),
+                record.dir.display(),
+            );
+        }
+        if daemons.len() > ceiling {
+            println!(
+                "WARNING: {} daemons exceed the ceiling of {ceiling}; run `basemind comms stop --all` to reclaim",
+                daemons.len(),
+            );
+        }
     }
-    println!("{} live daemon(s) (ceiling {ceiling}):", daemons.len());
-    for record in &daemons {
+
+    if let Some((dir, record)) = &fatal {
         println!(
-            "  pid={} kind={} version={} uptime={}s dir={}",
+            "\nlast fatal store error in {} (pid {}, {} ago, on `{}`, build {}):\n  {}",
+            dir.display(),
             record.pid,
-            record.kind,
+            humanize_age(now.saturating_sub(record.epoch_secs as i64)),
+            record.request,
             record.version,
-            (now - record.started_unix).max(0),
-            record.dir.display(),
+            record.error,
         );
+        println!("  That daemon released its lock and exited. Acknowledge with `basemind comms doctor --clear-fatal`.");
     }
-    if daemons.len() > ceiling {
+
+    if probe {
+        println!("\nchecked: the pidfile registry, plus a Status RPC per comms daemon (`serving` above).");
+    } else {
+        println!("\nchecked: the pidfile registry only — whether a process with that pid exists.");
         println!(
-            "WARNING: {} daemons exceed the ceiling of {ceiling}; run `basemind comms stop --all` to reclaim",
-            daemons.len(),
+            "  This does NOT mean a daemon is serving. Use `basemind comms doctor --probe`, or `basemind comms status`, to test that."
         );
     }
     Ok(())
+}
+
+/// The trailing serviceability verdict on a `doctor --probe` row. Empty when the row was not probed,
+/// so an unprobed row renders exactly as it did before.
+#[cfg(all(feature = "comms", any(unix, windows)))]
+fn probe_label(verdict: &basemind::comms::singleton::DaemonProbe) -> String {
+    use basemind::comms::singleton::DaemonProbe;
+    match verdict {
+        DaemonProbe::Serving { threads } => format!(" serving({threads} threads)"),
+        DaemonProbe::Failing { code, message } => format!(" LIVE BUT FAILING [{code}: {message}]"),
+        DaemonProbe::Unreachable => " LIVE BUT NOT RESPONDING".to_string(),
+    }
+}
+
+#[cfg(all(feature = "comms", any(unix, windows)))]
+fn probe_json(verdict: &basemind::comms::singleton::DaemonProbe) -> serde_json::Value {
+    use basemind::comms::singleton::DaemonProbe;
+    match verdict {
+        DaemonProbe::Serving { threads } => serde_json::json!({ "state": "serving", "threads": threads }),
+        DaemonProbe::Failing { code, message } => {
+            serde_json::json!({ "state": "failing", "code": code, "message": message })
+        }
+        DaemonProbe::Unreachable => serde_json::json!({ "state": "not_responding" }),
+    }
+}
+
+/// Coarse "N ago" for operator output. Whole units only — the exact epoch is in the JSON report.
+#[cfg(all(feature = "comms", any(unix, windows)))]
+fn humanize_age(secs: i64) -> String {
+    match secs {
+        s if s < 0 => "an unknown time".to_string(),
+        s if s < 60 => format!("{s}s"),
+        s if s < 3600 => format!("{}m", s / 60),
+        s if s < 86400 => format!("{}h", s / 3600),
+        s => format!("{}d", s / 86400),
+    }
 }
 
 /// `basemind comms stop --all`: signal every live comms daemon on this machine to drain, addressing
@@ -436,17 +598,110 @@ fn cmd_comms_stop_all(json: bool) -> Result<()> {
     // Comms-only: this addresses each holder over the comms stop protocol, which another daemon
     // family in the shared registry does not speak.
     let daemons = daemon_lock::live_daemons_of(DaemonKind::Comms);
+    // Classify each answer rather than discarding it. A daemon that ignored the request is exactly
+    // the case `stop` most needs to handle — asking it to drain is itself a request, and a daemon
+    // whose store is broken can refuse it, so the documented recovery path would otherwise route
+    // through the very subsystem that is down. But a daemon that answered `daemon_busy` made an
+    // informed decision to protect the persistent clients attached to it, and reclaiming THAT one
+    // by pid is the severing the refusal exists to prevent. Only the former may be escalated. ~keep
+    let mut reclaimable = Vec::new();
+    let mut refused = Vec::new();
     for record in &daemons {
-        singleton::request_stop(&singleton::comms_socket_path(&record.dir));
+        let outcome = singleton::request_stop_classified(&singleton::comms_socket_path(&record.dir));
+        if outcome.permits_reclaim() {
+            reclaimable.push(record.clone());
+        } else if let singleton::StopOutcome::Refused { code, message } = outcome {
+            refused.push((record.pid, code, message));
+        }
     }
+    let forced = reclaim_unresponsive(&reclaimable);
+
     if json {
-        println!("{{\"stopped\":{}}}", daemons.len());
+        println!(
+            "{}",
+            serde_json::json!({
+                "stopped": reclaimable.len(),
+                "force_terminated": forced,
+                "refused": refused
+                    .iter()
+                    .map(|(pid, code, message)| serde_json::json!({
+                        "pid": pid,
+                        "code": code,
+                        "message": message,
+                    }))
+                    .collect::<Vec<_>>(),
+            })
+        );
     } else if daemons.is_empty() {
         println!("no live basemind daemons to stop");
     } else {
         println!("asked {} daemon(s) to stop", daemons.len());
+        if forced > 0 {
+            println!("  force-terminated {forced} daemon(s) that did not answer the stop request");
+        }
+        for (pid, code, message) in &refused {
+            println!("  pid={pid} refused [{code}]: {message}");
+            println!("    left running — stopping it would disconnect the clients it is serving");
+        }
     }
     Ok(())
+}
+
+/// What the `Stop` RPC established, and therefore whether escalating to the pid is warranted.
+#[cfg(all(feature = "comms", any(unix, windows)))]
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum StopVerdict {
+    /// The daemon took the request (or there was nothing to ask).
+    Accepted,
+    /// Nothing answered, or the answer proved the store is broken.
+    Reclaimable,
+}
+
+/// Whether a failed `Stop` came back as the broker's `store_error` — the one refusal that is not a
+/// decision but a symptom, and so does not protect the daemon from being reclaimed.
+#[cfg(all(feature = "comms", any(unix, windows)))]
+fn is_broken_store_error(error: &basemind::comms::client::CommsClientError) -> bool {
+    matches!(error, basemind::comms::client::CommsClientError::Broker { code, .. } if code == "store_error")
+}
+
+/// Hard bound on the `Stop` RPC itself — connect plus request. A daemon wedged before its accept
+/// loop never completes the connect, which used to hang `basemind comms stop` indefinitely: the
+/// documented recovery path blocked on the very daemon it was meant to reclaim.
+#[cfg(all(feature = "comms", any(unix, windows)))]
+const STOP_RPC_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// How long a daemon has to honour a `Stop` request before [`reclaim_unresponsive`] escalates to
+/// its pid. Generous relative to a drain that is actually progressing (the daemon's own drain grace
+/// is 10s), so a busy-but-healthy daemon is never killed out from under an in-flight request.
+#[cfg(all(feature = "comms", any(unix, windows)))]
+const STOP_GRACE: std::time::Duration = std::time::Duration::from_secs(12);
+
+/// Wait out [`STOP_GRACE`] and terminate any daemon still alive, returning how many were forced.
+///
+/// This is the half of recovery that `stop` was missing. `request_stop` is best-effort by design,
+/// so a daemon that cannot serve simply stays put — holding the singleton flock and the socket,
+/// with `pid_is_live` keeping its registry row alive, indefinitely.
+#[cfg(all(feature = "comms", any(unix, windows)))]
+fn reclaim_unresponsive(daemons: &[basemind::daemon_lock::DaemonRecord]) -> usize {
+    use basemind::comms::singleton;
+    use basemind::daemon_lock::pid_is_live;
+
+    let deadline = std::time::Instant::now() + STOP_GRACE;
+    let mut stubborn: Vec<u32> = daemons.iter().map(|record| record.pid).collect();
+    while std::time::Instant::now() < deadline {
+        stubborn.retain(|pid| pid_is_live(*pid));
+        if stubborn.is_empty() {
+            return 0;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    stubborn
+        .iter()
+        .filter(|pid| {
+            tracing::warn!(pid, "comms: daemon ignored the stop request; terminating by pid");
+            singleton::force_terminate(**pid, std::time::Duration::from_secs(3))
+        })
+        .count()
 }
 
 #[cfg(all(test, feature = "comms", any(unix, windows)))]
