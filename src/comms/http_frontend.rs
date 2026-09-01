@@ -141,6 +141,36 @@ fn parse_target(query: Option<&str>) -> Option<(PathBuf, Option<String>)> {
     Some((PathBuf::from(root), agent))
 }
 
+/// Resolve a `?root=` query value into a usable workspace root, or the response that refuses it.
+///
+/// Shared by `/mcp` and `/ui` so the two cannot drift apart. Both must reject a relative path
+/// *before* `canonicalize`, which would otherwise resolve it against the DAEMON's cwd — wherever
+/// the daemon happened to be spawned — rather than anywhere the caller named. And both must refuse
+/// a non-project root here, upstream of the workspace pool, so that no cache directory is minted
+/// for `/` and the caller is told what to do instead of getting a generic "could not be hosted"
+/// (issue #62).
+fn resolve_request_root(raw_root: &Path) -> Result<PathBuf, Response<HttpBody>> {
+    if raw_root.is_relative() {
+        return Err(text_response(
+            StatusCode::BAD_REQUEST,
+            "bad request: ?root= must be an absolute path",
+        ));
+    }
+    let Ok(root) = std::fs::canonicalize(raw_root) else {
+        return Err(text_response(
+            StatusCode::NOT_FOUND,
+            "not found: root does not resolve to an existing path",
+        ));
+    };
+    if let Err(refusal) = crate::config::root_guard::workspace_root_verdict(&root) {
+        return Err(text_response(
+            StatusCode::FORBIDDEN,
+            &crate::config::root_guard::refusal_message(&root, refusal),
+        ));
+    }
+    Ok(root)
+}
+
 /// Build a plain-text HTTP response with a boxed body matching [`HttpBody`].
 fn text_response(status: StatusCode, message: &str) -> Response<HttpBody> {
     Response::builder()
@@ -305,11 +335,9 @@ impl HttpRouter {
         let Some((raw_root, agent)) = parse_target(request.uri().query()) else {
             return text_response(StatusCode::NOT_FOUND, "not found: missing ?root=<abs-repo-path>");
         };
-        let Ok(root) = std::fs::canonicalize(&raw_root) else {
-            return text_response(
-                StatusCode::NOT_FOUND,
-                "not found: root does not resolve to an existing path",
-            );
+        let root = match resolve_request_root(&raw_root) {
+            Ok(root) => root,
+            Err(refusal) => return refusal,
         };
 
         let shared = match self.broker.host_read_stack(&root).await {
@@ -372,11 +400,9 @@ impl HttpRouter {
         let Some(args) = parse_ui_args(request.uri().query()) else {
             return text_response(StatusCode::BAD_REQUEST, "bad request: missing ?root=<abs-repo-path>");
         };
-        let Ok(root) = std::fs::canonicalize(&args.root) else {
-            return text_response(
-                StatusCode::NOT_FOUND,
-                "not found: root does not resolve to an existing path",
-            );
+        let root = match resolve_request_root(&args.root) {
+            Ok(root) => root,
+            Err(refusal) => return refusal,
         };
         let shared = match self.broker.host_read_stack(&root).await {
             Ok(shared) => shared,

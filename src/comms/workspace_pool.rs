@@ -43,6 +43,12 @@ pub(crate) enum WorkspacePoolError {
     /// back to defaults and never reaches here).
     #[error("load workspace config: {0}")]
     Config(#[from] config::ConfigError),
+    /// The root is not a project basemind will index (issue #62). `message` is the full
+    /// operator-facing guidance from [`config::root_guard::refusal_message`], carried verbatim so
+    /// the daemon's generic `Err` arm relays the real explanation instead of a status word;
+    /// `root` stays a structured field so a caller can key on the path without parsing the prose.
+    #[error("{message}")]
+    RootRefused { root: PathBuf, message: String },
 }
 
 /// One hot workspace: an open read-write store plus the resolved config and LRU bookkeeping.
@@ -323,6 +329,15 @@ impl WorkspacePool {
             if let Some(entry) = map.get(&key) {
                 return Ok(entry.clone());
             }
+        }
+        // The daemon's choke point for issue #62: relay, HTTP, `host_read_stack`, `begin_conn` and
+        // every forwarded rescan funnel through here, so refusing a non-project root here is what
+        // actually stops the daemon opening `/` read-write and walking the whole filesystem.
+        if let Err(refusal) = config::root_guard::workspace_root_verdict(root) {
+            return Err(WorkspacePoolError::RootRefused {
+                root: root.to_path_buf(),
+                message: config::root_guard::refusal_message(root, refusal),
+            });
         }
         let store = Store::open_with_holder(root, VIEW_WORKING, LockHolder::Rescan)?;
         let config = load_config(root)?;

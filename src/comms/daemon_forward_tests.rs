@@ -97,6 +97,7 @@ async fn rescan_is_refused_while_draining() {
     broker.begin_drain().await;
 
     let ws = tempfile::tempdir().expect("workspace");
+    git(ws.path(), &["init", "-q"]);
     std::fs::write(ws.path().join("main.rs"), "pub fn f() {}\n").expect("write source");
     let mut session = Session::default();
     let resp = broker
@@ -126,7 +127,10 @@ async fn rescan_request_indexes_a_workspace_and_surfaces_it_as_accessed() {
     let (tx, _rx) = mpsc::channel(8);
     let mut session = Session::default();
 
+    // The workspace-root allow-list (issue #62) only opens a project; `.git/` is invisible to the
+    // scanner, so the `scanned` / `updated` counts below are unchanged by the init.
     let ws = tempfile::tempdir().expect("workspace");
+    git(ws.path(), &["init", "-q"]);
     std::fs::write(ws.path().join("lib.rs"), "pub fn indexed() -> u32 { 7 }\n").expect("write source");
 
     let resp = broker

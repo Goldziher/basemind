@@ -24,8 +24,16 @@ use basemind::scanner_lanes::{LANE_RESOLVE, TEST_FAULT_LANE_ENV};
 use basemind::store::{INDEX_FILE, Store, VIEW_WORKING};
 use tempfile::TempDir;
 
-/// Write a small multi-file Rust tree so the scan has a real code map to lose.
+/// Write a small multi-file Rust tree so the scan has a real code map to lose. `git init` makes it
+/// a project root the allow-list accepts (issue #62); `.git/` is invisible to the scanner, so the
+/// `updated == 3` counts below are unchanged.
 fn seed_repo(root: &Path) {
+    let status = std::process::Command::new("git")
+        .args(["init", "--quiet"])
+        .current_dir(root)
+        .status()
+        .expect("run git init");
+    assert!(status.success(), "git init succeeds in {root:?}");
     fs::write(root.join("alpha.rs"), b"pub fn alpha() -> u32 { 1 }\n").unwrap();
     fs::write(root.join("beta.rs"), b"pub fn beta() -> u32 { alpha() }\n").unwrap();
     fs::write(root.join("gamma.rs"), b"pub struct Gamma { pub x: u32 }\n").unwrap();

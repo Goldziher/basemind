@@ -86,6 +86,17 @@ async fn http_get_with_host(addr: &str, target: &str, host: &str) -> u16 {
         .unwrap_or_else(|| panic!("no status line in response: {text}"))
 }
 
+/// Make `dir` a project root the workspace-root allow-list accepts (issue #62). `.git/` is
+/// invisible to the scanner, so the fixtures' indexed content is unchanged by the init.
+fn git_init(dir: &std::path::Path) {
+    let status = std::process::Command::new("git")
+        .args(["init", "--quiet"])
+        .current_dir(dir)
+        .status()
+        .expect("run git init");
+    assert!(status.success(), "git init succeeds in {dir:?}");
+}
+
 fn json_headers() -> Vec<(&'static str, &'static str)> {
     vec![
         ("content-type", "application/json"),
@@ -99,6 +110,7 @@ async fn streamable_http_serves_initialize_and_tools_list() {
 
     let comms_dir = tempfile::tempdir().expect("comms tempdir");
     let repo = tempfile::tempdir().expect("repo tempdir");
+    git_init(repo.path());
     std::fs::write(repo.path().join("a.rs"), b"pub fn alpha() {}\n").expect("write source");
     let root = std::fs::canonicalize(repo.path()).expect("canonicalize repo root");
 
@@ -187,6 +199,7 @@ async fn ui_route_serves_interactive_html() {
 
     let comms_dir = tempfile::tempdir().expect("comms tempdir");
     let repo = tempfile::tempdir().expect("repo tempdir");
+    git_init(repo.path());
     std::fs::write(
         repo.path().join("a.rs"),
         b"pub fn alpha() { beta(); }\npub fn beta() {}\n",
@@ -266,6 +279,54 @@ async fn ui_route_serves_interactive_html() {
     // same page (the body is ignored). Pins current behavior — the route has no write/side-effect path.
     let (status, _) = http_post(&addr, &format!("/ui?root={encoded_root}"), b"", &[]).await;
     assert_eq!(status, 200, "POST /ui serves the same read-only page");
+
+    shutdown_tx.send(true).ok();
+    let _ = tokio::time::timeout(Duration::from_secs(5), server).await;
+}
+
+/// Issue #62 at the HTTP front-end: `?root=` is documented as an absolute path and must name a
+/// project. A relative value is rejected BEFORE `std::fs::canonicalize` (which would otherwise
+/// resolve it against the daemon's own cwd — wherever the daemon happened to be spawned), and the
+/// filesystem root is refused outright. Neither may mint a workspace cache directory on the way.
+#[tokio::test]
+async fn mcp_root_param_must_be_absolute_and_must_be_a_project() {
+    basemind::store::init_isolated_cache();
+
+    let comms_dir = tempfile::tempdir().expect("comms tempdir");
+    // SAFETY: set before the server task reads it; every HTTP test here uses the same value.
+    unsafe { std::env::set_var(http_frontend::HTTP_ADDR_ENV, "127.0.0.1:0") };
+
+    let store = Arc::new(CommsStore::open(comms_dir.path()).expect("open comms store"));
+    let broker = Arc::new(Broker::new(store));
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    let broker_for_http = broker.clone();
+    let comms_path = comms_dir.path().to_path_buf();
+    let server = tokio::spawn(async move { http_frontend::serve_http(broker_for_http, comms_path, shutdown_rx).await });
+    let addr = http_frontend::await_http_ready(comms_dir.path(), Duration::from_secs(10))
+        .await
+        .expect("streamable-HTTP transport ready");
+
+    let list = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}});
+    let payload = list.to_string();
+
+    let (status, body) = http_post(&addr, "/mcp?root=relative%2Fpath", payload.as_bytes(), &json_headers()).await;
+    assert_eq!(
+        status, 400,
+        "a relative ?root must 400, never resolve against the daemon cwd: {body}"
+    );
+    assert!(body.contains("absolute"), "the 400 body says why: {body}");
+
+    let (status, body) = http_post(&addr, "/mcp?root=%2F", payload.as_bytes(), &json_headers()).await;
+    assert_eq!(status, 403, "the filesystem root must be refused: {body}");
+    assert!(
+        body.contains("filesystem/volume root") && body.contains("no override"),
+        "the refusal explains itself: {body}"
+    );
+
+    assert!(
+        !basemind::store::workspace_cache_dir(std::path::Path::new("/")).exists(),
+        "a refused root must not mint a workspace cache dir"
+    );
 
     shutdown_tx.send(true).ok();
     let _ = tokio::time::timeout(Duration::from_secs(5), server).await;

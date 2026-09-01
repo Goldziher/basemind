@@ -455,6 +455,18 @@ fn load_or_default(root: &std::path::Path) -> Result<Config> {
     load_or_default_with(root, None)
 }
 
+/// Refuse a workspace root that is not a project (issue #62). Root discovery still falls back to
+/// the start directory, so a host launched at `/` (or any stray directory) resolves to a root that
+/// basemind would open read-write and walk in full. Every verb that opens a root for indexing —
+/// and `serve`, which does it a hop away in the daemon — gates on this first, so the operator gets
+/// the guidance instead of an OOM.
+fn guard_workspace_root(root: &std::path::Path) -> Result<()> {
+    match config::root_guard::workspace_root_verdict(root) {
+        Ok(()) => Ok(()),
+        Err(refusal) => anyhow::bail!(config::root_guard::refusal_message(root, refusal)),
+    }
+}
+
 /// Variant of [`load_or_default`] that also applies a CLI override layer through
 /// the layered merger. Used by `scan` / `serve` to flow `#[command(flatten)]`
 /// flags down to the resolved config.
@@ -554,6 +566,7 @@ fn sync_git_history_after_scan(
 }
 
 fn cmd_scan(root: &std::path::Path, args: &ScanArgs, verbosity: Verbosity, no_color: bool) -> Result<()> {
+    guard_workspace_root(root)?;
     bootstrap_grammars(verbosity, no_color)?;
     let config = load_or_default_with(root, Some(args.documents.clone()))?;
 
@@ -616,6 +629,7 @@ fn cmd_scan(root: &std::path::Path, args: &ScanArgs, verbosity: Verbosity, no_co
 }
 
 fn cmd_rescan(root: &std::path::Path, args: &RescanArgs, verbosity: Verbosity, no_color: bool) -> Result<()> {
+    guard_workspace_root(root)?;
     bootstrap_grammars(verbosity, no_color)?;
     let config = load_or_default(root)?;
     let mut out = render::stdout(no_color);
@@ -646,6 +660,7 @@ fn cmd_rescan(root: &std::path::Path, args: &RescanArgs, verbosity: Verbosity, n
 }
 
 fn cmd_watch(root: &std::path::Path, verbosity: Verbosity, no_color: bool) -> Result<()> {
+    guard_workspace_root(root)?;
     bootstrap_grammars(verbosity, no_color)?;
     let config = Arc::new(load_or_default(root)?);
     let store = Arc::new(Mutex::new(
@@ -718,6 +733,10 @@ fn cmd_serve(root: &std::path::Path, view: &str, args: &ServeArgs, json: bool) -
             );
         }
     }
+    // Client-side pre-flight: the daemon pool refuses the same roots, but failing here yields the
+    // full guidance on the client's own stderr AND protects a new client talking to an older daemon.
+    guard_workspace_root(root)?;
+
     #[cfg(all(feature = "comms", any(unix, windows)))]
     {
         // No in-process fallback: relaying is the only path. If it fails the client sees a clear

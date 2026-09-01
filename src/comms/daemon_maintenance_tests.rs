@@ -325,7 +325,15 @@ async fn concurrent_rescan_and_blob_gc_never_reaps_a_referenced_blob() {
     let (_d, broker) = temp_broker();
     let (tx, _rx) = mpsc::channel(8);
 
+    // The workspace-root allow-list (issue #62) only opens a project root; `.git/` is invisible to
+    // the scanner, so the blob accounting this test asserts is unchanged by the init.
     let ws = tempfile::tempdir().expect("workspace");
+    let status = std::process::Command::new("git")
+        .args(["init", "--quiet"])
+        .current_dir(ws.path())
+        .status()
+        .expect("run git init");
+    assert!(status.success(), "git init succeeds");
     for i in 0..12 {
         std::fs::write(
             ws.path().join(format!("m{i}.rs")),

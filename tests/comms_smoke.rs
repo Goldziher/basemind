@@ -472,6 +472,10 @@ async fn rescan_rpc_indexes_a_workspace_and_reports_it_hot() {
     let comms_dir = tmp.path().join("comms");
     let workspace = tmp.path().join("workspace");
     std::fs::create_dir_all(&workspace).expect("workspace dir");
+    // The workspace-root allow-list refuses a directory that is neither a git repo nor carries
+    // `basemind.toml` (issue #62), and the daemon's pool is where it bites. `git init` rather than a
+    // marker file because `.git/` is invisible to the scanner, so `scanned == 1` still holds. ~keep
+    git(&["init", "--quiet"], &workspace);
     std::fs::write(workspace.join("lib.rs"), "pub fn indexed() -> u32 { 7 }\n").expect("write source");
 
     let daemon = Daemon::start(&comms_dir);

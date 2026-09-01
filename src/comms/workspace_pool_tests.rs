@@ -26,9 +26,22 @@ impl crate::git_history::remote::HistoryHost for UnusedHistoryHost {
     }
 }
 
+/// Make `dir` a project root the workspace-root allow-list accepts (issue #62). `git init` rather
+/// than dropping a `basemind.toml` marker: `.git/` is invisible to the scanner, so the exact
+/// `scanned` / `updated` counts these fixtures assert stay what they were.
+fn git_init(dir: &std::path::Path) {
+    let status = std::process::Command::new("git")
+        .args(["init", "--quiet"])
+        .current_dir(dir)
+        .status()
+        .expect("run git init");
+    assert!(status.success(), "git init succeeds in {dir:?}");
+}
+
 /// A temp workspace holding two trivial Rust sources — enough for the scanner to index symbols.
 fn workspace_with_sources() -> tempfile::TempDir {
     let dir = tempfile::tempdir().expect("tempdir");
+    git_init(dir.path());
     std::fs::write(dir.path().join("alpha.rs"), "pub fn alpha() -> u32 { 1 }\n").expect("write alpha");
     std::fs::write(dir.path().join("beta.rs"), "pub fn beta() -> u32 { 2 }\n").expect("write beta");
     dir
@@ -222,6 +235,7 @@ fn embed_pass_indexes_a_document_the_deferred_pass_leaves_untracked() {
     store::init_isolated_cache();
     let pool = WorkspacePool::new(DEFAULT_HOT_CAP);
     let dir = tempfile::tempdir().expect("tempdir");
+    git_init(dir.path());
     std::fs::write(
         dir.path().join("notes.svg"),
         br#"<svg xmlns="http://www.w3.org/2000/svg"><text>photosynthesis chloroplast glucose oxygen</text></svg>"#,

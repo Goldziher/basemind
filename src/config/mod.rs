@@ -4,6 +4,7 @@ mod documents;
 pub(crate) mod layered;
 mod overrides;
 mod resources;
+pub mod root_guard;
 mod shells;
 mod source;
 mod v1;
