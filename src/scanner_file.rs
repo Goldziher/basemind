@@ -23,97 +23,14 @@ use crate::config::Config;
 use crate::extract::{self, ExtractError, FileMapL1, FileMapL2};
 use crate::git::GitError;
 use crate::hashing;
-use crate::index::{IndexDb, writer::IndexWriter};
 use crate::lang;
 use crate::path::RelPath;
 use crate::scanner::{EmbedMode, FileResult, FileStatus, ScanCancel, ScanSource};
 #[cfg(feature = "documents")]
 use crate::scanner_docs::{extract_and_persist_doc, should_extract_document};
 use crate::scanner_filter::Filters;
+use crate::scanner_index_batch::WorkerIndexBatch;
 use crate::store::{FileEntry, Store};
-
-/// Number of files whose index entries are accumulated into one Fjall write batch before
-/// committing. Each `IndexWriter::commit` takes Fjall's single write lock, so committing
-/// per file made every rayon worker serialize on that lock (a flamegraph attributed ~14%
-/// of scan wall-time to `__psynch_mutexwait` here). Batching `N` files per commit cuts the
-/// commit count — and thus the lock-contention — by ~`N`× while keeping each worker's
-/// staged work bounded in memory. The per-file read-before-write atomicity is preserved:
-/// every file still stages its own deletes+inserts; only the *flush boundary* moved.
-const INDEX_COMMIT_BATCH: usize = 256;
-
-/// Per-rayon-worker accumulator: buffers each file's index upsert into a shared Fjall write
-/// batch and commits once `INDEX_COMMIT_BATCH` files have been staged (and once more at the
-/// end of the worker's slice). Also carries the worker's `FileResult`s so the parallel fold
-/// produces both the scan outcomes and the committed index in one pass.
-///
-/// Borrows `&IndexDb` (cheap `Arc`-backed handle) for the worker's lifetime. When the store
-/// has no index (`index_db == None`, read-only mode) staging is a no-op.
-struct WorkerIndexBatch<'a> {
-    index: Option<&'a IndexDb>,
-    writer: Option<IndexWriter>,
-    staged: usize,
-    results: Vec<FileResult>,
-}
-
-impl<'a> WorkerIndexBatch<'a> {
-    fn new(store: &'a Store) -> Self {
-        Self {
-            index: store.index_db.as_ref(),
-            writer: None,
-            staged: 0,
-            results: Vec::new(),
-        }
-    }
-
-    /// Stage one file's symbols / calls / imports into the current batch, committing first
-    /// if the batch is already full. Returns `false` only when the upsert itself failed
-    /// (caller logs); a `None` index is a successful no-op.
-    fn stage(&mut self, rel: &RelPath, l1: &FileMapL1, l2: Option<&FileMapL2>) -> bool {
-        let Some(index) = self.index else {
-            return true;
-        };
-        let writer = self.writer.get_or_insert_with(|| index.writer());
-        if writer.upsert_file(rel, l1, l2).is_err() {
-            return false;
-        }
-        self.staged += 1;
-        if self.staged >= INDEX_COMMIT_BATCH {
-            self.commit();
-        }
-        true
-    }
-
-    /// Stage one file's BM25 keyword postings into the current batch, reusing the same
-    /// [`IndexWriter`] as [`Self::stage`] so the symbol upsert and the keyword postings ride the
-    /// same per-file commit. Does not touch the file counter (the file was already counted by
-    /// `stage`) and never force-commits. A `None` index is a successful no-op.
-    #[cfg(feature = "code-search")]
-    fn stage_bm25(&mut self, rel: &RelPath, postings: &[crate::search::bm25::ChunkPosting]) {
-        let Some(index) = self.index else {
-            return;
-        };
-        let writer = self.writer.get_or_insert_with(|| index.writer());
-        if writer.upsert_bm25_file(rel, postings).is_err() {
-            tracing::warn!(rel = %rel, "bm25 upsert failed; keyword search may be incomplete");
-        }
-    }
-
-    /// Flush the staged batch under Fjall's write lock and reset the counter.
-    fn commit(&mut self) {
-        if let Some(writer) = self.writer.take()
-            && writer.commit().is_err()
-        {
-            tracing::warn!("index batch commit failed; reference search may be incomplete");
-        }
-        self.staged = 0;
-    }
-
-    /// Commit the trailing partial batch and hand back the worker's results.
-    fn finish(mut self) -> Vec<FileResult> {
-        self.commit();
-        self.results
-    }
-}
 
 /// Per-worker stack size for the scanner's rayon pool. Tree-sitter parse trees and the recursive
 /// msgpack (de)serialization of large extraction blobs can recurse deeper than rayon's small default
@@ -172,7 +89,7 @@ pub(crate) fn run_candidates(
                         return batch;
                     }
                     let result = process_file(root, rel, filters, store, source, config, scope, &mut batch, embed);
-                    batch.results.push(result);
+                    batch.push_result(result);
                     batch
                 },
             )

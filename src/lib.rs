@@ -38,6 +38,7 @@ pub mod scanner_doc_links;
 pub mod scanner_docs;
 pub mod scanner_file;
 pub(crate) mod scanner_filter;
+pub(crate) mod scanner_index_batch;
 pub mod scanner_lanes;
 pub mod search;
 #[cfg(all(feature = "shells", any(unix, windows)))]
