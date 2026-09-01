@@ -74,12 +74,13 @@ pub struct ScanConfig {
     pub exclude: Vec<String>,
     #[serde(default = "ScanConfig::default_respect_gitignore")]
     pub respect_gitignore: bool,
-    /// Follow symlinks during the repository walk. Default `false` — symlinks are a common way to
-    /// escape the repo (Bazel's `bazel-*` convenience symlinks point into an external output tree),
-    /// and following them can balloon the scan or pull in unrelated files. Set `true` for repos that
+    /// Follow symlinks during the walk. Default `false` — symlinks are a common way to escape the
+    /// repo (Bazel's `bazel-*` convenience symlinks point into an external output tree), and
+    /// following them can balloon the scan or pull in unrelated files. Set `true` for repos that
     /// deliberately symlink real source into place; the exclude floor still prunes `bazel-*` so a
-    /// symlinked Bazel tree does not leak in. `extra_roots` always follow symlinks regardless of this
-    /// flag (Bazel `external/` is symlink-heavy and is opted into explicitly).
+    /// symlinked Bazel tree does not leak in. This governs `extra_roots` too: those walks used to
+    /// follow links unconditionally, which let a link inside a directory named by the *repository's
+    /// own* config reach anywhere on the filesystem.
     #[serde(default = "ScanConfig::default_follow_symlinks")]
     pub follow_symlinks: bool,
     /// Skip files larger than this. Prevents minified-bundle stalls.
@@ -104,20 +105,35 @@ pub struct ScanConfig {
     /// (`/private/var/tmp/_bazel_<user>/<hash>/external`) — whose files should resolve in
     /// symbol search, references, outlines, and document search.
     ///
+    /// **Requires the `BASEMIND_ALLOW_EXTRA_ROOTS=1` environment grant.** This key is read from
+    /// the scanned repository's own `basemind.toml`, so without an operator-side opt-in a cloned
+    /// repository could point basemind at `~/.ssh` and read the results back out through the
+    /// search tools. Unset, every entry here is ignored with a warning.
+    ///
     /// Files under an extra root are keyed by their **absolute** path (repo files stay
     /// repo-relative), so returned paths for external files are absolute. Missing or
-    /// unreadable roots are skipped with a warning; a root inside the repo is ignored (the
-    /// primary walk already covers it). Extra roots are (re-)indexed on a full `basemind
-    /// scan` only — the live watcher does not track them. Symlinks are followed for extra
-    /// roots (Bazel `external/` is symlink-heavy). Because these trees can be large, scope
-    /// them narrowly and lean on `exclude` + `max_file_bytes`.
+    /// unreadable roots are skipped with a warning; so is a root inside the repo (the primary
+    /// walk already covers it) and a filesystem or volume root (never indexable, grant or no
+    /// grant). Extra roots are (re-)indexed on a full `basemind scan` only — the live watcher
+    /// does not track them — they count toward `max_candidates` like any other candidate, and
+    /// they follow symlinks only when `follow_symlinks` is on. Because these trees can be large,
+    /// scope them narrowly and lean on `exclude` + `max_file_bytes`.
     #[serde(default = "ScanConfig::default_extra_roots")]
     pub extra_roots: Vec<std::path::PathBuf>,
-    /// Hard ceiling on how many candidate files one scan may enumerate. The walk aborts the moment
-    /// it is reached — before any extraction, any index write, and before the candidate list itself
-    /// can grow to hundreds of megabytes — and the error names the directories that contributed
-    /// most, so a vendored or generated tree that slipped past `.gitignore` and `exclude` is a
-    /// one-line fix instead of an OOM kill (issue #62). `0` disables the ceiling.
+    /// Ceiling on how many candidate files one scan may **keep**: files that passed the
+    /// include/exclude gate and would be indexed, across the repository walk and every
+    /// `extra_roots` walk. Exceeding it aborts before any extraction, any index write, and before
+    /// the candidate list can grow to hundreds of megabytes, and the error names the heaviest
+    /// contributing directories — so a vendored or generated tree that slipped past `.gitignore`
+    /// and `exclude` is a one-line fix instead of an OOM kill (issue #62).
+    ///
+    /// It also bounds how far the walk may travel to find those candidates: a walk that visits
+    /// more than a generous multiple of this many filesystem entries aborts too, with a distinct
+    /// error, because a root broad enough to enumerate tens of millions of entries burns the time
+    /// and syscalls this ceiling exists to prevent even when it keeps almost nothing.
+    ///
+    /// What it does **not** bound: bytes read, index size, or the `Staged` / `Rev` scan sources,
+    /// which enumerate from git rather than from a walk. `0` disables both bounds.
     #[serde(default = "ScanConfig::default_max_candidates")]
     pub max_candidates: usize,
 }

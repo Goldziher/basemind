@@ -33,6 +33,7 @@ pub mod query;
 pub mod registry;
 pub mod render;
 pub mod scanner;
+pub(crate) mod scanner_candidates;
 #[cfg(feature = "code-search")]
 pub mod scanner_code;
 #[cfg(feature = "documents")]

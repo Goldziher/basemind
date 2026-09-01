@@ -277,64 +277,6 @@ pub(crate) fn ignore_walk_builder(dir: &Path, respect_gitignore: bool, follow_li
     b
 }
 
-/// Walk each configured `scan.extra_roots` directory and append its files to `out`, keyed by
-/// **absolute** path (see `RelPath::is_external`). Extra roots live outside the repo, so there is
-/// no `strip_prefix(root)` — the absolute path *is* the index key, which never collides with the
-/// repo's relative keys. Symlinks are followed (Bazel `external/` is symlink-heavy). Missing or
-/// unreadable roots are skipped with a warning; a root inside the repo is skipped because the
-/// primary walk already covers it.
-pub(crate) fn walk_extra_roots(root: &Path, config: &Config, filters: &Filters, out: &mut Vec<String>) {
-    if config.scan.extra_roots.is_empty() {
-        return;
-    }
-    let repo_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
-    let start = out.len();
-    for raw_root in &config.scan.extra_roots {
-        let extra = match raw_root.canonicalize() {
-            Ok(p) => p,
-            Err(e) => {
-                tracing::warn!(root = %raw_root.display(), error = %e, "extra_root skipped: cannot access");
-                continue;
-            }
-        };
-        if !extra.is_dir() {
-            tracing::warn!(root = %extra.display(), "extra_root skipped: not a directory");
-            continue;
-        }
-        if extra.starts_with(&repo_root) {
-            tracing::warn!(root = %extra.display(), "extra_root skipped: inside the repository root (already indexed)");
-            continue;
-        }
-        let pruner = filters.dir_pruner(None);
-        for dent in ignore_walk_builder(&extra, config.scan.respect_gitignore, true)
-            .filter_entry(move |dent| pruner.keep(dent))
-            .build()
-            .flatten()
-        {
-            if !dent.file_type().map(|t| t.is_file()).unwrap_or(false) {
-                continue;
-            }
-            let Some(abs_str) = dent.path().to_str() else {
-                continue;
-            };
-            #[cfg(windows)]
-            let abs_owned = abs_str.replace('\\', "/");
-            #[cfg(windows)]
-            let abs_str = abs_owned.as_str();
-            if !filters.allows(abs_str) {
-                continue;
-            }
-            out.push(abs_str.to_string());
-        }
-    }
-    if out.len() > start {
-        out[start..].sort_unstable();
-        let mut seen_tail = out.split_off(start);
-        seen_tail.dedup();
-        out.extend(seen_tail);
-    }
-}
-
 /// Indexability oracle for the **incremental** path (watcher + `scan_paths`), matching what a full
 /// scan would index. A full scan keeps a file iff it passes the include/exclude globs (`Filters`)
 /// AND survives the `ignore` crate's gitignore walk (`walk_candidates`). `IndexFilter` reproduces
@@ -678,6 +620,67 @@ mod tests {
         assert!(
             !kept.iter().any(|p| p.starts_with("node_modules")),
             "node_modules pruned at the directory, not per file: {kept:?}"
+        );
+    }
+
+    /// The only thing `filter_entry(DirPruner)` changes is how much the walker *does*: the indexed
+    /// set was already identical without it, because `walk_candidates` dropped every `node_modules`
+    /// path through `Filters::allows` one stat later. Scan output therefore cannot observe this fix
+    /// — walk work can, so the two walks below differ by exactly the subtree the gate refuses to
+    /// descend into.
+    #[test]
+    fn the_dir_pruner_stops_the_walk_descending_into_a_non_gitignored_node_modules() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().canonicalize().expect("canonicalize");
+        fs::create_dir_all(root.join("src")).expect("mkdir src");
+        fs::write(root.join("src/a.rs"), b"fn a() {}\n").expect("write a.rs");
+        for pkg in 0..4 {
+            let pkg_dir = root.join(format!("node_modules/pkg{pkg}/lib"));
+            fs::create_dir_all(&pkg_dir).expect("mkdir pkg");
+            for file in 0..5 {
+                fs::write(pkg_dir.join(format!("m{file}.js")), b"//\n").expect("write module");
+            }
+        }
+        let config = crate::config::default_for_root(&root);
+        let filters = Filters::build(&config, Vec::new()).expect("build filters");
+
+        let visited = |pruner: Option<DirPruner>| -> Vec<String> {
+            let mut builder = ignore_walk_builder(&root, false, false);
+            if let Some(pruner) = pruner {
+                builder.filter_entry(move |dent| pruner.keep(dent));
+            }
+            builder
+                .build()
+                .flatten()
+                .filter_map(|d| {
+                    d.path()
+                        .strip_prefix(&root)
+                        .ok()
+                        .map(|p| p.to_string_lossy().replace('\\', "/"))
+                })
+                .collect()
+        };
+
+        let ungated = visited(None);
+        let pruned = visited(Some(filters.dir_pruner(Some(&root))));
+
+        assert!(
+            ungated.iter().filter(|p| p.starts_with("node_modules")).count() >= 20,
+            "the ungated walk must actually descend, or the comparison proves nothing: {ungated:?}"
+        );
+        assert!(
+            !pruned.iter().any(|p| p.starts_with("node_modules")),
+            "the gated walk must not enter node_modules at all: {pruned:?}"
+        );
+        assert!(
+            pruned.len() < ungated.len(),
+            "pruning must be strictly less walk work: {} vs {}",
+            pruned.len(),
+            ungated.len()
+        );
+        assert!(
+            pruned.iter().any(|p| p == "src/a.rs"),
+            "real source is still walked: {pruned:?}"
         );
     }
 }
