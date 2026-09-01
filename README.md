@@ -45,7 +45,7 @@ about your code costs a small fraction of the tokens it takes to read the source
 | Capability | What it does | Key tools |
 |---|---|---|
 | **Code intelligence** | Read the code map instead of opening files: a file's structure (`outline`), find a definition by name (`symbols`), regex content search (`grep`), enumerate or fuzzy-find files (`files` · `find`), resolve a reference position to the definition it binds to (`definition` — **scope- and import-aware**, JS/TS via oxc, Python & Java via in-tree [stack-graphs](#how-it-works)), every call site of a name (`references`, name-only) or of one specific definition (`callers`), implementors of a trait / interface / base class (`implementations`), the reverse import lookup (`dependents`), one symbol's raw body (`expand`), and search by meaning over indexed chunks (`semantic` → `chunk`, needs `--features code-search`). Layered over [300+ languages](#how-it-works). | `code` (`outline` · `symbols` · `grep` · `files` · `find` · `definition` · `references` · `callers` · `implementations` · `dependents` · `expand` · `semantic` · `chunk`) |
-| **Code graph** | Walk the typed code-graph: who calls what and what a function reaches (`calls`), a symbol's n-hop blast radius (`neighbors`), the confidence-weighted shortest route between two symbols (`path`), a readable centrality-cut neighborhood (`subgraph`), the repo's de-facto modules (`communities`), and the whole-repo architecture ranked by PageRank + git churn with its dependency cycles (`map`). Render it as node-link JSON / DOT / Mermaid / GraphML / Cypher / offline interactive HTML / static SVG (`export`), **show it to a human** in their desktop viewer (`display`), or **open the interactive UI** at a live `http://…/ui` URL (`open`) — both take `open: false` to return the path or URL without launching anything. Every edge carries provenance + confidence; every result is deterministic and bounded. | `graph` (`calls` · `neighbors` · `path` · `subgraph` · `communities` · `map` · `export` · `display` · `open`) |
+| **Code graph** | Walk the typed code-graph: who calls what and what a function reaches (`calls`), a symbol's n-hop blast radius (`neighbors`), the confidence-weighted shortest route between two symbols (`path`), a readable centrality-cut neighborhood (`subgraph`), the repo's de-facto modules (`communities`), and the whole-repo architecture ranked by PageRank + git churn with its dependency cycles (`map`). Render it as node-link JSON / DOT / Mermaid / GraphML / Cypher / offline interactive HTML / static SVG (`export`), **show it to a human** in their desktop viewer (`display`), or **open the interactive UI** at a live `http://…/ui` URL (`open`, which needs the daemon's opt-in HTTP front-end and otherwise falls back to a `file://` export) — both take `open: false` to return the path or URL without launching anything. Every edge carries provenance + confidence; every result is deterministic and bounded. | `graph` (`calls` · `neighbors` · `path` · `subgraph` · `communities` · `map` · `export` · `display` · `open`) |
 | **Git intelligence** | Ask what changed recently, who last touched a function or a line, where the churn is, when a symbol's body actually changed, how a file's structure differs across commits, and full-text search commit authors + messages at full branch depth. | `git` (`status` · `recent` · `touching` · `by_path` · `churn` · `diff` · `diff_outline` · `blame` · `blame_symbol` · `symbol_history` · `search`) |
 | **Memory & documents** | A per-repo memory agents write to and search by meaning — clones of the same repo share it, unrelated repos stay separate — plus semantic search over PDFs, Office files, HTML, email, and images (OCR included, no extra setup), and a review queue of notes mined from files that change together, which you approve before anything is kept. | `memory` (`put` · `get` · `list` · `search` · `delete` · `audit` · `documents` · `mine` · `proposals` · `accept` · `reject`) |
 | **Web crawl** | Fetch a page or follow links from a starting URL; results join the document search above. | `web` (`scrape` · `crawl` · `map`) |
@@ -443,6 +443,21 @@ same worktree.
 `basemind statusline` queries the daemon for the workspaces currently active and prints a compact
 line for your shell prompt; it prints nothing when no daemon is running.
 
+The daemon is started on demand, detached with `setsid(2)`. That changes the session and the process
+group but **not** the cgroup, so on Linux an auto-spawned daemon lives in the cgroup of whatever
+shell or editor happened to start it — outside any `MemoryMax` you configured for basemind. No code
+in basemind can change that; a process cannot move its own children into a cgroup it does not
+control. If you want an enforced memory ceiling, your unit has to be the thing that starts the
+daemon: set `BASEMIND_NO_AUTOSPAWN=1` everywhere (basemind then connects to a running daemon but
+never starts one; `basemind comms start` deliberately still does) and install the ready-made user
+unit at [`docs/systemd/basemind-comms.service`](docs/systemd/basemind-comms.service), which also
+lists the two commands that verify the ceiling is real rather than merely configured.
+
+The daemon can additionally serve MCP over streamable HTTP on loopback, but that front-end is
+**opt-in**: it binds only when `BASEMIND_ALLOW_HTTP` is truthy in the daemon's environment, and every
+request must then present the bearer token published as the second line of `<comms_dir>/http.addr`
+(mode `0600`). Plugin manifests and the CLI use the stdio transport and need none of this.
+
 </details>
 
 <details>
@@ -658,6 +673,13 @@ exclude = []
 # without that opt-in a cloned repo could point basemind at your ~/.ssh. Extra roots count toward
 # max_candidates and follow symlinks only when follow_symlinks is on.
 extra_roots = ["/private/var/tmp/_bazel_you/abc123/external"]
+# Ceiling on how many candidate files one scan may keep, across the repo walk and every extra root.
+# Exceeding it aborts before any extraction or index write, and the error names the heaviest
+# contributing directories — so a vendored tree that slipped past .gitignore is a one-line fix
+# instead of an out-of-memory kill. It also bounds how far the walk may travel to find them. It does
+# NOT bound bytes read or index size, and does not apply to `--staged` / `--rev` (those enumerate
+# from git, not from a walk). 0 disables both bounds.
+max_candidates = 500_000
 
 [code_intel]
 # Precise, scope- and import-aware resolution (JS/TS via oxc; Python/Java via stack-graphs). On by
@@ -687,6 +709,23 @@ enabled = true
 # preset change).
 embed = false
 embed_exclude = []
+# Cap on chunks indexed per source file. A generated parser table or a checked-in bundle otherwise
+# fans one file out into a chunk count bounded only by max_file_bytes, and every chunk costs a
+# keyword posting, a vector row, and (with embed on) an embed. Over-cap files are still chunked and
+# cached — outline and grep are unaffected — they just contribute no postings and no vector rows.
+max_chunks_per_file = 2000
+
+[resources]
+# Memory ceiling for this process, in MiB. A positive integer is an explicit ceiling; 0 or "auto"
+# (the default) derives one — 75% of an enforced cgroup limit, or 50% of machine RAM, floored at
+# 512 MiB; "off" disables it. ADVISORY: workers park while over the ceiling and are admitted anyway
+# after five seconds, so it shapes peak memory rather than enforcing a hard limit. To actually cap
+# the daemon's memory, run it from your own resource-controlled unit — see
+# `docs/systemd/basemind-comms.service`.
+max_footprint_mb = "auto"
+# Byte budget (MiB) for the MCP read stack's decoded-outline cache, per workspace. 0 = unbounded.
+# A miss costs one blob read and never changes an answer.
+max_map_cache_mb = 256
 ```
 
 Any tool call can override these settings for that one request, and settings map to environment
@@ -736,7 +775,7 @@ machine-readable output.
 | `map [--granularity --focus --depth --edges --include-churn]` | Architecture overview: hub modules/symbols ranked by centrality + churn, plus dependency cycles (SCCs). `--edges` selects lanes (`calls`/`imports`/`inherits`/`both`/`all`); every edge carries a provenance tag (`extracted`/`inferred`/`ambiguous`) + confidence. |
 | `export [--format --focus --edges --write]` | Render as node-link JSON / DOT / Mermaid / GraphML / Cypher / HTML / SVG. |
 | `display [--format --no-open]` | Open a rendered view in the human's desktop viewer. `--no-open` writes the artifact and returns its path. |
-| `open [--format --no-open]` | Return a live `http://…/ui` URL for the interactive graph (or a `file://` export). `--no-open` launches nothing. |
+| `open [--format --no-open]` | Return a live `http://…/ui` URL for the interactive graph (or a `file://` export). The live page needs the daemon's HTTP front-end, which is opt-in — set `BASEMIND_ALLOW_HTTP=1` in the daemon's environment; without it you get the `file://` export. `--no-open` launches nothing. |
 
 **Git (`basemind git`)**
 

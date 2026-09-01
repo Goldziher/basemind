@@ -74,7 +74,16 @@ src/
 │                             the code-map persist barrier
 ├── scanner_code.rs         — code-search branch: L1/L2 → code chunks (feature code-search)
 ├── scanner_docs.rs         — document-tier scan (PDF/Office/HTML → LanceDB, feature documents)
-├── backpressure.rs         — FootprintGate: best-effort memory admission control
+├── scanner_candidates.rs   — candidate enumeration + the [scan] max_candidates ceilings and
+│                             the BASEMIND_ALLOW_EXTRA_ROOTS grant for extra_roots
+├── scanner_index_batch.rs  — per-worker index write batch: commits on files OR staged bytes
+│                             OR the process-wide staging ceiling
+├── scanner_drive.rs        — ScanObserver: per-file results are streamed, never accumulated
+├── chunk_drive.rs          — bounded process/absorb driver for whole-corpus passes
+├── scan_evidence.rs        — scan-inflight.json breadcrumb + rss/ceiling log line: what a
+│                             SIGKILLed scan leaves behind (see "Evidence" below)
+├── backpressure.rs         — FootprintGate: best-effort memory admission control;
+│                             DocSlot semaphore for max_concurrent_documents
 ├── sysres.rs               — process memory usage + platform limit (cgroup v1/v2, mach,
 │                             Windows); rate-limited, backs the footprint ceiling
 ├── sysres_cgroup.rs        — cgroup / procfs parsers + mount-parameterised readers
@@ -128,6 +137,8 @@ src/
 │   ├── resources.rs        — [resources]: scan_threads, embed_threads, max_footprint_mb, max_map_cache_mb
 │   │                         (MaxFootprint: integer | "auto" | "off"), document_models
 │   │                         (see "Resource governance" below)
+│   ├── root_guard.rs       — workspace-root allow-list: RootRefusal, the resolved-path
+│   │                         verdict, BASEMIND_ALLOW_ANY_ROOT, root-admission.json
 │   ├── documents.rs        — DocumentsConfig + sub-configs, ApiKey, SecretString
 │   ├── code.rs             — [code_search] config table
 │   ├── shells.rs           — [shells] config table
@@ -166,7 +177,9 @@ src/
 │       map_fingerprint.rs, identity.rs — response budgeting, TOON/lean output
 │       shaping, request leniency, daemon-forward plumbing for Seam B
 ├── comms/                  — agent-comms daemon: broker, thread registry, memory,
-│                             worktree registry (see "Agent comms" below)
+│                             worktree registry (see "Agent comms" below);
+│                             http_auth.rs is the BASEMIND_ALLOW_HTTP opt-in + the bearer
+│                             token every HTTP front-end request must present
 ├── git/, git_cache.rs      — gix-backed history, blame, diff, status (git/mod.rs,
 │                             commit.rs, remote.rs, worktree.rs); git_cache.rs is the
 │                             blame/log/diff disk + in-process LRU cache
@@ -468,10 +481,28 @@ basemind's footprint on a constrained machine:
 | `scan_threads` | `0` (auto: rayon's per-core default) | Cap on the code-map scanner's rayon pool. |
 | `embed_threads` | `0` (auto: `max(2, logical_cpus / 4)`) | Cap on the ONNX embedding pool. |
 | `embed_batch_size` | `32` | Chunks submitted to ONNX per batch. |
-| `max_concurrent_documents` | `0` (unbounded) | Reserved cap on concurrent document extraction. |
+| `max_concurrent_documents` | `0` (unbounded) | Cap on concurrent document extraction, enforced by a counting semaphore (`src/backpressure.rs`). Distinct from `max_footprint_mb`, which reacts to memory already allocated: an extraction's spike lands faster than the 50 ms sampler sees it, so this bounds how many spikes may overlap before the first one starts. |
 | `document_models` | `full` | Model families document extraction runs: `full` \| `code_only` (embeddings only, no keywords/NER/summarization/OCR) \| `none` (metadata + keyword search only). |
 | `max_footprint_mb` | `0` (auto) | Ceiling on process memory footprint. A positive integer is an explicit mebibyte ceiling; `0` or `"auto"` derives one from the environment; `"off"` disables the gate. |
 | `max_map_cache_mb` | `256` | Byte budget for the MCP read stack's decoded-outline cache (`src/mcp/l1_cache.rs`), per workspace. `0` = unbounded. A miss costs one blob read and never changes an answer. The code-graph memo is charged at half this value, and a read-only session's projected call / implementation indexes are charged against it too. |
+
+`[resources]` bounds **one** read stack. The daemon holds several, and that multiplier is its own
+bound (`src/comms/workspace_pool.rs`). A hot pool entry is an open `Store` handle, capped at 16
+(`DEFAULT_HOT_CAP`); a *warm read stack* is the O(corpus) structure `max_map_cache_mb` governs, and
+it is capped separately and far lower:
+
+| Knob | Default | Purpose |
+|---|---|---|
+| `BASEMIND_WARM_READ_STACKS` | `3` | Daemon-hosted read stacks kept warm at once. Building one past the cap sheds the least-recently-used, skipping any workspace with a live connection. |
+| read-stack idle TTL | `10 min` | A read stack unrequested this long is dropped while its hot store entry survives (swept every 60 s), against the 15-minute TTL for the entry itself. Deliberately not shorter: the warm-stack **cap** is what bounds residency, so a tighter clock buys at most three stacks while reaching the staleness window below more often. |
+
+Both are machine-global daemon knobs, so they are constants with an env override rather than
+`[resources]` keys: the pool is built before any workspace is known, and a per-workspace config key
+would have no answer to which workspace's number governs the shared daemon. Shedding a stack is safe
+because it is a projection of the same on-disk blobs — the next connection rebuilds it and answers
+identically; what it costs is latency. It does stop that workspace's filesystem watcher until the
+rebuild, so edits made in the gap are picked up on the next watcher event or rescan rather than
+immediately — the same window a daemon restart or the 15-minute entry sweep already opens.
 
 The best-effort `FootprintGate` backpressure (`src/backpressure.rs`) samples the process
 footprint via `src/sysres.rs` at the document-extraction and chunk-embedding admit points and
@@ -503,6 +534,14 @@ Readings are cached for 50 ms so an admit point called per file from every rayon
 turn a memory problem into a syscall storm. `auto` budgets **75%** of an enforced limit or **50%**
 of an advisory one, floored at 512 MiB so a small container cannot produce a ceiling the ONNX
 runtime alone would sit above.
+
+**Not a memory bound, and not a bug:** `SCANNER_STACK_SIZE` (256 MiB, `src/scanner_file.rs`) is the
+per-worker stack *reservation* for the scanner's rayon pool. A thread stack is lazily-committed
+virtual address space — only the pages actually touched become resident — so it never counts toward
+RSS or a cgroup limit, and it appears in no memory measurement this section describes. It looks
+alarming in `ps` output under `VSZ` and is a recurring false lead in memory investigations. It is
+sized for deeply nested syntax trees; shrinking it saves nothing and reintroduces stack-overflow
+aborts.
 
 ## Hardening
 
@@ -571,6 +610,45 @@ The daemon is the sole Fjall writer (across all repos on the machine). This allo
 sessions on the same repo to read concurrently without downgrade-to-read-only races. The daemon is
 a singleton enforced by socket-bind-as-lock (a Unix domain socket whose successful bind IS the lock);
 stale sockets are reclaimed probe-before-unlink. It auto-starts on first need and stops on explicit `comms stop`.
+
+### Daemon lifecycle and resource containment
+
+The daemon is spawned detached with `setsid(2)`, in its own comms dir (never an inherited cwd — a
+daemon that inherits `/` discovers a workspace root of `/`). It is started with a scrubbed
+environment: the spawning agent's `BASEMIND_AGENT_ID` / `BASEMIND_PARENT_AGENT_ID` /
+`BASEMIND_THREAD_ID` and the shell's `PWD` / `OLDPWD` are removed, everything else (PATH, HOME, XDG,
+proxy and model variables) is inherited.
+
+**`setsid` does not contain the daemon, and no code in basemind can.** It changes the session and
+the process group; on Linux the child stays in the **spawning process's cgroup**. A daemon
+auto-spawned from an interactive shell therefore lives in that shell's scope, outside whatever
+`MemoryMax` an operator configured on a basemind unit, and a process cannot move its own children
+into a cgroup it does not control. There is no in-process fix. Anyone who needs an enforced memory
+ceiling must make their own unit the thing that *starts* the daemon.
+
+`BASEMIND_NO_AUTOSPAWN=1` is what makes that possible. Set it and basemind connects to a daemon that
+is already running but never starts one — the auto-spawn is the only path by which a daemon can
+appear outside the operator's unit. Two deliberate exceptions: `basemind comms start` ignores it (an
+operator who typed a start command has stated the intent the variable withholds from implicit
+callers), and an already-live daemon is still used, because connect-only means *do not start one*,
+not *do not use one*. `basemind daemon ensure` honours it, like every other implicit caller.
+
+A working unit — with the install steps, the environment.d wiring, and the commands that verify the
+ceiling is real rather than merely configured — ships at `docs/systemd/basemind-comms.service`.
+
+### Evidence a killed process leaves behind
+
+A daemon that *diagnoses* its own failure records it (`comms/store_health.rs` writes
+`last-fatal.json` before releasing the singleton) and `comms doctor` reports it. A `SIGKILL` reaches
+none of that, so the OOM case — the one issue #62 is about — used to leave nothing at all.
+
+`scan_evidence.rs` covers it from the other direction. A full-tree scan writes
+`<workspace_cache_dir>/scan-inflight.json` before it starts and removes it on `Drop`, so a surviving
+file proves the process never ran its destructors; the record's `phase` says how far it had got and
+`root` names what it was scanning. `basemind comms doctor` lists every such record whose pid is dead
+(filesystem-only, no RPC, so it stays usable on a wedged machine) and `--clear-fatal` acknowledges
+them alongside the fatal-store record. Alongside it, a periodic `rss_mb` / `ceiling_mb` line makes
+the growth curve that led to the kill reconstructable from the log.
 
 ### Thread model
 

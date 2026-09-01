@@ -10,6 +10,67 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+> **Minor release — cache rebuild, breaking changes, and a security fix.** Read *Breaking changes*
+> and *Security* before upgrading. Almost all of this release is issue [#62]: a comms daemon reached
+> 43.8 GiB RSS in about two minutes on an initial scan of a large monorepo and was OOM-killed,
+> taking a VS Code renderer with it; under a 2 GiB `MemoryMax` the same scan died in about 50
+> seconds.
+
+### Breaking changes
+
+1. **A workspace root must be a project.** It has to be a git repository, or a directory containing
+   `basemind.toml`. Anything else is refused, and a filesystem or volume root is refused with no
+   override at all. *If you hit this:* run `basemind init` in the directory (writes `basemind.toml`,
+   the durable marker), or set `BASEMIND_ALLOW_ANY_ROOT=1` for that invocation. A root that already
+   had a working-view index before the upgrade keeps working untouched.
+2. **`[scan] extra_roots` is ignored unless `BASEMIND_ALLOW_EXTRA_ROOTS=1` is set** in the
+   environment that launches basemind. *If you hit this:* export the variable where your MCP host or
+   shell starts basemind — it deliberately cannot be granted from the scanned repository's own
+   config.
+3. **`[resources] max_footprint_mb = 0` now means *auto*, not *disabled*.** Every config generated
+   before this release carries that value, so upgrading gains a memory ceiling rather than keeping
+   none. *If you want the old behaviour:* write `max_footprint_mb = "off"`.
+4. **Caches are wiped and rebuilt on the next scan.** `INDEX_PARTITION_REVISION` advances 4 → 5, so
+   the Fjall secondary index is recreated on next open — fjall persists a keyspace's
+   `max_memtable_size` at *create* time and ignores the create options for a keyspace that already
+   exists, so the new per-keyspace sizing only takes effect on a recreated index. `RELEASE_MINOR`
+   advances 25 → 26 with the release cut, which also invalidates the content-addressed blob cache
+   and the git cache. *No action required:* rebuild is automatic, but the first scan after upgrading
+   is a full one.
+5. **Git history is no longer indexed for a workspace root that is merely a subdirectory of an
+   enclosing repository.** *If you relied on it:* set `BASEMIND_GIT_DISCOVER_PARENTS=1`.
+
+### Security
+
+- **The daemon's streamable-HTTP MCP endpoint is no longer unauthenticated, and no longer starts by
+  default.** Versions 0.23.0 through 0.25.2 bound `127.0.0.1:51786` unconditionally and gated
+  requests only with a `Host` / `:authority` loopback check. That check defeats DNS rebinding and
+  nothing else: any local process could open a TCP connection, send `Host: 127.0.0.1`, and reach the
+  full shared tool router — which in the release build (`--features full`) includes the `shell`
+  tool, enabled by default. Every process on the machine that could reach the port could therefore
+  run commands as the daemon's user. Two changes close it:
+  - The listener is opt-in. It binds only when `BASEMIND_ALLOW_HTTP` is truthy in the *daemon's*
+    environment; unset, no socket exists. An environment variable rather than a config key because
+    the daemon's environment belongs to whoever started it, whereas `basemind.toml` is authored by
+    whoever wrote the repository.
+  - When it does bind, every request on both routes (`/mcp` and `/ui`) must present a bearer token —
+    32 bytes from the OS CSPRNG, drawn per daemon process, checked before routing and before any
+    workspace is named or opened, compared without an early exit. The token is published as the
+    second line of `<comms_dir>/http.addr`, created mode `0600` at `open` time so it is never
+    briefly world-readable. `Authorization: Bearer <token>` and `?token=<token>` are both accepted
+    (a browser navigating to `/ui` cannot set a header). `basemind daemon ensure` reports the token: on
+    stderr for the human form, so the URL stays alone on stdout and `URL=$(basemind daemon ensure)`
+    keeps working, and in the object for `--json`.
+- **The Claude and Cursor plugin manifests no longer point at that port.** They now launch
+  `scripts/mcp-launch.sh serve --root <project dir>` over stdio. A hard-coded loopback port is not
+  addressable to a *process*: whichever process bound it first is what the client talked to, so a
+  local squatter could silently intercept every tool call, and no credential on the real daemon can
+  fix a client that never reaches it. The stdio relay is path-addressed and `0600`. The root is now
+  passed explicitly instead of being inherited from the host's working directory — a failed
+  expansion becomes a loud refusal from the root guard, where a wrong cwd was a silent scan of the
+  wrong tree. `tests/plugin_manifest_smoke.rs` pins both properties, including that no manifest
+  hard-codes `51786` anywhere.
+
 ### Added
 
 - `[scan] max_candidates` (default `500_000`, `0` disables) aborts a scan from inside the walk once
@@ -37,6 +98,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reported from a process running under a 2 GiB `MemoryMax` that had no way to know the limit
   existed. ([#62])
 - `[resources] max_footprint_mb` accepts `"off"` and `"auto"` alongside an integer. ([#62])
+- `[resources] max_map_cache_mb` (default `256`, `0` = unbounded) bounds the MCP read stack's
+  decoded-outline cache, per workspace. Charged in **bytes**, not entries: a decoded outline spans
+  three orders of magnitude (a ~1.4 KB median against a measured 697 KB maximum), so an entry cap
+  would bound the count and not the footprint. A miss costs one blob read and never changes an
+  answer. The code-graph memo is charged at half the same budget, and a read-only session's
+  projected call / implementation indexes are charged against it too. ([#62])
+- `[code_search] max_chunks_per_file` (default `2000`) caps how many chunks one source file may
+  contribute to the search index, mirroring the document tier's `max_chunks_per_document`. A
+  generated parser table or a checked-in bundle otherwise fans one file out into a chunk count
+  bounded only by `[scan] max_file_bytes`, and every chunk costs a BM25 posting entry carrying its
+  full term list, a LanceDB row, and — with `embed` on — an ONNX embed. An over-cap file is still
+  chunked and cached (the `.chunk.msgpack` sidecar is written, so outline and grep are unaffected);
+  what it loses is the per-chunk fan-out, with a warning naming the file. ([#62])
+- `BASEMIND_NO_AUTOSPAWN=1` makes basemind connect to a daemon that is already running but never
+  start one, so an operator can guarantee the daemon exists only inside a resource-controlled unit.
+  A working systemd user unit — with install steps, the `environment.d` wiring, and the commands
+  that verify the ceiling is real rather than merely configured — ships at
+  `docs/systemd/basemind-comms.service`. Two deliberate exceptions: `basemind comms start` ignores
+  the variable (an operator who typed a start command has stated the intent it withholds from
+  implicit callers), and an already-live daemon is still used — connect-only means *do not start
+  one*, not *do not use one*. ([#62])
+- A scan leaves post-mortem evidence a `SIGKILL` cannot erase.
+  `<workspace_cache_dir>/scan-inflight.json` is written before the pass starts and removed on
+  `Drop`, so a surviving record proves the process
+  never ran its destructors — the signature of an OOM kill, which is exactly the case the existing
+  `last-fatal.json` structurally cannot report, because the code that writes it never runs. The
+  record carries the pid, the build, the phase, the candidate count, and the root (a root of `/` is
+  itself the finding). `basemind comms doctor` lists every such record whose pid is dead —
+  filesystem-only, no RPC, so it stays usable on a wedged machine — and `--clear-fatal` now
+  acknowledges stale scan records alongside the fatal-store record. A periodic `rss_mb` /
+  `ceiling_mb` log line makes the growth curve reconstructable after the fact. ([#62])
+- `BASEMIND_GIT_DELTA_CACHE_BYTES` overrides the per-`Repository` delta-base (pack) cache bound;
+  `0` disables the cache. gix's default when `core.deltaBaseCacheLimit` is unset is 96 MiB **per
+  thread-local `Repository`**, i.e. per rayon worker during a git-history build — roughly 3 GiB of
+  decoded delta bases on a 32-core host that nothing in basemind accounted for. basemind now sets
+  the key to 8 MiB, as a CLI-precedence override so a repository-local `core.deltaBaseCacheLimit`
+  cannot raise the bound we set for our own protection. Undersizing it costs re-decoding, never a
+  wrong answer. ([#62])
+- `BASEMIND_ALLOW_HTTP` gates the daemon's streamable-HTTP MCP front-end — see *Security*. ([#62])
 
 ### Changed
 
@@ -49,7 +149,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the root — collapsing `..`, following symlinks — before deciding, and hands the resolved path to
   whatever opens the store, so a path such as `/..` can no longer be checked as a subdirectory and
   opened as the filesystem root. It now also covers `basemind admin rescan` (and the `admin` MCP
-  tool), which walks the whole working tree in-process, and the daemon's git-history sync. ([#62])
+  tool), which walks the whole working tree in-process, and the daemon's git-history sync. There are
+  three refusals, and the error text names every way out of the one you hit: *not a project* (a
+  plain directory — overridable), *filesystem root* (`/`, `C:\`, a UNC share root — never
+  overridable, by any marker, hatch or pre-existing index), and *unresolvable* (relative, missing or
+  unreadable, so the guard cannot decide about it at all). It is a misconfiguration guard, not an
+  authorization boundary: it does not defend against a caller who controls the process's arguments
+  or environment. ([#62])
+- The grandfather clause reads an explicit record rather than inferring consent from a side effect.
+  The guard writes `root-admission.json` into the root's workspace cache dir, stamped
+  `pre_existing_index` (a standing admission that survives with no env var — the upgrade path) or
+  `env_hatch` (never a standing admission). Without it, the mere existence of a working-view index
+  was proof of admission, which made a single `BASEMIND_ALLOW_ANY_ROOT=1 basemind scan` a
+  *permanent* whitelist for that root: the scan the hatch authorized left behind the very file the
+  next hatch-free run would accept as evidence. The first verdict is the standing one and is never
+  overwritten, and the write is best-effort — a failed write only degrades the guard to its
+  index-means-admitted behaviour and never fails a scan. ([#62])
 - The HTTP transport's `?root=` now runs the same root discovery the CLI does, so naming a
   subdirectory of a repository attaches to that repository instead of being refused — the two
   front-ends previously disagreed about what a root is. ([#62])
@@ -69,7 +184,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The scanner bounds what it stages into the index by **bytes** rather than by file count. BM25
   keyword postings — one entry per (term, chunk), staged on essentially every scan — previously
   counted toward no limit at all and could not force a commit; they now participate in the byte
-  budget. ([#62])
+  budget.
+
+  This is the single change that most explains issue #62's number. The old bound counted *files*,
+  and postings were staged without touching that counter, so the one structure that grows with the
+  product of files and distinct terms was the one structure nothing bounded. The other fixes in this
+  release matter, but they are smaller than their prominence suggests: reverting the chunked drive
+  loop to its previous whole-corpus form, measured at both arms on a 4 000-file corpus, moves peak
+  RSS by ~38 MiB — about 10 KiB per file — because a file's postings are already cleared inside the
+  worker before its result is returned. Worth having at monorepo scale, but not the 43.8 GiB.
+  Directory pruning is a walk-cost win rather than a memory one. Stated explicitly so nobody
+  re-derives the priorities from scratch next time. ([#62])
 - **Breaking:** `[resources] max_footprint_mb = 0` now means **auto**, not disabled. An existing
   config that carries the old default — as every config generated before this release does —
   therefore gains a memory ceiling on upgrade rather than keeping none. Auto budgets 75% of an
@@ -83,6 +208,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `sysres::phys_footprint`, a Darwin-only metric returning `None` everywhere else, so on the
   machine that filed #62 the ceiling could not have throttled anything even if it had been
   configured. ([#62])
+- The MCP read stack no longer keeps every file's decoded outline resident for the process lifetime.
+  The old `MapCache` was the only `O(total symbols)` structure with permanent lifetime — plus a
+  second full copy of every import, plus a deep clone of the whole map on every watcher batch, times
+  up to 16 hot workspaces in one daemon. It splits into a permanent `O(files)` symbol-free index
+  view and a byte-charged read-through LRU governed by `[resources] max_map_cache_mb`, keyed by
+  content hash so one cache is safely shared across snapshots and identical files share an entry.
+  Building the view now decodes zero outline blobs — it projects the index and probes blob existence
+  in parallel, one stat per file instead of a full read and decode. A read-only session whose
+  projections are truncated by the budget reports it through the existing lifecycle notice with
+  `retry: false`, because rerunning cannot widen a budget. ([#62])
+- Per-keyspace Fjall memtable sizing replaces the 64 MiB default on all 17 keyspaces: 16 MiB for the
+  BM25 posting list (the densest writer by far), 8 MiB for the secondary indexes the scanner
+  rewrites once per file, less for the keyspaces a scan barely touches — all within fjall's
+  recommended 8–64 MiB band. This is what `INDEX_PARTITION_REVISION` 4 → 5 exists to force: fjall
+  persists `max_memtable_size` at keyspace *create* time and ignores the create options on reopen,
+  so an index built by an earlier build would have kept the 64 MiB default forever. ([#62])
+- The staged-byte counter now models fjall's real per-entry cost (`64 + heap(key) + heap(value)`,
+  where a payload of 20 bytes or fewer inlines and anything larger carries an 8-byte refcount
+  header). Charging `key.len() + value.len()` undercounted what a `WriteBatch` actually holds by
+  2–3×, so both the per-worker batch budget and the process-wide staging ceiling meant something
+  other than what they said. It remains a deliberate lower bound: allocator size-class rounding and
+  `Vec` growth slack are not modelled. ([#62])
+- The resolve pass no longer materialises the whole corpus. It previously built every file's
+  resolved-reference edge set at once — one edge per resolved identifier use — held them through
+  fact staging, then transformed rather than dropped them. The per-file edge set now cannot escape
+  the file that produced it (there is no field to retain it in, so keeping the corpus set is a
+  compile error), and the serial index writers gained the same byte bounds the parallel workers
+  already had, closing the last staging path with no byte bound at all. ([#62])
+- `basemind scan` / `rescan` stream each file's line as the scan absorbs it instead of accumulating
+  one result per file for the whole repository just to print it afterwards. `ScanReport` now carries
+  the summary statistics only; a caller that wants the old whole-corpus vector asks for it
+  explicitly. ([#62])
+- **Breaking:** git history is no longer indexed for a workspace root that is a subdirectory of the
+  repository git discovery lands on. Those commits are addressed by paths that do not exist under
+  the root, and walking them costs the whole ancestor object database — a 4.4k-file subdirectory of
+  a monorepo was driving gix over 275 MiB of packs and 101 655 objects. Discovery itself is
+  unchanged (ascent is what lets `basemind scan src/` lift to the repository root); only the
+  history integration is gated. `git init` in the directory, or
+  `BASEMIND_GIT_DISCOVER_PARENTS=1`, restores the old behaviour. ([#62])
+- The Claude and Cursor plugin manifests launch `scripts/mcp-launch.sh serve --root <project dir>`
+  over stdio instead of dialling `http://127.0.0.1:51786/mcp?root=…` — see *Security*. ([#62])
 
 ### Fixed
 
@@ -96,9 +262,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   bounded number of further entries before erroring, buckets by the first *two* path segments so
   monorepos get an actionable name, and groups root-level files instead of listing them one by
   one. ([#62])
-
 - A draining daemon can now interrupt a running file walk. Previously cancellation was only checked
   once the walk had finished, so a runaway scan could not be stopped. ([#62])
+- `[resources] max_concurrent_documents` was parsed and never consumed — the setting did nothing. A
+  counting semaphore now enforces it. It is distinct from the footprint gate, which reacts to memory
+  *already* allocated: a document extraction's spike (decoded page buffers, OCR bitmaps, an
+  embedding batch) lands faster than the sampler can see it, so this bounds how many spikes may
+  overlap before the first one starts. ([#62])
+- Staging an entry that failed returned early without running the commit check, so bytes the failed
+  upsert had already staged drifted out of the ledger permanently. ([#62])
+- Commit cadence no longer collapses at high core counts. The process-wide staging ceiling had no
+  hysteresis, so cadence scaled as `ceiling / workers` — a commit per file on a many-core host. A
+  1 MiB floor on that branch bounds the worst case at about 128 MiB of resident staged index at 64
+  workers, and no core count now commits more often than the 8-worker cadence. ([#62])
+
+### Known limitations
+
+- **Two concurrent full-tree scans of one workspace share one `scan-inflight.json`.** The second
+  scan's record overwrites the first's, and the first scan's completion then removes the file while
+  the second is still running — a window in which a genuine hard death would leave no breadcrumb.
+  This is not reachable today (the daemon serialises a workspace's scans behind its store lock, and
+  a `serve` boot's deferred and inline passes are sequential), and a per-pid filename would trade
+  the window for records that accumulate and never get cleaned, so the single-file design stands.
+  Recorded because the evidence is only trustworthy if its gaps are known. ([#62])
+- **A memory ceiling on the daemon can only be enforced by whoever *starts* it.** basemind spawns the
+  daemon detached with `setsid(2)`, which changes the session and the process group and **not** the
+  cgroup. On Linux a child stays in the spawning process's cgroup, so a daemon auto-spawned from an
+  interactive shell lands in that shell's scope — outside whatever `MemoryMax` an operator
+  configured on a basemind unit — and a process cannot move its own children into a cgroup it does
+  not control. There is no in-process fix, and none is claimed. The answer is
+  `BASEMIND_NO_AUTOSPAWN=1` everywhere plus a unit that starts the daemon itself; see
+  `docs/systemd/basemind-comms.service`, which includes the two commands that check whether the
+  ceiling is real rather than merely configured. ([#62])
+- **`[resources] max_footprint_mb` is advisory, not structural.** The gate parks workers at admit
+  points while the process is over the ceiling and then admits anyway after five seconds, trading an
+  overshoot for guaranteed forward progress. It shapes the peak; it cannot enforce an invariant the
+  allocator will not, and it cannot make a scan that used to succeed start failing. The structural
+  bounds this release adds are the ones that abort or truncate: `[scan] max_candidates`,
+  `[code_search] max_chunks_per_file`, `[resources] max_map_cache_mb`, and the byte budget on staged
+  index entries.
+- **`[scan] max_candidates` does not bound bytes read or index size**, and does not apply to the
+  `Staged` / `Rev` scan sources, which enumerate from git rather than from a walk.
+- **Directory pruning is a walk-cost win, not a memory win.** Pruned files were already rejected by
+  the path filter and never entered the candidate list. What pruning removes is the descent and the
+  per-file `stat` — real, and the reason the Linux watcher stopped registering inotify watches
+  inside excluded trees — but no claim is made that it reduced peak memory.
+- **`SCANNER_STACK_SIZE` (256 MiB, `src/scanner_file.rs`) is not a leak and was deliberately left
+  alone.** It is the per-worker stack reservation for the scanner's thread pool: lazily-committed
+  virtual address space that never counts toward RSS or a cgroup limit. Shrinking it to "save
+  memory" would save nothing and would reintroduce stack-overflow aborts on deeply nested syntax
+  trees.
 
 [#62]: https://github.com/Goldziher/basemind/issues/62
 

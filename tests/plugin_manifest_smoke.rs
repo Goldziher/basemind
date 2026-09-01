@@ -66,6 +66,62 @@ fn claude_and_cursor_manifests_launch_the_stdio_server() {
     }
 }
 
+/// The harnesses that launch the same stdio launcher but cannot name the project directory.
+///
+/// Gemini's `${extensionPath}` and Kimi's relative path both resolve against the *extension* root,
+/// not the workspace, and neither harness exposes a project-directory variable the way
+/// `${CLAUDE_PROJECT_DIR}` and `${workspaceFolder}` do. So these two inherit the root from the cwd
+/// the host launches them in — the documented contract for both, and the same one the Codex
+/// manifest depends on deliberately (it asserts `cwd` is absent for exactly this reason).
+///
+/// The asymmetry with the Claude and Cursor manifests is therefore intentional, not drift. Passing
+/// a variable these harnesses do not define would expand to a literal, which the root guard would
+/// refuse — breaking them outright, which is strictly worse than the cwd inheritance it replaced.
+/// The root guard is the backstop that makes cwd inheritance survivable for all of them: a host
+/// launched at `/` now gets a loud refusal instead of a scan of the whole filesystem (issue #62).
+///
+/// What this pins is the part that *is* the same everywhere — the stdio launcher, and the absence
+/// of any HTTP transport or hard-coded port. Before this test those two manifests were covered by
+/// nothing at all.
+#[test]
+fn gemini_and_kimi_manifests_launch_the_stdio_server() {
+    let repository_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+
+    for (manifest_rel, expected_command) in [
+        ("gemini-extension.json", "${extensionPath}/scripts/mcp-launch.sh"),
+        ("kimi.plugin.json", "./scripts/mcp-launch.sh"),
+    ] {
+        let path = repository_root.join(manifest_rel);
+        let manifest: Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap_or_else(|e| panic!("read {manifest_rel} ({e})")))
+                .unwrap_or_else(|e| panic!("parse {manifest_rel} ({e})"));
+        let server = manifest
+            .get("mcpServers")
+            .and_then(|servers| servers.get("basemind"))
+            .unwrap_or_else(|| panic!("{manifest_rel} declares a basemind MCP server"));
+
+        assert_eq!(
+            server.get("command").and_then(Value::as_str),
+            Some(expected_command),
+            "{manifest_rel} must exec the shipped stdio launcher",
+        );
+        assert_eq!(
+            server.get("args").and_then(Value::as_array).map(Vec::as_slice),
+            Some([Value::from("serve")].as_slice()),
+            "{manifest_rel} launches the stdio `serve` transport and inherits the host's workspace cwd",
+        );
+        assert!(
+            server.get("url").is_none() && server.get("type").is_none(),
+            "{manifest_rel} must not carry an HTTP transport: a hard-coded loopback port is \
+             squattable and cannot be authenticated from the client side",
+        );
+        assert!(
+            !manifest.to_string().contains("51786"),
+            "{manifest_rel} must not hard-code the daemon's HTTP port anywhere",
+        );
+    }
+}
+
 #[test]
 fn codex_mcp_should_launch_latest_release_from_workspace() {
     let repository_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));

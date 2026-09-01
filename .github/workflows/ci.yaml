@@ -158,6 +158,65 @@ jobs:
         with:
           command: check
 
+  memory-ceiling:
+    name: scan under a 1 GiB cgroup (Linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      # Issue #62 was reported from a daemon under a systemd `MemoryMax`, and the whole class was
+      # invisible to the matrix above because no leg there ever runs under a memory cgroup. A scope
+      # with a real ceiling turns an unbounded scan into an OOM kill (137) instead of a slow green
+      # leg, so this is the one job that reproduces the reporter's environment rather than
+      # approximating it.
+      #
+      # A SYSTEM scope via sudo, not `systemd-run --user`: a GitHub runner has no user session bus,
+      # so the `--user` form fails to start and would report a green leg that never enforced
+      # anything -- the precise failure mode this job exists to rule out.  ~keep
+      - name: Build the scanner
+        run: cargo build --bin basemind
+
+      - name: Generate a synthetic corpus
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/corpus/src
+          cd /tmp/corpus
+          git init -q .
+          for f in $(seq 0 2999); do
+            {
+              echo "use std::collections::HashMap;"
+              for i in $(seq 0 60); do
+                printf 'pub fn module_%s_item_%s(a: u64, b: &str) -> HashMap<String, usize> { let _ = b; HashMap::new() }\n' "$f" "$i"
+              done
+            } > "src/module_$f.rs"
+          done
+          # The scan runs as root inside the scope, so the repo must be trusted for that user too.
+          sudo git config --system --add safe.directory /tmp/corpus
+
+      - name: Confirm the scope really enforces a ceiling
+        run: |
+          set -euo pipefail
+          # Prove the harness before trusting its verdict: a scope that silently fails to apply
+          # MemoryMax would make the scan step pass for the wrong reason.
+          if sudo systemd-run --scope -p MemoryMax=64M -p MemorySwapMax=0 \
+               bash -c 'tail /dev/zero'; then
+            echo "MemoryMax was NOT enforced: a process that should have been killed survived."
+            echo "This job cannot vouch for the scan step, so fail rather than report a false pass."
+            exit 1
+          fi
+          echo "confirmed: the scope enforces MemoryMax"
+
+      - name: Scan under MemoryMax=1G
+        run: |
+          set -euo pipefail
+          sudo systemd-run --scope -p MemoryMax=1G -p MemorySwapMax=0 \
+            env BASEMIND_DATA_HOME=/tmp/bm-data \
+            ./target/debug/basemind scan --root /tmp/corpus
+          echo "scan completed inside a 1 GiB ceiling"
+
   hardening:
     name: hardening harness (nightly)
     runs-on: ubuntu-latest
