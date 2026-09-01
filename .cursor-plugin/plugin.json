@@ -14,7 +14,8 @@
   "skills": "./skills/",
   "mcpServers": {
     "basemind": {
-      "url": "http://127.0.0.1:51786/mcp?root=${workspaceFolder}"
+      "command": "${CURSOR_PLUGIN_ROOT}/scripts/mcp-launch.sh",
+      "args": ["serve", "--root", "${workspaceFolder}"]
     }
   }
 }

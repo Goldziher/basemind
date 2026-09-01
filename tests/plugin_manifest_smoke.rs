@@ -2,6 +2,70 @@ use std::path::PathBuf;
 
 use serde_json::Value;
 
+/// Every harness manifest must launch the MCP server over **stdio**, through the shipped launcher.
+///
+/// The Claude and Cursor manifests used to point at `http://127.0.0.1:51786/mcp`, and a hard-coded
+/// loopback port is not addressable to a *process*: whichever process binds it first is what the
+/// client talks to, and no credential on the real daemon can fix a client that never reaches it. The
+/// stdio relay is path-addressed and `0600`, so it closes the port-squatting hijack outright. The
+/// launcher (`scripts/mcp-launch.sh`) resolves a version-matched binary and `exec`s `basemind serve`,
+/// forwarding its arguments verbatim — the same wiring `gemini-extension.json` and
+/// `kimi.plugin.json` already use.
+///
+/// The workspace root is passed **explicitly** rather than inherited from cwd. The HTTP form these
+/// manifests replaced carried `?root=`, and issue #62 is what a cwd-derived root costs: a host
+/// launched at `/` handed the daemon the whole filesystem. An expansion that silently fails is a
+/// loud refusal from the root guard, where a wrong cwd would be a silent scan of the wrong tree.
+#[test]
+fn claude_and_cursor_manifests_launch_the_stdio_server() {
+    let repository_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    assert!(
+        repository_root.join("scripts/mcp-launch.sh").is_file(),
+        "the launcher every stdio manifest points at must ship with the plugin",
+    );
+
+    for (manifest_rel, root_var, project_var) in [
+        (".claude-plugin/plugin.json", "CLAUDE_PLUGIN_ROOT", "CLAUDE_PROJECT_DIR"),
+        (".cursor-plugin/plugin.json", "CURSOR_PLUGIN_ROOT", "workspaceFolder"),
+    ] {
+        let path = repository_root.join(manifest_rel);
+        let manifest: Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap_or_else(|e| panic!("read {manifest_rel} ({e})")))
+                .unwrap_or_else(|e| panic!("parse {manifest_rel} ({e})"));
+        let server = manifest
+            .get("mcpServers")
+            .and_then(|servers| servers.get("basemind"))
+            .unwrap_or_else(|| panic!("{manifest_rel} declares a basemind MCP server"));
+
+        assert_eq!(
+            server.get("command").and_then(Value::as_str),
+            Some(format!("${{{root_var}}}/scripts/mcp-launch.sh").as_str()),
+            "{manifest_rel} must exec the plugin-root launcher",
+        );
+        assert_eq!(
+            server.get("args").and_then(Value::as_array).map(Vec::as_slice),
+            Some(
+                [
+                    Value::from("serve"),
+                    Value::from("--root"),
+                    Value::from(format!("${{{project_var}}}")),
+                ]
+                .as_slice()
+            ),
+            "{manifest_rel} must launch the stdio `serve` transport against an explicit root",
+        );
+        assert!(
+            server.get("url").is_none() && server.get("type").is_none(),
+            "{manifest_rel} must not carry an HTTP transport: a hard-coded loopback port is \
+             squattable and cannot be authenticated from the client side",
+        );
+        assert!(
+            !manifest.to_string().contains("51786"),
+            "{manifest_rel} must not hard-code the daemon's HTTP port anywhere",
+        );
+    }
+}
+
 #[test]
 fn codex_mcp_should_launch_latest_release_from_workspace() {
     let repository_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));

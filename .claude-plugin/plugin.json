@@ -13,8 +13,8 @@
   "keywords": ["mcp", "agent-context", "rag", "code-map", "tree-sitter"],
   "mcpServers": {
     "basemind": {
-      "type": "http",
-      "url": "http://127.0.0.1:51786/mcp?root=${CLAUDE_PROJECT_DIR}"
+      "command": "${CLAUDE_PLUGIN_ROOT}/scripts/mcp-launch.sh",
+      "args": ["serve", "--root", "${CLAUDE_PROJECT_DIR}"]
     }
   }
 }
