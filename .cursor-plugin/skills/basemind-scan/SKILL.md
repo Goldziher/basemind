@@ -50,6 +50,9 @@ Finding the binary (in order of preference):
   instead, or stop the server first.
 - **Indexing directories outside the repo** — set `scan.extra_roots` in the repo-root `basemind.toml`
   to a list of absolute paths (e.g. a Bazel external repo cache) to index them alongside the repo.
+  This needs `BASEMIND_ALLOW_EXTRA_ROOTS=1` in the environment that launches basemind: the config
+  file lives inside the repository, so without that operator opt-in the entries are ignored with a
+  warning. A filesystem or volume root is refused either way.
   Their files are keyed by absolute path (so results for them are absolute, not repo-relative) and
   are (re-)indexed on a full `scan` only — the live watcher does not track them. Git tools (blame)
   don't apply to external files; the code map (symbols / references / outlines) and document search

@@ -13,12 +13,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `[scan] max_candidates` (default `500_000`, `0` disables) aborts a scan from inside the walk once
-  that many candidate files have been enumerated — before extraction, before any index write, and
-  before the candidate list itself can grow to hundreds of megabytes. The error names the
-  heaviest top-level directories, so a vendored or generated tree that slipped past `.gitignore`
-  is a one-line fix rather than an out-of-memory kill. ([#62])
+  more than that many candidate files have been kept — before extraction, before any index write,
+  and before the candidate list itself can grow to hundreds of megabytes. The error names the
+  heaviest contributing directories by their first two path segments, so a vendored or generated
+  tree that slipped past `.gitignore` is a one-line fix rather than an out-of-memory kill. ([#62])
 - `BASEMIND_ALLOW_ANY_ROOT=1` accepts any directory as a workspace root, for the cases the new
-  allow-list refuses. It does not override the refusal of a filesystem or volume root. ([#62])
+  allow-list refuses. It does not override the refusal of a filesystem or volume root, and it
+  applies only to the invocation that sets it: the index a hatched scan produces does not make the
+  root permanently acceptable, so unsetting the variable refuses it again. ([#62])
+- `[scan] max_candidates` also bounds the walk itself, not only what it keeps: a walk that visits a
+  generous multiple of that many filesystem entries while accepting almost none of them now aborts
+  with its own error, because a root broad enough to enumerate tens of millions of entries burns
+  exactly the time and syscalls the ceiling exists to prevent. ([#62])
+- basemind now reads the memory limit it is running under, not just its own usage: cgroup v2
+  (`memory.max`, taking the minimum over the whole hierarchy, because systemd puts `MemoryMax` on
+  a slice above the scope a process actually lives in), cgroup v1 (with its no-limit sentinel
+  recognised as *no limit* rather than as an 8-exabyte ceiling), `/proc/meminfo` on a Linux box
+  with no memory cgroup, `hw.memsize` on macOS, and `GlobalMemoryStatusEx` on Windows. Usage on
+  Linux is a working set — reclaimable page cache is subtracted, as kubelet does — so having read
+  a large repository no longer reads as being near the limit. A cgroup that sets no limit — the
+  default for a plain `docker run` — falls back to total RAM rather than reporting no ceiling, and
+  a cgroup limit larger than the machine is not treated as the binding constraint. Issue #62 was
+  reported from a process running under a 2 GiB `MemoryMax` that had no way to know the limit
+  existed. ([#62])
+- `[resources] max_footprint_mb` accepts `"off"` and `"auto"` alongside an integer. ([#62])
 
 ### Changed
 
@@ -26,18 +44,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   opens a root read-write and indexes everything beneath it, and root discovery falls back to the
   starting directory, so an MCP host launched at `/` could previously hand the daemon the whole
   filesystem — which is how a scan reached 43.8 GiB and was OOM-killed. `basemind init` and
-  `BASEMIND_ALLOW_ANY_ROOT` are the escape hatches, and a root that already has an index on disk is
-  grandfathered so upgrades do not break a working setup. ([#62])
+  `BASEMIND_ALLOW_ANY_ROOT` are the escape hatches, and a root that already had an index on disk
+  before the upgrade is grandfathered so upgrades do not break a working setup. The guard resolves
+  the root — collapsing `..`, following symlinks — before deciding, and hands the resolved path to
+  whatever opens the store, so a path such as `/..` can no longer be checked as a subdirectory and
+  opened as the filesystem root. It now also covers `basemind admin rescan` (and the `admin` MCP
+  tool), which walks the whole working tree in-process, and the daemon's git-history sync. ([#62])
+- The HTTP transport's `?root=` now runs the same root discovery the CLI does, so naming a
+  subdirectory of a repository attaches to that repository instead of being refused — the two
+  front-ends previously disagreed about what a root is. ([#62])
 - Excluded directories are now pruned during the walk instead of being filtered per file after the
   walker has already descended into them, so a non-gitignored `node_modules` is no longer traversed
   and stat'd in full. The indexed set is unchanged. This also fixes the Linux watcher, which
   previously registered inotify watches inside trees it was excluding. ([#62])
+- **Breaking:** `[scan] extra_roots` now requires the operator to set `BASEMIND_ALLOW_EXTRA_ROOTS=1`
+  in the environment. That key names directories *outside* the repository but is read from the
+  scanned repository's own `basemind.toml`, so cloning and indexing a repo was enough to make
+  basemind walk whatever it named — `~/.ssh`, `~/.aws` — and surface the contents through the
+  `code grep` / `search` tools. The process environment is the one input a cloned repository cannot
+  write, so it is what the grant hangs on. Extra roots also now count toward `[scan] max_candidates`
+  (they were appended after the ceiling was evaluated), are refused when they resolve to a
+  filesystem or volume root, follow symlinks only when `[scan] follow_symlinks` is on (it was
+  hard-coded on), and stop when a scan is cancelled. ([#62])
 - The scanner bounds what it stages into the index by **bytes** rather than by file count. BM25
   keyword postings — one entry per (term, chunk), staged on essentially every scan — previously
   counted toward no limit at all and could not force a commit; they now participate in the byte
   budget. ([#62])
+- **Breaking:** `[resources] max_footprint_mb = 0` now means **auto**, not disabled. An existing
+  config that carries the old default — as every config generated before this release does —
+  therefore gains a memory ceiling on upgrade rather than keeping none. Auto budgets 75% of an
+  enforced cgroup limit or 50% of total machine RAM, whichever the platform reports, floored at
+  512 MiB. Write `max_footprint_mb = "off"` to restore the previous behaviour, or a positive
+  integer to state a ceiling explicitly. The gate remains best-effort — it parks workers and then
+  admits anyway after five seconds rather than failing a scan — so the change shapes peak memory
+  and cannot make a scan that used to succeed start failing. A long-lived daemon shipping with its
+  only memory bound disabled by default is what made 43.8 GiB reachable. ([#62])
+- The footprint gate works on Linux and Windows, not only macOS. Its sampler was
+  `sysres::phys_footprint`, a Darwin-only metric returning `None` everywhere else, so on the
+  machine that filed #62 the ceiling could not have throttled anything even if it had been
+  configured. ([#62])
 
 ### Fixed
+
+- A scan of a repository holding *exactly* `[scan] max_candidates` candidate files could abort
+  spuriously: the ceiling was checked against every walk entry, so once the candidate list reached
+  the cap the next directory node or non-indexed file tripped it. Whether it fired depended on
+  readdir order. ([#62])
+- The "largest contributors" list in a `max_candidates` abort routinely named the wrong directory.
+  The tally stopped at the breach and `ignore::Walk` is depth-first in readdir order, so a repo
+  with `aaa/` (30 files) and `zzz/` (5000) was told to exclude `aaa`. The walk now surveys a
+  bounded number of further entries before erroring, buckets by the first *two* path segments so
+  monorepos get an actionable name, and groups root-level files instead of listing them one by
+  one. ([#62])
 
 - A draining daemon can now interrupt a running file walk. Previously cancellation was only checked
   once the walk had finished, so a runaway scan could not be stopped. ([#62])

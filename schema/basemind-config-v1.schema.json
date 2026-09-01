@@ -135,6 +135,7 @@
         "max_concurrent_documents": 0,
         "embed_batch_size": 32,
         "max_footprint_mb": 0,
+        "max_map_cache_mb": 256,
         "document_models": "full"
       }
     },
@@ -256,7 +257,7 @@
           "default": true
         },
         "follow_symlinks": {
-          "description": "Follow symlinks during the repository walk. Default `false` — symlinks are a common way to\nescape the repo (Bazel's `bazel-*` convenience symlinks point into an external output tree),\nand following them can balloon the scan or pull in unrelated files. Set `true` for repos that\ndeliberately symlink real source into place; the exclude floor still prunes `bazel-*` so a\nsymlinked Bazel tree does not leak in. `extra_roots` always follow symlinks regardless of this\nflag (Bazel `external/` is symlink-heavy and is opted into explicitly).",
+          "description": "Follow symlinks during the walk. Default `false` — symlinks are a common way to escape the\nrepo (Bazel's `bazel-*` convenience symlinks point into an external output tree), and\nfollowing them can balloon the scan or pull in unrelated files. Set `true` for repos that\ndeliberately symlink real source into place; the exclude floor still prunes `bazel-*` so a\nsymlinked Bazel tree does not leak in. This governs `extra_roots` too: those walks used to\nfollow links unconditionally, which let a link inside a directory named by the *repository's\nown* config reach anywhere on the filesystem.",
           "type": "boolean",
           "default": false
         },
@@ -278,7 +279,7 @@
           "default": true
         },
         "extra_roots": {
-          "description": "Extra directories to index in addition to the repository root. Each entry is an\nabsolute path to a directory *outside* the repo — e.g. a Bazel external repo cache\n(`/private/var/tmp/_bazel_<user>/<hash>/external`) — whose files should resolve in\nsymbol search, references, outlines, and document search.\n\nFiles under an extra root are keyed by their **absolute** path (repo files stay\nrepo-relative), so returned paths for external files are absolute. Missing or\nunreadable roots are skipped with a warning; a root inside the repo is ignored (the\nprimary walk already covers it). Extra roots are (re-)indexed on a full `basemind\nscan` only — the live watcher does not track them. Symlinks are followed for extra\nroots (Bazel `external/` is symlink-heavy). Because these trees can be large, scope\nthem narrowly and lean on `exclude` + `max_file_bytes`.",
+          "description": "Extra directories to index in addition to the repository root. Each entry is an\nabsolute path to a directory *outside* the repo — e.g. a Bazel external repo cache\n(`/private/var/tmp/_bazel_<user>/<hash>/external`) — whose files should resolve in\nsymbol search, references, outlines, and document search.\n\n**Requires the `BASEMIND_ALLOW_EXTRA_ROOTS=1` environment grant.** This key is read from\nthe scanned repository's own `basemind.toml`, so without an operator-side opt-in a cloned\nrepository could point basemind at `~/.ssh` and read the results back out through the\nsearch tools. Unset, every entry here is ignored with a warning.\n\nFiles under an extra root are keyed by their **absolute** path (repo files stay\nrepo-relative), so returned paths for external files are absolute. Missing or\nunreadable roots are skipped with a warning; so is a root inside the repo (the primary\nwalk already covers it) and a filesystem or volume root (never indexable, grant or no\ngrant). Extra roots are (re-)indexed on a full `basemind scan` only — the live watcher\ndoes not track them — they count toward `max_candidates` like any other candidate, and\nthey follow symlinks only when `follow_symlinks` is on. Because these trees can be large,\nscope them narrowly and lean on `exclude` + `max_file_bytes`.",
           "type": "array",
           "items": {
             "type": "string"
@@ -286,7 +287,7 @@
           "default": []
         },
         "max_candidates": {
-          "description": "Hard ceiling on how many candidate files one scan may enumerate. The walk aborts the moment\nit is reached — before any extraction, any index write, and before the candidate list itself\ncan grow to hundreds of megabytes — and the error names the directories that contributed\nmost, so a vendored or generated tree that slipped past `.gitignore` and `exclude` is a\none-line fix instead of an OOM kill (issue #62). `0` disables the ceiling.",
+          "description": "Ceiling on how many candidate files one scan may **keep**: files that passed the\ninclude/exclude gate and would be indexed, across the repository walk and every\n`extra_roots` walk. Exceeding it aborts before any extraction, any index write, and before\nthe candidate list can grow to hundreds of megabytes, and the error names the heaviest\ncontributing directories — so a vendored or generated tree that slipped past `.gitignore`\nand `exclude` is a one-line fix instead of an OOM kill (issue #62).\n\nIt also bounds how far the walk may travel to find those candidates: a walk that visits\nmore than a generous multiple of this many filesystem entries aborts too, with a distinct\nerror, because a root broad enough to enumerate tens of millions of entries burns the time\nand syscalls this ceiling exists to prevent even when it keeps almost nothing.\n\nWhat it does **not** bound: bytes read, index size, or the `Staged` / `Rev` scan sources,\nwhich enumerate from git rather than from a walk. `0` disables both bounds.",
           "type": "integer",
           "format": "uint",
           "minimum": 0,
@@ -805,11 +806,16 @@
           "default": 32
         },
         "max_footprint_mb": {
-          "description": "Hard ceiling on process physical footprint in mebibytes. `0` (disabled)\nis the default. When set, the best-effort backpressure gate\n([`crate::backpressure::FootprintGate`]) samples\n[`crate::sysres::phys_footprint`] at the document-extraction and\nchunk-embedding admit points and parks the worker while the process is\nover this ceiling, shaving the scan's peak. It is best-effort: an\nunreadable sample or a sustained overshoot admits anyway to guarantee\nforward progress, so the ceiling shapes the peak rather than enforcing a\nhard invariant. macOS today (`phys_footprint` is a Darwin metric); a\nno-op elsewhere.",
+          "description": "Ceiling on process memory footprint, in mebibytes. Accepts a positive\ninteger (an explicit ceiling), `0` or `\"auto\"` (derive one from the\nenvironment — the default), or `\"off\"` (no ceiling at all).\n\nThe best-effort backpressure gate\n([`crate::backpressure::FootprintGate`]) samples\n[`crate::sysres::phys_footprint`] at each admit point and parks the\nworker while the process is over the ceiling, shaving the scan's peak.\nIt stays best-effort: an unreadable sample or a sustained overshoot\nadmits anyway to guarantee forward progress, so the ceiling shapes the\npeak rather than enforcing a hard invariant.\n\n**`0` used to mean \"disabled\" and now means \"auto\".** A config carrying\nthe old default therefore gains a ceiling on upgrade; `\"off\"` restores\nthe previous behaviour. See [`MaxFootprint::auto_ceiling_bytes`] for the\narithmetic.",
+          "$ref": "#/$defs/MaxFootprint",
+          "default": 0
+        },
+        "max_map_cache_mb": {
+          "description": "Byte budget, in mebibytes, for the MCP read stack's decoded-outline cache\n([`crate::mcp::l1_cache::L1Cache`]). `0` means unbounded — the\npre-0.26 behaviour, where every indexed file's decoded L1 stayed\nresident for the process lifetime, once per hot workspace.\n\nCharged in BYTES rather than in entries because a decoded outline\nspans three orders of magnitude (a ~1.4 KB median against a measured\n697 KB maximum), so an entry cap would bound the count and not the\nfootprint. A miss costs one content-addressed blob read and never\nchanges an answer. Read-only sessions charge their projected call /\nimplementation indexes — the substitute for a Fjall index they cannot\nopen — against the same budget, since it is the one knob bounding the\nread stack.",
           "type": "integer",
           "format": "uint",
           "minimum": 0,
-          "default": 0
+          "default": 256
         },
         "document_models": {
           "description": "Which model families run during document extraction. `Full` (default)\nruns every configured post-processor; the narrower profiles strip\nenrichment / embeddings to shrink the scan-time footprint on code-centric\nworkspaces. See [`DocumentModelProfile`].",
@@ -818,6 +824,36 @@
         }
       },
       "additionalProperties": false
+    },
+    "MaxFootprint": {
+      "description": "The `max_footprint_mb` setting: an explicit mebibyte ceiling, `\"off\"`, or\nauto (spelled either `0` or `\"auto\"`).\n\nIt is an enum rather than a bare integer because `0` was already spent: it\nused to mean \"disabled\", and auto is the right default, so \"disabled\" needed\na spelling of its own. Untagged, so all three forms parse from plain TOML\n(`max_footprint_mb = 0`, `= 512`, `= \"off\"`) with no wrapper table.",
+      "anyOf": [
+        {
+          "description": "`\"off\"` or `\"auto\"`.",
+          "$ref": "#/$defs/FootprintKeyword"
+        },
+        {
+          "description": "An explicit ceiling in mebibytes. `0` is auto, preserving the shape of\nevery `[resources]` knob where `0` already means \"pick for me\".",
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        }
+      ]
+    },
+    "FootprintKeyword": {
+      "description": "The literal spellings `max_footprint_mb` accepts besides a number.",
+      "oneOf": [
+        {
+          "description": "No ceiling: the gate is a no-op. The only way to disable it, and\ndeliberately something an operator has to spell out.",
+          "type": "string",
+          "const": "off"
+        },
+        {
+          "description": "Derive a ceiling from the environment. Identical to `0`.",
+          "type": "string",
+          "const": "auto"
+        }
+      ]
     },
     "DocumentModelProfile": {
       "description": "Selects which model families run during document extraction, trading recall\nfor a smaller scan-time footprint on workspaces that are mostly source code.\n\nThe enrichment post-processors (keyword extraction, NER, summarisation) and\nOCR each pull in their own ONNX / LLM weights; a code workspace rarely wants\nany of them. Narrowing the profile lets an operator keep the code map and\n(optionally) embeddings while paying for nothing else.",

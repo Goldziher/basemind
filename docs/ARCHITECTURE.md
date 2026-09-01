@@ -75,7 +75,9 @@ src/
 ├── scanner_code.rs         — code-search branch: L1/L2 → code chunks (feature code-search)
 ├── scanner_docs.rs         — document-tier scan (PDF/Office/HTML → LanceDB, feature documents)
 ├── backpressure.rs         — FootprintGate: best-effort memory admission control
-├── sysres.rs               — process RSS / physical-footprint (macOS) sampling
+├── sysres.rs               — process memory usage + platform limit (cgroup v1/v2, mach,
+│                             Windows); rate-limited, backs the footprint ceiling
+├── sysres_cgroup.rs        — cgroup / procfs parsers + mount-parameterised readers
 ├── chunk.rs                — code-chunk model + chunker (feature code-search)
 ├── embeddings.rs           — shared ONNX embedding engine (feature intelligence)
 ├── url.rs                  — boundary-validated Url newtype (feature crawl)
@@ -123,8 +125,9 @@ src/
 │   └── remote.rs           — daemon-forwarding backend (feature comms)
 ├── config/                 — schema-driven config (TOML/CLI/MCP/env)
 │   ├── v1.rs               — top-level ConfigV1, LlmConfig, CodeIntelConfig (schemars-derived)
-│   ├── resources.rs        — [resources]: scan_threads, embed_threads, max_footprint_mb,
-│   │                         document_models (see "Resource governance" below)
+│   ├── resources.rs        — [resources]: scan_threads, embed_threads, max_footprint_mb, max_map_cache_mb
+│   │                         (MaxFootprint: integer | "auto" | "off"), document_models
+│   │                         (see "Resource governance" below)
 │   ├── documents.rs        — DocumentsConfig + sub-configs, ApiKey, SecretString
 │   ├── code.rs             — [code_search] config table
 │   ├── shells.rs           — [shells] config table
@@ -467,15 +470,39 @@ basemind's footprint on a constrained machine:
 | `embed_batch_size` | `32` | Chunks submitted to ONNX per batch. |
 | `max_concurrent_documents` | `0` (unbounded) | Reserved cap on concurrent document extraction. |
 | `document_models` | `full` | Model families document extraction runs: `full` \| `code_only` (embeddings only, no keywords/NER/summarization/OCR) \| `none` (metadata + keyword search only). |
-| `max_footprint_mb` | `0` (disabled) | Hard ceiling on process physical footprint (mebibytes). |
+| `max_footprint_mb` | `0` (auto) | Ceiling on process memory footprint. A positive integer is an explicit mebibyte ceiling; `0` or `"auto"` derives one from the environment; `"off"` disables the gate. |
+| `max_map_cache_mb` | `256` | Byte budget for the MCP read stack's decoded-outline cache (`src/mcp/l1_cache.rs`), per workspace. `0` = unbounded. A miss costs one blob read and never changes an answer. The code-graph memo is charged at half this value, and a read-only session's projected call / implementation indexes are charged against it too. |
 
-When `max_footprint_mb` is set, the best-effort `FootprintGate` backpressure
-(`src/backpressure.rs`) samples the process `phys_footprint` (macOS `TASK_VM_INFO` via
-`src/sysres.rs`; a no-op elsewhere) at the document-extraction and chunk-embedding admit points
-and parks the calling worker in a bounded backoff loop while the process is over the ceiling. It
-is deliberately never a hard invariant: an unreadable sample admits immediately, and a sustained
+The best-effort `FootprintGate` backpressure (`src/backpressure.rs`) samples the process
+footprint via `src/sysres.rs` at the document-extraction and chunk-embedding admit points and
+parks the calling worker in a bounded backoff loop while the process is over the ceiling. It is
+deliberately never a hard invariant: an unreadable sample admits immediately, and a sustained
 overshoot admits anyway after `max_wait` (5s) to guarantee forward progress — the gate shaves the
 scan's peak memory, it never fails a scan.
+
+`src/sysres.rs` (plus `src/sysres_cgroup.rs`) reports both usage and the *limit* the platform
+imposes, which is what makes `auto` possible:
+
+| Platform | Usage | Limit |
+|---|---|---|
+| Linux, cgroup v2 | `memory.current` − `inactive_file` | `memory.max`, minimum over the hierarchy |
+| Linux, cgroup v1 | `memory.usage_in_bytes` − `total_inactive_file` | `memory.limit_in_bytes` (sentinel = none) |
+| Linux, neither | `/proc/self/statm` resident pages | `MemTotal` from `/proc/meminfo` |
+| Linux, cgroup with no limit | as above | falls back to `MemTotal`, marked *not enforced* |
+| macOS | mach `TASK_VM_INFO` `phys_footprint` | `hw.memsize` |
+| Windows | `K32GetProcessMemoryInfo` working set | `GlobalMemoryStatusEx` total physical |
+| anything else | unavailable — the gate is a no-op | unavailable |
+
+A reading reports whether its limit is *enforced* (a cgroup limit the kernel kills you for
+crossing) separately from where the usage figure came from, because a container with a cgroup but
+no `memory.max` — the default for a plain `docker run` — reads its usage from cgroup v2 and is
+nevertheless bounded only by the size of the machine. A cgroup limit larger than `MemTotal` is
+demoted the same way.
+
+Readings are cached for 50 ms so an admit point called per file from every rayon worker does not
+turn a memory problem into a syscall storm. `auto` budgets **75%** of an enforced limit or **50%**
+of an advisory one, floored at 512 MiB so a small container cannot produce a ceiling the ONNX
+runtime alone would sit above.
 
 ## Hardening
 

@@ -653,7 +653,10 @@ follow_symlinks = false
 exclude = []
 # Index directories outside the repo root too — e.g. a Bazel external repo cache — so their
 # symbols resolve in search / references / outlines. External files are keyed by absolute path;
-# (re-)indexed on a full `basemind scan` only (not live-watched). extra_roots always follow symlinks.
+# (re-)indexed on a full `basemind scan` only (not live-watched). Requires the operator to set
+# BASEMIND_ALLOW_EXTRA_ROOTS=1 in the environment: this file lives inside the repository, so
+# without that opt-in a cloned repo could point basemind at your ~/.ssh. Extra roots count toward
+# max_candidates and follow symlinks only when follow_symlinks is on.
 extra_roots = ["/private/var/tmp/_bazel_you/abc123/external"]
 
 [code_intel]
