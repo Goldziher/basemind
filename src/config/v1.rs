@@ -113,6 +113,13 @@ pub struct ScanConfig {
     /// them narrowly and lean on `exclude` + `max_file_bytes`.
     #[serde(default = "ScanConfig::default_extra_roots")]
     pub extra_roots: Vec<std::path::PathBuf>,
+    /// Hard ceiling on how many candidate files one scan may enumerate. The walk aborts the moment
+    /// it is reached — before any extraction, any index write, and before the candidate list itself
+    /// can grow to hundreds of megabytes — and the error names the directories that contributed
+    /// most, so a vendored or generated tree that slipped past `.gitignore` and `exclude` is a
+    /// one-line fix instead of an OOM kill (issue #62). `0` disables the ceiling.
+    #[serde(default = "ScanConfig::default_max_candidates")]
+    pub max_candidates: usize,
 }
 
 impl ScanConfig {
@@ -154,6 +161,9 @@ impl ScanConfig {
     fn default_extra_roots() -> Vec<std::path::PathBuf> {
         Vec::new()
     }
+    fn default_max_candidates() -> usize {
+        500_000
+    }
 }
 
 impl Default for ScanConfig {
@@ -167,6 +177,7 @@ impl Default for ScanConfig {
             skip_submodules: Self::default_skip_submodules(),
             eager_l2: Self::default_eager_l2(),
             extra_roots: Self::default_extra_roots(),
+            max_candidates: Self::default_max_candidates(),
         }
     }
 }

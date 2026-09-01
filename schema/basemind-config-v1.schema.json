@@ -29,7 +29,8 @@
         "max_file_bytes": 2097152,
         "skip_submodules": true,
         "eager_l2": true,
-        "extra_roots": []
+        "extra_roots": [],
+        "max_candidates": 500000
       }
     },
     "code_intel": {
@@ -283,6 +284,13 @@
             "type": "string"
           },
           "default": []
+        },
+        "max_candidates": {
+          "description": "Hard ceiling on how many candidate files one scan may enumerate. The walk aborts the moment\nit is reached — before any extraction, any index write, and before the candidate list itself\ncan grow to hundreds of megabytes — and the error names the directories that contributed\nmost, so a vendored or generated tree that slipped past `.gitignore` and `exclude` is a\none-line fix instead of an OOM kill (issue #62). `0` disables the ceiling.",
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "default": 500000
         }
       },
       "additionalProperties": false

@@ -65,6 +65,32 @@ pub enum ScanError {
     BadGlob(String),
     #[error("git error: {0}")]
     Git(#[from] GitError),
+    /// The walk hit [`crate::config::ScanConfig::max_candidates`]. Raised from the walk loop
+    /// itself — before extraction, before any index write — so a pathological root costs one
+    /// truncated walk instead of a 40 GiB resident scan (issue #62).
+    #[error(
+        "scan aborted: {root} yielded more than {cap} candidate files. Largest contributors: {}. \
+         Add them to [scan] exclude or .gitignore, or raise [scan] max_candidates.",
+        render_top_dirs(.top_dirs)
+    )]
+    TooManyCandidates {
+        count: usize,
+        cap: usize,
+        root: String,
+        top_dirs: Vec<(String, usize)>,
+    },
+}
+
+/// `node_modules (812431), .cache (194002)` — the contributor list in [`ScanError::TooManyCandidates`].
+fn render_top_dirs(top_dirs: &[(String, usize)]) -> String {
+    if top_dirs.is_empty() {
+        return "(none)".to_string();
+    }
+    top_dirs
+        .iter()
+        .map(|(name, count)| format!("{name} ({count})"))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Aggregate counters for a single scan invocation.
@@ -288,7 +314,7 @@ pub fn scan_with_cancel(
 ) -> Result<ScanReport, ScanError> {
     let submodule_roots = submodule_roots_for_source(root, &source);
     let filters = Filters::build(config, submodule_roots)?;
-    let candidates = candidates_for_source(root, config, &filters, &source)?;
+    let candidates = candidates_for_source(root, config, &filters, &source, cancel)?;
     debug!(count = candidates.len(), kind = source.label(), "scan candidates");
 
     let scope = derive_scope(root, &source);
@@ -691,9 +717,10 @@ fn candidates_for_source(
     config: &Config,
     filters: &Filters,
     source: &ScanSource<'_>,
+    cancel: &ScanCancel,
 ) -> Result<Vec<String>, ScanError> {
     let raw = match source {
-        ScanSource::WorkingTree => walk_candidates(root, config, filters),
+        ScanSource::WorkingTree => walk_candidates(root, config, filters, cancel)?,
         ScanSource::Staged(repo) => repo.list_paths_staged()?,
         ScanSource::Rev { repo, sha } => repo.list_paths_rev(sha)?,
     };
@@ -710,10 +737,36 @@ fn candidates_for_source(
     Ok(out)
 }
 
-fn walk_candidates(root: &Path, config: &Config, filters: &Filters) -> Vec<String> {
+/// Enumerate the working tree's candidate files.
+///
+/// Directories excluded by the glob floor / `[scan] exclude` / a skipped submodule root are pruned
+/// by [`Filters::dir_pruner`] *at the directory*, so a non-gitignored `node_modules` is never
+/// descended into — see [`crate::scanner_filter`] for why that keeps the candidate set identical.
+/// The loop also stops on a tripped [`ScanCancel`] (a draining daemon must be able to interrupt a
+/// runaway walk) and on `[scan] max_candidates`, which fails the scan rather than letting the
+/// candidate `Vec` alone reach hundreds of megabytes.
+fn walk_candidates(
+    root: &Path,
+    config: &Config,
+    filters: &Filters,
+    cancel: &ScanCancel,
+) -> Result<Vec<String>, ScanError> {
+    let cap = config.scan.max_candidates;
     let mut out = Vec::new();
-    let walker = ignore_walk_builder(root, config.scan.respect_gitignore, config.scan.follow_symlinks).build();
+    let mut by_top_segment: ahash::AHashMap<String, usize> = ahash::AHashMap::new();
+    let pruner = filters.dir_pruner(Some(root));
+    let walker = ignore_walk_builder(root, config.scan.respect_gitignore, config.scan.follow_symlinks)
+        .filter_entry(move |dent| pruner.keep(dent))
+        .build();
+    let mut over_cap = false;
     for dent in walker.flatten() {
+        if cancel.is_cancelled() {
+            break;
+        }
+        if cap != 0 && out.len() >= cap {
+            over_cap = true;
+            break;
+        }
         if !dent.file_type().map(|t| t.is_file()).unwrap_or(false) {
             continue;
         }
@@ -732,7 +785,29 @@ fn walk_candidates(root: &Path, config: &Config, filters: &Filters) -> Vec<Strin
         if !filters.allows(rel_str) {
             continue;
         }
+        let segment = rel_str.split('/').next().unwrap_or(rel_str);
+        match by_top_segment.get_mut(segment) {
+            Some(count) => *count += 1,
+            None => {
+                by_top_segment.insert(segment.to_string(), 1);
+            }
+        }
         out.push(rel_str.to_string());
+    }
+    if over_cap {
+        return Err(ScanError::TooManyCandidates {
+            count: out.len(),
+            cap,
+            root: root.display().to_string(),
+            top_dirs: top_contributors(by_top_segment),
+        });
+    }
+    // A tripped token means "stop walking", and that has to include the extra roots — otherwise the
+    // check above buys nothing whenever an extra root is the runaway tree. Returning the partial list
+    // is safe: `scan_with_cancel` returns before the stale purge whenever the token is tripped, so
+    // the candidates this walk never reached are not mistaken for deletions. ~keep
+    if cancel.is_cancelled() {
+        return Ok(out);
     }
     crate::scanner_filter::walk_extra_roots(root, config, filters, &mut out);
     if out.len() > LARGE_SCAN_CANDIDATE_WARN {
@@ -741,7 +816,16 @@ fn walk_candidates(root: &Path, config: &Config, filters: &Filters) -> Vec<Strin
             "scan candidate set is very large; check .gitignore / [scan] exclude globs for generated or vendored trees"
         );
     }
-    out
+    Ok(out)
+}
+
+/// The five heaviest top-level path segments, descending by count (name breaks ties so the message
+/// is deterministic).
+fn top_contributors(tally: ahash::AHashMap<String, usize>) -> Vec<(String, usize)> {
+    let mut top: Vec<(String, usize)> = tally.into_iter().collect();
+    top.sort_unstable_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    top.truncate(5);
+    top
 }
 
 /// Compute the LanceDB scope key for this scan. Git sources reuse the existing remote-URL

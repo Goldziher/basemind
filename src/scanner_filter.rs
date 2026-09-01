@@ -6,6 +6,7 @@
 
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use ahash::{AHashMap, AHashSet};
 use globset::{Glob, GlobSetBuilder};
@@ -55,15 +56,15 @@ const FLOOR_EXCLUDES: &[&str] = &[
 pub(crate) struct Filters {
     include: globset::GlobSet,
     exclude: globset::GlobSet,
+    /// Directory-level view of `exclude`: every `P/**` pattern also present as bare `P`, so a
+    /// directory can be pruned before its children are ever stat'd. See [`dir_exclude_patterns`].
+    dir_exclude: Arc<globset::GlobSet>,
     /// Mirror of `config.scan.max_file_bytes`; the per-file size cap is enforced by the scanner.
     pub(crate) max_file_bytes: u64,
-    /// Submodule root prefixes (forward-slash, no trailing `/`). When `config.scan
-    /// .skip_submodules` is true, any candidate path under one of these prefixes is filtered
-    /// out before extraction. Empty when there are no submodules or the knob is disabled.
-    submodule_roots: Vec<String>,
-    /// Pre-built `"{root}/"` prefix strings for each submodule root — avoids a `format!`
-    /// allocation per candidate file in the `allows` hot path.
-    submodule_prefixes: Vec<String>,
+    /// Pre-built `"{root}/"` prefix strings for each skipped submodule root — avoids a `format!`
+    /// allocation per candidate file in the `allows` hot path. Empty when there are no submodules
+    /// or `config.scan.skip_submodules` is off. `Arc` so [`Filters::dir_pruner`] is a refcount bump.
+    submodule_prefixes: Arc<[String]>,
     /// Mirror of `config.scan.eager_l2`. When true the scanner runs L2 extraction inline
     /// with L1 and pushes calls to the Fjall index. Off → calls index stays stale until
     /// the on-demand lazy path runs.
@@ -73,44 +74,37 @@ pub(crate) struct Filters {
 impl Filters {
     pub(crate) fn build(config: &Config, submodule_roots: Vec<String>) -> Result<Self, ScanError> {
         let include = compile_globs(config.scan.include.iter().map(String::as_str))?;
-        let exclude = compile_globs(
-            FLOOR_EXCLUDES
-                .iter()
-                .copied()
-                .chain(config.scan.exclude.iter().map(String::as_str)),
-        )?;
-        let submodule_roots: Vec<String> = if config.scan.skip_submodules {
+        let exclude_patterns: Vec<&str> = FLOOR_EXCLUDES
+            .iter()
+            .copied()
+            .chain(config.scan.exclude.iter().map(String::as_str))
+            .collect();
+        let exclude = compile_globs(exclude_patterns.iter().copied())?;
+        let dir_exclude = compile_globs(dir_exclude_patterns(&exclude_patterns).iter().map(String::as_str))?;
+        let submodule_prefixes: Arc<[String]> = if config.scan.skip_submodules {
             submodule_roots
                 .into_iter()
                 .map(|s| s.trim_end_matches('/').to_string())
                 .filter(|s| !s.is_empty())
+                .map(|r| format!("{r}/"))
                 .collect()
         } else {
-            Vec::new()
+            Arc::from([] as [String; 0])
         };
-        let submodule_prefixes: Vec<String> = submodule_roots.iter().map(|r| format!("{r}/")).collect();
         Ok(Self {
             include,
             exclude,
+            dir_exclude: Arc::new(dir_exclude),
             max_file_bytes: config.scan.max_file_bytes,
-            submodule_roots,
             submodule_prefixes,
             eager_l2: config.scan.eager_l2,
         })
     }
 
     /// True when `rel` is dropped by the exclude globs or a skipped submodule root — the shared
-    /// gate behind both [`Filters::allows`] (files) and [`Filters::allows_dir`] (directories).
+    /// gate behind [`Filters::allows`] (files).
     fn excluded(&self, rel: &str) -> bool {
-        if self.exclude.is_match(rel) {
-            return true;
-        }
-        for (root, prefix) in self.submodule_roots.iter().zip(self.submodule_prefixes.iter()) {
-            if rel == root || rel.starts_with(prefix.as_str()) {
-                return true;
-            }
-        }
-        false
+        self.exclude.is_match(rel) || under_submodule(rel, &self.submodule_prefixes)
     }
 
     pub(crate) fn allows(&self, rel: &str) -> bool {
@@ -120,17 +114,123 @@ impl Filters {
         self.include.is_match(rel)
     }
 
-    /// Directory gate for the inotify watch registration. A directory is kept iff it is NOT
-    /// matched by any exclude glob and not under a skipped submodule root. Include globs are
-    /// irrelevant for directories (they match files), so only the exclude set + submodule
-    /// pruning apply. Used by the watcher to decide which directories to register an inotify
-    /// watch on, so permission-denied or excluded trees are never handed to inotify.
+    /// Directory gate. A directory is kept iff it is NOT matched by the directory-level exclude
+    /// set and not under a skipped submodule root. Include globs are irrelevant for directories
+    /// (they match files), so only the exclude set + submodule pruning apply.
+    ///
+    /// Used by the Linux watcher to decide which directories to register an inotify watch on, so
+    /// permission-denied or excluded trees are never handed to inotify. Matching against
+    /// `dir_exclude` rather than `exclude` is what makes it drop `node_modules` itself and not
+    /// merely `node_modules/react` — before this the watcher watched every excluded tree's root.
     ///
     /// Only the Linux watcher registers per-directory watches — macOS/Windows use one recursive
-    /// watch — so the gate is dead code elsewhere; `test` keeps the unit test building on any host.
+    /// watch — so the method is dead code elsewhere; `test` keeps the unit test building on any
+    /// host. The scan walk shares the rule through [`DirPruner`], which needs an owned `'static`
+    /// gate and therefore calls [`dir_allowed`] directly.
     #[cfg(any(target_os = "linux", test))]
     pub(crate) fn allows_dir(&self, rel: &str) -> bool {
-        !self.excluded(rel)
+        dir_allowed(rel, &self.dir_exclude, &self.submodule_prefixes)
+    }
+
+    /// Detach a `'static`, `Send + Sync` directory gate for `WalkBuilder::filter_entry`, which
+    /// cannot borrow `Filters`. `base` is the directory the walk was rooted at when candidate keys
+    /// are repo-relative (the primary walk), or `None` when they are absolute (extra roots).
+    pub(crate) fn dir_pruner(&self, base: Option<&Path>) -> DirPruner {
+        DirPruner {
+            dir_exclude: Arc::clone(&self.dir_exclude),
+            submodule_prefixes: Arc::clone(&self.submodule_prefixes),
+            base: base.map(Path::to_path_buf),
+        }
+    }
+}
+
+/// True when `rel` is a skipped submodule root or lives under one. `prefixes` carry the trailing
+/// `/`, so the root itself is the "one shorter, same bytes" case.
+fn under_submodule(rel: &str, prefixes: &[String]) -> bool {
+    prefixes
+        .iter()
+        .any(|p| rel.starts_with(p.as_str()) || (p.len() == rel.len() + 1 && p.starts_with(rel)))
+}
+
+fn dir_allowed(rel: &str, dir_exclude: &globset::GlobSet, submodule_prefixes: &[String]) -> bool {
+    !dir_exclude.is_match(rel) && !under_submodule(rel, submodule_prefixes)
+}
+
+/// Directory-level projection of the exclude patterns, built **only** from the `P/**` family:
+/// each such pattern is kept, and is also added with the suffix stripped (`**/node_modules/**` →
+/// `**/node_modules`), because `P/**` matches paths *beneath* `P` but never `P` itself.
+///
+/// **Why this is candidate-set-preserving, by construction.** `P/**` excludes every file beneath
+/// `P`, so refusing to descend into directory `P` removes only paths [`Filters::allows`] would have
+/// rejected one stat later. The index is byte-identical; only the walk is cheaper. (That is the
+/// whole point — a non-gitignored `node_modules` used to be traversed and stat'd in full before
+/// every one of its files was thrown away.)
+///
+/// **Why patterns without the `/**` suffix are deliberately dropped.** Such a pattern constrains
+/// files, not subtrees: `**/generated` matches the directory `a/generated` but not the file
+/// `a/generated/x.rs`, which is therefore indexed today. Pruning that directory would silently
+/// delete real files from the index — trading a memory fix for a data-loss bug — so the directory
+/// gate simply never sees those patterns. `Filters::allows` still applies the full set to files, so
+/// nothing stops being excluded that was excluded before.
+///
+/// This is also why the watcher shares this set rather than the file-level one: gating inotify
+/// registration on `**/generated` made it blind to changes under a directory it was indexing.
+fn dir_exclude_patterns(patterns: &[&str]) -> Vec<String> {
+    let mut out = Vec::with_capacity(patterns.len() * 2);
+    for p in patterns {
+        let Some(stem) = p.strip_suffix("/**") else {
+            continue;
+        };
+        if stem.is_empty() {
+            continue;
+        }
+        out.push((*p).to_string());
+        out.push(stem.to_string());
+    }
+    out
+}
+
+/// Owned, `'static` directory gate for `WalkBuilder::filter_entry` (which demands
+/// `Fn(&DirEntry) -> bool + Send + Sync + 'static` and so cannot borrow [`Filters`]). Cloned out of
+/// a `Filters` by [`Filters::dir_pruner`]; every field is a refcount bump.
+pub(crate) struct DirPruner {
+    dir_exclude: Arc<globset::GlobSet>,
+    submodule_prefixes: Arc<[String]>,
+    base: Option<PathBuf>,
+}
+
+impl DirPruner {
+    /// Should the walker descend into / yield `dent`? **Only directories are ever pruned** —
+    /// files fall through to the unchanged per-file [`Filters::allows`] gate, which is also where
+    /// the include globs live.
+    pub(crate) fn keep(&self, dent: &ignore::DirEntry) -> bool {
+        // Depth 0 is the walk root, whose relative path is `""`; pruning it would empty the scan ~keep
+        // for a repo that happens to be named `target`. ~keep
+        if dent.depth() == 0 {
+            return true;
+        }
+        if !dent.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+            return true;
+        }
+        let path = dent.path();
+        let candidate = match &self.base {
+            Some(base) => match path.strip_prefix(base) {
+                Ok(rel) => rel,
+                Err(_) => return true,
+            },
+            None => path,
+        };
+        let Some(rel) = candidate.to_str() else {
+            return true;
+        };
+        #[cfg(windows)]
+        let rel_owned = rel.replace('\\', "/");
+        #[cfg(windows)]
+        let rel = rel_owned.as_str();
+        if rel.is_empty() {
+            return true;
+        }
+        dir_allowed(rel, &self.dir_exclude, &self.submodule_prefixes)
     }
 }
 
@@ -205,7 +305,9 @@ pub(crate) fn walk_extra_roots(root: &Path, config: &Config, filters: &Filters, 
             tracing::warn!(root = %extra.display(), "extra_root skipped: inside the repository root (already indexed)");
             continue;
         }
+        let pruner = filters.dir_pruner(None);
         for dent in ignore_walk_builder(&extra, config.scan.respect_gitignore, true)
+            .filter_entry(move |dent| pruner.keep(dent))
             .build()
             .flatten()
         {
@@ -500,9 +602,82 @@ mod tests {
         // Plain source directories are kept.
         assert!(filters.allows_dir("src"), "kept dir");
         assert!(filters.allows_dir("src/services"), "kept nested dir");
-        // Floor excludes prune nested dirs (the top-level dir itself is not matched by
-        // `**/X/**`, so we assert on a nested path).
         assert!(!filters.allows_dir("node_modules/react"), "floor: node_modules/react");
         assert!(!filters.allows_dir("target/debug"), "floor: target/debug");
+        // The bare directory itself: `**/X/**` never matches `X`, so the directory-level exclude
+        // set carries the `/**`-stripped form. Without it the walker descends into `node_modules`
+        // and stats every file inside only to throw them all away.
+        for dir in ["node_modules", "target", "vendor", ".git", "dist", "generated"] {
+            assert!(!filters.allows_dir(dir), "bare excluded dir pruned: {dir}");
+        }
+        assert!(
+            !filters.allows_dir("packages/app/node_modules"),
+            "nested bare excluded dir pruned"
+        );
+    }
+
+    /// A `scan.exclude` entry with no `/**` suffix constrains files, not subtrees, so it must never
+    /// prune a directory. `**/generated` does not match `generated/schema.rs`, which is therefore
+    /// indexed today; pruning `generated/` would delete real files from the index — a data-loss bug
+    /// wearing a memory fix's clothes. This is the invariant [`dir_exclude_patterns`] exists to hold,
+    /// and the reason it drops every pattern outside the `P/**` family.
+    #[test]
+    fn a_file_shaped_exclude_never_prunes_the_directory_it_names() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().canonicalize().expect("canonicalize");
+        fs::create_dir_all(root.join(".git")).expect("mkdir .git");
+        let mut config = crate::config::default_for_root(&root);
+        config.scan.exclude = vec!["**/generated".to_string(), "**/cache/**".to_string()];
+        let filter = IndexFilter::new(&root, &config).expect("build filter");
+        let filters = filter.filters();
+
+        assert!(
+            filters.allows("generated/schema.rs"),
+            "a file under `generated/` is indexed today; the directory gate must not change that"
+        );
+        assert!(
+            filters.allows_dir("generated"),
+            "pruning `generated/` would drop the very file `allows` just admitted"
+        );
+        assert!(
+            !filters.allows_dir("cache"),
+            "the `/**` form still prunes, so the distinction is real and not an accident"
+        );
+    }
+
+    /// The walk root is never pruned, whatever it is called: its relative path is `""` and a repo
+    /// that happens to be named `target` must still scan.
+    #[test]
+    fn dir_pruner_keeps_the_walk_root_even_when_named_target() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().canonicalize().expect("canonicalize").join("target");
+        fs::create_dir_all(root.join(".git")).expect("mkdir .git");
+        fs::create_dir_all(root.join("node_modules/pkg")).expect("mkdir node_modules");
+        fs::write(root.join("a.rs"), b"fn a() {}\n").expect("write a.rs");
+        fs::write(root.join("node_modules/pkg/i.js"), b"//\n").expect("write i.js");
+        let config = crate::config::default_for_root(&root);
+        let filters = Filters::build(&config, Vec::new()).expect("build filters");
+        let pruner = filters.dir_pruner(Some(&root));
+
+        let kept: Vec<String> = ignore_walk_builder(&root, false, false)
+            .filter_entry(move |dent| pruner.keep(dent))
+            .build()
+            .flatten()
+            .filter_map(|d| {
+                d.path()
+                    .strip_prefix(&root)
+                    .ok()
+                    .map(|p| p.to_string_lossy().replace('\\', "/"))
+            })
+            .collect();
+
+        assert!(
+            kept.iter().any(|p| p == "a.rs"),
+            "root named `target` still walked: {kept:?}"
+        );
+        assert!(
+            !kept.iter().any(|p| p.starts_with("node_modules")),
+            "node_modules pruned at the directory, not per file: {kept:?}"
+        );
     }
 }
