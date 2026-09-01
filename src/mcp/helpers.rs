@@ -505,6 +505,32 @@ pub(super) fn head_sha(repo: &crate::git::Repo) -> Result<String, McpError> {
         .ok_or_else(|| McpError::internal_error("repository has no HEAD", None))
 }
 
+/// The only thing the MCP rescan wants out of a scan's per-file outcomes: which paths to fold into
+/// the cache delta, and which to drop from it.
+///
+/// A [`ScanObserver`](crate::scanner::ScanObserver) rather than a filter over a collected `Vec`,
+/// because the two projections here are all that ever needed to survive a file's result — the
+/// status, the buffered index entry and the pending batches never leave the drive chunk.
+#[derive(Default)]
+struct RescanPaths {
+    updated: Vec<crate::path::RelPath>,
+    removed: Vec<crate::path::RelPath>,
+}
+
+impl crate::scanner::ScanObserver for RescanPaths {
+    fn on_file(&mut self, result: crate::scanner::FileResult) {
+        match result.status {
+            crate::scanner::FileStatus::Updated { .. } => {
+                self.updated.push(crate::path::RelPath::from(result.path.as_str()));
+            }
+            crate::scanner::FileStatus::Removed => {
+                self.removed.push(crate::path::RelPath::from(result.path.as_str()));
+            }
+            _ => {}
+        }
+    }
+}
+
 /// Run the scanner in-process and refresh the in-RAM caches, returning the raw
 /// [`crate::scanner::ScanReport`]. Shared by the `rescan` MCP tool and the startup
 /// auto-scan in [`super::BasemindServer::new`] so both go through the exact same scan +
@@ -550,19 +576,24 @@ pub(super) async fn scan_and_refresh(
 
     let was_scoped = scoped_paths.is_some();
     let state_for_scan = Arc::clone(&state);
-    let report = tokio::task::spawn_blocking(move || {
+    let (report, paths) = tokio::task::spawn_blocking(move || {
         let mut store = state_for_scan.shared.store.blocking_write();
-        if let Some(paths) = scoped_paths {
-            crate::scanner::scan_paths(&root, &mut store, &config, &paths, embed)
+        let mut observer = RescanPaths::default();
+        let cancel = crate::scanner::ScanCancel::new();
+        let report = if let Some(paths) = scoped_paths {
+            crate::scanner::scan_paths_with_observer(&root, &mut store, &config, &paths, embed, &cancel, &mut observer)
         } else {
-            crate::scanner::scan(
+            crate::scanner::scan_with_observer(
                 &root,
                 &mut store,
                 &config,
                 crate::scanner::ScanSource::WorkingTree,
                 embed,
+                &cancel,
+                &mut observer,
             )
-        }
+        };
+        report.map(|report| (report, observer))
     })
     .await
     .map_err(|e| McpError::internal_error(format!("scan join: {e}"), None))?
@@ -572,18 +603,7 @@ pub(super) async fn scan_and_refresh(
         return Ok(report);
     }
 
-    let updated: Vec<crate::path::RelPath> = report
-        .results
-        .iter()
-        .filter(|r| matches!(r.status, crate::scanner::FileStatus::Updated { .. }))
-        .map(|r| crate::path::RelPath::from(r.path.as_str()))
-        .collect();
-    let removed: Vec<crate::path::RelPath> = report
-        .results
-        .iter()
-        .filter(|r| matches!(r.status, crate::scanner::FileStatus::Removed))
-        .map(|r| crate::path::RelPath::from(r.path.as_str()))
-        .collect();
+    let RescanPaths { updated, removed } = paths;
 
     let new_cache = {
         let store = state.shared.store.read().await;

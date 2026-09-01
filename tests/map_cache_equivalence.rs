@@ -176,6 +176,7 @@ async fn collect_responses(root: &Path) -> Vec<Value> {
         .await
         .expect("in-memory serve");
     let service = ().serve(transport).await.expect("rmcp handshake");
+    await_steady_state(&service).await;
     let mut out = Vec::new();
     for (tool, args) in tool_matrix() {
         let result = service
@@ -188,6 +189,46 @@ async fn collect_responses(root: &Path) -> Vec<Value> {
     }
     service.cancel().await.ok();
     out
+}
+
+/// Block until the server has finished warming, so the comparison measures answers rather than a
+/// race against the preload.
+///
+/// `await_cache_ready` waits only `CACHE_WARM_WAIT_CAP` (15s) and then answers anyway, attaching a
+/// `warming_up` lifecycle notice. That is correct product behaviour — a client must never mistake a
+/// partial result for "no matches" — but it makes this comparison timing-dependent, because the
+/// bounded arm warms more slowly (it evicts and re-reads) and so is the arm that loses the race.
+/// This test failed exactly once, inside a full-suite run on a machine that had thrashed its disk
+/// down to 8 GiB, with the two arms differing only by that inserted notice.
+///
+/// Waiting here rather than scrubbing the notice out of the comparison: the invariant on trial is
+/// that a cache MISS does not change an answer, and a notice that appears only under one budget is
+/// a real difference this test should keep being able to see. What it should not do is depend on
+/// whether a background preload beat a fixed timeout on a loaded CI box.
+async fn await_steady_state<S>(service: &rmcp::service::RunningService<rmcp::RoleClient, S>)
+where
+    S: rmcp::service::Service<rmcp::RoleClient>,
+{
+    // Generous relative to CACHE_WARM_WAIT_CAP: the point is to outlast a slow machine, and a real
+    // hang still fails rather than hanging the suite forever.
+    const READY_DEADLINE: std::time::Duration = std::time::Duration::from_secs(120);
+    let started = std::time::Instant::now();
+    loop {
+        let probe = service
+            .call_tool(call_params("code", json!({"mode": "outline", "path": "module_000.rs"})))
+            .await
+            .expect("probe call");
+        let parsed: Value = serde_json::from_str(&text_of(&probe)).unwrap_or(Value::Null);
+        if parsed.get("notice").is_none() {
+            return;
+        }
+        assert!(
+            started.elapsed() < READY_DEADLINE,
+            "server never reached a steady state within {READY_DEADLINE:?}; last notice: {:?}",
+            parsed.get("notice"),
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
 }
 
 /// The whole point: identical bytes from a read stack that had to fault most of its outlines back

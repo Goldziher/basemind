@@ -348,6 +348,36 @@ mod tests {
         assert_eq!(LEDGER.in_flight(), 0);
     }
 
+    /// The converse of the test above, and the only cover the *cadence* bound has: a worker
+    /// staging ordinary files that come nowhere near either byte bound must still commit on the
+    /// file counter. [`INDEX_COMMIT_BATCH`] is not a memory bound (that is the byte budget and the
+    /// shared ceiling) — it is what keeps a scan of small files off a commit-per-file cadence, and
+    /// what keeps a worker from holding a batch open for its entire slice.
+    #[test]
+    fn the_file_count_bound_commits_when_neither_byte_bound_is_near() {
+        static ROOMY: StagedByteLedger = StagedByteLedger::new(u64::MAX);
+        let (_dir, db) = fresh_index();
+        let l1 = bulky_l1(1);
+
+        let mut batch = WorkerIndexBatch::with_budget(Some(&db), u64::MAX, &ROOMY);
+        for i in 0..INDEX_COMMIT_BATCH - 1 {
+            assert!(batch.stage(&RelPath::from(format!("src/f{i}.rs")), &l1, None));
+        }
+        assert!(
+            db.symbols_by_path.iter().next().is_none(),
+            "nothing may commit before the file counter reaches the bound"
+        );
+
+        assert!(batch.stage(&RelPath::from("src/last.rs"), &l1, None));
+        assert!(
+            db.symbols_by_path.iter().next().is_some(),
+            "the {INDEX_COMMIT_BATCH}th file must force the commit"
+        );
+        assert_eq!(batch.staged, 0, "the file counter resets at its own commit");
+        drop(batch);
+        assert_eq!(ROOMY.in_flight(), 0);
+    }
+
     /// BM25 postings used to ride entirely outside the only bound that existed — `stage_bm25`
     /// touched neither the counter nor the commit. They are the largest single staged
     /// contributor, so their staging must be able to force a commit on its own.
@@ -362,16 +392,31 @@ mod tests {
         static LEDGER: StagedByteLedger = StagedByteLedger::new(u64::MAX);
         let (_dir, db) = fresh_index();
 
-        let postings: Vec<ChunkPosting> = (0..4)
-            .map(|chunk| ChunkPosting {
-                chunk_id: format!("hash:{chunk}"),
-                doclen: 512,
-                terms: (0..512).map(|t| (format!("term_{t:04}"), 1)).collect(),
-            })
-            .collect();
+        fn postings(chunks: u32, terms: u32) -> Vec<ChunkPosting> {
+            (0..chunks)
+                .map(|chunk| ChunkPosting {
+                    chunk_id: format!("hash:{chunk}"),
+                    doclen: terms,
+                    terms: (0..terms).map(|t| (format!("term_{t:04}"), 1)).collect(),
+                })
+                .collect()
+        }
+
+        // Control: the same call, far under the budget, must NOT commit. Without it the assertion ~keep
+        // below would also pass for a `stage_bm25` that flushed unconditionally — which is exactly ~keep
+        // the per-file fjall write-lock contention the batching exists to remove. ~keep
+        let (_control_dir, control) = fresh_index();
+        let mut under_budget = WorkerIndexBatch::with_budget(Some(&control), 8 * 1024 * 1024, &LEDGER);
+        under_budget.stage_bm25(&RelPath::from("src/small.rs"), &postings(1, 4));
+        assert!(
+            control.code_bm25_postings.iter().next().is_none(),
+            "staging well under the byte budget must leave the batch uncommitted"
+        );
+        drop(under_budget);
+        assert_eq!(LEDGER.in_flight(), 0);
 
         let mut batch = WorkerIndexBatch::with_budget(Some(&db), 8 * 1024, &LEDGER);
-        batch.stage_bm25(&RelPath::from("src/generated.rs"), &postings);
+        batch.stage_bm25(&RelPath::from("src/generated.rs"), &postings(4, 512));
 
         assert_eq!(batch.staged, 0, "bm25 staging must not bump the file counter");
         assert!(
@@ -380,6 +425,42 @@ mod tests {
         );
         drop(batch);
         assert_eq!(LEDGER.in_flight(), 0);
+    }
+
+    /// The shared ceiling must be able to force a commit *by itself*. It is the only bound that can
+    /// see the other workers — [`INDEX_COMMIT_BATCH_BYTES`] alone still permits `workers × 8 MiB`,
+    /// the machine-dependent multiplier that grows exactly on the machines that scan the big repos —
+    /// so a worker nowhere near either of its own bounds must still commit when the process is over
+    /// the ceiling. Both of this worker's own bounds are disarmed here (`u64::MAX` byte budget, and
+    /// the commit lands well inside [`INDEX_COMMIT_BATCH`] files), leaving the ceiling as the only
+    /// thing that could have committed.
+    #[test]
+    fn the_shared_ceiling_alone_forces_a_commit() {
+        static CEILINGED: StagedByteLedger = StagedByteLedger::new(4 * 1024);
+        let (_dir, db) = fresh_index();
+        let l1 = bulky_l1(64);
+
+        let mut worker = WorkerIndexBatch::with_budget(Some(&db), u64::MAX, &CEILINGED);
+        let mut committed_after = None;
+        for i in 0..(INDEX_COMMIT_BATCH - 1) {
+            assert!(worker.stage(&RelPath::from(format!("src/f{i}.rs")), &l1, None));
+            if CEILINGED.commits() > 0 {
+                committed_after = Some(i + 1);
+                break;
+            }
+        }
+
+        let files = committed_after.expect("a worker over the shared ceiling must commit");
+        assert!(
+            files < INDEX_COMMIT_BATCH,
+            "the file-count bound must not be what committed here"
+        );
+        assert!(
+            db.symbols_by_path.iter().next().is_some(),
+            "the ceiling commit must have reached disk"
+        );
+        worker.finish();
+        assert_eq!(CEILINGED.in_flight(), 0);
     }
 
     /// The shared ceiling is only a bound if the ledger tracks the true in-flight total: it must

@@ -2,7 +2,10 @@ use std::fs;
 
 use basemind::config::ConfigV1;
 use basemind::extract::SymbolKind;
-use basemind::scanner::{FileStatus, ScanCancel, scan, scan_paths, scan_with_cancel};
+use basemind::scanner::{
+    CollectObserver, FileStatus, ScanCancel, scan, scan_paths, scan_paths_with_observer, scan_with_cancel,
+    scan_with_observer,
+};
 use basemind::store::Store;
 use tempfile::TempDir;
 
@@ -338,12 +341,15 @@ fn scan_flags_files_with_syntax_errors() {
     .unwrap();
 
     let mut store = Store::open(root, basemind::store::VIEW_WORKING).unwrap();
-    let report = scan(
+    let mut observer = CollectObserver::new();
+    let report = scan_with_observer(
         root,
         &mut store,
         &cfg,
         basemind::scanner::ScanSource::WorkingTree,
         basemind::scanner::EmbedMode::Inline,
+        &ScanCancel::new(),
+        &mut observer,
     )
     .unwrap();
     assert_eq!(report.stats.updated, 1);
@@ -352,8 +358,8 @@ fn scan_flags_files_with_syntax_errors() {
         "should flag the file as having parse errors"
     );
 
-    let row = report
-        .results
+    let row = observer
+        .results()
         .iter()
         .find(|r| r.path == "broken.rs")
         .expect("broken.rs in report");
@@ -928,10 +934,20 @@ fn scan_paths_noop_batch_does_no_work() {
         root.join("node_modules/pkg/index.js"),
         root.join("child/.basemind/index.msgpack"),
     ];
-    let report = scan_paths(root, &mut store, &cfg, &touched, basemind::scanner::EmbedMode::Inline).unwrap();
+    let mut observer = CollectObserver::new();
+    let report = scan_paths_with_observer(
+        root,
+        &mut store,
+        &cfg,
+        &touched,
+        basemind::scanner::EmbedMode::Inline,
+        &ScanCancel::new(),
+        &mut observer,
+    )
+    .unwrap();
     assert_eq!(report.stats.updated, 0, "no indexable file changed");
     assert_eq!(report.stats.removed, 0, "nothing removed");
-    assert_eq!(report.results.len(), 0, "short-circuit: no per-file work recorded");
+    assert_eq!(observer.results().len(), 0, "short-circuit: no per-file work recorded");
     assert!(store.lookup("build/out.o").is_none());
     assert!(store.lookup("node_modules/pkg/index.js").is_none());
     assert!(store.lookup("child/.basemind/index.msgpack").is_none());
@@ -1280,20 +1296,22 @@ fn cancel_flag_pretripped_skips_all_candidates_fast() {
     let cancel = ScanCancel::new();
     cancel.cancel();
     let mut store = Store::open(root, basemind::store::VIEW_WORKING).unwrap();
-    let report = scan_with_cancel(
+    let mut observer = CollectObserver::new();
+    let report = scan_with_observer(
         root,
         &mut store,
         &cfg,
         basemind::scanner::ScanSource::WorkingTree,
         basemind::scanner::EmbedMode::Inline,
         &cancel,
+        &mut observer,
     )
     .unwrap();
     assert!(report.cancelled);
     assert!(
-        report.results.is_empty(),
+        observer.results().is_empty(),
         "a pre-tripped token must skip every candidate, got {} results",
-        report.results.len()
+        observer.results().len()
     );
     assert_eq!(report.stats.scanned, 0);
 }

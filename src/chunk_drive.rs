@@ -80,11 +80,48 @@ pub(crate) fn drive_chunks<T, R>(
     mut process: impl FnMut(&[T]) -> Vec<R>,
     mut absorb: impl FnMut(Vec<R>),
 ) {
+    drive_chunks_governed(
+        &mut (),
+        items,
+        || Some(cut),
+        |(), item| weigh(item),
+        |(), chunk| process(chunk),
+        |(), produced| absorb(produced),
+    );
+}
+
+/// [`drive_chunks`] with the two things the primary scan needs and the resolve pass does not:
+/// a caller state threaded *through* the driver, and a cut re-decided before every chunk.
+///
+/// **Why `ctx` instead of captured state.** The scan's `process` needs `&Store` (rayon workers read
+/// blobs and the index through it) while its `absorb` needs `&mut Store` (it drains each result's
+/// staged `FileEntry` into the file map). Two closures cannot capture those two borrows at once, so
+/// the driver owns the state and lends each half the borrow it needs. `C = ()` recovers the plain
+/// [`drive_chunks`] shape.
+///
+/// **Why `next_cut` is a closure.** It is the drive loop's admission point: it samples the memory
+/// gate, narrows the cut when the process is over its ceiling, and returns `None` to stop the drive
+/// entirely (cancellation). Deciding the cut per chunk is what makes the bound *actuating* rather
+/// than merely advisory — see [`crate::scanner_drive`].
+pub(crate) fn drive_chunks_governed<C, T, R>(
+    ctx: &mut C,
+    items: &[T],
+    mut next_cut: impl FnMut() -> Option<ChunkCut>,
+    weigh: impl Fn(&C, &T) -> u64,
+    mut process: impl FnMut(&C, &[T]) -> Vec<R>,
+    mut absorb: impl FnMut(&mut C, Vec<R>),
+) {
     let mut start = 0usize;
     while start < items.len() {
-        let end = cut.boundary(items, start, &weigh);
-        let produced = process(&items[start..end]);
-        absorb(produced);
+        let Some(cut) = next_cut() else {
+            return;
+        };
+        let end = {
+            let ctx: &C = ctx;
+            cut.boundary(items, start, &|item: &T| weigh(ctx, item))
+        };
+        let produced = process(ctx, &items[start..end]);
+        absorb(ctx, produced);
         start = end;
     }
 }
@@ -157,6 +194,48 @@ mod tests {
             |produced| seen.extend(produced),
         );
         assert_eq!(seen, items);
+    }
+
+    /// The governed driver re-asks for a cut before every chunk, so a caller that narrows under
+    /// pressure narrows the very next chunk rather than the next scan.
+    #[test]
+    fn a_governed_drive_re_cuts_before_every_chunk() {
+        let items: Vec<u32> = (0..15).collect();
+        let mut budget = 8usize;
+        let mut lengths: Vec<usize> = Vec::new();
+        drive_chunks_governed(
+            &mut lengths,
+            &items,
+            || {
+                let cut = ChunkCut::new(budget, u64::MAX);
+                budget = (budget / 2).max(1);
+                Some(cut)
+            },
+            |_, _| 0,
+            |_, chunk| vec![chunk.len()],
+            |lengths: &mut Vec<usize>, produced| lengths.extend(produced),
+        );
+        assert_eq!(lengths, vec![8, 4, 2, 1]);
+    }
+
+    /// `None` from the cut stops the drive where it stands — the scan's cancellation seam.
+    #[test]
+    fn a_governed_drive_stops_when_the_cut_is_withdrawn() {
+        let items: Vec<u32> = (0..100).collect();
+        let mut driven = 0usize;
+        let mut cuts = 0usize;
+        drive_chunks_governed(
+            &mut driven,
+            &items,
+            || {
+                cuts += 1;
+                (cuts <= 2).then(|| ChunkCut::new(5, u64::MAX))
+            },
+            |_, _| 0,
+            |_, chunk| vec![chunk.len()],
+            |driven: &mut usize, produced| *driven += produced.iter().sum::<usize>(),
+        );
+        assert_eq!(driven, 10, "the drive must stop at the first withdrawn cut");
     }
 
     /// Counts live instances of itself so a test can observe the driver's real peak.

@@ -20,6 +20,7 @@
 //! inject a stub sampler to drive the over-then-under transition deterministically without
 //! touching real memory.
 
+use std::sync::{Condvar, Mutex, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
 use crate::config::MaxFootprint;
@@ -145,6 +146,77 @@ where
     }
 }
 
+/// Counting semaphore bounding how many documents are extracted at once, enforcing
+/// `[resources] max_concurrent_documents`.
+///
+/// A `Mutex` + `Condvar` and not an async primitive: the waiters are rayon workers, which are
+/// blocking OS threads with no reactor to yield to.
+///
+/// Distinct from [`FootprintGate`], which reacts to memory *already* allocated. A document
+/// extraction's spike (xberg's decoded page buffers, OCR bitmaps, an embedding batch) lands faster
+/// than the 50 ms sampler can see it, so a footprint ceiling alone bounds the corpus after the
+/// fact. This bounds the number of spikes that can overlap, before the first one starts.
+struct DocSemaphore {
+    available: Mutex<usize>,
+    released: Condvar,
+}
+
+/// The process-wide document semaphore, or `None` when this caller's `max_concurrent_documents` is
+/// `0` (auto, today's unbounded dispatch).
+///
+/// The `0` case returns before touching the `OnceLock`, which is the whole subtlety here. A daemon
+/// hosts many workspaces in one process and `0` is the *default*, so initialising the cell from the
+/// first caller regardless of its value would let one default-configured workspace latch "no
+/// semaphore" and silently disable the knob for every workspace opened afterwards — a config that
+/// parses, validates, and does nothing. That is precisely the failure mode `max_footprint_mb` had
+/// in issue #62, and it is not worth reproducing in the fix for it.
+///
+/// The first caller that actually asks for a bound still sets the capacity for the life of the
+/// process, mirroring [`scanner_pool`](crate::scanner_file::scanner_pool) and `embed_pool`: the
+/// workers it bounds are themselves a process-global pool, so a per-scan limit would not be one.
+fn doc_semaphore(max_concurrent: usize) -> Option<&'static DocSemaphore> {
+    if max_concurrent == 0 {
+        return None;
+    }
+    static SEMAPHORE: OnceLock<DocSemaphore> = OnceLock::new();
+    Some(SEMAPHORE.get_or_init(|| DocSemaphore {
+        available: Mutex::new(max_concurrent),
+        released: Condvar::new(),
+    }))
+}
+
+/// One held document-extraction slot; releases it on drop.
+pub struct DocSlot {
+    semaphore: &'static DocSemaphore,
+}
+
+impl Drop for DocSlot {
+    fn drop(&mut self) {
+        let mut available = self.semaphore.available.lock().unwrap_or_else(PoisonError::into_inner);
+        *available += 1;
+        self.semaphore.released.notify_one();
+    }
+}
+
+/// Block until a document-extraction slot is free, returning the guard that holds it. `None` — the
+/// unbounded default — is returned immediately and costs nothing.
+///
+/// Never acquired while holding the store lock or an open index batch: a bounded wait behind a lock
+/// the releasing worker also needs would deadlock rather than throttle.
+pub fn acquire_doc_slot(max_concurrent: usize) -> Option<DocSlot> {
+    let semaphore = doc_semaphore(max_concurrent)?;
+    let mut available = semaphore.available.lock().unwrap_or_else(PoisonError::into_inner);
+    while *available == 0 {
+        available = semaphore
+            .released
+            .wait(available)
+            .unwrap_or_else(PoisonError::into_inner);
+    }
+    *available -= 1;
+    drop(available);
+    Some(DocSlot { semaphore })
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -188,6 +260,58 @@ mod tests {
         assert!(
             calls.load(Ordering::SeqCst) >= 3,
             "gate must re-sample until the footprint falls under the ceiling"
+        );
+    }
+
+    /// F6: `max_concurrent_documents` was parsed and never consumed. The semaphore is the consumer,
+    /// so the property to pin is the one an operator sets it for — no more than `LIMIT` extractions
+    /// are ever in flight, however many rayon workers arrive at once.
+    ///
+    /// The semaphore is process-global and first-*bounded*-caller-wins, so this is the only test in
+    /// the crate that may call [`acquire_doc_slot`] with a non-zero limit. Calling it with `0` is
+    /// always safe and never latches anything, which is the property
+    /// [`unbounded_callers_do_not_latch_the_semaphore`] pins.
+    #[test]
+    fn the_document_semaphore_bounds_concurrent_extractions() {
+        const LIMIT: usize = 2;
+        let live = AtomicUsize::new(0);
+        let peak = AtomicUsize::new(0);
+        std::thread::scope(|scope| {
+            for _ in 0..8 {
+                scope.spawn(|| {
+                    let _slot = acquire_doc_slot(LIMIT).expect("a positive limit must yield a real slot");
+                    peak.fetch_max(live.fetch_add(1, Ordering::SeqCst) + 1, Ordering::SeqCst);
+                    std::thread::sleep(Duration::from_millis(5));
+                    live.fetch_sub(1, Ordering::SeqCst);
+                });
+            }
+        });
+        let peak = peak.load(Ordering::SeqCst);
+        assert!(peak >= 1, "every worker must eventually get a slot");
+        assert!(peak <= LIMIT, "at most {LIMIT} extractions may overlap, saw {peak}");
+        assert_eq!(live.load(Ordering::SeqCst), 0, "every slot must be released on drop");
+    }
+
+    /// A `0` (auto) caller must not decide for the process. `0` is the default, and a daemon hosts
+    /// many workspaces in one process: if the first one to extract a document happened to be
+    /// default-configured, latching "no semaphore" would silently disable
+    /// `max_concurrent_documents` for every workspace opened after it.
+    ///
+    /// Ordering is the assertion. This runs `0` first and then a bounded limit, and the bounded
+    /// limit must still bind.
+    #[test]
+    fn unbounded_callers_do_not_latch_the_semaphore() {
+        assert!(
+            acquire_doc_slot(0).is_none(),
+            "an auto limit yields no slot and must cost nothing"
+        );
+        assert!(
+            acquire_doc_slot(0).is_none(),
+            "repeating it must not latch a decision either"
+        );
+        assert!(
+            acquire_doc_slot(1).is_some(),
+            "a later bounded caller must still get a real semaphore"
         );
     }
 

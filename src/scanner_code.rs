@@ -17,7 +17,7 @@
 use anyhow::Result;
 
 use crate::chunk::{ChunkOptions, CodeChunkBlob, chunk_file};
-use crate::config::Config;
+use crate::config::{CodeSearchConfig, Config};
 use crate::embeddings::SharedEmbedder;
 use crate::extract::{FileMapL1, FileMapL2, SCHEMA_VER};
 use crate::lance::CodeRow;
@@ -55,10 +55,40 @@ pub(crate) fn should_chunk(config: &Config) -> bool {
     config.code_search.enabled
 }
 
+/// True when `chunk_count` exceeds `[code_search] max_chunks_per_file`, warning once at the point
+/// of decision. Over-cap files still get their `.chunk.msgpack` sidecar (outline and grep are
+/// unaffected); what they lose is the per-chunk fan-out — keyword postings, vector rows, embeds.
+/// Mirrors `scanner_docs::pending_from_doc`'s `max_chunks_per_document` handling.
+fn over_chunk_cap(rel: &str, chunk_count: usize, cfg: &CodeSearchConfig) -> bool {
+    let over = chunk_count > cfg.max_chunks_per_file;
+    if over {
+        tracing::warn!(
+            rel,
+            chunks = chunk_count,
+            cap = cfg.max_chunks_per_file,
+            "file exceeds max_chunks_per_file; caching chunk sidecar but skipping keyword postings and vector rows"
+        );
+    }
+    over
+}
+
+/// BM25 postings for `chunks`, or none at all when the file is over [`over_chunk_cap`].
+fn postings_for(rel: &str, chunks: &[crate::chunk::CodeChunk], cfg: &CodeSearchConfig) -> Vec<ChunkPosting> {
+    if over_chunk_cap(rel, chunks.len(), cfg) {
+        return Vec::new();
+    }
+    build_chunk_postings(chunks)
+}
+
 /// A rows-empty [`PendingCodeBatch`] (`embedding_dim: 0`) carrying only the BM25 postings for
 /// `chunks` — the graceful-degradation result when embeddings were requested but the embedder was
 /// unavailable. `None` for a chunkless file (nothing to index).
-fn bm25_batch_from_chunks(rel: &str, blob_hash: &str, chunks: &[crate::chunk::CodeChunk]) -> Option<PendingCodeBatch> {
+fn bm25_batch_from_chunks(
+    rel: &str,
+    blob_hash: &str,
+    chunks: &[crate::chunk::CodeChunk],
+    cfg: &CodeSearchConfig,
+) -> Option<PendingCodeBatch> {
     if chunks.is_empty() {
         return None;
     }
@@ -66,7 +96,7 @@ fn bm25_batch_from_chunks(rel: &str, blob_hash: &str, chunks: &[crate::chunk::Co
         rel_path: rel.to_string(),
         blob_hash: blob_hash.to_string(),
         embedding_dim: 0,
-        bm25: build_chunk_postings(chunks),
+        bm25: postings_for(rel, chunks, cfg),
     })
 }
 
@@ -127,7 +157,7 @@ pub(crate) fn chunk_and_embed(
         if chunks.is_empty() {
             return Ok(None);
         }
-        let bm25 = build_chunk_postings(&chunks);
+        let bm25 = postings_for(rel, &chunks, cfg);
         return Ok(Some(PendingCodeBatch {
             rel_path: rel.to_string(),
             blob_hash: hash_hex.to_string(),
@@ -154,7 +184,7 @@ pub(crate) fn chunk_and_embed(
                 Some(blob) if !blob.chunks.is_empty() => blob.chunks,
                 _ => chunk_file(rel, hash_hex, l1, l2, bytes, opts),
             };
-            return Ok(bm25_batch_from_chunks(rel, hash_hex, &chunks));
+            return Ok(bm25_batch_from_chunks(rel, hash_hex, &chunks, cfg));
         }
     };
     let dim = embedder.dim();
@@ -162,12 +192,16 @@ pub(crate) fn chunk_and_embed(
     if let Some(blob) = &cached
         && code_cache_is_reusable(blob, dim, &config.documents.embedding_preset)
     {
-        let bm25 = build_chunk_postings(&blob.chunks);
+        let over_cap = over_chunk_cap(rel, blob.chunks.len(), cfg);
         return Ok(Some(PendingCodeBatch {
             rel_path: rel.to_string(),
             blob_hash: hash_hex.to_string(),
-            embedding_dim: dim,
-            bm25,
+            embedding_dim: if over_cap { 0 } else { dim },
+            bm25: if over_cap {
+                Vec::new()
+            } else {
+                build_chunk_postings(&blob.chunks)
+            },
         }));
     }
 
@@ -185,6 +219,24 @@ pub(crate) fn chunk_and_embed(
         }
         return Ok(None);
     }
+    if over_chunk_cap(rel, chunks.len(), cfg) {
+        let blob = CodeChunkBlob {
+            schema_ver: SCHEMA_VER,
+            embedding_dim: 0,
+            embedding_model: String::new(),
+            chunks,
+            embeddings: Vec::new(),
+        };
+        if let Err(error) = store.write_chunks_hex(hash_hex, &blob) {
+            tracing::warn!(rel, ?error, "write over-cap code-chunk sidecar failed");
+        }
+        return Ok(Some(PendingCodeBatch {
+            rel_path: rel.to_string(),
+            blob_hash: hash_hex.to_string(),
+            embedding_dim: 0,
+            bm25: Vec::new(),
+        }));
+    }
     let texts: Vec<&str> = chunks.iter().map(|c| c.searchable_text.as_str()).collect();
     crate::backpressure::FootprintGate::new(config.resources.max_footprint_mb).admit();
     let embeddings = match embedder.embed_batch(&texts) {
@@ -196,11 +248,11 @@ pub(crate) fn chunk_and_embed(
                 want = chunks.len(),
                 "embedder returned wrong vector count; indexing BM25 keyword lane only"
             );
-            return Ok(bm25_batch_from_chunks(rel, hash_hex, &chunks));
+            return Ok(bm25_batch_from_chunks(rel, hash_hex, &chunks, cfg));
         }
         Err(error) => {
             tracing::warn!(rel, ?error, "embed code chunks failed; indexing BM25 keyword lane only");
-            return Ok(bm25_batch_from_chunks(rel, hash_hex, &chunks));
+            return Ok(bm25_batch_from_chunks(rel, hash_hex, &chunks, cfg));
         }
     };
     let bm25 = build_chunk_postings(&chunks);
@@ -395,7 +447,8 @@ mod tests {
 
     #[test]
     fn bm25_batch_from_chunks_is_rows_empty_with_postings() {
-        let batch = bm25_batch_from_chunks("src/lib.rs", "deadbeef", &[chunk("h:0", "alpha beta alpha")])
+        let cfg = CodeSearchConfig::default();
+        let batch = bm25_batch_from_chunks("src/lib.rs", "deadbeef", &[chunk("h:0", "alpha beta alpha")], &cfg)
             .expect("non-empty chunks must yield a batch");
         assert_eq!(batch.rel_path, "src/lib.rs");
         assert_eq!(
@@ -409,7 +462,7 @@ mod tests {
 
     #[test]
     fn bm25_batch_from_chunks_is_none_for_chunkless_file() {
-        assert!(bm25_batch_from_chunks("src/empty.rs", "deadbeef", &[]).is_none());
+        assert!(bm25_batch_from_chunks("src/empty.rs", "deadbeef", &[], &CodeSearchConfig::default()).is_none());
     }
 
     /// Structural regression guard for the streaming-flush memory fix: the accumulated per-file
@@ -463,5 +516,48 @@ mod tests {
             embeddings: Vec::new(),
         };
         assert!(!code_cache_is_reusable(&chunk_only, 768, "balanced"));
+    }
+
+    #[test]
+    fn postings_are_dropped_for_a_file_over_max_chunks_per_file() {
+        let cfg = CodeSearchConfig {
+            max_chunks_per_file: 2,
+            ..CodeSearchConfig::default()
+        };
+        let under: Vec<CodeChunk> = (0..2).map(|i| chunk(&format!("h:{i}"), "alpha beta")).collect();
+        let over: Vec<CodeChunk> = (0..3).map(|i| chunk(&format!("h:{i}"), "alpha beta")).collect();
+
+        assert_eq!(
+            postings_for("src/lib.rs", &under, &cfg).len(),
+            2,
+            "a file at the cap keeps every posting"
+        );
+        assert!(
+            postings_for("src/generated.rs", &over, &cfg).is_empty(),
+            "one chunk over the cap must stage no BM25 postings at all — this is the bound on the \
+             per-file staging residual the byte budget cannot see, because a whole file is staged \
+             in one call"
+        );
+    }
+
+    #[test]
+    fn over_cap_degraded_batch_carries_neither_postings_nor_vector_rows() {
+        let cfg = CodeSearchConfig {
+            max_chunks_per_file: 1,
+            ..CodeSearchConfig::default()
+        };
+        let chunks: Vec<CodeChunk> = (0..4).map(|i| chunk(&format!("h:{i}"), "alpha beta")).collect();
+        let batch = bm25_batch_from_chunks("src/generated.rs", "deadbeef", &chunks, &cfg)
+            .expect("an over-cap file is still tracked; only its per-chunk fan-out is dropped");
+        assert!(batch.bm25.is_empty());
+        assert_eq!(batch.embedding_dim, 0, "no vector rows either");
+    }
+
+    #[test]
+    fn default_max_chunks_per_file_mirrors_the_document_tier() {
+        assert_eq!(
+            CodeSearchConfig::default().max_chunks_per_file,
+            crate::config::DocumentsConfig::default().max_chunks_per_document
+        );
     }
 }

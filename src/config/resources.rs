@@ -44,10 +44,14 @@ pub struct ResourcesConfig {
     #[serde(default)]
     pub embed_threads: usize,
     /// Upper bound on documents extracted concurrently. `0` (auto) leaves the
-    /// dispatch unbounded (today's behaviour). Parsed now; a concurrency
-    /// semaphore around document dispatch is a later iteration — the field
-    /// exists so the schema is stable ahead of the consumer. Memory is bounded
-    /// today by `max_footprint_mb` rather than by an in-flight document count.
+    /// dispatch unbounded. Enforced by a counting semaphore around document
+    /// extraction (`backpressure::acquire_doc_slot`).
+    ///
+    /// Complementary to `max_footprint_mb` rather than redundant with it: a
+    /// document extraction's spike (decoded page buffers, OCR bitmaps, an
+    /// embedding batch) lands faster than the footprint sampler can observe it,
+    /// so a memory ceiling alone reacts after the allocation. This bounds how
+    /// many such spikes can overlap in the first place.
     #[serde(default)]
     pub max_concurrent_documents: usize,
     /// Number of chunks the embedder submits to ONNX per batch. Larger batches
@@ -451,7 +455,7 @@ mod tests {
     #[test]
     fn auto_ceiling_never_overflows_on_a_sentinel_sized_limit() {
         let ceiling = MaxFootprint::auto_ceiling_bytes(Some(u64::MAX), true).expect("a ceiling");
-        assert!(ceiling >= 512 * MB && ceiling < u64::MAX);
+        assert!((512 * MB..u64::MAX).contains(&ceiling));
     }
 
     #[test]

@@ -32,6 +32,7 @@ pub mod path;
 pub mod query;
 pub mod registry;
 pub mod render;
+pub mod scan_evidence;
 pub mod scanner;
 pub(crate) mod scanner_candidates;
 #[cfg(feature = "code-search")]
@@ -40,6 +41,7 @@ pub mod scanner_code;
 pub mod scanner_doc_links;
 #[cfg(feature = "documents")]
 pub mod scanner_docs;
+pub(crate) mod scanner_drive;
 pub mod scanner_file;
 pub(crate) mod scanner_filter;
 pub(crate) mod scanner_index_batch;

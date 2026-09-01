@@ -50,7 +50,17 @@ fn pruning_a_non_gitignored_node_modules_leaves_the_indexed_set_unchanged() {
     }
 
     let mut store = Store::open(root, basemind::store::VIEW_WORKING).unwrap();
-    let report = scan(root, &mut store, &cfg, ScanSource::WorkingTree, EmbedMode::Inline).unwrap();
+    let mut observer = basemind::scanner::CollectObserver::new();
+    basemind::scanner::scan_with_observer(
+        root,
+        &mut store,
+        &cfg,
+        ScanSource::WorkingTree,
+        EmbedMode::Inline,
+        &basemind::scanner::ScanCancel::new(),
+        &mut observer,
+    )
+    .unwrap();
 
     assert_eq!(
         indexed_paths(&store),
@@ -58,7 +68,7 @@ fn pruning_a_non_gitignored_node_modules_leaves_the_indexed_set_unchanged() {
         "only the real source file is indexed"
     );
     assert!(
-        report.results.iter().all(|r| !r.path.starts_with("node_modules/")),
+        observer.results().iter().all(|r| !r.path.starts_with("node_modules/")),
         "no node_modules file reached the per-file pipeline"
     );
 }

@@ -567,6 +567,31 @@ fn sync_git_history_after_scan(
     std::mem::forget(index);
 }
 
+/// Run a full scan, printing each file's line as the scan absorbs it.
+///
+/// The observer owns its own stdout stream, so it never collides with the caller's `out` and the
+/// CLI never holds a per-file result for the whole repo just to print one line each. The caller
+/// renders the summary from `report.stats` afterwards.
+fn scan_streaming(
+    no_color: bool,
+    verbosity: Verbosity,
+    source: basemind::scanner::ScanSource<'_>,
+    root: &std::path::Path,
+    store: &mut Store,
+    config: &basemind::config::Config,
+) -> std::result::Result<basemind::scanner::ScanReport, basemind::scanner::ScanError> {
+    let mut observer = render::ScanLineObserver::new(no_color, verbosity);
+    basemind::scanner::scan_with_observer(
+        root,
+        store,
+        config,
+        source,
+        basemind::scanner::EmbedMode::Inline,
+        &basemind::scanner::ScanCancel::new(),
+        &mut observer,
+    )
+}
+
 fn cmd_scan(root: &std::path::Path, args: &ScanArgs, verbosity: Verbosity, no_color: bool) -> Result<()> {
     let root = &guard_workspace_root(root)?;
     bootstrap_grammars(verbosity, no_color)?;
@@ -577,15 +602,16 @@ fn cmd_scan(root: &std::path::Path, args: &ScanArgs, verbosity: Verbosity, no_co
         let repo = basemind::git::Repo::discover(root).context("`--staged` requires being inside a git repository")?;
         let mut store = open_store_for_write(root, basemind::store::VIEW_STAGED, "staged", LockHolder::Scan)?;
         render::render_scan_header(&mut out, "staged index", verbosity);
-        let report = basemind::scanner::scan(
+        let report = scan_streaming(
+            no_color,
+            verbosity,
+            basemind::scanner::ScanSource::Staged(&repo),
             root,
             &mut store,
             &config,
-            basemind::scanner::ScanSource::Staged(&repo),
-            basemind::scanner::EmbedMode::Inline,
         )
         .context("scan staged")?;
-        render::render_report(&mut out, &report, verbosity);
+        render::render_summary(&mut out, &report.stats, verbosity);
         return Ok(());
     }
     if let Some(rev_spec) = &args.rev {
@@ -595,18 +621,19 @@ fn cmd_scan(root: &std::path::Path, args: &ScanArgs, verbosity: Verbosity, no_co
         let view = basemind::store::view_name_for_rev(short);
         let mut store = open_store_for_write(root, &view, "rev", LockHolder::Scan)?;
         render::render_scan_header(&mut out, &format!("rev {short}"), verbosity);
-        let report = basemind::scanner::scan(
-            root,
-            &mut store,
-            &config,
+        let report = scan_streaming(
+            no_color,
+            verbosity,
             basemind::scanner::ScanSource::Rev {
                 repo: &repo,
                 sha: sha.clone(),
             },
-            basemind::scanner::EmbedMode::Inline,
+            root,
+            &mut store,
+            &config,
         )
         .context("scan rev")?;
-        render::render_report(&mut out, &report, verbosity);
+        render::render_summary(&mut out, &report.stats, verbosity);
         return Ok(());
     }
 
@@ -617,15 +644,16 @@ fn cmd_scan(root: &std::path::Path, args: &ScanArgs, verbosity: Verbosity, no_co
         return Ok(());
     }
     let mut store = open_store_for_write(root, basemind::store::VIEW_WORKING, "scan", LockHolder::Scan)?;
-    let report = basemind::scanner::scan(
+    let report = scan_streaming(
+        no_color,
+        verbosity,
+        basemind::scanner::ScanSource::WorkingTree,
         root,
         &mut store,
         &config,
-        basemind::scanner::ScanSource::WorkingTree,
-        basemind::scanner::EmbedMode::Inline,
     )
     .context("scan")?;
-    render::render_report(&mut out, &report, verbosity);
+    render::render_summary(&mut out, &report.stats, verbosity);
     sync_git_history_after_scan(root, !args.no_git_history, args.rebuild_git_history, &mut out);
     Ok(())
 }
@@ -643,20 +671,30 @@ fn cmd_rescan(root: &std::path::Path, args: &RescanArgs, verbosity: Verbosity, n
     let mut store = open_store_for_write(root, basemind::store::VIEW_WORKING, "rescan", LockHolder::Rescan)?;
 
     let report = if args.full || args.paths.is_empty() {
-        basemind::scanner::scan(
+        scan_streaming(
+            no_color,
+            verbosity,
+            basemind::scanner::ScanSource::WorkingTree,
             root,
             &mut store,
             &config,
-            basemind::scanner::ScanSource::WorkingTree,
-            basemind::scanner::EmbedMode::Inline,
         )
         .context("rescan (full)")?
     } else {
         let abs: Vec<PathBuf> = args.paths.iter().map(|p| root.join(p)).collect();
-        basemind::scanner::scan_paths(root, &mut store, &config, &abs, basemind::scanner::EmbedMode::Inline)
-            .context("rescan (paths)")?
+        let mut observer = render::ScanLineObserver::new(no_color, verbosity);
+        basemind::scanner::scan_paths_with_observer(
+            root,
+            &mut store,
+            &config,
+            &abs,
+            basemind::scanner::EmbedMode::Inline,
+            &basemind::scanner::ScanCancel::new(),
+            &mut observer,
+        )
+        .context("rescan (paths)")?
     };
-    render::render_report(&mut out, &report, verbosity);
+    render::render_summary(&mut out, &report.stats, verbosity);
     sync_git_history_after_scan(root, !args.no_git_history, args.rebuild_git_history, &mut out);
     Ok(())
 }
@@ -682,11 +720,12 @@ fn cmd_watch(root: &std::path::Path, verbosity: Verbosity, no_color: bool) -> Re
         let mut stdout = render::stdout(no_color);
         let cb: basemind::watcher::BatchCallback = Box::new(move |batch: WatchBatch<'_>| match batch.kind {
             BatchKind::InitialScan => {
-                render::render_report(&mut stdout, batch.report, verbosity);
+                render::render_files(&mut stdout, batch.results, verbosity);
+                render::render_summary(&mut stdout, &batch.report.stats, verbosity);
             }
             BatchKind::Incremental { paths } => {
                 render::render_batch_header(&mut stdout, paths, verbosity);
-                render::render_lines(&mut stdout, batch.report, verbosity);
+                render::render_files(&mut stdout, batch.results, verbosity);
             }
         });
         basemind::watcher::watch(&root_buf, store_w, config_w, shutdown_rx, cb)

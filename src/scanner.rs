@@ -8,12 +8,16 @@ use tracing::debug;
 use crate::config::Config;
 use crate::git::{GitError, Repo};
 use crate::path::RelPath;
+use crate::scan_evidence::{
+    PHASE_CANDIDATES, PHASE_EXTRACT, PHASE_FLUSH, PHASE_LANES, PHASE_PURGE, PHASE_RESOLVE, ScanBreadcrumb,
+};
 use crate::scanner_candidates::walk_candidates;
 #[cfg(feature = "code-search")]
 use crate::scanner_code::PendingCodeBatch;
 #[cfg(feature = "documents")]
 use crate::scanner_docs::{PendingDocBatch, flush_document_batches};
-use crate::scanner_file::{run_candidates, scanner_pool};
+use crate::scanner_drive::{DriveOutcome, PendingCodeBatchOpt, PendingDocBatchOpt, ScanDrive, drive_scan};
+use crate::scanner_file::scanner_pool;
 use crate::scanner_filter::{Filters, IndexFilter};
 #[cfg(feature = "documents")]
 use crate::scanner_lanes::LANE_DOC_REMOVALS;
@@ -30,6 +34,10 @@ pub use crate::scanner_file::looks_binary;
 /// The `scan.extra_roots` operator grant lives with the candidate walk it gates; re-exported here
 /// so embedders reach it through the scanner's public surface.
 pub use crate::scanner_candidates::{ALLOW_EXTRA_ROOTS_ENV, allow_extra_roots};
+
+/// Where a scan's per-file outcomes go. Replaced `ScanReport.results`, which every caller paid for
+/// and only two ever read; the chunked drive loop that keeps live results O(chunk) lives with it.
+pub use crate::scanner_drive::{CollectObserver, NullObserver, ScanObserver};
 
 /// What state of the repository the scanner indexes from.
 ///
@@ -238,9 +246,10 @@ pub enum FileStatus {
     },
 }
 
+/// Aggregate outcome of one scan. Per-file outcomes are delivered to the caller's
+/// [`ScanObserver`] as they are absorbed, never accumulated here — see [`crate::scanner_drive`].
 #[derive(Debug, Clone, Default)]
 pub struct ScanReport {
-    pub results: Vec<FileResult>,
     pub stats: ScanStats,
     /// True when the scan was interrupted by a [`ScanCancel`] token. The per-file work that
     /// completed before the trip is committed (blobs, fjall batches, `index.msgpack`); everything
@@ -337,82 +346,101 @@ pub fn scan_with_cancel(
     embed: EmbedMode,
     cancel: &ScanCancel,
 ) -> Result<ScanReport, ScanError> {
+    scan_with_observer(root, store, config, source, embed, cancel, &mut NullObserver)
+}
+
+/// [`scan_with_cancel`] reporting each file's outcome to `observer` as it is absorbed.
+///
+/// This is the full-fidelity entry point: `scan` and `scan_with_cancel` are it with a
+/// [`NullObserver`]. Per-file results are never accumulated — the observer sees each one inside the
+/// drive chunk that produced it and the chunk's results die at its boundary — so a caller that
+/// wants the old whole-corpus `Vec` must ask for it explicitly via [`CollectObserver`].
+#[allow(clippy::too_many_arguments)]
+pub fn scan_with_observer(
+    root: &Path,
+    store: &mut Store,
+    config: &Config,
+    source: ScanSource<'_>,
+    embed: EmbedMode,
+    cancel: &ScanCancel,
+    observer: &mut dyn ScanObserver,
+) -> Result<ScanReport, ScanError> {
+    // Held for the whole pass and dropped on every exit — the two cancellation returns, the `?` on ~keep
+    // a walk that hit the candidate ceiling, an unwinding panic. That is what makes a surviving ~keep
+    // record mean "this process never ran a destructor", i.e. a hard kill (issue #62). Only the ~keep
+    // full-tree pass gets one: `scan_paths` runs per watcher batch and would churn the file. ~keep
+    let mut breadcrumb = ScanBreadcrumb::begin(root);
+    // Paired with the breadcrumb, and for the same reason: when the kernel kills the process there
+    // is no exit path left to log from, so the growth curve has to have been written down as it
+    // happened. The breadcrumb says a scan died here; this says how its memory got there. ~keep
+    let _memory_log = crate::scan_evidence::MemoryLog::start(root);
+
     let submodule_roots = submodule_roots_for_source(root, &source);
     let filters = Filters::build(config, submodule_roots)?;
+    advance(&mut breadcrumb, PHASE_CANDIDATES, None);
     let candidates = candidates_for_source(root, config, &filters, &source, cancel)?;
     debug!(count = candidates.len(), kind = source.label(), "scan candidates");
+    advance(&mut breadcrumb, PHASE_EXTRACT, Some(candidates.len()));
 
     let scope = derive_scope(root, &source);
-
-    let outcomes: Vec<FileResult> = run_candidates(
-        &candidates,
+    let mut report = ScanReport::default();
+    let drive = ScanDrive {
         root,
-        &filters,
-        store,
-        &source,
+        filters: &filters,
+        source: &source,
         config,
-        &scope,
+        scope: &scope,
         embed,
         cancel,
-    );
+    };
+    let driven = drive_scan(&drive, &candidates, store, &mut report.stats, observer);
 
     // Cancelled mid-pass: commit what completed and return BEFORE the stale purge. The purge below ~keep
-    // treats every indexed file absent from `outcomes` as deleted — on a partial pass that would ~keep
+    // treats every indexed file absent from `driven.seen` as deleted — on a partial pass that would ~keep
     // wipe the entry of every candidate the cancellation skipped. The batch flushes still run: ~keep
-    // apply_outcomes recorded the completed files' entries (embedded=true), so dropping their ~keep
+    // the drive loop recorded the completed files' entries (embedded=true), so dropping their ~keep
     // LanceDB rows here would leave them tracked-but-rowless — quiescent, never re-flushed. The ~keep
     // rows come from already-persisted blobs (no model inference), so this stays bounded. ~keep
     if cancel.is_cancelled() {
-        let mut report = ScanReport {
-            cancelled: true,
-            ..ScanReport::default()
-        };
-        let (doc_batches, code_batches) = apply_outcomes(store, &mut report, outcomes);
+        report.cancelled = true;
         flush_code_map(store)?;
         run_optional_lane(LANE_DOC_BATCHES, || {
-            flush_doc_batches_if_any(store, config, &scope, doc_batches);
+            flush_doc_batches_if_any(store, config, &scope, driven.doc_batches);
         });
         run_optional_lane(LANE_CODE_BATCHES, || {
-            flush_code_batches_if_any(store, config, &scope, code_batches);
+            flush_code_batches_if_any(store, config, &scope, driven.code_batches);
         });
         return Ok(report);
     }
 
-    let seen: ahash::AHashSet<&str> = outcomes
-        .iter()
-        .filter_map(|r| match &r.status {
-            FileStatus::Updated { .. } | FileStatus::Unchanged => Some(r.path.as_str()),
-            _ => None,
-        })
-        .collect();
+    advance(&mut breadcrumb, PHASE_PURGE, None);
 
+    // Derived AFTER the drive rather than before it: the entries the drive upserted are all in ~keep
+    // `seen`, so they are excluded either way, and reading the file map here keeps the whole ~keep
+    // derivation out of the per-file results' lifetime. ~keep
     let stale: Vec<String> = store
         .index
         .files
         .keys()
-        .filter(|k| !seen.contains(k.to_str_lossy().as_ref()))
+        .filter(|k| !driven.seen.contains(k.to_str_lossy().as_ref()))
         .map(|k| k.to_str_lossy().into_owned())
         .collect();
-    drop(seen);
 
     #[cfg(feature = "documents")]
-    let doc_stale: Vec<String> = {
-        let doc_seen: ahash::AHashSet<&str> = outcomes
-            .iter()
-            .filter(|r| r.doc_batch.is_some() || matches!(r.status, FileStatus::Unchanged | FileStatus::Updated { .. }))
-            .map(|r| r.path.as_str())
-            .collect();
-        store
-            .index
-            .doc_files
-            .keys()
-            .filter(|k| !doc_seen.contains(k.to_str_lossy().as_ref()))
-            .map(|k| k.to_str_lossy().into_owned())
-            .collect()
-    };
+    let doc_stale: Vec<String> = store
+        .index
+        .doc_files
+        .keys()
+        .filter(|k| !driven.doc_seen.contains(k.to_str_lossy().as_ref()))
+        .map(|k| k.to_str_lossy().into_owned())
+        .collect();
 
-    let mut report = ScanReport::default();
-    let (doc_batches, code_batches) = apply_outcomes(store, &mut report, outcomes);
+    // The path sets have done their job; only the metadata-only batch descriptors outlive them.
+    let DriveOutcome {
+        doc_batches,
+        code_batches,
+        ..
+    } = driven;
 
     for k in &stale {
         store.remove(k);
@@ -424,10 +452,11 @@ pub fn scan_with_cancel(
             let res = res.and_then(|()| w.remove_bm25_file(&rel));
             let _ = res.and_then(|()| w.commit());
         }
-        report.results.push(FileResult::bare(k.clone(), FileStatus::Removed));
+        observer.on_file(FileResult::bare(k.clone(), FileStatus::Removed));
         report.stats.removed += 1;
     }
 
+    advance(&mut breadcrumb, PHASE_FLUSH, None);
     flush_code_map(store)?;
 
     // A token tripped after the last per-file check still stops the pass here, once the code map ~keep
@@ -446,6 +475,7 @@ pub fn scan_with_cancel(
     }
 
     if matches!(source, ScanSource::WorkingTree) {
+        advance(&mut breadcrumb, PHASE_RESOLVE, None);
         let precise = config.code_intel.precise_resolution;
         run_optional_lane(LANE_RESOLVE, || {
             scanner_pool(config.resources.scan_threads)
@@ -453,6 +483,7 @@ pub fn scan_with_cancel(
         });
     }
 
+    advance(&mut breadcrumb, PHASE_LANES, None);
     run_optional_lane(LANE_DOC_BATCHES, || {
         flush_doc_batches_if_any(store, config, &scope, doc_batches);
     });
@@ -471,6 +502,15 @@ pub fn scan_with_cancel(
     }
     run_optional_lane(LANE_BM25_STATS, || finalize_bm25_stats_if_any(store, config));
     Ok(report)
+}
+
+/// Move the pass's breadcrumb to `phase`, if one could be written at all. Folding the `Option` in
+/// here keeps every phase boundary a single line and keeps "no breadcrumb" from being a condition
+/// the scan branches on: evidence is never a precondition for the work.
+fn advance(breadcrumb: &mut Option<ScanBreadcrumb>, phase: &'static str, candidates: Option<usize>) {
+    if let Some(crumb) = breadcrumb.as_mut() {
+        crumb.advance(phase, candidates);
+    }
 }
 
 /// Persist the file map (`index.msgpack`) — the durability barrier that must run BEFORE the optional
@@ -520,6 +560,22 @@ pub fn scan_paths_with_cancel(
     paths: &[PathBuf],
     embed: EmbedMode,
     cancel: &ScanCancel,
+) -> Result<ScanReport, ScanError> {
+    scan_paths_with_observer(root, store, config, paths, embed, cancel, &mut NullObserver)
+}
+
+/// [`scan_paths_with_cancel`] reporting each file's outcome to `observer`. The incremental
+/// counterpart of [`scan_with_observer`]; the same drive loop, so the same O(chunk) bound holds
+/// even when a watcher hands over a very large touched set.
+#[allow(clippy::too_many_arguments)]
+pub fn scan_paths_with_observer(
+    root: &Path,
+    store: &mut Store,
+    config: &Config,
+    paths: &[PathBuf],
+    embed: EmbedMode,
+    cancel: &ScanCancel,
+    observer: &mut dyn ScanObserver,
 ) -> Result<ScanReport, ScanError> {
     let source = ScanSource::WorkingTree;
     let filter = IndexFilter::new(root, config)?;
@@ -574,20 +630,21 @@ pub fn scan_paths_with_cancel(
     }
 
     let scope = derive_scope(root, &source);
-    let outcomes: Vec<FileResult> = run_candidates(
-        &rels,
+    let mut report = ScanReport::default();
+    let drive = ScanDrive {
         root,
-        filter.filters(),
-        store,
-        &source,
+        filters: filter.filters(),
+        source: &source,
         config,
-        &scope,
+        scope: &scope,
         embed,
         cancel,
-    );
-
-    let mut report = ScanReport::default();
-    let (doc_batches, code_batches) = apply_outcomes(store, &mut report, outcomes);
+    };
+    let DriveOutcome {
+        doc_batches,
+        code_batches,
+        ..
+    } = drive_scan(&drive, &rels, store, &mut report.stats, observer);
 
     for rel in &removed {
         store.remove(rel);
@@ -599,13 +656,13 @@ pub fn scan_paths_with_cancel(
             let res = res.and_then(|()| w.remove_bm25_file(&rel));
             let _ = res.and_then(|()| w.commit());
         }
-        report.results.push(FileResult::bare(rel.clone(), FileStatus::Removed));
+        observer.on_file(FileResult::bare(rel.clone(), FileStatus::Removed));
         report.stats.removed += 1;
     }
 
     #[cfg(feature = "documents")]
     for rel in &doc_removed {
-        report.results.push(FileResult::bare(rel.clone(), FileStatus::Removed));
+        observer.on_file(FileResult::bare(rel.clone(), FileStatus::Removed));
         report.stats.removed += 1;
     }
 
@@ -651,91 +708,6 @@ pub fn scan_paths_with_cancel(
     run_optional_lane(LANE_BM25_STATS, || finalize_bm25_stats_if_any(store, config));
     Ok(report)
 }
-
-/// Drain the parallel-map results back into the single-threaded store + report. Returns the
-/// list of buffered document batches so the caller can flush them into LanceDB after the
-/// index is consistent.
-#[cfg_attr(not(feature = "documents"), allow(clippy::needless_pass_by_ref_mut))]
-fn apply_outcomes(
-    store: &mut Store,
-    report: &mut ScanReport,
-    outcomes: Vec<FileResult>,
-) -> (Vec<PendingDocBatchOpt>, Vec<PendingCodeBatchOpt>) {
-    #[cfg_attr(not(feature = "documents"), allow(unused_mut))]
-    let mut doc_batches: Vec<PendingDocBatchOpt> = Vec::new();
-    #[cfg_attr(not(feature = "code-search"), allow(unused_mut))]
-    let mut code_batches: Vec<PendingCodeBatchOpt> = Vec::new();
-    for mut o in outcomes {
-        report.stats.scanned += 1;
-        match &o.status {
-            FileStatus::Updated {
-                had_errors,
-                error_count: _,
-                reused,
-            } => {
-                report.stats.updated += 1;
-                if *had_errors {
-                    report.stats.updated_with_warnings += 1;
-                }
-                if *reused {
-                    report.stats.reused_extraction += 1;
-                }
-            }
-            FileStatus::Unchanged => report.stats.skipped_unchanged += 1,
-            FileStatus::SkippedTooLarge { .. } => report.stats.skipped_too_large += 1,
-            FileStatus::SkippedNonUtf8 => report.stats.skipped_non_utf8 += 1,
-            FileStatus::SkippedNoLang => report.stats.skipped_no_lang += 1,
-            FileStatus::SkippedBinary => report.stats.skipped_binary += 1,
-            FileStatus::Removed => report.stats.removed += 1,
-            FileStatus::ReadFailed { .. } => report.stats.read_failed += 1,
-            FileStatus::ExtractFailed { .. } => report.stats.extract_failed += 1,
-            FileStatus::ParseTimedOut => {
-                report.stats.extract_failed += 1;
-                report.stats.parse_timeouts += 1;
-            }
-            #[cfg(feature = "documents")]
-            FileStatus::DocIndexed { reused, .. } => {
-                report.stats.docs_indexed += 1;
-                if *reused {
-                    report.stats.reused_doc_extraction += 1;
-                }
-            }
-        }
-        if let Some(entry) = o.upsert.take() {
-            store.upsert(&o.path, entry);
-        }
-        #[cfg(feature = "documents")]
-        if let Some(entry) = o.doc_upsert.take() {
-            store.upsert_doc(&o.path, entry);
-        }
-        #[cfg(feature = "documents")]
-        if let Some(batch) = o.doc_batch.take() {
-            doc_batches.push(batch);
-        }
-        #[cfg(feature = "code-search")]
-        if let Some(batch) = o.code_batch.take() {
-            code_batches.push(batch);
-        }
-        let cleared = FileResult::bare(o.path, o.status);
-        report.results.push(cleared);
-    }
-    (doc_batches, code_batches)
-}
-
-/// Alias that's `PendingDocBatch` under the `documents` feature and `()` otherwise. Lets
-/// `apply_outcomes` keep one signature while still returning real values when the feature
-/// is on.
-#[cfg(feature = "documents")]
-type PendingDocBatchOpt = PendingDocBatch;
-#[cfg(not(feature = "documents"))]
-type PendingDocBatchOpt = ();
-
-/// Alias that's `PendingCodeBatch` under the `code-search` feature and `()` otherwise. Keeps
-/// `apply_outcomes`' return type consistent across feature sets.
-#[cfg(feature = "code-search")]
-type PendingCodeBatchOpt = PendingCodeBatch;
-#[cfg(not(feature = "code-search"))]
-type PendingCodeBatchOpt = ();
 
 fn candidates_for_source(
     root: &Path,

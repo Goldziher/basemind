@@ -11,7 +11,7 @@ use thiserror::Error;
 use tracing::{debug, info, warn};
 
 use crate::config::Config;
-use crate::scanner::{ScanError, ScanReport};
+use crate::scanner::{CollectObserver, FileResult, ScanError, ScanReport};
 use crate::store::Store;
 
 #[derive(Debug, Error)]
@@ -31,6 +31,11 @@ pub type BatchCallback = Box<dyn FnMut(WatchBatch<'_>) + Send>;
 pub struct WatchBatch<'a> {
     pub kind: BatchKind,
     pub report: &'a ScanReport,
+    /// The batch's per-file outcomes. Carried explicitly because
+    /// [`ScanReport`](crate::scanner::ScanReport) no longer accumulates them: the standalone
+    /// watcher renders every line, so it is one of the few callers that genuinely wants the whole
+    /// set and opts into a [`CollectObserver`] to get it.
+    pub results: &'a [FileResult],
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -212,25 +217,42 @@ pub fn watch(
     info!(root = %root.display(), "initial scan");
     {
         let mut guard = store.lock().expect("store poisoned");
-        let report = crate::scanner::scan(
+        let mut observer = CollectObserver::new();
+        let report = crate::scanner::scan_with_observer(
             root,
             &mut guard,
             &config,
             crate::scanner::ScanSource::WorkingTree,
             crate::scanner::EmbedMode::Inline,
+            &crate::scanner::ScanCancel::new(),
+            &mut observer,
         )?;
         on_batch(WatchBatch {
             kind: BatchKind::InitialScan,
             report: &report,
+            results: observer.results(),
         });
     }
     info!("initial scan complete; entering watch mode");
 
     watch_paths(root, &config, shutdown, |touched, kind| {
         let mut guard = store.lock().expect("store poisoned");
-        match crate::scanner::scan_paths(root, &mut guard, &config, &touched, crate::scanner::EmbedMode::Inline) {
+        let mut observer = CollectObserver::new();
+        match crate::scanner::scan_paths_with_observer(
+            root,
+            &mut guard,
+            &config,
+            &touched,
+            crate::scanner::EmbedMode::Inline,
+            &crate::scanner::ScanCancel::new(),
+            &mut observer,
+        ) {
             Ok(report) => {
-                on_batch(WatchBatch { kind, report: &report });
+                on_batch(WatchBatch {
+                    kind,
+                    report: &report,
+                    results: observer.results(),
+                });
             }
             Err(e) => warn!(error = %e, "scan_paths failed"),
         }

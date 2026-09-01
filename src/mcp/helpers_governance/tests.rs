@@ -27,7 +27,7 @@ fn scanned_fixture(rel_path: &str, src: &[u8]) -> (tempfile::TempDir, crate::sto
         crate::scanner::EmbedMode::Inline,
     )
     .expect("scan");
-    let cache = MapCache::build(&store);
+    let cache = MapCache::build(&store, 0);
     (dir, store, cache)
 }
 
@@ -190,7 +190,7 @@ fn should_return_stale_when_symbol_body_changed() {
         crate::scanner::EmbedMode::Inline,
     )
     .expect("scan");
-    let cache = MapCache::build(&store);
+    let cache = MapCache::build(&store, 0);
     let record = MemoryRecord {
         provenance: Provenance {
             symbols: vec![SymbolRef {
@@ -237,7 +237,7 @@ fn should_remain_verified_after_formatting_only_edit() {
         crate::scanner::EmbedMode::Inline,
     )
     .expect("scan");
-    let cache = MapCache::build(&store);
+    let cache = MapCache::build(&store, 0);
 
     let record = MemoryRecord {
         provenance: Provenance {

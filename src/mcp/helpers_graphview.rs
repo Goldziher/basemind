@@ -593,6 +593,15 @@ pub(super) fn render_ui_parts(
     })
 }
 
+/// Why `ui` handed back a `file://` export instead of the live served page.
+///
+/// The daemon's HTTP front-end — which is what serves `/ui` — is opt-in, so "not served" is the
+/// *default* state, not a fault. The message therefore has to name the grant that turns it on;
+/// without that the caller is told only that something is missing, with no way to act on it.
+const UI_NOT_SERVED_DETAIL: &str = "no basemind daemon is serving the interactive UI (its HTTP \
+     front-end is opt-in: set BASEMIND_ALLOW_HTTP=1 in the daemon's environment and restart it); \
+     using the written export file";
+
 /// `ui` (ADR-0006) — open the interactive basemind UI for a human. Renders the graph, always writes
 /// the self-contained export (so there is a durable `file://` artifact), and resolves a URL: a live
 /// `http://<addr>/ui?root=…` page when a basemind daemon is serving HTTP for this machine, otherwise
@@ -641,7 +650,7 @@ pub(super) async fn run_ui(
             file_url(&output_path),
             false,
             "file",
-            Some("no basemind daemon serving HTTP; using the written export file".to_string()),
+            Some(UI_NOT_SERVED_DETAIL.to_string()),
         ),
     };
 

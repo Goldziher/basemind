@@ -570,4 +570,74 @@ mod tests {
         );
         assert!(facts.import_uses.iter().all(|e| e.def_start == 7));
     }
+
+    /// The pass's half of the release invariant, over MANY chunks rather than one: what the harvest
+    /// accumulates must scale with the corpus's *imports*, never with its resolved edges.
+    ///
+    /// The guarantee is primarily a TYPE guarantee — `FileFacts` has no field that could hold
+    /// `intra`, so an accumulator of them cannot be O(corpus edges) however many chunks it sees.
+    /// The exhaustive destructuring at the end is what asserts that: giving `FileFacts` a field for
+    /// the full edge set stops this test compiling. The counts above it pin the runtime half, which
+    /// a filter regression (harvesting every edge instead of the import-bound slice) would break
+    /// without changing any type.
+    #[cfg(any(feature = "code-intel-js", feature = "code-intel-stack"))]
+    #[test]
+    fn what_survives_the_chunks_scales_with_imports_not_with_resolved_edges() {
+        use crate::intel::model::{ImportEdge, ResolvedEdge};
+
+        const CHUNKS: usize = 8;
+        const FILES_PER_CHUNK: usize = 16;
+        const EDGES_PER_FILE: u32 = 4096;
+
+        let file_facts = |rel: String| {
+            let mut refs = FileResolvedRefs::new("typescript");
+            refs.imports = vec![ImportEdge {
+                local: "useThing".to_string(),
+                specifier: "./thing".to_string(),
+                imported: Some("useThing".to_string()),
+                is_type: false,
+                local_start: 7,
+            }];
+            refs.intra = (0..EDGES_PER_FILE)
+                .map(|i| ResolvedEdge {
+                    use_start: 1000 + i * 16,
+                    use_end: 1008 + i * 16,
+                    def_start: if i == 0 { 7 } else { 500 },
+                    def_end: 20,
+                })
+                .collect();
+            (rel, refs)
+        };
+
+        let mut retained: ahash::AHashMap<String, crate::intel::xfile::FileFacts> = ahash::AHashMap::new();
+        for chunk in 0..CHUNKS {
+            let computed: Vec<(String, FileResolvedRefs)> = (0..FILES_PER_CHUNK)
+                .map(|f| file_facts(format!("src/c{chunk}/f{f}.ts")))
+                .collect();
+            harvest_cross_file_facts(computed, &mut retained);
+        }
+
+        let files = CHUNKS * FILES_PER_CHUNK;
+        let computed_edges = files * EDGES_PER_FILE as usize;
+        let survived: usize = retained.values().map(|f| f.import_uses.len()).sum();
+        assert_eq!(retained.len(), files, "every importer must be harvested");
+        assert_eq!(
+            survived, files,
+            "exactly the one import-bound edge per file may outlive its chunk"
+        );
+        assert!(
+            survived * 1000 < computed_edges,
+            "{survived} edges survived {computed_edges} computed — the projection stopped being one"
+        );
+
+        let (_rel, facts) = retained.into_iter().next().expect("at least one importer");
+        let crate::intel::xfile::FileFacts {
+            imports,
+            exports,
+            import_uses,
+        } = facts;
+        assert_eq!(imports.len(), 1);
+        assert!(exports.is_empty());
+        assert_eq!(import_uses.len(), 1);
+    }
 }

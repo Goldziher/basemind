@@ -12,7 +12,7 @@ use anstream::AutoStream;
 use anstyle::{AnsiColor, Color, Reset, Style};
 
 use crate::lang::BootstrapSummary;
-use crate::scanner::{FileResult, FileStatus, ScanReport, ScanStats};
+use crate::scanner::{FileResult, FileStatus, ScanObserver, ScanStats};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Verbosity {
@@ -43,18 +43,37 @@ pub fn stdout(force_off: bool) -> AutoStream<std::io::Stdout> {
 
 const COL_PATH: usize = 8;
 
-/// Print every line of a report, respecting verbosity.
-pub fn render_report(w: &mut AutoStream<std::io::Stdout>, report: &ScanReport, verbosity: Verbosity) {
-    for r in &report.results {
+/// Print the per-file lines of an already-collected result set (no summary). Used by the watcher,
+/// which renders a batch after the fact.
+pub fn render_files(w: &mut AutoStream<std::io::Stdout>, results: &[FileResult], verbosity: Verbosity) {
+    for r in results {
         render_file(w, r, verbosity);
     }
-    render_summary(w, &report.stats, verbosity);
 }
 
-/// Print only the per-file lines (no summary). Used by the watcher per batch.
-pub fn render_lines(w: &mut AutoStream<std::io::Stdout>, report: &ScanReport, verbosity: Verbosity) {
-    for r in &report.results {
-        render_file(w, r, verbosity);
+/// A [`ScanObserver`] that prints each file's line the moment the scan absorbs it.
+///
+/// This is why the CLI no longer needs `ScanReport.results`: it owns its own stdout stream, so it
+/// never has to be handed a `Vec` of every file in the repo just to print one line per file. The
+/// summary is still rendered by the caller from `report.stats` once the scan returns.
+pub struct ScanLineObserver {
+    out: AutoStream<std::io::Stdout>,
+    verbosity: Verbosity,
+}
+
+impl ScanLineObserver {
+    /// `force_off` mirrors [`stdout`]'s `--no-color` flag.
+    pub fn new(force_off: bool, verbosity: Verbosity) -> Self {
+        Self {
+            out: stdout(force_off),
+            verbosity,
+        }
+    }
+}
+
+impl ScanObserver for ScanLineObserver {
+    fn on_file(&mut self, result: FileResult) {
+        render_file(&mut self.out, &result, self.verbosity);
     }
 }
 

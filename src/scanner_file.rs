@@ -41,6 +41,11 @@ use crate::store::{FileEntry, Store};
 /// costs nothing on the common shallow path.
 const SCANNER_STACK_SIZE: usize = 256 * 1024 * 1024;
 
+/// Source size at or above which a fresh extraction goes through the memory gate. Below it the
+/// transient is small enough that sampling the gate would cost more than it saves; above it a
+/// handful of concurrent workers can move the process's footprint by hundreds of megabytes.
+const LARGE_FILE_ADMIT_BYTES: usize = 1024 * 1024;
+
 /// Process-wide rayon pool the scanner runs its per-file `par_iter` on: sized like the default global
 /// pool but with a much larger per-worker stack (see [`SCANNER_STACK_SIZE`]). Lazily built once.
 ///
@@ -64,6 +69,13 @@ pub(crate) fn scanner_pool(scan_threads: usize) -> &'static rayon::ThreadPool {
 /// Drive the per-file pipeline across `candidates` on the rayon pool, batching index commits
 /// per worker. Order of the returned `FileResult`s is unspecified (the parallel fold
 /// concatenates per-worker slices) — every consumer keys by `path`, never by position.
+///
+/// `max_workers` caps how many of the pool's threads this call may spread across; `0` leaves
+/// rayon's own splitting alone, which is what the unthrottled path wants (finer splits balance a
+/// batch whose files differ by orders of magnitude in parse cost). A non-zero value is the drive
+/// loop's actuating response to sustained memory pressure — see [`crate::scanner_drive`] — and is
+/// applied as a minimum split length, so rayon cannot subdivide the chunk past that many jobs. The
+/// rayon pool itself is process-global and fixed at first use; this narrows a single call, not it.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_candidates(
     candidates: &[String],
@@ -75,10 +87,17 @@ pub(crate) fn run_candidates(
     scope: &str,
     embed: EmbedMode,
     cancel: &ScanCancel,
+    max_workers: usize,
 ) -> Vec<FileResult> {
+    let min_len = if max_workers == 0 {
+        1
+    } else {
+        candidates.len().div_ceil(max_workers).max(1)
+    };
     scanner_pool(config.resources.scan_threads).install(|| {
         candidates
             .par_iter()
+            .with_min_len(min_len)
             .fold(
                 || WorkerIndexBatch::new(store),
                 |mut batch, rel| {
@@ -267,20 +286,31 @@ fn process_file(
 
     let (l1, l2_opt): (FileMapL1, Option<FileMapL2>) = match reused_pair {
         Some(pair) => pair,
-        None => match extract::extract_l1_l2(lang, &bytes, want_l2) {
-            Ok(pair) => pair,
-            Err(ExtractError::ParseTimeout(_)) => {
-                return FileResult::bare(rel.to_string(), FileStatus::ParseTimedOut);
+        None => {
+            // Advisory admit point (see `crate::scanner_drive` for the advisory/actuating split): ~keep
+            // a fresh parse of a large file allocates a tree-sitter tree plus two extraction maps ~keep
+            // several times the source size, and every pool worker can be doing it at once. There ~keep
+            // is no smaller unit to fall back to here, so after `max_wait` the gate admits anyway. ~keep
+            // Placed BEFORE `index_batch.stage`: parking with a Fjall batch open would turn a ~keep
+            // memory problem into a liveness one. ~keep
+            if bytes.len() >= LARGE_FILE_ADMIT_BYTES {
+                crate::backpressure::FootprintGate::new(config.resources.max_footprint_mb).admit();
             }
-            Err(source) => {
-                return FileResult::bare(
-                    rel.to_string(),
-                    FileStatus::ExtractFailed {
-                        msg: format_extract_err(&source),
-                    },
-                );
+            match extract::extract_l1_l2(lang, &bytes, want_l2) {
+                Ok(pair) => pair,
+                Err(ExtractError::ParseTimeout(_)) => {
+                    return FileResult::bare(rel.to_string(), FileStatus::ParseTimedOut);
+                }
+                Err(source) => {
+                    return FileResult::bare(
+                        rel.to_string(),
+                        FileStatus::ExtractFailed {
+                            msg: format_extract_err(&source),
+                        },
+                    );
+                }
             }
-        },
+        }
     };
 
     let l2: Option<FileMapL2> = l2_opt;
@@ -379,6 +409,10 @@ fn process_doc(
         return FileResult::bare(rel.to_string(), FileStatus::Unchanged);
     }
 
+    // Both bounds, in the order that makes them complementary: take a concurrency slot first so at ~keep
+    // most `max_concurrent_documents` extractions can ever overlap, then wait out any footprint ~keep
+    // overshoot the ones already running caused. Both are leaf-advisory — neither can refuse. ~keep
+    let _doc_slot = crate::backpressure::acquire_doc_slot(config.resources.max_concurrent_documents);
     crate::backpressure::FootprintGate::new(config.resources.max_footprint_mb).admit();
 
     match extract_and_persist_doc(

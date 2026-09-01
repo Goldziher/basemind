@@ -146,6 +146,7 @@
         "enabled": true,
         "max_characters": 1500,
         "overlap": 200,
+        "max_chunks_per_file": 2000,
         "embed": false,
         "embed_exclude": [],
         "reranker": {
@@ -897,6 +898,13 @@
           "format": "uint",
           "minimum": 0,
           "default": 200
+        },
+        "max_chunks_per_file": {
+          "description": "Hard cap on chunks indexed per source file. Mirrors the document tier's\n`max_chunks_per_document`. A pathological input — a generated parser table, a checked-in\nbundle, a file of tens of thousands of tiny symbols — otherwise fans one file out into a\nchunk count bounded only by `[scan] max_file_bytes`, and every chunk costs a BM25\n`code_bm25_by_path` entry carrying its full term list, a LanceDB row, and (when `embed`) an\nONNX embed. Files over the cap are still chunked and cached (the `.chunk.msgpack` sidecar is\nwritten, so outline and grep are unaffected) but contribute no keyword postings and no\nvector rows, with a warning.",
+          "type": "integer",
+          "format": "uint",
+          "minimum": 1,
+          "default": 2000
         },
         "embed": {
           "description": "Generate embeddings (`true`) or chunk-only without vector storage (`false`). **Default\n`false`**: local embeddings on *code* aren't worth their cost — code is embedded with a\ngeneral English model and the one real win (NL→symbol) is already served by the BM25 keyword\nlane over the same text. With embeddings off the `.chunk.msgpack` cache is still written and\nthe BM25 keyword lane still works (so `lane: \"keyword\"` functions), but no LanceDB\nrows land — the semantic (vector) lane returns nothing and no ONNX model is downloaded. Flip\nto `true` only if you specifically want vector search over code.",

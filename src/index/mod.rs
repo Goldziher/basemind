@@ -32,8 +32,12 @@ use thiserror::Error;
 /// `implementations_by_trait` / `implementations_by_path` partitions for `find_implementations`;
 /// `+3` the `refs_by_def` / `refs_by_path` partitions for the code-intelligence tier's
 /// scope/import-resolved `find_references` / `goto_definition`; `+4` the `code_bm25_postings` /
-/// `code_bm25_by_path` partitions for the code-search BM25 keyword lane (`search_code mode=keyword`).
-const INDEX_PARTITION_REVISION: u32 = 4;
+/// `code_bm25_by_path` partitions for the code-search BM25 keyword lane (`search_code mode=keyword`);
+/// `+5` the per-keyspace [`KEYSPACE_MEMTABLE_BYTES`] sizing — fjall persists `max_memtable_size`
+/// into its meta keyspace at *create* time and recovers it on reopen, ignoring the create options
+/// for a keyspace that already exists, so an index built by an earlier build would keep the 64 MiB
+/// default forever unless the schema mismatch forces it to be recreated.
+const INDEX_PARTITION_REVISION: u32 = 5;
 
 /// Bumped whenever the on-disk key layout changes — the sum of `RELEASE_MINOR` and the
 /// [`INDEX_PARTITION_REVISION`] offset, monotonic across both. When `RELEASE_MINOR` next bumps,
@@ -51,6 +55,91 @@ const META_BM25_DOC_COUNT: &[u8] = b"code_bm25_n";
 const META_BM25_TOTAL_LEN: &[u8] = b"code_bm25_total_len";
 
 const INDEX_DIR: &str = "index.fjall";
+
+/// Per-keyspace memtable sizes, in bytes. Three tiers, assigned by how much one scan writes to the
+/// keyspace: [`MEMTABLE_HOT_BYTES`] for the BM25 posting list (the densest writer by far — one
+/// entry per `(term, chunk)` pair), [`MEMTABLE_WARM_BYTES`] for the secondary indexes the scanner
+/// rewrites once per file, [`MEMTABLE_COLD_BYTES`] for the keyspaces a scan barely touches.
+///
+/// This table is the single source of truth: [`open_keyspace`] looks every keyspace up here, and
+/// `keyspace_memtable_table_covers_every_partition` fails if the two ever drift apart.
+const KEYSPACE_MEMTABLE_BYTES: &[(&str, u64)] = &[
+    ("meta", MEMTABLE_COLD_BYTES),
+    ("symbols_by_path", MEMTABLE_WARM_BYTES),
+    ("symbols_by_name", MEMTABLE_WARM_BYTES),
+    ("calls_by_path", MEMTABLE_WARM_BYTES),
+    ("calls_by_callee", MEMTABLE_WARM_BYTES),
+    ("imports_by_module", MEMTABLE_COLD_BYTES),
+    ("imports_by_path", MEMTABLE_COLD_BYTES),
+    ("implementations_by_trait", MEMTABLE_COLD_BYTES),
+    ("implementations_by_path", MEMTABLE_COLD_BYTES),
+    ("refs_by_def", MEMTABLE_WARM_BYTES),
+    ("refs_by_path", MEMTABLE_WARM_BYTES),
+    ("code_bm25_postings", MEMTABLE_HOT_BYTES),
+    ("code_bm25_by_path", MEMTABLE_WARM_BYTES),
+    ("embeddings", MEMTABLE_COLD_BYTES),
+    ("memory_by_key", MEMTABLE_COLD_BYTES),
+    ("memory_archive", MEMTABLE_COLD_BYTES),
+    ("proposals", MEMTABLE_COLD_BYTES),
+];
+
+/// Memtable size for the BM25 posting keyspace — the one partition that measurably benefits from
+/// headroom (it absorbs the large majority of a scan's index entries), so it gets the largest
+/// share of the ceiling while still sitting well inside fjall's recommended 8-64 MiB band.
+const MEMTABLE_HOT_BYTES: u64 = 16 * 1_024 * 1_024;
+
+/// Memtable size for the keyspaces the scanner rewrites once per file. 8 MiB is the floor of
+/// fjall's recommended band: small enough to matter for the ceiling, large enough that an ordinary
+/// repo's per-keyspace working set still lands in one or two flushes.
+const MEMTABLE_WARM_BYTES: u64 = 8 * 1_024 * 1_024;
+
+/// Memtable size for keyspaces a scan barely writes (`meta`, the reserved companions, the memory
+/// and proposal tiers). Deliberately below fjall's recommended band: none of them approaches even
+/// 4 MiB in practice, so the value never changes their flush cadence — it only stops each from
+/// contributing a 64 MiB slice to the worst case below.
+const MEMTABLE_COLD_BYTES: u64 = 4 * 1_024 * 1_024;
+
+/// Sealed (rotated, not yet flushed) memtables fjall lets one keyspace queue before it throttles
+/// the writer — `Keyspace::local_backpressure` in fjall 3.1.10 sleeps at 4+. So a keyspace's
+/// worst-case resident memtable memory is `max_memtable_size * (1 active + 4 sealed)`.
+const MEMTABLE_SEALED_LIMIT: u64 = 4;
+
+/// Worst-case resident memtable bytes across every keyspace of one open [`IndexDb`], each holding a
+/// full active memtable plus the maximum sealed queue at the same moment.
+///
+/// This is the bound [`KEYSPACE_MEMTABLE_BYTES`] exists to set. At fjall's unconfigured 64 MiB
+/// default the same expression is `17 * 5 * 64 MiB` = 5.3 GiB — headroom fjall would grant *before
+/// stalling a single write*, which is how an unbounded scan reached 43.8 GiB RSS without fjall ever
+/// pushing back.
+pub const INDEX_MEMTABLE_CEILING_BYTES: u64 = memtable_ceiling_bytes();
+
+const fn memtable_ceiling_bytes() -> u64 {
+    let mut total = 0;
+    let mut i = 0;
+    while i < KEYSPACE_MEMTABLE_BYTES.len() {
+        total += KEYSPACE_MEMTABLE_BYTES[i].1 * (1 + MEMTABLE_SEALED_LIMIT);
+        i += 1;
+    }
+    total
+}
+
+/// Open (creating on first use) one keyspace at its [`KEYSPACE_MEMTABLE_BYTES`] size.
+///
+/// fjall reads `max_memtable_size` from the create options only when the keyspace does not yet
+/// exist; every later open recovers the value it persisted then. That is what couples this sizing
+/// to [`INDEX_PARTITION_REVISION`] — without the bump, an index created by an earlier build would
+/// never pick the new sizes up.
+fn open_keyspace(db: &Database, name: &str) -> Result<Keyspace, IndexError> {
+    let bytes = memtable_bytes_for(name);
+    Ok(db.keyspace(name, move || KeyspaceCreateOptions::default().max_memtable_size(bytes))?)
+}
+
+fn memtable_bytes_for(name: &str) -> u64 {
+    KEYSPACE_MEMTABLE_BYTES
+        .iter()
+        .find(|(known, _)| *known == name)
+        .map_or(MEMTABLE_COLD_BYTES, |(_, bytes)| *bytes)
+}
 
 /// Floor for the Fjall block cache, in bytes. Matches the size fjall itself defaults to when
 /// left unconfigured (32 MiB — see `fjall::db_config::Config::new`), so a small or freshly
@@ -220,7 +309,7 @@ impl IndexDb {
         })?;
         let cache_bytes = index_cache_bytes(&dir);
         let mut db = Database::builder(&dir).cache_size(cache_bytes).open()?;
-        let mut meta = db.keyspace("meta", KeyspaceCreateOptions::default)?;
+        let mut meta = open_keyspace(&db, "meta")?;
         let on_disk_ver = meta
             .get(META_SCHEMA_VER)?
             .and_then(|bytes| <[u8; 4]>::try_from(&bytes[..]).ok())
@@ -237,24 +326,24 @@ impl IndexDb {
                 source,
             })?;
             db = Database::builder(&dir).cache_size(cache_bytes).open()?;
-            meta = db.keyspace("meta", KeyspaceCreateOptions::default)?;
+            meta = open_keyspace(&db, "meta")?;
         }
-        let symbols_by_path = db.keyspace("symbols_by_path", KeyspaceCreateOptions::default)?;
-        let symbols_by_name = db.keyspace("symbols_by_name", KeyspaceCreateOptions::default)?;
-        let calls_by_path = db.keyspace("calls_by_path", KeyspaceCreateOptions::default)?;
-        let calls_by_callee = db.keyspace("calls_by_callee", KeyspaceCreateOptions::default)?;
-        let imports_by_module = db.keyspace("imports_by_module", KeyspaceCreateOptions::default)?;
-        let imports_by_path = db.keyspace("imports_by_path", KeyspaceCreateOptions::default)?;
-        let implementations_by_trait = db.keyspace("implementations_by_trait", KeyspaceCreateOptions::default)?;
-        let implementations_by_path = db.keyspace("implementations_by_path", KeyspaceCreateOptions::default)?;
-        let refs_by_def = db.keyspace("refs_by_def", KeyspaceCreateOptions::default)?;
-        let refs_by_path = db.keyspace("refs_by_path", KeyspaceCreateOptions::default)?;
-        let code_bm25_postings = db.keyspace("code_bm25_postings", KeyspaceCreateOptions::default)?;
-        let code_bm25_by_path = db.keyspace("code_bm25_by_path", KeyspaceCreateOptions::default)?;
-        let embeddings = db.keyspace("embeddings", KeyspaceCreateOptions::default)?;
-        let memory_by_key = db.keyspace("memory_by_key", KeyspaceCreateOptions::default)?;
-        let memory_archive = db.keyspace("memory_archive", KeyspaceCreateOptions::default)?;
-        let proposals = db.keyspace("proposals", KeyspaceCreateOptions::default)?;
+        let symbols_by_path = open_keyspace(&db, "symbols_by_path")?;
+        let symbols_by_name = open_keyspace(&db, "symbols_by_name")?;
+        let calls_by_path = open_keyspace(&db, "calls_by_path")?;
+        let calls_by_callee = open_keyspace(&db, "calls_by_callee")?;
+        let imports_by_module = open_keyspace(&db, "imports_by_module")?;
+        let imports_by_path = open_keyspace(&db, "imports_by_path")?;
+        let implementations_by_trait = open_keyspace(&db, "implementations_by_trait")?;
+        let implementations_by_path = open_keyspace(&db, "implementations_by_path")?;
+        let refs_by_def = open_keyspace(&db, "refs_by_def")?;
+        let refs_by_path = open_keyspace(&db, "refs_by_path")?;
+        let code_bm25_postings = open_keyspace(&db, "code_bm25_postings")?;
+        let code_bm25_by_path = open_keyspace(&db, "code_bm25_by_path")?;
+        let embeddings = open_keyspace(&db, "embeddings")?;
+        let memory_by_key = open_keyspace(&db, "memory_by_key")?;
+        let memory_archive = open_keyspace(&db, "memory_archive")?;
+        let proposals = open_keyspace(&db, "proposals")?;
 
         meta.insert(META_SCHEMA_VER, INDEX_SCHEMA_VER.to_be_bytes())?;
 
@@ -411,5 +500,94 @@ impl IndexDb {
         self.meta.insert(META_BM25_DOC_COUNT, n.to_be_bytes())?;
         self.meta.insert(META_BM25_TOTAL_LEN, total_len.to_be_bytes())?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Bytes written into one keyspace to provoke a rotation. Above every tier in
+    /// [`KEYSPACE_MEMTABLE_BYTES`], and far below fjall's unconfigured 64 MiB default — so the
+    /// flush this triggers happens *because* the keyspace was sized, and would not happen at the
+    /// default. Also well below fjall's 512 MiB `max_journaling_size`, which is the only other
+    /// thing that could rotate a memtable here.
+    const ROTATION_PROBE_BYTES: usize = 24 * 1_024 * 1_024;
+
+    fn write_until_rotation_probe(keyspace: &Keyspace) {
+        let value = vec![0u8; 4_096];
+        for i in 0..(ROTATION_PROBE_BYTES / value.len()) {
+            keyspace
+                .insert(i.to_be_bytes(), value.as_slice())
+                .expect("probe insert");
+        }
+    }
+
+    /// True once fjall has flushed at least one memtable of `keyspace` to disk. Rotation is
+    /// requested synchronously on insert but performed by a background worker, so this polls.
+    fn flushed_within(keyspace: &Keyspace, timeout: std::time::Duration) -> bool {
+        let deadline = std::time::Instant::now() + timeout;
+        while std::time::Instant::now() < deadline {
+            if keyspace.disk_space() > 0 {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        keyspace.disk_space() > 0
+    }
+
+    #[test]
+    fn keyspace_memtable_table_covers_every_partition() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = IndexDb::open(dir.path()).unwrap();
+        let mut opened: Vec<String> = db.db.list_keyspace_names().iter().map(ToString::to_string).collect();
+        opened.sort();
+        let mut sized: Vec<String> = KEYSPACE_MEMTABLE_BYTES
+            .iter()
+            .map(|(name, _)| (*name).to_string())
+            .collect();
+        sized.sort();
+        assert_eq!(
+            opened, sized,
+            "every opened keyspace must be sized by the table, and the table must name no keyspace \
+             that is never opened — an unlisted name silently falls back to the cold tier"
+        );
+    }
+
+    #[test]
+    fn memtable_ceiling_is_bounded() {
+        let partitions = u64::try_from(KEYSPACE_MEMTABLE_BYTES.len()).expect("keyspace count fits a u64");
+        let unsized_ceiling = partitions * (1 + MEMTABLE_SEALED_LIMIT) * 64 * 1_024 * 1_024;
+        // A const block, because both sides are constants: this then fails the build rather than a
+        // test run, which is the right moment to learn that a new keyspace blew the ceiling. ~keep
+        const { assert!(INDEX_MEMTABLE_CEILING_BYTES <= 1_024 * 1_024 * 1_024) };
+        assert!(
+            INDEX_MEMTABLE_CEILING_BYTES * 4 <= unsized_ceiling,
+            "sizing must buy at least a 4x cut against fjall's 64 MiB default"
+        );
+    }
+
+    /// The load-bearing half of the sizing: fjall persists `max_memtable_size` when the keyspace is
+    /// *created* and recovers it on every later open, ignoring the create options for a keyspace
+    /// that already exists. A test that only checked a freshly created DB would pass even if the
+    /// value never survived a restart — which is the state every long-lived index is actually in.
+    ///
+    /// `max_memtable_size` has no public getter, so this observes the size behaviourally: write
+    /// more than the configured size (but far less than fjall's 64 MiB default) into a cold-tier
+    /// keyspace *after* reopening, and require that fjall rotated and flushed it.
+    #[test]
+    fn configured_memtable_size_survives_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let db = IndexDb::open(dir.path()).unwrap();
+            assert_eq!(db.proposals.disk_space(), 0, "nothing written yet");
+        }
+        let db = IndexDb::open(dir.path()).unwrap();
+        write_until_rotation_probe(&db.proposals);
+        assert!(
+            flushed_within(&db.proposals, std::time::Duration::from_secs(30)),
+            "a reopened keyspace must still rotate at its configured {MEMTABLE_COLD_BYTES}-byte \
+             memtable size; no flush means fjall recovered the 64 MiB default instead"
+        );
     }
 }

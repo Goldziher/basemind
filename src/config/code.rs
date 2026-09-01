@@ -27,6 +27,17 @@ pub struct CodeSearchConfig {
     #[serde(default = "CodeSearchConfig::default_overlap")]
     #[schemars(range(min = 0))]
     pub overlap: usize,
+    /// Hard cap on chunks indexed per source file. Mirrors the document tier's
+    /// `max_chunks_per_document`. A pathological input — a generated parser table, a checked-in
+    /// bundle, a file of tens of thousands of tiny symbols — otherwise fans one file out into a
+    /// chunk count bounded only by `[scan] max_file_bytes`, and every chunk costs a BM25
+    /// `code_bm25_by_path` entry carrying its full term list, a LanceDB row, and (when `embed`) an
+    /// ONNX embed. Files over the cap are still chunked and cached (the `.chunk.msgpack` sidecar is
+    /// written, so outline and grep are unaffected) but contribute no keyword postings and no
+    /// vector rows, with a warning.
+    #[serde(default = "CodeSearchConfig::default_max_chunks_per_file")]
+    #[schemars(range(min = 1))]
+    pub max_chunks_per_file: usize,
     /// Generate embeddings (`true`) or chunk-only without vector storage (`false`). **Default
     /// `false`**: local embeddings on *code* aren't worth their cost — code is embedded with a
     /// general English model and the one real win (NL→symbol) is already served by the BM25 keyword
@@ -76,6 +87,9 @@ impl CodeSearchConfig {
     fn default_overlap() -> usize {
         200
     }
+    fn default_max_chunks_per_file() -> usize {
+        2000
+    }
     fn default_embed() -> bool {
         false
     }
@@ -87,6 +101,7 @@ impl Default for CodeSearchConfig {
             enabled: Self::default_enabled(),
             max_characters: Self::default_max_characters(),
             overlap: Self::default_overlap(),
+            max_chunks_per_file: Self::default_max_chunks_per_file(),
             embed: Self::default_embed(),
             embed_exclude: Vec::new(),
             reranker: RerankerConfig::default(),
