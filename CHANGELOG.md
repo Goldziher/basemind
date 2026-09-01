@@ -428,7 +428,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   graph build consumes to emit `Annotates` / `Cites` edges. Blob-compatible (`#[serde(default)]`); no
   schema bump.
 - **Single-daemon guarantees + leak safeguards.** The comms daemon now takes an exclusive
-  single-owner lock (`daemon.lock`) _before_ binding its socket, so a redundant daemon on the same
+  single-owner lock (`daemon.lock`) *before* binding its socket, so a redundant daemon on the same
   comms dir converges (exits 0) instead of racing — uniform across Unix and Windows. Every live daemon
   registers a pidfile under `<data_home>/daemons/`, and a new machine-wide ceiling
   (`BASEMIND_MAX_DAEMONS`, default 8) **refuses** to spawn past it rather than letting daemons pile up.
@@ -583,7 +583,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   | `thread_history` | `agents` `history` | `comms history <thread>` | `agents history <thread>` |
   | `message_get` | `agents` `message` | `comms read <id>` | `agents message <id>` |
   | `inbox_read` | `agents` `inbox` | `comms inbox [--mark-read]` | `agents inbox [--mark-read]` |
-  | `inbox_ack` | `agents` `ack` | _(new — no prior tool)_ | `agents ack` |
+  | `inbox_ack` | `agents` `ack` | *(new — no prior tool)* | `agents ack` |
   | `inbox_wait` | `agents` `wait` | `comms wait [--thread --timeout-secs]` | `agents wait [--thread --timeout-secs]` |
   | `workspaces` | `workspace` `workspaces` | `registry workspaces` | `workspace workspaces` |
   | `worktrees` | `workspace` `worktrees` | `registry worktrees` | `workspace worktrees` |
@@ -672,7 +672,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The `multi-agent-room` skill now ships to every plugin tree.** `scripts/sync-plugin-skills.sh`
   carried a hand-maintained list of nine skills while `skills/` held ten, so `multi-agent-room` was
   copied into the Hermes bundle (generated separately by ai-rulez) but never into the Codex, Cursor
-  or opencode plugins — while the `agent-comms` rule those plugins _do_ ship tells the agent to
+  or opencode plugins — while the `agent-comms` rule those plugins *do* ship tells the agent to
   consult it. The skill and command lists are now derived from the canonical `skills/` and
   `commands/` trees, so adding either ships it everywhere instead of only where someone remembered.
 - **Documentation named tools and commands that no longer exist.** The consolidation swept the
@@ -746,7 +746,7 @@ Minor release: **`.basemind/` is wiped and rebuilt on the next `basemind scan`**
   mtime refreshed on every scan, so the blob GC's grace window keeps protecting an actively-scanned
   doc through a rename's transient entry-less gap instead of reaping it and forcing a full re-embed;
   (3) a doc whose embedding deterministically yields no vectors (an unembeddable body, a missing ONNX
-  runtime) is now recorded as _attempted_ and no longer re-extracted + re-embedded on every scan — a
+  runtime) is now recorded as *attempted* and no longer re-extracted + re-embedded on every scan — a
   content-hash or embedding-preset change re-opens the attempt.
 
 ## [0.22.8] — 2026-07-27
@@ -770,7 +770,7 @@ Minor release: **`.basemind/` is wiped and rebuilt on the next `basemind scan`**
   other client then sat unaccepted in the kernel backlog — including `ensure_daemon`'s readiness
   probe, whose short timeout reported a perfectly healthy, still-running daemon as unreachable, which
   in turn spawned a replacement that hit `AddrInUse` and exited (`SpawnTimeout`). The peek + relay/
-  legacy routing now runs _inside_ the per-connection spawned task, so the accept loop only
+  legacy routing now runs *inside* the per-connection spawned task, so the accept loop only
   `accept()`s and `spawn`s and never awaits client I/O — a slow/silent client harms only its own
   task. This aligns the Unix path with the Windows named-pipe front-end, which already reads the
   first byte in-task. No blob/index schema change.
@@ -947,7 +947,7 @@ older-build takeover) instead of leaving it to run away.
   hard-pinned to the plugin's exact version and aborted if that release's platform asset 404'd — so
   in the window between the plugin bumping to a new version and that release finishing its
   per-platform binary uploads, the session had no MCP server at all. On a missing pinned asset the
-  launcher now re-execs pinned to the newest _published_ GitHub release: GitHub exposes only
+  launcher now re-execs pinned to the newest *published* GitHub release: GitHub exposes only
   finalized, non-draft releases at `/releases/latest`, and the publish workflow promotes a release
   only after every platform asset + checksums exist, so the fallback target is always complete and
   safe to run — even from an empty cache. A same-schema-minor cached binary remains the offline last
@@ -1026,9 +1026,9 @@ older-build takeover) instead of leaving it to run away.
   their true definitions. Delivers **intra-file** precision (shadowing, per-function/method parameter
   scope, Python comprehension bindings, Java field-vs-local) and **cross-file** resolution for Python:
   dotted and relative imports resolve to their target module, and each call site of an imported name
-  resolves _through_ the import to the exported definition (reporting `resolved: true`), rather than
+  resolves *through* the import to the exported definition (reporting `resolved: true`), rather than
   matching by name. No new MCP tools or query surface — existing navigation just gets precise for
-  these languages. Known limitations this iteration: Java cross-file resolution of _member_ calls on
+  these languages. Known limitations this iteration: Java cross-file resolution of *member* calls on
   an imported type (`Foo.greet()`) is not yet resolved (the imported type itself is), and a variable
   reused after a same-name Python comprehension may bind to the comprehension's own variable.
 - **`[code_intel] precise_resolution` config toggle** (default `true`). Set it to `false` in
@@ -1087,7 +1087,7 @@ older-build takeover) instead of leaving it to run away.
 ### Fixed
 
 - **`basemind init` no longer scaffolds into a parent directory.** `init` resolved its target with
-  the same ancestor-`.basemind/` walk the other commands use to _attach_ to an existing index, so
+  the same ancestor-`.basemind/` walk the other commands use to *attach* to an existing index, so
   running it inside a repo whose parent already had a `.basemind/` wrote `basemind.toml`, `.gitignore`,
   and the rules block into the parent instead of the current repo. `init` now anchors to the closest
   enclosing git repository (falling back to the working directory when not in a repo), so it always
@@ -1105,10 +1105,10 @@ older-build takeover) instead of leaving it to run away.
   When resolution saw 2 of 172 real call sites it reported `total: 2` with no truncation flag — a
   confident, complete-looking, wrong answer an agent would act on. The name scan is now the floor and
   resolution only annotates it (a Python case that returned 7 of ~4,000 now returns the full set).
-- **`workspace_grep` returned a fast, confident, wrong zero.** `scan_cap` bounded _files visited_, so
+- **`workspace_grep` returned a fast, confident, wrong zero.** `scan_cap` bounded *files visited*, so
   a default grep over a 68k-file workspace searched ~2.9% of it in arbitrary path order and stopped —
   and a rare identifier, which is precisely what one greps for, does not live in the first 2.9%.
-  `limit` now caps _hits_, the whole corpus is scanned (rayon-parallel with a memmem literal
+  `limit` now caps *hits*, the whole corpus is scanned (rayon-parallel with a memmem literal
   prefilter), and `total_matches`/`total_files_matched` are exact. A latent cursor bug that dropped a
   file's remaining matches on a mid-file `limit` boundary is fixed by packing `(candidate, hit
   ordinal)` into the cursor.
@@ -1132,7 +1132,7 @@ older-build takeover) instead of leaving it to run away.
   `serve` forwards a detached vector-fill follow-up after the fast initial scan — off the boot
   handshake, so startup never blocks on ONNX. Live watcher rescans and the `rescan` tool forward it
   too.
-- **A failure in an optional lane destroyed the code map.** The scanner flushed the code map _after_
+- **A failure in an optional lane destroyed the code map.** The scanner flushed the code map *after*
   the optional lanes (embeddings, documents, code-intel), so any lane that failed took the whole map
   with it — leaving gigabytes of blobs behind a `file_count` of 0 and a full re-scan on every launch.
   The map is now persisted before the optional lanes run, each lane runs under `catch_unwind`, and a
@@ -1164,11 +1164,11 @@ older-build takeover) instead of leaving it to run away.
   `"basemind-cli"` constant (and `serve` onto `"anon"`). All four resolvers are consolidated to a
   single chain — env, config, then a generated id persisted in the correct per-workspace cache dir,
   then a process-unique id — never a shared constant, and honouring `comms.agent_id`.
-- **A thread scoped to `<dir>/**` was invisible to an agent whose cwd _is_ `<dir>`.** globset's `**`
+- **A thread scoped to `<dir>/**` was invisible to an agent whose cwd *is* `<dir>`.** globset's `**`
   requires a component after the slash, so the recursive form never matched its own base — the most
   common cwd. The stripped base is retried, covering the root without widening the glob.
 - **Cross-file `goto_definition` silently dropped every tsconfig-aliased import.** oxc resolves a
-  tsconfig `paths` alias against a _canonicalized_ `baseUrl`, so on a symlinked root the resolved
+  tsconfig `paths` alias against a *canonicalized* `baseUrl`, so on a symlinked root the resolved
   target's prefix didn't match and the cross-file edge was discarded. The resolver now discovers the
   governing tsconfig per importing file (what `tsc` applies) and `to_repo_relative` retries against
   the canonical root — a no-op on non-symlinked roots.
@@ -1287,7 +1287,7 @@ addressed and rebuilds losslessly).
 ### Changed
 
 - **Code embeddings are now OFF by default (`code_search.embed = false`).** A general-English model
-  embeds _code_ weakly, and the BM25 keyword lane already serves the NL→symbol query over the same
+  embeds *code* weakly, and the BM25 keyword lane already serves the NL→symbol query over the same
   text, so code embedding isn't worth the ONNX download + ORT pass + vector store. Code is still
   chunked and keyword-indexed; documents and images still embed. Existing code-search users who rely
   on vector search over code must set `code_search.embed = true` to keep it.
@@ -1430,7 +1430,7 @@ determinism assertions are unchanged.
 ### Fixed
 
 - **`architecture_map` symbol-tier `score` is now monotonic with node order.** `fan_out` was
-  computed _after_ the knee-cut, so the blended `score` never actually influenced selection or
+  computed *after* the knee-cut, so the blended `score` never actually influenced selection or
   ordering and the emitted nodes were not sorted by their own `score`. Selection, knee-cut, and
   `score` now all key off the single specificity-weighted signal, matching the module/file tiers;
   `fan_out` and per-file churn remain reported but no longer pretend to affect the ranking.
@@ -1565,7 +1565,7 @@ determinism assertions are unchanged.
   as such.
 - **L1 extraction no longer drops (or crashes on) symbols in TSLP-fallback languages whose
   `tags.scm` leads a definition with an auxiliary capture.** The combined-L1 dispatch keyed on the
-  match's _first_ capture, but adapted upstream tag queries (e.g. Ruby) prepend a `@doc` capture for
+  match's *first* capture, but adapted upstream tag queries (e.g. Ruby) prepend a `@doc` capture for
   a preceding comment — so a commented `def` classified as `Other`, panicking debug builds
   (`debug_assert!`) and silently dropping the symbol in release. A single such file could abort the
   whole parallel scan, leaving the index empty. Dispatch now scans to the first capture that
@@ -1686,7 +1686,7 @@ repos populate the new git-history full-text search index.
 
 - **Multi-session MCP contention: the writer→read-only downgrade race.** A `basemind serve` that
   rightfully held the `.basemind/.lock` write lock could still come up read-only when a concurrent
-  reader transiently held Fjall's single-holder index lock — leaving the repo with _zero_ writers
+  reader transiently held Fjall's single-holder index lock — leaving the repo with *zero* writers
   (no auto-scan / watcher / rescan → a silently stale index). Fixed on both single-holder Fjall
   stores: the writer now **retries** a transient `Locked` on open (it already owns `.basemind/.lock`,
   so the contention always clears), read-only openers **probe `.basemind/.lock` and skip the Fjall
@@ -1741,7 +1741,7 @@ wiped and rebuilt on the next `basemind scan` (intentional; no action needed).
 
 - **`serve` watcher no longer pegs multi-core CPU on gitignored / nested-`.basemind` churn
   (#33).** A writer `serve` watching an umbrella repo woke on every filesystem event except those
-  under its _own_ `.basemind/`, then ran a no-op incremental scan that still re-serialized the
+  under its *own* `.basemind/`, then ran a no-op incremental scan that still re-serialized the
   index (`store.flush`) and rebuilt the **entire** `MapCache` over the whole corpus — on every
   debounced batch. With nested child repos each flushing their own `.basemind/` in a mutual loop
   (or any `node_modules` / build churn) this rebuilt the cache indefinitely. Three fixes:
@@ -1824,7 +1824,7 @@ the next `basemind scan`.
 
 - **Status line no longer renders blank on Linux** — `build_basemind_line` read file mtimes
   with BSD `stat -f %m` first. On GNU coreutils `-f` means "display filesystem status" and
-  _succeeds_, printing a multi-line blob instead of failing, so the `|| stat -c %Y` fallback
+  *succeeds*, printing a multi-line blob instead of failing, so the `|| stat -c %Y` fallback
   never ran; under `set -euo pipefail` the blob's bare `File` word aborted the command
   substitution as an unbound variable, emptying the whole line. An `epoch_mtime` helper now
   tries GNU `stat -c %Y` first and falls back to BSD `stat -f %m` only when `-c` genuinely
@@ -1845,7 +1845,7 @@ raised runtime floors.
 
 - **Homebrew tap no longer breaks on Intel hosts** — the generated formula's `on_intel` block called
   `odie` at formula-load time, which aborted every `brew` command that read the tap on an Intel Mac
-  (poisoning bottle builds and installs for _all_ formulae in the tap, not just basemind). The
+  (poisoning bottle builds and installs for *all* formulae in the tap, not just basemind). The
   Apple-Silicon-only constraint is now expressed via `depends_on arch: :arm64`, evaluated at install
   time instead of load time.
 
@@ -1875,7 +1875,7 @@ Macs running an x86_64 shell, Node, or Python under Rosetta.
 ### Fixed
 
 - **Apple Silicon installs under Rosetta no longer abort** — `uname -m`, `os.arch()`, and
-  `platform.machine()` all report the _process_ architecture, so an x86_64 shell, Node, or Python
+  `platform.machine()` all report the *process* architecture, so an x86_64 shell, Node, or Python
   running under Rosetta reports `x86_64` on Apple Silicon hardware. All three installers (the shell
   launcher, npm `install.js`, pip `downloader.py`) matched the Darwin/x86_64 branch and aborted with
   "Intel macOS not supported", even though the native arm64 binary runs fine. They now probe a

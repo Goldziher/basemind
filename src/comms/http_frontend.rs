@@ -222,8 +222,8 @@ fn text_response(status: StatusCode, message: &str) -> Response<HttpBody> {
 async fn drain_request_body(request: &mut Request<Incoming>) {
     use http_body_util::BodyExt;
 
-    /// Enough for any plausible mis-authenticated MCP call; far below anything worth reading for
-    /// an attacker's benefit.
+    /// Enough for any plausible MCP call that merely got its token wrong; far below anything worth
+    /// reading for an attacker's benefit.
     const DRAIN_CAP: usize = 64 * 1024;
 
     let body = request.body_mut();
