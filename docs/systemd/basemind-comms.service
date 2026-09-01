@@ -1,0 +1,81 @@
+#  basemind comms daemon, started BY a resource-controlled unit.
+#
+#  Why this file exists
+#  --------------------
+#  basemind spawns its daemon detached with setsid(2). setsid changes the session and the process
+#  group — it does NOT change the cgroup. On Linux a child stays in its parent's cgroup, so a daemon
+#  auto-spawned from an interactive shell lands in that shell's scope (user@1000.service/…), NOT in
+#  whatever unit you configured MemoryMax on. No amount of code in basemind can move it: a process
+#  cannot place its own children into a cgroup it does not control.
+#
+#  The only way to guarantee the daemon runs under a memory ceiling is for the unit to be the thing
+#  that starts it. That requires switching the auto-spawn off everywhere else, which is what
+#  BASEMIND_NO_AUTOSPAWN does: with it set, basemind connects to a daemon that is already running
+#  but never starts one. `basemind comms start` deliberately ignores it, so you keep a manual
+#  override; ExecStart below bypasses the question entirely by running the daemon directly.
+#
+#  Install (per-user, the normal case)
+#  -----------------------------------
+#    mkdir -p ~/.config/systemd/user
+#    cp docs/systemd/basemind-comms.service ~/.config/systemd/user/
+#    # edit ExecStart to your basemind path, then:
+#    systemctl --user daemon-reload
+#    systemctl --user enable --now basemind-comms.service
+#
+#  Then make every client connect-only, so nothing spawns a daemon outside this unit:
+#    mkdir -p ~/.config/environment.d
+#    echo 'BASEMIND_NO_AUTOSPAWN=1' > ~/.config/environment.d/50-basemind.conf
+#    # plus your shell rc, for shells that do not read environment.d:
+#    echo 'export BASEMIND_NO_AUTOSPAWN=1' >> ~/.bashrc
+#
+#  Verify the ceiling is real (not merely configured):
+#    systemctl --user show basemind-comms.service -p MemoryMax -p MemoryCurrent
+#    cat /proc/$(systemctl --user show -p MainPID --value basemind-comms.service)/cgroup
+#  The second command must name basemind-comms.service. If it names a shell scope, something
+#  auto-spawned the daemon before the unit did — check BASEMIND_NO_AUTOSPAWN reached that shell.
+#
+#  Per-user memory limits need the memory controller delegated to the user manager. On cgroup v2
+#  with a current systemd this is the default; if MemoryMax reads as "infinity", enable delegation
+#  (`systemctl set-property user-.slice MemoryAccounting=yes`) or install this as a system unit with
+#  User= set instead.
+
+[Unit]
+Description=basemind comms daemon (singleton broker, sole index writer)
+Documentation=https://github.com/Goldziher/basemind
+After=default.target
+# Rate-limit restarts here, not in [Service]: systemd moved these keys to [Unit], and a modern
+# systemd ignores them in [Service] with only a warning — a silent loss of the guard.
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=exec
+# Absolute path required: systemd does not search PATH.
+ExecStart=%h/.local/bin/basemind comms daemon
+
+# The ceiling this whole file exists to impose. MemoryHigh throttles and reclaims first, which
+# usually turns a would-be kill into a slow scan; MemoryMax is the hard wall. Size them to the
+# machine — these values suit a 16 GiB workstation.
+MemoryAccounting=yes
+MemoryHigh=3G
+MemoryMax=4G
+
+# The daemon self-reaps when no client has used it for a while, which is right for an auto-spawned
+# process and wrong for a supervised one: it would make systemd restart the unit every ten minutes
+# forever. Stretch both windows so the unit stays up, and let systemd own the lifecycle.
+Environment=BASEMIND_COMMS_IDLE_REAP_SECS=31536000
+Environment=BASEMIND_COMMS_BOOTSTRAP_SECS=31536000
+
+# Restart on an OOM kill or a crash, but never faster than this — a daemon that dies immediately on
+# every start (an unusable store, say) must stop and be visible in `systemctl --user status`, not
+# spin. `comms doctor` reads the record it left behind.
+Restart=on-failure
+RestartSec=5s
+
+# A clean shutdown drains in-flight links; the daemon bounds its own teardown, so this only has to
+# outlast that.
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+[Install]
+WantedBy=default.target

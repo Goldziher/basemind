@@ -15,6 +15,18 @@ use super::CommsPaths;
 /// executable is not itself `basemind` — a test harness, or an embedding host.
 pub const DAEMON_BINARY_ENV: &str = "BASEMIND_DAEMON_BINARY";
 
+/// Make the resolved binary path independent of the working directory, because
+/// [`spawn_detached_daemon`] sets one. A relative path with a directory component (`target/debug/
+/// basemind`, the shape [`DAEMON_BINARY_ENV`] most often takes in a test) is resolved by the child
+/// *after* its `chdir`, so it would silently stop existing. A bare program name has no directory
+/// component and is looked up on `PATH`, which the cwd does not affect — left alone.
+fn absolute_daemon_binary(exe: PathBuf) -> std::io::Result<PathBuf> {
+    if exe.is_absolute() || exe.parent().is_none_or(|parent| parent.as_os_str().is_empty()) {
+        return Ok(exe);
+    }
+    Ok(std::env::current_dir()?.join(exe))
+}
+
 /// Resolve the executable to re-exec as `basemind comms daemon`.
 ///
 /// This deliberately refuses to re-exec an executable that is not a `basemind` binary, because
@@ -61,17 +73,56 @@ fn daemon_binary_for(exe: &Path) -> std::io::Result<PathBuf> {
     ))
 }
 
-/// Spawn `basemind comms daemon` detached so it outlives the spawning process. stdout/stderr
-/// are redirected to null; the daemon's own tracing goes to its log sink.
-pub fn spawn_detached_daemon(_paths: &CommsPaths) -> std::io::Result<()> {
-    let exe = resolve_daemon_binary()?;
+/// The spawning agent's identity, inherited by every child unless removed. A daemon that inherited
+/// them would answer as whichever agent happened to start it — and, worse, would keep answering as
+/// that agent long after the session was gone. The daemon resolves no identity of its own (it is a
+/// broker, not a participant), so removing them takes nothing away from it.
+const INHERITED_IDENTITY_VARS: [&str; 3] = ["BASEMIND_AGENT_ID", "BASEMIND_PARENT_AGENT_ID", "BASEMIND_THREAD_ID"];
+
+/// Shell-maintained records of the *spawning* shell's directory. They are not the child's cwd — the
+/// shell writes them, nothing keeps them in step with `chdir` — so leaving them set hands the daemon
+/// a second, contradictory answer to "where am I", pointing at a repository it has no relationship
+/// with.
+const INHERITED_CWD_VARS: [&str; 2] = ["PWD", "OLDPWD"];
+
+/// The `basemind comms daemon` invocation, minus the platform detach flags: argv, working
+/// directory, stdio and the environment scrub. Split out so the hygiene above is assertable without
+/// launching a process — the properties that matter here are all visible on the [`Command`] itself.
+///
+/// [`Command`]: std::process::Command
+fn daemon_command(exe: &Path, paths: &CommsPaths) -> std::process::Command {
     let mut command = std::process::Command::new(exe);
     command
         .arg("comms")
         .arg("daemon")
+        .current_dir(&paths.comms_dir)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
+    // Targeted removals, never `env_clear`: the daemon needs PATH, HOME, the XDG dirs, the proxy
+    // variables and the model configuration to function at all.
+    for key in INHERITED_IDENTITY_VARS.iter().chain(INHERITED_CWD_VARS.iter()) {
+        command.env_remove(key);
+    }
+    command
+}
+
+/// Spawn `basemind comms daemon` detached so it outlives the spawning process. stdout/stderr
+/// are redirected to null; the daemon's own tracing goes to its log sink.
+///
+/// The child is placed in `paths.comms_dir` rather than inheriting the spawner's cwd. The comms dir
+/// is created by `resolve_paths`, is stable for the daemon's whole life, and — decisively — is never
+/// a repository. An inherited cwd is none of those: a daemon spawned from a shell sitting at `/`
+/// inherits `/`, and repository-root discovery from `/` is how issue #62 produced a workspace root
+/// of `/` and a scan of the entire filesystem. Nothing in the daemon reads its own cwd, so this
+/// costs nothing and removes the whole class.
+pub fn spawn_detached_daemon(paths: &CommsPaths) -> std::io::Result<()> {
+    let exe = absolute_daemon_binary(resolve_daemon_binary()?)?;
+    // `resolve_paths` already made it; recreate defensively because `current_dir` on a missing
+    // directory fails the spawn outright, and losing the daemon to a tidied cache dir is worse
+    // than the cwd hygiene is good.
+    let _ = std::fs::create_dir_all(&paths.comms_dir);
+    let mut command = daemon_command(&exe, paths);
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -199,6 +250,78 @@ mod tests {
             real,
             "the harness must be redirected to the real binary, never re-exec'd"
         );
+    }
+
+    fn paths_at(comms_dir: &std::path::Path) -> CommsPaths {
+        CommsPaths {
+            comms_dir: comms_dir.to_path_buf(),
+            socket_path: comms_dir.join("comms.sock"),
+        }
+    }
+
+    /// Issue #62's root cause in one assertion: a daemon that inherits the spawner's cwd inherits
+    /// whatever repository — or `/` — that shell happened to be sitting in.
+    #[test]
+    fn the_daemon_runs_in_the_comms_dir_not_the_spawner_cwd() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let command = daemon_command(std::path::Path::new("/usr/local/bin/basemind"), &paths_at(dir.path()));
+
+        assert_eq!(
+            command.get_current_dir(),
+            Some(dir.path()),
+            "the child must be placed in the comms dir, which is never a repository"
+        );
+    }
+
+    /// The scrub is targeted, and the negative half is the load-bearing one: `env_clear` would take
+    /// PATH, HOME and the proxy/model configuration with it and leave a daemon that cannot work.
+    #[test]
+    fn the_child_environment_drops_identity_and_cwd_vars_and_keeps_everything_else() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let command = daemon_command(std::path::Path::new("/usr/local/bin/basemind"), &paths_at(dir.path()));
+
+        let removed: Vec<&std::ffi::OsStr> = command
+            .get_envs()
+            .filter(|(_, value)| value.is_none())
+            .map(|(key, _)| key)
+            .collect();
+        for key in INHERITED_IDENTITY_VARS.iter().chain(INHERITED_CWD_VARS.iter()) {
+            assert!(
+                removed.contains(&std::ffi::OsStr::new(key)),
+                "{key} must not reach the daemon; removed: {removed:?}"
+            );
+        }
+        assert!(
+            command.get_envs().all(|(_, value)| value.is_none()),
+            "only removals belong here — an override would mean the parent env is being rebuilt"
+        );
+        assert_eq!(
+            removed.len(),
+            INHERITED_IDENTITY_VARS.len() + INHERITED_CWD_VARS.len(),
+            "nothing the daemon needs (PATH, HOME, XDG, proxy, model vars) may be swept up: {removed:?}"
+        );
+    }
+
+    /// Setting a working directory changes how the child resolves a relative program path, so the
+    /// binary must be pinned first. `BASEMIND_DAEMON_BINARY=target/debug/basemind` is the common
+    /// shape, and it would resolve against the comms dir and vanish.
+    #[test]
+    fn a_relative_binary_is_absolutised_before_the_working_directory_changes() {
+        let relative = PathBuf::from("target/debug/basemind");
+        let resolved = absolute_daemon_binary(relative.clone()).expect("absolutised");
+        assert!(resolved.is_absolute(), "got {}", resolved.display());
+        assert!(resolved.ends_with(&relative));
+
+        let absolute = PathBuf::from(if cfg!(windows) {
+            r"C:\bin\basemind.exe"
+        } else {
+            "/usr/local/bin/basemind"
+        });
+        assert_eq!(absolute_daemon_binary(absolute.clone()).expect("unchanged"), absolute);
+
+        // A bare name is a PATH lookup, which the working directory does not affect.
+        let bare = PathBuf::from("basemind");
+        assert_eq!(absolute_daemon_binary(bare.clone()).expect("unchanged"), bare);
     }
 
     /// The escape hatch for an embedding host whose executable is neither `basemind` nor sitting

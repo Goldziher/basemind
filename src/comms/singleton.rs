@@ -119,6 +119,49 @@ pub enum SingletonError {
         /// The effective ceiling.
         max: usize,
     },
+    /// No daemon answered and [`NO_AUTOSPAWN_ENV`] forbids starting one. The operator asked for
+    /// connect-only behaviour; saying so is the whole point, so this is an error rather than a
+    /// silent no-op that would surface later as an unexplained connection failure.
+    #[error(
+        "no basemind comms daemon is running at {socket} and {env} is set, so one will not be \
+         auto-spawned; start it from your own supervisor (see the systemd unit in \
+         docs/systemd/), or run `basemind comms start`, which ignores {env}"
+    )]
+    AutospawnDisabled {
+        /// The endpoint nothing answered on.
+        socket: PathBuf,
+        /// The variable that suppressed the spawn, named so the message is actionable.
+        env: &'static str,
+    },
+}
+
+/// Environment opt-out: when set to a truthy value, basemind connects to a daemon that is already
+/// running but never starts one itself.
+///
+/// This exists because `setsid` cannot solve the containment problem. A detached child changes
+/// session and process group; on Linux it stays in the **spawning process's cgroup**, so a daemon
+/// auto-spawned from an interactive shell is outside whatever `MemoryMax` the operator configured,
+/// no matter what this code does. The only way to guarantee the daemon runs inside a
+/// resource-controlled unit is for that unit to be the thing that starts it — and that requires
+/// being able to switch the auto-spawn off. See `docs/systemd/basemind-comms.service`.
+pub const NO_AUTOSPAWN_ENV: &str = "BASEMIND_NO_AUTOSPAWN";
+
+/// Whether [`NO_AUTOSPAWN_ENV`] forbids spawning a daemon from this process.
+pub fn autospawn_disabled() -> bool {
+    std::env::var(NO_AUTOSPAWN_ENV).is_ok_and(|value| {
+        let value = value.trim();
+        value.eq_ignore_ascii_case("1") || value.eq_ignore_ascii_case("true") || value.eq_ignore_ascii_case("yes")
+    })
+}
+
+/// Whether a caller is allowed to spawn a daemon when none answers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SpawnPolicy {
+    /// Spawn on demand unless [`NO_AUTOSPAWN_ENV`] says otherwise. Every implicit caller.
+    Auto,
+    /// Spawn regardless: the operator typed a command whose entire purpose is to start the daemon,
+    /// so honouring the auto-spawn opt-out there would make `comms start` a no-op.
+    Explicit,
 }
 
 /// Environment override for the comms data directory. When set, it is used verbatim as the
@@ -302,13 +345,34 @@ fn check_socket_path_len(_socket_path: &Path) -> Result<(), SingletonError> {
 /// `is_alive` probes the socket (connect + ping). `spawn` launches the detached daemon. Both
 /// are injected so the unit tests can exercise the control flow without a real process; the
 /// production wiring in [`ensure_daemon`] supplies the real implementations.
+///
+/// This is the single choke point every implicit bring-up passes through — [`ensure_daemon`] and
+/// `CommsClient::reconnect`, which does not go via [`ensure_daemon`] — so it is where the
+/// [`NO_AUTOSPAWN_ENV`] opt-out is enforced.
 pub async fn ensure_daemon_with(
     paths: &CommsPaths,
     is_alive: impl Fn(&Path) -> bool,
     spawn: impl FnOnce(&CommsPaths) -> std::io::Result<()>,
 ) -> Result<(), SingletonError> {
+    ensure_daemon_with_policy(paths, SpawnPolicy::Auto, is_alive, spawn).await
+}
+
+/// [`ensure_daemon_with`] with an explicit [`SpawnPolicy`].
+pub async fn ensure_daemon_with_policy(
+    paths: &CommsPaths,
+    policy: SpawnPolicy,
+    is_alive: impl Fn(&Path) -> bool,
+    spawn: impl FnOnce(&CommsPaths) -> std::io::Result<()>,
+) -> Result<(), SingletonError> {
+    // Ahead of the opt-out on purpose: connect-only means *do not start one*, not *do not use one*.
     if is_alive(&paths.socket_path) {
         return Ok(());
+    }
+    if policy == SpawnPolicy::Auto && autospawn_disabled() {
+        return Err(SingletonError::AutospawnDisabled {
+            socket: paths.socket_path.clone(),
+            env: NO_AUTOSPAWN_ENV,
+        });
     }
     check_socket_path_len(&paths.socket_path)?;
     spawn(paths).map_err(|source| SingletonError::Io {
@@ -337,10 +401,34 @@ pub async fn ensure_daemon_with(
 /// broker. If the predecessor will not yield the socket, we error out clearly
 /// ([`SingletonError::StalePredecessor`]) rather than silently talking to an incompatible daemon.
 pub async fn ensure_daemon(paths: &CommsPaths) -> Result<(), SingletonError> {
+    ensure_daemon_with_spawn_policy(paths, SpawnPolicy::Auto).await
+}
+
+/// [`ensure_daemon`] for `basemind comms start`: the operator asked for a daemon in so many words,
+/// so [`NO_AUTOSPAWN_ENV`] does not apply. It is what makes the opt-out usable — a supervisor unit
+/// that sets the variable globally still needs one command that actually starts the thing.
+pub async fn ensure_daemon_explicit(paths: &CommsPaths) -> Result<(), SingletonError> {
+    ensure_daemon_with_spawn_policy(paths, SpawnPolicy::Explicit).await
+}
+
+async fn ensure_daemon_with_spawn_policy(paths: &CommsPaths, policy: SpawnPolicy) -> Result<(), SingletonError> {
     if let Some(report) = daemon_status(&paths.socket_path) {
         let ours = env!("CARGO_PKG_VERSION");
         let compatible = report.proto_ver == PROTO_VER && !version_is_older(&report.version, ours);
         if compatible {
+            return Ok(());
+        }
+        // Never stop a daemon we are then forbidden to replace. Under connect-only the takeover
+        // would leave the operator with no daemon at all — strictly worse than an old one, whose
+        // skew the handshake reports precisely.
+        if policy == SpawnPolicy::Auto && autospawn_disabled() {
+            tracing::warn!(
+                daemon_version = %report.version,
+                daemon_pid = report.pid,
+                ours,
+                env = NO_AUTOSPAWN_ENV,
+                "comms: a previous/incompatible daemon holds the socket, but auto-spawn is disabled; using it as-is"
+            );
             return Ok(());
         }
         tracing::warn!(
@@ -373,7 +461,7 @@ pub async fn ensure_daemon(paths: &CommsPaths) -> Result<(), SingletonError> {
     if live >= max {
         return Err(SingletonError::TooManyDaemons { count: live, max });
     }
-    ensure_daemon_with(paths, probe_alive, spawn_detached_daemon).await
+    ensure_daemon_with_policy(paths, policy, probe_alive, spawn_detached_daemon).await
 }
 
 /// True when `daemon`'s `MAJOR.MINOR.PATCH` is strictly older than `ours`. Pre-release suffixes
