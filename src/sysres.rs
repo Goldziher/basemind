@@ -460,7 +460,7 @@ fn windows_working_set() -> Option<u64> {
     // its own size, as the API requires; `GetCurrentProcess` returns a pseudo-handle that
     // needs no closing.
     let ok = unsafe { K32GetProcessMemoryInfo(GetCurrentProcess(), &mut counters, counters.cb) };
-    (ok != 0).then(|| counters.working_set_size as u64)
+    (ok != 0).then_some(counters.working_set_size as u64)
 }
 
 #[cfg(windows)]
@@ -552,7 +552,7 @@ fn peak_rss() -> Option<u64> {
     };
     // SAFETY: see `windows_working_set`.
     let ok = unsafe { K32GetProcessMemoryInfo(GetCurrentProcess(), &mut counters, counters.cb) };
-    (ok != 0).then(|| counters.peak_working_set_size as u64)
+    (ok != 0).then_some(counters.peak_working_set_size as u64)
 }
 
 #[cfg(not(any(unix, windows)))]
