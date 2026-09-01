@@ -10,6 +10,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `[scan] max_candidates` (default `500_000`, `0` disables) aborts a scan from inside the walk once
+  that many candidate files have been enumerated — before extraction, before any index write, and
+  before the candidate list itself can grow to hundreds of megabytes. The error names the
+  heaviest top-level directories, so a vendored or generated tree that slipped past `.gitignore`
+  is a one-line fix rather than an out-of-memory kill. ([#62])
+- `BASEMIND_ALLOW_ANY_ROOT=1` accepts any directory as a workspace root, for the cases the new
+  allow-list refuses. It does not override the refusal of a filesystem or volume root. ([#62])
+
+### Changed
+
+- **Breaking:** a workspace root must now be a git repository or contain `basemind.toml`. basemind
+  opens a root read-write and indexes everything beneath it, and root discovery falls back to the
+  starting directory, so an MCP host launched at `/` could previously hand the daemon the whole
+  filesystem — which is how a scan reached 43.8 GiB and was OOM-killed. `basemind init` and
+  `BASEMIND_ALLOW_ANY_ROOT` are the escape hatches, and a root that already has an index on disk is
+  grandfathered so upgrades do not break a working setup. ([#62])
+- Excluded directories are now pruned during the walk instead of being filtered per file after the
+  walker has already descended into them, so a non-gitignored `node_modules` is no longer traversed
+  and stat'd in full. The indexed set is unchanged. This also fixes the Linux watcher, which
+  previously registered inotify watches inside trees it was excluding. ([#62])
+- The scanner bounds what it stages into the index by **bytes** rather than by file count. BM25
+  keyword postings — one entry per (term, chunk), staged on essentially every scan — previously
+  counted toward no limit at all and could not force a commit; they now participate in the byte
+  budget. ([#62])
+
+### Fixed
+
+- A draining daemon can now interrupt a running file walk. Previously cancellation was only checked
+  once the walk had finished, so a runaway scan could not be stopped. ([#62])
+
+[#62]: https://github.com/Goldziher/basemind/issues/62
+
 ## [0.25.2] - 2026-08-31
 
 ### Added

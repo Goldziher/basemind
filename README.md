@@ -425,6 +425,13 @@ workspace, never inside your repo. The
 content-addressed blob store is machine-wide too: identical file content scanned from different repos
 or worktrees is extracted and stored once.
 
+A workspace root must be a project: a git repository, or a directory containing `basemind.toml`.
+Anything else is refused, because basemind opens a root read-write and indexes every file beneath
+it — so an accidentally inherited root (`/`, your home directory, or wherever an MCP host happened
+to start) would become a whole-filesystem scan. Run `basemind init` to mark a directory you do want
+indexed, or set `BASEMIND_ALLOW_ANY_ROOT=1` to skip the check. A filesystem or volume root is
+refused unconditionally and cannot be overridden.
+
 A single background daemon per machine is the sole writer to that cache. `basemind serve` opens its
 store read-only and forwards writes (scan / rescan) to the daemon over a local socket, so N `serve`
 sessions on the same repo — or on different worktrees of it — all read and write concurrently instead
