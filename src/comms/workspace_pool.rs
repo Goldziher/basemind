@@ -315,6 +315,11 @@ impl WorkspacePool {
 
     /// Fetch the entry for `root`, opening it read-write and inserting it (evicting LRU past the
     /// cap) if cold. The returned `Arc` lets the caller run the scan after the map lock is dropped.
+    ///
+    /// The map key stays [`store::workspace_key`], which canonicalizes internally — so two spellings
+    /// of one repo (`/tmp/x` and `/private/tmp/x`, `/repo` and `/repo/..//repo`) already collapse to
+    /// one entry, and the root-guard resolution below cannot change which entry a caller lands on.
+    /// The entry's `root`, however, is now the resolved path, because that is what gets opened.
     fn get_or_open(&self, root: &Path) -> Result<std::sync::Arc<WorkspaceEntry>, WorkspacePoolError> {
         let key = store::workspace_key(root);
         {
@@ -333,18 +338,25 @@ impl WorkspacePool {
         // The daemon's choke point for issue #62: relay, HTTP, `host_read_stack`, `begin_conn` and
         // every forwarded rescan funnel through here, so refusing a non-project root here is what
         // actually stops the daemon opening `/` read-write and walking the whole filesystem.
-        if let Err(refusal) = config::root_guard::workspace_root_verdict(root) {
-            return Err(WorkspacePoolError::RootRefused {
-                root: root.to_path_buf(),
-                message: config::root_guard::refusal_message(root, refusal),
-            });
-        }
-        let store = Store::open_with_holder(root, VIEW_WORKING, LockHolder::Rescan)?;
-        let config = load_config(root)?;
+        //
+        // `root` arrives straight off the wire (`hello.root`), so everything below uses the
+        // RESOLVED path the guard returns — never the raw one. Opening the raw path is how a client
+        // sending `/..` got `/` opened read-write past a guard that had approved something else.
+        let resolved = match config::root_guard::workspace_root_verdict(root) {
+            Ok(resolved) => resolved,
+            Err(refusal) => {
+                return Err(WorkspacePoolError::RootRefused {
+                    root: root.to_path_buf(),
+                    message: config::root_guard::refusal_message(root, refusal),
+                });
+            }
+        };
+        let store = Store::open_with_holder(&resolved, VIEW_WORKING, LockHolder::Rescan)?;
+        let config = load_config(&resolved)?;
         let entry = std::sync::Arc::new(WorkspaceEntry {
             store: Mutex::new(store),
             config,
-            root: root.to_path_buf(),
+            root: resolved,
             key: key.clone(),
             last_used: Mutex::new(Instant::now()),
             full_scan_gen: std::sync::atomic::AtomicU64::new(0),

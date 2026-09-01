@@ -113,3 +113,94 @@ fn serve_refuses_a_non_project_root_instead_of_scanning_in_process() {
         "a refused `serve` must not fall back to an in-process scan"
     );
 }
+
+/// The guard used to be a purely syntactic check on whatever path it was handed, and `std::path`
+/// normalizes neither `..` nor symlinks. Every spelling below names `/` while looking like an
+/// ordinary directory, and the env hatch is set throughout — the module doc promises nothing
+/// overrides the filesystem-root refusal, so this is that promise under test end to end.
+#[test]
+fn paths_that_resolve_to_the_filesystem_root_are_refused_even_under_the_env_hatch() {
+    basemind::store::init_isolated_cache();
+    let hatch = [("BASEMIND_ALLOW_ANY_ROOT", "1")];
+
+    for spelling in ["/..", "/usr/..", "/tmp/../.."] {
+        let (ok, output) = run(&["--root", spelling, "scan", "--quiet"], &hatch);
+        assert!(!ok, "`basemind scan --root {spelling}` must fail: {output}");
+        assert!(
+            output.contains("filesystem/volume root"),
+            "{spelling} resolves to the filesystem root: {output}"
+        );
+    }
+
+    #[cfg(unix)]
+    {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let link = dir.path().join("slash");
+        std::os::unix::fs::symlink("/", &link).expect("symlink to /");
+        let (ok, output) = run(
+            &["--root", link.to_str().expect("utf-8 link"), "scan", "--quiet"],
+            &hatch,
+        );
+        assert!(!ok, "a symlink to / must fail: {output}");
+        assert!(output.contains("filesystem/volume root"), "{output}");
+    }
+
+    assert!(
+        !working_index(Path::new("/")).exists(),
+        "no spelling of the filesystem root may be indexed"
+    );
+}
+
+/// `basemind admin rescan` is a full working-tree walk that reaches `crate::scanner::scan`
+/// in-process, but the tool-subcommand dispatcher never calls the CLI's root guard — so
+/// `cd / && basemind admin rescan` reproduced issue #62 on a verb the guard missed. The guard now
+/// sits at `mcp::helpers::scan_and_refresh`, which is also what the `admin` MCP tool funnels through.
+#[test]
+fn admin_rescan_refuses_a_non_project_root() {
+    basemind::store::init_isolated_cache();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path().canonicalize().expect("canonicalize");
+    std::fs::write(root.join("a.rs"), b"pub fn alpha() {}\n").expect("write source");
+    let root_str = root.to_str().expect("utf-8 root");
+
+    let (ok, output) = run(&["--root", root_str, "admin", "rescan"], &[]);
+    assert!(!ok, "`basemind admin rescan` on a plain directory must fail: {output}");
+    assert!(
+        output.contains("refusing to use") && output.contains("basemind init"),
+        "the operator gets the same guidance as from `scan`: {output}"
+    );
+    assert!(
+        !working_index(&root).exists(),
+        "a refused `admin rescan` must not have walked the tree"
+    );
+}
+
+/// The escape hatch is per-invocation. Before the admission record it was a permanent whitelist: the
+/// scan it authorized wrote `views/working/index.msgpack`, and the grandfather clause read that file
+/// as proof of consent — so one `BASEMIND_ALLOW_ANY_ROOT=1 basemind scan $HOME` admitted `$HOME`
+/// forever, for every consumer, with no env var set.
+#[test]
+fn using_the_env_hatch_once_does_not_whitelist_the_root_forever() {
+    basemind::store::init_isolated_cache();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path().canonicalize().expect("canonicalize");
+    std::fs::write(root.join("a.rs"), b"pub fn alpha() {}\n").expect("write source");
+    let root_str = root.to_str().expect("utf-8 root");
+
+    let (ok, output) = run(
+        &["--root", root_str, "scan", "--quiet"],
+        &[("BASEMIND_ALLOW_ANY_ROOT", "1")],
+    );
+    assert!(ok, "the hatch lets the scan through: {output}");
+    assert!(working_index(&root).exists(), "the hatched scan really did index");
+
+    let (ok, output) = run(&["--root", root_str, "scan", "--quiet"], &[]);
+    assert!(
+        !ok,
+        "unsetting the hatch must re-refuse a root it only ever admitted: {output}"
+    );
+    assert!(
+        output.contains("unset it and this root is refused again"),
+        "the refusal states the hatch's scope in plain words: {output}"
+    );
+}

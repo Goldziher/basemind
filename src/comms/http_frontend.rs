@@ -141,6 +141,30 @@ fn parse_target(query: Option<&str>) -> Option<(PathBuf, Option<String>)> {
     Some((PathBuf::from(root), agent))
 }
 
+/// Maximum approved roots memoized by [`resolve_request_root`]. The real population is the handful
+/// of repos one daemon serves; the cap exists so a client spraying distinct `?root=` values cannot
+/// grow the map without bound. Overflow clears wholesale rather than evicting an LRU victim — at
+/// this size the rebuild costs one guard pass per live workspace.
+const APPROVED_ROOT_CACHE_CAP: usize = 64;
+
+/// Canonicalized `?root=` values the guard has already approved, mapped to the workspace root they
+/// resolved to.
+///
+/// The streamable-HTTP transport is stateless (`with_legacy_session_mode(false)`), so every
+/// JSON-RPC message is a fresh POST and [`resolve_request_root`] runs per *message*, not per cold
+/// open — unlike [`WorkspacePool::get_or_open`](super::workspace_pool), which sits behind a map hit.
+/// The guard's git test opens a `gix` repository each time (walk up for `.git`, then read
+/// `.git/config`, `HEAD`, and the user/system gitconfigs): tens of syscalls of pure per-request
+/// overhead.
+///
+/// Only APPROVALS are cached, which is what makes this sound: refusals are re-derived every time, and
+/// a root's verdict otherwise only moves *toward* allowed (`basemind init`, an index appearing, the
+/// grandfather record being written). The two ways it could move back — deleting the repo's `.git`,
+/// or unsetting `BASEMIND_ALLOW_ANY_ROOT` — cannot happen inside one daemon process for a workspace
+/// it is already serving, since the daemon's environment is fixed at spawn.
+static APPROVED_ROOTS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<PathBuf, PathBuf>>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
 /// Resolve a `?root=` query value into a usable workspace root, or the response that refuses it.
 ///
 /// Shared by `/mcp` and `/ui` so the two cannot drift apart. Both must reject a relative path
@@ -149,6 +173,11 @@ fn parse_target(query: Option<&str>) -> Option<(PathBuf, Option<String>)> {
 /// a non-project root here, upstream of the workspace pool, so that no cache directory is minted
 /// for `/` and the caller is told what to do instead of getting a generic "could not be hosted"
 /// (issue #62).
+///
+/// Discovery runs on the canonicalized path before the verdict so HTTP and the CLI agree on what a
+/// root *is*: `discover_root_with_basemind` lifts a repo subdirectory to its workdir, which every
+/// CLI verb already gets for free. Without it an HTTP caller naming `<repo>/src` would be refused
+/// outright (the guard requires `workdir == root`) while the same path on the command line works.
 fn resolve_request_root(raw_root: &Path) -> Result<PathBuf, Response<HttpBody>> {
     if raw_root.is_relative() {
         return Err(text_response(
@@ -156,19 +185,33 @@ fn resolve_request_root(raw_root: &Path) -> Result<PathBuf, Response<HttpBody>> 
             "bad request: ?root= must be an absolute path",
         ));
     }
-    let Ok(root) = std::fs::canonicalize(raw_root) else {
+    let Ok(canonical) = std::fs::canonicalize(raw_root) else {
         return Err(text_response(
             StatusCode::NOT_FOUND,
             "not found: root does not resolve to an existing path",
         ));
     };
-    if let Err(refusal) = crate::config::root_guard::workspace_root_verdict(&root) {
-        return Err(text_response(
-            StatusCode::FORBIDDEN,
-            &crate::config::root_guard::refusal_message(&root, refusal),
-        ));
+    {
+        let approved = APPROVED_ROOTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(root) = approved.get(&canonical) {
+            return Ok(root.clone());
+        }
     }
-    Ok(root)
+    let discovered = crate::config::discover_root_with_basemind(&canonical);
+    match crate::config::root_guard::workspace_root_verdict(&discovered) {
+        Ok(root) => {
+            let mut approved = APPROVED_ROOTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            if approved.len() >= APPROVED_ROOT_CACHE_CAP {
+                approved.clear();
+            }
+            approved.insert(canonical, root.clone());
+            Ok(root)
+        }
+        Err(refusal) => Err(text_response(
+            StatusCode::FORBIDDEN,
+            &crate::config::root_guard::refusal_message(&discovered, refusal),
+        )),
+    }
 }
 
 /// Build a plain-text HTTP response with a boxed body matching [`HttpBody`].

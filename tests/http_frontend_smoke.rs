@@ -328,6 +328,26 @@ async fn mcp_root_param_must_be_absolute_and_must_be_a_project() {
         "a refused root must not mint a workspace cache dir"
     );
 
+    // A repo SUBDIRECTORY must attach to the repository, exactly as every CLI verb does — the CLI
+    // gets that from `discover_root_with_basemind` before its guard runs, and the HTTP front-end
+    // taking `?root=` verbatim made the two disagree (the guard requires `workdir == root`, so a
+    // subdirectory 403'd here while working on the command line).
+    let repo = tempfile::tempdir().expect("repo tempdir");
+    git_init(repo.path());
+    let repo_root = repo.path().canonicalize().expect("canonicalize repo");
+    let nested = repo_root.join("src");
+    std::fs::create_dir_all(&nested).expect("mkdir src");
+    std::fs::write(nested.join("lib.rs"), "pub fn nested() {}\n").expect("write source");
+    let encoded_nested = nested.to_str().expect("utf-8 path").replace('/', "%2F");
+    let (status, body) = http_post(
+        &addr,
+        &format!("/mcp?root={encoded_nested}"),
+        payload.as_bytes(),
+        &json_headers(),
+    )
+    .await;
+    assert_eq!(status, 200, "a repo subdirectory resolves to its repository: {body}");
+
     shutdown_tx.send(true).ok();
     let _ = tokio::time::timeout(Duration::from_secs(5), server).await;
 }

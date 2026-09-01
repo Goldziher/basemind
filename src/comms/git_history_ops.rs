@@ -61,6 +61,10 @@ impl Broker {
                 code: "git_history_disabled".to_string(),
                 message: GitHistoryError::Disabled.to_string(),
             },
+            Err(error @ GitHistoryError::RootRefused(_)) => CommsResponse::Error {
+                code: "root_refused".to_string(),
+                message: error.to_string(),
+            },
             Err(error) => CommsResponse::Error {
                 code: "git_history_failed".to_string(),
                 message: error.to_string(),
@@ -85,6 +89,14 @@ impl Broker {
         if !crate::git_history::index_enabled() {
             return Err(GitHistoryError::Disabled);
         }
+        // This root arrives from a client RPC and does NOT pass through `WorkspacePool::get_or_open`,
+        // so it needs its own trip through the guard: `GitHistoryOp::Sync` walks the whole history
+        // and creates `shared_history_basemind_dir(root)`, minting cache state for a root every other
+        // consumer refuses (issue #62). The resolved path is what gets used onward, so the directory
+        // this creates belongs to the root that was actually checked.
+        let root = crate::config::root_guard::workspace_root_verdict(&root).map_err(|refusal| {
+            GitHistoryError::RootRefused(crate::config::root_guard::refusal_message(&root, refusal))
+        })?;
         let dir = crate::git_history::shared_history_basemind_dir(&root);
         let entry = self.history_entry(&dir).await?;
         entry.touch();

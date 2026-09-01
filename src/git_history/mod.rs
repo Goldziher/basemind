@@ -131,6 +131,11 @@ pub enum GitHistoryError {
     /// daemon's in-process runner so both the forwarded and the hosted path report it uniformly.
     #[error("git-history index disabled (BASEMIND_GH_INDEX=0)")]
     Disabled,
+    /// The workspace root a client asked history for is not one basemind will index (issue #62).
+    /// The payload is the full operator-facing guidance from
+    /// [`refusal_message`](crate::config::root_guard::refusal_message).
+    #[error("{0}")]
+    RootRefused(String),
 }
 
 /// Per-commit metadata stored in `gh_commit_by_ord`. File paths are interned to `path_id` (u32) so

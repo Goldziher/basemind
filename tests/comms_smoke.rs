@@ -491,7 +491,10 @@ async fn rescan_rpc_indexes_a_workspace_and_reports_it_hot() {
 
     let hot = client.accessed_paths().await.expect("accessed_paths");
     assert_eq!(hot.len(), 1, "exactly one workspace is hot");
-    assert_eq!(hot[0].root, workspace, "the scanned workspace is reported hot");
+    // The pool reports the RESOLVED root — the path the guard approved and the store actually
+    // opened — and on macOS a tempdir is reached through the `/var` → `/private/var` symlink.
+    let resolved = workspace.canonicalize().expect("canonicalize workspace");
+    assert_eq!(hot[0].root, resolved, "the scanned workspace is reported hot");
 }
 
 /// Connecting a client with a git-repo cwd auto-registers it in the daemon's machine registry, so

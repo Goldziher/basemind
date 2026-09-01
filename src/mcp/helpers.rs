@@ -528,6 +528,23 @@ pub(super) async fn scan_and_refresh(
             None,
         ));
     }
+    // The last in-process full-tree walk that the CLI's own guard does not cover (issue #62). The
+    // tool-subcommand dispatcher never calls `guard_workspace_root`, so `basemind admin rescan`
+    // reaches `crate::scanner::scan` here — and so does the `admin` MCP tool in `rescan` mode, plus
+    // the boot/watcher scans in `mcp::background`. Guarding at this single funnel covers all of
+    // them; it does NOT cover the read-only store open that `cli::context::build_server` already
+    // performed, so a refused root can still have had its cache directory created by that point.
+    //
+    // Used as a pure admission check: the scan keeps running against `state.shared.root`, not the
+    // resolved path. This server's store, `MapCache` and any scoped paths were all built from that
+    // exact spelling, so swapping in a differently-spelled-but-equal root here would make
+    // `strip_prefix` miss every scoped path. Resolution belongs where the root is first chosen.
+    crate::config::root_guard::workspace_root_verdict(&state.shared.root).map_err(|refusal| {
+        McpError::invalid_request(
+            crate::config::root_guard::refusal_message(&state.shared.root, refusal),
+            None,
+        )
+    })?;
     let root = state.shared.root.clone();
     let config = Arc::clone(&state.shared.config);
 

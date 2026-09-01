@@ -157,8 +157,43 @@ async fn rescan_request_indexes_a_workspace_and_surfaces_it_as_accessed() {
     match accessed {
         CommsResponse::Accessed { workspaces } => {
             assert_eq!(workspaces.len(), 1);
-            assert_eq!(workspaces[0].root, ws.path());
+            // The pool records the RESOLVED root (what it opens), and a macOS tempdir is reached
+            // through a `/var` → `/private/var` symlink.
+            assert_eq!(workspaces[0].root, ws.path().canonicalize().expect("canonicalize"));
         }
         other => panic!("expected Accessed, got {other:?}"),
     }
+}
+
+/// `run_git_history_inproc` takes a root straight from a client RPC and does NOT go through
+/// [`WorkspacePool::get_or_open`](super::workspace_pool::WorkspacePool), so it needs its own trip
+/// through the root guard: `GitHistoryOp::Sync` walks the whole history and creates
+/// `shared_history_basemind_dir(root)`, which would mint cache state for a root every other consumer
+/// refuses. Only reachable over the 0600 socket, so this is an invariant, not a privilege boundary —
+/// but an invariant the other fixes are pointless without.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn git_history_refuses_a_non_project_root_without_minting_cache_state() {
+    use crate::git_history::{GitHistoryError, proto::GitHistoryOp};
+
+    crate::store::init_isolated_cache();
+    let (_d, broker) = temp_broker();
+
+    let plain = tempfile::tempdir().expect("workspace");
+    let root = plain.path().canonicalize().expect("canonicalize");
+    std::fs::write(root.join("notes.md"), "not a repo\n").expect("write file");
+
+    match broker
+        .run_git_history_inproc(root.clone(), GitHistoryOp::Sync)
+        .await
+    {
+        Err(GitHistoryError::RootRefused(message)) => assert!(
+            message.contains("basemind init"),
+            "the operator guidance is carried through: {message}"
+        ),
+        other => panic!("expected RootRefused, got {other:?}"),
+    }
+    assert!(
+        !crate::git_history::shared_history_basemind_dir(&root).exists(),
+        "a refused root must not have history cache state created for it"
+    );
 }

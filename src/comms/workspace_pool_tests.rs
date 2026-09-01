@@ -38,6 +38,14 @@ fn git_init(dir: &std::path::Path) {
     assert!(status.success(), "git init succeeds in {dir:?}");
 }
 
+/// The canonical path of a fixture workspace root. The pool now stores the RESOLVED root — that is
+/// the path it actually opens and scans — and on macOS a tempdir path is reached through a symlink
+/// (`/var` → `/private/var`), so comparing an `accessed()` row against `TempDir::path` would compare
+/// two spellings of one directory.
+fn canonical(dir: &tempfile::TempDir) -> PathBuf {
+    dir.path().canonicalize().expect("canonicalize fixture root")
+}
+
 /// A temp workspace holding two trivial Rust sources — enough for the scanner to index symbols.
 fn workspace_with_sources() -> tempfile::TempDir {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -116,7 +124,7 @@ fn lru_eviction_keeps_only_the_most_recent_within_the_cap() {
 
     let hot = pool.accessed();
     assert_eq!(hot.len(), 1);
-    assert_eq!(hot[0].root, ws2.path(), "the most-recently-used workspace survived");
+    assert_eq!(hot[0].root, canonical(&ws2), "the most-recently-used workspace survived");
 }
 
 #[test]
@@ -137,7 +145,7 @@ fn evicted_workspace_lazily_reopens_with_its_committed_index_intact() {
         .expect("scan ws2");
     assert_eq!(pool.len(), 1, "cap of 1 holds a single hot workspace");
     assert!(
-        pool.accessed().iter().all(|w| w.root != ws1.path()),
+        pool.accessed().iter().all(|w| w.root != canonical(&ws1)),
         "ws1 must have been evicted from the hot set"
     );
 
@@ -167,7 +175,7 @@ fn accessed_reports_the_hot_set() {
 
     let hot = pool.accessed();
     assert_eq!(hot.len(), 1);
-    assert_eq!(hot[0].root, ws.path());
+    assert_eq!(hot[0].root, canonical(&ws));
     assert_eq!(hot[0].key, store::workspace_key(ws.path()));
 }
 
@@ -415,7 +423,7 @@ fn active_connection_guard_blocks_lru_eviction() {
         .expect("scan ws2");
     assert_eq!(pool.len(), 2, "an active connection holds ws1 hot past the cap");
     assert!(
-        pool.accessed().iter().any(|w| w.root == ws1.path()),
+        pool.accessed().iter().any(|w| w.root == canonical(&ws1)),
         "ws1 stays hot while a connection is served against it"
     );
 
@@ -425,7 +433,7 @@ fn active_connection_guard_blocks_lru_eviction() {
     pool.rescan(ws3.path(), None, false, false, &ScanCancel::default())
         .expect("scan ws3");
     assert!(
-        pool.accessed().iter().all(|w| w.root != ws1.path()),
+        pool.accessed().iter().all(|w| w.root != canonical(&ws1)),
         "ws1 is evictable once no connection holds it"
     );
 }
@@ -454,4 +462,59 @@ fn active_connection_guard_blocks_idle_sweep() {
         "the workspace is idle-swept once its last connection drains"
     );
     assert_eq!(pool.len(), 0);
+}
+
+/// The pool is documented as *the* daemon choke point for issue #62 — relay, HTTP,
+/// `host_read_stack`, `begin_conn` and every forwarded rescan funnel through `get_or_open` — yet
+/// every existing test of that refusal drives a front-end. Deleting the guard block, or moving it
+/// below `Store::open_with_holder`, would leave all of them green. This pins both properties the
+/// choke point has to have: the refusal itself, and that it lands BEFORE anything touches the disk.
+#[test]
+fn a_non_project_root_is_refused_without_minting_a_workspace_cache_dir() {
+    store::init_isolated_cache();
+    let pool = WorkspacePool::new(4);
+    let plain = tempfile::tempdir().expect("tempdir");
+    let root = plain.path().canonicalize().expect("canonicalize");
+    std::fs::write(root.join("alpha.rs"), "pub fn alpha() {}\n").expect("write source");
+
+    let error = pool
+        .rescan(&root, None, false, false, &ScanCancel::default())
+        .expect_err("a plain directory is not a project");
+    match error {
+        WorkspacePoolError::RootRefused { root: refused, message } => {
+            assert_eq!(refused, root);
+            assert!(message.contains("basemind init"), "the guidance is carried through: {message}");
+        }
+        other => panic!("expected RootRefused, got {other:?}"),
+    }
+    assert!(
+        !store::workspace_cache_dir(&root).exists(),
+        "the refusal must precede the store open — a cache dir here means the guard moved below it"
+    );
+    assert_eq!(pool.len(), 0, "a refused root is never inserted into the pool");
+}
+
+/// `hello.root` reaches `get_or_open` raw off the wire, so a client can spell the filesystem root as
+/// an ordinary-looking path. `std::path` normalizes neither `..` nor symlinks, so a purely syntactic
+/// guard let `/..` through and the daemon opened `/` read-write. The refusal is unconditional, which
+/// is why this needs no env fiddling — `tests/root_guard_smoke.rs` drives the same spellings with
+/// `BASEMIND_ALLOW_ANY_ROOT=1` out-of-process, where setting the variable is actually sound.
+#[test]
+fn a_path_that_resolves_to_the_filesystem_root_is_refused() {
+    store::init_isolated_cache();
+    let pool = WorkspacePool::new(4);
+
+    for spelling in ["/..", "/usr/..", "/tmp/../.."] {
+        match pool.rescan(Path::new(spelling), None, false, false, &ScanCancel::default()) {
+            Err(WorkspacePoolError::RootRefused { message, .. }) => assert!(
+                message.contains("filesystem/volume root"),
+                "{spelling} must be refused AS the filesystem root: {message}"
+            ),
+            other => panic!("{spelling} must be refused, got {other:?}"),
+        }
+    }
+    assert!(
+        !store::workspace_cache_dir(Path::new("/")).exists(),
+        "no spelling of the filesystem root may mint a workspace cache dir"
+    );
 }
