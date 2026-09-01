@@ -21,7 +21,7 @@ tasks:
   test:
     desc: Run all tests
     cmds:
-      - cargo test --workspace
+      - cargo test --workspace --no-fail-fast
       - task: hermes:test
 
   hermes:test:
@@ -36,7 +36,7 @@ tasks:
   test:verbose:
     desc: Run tests with verbose output
     cmds:
-      - cargo test --workspace -- --nocapture
+      - cargo test --workspace --no-fail-fast -- --nocapture
 
   lint:
     desc: Run all linters and formatters via poly

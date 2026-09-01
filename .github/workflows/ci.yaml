@@ -123,15 +123,19 @@ jobs:
       - name: cargo clippy
         run: cargo clippy --workspace --all-targets --tests --features "${{ matrix.features }}" -- -D warnings
 
+      # ~keep `--no-fail-fast`: plain `cargo test` stops at the first failing test BINARY, so a leg
+      # ~keep reports one target's failures and hides every straggler behind it. A cross-cutting
+      # ~keep change leaves failures in several binaries at once, and discovering them one CI
+      # ~keep round-trip at a time costs an afternoon per release.
       - name: cargo test
-        run: cargo test --workspace --features "${{ matrix.features }}" --quiet
+        run: cargo test --workspace --features "${{ matrix.features }}" --quiet --no-fail-fast
 
       # ~keep The tui `replay` feature (scripted model + PTY e2e) is a basemind-tui feature, not a root
       # ~keep one, so the workspace test above compiles it out. Run it explicitly on the unix default legs
       # ~keep (the tests are `unix`-gated; portable-pty supplies its own PTY, so no real TTY is needed).
       - name: cargo test (basemind-tui replay + PTY)
         if: runner.os != 'Windows' && matrix.features == ''
-        run: cargo test -p basemind-tui --features replay --quiet
+        run: cargo test -p basemind-tui --features replay --quiet --no-fail-fast
 
       # ~keep `agent-tui` / `desktop-ui` gate the launcher subcommands for the two unreleased
       # ~keep front-ends, so they are in no matrix leg and in no release build — which leaves
@@ -142,7 +146,7 @@ jobs:
         if: runner.os == 'Linux' && matrix.features == 'full'
         run: |
           cargo clippy --bin basemind --features full,agent-tui,desktop-ui -- -D warnings
-          cargo test --bin basemind --features full,agent-tui,desktop-ui --quiet
+          cargo test --bin basemind --features full,agent-tui,desktop-ui --quiet --no-fail-fast
 
       - name: cargo build --release
         run: cargo build --release --quiet --bin basemind --features "${{ matrix.features }}"
