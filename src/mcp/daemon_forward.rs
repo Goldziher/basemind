@@ -96,7 +96,7 @@ async fn refresh_cache_after_scan(state: &Arc<ServerState>) -> Result<(), McpErr
         // Attach persisted doc↔code links (ADR-0008) on this blocking thread, before publish — the
         // LanceStore's own block_on must not nest inside the async reactor.
         let cache = (super::map_fingerprint::index_fingerprint(&store) != current_fingerprint).then(|| {
-            let mut cache = MapCache::build(&store);
+            let mut cache = MapCache::build(&store, super::l1_cache::budget_bytes_from(&config.resources));
             super::doc_links_cache::attach(&mut cache, &store, &config, &scope);
             cache
         });

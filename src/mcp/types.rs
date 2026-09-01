@@ -53,6 +53,21 @@ impl LifecycleNotice {
             }),
         }
     }
+
+    /// The notice for a read-only session whose projected call / implementation indexes hit their
+    /// byte cap. Such a session has no Fjall index to query, so those projections ARE the answer
+    /// source; once capped, reference-shaped results are truncated rather than merely stale.
+    /// `retry: false` because rerunning changes nothing — the fix is a larger
+    /// `[resources] max_map_cache_mb`, or a session that owns the index.
+    pub(crate) fn projections_capped() -> Self {
+        Self {
+            state: "projections_capped",
+            message: "This session has no writable index and its in-memory reference projections hit \
+                      the `[resources] max_map_cache_mb` budget, so reference / implementation \
+                      results are truncated. Raise the budget for complete results.",
+            retry: false,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]

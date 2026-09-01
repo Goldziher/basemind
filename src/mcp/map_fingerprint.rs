@@ -150,29 +150,29 @@ mod tests {
         fs::write(root.join("b.rs"), b"pub fn beta() {}\n").unwrap();
 
         let store = scan(root);
-        let map_a = super::super::MapCache::build(&store);
+        let map_a = super::super::MapCache::build(&store, 0);
         drop(store);
 
         let store = scan(root);
-        let map_b = super::super::MapCache::build(&store);
+        let map_b = super::super::MapCache::build(&store, 0);
 
         assert_eq!(
             map_a.fingerprint, map_b.fingerprint,
             "no source change => same fingerprint"
         );
         assert_eq!(
-            map_a.by_path.keys().collect::<Vec<_>>(),
-            map_b.by_path.keys().collect::<Vec<_>>(),
+            map_a.paths().collect::<Vec<_>>(),
+            map_b.paths().collect::<Vec<_>>(),
             "same fingerprint => same indexed path set"
         );
-        for (path, l1) in &map_a.by_path {
-            let other = map_b.by_path.get(path).expect("path present in both maps");
+        map_a.for_each(|path, l1| {
+            let other = map_b.get(path).expect("path present in both maps");
             let names = |m: &crate::extract::FileMapL1| m.symbols.iter().map(|s| s.name.clone()).collect::<Vec<_>>();
             assert_eq!(
                 names(l1),
-                names(other),
+                names(&other),
                 "same fingerprint => identical symbols for {path:?}"
             );
-        }
+        });
     }
 }

@@ -233,6 +233,10 @@ pub(super) fn scan_calls_in_ram(
     }
 }
 
+/// How many files one projection pass decodes before folding them into the views. Bounds the
+/// decoded-L2 working set to O(chunk) rather than O(corpus).
+const L2_PROJECTION_CHUNK: usize = 256;
+
 /// In-RAM mirror of the Fjall `calls_by_callee` + `calls_by_path` keyspaces, built
 /// from the L2 call blobs for read-only `serve` sessions that can't open the
 /// single-holder Fjall index. Lets unlimited concurrent sessions answer
@@ -245,6 +249,8 @@ pub(crate) struct InRamCallIndex {
     /// path → its call sites (the `calls_by_path` keyspace), for the call-graph
     /// "callees" direction.
     by_path: ahash::AHashMap<crate::path::RelPath, Vec<CallRef>>,
+    /// True when the byte budget cut the projection short, so its answers are incomplete.
+    capped: bool,
 }
 
 struct InRamCall {
@@ -272,47 +278,82 @@ pub(crate) struct CallRef {
 }
 
 impl InRamCallIndex {
-    /// Build the index by decoding the L2 calls from every file's combined blob.
-    /// File reads/decodes run in parallel (pure read, like `MapCache::build`); the
-    /// two views are assembled serially afterward.
-    pub(crate) fn build(store: &crate::store::Store) -> Self {
+    /// Project the L2 calls of every file into the two views, bounded by `budget_bytes`
+    /// (`0` = unbounded).
+    ///
+    /// Reads/decodes run in parallel a chunk at a time; the two views are assembled serially per
+    /// chunk. See [`capped`](Self::capped) for what happens when the budget is reached.
+    pub(crate) fn build(store: &crate::store::Store, budget_bytes: u64) -> Self {
         use rayon::prelude::*;
-        let per_file: Vec<(crate::path::RelPath, Vec<crate::extract::Call>)> = store
+        let paths: Vec<(&crate::path::RelPath, &str)> = store
             .index
             .files
-            .par_iter()
-            .filter_map(|(rel, entry)| {
-                let calls = store.read_l2_by_hex(&entry.hash_hex).ok().flatten()?.calls;
-                Some((rel.clone(), calls))
-            })
+            .iter()
+            .map(|(rel, entry)| (rel, entry.hash_hex.as_str()))
             .collect();
         let mut entries: Vec<InRamCall> = Vec::new();
         let mut by_path: ahash::AHashMap<crate::path::RelPath, Vec<CallRef>> =
-            ahash::AHashMap::with_capacity(per_file.len());
-        for (rel, calls) in per_file {
-            let mut refs: Vec<CallRef> = Vec::with_capacity(calls.len());
-            for call in calls {
-                if let Some(key) = crate::index::keys::call_by_callee(&call.callee, &rel, call.start_byte) {
-                    entries.push(InRamCall {
-                        key,
-                        callee: call.callee.clone(),
-                        rel: rel.clone(),
-                        start_byte: call.start_byte,
+            ahash::AHashMap::with_capacity(paths.len());
+        let mut charged: u64 = 0;
+        let mut capped = false;
+        // Chunked rather than one whole-corpus `par_iter`: the previous shape materialised EVERY
+        // file's decoded L2 calls before assembling either view, so peak residency was the sum of
+        // the projection and the raw decode it was projected from. Here at most one chunk of
+        // decoded blobs is live, and the loop stops the moment the projection reaches its budget.
+        for chunk in paths.chunks(L2_PROJECTION_CHUNK) {
+            let per_file: Vec<(crate::path::RelPath, Vec<crate::extract::Call>)> = chunk
+                .par_iter()
+                .filter_map(|(rel, hash_hex)| {
+                    let calls = store.read_l2_by_hex(hash_hex).ok().flatten()?.calls;
+                    Some(((*rel).clone(), calls))
+                })
+                .collect();
+            for (rel, calls) in per_file {
+                let mut refs: Vec<CallRef> = Vec::with_capacity(calls.len());
+                for call in calls {
+                    charged += (call.callee.len() + rel.as_bytes().len()) as u64
+                        + (std::mem::size_of::<InRamCall>() + std::mem::size_of::<CallRef>()) as u64;
+                    if budget_bytes != 0 && charged > budget_bytes {
+                        capped = true;
+                        break;
+                    }
+                    if let Some(key) = crate::index::keys::call_by_callee(&call.callee, &rel, call.start_byte) {
+                        entries.push(InRamCall {
+                            key,
+                            callee: call.callee.clone(),
+                            rel: rel.clone(),
+                            start_byte: call.start_byte,
+                            line: call.start_row + 1,
+                            column: call.start_col,
+                        });
+                    }
+                    refs.push(CallRef {
                         line: call.start_row + 1,
                         column: call.start_col,
+                        callee: call.callee,
+                        start_byte: call.start_byte,
                     });
                 }
-                refs.push(CallRef {
-                    line: call.start_row + 1,
-                    column: call.start_col,
-                    callee: call.callee,
-                    start_byte: call.start_byte,
-                });
+                by_path.insert(rel, refs);
+                if capped {
+                    break;
+                }
             }
-            by_path.insert(rel, refs);
+            if capped {
+                break;
+            }
         }
         entries.sort_unstable_by(|a, b| a.key.cmp(&b.key));
-        Self { entries, by_path }
+        Self {
+            entries,
+            by_path,
+            capped,
+        }
+    }
+
+    /// Whether the byte budget truncated this projection.
+    pub(crate) fn capped(&self) -> bool {
+        self.capped
     }
 
     /// All call sites in `rel`, for the call-graph "callees" direction (the

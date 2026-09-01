@@ -595,7 +595,10 @@ pub(super) async fn scan_and_refresh(
         let mut cache = if was_scoped {
             state.shared.cache.load().with_delta(&store, &updated, &removed)
         } else {
-            super::MapCache::build(&store)
+            super::MapCache::build(
+                &store,
+                super::l1_cache::budget_bytes_from(&state.shared.config.resources),
+            )
         };
         // A scoped rescan carries doc↔code links (ADR-0008) forward via `with_delta`; a full rebuild
         // starts empty, so reattach them (off-reactor) before publish or the `documents` lane goes stale.

@@ -63,11 +63,10 @@ pub(super) fn run_find_implementations(
             continue;
         }
 
-        if let Some(lang_filter) = params.language.as_deref() {
-            let l1_lang = cache.by_path.get(&rel).map(|l1| l1.language.as_str());
-            if l1_lang != Some(lang_filter) {
-                continue;
-            }
+        if let Some(lang_filter) = params.language.as_deref()
+            && cache.language_of(&rel) != Some(lang_filter)
+        {
+            continue;
         }
 
         total += 1;
@@ -127,7 +126,7 @@ pub(super) fn run_find_implementations(
 /// `start_byte` is the sole discriminant: an impl/class block has a unique byte offset
 /// within a file, so no additional fields are needed.
 fn resolve_impl_row_col(cache: &super::MapCache, rel: &crate::path::RelPath, start_byte: u32) -> (u32, u32) {
-    let Some(l1) = cache.by_path.get(rel) else {
+    let Some(l1) = cache.get(rel) else {
         return (0, 0);
     };
     if let Some(imp) = l1.implementations.iter().find(|i| i.start_byte == start_byte) {
@@ -177,7 +176,7 @@ fn find_implementations_in_ram(
             continue;
         }
         if let Some(lang) = params.language.as_deref()
-            && cache.by_path.get(&entry.rel).map(|l1| l1.language.as_str()) != Some(lang)
+            && cache.language_of(&entry.rel) != Some(lang)
         {
             continue;
         }
@@ -228,13 +227,14 @@ fn find_implementations_in_ram(
     })
 }
 
-/// In-RAM mirror of the Fjall `implementations_by_trait` keyspace, built from the
-/// L1 `implementations` already held by `MapCache::by_path`. Populated only for
-/// read-only sessions; keys reuse `keys::impl_by_trait` so cursors round-trip with
-/// the Fjall path.
+/// In-RAM mirror of the Fjall `implementations_by_trait` keyspace, projected from every file's
+/// L1 `implementations`. Populated only for read-only sessions; keys reuse `keys::impl_by_trait`
+/// so cursors round-trip with the Fjall path.
 pub(crate) struct InRamImplIndex {
     /// Sorted ascending by key to match Fjall's `range` iteration order.
     entries: Vec<InRamImpl>,
+    /// True when the byte budget cut the projection short, so its answers are incomplete.
+    capped: bool,
 }
 
 struct InRamImpl {
@@ -249,25 +249,51 @@ struct InRamImpl {
 }
 
 impl InRamImplIndex {
-    pub(crate) fn build(by_path: &std::collections::BTreeMap<crate::path::RelPath, crate::extract::FileMapL1>) -> Self {
+    /// Project every file's implementation records into the sorted index, streaming the corpus so
+    /// no whole-corpus set of decoded L1s is ever live, and stopping once the projection itself
+    /// would exceed `budget_bytes` (`0` = unbounded).
+    ///
+    /// The cap is what keeps a read-only session — the NORMAL front-end topology under
+    /// daemon-writer, where the store has no Fjall index — from holding an O(corpus) structure for
+    /// the process lifetime. Truncation is reported, never silent: see
+    /// [`capped`](Self::capped) and `LifecycleNotice::projections_capped`.
+    pub(crate) fn build(
+        files: &super::l1_cache::FileIndexView,
+        l1: &super::l1_cache::L1Cache,
+        budget_bytes: u64,
+    ) -> Self {
         let mut entries: Vec<InRamImpl> = Vec::new();
-        for (rel, l1) in by_path {
-            for imp in &l1.implementations {
-                if let Some(key) =
-                    crate::index::keys::impl_by_trait(&imp.trait_name, &imp.impl_type, rel, imp.start_byte)
-                {
-                    entries.push(InRamImpl {
-                        key,
-                        trait_name: imp.trait_name.clone(),
-                        impl_type: imp.impl_type.clone(),
-                        rel: rel.clone(),
-                        start_row: imp.start_row + 1,
-                        start_col: imp.start_col,
-                    });
+        let mut charged: u64 = 0;
+        let mut capped = false;
+        super::l1_cache::stream_while(files, l1, |rel, map| {
+            for imp in &map.implementations {
+                let Some(key) = crate::index::keys::impl_by_trait(&imp.trait_name, &imp.impl_type, rel, imp.start_byte)
+                else {
+                    continue;
+                };
+                charged += (key.len() + imp.trait_name.len() + imp.impl_type.len() + rel.as_bytes().len()) as u64
+                    + std::mem::size_of::<InRamImpl>() as u64;
+                if budget_bytes != 0 && charged > budget_bytes {
+                    capped = true;
+                    return false;
                 }
+                entries.push(InRamImpl {
+                    key,
+                    trait_name: imp.trait_name.clone(),
+                    impl_type: imp.impl_type.clone(),
+                    rel: rel.clone(),
+                    start_row: imp.start_row + 1,
+                    start_col: imp.start_col,
+                });
             }
-        }
+            true
+        });
         entries.sort_unstable_by(|a, b| a.key.cmp(&b.key));
-        Self { entries }
+        Self { entries, capped }
+    }
+
+    /// Whether the byte budget truncated this projection.
+    pub(crate) fn capped(&self) -> bool {
+        self.capped
     }
 }

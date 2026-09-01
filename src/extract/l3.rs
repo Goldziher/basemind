@@ -12,18 +12,27 @@ pub fn dependents_of<P: AsRef<Path>>(module: &str, index: &[(P, Vec<Import>)]) -
     let module_finder = memchr::memmem::Finder::new(module.as_bytes());
     let mut out = Vec::new();
     for (path, imports) in index {
-        for imp in imports {
-            let module_match = imp
-                .module
-                .as_deref()
-                .is_some_and(|m| m == module || module_finder.find(m.as_bytes()).is_some());
-            let raw_match = !module_match && module_finder.find(imp.raw.as_bytes()).is_some();
-            if module_match || raw_match {
-                out.push(path.as_ref().to_path_buf());
-                break;
-            }
+        if imports_mention(module, &module_finder, imports) {
+            out.push(path.as_ref().to_path_buf());
         }
     }
     out.sort();
     out
+}
+
+/// Whether one file's import list mentions `module` — the per-file predicate behind
+/// [`dependents_of`].
+///
+/// Exposed separately so a caller that STREAMS the corpus (the MCP `dependents` mode, which reads
+/// outlines one bounded chunk at a time) can apply the identical match without first materialising
+/// every file's imports into a slice. `module_finder` is passed in rather than built here so the
+/// substring automaton is compiled once per query, not once per file.
+pub fn imports_mention(module: &str, module_finder: &memchr::memmem::Finder<'_>, imports: &[Import]) -> bool {
+    imports.iter().any(|imp| {
+        let module_match = imp
+            .module
+            .as_deref()
+            .is_some_and(|m| m == module || module_finder.find(m.as_bytes()).is_some());
+        module_match || module_finder.find(imp.raw.as_bytes()).is_some()
+    })
 }

@@ -317,15 +317,87 @@ pub(crate) type GraphKey = (u64, EdgeKindSet, Option<RelPath>, bool);
 /// thrashing a single slot. Small: the working set is a handful of lane/focus combos per snapshot.
 const GRAPH_MEMO_CAP: usize = 16;
 
-/// The graph memo: an LRU of built [`CodeGraph`]s shared by every graph tool (ADR-0001..0005). Each
-/// entry is keyed by the content fingerprint of the cache it was built from, so a superseded graph is
-/// simply a key no current cache matches — it ages out by LRU rather than ever being served. Repeat
-/// calls against one snapshot collapse to an `Arc` clone.
-pub(crate) type GraphMemo = LruCache<GraphKey, Arc<CodeGraph>>;
+/// The graph memo: a byte-charged LRU of built [`CodeGraph`]s shared by every graph tool
+/// (ADR-0001..0005). Each entry is keyed by the content fingerprint of the cache it was built from,
+/// so a superseded graph is simply a key no current cache matches — it ages out rather than ever
+/// being served. Repeat calls against one snapshot collapse to an `Arc` clone.
+///
+/// Charged in bytes as well as in entries because a `CodeGraph` is O(corpus): the calls lane alone
+/// emits an edge per resolved call site, so 16 graphs of a large monorepo is the same unbounded
+/// resident structure the outline map used to be, one level removed. The entry cap still applies —
+/// it bounds key-space churn — but the byte budget is what bounds memory.
+pub(crate) struct GraphMemo {
+    lru: LruCache<GraphKey, Arc<CodeGraph>>,
+    /// Running sum of [`graph_heap_bytes`] over the values held.
+    charged: u64,
+    /// Byte ceiling; `0` = unbounded.
+    budget_bytes: u64,
+}
 
-/// An empty graph memo at the shared capacity.
-pub(crate) fn new_graph_memo() -> GraphMemo {
-    LruCache::new(NonZeroUsize::new(GRAPH_MEMO_CAP).expect("GRAPH_MEMO_CAP > 0"))
+impl GraphMemo {
+    /// A memo bounded by `budget_bytes` (`0` = unbounded).
+    pub(crate) fn new(budget_bytes: u64) -> Self {
+        Self {
+            lru: LruCache::new(NonZeroUsize::new(GRAPH_MEMO_CAP).expect("GRAPH_MEMO_CAP > 0")),
+            charged: 0,
+            budget_bytes,
+        }
+    }
+
+    fn get(&mut self, key: &GraphKey) -> Option<Arc<CodeGraph>> {
+        self.lru.get(key).cloned()
+    }
+
+    /// Insert `graph`, then evict least-recently-used entries until the charge fits the budget.
+    ///
+    /// As in the L1 cache, the entry just inserted is never evicted: a graph larger than the whole
+    /// budget must still be servable to the call that just built it, otherwise a big repo would
+    /// rebuild the same graph on every single tool call.
+    fn put(&mut self, key: GraphKey, graph: Arc<CodeGraph>) {
+        let bytes = graph_heap_bytes(&graph);
+        if let Some(previous) = self.lru.put(key, graph) {
+            self.charged = self.charged.saturating_sub(graph_heap_bytes(&previous));
+        }
+        self.charged = self.charged.saturating_add(bytes);
+        if self.budget_bytes == 0 {
+            return;
+        }
+        while self.charged > self.budget_bytes && self.lru.len() > 1 {
+            let Some((_, evicted)) = self.lru.pop_lru() else {
+                break;
+            };
+            self.charged = self.charged.saturating_sub(graph_heap_bytes(&evicted));
+        }
+    }
+
+    /// Bytes currently charged. Test surface for the budget assertion.
+    #[cfg(test)]
+    pub(crate) fn charged_bytes(&self) -> u64 {
+        self.charged
+    }
+}
+
+/// Approximate resident cost of a built graph, in bytes: the edge vector plus the owned path /
+/// name bytes its endpoints carry. Approximate for the same reason the L1 charge is — it informs
+/// eviction, so it must be cheaper than the eviction it informs.
+fn graph_heap_bytes(graph: &CodeGraph) -> u64 {
+    let mut total = (graph.edges.len() * std::mem::size_of::<CodeEdge>()) as u64;
+    for edge in &graph.edges {
+        total += node_key_heap_bytes(&edge.from) + node_key_heap_bytes(&edge.to);
+    }
+    total
+}
+
+fn node_key_heap_bytes(key: &NodeKey) -> u64 {
+    match key {
+        NodeKey::Name(name) => name.len() as u64,
+        other => other.file().map_or(0, |p| p.as_bytes().len() as u64),
+    }
+}
+
+/// An empty graph memo bounded by `budget_bytes`.
+pub(crate) fn new_graph_memo(budget_bytes: u64) -> GraphMemo {
+    GraphMemo::new(budget_bytes)
 }
 
 /// Build the graph for `opts`, served from `memo` when a graph for the same
@@ -345,7 +417,7 @@ pub(crate) fn build_memoized(
     // truncated under a different bound.
     debug_assert_eq!(opts.scan_cap, CODEGRAPH_SCAN_CAP);
     let key: GraphKey = (cache.fingerprint, opts.kinds, opts.focus.clone(), idx.is_some());
-    if let Some(hit) = memo.lock().unwrap_or_else(PoisonError::into_inner).get(&key).cloned() {
+    if let Some(hit) = memo.lock().unwrap_or_else(PoisonError::into_inner).get(&key) {
         return Ok(hit);
     }
     let graph = Arc::new(build(idx, cache, opts)?);
@@ -441,7 +513,12 @@ fn attach_symbol(syms_by_start: &[(u32, u32)], marker: u32) -> Option<u32> {
 type EdgeKey = (NodeKey, NodeKey, EdgeKind);
 
 /// Repo-wide symbol table: name → the definition sites (path, byte span, kind) carrying it.
-type DefsByName<'a> = AHashMap<&'a str, Vec<(&'a RelPath, u32, u32, crate::extract::SymbolKind)>>;
+///
+/// Owned, not borrowed from the cache: outlines are streamed and dropped a chunk at a time, so no
+/// reference into one may survive the pass that builds this. It is a projection — names and spans
+/// only, no signatures, decorators or rationale — and it is transient to a single `build`, so it
+/// never joins the resident set the way the whole-corpus map it replaced did.
+type DefsByName = AHashMap<String, Vec<(RelPath, u32, u32, crate::extract::SymbolKind)>>;
 
 /// Stage the name-resolved edge(s) for one import/inherit reference from `from` to `name`. One
 /// candidate ⇒ INFERRED; several ⇒ AMBIGUOUS (one edge per candidate); none ⇒ a single INFERRED
@@ -449,7 +526,7 @@ type DefsByName<'a> = AHashMap<&'a str, Vec<(&'a RelPath, u32, u32, crate::extra
 /// proven binding (ADR-0002). Shared by the imports and inherits lanes.
 fn resolve_named_edge(
     push: &mut impl FnMut(NodeKey, NodeKey, EdgeKind, Provenance, u32),
-    defs_by_name: &DefsByName<'_>,
+    defs_by_name: &DefsByName,
     from: NodeKey,
     name: &str,
     kind: EdgeKind,
@@ -466,7 +543,7 @@ fn resolve_named_edge(
                 push(
                     from.clone(),
                     NodeKey::Symbol {
-                        path: (*dp).clone(),
+                        path: dp.clone(),
                         start_byte: *ds,
                     },
                     kind,
@@ -483,6 +560,12 @@ fn resolve_named_edge(
 /// `idx = Some` enables proof of call edges via the resolved-reference index; `idx = None`
 /// (read-only/degraded serve) still builds every lane but call edges degrade *down* to
 /// INFERRED/AMBIGUOUS — never falsely EXTRACTED.
+///
+/// The corpus is STREAMED, three times: the symbol table must be complete before the edge pass can
+/// resolve a callee, and the rationale lane must see every file even when the edge pass stopped at
+/// `scan_cap`. Folding the lanes into one pass would change which files the cap cuts, so the passes
+/// stay separate and the outline cache absorbs the repeat reads. The build is memoized
+/// ([`build_memoized`]), so a repo pays this at most once per snapshot per lane set.
 pub(crate) fn build(idx: Option<&IndexDb>, cache: &MapCache, opts: &BuildOpts) -> Result<CodeGraph, McpError> {
     let kinds = opts.kinds;
     // Compared byte-wise, not as `&str`: for UTF-8 paths a byte prefix and a `str` prefix are the
@@ -496,15 +579,17 @@ pub(crate) fn build(idx: Option<&IndexDb>, cache: &MapCache, opts: &BuildOpts) -
 
     // Repo-wide name → definition sites, so a target resolves even when the source file is
     // outside `focus`. `>1` distinct sites for a name is what makes a resolution ambiguous.
-    let mut defs_by_name: DefsByName<'_> = AHashMap::new();
-    for (path, l1) in &cache.by_path {
+    let mut defs_by_name: DefsByName = AHashMap::new();
+    cache.for_each(|path, l1| {
         for sym in &l1.symbols {
-            defs_by_name
-                .entry(sym.name.as_str())
-                .or_default()
-                .push((path, sym.start_byte, sym.end_byte, sym.kind));
+            defs_by_name.entry(sym.name.clone()).or_default().push((
+                path.clone(),
+                sym.start_byte,
+                sym.end_byte,
+                sym.kind,
+            ));
         }
-    }
+    });
 
     let mut acc: AHashMap<EdgeKey, (u32, Provenance)> = AHashMap::new();
     let mut push = |from: NodeKey, to: NodeKey, kind: EdgeKind, prov: Provenance, w: u32| {
@@ -522,9 +607,13 @@ pub(crate) fn build(idx: Option<&IndexDb>, cache: &MapCache, opts: &BuildOpts) -
     let mut scanned = 0usize;
     let mut truncated = false;
 
-    for (path, l1) in &cache.by_path {
+    // Streamed. Each iteration projects into `acc` and drops the outline, so the edge pass holds
+    // one chunk of decoded L1s rather than the corpus. A call-site error is captured and rethrown
+    // after the stream rather than propagated with `?`, which a callback cannot do.
+    let mut call_error: Option<McpError> = None;
+    cache.for_each_while(|path, l1| {
         if !in_focus(path) {
-            continue;
+            return true;
         }
 
         if kinds.contains {
@@ -569,7 +658,7 @@ pub(crate) fn build(idx: Option<&IndexDb>, cache: &MapCache, opts: &BuildOpts) -
         }
 
         if !want_calls {
-            continue;
+            return true;
         }
 
         // Function-like symbols in this file, for attributing a call site to its enclosing
@@ -609,7 +698,7 @@ pub(crate) fn build(idx: Option<&IndexDb>, cache: &MapCache, opts: &BuildOpts) -
         };
 
         let mut cap_hit = false;
-        for_each_call_in_file(idx, cache, path, |callee, call_byte| {
+        let scan = for_each_call_in_file(idx, cache, path, |callee, call_byte| {
             scanned += 1;
             if scanned > opts.scan_cap {
                 cap_hit = true;
@@ -620,7 +709,7 @@ pub(crate) fn build(idx: Option<&IndexDb>, cache: &MapCache, opts: &BuildOpts) -
                 Some(c) => c
                     .iter()
                     .filter(|(_, _, _, k)| is_function_like(*k))
-                    .map(|(p, start, end, _)| (*p, *start, *end))
+                    .map(|(p, start, end, _)| (p, *start, *end))
                     .collect(),
                 None => Vec::new(),
             };
@@ -675,11 +764,19 @@ pub(crate) fn build(idx: Option<&IndexDb>, cache: &MapCache, opts: &BuildOpts) -
                 }
             }
             true
-        })?;
+        });
+        if let Err(error) = scan {
+            call_error = Some(error);
+            return false;
+        }
         if cap_hit {
             truncated = true;
-            break;
+            return false;
         }
+        true
+    });
+    if let Some(error) = call_error {
+        return Err(error);
     }
 
     // ── Rationale lane (ADR-0009): promote WHY/NOTE/… notes to nodes, attach them to the code
@@ -688,15 +785,15 @@ pub(crate) fn build(idx: Option<&IndexDb>, cache: &MapCache, opts: &BuildOpts) -
     if kinds.annotates || kinds.cites {
         let mut decisions_by_id: AHashMap<String, Vec<&RelPath>> = AHashMap::new();
         if kinds.cites {
-            for path in cache.by_path.keys() {
+            for path in cache.paths() {
                 if let Some(id) = decision_id_of_path(path) {
                     decisions_by_id.entry(id).or_default().push(path);
                 }
             }
         }
-        for (path, l1) in &cache.by_path {
+        cache.for_each(|path, l1| {
             if !in_focus(path) || l1.rationale.is_empty() {
-                continue;
+                return;
             }
             let mut syms: Vec<(u32, u32)> = l1.symbols.iter().map(|s| (s.start_byte, s.end_byte)).collect();
             syms.sort_unstable_by_key(|&(sb, _)| sb);
@@ -747,7 +844,7 @@ pub(crate) fn build(idx: Option<&IndexDb>, cache: &MapCache, opts: &BuildOpts) -
                     }
                 }
             }
-        }
+        });
     }
 
     // ── Document lane (ADR-0008): promote each persisted document→code link to a `DocChunk` node and
@@ -767,7 +864,7 @@ pub(crate) fn build(idx: Option<&IndexDb>, cache: &MapCache, opts: &BuildOpts) -
             match &link.mention {
                 DocMention::Name(name) => resolve_named_edge(&mut push, &defs_by_name, from, name, EdgeKind::Documents),
                 DocMention::Path(target) => {
-                    if cache.by_path.contains_key(target) {
+                    if cache.contains(target) {
                         push(
                             from,
                             NodeKey::File { path: target.clone() },

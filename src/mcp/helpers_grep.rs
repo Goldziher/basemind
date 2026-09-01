@@ -79,12 +79,13 @@ pub(super) fn run_workspace_grep(
 
     let cache = state.shared.cache.load_full();
 
-    let candidates: Vec<(&RelPath, &crate::extract::FileMapL1)> = cache
-        .by_path
-        .iter()
-        .filter(|(path, entry)| {
+    // Grep needs only path, language and indexed size — every one of them in the symbol-free file
+    // view — so the candidate scan never decodes an outline however large the corpus is.
+    let candidates: Vec<(&RelPath, &super::l1_cache::FileMeta)> = cache
+        .file_metas()
+        .filter(|(path, meta)| {
             path_finder.as_ref().is_none_or(|f| f.find(path.as_bytes()).is_some())
-                && lang_filter.is_none_or(|l| entry.language == l)
+                && lang_filter.is_none_or(|l| *meta.language == *l)
         })
         .collect();
 
@@ -162,12 +163,12 @@ fn unpack_cursor(offset: u64) -> (usize, u32) {
 /// Returns the slice to scan and whether anything was cut. At least one file always survives, so a
 /// paging caller can never stall on a cursor that refuses to advance.
 fn apply_byte_budget<'a, 'b>(
-    window: &'a [(&'b RelPath, &'b crate::extract::FileMapL1)],
-) -> (&'a [(&'b RelPath, &'b crate::extract::FileMapL1)], bool) {
+    window: &'a [(&'b RelPath, &'b super::l1_cache::FileMeta)],
+) -> (&'a [(&'b RelPath, &'b super::l1_cache::FileMeta)], bool) {
     let mut used: u64 = 0;
     let mut end = window.len();
-    for (i, (_, entry)) in window.iter().enumerate() {
-        used = used.saturating_add(entry.size_bytes);
+    for (i, (_, meta)) in window.iter().enumerate() {
+        used = used.saturating_add(meta.size_bytes);
         if used > GREP_BYTE_BUDGET {
             end = i.max(1);
             break;
@@ -183,7 +184,7 @@ fn apply_byte_budget<'a, 'b>(
 /// the totals mean "matches remaining from the cursor position", not "matches in the repo".
 fn count_all(
     state: &ServerState,
-    scanned: &[(&RelPath, &crate::extract::FileMapL1)],
+    scanned: &[(&RelPath, &super::l1_cache::FileMeta)],
     re: &Regex,
     literal: Option<&Finder<'static>>,
     skip_hits: u32,
@@ -268,7 +269,7 @@ fn select_hits(counts: &[u32], limit: usize, skip_files: usize, skip_hits: u32) 
 /// budget uses it to page a dropped tail exactly.
 fn materialize(
     state: &ServerState,
-    scanned: &[(&RelPath, &crate::extract::FileMapL1)],
+    scanned: &[(&RelPath, &super::l1_cache::FileMeta)],
     selected: &[Selection],
     re: &Regex,
     include_context: bool,

@@ -89,22 +89,27 @@ pub(super) fn kinds_from(edges: &str, include_contains: bool) -> Result<EdgeKind
 /// Uses the authoritative L1 cache, so a symbol with no graph edges still resolves to a node.
 fn resolve_roots(cache: &MapCache, name: &str, path_filter: Option<&RelPath>) -> Vec<NodeKey> {
     let mut roots: Vec<NodeKey> = Vec::new();
-    for (path, l1) in &cache.by_path {
-        if let Some(pf) = path_filter
-            && pf != path
-        {
-            continue;
+    // A pinned path is a point lookup, not a corpus scan — the common `trace-symbol --path` shape.
+    if let Some(pf) = path_filter {
+        if let Some(l1) = cache.get(pf) {
+            collect_named_roots(&mut roots, pf, &l1, name);
         }
-        for sym in &l1.symbols {
-            if sym.name == name {
-                roots.push(NodeKey::Symbol {
-                    path: path.clone(),
-                    start_byte: sym.start_byte,
-                });
-            }
+        return roots;
+    }
+    cache.for_each(|path, l1| collect_named_roots(&mut roots, path, l1, name));
+    roots
+}
+
+/// Append a `Symbol` node key for every definition of `name` in one file's outline.
+fn collect_named_roots(roots: &mut Vec<NodeKey>, path: &RelPath, l1: &crate::extract::FileMapL1, name: &str) {
+    for sym in &l1.symbols {
+        if sym.name == name {
+            roots.push(NodeKey::Symbol {
+                path: path.clone(),
+                start_byte: sym.start_byte,
+            });
         }
     }
-    roots
 }
 
 /// Describe a node key for the response — resolving a `Symbol` back to its name/kind/location
@@ -112,9 +117,9 @@ fn resolve_roots(cache: &MapCache, name: &str, path_filter: Option<&RelPath>) ->
 pub(super) fn describe(cache: &MapCache, key: &NodeKey) -> GraphNode {
     match key {
         NodeKey::Symbol { path, start_byte } => {
-            let found = cache
-                .by_path
-                .get(path)
+            let l1 = cache.get(path);
+            let found = l1
+                .as_ref()
                 .and_then(|l1| l1.symbols.iter().find(|s| s.start_byte == *start_byte));
             match found {
                 Some(sym) => GraphNode {
@@ -161,9 +166,9 @@ pub(super) fn describe(cache: &MapCache, key: &NodeKey) -> GraphNode {
         NodeKey::Rationale { path, start_byte } => {
             // Resolve the note back to its kind/text via the L1 cache, mirroring how a `Symbol`
             // node is described — so the label reads e.g. "why: keep the lock scope tight".
-            let found = cache
-                .by_path
-                .get(path)
+            let l1 = cache.get(path);
+            let found = l1
+                .as_ref()
                 .and_then(|l1| l1.rationale.iter().find(|r| r.start_byte == *start_byte));
             let name = match found {
                 Some(rec) => {

@@ -71,7 +71,9 @@ pub(crate) struct SharedReadStack {
     /// Generation-keyed memo of built code-graphs, shared by every graph tool (`neighbors`/`path`/
     /// `subgraph`/`communities`/`architecture_map`/`graph_export`). Keyed on the current
     /// [`cache_generation`](Self::cache_generation), so it is invalidated wholesale on any `cache`
-    /// swap and never serves a stale graph. See [`super::codegraph::GraphMemo`].
+    /// swap and never serves a stale graph. Byte-budgeted — a built graph is O(corpus), so without
+    /// one it would be the last unbounded resident structure on the read stack. See
+    /// [`super::codegraph::GraphMemo`].
     pub(crate) graph_memo: Mutex<super::codegraph::GraphMemo>,
     /// Per-repo scope key for LanceDB tables and `memory_by_key` Fjall keyspace.
     /// Computed once at boot. Do NOT recompute per-call.
@@ -160,6 +162,15 @@ pub(crate) struct SharedReadStack {
     pub(crate) host: Option<std::sync::Arc<dyn crate::mcp::HostBackend>>,
 }
 
+/// Byte budget for the code-graph memo, derived from `[resources] max_map_cache_mb`.
+///
+/// Half the outline budget, because a graph is a rebuildable projection OF those outlines and
+/// should not outweigh them; `0` (unbounded outlines) stays unbounded here too. Derived rather than
+/// separately configurable so an operator bounds the whole read stack with one number.
+fn graph_memo_budget_bytes(resources: &crate::config::ResourcesConfig) -> u64 {
+    super::l1_cache::budget_bytes_from(resources) / 2
+}
+
 /// Boot decisions derived purely from the opened store + [`ServerOptions`]: whether an empty-index
 /// initial scan is needed, and whether the in-RAM cache preload is deferred to the background.
 ///
@@ -211,7 +222,10 @@ impl SharedReadStack {
         let cache = if defer_warm || options.lazy_cache {
             Arc::new(MapCache::empty())
         } else {
-            Arc::new(MapCache::build(&store))
+            Arc::new(MapCache::build(
+                &store,
+                super::l1_cache::budget_bytes_from(&config.resources),
+            ))
         };
         tracing::info!(
             files = store.index.files.len(),
@@ -222,6 +236,7 @@ impl SharedReadStack {
             lazy_cache = options.lazy_cache,
             "code map ready for MCP server (preloaded, warming in background, or lazy)"
         );
+        let graph_memo_budget = graph_memo_budget_bytes(&config.resources);
         let outline_cache: Arc<OutlineCache> = Arc::new(Mutex::new(LruCache::new(
             NonZeroUsize::new(OUTLINE_CACHE_CAP).expect("OUTLINE_CACHE_CAP > 0"),
         )));
@@ -246,7 +261,7 @@ impl SharedReadStack {
             telemetry: telemetry_handle,
             corpus_bytes: AtomicU64::new(corpus_bytes),
             cache_generation: AtomicU32::new(1),
-            graph_memo: Mutex::new(super::codegraph::new_graph_memo()),
+            graph_memo: Mutex::new(super::codegraph::new_graph_memo(graph_memo_budget)),
             scope,
             #[cfg(any(feature = "memory", feature = "documents", feature = "code-search"))]
             lance: tokio::sync::OnceCell::new(),

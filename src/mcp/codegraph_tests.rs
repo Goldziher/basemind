@@ -24,7 +24,7 @@ fn scan_repo(files: &[(&str, &str)]) -> (TempDir, Store, MapCache) {
         crate::scanner::EmbedMode::Inline,
     )
     .expect("scan");
-    let cache = MapCache::build(&store);
+    let cache = MapCache::build(&store, 0);
     (dir, store, cache)
 }
 
@@ -75,7 +75,7 @@ fn name_of(sym_path: &str, key: &NodeKey, cache: &MapCache) -> Option<String> {
     if let NodeKey::Symbol { path, start_byte } = key
         && path.as_str() == Some(sym_path)
     {
-        let l1 = cache.by_path.get(path)?;
+        let l1 = cache.get(path)?;
         return l1
             .symbols
             .iter()
@@ -146,7 +146,7 @@ fn cache_with_rationale(
 ) -> MapCache {
     use crate::extract::FileMapL1;
     use crate::path::RelPath;
-    let mut cache = MapCache::empty();
+    let mut synthetic: Vec<(RelPath, FileMapL1)> = Vec::new();
     for (path, symbols, rationale) in files {
         let l1 = FileMapL1 {
             schema_ver: crate::extract::SCHEMA_VER,
@@ -159,9 +159,9 @@ fn cache_with_rationale(
             implementations: Vec::new(),
             rationale: rationale.clone(),
         };
-        cache.by_path.insert(RelPath::from(*path), l1);
+        synthetic.push((RelPath::from(*path), l1));
     }
-    cache
+    MapCache::from_synthetic(synthetic)
 }
 
 fn sym(name: &str, start: u32, end: u32) -> crate::extract::Symbol {
@@ -612,7 +612,7 @@ fn resolved_calls_are_extracted_with_intel() {
         crate::scanner::EmbedMode::Inline,
     )
     .expect("scan");
-    let cache = MapCache::build(&store);
+    let cache = MapCache::build(&store, 0);
     let g = built(&store, &cache, EdgeKindSet::all());
     let has_extracted_call = g.edges.iter().any(|e| {
         e.kind == EdgeKind::Calls
@@ -634,7 +634,7 @@ fn resolved_call_prefers_innermost_same_named_definition() {
         "def target():\n    def target():\n        pass\n    target()\n",
     )]);
     let path = RelPath::from("nested.py");
-    let symbols = cache.by_path.get(&path).expect("nested.py map");
+    let symbols = cache.get(&path).expect("nested.py map");
     let inner_start = symbols
         .symbols
         .iter()
@@ -667,7 +667,7 @@ fn opts(kinds: EdgeKindSet) -> BuildOpts {
 fn memo_serves_the_same_build_for_one_snapshot() {
     let (_dir, store, cache) = provenance_fixture();
     let idx = store.index_db.as_ref();
-    let memo = Mutex::new(new_graph_memo());
+    let memo = Mutex::new(new_graph_memo(0));
 
     let first = build_memoized(&memo, idx, &cache, &opts(EdgeKindSet::all())).expect("first build");
     let second = build_memoized(&memo, idx, &cache, &opts(EdgeKindSet::all())).expect("second build");
@@ -685,11 +685,46 @@ fn memo_serves_the_same_build_for_one_snapshot() {
     );
 }
 
+/// D3: a built graph is O(corpus), so the memo needs a BYTE budget, not just an entry cap —
+/// otherwise it inherits the residency problem the outline map was split to fix. A budget below one
+/// graph's own size must still serve that graph (the just-inserted entry is never evicted) while
+/// holding no more than it.
+#[test]
+fn graph_memo_evicts_to_its_byte_budget() {
+    let (_dir, store, cache) = provenance_fixture();
+    let idx = store.index_db.as_ref();
+
+    let sized = Mutex::new(new_graph_memo(0));
+    let one = build_memoized(&sized, idx, &cache, &opts(EdgeKindSet::all())).expect("build");
+    let one_graph_bytes = sized.lock().unwrap().charged_bytes();
+    assert!(one_graph_bytes > 0, "a non-empty graph must charge something");
+    assert!(!one.edges.is_empty(), "fixture must produce edges");
+
+    // A budget smaller than a single graph: every insert evicts everything else.
+    let tight = Mutex::new(new_graph_memo(one_graph_bytes / 2));
+    let calls_only = EdgeKindSet {
+        calls: true,
+        ..EdgeKindSet::none()
+    };
+    build_memoized(&tight, idx, &cache, &opts(EdgeKindSet::all())).expect("all lanes");
+    build_memoized(&tight, idx, &cache, &opts(calls_only)).expect("calls lane");
+    assert_eq!(tight.lock().unwrap().lru.len(), 1, "the budget evicts the older graph");
+    // Still served, even though it alone exceeds the budget.
+    let served = build_memoized(&tight, idx, &cache, &opts(calls_only)).expect("re-serve");
+    assert!(!served.edges.is_empty());
+
+    // Unbounded keeps both.
+    let loose = Mutex::new(new_graph_memo(0));
+    build_memoized(&loose, idx, &cache, &opts(EdgeKindSet::all())).expect("all lanes");
+    build_memoized(&loose, idx, &cache, &opts(calls_only)).expect("calls lane");
+    assert_eq!(loose.lock().unwrap().lru.len(), 2, "no budget, no eviction");
+}
+
 #[test]
 fn memo_keys_on_lanes_and_index_mode() {
     let (_dir, store, cache) = provenance_fixture();
     let idx = store.index_db.as_ref();
-    let memo = Mutex::new(new_graph_memo());
+    let memo = Mutex::new(new_graph_memo(0));
 
     let calls_only = EdgeKindSet {
         calls: true,
@@ -730,7 +765,7 @@ fn memo_isolates_snapshots_by_fingerprint() {
         cache_a.fingerprint, cache_b.fingerprint,
         "different content must fingerprint differently"
     );
-    let memo = Mutex::new(new_graph_memo());
+    let memo = Mutex::new(new_graph_memo(0));
 
     let ga = build_memoized(&memo, store_a.index_db.as_ref(), &cache_a, &opts(EdgeKindSet::all())).expect("a");
     let gb = build_memoized(&memo, store_b.index_db.as_ref(), &cache_b, &opts(EdgeKindSet::all())).expect("b");

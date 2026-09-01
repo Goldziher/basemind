@@ -1,7 +1,7 @@
 //! Governance helpers for the `memory_audit` MCP tool (W10).
 //!
 //! `audit_one_record` is a pure in-RAM, sync function — no async calls. It:
-//! - checks file provenance against `MapCache.by_path` (file deleted → Stale)
+//! - checks file provenance against the `MapCache` file view (file deleted → Stale)
 //! - checks symbol provenance against the in-RAM L1 map (symbol missing → Stale)
 //! - checks structural hashes by reading the working-tree source bytes from disk and
 //!   computing `symbol_fingerprint(…, HashMode::Structural)` (body changed → Stale)
@@ -107,14 +107,14 @@ pub(super) fn audit_one_record(
     let mut stale = false;
 
     for rel in &prov.files {
-        if !cache.by_path.contains_key(rel) {
+        if !cache.contains(rel) {
             reasons.push(format!("file deleted: {}", rel.to_str_lossy()));
             stale = true;
         }
     }
 
     for sym_ref in &prov.symbols {
-        let Some(l1) = cache.by_path.get(&sym_ref.path) else {
+        let Some(l1) = cache.get(&sym_ref.path) else {
             reasons.push(format!(
                 "symbol not found: {} (file gone: {})",
                 sym_ref.name,
@@ -144,7 +144,7 @@ pub(super) fn audit_one_record(
             let abs_path = root.join(sym_ref.path.to_path_buf());
             if let Ok(source) = std::fs::read(&abs_path) {
                 let entry = OutlineEntry {
-                    map: Arc::new(l1.clone()),
+                    map: Arc::clone(&l1),
                     source: Arc::new(source),
                 };
                 let kind_opt = sym_ref.kind.as_deref().and_then(parse_kind_opt);
@@ -163,7 +163,7 @@ pub(super) fn audit_one_record(
     for cmd in &prov.commands {
         let first_token = cmd.split_whitespace().next().unwrap_or(cmd.as_str());
         let cmd_rel = crate::path::RelPath::from(first_token);
-        if cache.by_path.contains_key(&cmd_rel) && store.lookup(first_token).is_none() {
+        if cache.contains(&cmd_rel) && store.lookup(first_token).is_none() {
             reasons.push(format!("command may be stale: {cmd}"));
         }
     }

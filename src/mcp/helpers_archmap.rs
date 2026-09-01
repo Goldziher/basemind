@@ -193,21 +193,23 @@ impl RepoGraph {
     /// Fjall `calls_by_path` keyspace per file; `idx = None` reads the in-RAM call index
     /// (read-only session). Bounded by `edge_scan_cap` total call sites.
     pub(crate) fn build(idx: Option<&IndexDb>, cache: &MapCache, edge_scan_cap: usize) -> Result<Self, McpError> {
-        let files: Vec<RelPath> = cache.by_path.keys().cloned().collect();
+        let files: Vec<RelPath> = cache.paths().cloned().collect();
         let mut id_of: AHashMap<RelPath, u32> = AHashMap::with_capacity(files.len());
         for (i, p) in files.iter().enumerate() {
             id_of.insert(p.clone(), i as u32);
         }
 
+        // Streamed: each file's function names are projected to a file id and the outline is
+        // dropped, so the symbol table is built without the corpus ever being resident.
         let mut def_files_by_name: AHashMap<String, Vec<u32>> = AHashMap::new();
-        for (path, l1) in &cache.by_path {
+        cache.for_each(|path, l1| {
             let fid = id_of[path];
             for sym in &l1.symbols {
                 if is_function_like(sym.kind) {
                     def_files_by_name.entry(sym.name.clone()).or_default().push(fid);
                 }
             }
-        }
+        });
 
         let mut edges: AHashMap<(u32, u32), u32> = AHashMap::new();
         let mut callee_counts: AHashMap<String, u32> = AHashMap::new();
@@ -215,7 +217,7 @@ impl RepoGraph {
         let mut truncated = false;
         let mut truncation_reason: Option<&'static str> = None;
 
-        for path in cache.by_path.keys() {
+        for path in cache.paths() {
             let src = id_of[path];
             let mut cap_hit = false;
             for_each_call_in_file(idx, cache, path, |callee, _start_byte| {
@@ -769,11 +771,11 @@ fn collect_symbol_candidates(
     max_nodes: usize,
 ) -> (Vec<SymCand>, u32) {
     let mut cands: Vec<SymCand> = Vec::new();
-    for (path, l1) in &cache.by_path {
+    cache.for_each(|path, l1| {
         if let Some(fx) = focus
             && !path.as_bytes().starts_with(fx.as_bytes())
         {
-            continue;
+            return;
         }
         let c = churn.and_then(|ch| ch.get(path)).copied().unwrap_or(0);
         for sym in &l1.symbols {
@@ -795,7 +797,7 @@ fn collect_symbol_candidates(
                 churn: c,
             });
         }
-    }
+    });
     let node_count_total = cands.len() as u32;
 
     cands.sort_by(|a, b| {

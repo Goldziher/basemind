@@ -65,6 +65,7 @@ mod identity;
 #[cfg(feature = "test-support")]
 pub mod in_memory;
 mod kneedle;
+mod l1_cache;
 mod lean;
 mod lenient;
 mod map_fingerprint;
@@ -745,12 +746,10 @@ mod lazy_cache_tests;
 mod map_cache_tests {
     use super::*;
     use std::fs;
-    use std::path::Path;
 
     fn sym_names(cache: &MapCache, rel: &str) -> Vec<String> {
         let key = crate::path::RelPath::from(rel);
         cache
-            .by_path
             .get(&key)
             .map(|l1| l1.symbols.iter().map(|s| s.name.clone()).collect())
             .unwrap_or_default()
@@ -784,9 +783,23 @@ mod map_cache_tests {
         assert!(!rescanning.retry, "rescan results are usable, no retry required");
     }
 
-    /// `with_delta` must re-read only the changed blobs, preserve untouched entries, drop removed
-    /// ones, and keep `imports_index` consistent — the incremental refresh the serve watcher uses
-    /// instead of a whole-corpus rebuild (issue #33).
+    /// A read-only session whose reference projections were truncated by the outline budget reports
+    /// it through the same channel — and does NOT ask for a retry, because rerunning the query
+    /// cannot widen a budget.
+    #[test]
+    fn capped_projection_notice_reports_truncation_without_asking_for_a_retry() {
+        let notice = types::LifecycleNotice::projections_capped();
+        assert_eq!(notice.state, "projections_capped");
+        assert!(!notice.retry);
+        assert!(
+            notice.message.contains("max_map_cache_mb"),
+            "the notice must name the knob that fixes it"
+        );
+    }
+
+    /// `with_delta` must re-read only the changed blobs, preserve untouched entries, and drop
+    /// removed ones — the incremental refresh the serve watcher uses instead of a whole-corpus
+    /// rebuild (issue #33).
     #[test]
     fn with_delta_patches_updated_and_removed_paths_only() {
         let tmp = tempfile::tempdir().unwrap();
@@ -805,7 +818,7 @@ mod map_cache_tests {
         )
         .unwrap();
 
-        let cache = MapCache::build(&store);
+        let cache = MapCache::build(&store, 0);
         assert_eq!(sym_names(&cache, "a.rs"), vec!["alpha".to_string()]);
         assert_eq!(sym_names(&cache, "b.rs"), vec!["beta".to_string()]);
         assert!(cache.calls.is_none() && cache.impls.is_none());
@@ -837,16 +850,13 @@ mod map_cache_tests {
         let removed = vec![crate::path::RelPath::from("b.rs")];
         let after = next.with_delta(&store, &[], &removed);
         assert!(
-            !after.by_path.contains_key(&crate::path::RelPath::from("b.rs")),
-            "removed path dropped from by_path"
+            !after.contains(&crate::path::RelPath::from("b.rs")),
+            "removed path dropped from the file view"
         );
+        assert!(after.contains(&crate::path::RelPath::from("a.rs")), "other path kept");
         assert!(
-            after.by_path.contains_key(&crate::path::RelPath::from("a.rs")),
-            "other path kept"
-        );
-        assert!(
-            !after.imports_index.iter().any(|(p, _)| p == Path::new("b.rs")),
-            "imports_index must not retain a removed path"
+            sym_names(&after, "b.rs").is_empty(),
+            "a removed path resolves to no outline"
         );
     }
 }

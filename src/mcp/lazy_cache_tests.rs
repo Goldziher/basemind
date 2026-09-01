@@ -44,7 +44,7 @@ fn json_of(result: &CallToolResult) -> Value {
 }
 
 fn mapped_files(state: &ServerState) -> usize {
-    state.shared.cache.load().by_path.len()
+    state.shared.cache.load().len()
 }
 
 /// A one-shot server must boot with an EMPTY code map, and a tool that never touches the map

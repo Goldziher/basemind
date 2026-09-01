@@ -136,7 +136,8 @@ pub(super) fn spawn_cache_warm(state: Arc<ServerState>) {
         let build_state = Arc::clone(&state);
         let built = tokio::task::spawn_blocking(move || {
             let store = build_state.shared.store.blocking_read();
-            let mut cache = MapCache::build(&store);
+            let budget = super::l1_cache::budget_bytes_from(&build_state.shared.config.resources);
+            let mut cache = MapCache::build(&store, budget);
             // Load persisted doc↔code links (ADR-0008) on this blocking thread — the LanceStore's own
             // block_on must not nest inside the async reactor.
             super::doc_links_cache::attach(
@@ -150,7 +151,7 @@ pub(super) fn spawn_cache_warm(state: Arc<ServerState>) {
         .await;
         match built {
             Ok(cache) => {
-                let files = cache.by_path.len();
+                let files = cache.len();
                 state.shared.cache.store(Arc::new(cache));
                 state.shared.cache_generation.fetch_add(1, Ordering::Relaxed);
                 state
@@ -359,13 +360,14 @@ pub(super) fn spawn_view_watcher(state: Arc<ServerState>) -> WatcherGuard {
                     tracing::debug!("view watcher: index rewritten but unchanged; keeping the current MapCache");
                     continue;
                 }
-                let mut rebuilt = MapCache::build(&new_store);
+                let budget = super::l1_cache::budget_bytes_from(&state.shared.config.resources);
+                let mut rebuilt = MapCache::build(&new_store, budget);
                 // Reload doc↔code links (ADR-0008) after a refreshed-index rebuild; safe here because
                 // this runs on a plain std thread with no tokio runtime entered.
                 super::doc_links_cache::attach(&mut rebuilt, &new_store, &state.shared.config, &state.shared.scope);
                 let new_cache = Arc::new(rebuilt);
                 tracing::info!(
-                    files = new_cache.by_path.len(),
+                    files = new_cache.len(),
                     "view watcher: rebuilt MapCache from refreshed index"
                 );
                 state.shared.cache.store(new_cache);

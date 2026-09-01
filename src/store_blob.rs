@@ -74,6 +74,22 @@ pub(crate) fn read_if_exists(path: &Path) -> Result<Option<Vec<u8>>, StoreError>
     }
 }
 
+/// Read one file's L1 outline straight out of the global blob directory.
+///
+/// Blobs are content-addressed, so `blobs_dir` + the hash is the whole identity of the read — no
+/// index, no view, and no [`Store`] (hence no store lock). That is what lets the MCP read stack's
+/// L1 cache ([`crate::mcp::l1_cache`]) serve a miss from a `&self` method on a shared, lock-free
+/// handle instead of having to reach back through the async `RwLock<Store>` every reader holds.
+pub fn read_l1_blob_in(blobs_dir: &Path, hash_hex: &str) -> Result<Option<FileMapL1>, StoreError> {
+    let path = blobs_dir.join(format!("{hash_hex}.fm.msgpack"));
+    let Some(bytes) = read_if_exists(&path)? else {
+        return Ok(None);
+    };
+    let map = parse_filemap_l1(&path, &bytes)?;
+    check_schema(map.schema_ver)?;
+    Ok(Some(map))
+}
+
 /// Split a legacy combined-filemap frame `[l1_len: u32 LE][l1][l2]` into byte slices.
 fn frame_slices(bytes: &[u8]) -> Option<(&[u8], &[u8])> {
     let header: [u8; 4] = bytes.get(0..4)?.try_into().ok()?;
@@ -418,13 +434,7 @@ impl Store {
     /// the frame — the trailing L2 bytes are read off disk but never decoded, so the common
     /// outline-only read path (`MapCache` build, `search_symbols`) pays no L2 decode cost.
     pub fn read_l1_by_hex(&self, hash_hex: &str) -> Result<Option<FileMapL1>, StoreError> {
-        let path = self.blob_path_fm_hex(hash_hex);
-        let Some(bytes) = read_if_exists(&path)? else {
-            return Ok(None);
-        };
-        let map = parse_filemap_l1(&path, &bytes)?;
-        check_schema(map.schema_ver)?;
-        Ok(Some(map))
+        read_l1_blob_in(&self.blobs_dir, hash_hex)
     }
 
     /// Read the L2 calls from the combined-filemap blob. Returns `Ok(None)` both when the blob

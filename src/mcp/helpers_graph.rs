@@ -491,41 +491,43 @@ struct BfsOutcome {
 /// symbols are indexed, so a `Symbol` node that shares a start byte with a co-located non-function
 /// symbol (a struct/class declaration at the same offset) resolves to the function — the endpoints
 /// of a `Calls` edge are always function-like. An `O(1)` lookup replacing a per-edge linear scan.
-type NameIndex<'c> = AHashMap<&'c RelPath, AHashMap<u32, &'c str>>;
+/// Owned rather than borrowed from the cache: outlines are streamed and dropped a chunk at a time,
+/// so nothing may outlive the pass that builds this. The projection keeps only function names —
+/// no signatures, decorators or rationale — which is a small fraction of the outlines it is
+/// distilled from.
+type NameIndex = AHashMap<RelPath, AHashMap<u32, String>>;
 
-fn build_name_index(cache: &MapCache) -> NameIndex<'_> {
-    let mut index: NameIndex<'_> = AHashMap::new();
-    for (path, l1) in &cache.by_path {
+fn build_name_index(cache: &MapCache) -> NameIndex {
+    let mut index: NameIndex = AHashMap::new();
+    cache.for_each(|path, l1| {
         for sym in &l1.symbols {
             if is_function_like(sym.kind) {
                 index
-                    .entry(path)
+                    .entry(path.clone())
                     .or_default()
                     .entry(sym.start_byte)
-                    .or_insert(sym.name.as_str());
+                    .or_insert_with(|| sym.name.clone());
             }
         }
-    }
+    });
     index
 }
 
 /// The function-like symbol name a resolved `Symbol` node points at. `File` / `Name` nodes
 /// (file-scope callers, unresolved targets) have no function name.
-fn name_at<'c>(index: &NameIndex<'c>, key: &NodeKey) -> Option<&'c str> {
+fn name_at<'c>(index: &'c NameIndex, key: &NodeKey) -> Option<&'c str> {
     if let NodeKey::Symbol { path, start_byte } = key {
-        return index.get(path).and_then(|by_byte| by_byte.get(start_byte)).copied();
+        return index
+            .get(path)
+            .and_then(|by_byte| by_byte.get(start_byte))
+            .map(String::as_str);
     }
     None
 }
 
 /// The resolved callee names invoked from the definition(s) of `root_name` located in `path` —
 /// the depth-0 seed for a `callees` walk when a `path` disambiguates overloaded roots.
-fn root_path_callees<'c>(
-    graph: &CodeGraph,
-    name_index: &NameIndex<'c>,
-    root_name: &str,
-    path: &RelPath,
-) -> Vec<String> {
+fn root_path_callees<'c>(graph: &CodeGraph, name_index: &'c NameIndex, root_name: &str, path: &RelPath) -> Vec<String> {
     let mut set: AHashSet<&'c str> = AHashSet::new();
     for edge in &graph.edges {
         if edge.kind != EdgeKind::Calls {
@@ -558,7 +560,7 @@ struct CallProjection {
 impl CallProjection {
     fn build(graph: &CodeGraph, cache: &MapCache, name_index: &NameIndex) -> Self {
         let mut sites_of: AHashMap<String, Vec<CallGraphSite>> = AHashMap::new();
-        for (path, l1) in &cache.by_path {
+        cache.for_each(|path, l1| {
             for sym in &l1.symbols {
                 if is_function_like(sym.kind) {
                     sites_of.entry(sym.name.clone()).or_default().push(CallGraphSite {
@@ -569,7 +571,7 @@ impl CallProjection {
                     });
                 }
             }
-        }
+        });
         for sites in sites_of.values_mut() {
             sites.sort_by(|a, b| {
                 a.path

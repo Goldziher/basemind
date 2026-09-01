@@ -73,7 +73,7 @@ pub(super) async fn run_diff_outline(
 
     state.await_cache_ready().await;
     let cache = state.shared.cache.load_full();
-    let here = cache.by_path.get(&params.path).map(|l1| {
+    let here = cache.get(&params.path).map(|l1| {
         l1.symbols
             .iter()
             .map(|s| (s.name.clone(), kind_to_str(s.kind)))
@@ -235,7 +235,6 @@ pub(super) async fn run_blame_symbol(
     state.await_cache_ready().await;
     let cache = state.shared.cache.load_full();
     let l1 = cache
-        .by_path
         .get(&params.path)
         .ok_or_else(|| McpError::invalid_params(format!("file not indexed in current view: {}", params.path), None))?;
     let sym = l1

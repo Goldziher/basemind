@@ -4,8 +4,9 @@
 //! tool arguments. basemind backs the typed arguments of its [`super::prompts`] templates from the
 //! in-RAM code map: the `trace-symbol` prompt's `symbol` argument completes against indexed symbol
 //! names, and the `explain-file` prompt's `path` argument completes against indexed file paths.
-//! Both sources are the `MapCache.by_path` snapshot already held in RAM, so completion is a pure
-//! prefix scan with no store lock and no disk I/O.
+//! Both sources are the `MapCache` snapshot, so completion takes no store lock. Paths answer from
+//! the resident file view; symbol names stream the outlines, which is RAM-only whenever they fit
+//! the `[resources] max_map_cache_mb` budget and otherwise re-reads their blobs.
 
 use std::collections::BTreeSet;
 
@@ -44,27 +45,29 @@ impl BasemindServer {
     }
 
     /// Indexed symbol names that start with `prefix`, deduped and sorted, capped at
-    /// [`MAX_COMPLETIONS`]. Pure in-RAM scan of the `MapCache` snapshot.
+    /// [`MAX_COMPLETIONS`]. Streams the `MapCache` snapshot's outlines.
     fn complete_symbol_names(&self, prefix: &str) -> Vec<String> {
         let cache = self.state.shared.cache.load_full();
-        let mut names: BTreeSet<&str> = BTreeSet::new();
-        for l1 in cache.by_path.values() {
+        // Owned rather than borrowed names: the outlines are streamed and dropped a chunk at a
+        // time, so nothing may outlive the callback. The set is bounded by the repo's distinct
+        // symbol names, and the result by `MAX_COMPLETIONS`.
+        let mut names: BTreeSet<String> = BTreeSet::new();
+        cache.for_each(|_, l1| {
             for symbol in &l1.symbols {
                 if symbol.name.starts_with(prefix) {
-                    names.insert(symbol.name.as_str());
+                    names.insert(symbol.name.clone());
                 }
             }
-        }
-        names.into_iter().take(MAX_COMPLETIONS).map(str::to_owned).collect()
+        });
+        names.into_iter().take(MAX_COMPLETIONS).collect()
     }
 
     /// Indexed repo-relative file paths that start with `prefix`, capped at [`MAX_COMPLETIONS`].
-    /// `by_path` is a `BTreeMap`, so keys are already sorted and prefix matches are contiguous.
+    /// The file view is sorted, so keys are already ordered and prefix matches are contiguous.
     fn complete_file_paths(&self, prefix: &str) -> Vec<String> {
         let cache = self.state.shared.cache.load_full();
         cache
-            .by_path
-            .keys()
+            .paths()
             .filter_map(|path| path.as_str())
             .filter(|path| path.starts_with(prefix))
             .take(MAX_COMPLETIONS)

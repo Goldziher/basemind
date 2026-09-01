@@ -112,7 +112,7 @@ pub(super) async fn run_list_files(state: &ServerState, params: ListFilesParams)
 /// Body of the `code` tool's `find` mode: fuzzy subsequence match over indexed paths (fzf/fd-style),
 /// ranked by `nucleo-matcher` score, with optional `path_prefix` / `language` pre-filters.
 ///
-/// Sourced from `MapCache::by_path` (already sorted, in-RAM, no store lock needed) — the
+/// Sourced from the `MapCache` file view (already sorted, in-RAM, no store lock needed) — the
 /// `await_cache_ready()` call above guarantees it is populated before this runs. Paths that
 /// aren't valid UTF-8 are skipped — `nucleo-matcher` scores `str`, not raw bytes.
 pub(super) async fn run_find_files(state: &ServerState, params: FindFilesParams) -> Result<CallToolResult, McpError> {
@@ -156,8 +156,10 @@ pub(super) async fn run_find_files(state: &ServerState, params: FindFilesParams)
     let mut utf32_buf: Vec<char> = Vec::new();
 
     let mut scored: Vec<(u32, FindFilesEntry)> = Vec::new();
-    for (p, l1) in cache.by_path.iter() {
-        let lang_ok = lang_filter.is_none_or(|l| l1.language == l);
+    // Language, size and path are all the fuzzy-file search needs, and all three live in the
+    // symbol-free file view — so this whole scan reads no outline and touches no blob.
+    for (p, meta) in cache.file_metas() {
+        let lang_ok = lang_filter.is_none_or(|l| *meta.language == *l);
         if !lang_ok {
             continue;
         }
@@ -176,8 +178,8 @@ pub(super) async fn run_find_files(state: &ServerState, params: FindFilesParams)
             score,
             FindFilesEntry {
                 path: p.clone(),
-                language: l1.language.clone(),
-                size_bytes: l1.size_bytes,
+                language: meta.language.to_string(),
+                size_bytes: meta.size_bytes,
                 score,
             },
         ));

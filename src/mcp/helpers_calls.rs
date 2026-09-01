@@ -235,7 +235,7 @@ pub(super) async fn run_find_callers(
     use super::types::{DefinitionView, FindCallersResponse};
     let limit = params.limit.unwrap_or(SEARCH_LIMIT_DEFAULT).min(SEARCH_LIMIT_MAX) as usize;
     let kind_filter = params.kind.as_deref().map(parse_kind).transpose()?;
-    let symbol = cache.by_path.get(&params.path).and_then(|l1| {
+    let symbol = cache.get(&params.path).and_then(|l1| {
         l1.symbols
             .iter()
             .find(|s| s.name == params.name && kind_filter.is_none_or(|k| s.kind == k))
@@ -576,7 +576,7 @@ mod tests {
             crate::scanner::EmbedMode::Inline,
         )
         .expect("scan");
-        let cache = crate::mcp::MapCache::build(&store);
+        let cache = crate::mcp::MapCache::build(&store, 0);
         (store, cache)
     }
 
@@ -796,7 +796,7 @@ mod tests {
         )
         .expect("scan");
 
-        let index = InRamCallIndex::build(&store);
+        let index = InRamCallIndex::build(&store, 0);
         let page = scan_calls_in_ram(&index, "alpha", 100, None);
         assert_eq!(page.total, 2, "two alpha() call sites in b.rs");
         assert_eq!(page.hits.len(), 2);
