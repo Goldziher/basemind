@@ -52,31 +52,63 @@ const FILES: usize = 4_000;
 const LINES_PER_FILE: usize = 120;
 
 /// Fixed allowance for everything that does not scale with the corpus: the rayon pool's worker
-/// stacks, tree-sitter's parser and language objects, fjall's memtables and block cache, and the
-/// allocator's own retained arenas.
+/// stacks, tree-sitter's parser and language objects, fjall's memtables and block cache, the
+/// chunker's arenas where it is compiled, and the allocator's own retained arenas.
 ///
-/// Calibrated, not guessed. Measured on this tree at two corpus sizes — 3 000 files cost 158 MiB
-/// and 9 000 cost 223 MiB — which is a slope of ~11.4 KiB per file and an intercept of ~125 MiB.
-/// This is that intercept with roughly 2x headroom for machine variance. The first draft of this
-/// test used 768 MiB here and 96 KiB below, which made the budget about seven times the thing it
-/// was supposed to catch: it passed at 15% utilisation and could not have failed. Constants for a
-/// budget test have to come from a measurement, or the test is decoration.
-const BASE_OVERHEAD_BYTES: u64 = 256 * 1024 * 1024;
+/// ## Why this constant is feature-dependent
+///
+/// `code_search.enabled` defaults to `true`, so under `code-search` this scan also chunks every
+/// file and stages BM25 postings — and staged postings riding outside the only bound that existed
+/// are what the investigation identified as the bulk of issue #62's 43.8 GiB. Without the feature
+/// that lane is not merely disabled, it is not compiled, so the same corpus exercises a materially
+/// different pipeline. One set of constants across both axes therefore has to be either too loose
+/// to bind on `full` or too tight to pass on default, and the first draft of these numbers was
+/// calibrated only on the default axis — the one that does *not* contain the structure this test
+/// exists to catch. Splitting them keeps both axes binding.
+///
+/// Calibrated, not guessed, on this tree:
+///
+/// | axis | 2 000 files | 3 000 | 4 000 | 8 000 | 9 000 |
+/// |---|---|---|---|---|---|
+/// | default | — | 158 MiB | 146 MiB | — | 223 MiB |
+/// | `full` | 324 MiB | — | 503 MiB | 522 MiB | — |
+///
+/// The `full` row is close to flat across a 4x corpus range — the marginal cost from 4 000 to
+/// 8 000 files is ~5 KiB per file — which is the result this test wants: chunking memory is
+/// bounded, not accumulating. What that row also shows is roughly ±100 MiB of run-to-run variance
+/// (the 4 000-file point sits well above the line through the other two), coming from allocator
+/// arena retention and rayon scheduling rather than from the corpus. That variance belongs in the
+/// intercept. Putting it in the slope instead would buy nothing here and would loosen the bound
+/// exactly where a real leak shows up first — at large N.
+const BASE_OVERHEAD_BYTES: u64 = if cfg!(feature = "code-search") {
+    576 * 1024 * 1024
+} else {
+    256 * 1024 * 1024
+};
 
 /// Allowance per file scanned — the slope, and the half of this bound that does the work.
 ///
-/// Measured at ~11.4 KiB per file (see above). A scan is *entitled* to grow with the corpus: the
-/// drive outcome keeps a path and a content hash per file, the file map grows, and fjall's index
-/// and the allocator's retained arenas grow with it. What it is not entitled to do is keep a
-/// `FileResult`, a decoded outline, or a chunk set per file alive across a phase boundary, which is
-/// what issue #62 was.
+/// A scan is *entitled* to grow with the corpus: the drive outcome keeps a path and a content hash
+/// per file, the file map grows, and fjall's index and the allocator's retained arenas grow with
+/// it. What it is not entitled to do is keep a `FileResult`, a decoded outline, or a chunk set per
+/// file alive across a phase boundary, which is what issue #62 was.
 ///
-/// 20 KiB is that slope with ~1.75x headroom.
+/// Measured at ~11.4 KiB per file on the default axis and ~5 KiB per file at the top of the `full`
+/// range. Both constants below are that slope with headroom, deliberately kept tight: the slope is
+/// what rejects superlinear growth, so it is the half of the bound that must not be inflated to
+/// absorb noise.
+///
+/// Resulting utilisation at the calibration points — high enough to bind, with ~1.3x headroom on
+/// the worst observed run:
+///
+/// | axis | 2 000 | 4 000 | 8 000 |
+/// |---|---|---|---|
+/// | `full` | 52% | 75% | 68% |
 ///
 /// What this bound does and does not catch, measured rather than assumed. Reverting the drive loop
 /// to a single whole-corpus chunk — exactly the pre-release behaviour — was measured at both arms
-/// on a 4 000-file corpus: 146 MiB chunked against 184 MiB unchunked, so ~38 MiB, or ~10 KiB per
-/// file. This test stayed green through that, at 55% of budget.
+/// on a 4 000-file corpus on the default axis: 146 MiB chunked against 184 MiB unchunked, so
+/// ~38 MiB, or ~10 KiB per file. This test stayed green through that, at 55% of budget.
 ///
 /// That is a fact about the drive loop rather than a hole in the test. `scanner_code` clears a
 /// file's BM25 postings inside the worker (`batch.bm25 = Vec::new()`) before the `FileResult`
@@ -84,10 +116,28 @@ const BASE_OVERHEAD_BYTES: u64 = 256 * 1024 * 1024;
 /// real win and worth having at monorepo scale, but it is not what made issue #62 a 43.8 GiB
 /// number, and this test is not its guard — `scanner_drive`'s own `on_batch` bound is.
 ///
+/// The same measurement was made for the other half of the release, and came out the same way.
+/// Removing *both* byte bounds — `INDEX_COMMIT_BATCH_BYTES` and `INDEX_STAGED_BYTES_CEILING` set
+/// out of reach, leaving only the 256-file counter, which is exactly the pre-release shape in
+/// which BM25 postings rode outside every bound — was measured on the 4 000-file corpus under
+/// `full` at 479 MiB, against 503 MiB unmutated. The mutated arm used *less*: the difference is
+/// inside this test's run-to-run noise, so at this corpus size the file counter alone is
+/// sufficient and the byte ledger buys nothing measurable. Its value shows up at monorepo scale,
+/// which no CI leg can afford to run.
+///
+/// That is worth stating plainly because it bounds what a green run here is evidence *of*. This
+/// test is not the ledger's guard either — `scanner_index_batch`'s
+/// `the_production_byte_budget_commits_before_the_file_counter` is, and that one was written
+/// precisely because the mutation above left this file and every other test in the tree green.
+///
 /// What this test does guard is the gross end-to-end shape: any structure that starts scaling with
 /// the corpus and *stays* scaled — a retained outline, a chunk set, an unbounded staging buffer —
 /// shows up here as slope, which is the failure issue #62 actually was.
-const PER_FILE_BYTES: u64 = 20 * 1024;
+const PER_FILE_BYTES: u64 = if cfg!(feature = "code-search") {
+    24 * 1024
+} else {
+    20 * 1024
+};
 
 /// Write `FILES` synthetic Rust files with enough real structure that the scanner does actual work
 /// on each — symbols to extract, calls to record, imports to resolve.

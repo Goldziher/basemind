@@ -378,6 +378,47 @@ mod tests {
         assert_eq!(ROOMY.in_flight(), 0);
     }
 
+    /// The production *wiring*, as distinct from the mechanism.
+    ///
+    /// Every other test in this file injects its own byte budget and its own ledger, so together
+    /// they prove `WorkerIndexBatch` commits when a budget tells it to — and prove nothing about
+    /// the budget a real scan runs with. Setting both `INDEX_COMMIT_BATCH_BYTES` and
+    /// `INDEX_STAGED_BYTES_CEILING` to `u64::MAX` was measured to leave this entire file green,
+    /// and `tests/scan_memory_budget.rs` green with it (479 MiB against 503 MiB unmutated, i.e.
+    /// inside that test's noise): the two constants that do the bounding in a real scan had no
+    /// cover at all. That is the shape of the inert `max_footprint_mb` which let issue #62 happen
+    /// — a bound that parses, validates, and does nothing.
+    ///
+    /// So this test pins the constant rather than a stand-in, by staging through the same budget
+    /// `WorkerIndexBatch::new` passes and requiring the commit to come from bytes and not from the
+    /// file counter.
+    #[test]
+    fn the_production_byte_budget_commits_before_the_file_counter() {
+        let (_dir, db) = fresh_index();
+        // Big enough that a real 8 MiB budget is crossed in tens of files rather than hundreds,
+        // which is what leaves room for the file counter to be ruled out as the cause. ~keep
+        let l1 = bulky_l1(8192);
+
+        let mut batch = WorkerIndexBatch::with_budget(Some(&db), INDEX_COMMIT_BATCH_BYTES, &SCAN_STAGED_BYTES);
+        let mut files = 0usize;
+        while db.symbols_by_path.iter().next().is_none() && files < INDEX_COMMIT_BATCH {
+            assert!(batch.stage(&RelPath::from(format!("src/f{files}.rs")), &l1, None));
+            files += 1;
+        }
+
+        assert!(
+            db.symbols_by_path.iter().next().is_some(),
+            "staging {INDEX_COMMIT_BATCH} bulky files must have committed something"
+        );
+        assert!(
+            files < INDEX_COMMIT_BATCH,
+            "the production byte budget must force a commit before the {INDEX_COMMIT_BATCH}-file \
+             counter reaches it, or INDEX_COMMIT_BATCH_BYTES is not a memory bound in a real scan; \
+             committed only after {files} files"
+        );
+        drop(batch);
+    }
+
     /// BM25 postings used to ride entirely outside the only bound that existed — `stage_bm25`
     /// touched neither the counter nor the commit. They are the largest single staged
     /// contributor, so their staging must be able to force a commit on its own.
