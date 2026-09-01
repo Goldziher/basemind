@@ -878,6 +878,7 @@ dependencies = [
  "form_urlencoded",
  "fs2",
  "futures",
+ "getrandom 0.3.4",
  "gix",
  "globset",
  "hex",

@@ -79,6 +79,7 @@ comms = [
   "dep:http-body-util",
   "dep:bytes",
   "dep:form_urlencoded",
+  "dep:getrandom",
   "rmcp/transport-streamable-http-server",
 ]
 
@@ -132,6 +133,9 @@ fjall = "3.1.10"
 form_urlencoded = { version = "1", optional = true }
 fs2 = "0.4"
 futures = { version = "0.3", optional = true }
+# OS CSPRNG for the comms daemon's HTTP bearer token. Already in the graph via ahash, so this adds ~keep
+# no build cost; a hand-rolled seed mix would be rolling our own crypto for a credential. ~keep
+getrandom = { version = "0.3", features = ["std"], optional = true }
 gix = { version = "0.87.1", features = ["status", "blob-diff", "revision", "max-performance-safe"] }
 globset = "0.4"
 hex = "0.4"

@@ -250,20 +250,53 @@ fn cmd_daemon_ensure(json: bool) -> Result<()> {
         .build()
         .context("build tokio runtime")?;
 
+    let comms_dir = paths.comms_dir.clone();
     let addr = runtime.block_on(async move {
         singleton::ensure_daemon(&paths)
             .await
             .map_err(|e| anyhow::anyhow!("ensure comms daemon: {e}"))?;
+        // The daemon is up either way; only the HTTP front-end is conditional. It is opt-in, so
+        // "no transport" is the ordinary outcome and must not read as a failure to callers (the
+        // session hooks call this on every start) — hence `Ok(None)` rather than an error.
+        if !http_frontend::http_enabled() {
+            return anyhow::Ok(None);
+        }
         http_frontend::await_http_ready(&paths.comms_dir, HTTP_READY_TIMEOUT)
             .await
             .context("wait for streamable-HTTP MCP transport")
+            .map(Some)
     })?;
 
+    let Some(addr) = addr else {
+        let grant = http_frontend::ALLOW_HTTP_ENV;
+        if json {
+            println!("{{\"ready\":false,\"http\":\"disabled\",\"grant\":\"{grant}\"}}");
+        } else {
+            println!(
+                "comms daemon is running; its streamable-HTTP MCP transport is opt-in and not \
+                 enabled (set {grant}=1 in the daemon's environment and restart it)"
+            );
+        }
+        return Ok(());
+    };
+
     let url = http_frontend::base_url(&addr);
+    // The transport now requires a bearer token, so an address alone is no longer actionable.
+    let token = http_frontend::published_token(&comms_dir).unwrap_or_default();
     if json {
-        println!("{{\"ready\":true,\"addr\":\"{addr}\",\"url\":\"{url}\"}}");
+        println!("{{\"ready\":true,\"addr\":\"{addr}\",\"url\":\"{url}\",\"token\":\"{token}\"}}");
     } else {
+        // The URL stays alone on stdout so `URL=$(basemind daemon ensure)` keeps working; the
+        // credential goes to stderr, where it informs a human without joining a captured value. ~keep
         println!("{url}");
+        if token.is_empty() {
+            eprintln!(
+                "warning: the daemon published no bearer token, so this URL will be refused. It \
+                 predates the token requirement — restart it to mint one."
+            );
+        } else {
+            eprintln!("Authorization: Bearer {token}");
+        }
     }
     Ok(())
 }
@@ -279,7 +312,9 @@ fn cmd_comms_start() -> Result<()> {
         .build()
         .context("build tokio runtime")?;
     runtime.block_on(async move {
-        singleton::ensure_daemon(&paths)
+        // Explicit, so `BASEMIND_NO_AUTOSPAWN` does not apply: an operator who typed `comms start`
+        // has stated the intent the variable exists to withhold from implicit callers.
+        singleton::ensure_daemon_explicit(&paths)
             .await
             .map_err(|e| anyhow::anyhow!("ensure comms daemon: {e}"))
     })?;
@@ -429,26 +464,87 @@ fn now_unix() -> i64 {
 /// unusable still holds its pid, its flock and its socket, and shows up in this list looking exactly
 /// like a healthy one. So every report says which question it answered, and `--probe` asks the other
 /// one — a bounded `Status` RPC per comms daemon, reported as a separate `serving` verdict.
+/// `--clear-fatal`: acknowledge both kinds of corpse the last run left behind.
+///
+/// They answer one question — "what killed the previous run?" — so one flag retires both, and no
+/// new CLI surface is added (the CLI↔MCP bijection in `tests/cli_parity.rs` is keyed on commands,
+/// not flags, and stays untouched). Only records whose pid is dead are removed, so a scan running
+/// right now keeps its claim.
+#[cfg(all(feature = "comms", any(unix, windows)))]
+fn clear_recorded_failures(json: bool) -> Result<()> {
+    use basemind::comms::{singleton, store_health};
+
+    let paths = singleton::resolve_paths().context("resolve comms paths")?;
+    let cleared = store_health::clear(&paths.comms_dir);
+    let cleared_scans = basemind::scan_evidence::stale_inflight_scans()
+        .iter()
+        .filter(|scan| basemind::scan_evidence::clear(&scan.cache_dir))
+        .count();
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({ "cleared_fatal": cleared, "cleared_stale_scans": cleared_scans })
+        );
+        return Ok(());
+    }
+    if cleared {
+        println!(
+            "cleared the recorded fatal store error for {}",
+            paths.comms_dir.display()
+        );
+    } else {
+        println!("no recorded fatal store error for {}", paths.comms_dir.display());
+    }
+    println!("cleared {cleared_scans} stale scan-inflight record(s)");
+    Ok(())
+}
+
+/// Report scans whose breadcrumb outlived their process.
+///
+/// The distinction the record exists to draw: a scan that fails normally unwinds and removes its
+/// own record, so a surviving one proves no destructor ran — a kill signal, and on a scan
+/// overwhelmingly the kernel's OOM killer. That is the case `last-fatal.json` structurally cannot
+/// report, because the code that writes it never runs.
+#[cfg(all(feature = "comms", any(unix, windows)))]
+fn report_stale_scans(stale_scans: &[basemind::scan_evidence::StaleScan], now: i64) {
+    if stale_scans.is_empty() {
+        return;
+    }
+    println!(
+        "\n{} scan(s) left a breadcrumb behind and their process is gone:",
+        stale_scans.len()
+    );
+    for scan in stale_scans {
+        println!(
+            "  pid={} phase={} candidates={} started {} ago build={} root={}",
+            scan.record.pid,
+            scan.record.phase,
+            scan.record
+                .candidates
+                .map_or_else(|| "?".to_string(), |count| count.to_string()),
+            humanize_age(now.saturating_sub(scan.record.started_unix as i64)),
+            scan.record.version,
+            scan.record.root.display(),
+        );
+    }
+    println!(
+        "  A scan that fails normally removes its own record, so these died without unwinding \
+         — most often an OOM kill. Acknowledge with `basemind comms doctor --clear-fatal`."
+    );
+}
+
 #[cfg(all(feature = "comms", any(unix, windows)))]
 fn cmd_comms_doctor(json: bool, probe: bool, clear_fatal: bool) -> Result<()> {
     use basemind::comms::{singleton, store_health};
     use basemind::daemon_lock::{self, DaemonKind};
 
     if clear_fatal {
-        let paths = singleton::resolve_paths().context("resolve comms paths")?;
-        let cleared = store_health::clear(&paths.comms_dir);
-        if json {
-            println!("{}", serde_json::json!({ "cleared_fatal": cleared }));
-        } else if cleared {
-            println!(
-                "cleared the recorded fatal store error for {}",
-                paths.comms_dir.display()
-            );
-        } else {
-            println!("no recorded fatal store error for {}", paths.comms_dir.display());
-        }
-        return Ok(());
+        return clear_recorded_failures(json);
     }
+
+    // Read before the daemon rows so the report can say "nothing survived a scan" alongside "no
+    // daemon is wedged". Filesystem-only, like the registry read — `doctor` must never need an RPC.
+    let stale_scans = basemind::scan_evidence::stale_inflight_scans();
 
     let daemons = daemon_lock::live_daemons();
     let ceiling = daemon_lock::max_live_daemons();
@@ -499,6 +595,10 @@ fn cmd_comms_doctor(json: bool, probe: bool, clear_fatal: bool) -> Result<()> {
                 "comms_dir": dir,
                 "record": record,
             })),
+            "stale_scans": stale_scans.iter().map(|scan| serde_json::json!({
+                "cache_dir": scan.cache_dir,
+                "record": scan.record,
+            })).collect::<Vec<_>>(),
         });
         println!("{report}");
         return Ok(());
@@ -539,6 +639,8 @@ fn cmd_comms_doctor(json: bool, probe: bool, clear_fatal: bool) -> Result<()> {
         );
         println!("  That daemon released its lock and exited. Acknowledge with `basemind comms doctor --clear-fatal`.");
     }
+
+    report_stale_scans(&stale_scans, now);
 
     if probe {
         println!("\nchecked: the pidfile registry, plus a Status RPC per comms daemon (`serving` above).");

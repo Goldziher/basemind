@@ -16,12 +16,18 @@
 //! [`StreamableHttpService`] bound to that stack for the one request. There is no session registry
 //! to maintain — `NeverSessionManager` keeps the transport stateless per SEP-2567.
 //!
+//! ## Opt-in + authentication
+//!
+//! This front-end does not exist unless an operator grants it, and every request on both routes must
+//! present the daemon's bearer token. Both live in [`http_auth`](super::http_auth), which documents
+//! why loopback alone was never an authentication boundary.
+//!
 //! ## Bind-as-lock + portfile
 //!
 //! The listener binds a fixed loopback address (default `127.0.0.1:51786`, override
 //! [`HTTP_ADDR_ENV`]). Binding IS the lock: only one daemon holds it. The actually-bound `host:port`
-//! is written to `<comms_dir>/http.addr` (mode 0600 on Unix) so tooling — `basemind daemon ensure`
-//! and any launcher — can discover it without guessing the port.
+//! and the process's bearer token are written to `<comms_dir>/http.addr` (mode 0600 on Unix) so
+//! tooling — `basemind daemon ensure` and any launcher — can discover both without guessing.
 //!
 //! ## Idle lifecycle
 //!
@@ -55,9 +61,12 @@ use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
 use super::daemon::Broker;
+use super::http_auth::{self, HttpToken};
 use super::identity;
 use super::ids::AgentId;
 use crate::mcp::BasemindServer;
+
+pub use super::http_auth::{ALLOW_HTTP_ENV, http_enabled, portfile_path};
 
 /// Env var overriding the bound loopback address. `host:port`, e.g. `127.0.0.1:0` to let the OS pick
 /// a free port (the actual port is discoverable via the portfile). Empty/unset uses
@@ -65,9 +74,6 @@ use crate::mcp::BasemindServer;
 pub const HTTP_ADDR_ENV: &str = "BASEMIND_HTTP_ADDR";
 /// Default fixed loopback address for the streamable-HTTP MCP transport.
 const DEFAULT_HTTP_ADDR: &str = "127.0.0.1:51786";
-/// Portfile name under `comms_dir` holding the actually-bound `host:port`, so tooling reads the
-/// address instead of assuming the default port.
-const PORTFILE_NAME: &str = "http.addr";
 /// The MCP JSON-RPC transport path. Anything other than this or [`UI_PATH`] is a 404.
 const MCP_PATH: &str = "/mcp";
 /// The interactive-UI path (ADR-0006): `GET /ui?root=<abs>&…` serves the self-contained graph page
@@ -77,20 +83,12 @@ const UI_PATH: &str = "/ui";
 /// A live loopback daemon answers in well under this; a stale portfile (crashed daemon) fails fast so
 /// the `ui` tool degrades to the file export instead of handing back a dead link.
 const UI_PROBE_TIMEOUT: Duration = Duration::from_millis(150);
-/// Owner-only mode for the portfile, matching the socket's `0600`.
-#[cfg(unix)]
-const PORTFILE_MODE: u32 = 0o600;
 /// Poll cadence while [`await_http_ready`] waits for the listener to answer.
 const HTTP_READY_POLL: Duration = Duration::from_millis(50);
 
 /// Response body type produced by every path here — the shape [`StreamableHttpService::handle`]
 /// returns, so the router and the service agree.
 type HttpBody = BoxBody<Bytes, Infallible>;
-
-/// The portfile path for a resolved comms dir.
-pub fn portfile_path(comms_dir: &Path) -> PathBuf {
-    comms_dir.join(PORTFILE_NAME)
-}
 
 /// Resolve the address to bind: [`HTTP_ADDR_ENV`] when set and non-blank, else [`DEFAULT_HTTP_ADDR`].
 fn resolve_addr() -> Result<SocketAddr> {
@@ -100,27 +98,6 @@ fn resolve_addr() -> Result<SocketAddr> {
         .unwrap_or_else(|| DEFAULT_HTTP_ADDR.to_string());
     raw.parse::<SocketAddr>()
         .with_context(|| format!("parse {HTTP_ADDR_ENV}={raw:?} as a host:port socket address"))
-}
-
-/// Write the bound `host:port` to the portfile (mode 0600 on Unix).
-fn write_portfile(comms_dir: &Path, addr: &SocketAddr) -> std::io::Result<()> {
-    let path = portfile_path(comms_dir);
-    std::fs::write(&path, addr.to_string())?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(PORTFILE_MODE))?;
-    }
-    Ok(())
-}
-
-/// Read the bound address back from the portfile, if present and parseable.
-fn read_portfile(comms_dir: &Path) -> Option<SocketAddr> {
-    std::fs::read_to_string(portfile_path(comms_dir))
-        .ok()?
-        .trim()
-        .parse()
-        .ok()
 }
 
 /// Parse `root` (required) and `agent` (optional) from the request query. A blank `agent` is treated
@@ -165,7 +142,14 @@ const APPROVED_ROOT_CACHE_CAP: usize = 64;
 static APPROVED_ROOTS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<PathBuf, PathBuf>>> =
     std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
 
-/// Resolve a `?root=` query value into a usable workspace root, or the response that refuses it.
+/// A refusal from [`resolve_request_root`]: the status plus the plain-text body that explains it.
+///
+/// Deliberately the *parts* of a response rather than a built `Response<HttpBody>`: a whole hyper
+/// response in the `Err` arm makes `Result` 128+ bytes wide on every call, which `clippy`'s
+/// `result_large_err` rejects. The caller builds the response.
+type RootRefusal = (StatusCode, std::borrow::Cow<'static, str>);
+
+/// Resolve a `?root=` query value into a usable workspace root, or the parts of the refusal.
 ///
 /// Shared by `/mcp` and `/ui` so the two cannot drift apart. Both must reject a relative path
 /// *before* `canonicalize`, which would otherwise resolve it against the DAEMON's cwd — wherever
@@ -178,17 +162,17 @@ static APPROVED_ROOTS: std::sync::LazyLock<std::sync::Mutex<std::collections::Ha
 /// root *is*: `discover_root_with_basemind` lifts a repo subdirectory to its workdir, which every
 /// CLI verb already gets for free. Without it an HTTP caller naming `<repo>/src` would be refused
 /// outright (the guard requires `workdir == root`) while the same path on the command line works.
-fn resolve_request_root(raw_root: &Path) -> Result<PathBuf, Response<HttpBody>> {
+fn resolve_request_root(raw_root: &Path) -> Result<PathBuf, RootRefusal> {
     if raw_root.is_relative() {
-        return Err(text_response(
+        return Err((
             StatusCode::BAD_REQUEST,
-            "bad request: ?root= must be an absolute path",
+            "bad request: ?root= must be an absolute path".into(),
         ));
     }
     let Ok(canonical) = std::fs::canonicalize(raw_root) else {
-        return Err(text_response(
+        return Err((
             StatusCode::NOT_FOUND,
-            "not found: root does not resolve to an existing path",
+            "not found: root does not resolve to an existing path".into(),
         ));
     };
     {
@@ -207,9 +191,9 @@ fn resolve_request_root(raw_root: &Path) -> Result<PathBuf, Response<HttpBody>> 
             approved.insert(canonical, root.clone());
             Ok(root)
         }
-        Err(refusal) => Err(text_response(
+        Err(refusal) => Err((
             StatusCode::FORBIDDEN,
-            &crate::config::root_guard::refusal_message(&discovered, refusal),
+            crate::config::root_guard::refusal_message(&discovered, refusal).into(),
         )),
     }
 }
@@ -222,6 +206,57 @@ fn text_response(status: StatusCode, message: &str) -> Response<HttpBody> {
         // ~keep A response built from constant parts is infallible; mirrors rmcp's own handlers.
         .body(Full::new(Bytes::from(message.to_string())).boxed())
         .expect("text response builds from constant parts")
+}
+
+/// Read and discard a rejected request's body before answering.
+///
+/// Closing a connection while unread data is still in the receive buffer makes the OS send RST
+/// rather than FIN, and the client then fails its *read* with `ECONNRESET` instead of seeing the
+/// response — so a caller with a bad token would get "connection reset by peer" rather than the 401
+/// that tells it what to do. Rejecting before routing (which is where the check belongs) means
+/// nothing downstream consumes the body, so the drain has to happen here.
+///
+/// Bounded, because an unauthenticated caller must not be able to make the daemon read as much as
+/// it cares to send. Past the cap we stop and accept the reset: a request body larger than this is
+/// not a client that merely got its token wrong.
+async fn drain_request_body(request: &mut Request<Incoming>) {
+    use http_body_util::BodyExt;
+
+    /// Enough for any plausible mis-authenticated MCP call; far below anything worth reading for
+    /// an attacker's benefit.
+    const DRAIN_CAP: usize = 64 * 1024;
+
+    let body = request.body_mut();
+    let mut drained = 0usize;
+    while drained < DRAIN_CAP {
+        match body.frame().await {
+            Some(Ok(frame)) => {
+                if let Some(data) = frame.data_ref() {
+                    drained = drained.saturating_add(data.len());
+                }
+            }
+            Some(Err(_)) | None => return,
+        }
+    }
+}
+
+/// The refusal for a request with no bearer token or the wrong one. Deliberately says nothing about
+/// which workspaces exist or whether the presented value was close: an unauthenticated caller learns
+/// only that this server wants a token.
+fn unauthorized_response() -> Response<HttpBody> {
+    Response::builder()
+        .status(StatusCode::UNAUTHORIZED)
+        .header(http::header::CONTENT_TYPE, "text/plain; charset=utf-8")
+        .header(http::header::WWW_AUTHENTICATE, "Bearer")
+        // ~keep A response built from constant parts is infallible; mirrors rmcp's own handlers.
+        .body(
+            Full::new(Bytes::from_static(
+                b"unauthorized: present the daemon's bearer token as `Authorization: Bearer <token>` \
+                  or `?token=<token>`; it is the second line of <comms_dir>/http.addr",
+            ))
+            .boxed(),
+        )
+        .expect("unauthorized response builds from constant parts")
 }
 
 /// Build an HTML/SVG HTTP response with a boxed body matching [`HttpBody`]. `content_type` is one of
@@ -296,6 +331,8 @@ struct HttpRouter {
     /// the DNS-rebinding `Host` guard; an explicit non-loopback bind (the documented remote-access
     /// opt-in in [`serve_http`]) disables it, leaving host/origin policy to the operator.
     loopback: bool,
+    /// This daemon process's bearer token. Every request on both routes must present it.
+    token: HttpToken,
 }
 
 /// The host part of a `Host` / `:authority` value, dropping any `:port`. A bracketed IPv6 literal
@@ -346,7 +383,22 @@ fn host_is_loopback(request: &Request<Incoming>) -> bool {
 impl HttpRouter {
     /// Route and serve one HTTP request. Always returns a response (errors are HTTP status codes,
     /// never a torn connection), mirroring the relay path's never-brick-a-client contract.
-    async fn handle(&self, request: Request<Incoming>) -> Response<HttpBody> {
+    async fn handle(&self, mut request: Request<Incoming>) -> Response<HttpBody> {
+        // Bearer-token gate, FIRST — before routing, before the daemon is pinned, before a workspace
+        // is named. Reaching this port proves only that a process on this machine opened a socket,
+        // which is not an identity; the token is the identity. See `http_auth`.
+        let presented = http_auth::presented_token(
+            request
+                .headers()
+                .get(http::header::AUTHORIZATION)
+                .and_then(|value| value.to_str().ok()),
+            request.uri().query(),
+        );
+        if !presented.is_some_and(|token| self.token.matches(&token)) {
+            drain_request_body(&mut request).await;
+            return unauthorized_response();
+        }
+
         // DNS-rebinding guard: a loopback-bound listener answers only requests whose `Host`/
         // `:authority` is a loopback name. This runs first, before the daemon is pinned or any
         // workspace is read, so a foreign-`Host` page (the rebinding-to-127.0.0.1 attack) cannot even
@@ -380,7 +432,7 @@ impl HttpRouter {
         };
         let root = match resolve_request_root(&raw_root) {
             Ok(root) => root,
-            Err(refusal) => return refusal,
+            Err((status, message)) => return text_response(status, &message),
         };
 
         let shared = match self.broker.host_read_stack(&root).await {
@@ -445,7 +497,7 @@ impl HttpRouter {
         };
         let root = match resolve_request_root(&args.root) {
             Ok(root) => root,
-            Err(refusal) => return refusal,
+            Err((status, message)) => return text_response(status, &message),
         };
         let shared = match self.broker.host_read_stack(&root).await {
             Ok(shared) => shared,
@@ -498,12 +550,29 @@ impl Service<Request<Incoming>> for HyperSvc {
     }
 }
 
-/// Serve the streamable-HTTP MCP transport until `shutdown` flips true (or its sender drops). Binds
-/// the loopback listener (bind-as-lock), writes the portfile, and serves each connection with a
-/// hyper auto (h1/h2) server over the shared router. A bind failure is returned to the caller, which
-/// logs it and leaves the rest of the daemon (the UDS relay) running — HTTP is additive, never a
-/// precondition for comms.
+/// Serve the streamable-HTTP MCP transport until `shutdown` flips true (or its sender drops).
+///
+/// Returns `Ok(())` immediately, binding nothing, unless the operator granted the front-end via
+/// [`ALLOW_HTTP_ENV`] — see [`http_auth`](super::http_auth) for why it is off by default. When it is
+/// granted, this mints the process's bearer token, binds the loopback listener (bind-as-lock),
+/// publishes address + token to the portfile, and serves each connection with a hyper auto (h1/h2)
+/// server over the shared router. A bind failure is returned to the caller, which logs it and leaves
+/// the rest of the daemon (the UDS relay) running — HTTP is additive, never a precondition for comms.
 pub async fn serve_http(broker: Arc<Broker>, comms_dir: PathBuf, mut shutdown: watch::Receiver<bool>) -> Result<()> {
+    if !http_auth::http_enabled() {
+        // A portfile from a previously-granted daemon would otherwise keep advertising an address
+        // nothing is serving, so `served_ui_url` would hand out dead links.
+        http_auth::remove_portfile(&comms_dir);
+        tracing::info!(
+            grant = ALLOW_HTTP_ENV,
+            "comms: streamable-HTTP MCP front-end not started (opt-in). The /mcp and /ui routes, and \
+             with them the served interactive graph page the `display` and `ui` tools open, are \
+             unavailable; set {ALLOW_HTTP_ENV}=1 in the daemon's environment and restart it to enable \
+             them.",
+        );
+        return Ok(());
+    }
+    let token = HttpToken::generate()?;
     let addr = resolve_addr()?;
     if !addr.ip().is_loopback() {
         tracing::warn!(
@@ -521,21 +590,16 @@ pub async fn serve_http(broker: Arc<Broker>, comms_dir: PathBuf, mut shutdown: w
             // Clear it before bailing so discovery fails cleanly instead of pointing at a foreign
             // process. (The portfile lives in this user's comms dir, so it can only be our own stale
             // write — the per-user singleton lock means we never race another basemind daemon here.)
-            let path = portfile_path(&comms_dir);
-            if let Err(remove_error) = std::fs::remove_file(&path)
-                && remove_error.kind() != std::io::ErrorKind::NotFound
-            {
-                tracing::debug!(error = %remove_error, path = %path.display(),
-                    "http: clearing stale portfile after bind failure");
-            }
+            http_auth::remove_portfile(&comms_dir);
             return Err(anyhow::Error::new(error)).with_context(|| {
                 format!("bind streamable-HTTP MCP listener on {addr} (is another process holding it?)")
             });
         }
     };
     let local = listener.local_addr().context("read the bound HTTP address")?;
-    write_portfile(&comms_dir, &local).with_context(|| format!("write HTTP portfile under {}", comms_dir.display()))?;
-    tracing::info!(addr = %local, "comms: streamable-HTTP MCP transport listening");
+    http_auth::write_portfile(&comms_dir, &local, &token)
+        .with_context(|| format!("write HTTP portfile under {}", comms_dir.display()))?;
+    tracing::info!(addr = %local, "comms: streamable-HTTP MCP transport listening (bearer token required)");
 
     let cancel = CancellationToken::new();
     let router = Arc::new(HttpRouter {
@@ -543,6 +607,7 @@ pub async fn serve_http(broker: Arc<Broker>, comms_dir: PathBuf, mut shutdown: w
         session_manager: Arc::new(NeverSessionManager::default()),
         cancel: cancel.clone(),
         loopback: local.ip().is_loopback(),
+        token,
     });
 
     loop {
@@ -589,31 +654,37 @@ pub async fn serve_http(broker: Arc<Broker>, comms_dir: PathBuf, mut shutdown: w
     }
 
     cancel.cancel();
-    let path = portfile_path(&comms_dir);
-    match std::fs::remove_file(&path) {
-        Ok(()) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => tracing::debug!(%error, path = %path.display(), "http: removing portfile failed"),
-    }
+    http_auth::remove_portfile(&comms_dir);
     tracing::info!("comms: streamable-HTTP MCP transport stopped");
     Ok(())
 }
 
 /// Poll until the transport answers a TCP connect (or `timeout` elapses), returning the bound
 /// `host:port`. Used by `basemind daemon ensure` to confirm readiness before printing the base URL.
+///
+/// Deliberately does NOT consult [`ALLOW_HTTP_ENV`]: the grant that matters belongs to the *daemon*
+/// process, and this runs in whatever process is doing the discovering. A caller that is about to
+/// spawn the daemon from its own environment (`basemind daemon ensure`) can and does short-circuit on
+/// the grant before calling this; a caller probing a daemon it did not spawn must go by the portfile.
 pub async fn await_http_ready(comms_dir: &Path, timeout: Duration) -> Result<String> {
     let deadline = std::time::Instant::now() + timeout;
     loop {
-        if let Some(addr) = read_portfile(comms_dir)
-            && tokio::net::TcpStream::connect(addr).await.is_ok()
+        if let Some(portfile) = http_auth::read_portfile(comms_dir)
+            && tokio::net::TcpStream::connect(portfile.addr).await.is_ok()
         {
-            return Ok(addr.to_string());
+            return Ok(portfile.addr.to_string());
         }
         if std::time::Instant::now() >= deadline {
             anyhow::bail!("streamable-HTTP MCP transport did not become ready within {timeout:?}");
         }
         tokio::time::sleep(HTTP_READY_POLL).await;
     }
+}
+
+/// The bearer token this machine's daemon published, for tooling that has to authenticate to the
+/// transport (`basemind daemon ensure --json` hands it to whoever it printed the URL for).
+pub fn published_token(comms_dir: &Path) -> Option<String> {
+    http_auth::read_portfile(comms_dir)?.token
 }
 
 /// The MCP base URL for a bound `host:port`.
@@ -623,9 +694,15 @@ pub fn base_url(addr: &str) -> String {
 
 /// Assemble the `/ui` URL for a served workspace: `http://<addr>/ui?root=…&…` with every value
 /// percent-encoded. Pure (no I/O) so the URL assembly is unit-testable.
+///
+/// The bearer token rides in the query because the consumer of this URL is a *browser*: the `ui` and
+/// `display` tools hand it to the system opener, and a navigation cannot set an `Authorization`
+/// header. Loopback-only and readable solely by the daemon's own user (the portfile it comes from is
+/// `0600`), so the exposure is the URL landing in that user's own browser history.
 #[allow(clippy::too_many_arguments)]
 fn build_ui_url(
     addr: &SocketAddr,
+    token: &str,
     root: &Path,
     format: &str,
     edges: &str,
@@ -636,6 +713,7 @@ fn build_ui_url(
     focus: Option<&str>,
 ) -> String {
     let mut ser = form_urlencoded::Serializer::new(String::new());
+    ser.append_pair(http_auth::TOKEN_QUERY_KEY, token);
     ser.append_pair("root", &root.to_string_lossy());
     ser.append_pair("format", format);
     ser.append_pair("edges", edges);
@@ -696,16 +774,20 @@ async fn served_ui_url_from_comms_dir(
     max_edges: Option<u32>,
     focus: Option<&str>,
 ) -> Option<String> {
-    let addr = read_portfile(comms_dir)?;
+    let portfile = http_auth::read_portfile(comms_dir)?;
+    // A portfile with no token line was written by a pre-token daemon; a URL built without one would
+    // 401. Degrading to the file export beats handing the browser a page it cannot open.
+    let token = portfile.token?;
     // Confirm a daemon is actually answering before advertising the URL — a stale portfile (crashed
     // daemon) must degrade to the file export, not hand back a dead link. Async connect + timeout so
     // the probe never blocks the calling tokio worker (`run_ui` awaits this on a hot path).
-    tokio::time::timeout(UI_PROBE_TIMEOUT, tokio::net::TcpStream::connect(addr))
+    tokio::time::timeout(UI_PROBE_TIMEOUT, tokio::net::TcpStream::connect(portfile.addr))
         .await
         .ok()?
         .ok()?;
     Some(build_ui_url(
-        &addr,
+        &portfile.addr,
+        &token,
         root,
         format,
         edges,
@@ -766,6 +848,7 @@ mod tests {
         let addr: SocketAddr = "127.0.0.1:51786".parse().unwrap();
         let url = build_ui_url(
             &addr,
+            "deadbeef",
             Path::new("/tmp/my repo"),
             "html",
             "all",
@@ -776,6 +859,8 @@ mod tests {
             Some("src/mcp"),
         );
         assert!(url.starts_with("http://127.0.0.1:51786/ui?"), "got {url}");
+        // The bearer token rides in the query: a browser navigation cannot send an Authorization header.
+        assert!(url.contains("token=deadbeef"), "token carried: {url}");
         // A space and `/` in the root are percent/plus-encoded — the query survives the round-trip.
         assert!(url.contains("root=%2Ftmp%2Fmy+repo"), "root encoded: {url}");
         assert!(url.contains("format=html"), "{url}");
@@ -801,6 +886,7 @@ mod tests {
         let addr: SocketAddr = "127.0.0.1:51786".parse().unwrap();
         let url = build_ui_url(
             &addr,
+            "deadbeef",
             Path::new("/repo"),
             "svg",
             "calls",
@@ -849,7 +935,8 @@ mod tests {
         // the backlog), so a URL targeting that address is returned.
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback listener");
         let addr = listener.local_addr().expect("listener addr");
-        write_portfile(comms_dir.path(), &addr).expect("write portfile");
+        let token = HttpToken::generate().expect("generate token");
+        http_auth::write_portfile(comms_dir.path(), &addr, &token).expect("write portfile");
         let live = served_ui_url_from_comms_dir(
             comms_dir.path(),
             root,
@@ -871,6 +958,10 @@ mod tests {
             live.contains("format=html") && live.contains("edges=all"),
             "served URL carries the requested knobs: {live}"
         );
+        assert!(
+            live.contains(&format!("token={}", token.as_str())),
+            "served URL carries the daemon's bearer token, or the browser gets a 401: {live}"
+        );
         drop(listener);
 
         // Dead: rewrite the portfile to an address nothing is listening on (bind + drop to grab an
@@ -879,7 +970,7 @@ mod tests {
             let ephemeral = TcpListener::bind("127.0.0.1:0").expect("bind loopback listener");
             ephemeral.local_addr().expect("listener addr")
         };
-        write_portfile(comms_dir.path(), &dead_addr).expect("rewrite portfile");
+        http_auth::write_portfile(comms_dir.path(), &dead_addr, &token).expect("rewrite portfile");
         let dead = served_ui_url_from_comms_dir(
             comms_dir.path(),
             root,
