@@ -65,6 +65,10 @@ impl Broker {
                 code: "root_refused".to_string(),
                 message: error.to_string(),
             },
+            Err(error @ GitHistoryError::ForeignHistory { .. }) => CommsResponse::Error {
+                code: "git_history_out_of_scope".to_string(),
+                message: error.to_string(),
+            },
             Err(error) => CommsResponse::Error {
                 code: "git_history_failed".to_string(),
                 message: error.to_string(),

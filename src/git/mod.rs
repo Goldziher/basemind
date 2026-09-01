@@ -47,6 +47,12 @@ pub enum GitError {
 pub struct Repo {
     inner: gix::ThreadSafeRepository,
     workdir: PathBuf,
+    /// The path [`Repo::discover`] was asked about, canonicalized. Discovery **ascends**, so this is
+    /// `workdir` for a checkout root and a strict descendant of it for any subdirectory. Recorded so
+    /// consumers whose cost scales with the whole repository — the git-history build above all — can
+    /// tell "the caller IS this repo" from "the caller inherited an ancestor repo" without
+    /// re-running (or changing) discovery. See [`Repo::origin_is_workdir`].
+    origin: PathBuf,
     /// True if `.git/shallow` exists — history walks may terminate at the boundary, and
     /// blame/diff_outline can hit "tree iterator" errors near the cut. Surfaced through
     /// `Repo::is_shallow()` so MCP tools can flag responses as truncated rather than fail.
@@ -181,10 +187,59 @@ fn anchor_git_path(workdir: &Path, path: &Path) -> PathBuf {
     abs.canonicalize().unwrap_or(abs)
 }
 
+/// Canonicalize when the path exists, else keep it as-is. Comparisons between a caller-supplied root
+/// and a gix-reported workdir need this on macOS, where `/tmp` is a symlink to `/private/tmp`.
+fn canonical(path: &Path) -> PathBuf {
+    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
+}
+
+/// Byte cap for gix's per-`Repository` delta-base (pack) cache, overridable with
+/// `BASEMIND_GIT_DELTA_CACHE_BYTES` (`0` disables the cache entirely).
+///
+/// gix's default when `core.deltaBaseCacheLimit` is unset is a `StaticLinkedList<64>` capped at
+/// **96 MiB** — and that is *per thread-local `Repository`*, i.e. per rayon worker during a
+/// git-history build. On a 32-core host that is ~3 GiB of decoded delta bases nothing in basemind
+/// accounts for. Setting the key switches gix to a byte-capped LRU (`MemoryCappedHashmap`) at this
+/// size, so the same host tops out near 256 MiB. 8 MiB comfortably holds a source-tree delta chain
+/// (chains are ≲50 deep and the bases are source blobs); the cost of undersizing it is re-decoding,
+/// not wrong answers.
+const DELTA_BASE_CACHE_BYTES: usize = 8 * 1024 * 1024;
+
+fn delta_base_cache_bytes() -> usize {
+    std::env::var("BASEMIND_GIT_DELTA_CACHE_BYTES")
+        .ok()
+        .and_then(|raw| raw.trim().parse::<usize>().ok())
+        .unwrap_or(DELTA_BASE_CACHE_BYTES)
+}
+
+/// Trust-mapped open options carrying basemind's resource bounds, applied to every repository we
+/// open. Only the caches are touched: discovery, trust and permissions keep gix's defaults, so this
+/// changes what a repository *costs*, never what it *resolves to*.
+fn bounded_open_options() -> gix::sec::trust::Mapping<gix::open::Options> {
+    let mut mapping = gix::sec::trust::Mapping::<gix::open::Options>::default();
+    let delta_cache = format!("core.deltaBaseCacheLimit={}", delta_base_cache_bytes());
+    // ~keep CLI precedence, not API: an API override sits with the globals and a repository-local
+    // ~keep `core.deltaBaseCacheLimit` would outrank it, which would let an untrusted checkout raise
+    // ~keep the bound we set for our own protection.
+    mapping.full.modify(|o| o.cli_overrides([delta_cache.clone()]));
+    mapping.reduced.modify(|o| o.cli_overrides([delta_cache]));
+    mapping
+}
+
 impl Repo {
     /// Walk up from `start` looking for `.git`. Returns `NotARepo` if discovery fails.
+    ///
+    /// Ascent is deliberate and load-bearing (`config::discover_root_with_basemind` relies on it to
+    /// lift a command run from a subdirectory to the repository root). Callers whose work scales
+    /// with the whole repository must therefore consult [`Repo::origin_is_workdir`] rather than
+    /// assume `start` is the repository.
     pub fn discover(start: &Path) -> Result<Self, GitError> {
-        let inner = gix::ThreadSafeRepository::discover(start).map_err(|_| GitError::NotARepo(start.to_path_buf()))?;
+        let inner = gix::ThreadSafeRepository::discover_opts(
+            start,
+            gix::discover::upwards::Options::default(),
+            bounded_open_options(),
+        )
+        .map_err(|_| GitError::NotARepo(start.to_path_buf()))?;
         let workdir = inner
             .work_dir()
             .ok_or_else(|| GitError::Other("bare repositories are not supported".to_string()))?
@@ -193,12 +248,30 @@ impl Repo {
         Ok(Self {
             inner,
             workdir,
+            origin: canonical(start),
             is_shallow,
         })
     }
 
     pub fn workdir(&self) -> &Path {
         &self.workdir
+    }
+
+    /// The path discovery started from — the workspace root, for every basemind caller.
+    pub fn origin(&self) -> &Path {
+        &self.origin
+    }
+
+    /// True when discovery did **not** have to ascend: the path the caller asked about IS this
+    /// repository's working directory.
+    ///
+    /// False means the caller's directory carries no `.git` of its own and inherited an ancestor
+    /// repository. That is a perfectly good answer for "what revision is this file at" but a
+    /// catastrophic one for anything sized by the repository: a subdirectory workspace of a monorepo
+    /// would index — and drive gix's pack decoding over — the entire monorepo's object database
+    /// (issue #62, where a 4.4k-file subdirectory inherited 101 655 objects / 275 MiB of packs).
+    pub fn origin_is_workdir(&self) -> bool {
+        self.workdir == self.origin || canonical(&self.workdir) == self.origin
     }
 
     /// The working directory of the **main** worktree for this repository.
@@ -253,6 +326,23 @@ impl Repo {
     /// Borrow a per-thread `Repository` view of the wrapped thread-safe repo.
     pub(super) fn local(&self) -> gix::Repository {
         self.inner.to_thread_local()
+    }
+
+    /// Decode a run of commits through ONE thread-local `Repository`, preserving input order.
+    ///
+    /// [`Repo::commit_record`] takes `self.local()` per call, which the git-history rebuild used to
+    /// invoke once per commit — a fresh odb handle, and with it a fresh delta-base cache, for every
+    /// one of a monorepo's 200k commits. That guarantees a 0% cache hit rate on exactly the workload
+    /// the cache exists for, and churns an allocation per commit. Batching lets the cache live long
+    /// enough to pay for itself and caps concurrent handles at one per rayon worker.
+    pub fn commit_records(&self, shas: &[&str]) -> Vec<Option<CommitInfo>> {
+        let local = self.local();
+        shas.iter()
+            .map(|sha| {
+                let id = local.rev_parse_single(*sha).ok()?.detach();
+                build_commit_info(&local, id, true)
+            })
+            .collect()
     }
 
     /// Resolve any rev-spec (HEAD, branch name, partial sha, HEAD~3) to a 40-hex sha.

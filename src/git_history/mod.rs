@@ -84,13 +84,42 @@ pub(crate) const GIT_HISTORY_DIR: &str = "git-history.fjall";
 /// on the MAIN worktree root, turning a per-worktree git-history rebuild (seconds to minutes on a
 /// large repo) into a one-time cost shared across every worktree.
 ///
-/// Falls back to `root`'s own workspace cache dir when `root` is not inside a git repository.
+/// Falls back to `root`'s own workspace cache dir when `root` is not inside a git repository, and
+/// equally when discovery had to ascend to reach one — a subdirectory workspace must not be handed
+/// an ancestor repository's cache directory (see [`history_scope_ok`]).
 pub fn shared_history_basemind_dir(root: &std::path::Path) -> std::path::PathBuf {
     let base = match crate::git::Repo::discover(root) {
-        Ok(repo) if repo.is_linked_worktree() => repo.main_worktree_root(),
+        Ok(repo) if repo.origin_is_workdir() && repo.is_linked_worktree() => repo.main_worktree_root(),
         _ => root.to_path_buf(),
     };
     crate::store::workspace_cache_dir(&base)
+}
+
+/// Escape hatch restoring the pre-#62 behaviour: index an ancestor repository's history for a
+/// workspace root that is merely a subdirectory of it.
+const DISCOVER_PARENTS_ENV: &str = "BASEMIND_GIT_DISCOVER_PARENTS";
+
+/// Whether `repo`'s history may be indexed for the workspace it was discovered from.
+///
+/// The predicate is **`repo.workdir() == the root discovery started from`**, not "the root has a
+/// `.git`". They agree on the reported shape (a subdirectory with no `.git` of its own) and the
+/// stronger form also covers the cases a `.git` probe would wave through: a `.git` file pointing at
+/// a linked worktree elsewhere, a `GIT_DIR`/`GIT_WORK_TREE` environment override, a `.git` directory
+/// that is not actually this path's repository. It is also the only form that needs no filesystem
+/// probe of its own — `Repo::discover` already knows both halves.
+///
+/// Why this and not a change to [`Repo::discover`](crate::git::Repo::discover): ascent is what lets
+/// `config::discover_root_with_basemind` lift `basemind scan src/` to the repository root, and every
+/// CLI verb invoked from a subdirectory depends on it. So the *integration* is gated, not discovery.
+///
+/// Refusing costs a subdirectory workspace nothing it could correctly have had: the commits it would
+/// have indexed are the ancestor repository's, addressed by paths that do not exist under this root.
+/// What it saves is the whole ancestor object database — the git-history build walks every reachable
+/// commit and diffs every tree, so a 4.4k-file subdirectory of a monorepo was driving gix over
+/// 275 MiB of packs and 101 655 objects (issue #62). Set `BASEMIND_GIT_DISCOVER_PARENTS=1` to opt
+/// back in.
+pub fn history_scope_ok(repo: &crate::git::Repo) -> bool {
+    repo.origin_is_workdir() || std::env::var_os(DISCOVER_PARENTS_ENV).is_some_and(|v| v != "0")
 }
 
 /// Retry budget + backoff for a transient fjall `Locked` when opening the git-history DB. The
@@ -136,6 +165,15 @@ pub enum GitHistoryError {
     /// [`refusal_message`](crate::config::root_guard::refusal_message).
     #[error("{0}")]
     RootRefused(String),
+    /// The workspace root is a subdirectory of the repository git discovery landed on, so indexing
+    /// its history would index an ancestor repository (issue #62). See [`history_scope_ok`].
+    #[error(
+        "refusing to index git history for {root}: it is a subdirectory of the repository at \
+         {workdir}, not a repository of its own. Those commits are addressed by paths outside this \
+         root, and walking them costs the whole ancestor object database. Run `git init` here, or \
+         set BASEMIND_GIT_DISCOVER_PARENTS=1 to index the ancestor repository's history anyway."
+    )]
+    ForeignHistory { root: PathBuf, workdir: PathBuf },
 }
 
 /// Per-commit metadata stored in `gh_commit_by_ord`. File paths are interned to `path_id` (u32) so

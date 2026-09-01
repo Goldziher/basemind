@@ -31,8 +31,18 @@ pub enum RebuildOutcome {
 /// Only the process that HOLDS the fjall database may build it. A daemon-backed handle (a
 /// `daemon_writer` serve) has no database to write, and building one would steal the lock the daemon
 /// needs; such a caller forwards [`GitHistoryOp::Sync`](super::proto::GitHistoryOp::Sync) instead.
+///
+/// And only a repository the caller actually rooted at is built: `repo` reaching here from a
+/// workspace root *below* its workdir means an ancestor repository was inherited, which
+/// [`history_scope_ok`](super::history_scope_ok) refuses.
 pub fn sync(index: &GitHistoryIndex, repo: &Repo, basemind_dir: &Path) -> Result<RebuildOutcome, GitHistoryError> {
     index.require_local()?;
+    if !super::history_scope_ok(repo) {
+        return Err(GitHistoryError::ForeignHistory {
+            root: repo.origin().to_path_buf(),
+            workdir: repo.workdir().to_path_buf(),
+        });
+    }
     let head = match repo.resolve_rev("HEAD") {
         Ok(h) => h,
         Err(_) => return Ok(RebuildOutcome::Fresh),
@@ -243,10 +253,23 @@ fn fold_chunked(
     Ok(written)
 }
 
-/// Compute a chunk of commits' full records in parallel. Each rayon worker gets its own thread-local
-/// gix repository via `Repo::commit_record` → `Repo::local`, so the `!Sync` gix repo is never shared.
+/// How many commits one rayon task decodes through a single gix repository handle. See
+/// [`Repo::commit_records`]: a handle per commit meant gix's delta-base cache never got a second
+/// look at anything. With `RECORD_CHUNK`/`RECORD_BATCH` = 64 tasks per chunk the pool still
+/// saturates, while live handles — and their caches — stay bounded by the worker count.
+const RECORD_BATCH: usize = 128;
+
+/// Compute a chunk of commits' full records in parallel. Each rayon task gets its own thread-local
+/// gix repository via `Repo::commit_records` → `Repo::local`, so the `!Sync` gix repo is never
+/// shared. rayon's `collect` is order-preserving, so records still line up with `chrono`.
 fn compute_records(repo: &Repo, chrono: &[&String]) -> Vec<Option<crate::git::CommitInfo>> {
-    chrono.par_iter().map(|sha| repo.commit_record(sha)).collect()
+    chrono
+        .par_chunks(RECORD_BATCH)
+        .flat_map(|batch| {
+            let shas: Vec<&str> = batch.iter().map(|sha| sha.as_str()).collect();
+            repo.commit_records(&shas)
+        })
+        .collect()
 }
 
 /// Intern a commit's file paths to `path_id`s, recording the new path rows and posting edges.
