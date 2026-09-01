@@ -26,7 +26,7 @@ enumset = "1.1"
 fxhash = "0.2"
 itertools = "0.15"
 lsp-positions = { package = "basemind-lsp-positions", version = "0.3.4", path = "../lsp-positions" }
-smallvec = { version = "1.15", features = ["union"] }
+smallvec = { version = "1.16", features = ["union"] }
 thiserror = "2"
 
 [dev-dependencies]

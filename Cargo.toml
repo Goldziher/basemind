@@ -127,7 +127,7 @@ bstr = { version = "1", features = ["serde"] }
 # Streamable-HTTP MCP front-end (comms daemon only): response bodies + query parsing + hyper server. ~keep
 bytes = { version = "1", optional = true }
 clap = { version = "4", features = ["derive", "env"] }
-crawlberg = { version = "1.4.2", default-features = false, features = ["native-runtime"], optional = true }
+crawlberg = { version = "1.5.0", default-features = false, features = ["native-runtime"], optional = true }
 directories = "6"
 fjall = "3.1.10"
 form_urlencoded = { version = "1", optional = true }
@@ -135,7 +135,7 @@ fs2 = "0.4"
 futures = { version = "0.3", optional = true }
 # OS CSPRNG for the comms daemon's HTTP bearer token. Already in the graph via ahash, so this adds ~keep
 # no build cost; a hand-rolled seed mix would be rolling our own crypto for a credential. ~keep
-getrandom = { version = "0.3", features = ["std"], optional = true }
+getrandom = { version = "0.4", features = ["std"], optional = true }
 gix = { version = "0.87.1", features = ["status", "blob-diff", "revision", "max-performance-safe"] }
 globset = "0.4"
 hex = "0.4"
@@ -146,6 +146,10 @@ hyper = { version = "1", features = ["server", "http1", "http2"], optional = tru
 hyper-util = { version = "0.1", features = ["server-auto", "tokio"], optional = true }
 ignore = "0.4"
 jsonschema = "0.52"
+# ~keep Held at 0.37: lancedb 0.38.0 does not compile without its `remote` feature --
+# ~keep `error.rs` gates the `Error::Http` variant behind `#[cfg(feature = "remote")]`
+# ~keep while `job.rs` references it unconditionally. Enabling `remote` would pull an HTTP
+# ~keep client stack in for no benefit here. Revisit when upstream fixes the gate.
 lancedb = { version = "0.37", optional = true }
 libc = "0.2"
 lru = "0.18.3"
@@ -161,7 +165,7 @@ oxc_span = { version = "=0.138.0", optional = true }
 oxc_syntax = { version = "=0.138.0", optional = true }
 rayon = "1"
 regex = "1.13.1"
-rmcp = { version = "3.1", features = ["server", "macros", "schemars", "transport-async-rw"] }
+rmcp = { version = "3.2", features = ["server", "macros", "schemars", "transport-async-rw"] }
 rmp-serde = "1"
 rmux-client = { version = "0.10", default-features = false, optional = true }
 rmux-sdk = { version = "0.10", default-features = false, optional = true }
@@ -192,10 +196,10 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tree-sitter = "0.26"
 tree-sitter-graph = { package = "basemind-tree-sitter-graph", version = "0.12.0", path = "crates/tree-sitter-graph", optional = true }
-tree-sitter-language-pack = "1.15.12"
+tree-sitter-language-pack = "1.16.1"
 tree-sitter-stack-graphs = { package = "basemind-tree-sitter-stack-graphs", version = "0.10.0", path = "crates/tree-sitter-stack-graphs", optional = true }
 url = { version = "2", features = ["serde"], optional = true }
-xberg = { version = "1.1.0", git = "https://github.com/xberg-io/xberg.git", rev = "70f77bfa191be5051abece4690a0b4f3326c7229", default-features = false, features = [
+xberg = { version = "1.1.0", git = "https://github.com/xberg-io/xberg.git", rev = "71297af8da8913d38a3f43b81eed35e29aafa6b7", default-features = false, features = [
   "tokio-runtime",
   "simd-utf8",
 ], optional = true }
@@ -209,7 +213,7 @@ basemind = { path = ".", features = ["test-support"] }
 criterion = { version = "0.8", features = ["html_reports"] }
 insta = "1"
 proptest = "1"
-rmcp = { version = "3.1", features = ["client", "transport-async-rw", "transport-child-process"] }
+rmcp = { version = "3.2", features = ["client", "transport-async-rw", "transport-child-process"] }
 tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
 wiremock = "0.6"
