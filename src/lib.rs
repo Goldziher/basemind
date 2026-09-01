@@ -3,6 +3,9 @@
 pub mod backpressure;
 #[cfg(feature = "code-search")]
 pub mod chunk;
+/// The scan pipeline's one chunked-drive primitive: a serial loop over weight-bounded chunks with
+/// a parallel interior, so no phase holds an O(corpus) set of per-file results live.
+pub(crate) mod chunk_drive;
 pub mod cli;
 pub mod comms;
 pub mod config;

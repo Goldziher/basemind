@@ -25,6 +25,9 @@ pub(crate) mod resolver;
 /// cross-file join consumes.
 #[cfg(feature = "code-intel-stack")]
 pub mod stackgraph;
+/// Byte-bounded serial index staging for the resolve pass and the cross-file stitch, reporting to
+/// the same process-wide staged-byte ledger the scanner's parallel path uses.
+pub(crate) mod stage_budget;
 /// Cross-file resolution stitch (importer binding → resolved target export), run once at the end
 /// of the scanner's resolve pass. Resolves each importer's specifiers via the per-language
 /// [`resolver::SpecifierResolver`], so it covers any language with a compiled-in resolver (JS/TS

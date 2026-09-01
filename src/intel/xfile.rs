@@ -28,6 +28,7 @@ use ahash::AHashMap;
 use crate::index::IndexDb;
 use crate::intel::model::{ExportEdge, ImportEdge, ResolvedEdge};
 use crate::intel::resolver::SpecifierResolver;
+use crate::intel::stage_budget::BudgetedWriter;
 use crate::store::Store;
 
 /// Import/export facts for one file, harvested during the resolve pass's per-file loop so the
@@ -44,7 +45,9 @@ pub struct FileFacts {
 
 /// Commit the cross-file edge batch in bounded chunks, matching the primary scan's
 /// `INDEX_COMMIT_BATCH`: caps peak memory and periodically releases Fjall's write lock so a
-/// concurrent MCP reader isn't blocked for the whole stitch.
+/// concurrent MCP reader isn't blocked for the whole stitch. A count of edges is not itself a
+/// memory bound — [`BudgetedWriter`] adds the byte bounds, including the process-wide staged-byte
+/// ceiling this staging was previously invisible to.
 const COMMIT_BATCH: usize = 256;
 
 /// How far the join follows a re-export chain before giving up. A name imported through a package
@@ -122,7 +125,7 @@ pub fn stitch_cross_file_edges(root: &Path, store: &Store, index_db: &IndexDb, f
         .collect();
 
     let mut resolvers: AHashMap<String, Option<SpecifierResolver>> = AHashMap::new();
-    let mut writer = index_db.writer();
+    let mut batch = BudgetedWriter::new(index_db, COMMIT_BATCH, "cross-file stitch");
     let mut edges = 0usize;
 
     for (importer_key, importer_facts) in facts {
@@ -171,15 +174,13 @@ pub fn stitch_cross_file_edges(root: &Path, store: &Store, index_db: &IndexDb, f
                 }
             }
             for use_start in use_starts {
-                match writer.upsert_cross_file_edge(&def_rel, name_start, &importer_rel, use_start) {
+                let staged = batch
+                    .writer()
+                    .upsert_cross_file_edge(&def_rel, name_start, &importer_rel, use_start);
+                match staged {
                     Ok(()) => {
                         edges += 1;
-                        if edges.is_multiple_of(COMMIT_BATCH) {
-                            if let Err(error) = writer.commit() {
-                                tracing::warn!(%error, "cross-file stitch: batch commit failed — navigation may be stale");
-                            }
-                            writer = index_db.writer();
-                        }
+                        batch.item_staged();
                     }
                     Err(error) => tracing::warn!(
                         importer = %importer_rel,
@@ -192,8 +193,7 @@ pub fn stitch_cross_file_edges(root: &Path, store: &Store, index_db: &IndexDb, f
         }
     }
 
-    if let Err(error) = writer.commit() {
-        tracing::warn!(%error, "cross-file stitch: index commit failed — cross-file navigation may be stale");
+    if !batch.finish() {
         return;
     }
     tracing::debug!(edges, "cross-file stitch: staged cross-file resolved edges");

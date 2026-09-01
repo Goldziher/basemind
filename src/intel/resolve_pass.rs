@@ -24,13 +24,28 @@
 //! whose resolved target is a changed file is pulled into the affected set. Those affected importers
 //! (changed OR unchanged) get their per-file slate cleared via `upsert_resolved_file` *before* the
 //! stitch, so the re-stitch replaces — never accumulates — their cross-file edges.
+//!
+//! ## Why the pass is chunked
+//!
+//! [`FileResolvedRefs::intra`] carries one edge per resolved identifier use, which makes it by far
+//! the largest per-file structure this pass touches — and materialising every file's at once was a
+//! whole-corpus peak on top of the primary scan's. It is needed for exactly two things, and both
+//! are **per-file**: `upsert_resolved_file` staging, and the [`import_bound_edges`] filter that
+//! projects out the handful of import-bound edges the cross-file stitch consumes. So the pass runs
+//! through [`crate::chunk_drive`]: compute a chunk in parallel, stage it, project it into
+//! `xfile::FileFacts` — a type with no field capable of holding `intra` — and drop the chunk's
+//! `FileResolvedRefs` before the next chunk is computed. What survives a chunk is the join's
+//! import/export facts, never the corpus's resolved edges, and that is enforced by the types
+//! rather than by an assertion.
 
 use std::path::Path;
 
 use rayon::prelude::*;
 
+use crate::chunk_drive::{ChunkCut, drive_chunks};
 use crate::index::IndexDb;
 use crate::intel::model::FileResolvedRefs;
+use crate::intel::stage_budget::BudgetedWriter;
 use crate::lang;
 use crate::path::RelPath;
 use crate::scanner_lanes::contain_panic;
@@ -40,12 +55,36 @@ use crate::store::Store;
 /// `INDEX_COMMIT_BATCH`: each commit takes Fjall's single write lock, so batching caps the
 /// commit count (and thus lock contention) while keeping staged work bounded in memory. Kept
 /// local to this module rather than shared with `scanner.rs` — it is an independent tuning knob
-/// for the resolve pass.
+/// for the resolve pass. It is a *count* bound only; the byte bound that makes it a memory bound
+/// lives in [`BudgetedWriter`].
 const INDEX_COMMIT_BATCH: usize = 256;
 
-/// A minimal per-file snapshot `(rel, content-hash-hex, language)` taken from the primary index so
-/// the compute phase holds no borrow of `store.index`.
-type FileSnapshot = (String, String, String);
+/// Files whose [`FileResolvedRefs`] may be live at once. Sized well above any plausible thread
+/// count so the parallel compute phase still saturates the pool, and far below any repo's file
+/// count.
+const RESOLVE_CHUNK_FILES: usize = 1024;
+
+/// Source bytes one chunk may cover, whatever the file count says. Resolved edges scale with the
+/// number of identifiers in a file, so source size is the pre-compute proxy for how much a chunk
+/// will materialise: a handful of machine-generated files can out-weigh a thousand hand-written
+/// ones, and a pure file count would wave them through.
+const RESOLVE_CHUNK_SOURCE_BYTES: u64 = 16 * 1024 * 1024;
+
+/// The bound on one compute chunk. A named function so a test can pin the constants against the
+/// cut they are supposed to produce.
+fn resolve_chunk_cut() -> ChunkCut {
+    ChunkCut::new(RESOLVE_CHUNK_FILES, RESOLVE_CHUNK_SOURCE_BYTES)
+}
+
+/// A minimal per-file snapshot taken from the primary index so the compute phase holds no borrow
+/// of `store.index`.
+struct FileSnapshot {
+    rel: String,
+    hash_hex: String,
+    language: String,
+    /// Source size — the chunk driver's weight, and nothing else.
+    size_bytes: u64,
+}
 
 /// Wholesale resolve pass: (re)stage every indexed file's intra facts and (re)stitch every
 /// importer. Best-effort — any failure is logged and the scan still succeeds. No-op in a read-only
@@ -58,25 +97,24 @@ pub(crate) fn resolve_pass(root: &Path, store: &Store, precise: bool) {
         .index
         .files
         .iter()
-        .map(|(rel, entry)| {
-            (
-                rel.to_str_lossy().into_owned(),
-                entry.hash_hex.clone(),
-                entry.language.clone(),
-            )
+        .map(|(rel, entry)| FileSnapshot {
+            rel: rel.to_str_lossy().into_owned(),
+            hash_hex: entry.hash_hex.clone(),
+            language: entry.language.clone(),
+            size_bytes: entry.size_bytes,
         })
         .collect();
 
-    let facts = compute_facts(root, store, &files, precise);
-    stage_facts(index_db, &facts);
-
     #[cfg(any(feature = "code-intel-js", feature = "code-intel-stack"))]
     {
-        let facts_map = harvest_cross_file_facts(facts);
-        crate::intel::xfile::stitch_cross_file_edges(root, store, index_db, &facts_map);
+        let mut cross_file: ahash::AHashMap<String, crate::intel::xfile::FileFacts> = ahash::AHashMap::new();
+        resolve_in_chunks(root, store, index_db, &files, precise, |facts| {
+            harvest_cross_file_facts(facts, &mut cross_file);
+        });
+        crate::intel::xfile::stitch_cross_file_edges(root, store, index_db, &cross_file);
     }
     #[cfg(not(any(feature = "code-intel-js", feature = "code-intel-stack")))]
-    let _ = facts;
+    resolve_in_chunks(root, store, index_db, &files, precise, drop);
 }
 
 /// Incremental resolve pass for the watcher: only `changed` files' intra facts are restaged, and
@@ -91,16 +129,45 @@ pub(crate) fn resolve_pass_incremental(root: &Path, store: &Store, changed: &[St
         .iter()
         .filter_map(|rel| {
             let entry = store.lookup(rel.as_str())?;
-            Some((rel.clone(), entry.hash_hex.clone(), entry.language.clone()))
+            Some(FileSnapshot {
+                rel: rel.clone(),
+                hash_hex: entry.hash_hex.clone(),
+                language: entry.language.clone(),
+                size_bytes: entry.size_bytes,
+            })
         })
         .collect();
-    let changed_facts = compute_facts(root, store, &changed_snapshot, precise);
-    stage_facts(index_db, &changed_facts);
+    resolve_in_chunks(root, store, index_db, &changed_snapshot, precise, drop);
 
     #[cfg(any(feature = "code-intel-js", feature = "code-intel-stack"))]
     xfile_incremental::restitch_affected(root, store, index_db, changed, precise);
-    #[cfg(not(any(feature = "code-intel-js", feature = "code-intel-stack")))]
-    let _ = changed_facts;
+}
+
+/// Compute → stage → project, one bounded chunk at a time.
+///
+/// This is the pass's whole memory story: [`drive_chunks`] owns each chunk's `FileResolvedRefs`,
+/// hands them to the serial staging step, offers them to `harvest` for projection, and drops them
+/// before the next chunk is computed. `harvest` receives them by value precisely so it cannot keep
+/// them — anything it wants to retain has to be copied into a structure of its own choosing, and
+/// the one caller that retains anything chooses a type with no `intra` field.
+fn resolve_in_chunks(
+    root: &Path,
+    store: &Store,
+    index_db: &IndexDb,
+    files: &[FileSnapshot],
+    precise: bool,
+    mut harvest: impl FnMut(Vec<(String, FileResolvedRefs)>),
+) {
+    drive_chunks(
+        files,
+        resolve_chunk_cut(),
+        |snapshot| snapshot.size_bytes,
+        |chunk| compute_facts(root, store, chunk, precise),
+        |facts| {
+            stage_facts(index_db, &facts);
+            harvest(facts);
+        },
+    );
 }
 
 /// Parallel-compute the resolution facts for `files`, respecting the blob cache. Returns the
@@ -112,11 +179,12 @@ pub(crate) fn resolve_pass_incremental(root: &Path, store: &Store, changed: &[St
 fn compute_facts(root: &Path, store: &Store, files: &[FileSnapshot], precise: bool) -> Vec<(String, FileResolvedRefs)> {
     files
         .par_iter()
-        .filter_map(|(rel_str, hash_hex, language)| {
-            let refs = match store.read_resolved_by_hex(hash_hex) {
+        .filter_map(|snapshot| {
+            let rel_str = snapshot.rel.as_str();
+            let refs = match store.read_resolved_by_hex(&snapshot.hash_hex) {
                 Ok(Some(cached)) => cached,
                 _ => {
-                    let lang = lang::intern(language)?;
+                    let lang = lang::intern(&snapshot.language)?;
                     let abs = root.join(rel_str);
                     let bytes = std::fs::read(&abs).ok()?;
                     let computed = match contain_panic(|| crate::intel::resolve::resolve_file(lang, &abs, &bytes, precise))
@@ -133,45 +201,35 @@ fn compute_facts(root: &Path, store: &Store, files: &[FileSnapshot], precise: bo
                         }
                     };
                     if !computed.is_empty() {
-                        let _ = store.write_resolved_hex(hash_hex, &computed);
+                        let _ = store.write_resolved_hex(&snapshot.hash_hex, &computed);
                     }
                     computed
                 }
             };
-            Some((rel_str.clone(), refs))
+            Some((rel_str.to_string(), refs))
         })
         .collect()
 }
 
-/// Drain the computed facts into the single `IndexWriter` SERIALLY, committing in
-/// `INDEX_COMMIT_BATCH` chunks. Fjall staging is the shared bottleneck, so it stays single-threaded
-/// (the parallel win is the compute phase above). A file with empty facts still gets
-/// `remove_resolved_file` so a prior scan's edges are cleared.
+/// Drain one chunk's computed facts into the `IndexWriter` SERIALLY, committing on
+/// `INDEX_COMMIT_BATCH` files or the byte bounds [`BudgetedWriter`] enforces. Fjall staging is the
+/// shared bottleneck, so it stays single-threaded (the parallel win is the compute phase above). A
+/// file with empty facts still gets `remove_resolved_file` so a prior scan's edges are cleared.
 fn stage_facts(index_db: &IndexDb, facts: &[(String, FileResolvedRefs)]) {
-    let mut writer = index_db.writer();
-    let mut staged = 0usize;
+    let mut batch = BudgetedWriter::new(index_db, INDEX_COMMIT_BATCH, "resolve pass");
     for (rel_str, refs) in facts {
         let rel = RelPath::from(rel_str.as_str());
         let staged_res = if refs.is_empty() {
-            writer.remove_resolved_file(&rel)
+            batch.writer().remove_resolved_file(&rel)
         } else {
-            writer.upsert_resolved_file(&rel, refs)
+            batch.writer().upsert_resolved_file(&rel, refs)
         };
         if let Err(error) = staged_res {
             tracing::warn!(path = %rel, %error, "resolve pass: failed to stage resolved edges — skipping file");
         }
-        staged += 1;
-        if staged >= INDEX_COMMIT_BATCH {
-            if let Err(error) = writer.commit() {
-                tracing::warn!(%error, "resolve pass: index commit failed — resolved navigation may be stale");
-            }
-            writer = index_db.writer();
-            staged = 0;
-        }
+        batch.item_staged();
     }
-    if let Err(error) = writer.commit() {
-        tracing::warn!(%error, "resolve pass: index commit failed — resolved navigation may be stale");
-    }
+    batch.finish();
 }
 
 /// This file's intra edges whose definition is one of its own import bindings — the in-file use
@@ -190,28 +248,33 @@ fn import_bound_edges(refs: &FileResolvedRefs) -> Vec<crate::intel::model::Resol
         .collect()
 }
 
-/// Move the import/export lists out of the wholesale facts into the map the cross-file stitch
-/// consumes. Only files that import or export something are kept (the join ignores the rest). The
-/// stitch itself picks a per-language resolver, so this harvest is language-agnostic.
+/// Project one chunk's facts into the map the cross-file stitch consumes, then let the chunk's
+/// [`FileResolvedRefs`] die. Only files that import or export something are kept (the join ignores
+/// the rest). The stitch itself picks a per-language resolver, so this harvest is
+/// language-agnostic.
+///
+/// This is the projection the whole chunking rests on: `FileFacts` has no `intra` field, so what
+/// accumulates across chunks *cannot* be the O(corpus) edge set — only the import/export lists and
+/// the import-bound slice of `intra`, which is the part the join actually needs.
 #[cfg(any(feature = "code-intel-js", feature = "code-intel-stack"))]
 fn harvest_cross_file_facts(
     facts: Vec<(String, FileResolvedRefs)>,
-) -> ahash::AHashMap<String, crate::intel::xfile::FileFacts> {
-    facts
-        .into_iter()
-        .filter(|(_, refs)| !refs.imports.is_empty() || !refs.exports.is_empty())
-        .map(|(rel, refs)| {
-            let import_uses = import_bound_edges(&refs);
-            (
-                rel,
-                crate::intel::xfile::FileFacts {
-                    imports: refs.imports,
-                    exports: refs.exports,
-                    import_uses,
-                },
-            )
-        })
-        .collect()
+    out: &mut ahash::AHashMap<String, crate::intel::xfile::FileFacts>,
+) {
+    for (rel, refs) in facts {
+        if refs.imports.is_empty() && refs.exports.is_empty() {
+            continue;
+        }
+        let import_uses = import_bound_edges(&refs);
+        out.insert(
+            rel,
+            crate::intel::xfile::FileFacts {
+                imports: refs.imports,
+                exports: refs.exports,
+                import_uses,
+            },
+        );
+    }
 }
 
 /// Incremental cross-file re-stitch (feature `code-intel-js` or `code-intel-stack`).
@@ -226,7 +289,7 @@ mod xfile_incremental {
     use ahash::{AHashMap, AHashSet};
     use rayon::prelude::*;
 
-    use super::{FileSnapshot, compute_facts, stage_facts};
+    use super::{FileSnapshot, resolve_in_chunks};
     use crate::index::IndexDb;
     use crate::intel::resolver::SpecifierResolver;
     use crate::intel::xfile::{FileFacts, stitch_cross_file_edges};
@@ -353,11 +416,15 @@ mod xfile_incremental {
             .filter(|k| !changed_set.contains(k.as_str()))
             .filter_map(|k| {
                 let entry = store.lookup(k.as_str())?;
-                Some((k.clone(), entry.hash_hex.clone(), entry.language.clone()))
+                Some(FileSnapshot {
+                    rel: k.clone(),
+                    hash_hex: entry.hash_hex.clone(),
+                    language: entry.language.clone(),
+                    size_bytes: entry.size_bytes,
+                })
             })
             .collect();
-        let ua_facts = compute_facts(root, store, &unchanged_affected, precise);
-        stage_facts(index_db, &ua_facts);
+        resolve_in_chunks(root, store, index_db, &unchanged_affected, precise, drop);
 
         let mut stitch_facts: AHashMap<String, FileFacts> = AHashMap::with_capacity(affected.len());
         for key in &affected {
@@ -395,5 +462,112 @@ mod xfile_incremental {
         }
 
         stitch_cross_file_edges(root, store, index_db, &stitch_facts);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn snapshot(rel: &str, size_bytes: u64) -> FileSnapshot {
+        FileSnapshot {
+            rel: rel.to_string(),
+            hash_hex: "0".repeat(64),
+            language: "typescript".to_string(),
+            size_bytes,
+        }
+    }
+
+    /// The pass's own constants — not just the driver — must cut on bytes. A handful of
+    /// machine-generated files carries more resolved edges than a thousand hand-written ones, so a
+    /// cut that only counted files would materialise all of them at once.
+    #[test]
+    fn the_pass_cut_is_byte_aware_and_not_only_count_aware() {
+        let heavy: Vec<FileSnapshot> = (0..8)
+            .map(|i| snapshot(&format!("src/generated_{i}.ts"), 8 * 1024 * 1024))
+            .collect();
+
+        let mut chunk_sizes = Vec::new();
+        drive_chunks(
+            &heavy,
+            resolve_chunk_cut(),
+            |s| s.size_bytes,
+            |chunk| {
+                chunk_sizes.push(chunk.len());
+                Vec::<()>::new()
+            },
+            |_| {},
+        );
+
+        assert!(
+            chunk_sizes.len() > 1,
+            "eight 8 MiB files must not ride in one chunk under a {RESOLVE_CHUNK_SOURCE_BYTES}-byte budget"
+        );
+        assert!(
+            heavy.len() < RESOLVE_CHUNK_FILES,
+            "the file-count bound must not be what cut these chunks"
+        );
+        assert_eq!(chunk_sizes.iter().sum::<usize>(), heavy.len());
+    }
+
+    /// A repo of ordinary files still rides the cheap count bound — the byte budget must not turn
+    /// every scan into a chunk-per-file commit storm.
+    #[test]
+    fn ordinary_files_still_ride_the_count_bound() {
+        let light: Vec<FileSnapshot> = (0..RESOLVE_CHUNK_FILES)
+            .map(|i| snapshot(&format!("src/hand_written_{i}.ts"), 4 * 1024))
+            .collect();
+
+        let mut chunk_sizes = Vec::new();
+        drive_chunks(
+            &light,
+            resolve_chunk_cut(),
+            |s| s.size_bytes,
+            |chunk| {
+                chunk_sizes.push(chunk.len());
+                Vec::<()>::new()
+            },
+            |_| {},
+        );
+
+        assert_eq!(chunk_sizes, vec![RESOLVE_CHUNK_FILES]);
+    }
+
+    /// The projection that lets a chunk's `FileResolvedRefs` die: what survives into `FileFacts`
+    /// must be the import-bound *slice* of `intra`, never the whole vector. `FileFacts` has no
+    /// field that could hold the rest, and this pins the one field that shares its element type.
+    #[cfg(any(feature = "code-intel-js", feature = "code-intel-stack"))]
+    #[test]
+    fn the_harvest_retains_only_import_bound_edges() {
+        use crate::intel::model::{ImportEdge, ResolvedEdge};
+
+        let mut refs = FileResolvedRefs::new("typescript");
+        refs.imports = vec![ImportEdge {
+            local: "useThing".to_string(),
+            specifier: "./thing".to_string(),
+            imported: Some("useThing".to_string()),
+            is_type: false,
+            local_start: 7,
+        }];
+        refs.intra = (0..256)
+            .map(|i| ResolvedEdge {
+                use_start: 1000 + i * 16,
+                use_end: 1008 + i * 16,
+                // Only every 128th edge binds to the import; the rest are ordinary in-file edges.
+                def_start: if i.is_multiple_of(128) { 7 } else { 500 },
+                def_end: 20,
+            })
+            .collect();
+
+        let mut harvested = ahash::AHashMap::new();
+        harvest_cross_file_facts(vec![("src/app.ts".to_string(), refs)], &mut harvested);
+
+        let facts = harvested.get("src/app.ts").expect("importer must be harvested");
+        assert_eq!(
+            facts.import_uses.len(),
+            2,
+            "only the edges bound to an import may survive the chunk"
+        );
+        assert!(facts.import_uses.iter().all(|e| e.def_start == 7));
     }
 }
