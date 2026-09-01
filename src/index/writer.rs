@@ -15,15 +15,67 @@ use crate::search::bm25::ChunkPosting;
 pub struct IndexWriter {
     db: IndexDb,
     batch: OwnedWriteBatch,
-    /// Key+value bytes staged into `batch` so far. Fjall keeps every staged key and value
-    /// resident until `commit`, so this — not the number of *files* staged — is what actually
-    /// bounds a writer's live memory: one machine-generated source file can stage tens of
-    /// thousands of entries, and a chunk's BM25 posting list is unbounded in the same way.
-    /// Callers batch against [`Self::staged_bytes`]; see `scanner_file::WorkerIndexBatch`.
+    /// Resident bytes staged into `batch` so far, as modelled by [`staged_entry_bytes`]. Fjall
+    /// keeps every staged entry resident until `commit`, so this — not the number of *files*
+    /// staged — is what actually bounds a writer's live memory: one machine-generated source file
+    /// can stage tens of thousands of entries, and a chunk's BM25 posting list is unbounded in the
+    /// same way. Callers batch against [`Self::staged_bytes`]; see
+    /// `scanner_index_batch::WorkerIndexBatch`.
     staged_bytes: u64,
+    /// Test-only fault seam: make the next [`Self::upsert_file`] stage its deletes and inserts and
+    /// *then* fail. The real failures have exactly that shape — a fjall read error inside
+    /// `stage_deletes_for`, an `rmp_serde` encode error inside `stage_inserts_for` — and neither is
+    /// reachable from a test, so without this seam the caller's "bytes staged by a failed upsert
+    /// still count" invariant cannot be exercised at all.
+    #[cfg(test)]
+    pub(crate) fail_after_staging: bool,
 }
 
-/// Stage one insert, charging its key+value bytes to `staged_bytes`.
+/// Fixed cost of one entry staged in a fjall write batch, independent of its payload.
+///
+/// Derived from **fjall 3.1.10** (re-check on upgrade): `WriteBatch` accumulates into a
+/// `Vec<Item>`, and `batch::item::Item` is
+/// `{ keyspace: Keyspace(Arc<KeyspaceInner>) = 8, key: UserKey = Slice = 24, value: UserValue = 24,
+/// value_type: ValueType = 1 }` → 57 bytes, rounded to 64 by the 8-byte alignment the `Arc` and the
+/// `Slice`'s interior pointer impose. Every entry pays it, tombstones included.
+const STAGED_ITEM_BYTES: u64 = 64;
+
+/// Longest payload byteview stores *inside* the 24-byte `Slice` rather than on the heap
+/// (`byteview::INLINE_SIZE` for 64-bit targets, **byteview 0.10.2** via lsm-tree 3.1.10). Payloads
+/// this short are already covered by [`STAGED_ITEM_BYTES`] and cost nothing extra.
+const SLICE_INLINE_MAX: usize = 20;
+
+/// Header byteview prepends to every heap-allocated payload: `HeapAllocationHeader { ref_count:
+/// AtomicU64 }` (byteview 0.10.2).
+const SLICE_HEAP_HEADER: u64 = 8;
+
+/// Resident bytes one staged entry costs, modelled on the types above rather than on the payload
+/// alone.
+///
+/// Charging `key.len() + value.len()` — what this did before — undercounts by the whole
+/// per-entry `Item` slot, which is fine for a 300-byte msgpack `Symbol` but is the *majority* of
+/// the cost for the entries the scanner stages most of: the key-only secondary-index entries
+/// (`symbols_by_name`, `calls_by_callee`, `imports_by_*`, `implementations_*`, `refs_by_*`) and the
+/// BM25 postings, whose value is 8 bytes. Under the old accounting a 64 MiB budget of key+value
+/// bytes was 130-160 MiB resident on a posting-dense scan — the exact workload the budget exists to
+/// bound.
+///
+/// This is a deliberate **lower** bound on two counts, both allocator- or growth-dependent and so
+/// not worth pretending to model: the system allocator rounds each heap block up to a size class,
+/// and `Vec<Item>` grows by doubling, so up to another [`STAGED_ITEM_BYTES`] per entry can be
+/// reserved-but-unwritten.
+fn staged_entry_bytes(key_len: usize, value_len: usize) -> u64 {
+    fn payload(len: usize) -> u64 {
+        if len <= SLICE_INLINE_MAX {
+            0
+        } else {
+            SLICE_HEAP_HEADER + len as u64
+        }
+    }
+    STAGED_ITEM_BYTES + payload(key_len) + payload(value_len)
+}
+
+/// Stage one insert, charging its resident cost to `staged_bytes`.
 ///
 /// Free-standing rather than a `&mut self` method so a caller can hold disjoint borrows of the
 /// writer's fields — `&db.<partition>` alongside `&mut batch` — which a method taking `&mut self`
@@ -37,14 +89,15 @@ fn stage_insert<K: Into<Slice>, V: Into<Slice>>(
 ) {
     let key = key.into();
     let value = value.into();
-    *staged_bytes += (key.len() + value.len()) as u64;
+    *staged_bytes += staged_entry_bytes(key.len(), value.len());
     batch.insert(partition, key, value);
 }
 
-/// Stage one delete, charging its key bytes to `staged_bytes` (a tombstone carries no value).
+/// Stage one delete. `WriteBatch::remove` stages a full `Item` carrying an empty value, so a
+/// tombstone costs everything an insert does bar the value payload.
 fn stage_remove<K: Into<Slice>>(batch: &mut OwnedWriteBatch, staged_bytes: &mut u64, partition: &Keyspace, key: K) {
     let key = key.into();
-    *staged_bytes += key.len() as u64;
+    *staged_bytes += staged_entry_bytes(key.len(), 0);
     batch.remove(partition, key);
 }
 
@@ -55,12 +108,14 @@ impl IndexWriter {
             db,
             batch,
             staged_bytes: 0,
+            #[cfg(test)]
+            fail_after_staging: false,
         }
     }
 
-    /// Key+value bytes staged into the current batch. There is no reset: [`Self::commit`]
-    /// consumes the writer, so the counter dies with the batch it describes and the next batch
-    /// starts a fresh writer at zero.
+    /// Resident bytes staged into the current batch, per [`staged_entry_bytes`]. There is no reset:
+    /// [`Self::commit`] consumes the writer, so the counter dies with the batch it describes and
+    /// the next batch starts a fresh writer at zero.
     pub fn staged_bytes(&self) -> u64 {
         self.staged_bytes
     }
@@ -73,6 +128,13 @@ impl IndexWriter {
         self.stage_inserts_for(rel, l1)?;
         if let Some(l2) = l2 {
             self.stage_call_inserts(rel, l2)?;
+        }
+        #[cfg(test)]
+        if self.fail_after_staging {
+            return Err(IndexError::Io {
+                path: rel.to_path_buf(),
+                source: std::io::Error::other("injected upsert failure after staging"),
+            });
         }
         Ok(())
     }

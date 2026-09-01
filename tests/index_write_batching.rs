@@ -92,3 +92,46 @@ fn staged_bytes_scales_with_the_file_s_symbol_count() {
         "16x the symbols must stage far more bytes ({small_bytes} -> {large_bytes})"
     );
 }
+
+/// The accounting has to model fjall's *per-entry* cost, not just the payload. Each staged entry is
+/// a 64-byte `batch::Item` in the write batch's `Vec` before one byte of key or value is charged,
+/// and that fixed cost dominates the entries the scanner stages most of — the key-only secondary
+/// indexes and the 8-byte BM25 posting values. Counting payload alone made the whole byte budget
+/// mean 2-3x more resident memory than its name said.
+///
+/// Each symbol stages exactly two entries (`symbols_by_path` + `symbols_by_name`), so with short
+/// names and no signature — payloads far below the two `Item` slots — the counter must still be at
+/// least `2 x 64` per symbol. A payload-only counter is well under that.
+#[test]
+fn staged_bytes_charges_fjalls_per_entry_overhead_not_only_the_payload() {
+    const ITEM_BYTES: u64 = 64;
+    const SYMBOLS: u64 = 64;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db = IndexDb::open(dir.path()).expect("open index");
+
+    let mut l1 = synthetic_l1(&[]);
+    l1.symbols = (0..SYMBOLS)
+        .map(|i| Symbol {
+            name: format!("s{i}"),
+            kind: SymbolKind::Function,
+            start_byte: i as u32 * 8,
+            end_byte: i as u32 * 8 + 4,
+            start_row: 0,
+            start_col: 0,
+            signature: None,
+            decorators: Vec::new(),
+        })
+        .collect();
+
+    let mut writer = db.writer();
+    writer.upsert_file(&RelPath::from("s.rs"), &l1, None).unwrap();
+
+    let floor = 2 * ITEM_BYTES * SYMBOLS;
+    assert!(
+        writer.staged_bytes() >= floor,
+        "{SYMBOLS} symbols stage {SYMBOLS} x 2 entries, so the counter cannot be below their \
+         {floor} bytes of `Item` slots alone (got {})",
+        writer.staged_bytes()
+    );
+}

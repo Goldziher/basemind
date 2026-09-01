@@ -24,8 +24,8 @@ use crate::store::Store;
 /// This bound alone is not a memory bound — see [`INDEX_COMMIT_BATCH_BYTES`].
 const INDEX_COMMIT_BATCH: usize = 256;
 
-/// Key+value bytes a single worker may hold staged before it must commit, whatever the file
-/// count says.
+/// Resident staged bytes (see `index::writer::staged_entry_bytes`) a single worker may hold before
+/// it must commit, whatever the file count says.
 ///
 /// A file count says nothing about bytes: one file stages every symbol (full msgpack `Symbol`,
 /// signature included), every import, call and implementation, one BM25 posting per
@@ -51,50 +51,88 @@ const INDEX_COMMIT_BATCH_BYTES: u64 = 8 * 1024 * 1024;
 /// this ceiling commits at that boundary, before it stages another file.
 const INDEX_STAGED_BYTES_CEILING: u64 = 64 * 1024 * 1024;
 
+/// How much of its *own* staging a worker must be holding before the shared ceiling may force it
+/// to commit. Applies to the ceiling branch only — the per-worker bounds are unconditional.
+///
+/// Without a floor the ceiling has no hysteresis, and past `INDEX_STAGED_BYTES_CEILING /
+/// INDEX_COMMIT_BATCH_BYTES` workers (8, here) the process sits *pinned* at the ceiling: one worker
+/// commits, the rest push the total back over within a few files, and the next worker to reach a
+/// file boundary commits too. Average staging per commit collapses to `ceiling / workers`, so the
+/// commit cadence degrades linearly with core count — 256 files per commit before this batching, but
+/// ~34 at 16 workers and ~8 at 64 — which is precisely the fjall write-lock contention the batching
+/// exists to remove (a flamegraph put it at ~14% of scan wall-time). Bigger machines would get the
+/// worse cadence, which is backwards.
+///
+/// 1 MiB of *resident staged index* is on the order of a hundred ordinary source files, so the floor
+/// keeps any core count at no worse than the 8-worker cadence, while costing at most
+/// `workers × (this + one file)` above the ceiling in the worst case — ~64 MiB of overshoot at 64
+/// workers, against the 43.8 GiB RSS that motivated the ceiling.
+const CEILING_MIN_COMMIT_BYTES: u64 = 1024 * 1024;
+
 /// Lock-free ledger of index bytes staged but not yet committed, summed over the live
 /// [`WorkerIndexBatch`]es. Each batch reports only its own delta, and releases its whole
-/// contribution on commit *and* on drop, so a worker that unwinds (`scanner_lanes` contains
-/// panics with `catch_unwind`, and a pathological file must not cost the scan its budget for
-/// the rest of the process) cannot leak budget.
-struct StagedByteLedger {
+/// contribution on commit *and* on drop.
+///
+/// The drop release is what makes the ledger safe to hold in a `static`. `run_candidates` is *not*
+/// wrapped by `scanner_lanes::run_optional_lane` — only the optional post-extraction lanes are — so
+/// a panic in `process_file` unwinds the whole scan. Rayon drops the fold accumulator on that path,
+/// and without `Drop` releasing, the dead worker's contribution would stay charged for the lifetime
+/// of the *process*: a long-lived daemon that scans repeatedly would shrink its own ceiling scan by
+/// scan until every file forced a commit.
+pub(crate) struct StagedByteLedger {
     in_flight: AtomicU64,
     ceiling: u64,
+    /// Commits performed by the batches reporting here. Carries no policy — it exists so a test can
+    /// assert on commit *cadence*, which is the only deterministic way to catch a cadence
+    /// regression on a loaded machine (wall-clock deltas are noise).
+    commits: AtomicU64,
 }
 
 impl StagedByteLedger {
-    const fn new(ceiling: u64) -> Self {
+    pub(crate) const fn new(ceiling: u64) -> Self {
         Self {
             in_flight: AtomicU64::new(0),
             ceiling,
+            commits: AtomicU64::new(0),
         }
     }
 
-    fn charge(&self, bytes: u64) {
+    pub(crate) fn charge(&self, bytes: u64) {
         self.in_flight.fetch_add(bytes, Ordering::Relaxed);
     }
 
-    fn release(&self, bytes: u64) {
+    pub(crate) fn release(&self, bytes: u64) {
         self.in_flight.fetch_sub(bytes, Ordering::Relaxed);
     }
 
-    fn in_flight(&self) -> u64 {
+    pub(crate) fn in_flight(&self) -> u64 {
         self.in_flight.load(Ordering::Relaxed)
     }
 
-    fn over_ceiling(&self) -> bool {
+    pub(crate) fn over_ceiling(&self) -> bool {
         self.in_flight() >= self.ceiling
+    }
+
+    fn record_commit(&self) {
+        self.commits.fetch_add(1, Ordering::Relaxed);
+    }
+
+    #[cfg(test)]
+    fn commits(&self) -> u64 {
+        self.commits.load(Ordering::Relaxed)
     }
 }
 
 /// The scan-wide ledger every real [`WorkerIndexBatch`] reports to. Tests pass their own so the
 /// assertions stay hermetic against whatever else the test binary is scanning in parallel.
-static SCAN_STAGED_BYTES: StagedByteLedger = StagedByteLedger::new(INDEX_STAGED_BYTES_CEILING);
+pub(crate) static SCAN_STAGED_BYTES: StagedByteLedger = StagedByteLedger::new(INDEX_STAGED_BYTES_CEILING);
 
 /// Per-rayon-worker accumulator: buffers each file's index upsert into a shared Fjall write
 /// batch and commits once `INDEX_COMMIT_BATCH` files *or* [`INDEX_COMMIT_BATCH_BYTES`] have been
-/// staged — or once the process-wide [`StagedByteLedger`] is over its ceiling — and once more at
-/// the end of the worker's slice. Also carries the worker's `FileResult`s so the parallel fold
-/// produces both the scan outcomes and the committed index in one pass.
+/// staged — or once the process-wide [`StagedByteLedger`] is over its ceiling and this worker holds
+/// at least [`CEILING_MIN_COMMIT_BYTES`] of its own — and once more at the end of the worker's
+/// slice. Also carries the worker's `FileResult`s so the parallel fold produces both the scan
+/// outcomes and the committed index in one pass.
 ///
 /// Borrows `&IndexDb` (cheap `Arc`-backed handle) for the worker's lifetime. When the store
 /// has no index (`index_db == None`, read-only mode) staging is a no-op.
@@ -135,12 +173,15 @@ impl<'a> WorkerIndexBatch<'a> {
             return true;
         };
         let writer = self.writer.get_or_insert_with(|| index.writer());
-        if writer.upsert_file(rel, l1, l2).is_err() {
-            return false;
+        // A failed upsert has still staged whatever it wrote before the error (deletes, then ~keep
+        // inserts, both before the read or encode that can fail), and those bytes are resident ~keep
+        // until the next commit — so they must be reported and must be able to force one. ~keep
+        let staged_ok = writer.upsert_file(rel, l1, l2).is_ok();
+        if staged_ok {
+            self.staged += 1;
         }
-        self.staged += 1;
         self.commit_if_full();
-        true
+        staged_ok
     }
 
     /// Stage one file's BM25 keyword postings into the current batch, reusing the same
@@ -172,17 +213,19 @@ impl<'a> WorkerIndexBatch<'a> {
         let staged_bytes = self.writer.as_ref().map_or(0, IndexWriter::staged_bytes);
         self.ledger.charge(staged_bytes.saturating_sub(self.reported_bytes));
         self.reported_bytes = staged_bytes;
-        if self.staged >= INDEX_COMMIT_BATCH || staged_bytes >= self.byte_budget || self.ledger.over_ceiling() {
+        let ceiling_hit = self.ledger.over_ceiling() && staged_bytes >= CEILING_MIN_COMMIT_BYTES;
+        if self.staged >= INDEX_COMMIT_BATCH || staged_bytes >= self.byte_budget || ceiling_hit {
             self.commit();
         }
     }
 
     /// Flush the staged batch under Fjall's write lock and reset both counters.
     fn commit(&mut self) {
-        if let Some(writer) = self.writer.take()
-            && writer.commit().is_err()
-        {
-            tracing::warn!("index batch commit failed; reference search may be incomplete");
+        if let Some(writer) = self.writer.take() {
+            self.ledger.record_commit();
+            if writer.commit().is_err() {
+                tracing::warn!("index batch commit failed; reference search may be incomplete");
+            }
         }
         self.release_reported();
         self.staged = 0;
@@ -308,6 +351,10 @@ mod tests {
     /// BM25 postings used to ride entirely outside the only bound that existed — `stage_bm25`
     /// touched neither the counter nor the commit. They are the largest single staged
     /// contributor, so their staging must be able to force a commit on its own.
+    ///
+    /// `code-search` is not a default feature, so a plain `cargo test` compiles this out; CI covers
+    /// it on the two `full` legs (`full` ⊇ `code-search`), and locally it needs
+    /// `cargo test --features code-search`.
     #[cfg(feature = "code-search")]
     #[test]
     fn bm25_only_staging_hits_the_byte_budget_and_commits() {
@@ -336,8 +383,9 @@ mod tests {
     }
 
     /// The shared ceiling is only a bound if the ledger tracks the true in-flight total: it must
-    /// return to zero across many commits, and it must survive a worker that unwinds mid-file
-    /// (`scanner_lanes` contains such a panic) rather than leaking budget for the process.
+    /// return to zero across many commits, and it must survive a worker that unwinds mid-file —
+    /// nothing contains a `process_file` panic, and the ledger is a `static` that outlives the
+    /// scan, so a leaked contribution would shrink the ceiling for every later scan in the process.
     #[test]
     fn the_ledger_does_not_drift_across_commits_or_a_worker_panic() {
         static LEDGER: StagedByteLedger = StagedByteLedger::new(64 * 1024);
@@ -372,6 +420,90 @@ mod tests {
         }));
         assert!(caught.is_err());
         assert_eq!(LEDGER.in_flight(), 0, "a panicking file must not leak budget");
+    }
+
+    /// `upsert_file` stages its deletes and its inserts *before* the read or the encode that can
+    /// fail, so a failure leaves real bytes in the writer. Reporting them only on the worker's next
+    /// *successful* file would let a batch hold megabytes of tombstones that no bound can see.
+    #[test]
+    fn a_failed_upsert_still_reports_the_bytes_it_staged() {
+        static LEDGER: StagedByteLedger = StagedByteLedger::new(u64::MAX);
+        let (_dir, db) = fresh_index();
+        let l1 = bulky_l1(8);
+
+        let mut batch = WorkerIndexBatch::with_budget(Some(&db), u64::MAX, &LEDGER);
+        assert!(batch.stage(&RelPath::from("src/ok.rs"), &l1, None));
+        let after_ok = LEDGER.in_flight();
+        assert!(after_ok > 0, "the successful file must be on the ledger");
+
+        batch
+            .writer
+            .as_mut()
+            .expect("writer exists after a stage")
+            .fail_after_staging = true;
+        assert!(
+            !batch.stage(&RelPath::from("src/doomed.rs"), &l1, None),
+            "the injected failure must be reported to the caller"
+        );
+
+        let staged = batch
+            .writer
+            .as_ref()
+            .expect("no bound can have committed here")
+            .staged_bytes();
+        assert!(staged > after_ok, "the failed upsert did stage bytes before failing");
+        assert_eq!(
+            LEDGER.in_flight(),
+            staged,
+            "bytes staged by a failed upsert stay resident until the next commit, so they must be \
+             on the ledger and able to force one"
+        );
+        drop(batch);
+        assert_eq!(LEDGER.in_flight(), 0);
+    }
+
+    /// The shared ceiling has no hysteresis of its own: past `ceiling / per-worker budget` workers
+    /// the process sits pinned over it, and without [`CEILING_MIN_COMMIT_BYTES`] every worker then
+    /// commits at almost every file — a cadence that degrades linearly with core count, which is
+    /// exactly the fjall write-lock contention this batching exists to remove. Counting commits (not
+    /// timing them) is the only assertion that stays deterministic on a loaded machine.
+    #[test]
+    fn a_pinned_ceiling_does_not_degenerate_into_a_commit_per_file() {
+        static PINNED: StagedByteLedger = StagedByteLedger::new(64 * 1024);
+        const FILES: u32 = 200;
+        let (_dir, db) = fresh_index();
+        let l1 = bulky_l1(32);
+
+        // The other N-1 workers hold the total over the ceiling for the whole slice; charging ~keep
+        // their share directly is what a real scan looks like from one worker's point of view, ~keep
+        // and keeps this deterministic without a rayon pool. ~keep
+        PINNED.charge(PINNED.ceiling);
+        let commits_before = PINNED.commits();
+        let mut worker = WorkerIndexBatch::with_budget(Some(&db), u64::MAX, &PINNED);
+        assert!(worker.stage(&RelPath::from("src/f0.rs"), &l1, None));
+        let per_file = worker.reported_bytes;
+        for i in 1..FILES {
+            assert!(worker.stage(&RelPath::from(format!("src/f{i}.rs")), &l1, None));
+        }
+        assert!(
+            (FILES as usize) < INDEX_COMMIT_BATCH,
+            "the file-count bound must not be what commits here"
+        );
+        worker.finish();
+
+        let commits = PINNED.commits() - commits_before;
+        let cadence_bound = per_file * u64::from(FILES) / CEILING_MIN_COMMIT_BYTES + 2;
+        assert!(
+            commits <= cadence_bound,
+            "a pinned ceiling must still commit on the {CEILING_MIN_COMMIT_BYTES}-byte floor: \
+             {commits} commits for {FILES} files ({per_file} B each), expected at most {cadence_bound}"
+        );
+        assert!(
+            commits * 20 <= u64::from(FILES),
+            "cadence collapsed to {commits} commits for {FILES} files — a floorless ceiling commits per file"
+        );
+        PINNED.release(PINNED.ceiling);
+        assert_eq!(PINNED.in_flight(), 0);
     }
 
     /// Byte-bounded batching is a flush-boundary change only: committing per file and committing
