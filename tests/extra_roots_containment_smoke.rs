@@ -29,12 +29,15 @@ fn repo_supplied_extra_roots_cannot_index_an_out_of_repo_directory() {
     fs::write(secrets.path().join("id_rsa.rs"), b"pub fn private_key() {}\n").unwrap();
     fs::write(repo.path().join("main.rs"), b"fn main() {}\n").unwrap();
     let secrets_path = fs::canonicalize(secrets.path()).unwrap();
+    // A TOML basic string processes backslash escapes, and a canonicalized Windows path is full of
+    // them (`\\?\C:\Users\...`), so interpolating one raw makes the fixture's own config
+    // unparseable — the test would then fail on Windows for a reason that has nothing to do with
+    // the containment it exists to prove. Escaping keeps the string type, and the assertion below
+    // still pins that the loader saw exactly the path we wrote. ~keep
+    let secrets_toml = secrets_path.display().to_string().replace('\\', "\\\\");
     fs::write(
         repo.path().join("basemind.toml"),
-        format!(
-            "\"$schema\" = \"v1\"\n[scan]\ninclude = [\"**\"]\nextra_roots = [\"{}\"]\n",
-            secrets_path.display()
-        ),
+        format!("\"$schema\" = \"v1\"\n[scan]\ninclude = [\"**\"]\nextra_roots = [\"{secrets_toml}\"]\n"),
     )
     .unwrap();
 

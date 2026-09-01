@@ -21,6 +21,17 @@ fn bin() -> &'static str {
     env!("CARGO_BIN_EXE_basemind")
 }
 
+/// Mark a tempdir as a project so the workspace-root guard (issue #62) admits it.
+///
+/// These tests drive the real binary, so `basemind scan` gates on the guard: a bare tempdir is
+/// neither a git repository nor a directory holding `basemind.toml`, and is refused. The sibling
+/// tests below already carry a `basemind.toml` for their own config, which is why only the two
+/// that did not were refused. An empty marker leaves every default in place, so the chunker and
+/// embedder behave exactly as they did before the guard existed.
+fn mark_project(root: &std::path::Path) {
+    std::fs::write(root.join("basemind.toml"), "\"$schema\" = \"v1\"\n").expect("write project marker");
+}
+
 /// The fixture: one documented function + a struct, so the chunker emits at least one symbol
 /// chunk whose doc + signature make it a strong semantic match for the query below.
 const FIXTURE: &str = "/// Parse a configuration file's text into a typed Config value.\n\
@@ -38,6 +49,7 @@ fn search_code_finds_chunk_then_get_chunk_fetches_body() {
     basemind::store::init_isolated_cache();
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path();
+    mark_project(root);
     std::fs::write(root.join("lib.rs"), FIXTURE).expect("write fixture");
 
     let scan = Command::new(bin())
@@ -128,6 +140,7 @@ fn stale_sidecar_rechunked_when_content_unchanged() {
     basemind::store::init_isolated_cache();
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path();
+    mark_project(root);
     let fixture = format!("{FIXTURE}\n// stale-sidecar-rechunk-marker\n");
     std::fs::write(root.join("lib.rs"), &fixture).expect("write fixture");
     let stem = content_stem(fixture.as_bytes());
