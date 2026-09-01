@@ -124,7 +124,11 @@ fn lru_eviction_keeps_only_the_most_recent_within_the_cap() {
 
     let hot = pool.accessed();
     assert_eq!(hot.len(), 1);
-    assert_eq!(hot[0].root, canonical(&ws2), "the most-recently-used workspace survived");
+    assert_eq!(
+        hot[0].root,
+        canonical(&ws2),
+        "the most-recently-used workspace survived"
+    );
 }
 
 #[test]
@@ -483,7 +487,10 @@ fn a_non_project_root_is_refused_without_minting_a_workspace_cache_dir() {
     match error {
         WorkspacePoolError::RootRefused { root: refused, message } => {
             assert_eq!(refused, root);
-            assert!(message.contains("basemind init"), "the guidance is carried through: {message}");
+            assert!(
+                message.contains("basemind init"),
+                "the guidance is carried through: {message}"
+            );
         }
         other => panic!("expected RootRefused, got {other:?}"),
     }

@@ -182,10 +182,7 @@ async fn git_history_refuses_a_non_project_root_without_minting_cache_state() {
     let root = plain.path().canonicalize().expect("canonicalize");
     std::fs::write(root.join("notes.md"), "not a repo\n").expect("write file");
 
-    match broker
-        .run_git_history_inproc(root.clone(), GitHistoryOp::Sync)
-        .await
-    {
+    match broker.run_git_history_inproc(root.clone(), GitHistoryOp::Sync).await {
         Err(GitHistoryError::RootRefused(message)) => assert!(
             message.contains("basemind init"),
             "the operator guidance is carried through: {message}"
