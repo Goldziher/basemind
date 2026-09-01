@@ -15995,7 +15995,7 @@ dependencies = [
 [[package]]
 name = "xberg"
 version = "1.1.0"
-source = "git+https://github.com/xberg-io/xberg.git?rev=57f9a97180e92e56a800fba69e3f75f63df46fd8#57f9a97180e92e56a800fba69e3f75f63df46fd8"
+source = "git+https://github.com/xberg-io/xberg.git?rev=70f77bfa191be5051abece4690a0b4f3326c7229#70f77bfa191be5051abece4690a0b4f3326c7229"
 dependencies = [
  "ahash 0.8.12",
  "async-trait",
@@ -16107,7 +16107,7 @@ dependencies = [
 [[package]]
 name = "xberg-gliner"
 version = "1.1.0"
-source = "git+https://github.com/xberg-io/xberg.git?rev=57f9a97180e92e56a800fba69e3f75f63df46fd8#57f9a97180e92e56a800fba69e3f75f63df46fd8"
+source = "git+https://github.com/xberg-io/xberg.git?rev=70f77bfa191be5051abece4690a0b4f3326c7229#70f77bfa191be5051abece4690a0b4f3326c7229"
 dependencies = [
  "getrandom 0.2.17",
  "getrandom 0.3.4",
@@ -16122,7 +16122,7 @@ dependencies = [
 [[package]]
 name = "xberg-libheif"
 version = "1.1.0"
-source = "git+https://github.com/xberg-io/xberg.git?rev=57f9a97180e92e56a800fba69e3f75f63df46fd8#57f9a97180e92e56a800fba69e3f75f63df46fd8"
+source = "git+https://github.com/xberg-io/xberg.git?rev=70f77bfa191be5051abece4690a0b4f3326c7229#70f77bfa191be5051abece4690a0b4f3326c7229"
 dependencies = [
  "cfg-if 1.0.4",
  "enumn",
@@ -16134,7 +16134,7 @@ dependencies = [
 [[package]]
 name = "xberg-libwpd"
 version = "1.1.0"
-source = "git+https://github.com/xberg-io/xberg.git?rev=57f9a97180e92e56a800fba69e3f75f63df46fd8#57f9a97180e92e56a800fba69e3f75f63df46fd8"
+source = "git+https://github.com/xberg-io/xberg.git?rev=70f77bfa191be5051abece4690a0b4f3326c7229#70f77bfa191be5051abece4690a0b4f3326c7229"
 dependencies = [
  "cc",
  "flate2",
@@ -16148,7 +16148,7 @@ dependencies = [
 [[package]]
 name = "xberg-native-pdf"
 version = "1.1.0"
-source = "git+https://github.com/xberg-io/xberg.git?rev=57f9a97180e92e56a800fba69e3f75f63df46fd8#57f9a97180e92e56a800fba69e3f75f63df46fd8"
+source = "git+https://github.com/xberg-io/xberg.git?rev=70f77bfa191be5051abece4690a0b4f3326c7229#70f77bfa191be5051abece4690a0b4f3326c7229"
 dependencies = [
  "aes 0.9.2",
  "base64 0.23.1",
@@ -16194,7 +16194,7 @@ dependencies = [
 [[package]]
 name = "xberg-paddle-ocr"
 version = "1.1.0"
-source = "git+https://github.com/xberg-io/xberg.git?rev=57f9a97180e92e56a800fba69e3f75f63df46fd8#57f9a97180e92e56a800fba69e3f75f63df46fd8"
+source = "git+https://github.com/xberg-io/xberg.git?rev=70f77bfa191be5051abece4690a0b4f3326c7229#70f77bfa191be5051abece4690a0b4f3326c7229"
 dependencies = [
  "geo-clipper",
  "geo-types",
@@ -16210,7 +16210,7 @@ dependencies = [
 [[package]]
 name = "xberg-tesseract"
 version = "1.1.0"
-source = "git+https://github.com/xberg-io/xberg.git?rev=57f9a97180e92e56a800fba69e3f75f63df46fd8#57f9a97180e92e56a800fba69e3f75f63df46fd8"
+source = "git+https://github.com/xberg-io/xberg.git?rev=70f77bfa191be5051abece4690a0b4f3326c7229#70f77bfa191be5051abece4690a0b4f3326c7229"
 dependencies = [
  "cc",
  "cmake",

@@ -191,7 +191,7 @@ tree-sitter-graph = { package = "basemind-tree-sitter-graph", version = "0.12.0"
 tree-sitter-language-pack = "1.15.12"
 tree-sitter-stack-graphs = { package = "basemind-tree-sitter-stack-graphs", version = "0.10.0", path = "crates/tree-sitter-stack-graphs", optional = true }
 url = { version = "2", features = ["serde"], optional = true }
-xberg = { version = "1.1.0", git = "https://github.com/xberg-io/xberg.git", rev = "57f9a97180e92e56a800fba69e3f75f63df46fd8", default-features = false, features = [
+xberg = { version = "1.1.0", git = "https://github.com/xberg-io/xberg.git", rev = "70f77bfa191be5051abece4690a0b4f3326c7229", default-features = false, features = [
   "tokio-runtime",
   "simd-utf8",
 ], optional = true }
@@ -266,6 +266,17 @@ opt-level = 3
 
 [profile.release.package.aws-lc-sys]
 opt-level = 3
+
+# ~keep Also not perf tuning. xberg's own workspace pins these two because the archive crates
+# ~keep miscompile into a SIGBUS on macOS ARM64 at higher optimization -- sevenz-rust2 needs
+# ~keep opt-level 1 specifically (2 still faulted), zip needs at most 2. Cargo profiles only apply
+# ~keep from the workspace ROOT, so building xberg as a dependency here silently drops those pins;
+# ~keep the `package."*"` size override above would otherwise compile both well past the safe level.
+[profile.release.package.sevenz-rust2]
+opt-level = 1
+
+[profile.release.package.zip]
+opt-level = 2
 
 [[bench]]
 name = "extract"
