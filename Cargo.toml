@@ -255,6 +255,18 @@ opt-level = 3
 [profile.release.package.rayon]
 opt-level = 3
 
+# ~keep Not perf tuning -- correctness. cmake-rs derives CMAKE_BUILD_TYPE from opt-level, so "s"
+# ~keep silently builds these as MinSizeRel. xberg-tesseract then installs leptonica under that
+# ~keep config while tesseract still configures -DCMAKE_BUILD_TYPE=Release, its exported target
+# ~keep stops resolving, and the build script dies in check_leptonica_tiff_support with
+# ~keep "IMPORTED_LOCATION not set for imported target leptonica". Only the `full` Windows build
+# ~keep compiles tesseract, so CI's `comms shells` leg cannot catch this -- publish is where it lands.
+[profile.release.package.xberg-tesseract]
+opt-level = 3
+
+[profile.release.package.aws-lc-sys]
+opt-level = 3
+
 [[bench]]
 name = "extract"
 harness = false
