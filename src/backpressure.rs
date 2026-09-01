@@ -7,9 +7,10 @@
 //! more is admitted.
 //!
 //! It is deliberately *best-effort* and never fails a scan:
-//! - `max_footprint_mb == 0` (the default) makes the gate a no-op ([`AdmitOutcome::Disabled`]).
-//! - a sampler that cannot read the footprint (non-macOS, or a failed syscall) admits
-//!   immediately ([`AdmitOutcome::Unavailable`]).
+//! - `max_footprint_mb = "off"`, or an auto ceiling on a platform that reports no memory
+//!   limit, makes the gate a no-op ([`AdmitOutcome::Disabled`]).
+//! - a sampler that cannot read the footprint (an unsupported platform, or a failed syscall)
+//!   admits immediately ([`AdmitOutcome::Unavailable`]).
 //! - after `max_wait` over the ceiling the gate admits anyway ([`AdmitOutcome::WaitedOut`]),
 //!   trading a memory overshoot for guaranteed forward progress — the goal is to shave the
 //!   peak, not to enforce an invariant the allocator won't.
@@ -20,6 +21,8 @@
 //! touching real memory.
 
 use std::time::{Duration, Instant};
+
+use crate::config::MaxFootprint;
 
 /// Bytes in one mebibyte — the unit `max_footprint_mb` is expressed in.
 const BYTES_PER_MB: u64 = 1024 * 1024;
@@ -35,7 +38,8 @@ const DEFAULT_MAX_WAIT: Duration = Duration::from_secs(5);
 /// assert whether throttling actually happened.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AdmitOutcome {
-    /// The gate is disabled (`max_footprint_mb == 0`); admitted without sampling.
+    /// The gate has no ceiling to enforce (`max_footprint_mb = "off"`, or auto on a platform
+    /// that reports no limit); admitted without sampling.
     Disabled,
     /// The sampler could not read the footprint; admitted without throttling.
     Unavailable,
@@ -66,11 +70,16 @@ where
 }
 
 impl FootprintGate {
-    /// Construct a gate for a `max_footprint_mb` ceiling, sampling the real process footprint via
-    /// [`crate::sysres::phys_footprint`]. `max_footprint_mb == 0` yields a disabled gate whose
+    /// Construct a gate for the `[resources] max_footprint_mb` setting, sampling the real
+    /// process footprint via [`crate::sysres::phys_footprint`].
+    ///
+    /// The setting is resolved here rather than by the caller because auto mode has to consult
+    /// the environment — see [`MaxFootprint::resolve_mb`]. That sample is rate-limited inside
+    /// `sysres`, so constructing a gate per admit point stays cheap. A resolved ceiling of `0`
+    /// (`"off"`, or auto with no detectable limit) yields a disabled gate whose
     /// [`admit`](FootprintGate::admit) is a no-op.
-    pub fn new(max_footprint_mb: usize) -> Self {
-        FootprintGate::with_sampler(max_footprint_mb, crate::sysres::phys_footprint)
+    pub fn new(setting: MaxFootprint) -> Self {
+        FootprintGate::with_sampler(setting.resolve_mb(), crate::sysres::phys_footprint)
     }
 }
 
@@ -78,8 +87,9 @@ impl<S> FootprintGate<S>
 where
     S: Fn() -> Option<u64>,
 {
-    /// Construct a gate with an injected sampler. Used by tests to drive the over-then-under
-    /// transition deterministically.
+    /// Construct a gate from an already-resolved mebibyte ceiling (`0` = disabled) and an
+    /// injected sampler. Used by tests to drive the over-then-under transition
+    /// deterministically, and by [`FootprintGate::new`] once auto has been resolved.
     pub fn with_sampler(max_footprint_mb: usize, sampler: S) -> Self {
         Self {
             limit_bytes: (max_footprint_mb as u64).saturating_mul(BYTES_PER_MB),
