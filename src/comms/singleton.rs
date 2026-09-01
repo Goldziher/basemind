@@ -550,7 +550,6 @@ pub use spawn::{DAEMON_BINARY_ENV, spawn_detached_daemon};
 mod tests {
     use super::*;
 
-
     #[test]
     fn version_is_older_orders_releases_and_ignores_prerelease() {
         assert!(version_is_older("0.6.3", "0.10.0"));
