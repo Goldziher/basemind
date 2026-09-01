@@ -22,7 +22,7 @@
 
 /// Persisted-schema version. Synced to the release minor: `0.X.y` → `X` (and
 /// `M.X.y` → `M * 100 + X` once `1.0` ships).
-pub const RELEASE_MINOR: u16 = 25;
+pub const RELEASE_MINOR: u16 = 26;
 
 /// Reported when the running executable cannot be located or read.
 pub const UNKNOWN_BUILD_ID: &str = "unknown";

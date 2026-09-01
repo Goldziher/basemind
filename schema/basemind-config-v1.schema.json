@@ -183,7 +183,7 @@
         "max_pages": 32,
         "max_depth": 2,
         "max_body_size": 4194304,
-        "user_agent": "basemind/0.25.2 (+https://github.com/Goldziher/basemind)",
+        "user_agent": "basemind/0.26.0 (+https://github.com/Goldziher/basemind)",
         "allow_private_network": false
       }
     },
@@ -793,7 +793,7 @@
           "default": 0
         },
         "max_concurrent_documents": {
-          "description": "Upper bound on documents extracted concurrently. `0` (auto) leaves the\ndispatch unbounded (today's behaviour). Parsed now; a concurrency\nsemaphore around document dispatch is a later iteration — the field\nexists so the schema is stable ahead of the consumer. Memory is bounded\ntoday by `max_footprint_mb` rather than by an in-flight document count.",
+          "description": "Upper bound on documents extracted concurrently. `0` (auto) leaves the\ndispatch unbounded. Enforced by a counting semaphore around document\nextraction (`backpressure::acquire_doc_slot`).\n\nComplementary to `max_footprint_mb` rather than redundant with it: a\ndocument extraction's spike (decoded page buffers, OCR bitmaps, an\nembedding batch) lands faster than the footprint sampler can observe it,\nso a memory ceiling alone reacts after the allocation. This bounds how\nmany such spikes can overlap in the first place.",
           "type": "integer",
           "format": "uint",
           "minimum": 0,
@@ -1060,7 +1060,7 @@
           "description": "User-Agent header sent with every request. Override to identify your\ncrawler to operators; the default includes the basemind release\nversion + the upstream repo URL so site operators can trace traffic.",
           "type": "string",
           "minLength": 1,
-          "default": "basemind/0.25.2 (+https://github.com/Goldziher/basemind)"
+          "default": "basemind/0.26.0 (+https://github.com/Goldziher/basemind)"
         },
         "allow_private_network": {
           "description": "Allow crawling URLs that resolve to private, loopback, or link-local\naddresses (`127.0.0.0/8`, `10.0.0.0/8`, `169.254.0.0/16`, …). Default\n`false`: the engine rejects them with an SSRF-policy violation. Flip this\non only to scrape an internal docs server you control. (The\n`CRAWLBERG_ALLOW_PRIVATE_NETWORK` env var is honoured as a process-wide\noverride regardless of this setting.)",
