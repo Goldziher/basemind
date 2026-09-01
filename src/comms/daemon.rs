@@ -653,6 +653,14 @@ impl Broker {
         self.workspaces.evict_idle(ttl)
     }
 
+    /// Shed hosted READ STACKS idle past `ttl` while keeping their hot store entries, returning the
+    /// count dropped. Swept on its own, much shorter clock than
+    /// [`evict_idle_workspaces`](Self::evict_idle_workspaces): the stack is the O(corpus) half of a
+    /// hot workspace and is rebuilt from the same blobs on the next connection.
+    pub fn evict_idle_read_stacks(&self, ttl: Duration) -> usize {
+        self.workspaces.evict_idle_read_stacks(ttl)
+    }
+
     /// Reap orphaned workspace cache dirs, then reference-count the machine-global blob store across
     /// every *surviving* workspace and reap orphan blobs — both under the WRITE side of
     /// [`Broker::blob_gc_lock`], so no rescan is writing blobs mid-sweep. Only the daemon calls this:

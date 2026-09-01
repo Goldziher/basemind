@@ -7,6 +7,11 @@ use std::time::Duration;
 
 use super::*;
 
+/// History host for the fixtures, which care about the read stack and not about git history.
+///
+/// It DECLINES rather than panicking: the fixture workspaces are `git init`ed (that is how they pass
+/// the root guard), so a hosted read stack really does spawn a git-history sync against this host.
+/// Panicking there only produced background-task noise that no assertion depended on.
 struct UnusedHistoryHost;
 
 impl crate::git_history::remote::HistoryHost for UnusedHistoryHost {
@@ -22,7 +27,7 @@ impl crate::git_history::remote::HistoryHost for UnusedHistoryHost {
                 + '_,
         >,
     > {
-        Box::pin(async { unreachable!("plain workspace never opens git history") })
+        Box::pin(async { Err(crate::git_history::GitHistoryError::Disabled) })
     }
 }
 
@@ -523,5 +528,205 @@ fn a_path_that_resolves_to_the_filesystem_root_is_refused() {
     assert!(
         !store::workspace_cache_dir(Path::new("/")).exists(),
         "no spelling of the filesystem root may mint a workspace cache dir"
+    );
+}
+
+/// Build (or rebuild) `root`'s hosted read stack through `pool`, with the throwaway history host
+/// every plain-workspace fixture uses.
+async fn hosted_stack(
+    pool: &std::sync::Arc<WorkspacePool>,
+    root: &std::path::Path,
+) -> std::sync::Arc<crate::mcp::SharedReadStack> {
+    let host: std::sync::Arc<dyn crate::mcp::HostBackend> = pool.clone();
+    let history: std::sync::Arc<dyn crate::git_history::remote::HistoryHost> = std::sync::Arc::new(UnusedHistoryHost);
+    pool.get_or_build_serve_state(root, host, history)
+        .await
+        .expect("build hosted read stack")
+}
+
+/// Drop the one field two runs of the same query may legitimately disagree on: handler latency.
+fn scrub_timings(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(map) => {
+            map.remove("elapsed_us");
+            for nested in map.values_mut() {
+                scrub_timings(nested);
+            }
+        }
+        serde_json::Value::Array(items) => items.iter_mut().for_each(scrub_timings),
+        _ => {}
+    }
+}
+
+/// Answer one `code` call against a hosted stack, returning the response body with timings scrubbed.
+/// Goes through a real per-connection [`crate::mcp::BasemindServer`], so what is compared is the
+/// bytes a client would receive, not an internal projection of them.
+async fn code_response(
+    shared: &std::sync::Arc<crate::mcp::SharedReadStack>,
+    params: crate::mcp::params::CodeParams,
+) -> String {
+    use rmcp::model::ContentBlock;
+    let server = crate::mcp::BasemindServer::from_shared(
+        std::sync::Arc::clone(shared),
+        "read-stack-tester".to_string(),
+        std::sync::Arc::new(crate::mcp::admission::HeavyAdmission::default()),
+    );
+    let result = server
+        .code(crate::mcp::params::Parameters(crate::mcp::params::Lenient(params)))
+        .await
+        .expect("code call");
+    let text = result
+        .content
+        .iter()
+        .find_map(|block| match block {
+            ContentBlock::Text(block) => Some(block.text.clone()),
+            _ => None,
+        })
+        .unwrap_or_default();
+    let mut parsed: serde_json::Value = serde_json::from_str(&text).unwrap_or(serde_json::Value::Null);
+    scrub_timings(&mut parsed);
+    serde_json::to_string(&parsed).expect("re-serialize the scrubbed response")
+}
+
+/// A whole-corpus symbol scan — the read stack's L1 outline path.
+fn symbols_query() -> crate::mcp::params::CodeParams {
+    let mut params = crate::mcp::params::CodeParams::new(crate::mcp::params::CodeMode::Symbols);
+    params.name = Some("alpha".to_string());
+    params
+}
+
+/// A working-tree grep — a different consumer of the same stack, so the comparison is not one path.
+fn grep_query() -> crate::mcp::params::CodeParams {
+    let mut params = crate::mcp::params::CodeParams::new(crate::mcp::params::CodeMode::Grep);
+    params.pattern = Some("pub fn".to_string());
+    params
+}
+
+/// Warm read stacks are capped SEPARATELY from — and far below — the store cap. A hot entry is a
+/// `Store` handle; a warm read stack is an O(corpus) resident structure, and letting one grow per
+/// hot entry is the daemon-specific multiplier behind issue #62. So opening more workspaces than the
+/// stack cap must leave every store entry hot while the stacks stay at the cap.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn warm_read_stacks_are_capped_independently_of_hot_stores() {
+    store::init_isolated_cache();
+    let cap = warm_read_stack_cap();
+    let workspaces = cap + 2;
+    assert!(
+        workspaces <= DEFAULT_HOT_CAP,
+        "the fixture must stay inside the STORE cap, or it cannot show the two caps diverging"
+    );
+
+    let pool = std::sync::Arc::new(WorkspacePool::new(DEFAULT_HOT_CAP));
+    let roots: Vec<tempfile::TempDir> = (0..workspaces).map(|_| workspace_with_sources()).collect();
+    let mut first_answer = String::new();
+    for (i, root) in roots.iter().enumerate() {
+        pool.rescan(root.path(), None, false, false, &ScanCancel::default())
+            .expect("scan workspace");
+        // ~keep Dropped immediately: a held `Arc` is not a live CONNECTION, and only a connection
+        // ~keep (`begin_conn`) pins a stack against the cap.
+        let shared = hosted_stack(&pool, root.path()).await;
+        if i == 0 {
+            first_answer = code_response(&shared, symbols_query()).await;
+        }
+        drop(shared);
+        assert!(
+            pool.warm_read_stacks() <= cap,
+            "the cap holds at every step, not just at the end"
+        );
+    }
+
+    assert_eq!(pool.len(), workspaces, "every workspace stays hot as a store entry");
+    assert_eq!(
+        pool.warm_read_stacks(),
+        cap,
+        "read stacks are capped at {cap}, well below the {DEFAULT_HOT_CAP} store cap"
+    );
+
+    // ~keep The cap has to have BITTEN for any of this to mean anything: the least-recently-used
+    // ~keep workspace must have lost its stack while keeping its store entry — and must still answer
+    // ~keep identically once the next request rebuilds it.
+    let evicted = roots.first().expect("at least one workspace");
+    let rebuilt = hosted_stack(&pool, evicted.path()).await;
+    assert_eq!(
+        pool.warm_read_stacks(),
+        cap,
+        "rebuilding the LRU workspace's stack evicts another rather than exceeding the cap"
+    );
+    assert!(
+        first_answer.contains("alpha"),
+        "the query must actually match, or the comparison is vacuous: {first_answer}"
+    );
+    assert_eq!(
+        code_response(&rebuilt, symbols_query()).await,
+        first_answer,
+        "a stack the cap evicted answers byte-identically once rebuilt"
+    );
+}
+
+/// The invariant the whole bounded read stack rests on: **dropping a warm stack changes latency,
+/// never an answer.** The same queries are asked of a hosted stack, the stack is force-evicted while
+/// its store entry stays hot, and the rebuilt stack is asked again — the response bodies must match
+/// byte for byte, modulo the per-call timing every response carries.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_rebuilt_read_stack_answers_byte_identically() {
+    store::init_isolated_cache();
+    let pool = std::sync::Arc::new(WorkspacePool::new(DEFAULT_HOT_CAP));
+    let workspace = workspace_with_sources();
+    pool.rescan(workspace.path(), None, false, false, &ScanCancel::default())
+        .expect("scan workspace");
+
+    let shared = hosted_stack(&pool, workspace.path()).await;
+    let before_symbols = code_response(&shared, symbols_query()).await;
+    let before_grep = code_response(&shared, grep_query()).await;
+    drop(shared);
+    assert!(
+        before_symbols.contains("alpha"),
+        "the query must actually match, or the comparison is vacuous: {before_symbols}"
+    );
+
+    assert_eq!(
+        pool.evict_idle_read_stacks(Duration::ZERO),
+        1,
+        "a zero idle window sheds the warm read stack"
+    );
+    assert_eq!(pool.warm_read_stacks(), 0);
+    assert_eq!(
+        pool.len(),
+        1,
+        "the store entry — the half that is NOT cheaply rebuildable — survives the stack sweep"
+    );
+
+    let rebuilt = hosted_stack(&pool, workspace.path()).await;
+    assert_eq!(pool.warm_read_stacks(), 1, "the next request rebuilds the stack");
+    assert_eq!(code_response(&rebuilt, symbols_query()).await, before_symbols);
+    assert_eq!(code_response(&rebuilt, grep_query()).await, before_grep);
+}
+
+/// A live connection pins a warm stack against BOTH shedding paths, exactly as it pins the store
+/// entry. Dropping a stack out from under an in-flight session would leave that session's `Arc`
+/// resident AND let the next connection build a second stack for the same workspace — strictly worse
+/// than keeping the first.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_active_connection_pins_its_warm_read_stack() {
+    store::init_isolated_cache();
+    let pool = std::sync::Arc::new(WorkspacePool::new(DEFAULT_HOT_CAP));
+    let workspace = workspace_with_sources();
+    pool.rescan(workspace.path(), None, false, false, &ScanCancel::default())
+        .expect("scan workspace");
+    drop(hosted_stack(&pool, workspace.path()).await);
+
+    let guard = pool.begin_conn(workspace.path()).expect("begin conn");
+    assert_eq!(
+        pool.evict_idle_read_stacks(Duration::ZERO),
+        0,
+        "a served workspace keeps its read stack at any idle threshold"
+    );
+    assert_eq!(pool.warm_read_stacks(), 1);
+
+    drop(guard);
+    assert_eq!(
+        pool.evict_idle_read_stacks(Duration::ZERO),
+        1,
+        "the stack is shed once the last connection drains"
     );
 }

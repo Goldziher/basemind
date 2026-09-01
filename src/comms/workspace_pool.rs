@@ -27,6 +27,59 @@ use crate::store::{self, LockHolder, Store, VIEW_WORKING};
 /// this evicts the least-recently-used entry; it re-opens lazily on its next request.
 pub(crate) const DEFAULT_HOT_CAP: usize = 16;
 
+/// Default number of daemon-hosted READ STACKS kept warm at once — deliberately far below
+/// [`DEFAULT_HOT_CAP`], which governs something much cheaper.
+///
+/// A hot entry is an open `Store` handle. A warm read stack is an O(corpus) resident structure per
+/// workspace (the L1 outline cache, the projected call / implementation indexes, git caches,
+/// LanceDB, ONNX), so letting one grow per hot entry multiplies the whole read stack by 16 — the
+/// daemon-specific multiplier behind issue #62's 43.8 GiB. Three lets a developer alternate between
+/// a couple of repos without paying a rebuild, and a rebuild is transparent anyway: dropping a stack
+/// changes latency, not answers.
+pub(crate) const DEFAULT_WARM_READ_STACK_CAP: usize = 3;
+
+/// Env override for [`DEFAULT_WARM_READ_STACK_CAP`]. Zero or unparseable falls back to the default.
+///
+/// A const + env knob rather than a `[resources]` config key: the pool is machine-global and is
+/// built before any workspace is known ([`super::daemon::Broker::with_registry`]), so a
+/// per-workspace config key would have no answer to "which workspace's number governs the shared
+/// daemon". This mirrors the other machine-global daemon knobs
+/// ([`crate::daemon_lock::MAX_LIVE_DAEMONS_ENV`], `WORKSPACE_HOT_TTL`).
+pub(crate) const WARM_READ_STACK_CAP_ENV: &str = "BASEMIND_WARM_READ_STACKS";
+
+/// How long a hosted read stack may sit unrequested before the daemon drops it while KEEPING the
+/// workspace's hot store entry.
+///
+/// Shorter than [`super::daemon::WORKSPACE_HOT_TTL`], because the two things are not comparable: the
+/// store handle is a file descriptor and an index lock that cannot be reacquired for free, while the
+/// read stack is a whole-corpus projection that any later connection rebuilds from the same on-disk
+/// blobs. Shedding the expensive, rebuildable half early is what keeps a long-lived daemon's
+/// resident set proportional to what is actually being served rather than to everything it has ever
+/// served.
+///
+/// Two thirds rather than the more aggressive third it started at, because this clock is NOT what
+/// bounds memory — [`DEFAULT_WARM_READ_STACK_CAP`] is. The cap already holds residency to three
+/// stacks no matter how many workspaces the daemon has served; the TTL only reclaims *below* the
+/// cap, so shortening it further buys at most three stacks. It is not free, either: dropping a
+/// stack drops its `WatcherGuard` (they cannot be separated — the watcher task holds the read stack
+/// it would keep fresh), and a rebuild runs no catch-up scan, so edits made while a workspace is
+/// shed are invisible until the next watcher event or an explicit `admin rescan`. That exposure
+/// already existed at `WORKSPACE_HOT_TTL`; there is no reason to triple how often it is reached in
+/// exchange for memory the cap has already bounded.
+pub(crate) const READ_STACK_IDLE_TTL: Duration = Duration::from_secs(10 * 60);
+
+/// The effective warm-stack cap: [`DEFAULT_WARM_READ_STACK_CAP`] unless [`WARM_READ_STACK_CAP_ENV`]
+/// overrides it.
+pub(crate) fn warm_read_stack_cap() -> usize {
+    match std::env::var(WARM_READ_STACK_CAP_ENV) {
+        Ok(raw) => match raw.trim().parse::<usize>() {
+            Ok(n) if n > 0 => n,
+            _ => DEFAULT_WARM_READ_STACK_CAP,
+        },
+        Err(_) => DEFAULT_WARM_READ_STACK_CAP,
+    }
+}
+
 /// Failure opening or scanning a workspace through the pool. Surfaced to the dispatch layer, which
 /// maps it to a [`CommsResponse::Error`](super::protocol::CommsResponse::Error) rather than tearing
 /// down the link.
@@ -74,13 +127,19 @@ struct WorkspaceEntry {
     /// requests instead of re-scanning; an `Inline` result satisfies a `Deferred` request but not
     /// vice versa.
     last_full: Mutex<Option<(u64, EmbedMode, ScanStats)>>,
-    /// The daemon-hosted shared read stack for this workspace, built once on the first relay
-    /// connection and shared (by `Arc`) across every connection thereafter — so the heavy read
-    /// state (in-RAM `MapCache`, LanceDB, ONNX, git caches) is resident once per workspace, not
-    /// once per client. `None`/uninitialised until the first relay connection; a pure comms build
-    /// without any relay client never pays for it.
+    /// The daemon-hosted shared read stack for this workspace, built on the first relay connection
+    /// and shared (by `Arc`) across every connection thereafter — so the heavy read state (in-RAM
+    /// `MapCache`, LanceDB, ONNX, git caches) is resident once per workspace, not once per client.
+    /// `None` until the first relay connection; a pure comms build without any relay client never
+    /// pays for it.
+    ///
+    /// A `Mutex<Option<_>>` rather than a `OnceCell`: it keeps the build-once-under-concurrency
+    /// property (the lock is held across the build, so racing callers await the one build) while
+    /// staying RESETTABLE, which a `OnceCell` behind an `Arc` is not. Resettable is the whole point
+    /// — the stack is the O(corpus) half of a hot workspace and must be sheddable independently of
+    /// the store handle it sits next to (see [`WorkspacePool::evict_idle_read_stacks`]).
     #[cfg(all(feature = "comms", any(unix, windows)))]
-    serve_state: tokio::sync::OnceCell<crate::mcp::HostedReadStack>,
+    serve_state: tokio::sync::Mutex<Option<crate::mcp::HostedReadStack>>,
     /// Count of relay connections currently being served against this workspace's shared read
     /// stack. Eviction (LRU + idle sweep) skips any entry with a live connection so a hosted
     /// workspace is never dropped from under an in-flight rmcp session.
@@ -268,17 +327,21 @@ impl WorkspacePool {
         Ok(f(&mut store))
     }
 
-    /// Build (once) or fetch the daemon-hosted shared read stack for `root`, opening the workspace
-    /// into the pool if cold. The first caller runs
+    /// Build (or fetch) the daemon-hosted shared read stack for `root`, opening the workspace into
+    /// the pool if cold. The first caller runs
     /// [`build_hosted_read_stack`](crate::mcp::BasemindServer::build_hosted_read_stack) — which does
     /// a blocking whole-corpus `MapCache::build`, so it runs on a blocking thread — and spawns the
-    /// workspace's single freshness warden; every later caller gets the same `Arc` from the
-    /// [`OnceCell`](tokio::sync::OnceCell). Concurrent first callers all await the one build.
+    /// workspace's single freshness warden; every later caller gets the same `Arc`. Concurrent
+    /// callers all await the one build, because the slot lock is held across it.
     ///
     /// `host` is the in-process host seam handed to the built stack (the pool itself), so the hosted
     /// connection's writes / rescans / resolved-refs reach the pool directly instead of dialing the
     /// daemon over its own socket. `git_history_host` is the same seam for git-history reads (the
     /// daemon Broker, the sole holder of `git-history.fjall/`).
+    ///
+    /// Building one stack is what enforces the warm-stack cap: the trim runs here, AFTER the slot
+    /// lock is released, so admitting a new stack is the moment the least-recently-used ones are
+    /// shed.
     #[cfg(all(feature = "comms", any(unix, windows)))]
     pub(crate) async fn get_or_build_serve_state(
         &self,
@@ -288,18 +351,117 @@ impl WorkspacePool {
     ) -> anyhow::Result<std::sync::Arc<crate::mcp::SharedReadStack>> {
         let entry = self.get_or_open(root).map_err(anyhow::Error::new)?;
         entry.touch();
-        let root_buf = root.to_path_buf();
-        let shared = entry
-            .serve_state
-            .get_or_try_init(|| async move {
-                tokio::task::spawn_blocking(move || {
-                    crate::mcp::BasemindServer::build_hosted_read_stack(&root_buf, host, git_history_host)
-                })
-                .await
-                .map_err(|join| anyhow::anyhow!("hosted read stack build panicked: {join}"))?
-            })
-            .await?;
-        Ok(shared.shared())
+        let (shared, built) = {
+            let mut slot = entry.serve_state.lock().await;
+            match slot.as_ref() {
+                Some(hosted) => (hosted.shared(), false),
+                None => {
+                    let root_buf = root.to_path_buf();
+                    let hosted = tokio::task::spawn_blocking(move || {
+                        crate::mcp::BasemindServer::build_hosted_read_stack(&root_buf, host, git_history_host)
+                    })
+                    .await
+                    .map_err(|join| anyhow::anyhow!("hosted read stack build panicked: {join}"))??;
+                    let shared = hosted.shared();
+                    *slot = Some(hosted);
+                    (shared, true)
+                }
+            }
+        };
+        // Only an admission can push the warm set over the cap, and the stateless HTTP front-end
+        // resolves a stack on every request — so trimming on the cache-hit path would walk the pool
+        // once per request to discover there is nothing to do. ~keep
+        if built {
+            self.trim_warm_read_stacks(&entry.key);
+        }
+        Ok(shared)
+    }
+
+    /// Drop least-recently-used hosted read stacks until at most [`warm_read_stack_cap`] stay warm,
+    /// leaving every workspace's hot store entry in place.
+    ///
+    /// Follows the store LRU in [`Self::get_or_open`] exactly — same `last_used` clock, same
+    /// `active_conns` pin, same "exceed the cap rather than pull the rug from under a live session"
+    /// rule — so there is one eviction policy here, expressed twice at two different costs.
+    /// `just_built` is never a victim: the caller that paid for the build must be served from it.
+    ///
+    /// Non-blocking by construction: a slot whose lock is held is one being built or handed out
+    /// right now, i.e. the most-recently-used, so skipping it is both cheaper and more correct than
+    /// waiting for it.
+    #[cfg(all(feature = "comms", any(unix, windows)))]
+    fn trim_warm_read_stacks(&self, just_built: &str) {
+        use std::sync::atomic::Ordering::Acquire;
+        let cap = warm_read_stack_cap();
+        let entries: Vec<std::sync::Arc<WorkspaceEntry>> = self.lock_map().values().cloned().collect();
+        let mut warm = 0usize;
+        let mut evictable: Vec<std::sync::Arc<WorkspaceEntry>> = Vec::new();
+        for entry in entries {
+            let is_warm = match entry.serve_state.try_lock() {
+                Ok(slot) => slot.is_some(),
+                Err(_) => continue,
+            };
+            if !is_warm {
+                continue;
+            }
+            warm += 1;
+            if entry.key != just_built && entry.active_conns.load(Acquire) == 0 {
+                evictable.push(entry);
+            }
+        }
+        let Some(mut over) = warm.checked_sub(cap).filter(|over| *over > 0) else {
+            return;
+        };
+        evictable.sort_by_key(|entry| entry.last_used());
+        for entry in evictable {
+            if over == 0 {
+                break;
+            }
+            if let Ok(mut slot) = entry.serve_state.try_lock()
+                && slot.take().is_some()
+            {
+                over -= 1;
+                tracing::info!(root = %entry.root.display(), cap, "daemon: shed a warm read stack over the cap");
+            }
+        }
+    }
+
+    /// Drop the hosted read stack of every workspace idle for at least `idle`, KEEPING its hot store
+    /// entry, and return the count dropped.
+    ///
+    /// The counterpart to [`Self::evict_idle`] on a much shorter clock ([`READ_STACK_IDLE_TTL`]): a
+    /// read stack is an O(corpus) projection any later connection rebuilds from the same blobs,
+    /// whereas the store handle it sits next to holds the workspace's index lock. An entry with a
+    /// live connection is skipped, exactly as in the entry sweep — dropping a stack out from under
+    /// an in-flight rmcp session would leave that session's `Arc` alive AND let the next connection
+    /// build a second stack for the same workspace, which is worse than keeping the first.
+    #[cfg(all(feature = "comms", any(unix, windows)))]
+    pub(crate) fn evict_idle_read_stacks(&self, idle: Duration) -> usize {
+        use std::sync::atomic::Ordering::Acquire;
+        let entries: Vec<std::sync::Arc<WorkspaceEntry>> = self.lock_map().values().cloned().collect();
+        let mut dropped = 0;
+        for entry in entries {
+            if entry.active_conns.load(Acquire) != 0 || entry.last_used().elapsed() < idle {
+                continue;
+            }
+            if let Ok(mut slot) = entry.serve_state.try_lock()
+                && slot.take().is_some()
+            {
+                dropped += 1;
+            }
+        }
+        dropped
+    }
+
+    /// Number of workspaces currently holding a warm hosted read stack. Exposed for tests: it is the
+    /// quantity the cap bounds, and it is deliberately NOT [`Self::len`] — the two diverge on
+    /// purpose.
+    #[cfg(all(test, feature = "comms", any(unix, windows)))]
+    pub(crate) fn warm_read_stacks(&self) -> usize {
+        let entries: Vec<std::sync::Arc<WorkspaceEntry>> = self.lock_map().values().cloned().collect();
+        entries
+            .iter()
+            .filter(|entry| entry.serve_state.try_lock().is_ok_and(|slot| slot.is_some()))
+            .count()
     }
 
     /// Register one relay connection against `root`, returning a guard that decrements the live-count
@@ -362,7 +524,7 @@ impl WorkspacePool {
             full_scan_gen: std::sync::atomic::AtomicU64::new(0),
             last_full: Mutex::new(None),
             #[cfg(all(feature = "comms", any(unix, windows)))]
-            serve_state: tokio::sync::OnceCell::new(),
+            serve_state: tokio::sync::Mutex::new(None),
             active_conns: std::sync::atomic::AtomicUsize::new(0),
         });
 

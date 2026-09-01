@@ -46,6 +46,9 @@ impl Daemon {
             // Isolate the daemon's registry snapshot + index writes to the same tempdir so this ~keep
             // test never touches the real XDG cache, and a restart reloads the same state. ~keep
             .env("BASEMIND_DATA_HOME", comms_dir)
+            // The HTTP front-end is opt-in (see `comms::http_auth`); these tests drive it, so the ~keep
+            // spawned daemon gets the grant explicitly rather than inheriting an ambient one. ~keep
+            .env(http_frontend::ALLOW_HTTP_ENV, "1")
             .env(http_frontend::HTTP_ADDR_ENV, "127.0.0.1:0")
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
@@ -120,7 +123,15 @@ async fn connect(socket: &Path, agent: &str, root: &Path) -> CommsClient {
 }
 
 /// Send one stateless MCP JSON-RPC call to the daemon's hosted HTTP frontend.
-async fn hosted_tool_call(addr: &str, root: &Path, agent: &str, id: usize, tool: &str, arguments: Value) -> Value {
+async fn hosted_tool_call(
+    addr: &str,
+    token: &str,
+    root: &Path,
+    agent: &str,
+    id: usize,
+    tool: &str,
+    arguments: Value,
+) -> Value {
     let mode = arguments["mode"].as_str().unwrap_or("unknown");
     let target = format!("/mcp?root={}&agent={agent}", root.display());
     let body = json!({
@@ -133,6 +144,7 @@ async fn hosted_tool_call(addr: &str, root: &Path, agent: &str, id: usize, tool:
     let mut stream = TcpStream::connect(addr).await.expect("connect hosted MCP frontend");
     let request = format!(
         "POST {target} HTTP/1.1\r\nHost: {addr}\r\nAccept: application/json, text/event-stream\r\n\
+         Authorization: Bearer {token}\r\n\
          Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
     );
@@ -264,6 +276,7 @@ async fn concurrent_cold_hosted_agents_and_workspace_calls_use_the_running_daemo
     let addr = http_frontend::await_http_ready(&comms_dir, Duration::from_secs(10))
         .await
         .expect("daemon-hosted MCP transport ready");
+    let token = http_frontend::published_token(&comms_dir).expect("the daemon publishes its bearer token");
 
     let worker_count = std::thread::available_parallelism().map_or(1, usize::from);
     let identities_per_tool = worker_count
@@ -273,10 +286,11 @@ async fn concurrent_cold_hosted_agents_and_workspace_calls_use_the_running_daemo
     for index in 0..identities_per_tool {
         for (tool, mode) in [("agents", "inbox"), ("workspace", "workspaces")] {
             let addr = addr.clone();
+            let token = token.clone();
             let repo = repo.clone();
             let agent = format!("hosted-{tool}-{index}");
             calls.spawn(async move {
-                let response = hosted_tool_call(&addr, &repo, &agent, index, tool, json!({"mode": mode})).await;
+                let response = hosted_tool_call(&addr, &token, &repo, &agent, index, tool, json!({"mode": mode})).await;
                 (agent, tool, mode, response)
             });
         }
@@ -355,11 +369,13 @@ async fn hosted_keyword_search_reads_the_daemon_index_without_self_forwarding() 
     let addr = http_frontend::await_http_ready(&comms_dir, Duration::from_secs(10))
         .await
         .expect("daemon-hosted MCP transport ready");
+    let token = http_frontend::published_token(&comms_dir).expect("the daemon publishes its bearer token");
 
     let response = tokio::time::timeout(
         HOSTED_CALL_BOUND,
         hosted_tool_call(
             &addr,
+            &token,
             &repo,
             "hosted-keyword-search",
             1,

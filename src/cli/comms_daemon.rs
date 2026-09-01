@@ -20,6 +20,11 @@ use crate::comms::store::CommsStore;
 /// default 24h recency reads long before [`MESSAGE_TTL`](crate::comms::store::MESSAGE_TTL).
 const PRUNE_EVERY: std::time::Duration = std::time::Duration::from_secs(60 * 60);
 
+/// How often the hosted-read-stack sweep runs. Two orders tighter than [`PRUNE_EVERY`] because it
+/// sheds something two orders larger: an hourly clock would leave an O(corpus) read stack resident
+/// for up to an hour past its last use, which is exactly the residency the sweep exists to bound.
+const READ_STACK_SWEEP_EVERY: std::time::Duration = std::time::Duration::from_secs(60);
+
 /// How often the global blob GC + budget sweep runs, on its OWN task — deliberately not part of
 /// the prune loop. The GC can block up to its lock-timeout behind a long rescan (it takes the
 /// blob-GC write lock; every rescan holds the read side), and when it shared a loop with the
@@ -171,6 +176,23 @@ pub fn run() -> Result<()> {
                     tracing::info!(evicted, "daemon: shed idle hot workspaces from RAM");
                 }
                 prune_missing_registry_rows(&broker_for_prune).await;
+            }
+        });
+
+        // The read-stack sweep runs on its own task, not folded into the prune loop above: the two ~keep
+        // bound different things on clocks an order apart, and the prune loop's hourly tick would ~keep
+        // make a five-minute read-stack TTL unobservable. ~keep
+        let broker_for_stacks = broker.clone();
+        tokio::spawn(async move {
+            use crate::comms::workspace_pool::READ_STACK_IDLE_TTL;
+            let mut tick = tokio::time::interval(READ_STACK_SWEEP_EVERY);
+            tick.tick().await;
+            loop {
+                tick.tick().await;
+                let dropped = broker_for_stacks.evict_idle_read_stacks(READ_STACK_IDLE_TTL);
+                if dropped > 0 {
+                    tracing::info!(dropped, "daemon: shed idle hosted read stacks from RAM");
+                }
             }
         });
 
