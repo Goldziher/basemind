@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 <!-- Keep a Changelog repeats Added/Changed/Fixed headings per version. -->
 <!-- markdownlint-disable MD024 -->
 
-## [Unreleased]
+## [0.26.0] - 2026-09-01
 
 > **Minor release — cache rebuild, breaking changes, and a security fix.** Read *Breaking changes*
 > and *Security* before upgrading. Almost all of this release is issue [#62]: a comms daemon reached
@@ -249,6 +249,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `BASEMIND_GIT_DISCOVER_PARENTS=1`, restores the old behaviour. ([#62])
 - The Claude and Cursor plugin manifests launch `scripts/mcp-launch.sh serve --root <project dir>`
   over stdio instead of dialling `http://127.0.0.1:51786/mcp?root=…` — see *Security*. ([#62])
+- Dependency refresh: `xberg` repinned to the current 1.1.0 revision (internal extraction fixes and
+  its own dependency updates), `crawlberg` 1.4.2 → 1.5.0, `rmcp` 3.1 → 3.2,
+  `tree-sitter-language-pack` 1.15.12 → 1.16.1, `liter-llm` 1.18.4 → 1.19.1, `smallvec` 1.15 → 1.16,
+  `getrandom` 0.3 → 0.4. Two incompatible upgrades were deliberately not taken: `tree-sitter` stays
+  at 0.26 because `tree-sitter-language-pack` 1.16.1 still requires `^0.26` and `tree-sitter`
+  declares `links = "tree-sitter"`, so the graph admits exactly one version; and `lancedb` stays at
+  0.37 because 0.38.0 does not build without its `remote` feature — it gates the `Error::Http`
+  variant behind that feature while referencing it unconditionally from `job.rs`, and enabling
+  `remote` would pull an HTTP client stack in for no benefit here.
 
 ### Fixed
 
