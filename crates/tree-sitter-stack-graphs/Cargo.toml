@@ -22,7 +22,7 @@ lsp-positions = { package = "basemind-lsp-positions", version = "0.3.4", path = 
 once_cell = "1"
 stack-graphs = { package = "basemind-stack-graphs", version = "0.14.1", path = "../stack-graphs" }
 thiserror = "2"
-tree-sitter = "0.26"
+tree-sitter = "0.27"
 tree-sitter-graph = { package = "basemind-tree-sitter-graph", version = "0.12.0", path = "../tree-sitter-graph" }
 
 [dev-dependencies]

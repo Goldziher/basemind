@@ -75,7 +75,7 @@ fn run_docs(lang: LangId, root: tree_sitter::Node, source: &[u8]) -> Result<Vec<
 fn build_call(q: &Query, m: &QueryMatch, source: &[u8]) -> Option<Call> {
     let mut callee: Option<String> = None;
     let mut range_node = None;
-    for cap in m.captures {
+    for cap in m.captures() {
         let cname = capture_name(q, cap.index);
         match cname {
             "call.callee" => {
@@ -97,7 +97,7 @@ fn build_call(q: &Query, m: &QueryMatch, source: &[u8]) -> Option<Call> {
 }
 
 fn build_doc(q: &Query, m: &QueryMatch, source: &[u8]) -> Option<DocComment> {
-    for cap in m.captures {
+    for cap in m.captures() {
         if capture_name(q, cap.index) == "doc.text" {
             let node = cap.node;
             let text = node.utf8_text(source).ok()?.to_string();

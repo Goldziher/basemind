@@ -23,7 +23,7 @@ tree-sitter = ["dep:tree-sitter"]
 bincode = { version = "=2.0.1", optional = true }
 memchr = "2.8"
 serde = { version = "1", features = ["derive"], optional = true }
-tree-sitter = { version = "0.26", optional = true }
+tree-sitter = { version = "0.27", optional = true }
 unicode-segmentation = { version = "1.13" }
 
 [lints]

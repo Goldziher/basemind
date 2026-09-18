@@ -18,6 +18,7 @@ use std::io::stdout;
 use std::ops::Index;
 use std::ops::IndexMut;
 use std::path::Path;
+use std::sync::{LazyLock, Mutex};
 
 use serde::Serialize;
 use serde::Serializer;
@@ -30,6 +31,25 @@ use tree_sitter::Node;
 use crate::Identifier;
 use crate::Location;
 use crate::execution::error::ExecutionError;
+
+/// Interns tree-sitter node-kind names into `'static` strings.
+///
+/// tree-sitter >= 0.27 returns a tree-borrowing `&str` from `Node::kind()`, but
+/// [`SyntaxNodeRef`] stores its kind without a lifetime so that it stays `Copy`
+/// and usable as a map key. Node kinds come from the grammar's node-type table,
+/// so the set of distinct strings is small and bounded.
+static KIND_INTERNER: LazyLock<Mutex<HashMap<String, &'static str>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+fn intern_kind(kind: &str) -> &'static str {
+    let mut interned = KIND_INTERNER.lock().expect("kind interner lock poisoned");
+    if let Some(static_kind) = interned.get(kind) {
+        return static_kind;
+    }
+    let leaked: &'static str = Box::leak(kind.to_owned().into_boxed_str());
+    interned.insert(kind.to_owned(), leaked);
+    leaked
+}
 
 /// A graph produced by executing a graph DSL file.  Graphs include a lifetime parameter to ensure
 /// that they don't outlive the tree-sitter syntax tree that they are generated from.
@@ -56,7 +76,7 @@ impl<'tree> Graph<'tree> {
         let index = node.id() as SyntaxNodeID;
         let node_ref = SyntaxNodeRef {
             index,
-            kind: node.kind(),
+            kind: intern_kind(node.kind()),
             position: node.start_position(),
         };
         self.syntax_nodes.entry(index).or_insert(node);

@@ -16,7 +16,7 @@ use std::process::Command;
 
 use rmcp::ServiceExt;
 use rmcp::model::{
-    CallToolRequestParams, CallToolResponse, ClientCapabilities, ClientInfo, GetTaskParams, Implementation, TaskPayload,
+    CallToolRequestParams, CallToolResponse, ClientCapabilities, ClientConfig, GetTaskParams, Implementation, TaskPayload,
 };
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -73,8 +73,8 @@ async fn serve(root: &Path) -> tokio::io::DuplexStream {
         .expect("in-memory serve")
 }
 
-fn tasks_client() -> ClientInfo {
-    ClientInfo::new(
+fn tasks_client() -> ClientConfig {
+    ClientConfig::new(
         ClientCapabilities::builder().enable_tasks().build(),
         Implementation::from_build_env(),
     )
