@@ -169,7 +169,7 @@ fn build_bindings(query: &Query, root: Node, source: &[u8]) -> LocalBindings {
     let mut cursor = QueryCursor::new();
     let mut iter = cursor.matches(query, root, source);
     while let Some(m) = iter.next() {
-        for cap in m.captures {
+        for cap in m.captures() {
             let cname = names[cap.index as usize];
             let node = cap.node;
             let start = node.start_byte() as u32;

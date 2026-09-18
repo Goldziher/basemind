@@ -307,7 +307,7 @@ fn extract_exports(lang: LangId, source: &[u8], root: tree_sitter::Node<'_>, out
     let mut cursor = tree_sitter::QueryCursor::new();
     let mut matches = cursor.matches(query, root, source);
     while let Some(m) = matches.next() {
-        let Some(node) = m.captures.iter().find(|c| c.index == export_idx).map(|c| c.node) else {
+        let Some(node) = m.captures().iter().find(|c| c.index == export_idx).map(|c| c.node) else {
             continue;
         };
         let Ok(name) = node.utf8_text(source) else { continue };
@@ -332,13 +332,13 @@ fn extract_imports(lang: LangId, source: &[u8], root: tree_sitter::Node<'_>, out
     let mut cursor = tree_sitter::QueryCursor::new();
     let mut matches = cursor.matches(query, root, source);
     while let Some(m) = matches.next() {
-        let local_node = m.captures.iter().find(|c| c.index == local_idx).map(|c| c.node);
+        let local_node = m.captures().iter().find(|c| c.index == local_idx).map(|c| c.node);
         let Some(local_node) = local_node else { continue };
         let local = match local_node.utf8_text(source) {
             Ok(t) => t.to_string(),
             Err(_) => continue,
         };
-        let module_node = module_idx.and_then(|mi| m.captures.iter().find(|c| c.index == mi));
+        let module_node = module_idx.and_then(|mi| m.captures().iter().find(|c| c.index == mi));
         let specifier = module_node
             .and_then(|c| c.node.utf8_text(source).ok())
             .unwrap_or("")

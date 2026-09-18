@@ -87,7 +87,7 @@ fn run_combined(lang: LangId, root: tree_sitter::Node, source: &[u8]) -> Result<
         let mut iter = cursor.matches(q, root, source);
         while let Some(m) = iter.next() {
             let class = m
-                .captures
+                .captures()
                 .iter()
                 .map(|cap| classes[cap.index as usize])
                 .find(|class| !matches!(class, CaptureClass::Other));
@@ -162,7 +162,7 @@ fn build_symbol(q: &Query, m: &QueryMatch, source: &[u8]) -> Option<Symbol> {
     let mut signature: Option<String> = None;
     let mut decorators: Vec<String> = Vec::new();
 
-    for cap in m.captures {
+    for cap in m.captures() {
         let cname = capture_name(q, cap.index);
         let node = cap.node;
         if cname == "symbol.name" {
@@ -300,7 +300,7 @@ fn build_implementation(q: &Query, m: &QueryMatch, source: &[u8]) -> Option<Impl
     let mut range_node: Option<Node> = None;
     let mut trait_node: Option<Node> = None;
 
-    for cap in m.captures {
+    for cap in m.captures() {
         let cname = capture_name(q, cap.index);
         match cname {
             "impl.trait_name" => {
@@ -372,7 +372,7 @@ fn build_import(q: &Query, m: &QueryMatch, source: &[u8]) -> Option<Import> {
     let mut range_node = None;
     let mut module: Option<String> = None;
 
-    for cap in m.captures {
+    for cap in m.captures() {
         let cname = capture_name(q, cap.index);
         match cname {
             "import.range" => range_node = Some(cap.node),
