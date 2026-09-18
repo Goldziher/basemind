@@ -49,7 +49,7 @@ fn index_dir(scratch: &Path, name: &str) -> std::path::PathBuf {
 }
 
 #[test]
-fn subdirectory_workspace_never_inherits_the_parent_repositorys_history() {
+fn subdirectory_workspace_never_inherits_the_parent_repositories_history() {
     let repo_tmp = tempfile::tempdir().expect("tempdir");
     let scratch_tmp = tempfile::tempdir().expect("tempdir");
     let outer = canonical(repo_tmp.path());
@@ -63,7 +63,7 @@ fn subdirectory_workspace_never_inherits_the_parent_repositorys_history() {
 
     // The reporter's shape: a subdirectory that carries `basemind.toml` (so the root guard admits
     // it and it becomes the workspace root) but has no `.git` of its own.
-    let sub = outer.join("clientes").join("zheus");
+    let sub = outer.join("clients").join("zheus");
     fs::create_dir_all(&sub).unwrap();
     fs::write(sub.join("basemind.toml"), "\"$schema\" = \"v1\"\n").unwrap();
     fs::write(sub.join("inner.rs"), "fn inner() {}\n").unwrap();

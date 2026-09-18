@@ -59,7 +59,7 @@ function getReleaseAssets() {
 function downloadWithRedirects(url, dest, maxRedirects = 5) {
   return new Promise((resolve, reject) => {
     if (maxRedirects <= 0) {
-      return reject(new Error("Too many redirects"));
+      reject(new Error("Too many redirects"));
     }
 
     const urlObj = new URL(url);
@@ -74,13 +74,15 @@ function downloadWithRedirects(url, dest, maxRedirects = 5) {
       },
       (res) => {
         if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-          return downloadWithRedirects(res.headers.location, dest, maxRedirects - 1)
+          downloadWithRedirects(res.headers.location, dest, maxRedirects - 1)
             .then(resolve)
             .catch(reject);
+          return;
         }
 
         if (res.statusCode !== 200) {
-          return reject(new Error(`HTTP ${res.statusCode}: ${res.statusMessage}`));
+          reject(new Error(`HTTP ${res.statusCode}: ${res.statusMessage}`));
+          return;
         }
 
         const file = fs.createWriteStream(dest);
@@ -112,13 +114,14 @@ function retryWithBackoff(fn, maxAttempts = 3) {
     try {
       return await fn();
     } catch (err) {
+      const statusMatch = err.message.match(/HTTP ([0-9]+)/u);
       const isRetryable =
         err.message.includes("Download timeout") ||
         err.message.includes("ECONNREFUSED") ||
         err.message.includes("ECONNRESET") ||
         err.message.includes("ETIMEDOUT") ||
         err.message.includes("EHOSTUNREACH") ||
-        (err.message.match(/HTTP ([0-9]+)/) && parseInt(RegExp.$1) >= 500);
+        (statusMatch && Math.trunc(Number(statusMatch[1])) >= 500);
 
       if (!isRetryable || index >= maxAttempts - 1) {
         throw err;
@@ -126,7 +129,7 @@ function retryWithBackoff(fn, maxAttempts = 3) {
 
       const delay = delays[index];
       console.log(`Transient error (attempt ${index + 1}/${maxAttempts}): ${err.message}; retrying in ${delay}ms...`);
-      await new Promise((resolve) => setTimeout(resolve, delay));
+      await new Promise((resolve) => { setTimeout(resolve, delay); });
       return attempt(index + 1);
     }
   })();
@@ -135,7 +138,7 @@ function retryWithBackoff(fn, maxAttempts = 3) {
 function fetchTextWithRedirects(url, maxRedirects = 5) {
   return new Promise((resolve, reject) => {
     if (maxRedirects <= 0) {
-      return reject(new Error("Too many redirects"));
+      reject(new Error("Too many redirects"));
     }
 
     const urlObj = new URL(url);
@@ -150,13 +153,15 @@ function fetchTextWithRedirects(url, maxRedirects = 5) {
       },
       (res) => {
         if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-          return fetchTextWithRedirects(res.headers.location, maxRedirects - 1)
+          fetchTextWithRedirects(res.headers.location, maxRedirects - 1)
             .then(resolve)
             .catch(reject);
+          return;
         }
 
         if (res.statusCode !== 200) {
-          return reject(new Error(`HTTP ${res.statusCode}: ${res.statusMessage}`));
+          reject(new Error(`HTTP ${res.statusCode}: ${res.statusMessage}`));
+          return;
         }
 
         const chunks = [];
@@ -185,13 +190,13 @@ function sha256File(filePath) {
 }
 
 function expectedDigest(checksumsText, assetName) {
-  for (const line of checksumsText.split(/\r?\n/)) {
+  for (const line of checksumsText.split(/\r?\n/u)) {
     const trimmed = line.trim();
     if (!trimmed) continue;
-    const parts = trimmed.split(/\s+/);
+    const parts = trimmed.split(/\s+/u);
     if (parts.length < 2) continue;
     const digest = parts[0];
-    const name = parts[parts.length - 1].replace(/^\*/, "");
+    const name = parts.at(-1).replace(/^\*/u, "");
     if (name === assetName) return digest.toLowerCase();
   }
   return null;
@@ -204,6 +209,7 @@ async function verifyChecksum(archivePath, assetName, checksumsUrl) {
   } catch (error) {
     throw new Error(
       `could not fetch checksums (${checksumsUrl}): ${error.message} — refusing to install unverified binary`,
+      { cause: error },
     );
   }
 

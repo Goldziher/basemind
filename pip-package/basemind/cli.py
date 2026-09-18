@@ -5,7 +5,7 @@ import sys
 from .downloader import run_basemind
 
 
-def main():
+def main() -> None:
     """Main entry point for the CLI."""
     args = sys.argv[1:]
     run_basemind(args)

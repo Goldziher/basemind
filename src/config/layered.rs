@@ -112,99 +112,67 @@ pub(crate) fn apply_documents_overrides(
     let d = &mut config.documents;
     if let Some(v) = overrides.enabled {
         d.enabled = v;
-        if let Some(p) = provenance.as_mut() {
-            p.insert("documents.enabled", source);
-        }
+        record_provenance(&mut provenance, source, "documents.enabled");
     }
     if let Some(v) = overrides.max_characters {
         d.max_characters = v;
-        if let Some(p) = provenance.as_mut() {
-            p.insert("documents.max_characters", source);
-        }
+        record_provenance(&mut provenance, source, "documents.max_characters");
     }
     if let Some(v) = overrides.overlap {
         d.overlap = v;
-        if let Some(p) = provenance.as_mut() {
-            p.insert("documents.overlap", source);
-        }
+        record_provenance(&mut provenance, source, "documents.overlap");
     }
     if let Some(v) = overrides.embedding_preset.clone() {
         d.embedding_preset = v;
-        if let Some(p) = provenance.as_mut() {
-            p.insert("documents.embedding_preset", source);
-        }
+        record_provenance(&mut provenance, source, "documents.embedding_preset");
     }
     if let Some(v) = overrides.embed {
         d.embed = v;
-        if let Some(p) = provenance.as_mut() {
-            p.insert("documents.embed", source);
-        }
+        record_provenance(&mut provenance, source, "documents.embed");
     }
     if let Some(v) = overrides.language_auto_detect {
         d.language.auto_detect = v;
-        if let Some(p) = provenance.as_mut() {
-            p.insert("documents.language.auto_detect", source);
-        }
+        record_provenance(&mut provenance, source, "documents.language.auto_detect");
     }
     if let Some(v) = overrides.language_min_confidence {
         d.language.min_confidence = v;
-        if let Some(p) = provenance.as_mut() {
-            p.insert("documents.language.min_confidence", source);
-        }
+        record_provenance(&mut provenance, source, "documents.language.min_confidence");
     }
     if let Some(v) = overrides.language_detect_multiple {
         d.language.detect_multiple = v;
-        if let Some(p) = provenance.as_mut() {
-            p.insert("documents.language.detect_multiple", source);
-        }
+        record_provenance(&mut provenance, source, "documents.language.detect_multiple");
     }
     if let Some(v) = overrides.reranker_enabled {
         d.reranker.enabled = v;
-        if let Some(p) = provenance.as_mut() {
-            p.insert("documents.reranker.enabled", source);
-        }
+        record_provenance(&mut provenance, source, "documents.reranker.enabled");
     }
     if let Some(v) = overrides.reranker_preset.clone() {
         d.reranker.preset = v;
-        if let Some(p) = provenance.as_mut() {
-            p.insert("documents.reranker.preset", source);
-        }
+        record_provenance(&mut provenance, source, "documents.reranker.preset");
     }
     if let Some(v) = overrides.reranker_top_k {
         d.reranker.top_k = v;
-        if let Some(p) = provenance.as_mut() {
-            p.insert("documents.reranker.top_k", source);
-        }
+        record_provenance(&mut provenance, source, "documents.reranker.top_k");
     }
     if let Some(v) = overrides.keywords_enabled {
         d.keywords.enabled = v;
-        if let Some(p) = provenance.as_mut() {
-            p.insert("documents.keywords.enabled", source);
-        }
+        record_provenance(&mut provenance, source, "documents.keywords.enabled");
     }
     if let Some(v) = overrides.keywords_max_keywords {
         d.keywords.max_keywords = v;
-        if let Some(p) = provenance.as_mut() {
-            p.insert("documents.keywords.max_keywords", source);
-        }
+        record_provenance(&mut provenance, source, "documents.keywords.max_keywords");
     }
     if let Some(v) = overrides.keywords_min_score {
         d.keywords.min_score = v;
-        if let Some(p) = provenance.as_mut() {
-            p.insert("documents.keywords.min_score", source);
-        }
+        record_provenance(&mut provenance, source, "documents.keywords.min_score");
     }
     if let Some(v) = overrides.ner_enabled {
         d.ner.enabled = v;
-        if let Some(p) = provenance.as_mut() {
-            p.insert("documents.ner.enabled", source);
-        }
+        record_provenance(&mut provenance, source, "documents.ner.enabled");
     }
     if let Some(v) = overrides.summarization_enabled {
         d.summarization.enabled = v;
-        if let Some(p) = provenance.as_mut() {
-            p.insert("documents.summarization.enabled", source);
-        }
+        record_provenance(&mut provenance, source, "documents.summarization.enabled");
     }
     if let Some(v) = overrides.summarization_strategy.as_deref() {
         let applied = match v.to_ascii_lowercase().as_str() {
@@ -221,15 +189,13 @@ pub(crate) fn apply_documents_overrides(
                 false
             }
         };
-        if applied && let Some(p) = provenance.as_mut() {
-            p.insert("documents.summarization.strategy", source);
+        if applied {
+            record_provenance(&mut provenance, source, "documents.summarization.strategy");
         }
     }
     if let Some(v) = overrides.summarization_max_tokens {
         d.summarization.max_tokens = Some(v);
-        if let Some(p) = provenance.as_mut() {
-            p.insert("documents.summarization.max_tokens", source);
-        }
+        record_provenance(&mut provenance, source, "documents.summarization.max_tokens");
     }
     if let Some(v) = overrides.output_format.as_deref() {
         let applied = match v.to_ascii_lowercase().as_str() {
@@ -246,8 +212,8 @@ pub(crate) fn apply_documents_overrides(
                 false
             }
         };
-        if applied && let Some(p) = provenance.as_mut() {
-            p.insert("documents.output.format", source);
+        if applied {
+            record_provenance(&mut provenance, source, "documents.output.format");
         }
     }
     apply_llm_overrides(config, overrides, source, provenance);
@@ -265,45 +231,43 @@ fn apply_llm_overrides(
     let llm = &mut config.llm;
     if let Some(v) = overrides.llm_model.clone() {
         llm.model = v;
-        if let Some(p) = provenance.as_mut() {
-            p.insert("llm.model", source);
-        }
+        record_provenance(&mut provenance, source, "llm.model");
     }
     if let Some(v) = overrides.llm_api_key.clone() {
         llm.api_key = ApiKey::Literal(v);
-        if let Some(p) = provenance.as_mut() {
-            p.insert("llm.api_key", source);
-        }
+        record_provenance(&mut provenance, source, "llm.api_key");
     }
     if let Some(v) = overrides.llm_base_url.clone() {
         llm.base_url = Some(v);
-        if let Some(p) = provenance.as_mut() {
-            p.insert("llm.base_url", source);
-        }
+        record_provenance(&mut provenance, source, "llm.base_url");
     }
     if let Some(v) = overrides.llm_temperature {
         llm.temperature = Some(v);
-        if let Some(p) = provenance.as_mut() {
-            p.insert("llm.temperature", source);
-        }
+        record_provenance(&mut provenance, source, "llm.temperature");
     }
     if let Some(v) = overrides.llm_timeout_secs {
         llm.timeout_secs = Some(v);
-        if let Some(p) = provenance.as_mut() {
-            p.insert("llm.timeout_secs", source);
-        }
+        record_provenance(&mut provenance, source, "llm.timeout_secs");
     }
     if let Some(v) = overrides.llm_max_retries {
         llm.max_retries = Some(v);
-        if let Some(p) = provenance.as_mut() {
-            p.insert("llm.max_retries", source);
-        }
+        record_provenance(&mut provenance, source, "llm.max_retries");
     }
     if let Some(v) = overrides.llm_max_tokens {
         llm.max_tokens = Some(v);
-        if let Some(p) = provenance.as_mut() {
-            p.insert("llm.max_tokens", source);
-        }
+        record_provenance(&mut provenance, source, "llm.max_tokens");
+    }
+}
+
+/// Record `source` for a single config leaf into the provenance ledger, skipping
+/// the bookkeeping entirely when the caller passed `None` (the MCP override path).
+fn record_provenance(
+    provenance: &mut Option<&mut ProvenanceMap>,
+    source: ConfigSource,
+    key: &'static str,
+) {
+    if let Some(p) = provenance.as_mut() {
+        p.insert(key, source);
     }
 }
 

@@ -13,16 +13,16 @@ PROMPT_PAUSE="$(awk -v s="$SPEED" 'BEGIN { printf "%.4f", 0.6 * s }')"
 PROMPT="$(printf '\033[1;32m❯\033[0m ')"
 
 resolve_bin() {
-	if [ -n "${BASEMIND_BIN:-}" ] && [ -x "${BASEMIND_BIN}" ]; then
-		(cd "$(dirname "$BASEMIND_BIN")" && printf '%s/%s' "$PWD" "$(basename "$BASEMIND_BIN")")
-	elif [ -x "$REPO_ROOT/target/release/basemind" ]; then
-		printf '%s' "$REPO_ROOT/target/release/basemind"
-	elif command -v basemind >/dev/null 2>&1; then
-		command -v basemind
-	else
-		printf 'demo: no basemind binary found — run: cargo build --release (or set BASEMIND_BIN)\n' >&2
-		exit 1
-	fi
+  if [ -n "${BASEMIND_BIN:-}" ] && [ -x "${BASEMIND_BIN}" ]; then
+    (cd "$(dirname "$BASEMIND_BIN")" && printf '%s/%s' "$PWD" "$(basename "$BASEMIND_BIN")")
+  elif [ -x "$REPO_ROOT/target/release/basemind" ]; then
+    printf '%s' "$REPO_ROOT/target/release/basemind"
+  elif command -v basemind >/dev/null 2>&1; then
+    command -v basemind
+  else
+    printf 'demo: no basemind binary found — run: cargo build --release (or set BASEMIND_BIN)\n' >&2
+    exit 1
+  fi
 }
 BIN="$(resolve_bin)"
 
@@ -33,18 +33,18 @@ git clone -q "$REPO_ROOT" "$WORKDIR/basemind"
 cd "$WORKDIR/basemind"
 
 pe() {
-	printf '%s' "$PROMPT"
-	local i ch
-	for ((i = 0; i < ${#1}; i++)); do
-		ch="${1:$i:1}"
-		printf '%s' "$ch"
-		sleep "$TYPE_DELAY"
-	done
-	printf '\n'
-	local cmd="${1/#basemind/$BIN}"
-	eval "$cmd" || true
-	printf '\n'
-	sleep "$PROMPT_PAUSE"
+  printf '%s' "$PROMPT"
+  local i ch
+  for ((i = 0; i < ${#1}; i++)); do
+    ch="${1:$i:1}"
+    printf '%s' "$ch"
+    sleep "$TYPE_DELAY"
+  done
+  printf '\n'
+  local cmd="${1/#basemind/$BIN}"
+  eval "$cmd" || true
+  printf '\n'
+  sleep "$PROMPT_PAUSE"
 }
 
 pe "basemind scan --quiet"

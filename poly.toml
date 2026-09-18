@@ -16,6 +16,9 @@ exclude = [
   "**/pnpm-lock.yaml",
   "**/uv.lock",
   ".basemind/**",
+  # Generated AI-RULEZ bundles (three copies of the hermes plugin). Regenerated
+  # on every `release-bump.sh`; linting them is a loop with the generator.
+  ".hermes/**",
   "dist/**",
   "node_modules/**",
   "target/**",
@@ -30,6 +33,34 @@ exclude = [
 
 [lint.markdown.rumdl]
 disable = ["MD013", "MD024", "MD033", "MD036", "MD041"]
+
+# The quality tier's budgets are tuned to this repo's reality: the MCP/CLI
+# handlers are long by construction, most ships in vendored tree-sitter crates,
+# and the test suite exercises monoliths end-to-end. The remaining flags (>500
+# lines, >12 params, nesting ~7) are the genuinely problematic ones.
+[lint.quality]
+function_too_long_lines = 500
+file_too_long_lines = 1500
+type_too_long_lines = 400
+too_many_parameters_count = 12
+nesting_too_deep_depth = 6
+cyclomatic_complexity_max = 40
+
+# oxc noise that is deliberate in shipped scripts/plugins: a CLI's `console` is
+# its output interface, and the hook/extension callbacks are async by contract.
+[lint.javascript.oxc]
+ignore = [
+  "no-console",
+  "require-await",
+  "unicorn/prefer-import-meta-properties",
+  "unicorn/prefer-top-level-await",
+]
+
+[lint.typescript.oxc]
+ignore = [
+  "require-await",
+  "unicorn/prefer-import-meta-properties",
+]
 
 
 [lint.uncomment]
@@ -91,6 +122,23 @@ extend_exclude = ["tests/fixtures/**"]
 "crates/*-ffi/include/*.h" = ["comment", "doc-comment"]
 "packages/go/include/*.h" = ["comment", "doc-comment"]
 "Package.swift" = ["comment", "doc-comment"]
+# Vendored tree-sitter/stack-graphs forks and long test suites: flagged by the
+# quality tier but not ours to refactor.
+"crates/stack-graphs/**" = ["function-too-long", "file-too-long", "too-many-parameters", "nesting-too-deep", "cyclomatic-complexity", "type-too-long"]
+"crates/tree-sitter-graph/**" = ["function-too-long", "file-too-long", "too-many-parameters", "nesting-too-deep", "cyclomatic-complexity", "type-too-long"]
+"crates/tree-sitter-stack-graphs/**" = ["function-too-long", "file-too-long", "too-many-parameters", "nesting-too-deep", "cyclomatic-complexity", "type-too-long"]
+"tests/**" = ["function-too-long", "file-too-long", "too-many-parameters", "nesting-too-deep", "cyclomatic-complexity", "type-too-long"]
+"crates/*/tests/**" = ["function-too-long", "file-too-long", "too-many-parameters", "nesting-too-deep", "cyclomatic-complexity", "type-too-long"]
+"**/*_tests.rs" = ["function-too-long", "file-too-long", "too-many-parameters", "nesting-too-deep", "cyclomatic-complexity", "type-too-long"]
+"crates/basemind-agent/examples/**" = ["function-too-long", "file-too-long", "too-many-parameters", "nesting-too-deep", "cyclomatic-complexity", "type-too-long"]
+# Ruff noise that is not actionable: missing annotations in test specs, and the
+# hermes plugin package which mirrors ai-rulez-generated content.
+"pip-package/tests/**" = ["ANN", "ARG"]
+"pip-package/basemind/downloader.py" = ["T201", "PERF203", "C901", "PLR0912", "PLR0915"]
+"pip-package-hermes/**" = ["ANN", "ARG", "BLE001", "S110", "SIM105", "PERF203", "PTH109", "TRY300", "T201"]
+"tests/fixtures/**" = ["ANN", "C416", "RET504", "PERF203"]
+# CHANGELOG.md accumulates release notes without bound; length is intentional.
+"CHANGELOG.md" = ["file-too-long"]
 
 [hooks]
 stages = ["pre-commit"]
