@@ -1566,6 +1566,8 @@ fn dir_size(dir: &Path) -> u64 {
         match entry.metadata() {
             Ok(md) if md.is_dir() => acc += dir_size(&entry.path()),
             Ok(md) => acc += on_disk_size(&md),
+            // The entry vanished mid-walk (concurrent compaction/deletion) or is unreadable;
+            // either way it is already gone, so it contributes no on-disk bytes.
             Err(_) => {}
         }
     }

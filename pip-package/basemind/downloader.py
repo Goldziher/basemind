@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import os
 import platform
@@ -12,10 +13,16 @@ import tempfile
 import time
 import zipfile
 from pathlib import Path
+from typing import TYPE_CHECKING, TypeVar
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
 import certifi
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+T = TypeVar("T")
 
 
 def _sysctl(name: str) -> str:
@@ -105,21 +112,23 @@ def _is_retryable_error(error: Exception | str) -> bool:
     )
 
 
-def _retry_with_backoff(fn, max_attempts: int = 3, delays: list[int] | None = None) -> None:
+def _retry_with_backoff(
+    fn: Callable[[], T], max_attempts: int = 3, delays: list[int] | None = None
+) -> T:
     """Execute fn with exponential backoff retry on transient errors.
 
     Only retries on transient errors (network, 5xx). Deterministic failures
     (404, bad checksum) propagate immediately.
     """
+    if max_attempts <= 0:
+        raise ValueError("max_attempts must be positive")
     if delays is None:
         delays = [1, 2, 4]
 
-    last_error = None
     for attempt in range(max_attempts):
         try:
             return fn()
         except Exception as error:
-            last_error = error
             if not _is_retryable_error(error) or attempt >= max_attempts - 1:
                 raise
 
@@ -130,14 +139,14 @@ def _retry_with_backoff(fn, max_attempts: int = 3, delays: list[int] | None = No
             )
             time.sleep(delay)
 
-    if last_error:
-        raise last_error
+    # Unreachable: the final attempt either returns or re-raises above.
+    raise RuntimeError("retry loop exited without a result")
 
 
 def _download(url: str, destination: Path) -> None:
     """Download a file with retry-with-backoff on transient errors."""
 
-    def download_attempt():
+    def download_attempt() -> None:
         request = Request(url, headers={"User-Agent": "basemind-python-wrapper"})
         context = ssl.create_default_context(cafile=certifi.where())
         try:
@@ -154,7 +163,7 @@ def _download(url: str, destination: Path) -> None:
 def _download_text(url: str) -> str:
     """Download text content with retry-with-backoff on transient errors."""
 
-    def download_attempt():
+    def download_attempt() -> str:
         request = Request(url, headers={"User-Agent": "basemind-python-wrapper"})
         context = ssl.create_default_context(cafile=certifi.where())
         try:
@@ -250,7 +259,7 @@ def _prune_stale_versions(keep_version: str) -> None:
         shutil.rmtree(entry, ignore_errors=True)
 
 
-def ensure_binary():
+def ensure_binary() -> str:
     """Ensure the binary is available, downloading if necessary.
 
     Handles concurrent invocations via atomic rename: download+extract into a
@@ -327,18 +336,16 @@ def ensure_binary():
         return str(binary_path)
     finally:
         if lock_acquired:
-            try:
+            with contextlib.suppress(FileNotFoundError):
                 lock_path.unlink()
-            except FileNotFoundError:
-                pass
 
 
-def run_basemind(args):
+def run_basemind(args: list[str]) -> None:
     """Run the basemind binary with the given arguments."""
     binary_path = ensure_binary()
 
     try:
-        result = subprocess.run([binary_path] + args, check=False)
+        result = subprocess.run([binary_path, *args], check=False)
         sys.exit(result.returncode)
     except FileNotFoundError as exc:
         raise RuntimeError(f"Binary not found at {binary_path}") from exc

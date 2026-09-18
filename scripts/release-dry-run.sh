@@ -23,31 +23,31 @@ STAGING="basemind-staging-${TRIPLE}"
 
 WORK=""
 cleanup() {
-	rm -rf "${WORK:-}" "$ARCHIVE" "$SUMS" "$STAGING" 2>/dev/null || true
+  rm -rf "${WORK:-}" "$ARCHIVE" "$SUMS" "$STAGING" 2>/dev/null || true
 }
 trap cleanup EXIT
 
 if [ "${RELEASE_DRY_RUN_NO_BUILD:-}" != "1" ]; then
-	echo "==> building basemind ${VERSION} (${TRIPLE}, features: '${FEATURES:-<default>}')"
-	if [ -n "$FEATURES" ]; then
-		cargo build --release --features "$FEATURES" --bin basemind --target "$TRIPLE"
-	else
-		cargo build --release --bin basemind --target "$TRIPLE"
-	fi
+  echo "==> building basemind ${VERSION} (${TRIPLE}, features: '${FEATURES:-<default>}')"
+  if [ -n "$FEATURES" ]; then
+    cargo build --release --features "$FEATURES" --bin basemind --target "$TRIPLE"
+  else
+    cargo build --release --bin basemind --target "$TRIPLE"
+  fi
 fi
 
 echo "==> packaging via scripts/package-release.sh ${TRIPLE}"
 ./scripts/package-release.sh "$TRIPLE"
 [ -f "$ARCHIVE" ] || {
-	echo "error: expected archive ${ARCHIVE} was not produced" >&2
-	exit 1
+  echo "error: expected archive ${ARCHIVE} was not produced" >&2
+  exit 1
 }
 
 echo "==> generating ${SUMS}"
 if command -v sha256sum >/dev/null 2>&1; then
-	sha256sum "$ARCHIVE" >"$SUMS"
+  sha256sum "$ARCHIVE" >"$SUMS"
 else
-	shasum -a 256 "$ARCHIVE" >"$SUMS"
+  shasum -a 256 "$ARCHIVE" >"$SUMS"
 fi
 
 echo "==> smoke-testing the packaged artifact"
@@ -59,13 +59,13 @@ esac
 BIN="$WORK/basemind"
 [ "$EXT" = "zip" ] && BIN="$WORK/basemind.exe"
 [ -x "$BIN" ] || {
-	echo "error: basemind binary missing from ${ARCHIVE}" >&2
-	exit 1
+  echo "error: basemind binary missing from ${ARCHIVE}" >&2
+  exit 1
 }
 GOT="$("$BIN" --version | awk '{print $2}')"
 [ "$GOT" = "$VERSION" ] || {
-	echo "error: packaged version ${GOT} != Cargo.toml ${VERSION}" >&2
-	exit 1
+  echo "error: packaged version ${GOT} != Cargo.toml ${VERSION}" >&2
+  exit 1
 }
 
 BASEMIND_BIN="$BIN" CLAUDE_PLUGIN_ROOT="$PWD" scripts/mcp-launch.sh --version >/dev/null

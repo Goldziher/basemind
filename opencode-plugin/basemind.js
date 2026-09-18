@@ -58,13 +58,15 @@ const hooks = ({ client, directory } = {}) => {
   const root = directory || process.cwd();
 
   const surface = async (message) => {
-    try {
-      if (client?.tui?.showToast) {
-        await client.tui.showToast({ body: { message, variant: "info" } });
+    const toast = client?.tui?.showToast;
+    if (toast) {
+      try {
+        await toast({ body: { message, variant: "info" } });
         return;
+      } catch {
+        // TUI toast is best-effort; fall through to stderr so the message still surfaces.
       }
-    } catch {}
-    // eslint-disable-next-line no-console
+    }
     console.error(`[basemind] ${message}`);
   };
 

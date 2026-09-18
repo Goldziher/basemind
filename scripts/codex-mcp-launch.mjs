@@ -4,13 +4,13 @@ import path from "node:path";
 
 const RELEASES_LATEST_URL = "https://github.com/Goldziher/basemind/releases/latest";
 const LATEST_REQUEST_TIMEOUT_MS = 10_000;
-const VERSION_PATTERN = /^v?(\d+\.\d+\.\d+(?:-rc\.\d+)?)$/;
+const VERSION_PATTERN = /^v?(\d+\.\d+\.\d+(?:-rc\.\d+)?)$/u;
 const LAUNCHER_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), "mcp-launch.sh");
 
 function latestVersionFromUrl(url) {
-  const match = url.match(/\/releases\/tag\/([^/?#]+)$/);
+  const match = url.match(/\/releases\/tag\/([^/?#]+)$/u);
   if (!match) {
-    return undefined;
+    return;
   }
 
   return VERSION_PATTERN.exec(match[1])?.[1];
@@ -30,7 +30,6 @@ async function resolveLatestVersion() {
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
     process.stderr.write(`basemind Codex launcher: could not resolve latest release: ${detail}\n`);
-    return undefined;
   }
 }
 
