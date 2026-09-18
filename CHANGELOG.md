@@ -8,6 +8,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 <!-- Keep a Changelog repeats Added/Changed/Fixed headings per version. -->
 <!-- markdownlint-disable MD024 -->
 
+## [0.27.0] - 2026-09-18
+
+> **Minor release — a toolchain dependency refresh and a lint-driven hardening pass.** The agent
+> tool surface and the config schema are unchanged, but `RELEASE_MINOR` advances 26 → 27, so the
+> first scan after upgrading rebuilds the content-addressed blob cache automatically.
+
+### Changed
+
+- **tree-sitter 0.27** (was 0.26), with tree-sitter-language-pack 1.20.0 to match. Two breaking API
+  moves were adapted:
+  - `QueryMatch.captures` became the method `QueryMatch::captures()`. The L1/L2 extractors
+    (`src/extract/l1.rs`, `src/extract/l2.rs`, `src/extract/locals.rs`) and the intel resolver
+    (`src/intel/stackgraph.rs`) were migrated.
+  - `Node::kind()` now returns a tree-borrowing `&str`. The vendored tree-sitter-graph keeps
+    `SyntaxNodeRef`'s kind `'static` by interning node-kind names into a small global table
+    (`crates/tree-sitter-graph/src/graph.rs`).
+- **rmcp 3.4** (was 3.2). The handshake types that collided with the wire protocol's
+  `serverInfo`/`clientInfo` fields were renamed: `ServerInfo` → `ServerConfig`
+  (`src/mcp/server_handler.rs`) and `ClientInfo` → `ClientConfig` (`tests/tasks_smoke.rs`). The
+  server still advertises MCP logging; that capability line now carries `#[allow(deprecated)]` until
+  the SEP-2577 deprecation removes logging in a future rmcp.
+- **jsonschema 0.56** (was 0.52), **crawlberg 1.7.1** (was 1.5.0), **lru 0.18.4** (was 0.18.3),
+  **zstd 0.14.0** (was 0.13.3), and **liter-llm 2.0.2** in the agent crate (was 1.19.1). `lancedb`
+  stays pinned at 0.37: 0.38 and 0.39 still fail to compile without an HTTP-client stack basemind
+  has no use for.
+- The provenance ledger in the layered config merge (`src/config/layered.rs`) is no longer inlined
+  per field. The merge now records a field's `ConfigSource` through one `record_provenance`
+  helper — which also skips the ledger entirely on the MCP override path that throws it away — and
+  the merge's cyclomatic complexity drops from 43 to under the 40 ceiling. The two override tests
+  pin the behaviour.
+
+### Fixed
+
+- The npm and pip installers' network paths were lint-harded: `npm-package/install.js` no longer
+  returns from a Promise executor or reads the deprecated `RegExp` last-match globals
+  (`parseInt` → `Number`), and its thrown errors carry `{ cause }`; `pip-package/basemind/
+  downloader.py` moves the type-only import under `TYPE_CHECKING`.
+- Typos in tests (a misspelled `repositories` in a test name and a stray fixture path) and a
+  dangling `return;` in `scripts/codex-mcp-launch.mjs`. The opencode plugin's console fallback
+  explains why it exists instead of carrying a bare suppression directive (`no-console` was already
+  ignored for JS in `poly.toml`, so the rule it guarded never fires).
+- `poly.toml` gained per-file ignores for the vendored fork crates and for `CHANGELOG.md` (length is
+  intentional), and the shipped shell scripts were re-rendered by the shell formatter —
+  whitespace-only, no behaviour change.
+
 ## [0.26.0] - 2026-09-01
 
 > **Minor release — cache rebuild, breaking changes, and a security fix.** Read *Breaking changes*
