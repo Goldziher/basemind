@@ -170,6 +170,11 @@ rmp-serde = "1"
 rmux-client = { version = "0.10", default-features = false, optional = true }
 rmux-sdk = { version = "0.10", default-features = false, optional = true }
 rmux-server = { version = "0.10", default-features = false, optional = true }
+# rustix 1.1.5 renamed the `runtime` module rmux-client 0.10 imports to a ~keep
+# mangled private name (`runtime_448b8ad740e2a26f`) and made the old path ~keep
+# `pub(crate)`, so the Linux-only signal setup in its attach resize path stops ~keep
+# compiling. Hold rustix at 1.1.4, the last release whose `runtime` is public. ~keep
+rustix = "=1.1.4"
 schemars = "1.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
