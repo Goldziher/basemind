@@ -42,12 +42,9 @@ asset_id() {
 # already complete.
 cmd_resolve() {
   local tag="$1" require_draft="${2:-true}" expected_id="${3:-}" ids count state
-  echo "DEBUG: resolve tag='$tag' repo='${GITHUB_REPOSITORY:-UNSET}'" >&2
-  gh api "repos/${GITHUB_REPOSITORY:-UNSET}/releases?per_page=100" -q '.[].tag_name' >&2 || echo "DEBUG: api failed rc=$?" >&2
   ids="$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
     -q '.[] | "\(.id) \(.tag_name)"' | awk -v want="$tag" '$2 == want { print $1 }')"
   count="$(printf '%s' "$ids" | grep -c . || true)"
-  echo "DEBUG: count=$count ids='$ids'" >&2
 
   if [ "$count" -gt 1 ]; then
     {
