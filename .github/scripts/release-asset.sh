@@ -29,7 +29,7 @@ EOF
 # Asset id of <asset_name> on release <release_id>, or empty. Filters in awk rather than
 # interpolating the name into a jq expression.
 asset_id() {
-  gh api "/repos/$GITHUB_REPOSITORY/releases/$1/assets?per_page=100" \
+  gh api "repos/$GITHUB_REPOSITORY/releases/$1/assets?per_page=100" \
     -q '.[] | "\(.id) \(.name)"' | awk -v want="$2" '$2 == want { print $1; exit }'
 }
 
@@ -42,7 +42,7 @@ asset_id() {
 # already complete.
 cmd_resolve() {
   local tag="$1" require_draft="${2:-true}" expected_id="${3:-}" ids count state
-  ids="$(gh api "/repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+  ids="$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
     -q '.[] | "\(.id) \(.tag_name)"' | awk -v want="$tag" '$2 == want { print $1 }')"
   count="$(printf '%s' "$ids" | grep -c . || true)"
 
@@ -67,7 +67,7 @@ cmd_resolve() {
     exit 1
   fi
   if [ "$require_draft" = "true" ]; then
-    state="$(gh api "/repos/$GITHUB_REPOSITORY/releases/$ids" -q '.draft')"
+    state="$(gh api "repos/$GITHUB_REPOSITORY/releases/$ids" -q '.draft')"
     if [ "$state" != "true" ]; then
       {
         echo "::error::release $ids (tag $tag) is no longer a draft"
@@ -97,7 +97,7 @@ cmd_upload() {
   existing="$(asset_id "$release_id" "$name")"
   if [ -n "$existing" ]; then
     echo "replacing existing asset $name (id $existing)"
-    gh api -X DELETE "/repos/$GITHUB_REPOSITORY/releases/assets/$existing" >/dev/null
+    gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$existing" >/dev/null
   fi
 
   echo "uploading $name to release $release_id"
@@ -127,7 +127,7 @@ cmd_download() {
   # token or no token. `gh api` rather than curl because the asset endpoint redirects to storage
   # and curl would forward the Authorization header to that host.
   gh api -H "Accept: application/octet-stream" \
-    "/repos/$GITHUB_REPOSITORY/releases/assets/$id" >"$out"
+    "repos/$GITHUB_REPOSITORY/releases/assets/$id" >"$out"
   echo "downloaded $name to $out"
 }
 

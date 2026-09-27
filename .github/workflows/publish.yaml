@@ -661,7 +661,7 @@ jobs:
           set -euo pipefail
           # Checksums must cover every platform. Generating the file from a partial asset set is
           # what let v0.27.0 ship archives no downloader could verify.
-          gh api "/repos/$GITHUB_REPOSITORY/releases/$release_id/assets?per_page=100" \
+          gh api "repos/$GITHUB_REPOSITORY/releases/$release_id/assets?per_page=100" \
             -q '.[].name' >/tmp/release_assets.txt
 
           missing=0
@@ -742,7 +742,7 @@ jobs:
             "basemind_${version}_checksums.txt"
           )
 
-          gh api "/repos/$GITHUB_REPOSITORY/releases/$release_id/assets?per_page=100" \
+          gh api "repos/$GITHUB_REPOSITORY/releases/$release_id/assets?per_page=100" \
             -q '.[].name' >/tmp/assets.txt
           missing=0
           for asset in "${required[@]}"; do
@@ -758,7 +758,7 @@ jobs:
 
           # By id, not tag: the tag would follow whichever record GitHub decides it points at.
           # Idempotent — a PATCH to draft=false on a published release is a no-op.
-          gh api -X PATCH "/repos/$GITHUB_REPOSITORY/releases/$release_id" -F draft=false >/dev/null
+          gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$release_id" -F draft=false >/dev/null
           echo "promoted release $release_id (tag $tag) to published"
 
   publish_crates:
