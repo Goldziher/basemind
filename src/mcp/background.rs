@@ -209,6 +209,26 @@ fn refresh_batch(
 const VIEW_WATCHER_DEBOUNCE: Duration = Duration::from_millis(150);
 const VIEW_WATCHER_SHUTDOWN_POLL: Duration = Duration::from_millis(200);
 
+/// Bound on the view watcher's debouncer→consumer queue, in whole debounced batches.
+///
+/// A MapCache rebuild is synchronous and takes as long as reopening the index plus rebuilding the
+/// map, so a writer rewriting the index in a loop can outrun this consumer; unbounded, every one of
+/// those rewrites would sit in the queue holding its event paths. 8 slots is ~1.2 s of backlog at
+/// [`VIEW_WATCHER_DEBOUNCE`] and the consumer collapses whatever it finds into a single rebuild
+/// anyway, so a deeper queue would only buy duplicate work. Overflow sets `pending_touch` instead of
+/// blocking the debouncer's emit thread or dropping the notification — a dropped index rewrite would
+/// leave the served MapCache permanently stale.
+const VIEW_WATCHER_QUEUE_CAPACITY: usize = 8;
+
+/// Does a debounced batch touch the view's index file? That one path is the whole of the view
+/// watcher's event filtering, so it runs both in the consumer and — on queue overflow — in the
+/// debouncer callback.
+fn touches_index(events: &[notify_debouncer_full::DebouncedEvent], target: &std::path::Path) -> bool {
+    events
+        .iter()
+        .any(|de| de.event.paths.iter().any(|p| p.as_path() == target))
+}
+
 /// Drop guard that requests shutdown of a filesystem watcher.
 pub(super) struct WatcherGuard {
     shutdown: Option<tokio::sync::oneshot::Sender<()>>,
@@ -298,15 +318,29 @@ pub(super) fn spawn_view_watcher(state: Arc<ServerState>) -> WatcherGuard {
         .name("basemind-mcp-view-watcher".to_string())
         .spawn(move || {
             use notify::RecommendedWatcher;
-            use notify_debouncer_full::{NoCache, new_debouncer_opt};
+            use notify_debouncer_full::{DebounceEventResult, NoCache, new_debouncer_opt};
+            use std::sync::atomic::{AtomicBool, Ordering};
 
-            let (tx, rx) = std::sync::mpsc::channel();
+            let (tx, rx) = std::sync::mpsc::sync_channel::<DebounceEventResult>(VIEW_WATCHER_QUEUE_CAPACITY);
+            // Overflow state for a full queue: one bit, because every batch that reaches `target`
+            // asks for the same single rebuild. Set from the debouncer's emit thread, which must
+            // never block on this queue.
+            let pending_touch = Arc::new(AtomicBool::new(false));
+            let touch_producer = Arc::clone(&pending_touch);
+            let target_producer = target.clone();
+            let handler = move |result: DebounceEventResult| {
+                if let Err(std::sync::mpsc::TrySendError::Full(Ok(events))) = tx.try_send(result)
+                    && touches_index(&events, &target_producer)
+                {
+                    touch_producer.store(true, Ordering::Relaxed);
+                }
+            };
             // ~keep NoCache, not the default FileIdMap — see src/watcher.rs (issue #43). We only
             // ~keep compare event paths to `target`, so the FileId rename cache is dead weight here.
             let mut debouncer = match new_debouncer_opt::<_, RecommendedWatcher, NoCache>(
                 VIEW_WATCHER_DEBOUNCE,
                 None,
-                tx,
+                handler,
                 NoCache::new(),
                 notify::Config::default(),
             ) {
@@ -329,17 +363,26 @@ pub(super) fn spawn_view_watcher(state: Arc<ServerState>) -> WatcherGuard {
                 ) {
                     break;
                 }
-                let result = match rx.recv_timeout(VIEW_WATCHER_SHUTDOWN_POLL) {
-                    Ok(result) => result,
-                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+                let mut rebuild = false;
+                match rx.recv_timeout(VIEW_WATCHER_SHUTDOWN_POLL) {
+                    Ok(Ok(events)) => rebuild |= touches_index(&events, &target),
+                    Ok(Err(_)) => {}
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
                     Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
-                };
-                let events = match result {
-                    Ok(e) => e,
-                    Err(_) => continue,
-                };
-                let touches_index = events.iter().any(|de| de.event.paths.iter().any(|p| p == &target));
-                if !touches_index {
+                }
+                // Collapse the rest of the queue into this iteration: N index rewrites that piled up
+                // during the last rebuild still need exactly one rebuild.
+                for _ in 1..VIEW_WATCHER_QUEUE_CAPACITY {
+                    match rx.try_recv() {
+                        Ok(Ok(events)) => rebuild |= touches_index(&events, &target),
+                        Ok(Err(_)) => {}
+                        Err(_) => break,
+                    }
+                }
+                // Whatever overflowed while the last rebuild ran. Cleared as it is read, and read on
+                // every iteration (the idle timeout included) so it can never be stranded.
+                rebuild |= pending_touch.swap(false, Ordering::Relaxed);
+                if !rebuild {
                     continue;
                 }
                 let view = state
