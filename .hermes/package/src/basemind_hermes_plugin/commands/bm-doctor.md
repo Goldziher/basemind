@@ -6,7 +6,7 @@ description: Diagnose and recover basemind when it isn't working (MCP tools miss
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
 Content-Hash: blake3:df3f49e191ec87771c49ce500cb25d3441611a56a6bc9cacb433f25f7837f171
-Source-Hash: blake3:8c6112e0e081ce8b20375a240128b349bab7ecbb1e5e52bda918d4894fbd55f1
+Source-Hash: blake3:e5a0f0b8772a0ac511fb56260504bbd4743b084597bfdf12c5a347ed20dee916
 Schema-Version: v1
 -->
 

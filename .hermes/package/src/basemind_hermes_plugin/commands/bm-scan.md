@@ -7,7 +7,7 @@ argument-hint: [path]
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
 Content-Hash: blake3:9dcec864744e510480745eb2d0ccdcf9ae34e9cf8f7c1ef9094bb5c27215969f
-Source-Hash: blake3:8c6112e0e081ce8b20375a240128b349bab7ecbb1e5e52bda918d4894fbd55f1
+Source-Hash: blake3:e5a0f0b8772a0ac511fb56260504bbd4743b084597bfdf12c5a347ed20dee916
 Schema-Version: v1
 -->
 

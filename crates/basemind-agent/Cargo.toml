@@ -1,6 +1,6 @@
 [package]
 name = "basemind-agent"
-version = "0.27.0"
+version = "0.27.1"
 edition = "2024"
 license = "MIT"
 description = "Model-agnostic coding-agent engine built on the basemind code map + liter-llm."
