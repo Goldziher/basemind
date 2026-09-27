@@ -117,6 +117,19 @@ cleanup_stale_state() {
 # another; a different minor would trigger a wipe-and-rebuild and must never be a fallback. ~keep
 version_minor() { printf '%s\n' "$1" | sed -n 's/^\([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p'; }
 
+# True when version $1 is at least version $2.
+version_ge() { [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | head -n1)" = "$2" ]; }
+
+# Floor for every FALLBACK path below. Versions under this have no bound on the comms daemon's ~keep
+# resident set: the warm read-stack cap, the per-workspace byte budgets and the footprint gate all ~keep
+# landed in 0.26.0 as issue #62, where a daemon reached 43.8 GiB RSS in about two minutes on an ~keep
+# initial scan and was OOM-killed. That daemon is machine-global and outlives the session that ~keep
+# spawned it, so execing one of these does not degrade a session — it takes down the machine, and ~keep
+# it keeps doing so for as long as any session re-ensures it. A missing MCP server is strictly ~keep
+# better, so refuse rather than fall back. Does not gate VERSION itself or BASEMIND_BIN: those are ~keep
+# explicit pins, not the launcher choosing on the user's behalf. ~keep
+MIN_SAFE_VERSION="0.26.0"
+
 # Newest cached binary whose schema minor matches VERSION (so it is blob/index ~keep
 # compatible), excluding VERSION itself. Prints its path, or nothing. Used to keep the ~keep
 # MCP server available during a release window, before the pinned assets finish uploading. ~keep
@@ -137,6 +150,7 @@ newest_compatible_cached() {
     ver="$(binary_version "$bin")"
     [ -n "$ver" ] || continue
     [ "$(version_minor "$ver")" = "$want" ] || continue
+    version_ge "$ver" "$MIN_SAFE_VERSION" || continue
     if [ -z "$best_ver" ] || [ "$(printf '%s\n%s\n' "$best_ver" "$ver" | sort -V | tail -n1)" = "$ver" ]; then
       best_ver="$ver"
       best_bin="$bin"
@@ -154,7 +168,18 @@ try_exec() {
   fi
 }
 
-try_exec "${BASEMIND_BIN:-}" "$@"
+# BASEMIND_BIN is an explicit operator pin — honour it whatever version it reports, unlike every ~keep
+# resolution step below. Gating it on VERSION made it useless for the case it exists for: a local ~keep
+# `cargo build` is almost never the version the installed plugin manifest pins, so the gate silently ~keep
+# ignored the override and went off to download a release binary instead. A mismatched schema minor ~keep
+# triggers a wipe-and-rebuild of the caches, which is why the version is still reported. ~keep
+if [ -n "${BASEMIND_BIN:-}" ] && [ -x "${BASEMIND_BIN}" ]; then
+  bin_ver="$(binary_version "$BASEMIND_BIN")"
+  if [ "$bin_ver" != "$VERSION" ]; then
+    log "BASEMIND_BIN pins basemind ${bin_ver:-unknown} while the plugin manifest pins $VERSION; using the pin"
+  fi
+  exec "$BASEMIND_BIN" "$@"
+fi
 if [ -x "$MANAGED_BIN" ] && [ "$(binary_version "$MANAGED_BIN")" = "$VERSION" ]; then
   reap_other_versions "$CACHE_ROOT"
   prune_stale_versions
@@ -223,11 +248,13 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Newest PUBLISHED release tag ("vX.Y.Z"), or empty. GitHub exposes only non-draft, ~keep
-# non-prerelease releases at /releases/latest, and the publish workflow promotes a draft ~keep
-# to published only after every platform asset + checksums file exists — so whatever this ~keep
-# resolves to is always a complete, safe-to-download release. Uses curl's redirect target ~keep
-# (no API rate limit) when available, else the releases API (works with curl or wget). ~keep
+# Newest PUBLISHED release tag ("vX.Y.Z"), or empty. GitHub exposes only non-draft, non-prerelease ~keep
+# releases at /releases/latest. That makes it the best FIRST candidate but NOT a guarantee of ~keep
+# completeness: the publish workflow promotes a draft only after every asset exists, yet a human ~keep
+# can promote it by hand first, and for v0.27.0 someone did — `latest` carried 3 of 5 archives and ~keep
+# no checksums file. Everything downstream therefore gates on `release_is_installable`, never on ~keep
+# publication status. Uses curl's redirect target (no API rate limit) when available, else the ~keep
+# releases API (works with curl or wget). ~keep
 resolve_latest_tag() {
   local eff tmp
   if have curl; then
@@ -247,25 +274,66 @@ resolve_latest_tag() {
   rm -f "$tmp" 2>/dev/null || true
 }
 
+# Published, non-draft versions newest-first, up to 20 (bare "X.Y.Z", no leading "v"). Reached ~keep
+# only on the fallback path, so the unauthenticated API rate limit is never on the hot path. May ~keep
+# include prereleases, which /releases/latest excludes; that is acceptable here because every ~keep
+# candidate still has to clear MIN_SAFE_VERSION and release_is_installable, and a prerelease that ~keep
+# clears both is a working binary — strictly better than no MCP server at all. ~keep
+published_versions() {
+  local tmp
+  tmp="$(mktemp)"
+  if fetch "https://api.github.com/repos/Goldziher/basemind/releases?per_page=20" "$tmp" 2>/dev/null; then
+    sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"v\{0,1\}\([^"]*\)".*/\1/p' "$tmp"
+  fi
+  rm -f "$tmp" 2>/dev/null || true
+}
+
+# True when v$1 carries a checksums file that lists THIS platform's asset — precisely the ~keep
+# precondition the install path below needs, checked directly instead of inferred from the ~keep
+# release's published flag. One fetch per candidate, on the failure path only. ~keep
+release_is_installable() {
+  local ver="$1" tmp rc=1
+  tmp="$(mktemp)"
+  if fetch "https://github.com/Goldziher/basemind/releases/download/v${ver}/basemind_${ver}_checksums.txt" "$tmp" 2>/dev/null &&
+    awk -v f="$ASSET" '{name=$NF; sub(/^[*]/, "", name); if (name == f) found=1} END{exit !found}' "$tmp"; then
+    rc=0
+  fi
+  rm -f "$tmp" 2>/dev/null || true
+  return "$rc"
+}
+
 # The pinned v${VERSION} assets are missing (release still publishing, or genuinely ~keep
 # incomplete). Keep the session working instead of leaving it with no MCP server: ~keep
-#   1. Re-exec pinned to the newest PUBLISHED release (assets-gated, so even a clean cache ~keep
-#      gets a running server); Claude Code auto-updates to v${VERSION} once it publishes. ~keep
-#      Skipped when already running a forced version, so it can never loop. ~keep
+#   1. Re-exec pinned to the newest release whose assets actually exist; Claude Code ~keep
+#      auto-updates to v${VERSION} once it publishes. Skipped when already running a forced ~keep
+#      version, so it can never loop. ~keep
 #   2. Offline last resort: newest cached binary of the same schema minor. ~keep
 #   3. Give up with the incomplete-release message. ~keep
+#
+# Steps 1 and 2 both refuse anything below MIN_SAFE_VERSION. A fallback exists to preserve a ~keep
+# session's tooling, and no amount of tooling is worth OOM-ing the machine. ~keep
 fallback_or_die() {
-  local reason="$1" tag lver fb
+  local reason="$1" cand fb tried="" attempts=0
   if [ -z "$FORCED_VERSION" ]; then
-    tag="$(resolve_latest_tag)"
-    lver="${tag#v}"
-    if [ -n "$lver" ] && [ "$lver" != "$VERSION" ]; then
+    # Newest-first, `latest` before the rest because it is the only candidate GitHub guarantees ~keep
+    # is neither a draft nor a prerelease. Several candidates rather than just `latest`: `latest` ~keep
+    # is exactly what was broken in the v0.27.0 incident, and with one candidate a bad `latest` ~keep
+    # left every session with no server at all. ~keep
+    for cand in "$(resolve_latest_tag | sed 's/^v//')" $(published_versions); do
+      [ -n "$cand" ] || continue
+      [ "$cand" = "$VERSION" ] && continue
+      case " $tried " in *" $cand "*) continue ;; esac
+      tried="$tried $cand"
+      version_ge "$cand" "$MIN_SAFE_VERSION" || continue
+      attempts=$((attempts + 1))
+      [ "$attempts" -gt 5 ] && break
+      release_is_installable "$cand" || continue
       log "warning: $reason"
-      log "v${VERSION} not yet published; running the latest published basemind ${lver} — Claude Code will auto-update to v${VERSION} once its release completes"
+      log "v${VERSION} is not installable; running basemind ${cand} instead — Claude Code will auto-update to v${VERSION} once its release completes"
       release_lock
       LOCK_HELD=""
-      exec env BASEMIND_FORCE_VERSION="$lver" "$0" "${ARGS[@]}"
-    fi
+      exec env BASEMIND_FORCE_VERSION="$cand" "$0" "${ARGS[@]}"
+    done
   fi
   fb="$(newest_compatible_cached)"
   if [ -n "$fb" ]; then
