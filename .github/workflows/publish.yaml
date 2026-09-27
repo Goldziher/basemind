@@ -308,6 +308,21 @@ jobs:
           set -euo pipefail
           tag="${{ needs.meta.outputs.tag }}"
 
+          # `gh release view --json databaseId` is the query GitHub eventually settles on; retry it
+          # a bounded few times because the record is not always visible the instant create returns.
+          release_id_for() {
+            local t="$1" id=""
+            for _ in 1 2 3 4 5 6 7 8; do
+              id="$(gh release view "$t" --json databaseId -q .databaseId 2>/dev/null || true)"
+              if [ -n "$id" ] && [ "$id" != "null" ]; then
+                printf '%s' "$id"
+                return 0
+              fi
+              sleep 3
+            done
+            return 1
+          }
+
           if gh release view "$tag" >/dev/null 2>&1; then
             echo "Release $tag already exists."
             echo "created=false" >> "$GITHUB_OUTPUT"
@@ -323,12 +338,14 @@ jobs:
             # platform build therefore leaves a hidden draft, not a live release
             # with missing binaries and no checksums (the v0.10.0 failure mode that
             # broke the plugin launcher's checksum-verified download).
-            # `gh release create` has no --json, but it prints the release URL
-            # (…/releases/tag/<tag-or-untagged-slug>). Turn that into the API id via the tag,
-            # so a fresh create never re-queries the racy releases list.
+            # `gh release create` has no --json; create, then resolve the numeric id with retries
+            # (a fresh record is briefly invisible to the release API).
             gh release create "$tag" --title "$tag" --notes "Release $tag" \
               --verify-tag --draft $prerelease >/dev/null
-            release_id="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" -q .id)"
+            if ! release_id="$(release_id_for "$tag")"; then
+              echo "::error::created release for $tag but its id never became visible"
+              exit 1
+            fi
             echo "release_id=$release_id" >> "$GITHUB_OUTPUT"
             echo "created=true" >> "$GITHUB_OUTPUT"
             echo "Created draft release id: $release_id"
