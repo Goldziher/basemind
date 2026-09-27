@@ -124,7 +124,10 @@ pub(super) async fn resolve_comms_client(
     }
     let client = connect_comms_client(state, target.clone()).await?;
     let handle = Arc::new(Mutex::new(client));
-    map.insert(target, handle.clone());
+    // ~keep `put` past the cap drops the least-recently-used client, closing its broker socket. Safe
+    // ~keep because callers hold the returned `Arc` for the duration of their call: an evicted client
+    // ~keep stays alive until the last in-flight handle drops, and the identity reconnects on next use.
+    map.put(target, handle.clone());
     Ok(handle)
 }
 
