@@ -49,6 +49,21 @@ const READ_CHUNK: usize = 8 * 1024;
 #[cfg(windows)]
 const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
+/// Cap on [`CommsClient::pending_notifications`]; the oldest is dropped once it is reached.
+///
+/// The queue is opportunistic, and for most clients nothing ever drains it: the only consumers are
+/// [`CommsClient::poll_notification`] (reached solely by the timeout-bounded `wait` path) and
+/// [`CommsClient::next_notification`], which the crate never calls. A client that only issues
+/// ordinary requests — post, history, inbox, thread_list, i.e. nearly all MCP `agents` traffic —
+/// therefore buffers every notification the broker pushes it and frees none of them until the link
+/// dies and [`CommsClient::reconnect`] clears it. A long session on a busy thread grows it without
+/// limit.
+///
+/// Dropping the oldest loses nothing durable: the broker is the authoritative record and `history` /
+/// `inbox` read from it by request, so a discarded push costs at most an early wake-up, while the
+/// unbounded queue costs resident memory for the whole session.
+const PENDING_NOTIFICATION_CAP: usize = 1_024;
+
 /// Strategy for (re)spawning the daemon when a reconnect finds the socket dead. Defaults to the
 /// production [`singleton::spawn_detached_daemon`]; tests inject a closure that launches the real
 /// `basemind` binary against an isolated comms dir (the test binary has no `comms daemon` verb).
@@ -103,7 +118,8 @@ pub struct CommsClient {
     read_buf: BytesMut,
     agent: AgentId,
     /// Notifications received while waiting for a response are queued here so the caller can
-    /// drain them via [`CommsClient::next_notification`].
+    /// drain them via [`CommsClient::next_notification`]. Bounded at [`PENDING_NOTIFICATION_CAP`],
+    /// oldest-first, because most clients never drain it — see that constant.
     pending_notifications: std::collections::VecDeque<CommsNotification>,
     /// Connection context retained so the client can transparently re-establish the link (and
     /// re-spawn the daemon) after the daemon dies mid-session.
@@ -757,7 +773,7 @@ impl CommsClient {
         loop {
             match self.read_frame().await? {
                 Some(CommsOut::Response(resp)) => return Ok(resp),
-                Some(CommsOut::Notification(n)) => self.pending_notifications.push_back(n),
+                Some(CommsOut::Notification(n)) => buffer_notification(&mut self.pending_notifications, n),
                 None => return Err(CommsClientError::Closed),
             }
         }
@@ -844,6 +860,85 @@ mod tests {
             "error must not be the bare OS string, got: {msg}"
         );
     }
+
+    /// Nothing drains `pending_notifications` for a client that only issues ordinary requests, so
+    /// the buffer itself has to be the bound: past the cap the queue must stay at the cap and shed
+    /// its OLDEST entries, never grow with the broker's push volume.
+    #[test]
+    fn buffering_notifications_past_the_cap_holds_at_the_cap() {
+        let mut queue = std::collections::VecDeque::new();
+
+        for _ in 0..PENDING_NOTIFICATION_CAP {
+            buffer_notification(&mut queue, CommsNotification::Shutdown);
+        }
+        assert_eq!(
+            queue.len(),
+            PENDING_NOTIFICATION_CAP,
+            "the cap is reached but not exceeded"
+        );
+
+        for _ in 0..(PENDING_NOTIFICATION_CAP * 3) {
+            buffer_notification(&mut queue, CommsNotification::Shutdown);
+        }
+        assert_eq!(
+            queue.len(),
+            PENDING_NOTIFICATION_CAP,
+            "four times the cap of pushes must still leave exactly the cap resident"
+        );
+    }
+
+    /// The eviction has to be oldest-first: the newest notifications are the ones a `wait` caller
+    /// would act on, so shedding those instead would make the bound cost correctness. The single
+    /// `Message` is enqueued FIRST, so it is the one entry the cap must drop.
+    #[test]
+    fn buffering_evicts_the_oldest_notification_first() {
+        let mut queue = std::collections::VecDeque::new();
+
+        buffer_notification(&mut queue, CommsNotification::Message(test_message_meta()));
+        for _ in 0..(PENDING_NOTIFICATION_CAP - 1) {
+            buffer_notification(&mut queue, CommsNotification::Shutdown);
+        }
+        assert!(
+            matches!(queue.front(), Some(CommsNotification::Message(_))),
+            "precondition: the queue is exactly full and the Message is still the oldest entry"
+        );
+
+        buffer_notification(&mut queue, CommsNotification::Shutdown);
+
+        assert_eq!(queue.len(), PENDING_NOTIFICATION_CAP, "the cap still holds");
+        assert!(
+            matches!(queue.front(), Some(CommsNotification::Shutdown)),
+            "the oldest entry (the Message) must be the one dropped"
+        );
+        assert!(
+            !queue.iter().any(|n| matches!(n, CommsNotification::Message(_))),
+            "the evicted entry must be gone from the queue entirely"
+        );
+    }
+
+    fn test_message_meta() -> crate::comms::model::MessageMeta {
+        crate::comms::model::MessageMeta {
+            id: "m1".to_string(),
+            thread: ThreadId::parse("t1".to_string()).expect("valid thread id"),
+            from: AgentId::parse("agent-1".to_string()).expect("valid agent id"),
+            ts_micros: 0,
+            subject: "s".to_string(),
+            tags: Vec::new(),
+            reply_to: None,
+            body_len: 0,
+            body_sha: String::new(),
+        }
+    }
+}
+
+/// Buffer a notification seen while awaiting a response, holding `queue` to
+/// [`PENDING_NOTIFICATION_CAP`] by evicting the oldest first. A free function rather than a method
+/// so the bound can be tested without a live broker socket.
+fn buffer_notification(queue: &mut std::collections::VecDeque<CommsNotification>, n: CommsNotification) {
+    while queue.len() >= PENDING_NOTIFICATION_CAP {
+        queue.pop_front();
+    }
+    queue.push_back(n);
 }
 
 /// Map a `UnixStream::connect` failure into an actionable error. A missing socket file
