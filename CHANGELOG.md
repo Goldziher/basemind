@@ -8,6 +8,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 <!-- Keep a Changelog repeats Added/Changed/Fixed headings per version. -->
 <!-- markdownlint-disable MD024 -->
 
+## [0.27.1] - 2026-09-27
+
+> **Patch release — memory-safety follow-ups to [#62], a stricter plugin launcher, and a
+> release-workflow fix.** No schema or MCP-surface change: `RELEASE_MINOR` stays 27, so the
+> on-disk blob and index formats are untouched.
+
+### Changed
+
+- Dependency refresh: `crawlberg` 1.7.1 → 1.8.0, `gix` 0.87.1 → 0.88.0, `jsonschema` 0.56 → 0.58,
+  and `lru` 0.18.4 → 0.18.5. `lancedb` stays held at 0.37: 0.38 and 0.39 still gate the
+  `Error::Http` variant behind their `remote` feature while `job.rs` references it unconditionally,
+  and enabling `remote` would pull an HTTP client stack in for no benefit here.
+
+### Fixed
+
+- **Comms daemon memory growth ([#62])**, continued:
+  - The per-connection comms client map is now bounded with an LRU. It is keyed by the
+    caller-supplied `as_agent`, so it previously grew one broker socket and one notification queue
+    for every identity a session ever named.
+  - The pending-notification queue is now capped, dropping the oldest entries. Clients that only
+    issue ordinary requests never drain it, so it grew for the life of the link.
+- The git-cache RAM categories are now charged by bytes as well as entry count, each held to
+  32 MiB. A single `CommitInfo` or `BlameResult` has no natural size, so 1024 entries could reach
+  gigabytes.
+- The file watcher's debounce queues are bounded, and overflow coalesces into a path set instead of
+  queueing without limit. A rescan slower than the debounce interval could otherwise let batches
+  accumulate unbounded.
+- `gix` 0.88 no longer accepts the `Infallible` turbofish, which `src/git/commit.rs` still passed.
+- The plugin launcher never falls back below 0.26.0, verifies each candidate is installable, and
+  honours `BASEMIND_BIN`. With v0.27.0 incomplete, the old fallback exec'd 0.25.2, which predates
+  the [#62] memory bounds and OOM-killed the machine.
+- The release workflow now addresses assets by release id rather than by tag. A hand-promoted
+  v0.27.0 draft left two records on one tag and split the archives across them; uploads replace in
+  place, and every stage refuses an ambiguous tag.
+
 ## [0.27.0] - 2026-09-18
 
 > **Minor release — a toolchain dependency refresh and a lint-driven hardening pass.** The agent
