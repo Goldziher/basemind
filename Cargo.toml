@@ -14,7 +14,9 @@ keywords = ["mcp", "agent-context", "rag", "code-map", "tree-sitter"]
 categories = ["command-line-utilities", "development-tools"]
 
 [package.metadata.cargo-machete]
-ignored = ["serde_toon_format"]
+# `rustix` is not imported directly: it is pinned to hold rmux-client's Linux build (see the
+# dependency's comment), so machete's unused-dependency scan must skip it.
+ignored = ["serde_toon_format", "rustix"]
 [workspace]
 members = [
   "crates/basemind-agent",
