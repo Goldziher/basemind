@@ -323,9 +323,12 @@ jobs:
             # platform build therefore leaves a hidden draft, not a live release
             # with missing binaries and no checksums (the v0.10.0 failure mode that
             # broke the plugin launcher's checksum-verified download).
-            # --json id prints the id, so a fresh create never has to re-query.
-            release_id="$(gh release create "$tag" --title "$tag" --notes "Release $tag" \
-              --verify-tag --draft $prerelease --json id -q .id)"
+            # `gh release create` has no --json, but it prints the release URL
+            # (…/releases/tag/<tag-or-untagged-slug>). Turn that into the API id via the tag,
+            # so a fresh create never re-queries the racy releases list.
+            gh release create "$tag" --title "$tag" --notes "Release $tag" \
+              --verify-tag --draft $prerelease >/dev/null
+            release_id="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" -q .id)"
             echo "release_id=$release_id" >> "$GITHUB_OUTPUT"
             echo "created=true" >> "$GITHUB_OUTPUT"
             echo "Created draft release id: $release_id"
