@@ -150,7 +150,7 @@ jsonschema = "0.58"
 # ~keep feature -- `error.rs` gates the `Error::Http` variant behind `#[cfg(feature = "remote")]`
 # ~keep while `job.rs` references it unconditionally. Enabling `remote` would pull an HTTP
 # ~keep client stack in for no benefit here. Revisit when upstream fixes the gate.
-lancedb = { version = "0.39", optional = true }
+lancedb = { version = "0.37", optional = true }
 libc = "0.2"
 lru = "0.18.5"
 memchr = "2"
