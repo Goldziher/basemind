@@ -88,7 +88,7 @@ pub(super) fn commit_files(
                     })
                     .or_insert(kind);
             }
-            Ok::<_, std::convert::Infallible>(gix::object::tree::diff::Action::Continue(()))
+            Ok(gix::object::tree::diff::Action::Continue(()))
         });
     }
     let mut out: Vec<(crate::path::RelPath, ChangeKind)> = union.into_iter().collect();
