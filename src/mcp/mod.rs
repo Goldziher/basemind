@@ -388,7 +388,9 @@ impl BasemindServer {
             shared,
             agent_id,
             #[cfg(all(feature = "comms", any(unix, windows)))]
-            comms_clients: tokio::sync::Mutex::new(ahash::AHashMap::new()),
+            comms_clients: tokio::sync::Mutex::new(lru::LruCache::new(
+                std::num::NonZeroUsize::new(state::COMMS_CLIENT_CAP).expect("comms client capacity is non-zero"),
+            )),
             #[cfg(all(feature = "comms", any(unix, windows)))]
             delivered_notifications: tokio::sync::Mutex::new(lru::LruCache::new(
                 std::num::NonZeroUsize::new(state::DELIVERED_NOTIFICATION_CAP)

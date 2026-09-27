@@ -11,6 +11,16 @@ use std::sync::Arc;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 pub(crate) const DELIVERED_NOTIFICATION_CAP: usize = 4_096;
 
+/// Maximum simultaneously-cached comms-broker clients per connection. Each entry owns a live socket
+/// to the broker plus that client's read buffer and undrained notification queue, and the key is the
+/// caller-supplied `as_agent` — a free-form validated string, so the key space is unbounded and an
+/// insert-only map accumulates one fd + one growing queue per distinct identity a session ever names
+/// (and pins a broker `link` against the daemon's idle reaper). 32 is well above the handful of
+/// sub-identities a real session drives, and eviction only closes a connection that re-opens lazily
+/// on its next use.
+#[cfg(all(feature = "comms", any(unix, windows)))]
+pub(crate) const COMMS_CLIENT_CAP: usize = 32;
+
 #[cfg(feature = "documents")]
 use super::codegraph;
 use super::{SharedReadStack, helpers_calls, helpers_impls, l1_cache, map_fingerprint, types};
@@ -37,9 +47,11 @@ pub(crate) struct ServerState {
     /// `as_agent` param) gets its own broker connection, so one `serve` process can act as many
     /// named agents. Entries are created on first use; a connect failure surfaces as an MCP error
     /// on the triggering call, never at server boot. Per-connection identity.
+    ///
+    /// Bounded at [`COMMS_CLIENT_CAP`] because the key comes off the wire — see that constant.
     #[cfg(all(feature = "comms", any(unix, windows)))]
     pub(crate) comms_clients: tokio::sync::Mutex<
-        ahash::AHashMap<
+        lru::LruCache<
             crate::comms::ids::AgentId,
             std::sync::Arc<tokio::sync::Mutex<crate::comms::client::CommsClient>>,
         >,
@@ -71,7 +83,9 @@ impl ServerState {
             shared,
             agent_id,
             #[cfg(all(feature = "comms", any(unix, windows)))]
-            comms_clients: tokio::sync::Mutex::new(ahash::AHashMap::new()),
+            comms_clients: tokio::sync::Mutex::new(lru::LruCache::new(
+                std::num::NonZeroUsize::new(COMMS_CLIENT_CAP).expect("comms client capacity is non-zero"),
+            )),
             #[cfg(all(feature = "comms", any(unix, windows)))]
             delivered_notifications: tokio::sync::Mutex::new(lru::LruCache::new(
                 std::num::NonZeroUsize::new(DELIVERED_NOTIFICATION_CAP)
