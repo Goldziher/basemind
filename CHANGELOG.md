@@ -8,11 +8,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 <!-- Keep a Changelog repeats Added/Changed/Fixed headings per version. -->
 <!-- markdownlint-disable MD024 -->
 
+## [0.27.3] - 2026-09-27
+
+> **Patch release — the first publish that completes on every platform.** Supersedes the
+> unpublished v0.27.1 and v0.27.2 drafts: no crates.io, npm or PyPI version was cut from either.
+
+### Fixed
+
+- The release helpers no longer pass `gh api` an endpoint with a leading slash. Git Bash on the
+  Windows runner rewrites an argument beginning with `/` into a filesystem path, so
+  `gh api "/repos/…"` became `C:/Program Files/Git/repos/…` and the call failed with
+  *invalid API endpoint*. The Windows build job hit this on its pre-upload resolve and skipped the
+  upload, and `finalize_release` runs on every leg via `always()`. The endpoints now omit the
+  leading slash, as the CLI's own error recommends; the absolute `uploads.github.com` URL is
+  unaffected.
+
 ## [0.27.2] - 2026-09-27
 
-> **Patch release — the first publish that could build on Linux.** This supersedes v0.27.1,
-> whose GitHub release was never published and whose Linux archives never built: no crates.io,
-> npm or PyPI version was cut from it, so 0.27.2 is the release to use.
+> **Never published as a GitHub release.** The Linux builds were fixed below, but the Windows
+> upload and the promotion still failed, so no registry version was cut. Superseded by
+> [0.27.3].
 
 ### Fixed
 
@@ -27,7 +42,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 > **Never published as a GitHub release.** The source below was tagged and pushed, but the Linux
 > archives failed to build and the release record was never promoted. It is superseded by
-> [0.27.2]; no registry version was cut from it.
+> [0.27.3]; no registry version was cut from it.
 
 > **Patch release — memory-safety follow-ups to [#62], a stricter plugin launcher, and a
 > release-workflow fix.** No schema or MCP-surface change: `RELEASE_MINOR` stays 27, so the
