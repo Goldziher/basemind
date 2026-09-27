@@ -301,6 +301,7 @@ jobs:
           ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || '' }}
 
       - name: Ensure the GitHub release exists
+        id: ensure
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -309,6 +310,7 @@ jobs:
 
           if gh release view "$tag" >/dev/null 2>&1; then
             echo "Release $tag already exists."
+            echo "created=false" >> "$GITHUB_OUTPUT"
           else
             prerelease=""
             case "$tag" in
@@ -321,7 +323,12 @@ jobs:
             # platform build therefore leaves a hidden draft, not a live release
             # with missing binaries and no checksums (the v0.10.0 failure mode that
             # broke the plugin launcher's checksum-verified download).
-            gh release create "$tag" --title "$tag" --notes "Release $tag" --verify-tag --draft $prerelease
+            # --json id prints the id, so a fresh create never has to re-query.
+            release_id="$(gh release create "$tag" --title "$tag" --notes "Release $tag" \
+              --verify-tag --draft $prerelease --json id -q .id)"
+            echo "release_id=$release_id" >> "$GITHUB_OUTPUT"
+            echo "created=true" >> "$GITHUB_OUTPUT"
+            echo "Created draft release id: $release_id"
           fi
 
       - name: Capture the release id
@@ -332,9 +339,17 @@ jobs:
           set -euo pipefail
           # Every later job addresses assets by this id, never by the tag: a tag can resolve to
           # more than one release record, and that is what split the v0.27.0 assets.
-          release_id="$(bash .github/scripts/release-asset.sh resolve "${{ needs.meta.outputs.tag }}")"
+          if [ "${{ steps.ensure.outputs.created }}" = "true" ]; then
+            # Reuse the id create just returned. Re-resolving the id from the releases list is
+            # racy: the list endpoint omits the draft for a short window right after creation, so
+            # a freshly created release looked absent and the run died with "no release record".
+            release_id="${{ steps.ensure.outputs.release_id }}"
+            echo "Reusing created release id: $release_id"
+          else
+            release_id="$(bash .github/scripts/release-asset.sh resolve "${{ needs.meta.outputs.tag }}")"
+            echo "Resolved release id: $release_id"
+          fi
           echo "release_id=$release_id" >> "$GITHUB_OUTPUT"
-          echo "Release id: $release_id"
 
   build-binaries:
     name: Build binaries / ${{ matrix.triple }}
