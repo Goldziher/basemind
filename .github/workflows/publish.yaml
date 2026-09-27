@@ -709,6 +709,12 @@ jobs:
     if: always() && needs.meta.result == 'success'
     runs-on: ubuntu-latest
     steps:
+      # The promotion step runs `.github/scripts/release-asset.sh`; without a checkout the
+      # workspace is empty and `bash` exits 127. Every other job that uses the script checks
+      # out first — only this one was missed.
+      - name: Checkout
+        uses: actions/checkout@v6
+
       - name: Promote draft to a published release once complete
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
