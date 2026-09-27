@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -6,7 +7,7 @@ use std::time::Duration;
 #[cfg(target_os = "linux")]
 use notify::event::CreateKind;
 use notify::{Config as NotifyConfig, EventKind, RecommendedWatcher, RecursiveMode};
-use notify_debouncer_full::{DebounceEventResult, NoCache, new_debouncer_opt};
+use notify_debouncer_full::{DebounceEventResult, DebouncedEvent, NoCache, new_debouncer_opt};
 use thiserror::Error;
 use tracing::{debug, info, warn};
 
@@ -47,6 +48,74 @@ pub enum BatchKind {
     },
 }
 
+/// Bound on the debouncer→consumer queue, in whole debounced batches.
+///
+/// The consumer rescans synchronously, so on a large monorepo one iteration can take minutes while
+/// the debouncer keeps emitting a batch every `watch.debounce_ms` (250 ms by default). Unbounded,
+/// that queue grows for as long as the churn lasts — a branch switch across 55 worktrees / 82k files
+/// buries the consumer under thousands of `Vec<PathBuf>` batches, each of which costs another rescan.
+/// 64 slots is ~16 s of backlog at the default debounce, comfortably more than an incremental scan
+/// needs, so the overflow path stays cold in normal operation; past it the producer coalesces into
+/// [`PendingPaths`] instead of blocking or dropping.
+const DEBOUNCE_QUEUE_CAPACITY: usize = 64;
+
+/// Overflow sink shared by the debouncer callback and the consumer loop.
+///
+/// A full queue must neither block the callback — it runs on the debouncer's emit thread, so
+/// blocking there stalls debouncing and backs up notify's own channel — nor drop the batch, because
+/// a lost path means a file silently missing from the index. So the callback folds the overflowing
+/// batch into this set: N queued batches collapse into one union of paths, bounded by how many
+/// distinct paths the tree has rather than by how many batches the debouncer emitted.
+#[derive(Default)]
+struct PendingPaths(Mutex<BTreeSet<PathBuf>>);
+
+impl PendingPaths {
+    /// Fold one overflowing batch's relevant paths into the set.
+    fn coalesce(&self, events: &[DebouncedEvent]) {
+        let mut set = self.0.lock().expect("pending paths poisoned");
+        for ev in events {
+            if !is_relevant(&ev.event.kind) {
+                continue;
+            }
+            set.extend(ev.event.paths.iter().cloned());
+        }
+    }
+
+    /// Take everything coalesced so far, leaving the set empty. The consumer calls this on every
+    /// loop iteration — including the idle timeout — so a set that filled up during a long rescan is
+    /// processed as soon as that rescan returns.
+    fn take(&self) -> Vec<PathBuf> {
+        let mut set = self.0.lock().expect("pending paths poisoned");
+        std::mem::take(&mut *set).into_iter().collect()
+    }
+}
+
+/// Debouncer callback body: hand the batch to the consumer, or coalesce it when the queue is full.
+/// Never blocks, never discards a path.
+fn dispatch_debounced(
+    tx: &std::sync::mpsc::SyncSender<DebounceEventResult>,
+    pending: &PendingPaths,
+    res: DebounceEventResult,
+) {
+    match tx.try_send(res) {
+        Ok(()) => {}
+        Err(std::sync::mpsc::TrySendError::Full(Ok(events))) => {
+            debug!(
+                n = events.len(),
+                "debounce queue full; coalescing batch into the pending set"
+            );
+            pending.coalesce(&events);
+        }
+        // Errors carry no path, so there is nothing to coalesce; log them here instead of queueing.
+        Err(std::sync::mpsc::TrySendError::Full(Err(errors))) => {
+            for e in errors {
+                warn!(error = %e, "watch error (debounce queue full)");
+            }
+        }
+        Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {}
+    }
+}
+
 /// Path-emitting primitive at the core of every watcher. Runs the
 /// `notify-debouncer-full` event loop and, for each debounced batch, hands the
 /// caller the set of repo-relative changed paths (sorted + deduped, with
@@ -67,7 +136,9 @@ pub fn watch_paths(
     mut shutdown: tokio::sync::oneshot::Receiver<()>,
     mut on_change: impl FnMut(Vec<PathBuf>, BatchKind),
 ) -> Result<(), WatchError> {
-    let (tx, rx) = std::sync::mpsc::channel::<DebounceEventResult>();
+    let (tx, rx) = std::sync::mpsc::sync_channel::<DebounceEventResult>(DEBOUNCE_QUEUE_CAPACITY);
+    let pending = Arc::new(PendingPaths::default());
+    let pending_producer = Arc::clone(&pending);
     let debounce = Duration::from_millis(config.watch.debounce_ms);
     // ~keep NoCache, not the default RecommendedCache. On macOS/Windows the default is FileIdMap,
     // ~keep whose add_path recursively WalkDirs the whole subtree with follow_links(true) — at
@@ -80,9 +151,7 @@ pub fn watch_paths(
     let mut debouncer = new_debouncer_opt::<_, RecommendedWatcher, NoCache>(
         debounce,
         None,
-        move |res| {
-            let _ = tx.send(res);
-        },
+        move |res| dispatch_debounced(&tx, &pending_producer, res),
         NoCache::new(),
         NotifyConfig::default(),
     )?;
@@ -149,41 +218,13 @@ pub fn watch_paths(
             info!("shutdown requested; exiting watcher");
             return Ok(());
         }
+        // One generation of work: the batch we just received, every other batch already queued, and
+        // whatever the callback coalesced aside while the last rescan was running. Rescanning those
+        // one at a time is what lets a backlog outlive the burst that produced it, so they are merged
+        // into a single union of paths instead.
+        let mut queued: Vec<Vec<DebouncedEvent>> = Vec::new();
         match rx.recv_timeout(Duration::from_millis(200)) {
-            Ok(Ok(events)) => {
-                filter.clear_cache();
-                let mut touched: Vec<PathBuf> = Vec::new();
-                for ev in events {
-                    if !is_relevant(&ev.event.kind) {
-                        continue;
-                    }
-                    // Linux inotify: a directory created after startup is not covered by the
-                    // frozen NonRecursive watch set. Re-arm by registering a watch on it.
-                    #[cfg(target_os = "linux")]
-                    if matches!(&ev.event.kind, EventKind::Create(CreateKind::Folder)) {
-                        for p in &ev.event.paths {
-                            if p.is_dir()
-                                && let Err(e) = debouncer.watch(p, RecursiveMode::NonRecursive)
-                            {
-                                warn!(path = %p.display(), error = %e, "inotify re-arm failed");
-                            }
-                        }
-                    }
-                    for p in &ev.event.paths {
-                        if keep_event_path(&filter, root, p) {
-                            touched.push(p.clone());
-                        }
-                    }
-                }
-                touched.sort();
-                touched.dedup();
-                if touched.is_empty() {
-                    continue;
-                }
-                debug!(n = touched.len(), "debounced batch");
-                let n = touched.len();
-                on_change(touched, BatchKind::Incremental { paths: n });
-            }
+            Ok(Ok(events)) => queued.push(events),
             Ok(Err(errors)) => {
                 for e in errors {
                     warn!(error = %e, "watch error");
@@ -195,6 +236,70 @@ pub fn watch_paths(
                 return Ok(());
             }
         }
+        // Bounded by the queue's own capacity so a sustained event stream can never keep the drain
+        // spinning past the next shutdown check.
+        for _ in 1..DEBOUNCE_QUEUE_CAPACITY {
+            match rx.try_recv() {
+                Ok(Ok(events)) => queued.push(events),
+                Ok(Err(errors)) => {
+                    for e in errors {
+                        warn!(error = %e, "watch error");
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+
+        let mut candidates: Vec<PathBuf> = Vec::new();
+        for ev in queued.into_iter().flatten() {
+            if !is_relevant(&ev.event.kind) {
+                continue;
+            }
+            // Linux inotify: a directory created after startup is not covered by the
+            // frozen NonRecursive watch set. Re-arm by registering a watch on it.
+            #[cfg(target_os = "linux")]
+            if matches!(&ev.event.kind, EventKind::Create(CreateKind::Folder)) {
+                for p in &ev.event.paths {
+                    if p.is_dir()
+                        && let Err(e) = debouncer.watch(p, RecursiveMode::NonRecursive)
+                    {
+                        warn!(path = %p.display(), error = %e, "inotify re-arm failed");
+                    }
+                }
+            }
+            candidates.extend(ev.event.paths.iter().cloned());
+        }
+        // Taken after the drain, so a batch that overflowed while we were draining is not left
+        // sitting until the next iteration.
+        let coalesced = pending.take();
+        // A coalesced path has lost its event kind, so the Create(Folder) test above cannot fire for
+        // it; re-arm any that is a directory, or a subtree created during the burst stays unwatched.
+        #[cfg(target_os = "linux")]
+        for p in &coalesced {
+            if p.is_dir()
+                && let Err(e) = debouncer.watch(p, RecursiveMode::NonRecursive)
+            {
+                warn!(path = %p.display(), error = %e, "inotify re-arm failed");
+            }
+        }
+        candidates.extend(coalesced);
+        if candidates.is_empty() {
+            continue;
+        }
+
+        filter.clear_cache();
+        candidates.sort();
+        candidates.dedup();
+        let touched: Vec<PathBuf> = candidates
+            .into_iter()
+            .filter(|p| keep_event_path(&filter, root, p))
+            .collect();
+        if touched.is_empty() {
+            continue;
+        }
+        debug!(n = touched.len(), "debounced batch");
+        let n = touched.len();
+        on_change(touched, BatchKind::Incremental { paths: n });
     }
 }
 
@@ -539,6 +644,173 @@ mod tests {
 
         let _ = shutdown_tx.send(());
         let _ = handle.join();
+    }
+
+    /// A rescan can outlast the event stream that triggered it, and everything that happened during
+    /// it must still arrive — queued or coalesced. The callback here blocks well past the debounce
+    /// window, so `late.rs` is written while the "rescan" owns the consumer thread.
+    #[test]
+    fn should_deliver_events_produced_while_the_consumer_is_busy() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().canonicalize().expect("canonicalize tempdir");
+        let mut config = crate::config::default_for_root(&root);
+        config.watch.debounce_ms = 50;
+
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+        let (path_tx, path_rx) = mpsc::channel::<Vec<PathBuf>>();
+        let (busy_tx, busy_rx) = mpsc::channel::<()>();
+
+        let root_for_thread = root.clone();
+        let handle = std::thread::spawn(move || {
+            watch_paths(&root_for_thread, &config, shutdown_rx, |paths, _kind| {
+                let _ = busy_tx.send(());
+                // Stands in for the synchronous rescan the real consumers run inside this callback.
+                std::thread::sleep(Duration::from_millis(600));
+                let _ = path_tx.send(paths);
+            })
+        });
+
+        // Arm the watch by retrying a write until the consumer reports it is busy — the sleeping
+        // callback makes the shared `arm_watcher` drain window meaningless here.
+        let arm = root.join("arm.rs");
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            assert!(std::time::Instant::now() < deadline, "watcher never armed within 30s");
+            std::fs::write(&arm, b"fn arm() {}\n").expect("write arm file");
+            match busy_rx.recv_timeout(Duration::from_millis(500)) {
+                Ok(()) => break,
+                Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(mpsc::RecvTimeoutError::Disconnected) => panic!("watcher thread died"),
+            }
+        }
+
+        // The consumer is inside the callback right now; this event has nowhere to go but the queue
+        // or the pending set.
+        std::fs::write(root.join("late.rs"), b"fn late() {}\n").expect("write late file");
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "an event produced during a busy rescan was never delivered"
+            );
+            match path_rx.recv_timeout(Duration::from_millis(500)) {
+                Ok(paths) if paths.iter().any(|p| p.ends_with("late.rs")) => break,
+                Ok(_) => continue,
+                Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(mpsc::RecvTimeoutError::Disconnected) => panic!("watcher thread died"),
+            }
+        }
+
+        let _ = shutdown_tx.send(());
+        let _ = handle.join();
+    }
+
+    const MODIFY: EventKind = EventKind::Modify(notify::event::ModifyKind::Any);
+
+    /// One debounced batch, in the shape `notify-debouncer-full` hands the callback.
+    fn batch(kind: EventKind, paths: &[&str]) -> DebounceEventResult {
+        Ok(paths
+            .iter()
+            .map(|p| {
+                DebouncedEvent::new(
+                    notify::Event::new(kind).add_path(PathBuf::from(p)),
+                    std::time::Instant::now(),
+                )
+            })
+            .collect())
+    }
+
+    fn drain(rx: &mpsc::Receiver<DebounceEventResult>) -> usize {
+        std::iter::from_fn(|| rx.try_recv().ok()).count()
+    }
+
+    /// The bound must be invisible under normal load: with room in the queue a batch goes straight to
+    /// the consumer and nothing is set aside.
+    #[test]
+    fn should_deliver_batch_to_the_queue_when_it_has_room() {
+        let (tx, rx) = mpsc::sync_channel::<DebounceEventResult>(DEBOUNCE_QUEUE_CAPACITY);
+        let pending = PendingPaths::default();
+
+        dispatch_debounced(&tx, &pending, batch(MODIFY, &["/repo/a.rs", "/repo/b.rs"]));
+
+        let events = rx
+            .try_recv()
+            .expect("batch reaches the consumer")
+            .expect("not an error batch");
+        let paths: Vec<PathBuf> = events.iter().flat_map(|e| e.event.paths.iter().cloned()).collect();
+        assert_eq!(paths, vec![PathBuf::from("/repo/a.rs"), PathBuf::from("/repo/b.rs")]);
+        assert!(
+            pending.take().is_empty(),
+            "nothing should be coalesced while the queue has room"
+        );
+    }
+
+    /// A full queue must neither block the debouncer nor drop a path: the overflow is folded into the
+    /// pending set, deduped, and filtered by the same relevance test the consumer applies.
+    #[test]
+    fn should_coalesce_into_the_pending_set_when_the_queue_is_full() {
+        let (tx, rx) = mpsc::sync_channel::<DebounceEventResult>(DEBOUNCE_QUEUE_CAPACITY);
+        let pending = PendingPaths::default();
+
+        for i in 0..DEBOUNCE_QUEUE_CAPACITY {
+            dispatch_debounced(&tx, &pending, batch(MODIFY, &[format!("/repo/queued_{i}.rs").as_str()]));
+        }
+        assert!(pending.take().is_empty(), "the queue had room for all of those");
+
+        // Now full. `busy_b.rs` repeats across two batches, and a read is not a change at all.
+        dispatch_debounced(&tx, &pending, batch(MODIFY, &["/repo/busy_a.rs"]));
+        dispatch_debounced(&tx, &pending, batch(MODIFY, &["/repo/busy_b.rs", "/repo/busy_c.rs"]));
+        dispatch_debounced(&tx, &pending, batch(MODIFY, &["/repo/busy_b.rs"]));
+        dispatch_debounced(
+            &tx,
+            &pending,
+            batch(EventKind::Access(notify::event::AccessKind::Any), &["/repo/read.rs"]),
+        );
+
+        assert_eq!(
+            pending.take(),
+            vec![
+                PathBuf::from("/repo/busy_a.rs"),
+                PathBuf::from("/repo/busy_b.rs"),
+                PathBuf::from("/repo/busy_c.rs"),
+            ],
+            "every overflowing change must survive, deduped, with reads filtered out"
+        );
+        assert!(
+            pending.take().is_empty(),
+            "take must empty the set so a path is never replayed"
+        );
+        assert_eq!(
+            drain(&rx),
+            DEBOUNCE_QUEUE_CAPACITY,
+            "the already-queued batches must be untouched by the overflow"
+        );
+    }
+
+    /// The queue must not grow with the burst — this is the leak. 10k batches over four paths leave
+    /// at most `DEBOUNCE_QUEUE_CAPACITY` batches queued plus a four-path union, so the memory tracks
+    /// how many distinct paths exist rather than how many batches the debouncer emitted.
+    #[test]
+    fn should_not_grow_the_queue_beyond_capacity_under_a_burst() {
+        let (tx, rx) = mpsc::sync_channel::<DebounceEventResult>(DEBOUNCE_QUEUE_CAPACITY);
+        let pending = PendingPaths::default();
+        let paths = ["/repo/a.rs", "/repo/b.rs", "/repo/c.rs", "/repo/d.rs"];
+
+        for _ in 0..10_000 {
+            dispatch_debounced(&tx, &pending, batch(MODIFY, &paths));
+        }
+
+        assert_eq!(
+            drain(&rx),
+            DEBOUNCE_QUEUE_CAPACITY,
+            "the queue is capped at its capacity"
+        );
+        assert_eq!(
+            pending.take().len(),
+            paths.len(),
+            "the overflowing batches collapse into one union of their paths"
+        );
     }
 
     /// A permission-denied directory must not break the watcher's startup. This is the entire
