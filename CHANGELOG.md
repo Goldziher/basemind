@@ -8,7 +8,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 <!-- Keep a Changelog repeats Added/Changed/Fixed headings per version. -->
 <!-- markdownlint-disable MD024 -->
 
+## [0.27.2] - 2026-09-27
+
+> **Patch release — the first publish that could build on Linux.** This supersedes v0.27.1,
+> whose GitHub release was never published and whose Linux archives never built: no crates.io,
+> npm or PyPI version was cut from it, so 0.27.2 is the release to use.
+
+### Fixed
+
+- The `shells` feature no longer fails to compile on Linux. `rustix` was refreshed to 1.1.5, which
+  renamed its experimental `runtime` module to a rotating mangled name (`runtime_448b8ad740e2a26f`)
+  and reduced the old `runtime` path to a private alias. `rmux-client` 0.10.0 imports
+  `rustix::runtime::{…}` from its Linux attach-resize path, so only the Linux builds broke
+  (E0603); macOS and Windows were unaffected. `rustix` is now held at 1.1.4, the last release whose
+  `runtime` module is public and the version `rmux-client` itself declares.
+
 ## [0.27.1] - 2026-09-27
+
+> **Never published as a GitHub release.** The source below was tagged and pushed, but the Linux
+> archives failed to build and the release record was never promoted. It is superseded by
+> [0.27.2]; no registry version was cut from it.
 
 > **Patch release — memory-safety follow-ups to [#62], a stricter plugin launcher, and a
 > release-workflow fix.** No schema or MCP-surface change: `RELEASE_MINOR` stays 27, so the
