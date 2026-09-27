@@ -7,8 +7,9 @@
 //! request so a stale entry still describes a valid past).
 //!
 //! Two layers:
-//! - **RAM** — `lru::LruCache` per category, behind a `Mutex`. Bounded by
-//!   capacity from `ServeArgs`.
+//! - **RAM** — `lru::LruCache` per category, behind a `Mutex`. Bounded by entry
+//!   count (capacity from `ServeArgs`) *and* by bytes
+//!   (`CATEGORY_MEM_BUDGET_BYTES`), because these values have no natural size.
 //! - **Disk** — sha-keyed `.msgpack` files under `.basemind/git-cache/`. Optional;
 //!   `GitCache::open(.., persist=false)` skips disk altogether for ephemeral
 //!   `basemind cache` operations.
@@ -20,7 +21,6 @@
 //! a schema bump rebuilds the git cache lazily without any destructive wipe.
 
 use std::fs;
-use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -110,10 +110,92 @@ pub struct LogKey {
 /// `(path, change_kind)` for one file in a commit's tree-against-parent diff.
 type CommitFileChange = (crate::path::RelPath, ChangeKind);
 
+/// Byte ceiling for each RAM category (32 MiB), the bound an entry cap cannot express.
+///
+/// `mem_capacity` bounds how MANY values a category holds, never how large they are, and none of
+/// these values has a natural size: one `CommitInfo` carries the full commit body plus one entry per
+/// path the commit touched, and one `BlameResult` is a hunk per contiguous run of lines in a whole
+/// file. A lockfile merge is orders of magnitude bigger than a typo fix, so the same 1024 entries
+/// are a few megabytes on one repo and gigabytes on the next — `crate::mcp::l1_cache` reached the
+/// same conclusion about decoded outlines: an entry-count LRU is the same unbounded structure with a
+/// different constant.
+///
+/// 32 MiB per category is 96 MiB per workspace. A typical entry is single-digit KB, so on any
+/// ordinary session the entry cap still binds first and the byte ceiling never evicts anything; it
+/// exists for the pathological tail (huge merges, blames of generated files) where 1024 entries
+/// would otherwise be unbounded. It stays well under the 256 MiB one workspace's outline cache is
+/// already allowed (`[resources] max_map_cache_mb`), which keeps git artifacts from becoming the
+/// dominant term in a daemon holding 16 hot workspaces.
+const CATEGORY_MEM_BUDGET_BYTES: u64 = 32 * 1024 * 1024;
+
+/// One category's LRU plus the running byte charge over its values — the `crate::mcp::l1_cache`
+/// shape, generalised over the three value types this cache holds.
+///
+/// The `LruCache` is `unbounded` and the entry cap is enforced here so that EVERY eviction passes
+/// through the byte accounting: `LruCache::put` on a capacity-bounded map drops the LRU entry
+/// silently without handing it back, which would leave its bytes charged forever and make the
+/// running total drift up until the cache evicted on every insert.
+struct Charged<K, V> {
+    lru: LruCache<K, V>,
+    /// Max entries, the pre-existing `mem_capacity` bound.
+    entries: usize,
+    /// Byte ceiling; `0` means unbounded, matching `L1Cache`'s sentinel.
+    budget_bytes: u64,
+    charged: u64,
+    /// Approximate resident cost of one value. A `fn` pointer rather than a trait so the three
+    /// estimators stay plain functions a unit test can call directly.
+    heap_bytes: fn(&V) -> u64,
+}
+
+impl<K: std::hash::Hash + Eq, V> Charged<K, V> {
+    fn new(entries: usize, budget_bytes: u64, heap_bytes: fn(&V) -> u64) -> Self {
+        Self {
+            lru: LruCache::unbounded(),
+            entries: entries.max(1),
+            budget_bytes,
+            charged: 0,
+            heap_bytes,
+        }
+    }
+
+    /// Insert `value`, then evict least-recently-used entries until both bounds hold.
+    ///
+    /// The entry just admitted is never the one evicted, even when it alone exceeds the budget: a
+    /// blame of a generated file must still be returnable under any ceiling, or a cache that exists
+    /// to save work would start withholding answers.
+    fn admit(&mut self, key: K, value: V) {
+        let bytes = (self.heap_bytes)(&value);
+        if let Some(previous) = self.lru.put(key, value) {
+            self.charged = self.charged.saturating_sub((self.heap_bytes)(&previous));
+        }
+        self.charged = self.charged.saturating_add(bytes);
+        while self.lru.len() > self.entries {
+            self.evict_lru();
+        }
+        if self.budget_bytes == 0 {
+            return;
+        }
+        while self.charged > self.budget_bytes && self.lru.len() > 1 {
+            self.evict_lru();
+        }
+    }
+
+    fn evict_lru(&mut self) {
+        if let Some((_, evicted)) = self.lru.pop_lru() {
+            self.charged = self.charged.saturating_sub((self.heap_bytes)(&evicted));
+        }
+    }
+
+    fn clear(&mut self) {
+        self.lru.clear();
+        self.charged = 0;
+    }
+}
+
 pub struct GitCache {
-    commit_files: Mutex<LruCache<String, Arc<Vec<CommitFileChange>>>>,
-    log: Mutex<LruCache<LogKey, Arc<Vec<CommitInfo>>>>,
-    blame: Mutex<LruCache<BlameKey, Arc<BlameResult>>>,
+    commit_files: Mutex<Charged<String, Arc<Vec<CommitFileChange>>>>,
+    log: Mutex<Charged<LogKey, Arc<Vec<CommitInfo>>>>,
+    blame: Mutex<Charged<BlameKey, Arc<BlameResult>>>,
     disk: Option<PathBuf>,
 }
 
@@ -131,19 +213,35 @@ impl GitCache {
         } else {
             None
         };
-        let cap = NonZeroUsize::new(mem_capacity.max(1)).expect("capacity > 0");
-        Ok(Self {
-            commit_files: Mutex::new(LruCache::new(cap)),
-            log: Mutex::new(LruCache::new(cap)),
-            blame: Mutex::new(LruCache::new(cap)),
+        Ok(Self::with_budget(disk, mem_capacity, CATEGORY_MEM_BUDGET_BYTES))
+    }
+
+    /// Assemble the three charged LRUs. Split out of [`GitCache::open`] so a test can pick a tiny
+    /// budget instead of synthesising 32 MiB of git history; production always passes
+    /// [`CATEGORY_MEM_BUDGET_BYTES`].
+    fn with_budget(disk: Option<PathBuf>, mem_capacity: usize, budget_bytes: u64) -> Self {
+        Self {
+            commit_files: Mutex::new(Charged::new(
+                mem_capacity,
+                budget_bytes,
+                |files: &Arc<Vec<CommitFileChange>>| commit_files_heap_bytes(files),
+            )),
+            log: Mutex::new(Charged::new(
+                mem_capacity,
+                budget_bytes,
+                |commits: &Arc<Vec<CommitInfo>>| commits_heap_bytes(commits),
+            )),
+            blame: Mutex::new(Charged::new(mem_capacity, budget_bytes, |result: &Arc<BlameResult>| {
+                blame_heap_bytes(result)
+            })),
             disk,
-        })
+        }
     }
 
     /// Look up (or compute) the per-file change list for a commit. Sha-keyed: result is
     /// immutable, so any hit is correct forever.
     pub fn commit_files(&self, repo: &Repo, commit_sha: &str) -> Result<Arc<Vec<CommitFileChange>>, CacheError> {
-        if let Some(hit) = self.commit_files.lock().unwrap().get(commit_sha).cloned() {
+        if let Some(hit) = self.commit_files.lock().unwrap().lru.get(commit_sha).cloned() {
             return Ok(hit);
         }
         if let Some(disk) = self.read_commit_files_disk(commit_sha) {
@@ -151,7 +249,7 @@ impl GitCache {
             self.commit_files
                 .lock()
                 .unwrap()
-                .put(commit_sha.to_string(), Arc::clone(&arc));
+                .admit(commit_sha.to_string(), Arc::clone(&arc));
             return Ok(arc);
         }
         let computed = repo.commit_files_uncached(commit_sha)?;
@@ -159,7 +257,7 @@ impl GitCache {
         self.commit_files
             .lock()
             .unwrap()
-            .put(commit_sha.to_string(), Arc::clone(&arc));
+            .admit(commit_sha.to_string(), Arc::clone(&arc));
         self.write_commit_files_disk(commit_sha, &arc);
         Ok(arc)
     }
@@ -180,12 +278,12 @@ impl GitCache {
             limit,
             include_files,
         };
-        if let Some(hit) = self.log.lock().unwrap().get(&key).cloned() {
+        if let Some(hit) = self.log.lock().unwrap().lru.get(&key).cloned() {
             return Ok(hit);
         }
         if let Some(disk) = self.read_log_disk(&key) {
             let arc = Arc::new(disk);
-            self.log.lock().unwrap().put(key.clone(), Arc::clone(&arc));
+            self.log.lock().unwrap().admit(key.clone(), Arc::clone(&arc));
             return Ok(arc);
         }
         let commits = match path {
@@ -193,7 +291,7 @@ impl GitCache {
             None => repo.log_paths(limit as usize, include_files)?,
         };
         let arc = Arc::new(commits);
-        self.log.lock().unwrap().put(key.clone(), Arc::clone(&arc));
+        self.log.lock().unwrap().admit(key.clone(), Arc::clone(&arc));
         self.write_log_disk(&key, &arc);
         Ok(arc)
     }
@@ -212,17 +310,17 @@ impl GitCache {
             path: path.clone(),
             range,
         };
-        if let Some(hit) = self.blame.lock().unwrap().get(&key).cloned() {
+        if let Some(hit) = self.blame.lock().unwrap().lru.get(&key).cloned() {
             return Ok(hit);
         }
         if let Some(disk) = self.read_blame_disk(&key) {
             let arc = Arc::new(disk);
-            self.blame.lock().unwrap().put(key.clone(), Arc::clone(&arc));
+            self.blame.lock().unwrap().admit(key.clone(), Arc::clone(&arc));
             return Ok(arc);
         }
         let computed = repo.blame_file(suspect_sha, path, range)?;
         let arc = Arc::new(computed);
-        self.blame.lock().unwrap().put(key.clone(), Arc::clone(&arc));
+        self.blame.lock().unwrap().admit(key.clone(), Arc::clone(&arc));
         self.write_blame_disk(&key, &arc);
         Ok(arc)
     }
@@ -362,6 +460,60 @@ impl GitCache {
     }
 }
 
+/// Approximate resident cost of one cached commit-files list, in bytes.
+///
+/// Approximate on purpose: the charge shapes eviction, and an exact walk would cost more than the
+/// eviction it informs. What it must not do is undercount the heap, which is where the size actually
+/// lives — a `RelPath` is a `BString`, so the path bytes are counted on top of the tuple's own
+/// footprint.
+fn commit_files_heap_bytes(files: &[CommitFileChange]) -> u64 {
+    let mut total = std::mem::size_of::<Vec<CommitFileChange>>() as u64;
+    total += std::mem::size_of_val(files) as u64;
+    total += files.iter().map(|(path, _)| path.as_bytes().len() as u64).sum::<u64>();
+    total
+}
+
+/// Approximate resident cost of one cached log walk, in bytes.
+///
+/// Every owned `String` on a `CommitInfo` is counted, `body` above all: a commit message is
+/// unbounded, and a walk of 1000 commits with long bodies is the case the byte ceiling exists for.
+fn commits_heap_bytes(commits: &[CommitInfo]) -> u64 {
+    let mut total = std::mem::size_of::<Vec<CommitInfo>>() as u64;
+    total += std::mem::size_of_val(commits) as u64;
+    for commit in commits {
+        total += (commit.sha.len()
+            + commit.short_sha.len()
+            + commit.summary.len()
+            + commit.author.len()
+            + commit.author_email.len()
+            + commit.body.len()) as u64;
+        total += std::mem::size_of_val(commit.files.as_slice()) as u64;
+        total += commit
+            .files
+            .iter()
+            .map(|(path, _)| path.as_bytes().len() as u64)
+            .sum::<u64>();
+    }
+    total
+}
+
+/// Approximate resident cost of one cached blame, in bytes.
+///
+/// Scales with the hunk count, which scales with the blamed file: a file whose every line came from
+/// a different commit is one hunk per line, each carrying its own sha, author and summary.
+fn blame_heap_bytes(result: &BlameResult) -> u64 {
+    let mut total = std::mem::size_of::<BlameResult>() as u64;
+    total += result.path.as_bytes().len() as u64;
+    total += result.suspect_sha.len() as u64;
+    total += result.truncated_reason.as_ref().map_or(0, String::len) as u64;
+    total += std::mem::size_of_val(result.hunks.as_slice()) as u64;
+    for hunk in &result.hunks {
+        total += (hunk.commit_sha.len() + hunk.short_sha.len() + hunk.author.len() + hunk.summary.len()) as u64;
+        total += hunk.source_path.as_ref().map_or(0, |path| path.as_bytes().len()) as u64;
+    }
+    total
+}
+
 fn ensure_subdir(root: &Path, sub: &str) -> Result<(), CacheError> {
     let path = root.join(sub);
     fs::create_dir_all(&path).map_err(|source| CacheError::Io { path, source })
@@ -448,7 +600,182 @@ pub(crate) fn evict_log_cache(cache_root: &Path, max_bytes: u64) {
 
 #[cfg(test)]
 mod tests {
-    use super::atomic_write;
+    use super::*;
+    use crate::git::BlameHunk;
+    use crate::path::RelPath;
+
+    /// One log entry whose charge is dominated by `body_len`: a commit message is unbounded, and it
+    /// is exactly the kind of payload an entry cap cannot see.
+    fn commits(sha: &str, body_len: usize) -> Arc<Vec<CommitInfo>> {
+        Arc::new(vec![CommitInfo {
+            sha: sha.to_string(),
+            short_sha: sha.chars().take(7).collect(),
+            summary: "summary line".to_string(),
+            author: "author".to_string(),
+            author_email: "author@example.com".to_string(),
+            author_time_unix: 0,
+            body: "b".repeat(body_len),
+            files: vec![(RelPath::from("src/git_cache.rs"), ChangeKind::Modified)],
+        }])
+    }
+
+    fn log_key(head_sha: &str) -> LogKey {
+        LogKey {
+            head_sha: head_sha.to_string(),
+            path: None,
+            limit: 10,
+            include_files: false,
+        }
+    }
+
+    /// A blame of a file whose every line came from a different commit — one hunk per line, the
+    /// shape that makes a single blame arbitrarily large.
+    fn blame_result(hunks: usize) -> BlameResult {
+        BlameResult {
+            path: RelPath::from("src/git_cache.rs"),
+            suspect_sha: "a".repeat(40),
+            hunks: (0..hunks)
+                .map(|i| BlameHunk {
+                    commit_sha: format!("{i:040x}"),
+                    short_sha: format!("{i:07x}"),
+                    start_line: 1,
+                    len: 1,
+                    source_start_line: 1,
+                    author: "author".to_string(),
+                    author_time_unix: 0,
+                    summary: "one line changed".to_string(),
+                    source_path: None,
+                })
+                .collect(),
+            truncated_reason: None,
+        }
+    }
+
+    /// The charge must scale with a value's own heap, not with the entry count — the whole reason
+    /// the second bound is in bytes. A 100 KB commit body charges ~100 KB more than a 1-byte one,
+    /// and 1000 blame hunks charge at least their own element storage more than one hunk.
+    #[test]
+    fn heap_bytes_track_payload_not_entry_count() {
+        let small = commits_heap_bytes(&commits("aaa", 1));
+        let large = commits_heap_bytes(&commits("aaa", 100_000));
+        assert!(large > small + 99_000, "small={small} large={large}");
+
+        let one_hunk = blame_heap_bytes(&blame_result(1));
+        let many_hunks = blame_heap_bytes(&blame_result(1000));
+        let element_storage = (1000 * std::mem::size_of::<BlameHunk>()) as u64;
+        assert!(
+            many_hunks > one_hunk + element_storage,
+            "one={one_hunk} many={many_hunks}"
+        );
+
+        // Path bytes live on the heap behind each `RelPath`, so a long-path commit must charge more
+        // than the tuple array alone.
+        let files: Vec<CommitFileChange> = (0..500)
+            .map(|i| {
+                (
+                    RelPath::from(format!("crates/pack/src/module_{i:04}/deeply/nested/file.rs")),
+                    ChangeKind::Added,
+                )
+            })
+            .collect();
+        let tuples = (500 * std::mem::size_of::<CommitFileChange>()) as u64;
+        assert!(
+            commit_files_heap_bytes(&files) > tuples + 500 * 40,
+            "paths must be charged"
+        );
+    }
+
+    /// Under budget nothing is evicted: the byte ceiling is an additional bound, not a tighter one,
+    /// so a category the entry cap allows and the budget covers keeps every entry.
+    #[test]
+    fn under_budget_keeps_every_entry() {
+        let cache = GitCache::with_budget(None, 64, 1024 * 1024);
+        for i in 0..8 {
+            let value = commits(&format!("sha{i}"), 1024);
+            cache.log.lock().unwrap().admit(log_key(&format!("head{i}")), value);
+        }
+        let mut guard = cache.log.lock().unwrap();
+        assert_eq!(guard.lru.len(), 8);
+        assert!(guard.charged < 1024 * 1024, "charged={}", guard.charged);
+        for i in 0..8 {
+            assert!(
+                guard.lru.get(&log_key(&format!("head{i}"))).is_some(),
+                "entry {i} survives"
+            );
+        }
+    }
+
+    /// Past the byte budget the least-recently-used entry is the one that goes, with the entry cap
+    /// nowhere near binding — which is the defect this bound closes.
+    #[test]
+    fn byte_budget_evicts_least_recently_used() {
+        let cache = GitCache::with_budget(None, 64, 50_000);
+        let (a, b, c) = (log_key("aaa"), log_key("bbb"), log_key("ccc"));
+        cache.log.lock().unwrap().admit(a.clone(), commits("aaa", 20_000));
+        cache.log.lock().unwrap().admit(b.clone(), commits("bbb", 20_000));
+        // Reading `a` back makes `b` the oldest, so the next insert must take `b` and not `a`.
+        assert!(cache.log.lock().unwrap().lru.get(&a).is_some());
+        cache.log.lock().unwrap().admit(c.clone(), commits("ccc", 20_000));
+
+        let mut guard = cache.log.lock().unwrap();
+        assert!(guard.charged <= 50_000, "charged={}", guard.charged);
+        assert!(guard.lru.get(&a).is_some(), "the recently-read entry survives");
+        assert!(guard.lru.get(&c).is_some(), "the newest entry survives");
+        assert!(
+            guard.lru.get(&b).is_none(),
+            "the least-recently-used entry is the one evicted"
+        );
+    }
+
+    /// An entry larger than the whole budget is admitted anyway — a blame of a generated file must
+    /// still be returnable — and then yields the moment anything else needs the room.
+    #[test]
+    fn oversized_entry_is_admitted_then_displaced() {
+        let cache = GitCache::with_budget(None, 64, 8192);
+        let huge = log_key("huge");
+        cache
+            .log
+            .lock()
+            .unwrap()
+            .admit(huge.clone(), commits("huge", 1_000_000));
+        {
+            let mut guard = cache.log.lock().unwrap();
+            assert!(
+                guard.lru.get(&huge).is_some(),
+                "a value over budget is still returnable"
+            );
+            assert_eq!(guard.lru.len(), 1);
+        }
+        let small = log_key("small");
+        cache.log.lock().unwrap().admit(small.clone(), commits("small", 16));
+
+        let mut guard = cache.log.lock().unwrap();
+        assert!(guard.lru.get(&small).is_some());
+        assert!(
+            guard.lru.get(&huge).is_none(),
+            "the oversized entry goes on the next insert"
+        );
+        assert!(guard.charged <= 8192, "charged={}", guard.charged);
+    }
+
+    /// An eviction forced by the ENTRY cap must discharge its bytes too. `LruCache::put` on a
+    /// capacity-bounded map drops the LRU value without returning it, so charging around that
+    /// instead of through it would leak the charge until the budget evicted on every insert.
+    #[test]
+    fn entry_cap_eviction_still_discharges_bytes() {
+        let cache = GitCache::with_budget(None, 2, 1024 * 1024);
+        for i in 0..8 {
+            let value = commits(&format!("sha{i}"), 4096);
+            cache.log.lock().unwrap().admit(log_key(&format!("head{i}")), value);
+        }
+        let guard = cache.log.lock().unwrap();
+        assert_eq!(guard.lru.len(), 2, "the entry cap still binds");
+        assert!(
+            guard.charged < 3 * 4096,
+            "charge must describe the two live entries only, got {}",
+            guard.charged
+        );
+    }
 
     /// Concurrent same-process writers to the *same* destination key must not clobber each
     /// other's temp file mid-write: the final file is always one complete payload, never a
