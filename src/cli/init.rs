@@ -454,7 +454,11 @@ fn resolve_rules_plan(root: &Path, target: RulesTarget, no_rules: bool) -> Rules
         return RulesPlan::Skip;
     }
     let ai_rulez_rule = root.join(".ai-rulez").join("rules").join("basemind-usage.md");
-    let ai_rulez_local_rule = root.join(".ai-rulez").join("local").join("rules").join("basemind-usage.md");
+    let ai_rulez_local_rule = root
+        .join(".ai-rulez")
+        .join("local")
+        .join("rules")
+        .join("basemind-usage.md");
     let claude = root.join("CLAUDE.md");
     let claude_local = root.join("CLAUDE.local.md");
     let agents = root.join("AGENTS.md");
@@ -761,7 +765,11 @@ mod tests {
         match resolve_rules_plan(dir.path(), RulesTarget::Auto, false) {
             RulesPlan::AiRulez(path) => assert_eq!(
                 path,
-                dir.path().join(".ai-rulez").join("local").join("rules").join("basemind-usage.md"),
+                dir.path()
+                    .join(".ai-rulez")
+                    .join("local")
+                    .join("rules")
+                    .join("basemind-usage.md"),
                 "Auto with ai-rulez present must resolve to the local rule tree"
             ),
             other => panic!("expected an AiRulez plan, got {other:?}"),
@@ -778,13 +786,18 @@ mod tests {
     fn explicit_ai_rulez_and_ai_rulez_local_resolve_to_their_own_files() {
         let root = Path::new("/nonexistent");
         match resolve_rules_plan(root, RulesTarget::AiRulez, false) {
-            RulesPlan::AiRulez(path) => assert_eq!(path, root.join(".ai-rulez").join("rules").join("basemind-usage.md")),
+            RulesPlan::AiRulez(path) => {
+                assert_eq!(path, root.join(".ai-rulez").join("rules").join("basemind-usage.md"))
+            }
             other => panic!("expected an AiRulez plan, got {other:?}"),
         }
         match resolve_rules_plan(root, RulesTarget::AiRulezLocal, false) {
             RulesPlan::AiRulez(path) => assert_eq!(
                 path,
-                root.join(".ai-rulez").join("local").join("rules").join("basemind-usage.md")
+                root.join(".ai-rulez")
+                    .join("local")
+                    .join("rules")
+                    .join("basemind-usage.md")
             ),
             other => panic!("expected an AiRulez plan, got {other:?}"),
         }

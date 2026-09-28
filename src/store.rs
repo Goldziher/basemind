@@ -743,7 +743,9 @@ mod tests {
             !store.view_dir.exists(),
             "open_read_only must not create view_dir on a never-scanned workspace"
         );
-        store.ensure_dirs().expect("ensure_dirs creates the missing directories");
+        store
+            .ensure_dirs()
+            .expect("ensure_dirs creates the missing directories");
         assert!(store.view_dir.exists(), "ensure_dirs must create view_dir");
         store
             .flush()
