@@ -22,8 +22,8 @@
     "postinstall": "node install.js"
   },
   "dependencies": {
-    "adm-zip": "^0.5.12",
-    "tar": "^7.5.16"
+    "adm-zip": "^0.6.1",
+    "tar": "^7.5.22"
   },
   "engines": {
     "node": ">=22"

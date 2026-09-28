@@ -261,11 +261,7 @@ fn apply_llm_overrides(
 
 /// Record `source` for a single config leaf into the provenance ledger, skipping
 /// the bookkeeping entirely when the caller passed `None` (the MCP override path).
-fn record_provenance(
-    provenance: &mut Option<&mut ProvenanceMap>,
-    source: ConfigSource,
-    key: &'static str,
-) {
+fn record_provenance(provenance: &mut Option<&mut ProvenanceMap>, source: ConfigSource, key: &'static str) {
     if let Some(p) = provenance.as_mut() {
         p.insert(key, source);
     }

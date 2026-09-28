@@ -112,9 +112,7 @@ def _is_retryable_error(error: Exception | str) -> bool:
     )
 
 
-def _retry_with_backoff(
-    fn: Callable[[], T], max_attempts: int = 3, delays: list[int] | None = None
-) -> T:
+def _retry_with_backoff(fn: Callable[[], T], max_attempts: int = 3, delays: list[int] | None = None) -> T:
     """Execute fn with exponential backoff retry on transient errors.
 
     Only retries on transient errors (network, 5xx). Deterministic failures

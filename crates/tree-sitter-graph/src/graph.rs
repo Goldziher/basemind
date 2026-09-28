@@ -38,8 +38,7 @@ use crate::execution::error::ExecutionError;
 /// [`SyntaxNodeRef`] stores its kind without a lifetime so that it stays `Copy`
 /// and usable as a map key. Node kinds come from the grammar's node-type table,
 /// so the set of distinct strings is small and bounded.
-static KIND_INTERNER: LazyLock<Mutex<HashMap<String, &'static str>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
+static KIND_INTERNER: LazyLock<Mutex<HashMap<String, &'static str>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
 
 fn intern_kind(kind: &str) -> &'static str {
     let mut interned = KIND_INTERNER.lock().expect("kind interner lock poisoned");

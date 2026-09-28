@@ -129,7 +129,9 @@ function retryWithBackoff(fn, maxAttempts = 3) {
 
       const delay = delays[index];
       console.log(`Transient error (attempt ${index + 1}/${maxAttempts}): ${err.message}; retrying in ${delay}ms...`);
-      await new Promise((resolve) => { setTimeout(resolve, delay); });
+      await new Promise((resolve) => {
+        setTimeout(resolve, delay);
+      });
       return attempt(index + 1);
     }
   })();
