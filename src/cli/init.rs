@@ -21,7 +21,9 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use clap::{Args, ValueEnum};
 
+use super::init_gitignore;
 use super::init_rules::{self, BlockSections, Capability};
+use super::init_settings;
 use crate::config;
 
 /// BEGIN delimiter of the managed rules block. Load-bearing: the splice matches this verbatim.
@@ -134,8 +136,12 @@ pub enum RulesTarget {
     Agents,
     /// Force the personal, gitignored `AGENTS.local.md` delimited block.
     AgentsLocal,
-    /// Force an ai-rulez rule file (`.ai-rulez/rules/basemind-usage.md`).
+    /// Force the COMMITTED ai-rulez rule file (`.ai-rulez/rules/basemind-usage.md`). An explicit
+    /// opt-in only — `Auto` never resolves here, it prefers [`RulesTarget::AiRulezLocal`].
     AiRulez,
+    /// Force the personal, gitignored ai-rulez rule file (`.ai-rulez/local/rules/basemind-usage.md`).
+    /// This is what `Auto` resolves to when `.ai-rulez/config.toml` owns governance.
+    AiRulezLocal,
     /// Write no rules at all (same as `--no-rules`).
     None,
 }
@@ -161,6 +167,14 @@ pub struct InitArgs {
     #[arg(long, value_enum, default_value_t = RulesTarget::Auto)]
     pub rules_target: RulesTarget,
 
+    /// Where to add basemind's MCP tools to Claude Code's auto-approved permissions
+    /// (`permissions.allow` in `.claude/settings*.json`). Unset: interactive TTY prompts
+    /// (recommending `local`); a non-interactive run (`--yes` / piped) skips this step entirely
+    /// unless the flag is passed explicitly — broadening auto-approved permissions is not
+    /// something to land unattended.
+    #[arg(long, value_enum)]
+    pub settings_target: Option<init_settings::SettingsTarget>,
+
     /// Skip rules injection entirely (write the config scaffold only).
     #[arg(long)]
     pub no_rules: bool,
@@ -179,8 +193,9 @@ pub struct InitArgs {
 }
 
 /// One planned filesystem effect, collected before anything is written so `--print` can report a
-/// faithful dry-run and the real run reports the same set.
-enum Change {
+/// faithful dry-run and the real run reports the same set. `pub(crate)` so [`init_settings`] can
+/// build one for the settings-permissions step.
+pub(crate) enum Change {
     /// A file will be created or its content changed. `note` is the human summary.
     Write {
         path: PathBuf,
@@ -200,16 +215,42 @@ pub fn run(root: &Path, args: &InitArgs) -> Result<()> {
     };
 
     let rules_target = resolve_rules_target(root, args)?;
+    let rules_plan = resolve_rules_plan(root, rules_target, args.no_rules);
+    let settings_target = init_settings::resolve_settings_target(args)?;
+    let settings_plan = init_settings::resolve_settings_plan(root, settings_target);
 
     let mut changes = Vec::new();
     changes.push(plan_config(root)?);
-    if let Some(rule_change) = plan_rules(root, args, rules_target, &caps, sections)? {
+    if let Some(rule_change) = plan_rules_change(&rules_plan, &caps, sections)? {
         changes.push(rule_change);
     }
+    if let Some(settings_change) = init_settings::plan_settings_change(&settings_plan)? {
+        changes.push(settings_change);
+    }
+
+    let gitignore_targets = gitignore_targets(&rules_plan, &settings_plan);
 
     if args.print {
         report_dry_run(&changes);
+        for target in &gitignore_targets {
+            if let Some(pattern) = init_gitignore::local_pattern(root, target)
+                && !init_gitignore::is_covered(root, target)?
+            {
+                println!("would add {pattern:?} to .gitignore ({})", target.display());
+            }
+        }
         return Ok(());
+    }
+
+    // ~keep Gitignore coverage runs before the writes below: it never depends on the target
+    // ~keep file existing (a `.gitignore` pattern matches a path whether or not it's on disk yet),
+    // ~keep and doing it first means a `.local` file is never written uncovered, even for an instant.
+    for target in &gitignore_targets {
+        if let Some(pattern) = init_gitignore::local_pattern(root, target)
+            && let Some(gitignore_path) = init_gitignore::ensure_coverage(root, target, &pattern, args.yes)?
+        {
+            println!("added {pattern:?} to .gitignore: {}", gitignore_path.display());
+        }
     }
 
     let mut any_write = false;
@@ -234,6 +275,20 @@ pub fn run(root: &Path, args: &InitArgs) -> Result<()> {
     Ok(())
 }
 
+/// Every path this run's resolved plans would write, that must not land uncommitted-by-convention
+/// without `.gitignore` covering it. `Skip` plans and committed (non-`.local`) targets contribute
+/// nothing — [`init_gitignore::local_pattern`] filters those out.
+fn gitignore_targets(rules_plan: &RulesPlan, settings_plan: &init_settings::SettingsPlan) -> Vec<PathBuf> {
+    let mut targets = Vec::new();
+    if let Some(path) = rules_plan.target_path() {
+        targets.push(path.to_path_buf());
+    }
+    if let init_settings::SettingsPlan::Write(path) = settings_plan {
+        targets.push(path.clone());
+    }
+    targets
+}
+
 /// Decide the effective rules target, applying the "ask before touching a committed file" policy.
 ///
 /// Precedence: an explicit `--rules-target` (anything but `auto`) or `--no-rules` wins verbatim;
@@ -250,7 +305,11 @@ fn resolve_rules_target(root: &Path, args: &InitArgs) -> Result<RulesTarget> {
         return Ok(args.rules_target);
     }
     if root.join(".ai-rulez").join("config.toml").exists() {
-        return Ok(RulesTarget::AiRulez);
+        // ~keep ai-rulez owns governance here, but the rule file basemind writes is its own
+        // ~keep tool-usage advice, not something the repo's ai-rulez maintainers authored — treat
+        // ~keep it like any other basemind-owned file and default to the gitignored `.local` tree.
+        // ~keep `--rules-target ai-rulez` still opts into the committed file explicitly.
+        return Ok(RulesTarget::AiRulezLocal);
     }
     if !args.yes && std::io::stdin().is_terminal() {
         return prompt_rules_target();
@@ -395,12 +454,14 @@ fn resolve_rules_plan(root: &Path, target: RulesTarget, no_rules: bool) -> Rules
         return RulesPlan::Skip;
     }
     let ai_rulez_rule = root.join(".ai-rulez").join("rules").join("basemind-usage.md");
+    let ai_rulez_local_rule = root.join(".ai-rulez").join("local").join("rules").join("basemind-usage.md");
     let claude = root.join("CLAUDE.md");
     let claude_local = root.join("CLAUDE.local.md");
     let agents = root.join("AGENTS.md");
     let agents_local = root.join("AGENTS.local.md");
     match target {
         RulesTarget::AiRulez => RulesPlan::AiRulez(ai_rulez_rule),
+        RulesTarget::AiRulezLocal => RulesPlan::AiRulez(ai_rulez_local_rule),
         RulesTarget::Claude => RulesPlan::Delimited(claude),
         RulesTarget::ClaudeLocal => RulesPlan::Delimited(claude_local),
         RulesTarget::Agents => RulesPlan::Delimited(agents),
@@ -408,11 +469,12 @@ fn resolve_rules_plan(root: &Path, target: RulesTarget, no_rules: bool) -> Rules
         RulesTarget::None => RulesPlan::Skip,
         RulesTarget::Auto => {
             // ~keep Never auto-write a COMMITTED agent-instructions file — that's a shared,
-            // ~keep version-controlled surface the user must opt into. Prefer ai-rulez governance,
-            // ~keep else the personal `*.local.md` sibling, matching whichever committed convention
-            // ~keep the repo already uses (AGENTS-only repos get AGENTS.local.md).
+            // ~keep version-controlled surface the user must opt into. Prefer the gitignored
+            // ~keep ai-rulez `.local` rule tree when ai-rulez owns governance, else the personal
+            // ~keep `*.local.md` sibling, matching whichever committed convention the repo already
+            // ~keep uses (AGENTS-only repos get AGENTS.local.md).
             if root.join(".ai-rulez").join("config.toml").exists() {
-                RulesPlan::AiRulez(ai_rulez_rule)
+                RulesPlan::AiRulez(ai_rulez_local_rule)
             } else if agents.exists() && !claude.exists() {
                 RulesPlan::Delimited(agents_local)
             } else {
@@ -422,28 +484,35 @@ fn resolve_rules_plan(root: &Path, target: RulesTarget, no_rules: bool) -> Rules
     }
 }
 
-/// Plan the rules write. Returns `None` only when rules are skipped.
-fn plan_rules(
-    root: &Path,
-    args: &InitArgs,
-    target: RulesTarget,
-    caps: &[Capability],
-    sections: BlockSections,
-) -> Result<Option<Change>> {
-    match resolve_rules_plan(root, target, args.no_rules) {
+impl RulesPlan {
+    /// The target path this plan would write, or `None` for [`RulesPlan::Skip`]. Used by the
+    /// `.gitignore`-coverage step, which needs the path regardless of whether the content is
+    /// actually changing this run.
+    fn target_path(&self) -> Option<&Path> {
+        match self {
+            RulesPlan::Skip => None,
+            RulesPlan::AiRulez(path) | RulesPlan::Delimited(path) => Some(path),
+        }
+    }
+}
+
+/// Plan the rules write from an already-resolved `plan`. Returns `None` only when rules are
+/// skipped.
+fn plan_rules_change(plan: &RulesPlan, caps: &[Capability], sections: BlockSections) -> Result<Option<Change>> {
+    match plan {
         RulesPlan::Skip => Ok(Some(Change::NoOp {
             note: "rules: skipped (--no-rules / --rules-target none)".to_string(),
         })),
         RulesPlan::AiRulez(path) => {
             let contents = init_rules::render_ai_rulez_rule(caps, sections);
-            let unchanged = std::fs::read_to_string(&path).is_ok_and(|prev| prev == contents);
+            let unchanged = std::fs::read_to_string(path).is_ok_and(|prev| prev == contents);
             if unchanged {
                 return Ok(Some(Change::NoOp {
                     note: format!("rules: ai-rulez rule already up to date ({})", path.display()),
                 }));
             }
             Ok(Some(Change::Write {
-                path,
+                path: path.clone(),
                 note: "wrote ai-rulez rule (run `ai-rulez generate` to render outputs)",
                 contents,
             }))
@@ -453,7 +522,7 @@ fn plan_rules(
                 "{BEGIN_MARKER}\n\n{}{END_MARKER}\n",
                 init_rules::render_block_body(caps, sections)
             );
-            let existing = match std::fs::read_to_string(&path) {
+            let existing = match std::fs::read_to_string(path) {
                 Ok(c) => Some(c),
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
                 Err(e) => return Err(anyhow::Error::new(e).context(format!("read {}", path.display()))),
@@ -466,7 +535,7 @@ fn plan_rules(
                 }));
             }
             Ok(Some(Change::Write {
-                path,
+                path: path.clone(),
                 note: "injected basemind rules block",
                 contents: next,
             }))
@@ -678,5 +747,46 @@ mod tests {
             name(resolve_rules_plan(root, RulesTarget::Agents, false)).as_deref(),
             Some("AGENTS.md")
         );
+    }
+
+    #[test]
+    fn auto_resolves_to_ai_rulez_local_when_ai_rulez_owns_governance() {
+        // ~keep When `.ai-rulez/config.toml` is present, Auto must route to the gitignored
+        // ~keep `.ai-rulez/local/` tree, never the committed `.ai-rulez/rules/` one — the whole
+        // ~keep point of `AiRulezLocal` is that Auto never writes a committed file unasked.
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(dir.path().join(".ai-rulez")).expect("mkdir .ai-rulez");
+        std::fs::write(dir.path().join(".ai-rulez").join("config.toml"), "").expect("seed config.toml");
+
+        match resolve_rules_plan(dir.path(), RulesTarget::Auto, false) {
+            RulesPlan::AiRulez(path) => assert_eq!(
+                path,
+                dir.path().join(".ai-rulez").join("local").join("rules").join("basemind-usage.md"),
+                "Auto with ai-rulez present must resolve to the local rule tree"
+            ),
+            other => panic!("expected an AiRulez plan, got {other:?}"),
+        }
+
+        assert_eq!(
+            resolve_rules_target(dir.path(), &InitArgs::default()).expect("resolve target"),
+            RulesTarget::AiRulezLocal,
+            "resolve_rules_target must also route to AiRulezLocal, not the committed AiRulez"
+        );
+    }
+
+    #[test]
+    fn explicit_ai_rulez_and_ai_rulez_local_resolve_to_their_own_files() {
+        let root = Path::new("/nonexistent");
+        match resolve_rules_plan(root, RulesTarget::AiRulez, false) {
+            RulesPlan::AiRulez(path) => assert_eq!(path, root.join(".ai-rulez").join("rules").join("basemind-usage.md")),
+            other => panic!("expected an AiRulez plan, got {other:?}"),
+        }
+        match resolve_rules_plan(root, RulesTarget::AiRulezLocal, false) {
+            RulesPlan::AiRulez(path) => assert_eq!(
+                path,
+                root.join(".ai-rulez").join("local").join("rules").join("basemind-usage.md")
+            ),
+            other => panic!("expected an AiRulez plan, got {other:?}"),
+        }
     }
 }
