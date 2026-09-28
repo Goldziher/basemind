@@ -328,6 +328,26 @@ impl Store {
         })
     }
 
+    /// Materialize this store's on-disk directories (`basemind_dir`, `blobs_dir`, `views/`,
+    /// `view_dir`) if they don't already exist.
+    ///
+    /// A store opened via [`Store::open_read_only`] never creates these — that constructor
+    /// deliberately does no filesystem writes so a read-only consumer never contends for the
+    /// exclusive lock. But `admin rescan` / `basemind scan` upgrade a read-only-opened store to a
+    /// writer in place (`scan_and_refresh` takes the in-process write lock and scans directly into
+    /// it, never re-opening through [`Store::open_with_holder`]), so on a workspace's first-ever
+    /// scan `view_dir` does not exist on disk yet and `flush()`'s `OpenOptions::open` on
+    /// `index.msgpack.tmp` fails with ENOENT. Call this before scanning a store that may have been
+    /// opened read-only. Cheap and idempotent when the directories already exist; does not touch
+    /// the lock file. ~keep
+    pub fn ensure_dirs(&self) -> Result<(), StoreError> {
+        ensure_dir(&self.basemind_dir)?;
+        ensure_dir(&self.blobs_dir)?;
+        ensure_dir(&self.basemind_dir.join(VIEWS_DIR))?;
+        ensure_dir(&self.view_dir)?;
+        Ok(())
+    }
+
     /// Open without taking the exclusive lock. Use for read-only consumers (CLI query, MCP).
     ///
     /// Opens the Fjall index for reads when the writer lock is free; falls back to blob-only reads
@@ -711,6 +731,23 @@ mod tests {
         let store =
             Store::open_read_only(tmp.path(), VIEW_WORKING).expect("working view opens even when never scanned");
         assert!(store.index.files.is_empty(), "empty working index");
+    }
+
+    #[test]
+    fn ensure_dirs_lets_a_read_only_opened_store_flush_on_first_scan() {
+        init_isolated_cache();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let store =
+            Store::open_read_only(tmp.path(), VIEW_WORKING).expect("working view opens even when never scanned");
+        assert!(
+            !store.view_dir.exists(),
+            "open_read_only must not create view_dir on a never-scanned workspace"
+        );
+        store.ensure_dirs().expect("ensure_dirs creates the missing directories");
+        assert!(store.view_dir.exists(), "ensure_dirs must create view_dir");
+        store
+            .flush()
+            .expect("flush must not ENOENT once ensure_dirs has materialized view_dir");
     }
 
     #[test]
