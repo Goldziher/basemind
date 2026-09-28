@@ -144,11 +144,19 @@ mod tests {
         assert_eq!(
             local_pattern(
                 root,
-                &root.join(".ai-rulez").join("local").join("rules").join("basemind-usage.md")
+                &root
+                    .join(".ai-rulez")
+                    .join("local")
+                    .join("rules")
+                    .join("basemind-usage.md")
             ),
             Some(".ai-rulez/local/".to_string())
         );
-        assert_eq!(local_pattern(root, &root.join("CLAUDE.md")), None, "committed file untouched");
+        assert_eq!(
+            local_pattern(root, &root.join("CLAUDE.md")),
+            None,
+            "committed file untouched"
+        );
         assert_eq!(
             local_pattern(root, &root.join(".ai-rulez").join("rules").join("basemind-usage.md")),
             None,
@@ -162,7 +170,10 @@ mod tests {
         let root = tmp.path();
         let target = root.join("CLAUDE.local.md");
 
-        assert!(!is_covered(root, &target).expect("check coverage"), "nothing covers it yet");
+        assert!(
+            !is_covered(root, &target).expect("check coverage"),
+            "nothing covers it yet"
+        );
 
         let appended = ensure_coverage(root, &target, "CLAUDE.local.md", true)
             .expect("ensure coverage")
@@ -201,7 +212,8 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let root = tmp.path();
         std::fs::create_dir_all(root.join(".claude")).expect("mkdir .claude");
-        std::fs::write(root.join(".claude").join(".gitignore"), "settings.local.json\n").expect("seed nested gitignore");
+        std::fs::write(root.join(".claude").join(".gitignore"), "settings.local.json\n")
+            .expect("seed nested gitignore");
         let target = root.join(".claude").join("settings.local.json");
 
         assert!(
@@ -210,6 +222,9 @@ mod tests {
         );
         let result = ensure_coverage(root, &target, ".claude/settings.local.json", true).expect("ensure coverage");
         assert!(result.is_none(), "already covered by the nested file");
-        assert!(!root.join(".gitignore").exists(), "no root .gitignore should be created");
+        assert!(
+            !root.join(".gitignore").exists(),
+            "no root .gitignore should be created"
+        );
     }
 }

@@ -144,7 +144,9 @@ fn merged_settings_contents(existing: Option<&str>) -> Result<(String, bool)> {
         .as_object_mut()
         .ok_or_else(|| anyhow::anyhow!("existing `permissions` is not a JSON object"))?;
 
-    let allow = permissions_obj.entry("allow").or_insert_with(|| Value::Array(Vec::new()));
+    let allow = permissions_obj
+        .entry("allow")
+        .or_insert_with(|| Value::Array(Vec::new()));
     let allow_arr = allow
         .as_array_mut()
         .ok_or_else(|| anyhow::anyhow!("existing `permissions.allow` is not a JSON array"))?;
@@ -174,7 +176,10 @@ mod tests {
             SettingsPlan::Write(path) => assert_eq!(path, root.join(".claude").join("settings.json")),
             SettingsPlan::Skip => panic!("Shared must not skip"),
         }
-        assert!(matches!(resolve_settings_plan(root, SettingsTarget::None), SettingsPlan::Skip));
+        assert!(matches!(
+            resolve_settings_plan(root, SettingsTarget::None),
+            SettingsPlan::Skip
+        ));
     }
 
     #[test]
@@ -217,7 +222,10 @@ mod tests {
         let other_pos = contents.find("otherKey").expect("otherKey present");
         let permissions_pos = contents.find("\"permissions\"").expect("permissions present");
         assert!(skill_pos < other_pos, "skillOverrides must stay before otherKey");
-        assert!(other_pos < permissions_pos, "the newly-added permissions key must land last");
+        assert!(
+            other_pos < permissions_pos,
+            "the newly-added permissions key must land last"
+        );
     }
 
     #[test]
@@ -257,7 +265,11 @@ mod tests {
             .expect("plan")
             .expect("a change");
         match change {
-            Change::Write { path: written, contents, .. } => {
+            Change::Write {
+                path: written,
+                contents,
+                ..
+            } => {
                 assert_eq!(written, path);
                 assert!(contents.contains(PERMISSION_ENTRY));
             }
