@@ -45,11 +45,17 @@ default = []
 
 intelligence = ["dep:xberg", "dep:lancedb", "dep:arrow-array", "dep:arrow-schema", "dep:futures"]
 
+# Just the real o200k tokenizer (`xberg::chunking::count_tokens`), used by `basemind admin tokens`
+# and `src/mcp/savings.rs`. `xberg/chunking-tokenizers` is a pure-Rust `tokenizers` crate underneath
+# (no LanceDB/Arrow/OCR/ONNX), so this is deliberately its own feature rather than riding on
+# `intelligence` — it stays cheap enough to build without also pulling in the vector-store deps.
+tokenizer = ["dep:xberg", "xberg/chunking-tokenizers"]
+
 documents = [
   "intelligence",
+  "tokenizer",
   "xberg/formats",
   "xberg/analysis",
-  "xberg/chunking-tokenizers",
   "xberg/embeddings",
   "xberg/reranker",
   "xberg/reranker-presets",
@@ -179,7 +185,7 @@ rmux-server = { version = "0.10", default-features = false, optional = true }
 rustix = "=1.1.4"
 schemars = "1.2"
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json = { version = "1", features = ["preserve_order"] }
 serde_toon_format = { version = "0.1", optional = true }
 stack-graphs = { package = "basemind-stack-graphs", version = "0.14.1", path = "crates/stack-graphs", optional = true }
 streaming-iterator = "0.1"

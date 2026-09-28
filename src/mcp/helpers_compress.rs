@@ -456,7 +456,7 @@ mod tests {
     }
 
     /// On the `bytes/4` heuristic build, a known string counts to exactly `len / 4`.
-    #[cfg(not(feature = "documents"))]
+    #[cfg(not(feature = "tokenizer"))]
     #[test]
     fn heuristic_count_is_bytes_over_four() {
         let text = "a".repeat(400);
@@ -465,7 +465,7 @@ mod tests {
     }
 
     /// On the real-tokenizer build, the disclosure note names the tokenizer.
-    #[cfg(feature = "documents")]
+    #[cfg(feature = "tokenizer")]
     #[test]
     fn real_count_note_names_tokenizer() {
         assert!(tokens_note().contains("tokenizer"));
