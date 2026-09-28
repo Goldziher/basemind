@@ -15,6 +15,7 @@
     "url": "git+https://github.com/Goldziher/basemind.git"
   },
   "type": "module",
+  "packageManager": "pnpm@12.6.0",
   "pi": {
     "extensions": ["./.pi/extensions"],
     "skills": ["./skills"]

@@ -80,3 +80,4 @@ CLAUDE.md
 # END ai-rulez
 
 .env
+/node_modules/
