@@ -1,8 +1,8 @@
 //! Smoke tests for the root-relocated config: `basemind.toml` at the repo root is the canonical
 //! location, the legacy `.basemind/basemind.toml` is still read as a fallback, and `basemind init`
-//! scaffolds the root file without touching `.gitignore` (the index cache is machine-global and
-//! out-of-repo, so there is nothing to ignore). Also covers the new scan/embed
-//! config fields introduced alongside the relocation (`follow_symlinks`, `embed_exclude`,
+//! scaffolds the root file and appends a `.gitignore` pattern covering the personal `.local` rule
+//! file it writes (the index cache itself is machine-global and out-of-repo). Also covers the new
+//! scan/embed config fields introduced alongside the relocation (`follow_symlinks`, `embed_exclude`,
 //! `extract_archives`, and `code_search.embed` defaulting off).
 
 use std::fs;
@@ -99,11 +99,11 @@ fn embed_exclude_parses_on_both_tiers() {
 }
 
 #[test]
-fn init_writes_root_config_and_leaves_no_gitignore() {
+fn init_writes_root_config_and_gitignores_the_local_rule_file() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path();
     let status = Command::new(env!("CARGO_BIN_EXE_basemind"))
-        .arg("init")
+        .args(["init", "--yes"])
         .current_dir(root)
         .status()
         .expect("run basemind init");
@@ -114,12 +114,10 @@ fn init_writes_root_config_and_leaves_no_gitignore() {
     let cfg = config::load(root).expect("scaffolded config loads + validates");
     assert_eq!(cfg.schema, "v1");
 
-    // ~keep The index lives in the machine-global XDG cache, not an in-repo `.basemind/`, so init
-    // ~keep no longer touches `.gitignore` — there is nothing in the repo to ignore.
-    assert!(
-        !root.join(".gitignore").exists(),
-        "init must not create a .gitignore for a nonexistent in-repo cache"
-    );
+    // ~keep The index cache lives in the machine-global XDG cache, but init still writes a personal
+    // ~keep `.local` rule file, so it appends the `.gitignore` pattern that covers it.
+    let gitignore = fs::read_to_string(root.join(".gitignore")).expect("init writes a .gitignore");
+    assert_eq!(gitignore, "CLAUDE.local.md\n", "the local rule file is gitignored");
 }
 
 #[test]
@@ -162,20 +160,22 @@ fn init_refuses_to_shadow_a_legacy_in_cache_config() {
 }
 
 #[test]
-fn init_leaves_an_existing_gitignore_untouched() {
+fn init_preserves_an_existing_gitignore_and_appends_the_local_pattern() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path();
     fs::write(root.join(".gitignore"), "target/\n").expect("seed gitignore");
 
     let ok = Command::new(env!("CARGO_BIN_EXE_basemind"))
-        .arg("init")
+        .args(["init", "--yes"])
         .current_dir(root)
         .status()
         .expect("run init");
     assert!(ok.success());
-    // ~keep init no longer writes a cache entry (the cache is out-of-repo), so a pre-existing
-    // ~keep `.gitignore` is preserved verbatim and never grows a `.basemind/` line.
+    // ~keep init writes no in-repo cache entry (the cache is out-of-repo), but it does add the
+    // ~keep pattern for the personal `.local` rule file it writes — existing content stays verbatim.
     let after = fs::read_to_string(root.join(".gitignore")).expect("read gitignore");
-    assert_eq!(after, "target/\n", "existing .gitignore left byte-for-byte untouched");
-    assert!(!after.contains(".basemind"), "no .basemind entry added, got: {after:?}");
+    assert_eq!(
+        after, "target/\nCLAUDE.local.md\n",
+        "existing content preserved, the local pattern appended"
+    );
 }
