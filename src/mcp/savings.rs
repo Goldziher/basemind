@@ -3,8 +3,8 @@
 //! so the dashboard can disclose the assumption.
 //!
 //! Token counting has two tiers. When the **full response text** is in hand, the figures route
-//! through [`super::tokens::count_tokens`] — a real o200k (gpt-4o) tokenizer under the `documents`
-//! feature, a `bytes / 4` heuristic otherwise. When only a **byte length** is available (the live
+//! through [`super::tokens::count_tokens`] — a real o200k (gpt-4o) tokenizer under the `tokenizer`
+//! feature (pulled in unconditionally by `documents`), a `bytes / 4` heuristic otherwise. When only a **byte length** is available (the live
 //! telemetry path, whose caller has already collapsed the response to a byte count), there is no
 //! text to tokenize, so it falls back to the same `bytes / 4` rule of thumb basemind's scan-cost
 //! reporting uses. Under default features the two tiers are numerically identical.
@@ -195,7 +195,7 @@ mod tests {
         let s = estimate_from_text("code:outline", 1_000_000, &"a".repeat(400));
         assert_eq!(s.baseline_tokens, s.actual_tokens.saturating_mul(5));
         assert_eq!(s.baseline, "full_file_read");
-        #[cfg(not(feature = "documents"))]
+        #[cfg(not(feature = "tokenizer"))]
         {
             assert_eq!(s.actual_tokens, 100);
             assert_eq!(s.baseline_tokens, 500);
@@ -210,7 +210,7 @@ mod tests {
         let empty = estimate_from_text("code:symbols", 0, &text);
         assert_eq!(big.est_tokens_saved, empty.est_tokens_saved);
         assert_grep_model(&big, "grep_plus_read_top_hits");
-        #[cfg(not(feature = "documents"))]
+        #[cfg(not(feature = "tokenizer"))]
         {
             assert_eq!(big.actual_tokens, 100);
             assert_eq!(big.baseline_tokens, 300);
@@ -222,7 +222,7 @@ mod tests {
     fn find_references_grep_baseline_floors_at_zero_for_empty_corpus() {
         let s = estimate_from_text("code:references", 0, &"a".repeat(200));
         assert_grep_model(&s, "grep_top_hits");
-        #[cfg(not(feature = "documents"))]
+        #[cfg(not(feature = "tokenizer"))]
         {
             assert_eq!(s.actual_tokens, 50);
             assert_eq!(s.baseline_tokens, 150);
@@ -240,7 +240,7 @@ mod tests {
             large.est_tokens_saved,
             small.est_tokens_saved
         );
-        #[cfg(not(feature = "documents"))]
+        #[cfg(not(feature = "tokenizer"))]
         assert_eq!(large.est_tokens_saved, 2_000);
     }
 
@@ -328,7 +328,7 @@ mod tests {
         assert_eq!(s.baseline, "full_document_read");
         assert_eq!(s.baseline_tokens, s.actual_tokens.saturating_mul(5));
         assert_eq!(s.est_tokens_saved, s.baseline_tokens.saturating_sub(s.actual_tokens));
-        #[cfg(not(feature = "documents"))]
+        #[cfg(not(feature = "tokenizer"))]
         {
             assert_eq!(s.actual_tokens, 100);
             assert_eq!(s.baseline_tokens, 500);
@@ -342,7 +342,7 @@ mod tests {
         assert_eq!(s.baseline, "find_plus_filter");
         assert_eq!(s.baseline_tokens, s.actual_tokens.saturating_mul(2));
         assert_eq!(s.est_tokens_saved, s.baseline_tokens.saturating_sub(s.actual_tokens));
-        #[cfg(not(feature = "documents"))]
+        #[cfg(not(feature = "tokenizer"))]
         {
             assert_eq!(s.actual_tokens, 100);
             assert_eq!(s.baseline_tokens, 200);
@@ -365,7 +365,7 @@ mod tests {
                 s.baseline_tokens.saturating_sub(s.actual_tokens),
                 "{tool} savings"
             );
-            #[cfg(not(feature = "documents"))]
+            #[cfg(not(feature = "tokenizer"))]
             {
                 assert_eq!(s.actual_tokens, 100, "{tool} actual");
                 assert_eq!(s.baseline_tokens, 300, "{tool} baseline");
@@ -383,7 +383,7 @@ mod tests {
 
     /// Under the heuristic tier (no `documents`), counting the full text is byte-for-byte
     /// `len / 4` — the telemetry numbers are identical to the old `bytes / 4` estimate.
-    #[cfg(not(feature = "documents"))]
+    #[cfg(not(feature = "tokenizer"))]
     #[test]
     fn estimate_from_text_is_bytes_over_four_under_heuristic() {
         let s = estimate_from_text("code:outline", 0, &"x".repeat(800));

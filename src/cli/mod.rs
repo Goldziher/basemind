@@ -21,7 +21,9 @@ pub mod context;
 pub mod git;
 pub mod graph;
 pub mod init;
+pub mod init_gitignore;
 pub mod init_rules;
+pub mod init_settings;
 pub mod memory;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 pub mod registry;
