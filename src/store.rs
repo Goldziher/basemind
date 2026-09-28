@@ -281,6 +281,13 @@ impl Store {
     pub fn open_with_holder(root: &Path, view: &str, holder: LockHolder) -> Result<Self, StoreError> {
         let basemind_dir = workspace_cache_dir(root);
         ensure_dir(&basemind_dir)?;
+        // Lock before creating any of the rebuildable subdirectories below: the cache-budget
+        // eviction sweep (`store_gc_budget::evict_workspace`) takes this same lock before it
+        // `remove_dir_all`s `views/` et al., and skips (`locked_skipped`) when it can't get it.
+        // Locking first closes the window where it could see `views/`/`view_dir` freshly created
+        // but still unlocked, delete them, and leave `flush()` writing into a directory that no
+        // longer exists. ~keep
+        let lock = acquire_lock_as(&basemind_dir, holder)?;
         let blobs_dir = global_blobs_dir();
         ensure_dir(&blobs_dir)?;
         let blobs_shared = true;
@@ -289,7 +296,6 @@ impl Store {
 
         let view_dir = basemind_dir.join(VIEWS_DIR).join(view);
         ensure_dir(&view_dir)?;
-        let lock = acquire_lock_as(&basemind_dir, holder)?;
         ensure_workspace_marker(&basemind_dir, root);
         let index = match read_index(&view_dir) {
             Ok(Some(idx)) => idx,
