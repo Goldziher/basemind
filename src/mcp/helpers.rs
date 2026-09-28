@@ -578,6 +578,11 @@ pub(super) async fn scan_and_refresh(
     let state_for_scan = Arc::clone(&state);
     let (report, paths) = tokio::task::spawn_blocking(move || {
         let mut store = state_for_scan.shared.store.blocking_write();
+        // The store may have been opened via `Store::open_read_only` (the CLI / MCP query path),
+        // which never creates `view_dir` on disk. On a workspace's first-ever scan that directory
+        // is still missing here, and `flush()` would fail with ENOENT writing `index.msgpack.tmp`.
+        // ~keep
+        store.ensure_dirs()?;
         let mut observer = RescanPaths::default();
         let cancel = crate::scanner::ScanCancel::new();
         let report = if let Some(paths) = scoped_paths {

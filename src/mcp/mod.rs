@@ -85,7 +85,7 @@ mod shared_state;
 mod state;
 mod tasks;
 mod telemetry;
-mod tokens;
+pub(crate) mod tokens;
 mod tools;
 mod tools_admin;
 #[cfg(all(feature = "comms", any(unix, windows)))]

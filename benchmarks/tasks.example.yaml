@@ -1,0 +1,48 @@
+# Example benchmark task list for benchmarks/run.sh.
+#
+# Each task has:
+#   name        - short identifier, used as the report's row label
+#   tier        - "code_search" or "documents" (see benchmarks/README.md)
+#   description - one line of human context
+#   basemind    - arguments appended to the basemind binary (NOT including the
+#                 binary path itself); run.sh does `"$BASEMIND_BIN" <basemind>`
+#   baseline    - a literal shell command (grep/rg/cat/find), run via `bash -c`
+#
+# These six are a self-test against this repo: they should run clean against
+# any checkout of basemind itself, with no external fixtures required.
+tasks:
+  - name: callers_of_count_tokens
+    tier: code_search
+    description: "Find every caller of count_tokens (the o200k tokenizer entry point)"
+    basemind: "code references count_tokens"
+    baseline: "grep -rn 'count_tokens(' --include=*.rs --exclude-dir=target --exclude-dir=.git ."
+
+  - name: outline_init_cli
+    tier: code_search
+    description: "Outline src/cli/init.rs instead of reading the whole file"
+    basemind: "code outline src/cli/init.rs"
+    baseline: "cat src/cli/init.rs"
+
+  - name: definition_of_codecmd
+    tier: code_search
+    description: "Find where the CodeCmd enum is defined"
+    basemind: "code symbols CodeCmd"
+    baseline: "grep -rn 'enum CodeCmd' --include=*.rs --exclude-dir=target --exclude-dir=.git ."
+
+  - name: find_admin_cli_file
+    tier: code_search
+    description: "Locate the file implementing the admin CLI subcommand group"
+    basemind: "code find admin --path-prefix src/cli"
+    baseline: "find . \\( -path './target' -o -path './.git' \\) -prune -o -iname '*admin*' -path '*/cli/*' -print"
+
+  - name: bm_init_doc_settings_mention
+    tier: documents
+    description: "Find where commands/bm-init.md discusses the settings.local.json permissions step"
+    basemind: "code grep settings.local.json --path-contains commands/bm-init.md"
+    baseline: "grep -n settings.local.json commands/bm-init.md"
+
+  - name: readme_performance_section
+    tier: documents
+    description: "Find the Performance section reference/heading in the top-level README"
+    basemind: "code grep Performance --path-contains README.md"
+    baseline: "grep -n Performance README.md"

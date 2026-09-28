@@ -100,6 +100,39 @@ pub enum AdminCmd {
         #[arg(long, value_name = "FILE")]
         log: Option<PathBuf>,
     },
+    /// Count tokens in text with the real o200k tokenizer and print just the integer (needs the
+    /// `tokenizer` feature, which `documents` also includes). No `--json` envelope and no MCP
+    /// round trip — this is the CLI-only primitive `benchmarks/run.sh` scripts against so both
+    /// sides of a benchmark task get scored with the same tokenizer.
+    Tokens {
+        /// Read text from stdin. Currently the only input source; kept as an explicit flag so
+        /// `basemind admin tokens --stdin <<< "$text"` reads as intentional in scripts.
+        #[arg(long)]
+        stdin: bool,
+    },
+}
+
+/// Count tokens in stdin and print just the integer, so a shell script can pipe straight into it.
+/// Bypasses the MCP tool dispatch entirely — there is no `AdminMode` for this, since it is a
+/// CLI-only convenience over [`crate::mcp::tokens::count_tokens`], not an agent-facing operation.
+#[cfg(feature = "tokenizer")]
+fn run_tokens(out: &mut impl Write) -> Result<()> {
+    let text = read_stdin()?;
+    let count = crate::mcp::tokens::count_tokens(&text);
+    writeln!(out, "{count}").context("write token count")?;
+    Ok(())
+}
+
+/// `tokenizer` (and therefore `documents`) was not compiled in: fail loudly rather than silently
+/// falling back to the `bytes/4` heuristic, which would quietly poison any benchmark comparing
+/// basemind against a baseline.
+#[cfg(not(feature = "tokenizer"))]
+fn run_tokens(_out: &mut impl Write) -> Result<()> {
+    anyhow::bail!(
+        "`admin tokens` requires the `tokenizer` feature, which is not compiled into this \
+         basemind binary. Rebuild with `--features tokenizer` (or `--features documents`, which \
+         includes it)."
+    )
 }
 
 /// Read the whole of stdin as lossy UTF-8, so non-UTF-8 input never aborts the pipe.
@@ -189,6 +222,7 @@ pub async fn run(server: &BasemindServer, cmd: AdminCmd, opts: &Emit, out: &mut 
             log: Some(read_file_or_stdin(log.as_deref())?),
             ..AdminParams::new(AdminMode::Waste)
         },
+        AdminCmd::Tokens { .. } => return run_tokens(out),
     };
 
     let key = p.mode.telemetry_key();
