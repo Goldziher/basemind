@@ -8,6 +8,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 <!-- Keep a Changelog repeats Added/Changed/Fixed headings per version. -->
 <!-- markdownlint-disable MD024 -->
 
+## [0.27.4] - 2026-09-28
+
+> **Patch release — `init` defaults to local/gitignored config, a benchmark harness, and a
+> read-only-store flush fix.** No schema or MCP-surface change: `RELEASE_MINOR` stays 27, so
+> the on-disk blob and index formats are untouched.
+
+### Added
+
+- `basemind init` now defaults every writable target to its `.local`/gitignored form: an
+  ai-rulez config routes to `.ai-rulez/local/rules/basemind-usage.md` instead of the
+  committed rules tree, and a new `.gitignore`-coverage check prompts (or, with `--yes`,
+  auto-appends) a pattern for any `.local` target `.gitignore` doesn't already cover.
+- A new `.claude/settings.local.json` step in `init`, adding the basemind MCP permission
+  entries via a surgical JSON merge (`serde_json`'s `preserve_order` feature) that only
+  touches the keys basemind owns — an existing `skillOverrides` or other hand-ordered
+  content in that file is left untouched.
+- `basemind admin tokens --stdin`: counts stdin with the real o200k tokenizer
+  (`src/mcp/tokens.rs`) and prints just the integer. Gated behind the `tokenizer` feature
+  (already implied by `documents`), not the heavier `documents`/`code-search` builds.
+- `benchmarks/`: a harness (`run.sh` + `tasks.example.yaml`) that runs a fixed task list
+  twice — once via a `basemind` command, once via the equivalent `grep`/`cat`/`find`
+  baseline — and reports real token counts (via `admin tokens --stdin`) and wall-clock time
+  for each side, plus totals. See `benchmarks/README.md`.
+
+### Fixed
+
+- **`admin rescan` / `scan_and_refresh` could fail with ENOENT on
+  `views/working/index.msgpack.tmp`** on a workspace's first scan, whenever the `Store` was
+  opened via `open_read_only` (which — unlike `open_with_holder` — never creates `view_dir`
+  on disk). The MCP `admin rescan` tool and its CLI shim both open their `Store` this way, so
+  this reproduced on any workspace's first-ever scan through either surface. Fixed with a new
+  `Store::ensure_dirs()`, called inside `scan_and_refresh` right after acquiring the write
+  lock, so a store opened read-only still gets its rebuildable directories materialized
+  before the first `flush()`.
+- `Store::open_with_holder` now acquires its lock before creating rebuildable cache
+  subdirectories, closing a lock-ordering gap that could race a concurrent opener.
+
 ## [0.27.3] - 2026-09-27
 
 > **Patch release — the first publish that completes on every platform.** Supersedes the
