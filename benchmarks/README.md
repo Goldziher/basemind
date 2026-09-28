@@ -143,7 +143,7 @@ Two things worth knowing when writing your own tasks:
 
 Example real run against this repo (`tokenizer`-feature build, index already scanned):
 
-```
+```text
 task                             tier             bm_tok   base_tok   delta%      bm_ms    base_ms
 --------------------------------------------------------------------------------------------------
 callers_of_count_tokens          code_search         161        356    54.8%      3119ms       382ms
