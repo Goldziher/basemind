@@ -7,7 +7,7 @@ argument-hint: <question about the codebase>
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
 Content-Hash: blake3:39cefdc90017a956662c77b5bbdcbb598a7e054c9b81884c2d26768aa12e47c7
-Source-Hash: blake3:f9e74d97bfc4e5fd42330cf5c692754ae26d69d526df2ae1e1cae9d60347e31a
+Source-Hash: blake3:8e3d03b0a29d70e7684fb65ed1186f800ac703498c14f053341d8869d89b2bbe
 Schema-Version: v1
 -->
 
