@@ -26,6 +26,25 @@ use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
+/// The filesystem/volume root as this platform expresses it: `/` on unix, the system volume
+/// (`D:/` on a GitHub Windows runner) on Windows. Unix-style `/` is *relative* on Windows, so a
+/// hard-coded `/` would be refused as a non-absolute path (400) instead of exercising the
+/// filesystem-root guard (403).
+fn filesystem_root() -> std::path::PathBuf {
+    std::env::current_dir()
+        .expect("current dir")
+        .ancestors()
+        .last()
+        .expect("filesystem root")
+        .to_path_buf()
+}
+
+/// Percent-encode a path for a `?root=` query value, normalising separators so Windows
+/// backslashes are emitted as `/` rather than needing their own escape.
+fn encode_root(path: &std::path::Path) -> String {
+    path.to_string_lossy().replace('\\', "/").replace('/', "%2F")
+}
+
 /// One HTTP/1.1 POST over loopback, returning `(status_code, body)`. `Connection: close` lets us
 /// read the body to EOF without parsing `Content-Length`.
 async fn http_post(addr: &str, target: &str, body: &[u8], extra_headers: &[(&str, &str)]) -> (u16, String) {
@@ -396,7 +415,8 @@ async fn ui_route_serves_interactive_html() {
         "the 400 is plain text: {head}"
     );
     assert!(body.contains("root"), "the 400 body names the missing root: {body}");
-    let (status, _, _) = http_get(&addr, &ui("root=%2Fno%2Fsuch%2Fpath%2Fbm-xyz")).await;
+    let missing = filesystem_root().join("no").join("such").join("path").join("bm-xyz");
+    let (status, _, _) = http_get(&addr, &ui(&format!("root={}", encode_root(&missing)))).await;
     assert_eq!(status, 404, "a root that does not resolve must 404");
 
     // DNS-rebinding guard: a foreign `Host` (a rebound-to-127.0.0.1 attacker page) is rejected before
@@ -452,7 +472,14 @@ async fn mcp_root_param_must_be_absolute_and_must_be_a_project() {
     );
     assert!(body.contains("absolute"), "the 400 body says why: {body}");
 
-    let (status, body) = http_post(&addr, "/mcp?root=%2F", payload.as_bytes(), &headers).await;
+    let fs_root = filesystem_root();
+    let (status, body) = http_post(
+        &addr,
+        &format!("/mcp?root={}", encode_root(&fs_root)),
+        payload.as_bytes(),
+        &headers,
+    )
+    .await;
     assert_eq!(status, 403, "the filesystem root must be refused: {body}");
     assert!(
         body.contains("filesystem/volume root") && body.contains("no override"),
@@ -460,7 +487,7 @@ async fn mcp_root_param_must_be_absolute_and_must_be_a_project() {
     );
 
     assert!(
-        !basemind::store::workspace_cache_dir(std::path::Path::new("/")).exists(),
+        !basemind::store::workspace_cache_dir(&fs_root).exists(),
         "a refused root must not mint a workspace cache dir"
     );
 
