@@ -16,7 +16,8 @@ use std::process::Command;
 
 use rmcp::ServiceExt;
 use rmcp::model::{
-    CallToolRequestParams, CallToolResponse, ClientCapabilities, ClientConfig, GetTaskParams, Implementation, TaskPayload,
+    CallToolRequestParams, CallToolResponse, ClientCapabilities, ClientConfig, GetTaskParams, Implementation,
+    TaskPayload,
 };
 use serde_json::{Value, json};
 use tempfile::TempDir;
