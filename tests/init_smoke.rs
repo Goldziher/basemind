@@ -1,9 +1,10 @@
 //! End-to-end smoke tests for `basemind init` — the re-runnable onboarding flow.
 //!
 //! These shell the built binary (`CARGO_BIN_EXE_basemind`) against a tempdir and assert the
-//! observable filesystem effects: the `basemind.toml` scaffold and the idempotent delimited rules
-//! block injected into CLAUDE.md / AGENTS.md / an ai-rulez rule file. Init no longer writes a
-//! `.gitignore` entry — the index cache is machine-global and out-of-repo.
+//! observable filesystem effects: the `basemind.toml` scaffold, the idempotent delimited rules
+//! block injected into CLAUDE.md / AGENTS.md / an ai-rulez rule file, and the `.gitignore` pattern
+//! init appends to cover the personal `.local` file it writes (the index cache itself is
+//! machine-global and out-of-repo).
 
 use std::path::Path;
 use std::process::Command;
@@ -38,7 +39,7 @@ fn count_markers(haystack: &str) -> usize {
 }
 
 #[test]
-fn fresh_dir_writes_config_and_claude_local_block_without_gitignore() {
+fn fresh_dir_writes_config_and_local_block_and_gitignores_it() {
     let dir = tmpdir();
     let root = dir.path();
     run_init(root, &["--yes"]);
@@ -48,11 +49,10 @@ fn fresh_dir_writes_config_and_claude_local_block_without_gitignore() {
     let config_text = std::fs::read_to_string(&config).expect("read config");
     assert!(config_text.contains("[scan]"), "scaffold content present");
 
-    // ~keep The index cache is machine-global and out-of-repo, so init writes no `.gitignore`.
-    assert!(
-        !root.join(".gitignore").exists(),
-        "init must not create a .gitignore for a nonexistent in-repo cache"
-    );
+    // ~keep The index cache is machine-global and out-of-repo, but the personal `.local` rule file
+    // ~keep init writes is gitignored by convention, so init appends the covering pattern.
+    let gitignore = std::fs::read_to_string(root.join(".gitignore")).expect("init writes a .gitignore");
+    assert_eq!(gitignore, "CLAUDE.local.md\n", "the local rule file is gitignored");
 
     // ~keep Non-interactive Auto must land in the personal, gitignored CLAUDE.local.md — never the
     // ~keep committed CLAUDE.md — so onboarding never edits a shared file without an explicit opt-in.
@@ -126,7 +126,7 @@ fn existing_claude_content_is_preserved_verbatim() {
 }
 
 #[test]
-fn ai_rulez_present_writes_rule_file_and_leaves_claude_untouched() {
+fn ai_rulez_present_writes_local_rule_file_and_leaves_claude_untouched() {
     let dir = tmpdir();
     let root = dir.path();
     std::fs::create_dir_all(root.join(".ai-rulez")).expect("mkdir .ai-rulez");
@@ -136,10 +136,13 @@ fn ai_rulez_present_writes_rule_file_and_leaves_claude_untouched() {
 
     run_init(root, &["--yes"]);
 
-    let rule = root.join(".ai-rulez/rules/basemind-usage.md");
-    assert!(rule.exists(), "ai-rulez rule file should be written");
+    // ~keep Auto targets the personal, gitignored `.ai-rulez/local/` tree, never the committed rule.
+    let rule = root.join(".ai-rulez/local/rules/basemind-usage.md");
+    assert!(rule.exists(), "ai-rulez local rule file should be written");
     let rule_text = std::fs::read_to_string(&rule).expect("read rule");
     assert!(rule_text.contains("basemind"), "rule advertises basemind");
+    let gitignore = std::fs::read_to_string(root.join(".gitignore")).expect("init writes a .gitignore");
+    assert_eq!(gitignore, ".ai-rulez/local/\n", "the local rule tree is gitignored");
 
     let claude = std::fs::read_to_string(root.join("CLAUDE.md")).expect("read CLAUDE.md");
     assert!(
