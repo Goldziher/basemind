@@ -52,6 +52,17 @@ pub fn sync(index: &GitHistoryIndex, repo: &Repo, basemind_dir: &Path) -> Result
         return Ok(RebuildOutcome::Fresh);
     }
 
+    // The index tracks ONE head, and every worktree of a clone shares it. A linked worktree on its
+    // own branch is almost never a descendant of the head another worktree indexed, so letting it
+    // sync wipes and rebuilds the whole multi-100k-commit history (multi-GB, minutes) on every switch
+    // between worktrees, and the main checkout then wipes it back. Only the first build is left to a
+    // linked worktree; afterwards the main checkout owns the index. The index is a pure accelerator
+    // (tools use it only when `last_indexed_head == HEAD`), so a linked worktree at any other head
+    // reads via the live walk: correct, just slower.
+    if repo.is_linked_worktree() && !index.is_empty() {
+        return Ok(RebuildOutcome::Fresh);
+    }
+
     if let Some(last_hex) = index.last_indexed_head_hex()
         && repo.has_commit(&last_hex)
         && repo.is_ancestor(&last_hex, &head)
