@@ -297,6 +297,18 @@ pub struct IndexDb {
     pub(crate) proposals: Keyspace,
 }
 
+/// Flush/compaction threads per index database. fjall defaults to `min(cores, 4)` per `Database`, and
+/// the daemon holds one per hot workspace, so the default multiplies into dozens of mostly idle threads.
+const FJALL_WORKER_THREADS: usize = 2;
+
+/// Journal ceiling per index database (fjall's minimum; its default is 512 MiB). Recovery replays every
+/// unflushed journal into memtables on open, so an oversized journal is a multi-GB allocation on every
+/// workspace open; a 2.5 GiB single journal was observed on a scanned worktree.
+const FJALL_MAX_JOURNAL_BYTES: u64 = 64 * 1_024 * 1_024;
+
+/// Journal size past which `open` flushes every keyspace, so the next open does not replay it again.
+const JOURNAL_FLUSH_ON_OPEN_BYTES: u64 = 256 * 1_024 * 1_024;
+
 impl IndexDb {
     /// Open (or create) the index DB under `view_dir`. On schema-version mismatch the
     /// existing `index.fjall/` directory is dropped and a fresh one is created — the
@@ -308,7 +320,11 @@ impl IndexDb {
             source,
         })?;
         let cache_bytes = index_cache_bytes(&dir);
-        let mut db = Database::builder(&dir).cache_size(cache_bytes).open()?;
+        let mut db = Database::builder(&dir)
+            .cache_size(cache_bytes)
+            .worker_threads(FJALL_WORKER_THREADS)
+            .max_journaling_size(FJALL_MAX_JOURNAL_BYTES)
+            .open()?;
         let mut meta = open_keyspace(&db, "meta")?;
         let on_disk_ver = meta
             .get(META_SCHEMA_VER)?
@@ -325,7 +341,11 @@ impl IndexDb {
                 path: dir.clone(),
                 source,
             })?;
-            db = Database::builder(&dir).cache_size(cache_bytes).open()?;
+            db = Database::builder(&dir)
+                .cache_size(cache_bytes)
+                .worker_threads(FJALL_WORKER_THREADS)
+                .max_journaling_size(FJALL_MAX_JOURNAL_BYTES)
+                .open()?;
             meta = open_keyspace(&db, "meta")?;
         }
         let symbols_by_path = open_keyspace(&db, "symbols_by_path")?;
@@ -346,6 +366,30 @@ impl IndexDb {
         let proposals = open_keyspace(&db, "proposals")?;
 
         meta.insert(META_SCHEMA_VER, INDEX_SCHEMA_VER.to_be_bytes())?;
+
+        if db.journal_disk_space().unwrap_or(0) > JOURNAL_FLUSH_ON_OPEN_BYTES {
+            for keyspace in [
+                &symbols_by_path,
+                &symbols_by_name,
+                &calls_by_path,
+                &calls_by_callee,
+                &imports_by_module,
+                &imports_by_path,
+                &implementations_by_trait,
+                &implementations_by_path,
+                &refs_by_def,
+                &refs_by_path,
+                &code_bm25_postings,
+                &code_bm25_by_path,
+                &embeddings,
+                &memory_by_key,
+                &memory_archive,
+                &proposals,
+                &meta,
+            ] {
+                keyspace.rotate_memtable_and_wait()?;
+            }
+        }
 
         Ok(Self {
             db,

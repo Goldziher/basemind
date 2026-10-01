@@ -157,7 +157,7 @@ impl CommsStore {
             path: dir.clone(),
             source,
         })?;
-        let mut db = Database::builder(&dir).open()?;
+        let mut db = Database::builder(&dir).worker_threads(1).open()?;
         let mut meta = db.keyspace("meta", KeyspaceCreateOptions::default)?;
         let on_disk_ver = meta
             .get(META_SCHEMA_VER)?
@@ -174,7 +174,7 @@ impl CommsStore {
                 path: dir.clone(),
                 source,
             })?;
-            db = Database::builder(&dir).open()?;
+            db = Database::builder(&dir).worker_threads(1).open()?;
             meta = db.keyspace("meta", KeyspaceCreateOptions::default)?;
         }
         let threads = db.keyspace("threads", KeyspaceCreateOptions::default)?;
