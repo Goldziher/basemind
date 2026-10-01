@@ -496,3 +496,101 @@ fn author_search_finds_commit_beyond_recent_window_matches_git() {
         "Dor's commit is outside the newest-100 window, so a recent-window scan misses it"
     );
 }
+
+/// Open the shared index at `bdir` and sync it from the checkout rooted at `root`. Mirrors
+/// production, where every linked worktree resolves to the MAIN worktree's index directory.
+fn sync_at(root: &Path, bdir: &Path) -> (GitHistoryIndex, RebuildOutcome) {
+    let repo = Repo::discover(root).expect("repo discover");
+    let index = GitHistoryIndex::open(bdir).expect("open git-history index");
+    let outcome = builder::sync(&index, &repo, bdir).expect("sync");
+    (index, outcome)
+}
+
+/// Add a linked worktree of `main` on a new branch `feature`, then amend its tip so the branch
+/// diverges from `main`'s head (the amended commit does not descend from the original).
+fn diverged_linked_worktree(main: &Path) -> (tempfile::TempDir, PathBuf) {
+    let holder = tempfile::tempdir().expect("tempdir");
+    let wt = holder.path().join("wt");
+    run(main, &["worktree", "add", "-q", "-b", "feature", wt.to_str().expect("utf8")]);
+    run(&wt, &["config", "commit.gpgsign", "false"]);
+    run(&wt, &["commit", "--amend", "-qm", "diverged"]);
+    (holder, wt)
+}
+
+#[test]
+fn linked_worktree_leaves_populated_index_untouched() {
+    let dir = init_repo();
+    let root = dir.path();
+    commit_file(root, "a.rs", "fn a1() {}\n", "c1");
+    commit_file(root, "a.rs", "fn a2() {}\n", "c2");
+    let bdir = basemind_dir(root);
+
+    let (index, outcome) = sync_at(root, &bdir);
+    assert!(matches!(outcome, RebuildOutcome::FullRebuild { reason: "initial", .. }));
+    let head_a = index.last_indexed_head_hex().expect("indexed head");
+    let count = index.commit_count();
+    assert_eq!(count, 2);
+    drop(index);
+
+    let (_holder, wt) = diverged_linked_worktree(root);
+    let head_b = capture(&wt, &["rev-parse", "HEAD"]).trim().to_string();
+    assert_ne!(head_a, head_b, "worktree branch diverged from the indexed head");
+    assert!(Repo::discover(&wt).expect("discover worktree").is_linked_worktree());
+
+    let (index, outcome) = sync_at(&wt, &bdir);
+    assert_eq!(outcome, RebuildOutcome::Fresh, "linked worktree must not rebuild");
+    assert_eq!(index.last_indexed_head_hex().as_deref(), Some(head_a.as_str()));
+    assert_eq!(index.commit_count(), count);
+}
+
+#[test]
+fn linked_worktree_builds_an_empty_index() {
+    let dir = init_repo();
+    let root = dir.path();
+    commit_file(root, "a.rs", "fn a1() {}\n", "c1");
+    commit_file(root, "a.rs", "fn a2() {}\n", "c2");
+    let bdir = basemind_dir(root);
+
+    let holder = tempfile::tempdir().expect("tempdir");
+    let wt = holder.path().join("wt");
+    run(root, &["worktree", "add", "-q", "-b", "feature", wt.to_str().expect("utf8")]);
+    assert!(Repo::discover(&wt).expect("discover worktree").is_linked_worktree());
+
+    let (index, outcome) = sync_at(&wt, &bdir);
+    assert!(
+        matches!(outcome, RebuildOutcome::FullRebuild { reason: "initial", commits: 2 }),
+        "empty index is built from a linked worktree, got {outcome:?}"
+    );
+    assert_eq!(index.commit_count(), 2);
+    assert_eq!(
+        index.last_indexed_head_hex(),
+        Some(capture(&wt, &["rev-parse", "HEAD"]).trim().to_string())
+    );
+}
+
+#[test]
+fn main_checkout_still_appends_after_linked_worktree_skipped() {
+    let dir = init_repo();
+    let root = dir.path();
+    commit_file(root, "a.rs", "fn a1() {}\n", "c1");
+    let bdir = basemind_dir(root);
+
+    let (index, _) = sync_at(root, &bdir);
+    assert_eq!(index.commit_count(), 1);
+    drop(index);
+
+    let (_holder, wt) = diverged_linked_worktree(root);
+    let (index, outcome) = sync_at(&wt, &bdir);
+    assert_eq!(outcome, RebuildOutcome::Fresh);
+    drop(index);
+
+    commit_file(root, "a.rs", "fn a2() {}\n", "c2");
+    let (index, outcome) = sync_at(root, &bdir);
+    assert_eq!(outcome, RebuildOutcome::Incremental { added: 1 });
+    assert_eq!(index.commit_count(), 2);
+    assert_eq!(
+        index.last_indexed_head_hex(),
+        Some(capture(root, &["rev-parse", "HEAD"]).trim().to_string())
+    );
+    assert_eq!(index_commits_touching(&index, "a.rs"), git_commits_touching(root, "a.rs"));
+}
