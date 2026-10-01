@@ -118,6 +118,10 @@ impl ScanObserver for CollectObserver {
 /// parallelism.
 const RECOVERY_CLEAR_ADMITS: usize = 4;
 
+/// Scan workers allowed while embedding inline: more than the embed pool can serve only queue chunk
+/// data in memory.
+const EMBED_PASS_MAX_WORKERS: usize = 2;
+
 /// Floor on the drive chunk, independent of the worker count: below this the serial absorb pass
 /// dominates and the drive stops being a parallel scan at all.
 const MIN_BASE_CHUNK_ITEMS: usize = 1024;
@@ -304,11 +308,19 @@ pub(crate) fn drive_scan(
         // the bytes a chunk touches are held by at most one worker each, never by the chunk.
         |_, _| 0,
         |ctx: &DriveCtx<'_>, chunk| {
-            let max_workers = if workers.get() >= pool_threads {
+            let mut max_workers = if workers.get() >= pool_threads {
                 0
             } else {
                 workers.get()
             };
+            // Inference serializes on the embed pool (two threads by default), so extra scan workers
+            // in the embedding pass only hold file and chunk data while they wait their turn.
+            if matches!(drive.embed, crate::scanner::EmbedMode::Inline) {
+                max_workers = match max_workers {
+                    0 => EMBED_PASS_MAX_WORKERS,
+                    n => n.min(EMBED_PASS_MAX_WORKERS),
+                };
+            }
             run_candidates(
                 chunk,
                 drive.root,

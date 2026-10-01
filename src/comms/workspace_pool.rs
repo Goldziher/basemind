@@ -686,10 +686,36 @@ impl crate::mcp::HostBackend for WorkspacePool {
 /// Resolve a workspace's config, mirroring the CLI's `load_or_default`: a missing `basemind.toml`
 /// falls back to per-root defaults; only a genuine parse/IO error propagates.
 fn load_config(root: &Path) -> Result<Config, WorkspacePoolError> {
-    match config::load_with_overrides(root, None, None) {
-        Ok(loaded) => Ok(loaded.config),
-        Err(config::ConfigError::NotFound(_)) => Ok(config::default_for_root(root)),
-        Err(error) => Err(error.into()),
+    let mut config = match config::load_with_overrides(root, None, None) {
+        Ok(loaded) => loaded.config,
+        Err(config::ConfigError::NotFound(_)) => config::default_for_root(root),
+        Err(error) => return Err(error.into()),
+    };
+    clamp_daemon_resources(&mut config.resources);
+    Ok(config)
+}
+
+/// Scan concurrency the daemon allows a hosted workspace, whatever its `basemind.toml` says.
+const DAEMON_MAX_SCAN_THREADS: usize = 4;
+
+/// Largest embed batch the daemon runs; a bigger batch grows the ONNX arena, which never shrinks.
+const DAEMON_MAX_EMBED_BATCH: usize = 8;
+
+/// Footprint ceiling the daemon applies when a workspace leaves `max_footprint_mb` on auto. Auto is
+/// half of machine RAM, which on a developer laptop never engages before the machine is swapping.
+const DAEMON_FOOTPRINT_CEILING_MB: usize = 3072;
+
+/// Tighten, never loosen, the scan and embed limits for daemon-hosted workspaces. The daemon is one
+/// process shared by every session, so a per-workspace file that leaves these on "auto" multiplies the
+/// peak by the number of workspaces scanning at once. A workspace that asks for less keeps its value.
+fn clamp_daemon_resources(resources: &mut config::ResourcesConfig) {
+    resources.scan_threads = match resources.scan_threads {
+        0 => DAEMON_MAX_SCAN_THREADS,
+        n => n.min(DAEMON_MAX_SCAN_THREADS),
+    };
+    resources.embed_batch_size = resources.embed_batch_size.clamp(1, DAEMON_MAX_EMBED_BATCH);
+    if matches!(resources.max_footprint_mb, config::MaxFootprint::Mebibytes(0)) {
+        resources.max_footprint_mb = config::MaxFootprint::Mebibytes(DAEMON_FOOTPRINT_CEILING_MB);
     }
 }
 
