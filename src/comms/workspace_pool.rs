@@ -25,7 +25,11 @@ use crate::store::{self, LockHolder, Store, VIEW_WORKING};
 
 /// Default number of workspaces the daemon keeps hot in RAM at once. A cold workspace opened past
 /// this evicts the least-recently-used entry; it re-opens lazily on its next request.
-pub(crate) const DEFAULT_HOT_CAP: usize = 16;
+pub(crate) const DEFAULT_HOT_CAP: usize = 4;
+
+/// Serializes hosted read-stack builds across every workspace in the daemon.
+#[cfg(all(feature = "comms", any(unix, windows)))]
+static READ_STACK_BUILD_GATE: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
 
 /// Default number of daemon-hosted READ STACKS kept warm at once — deliberately far below
 /// [`DEFAULT_HOT_CAP`], which governs something much cheaper.
@@ -357,6 +361,13 @@ impl WorkspacePool {
                 Some(hosted) => (hosted.shared(), false),
                 None => {
                     let root_buf = root.to_path_buf();
+                    // One build at a time machine-wide: a reconnect storm after a daemon restart would
+                    // otherwise run one O(corpus) build per workspace concurrently, and the warm cap
+                    // only trims AFTER each finishes.
+                    let _gate = READ_STACK_BUILD_GATE
+                        .acquire()
+                        .await
+                        .map_err(|closed| anyhow::anyhow!("read stack build gate closed: {closed}"))?;
                     let hosted = tokio::task::spawn_blocking(move || {
                         crate::mcp::BasemindServer::build_hosted_read_stack(&root_buf, host, git_history_host)
                     })

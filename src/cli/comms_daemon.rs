@@ -31,6 +31,19 @@ const READ_STACK_SWEEP_EVERY: std::time::Duration = std::time::Duration::from_se
 /// cheap prunes one starved GC silently stopped ALL maintenance — the 116 GB incident.
 const GC_EVERY: std::time::Duration = std::time::Duration::from_secs(60 * 60);
 
+/// Thread-pool caps applied to the daemon process: rayon's global pool (and the scanner pool when
+/// `scan_threads` is unset) and lance's CPU runtime.
+const DAEMON_POOL_ENV: [(&str, &str); 2] = [("RAYON_NUM_THREADS", "6"), ("LANCE_CPU_THREADS", "2")];
+
+/// Async worker threads for the daemon runtime.
+const DAEMON_ASYNC_WORKERS: usize = 4;
+
+/// Ceiling on the daemon runtime's `spawn_blocking` pool.
+const DAEMON_MAX_BLOCKING_THREADS: usize = 16;
+
+/// Delay before the first blob GC after daemon start.
+const STARTUP_GC_DELAY: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
 /// How often the Unix socket-ownership watchdog verifies we still own our bound socket. Short, so
 /// an orphaned daemon (its socket reclaimed by another) self-terminates within seconds.
 #[cfg(unix)]
@@ -58,7 +71,23 @@ fn socket_inode(path: &std::path::Path) -> Option<(u64, u64)> {
 pub fn run() -> Result<()> {
     let paths = singleton::resolve_paths().context("resolve comms paths")?;
 
+    // Bound the third-party thread pools the daemon inherits before any of them is first used. Each
+    // defaults to one thread per core and they are created lazily, so an unset env means an 18-core
+    // machine ends up with dozens of mostly idle threads per pool. An operator's own setting wins.
+    for (key, value) in DAEMON_POOL_ENV {
+        if std::env::var_os(key).is_none() {
+            // SAFETY: runs first in `run()`, before the runtime or any other thread exists.
+            unsafe { std::env::set_var(key, value) };
+        }
+    }
+
+    // The daemon is mostly idle I/O relay, so a handful of async workers is plenty; the blocking pool
+    // (GC, read-stack builds, git-history syncs) is capped well under tokio's default of 512 and its
+    // idle threads are reaped quickly.
     let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(DAEMON_ASYNC_WORKERS)
+        .max_blocking_threads(DAEMON_MAX_BLOCKING_THREADS)
+        .thread_keep_alive(std::time::Duration::from_secs(5))
         .enable_all()
         .build()
         .context("build tokio runtime")?;
@@ -205,6 +234,10 @@ pub fn run() -> Result<()> {
         // and a GC starved behind a rescan must never stall the rest of the maintenance. ~keep
         let broker_for_gc = broker.clone();
         tokio::spawn(async move {
+            // The first sweep waits out STARTUP_GC_DELAY: it deserializes every workspace's full index,
+            // and running it in the first seconds stacks that peak on top of the reconnect storm's
+            // read-stack builds. A daemon that lives this long still reclaims.
+            tokio::time::sleep(STARTUP_GC_DELAY).await;
             run_gc_cycle(&broker_for_gc).await;
             let mut tick = tokio::time::interval(GC_EVERY);
             tick.tick().await;
