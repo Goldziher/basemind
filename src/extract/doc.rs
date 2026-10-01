@@ -419,7 +419,12 @@ impl DocConfig {
 fn extraction_runtime() -> &'static tokio::runtime::Runtime {
     static RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
     RT.get_or_init(|| {
+        // Capped: the default is one worker per core plus a 512-thread blocking pool, on top of the
+        // scanner's own per-core rayon pool that drives it.
         tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(std::thread::available_parallelism().map_or(2, |n| n.get().clamp(2, 4)))
+            .max_blocking_threads(16)
+            .thread_keep_alive(std::time::Duration::from_secs(5))
             .enable_all()
             .build()
             .expect("build xberg extraction runtime")
