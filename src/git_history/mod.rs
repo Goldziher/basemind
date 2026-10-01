@@ -313,7 +313,7 @@ impl GitHistoryIndex {
             path: dir.to_path_buf(),
             source,
         })?;
-        let mut db = Database::builder(dir).open()?;
+        let mut db = Database::builder(dir).worker_threads(1).open()?;
         let mut meta = db.keyspace("gh_meta", KeyspaceCreateOptions::default)?;
         let on_disk_ver = meta.get(keys::META_SCHEMA_VER)?.and_then(|b| keys::parse_u32(&b));
         if matches!(on_disk_ver, Some(ver) if ver != GIT_HISTORY_SCHEMA) {
@@ -327,7 +327,7 @@ impl GitHistoryIndex {
                 path: dir.to_path_buf(),
                 source,
             })?;
-            db = Database::builder(dir).open()?;
+            db = Database::builder(dir).worker_threads(1).open()?;
             meta = db.keyspace("gh_meta", KeyspaceCreateOptions::default)?;
         }
         let commit_by_ord = db.keyspace("gh_commit_by_ord", KeyspaceCreateOptions::default)?;
