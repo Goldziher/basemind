@@ -32,6 +32,12 @@ pub type Config = ConfigV1;
 
 pub const CONFIG_FILE_NAME: &str = "basemind.toml";
 pub const BASEMIND_DIR: &str = ".basemind";
+/// Project-level `.config/` convention directory (https://github.com/pi0/config-dir).
+pub const CONFIG_CONVENTION_DIR: &str = ".config";
+/// Tool-named subdirectory of the convention: `<root>/.config/basemind/`.
+pub const CONFIG_CONVENTION_SUBDIR: &str = "basemind";
+/// Generic config filename used by the nested convention form: `<root>/.config/basemind/config.toml`.
+pub const CONFIG_NESTED_FILE_NAME: &str = "config.toml";
 
 #[derive(Debug, Error)]
 pub enum ConfigError {
@@ -103,7 +109,8 @@ pub fn load_with_overrides(
 }
 
 /// Resolve the repository root by walking UP from `start` to the nearest ancestor that carries a
-/// committed `basemind.toml` config marker (monorepo/nested-git support), falling back to git
+/// committed config marker — a root `basemind.toml`, or one under the project-level `.config/`
+/// convention (`.config/basemind.toml` / `.config/basemind/config.toml`) — falling back to git
 /// discovery, then to `start` unchanged. Lets basemind commands run from a monorepo subfolder
 /// attach to the configured root.
 ///
@@ -119,7 +126,7 @@ pub fn load_with_overrides(
 ///
 /// Precedence:
 /// 1. The nearest ancestor of `start` (including `start` itself, up to and including the enclosing
-///    git root) that holds a `basemind.toml` file.
+///    git root) that holds a config marker (root `basemind.toml` or a `.config/` convention file).
 /// 2. Else the git workdir discovered from `start`.
 /// 3. Else `start` unchanged.
 ///
@@ -133,7 +140,7 @@ pub fn discover_root_with_basemind(start: &Path) -> PathBuf {
 
     let mut current = start;
     loop {
-        if current.join(CONFIG_FILE_NAME).is_file() {
+        if has_config_marker(current) {
             return current.to_path_buf();
         }
         if git_root.as_deref() == Some(current) {
@@ -181,19 +188,47 @@ pub fn legacy_config_path(root: &Path) -> PathBuf {
     root.join(BASEMIND_DIR).join(CONFIG_FILE_NAME)
 }
 
-/// Resolve which config file to read: prefer the canonical root `basemind.toml`, else the legacy
-/// in-cache path, else the root path (so a not-found error names the location we tell users to
-/// create). The root file always wins when both exist.
+/// Flat project-level `.config/` convention: `<root>/.config/basemind.toml`.
+pub fn convention_flat_config_path(root: &Path) -> PathBuf {
+    root.join(CONFIG_CONVENTION_DIR).join(CONFIG_FILE_NAME)
+}
+
+/// Nested project-level `.config/` convention: `<root>/.config/basemind/config.toml`.
+pub fn convention_nested_config_path(root: &Path) -> PathBuf {
+    root.join(CONFIG_CONVENTION_DIR)
+        .join(CONFIG_CONVENTION_SUBDIR)
+        .join(CONFIG_NESTED_FILE_NAME)
+}
+
+/// Every location a config may live at, in precedence order: the canonical root file wins, then the
+/// legacy in-cache file, then the project-level `.config/` convention (flat `.config/basemind.toml`
+/// before the nested `.config/basemind/config.toml`). [`load`] reads the first that exists;
+/// [`has_config_marker`] treats any of them as the durable "this is a basemind-managed root" marker.
+pub fn config_candidate_paths(root: &Path) -> Vec<PathBuf> {
+    vec![
+        config_path(root),
+        legacy_config_path(root),
+        convention_flat_config_path(root),
+        convention_nested_config_path(root),
+    ]
+}
+
+/// True when `root` carries a config file at any [`config_candidate_paths`] location.
+///
+/// This is the marker root discovery and the workspace-root guard key off, so a project that stores
+/// its config under the `.config/` convention is recognized exactly like one with a root
+/// `basemind.toml`.
+pub fn has_config_marker(root: &Path) -> bool {
+    config_candidate_paths(root).iter().any(|path| path.is_file())
+}
+
+/// Resolve which config file to read: the first existing [`config_candidate_paths`] entry, else the
+/// canonical root path (so a not-found error names the location we tell users to create).
 pub fn resolve_config_path(root: &Path) -> PathBuf {
-    let root_path = config_path(root);
-    if root_path.exists() {
-        return root_path;
-    }
-    let legacy = legacy_config_path(root);
-    if legacy.exists() {
-        return legacy;
-    }
-    root_path
+    config_candidate_paths(root)
+        .into_iter()
+        .find(|path| path.exists())
+        .unwrap_or_else(|| config_path(root))
 }
 
 pub fn parse_str(raw: &str) -> Result<Config, ConfigError> {
@@ -303,5 +338,99 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let start = tmp.path().canonicalize().expect("canonicalize");
         assert_eq!(discover_root_with_basemind(&start), start);
+    }
+
+    #[test]
+    fn resolve_reads_flat_config_convention_when_root_absent() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        let path = convention_flat_config_path(root);
+        std::fs::create_dir_all(path.parent().expect("convention dir")).expect("mkdir .config");
+        std::fs::write(&path, "\"$schema\" = \"v1\"\n[scan]\nmax_file_bytes = 1234\n")
+            .expect("write convention config");
+
+        assert_eq!(resolve_config_path(root), path);
+        assert_eq!(load(root).expect("convention config loads").scan.max_file_bytes, 1234);
+    }
+
+    #[test]
+    fn resolve_reads_nested_config_convention_when_root_absent() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        let path = convention_nested_config_path(root);
+        std::fs::create_dir_all(path.parent().expect("convention dir")).expect("mkdir .config/basemind");
+        std::fs::write(&path, "\"$schema\" = \"v1\"\n[scan]\nmax_file_bytes = 4321\n")
+            .expect("write nested convention");
+
+        assert_eq!(resolve_config_path(root), path);
+        assert_eq!(load(root).expect("nested config loads").scan.max_file_bytes, 4321);
+    }
+
+    #[test]
+    fn root_config_wins_over_the_convention() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        let flat = convention_flat_config_path(root);
+        std::fs::create_dir_all(flat.parent().expect("convention dir")).expect("mkdir .config");
+        std::fs::write(
+            config_path(root),
+            "\"$schema\" = \"v1\"\n[scan]\nmax_file_bytes = 4096\n",
+        )
+        .expect("root");
+        std::fs::write(&flat, "\"$schema\" = \"v1\"\n[scan]\nmax_file_bytes = 9999\n").expect("convention");
+
+        assert_eq!(resolve_config_path(root), config_path(root));
+        assert_eq!(load(root).expect("load").scan.max_file_bytes, 4096);
+    }
+
+    #[test]
+    fn flat_convention_wins_over_nested_convention() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        let flat = convention_flat_config_path(root);
+        let nested = convention_nested_config_path(root);
+        std::fs::create_dir_all(flat.parent().expect("convention dir")).expect("mkdir .config");
+        std::fs::create_dir_all(nested.parent().expect("nested dir")).expect("mkdir .config/basemind");
+        std::fs::write(&flat, "\"$schema\" = \"v1\"\n[scan]\nmax_file_bytes = 1111\n").expect("flat");
+        std::fs::write(&nested, "\"$schema\" = \"v1\"\n[scan]\nmax_file_bytes = 2222\n").expect("nested");
+
+        assert_eq!(resolve_config_path(root), flat);
+    }
+
+    #[test]
+    fn discover_root_walks_up_to_the_convention_marker() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().canonicalize().expect("canonicalize");
+        let path = convention_nested_config_path(&root);
+        std::fs::create_dir_all(path.parent().expect("convention dir")).expect("mkdir");
+        std::fs::write(&path, "\"$schema\" = \"v1\"\n").expect("write marker");
+        let sub = root.join("crates").join("inner");
+        std::fs::create_dir_all(&sub).expect("mkdir sub");
+
+        assert_eq!(
+            discover_root_with_basemind(&sub),
+            root,
+            "the .config marker anchors the walk"
+        );
+    }
+
+    #[test]
+    fn has_config_marker_recognizes_every_candidate_location() {
+        let bare = tempfile::tempdir().expect("tempdir");
+        assert!(!has_config_marker(bare.path()), "a bare directory is not a marker");
+
+        for candidate in ["root", "legacy", "flat", "nested"] {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let root = tmp.path();
+            let path = match candidate {
+                "root" => config_path(root),
+                "legacy" => legacy_config_path(root),
+                "flat" => convention_flat_config_path(root),
+                _ => convention_nested_config_path(root),
+            };
+            std::fs::create_dir_all(path.parent().expect("parent")).expect("mkdir");
+            std::fs::write(&path, "\"$schema\" = \"v1\"\n").expect("write");
+            assert!(has_config_marker(root), "{candidate} config is a marker");
+        }
     }
 }

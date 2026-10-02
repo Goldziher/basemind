@@ -22,7 +22,7 @@ first, shell/grep/git fallback.**
 - [MCP tool reference](https://basemind.ai/reference/mcp-tools/): Every tool, its parameters, and matching semantics.
 - [CLI reference](https://basemind.ai/reference/cli/): The scriptable CLI, at parity with the MCP tools.
 - [Installation](https://basemind.ai/start/installation/): Plugin, MCP server, and standalone CLI setup.
-- [Configuration](https://basemind.ai/reference/configuration/): `.basemind/basemind.toml`, feature flags, and layered overrides.
+- [Configuration](https://basemind.ai/reference/configuration/): `basemind.toml` (repo root or `.config/`), feature flags, and layered overrides.
 - [Hosted llms.txt](https://basemind.ai/llms.txt): Always-current docs map, generated from the site (this repo-root file is the hand-curated project map).
 - [llms-full.txt](https://basemind.ai/llms-full.txt): The complete documentation as a single file, for LLM ingestion.
 - [GitHub repository](https://github.com/Goldziher/basemind): Source, issues, and releases.
@@ -58,6 +58,6 @@ first, shell/grep/git fallback.**
 - [crates.io](https://crates.io/crates/basemind): Install the Rust binary with `cargo install basemind`.
 - [npm](https://www.npmjs.com/package/basemind): Node wrapper that downloads the prebuilt binary.
 - [PyPI](https://pypi.org/project/basemind/): Python wrapper that downloads the prebuilt binary.
-- [Config schema](https://github.com/Goldziher/basemind/blob/main/schema/basemind-config-v1.schema.json): JSON Schema for `.basemind/basemind.toml`.
+- [Config schema](https://github.com/Goldziher/basemind/blob/main/schema/basemind-config-v1.schema.json): JSON Schema for `basemind.toml`.
 - [CLAUDE.md](https://github.com/Goldziher/basemind/blob/main/CLAUDE.md): Project rules, crate layout, and conventions for agents working in the repo.
 - [Cargo.toml](https://github.com/Goldziher/basemind/blob/main/Cargo.toml): Crate manifest and feature flags (`documents`, `memory`, `crawl`, `comms`, `shells`, `code-intel`, `code-search`, `full`).

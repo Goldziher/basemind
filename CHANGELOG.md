@@ -8,6 +8,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 <!-- Keep a Changelog repeats Added/Changed/Fixed headings per version. -->
 <!-- markdownlint-disable MD024 -->
 
+## [Unreleased]
+
+### Added
+
+- Project-level `.config/` convention (<https://github.com/pi0/config-dir>): configuration is now
+  also discovered at `.config/basemind.toml` or `.config/basemind/config.toml` when no root
+  `basemind.toml` (or legacy `.basemind/basemind.toml`) exists. The root file still wins when both
+  are present. Any of these locations now counts as the durable "this is a basemind-managed root"
+  marker for upward root discovery and the workspace-root guard, so a project that keeps its config
+  under `.config/` no longer needs `--root`.
+- `basemind init --config-dir`: scaffold the config under the `.config/` convention. Accepts
+  `.config` (writes `.config/basemind.toml`) or `.config/basemind` (writes
+  `.config/basemind/config.toml`); any other value is rejected, since there is no read-time
+  config-path flag and a config written elsewhere would never be auto-discovered.
+
 ## [0.27.4] - 2026-09-28
 
 > **Patch release — `init` defaults to local/gitignored config, a benchmark harness, and a

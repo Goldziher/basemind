@@ -425,8 +425,9 @@ workspace, never inside your repo. The
 content-addressed blob store is machine-wide too: identical file content scanned from different repos
 or worktrees is extracted and stored once.
 
-A workspace root must be a project: a git repository, or a directory containing `basemind.toml`.
-Anything else is refused, because basemind opens a root read-write and indexes every file beneath
+A workspace root must be a project: a git repository, or a directory containing a basemind config
+(`basemind.toml` at the root, or under the `.config/` convention). Anything else is refused, because
+basemind opens a root read-write and indexes every file beneath
 it — so an accidentally inherited root (`/`, your home directory, or wherever an MCP host happened
 to start) would become a whole-filesystem scan. Run `basemind init` to mark a directory you do want
 indexed, or set `BASEMIND_ALLOW_ANY_ROOT=1` to skip the check. A filesystem or volume root is
@@ -648,9 +649,13 @@ nothing about the first.
 The config lives at the **repo root** as `basemind.toml` (committed). The cache it drives is derived
 state — held in the global cache under the XDG data directory, wiped and rebuilt on schema bumps —
 so config never belongs there and nothing basemind-owned is written into your repo. Run
-`basemind init` to drop a fully-commented scaffold (documenting every option) at the root. The legacy
-in-cache path (`.basemind/basemind.toml`, from before the global-cache move) is still read as a
-fallback for older checkouts. The full schema is at `schema/basemind-config-v1.schema.json`:
+`basemind init` to drop a fully-commented scaffold (documenting every option) at the root. It can
+also live under the project-level [`.config/` convention](https://github.com/pi0/config-dir) —
+`.config/basemind.toml` or `.config/basemind/config.toml` — which is auto-discovered read-only; the
+root `basemind.toml` still wins when both exist. `basemind init --config-dir .config` (or
+`--config-dir .config/basemind`) scaffolds the convention. The legacy in-cache path
+(`.basemind/basemind.toml`, from before the global-cache move) is still read as a fallback for older
+checkouts. The full schema is at `schema/basemind-config-v1.schema.json`:
 
 ```toml
 # basemind.toml  (repo root — commit this)
@@ -870,7 +875,7 @@ Every command takes `--as-agent <ID>` to act as a named sub-identity.
 | `scan` / `rescan <path>` | Full scan / update one path. |
 | `watch` | Keep the index fresh as files change (no server). |
 | `serve [--no-watch]` | Start the server (keeps the index fresh by default). |
-| `init` | Re-runnable onboarding: write `basemind.toml`, select capabilities, inject usage rules. |
+| `init [--config-dir .config\|.config/basemind]` | Re-runnable onboarding: write `basemind.toml` (at the root or under the `.config/` convention), select capabilities, inject usage rules. |
 | `lang <list\|install\|clean>` | Manage downloaded language grammars. |
 | `hook install` | Add a git pre-commit hook that runs a scan. |
 | `compress-output` / `delta --old <path>` | Backends for the optional guardrails above. |

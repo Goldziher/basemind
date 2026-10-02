@@ -35,7 +35,8 @@ pub(crate) const END_MARKER: &str = "<!-- END basemind -->";
 /// the built-in default, so an unedited file is a no-op. Written to the repo ROOT (committed); the
 /// index it drives lives in the machine-global cache, so nothing is written into the repo.
 pub(crate) const INIT_SCAFFOLD_TOML: &str = r##"# basemind configuration — https://github.com/Goldziher/basemind
-# Lives at the repo root and is meant to be committed. The index (blobs + Fjall) is derived state
+# Lives at the repo root, or under `.config/` (`.config/basemind.toml` / `.config/basemind/
+# config.toml`), and is meant to be committed. The index (blobs + Fjall) is derived state
 # kept in the machine-global cache under ~/.local/share/basemind/ (override BASEMIND_DATA_HOME),
 # keyed by workspace and wiped on schema bumps — nothing is written into the repo, so there is
 # nothing to gitignore. Never put durable config in the cache.
@@ -190,6 +191,13 @@ pub struct InitArgs {
     /// Dry run: print what WOULD change and write nothing.
     #[arg(long)]
     pub print: bool,
+
+    /// Write the config under the project-level `.config/` convention instead of the repo root.
+    /// Accepted values: `.config` (writes `.config/basemind.toml`) or `.config/basemind` (writes
+    /// `.config/basemind/config.toml`). Any other value is rejected — basemind auto-discovers only
+    /// these locations, so a config written elsewhere would never be read.
+    #[arg(long, value_name = "DIR")]
+    pub config_dir: Option<String>,
 }
 
 /// One planned filesystem effect, collected before anything is written so `--print` can report a
@@ -220,7 +228,7 @@ pub fn run(root: &Path, args: &InitArgs) -> Result<()> {
     let settings_plan = init_settings::resolve_settings_plan(root, settings_target);
 
     let mut changes = Vec::new();
-    changes.push(plan_config(root)?);
+    changes.push(plan_config(root, args.config_dir.as_deref())?);
     if let Some(rule_change) = plan_rules_change(&rules_plan, &caps, sections)? {
         changes.push(rule_change);
     }
@@ -407,18 +415,20 @@ fn prompt_capabilities() -> Result<Vec<Capability>> {
 }
 
 /// Plan the `basemind.toml` write: scaffold when absent, keep when present.
-fn plan_config(root: &Path) -> Result<Change> {
-    let path = config::config_path(root);
+fn plan_config(root: &Path, config_dir: Option<&str>) -> Result<Change> {
+    let path = resolve_init_config_path(root, config_dir)?;
     if path.exists() {
         return Ok(Change::NoOp {
             note: format!("basemind.toml: kept existing config at {}", path.display()),
         });
     }
+    // ~keep A ROOT scaffold would silently shadow the legacy config (root path wins in resolution), so
+    // ~keep refuse rather than change the effective config behind the user's back. A `.config/` scaffold
+    // ~keep does NOT shadow it — resolution reads legacy before the convention — so only the root target
+    // ~keep is guarded. They migrate it, then re-run init. Matches the pre-onboarding `cmd_init`
+    // ~keep contract (config_root_smoke).
     let legacy = config::legacy_config_path(root);
-    if legacy.exists() {
-        // ~keep A root scaffold would silently shadow the legacy config (root path wins in resolution), so
-        // ~keep refuse rather than change the effective config behind the user's back. They migrate it,
-        // ~keep then re-run init. Matches the pre-onboarding `cmd_init` contract (config_root_smoke).
+    if path == config::config_path(root) && legacy.exists() {
         anyhow::bail!(
             "legacy config at {} is still read as a fallback; move it to {} to migrate — init will \
              not write a scaffold that shadows it",
@@ -431,6 +441,28 @@ fn plan_config(root: &Path) -> Result<Change> {
         note: "wrote basemind.toml scaffold",
         contents: INIT_SCAFFOLD_TOML.to_string(),
     })
+}
+
+/// Map `--config-dir` to the config file `init` writes. Only the two `.config/` convention spellings
+/// are accepted: there is no read-time config-path flag, so a file written anywhere else would never
+/// be auto-discovered — silently producing a config basemind ignores. Unset writes the canonical
+/// root `basemind.toml`.
+fn resolve_init_config_path(root: &Path, config_dir: Option<&str>) -> Result<PathBuf> {
+    let Some(dir) = config_dir.map(str::trim).filter(|dir| !dir.is_empty()) else {
+        return Ok(config::config_path(root));
+    };
+    let normalized = dir.trim_start_matches("./").trim_end_matches('/');
+    if normalized == config::CONFIG_CONVENTION_DIR {
+        return Ok(config::convention_flat_config_path(root));
+    }
+    if normalized == format!("{}/{}", config::CONFIG_CONVENTION_DIR, config::CONFIG_CONVENTION_SUBDIR) {
+        return Ok(config::convention_nested_config_path(root));
+    }
+    anyhow::bail!(
+        "unsupported --config-dir {dir:?}: basemind auto-discovers only the repo root, \
+         `.config/basemind.toml`, and `.config/basemind/config.toml` — pass `.config` or \
+         `.config/basemind`"
+    )
 }
 
 /// Which agent-instructions file owns the rules, after resolving `--rules-target`/`--no-rules`
