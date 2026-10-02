@@ -36,6 +36,28 @@ pub enum RebuildOutcome {
 /// workspace root *below* its workdir means an ancestor repository was inherited, which
 /// [`history_scope_ok`](super::history_scope_ok) refuses.
 pub fn sync(index: &GitHistoryIndex, repo: &Repo, basemind_dir: &Path) -> Result<RebuildOutcome, GitHistoryError> {
+    // Run on a small dedicated pool, not rayon's global one: a first build walks hundreds of thousands
+    // of commits in parallel, and on the global pool it starves every other par_iter in the process
+    // (a read-stack warm that takes 12 s took 469 s while a 248k-commit build was running).
+    history_pool().install(|| sync_inner(index, repo, basemind_dir))
+}
+
+/// Threads given to history indexing. Enough to finish a first build in minutes without taking the
+/// scan and warm paths' cores.
+const HISTORY_POOL_THREADS: usize = 2;
+
+fn history_pool() -> &'static rayon::ThreadPool {
+    static POOL: std::sync::OnceLock<rayon::ThreadPool> = std::sync::OnceLock::new();
+    POOL.get_or_init(|| {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(HISTORY_POOL_THREADS)
+            .thread_name(|i| format!("bm-history-{i}"))
+            .build()
+            .expect("build git-history pool")
+    })
+}
+
+fn sync_inner(index: &GitHistoryIndex, repo: &Repo, basemind_dir: &Path) -> Result<RebuildOutcome, GitHistoryError> {
     index.require_local()?;
     if !super::history_scope_ok(repo) {
         return Err(GitHistoryError::ForeignHistory {
