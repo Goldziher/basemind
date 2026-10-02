@@ -511,7 +511,10 @@ fn sync_at(root: &Path, bdir: &Path) -> (GitHistoryIndex, RebuildOutcome) {
 fn diverged_linked_worktree(main: &Path) -> (tempfile::TempDir, PathBuf) {
     let holder = tempfile::tempdir().expect("tempdir");
     let wt = holder.path().join("wt");
-    run(main, &["worktree", "add", "-q", "-b", "feature", wt.to_str().expect("utf8")]);
+    run(
+        main,
+        &["worktree", "add", "-q", "-b", "feature", wt.to_str().expect("utf8")],
+    );
     run(&wt, &["config", "commit.gpgsign", "false"]);
     run(&wt, &["commit", "--amend", "-qm", "diverged"]);
     (holder, wt)
@@ -553,12 +556,21 @@ fn linked_worktree_builds_an_empty_index() {
 
     let holder = tempfile::tempdir().expect("tempdir");
     let wt = holder.path().join("wt");
-    run(root, &["worktree", "add", "-q", "-b", "feature", wt.to_str().expect("utf8")]);
+    run(
+        root,
+        &["worktree", "add", "-q", "-b", "feature", wt.to_str().expect("utf8")],
+    );
     assert!(Repo::discover(&wt).expect("discover worktree").is_linked_worktree());
 
     let (index, outcome) = sync_at(&wt, &bdir);
     assert!(
-        matches!(outcome, RebuildOutcome::FullRebuild { reason: "initial", commits: 2 }),
+        matches!(
+            outcome,
+            RebuildOutcome::FullRebuild {
+                reason: "initial",
+                commits: 2
+            }
+        ),
         "empty index is built from a linked worktree, got {outcome:?}"
     );
     assert_eq!(index.commit_count(), 2);
@@ -592,5 +604,8 @@ fn main_checkout_still_appends_after_linked_worktree_skipped() {
         index.last_indexed_head_hex(),
         Some(capture(root, &["rev-parse", "HEAD"]).trim().to_string())
     );
-    assert_eq!(index_commits_touching(&index, "a.rs"), git_commits_touching(root, "a.rs"));
+    assert_eq!(
+        index_commits_touching(&index, "a.rs"),
+        git_commits_touching(root, "a.rs")
+    );
 }

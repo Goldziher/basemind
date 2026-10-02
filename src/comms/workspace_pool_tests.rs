@@ -610,13 +610,17 @@ fn grep_query() -> crate::mcp::params::CodeParams {
 async fn warm_read_stacks_are_capped_independently_of_hot_stores() {
     store::init_isolated_cache();
     let cap = warm_read_stack_cap();
+    // ~keep Derived from the real caps rather than hard-coded: open more workspaces than the stack
+    // ~keep cap, and size the store pool so every one of them stays hot. (`DEFAULT_HOT_CAP` may be
+    // ~keep lower than `cap + 2`, so it cannot be the pool size here.)
     let workspaces = cap + 2;
+    let hot_cap = workspaces.max(DEFAULT_HOT_CAP);
     assert!(
-        workspaces <= DEFAULT_HOT_CAP,
-        "the fixture must stay inside the STORE cap, or it cannot show the two caps diverging"
+        workspaces > cap && workspaces <= hot_cap,
+        "the fixture must exceed the STACK cap yet stay inside the STORE cap, or it cannot show the two caps diverging"
     );
 
-    let pool = std::sync::Arc::new(WorkspacePool::new(DEFAULT_HOT_CAP));
+    let pool = std::sync::Arc::new(WorkspacePool::new(hot_cap));
     let roots: Vec<tempfile::TempDir> = (0..workspaces).map(|_| workspace_with_sources()).collect();
     let mut first_answer = String::new();
     for (i, root) in roots.iter().enumerate() {
@@ -639,7 +643,7 @@ async fn warm_read_stacks_are_capped_independently_of_hot_stores() {
     assert_eq!(
         pool.warm_read_stacks(),
         cap,
-        "read stacks are capped at {cap}, well below the {DEFAULT_HOT_CAP} store cap"
+        "read stacks are capped at {cap}, below the {hot_cap} store cap"
     );
 
     // ~keep The cap has to have BITTEN for any of this to mean anything: the least-recently-used
