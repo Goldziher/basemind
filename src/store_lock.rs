@@ -154,9 +154,17 @@ mod tests {
             other => panic!("expected Held with named holder, got {other:?}"),
         }
         drop(guard);
-        assert!(
-            matches!(probe_writer_lock(tmp.path()), WriterProbe::Free),
-            "lock is free once the holder drops"
-        );
+        // The lock fd is O_CLOEXEC, but a sibling test thread that forks a subprocess between the
+        // fork and its exec briefly holds a copy of the open file description, and a flock lives as
+        // long as ANY copy does. So "free once dropped" is eventual under parallel tests: poll for
+        // the child's exec (milliseconds) instead of asserting on the first probe.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !matches!(probe_writer_lock(tmp.path()), WriterProbe::Free) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "lock is free once the holder drops"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
     }
 }
