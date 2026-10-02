@@ -60,32 +60,35 @@ pub(crate) const INIT_SCAFFOLD_TOML: &str = r##"# basemind configuration — htt
 # max_file_bytes = 2097152
 # Skip paths under any submodule root listed in .gitmodules.
 # skip_submodules = true
-# Run L2 extraction (calls + docs) inline with L1. Powers find_references / find_callers. Turning
-# off roughly halves scan time on large repos but leaves reference search empty until an L2 pass.
+# Run L2 extraction (calls + docs) inline with L1. Powers the `code` tool's references / callers
+# modes. Turning off roughly halves scan time on large repos but leaves reference search empty
+# until an L2 pass.
 # eager_l2 = true
-# Absolute paths OUTSIDE the repo to also index (e.g. a Bazel external cache). Symlinks are always
-# followed for these regardless of scan.follow_symlinks.
+# Absolute paths OUTSIDE the repo to also index (e.g. a Bazel external cache). Ignored unless the
+# operator sets BASEMIND_ALLOW_EXTRA_ROOTS in the environment (1 = any workspace, or a `:`-separated
+# list of workspace roots), because this file is authored by the repository. Symlinks inside them
+# are followed only when scan.follow_symlinks is on.
 # extra_roots = []
 
 [code_intel]
 # Precise, scope- and import-aware name resolution. On by default: JS/TS resolve via oxc, Python and
-# Java via the stack-graphs engine, so find_references / find_callers / goto_definition distinguish a
-# shadowed local from an import instead of matching by name. Set false to fall back to fast
+# Java via the stack-graphs engine, so the `code` tool's references / callers / definition modes
+# distinguish a shadowed local from an import instead of matching by name. Set false to fall back to fast
 # tree-sitter locals binding for every language. Applies to files (re)scanned after the change.
 # precise_resolution = true
 
 [watch]
 # Coalesce filesystem events within this window (milliseconds).
 # debounce_ms = 250
-# Run L2 extraction on live watch edits (extra CPU per edit).
+# Reserved: parsed but has no effect yet.
 # live_l2 = false
 
 [cache]
-# Max extracted file-maps kept hot in memory.
+# Reserved: parsed but has no effect yet (see [resources] max_map_cache_mb for the outline cache).
 # file_map_lru = 256
 
 [mcp]
-# MCP transport. Only "stdio" is supported today.
+# Reserved: "stdio" is the only transport and nothing reads this key.
 # transport = "stdio"
 
 [documents]
@@ -117,6 +120,32 @@ pub(crate) const INIT_SCAFFOLD_TOML: &str = r##"# basemind configuration — htt
 # Globs for source files that are still chunked + BM25-indexed but NOT embedded (only used when
 # embed = true).
 # embed_exclude = []
+
+[resources]
+# Footprint bounds. 0 = auto for the thread / concurrency caps. The shared daemon treats these as
+# ceilings: min(value here, daemon cap), with 0 / "auto" / "off" resolving to the cap. Raise a
+# daemon cap with BASEMIND_DAEMON_MAX_SCAN_THREADS / _EMBED_THREADS / _EMBED_BATCH /
+# _CONCURRENT_DOCUMENTS / _FOOTPRINT_MB / _MAP_CACHE_MB / _CANDIDATES in the daemon's environment.
+# scan_threads = 0
+# embed_threads = 0
+# max_concurrent_documents = 0
+# embed_batch_size = 32
+# max_footprint_mb = 0
+# max_map_cache_mb = 256
+
+[crawl]
+# Web crawl / scrape limits. allow_private_network = true is ignored when it comes from this file
+# unless the operator sets BASEMIND_ALLOW_PRIVATE_HOSTS=1 in the environment.
+# respect_robots_txt = true
+# allow_private_network = false
+
+[llm]
+# Optional LLM for abstractive summaries and LLM NER. Inert while `model` is empty. In this file
+# `base_url` is ignored and api_key env references are limited to the provider's standard variable
+# (OPENAI_API_KEY for openai/..., ANTHROPIC_API_KEY for anthropic/..., or BASEMIND_LLM_API_KEY)
+# unless the operator sets BASEMIND_ALLOW_REPO_LLM=1 in the environment.
+# model = "openai/gpt-4o"
+# api_key = { env = "OPENAI_API_KEY" }
 "##;
 
 /// Where to inject the usage rules. `Auto` never writes a COMMITTED agent-instructions file

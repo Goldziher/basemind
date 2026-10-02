@@ -47,7 +47,7 @@ The crawler:
 
 - Honors `robots.txt` by default (disable with config).
 - SSRF-blocks private and loopback hosts by default to prevent exfil. Allow them with
-  `[crawl].allow_private_network = true` in `.basemind/basemind.toml`.
+  `[crawl].allow_private_network = true` in `basemind.toml`.
 - Tags all pages under a `scope` of `web:<host>` by default, overridable per-request.
 - Stops when it hits `max_depth`, `max_pages`, or no new links.
 
@@ -68,7 +68,7 @@ page.
 
 ## Configuration
 
-In `.basemind/basemind.toml` (config-file-only):
+In `basemind.toml` (config-file-only):
 
 ```toml
 [crawl]

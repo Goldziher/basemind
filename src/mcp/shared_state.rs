@@ -53,7 +53,7 @@ pub(crate) struct SharedReadStack {
     pub(crate) outline_cache: Arc<OutlineCache>,
     /// Scanner config (include / exclude globs, eager_l2, document tier knobs, …).
     /// Held on the server so the `rescan` MCP tool can re-run a scan in-process
-    /// without re-reading `.basemind/basemind.toml`.
+    /// without re-reading `basemind.toml`.
     pub(crate) config: Arc<crate::config::Config>,
     /// Per-tool-call telemetry writer; appends to `.basemind/telemetry.jsonl`.
     /// Always present (best-effort writes); the dashboard surfaces / statusline

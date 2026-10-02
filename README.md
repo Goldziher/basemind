@@ -674,7 +674,7 @@ exclude = []
 # Index directories outside the repo root too — e.g. a Bazel external repo cache — so their
 # symbols resolve in search / references / outlines. External files are keyed by absolute path;
 # (re-)indexed on a full `basemind scan` only (not live-watched). Requires the operator to set
-# BASEMIND_ALLOW_EXTRA_ROOTS=1 in the environment: this file lives inside the repository, so
+# BASEMIND_ALLOW_EXTRA_ROOTS in the environment: this file lives inside the repository, so
 # without that opt-in a cloned repo could point basemind at your ~/.ssh. Extra roots count toward
 # max_candidates and follow symlinks only when follow_symlinks is on.
 extra_roots = ["/private/var/tmp/_bazel_you/abc123/external"]
@@ -733,8 +733,54 @@ max_footprint_mb = "auto"
 max_map_cache_mb = 256
 ```
 
-Any tool call can override these settings for that one request, and settings map to environment
-variables in the obvious way: `--llm-api-key` becomes `BASEMIND_LLM_API_KEY`.
+**Overrides.** Only the `documents.*` and `llm.*` keys can be overridden, by a CLI flag or its
+environment variable (each flag's name is in `--help`; the variable is the flag upper-cased with a
+`BASEMIND_` prefix and underscores, e.g. `--llm-model` is `BASEMIND_LLM_MODEL`, `--documents-overlap`
+is `BASEMIND_DOCUMENTS_OVERLAP`). Every other setting is file-only. Overrides apply to the CLI
+command they are passed to and, per request, to `search_documents`; a daemon-hosted scan or read
+stack loads only the file (plus the daemon caps below), so set those keys in `basemind.toml` for
+daemon workloads. Overrides are validated after merging, so an override cannot smuggle in a value
+the file would be rejected for (`documents.max_characters` under 64, `overlap >= max_characters`,
+`language.min_confidence` outside 0..1).
+
+**Trust boundary.** `basemind.toml` is authored by the repository, not by you, so settings that
+reach outside the process are gated on the operator's environment:
+
+| Setting in the repo's file | Honoured only when |
+|---|---|
+| `[llm] base_url` | `BASEMIND_ALLOW_REPO_LLM=1`; otherwise ignored with a warning (a clone could aim it at a host that collects your API key and document text). Pass it by `--llm-base-url` / `BASEMIND_LLM_BASE_URL` instead. |
+| `[llm] api_key = { env = "NAME" }` | `NAME` is the chosen provider's standard variable (`OPENAI_API_KEY` for `openai/...`, `ANTHROPIC_API_KEY` for `anthropic/...`, ...) or `BASEMIND_LLM_API_KEY`, or `BASEMIND_ALLOW_REPO_LLM=1`. |
+| `[crawl] allow_private_network = true` | `BASEMIND_ALLOW_PRIVATE_HOSTS=1`; otherwise reset to `false` with a warning. |
+| `[scan] extra_roots` | `BASEMIND_ALLOW_EXTRA_ROOTS=1` (every workspace this process scans) or a `:`-separated list of workspace roots (only those). A daemon is one long-lived process serving many repositories, so prefer the list form there: the bare `1` also opens `extra_roots` for any workspace it serves later. |
+
+Files such as `.env*`, `.aws/*`, `.npmrc` and private keys are indexed like any other file by
+default; add them to `[scan] exclude` if your repository carries them.
+
+**The daemon treats `[resources]` and `[scan] max_candidates` as ceilings.** The effective value is
+the smaller of the file's and the daemon's cap, and `0` / `"auto"` / `"off"` resolve to the cap. The
+operator raises a cap in the daemon's own environment (a repository cannot):
+
+| Variable | Caps | Default |
+|---|---|---|
+| `BASEMIND_DAEMON_MAX_SCAN_THREADS` | `scan_threads` | 4 |
+| `BASEMIND_DAEMON_MAX_EMBED_THREADS` | `embed_threads` | 4 |
+| `BASEMIND_DAEMON_MAX_EMBED_BATCH` | `embed_batch_size` | 8 |
+| `BASEMIND_DAEMON_MAX_CONCURRENT_DOCUMENTS` | `max_concurrent_documents` | 4 |
+| `BASEMIND_DAEMON_MAX_FOOTPRINT_MB` | `max_footprint_mb` | 3072 |
+| `BASEMIND_DAEMON_MAX_MAP_CACHE_MB` | `max_map_cache_mb` | 1024 |
+| `BASEMIND_DAEMON_MAX_CANDIDATES` | `[scan] max_candidates` | 2000000 |
+
+**Reload.** The daemon re-reads a workspace's `basemind.toml` on the next request after it changes
+(size or modification time) and logs `config changed`. A file that no longer parses keeps the last
+good config and logs a warning. A hosted read stack with live sessions keeps its config until they
+reconnect, and `scan_threads` is fixed for the process lifetime (the daemon logs that a restart is
+required). `admin status` reports `config_stamp` (`<bytes>B@<unix seconds>`) to spot an edit.
+
+**Reserved keys.** These parse but nothing reads them yet, and setting one to a non-default value
+logs a warning: `[watch] live_l2`, `[cache] file_map_lru`, `[mcp] transport`, `[memory] enabled` /
+`scope_strategy` / `default_visibility`, `[comms] enabled` / `idle_timeout_secs` /
+`max_messages_per_room` / `retention_secs` / `max_rooms` / `workspace_root`, `[shells] keep_on_exit`,
+`[documents.ocr] backend` / `languages`, and `[documents.language] preferred_languages`.
 
 </details>
 

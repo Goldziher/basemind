@@ -43,7 +43,7 @@ pub fn build_server(root: &Path, view: &str, documents: DocumentsCliOverrides) -
 }
 
 /// Load the resolved config, applying the document CLI override layer. Falls back
-/// to defaults when no `.basemind/basemind.toml` exists.
+/// to defaults when no `basemind.toml` exists.
 fn load_config(root: &Path, documents: DocumentsCliOverrides) -> Result<Config> {
     match config::load_with_overrides(root, None, Some(documents)) {
         Ok(loaded) => Ok(loaded.config),
