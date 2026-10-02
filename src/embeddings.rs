@@ -6,6 +6,26 @@ use anyhow::{Context, Result, anyhow};
 use xberg::embeddings::EMBEDDING_PRESETS;
 use xberg::{EmbeddingConfig, EmbeddingModelType};
 
+/// Bound ONNX Runtime's memory for every session built from now on: no memory-pattern planning, no
+/// retaining CPU arena, and at most `intra_threads` intra-op threads. ORT's defaults keep allocations
+/// sized to the largest batch seen and never shrink, so one embedding pass over variable-length
+/// documents grew the daemon by ~2.7 GB. Trades some throughput for a bounded footprint.
+///
+/// Call before the first embedding; resident engines keep the options they were built with.
+pub fn bound_ort_memory(intra_threads: usize) {
+    xberg::set_ort_session_options(xberg::OrtSessionOptions {
+        memory_pattern: false,
+        cpu_arena: false,
+        max_threads: Some(intra_threads),
+    });
+}
+
+/// Drop every resident embedding engine so its ONNX session, weights and arena are freed. The next
+/// embedding reloads the model. Returns how many engines were dropped.
+pub fn release_engines() -> usize {
+    xberg::clear_engine_caches()
+}
+
 /// Global bounded rayon `ThreadPool` for all ONNX embed calls. Initialized once
 /// on first use; subsequent calls to `embed_pool` return the same pool regardless
 /// of the `max_threads` argument (the pool size is fixed for the process).
