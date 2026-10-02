@@ -56,7 +56,7 @@ type SupportBits = (
 /// Build the [`SupportBits`] every in-memory server needs, from a repo `root`.
 fn build_support_bits(root: &Path) -> Result<SupportBits> {
     let basemind_dir = crate::store::workspace_cache_dir(root);
-    let config = Arc::new(crate::config::load(root).unwrap_or_else(|_| crate::config::default_for_root(root)));
+    let config = Arc::new(crate::config::load_or_default_logged(root));
     let repo = crate::git::Repo::discover(root).ok().map(Arc::new);
     let git_cache =
         Arc::new(crate::git_cache::GitCache::open(&basemind_dir, GIT_CACHE_MEM, false).context("open git cache")?);

@@ -113,8 +113,12 @@ struct WorkspaceEntry {
     /// The open read-write store. Behind its own lock so concurrent scans of the SAME workspace
     /// serialize here (one writer) while different workspaces proceed in parallel.
     store: Mutex<Store>,
-    /// Resolved config for this workspace, captured at open time.
-    config: Config,
+    /// Resolved config for this workspace, replaced in place when `basemind.toml` changes on disk
+    /// (see [`WorkspacePool::refresh_config`]). A scan takes a snapshot, so one scan never sees a
+    /// config change halfway through.
+    config: std::sync::RwLock<std::sync::Arc<Config>>,
+    /// Stamp of the config file the current `config` was loaded from.
+    config_stamp: Mutex<config::daemon::ConfigStamp>,
     /// Canonical workspace root.
     root: PathBuf,
     /// Stable workspace key (blake3 of the canonical root).
@@ -151,6 +155,11 @@ struct WorkspaceEntry {
 }
 
 impl WorkspaceEntry {
+    /// Snapshot of the current config.
+    fn config(&self) -> std::sync::Arc<Config> {
+        self.config.read().unwrap_or_else(PoisonError::into_inner).clone()
+    }
+
     /// Read the last-used instant, recovering from a poisoned lock (a panic mid-scan must not
     /// wedge the whole pool).
     fn last_used(&self) -> Instant {
@@ -267,6 +276,7 @@ impl WorkspacePool {
         entry.touch();
 
         let mode = if embed { EmbedMode::Inline } else { EmbedMode::Deferred };
+        let config = entry.config();
         let incremental = matches!(paths, Some(ref p) if !full && !p.is_empty());
         let gen_before = entry.full_scan_gen.load(std::sync::atomic::Ordering::Acquire);
         let mut store = entry.store.lock().unwrap_or_else(PoisonError::into_inner);
@@ -284,16 +294,9 @@ impl WorkspacePool {
         }
         let report = if incremental {
             let paths = paths.as_deref().unwrap_or_default();
-            scanner::scan_paths_with_cancel(&entry.root, &mut store, &entry.config, paths, mode, cancel)?
+            scanner::scan_paths_with_cancel(&entry.root, &mut store, &config, paths, mode, cancel)?
         } else {
-            scanner::scan_with_cancel(
-                &entry.root,
-                &mut store,
-                &entry.config,
-                ScanSource::WorkingTree,
-                mode,
-                cancel,
-            )?
+            scanner::scan_with_cancel(&entry.root, &mut store, &config, ScanSource::WorkingTree, mode, cancel)?
         };
         if !incremental && !report.cancelled {
             let generation = entry.full_scan_gen.fetch_add(1, std::sync::atomic::Ordering::AcqRel) + 1;
@@ -486,6 +489,46 @@ impl WorkspacePool {
         Ok(ServeConnGuard { entry })
     }
 
+    /// Reload `entry`'s config when its `basemind.toml` changed on disk since it was loaded.
+    ///
+    /// The stamp is advanced before the reload, so a file that fails to parse is reported once per
+    /// edit rather than once per request, and the previous config stays in force until a good one
+    /// lands. A hosted read stack with no live connection is dropped so its next build picks the new
+    /// config up; live sessions keep theirs until they reconnect. The scanner's thread pool is sized
+    /// once per process, so a changed `scan_threads` only warns.
+    fn refresh_config(&self, entry: &WorkspaceEntry) {
+        let now = config::daemon::ConfigStamp::of(&entry.root);
+        {
+            let mut stamp = entry.config_stamp.lock().unwrap_or_else(PoisonError::into_inner);
+            if *stamp == now {
+                return;
+            }
+            *stamp = now;
+        }
+        let new = match config::daemon::load_daemon(&entry.root) {
+            Ok(new) => new,
+            Err(error) => {
+                tracing::warn!(root = %entry.root.display(), %error, "config changed but does not load; keeping the previous config");
+                return;
+            }
+        };
+        let old = entry.config();
+        if old.resources.scan_threads != new.resources.scan_threads {
+            tracing::warn!(
+                root = %entry.root.display(),
+                "config changed: resources.scan_threads is fixed for the process lifetime; restart the daemon for it to take effect"
+            );
+        }
+        tracing::info!(root = %entry.root.display(), stamp = %now, "config changed; reloaded");
+        *entry.config.write().unwrap_or_else(PoisonError::into_inner) = std::sync::Arc::new(new);
+        #[cfg(all(feature = "comms", any(unix, windows)))]
+        if entry.active_conns.load(std::sync::atomic::Ordering::Acquire) == 0
+            && let Ok(mut slot) = entry.serve_state.try_lock()
+        {
+            *slot = None;
+        }
+    }
+
     /// Fetch the entry for `root`, opening it read-write and inserting it (evicting LRU past the
     /// cap) if cold. The returned `Arc` lets the caller run the scan after the map lock is dropped.
     ///
@@ -496,9 +539,10 @@ impl WorkspacePool {
     fn get_or_open(&self, root: &Path) -> Result<std::sync::Arc<WorkspaceEntry>, WorkspacePoolError> {
         let key = store::workspace_key(root);
         {
-            let map = self.lock_map();
-            if let Some(entry) = map.get(&key) {
-                return Ok(entry.clone());
+            let hit = self.lock_map().get(&key).cloned();
+            if let Some(entry) = hit {
+                self.refresh_config(&entry);
+                return Ok(entry);
             }
         }
         let _opening = self.open_lock.lock().unwrap_or_else(PoisonError::into_inner);
@@ -525,10 +569,12 @@ impl WorkspacePool {
             }
         };
         let store = Store::open_with_holder(&resolved, VIEW_WORKING, LockHolder::Rescan)?;
-        let config = load_config(&resolved)?;
+        let config_stamp = config::daemon::ConfigStamp::of(&resolved);
+        let config = config::daemon::load_daemon(&resolved)?;
         let entry = std::sync::Arc::new(WorkspaceEntry {
             store: Mutex::new(store),
-            config,
+            config: std::sync::RwLock::new(std::sync::Arc::new(config)),
+            config_stamp: Mutex::new(config_stamp),
             root: resolved,
             key: key.clone(),
             last_used: Mutex::new(Instant::now()),
@@ -680,42 +726,6 @@ impl crate::mcp::HostBackend for WorkspacePool {
         })
         .map_err(|error| error.to_string())
         .and_then(|result| result.map_err(|error| error.to_string()))
-    }
-}
-
-/// Resolve a workspace's config, mirroring the CLI's `load_or_default`: a missing `basemind.toml`
-/// falls back to per-root defaults; only a genuine parse/IO error propagates.
-fn load_config(root: &Path) -> Result<Config, WorkspacePoolError> {
-    let mut config = match config::load_with_overrides(root, None, None) {
-        Ok(loaded) => loaded.config,
-        Err(config::ConfigError::NotFound(_)) => config::default_for_root(root),
-        Err(error) => return Err(error.into()),
-    };
-    clamp_daemon_resources(&mut config.resources);
-    Ok(config)
-}
-
-/// Scan concurrency the daemon allows a hosted workspace, whatever its `basemind.toml` says.
-const DAEMON_MAX_SCAN_THREADS: usize = 4;
-
-/// Largest embed batch the daemon runs; a bigger batch grows the ONNX arena, which never shrinks.
-const DAEMON_MAX_EMBED_BATCH: usize = 8;
-
-/// Footprint ceiling the daemon applies when a workspace leaves `max_footprint_mb` on auto. Auto is
-/// half of machine RAM, which on a developer laptop never engages before the machine is swapping.
-const DAEMON_FOOTPRINT_CEILING_MB: usize = 3072;
-
-/// Tighten, never loosen, the scan and embed limits for daemon-hosted workspaces. The daemon is one
-/// process shared by every session, so a per-workspace file that leaves these on "auto" multiplies the
-/// peak by the number of workspaces scanning at once. A workspace that asks for less keeps its value.
-fn clamp_daemon_resources(resources: &mut config::ResourcesConfig) {
-    resources.scan_threads = match resources.scan_threads {
-        0 => DAEMON_MAX_SCAN_THREADS,
-        n => n.min(DAEMON_MAX_SCAN_THREADS),
-    };
-    resources.embed_batch_size = resources.embed_batch_size.clamp(1, DAEMON_MAX_EMBED_BATCH);
-    if matches!(resources.max_footprint_mb, config::MaxFootprint::Mebibytes(0)) {
-        resources.max_footprint_mb = config::MaxFootprint::Mebibytes(DAEMON_FOOTPRINT_CEILING_MB);
     }
 }
 

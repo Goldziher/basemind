@@ -734,3 +734,44 @@ async fn an_active_connection_pins_its_warm_read_stack() {
         "the stack is shed once the last connection drains"
     );
 }
+
+#[test]
+fn a_changed_basemind_toml_replaces_the_cached_config_and_a_broken_one_keeps_it() {
+    store::init_isolated_cache();
+    let pool = WorkspacePool::new(DEFAULT_HOT_CAP);
+    let ws = workspace_with_sources();
+    let toml = ws.path().join("basemind.toml");
+
+    std::fs::write(&toml, "\"$schema\" = \"v1\"\n[watch]\ndebounce_ms = 111\n").expect("write toml");
+    let entry = pool.get_or_open(ws.path()).expect("open");
+    assert_eq!(entry.config().watch.debounce_ms, 111);
+
+    std::fs::write(&toml, "\"$schema\" = \"v1\"\n[watch]\ndebounce_ms = 2222\n").expect("rewrite toml");
+    let entry = pool.get_or_open(ws.path()).expect("reopen");
+    assert_eq!(entry.config().watch.debounce_ms, 2222, "the rewritten file is live");
+
+    std::fs::write(&toml, "this is = not valid [toml").expect("break toml");
+    let entry = pool.get_or_open(ws.path()).expect("reopen with a broken file");
+    assert_eq!(
+        entry.config().watch.debounce_ms,
+        2222,
+        "a file that does not load keeps the last good config"
+    );
+    assert_eq!(pool.len(), 1, "the entry (and its store) was reused, not rebuilt");
+}
+
+#[test]
+fn pool_config_is_clamped_whatever_the_repo_asks_for() {
+    store::init_isolated_cache();
+    let pool = WorkspacePool::new(DEFAULT_HOT_CAP);
+    let ws = workspace_with_sources();
+    std::fs::write(
+        ws.path().join("basemind.toml"),
+        "\"$schema\" = \"v1\"\n[scan]\nmax_candidates = 0\n[resources]\nmax_footprint_mb = \"off\"\nmax_map_cache_mb = 0\n",
+    )
+    .expect("write toml");
+    let config = pool.get_or_open(ws.path()).expect("open").config();
+    assert!(config.resources.max_footprint_mb.explicit_bytes().is_some());
+    assert_ne!(config.resources.max_map_cache_mb, 0);
+    assert_ne!(config.scan.max_candidates, 0);
+}

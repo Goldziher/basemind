@@ -246,6 +246,7 @@ async fn run_status(state: &ServerState) -> Result<CallToolResult, McpError> {
                     .as_ref()
                     .map(|r| r.submodule_paths())
                     .unwrap_or_default(),
+                config_stamp: config_stamp(state),
                 elapsed_us: elapsed_us(body),
             });
         }
@@ -285,8 +286,13 @@ async fn run_status(state: &ServerState) -> Result<CallToolResult, McpError> {
         schema_version: crate::extract::SCHEMA_VER,
         root: state.shared.root.display().to_string(),
         submodules,
+        config_stamp: config_stamp(state),
         elapsed_us: elapsed_us(body),
     })
+}
+
+fn config_stamp(state: &ServerState) -> String {
+    crate::config::daemon::ConfigStamp::of(&state.shared.root).to_string()
 }
 
 /// Body for `admin` mode `repo`: repository identity — workdir, branch, full + short HEAD sha.

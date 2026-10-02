@@ -237,7 +237,7 @@ pub fn resolve_for_root(root: &Path, config_agent_id: Option<String>) -> AgentId
 /// A cross-workspace collision is printed to stderr (the CLI has no `tracing` sink) and the id is
 /// still returned: visible, never fatal.
 pub fn cli_agent_id(root: &Path) -> AgentId {
-    let config_agent_id = crate::config::load(root).ok().and_then(|config| config.comms.agent_id);
+    let config_agent_id = crate::config::load_logged(root).and_then(|config| config.comms.agent_id);
     let identity = resolve_for_root(root, config_agent_id);
     if let Some(warning) = identity.collision_warning() {
         eprintln!("warning: {warning}");
@@ -251,7 +251,7 @@ pub fn cli_agent_id(root: &Path) -> AgentId {
 /// one checkout must remain distinct. Explicit environment/config identities retain their stable
 /// reconnect semantics.
 pub fn mcp_session_agent_id(root: &Path) -> AgentId {
-    let config_agent_id = crate::config::load(root).ok().and_then(|config| config.comms.agent_id);
+    let config_agent_id = crate::config::load_logged(root).and_then(|config| config.comms.agent_id);
     resolve_session(&IdentityRequest::from_process(root, config_agent_id)).into_id()
 }
 
