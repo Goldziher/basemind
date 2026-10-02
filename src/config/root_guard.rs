@@ -9,7 +9,8 @@
 //!
 //! The fix is an ADDITIVE predicate applied where a root is *consumed* (client pre-flight, daemon
 //! pool, HTTP `?root=`, CLI scan verbs, in-process rescan), never inside discovery: a root must
-//! look like a project — a git repository, or a directory carrying `basemind.toml`. This is a
+//! look like a project — a git repository, or a directory carrying a basemind config (a root
+//! `basemind.toml`, or one under the project-level `.config/` convention). This is a
 //! deliberate breaking change for anyone indexing a plain directory, softened by two escape hatches
 //! ([`basemind init`] writes the marker; [`ALLOW_ANY_ROOT_ENV`] skips the check for that
 //! invocation) and a grandfather clause for roots that already had a working-view index before the
@@ -32,6 +33,7 @@ use std::path::{Component, Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use super::CONFIG_FILE_NAME;
+use super::has_config_marker;
 
 /// Escape hatch: set truthy to accept any directory as a workspace root **for that invocation**.
 /// Mirrors the `BASEMIND_ALLOW_PRIVATE_HOSTS` style — an env-var opt-out for a safety default. It
@@ -97,7 +99,8 @@ struct RootAdmission {
 /// 1. `/`, `C:\`, a UNC share root — syntactically, then again after resolution →
 ///    [`RootRefusal::FilesystemRoot`], unconditionally.
 /// 2. The path does not resolve → [`RootRefusal::Unresolvable`].
-/// 3. `<root>/basemind.toml` exists → allowed. Reuses discovery's top-precedence marker, so the
+/// 3. A config marker exists at any [`super::config_candidate_paths`] location (`<root>/basemind.toml`
+///    or a `.config/` convention file) → allowed. Reuses discovery's marker predicate, so the
 ///    documented durable escape hatch is simply `basemind init`.
 /// 4. `root` is itself a git workdir → allowed.
 /// 5. Grandfather: the root carries a standing admission (see [`ROOT_ADMISSION_FILE`]) → allowed.
@@ -114,7 +117,7 @@ pub fn workspace_root_verdict(root: &Path) -> Result<PathBuf, RootRefusal> {
     if is_filesystem_root(&resolved) {
         return Err(RootRefusal::FilesystemRoot);
     }
-    if resolved.join(CONFIG_FILE_NAME).is_file() || is_git_workdir(&resolved) || is_grandfathered(&resolved) {
+    if has_config_marker(&resolved) || is_git_workdir(&resolved) || is_grandfathered(&resolved) {
         return Ok(resolved);
     }
     if allow_any_root() {
@@ -151,7 +154,7 @@ pub fn refusal_message(root: &Path, refusal: RootRefusal) -> String {
         ),
         RootRefusal::NotAProject => format!(
             "refusing to use {root} as a basemind workspace root: it is neither a git repository nor \
-             a directory containing {CONFIG_FILE_NAME}.\n\
+             a directory containing a basemind config ({CONFIG_FILE_NAME}, or under `.config/`).\n\
              \n\
              basemind opens a workspace root read-write and indexes every file beneath it, so an \
              accidentally-inherited root — `/`, your home directory, or wherever an MCP host happened \
@@ -426,6 +429,16 @@ mod tests {
         let dir = plain_dir();
         let root = dir.path().canonicalize().expect("canonicalize");
         std::fs::write(root.join(CONFIG_FILE_NAME), "\"$schema\" = \"v1\"\n").expect("write marker");
+        assert_eq!(workspace_root_verdict(&root), Ok(root.clone()));
+    }
+
+    #[test]
+    fn a_directory_with_the_config_convention_is_allowed() {
+        let dir = plain_dir();
+        let root = dir.path().canonicalize().expect("canonicalize");
+        let path = crate::config::convention_nested_config_path(&root);
+        std::fs::create_dir_all(path.parent().expect("convention dir")).expect("mkdir .config/basemind");
+        std::fs::write(&path, "\"$schema\" = \"v1\"\n").expect("write marker");
         assert_eq!(workspace_root_verdict(&root), Ok(root.clone()));
     }
 

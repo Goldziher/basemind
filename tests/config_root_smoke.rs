@@ -59,6 +59,107 @@ fn root_config_wins_over_legacy_when_both_present() {
 }
 
 #[test]
+fn load_reads_the_flat_config_convention() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path();
+    write(
+        &config::convention_flat_config_path(root),
+        "\"$schema\" = \"v1\"\n[scan]\nmax_file_bytes = 2048\n",
+    );
+    let cfg = config::load(root).expect("flat .config convention loads");
+    assert_eq!(cfg.scan.max_file_bytes, 2048);
+}
+
+#[test]
+fn load_reads_the_nested_config_convention() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path();
+    write(
+        &config::convention_nested_config_path(root),
+        "\"$schema\" = \"v1\"\n[scan]\nmax_file_bytes = 1024\n",
+    );
+    let cfg = config::load(root).expect("nested .config convention loads");
+    assert_eq!(cfg.scan.max_file_bytes, 1024);
+}
+
+#[test]
+fn root_config_wins_over_the_config_convention() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path();
+    write(
+        &config::config_path(root),
+        "\"$schema\" = \"v1\"\n[scan]\nmax_file_bytes = 4096\n",
+    );
+    write(
+        &config::convention_flat_config_path(root),
+        "\"$schema\" = \"v1\"\n[scan]\nmax_file_bytes = 9999\n",
+    );
+    let cfg = config::load(root).expect("config loads");
+    assert_eq!(
+        cfg.scan.max_file_bytes, 4096,
+        "the root basemind.toml must win over the .config convention"
+    );
+}
+
+#[test]
+fn init_config_dir_scaffolds_the_flat_convention() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path();
+    let status = Command::new(env!("CARGO_BIN_EXE_basemind"))
+        .args(["init", "--yes", "--config-dir", ".config"])
+        .current_dir(root)
+        .status()
+        .expect("run basemind init");
+    assert!(status.success());
+
+    assert!(
+        config::convention_flat_config_path(root).exists(),
+        "init --config-dir .config writes .config/basemind.toml"
+    );
+    assert!(
+        !config::config_path(root).exists(),
+        "no root basemind.toml when the convention is requested"
+    );
+    let cfg = config::load(root).expect("scaffolded convention config loads + validates");
+    assert_eq!(cfg.schema, "v1");
+}
+
+#[test]
+fn init_config_dir_scaffolds_the_nested_convention() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path();
+    let status = Command::new(env!("CARGO_BIN_EXE_basemind"))
+        .args(["init", "--yes", "--config-dir", ".config/basemind"])
+        .current_dir(root)
+        .status()
+        .expect("run basemind init");
+    assert!(status.success());
+
+    assert!(
+        config::convention_nested_config_path(root).exists(),
+        "init --config-dir .config/basemind writes .config/basemind/config.toml"
+    );
+    assert!(config::load(root).is_ok(), "nested convention config loads");
+}
+
+#[test]
+fn init_rejects_a_config_dir_outside_the_convention() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path();
+    let out = Command::new(env!("CARGO_BIN_EXE_basemind"))
+        .args(["init", "--yes", "--config-dir", "some/other/dir"])
+        .current_dir(root)
+        .output()
+        .expect("run basemind init");
+    assert!(!out.status.success(), "a non-convention config dir is refused");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("unsupported --config-dir"),
+        "error explains the supported values, got: {stderr:?}"
+    );
+}
+
+#[test]
 fn code_search_embed_defaults_off() {
     let cfg = config::parse_str("\"$schema\" = \"v1\"\n").expect("minimal config parses");
     assert!(!cfg.code_search.embed, "code_search.embed must default to false");

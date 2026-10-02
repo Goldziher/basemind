@@ -15,8 +15,15 @@ Create `basemind.toml` at the repo root to customize behavior. `basemind init` (
 [Get started](/start/installation/#get-started)) writes a fully-commented starter file there if
 one doesn't already exist — optional, since all settings have sensible defaults. The file is
 validated against a JSON Schema and **rejects unknown keys**, so a typo fails loudly rather than
-being silently ignored. A legacy `.basemind/basemind.toml` path is still read as a fallback for
-older checkouts.
+being silently ignored.
+
+The config can also live under the project-level
+[`.config/` convention](https://github.com/pi0/config-dir), either flat (`.config/basemind.toml`)
+or nested (`.config/basemind/config.toml`); both are auto-discovered when no root file is present.
+The root `basemind.toml` wins when more than one exists, and any of these locations marks the
+directory as a basemind workspace root. Scaffold the convention with
+`basemind init --config-dir .config` or `--config-dir .config/basemind`. A legacy
+`.basemind/basemind.toml` path is still read as a fallback for older checkouts.
 
 ### Minimal Example
 

@@ -38,6 +38,23 @@ fn resolves_upward_to_ancestor_with_config_marker() {
 }
 
 #[test]
+fn resolves_upward_to_ancestor_with_config_convention_marker() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path().canonicalize().expect("canonicalize root");
+    let marker = basemind::config::convention_nested_config_path(&root);
+    fs::create_dir_all(marker.parent().expect("convention dir")).expect("mkdir .config/basemind");
+    fs::write(&marker, "\"$schema\" = \"v1\"\n").expect("write nested convention marker");
+    let sub = root.join("crates").join("inner");
+    fs::create_dir_all(&sub).expect("mkdir subfolder");
+
+    let resolved = discover_root_with_basemind(&sub);
+    assert_eq!(
+        resolved, root,
+        "a .config/basemind/config.toml marker anchors the walk like a root basemind.toml"
+    );
+}
+
+#[test]
 fn inner_git_repo_bounds_the_config_marker_walk() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let outer = tmp.path().canonicalize().expect("canonicalize outer");
