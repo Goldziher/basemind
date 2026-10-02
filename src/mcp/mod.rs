@@ -547,11 +547,10 @@ impl BasemindServer {
             "hosted read stack must be index-less so MapCache builds in-RAM call/impl indexes"
         );
         let basemind_dir = crate::store::workspace_cache_dir(root);
-        let config = Arc::new(match crate::config::load_with_overrides(root, None, None) {
-            Ok(loaded) => loaded.config,
-            Err(crate::config::ConfigError::NotFound(_)) => crate::config::default_for_root(root),
-            Err(error) => return Err(anyhow::Error::new(error).context("load hosted workspace config")),
-        });
+        let config = Arc::new(
+            crate::config::daemon::load_daemon(root)
+                .map_err(|error| anyhow::Error::new(error).context("load hosted workspace config"))?,
+        );
         let repo = crate::git::Repo::discover(root).ok().map(Arc::new);
         let git_cache = Arc::new(
             crate::git_cache::GitCache::open(&basemind_dir, HOSTED_GIT_CACHE_MEM, true)

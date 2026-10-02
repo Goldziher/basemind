@@ -519,6 +519,10 @@ pub(super) struct StatusResponse {
     /// submodules and for non-repo serves.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub submodules: Vec<RelPath>,
+    /// Size and modification time (`<bytes>B@<unix secs>`, or `absent`) of the workspace's
+    /// `basemind.toml` on disk right now. A changed value between two calls means the file was
+    /// edited; a long-lived daemon reloads it on the next request for that workspace.
+    pub config_stamp: String,
     /// Server-side handler latency in microseconds — the tool body's own execution (index / store
     /// lookup + response construction), excluding MCP transport, argument deserialization, and
     /// response serialization. Distinct from `index_build_ms` / `warm_ms`, which report the
