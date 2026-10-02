@@ -106,9 +106,19 @@ fn linked_worktrees_share_the_global_blob_cache() {
             basemind::scanner::EmbedMode::Inline,
         )
         .unwrap();
+        // A new linked worktree is seeded from its sibling's index (`store_seed`), so its first scan
+        // sees the content-identical file as `Unchanged` rather than `Updated { reused }`. Without a
+        // seed (`BASEMIND_NO_SEED=1`) the same file is counted under `reused_extraction`. Either way
+        // the property under test holds: the file is served from the shared blob, never re-extracted.
+        let stats = report.stats;
         assert_eq!(
-            report.stats.reused_extraction, 1,
-            "linked worktree reuses the main worktree's blob from the shared global store"
+            stats.reused_extraction + stats.skipped_unchanged,
+            1,
+            "linked worktree serves the main worktree's file from the shared global store: {stats:?}"
+        );
+        assert_eq!(
+            stats.updated, stats.reused_extraction,
+            "every update in the linked worktree reuses a shared blob; none is a fresh extraction: {stats:?}"
         );
     }
 
