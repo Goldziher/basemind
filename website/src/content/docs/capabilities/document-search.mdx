@@ -94,7 +94,7 @@ CLI: `basemind web crawl`.
 <Aside type="note">
 The crawler honors `robots.txt` by default (disable with config). It SSRF-blocks private
 and loopback hosts unless `[crawl].allow_private_network = true` is set in
-`.basemind/basemind.toml`.
+`basemind.toml`.
 </Aside>
 
 ### `web` mode `map`
@@ -154,7 +154,7 @@ Semantic search over stored values. CLI: `basemind memory search`.
 
 ## Configuration
 
-In `.basemind/basemind.toml`:
+In `basemind.toml`:
 
 ```toml
 [documents]
