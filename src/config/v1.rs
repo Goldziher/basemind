@@ -94,10 +94,12 @@ pub struct ScanConfig {
     /// (`/private/var/tmp/_bazel_<user>/<hash>/external`) — whose files should resolve in
     /// symbol search, references, outlines, and document search.
     ///
-    /// **Requires the `BASEMIND_ALLOW_EXTRA_ROOTS=1` environment grant.** This key is read from
+    /// **Requires the `BASEMIND_ALLOW_EXTRA_ROOTS` environment grant.** This key is read from
     /// the scanned repository's own `basemind.toml`, so without an operator-side opt-in a cloned
     /// repository could point basemind at `~/.ssh` and read the results back out through the
-    /// search tools. Unset, every entry here is ignored with a warning.
+    /// search tools. Unset, every entry here is ignored with a warning. `1` grants every
+    /// workspace the process scans (including every later workspace of a long-lived daemon); a
+    /// path list (`:`-separated) of workspace roots grants only those workspaces.
     ///
     /// Files under an extra root are keyed by their **absolute** path (repo files stay
     /// repo-relative), so returned paths for external files are absolute. Missing or
@@ -223,6 +225,7 @@ pub struct WatchConfig {
     #[serde(default = "WatchConfig::default_debounce_ms")]
     #[schemars(range(min = 0, max = 60000))]
     pub debounce_ms: u64,
+    /// Reserved: parsed but currently has no effect (a load-time warning is logged when set).
     #[serde(default)]
     pub live_l2: bool,
 }
@@ -245,7 +248,8 @@ impl Default for WatchConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CacheConfig {
-    /// Maximum number of extracted FileMaps to keep hot in memory.
+    /// Reserved: parsed but currently has no effect (a load-time warning is logged when set). The
+    /// outline cache is bounded by `resources.max_map_cache_mb`.
     #[serde(default = "CacheConfig::default_file_map_lru")]
     #[schemars(range(min = 0))]
     pub file_map_lru: usize,
@@ -268,6 +272,7 @@ impl Default for CacheConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct McpConfig {
+    /// Reserved: `stdio` is the only variant and nothing reads it.
     #[serde(default = "McpConfig::default_transport")]
     pub transport: McpTransport,
 }
@@ -316,14 +321,17 @@ impl Default for LanguageConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct MemoryConfig {
-    /// Master switch. Only meaningful when the `memory` cargo feature is compiled in.
+    /// Reserved: parsed but currently has no effect (a load-time warning is logged when set to a
+    /// non-default value); the `memory` cargo feature alone decides whether memory is available.
     #[serde(default = "MemoryConfig::default_enabled")]
     pub enabled: bool,
-    /// How to derive the scope key for an opened repository.
+    /// Reserved: parsed but currently has no effect (a load-time warning is logged when set to a
+    /// non-default value). Would choose how the scope key of an opened repository is derived.
     #[serde(default)]
     pub scope_strategy: MemoryScopeStrategy,
-    /// Default memory tier when a `memory_*` call omits `visibility`. `group` (shared) keeps
-    /// today's behavior; set to `individual` so a user's writes default to their private tier.
+    /// Reserved: parsed but currently has no effect (a load-time warning is logged when set to a
+    /// non-default value). Would set the default memory tier when a `memory_*` call omits
+    /// `visibility`.
     #[serde(default)]
     pub default_visibility: crate::mcp::params::Visibility,
 }
@@ -385,9 +393,11 @@ pub struct CrawlConfig {
     /// Allow crawling URLs that resolve to private, loopback, or link-local
     /// addresses (`127.0.0.0/8`, `10.0.0.0/8`, `169.254.0.0/16`, …). Default
     /// `false`: the engine rejects them with an SSRF-policy violation. Flip this
-    /// on only to scrape an internal docs server you control. (The
-    /// `CRAWLBERG_ALLOW_PRIVATE_NETWORK` env var is honoured as a process-wide
-    /// override regardless of this setting.)
+    /// on only to scrape an internal docs server you control. **`true` in the repository's own
+    /// `basemind.toml` is ignored (with a warning) unless the operator sets
+    /// `BASEMIND_ALLOW_PRIVATE_HOSTS=1` in the environment**, because a cloned repository could
+    /// otherwise aim the crawler at internal services. (The `CRAWLBERG_ALLOW_PRIVATE_NETWORK` env
+    /// var is honoured as a process-wide override regardless of this setting.)
     #[serde(default = "CrawlConfig::default_allow_private_network")]
     pub allow_private_network: bool,
 }

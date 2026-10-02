@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 pub enum ConfigSource {
     /// Hard-coded `Default::default()` value.
     Default,
-    /// Loaded from `.basemind/basemind.toml`.
+    /// Loaded from the repo-root `basemind.toml`.
     File,
     /// Override pulled from an environment variable (`BASEMIND_*`).
     Env,

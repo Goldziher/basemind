@@ -185,7 +185,7 @@ pub struct DocLanguageConfig {
     /// instead of just the top match. Off by default to match xberg.
     #[serde(default)]
     pub detect_multiple: bool,
-    /// Reserved — accepts ISO 639-3 codes (e.g. `"fra"`, `"deu"`) for future use.
+    /// Reserved: currently has no effect (a load-time warning is logged when set) — accepts ISO 639-3 codes (e.g. `"fra"`, `"deu"`) for future use.
     /// Xberg rc.10 does not honor a preferred-language hint, but the field
     /// is kept on the schema so users can populate it without a config break.
     #[serde(default)]
@@ -226,6 +226,7 @@ pub struct RerankerConfig {
     /// How many hits to rerank. The vector search returns `top_k` candidates
     /// which the cross-encoder then reorders.
     #[serde(default = "RerankerConfig::default_top_k")]
+    #[schemars(range(min = 1))]
     pub top_k: usize,
 }
 
@@ -264,6 +265,7 @@ pub struct KeywordsConfig {
     /// Maximum keywords to extract per document. Matches xberg's
     /// `KeywordConfig.max_keywords` default of 10.
     #[serde(default = "KeywordsConfig::default_max_keywords")]
+    #[schemars(range(min = 1))]
     pub max_keywords: usize,
     /// Minimum score threshold. Matches xberg's `KeywordConfig.min_score`
     /// default of 0.0 (i.e. surface every candidate). Score ranges differ
@@ -393,11 +395,12 @@ pub enum SummarizationStrategy {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct OcrConfig {
-    /// Backend selection. `tesseract` is the default; `paddle` for CJK-heavy
-    /// corpora; `vlm` routes through `[llm]` for vision-language OCR.
+    /// Reserved: parsed but currently has no effect (a load-time warning is logged when set to a
+    /// non-default value); OCR runs with xberg's defaults.
     #[serde(default)]
     pub backend: OcrBackend,
-    /// Tesseract / PaddleOCR language packs (ISO 639-3 codes like `"eng"`).
+    /// Reserved: parsed but currently has no effect (a load-time warning is logged when set to a
+    /// non-default value).
     #[serde(default = "OcrConfig::default_languages")]
     pub languages: Vec<String>,
 }
@@ -461,10 +464,18 @@ pub struct LlmConfig {
     pub model: String,
     /// API key — either a literal (discouraged; keeps secrets in version control)
     /// or an `{ env = "OPENAI_API_KEY" }` reference. `Unset` lets the underlying
-    /// provider SDK fall back to its standard environment variable lookup.
+    /// provider SDK fall back to its standard environment variable lookup. In the repository's
+    /// own `basemind.toml`, an env reference is honoured only for the chosen provider's standard
+    /// variable (`OPENAI_API_KEY` for `openai/...`, `ANTHROPIC_API_KEY` for `anthropic/...`, ...)
+    /// or `BASEMIND_LLM_API_KEY`; any other name is ignored with a warning unless
+    /// `BASEMIND_ALLOW_REPO_LLM=1` is set.
     #[serde(default)]
     pub api_key: ApiKey,
-    /// Override the provider base URL (for self-hosted vLLM, Azure OpenAI, …).
+    /// Override the provider base URL (for self-hosted vLLM, Azure OpenAI, …). **Ignored (with a
+    /// warning) when it comes from the repository's own `basemind.toml`** unless the operator sets
+    /// `BASEMIND_ALLOW_REPO_LLM=1` in the environment: a cloned repository could otherwise point
+    /// the summarizer and NER at a host that collects your API key and document text. A value
+    /// passed by CLI flag or environment override is operator-supplied and always honoured.
     #[serde(default)]
     pub base_url: Option<String>,
     /// Sampling temperature. Provider-default when unset.
@@ -472,6 +483,7 @@ pub struct LlmConfig {
     pub temperature: Option<f64>,
     /// Request timeout in seconds. Maps to xberg's `timeout_secs` (default 60).
     #[serde(default)]
+    #[schemars(range(min = 1))]
     pub timeout_secs: Option<u64>,
     /// Maximum retry attempts on transient errors. Maps to xberg's
     /// `max_retries` (default 3).

@@ -17,7 +17,7 @@ use super::v1::ConfigV1;
 /// CLI-only invocation passes `toml_file = None` + `env = None`).
 #[derive(Debug, Default, Clone)]
 pub struct ConfigLayers {
-    /// Parsed `.basemind/basemind.toml`. `None` means no file on disk.
+    /// Parsed repo-root `basemind.toml`. `None` means no file on disk.
     pub toml_file: Option<ConfigV1>,
     /// Environment-variable layer (typically populated by clap's `#[arg(env = …)]`
     /// when the CLI flag was absent — clap collapses both into one struct, so

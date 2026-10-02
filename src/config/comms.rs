@@ -27,8 +27,8 @@ const DEFAULT_MAX_ROOMS: u32 = 256;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CommsConfig {
-    /// Master switch. Only meaningful when the `comms` cargo feature is compiled in; when
-    /// `false` the MCP / CLI comms tools are wired but the server never connects to a daemon.
+    /// Reserved: parsed but currently has no effect (a load-time warning is logged when set to a
+    /// non-default value).
     #[serde(default = "CommsConfig::default_enabled")]
     pub enabled: bool,
     /// Stable identity this process presents to the broker. When unset, the identity resolver
@@ -38,24 +38,24 @@ pub struct CommsConfig {
     /// own. Validated through [`crate::comms::ids::AgentId`] at resolution time.
     #[serde(default)]
     pub agent_id: Option<String>,
-    /// Seconds of zero-subscriber idle before the broker sheds caches. Keeps the socket bound.
+    /// Reserved: parsed but currently has no effect (the daemon's idle timers are not read from
+    /// this file).
     #[serde(default = "CommsConfig::default_idle_timeout_secs")]
     #[schemars(range(min = 1))]
     pub idle_timeout_secs: u64,
-    /// Per-room front-matter retention cap before old messages become prune-eligible.
+    /// Reserved: parsed but currently has no effect.
     #[serde(default = "CommsConfig::default_max_messages_per_room")]
     #[schemars(range(min = 1))]
     pub max_messages_per_room: u32,
-    /// Message retention window in seconds. Older messages are eligible for pruning.
+    /// Reserved: parsed but currently has no effect.
     #[serde(default = "CommsConfig::default_retention_secs")]
     #[schemars(range(min = 1))]
     pub retention_secs: u64,
-    /// Hard cap on the number of concurrently registered rooms.
+    /// Reserved: parsed but currently has no effect.
     #[serde(default = "CommsConfig::default_max_rooms")]
     #[schemars(range(min = 1))]
     pub max_rooms: u32,
-    /// Optional explicit workspace root the daemon associates this client with. When unset the
-    /// client uses its discovered repo / cwd for scope context.
+    /// Reserved: parsed but currently has no effect; the client always uses its discovered repo.
     #[serde(default)]
     pub workspace_root: Option<PathBuf>,
 }

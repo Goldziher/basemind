@@ -1,12 +1,15 @@
 mod code;
 mod comms;
+pub mod daemon;
 mod documents;
+mod documents_validate;
 pub(crate) mod layered;
 mod overrides;
 mod resources;
 pub mod root_guard;
 mod shells;
 mod source;
+pub mod trust;
 mod v1;
 mod validate;
 
@@ -77,7 +80,10 @@ pub fn load(root: &Path) -> Result<Config, ConfigError> {
         path: path.clone(),
         source,
     })?;
-    parse_str(&raw).map_err(|e| annotate_path(e, &path))
+    let mut config = parse_str(&raw).map_err(|e| annotate_path(e, &path))?;
+    trust::sanitize_repo_config(&mut config, trust::Grants::from_env());
+    trust::warn_inert_fields(&config);
+    Ok(config)
 }
 
 /// Load the TOML config (if present) plus optional env / CLI override layers,
@@ -98,14 +104,46 @@ pub fn load_with_overrides(
         Err(ConfigError::NotFound(_)) => None,
         Err(e) => return Err(e),
     };
-    Ok(merge_layers(
+    let loaded = merge_layers(
         ConfigV1::with_defaults(),
         ConfigLayers {
             toml_file,
             env: env_overrides,
             cli: cli_overrides,
         },
-    ))
+    );
+    validate_merged(&loaded.config)?;
+    Ok(loaded)
+}
+
+/// Re-check the invariants the schema and `parse_str` enforce on the file, against the merged
+/// result: env / CLI / MCP overrides are applied after the file is validated and would otherwise
+/// bypass them.
+pub fn validate_merged(config: &Config) -> Result<(), ConfigError> {
+    config
+        .documents
+        .validate()
+        .and_then(|()| config.code_search.validate())
+        .map_err(ConfigError::SchemaValidation)
+}
+
+/// Like [`load`], but a broken file is logged rather than returned: for callers that only want an
+/// optional setting out of the config and must still never fail on it. `None` for a missing or
+/// unreadable file.
+pub fn load_logged(root: &Path) -> Option<Config> {
+    match load(root) {
+        Ok(config) => Some(config),
+        Err(ConfigError::NotFound(_)) => None,
+        Err(error) => {
+            tracing::warn!(root = %root.display(), %error, "ignoring unreadable basemind.toml");
+            None
+        }
+    }
+}
+
+/// [`load_logged`] falling back to per-root defaults.
+pub fn load_or_default_logged(root: &Path) -> Config {
+    load_logged(root).unwrap_or_else(|| default_for_root(root))
 }
 
 /// Resolve the repository root by walking UP from `start` to the nearest ancestor that carries a
@@ -232,6 +270,12 @@ pub fn resolve_config_path(root: &Path) -> PathBuf {
 }
 
 pub fn parse_str(raw: &str) -> Result<Config, ConfigError> {
+    let config = parse_v1(raw)?;
+    config.documents.validate().map_err(ConfigError::SchemaValidation)?;
+    Ok(config)
+}
+
+fn parse_v1(raw: &str) -> Result<Config, ConfigError> {
     let toml_value: toml::Value = toml::from_str(raw).map_err(|source| ConfigError::Toml {
         path: PathBuf::new(),
         source,
