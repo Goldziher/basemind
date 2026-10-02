@@ -309,6 +309,24 @@ const FJALL_MAX_JOURNAL_BYTES: u64 = 64 * 1_024 * 1_024;
 /// Journal size past which `open` flushes every keyspace, so the next open does not replay it again.
 const JOURNAL_FLUSH_ON_OPEN_BYTES: u64 = 256 * 1_024 * 1_024;
 
+/// Read the fjall `meta.schema_ver` under `view_dir` WITHOUT the wipe-on-mismatch that
+/// [`IndexDb::open`] performs. `Ok(None)` when the database carries no version. Used by the
+/// worktree view seeder to vet a cloned view before it is promoted into place.
+pub fn peek_index_schema_ver(view_dir: &Path) -> Result<Option<u32>, IndexError> {
+    let dir = view_dir.join(INDEX_DIR);
+    let db = Database::builder(&dir)
+        .cache_size(8 * 1_024 * 1_024)
+        .worker_threads(FJALL_WORKER_THREADS)
+        .max_journaling_size(FJALL_MAX_JOURNAL_BYTES)
+        .open()?;
+    let meta = open_keyspace(&db, "meta")?;
+    let ver = meta
+        .get(META_SCHEMA_VER)?
+        .and_then(|bytes| <[u8; 4]>::try_from(&bytes[..]).ok())
+        .map(u32::from_be_bytes);
+    Ok(ver)
+}
+
 impl IndexDb {
     /// Open (or create) the index DB under `view_dir`. On schema-version mismatch the
     /// existing `index.fjall/` directory is dropped and a fresh one is created — the

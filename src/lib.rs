@@ -58,6 +58,7 @@ pub mod store_gc_budget;
 pub mod store_gc_workspace;
 pub mod store_layout;
 mod store_lock;
+mod store_seed;
 pub mod sysres;
 pub mod textcompress;
 #[cfg(feature = "crawl")]
