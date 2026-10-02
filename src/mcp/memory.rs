@@ -501,6 +501,8 @@ pub(super) async fn run_search_documents(
             crate::config::ConfigSource::Mcp,
             None,
         );
+        crate::config::validate_merged(&effective)
+            .map_err(|e| McpError::invalid_params(format!("invalid documents override: {e}"), None))?;
         let r = &effective.documents.reranker;
         (effective.documents.output.format, r.enabled, r.preset.clone(), r.top_k)
     } else {

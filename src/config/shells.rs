@@ -34,8 +34,8 @@ pub struct ShellsConfig {
     /// Initial row count for the session's pseudo-terminal.
     #[schemars(range(min = 1))]
     pub default_rows: u16,
-    /// Keep the session alive after the visual surface is closed. When `false` the session is
-    /// torn down once its presentation exits.
+    /// Reserved: parsed but currently has no effect (a load-time warning is logged when set to a
+    /// non-default value).
     pub keep_on_exit: bool,
 }
 

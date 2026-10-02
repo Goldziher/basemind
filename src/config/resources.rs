@@ -26,6 +26,13 @@ use serde::{Deserialize, Serialize};
 /// basemind pick a bounded fraction of the machine" rather than "use zero
 /// threads". This keeps the default config safe on a laptop while letting an
 /// operator pin an explicit budget on a shared box.
+///
+/// **In the shared daemon these are ceilings, not requests.** The effective value is the smaller of
+/// the file's and the daemon's cap (`BASEMIND_DAEMON_MAX_SCAN_THREADS`, `..._MAX_EMBED_THREADS`,
+/// `..._MAX_EMBED_BATCH`, `..._MAX_CONCURRENT_DOCUMENTS`, `..._MAX_FOOTPRINT_MB`,
+/// `..._MAX_MAP_CACHE_MB`, and `..._MAX_CANDIDATES` for `[scan] max_candidates`), and a file value
+/// that means "no limit" (`0`, `"auto"`, `"off"`) resolves to the cap. The operator raises a cap in
+/// the daemon's environment; a repository cannot.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ResourcesConfig {
@@ -60,6 +67,7 @@ pub struct ResourcesConfig {
     /// `SharedEmbedder` (code-search + query paths) and the document extractor's
     /// `EmbeddingConfig`.
     #[serde(default = "ResourcesConfig::default_embed_batch_size")]
+    #[schemars(range(min = 1))]
     pub embed_batch_size: usize,
     /// Ceiling on process memory footprint, in mebibytes. Accepts a positive
     /// integer (an explicit ceiling), `0` or `"auto"` (derive one from the
