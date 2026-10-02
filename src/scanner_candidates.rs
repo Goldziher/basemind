@@ -97,8 +97,24 @@ pub fn allow_extra_roots(allow: bool) {
     EXTRA_ROOTS_GRANT.store(allow, Ordering::Relaxed);
 }
 
-fn extra_roots_granted() -> bool {
-    EXTRA_ROOTS_GRANT.load(Ordering::Relaxed) || std::env::var(ALLOW_EXTRA_ROOTS_ENV).is_ok_and(|v| is_truthy(&v))
+fn extra_roots_granted(repo_root: &Path) -> bool {
+    EXTRA_ROOTS_GRANT.load(Ordering::Relaxed)
+        || std::env::var(ALLOW_EXTRA_ROOTS_ENV).is_ok_and(|v| extra_roots_grant_covers(&v, repo_root))
+}
+
+/// Whether an [`ALLOW_EXTRA_ROOTS_ENV`] value covers `repo_root`. A truthy word (`1`, `true`, `yes`)
+/// grants every workspace this process scans; anything else is read as a path list (`:`-separated on
+/// Unix, `;` on Windows) of workspace roots, and the grant covers only those and their descendants.
+/// The list form matters for a daemon, which is one process serving many repositories: the bare
+/// word would let any later workspace's `extra_roots` through.
+fn extra_roots_grant_covers(value: &str, repo_root: &Path) -> bool {
+    if is_truthy(value) {
+        return true;
+    }
+    let repo_root = repo_root.canonicalize().unwrap_or_else(|_| repo_root.to_path_buf());
+    std::env::split_paths(value.trim())
+        .filter(|entry| !entry.as_os_str().is_empty())
+        .any(|entry| repo_root.starts_with(entry.canonicalize().unwrap_or(entry)))
 }
 
 /// `1` / `true` / `yes`, case- and whitespace-insensitive. Matches `root_guard`'s private
@@ -388,13 +404,13 @@ fn walk_extra_roots(root: &Path, config: &Config, filters: &Filters, cancel: &Sc
     if config.scan.extra_roots.is_empty() {
         return;
     }
-    if !extra_roots_granted() {
+    if !extra_roots_granted(root) {
         tracing::warn!(
             roots = config.scan.extra_roots.len(),
             env = ALLOW_EXTRA_ROOTS_ENV,
             "scan.extra_roots ignored: it names directories outside the repository but was read from \
-             the repository's own basemind.toml; set {ALLOW_EXTRA_ROOTS_ENV}=1 in the environment to \
-             opt in",
+             the repository's own basemind.toml; set {ALLOW_EXTRA_ROOTS_ENV}=1 (or a list of workspace \
+             roots) in the environment to opt in",
         );
         return;
     }
@@ -681,5 +697,30 @@ mod tests {
         for no in ["0", "false", "no", ""] {
             assert!(!is_truthy(no), "{no:?}");
         }
+    }
+
+    #[test]
+    fn extra_roots_grant_can_be_scoped_to_a_list_of_workspaces() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let allowed = dir.path().join("allowed");
+        let other = dir.path().join("other");
+        std::fs::create_dir_all(allowed.join("sub")).expect("mkdir");
+        std::fs::create_dir_all(&other).expect("mkdir");
+
+        assert!(
+            extra_roots_grant_covers("1", &other),
+            "the bare word grants every workspace"
+        );
+        let list = std::env::join_paths([&allowed, Path::new("/nonexistent/elsewhere")])
+            .expect("join")
+            .into_string()
+            .expect("utf8");
+        assert!(extra_roots_grant_covers(&list, &allowed));
+        assert!(
+            extra_roots_grant_covers(&list, &allowed.join("sub")),
+            "descendants are covered"
+        );
+        assert!(!extra_roots_grant_covers(&list, &other), "an unlisted workspace is not");
+        assert!(!extra_roots_grant_covers("0", &allowed));
     }
 }
