@@ -295,6 +295,11 @@ impl Store {
         migrate_legacy_index_into_views(&basemind_dir)?;
 
         let view_dir = basemind_dir.join(VIEWS_DIR).join(view);
+        // A fresh linked worktree clones its working view from a sibling checkout (COW, atomic
+        // rename) BEFORE fjall opens, so the first scan skips content-identical files. ~keep
+        if view == VIEW_WORKING {
+            crate::store_seed::seed_working_view(root, &basemind_dir, &view_dir);
+        }
         ensure_dir(&view_dir)?;
         ensure_workspace_marker(&basemind_dir, root);
         let index = match read_index(&view_dir) {
