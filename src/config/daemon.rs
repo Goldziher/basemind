@@ -95,25 +95,53 @@ pub fn load_daemon(root: &Path) -> Result<Config, ConfigError> {
     Ok(config)
 }
 
-/// Cheap change detector for a workspace's config file: modification time and length.
+/// Cheap change detector for a workspace's config file: modification time and length, plus a
+/// content hash while the modification time is too recent to trust.
+///
+/// An equal-length rewrite inside one timestamp tick (coarse-mtime filesystems, or an editor and a
+/// request landing in the same tick) is invisible to `(mtime, len)`. The same trick git uses for
+/// "racily clean" index entries closes it: while the file was modified within [`RACY_WINDOW`] of
+/// now, the stamp also carries a hash of its bytes, so two different contents never compare equal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct ConfigStamp {
     modified: Option<SystemTime>,
     len: Option<u64>,
+    content: Option<u64>,
 }
+
+/// How recent a modification time must be for the stamp to fall back to hashing the content.
+const RACY_WINDOW: std::time::Duration = std::time::Duration::from_secs(2);
 
 impl ConfigStamp {
     /// Stamp of the file [`super::resolve_config_path`] selects for `root`; a missing file stamps as
-    /// the default (both `None`), so creating or deleting the file reads as a change.
+    /// the default (all `None`), so creating or deleting the file reads as a change.
     pub fn of(root: &Path) -> Self {
-        match std::fs::metadata(super::resolve_config_path(root)) {
-            Ok(meta) => Self {
-                modified: meta.modified().ok(),
-                len: Some(meta.len()),
-            },
+        let path = super::resolve_config_path(root);
+        match std::fs::metadata(&path) {
+            Ok(meta) => {
+                let modified = meta.modified().ok();
+                let racy = modified.is_none_or(|m| {
+                    SystemTime::now()
+                        .duration_since(m)
+                        .map_or(true, |age| age < RACY_WINDOW)
+                });
+                Self {
+                    modified,
+                    len: Some(meta.len()),
+                    content: racy.then(|| content_hash(&path)).flatten(),
+                }
+            }
             Err(_) => Self::default(),
         }
     }
+}
+
+fn content_hash(path: &Path) -> Option<u64> {
+    use std::hash::{Hash, Hasher};
+    let bytes = std::fs::read(path).ok()?;
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    bytes.hash(&mut hasher);
+    Some(hasher.finish())
 }
 
 impl std::fmt::Display for ConfigStamp {
@@ -232,5 +260,27 @@ mod tests {
         let first = ConfigStamp::of(dir.path());
         write_toml(dir.path(), "[watch]\ndebounce_ms = 500\n");
         assert_ne!(first, ConfigStamp::of(dir.path()));
+    }
+
+    #[test]
+    fn an_equal_length_rewrite_with_an_identical_mtime_is_still_a_change() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_toml(dir.path(), "[watch]\ndebounce_ms = 111\n");
+        let path = crate::config::resolve_config_path(dir.path());
+        let mtime = std::fs::metadata(&path).unwrap().modified().unwrap();
+        let first = ConfigStamp::of(dir.path());
+
+        write_toml(dir.path(), "[watch]\ndebounce_ms = 222\n");
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(mtime)
+            .unwrap();
+        let second = ConfigStamp::of(dir.path());
+
+        assert_eq!(first.len, second.len, "same length");
+        assert_eq!(first.modified, second.modified, "same mtime");
+        assert_ne!(first, second, "the content hash tells them apart");
     }
 }
