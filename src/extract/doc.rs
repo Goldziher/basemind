@@ -422,8 +422,11 @@ impl DocConfig {
 /// so basemind owns the sync bridge. Built once and never dropped; rayon workers
 /// `block_on` it concurrently (each future is driven to completion on the shared
 /// worker pool).
-fn extraction_runtime() -> &'static tokio::runtime::Runtime {
-    static RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
+///
+/// A failed build (thread exhaustion) surfaces as an [`ExtractError`] for the file at hand instead of
+/// panicking a scan worker; the failure is cached, so later files fail fast the same way.
+fn extraction_runtime() -> Result<&'static tokio::runtime::Runtime, ExtractError> {
+    static RT: OnceLock<Result<tokio::runtime::Runtime, String>> = OnceLock::new();
     RT.get_or_init(|| {
         // Capped: the default is one worker per core plus a 512-thread blocking pool, on top of the
         // scanner's own per-core rayon pool that drives it.
@@ -433,8 +436,10 @@ fn extraction_runtime() -> &'static tokio::runtime::Runtime {
             .thread_keep_alive(std::time::Duration::from_secs(5))
             .enable_all()
             .build()
-            .expect("build xberg extraction runtime")
+            .map_err(|e| format!("build xberg extraction runtime: {e}"))
     })
+    .as_ref()
+    .map_err(|message| ExtractError::Document(message.clone()))
 }
 
 /// Run xberg against `path` and translate the result into a `FileMapDoc`.
@@ -445,7 +450,7 @@ pub fn extract_doc(path: &Path, mime_type: Option<&str>, config: &DocConfig) -> 
     let krz_config = config.to_xberg();
     let mut input = ExtractInput::from_uri(path.to_string_lossy().into_owned());
     input.mime_type = mime_type.map(str::to_string);
-    let mut extraction = extraction_runtime()
+    let mut extraction = extraction_runtime()?
         .block_on(extract(input, &krz_config))
         .map_err(|e| ExtractError::Document(e.to_string()))?;
     let result = extraction.results.pop().ok_or_else(|| {
