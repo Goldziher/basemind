@@ -32,7 +32,7 @@ Basemind is a single Rust crate that builds a CLI binary (`basemind`) and expose
   - `helpers.rs` + `helpers_<area>.rs` (`helpers_calls.rs` / `helpers_code.rs` / `helpers_code_search.rs` / `helpers_documents.rs` / `helpers_graph.rs` / `helpers_grep.rs` / `helpers_impls.rs` / `helpers_web.rs`, and more) — the `run_<mode>` bodies each shim dispatches to.
   - `memory.rs` — `search_documents` + `memory_*` bodies behind the `memory` tool's modes, over LanceDB.
   - `types.rs` + `types_<domain>.rs` — one flat `<Domain>Params` per domain (optional sibling fields per mode) + response structs, `JsonSchema`-derived.
-  - `cursor.rs`, `savings.rs`, `telemetry.rs` — pagination cursors, token-savings heuristics (keyed by `domain:mode`, plus the bare pre-consolidation spellings `basemind-agent` still uses), telemetry sink.
+  - `cursor.rs`, `savings.rs`, `telemetry.rs` — pagination cursors, token-savings heuristics (keyed by `domain:mode`, plus the bare pre-consolidation tool-name spellings), telemetry sink.
 - `query.rs` — read-side helpers shared between MCP tools and the CLI.
 - `git.rs` + `git_cache.rs` — `gix`-backed history / blame / churn.
 - `path.rs` — `RelPath` byte-precise repo-relative paths.

@@ -9,7 +9,6 @@
 //! Transport: stdio (the canonical MCP transport). Spawn via `basemind serve`.
 
 pub(crate) mod admission;
-pub mod agent_api;
 mod background;
 mod budget;
 mod codegraph;

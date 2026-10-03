@@ -164,14 +164,6 @@ extend_exclude = ["tests/fixtures/**"]
   "cyclomatic-complexity",
   "type-too-long",
 ]
-"crates/basemind-agent/examples/**" = [
-  "function-too-long",
-  "file-too-long",
-  "too-many-parameters",
-  "nesting-too-deep",
-  "cyclomatic-complexity",
-  "type-too-long",
-]
 # Ruff noise that is not actionable: missing annotations in test specs, and the
 # hermes plugin package which mirrors ai-rulez-generated content.
 "pip-package/tests/**" = ["ANN", "ARG"]

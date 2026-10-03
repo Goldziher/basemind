@@ -10,7 +10,9 @@ use std::sync::Arc;
 use rmcp::model::{ArgumentInfo, CallToolResult, CompleteRequestParams, ContentBlock, Reference};
 use serde_json::Value;
 
-use super::params::{AdminMode, AdminParams, Lenient, OutlineParams, Parameters, SearchSymbolsParams};
+use super::mode::CodeMode;
+use super::params::{AdminMode, AdminParams, Lenient, Parameters};
+use super::types_code::CodeParams;
 use super::{BasemindServer, ServerState};
 use crate::config::ConfigV1;
 use crate::git_cache::GitCache;
@@ -88,13 +90,14 @@ async fn outline_answers_from_the_store_without_building_the_corpus_map() {
     let server = oneshot_server(tmp.path());
     assert_eq!(mapped_files(&server.state), 0, "starts unbuilt");
 
-    let params = OutlineParams {
-        path: crate::path::RelPath::from("a.rs"),
-        l2: false,
+    let params = CodeParams {
+        path: Some(crate::path::RelPath::from("a.rs")),
+        l2: Some(false),
         max_tokens: None,
         format: None,
+        ..CodeParams::new(CodeMode::Outline)
     };
-    let result = server.outline(Parameters(Lenient(params))).await.expect("outline");
+    let result = server.code(Parameters(Lenient(params))).await.expect("outline");
     let payload = json_of(&result);
 
     let names: Vec<&str> = payload["symbols"]
@@ -152,18 +155,16 @@ async fn corpus_tool_builds_the_map_on_demand_and_sees_every_file() {
     let server = oneshot_server(tmp.path());
     assert_eq!(mapped_files(&server.state), 0, "starts unbuilt");
 
-    let params = SearchSymbolsParams {
-        needle: "_marker".to_string(),
+    let params = CodeParams {
+        name: Some("_marker".to_string()),
         kind: None,
         limit: None,
         max_tokens: None,
         format: None,
         cursor: None,
+        ..CodeParams::new(CodeMode::Symbols)
     };
-    let result = server
-        .search_symbols(Parameters(Lenient(params)))
-        .await
-        .expect("search_symbols");
+    let result = server.code(Parameters(Lenient(params))).await.expect("search_symbols");
     let payload = json_of(&result);
 
     let names: Vec<&str> = payload["results"]

@@ -31,10 +31,7 @@ esac
 
 RELEASE_DIR="target/${TRIPLE}/release"
 
-# The archive ships the code-map/MCP server alone. The agent TUI (`basemind-tui`) and desktop UI ~keep
-# (`basemind-ui`) are unreleased: their launcher subcommands sit behind the root crate's ~keep
-# `agent-tui` / `desktop-ui` features, which `full` omits, so a released `basemind` never looks for ~keep
-# a sibling that is not here. Add them back to this list when they ship. ~keep
+# The archive ships the code-map/MCP server alone.
 BINARIES=(basemind)
 
 for bin in "${BINARIES[@]}"; do

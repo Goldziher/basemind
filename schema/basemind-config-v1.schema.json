@@ -211,9 +211,6 @@
         "max_retries": null,
         "max_tokens": null
       }
-    },
-    "agent": {
-      "description": "The `[agent]` table, accepted here but interpreted elsewhere.\n\nThe agent front-end owns this section and parses it itself, leniently, straight out of the\nTOML document (`crates/basemind-tui/src/config.rs`). The core server never reads it — but it\nmust still ACCEPT it, because `deny_unknown_fields` above applies to the whole file: without\nthis passthrough, a repo whose `basemind.toml` legitimately carries `[agent]` fails to parse,\nthe daemon cannot host that workspace (`host_build_failed`), `serve` dies before `initialize`,\nand every MCP tool silently disappears. Keeping it untyped avoids duplicating the agent\ncrate's role schema here while preserving strict typo-checking for every other section."
     }
   },
   "additionalProperties": false,

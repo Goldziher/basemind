@@ -1,6 +1,8 @@
 # ADR-0006: Interactive UI — Tauri desktop app
 
-- **Status:** Proposed
+- **Status:** Withdrawn (2026-10-03) — the unreleased front-end stack (`basemind-ui`,
+  `basemind-tui`, `basemind-agent`, `basemind-agent-ipc`) and the `basemind ui` / `basemind agent`
+  launchers were removed; basemind ships the MCP server alone.
 - **Date:** 2026-08-02
 - **Deciders:** basemind maintainers
 - **Related:** ADR-0005 (rendering engine), ADR-0007 (agent-launchable display),
@@ -73,4 +75,6 @@ The **launch path and packaging** shipped first, carrying no GUI-toolchain blast
 - Until the window lands, `basemind ui` opens the offline, self-contained interactive HTML graph the
   `display` tool produces (ADR-0007) — the working baseline the resident window replaces.
 
-Status stays **Proposed** until the interactive window and its seam bridge land.
+**Withdrawn (2026-10-03):** the front-end crates and the `basemind ui` / `basemind agent`
+launchers were removed before the interactive window landed. The MCP server is the sole released
+surface.
