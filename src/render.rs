@@ -131,6 +131,13 @@ pub fn render_summary(w: &mut AutoStream<std::io::Stdout>, stats: &ScanStats, ve
         let docs_line = pair("docs_indexed", stats.docs_indexed, style_ok);
         let _ = writeln!(w, "{docs_line}");
     }
+    if stats.skipped_too_large > 0 {
+        let too_large = pair("too_large", stats.skipped_too_large, style_warn);
+        let _ = writeln!(
+            w,
+            "{too_large} (over [scan] max_file_bytes, or [documents] max_file_bytes for documents)"
+        );
+    }
 }
 
 /// Print a one-line summary of the grammar bootstrap.

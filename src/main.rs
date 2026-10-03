@@ -266,7 +266,8 @@ struct ServeArgs {
 enum LangCmd {
     /// Show installed grammars and where they live.
     List,
-    /// Force-download all supported grammars (no-op if already cached).
+    /// Force-download all supported grammars, plus any `[languages.<name>] preload = true` from
+    /// basemind.toml (no-op if already cached).
     Install,
     /// Delete the grammar cache. Next run will redownload.
     Clean,
@@ -365,7 +366,7 @@ fn main() -> Result<()> {
         },
         Cmd::Lang { action } => match action {
             LangCmd::List => lang_cli::cmd_lang_list(no_color),
-            LangCmd::Install => lang_cli::cmd_lang_install(verbosity, no_color),
+            LangCmd::Install => lang_cli::cmd_lang_install(&root, verbosity, no_color),
             LangCmd::Clean => lang_cli::cmd_lang_clean(),
         },
         Cmd::CompressOutput(args) => basemind::textcompress::cli::run(&args),

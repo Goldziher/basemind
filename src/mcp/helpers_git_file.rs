@@ -58,6 +58,15 @@ pub(super) fn run_diff(state: &ServerState, params: DiffFileParams) -> Result<Ca
     })
 }
 
+/// Grammar for `path`, honouring the workspace's `[languages]` overrides so git-side tools agree
+/// with what the scanner indexed.
+fn detect_lang(state: &ServerState, path: impl AsRef<std::ffi::OsStr>) -> Option<crate::lang::LangId> {
+    crate::lang_rules::LangRules::from_config(&state.shared.config.languages)
+        .unwrap_or_default()
+        .detect(std::path::Path::new(path.as_ref()))
+        .lang()
+}
+
 /// Body for `git` mode `diff_outline`: which symbols the served view has that `rev` does not, and
 /// vice versa — "what did this branch add" without reading source.
 pub(super) async fn run_diff_outline(
@@ -86,7 +95,7 @@ pub(super) async fn run_diff_outline(
 
     let there: Option<Vec<(String, &'static str)>> = match rev_blob {
         Some(bytes) => {
-            let lang = crate::lang::detect(std::path::Path::new(&params.path))
+            let lang = detect_lang(state, &params.path)
                 .ok_or_else(|| McpError::invalid_params(format!("unsupported language for {}", params.path), None))?;
             let l1 = crate::extract::l1::extract_l1(lang, &bytes)
                 .map_err(|e| McpError::internal_error(format!("extract {rev_sha}:{}: {e}", params.path), None))?;
@@ -307,7 +316,7 @@ pub(super) fn run_symbol_history(state: &ServerState, params: SymbolHistoryParam
     let repo = require_git_repo(state)?;
     let kind = params.kind.as_deref().map(parse_kind).transpose()?;
     let limit = params.limit.unwrap_or(20).min(100) as usize;
-    let lang = crate::lang::detect(std::path::Path::new(&params.path))
+    let lang = detect_lang(state, &params.path)
         .ok_or_else(|| McpError::invalid_params(format!("unsupported language: {}", params.path), None))?;
     let hash_mode = match params.hash_mode.as_deref() {
         Some(s) => parse_hash_mode(s)?,

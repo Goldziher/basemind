@@ -9,10 +9,12 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use ahash::{AHashMap, AHashSet};
-use globset::{Glob, GlobSetBuilder};
+use globset::GlobSet;
 use ignore::WalkBuilder;
 
 use crate::config::Config;
+use crate::config::rules::{compile_patterns, expand_pattern};
+use crate::lang_rules::{Detection, LangRules};
 use crate::scanner::{ScanError, ScanSource, submodule_roots_for_source};
 
 /// Exclude globs that are **always** applied, on top of (never replaced by) the user's
@@ -53,6 +55,73 @@ const FLOOR_EXCLUDES: &[&str] = &[
     "**/.DS_Store",
 ];
 
+/// Floor entries that `[scan] floor_allow` may never remove: indexing VCS internals or basemind's
+/// own state would corrupt the index.
+const FLOOR_PROTECTED: &[&str] = &["**/.git/**", "**/.basemind/**"];
+
+/// The directory / file name a floor pattern targets: `**/build/**` -> `build`, `**/*.pyc` -> `*.pyc`.
+fn floor_name(pattern: &str) -> &str {
+    let p = pattern.strip_prefix("**/").unwrap_or(pattern);
+    p.strip_suffix("/**").unwrap_or(p)
+}
+
+/// True when a `floor_allow` entry names `pattern`: the pattern itself, its directory name, or the
+/// `**/name/**` form, ignoring surrounding slashes.
+fn floor_allow_names(entry: &str, pattern: &str) -> bool {
+    let e = entry.trim().trim_matches('/');
+    e == pattern || e == floor_name(pattern) || format!("**/{e}/**") == pattern
+}
+
+/// The always-on exclude floor minus the entries the user removed via `[scan] floor_allow`.
+fn effective_floor(floor_allow: &[String]) -> Vec<&'static str> {
+    for entry in floor_allow {
+        let matched = FLOOR_EXCLUDES.iter().any(|p| floor_allow_names(entry, p));
+        let protected = FLOOR_PROTECTED.iter().any(|p| floor_allow_names(entry, p));
+        if protected {
+            tracing::warn!(entry, "[scan] floor_allow cannot remove this entry; it stays excluded");
+        } else if !matched {
+            tracing::warn!(
+                entry,
+                "[scan] floor_allow entry matches no exclude-floor entry; ignored"
+            );
+        }
+    }
+    FLOOR_EXCLUDES
+        .iter()
+        .copied()
+        .filter(|p| FLOOR_PROTECTED.contains(p) || !floor_allow.iter().any(|e| floor_allow_names(e, p)))
+        .collect()
+}
+
+/// Include/exclude pair precompiled once per scan. An absent include means "everything"; exclude
+/// always wins.
+#[derive(Default)]
+struct Gate {
+    include: Option<GlobSet>,
+    exclude: Option<GlobSet>,
+}
+
+impl Gate {
+    fn build(include: &[String], exclude: &[String]) -> Result<Self, ScanError> {
+        let compile = |list: &[String]| -> Result<Option<GlobSet>, ScanError> {
+            if list.is_empty() {
+                return Ok(None);
+            }
+            compile_patterns(list.iter().map(String::as_str))
+                .map(Some)
+                .map_err(ScanError::BadGlob)
+        };
+        Ok(Self {
+            include: compile(include)?,
+            exclude: compile(exclude)?,
+        })
+    }
+
+    fn allows(&self, key: &str) -> bool {
+        !self.exclude.as_ref().is_some_and(|e| e.is_match(key)) && self.include.as_ref().is_none_or(|i| i.is_match(key))
+    }
+}
+
 pub(crate) struct Filters {
     include: globset::GlobSet,
     exclude: globset::GlobSet,
@@ -61,6 +130,15 @@ pub(crate) struct Filters {
     dir_exclude: Arc<globset::GlobSet>,
     /// Mirror of `config.scan.max_file_bytes`; the per-file size cap is enforced by the scanner.
     pub(crate) max_file_bytes: u64,
+    /// Mirror of `config.documents.max_file_bytes`, the cap for the document tier.
+    #[cfg_attr(not(feature = "documents"), allow(dead_code))]
+    pub(crate) doc_max_file_bytes: u64,
+    /// [`crate::config::rules::code_digest`] / [`crate::config::rules::doc_digest`] of the config
+    /// this scan runs under; cached derived data is reusable only under the same digest.
+    #[cfg_attr(not(feature = "code-search"), allow(dead_code))]
+    pub(crate) code_digest: String,
+    #[cfg_attr(not(feature = "documents"), allow(dead_code))]
+    pub(crate) doc_digest: String,
     /// Pre-built `"{root}/"` prefix strings for each skipped submodule root — avoids a `format!`
     /// allocation per candidate file in the `allows` hot path. Empty when there are no submodules
     /// or `config.scan.skip_submodules` is off. `Arc` so [`Filters::dir_pruner`] is a refcount bump.
@@ -69,17 +147,36 @@ pub(crate) struct Filters {
     /// with L1 and pushes calls to the Fjall index. Off → calls index stays stale until
     /// the on-demand lazy path runs.
     pub(crate) eager_l2: bool,
+    /// Compiled `[languages]` overrides; see [`Filters::detect_lang`].
+    lang: LangRules,
+    /// `[documents] include/exclude`: which non-code files are indexed as documents.
+    #[cfg_attr(not(feature = "documents"), allow(dead_code))]
+    doc_scope: Gate,
+    /// `[documents] embed_include/embed_exclude`.
+    #[cfg_attr(not(feature = "documents"), allow(dead_code))]
+    doc_embed: Gate,
+    /// `[code_search] embed_include/embed_exclude`.
+    #[cfg_attr(not(feature = "code-search"), allow(dead_code))]
+    code_embed: Gate,
+    /// Canonical `"{extra_root}/"` prefixes of `scan.extra_roots`, used to turn an extra-root
+    /// file's absolute key back into the root-relative path the globs are written against.
+    extra_prefixes: Vec<String>,
+    /// Set by the full scan when the embed policy (see `config::rules::embed_policy_digest`) changed
+    /// since the last scan: unchanged files must then be re-flushed so their vector rows are rebuilt.
+    #[cfg_attr(not(any(feature = "code-search", feature = "documents")), allow(dead_code))]
+    pub(crate) reflush_embeds: bool,
 }
 
 impl Filters {
     pub(crate) fn build(config: &Config, submodule_roots: Vec<String>) -> Result<Self, ScanError> {
-        let include = compile_globs(config.scan.include.iter().map(String::as_str))?;
-        let exclude_patterns: Vec<&str> = FLOOR_EXCLUDES
-            .iter()
-            .copied()
-            .chain(config.scan.exclude.iter().map(String::as_str))
+        let include_patterns: Vec<String> = config.scan.include.iter().flat_map(|p| expand_pattern(p)).collect();
+        let include = compile_globs(include_patterns.iter().map(String::as_str))?;
+        let exclude_patterns: Vec<String> = effective_floor(&config.scan.floor_allow)
+            .into_iter()
+            .map(str::to_string)
+            .chain(config.scan.exclude.iter().flat_map(|p| expand_pattern(p)))
             .collect();
-        let exclude = compile_globs(exclude_patterns.iter().copied())?;
+        let exclude = compile_globs(exclude_patterns.iter().map(String::as_str))?;
         let dir_exclude = compile_globs(dir_exclude_patterns(&exclude_patterns).iter().map(String::as_str))?;
         let submodule_prefixes: Arc<[String]> = if config.scan.skip_submodules {
             submodule_roots
@@ -91,14 +188,68 @@ impl Filters {
         } else {
             Arc::from([] as [String; 0])
         };
+        let extra_prefixes = config
+            .scan
+            .extra_roots
+            .iter()
+            .filter_map(|r| r.canonicalize().ok())
+            .filter_map(|r| {
+                r.to_str()
+                    .map(|s| format!("{}/", s.replace('\\', "/").trim_end_matches('/')))
+            })
+            .collect();
         Ok(Self {
             include,
             exclude,
             dir_exclude: Arc::new(dir_exclude),
             max_file_bytes: config.scan.max_file_bytes,
+            doc_max_file_bytes: config.documents.max_file_bytes,
+            code_digest: crate::config::rules::code_digest(&config.code_search),
+            doc_digest: crate::config::rules::doc_digest(&config.documents, &config.resources, &config.llm),
             submodule_prefixes,
             eager_l2: config.scan.eager_l2,
+            lang: LangRules::from_config(&config.languages).map_err(ScanError::BadLanguage)?,
+            doc_scope: Gate::build(&config.documents.include, &config.documents.exclude)?,
+            doc_embed: Gate::build(&config.documents.embed_include, &config.documents.embed_exclude)?,
+            code_embed: Gate::build(&config.code_search.embed_include, &config.code_search.embed_exclude)?,
+            extra_prefixes,
+            reflush_embeds: false,
         })
+    }
+
+    /// Classify `rel` with the `[languages]` overrides layered over built-in detection.
+    pub(crate) fn detect_lang(&self, rel: &str) -> Detection {
+        self.lang.detect(Path::new(rel))
+    }
+
+    /// `key` as the globs see it: an extra-root file's absolute key is reduced to its path
+    /// relative to that root; repo-relative keys pass through.
+    fn scoped<'a>(&self, key: &'a str) -> &'a str {
+        if self.extra_prefixes.is_empty() || !crate::path::is_external_key(key.as_bytes()) {
+            return key;
+        }
+        self.extra_prefixes
+            .iter()
+            .find_map(|p| key.strip_prefix(p.as_str()))
+            .unwrap_or(key)
+    }
+
+    /// `[documents] include/exclude`: may `rel` be indexed as a document.
+    #[cfg_attr(not(feature = "documents"), allow(dead_code))]
+    pub(crate) fn doc_allowed(&self, rel: &str) -> bool {
+        self.doc_scope.allows(self.scoped(rel))
+    }
+
+    /// `[documents] embed_include/embed_exclude`: may the document at `rel` be embedded.
+    #[cfg_attr(not(feature = "documents"), allow(dead_code))]
+    pub(crate) fn doc_embed_allowed(&self, rel: &str) -> bool {
+        self.doc_embed.allows(self.scoped(rel))
+    }
+
+    /// `[code_search] embed_include/embed_exclude`: may the source file at `rel` be embedded.
+    #[cfg_attr(not(feature = "code-search"), allow(dead_code))]
+    pub(crate) fn code_embed_allowed(&self, rel: &str) -> bool {
+        self.code_embed.allows(self.scoped(rel))
     }
 
     /// True when `rel` is dropped by the exclude globs or a skipped submodule root — the shared
@@ -112,6 +263,12 @@ impl Filters {
             return false;
         }
         self.include.is_match(rel)
+    }
+
+    /// [`Filters::allows`] for a path relative to an `extra_roots` entry: globs only. Submodule
+    /// roots are repo-relative, so they say nothing about a tree outside the repository.
+    pub(crate) fn allows_in_extra_root(&self, rel_to_extra_root: &str) -> bool {
+        !self.exclude.is_match(rel_to_extra_root) && self.include.is_match(rel_to_extra_root)
     }
 
     /// Directory gate. A directory is kept iff it is NOT matched by the directory-level exclude
@@ -140,6 +297,17 @@ impl Filters {
             dir_exclude: Arc::clone(&self.dir_exclude),
             submodule_prefixes: Arc::clone(&self.submodule_prefixes),
             base: base.map(Path::to_path_buf),
+        }
+    }
+
+    /// Directory gate for an `extra_roots` walk rooted at `extra_root`: directories are matched by
+    /// their path relative to that root, so an absolute prefix containing `build` or `out` cannot
+    /// drop the whole root.
+    pub(crate) fn dir_pruner_for_extra_root(&self, extra_root: &Path) -> DirPruner {
+        DirPruner {
+            dir_exclude: Arc::clone(&self.dir_exclude),
+            submodule_prefixes: Arc::from([] as [String; 0]),
+            base: Some(extra_root.to_path_buf()),
         }
     }
 }
@@ -175,7 +343,7 @@ fn dir_allowed(rel: &str, dir_exclude: &globset::GlobSet, submodule_prefixes: &[
 ///
 /// This is also why the watcher shares this set rather than the file-level one: gating inotify
 /// registration on `**/generated` made it blind to changes under a directory it was indexing.
-fn dir_exclude_patterns(patterns: &[&str]) -> Vec<String> {
+fn dir_exclude_patterns(patterns: &[String]) -> Vec<String> {
     let mut out = Vec::with_capacity(patterns.len() * 2);
     for p in patterns {
         let Some(stem) = p.strip_suffix("/**") else {
@@ -184,7 +352,7 @@ fn dir_exclude_patterns(patterns: &[&str]) -> Vec<String> {
         if stem.is_empty() {
             continue;
         }
-        out.push((*p).to_string());
+        out.push(p.clone());
         out.push(stem.to_string());
     }
     out
@@ -234,31 +402,11 @@ impl DirPruner {
     }
 }
 
-/// True when `rel` matches any of the `embed_exclude` glob `patterns` — the embed gates in
-/// `scanner_code` / `scanner_docs` use this to skip embedding a file that is still chunked + indexed.
-///
-/// The patterns are compiled on each call rather than prebuilt-and-threaded: callers gate on
-/// `embed` (off by default for code) AND on a non-empty list, so the default scan never reaches this
-/// function, and when it does the globset compile is negligible against the ONNX embedding it
-/// guards. Invalid globs are skipped (not fatal) so a typo in one pattern never aborts the scan.
-#[cfg(any(feature = "code-search", feature = "documents"))]
-pub(crate) fn embed_excluded(rel: &str, patterns: &[String]) -> bool {
-    if patterns.is_empty() {
-        return false;
-    }
-    let mut b = GlobSetBuilder::new();
-    for p in patterns {
-        if let Ok(g) = Glob::new(p) {
-            b.add(g);
-        }
-    }
-    b.build().map(|set| set.is_match(rel)).unwrap_or(false)
-}
-
+/// Compile `patterns` (already expanded) into one set; a bad glob is a scan error, never dropped.
 fn compile_globs<'a>(patterns: impl IntoIterator<Item = &'a str>) -> Result<globset::GlobSet, ScanError> {
-    let mut b = GlobSetBuilder::new();
+    let mut b = globset::GlobSetBuilder::new();
     for p in patterns {
-        let g = Glob::new(p).map_err(|e| ScanError::BadGlob(format!("{p:?}: {e}")))?;
+        let g = globset::Glob::new(p).map_err(|e| ScanError::BadGlob(format!("{p:?}: {e}")))?;
         b.add(g);
     }
     b.build().map_err(|e| ScanError::BadGlob(format!("{e}")))
@@ -476,16 +624,111 @@ mod tests {
         );
     }
 
-    #[cfg(any(feature = "code-search", feature = "documents"))]
     #[test]
-    fn embed_excluded_matches_globs_and_is_empty_no_op() {
-        assert!(!embed_excluded("src/lib.rs", &[]), "empty patterns never exclude");
-        let patterns = vec!["**/generated/**".to_string(), "**/*.min.js".to_string()];
-        assert!(embed_excluded("app/generated/schema.rs", &patterns));
-        assert!(embed_excluded("static/bundle.min.js", &patterns));
+    fn embed_gates_compose_include_and_exclude_with_exclude_winning() {
+        let mut config = crate::config::default_for_root(Path::new("."));
+        let filters = Filters::build(&config, Vec::new()).expect("build filters");
+        assert!(filters.code_embed_allowed("src/lib.rs"), "empty lists allow everything");
+        assert!(filters.doc_embed_allowed("docs/a.pdf"));
+        assert!(filters.doc_allowed("docs/a.pdf"));
+
+        config.code_search.embed_include = vec!["src/**".to_string()];
+        config.code_search.embed_exclude = vec!["**/generated/**".to_string(), "**/*.min.js".to_string()];
+        config.documents.include = vec!["docs".to_string()];
+        config.documents.exclude = vec!["**/draft*".to_string()];
+        config.documents.embed_include = vec!["**/*.pdf".to_string()];
+        config.documents.embed_exclude = vec!["docs/huge".to_string()];
+        let filters = Filters::build(&config, Vec::new()).expect("build filters");
+
+        assert!(filters.code_embed_allowed("src/lib.rs"));
+        assert!(!filters.code_embed_allowed("tools/x.rs"), "outside embed_include");
         assert!(
-            !embed_excluded("src/lib.rs", &patterns),
-            "non-matching file is embedded"
+            !filters.code_embed_allowed("src/generated/schema.rs"),
+            "exclude beats include"
+        );
+        assert!(!filters.code_embed_allowed("src/bundle.min.js"));
+
+        assert!(filters.doc_allowed("docs/guide.md"));
+        assert!(!filters.doc_allowed("other/guide.md"), "outside documents.include");
+        assert!(
+            !filters.doc_allowed("docs/draft-1.md"),
+            "documents.exclude beats include"
+        );
+        assert!(filters.doc_embed_allowed("docs/a.pdf"));
+        assert!(!filters.doc_embed_allowed("docs/a.md"), "outside embed_include");
+        assert!(
+            !filters.doc_embed_allowed("docs/huge/a.pdf"),
+            "bare embed_exclude covers the subtree"
+        );
+    }
+
+    #[test]
+    fn invalid_globs_fail_filter_construction() {
+        let mut config = crate::config::default_for_root(Path::new("."));
+        config.documents.embed_exclude = vec!["a/[".to_string()];
+        assert!(matches!(
+            Filters::build(&config, Vec::new()),
+            Err(ScanError::BadGlob(_))
+        ));
+        let mut config = crate::config::default_for_root(Path::new("."));
+        config.documents.include = vec!["a/[".to_string()];
+        assert!(matches!(
+            Filters::build(&config, Vec::new()),
+            Err(ScanError::BadGlob(_))
+        ));
+    }
+
+    #[test]
+    fn bare_exclude_name_excludes_the_subtree_and_prunes_the_directory() {
+        let mut config = crate::config::default_for_root(Path::new("."));
+        config.scan.exclude = vec!["generated".to_string()];
+        let filters = Filters::build(&config, Vec::new()).expect("build filters");
+        assert!(!filters.allows("generated/schema.rs"));
+        assert!(!filters.allows("pkg/generated/deep/schema.rs"));
+        assert!(filters.allows("pkg/generated_code/schema.rs"));
+        assert!(
+            !filters.allows_dir("generated"),
+            "the walker prunes the directory itself"
+        );
+        assert!(!filters.allows_dir("pkg/generated"));
+    }
+
+    #[test]
+    fn floor_allow_removes_named_floor_entries_but_never_git_or_basemind() {
+        let mut config = crate::config::default_for_root(Path::new("."));
+        let baseline = Filters::build(&config, Vec::new()).expect("build filters");
+        assert!(!baseline.allows("build/gen.rs"));
+        assert!(!baseline.allows("vendor/dep/lib.go"));
+
+        config.scan.floor_allow = vec![
+            "build".to_string(),
+            "**/vendor/**".to_string(),
+            ".git".to_string(),
+            "no-such-entry".to_string(),
+        ];
+        let filters = Filters::build(&config, Vec::new()).expect("build filters");
+        assert!(filters.allows("build/gen.rs"), "named by directory");
+        assert!(filters.allows("vendor/dep/lib.go"), "named by floor pattern");
+        assert!(
+            filters.allows_dir("build"),
+            "the walker descends into an allowed floor dir"
+        );
+        assert!(!filters.allows(".git/config"), ".git can never be allowed");
+        assert!(!filters.allows("out/x.rs"), "untouched floor entries stay");
+    }
+
+    #[test]
+    fn extra_root_files_match_globs_relative_to_the_root() {
+        let config = crate::config::default_for_root(Path::new("."));
+        let filters = Filters::build(&config, Vec::new()).expect("build filters");
+        assert!(
+            filters.allows_in_extra_root("src/lib.rs"),
+            "root-relative path is judged on its own, not on where the root lives"
+        );
+        assert!(!filters.allows_in_extra_root("node_modules/x/index.js"));
+        assert!(
+            !filters.allows("/opt/build/ext/src/lib.rs"),
+            "an absolute key under a floor-named directory is what the old check tripped on"
         );
     }
 
