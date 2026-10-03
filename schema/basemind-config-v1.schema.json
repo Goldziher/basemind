@@ -261,7 +261,7 @@
           ]
         },
         "floor_allow": {
-          "description": "Entries to remove from the always-on exclude floor, named by directory (`build`, `vendor`)\nor by the floor pattern itself (`**/build/**`). Use it to index a tree the floor otherwise\ndrops. The default `exclude` list is separate: a directory also listed there (`dist`,\n`target`) must be removed from `exclude` too. `.git` and `.basemind` can never be allowed,\nand an entry naming nothing in the floor is ignored with a warning.",
+          "description": "Entries to remove from the always-on exclude floor, named by directory (`build`, `vendor`)\nor by the floor pattern itself (`**/build/**`). Use it to index a tree the floor otherwise\ndrops. The default `exclude` list is separate: a directory also listed there (`dist`,\n`target`) must be removed from `exclude` too. The floor also drops credential files (`.env`,\n`.env.*`, `.aws`, `.ssh`, `.gnupg`, `.npmrc`, `id_rsa`, `*.pem`, `*.key`, ...); list the\nentry (`.env.*`, `*.pem`) to index one deliberately. `.git` and `.basemind` can never be allowed,\nand an entry naming nothing in the floor is ignored with a warning.",
           "type": "array",
           "items": {
             "type": "string",
@@ -274,7 +274,7 @@
           "default": true
         },
         "follow_symlinks": {
-          "description": "Follow symlinks during the walk. Default `false` — symlinks are a common way to escape the\nrepo (Bazel's `bazel-*` convenience symlinks point into an external output tree), and\nfollowing them can balloon the scan or pull in unrelated files. Set `true` for repos that\ndeliberately symlink real source into place; the exclude floor still prunes `bazel-*` so a\nsymlinked Bazel tree does not leak in. This governs `extra_roots` too: those walks used to\nfollow links unconditionally, which let a link inside a directory named by the *repository's\nown* config reach anywhere on the filesystem.",
+          "description": "Follow symlinks during the walk. Ignored (forced `false`) when set by the repository's own\n`basemind.toml` unless the operator sets `BASEMIND_ALLOW_FOLLOW_SYMLINKS=1`. Default `false` — symlinks are a common way to escape the\nrepo (Bazel's `bazel-*` convenience symlinks point into an external output tree), and\nfollowing them can balloon the scan or pull in unrelated files. Set `true` for repos that\ndeliberately symlink real source into place; the exclude floor still prunes `bazel-*` so a\nsymlinked Bazel tree does not leak in. This governs `extra_roots` too: those walks used to\nfollow links unconditionally, which let a link inside a directory named by the *repository's\nown* config reach anywhere on the filesystem.",
           "type": "boolean",
           "default": false
         },

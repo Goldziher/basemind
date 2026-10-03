@@ -77,10 +77,21 @@ pub fn load(root: &Path) -> Result<Config, ConfigError> {
     if !path.exists() {
         return Err(ConfigError::NotFound(path));
     }
-    let raw = std::fs::read_to_string(&path).map_err(|source| ConfigError::Io {
+    let io_error = |source| ConfigError::Io {
         path: path.clone(),
         source,
-    })?;
+    };
+    // `basemind.toml -> ~/.aws/credentials` would make a parse error quote a secret back to the
+    // caller, so a link is only followed when it stays inside the workspace.
+    let resolved = path.canonicalize().map_err(io_error)?;
+    let workspace = root.canonicalize().map_err(io_error)?;
+    if !resolved.starts_with(&workspace) {
+        return Err(io_error(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "config file resolves outside the workspace root",
+        )));
+    }
+    let raw = std::fs::read_to_string(&resolved).map_err(io_error)?;
     let mut config = parse_str(&raw).map_err(|e| annotate_path(e, &path))?;
     trust::sanitize_repo_config(&mut config, trust::Grants::from_env());
     trust::warn_inert_fields(&config);
@@ -318,6 +329,19 @@ fn annotate_path(err: ConfigError, path: &Path) -> ConfigError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn a_config_symlinked_outside_the_root_is_refused_without_echoing_it() {
+        let outside = tempfile::tempdir().expect("tempdir");
+        let secret = outside.path().join("credentials");
+        std::fs::write(&secret, "aws_secret_access_key = AKIASECRETVALUE\n").expect("write");
+        let root = tempfile::tempdir().expect("tempdir");
+        std::os::unix::fs::symlink(&secret, root.path().join(CONFIG_FILE_NAME)).expect("symlink");
+        let error = load(root.path()).expect_err("must refuse").to_string();
+        assert!(!error.contains("AKIASECRETVALUE"), "{error}");
+        assert!(error.contains("outside the workspace"), "{error}");
+    }
 
     #[test]
     fn parse_extra_roots_through_schema_validation() {

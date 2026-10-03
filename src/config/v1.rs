@@ -75,14 +75,17 @@ pub struct ScanConfig {
     /// Entries to remove from the always-on exclude floor, named by directory (`build`, `vendor`)
     /// or by the floor pattern itself (`**/build/**`). Use it to index a tree the floor otherwise
     /// drops. The default `exclude` list is separate: a directory also listed there (`dist`,
-    /// `target`) must be removed from `exclude` too. `.git` and `.basemind` can never be allowed,
+    /// `target`) must be removed from `exclude` too. The floor also drops credential files (`.env`,
+    /// `.env.*`, `.aws`, `.ssh`, `.gnupg`, `.npmrc`, `id_rsa`, `*.pem`, `*.key`, ...); list the
+    /// entry (`.env.*`, `*.pem`) to index one deliberately. `.git` and `.basemind` can never be allowed,
     /// and an entry naming nothing in the floor is ignored with a warning.
     #[serde(default)]
     #[schemars(inner(length(min = 1)))]
     pub floor_allow: Vec<String>,
     #[serde(default = "ScanConfig::default_respect_gitignore")]
     pub respect_gitignore: bool,
-    /// Follow symlinks during the walk. Default `false` — symlinks are a common way to escape the
+    /// Follow symlinks during the walk. Ignored (forced `false`) when set by the repository's own
+    /// `basemind.toml` unless the operator sets `BASEMIND_ALLOW_FOLLOW_SYMLINKS=1`. Default `false` — symlinks are a common way to escape the
     /// repo (Bazel's `bazel-*` convenience symlinks point into an external output tree), and
     /// following them can balloon the scan or pull in unrelated files. Set `true` for repos that
     /// deliberately symlink real source into place; the exclude floor still prunes `bazel-*` so a
