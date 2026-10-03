@@ -22,7 +22,7 @@ first, shell/grep/git fallback.**
 - [MCP tool reference](https://basemind.ai/reference/mcp-tools/): Every tool, its parameters, and matching semantics.
 - [CLI reference](https://basemind.ai/reference/cli/): The scriptable CLI, at parity with the MCP tools.
 - [Installation](https://basemind.ai/start/installation/): Plugin, MCP server, and standalone CLI setup.
-- [Configuration](https://basemind.ai/reference/configuration/): `basemind.toml` (repo root or `.config/`), feature flags, and layered overrides.
+- [Configuration](https://basemind.ai/reference/configuration/): `basemind.toml` (repo root or `.config/`), scan and document scoping, per-grammar `[languages]` overrides, the credential exclude floor, operator trust grants (`BASEMIND_ALLOW_*`), daemon caps (`BASEMIND_DAEMON_MAX_*`), feature flags, and layered overrides.
 - [Hosted llms.txt](https://basemind.ai/llms.txt): Always-current docs map, generated from the site (this repo-root file is the hand-curated project map).
 - [llms-full.txt](https://basemind.ai/llms-full.txt): The complete documentation as a single file, for LLM ingestion.
 - [GitHub repository](https://github.com/Goldziher/basemind): Source, issues, and releases.
