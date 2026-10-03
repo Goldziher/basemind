@@ -720,8 +720,6 @@ mod tests {
         ));
     }
 
-    }
-
     #[cfg(feature = "documents")]
     #[test]
     fn unsupported_format_error_is_a_skip_not_a_failure() {
