@@ -426,8 +426,21 @@ content-addressed blob store is machine-wide too: identical file content scanned
 or worktrees is extracted and stored once.
 
 A new linked worktree's working view is seeded from a sibling checkout's index with a copy-on-write
-clone, so its first scan only touches files that differ. Set `BASEMIND_NO_SEED=1` to opt out and build
-the view from scratch.
+clone, so its first scan only touches files that differ. Only the view is cloned: the vector store is
+not, so the seeded worktree's first scan rebuilds its vector rows from the cached blobs without
+re-embedding. A sibling whose workspace lock is held (a daemon or another scan is writing it) is not a
+seed source, and neither is one too large to copy on a filesystem without reflinks; the new worktree
+then scans from scratch. Set `BASEMIND_NO_SEED=1` (any non-empty value other than `0`) to opt out.
+
+Linked worktrees share one git-history index per clone. A worktree whose HEAD descends from the
+indexed head appends the new commits; one that diverges leaves the index alone and answers history
+queries by walking git directly (correct, just slower), rather than wiping and rebuilding it on every
+worktree switch. The first build may come from any worktree.
+
+ONNX Runtime memory is bounded in every basemind process: no memory-pattern planning and no retained
+CPU arena, which otherwise grow to the largest batch seen and never shrink. Intra-op threads follow
+`embed_threads` (2 in the comms daemon). The daemon also drops its resident embedding models once the
+last concurrent embedding pass ends; the next pass reloads them.
 
 A workspace root must be a project: a git repository, or a directory containing a basemind config
 (`basemind.toml` at the root, or under the `.config/` convention). Anything else is refused, because
@@ -668,21 +681,27 @@ checkouts. The full schema is at `schema/basemind-config-v1.schema.json`:
 [scan]
 respect_gitignore = true
 # Follow symlinks during the walk. Off by default — symlinks often escape the repo (e.g. Bazel's
-# bazel-* convenience symlinks). Turn on for repos that symlink real source into place.
+# bazel-* convenience symlinks). Turn on for repos that symlink real source into place. Ignored
+# (forced false) in a repository's own file unless the operator sets BASEMIND_ALLOW_FOLLOW_SYMLINKS=1.
 follow_symlinks = false
 # Glob syntax (include / exclude here, and every include / exclude / embed_* list below): paths are
 # repo-relative with forward slashes, matching is case-sensitive, and `*` also crosses `/` (so
 # `src/*.rs` matches `src/a/b.rs`). A pattern with no glob characters is gitignore-like: `generated`
 # matches every path segment of that name at any depth and everything beneath it; `docs/api` is
-# anchored at the root. Exclude beats include. An invalid glob, or an empty `include`, is a config
-# error. For `extra_roots` files the globs are matched against the path relative to that root.
+# anchored at the root. Exclude beats include. An invalid glob, a negated (`!`) pattern, or an empty
+# `include` (it would index nothing) is a config error. For `extra_roots` files the globs are
+# matched against the path relative to that root.
 include = ["**/*"]
 # `exclude` is ADDED ON TOP of an always-on floor (node_modules, target, dist, build, out, .venv,
 # venv, __pycache__, *.pyc, .pytest_cache/.mypy_cache/.ruff_cache/.tox, .next/.nuxt/.svelte-kit,
-# vendor, .gradle, .terraform, coverage, bazel-*, .git, .basemind, .idea, .DS_Store).
+# vendor, .gradle, .terraform, coverage, bazel-*, .git, .basemind, .idea, .DS_Store) and of a
+# credential floor, so a secret never becomes searchable by every agent that can query the index:
+# .env and .env.*, .aws/, .ssh/, .gnupg/, .npmrc, .pypirc, .netrc, .git-credentials, id_rsa /
+# id_dsa / id_ecdsa / id_ed25519, *.pem, *.key, *.p12, *.pfx, *.jks, *.keystore. Note `.env.*` also
+# drops `.env.example`; list `.env.*` in floor_allow to index those templates.
 exclude = []
-# Remove entries from that floor so the tree is indexed, by directory name (`build`) or floor pattern
-# (`**/build/**`). `.git` and `.basemind` can never be allowed; an entry naming nothing is ignored
+# Remove entries from that floor so the tree is indexed, by directory name (`build`), file name or
+# glob (`.env.*`, `*.pem`) or floor pattern (`**/build/**`). `.git` and `.basemind` can never be allowed; an entry naming nothing is ignored
 # with a warning. The default `exclude` separately lists dist/target/node_modules/.venv/bazel-*, so
 # drop those from `exclude` too when allowing them.
 floor_allow = []
@@ -690,8 +709,9 @@ floor_allow = []
 # symbols resolve in search / references / outlines. External files are keyed by absolute path;
 # (re-)indexed on a full `basemind scan` only (not live-watched). Requires the operator to set
 # BASEMIND_ALLOW_EXTRA_ROOTS in the environment: this file lives inside the repository, so
-# without that opt-in a cloned repo could point basemind at your ~/.ssh. Extra roots count toward
-# max_candidates and follow symlinks only when follow_symlinks is on.
+# without that opt-in a cloned repo could point basemind at your ~/.ssh. Even with the grant, a root
+# under .ssh / .aws / .gnupg or /etc, a filesystem root, and a root inside the repo are skipped.
+# Extra roots count toward max_candidates and follow symlinks only when follow_symlinks is on.
 extra_roots = ["/private/var/tmp/_bazel_you/abc123/external"]
 # Ceiling on how many candidate files one scan may keep, across the repo walk and every extra root.
 # Exceeding it aborts before any extraction or index write, and the error names the heaviest
@@ -798,11 +818,21 @@ reach outside the process are gated on the operator's environment:
 |---|---|
 | `[llm] base_url` | `BASEMIND_ALLOW_REPO_LLM=1`; otherwise ignored with a warning (a clone could aim it at a host that collects your API key and document text). Pass it by `--llm-base-url` / `BASEMIND_LLM_BASE_URL` instead. |
 | `[llm] api_key = { env = "NAME" }` | `NAME` is the chosen provider's standard variable (`OPENAI_API_KEY` for `openai/...`, `ANTHROPIC_API_KEY` for `anthropic/...`, ...) or `BASEMIND_LLM_API_KEY`, or `BASEMIND_ALLOW_REPO_LLM=1`. |
-| `[crawl] allow_private_network = true` | `BASEMIND_ALLOW_PRIVATE_HOSTS=1`; otherwise reset to `false` with a warning. |
-| `[scan] extra_roots` | `BASEMIND_ALLOW_EXTRA_ROOTS=1` (every workspace this process scans) or a `:`-separated list of workspace roots (only those). A daemon is one long-lived process serving many repositories, so prefer the list form there: the bare `1` also opens `extra_roots` for any workspace it serves later. |
+| `[crawl] allow_private_network = true` | `BASEMIND_ALLOW_PRIVATE_HOSTS=1`; otherwise reset to `false` with a warning. The same variable governs the URL guard for `web` fetches. |
+| `[scan] follow_symlinks = true` | `BASEMIND_ALLOW_FOLLOW_SYMLINKS=1`; otherwise reset to `false` with a warning (a tracked link can point at `~/.ssh`). |
+| `[scan] extra_roots` | `BASEMIND_ALLOW_EXTRA_ROOTS=1` (every workspace this process scans) or a list of absolute workspace roots separated by `:` (`;` on Windows), which grants only those workspaces and their descendants. A relative entry is ignored with a warning, as is any other non-truthy word (`on`). A daemon is one long-lived process serving many repositories, so prefer the list form there: the bare `1` also opens `extra_roots` for any workspace it serves later. Credential directories (`.ssh`, `.aws`, `.gnupg`, `/etc`) and filesystem roots are refused even with the grant. |
+| `[documents] extract_archives = true` | In the daemon only: `BASEMIND_DAEMON_ALLOW_EXTRACT_ARCHIVES=1` in the daemon's environment; otherwise reset to `false` with a warning. |
 
-Files such as `.env*`, `.aws/*`, `.npmrc` and private keys are indexed like any other file by
-default; add them to `[scan] exclude` if your repository carries them.
+Grant variables accept `1`, `true` or `yes` (case-insensitive). They are read from the process
+environment; the env and CLI override layers are operator-supplied and never gated.
+
+Credential and key files are not indexed by default: the exclude floor (see `[scan]` above) drops
+`.env`, `.env.*` (which includes `.env.example`), `.aws/`, `.ssh/`, `.gnupg/`, `.npmrc`, `.pypirc`,
+`.netrc`, `.git-credentials`, SSH private keys and `*.pem` / `*.key` / `*.p12` / `*.pfx` / `*.jks` /
+`*.keystore`. Opt a file class back in with `[scan] floor_allow = [".env.*"]`. Unless
+`follow_symlinks` is granted, working-tree reads (including the watcher and `rescan paths`) refuse a
+symlinked file or a path that resolves outside the workspace, and a `basemind.toml` that is a symlink
+leaving the workspace is not followed.
 
 **The daemon treats `[resources]` and `[scan] max_candidates` as ceilings.** The effective value is
 the smaller of the file's and the daemon's cap, and `0` / `"auto"` / `"off"` resolve to the cap. The
@@ -817,6 +847,17 @@ operator raises a cap in the daemon's own environment (a repository cannot):
 | `BASEMIND_DAEMON_MAX_FOOTPRINT_MB` | `max_footprint_mb` | 3072 |
 | `BASEMIND_DAEMON_MAX_MAP_CACHE_MB` | `max_map_cache_mb` | 1024 |
 | `BASEMIND_DAEMON_MAX_CANDIDATES` | `[scan] max_candidates` | 2000000 |
+| `BASEMIND_DAEMON_MAX_FILE_BYTES` | `[scan] max_file_bytes` | 67108864 (64 MiB) |
+| `BASEMIND_DAEMON_MAX_DOCUMENT_BYTES` | `[documents] max_file_bytes` | 536870912 (512 MiB) |
+| `BASEMIND_DAEMON_MAX_DOCUMENT_PAGES` | `[documents] max_pages` | 5000 |
+| `BASEMIND_DAEMON_MAX_EXTRACTION_SECS` | `[documents] extraction_timeout_secs` | 1800 |
+| `BASEMIND_DAEMON_MAX_CHUNKS_PER_DOCUMENT` | `[documents] max_chunks_per_document` | 20000 |
+| `BASEMIND_DAEMON_MAX_CRAWL_PAGES` | `[crawl] max_pages`, and the per-call `web` `crawl` override | 500 |
+| `BASEMIND_DAEMON_MAX_CRAWL_DEPTH` | `[crawl] max_depth`, and the per-call override | 8 |
+| `BASEMIND_DAEMON_MAX_CRAWL_BODY_BYTES` | `[crawl] max_body_size` | 67108864 (64 MiB) |
+| `BASEMIND_DAEMON_MIN_DEBOUNCE_MS` | floor for `[watch] debounce_ms` (a minimum, not a ceiling) | 50 |
+
+A cap variable must be a positive integer; anything else falls back to the default.
 
 **Reload.** The daemon re-reads a workspace's `basemind.toml` on the next request after it changes
 (size or modification time) and logs `config changed`. A file that no longer parses keeps the last
@@ -825,14 +866,14 @@ reconnect, and `scan_threads` is fixed for the process lifetime (the daemon logs
 required). `admin status` reports `config_stamp` (`<bytes>B@<unix seconds>`) to spot an edit.
 
 **Reserved keys.** These parse but nothing reads them yet, and setting one to a non-default value
-logs a warning (`[mcp] transport` has a single value, `stdio`, so it is reserved but cannot differ): `[watch] live_l2`, `[cache] file_map_lru`, `[mcp] transport`, `[memory] enabled` /
+logs a warning: `[watch] live_l2`, `[cache] file_map_lru`, `[memory] enabled` /
 `scope_strategy` / `default_visibility`, `[comms] enabled` / `idle_timeout_secs` /
 `max_messages_per_room` / `retention_secs` / `max_rooms` / `workspace_root`, `[shells] keep_on_exit`,
 `[documents.ocr] backend` / `languages`, and `[documents.language] preferred_languages`.
 
 **Config changes take effect on the next scan.** Cached chunks and documents carry a fingerprint of
 the settings that shape them (`[code_search]` `max_characters` / `overlap` / `max_chunks_per_file`;
-`[documents]` chunk size, page cap, language, keywords, NER, summarization, OCR, `extract_archives`,
+`[documents]` chunk size, page cap, language detection, keywords, NER, summarization, `extract_archives`,
 `[resources] document_models` and `[llm] model`), so changing one re-chunks or re-extracts only the
 affected files. Embedding scope (`embed`, `embed_include`, `embed_exclude`, and the `enabled` switches)
 is reconciled too: the first scan after a change deletes the vector rows of files that are no longer
