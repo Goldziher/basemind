@@ -52,16 +52,22 @@ pub(crate) const INIT_SCAFFOLD_TOML: &str = r##"# basemind configuration — htt
 # Extra exclude globs, ADDED ON TOP of the always-on floor (node_modules, target, dist, build, out,
 # vendor, coverage, venv, .venv, __pycache__, .git, .basemind, bazel-*, .idea, .DS_Store, …). Same
 # syntax as include: `generated` excludes every directory of that name; exclude beats include.
+# The floor also drops credentials and key material so no secret becomes searchable: .env and
+# .env.* (which includes .env.example), .aws, .ssh, .gnupg, .npmrc, .pypirc, .netrc,
+# .git-credentials, id_rsa / id_dsa / id_ecdsa / id_ed25519, *.pem, *.key, *.p12, *.pfx, *.jks,
+# *.keystore.
 # exclude = []
-# Floor entries to drop so that tree gets indexed, by directory name (or the floor pattern itself).
-# `.git` and `.basemind` can never be allowed. The default exclude also lists dist/target/
-# node_modules/.venv, so remove those from exclude as well when allowing them.
+# Floor entries to drop so that tree gets indexed, by directory name, file name or glob (`build`,
+# `.env.*`, `*.pem`), or the floor pattern itself. `.git` and `.basemind` can never be allowed. The
+# default exclude also lists dist/target/node_modules/.venv, so remove those from exclude as well
+# when allowing them.
 # floor_allow = []
 # Honor .gitignore / .git/info/exclude while walking. Leave on unless you deliberately want
 # ignored files indexed.
 # respect_gitignore = true
 # Follow symlinks during the walk. Off by default — symlinks often escape the repo (e.g. Bazel's
-# bazel-* convenience symlinks). Turn on for repos that symlink real source into place.
+# bazel-* convenience symlinks). Turn on for repos that symlink real source into place. Ignored in
+# this file unless the operator sets BASEMIND_ALLOW_FOLLOW_SYMLINKS=1 in the environment.
 # follow_symlinks = false
 # Skip files larger than this many bytes (prevents minified-bundle stalls).
 # max_file_bytes = 2097152
@@ -73,8 +79,9 @@ pub(crate) const INIT_SCAFFOLD_TOML: &str = r##"# basemind configuration — htt
 # eager_l2 = true
 # Absolute paths OUTSIDE the repo to also index (e.g. a Bazel external cache). Ignored unless the
 # operator sets BASEMIND_ALLOW_EXTRA_ROOTS in the environment (1 = any workspace, or a `:`-separated
-# list of workspace roots), because this file is authored by the repository. Symlinks inside them
-# are followed only when scan.follow_symlinks is on.
+# list of absolute workspace roots), because this file is authored by the repository. Credential
+# directories (.ssh, .aws, .gnupg, /etc) are refused even then. Symlinks inside them are followed
+# only when scan.follow_symlinks is on.
 # extra_roots = []
 
 # Per-grammar overrides, keyed by tree-sitter-language-pack name (`basemind lang list`).
@@ -137,7 +144,8 @@ pub(crate) const INIT_SCAFFOLD_TOML: &str = r##"# basemind configuration — htt
 # embed_include = []
 # embed_exclude = []
 # Route archives (.zip/.tar/.jar/…) into the recursive archive extractor. Off by default so one
-# archive can't explode into thousands of embeds. True binaries are always skipped.
+# archive can't explode into thousands of embeds. True binaries are always skipped. In the shared
+# daemon this also needs BASEMIND_DAEMON_ALLOW_EXTRACT_ARCHIVES=1 in the daemon's environment.
 # extract_archives = false
 
 [code_search]
@@ -158,7 +166,8 @@ pub(crate) const INIT_SCAFFOLD_TOML: &str = r##"# basemind configuration — htt
 # Footprint bounds. 0 = auto for the thread / concurrency caps. The shared daemon treats these as
 # ceilings: min(value here, daemon cap), with 0 / "auto" / "off" resolving to the cap. Raise a
 # daemon cap with BASEMIND_DAEMON_MAX_SCAN_THREADS / _EMBED_THREADS / _EMBED_BATCH /
-# _CONCURRENT_DOCUMENTS / _FOOTPRINT_MB / _MAP_CACHE_MB / _CANDIDATES in the daemon's environment.
+# _CONCURRENT_DOCUMENTS / _FOOTPRINT_MB / _MAP_CACHE_MB / _CANDIDATES in the daemon's environment
+# (the daemon also caps file, document, crawl and debounce settings; see the configuration docs).
 # scan_threads = 0
 # embed_threads = 0
 # max_concurrent_documents = 0
