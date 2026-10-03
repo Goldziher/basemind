@@ -133,6 +133,21 @@ fn dispatch_debounced(
 pub fn watch_paths(
     root: &Path,
     config: &Config,
+    shutdown: tokio::sync::oneshot::Receiver<()>,
+    on_change: impl FnMut(Vec<PathBuf>, BatchKind),
+) -> Result<(), WatchError> {
+    watch_paths_reloading(root, config, || None, shutdown, on_change)
+}
+
+/// [`watch_paths`] whose indexability filter follows config changes: before each batch is filtered,
+/// `reload` is asked for a new config, and a `Some` rebuilds the filter (globs, `[languages]`,
+/// floor, submodule roots) from it. The caller owns applying the same config to its own scans, so
+/// the filter and the scan can never disagree. Without this the globs and languages the watcher
+/// started with stay in force until it is restarted.
+pub fn watch_paths_reloading(
+    root: &Path,
+    config: &Config,
+    mut reload: impl FnMut() -> Option<Arc<Config>>,
     mut shutdown: tokio::sync::oneshot::Receiver<()>,
     mut on_change: impl FnMut(Vec<PathBuf>, BatchKind),
 ) -> Result<(), WatchError> {
@@ -156,7 +171,7 @@ pub fn watch_paths(
         NotifyConfig::default(),
     )?;
 
-    let filter = crate::scanner_filter::IndexFilter::new(root, config)?;
+    let mut filter = crate::scanner_filter::IndexFilter::new(root, config)?;
 
     #[cfg(target_os = "linux")]
     {
@@ -287,6 +302,15 @@ pub fn watch_paths(
             continue;
         }
 
+        if let Some(fresh) = reload() {
+            match crate::scanner_filter::IndexFilter::new(root, &fresh) {
+                Ok(rebuilt) => {
+                    info!("config changed; watcher filter rebuilt");
+                    filter = rebuilt;
+                }
+                Err(error) => warn!(%error, "config changed but its filter does not build; keeping the previous one"),
+            }
+        }
         filter.clear_cache();
         candidates.sort();
         candidates.dedup();
@@ -340,28 +364,65 @@ pub fn watch(
     }
     info!("initial scan complete; entering watch mode");
 
-    watch_paths(root, &config, shutdown, |touched, kind| {
-        let mut guard = store.lock().expect("store poisoned");
-        let mut observer = CollectObserver::new();
-        match crate::scanner::scan_paths_with_observer(
-            root,
-            &mut guard,
-            &config,
-            &touched,
-            crate::scanner::EmbedMode::Inline,
-            &crate::scanner::ScanCancel::new(),
-            &mut observer,
-        ) {
-            Ok(report) => {
-                on_batch(WatchBatch {
-                    kind,
-                    report: &report,
-                    results: observer.results(),
-                });
+    // The config the filter and the scans both use; replaced together when `basemind.toml` changes.
+    let current = Arc::new(Mutex::new(Arc::clone(&config)));
+    let reload_current = Arc::clone(&current);
+    let mut reloader = config_reloader(root);
+    watch_paths_reloading(
+        root,
+        &config,
+        move || {
+            let fresh = reloader()?;
+            *reload_current.lock().expect("config poisoned") = Arc::clone(&fresh);
+            Some(fresh)
+        },
+        shutdown,
+        |touched, kind| {
+            let config = Arc::clone(&current.lock().expect("config poisoned"));
+            let mut guard = store.lock().expect("store poisoned");
+            let mut observer = CollectObserver::new();
+            match crate::scanner::scan_paths_with_observer(
+                root,
+                &mut guard,
+                &config,
+                &touched,
+                crate::scanner::EmbedMode::Inline,
+                &crate::scanner::ScanCancel::new(),
+                &mut observer,
+            ) {
+                Ok(report) => {
+                    on_batch(WatchBatch {
+                        kind,
+                        report: &report,
+                        results: observer.results(),
+                    });
+                }
+                Err(e) => warn!(error = %e, "scan_paths failed"),
             }
-            Err(e) => warn!(error = %e, "scan_paths failed"),
+        },
+    )
+}
+
+/// A `reload` source for [`watch_paths_reloading`] that yields a freshly loaded config whenever the
+/// workspace's `basemind.toml` changed since the previous call. A file that stops loading is
+/// reported once and the previous config stays in force.
+pub fn config_reloader(root: &Path) -> impl FnMut() -> Option<Arc<Config>> + use<> {
+    let root = root.to_path_buf();
+    let mut stamp = crate::config::daemon::ConfigStamp::of(&root);
+    move || {
+        let now = crate::config::daemon::ConfigStamp::of(&root);
+        if now == stamp {
+            return None;
         }
-    })
+        stamp = now;
+        match crate::config::load_with_overrides(&root, None, None) {
+            Ok(loaded) => Some(Arc::new(loaded.config)),
+            Err(error) => {
+                warn!(%error, "config changed but does not load; keeping the previous config");
+                None
+            }
+        }
+    }
 }
 
 fn is_relevant(kind: &EventKind) -> bool {
@@ -472,6 +533,94 @@ mod tests {
 
         let _ = shutdown_tx.send(());
         let _ = handle.join();
+    }
+
+    /// A config reload must rebuild the watcher's filter: a path the startup config excluded wakes a
+    /// rescan once the reloaded config stops excluding it.
+    #[test]
+    fn reloaded_config_rebuilds_the_watcher_filter() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().canonicalize().expect("canonicalize tempdir");
+        let mut config = crate::config::default_for_root(&root);
+        config.watch.debounce_ms = 50;
+        config.scan.exclude = vec!["blocked.rs".to_string()];
+        let mut reloaded = config.clone();
+        reloaded.scan.exclude = Vec::new();
+        let reloaded = Arc::new(reloaded);
+
+        let swap = Arc::new(AtomicBool::new(false));
+        let swap_for_thread = Arc::clone(&swap);
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+        let (path_tx, path_rx) = mpsc::channel::<Vec<PathBuf>>();
+        let root_for_thread = root.clone();
+        let handle = std::thread::spawn(move || {
+            watch_paths_reloading(
+                &root_for_thread,
+                &config,
+                move || {
+                    swap_for_thread
+                        .swap(false, Ordering::SeqCst)
+                        .then(|| Arc::clone(&reloaded))
+                },
+                shutdown_rx,
+                |paths, _| {
+                    let _ = path_tx.send(paths);
+                },
+            )
+        });
+        arm_watcher(&root, &path_rx);
+
+        let blocked = root.join("blocked.rs");
+        std::fs::write(&blocked, b"fn a() {}\n").expect("write blocked");
+        while let Ok(paths) = path_rx.recv_timeout(Duration::from_millis(800)) {
+            assert!(
+                !paths.iter().any(|p| p.ends_with("blocked.rs")),
+                "the startup config excludes blocked.rs: {paths:?}"
+            );
+        }
+
+        swap.store(true, Ordering::SeqCst);
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        let mut seen = false;
+        while !seen {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "blocked.rs never surfaced after the reload"
+            );
+            std::fs::write(&blocked, b"fn b() {}\n").expect("rewrite blocked");
+            if let Ok(paths) = path_rx.recv_timeout(Duration::from_millis(500)) {
+                seen = paths.iter().any(|p| p.ends_with("blocked.rs"));
+            }
+        }
+
+        let _ = shutdown_tx.send(());
+        let _ = handle.join();
+    }
+
+    #[test]
+    fn config_reloader_yields_a_config_only_after_the_file_changes() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().canonicalize().expect("canonicalize tempdir");
+        std::fs::write(
+            root.join("basemind.toml"),
+            "\"$schema\" = \"v1\"\n[watch]\ndebounce_ms = 111\n",
+        )
+        .unwrap();
+        let mut reload = config_reloader(&root);
+        assert!(reload().is_none(), "unchanged file: nothing to reload");
+
+        std::fs::write(
+            root.join("basemind.toml"),
+            "\"$schema\" = \"v1\"\n[watch]\ndebounce_ms = 222\n",
+        )
+        .unwrap();
+        let fresh = reload().expect("a rewritten file is reloaded");
+        assert_eq!(fresh.watch.debounce_ms, 222);
+        assert!(reload().is_none(), "the change is reported once");
+
+        std::fs::write(root.join("basemind.toml"), "not toml = = =").unwrap();
+        assert!(reload().is_none(), "a broken file keeps the previous config");
     }
 
     #[test]
