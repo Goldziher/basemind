@@ -468,7 +468,9 @@ impl LanceStore {
     }
 
     fn delete_paths_in(&self, table_name: &str, scope: &str, paths: &[String]) -> Result<()> {
-        const BATCH: usize = 200;
+        // Each batch is one delete transaction (a new table version plus a scan of `path`), so a
+        // large purge is dominated by the batch COUNT; 2000 literals keep the predicate small.
+        const BATCH: usize = 2_000;
         if paths.is_empty() {
             return Ok(());
         }

@@ -51,12 +51,6 @@ struct ChunkEnvelopePeek {
     embedding_count: usize,
 }
 
-#[cfg(feature = "code-search")]
-struct ChunkEnvelope<'a> {
-    peek: ChunkEnvelopePeek,
-    payload: CompressedPayload<'a>,
-}
-
 #[derive(Deserialize)]
 struct BlobSchemaPeek {
     schema_ver: u16,
@@ -293,8 +287,20 @@ fn chunk_digest_region(digest: &str) -> &[u8] {
     }
 }
 
+/// Parsed fixed + variable header of a chunk envelope, plus where the compressed payload starts.
 #[cfg(feature = "code-search")]
-fn chunk_envelope<'a>(path: &Path, bytes: &'a [u8]) -> Result<ChunkEnvelope<'a>, StoreError> {
+struct ChunkHeader {
+    peek: ChunkEnvelopePeek,
+    uncompressed_len: usize,
+    payload_start: usize,
+    payload_end: usize,
+}
+
+/// Parse a chunk envelope's header. `bytes` need only cover the header (up to `payload_start`);
+/// `total_len` is the blob's full length, which pins down whether the optional digest region exists
+/// (the payload length is self-describing: legacy blobs end exactly at `model_end + stored_len`).
+#[cfg(feature = "code-search")]
+fn chunk_header(path: &Path, bytes: &[u8], total_len: usize) -> Result<ChunkHeader, StoreError> {
     let prefix = envelope_prefix(path, bytes)?.ok_or_else(|| corrupt_blob(path))?;
     if prefix.kind != BlobKind::Chunk {
         return Err(corrupt_blob(path));
@@ -312,23 +318,27 @@ fn chunk_envelope<'a>(path: &Path, bytes: &'a [u8]) -> Result<ChunkEnvelope<'a>,
         .checked_add(model_len)
         .ok_or_else(|| corrupt_blob(path))?;
     let legacy_end = model_end.checked_add(stored_len).ok_or_else(|| corrupt_blob(path))?;
-    let digest_len = if legacy_end == bytes.len() {
+    let digest_len = if legacy_end == total_len {
         0
     } else {
         crate::config::rules::DIGEST_LEN
     };
     let digest_end = model_end + digest_len;
     let payload_end = digest_end.checked_add(stored_len).ok_or_else(|| corrupt_blob(path))?;
-    if payload_end != bytes.len() {
+    if payload_end != total_len {
         return Err(corrupt_blob(path));
     }
-    let embedding_model = std::str::from_utf8(&bytes[CHUNK_HEADER_LEN..model_end])
+    let embedding_model = std::str::from_utf8(
+        bytes
+            .get(CHUNK_HEADER_LEN..model_end)
+            .ok_or_else(|| corrupt_blob(path))?,
+    )
+    .map_err(|_| corrupt_blob(path))?
+    .to_string();
+    let config_digest = std::str::from_utf8(bytes.get(model_end..digest_end).ok_or_else(|| corrupt_blob(path))?)
         .map_err(|_| corrupt_blob(path))?
         .to_string();
-    let config_digest = std::str::from_utf8(&bytes[model_end..digest_end])
-        .map_err(|_| corrupt_blob(path))?
-        .to_string();
-    Ok(ChunkEnvelope {
+    Ok(ChunkHeader {
         peek: ChunkEnvelopePeek {
             schema_ver: prefix.schema_ver,
             embedding_dim,
@@ -337,20 +347,56 @@ fn chunk_envelope<'a>(path: &Path, bytes: &'a [u8]) -> Result<ChunkEnvelope<'a>,
             chunk_count,
             embedding_count,
         },
-        payload: CompressedPayload {
-            uncompressed_len,
-            bytes: &bytes[digest_end..payload_end],
-        },
+        uncompressed_len,
+        payload_start: digest_end,
+        payload_end,
     })
+}
+
+#[cfg(feature = "code-search")]
+fn chunk_payload<'a>(path: &Path, bytes: &'a [u8]) -> Result<CompressedPayload<'a>, StoreError> {
+    let header = chunk_header(path, bytes, bytes.len())?;
+    Ok(CompressedPayload {
+        uncompressed_len: header.uncompressed_len,
+        bytes: &bytes[header.payload_start..header.payload_end],
+    })
+}
+
+/// Read only a chunk sidecar's header from disk: the fixed 28 bytes, then the model name and digest
+/// region they describe, never the compressed payload. `Ok(None)` when the file is missing. Blobs that
+/// are not envelopes (legacy raw msgpack) are returned whole, since they have no header to stop at.
+#[cfg(feature = "code-search")]
+fn read_chunk_header_prefix(path: &Path) -> Result<Option<(Vec<u8>, usize, bool)>, StoreError> {
+    use std::io::Read;
+    let io_err = |source| StoreError::Io {
+        path: path.to_path_buf(),
+        source,
+    };
+    let mut file = match std::fs::File::open(path) {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(io_err(e)),
+    };
+    let total_len = usize::try_from(file.metadata().map_err(io_err)?.len()).map_err(|_| corrupt_blob(path))?;
+    let mut head = vec![0u8; CHUNK_HEADER_LEN.min(total_len)];
+    file.read_exact(&mut head).map_err(io_err)?;
+    if envelope_prefix(path, &head)?.is_none() {
+        // Legacy raw blob: no envelope, so read the rest and decode it whole.
+        file.read_to_end(&mut head).map_err(io_err)?;
+        return Ok(Some((head, total_len, false)));
+    }
+    let model_len = read_u16(path, &head, 18)? as usize;
+    let want = (CHUNK_HEADER_LEN + model_len + crate::config::rules::DIGEST_LEN).min(total_len);
+    let have = head.len();
+    head.resize(want, 0);
+    file.read_exact(&mut head[have..]).map_err(io_err)?;
+    Ok(Some((head, total_len, true)))
 }
 
 #[cfg(feature = "code-search")]
 fn decode_chunk_or_legacy<'a>(path: &Path, bytes: &'a [u8]) -> Result<Cow<'a, [u8]>, StoreError> {
     match envelope_prefix(path, bytes)? {
-        Some(_) => Ok(Cow::Owned(decompress_payload(
-            path,
-            chunk_envelope(path, bytes)?.payload,
-        )?)),
+        Some(_) => Ok(Cow::Owned(decompress_payload(path, chunk_payload(path, bytes)?)?)),
         None => Ok(Cow::Borrowed(bytes)),
     }
 }
@@ -623,18 +669,19 @@ impl Store {
 
     /// Cheaply read a chunk sidecar's embedding state without decoding the chunk text. Same contract
     /// as [`read_chunks_by_hex`](Self::read_chunks_by_hex) — `Ok(None)` when the file has no chunk
-    /// blob, a schema mismatch surfaces as an error — but reads only the plain envelope's counts +
-    /// embedding dim/model, without decompressing the chunk/embedding payload. Legacy raw blobs use
+    /// blob, a schema mismatch surfaces as an error — but reads only the plain envelope header (counts,
+    /// embedding dim/model, config digest) from disk, never the compressed chunk/embedding payload. Legacy raw blobs use
     /// the prior partial-msgpack decode. Backs the `embed_state_satisfied` unchanged-file fast path.
     #[cfg(feature = "code-search")]
     pub fn peek_chunk_state(&self, hash_hex: &str) -> Result<Option<crate::chunk::CodeChunkBlobPeek>, StoreError> {
         let path = self.blob_path_chunk_hex(hash_hex);
-        let Some(bytes) = read_if_exists(&path)? else {
+        let Some((bytes, total_len, enveloped)) = read_chunk_header_prefix(&path)? else {
             return Ok(None);
         };
-        let peek = match envelope_prefix(&path, &bytes)? {
-            Some(_) => public_chunk_peek(chunk_envelope(&path, &bytes)?.peek),
-            None => rmp_serde::from_slice(&bytes)?,
+        let peek = if enveloped {
+            public_chunk_peek(chunk_header(&path, &bytes, total_len)?.peek)
+        } else {
+            rmp_serde::from_slice(&bytes)?
         };
         check_schema(peek.schema_ver)?;
         Ok(Some(peek))

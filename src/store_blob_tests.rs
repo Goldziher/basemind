@@ -353,3 +353,61 @@ fn chunk_peek_reads_plain_metadata_without_decompressing_payload() {
         "full read must observe corruption"
     );
 }
+
+/// A chunk whose text is pseudo-random (so zstd cannot shrink it away), to force a large payload.
+#[cfg(feature = "code-search")]
+fn noisy_chunk(i: u32) -> crate::chunk::CodeChunk {
+    let mut x = i.wrapping_mul(2_654_435_761).wrapping_add(1);
+    let text: String = (0..64)
+        .map(|_| {
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            char::from(b'a' + (x % 26) as u8)
+        })
+        .collect();
+    crate::chunk::CodeChunk {
+        chunk_id: format!("h:{i}"),
+        path: "a.rs".to_string(),
+        lang: "rust".to_string(),
+        kind: None,
+        symbol: None,
+        signature: None,
+        doc: None,
+        byte_start: 0,
+        byte_end: 64,
+        line_start: 1,
+        line_end: 1,
+        searchable_text: text.clone(),
+        text,
+    }
+}
+
+#[cfg(feature = "code-search")]
+#[test]
+fn chunk_peek_prefix_read_recovers_digest_and_counts_with_large_payload() {
+    init_isolated_cache();
+    let tmp = tempfile::tempdir().unwrap();
+    let store = Store::open(tmp.path(), VIEW_WORKING).expect("open store");
+    let hash_hex = "5".repeat(64);
+    let digest = "d".repeat(crate::config::rules::DIGEST_LEN);
+    let blob = crate::chunk::CodeChunkBlob {
+        config_digest: digest.clone(),
+        schema_ver: SCHEMA_VER,
+        embedding_dim: 4,
+        embedding_model: "balanced".to_string(),
+        chunks: (0..200).map(noisy_chunk).collect(),
+        embeddings: (0..200).map(|i| vec![i as f32; 4]).collect(),
+    };
+    store.write_chunks_hex(&hash_hex, &blob).expect("write chunk blob");
+    assert!(
+        std::fs::metadata(store.blob_path_chunk_hex(&hash_hex)).unwrap().len() > 2_000,
+        "payload must dwarf the header so a prefix read is distinguishable from a whole read"
+    );
+
+    let peek = store.peek_chunk_state(&hash_hex).unwrap().expect("peek present");
+    assert_eq!(peek.config_digest, digest);
+    assert_eq!(peek.chunks.len(), 200);
+    assert_eq!(peek.embeddings.len(), 200);
+    assert_eq!(store.read_chunks_by_hex(&hash_hex).unwrap(), Some(blob));
+}
