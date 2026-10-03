@@ -522,6 +522,9 @@ fn sync_git_history_after_scan(
         Ok(outcome) => {
             let summary = match outcome {
                 basemind::git_history::builder::RebuildOutcome::Fresh => "git-history index: up to date".to_string(),
+                basemind::git_history::builder::RebuildOutcome::Skipped { reason } => {
+                    format!("git-history index: not updated ({reason})")
+                }
                 basemind::git_history::builder::RebuildOutcome::Incremental { added } => {
                     format!("git-history index: +{added} commits")
                 }
