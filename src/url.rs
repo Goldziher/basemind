@@ -50,7 +50,11 @@ fn is_loopback_name(candidate: &str) -> bool {
 /// Return `true` when the private-host denylist is disabled via the
 /// [`ALLOW_PRIVATE_HOSTS_ENV`] escape hatch.
 fn private_hosts_allowed() -> bool {
-    std::env::var(ALLOW_PRIVATE_HOSTS_ENV).is_ok_and(|v| v == "1")
+    // Same spellings as the config trust gate (`config::trust`): `1`, `true`, `yes`.
+    std::env::var(ALLOW_PRIVATE_HOSTS_ENV).is_ok_and(|v| {
+        let v = v.trim();
+        v.eq_ignore_ascii_case("1") || v.eq_ignore_ascii_case("true") || v.eq_ignore_ascii_case("yes")
+    })
 }
 
 /// Classify an IP address as private / non-routable for SSRF purposes.
@@ -312,6 +316,24 @@ mod tests {
                 "{host} must be rejected as a loopback alias"
             );
         }
+    }
+
+    #[test]
+    fn escape_hatch_accepts_the_same_spellings_as_the_config_gate() {
+        let _g = env_lock();
+        for (value, allowed) in [
+            ("1", true),
+            ("true", true),
+            ("YES", true),
+            (" true ", true),
+            ("0", false),
+            ("", false),
+            ("no", false),
+        ] {
+            unsafe { std::env::set_var(super::ALLOW_PRIVATE_HOSTS_ENV, value) };
+            assert_eq!(Url::parse("http://127.0.0.1/").is_ok(), allowed, "value {value:?}");
+        }
+        unsafe { std::env::remove_var(super::ALLOW_PRIVATE_HOSTS_ENV) };
     }
 
     #[test]
