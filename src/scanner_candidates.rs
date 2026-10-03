@@ -113,8 +113,30 @@ fn extra_roots_grant_covers(value: &str, repo_root: &Path) -> bool {
     }
     let repo_root = repo_root.canonicalize().unwrap_or_else(|_| repo_root.to_path_buf());
     std::env::split_paths(value.trim())
-        .filter(|entry| !entry.as_os_str().is_empty())
+        .filter(|entry| {
+            // A relative entry would be canonicalised against the daemon's cwd (often `/`) and could
+            // cover every workspace, and `on` / `enabled` are not truthy words: say so once instead
+            // of silently granting nothing.
+            let absolute = entry.is_absolute();
+            if !absolute && !entry.as_os_str().is_empty() {
+                crate::config::trust::warn_once(format!(
+                    "{ALLOW_EXTRA_ROOTS_ENV} entry {entry:?} ignored: use 1/true/yes or a list of absolute workspace paths"
+                ));
+            }
+            absolute
+        })
         .any(|entry| repo_root.starts_with(entry.canonicalize().unwrap_or(entry)))
+}
+
+/// Directories an `extra_roots` entry may never name, grant or not: credential stores and system
+/// configuration. The workspace-level grant says "this operator uses extra roots", not "index my keys".
+fn is_sensitive_root(path: &Path) -> bool {
+    const SENSITIVE_DIRS: &[&str] = &[".ssh", ".aws", ".gnupg"];
+    path.starts_with("/etc")
+        || path.starts_with("/private/etc")
+        || path
+            .components()
+            .any(|c| SENSITIVE_DIRS.iter().any(|d| c.as_os_str() == std::ffi::OsStr::new(d)))
 }
 
 /// `1` / `true` / `yes`, case- and whitespace-insensitive. Matches `root_guard`'s private
@@ -537,6 +559,10 @@ fn vet_extra_root(raw_root: &Path, repo_root: &Path) -> Option<PathBuf> {
         );
         return None;
     }
+    if is_sensitive_root(&extra) {
+        tracing::warn!(root = %extra.display(), "extra_root refused: credential or system configuration directory");
+        return None;
+    }
     if !extra.is_dir() {
         tracing::warn!(root = %extra.display(), "extra_root skipped: not a directory");
         return None;
@@ -722,5 +748,13 @@ mod tests {
         );
         assert!(!extra_roots_grant_covers(&list, &other), "an unlisted workspace is not");
         assert!(!extra_roots_grant_covers("0", &allowed));
+        assert!(
+            !extra_roots_grant_covers(".", &allowed),
+            "a relative entry never grants"
+        );
+        assert!(!extra_roots_grant_covers("on", &allowed));
+        assert!(is_sensitive_root(Path::new("/home/u/.ssh")));
+        assert!(is_sensitive_root(Path::new("/etc/ssl")));
+        assert!(!is_sensitive_root(Path::new("/home/u/code/external")));
     }
 }
