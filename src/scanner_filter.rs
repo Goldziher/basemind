@@ -501,10 +501,39 @@ impl IndexFilter {
         if !self.filters.allows(&rel) {
             return false;
         }
+        if !self.is_regular_file(abs) {
+            return false;
+        }
         if !self.respect_gitignore {
             return true;
         }
         self.gitignore_allows(abs)
+    }
+
+    /// The full scan only yields regular files (`dent.file_type().is_file()`), and never follows a
+    /// link unless `follow_symlinks` is set. Mirror both: without it, no path component below the
+    /// root may be a symlink (a tracked `notes.md -> ~/.ssh/id_rsa`, a `link -> /etc` directory, or
+    /// `x.rs -> /dev/zero` must not be read); with it, the resolved target must be a regular file.
+    fn is_regular_file(&self, abs: &Path) -> bool {
+        if self.follow_links {
+            return std::fs::metadata(abs).is_ok_and(|m| m.is_file());
+        }
+        let Ok(rel) = abs.strip_prefix(&self.root) else {
+            return false;
+        };
+        let mut cur = self.root.clone();
+        let mut last_is_file = false;
+        for comp in rel.components() {
+            cur.push(comp.as_os_str());
+            let Ok(meta) = std::fs::symlink_metadata(&cur) else {
+                return false;
+            };
+            if meta.file_type().is_symlink() {
+                return false;
+            }
+            last_is_file = meta.is_file();
+        }
+        last_is_file
     }
 
     /// Walk the path's segments root→leaf; reject as soon as a segment is a gitignored child of its
