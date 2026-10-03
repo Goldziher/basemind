@@ -27,7 +27,7 @@ tree-sitter = "0.27"
 [dev-dependencies]
 env_logger = "0.11"
 indoc = "2.0"
-tree-sitter-python = "=0.23.5"
+tree-sitter-python = "0.25.0"
 
 [lints]
 workspace = true

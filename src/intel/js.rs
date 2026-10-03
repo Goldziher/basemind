@@ -144,7 +144,7 @@ pub fn analyze(source: &str, source_type: SourceType) -> JsAnalysis {
         resolved,
         imports,
         exports,
-        had_errors: parsed.panicked || !parsed.diagnostics.is_empty(),
+        had_errors: parsed.fatal_error || !parsed.diagnostics.is_empty(),
     }
 }
 

@@ -254,6 +254,8 @@ impl DocConfig {
         let bounded = crate::embeddings::resolve_embed_threads(self.embed_max_threads);
         let concurrency = Some(ConcurrencyConfig {
             max_threads: Some(bounded),
+            // Defer to `max_threads` for the OCR session count. ~keep
+            max_concurrent_ocr: None,
         });
         let security_limits = SecurityLimits {
             max_pages: Some(self.max_pages),
