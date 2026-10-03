@@ -35,6 +35,7 @@ use crate::extract::doc::{DocConfig, FileMapDoc, extract_doc};
 use crate::hashing::{self, Hash};
 use crate::lance::DocumentRow;
 use crate::scanner::EmbedMode;
+use crate::scanner_filter::Filters;
 use crate::store::Store;
 
 /// Per-file deferred-LanceDB-write descriptor. Constructed inside `process_file`'s parallel
@@ -214,7 +215,7 @@ fn is_denied_binary_or_archive(abs: &Path, mime_type: &str, cfg: &DocumentsConfi
             || cfg
                 .extension_denylist
                 .iter()
-                .any(|e| e.eq_ignore_ascii_case(&ext_lower))
+                .any(|e| crate::config::rules::normalize_extension(e) == ext_lower)
         {
             return true;
         }
@@ -276,16 +277,23 @@ pub(crate) fn extract_and_persist_doc(
     cfg: &DocumentsConfig,
     llm: &LlmConfig,
     resources: &ResourcesConfig,
+    filters: &Filters,
     scope: &str,
     mode: EmbedMode,
 ) -> Result<Option<PendingDocBatch>, anyhow::Error> {
-    let embed = doc_embed_requested(rel, cfg, mode);
+    let embed = doc_embed_requested(rel, cfg, mode, filters);
     let hex_buf = hashing::hex_buf(hash);
     let hash_hex = hashing::hex_str(&hex_buf);
 
-    if let Some(cached) = store.read_doc_by_hex(hash_hex).ok().flatten()
-        && cached_doc_is_reusable(&cached, cfg, embed)
+    if let Some(mut cached) = store.read_doc_by_hex(hash_hex).ok().flatten()
+        && cached_doc_is_reusable(&cached, cfg, embed, &filters.doc_digest)
     {
+        if cached.config_digest.is_empty() {
+            cached.config_digest.clone_from(&filters.doc_digest);
+            store
+                .write_doc(hash, &cached)
+                .with_context(|| format!("stamp doc blob for {rel}"))?;
+        }
         // Keep this reused blob "young" so the blob GC's grace window protects it through a NoCache
         // rename's transient entry-less gap (issue #44) instead of reaping it and forcing a re-embed.
         store.touch_doc_blob(hash_hex);
@@ -293,8 +301,9 @@ pub(crate) fn extract_and_persist_doc(
     }
 
     let doc_config = doc_config_from(cfg, llm, resources, embed);
-    let doc: FileMapDoc =
+    let mut doc: FileMapDoc =
         extract_doc(abs, Some(mime_type), &doc_config).with_context(|| format!("extract document {rel}"))?;
+    doc.config_digest.clone_from(&filters.doc_digest);
     store
         .write_doc(hash, &doc)
         .with_context(|| format!("write doc blob for {rel}"))?;
@@ -307,8 +316,8 @@ pub(crate) fn extract_and_persist_doc(
 /// `extract_and_persist_doc` (whether to ask xberg for vectors) and the `process_doc` unchanged
 /// fast path (whether a tracked-but-unembedded doc must be re-processed) so the two sides can
 /// never disagree about the requirement — a disagreement is exactly the issue-#44 loop.
-pub(crate) fn doc_embed_requested(rel: &str, cfg: &DocumentsConfig, mode: EmbedMode) -> bool {
-    matches!(mode, EmbedMode::Inline) && cfg.embed && !crate::scanner_filter::embed_excluded(rel, &cfg.embed_exclude)
+pub(crate) fn doc_embed_requested(rel: &str, cfg: &DocumentsConfig, mode: EmbedMode, filters: &Filters) -> bool {
+    matches!(mode, EmbedMode::Inline) && cfg.embed && filters.doc_embed_allowed(rel)
 }
 
 /// The pure (IO-free) half of the `process_doc` unchanged fast path: does a tracked entry settle the
@@ -317,14 +326,22 @@ pub(crate) fn doc_embed_requested(rel: &str, cfg: &DocumentsConfig, mode: EmbedM
 /// attempt must not be re-extracted + retried every scan), or this pass does not ask to embed. The
 /// caller ANDs this with a blob-existence probe (the blob may have been GC'd out from under a
 /// still-tracked entry).
+///
+/// The entry must also carry the current `config_digest` (so a changed chunk / extraction knob
+/// re-processes the doc), and `reflush` (the embed policy changed since the last scan) sends every
+/// doc that wants vectors back through the pipeline so its rows are rebuilt from the cached blob.
 pub(crate) fn doc_entry_settled(
     existing: &crate::store::DocEntry,
     hash_hex: &str,
     embedding_preset: &str,
     embed_requested: bool,
+    config_digest: &str,
+    reflush: bool,
 ) -> bool {
     existing.hash_hex == hash_hex
         && existing.embedding_preset == embedding_preset
+        && existing.config_digest == config_digest
+        && !(embed_requested && reflush)
         && (existing.embedded || existing.embed_attempted || !embed_requested)
 }
 
@@ -334,8 +351,12 @@ pub(crate) fn doc_entry_settled(
 /// so a dim-only gate would falsely reuse stale-model vectors when switching between them. A preset
 /// change (dim OR model) therefore forces recompute — same gate as `chunk_and_embed`. An
 /// empty-of-chunks doc is always reusable (recompute would yield nothing anyway). When embedding is
-/// off, any cached doc is reusable (chunks only).
-fn cached_doc_is_reusable(cached: &FileMapDoc, cfg: &DocumentsConfig, embed: bool) -> bool {
+/// off, any cached doc is reusable (chunks only). In every case the blob must have been produced
+/// under the current `config_digest` (or predate digests, in which case the caller stamps it).
+fn cached_doc_is_reusable(cached: &FileMapDoc, cfg: &DocumentsConfig, embed: bool, config_digest: &str) -> bool {
+    if !cached.config_digest.is_empty() && cached.config_digest != config_digest {
+        return false;
+    }
     if !embed || cached.chunks.is_empty() {
         return true;
     }
@@ -429,23 +450,8 @@ pub(crate) fn delete_stale_documents(store: &mut Store, config: &crate::config::
     for path in stale {
         store.remove_doc(path);
     }
-    if store.lance.is_none() && !store.lance_dir_exists() {
+    let Some(lance) = open_existing_doc_lance(store, config, "doc stale purge") else {
         return;
-    }
-    let model = &config.documents.embedding_preset;
-    let dim = match preset_dim(model) {
-        Ok(dim) => dim,
-        Err(error) => {
-            tracing::warn!(?error, preset = %model, "doc stale purge: unknown preset; skipping lance delete");
-            return;
-        }
-    };
-    let lance = match store.lance_or_open(dim, model) {
-        Ok(lance) => lance.clone(),
-        Err(error) => {
-            tracing::warn!(?error, "doc stale purge: open LanceStore failed; skipping");
-            return;
-        }
     };
     for path in stale {
         let doc_scope = doc_scope_for(path, scope, config);
@@ -460,6 +466,70 @@ pub(crate) fn delete_stale_documents(store: &mut Store, config: &crate::config::
         // keep surfacing edges from a doc that no longer exists.
         if let Err(error) = lance.replace_doc_links(doc_scope.as_ref(), path, Vec::new()) {
             tracing::warn!(rel = %path, ?error, "doc links stale purge failed; doc↔code edges may be stale");
+        }
+    }
+}
+
+/// Open the LanceDB store for a purge, or `None` when there is nothing to purge from: the store
+/// was never built (a purge must not *create* it) or the preset / open failed (logged).
+fn open_existing_doc_lance(
+    store: &mut Store,
+    config: &crate::config::Config,
+    what: &str,
+) -> Option<crate::lance::LanceStore> {
+    if store.lance.is_none() && !store.lance_dir_exists() {
+        return None;
+    }
+    let model = &config.documents.embedding_preset;
+    let dim = match preset_dim(model) {
+        Ok(dim) => dim,
+        Err(error) => {
+            tracing::warn!(?error, preset = %model, "{what}: unknown preset; skipping lance delete");
+            return None;
+        }
+    };
+    match store.lance_or_open(dim, model) {
+        Ok(lance) => Some(lance.clone()),
+        Err(error) => {
+            tracing::warn!(?error, "{what}: open LanceStore failed; skipping");
+            None
+        }
+    }
+}
+
+/// Delete the `documents` vector rows of every tracked doc that is no longer embed-eligible
+/// (`[documents] embed = false`, or the path now falls outside `embed_include` / inside
+/// `embed_exclude`). The docs stay indexed and keyword-searchable; only their vectors go. Run when
+/// the embed policy changed since the last scan; see [`crate::scanner_policy`].
+pub(crate) fn purge_unembedded_documents(
+    store: &mut Store,
+    config: &crate::config::Config,
+    filters: &Filters,
+    scope: &str,
+) {
+    let cfg = &config.documents;
+    let mut by_scope: ahash::AHashMap<String, Vec<String>> = ahash::AHashMap::new();
+    for key in store.index.doc_files.keys() {
+        let path = key.to_str_lossy();
+        if cfg.embed && filters.doc_embed_allowed(&path) {
+            continue;
+        }
+        let doc_scope = doc_scope_for(&path, scope, config).into_owned();
+        by_scope.entry(doc_scope).or_default().push(path.into_owned());
+    }
+    if by_scope.is_empty() {
+        return;
+    }
+    let Some(lance) = open_existing_doc_lance(store, config, "doc embed-policy purge") else {
+        return;
+    };
+    for (doc_scope, paths) in by_scope {
+        if let Err(error) = lance.delete_documents_for_paths(&doc_scope, &paths) {
+            tracing::warn!(
+                paths = paths.len(),
+                ?error,
+                "doc embed-policy purge failed; search_documents may still return vectors for excluded paths"
+            );
         }
     }
 }
@@ -586,415 +656,5 @@ pub(crate) fn doc_scope_for<'a>(
 mod security_tests;
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn preset_dim_for_balanced_returns_768() {
-        let dim = preset_dim("balanced").expect("balanced preset");
-        assert_eq!(dim, 768);
-    }
-
-    /// A cached doc embedded under `balanced` (dim 768) must NOT be reused when the configured
-    /// preset switches to `multilingual` (also dim 768, different model) — the dim matches, so only
-    /// the model check closes the stale-vector hole. It stays reusable when the preset is unchanged.
-    #[test]
-    fn cached_doc_not_reusable_when_preset_model_differs_at_same_dim() {
-        use crate::extract::doc::{DocChunk, FileMapDoc};
-        let doc = FileMapDoc {
-            schema_ver: 0,
-            mime_type: "application/pdf".to_string(),
-            content: "hello".to_string(),
-            metadata: Vec::new(),
-            detected_languages: Vec::new(),
-            chunks: vec![DocChunk {
-                byte_start: 0,
-                byte_end: 5,
-                text: "hello".to_string(),
-                embedding: vec![0.0_f32; 768],
-            }],
-            embedding_model: "balanced".to_string(),
-            embedding_dim: 768,
-            keywords: Vec::new(),
-            entities: Vec::new(),
-            summary: None,
-            language_confidences: Vec::new(),
-        };
-
-        let same = DocumentsConfig {
-            embedding_preset: "balanced".to_string(),
-            ..DocumentsConfig::default()
-        };
-        assert!(
-            cached_doc_is_reusable(&doc, &same, true),
-            "same preset (balanced) must reuse the cached vectors"
-        );
-
-        let switched = DocumentsConfig {
-            embedding_preset: "multilingual".to_string(),
-            ..DocumentsConfig::default()
-        };
-        assert!(
-            !cached_doc_is_reusable(&doc, &switched, true),
-            "switching balanced -> multilingual (same dim, different model) must force recompute"
-        );
-
-        assert!(
-            cached_doc_is_reusable(&doc, &switched, false),
-            "embedding off: cached doc is always reusable"
-        );
-    }
-
-    /// Structural regression guard for the streaming-flush memory fix: the accumulated per-file
-    /// descriptor must stay metadata-only. This exhaustive struct literal names EXACTLY the metadata
-    /// fields — re-introducing a `rows: Vec<DocumentRow>` (or any embedding payload) field would
-    /// break this compile, catching a regression back to the corpus-wide accumulation that held
-    /// multiple GB resident on a large repo.
-    #[test]
-    fn pending_doc_batch_is_metadata_only() {
-        let batch = PendingDocBatch {
-            rel_path: "docs/manual.pdf".to_string(),
-            blob_hash: "deadbeef".to_string(),
-            doc_scope: "repo:origin".to_string(),
-            chunk_count: 3,
-            embedding_dim: 768,
-            emit_rows: true,
-            embedded: true,
-            embed_attempted: true,
-            reused: false,
-        };
-        assert!(batch.emit_rows);
-        assert_eq!(batch.chunk_count, 3);
-    }
-
-    /// Build a minimal document fixture: `chunk_count` chunks, each carrying an `embedding_dim`-long
-    /// vector (dim `0` leaves the chunks vectorless — the failed-embed shape).
-    fn doc_fixture(chunk_count: usize, embedding_dim: u16) -> crate::extract::doc::FileMapDoc {
-        use crate::extract::doc::{DocChunk, FileMapDoc};
-        let chunks = (0..chunk_count)
-            .map(|i| DocChunk {
-                byte_start: i as u32,
-                byte_end: i as u32 + 1,
-                text: format!("chunk {i}"),
-                embedding: vec![0.0_f32; embedding_dim as usize],
-            })
-            .collect();
-        FileMapDoc {
-            schema_ver: 0,
-            mime_type: "application/pdf".to_string(),
-            content: "body".to_string(),
-            metadata: Vec::new(),
-            detected_languages: Vec::new(),
-            chunks,
-            embedding_model: if embedding_dim > 0 {
-                "balanced".to_string()
-            } else {
-                String::new()
-            },
-            embedding_dim,
-            keywords: Vec::new(),
-            entities: Vec::new(),
-            summary: None,
-            language_confidences: Vec::new(),
-        }
-    }
-
-    /// GAP-2 regression (#44 follow-up): a fresh extraction that asked to embed but got zero vectors
-    /// back (an unembeddable body / missing ONNX) is recorded as *attempted* — so the fast path can
-    /// stop re-extracting it every scan — while `embedded` stays false because no vectors exist. A
-    /// successful embed sets both; an embed-off pass sets neither attempt nor a false `embedded`.
-    #[test]
-    fn pending_from_doc_marks_a_failed_embed_as_attempted_not_embedded() {
-        let cfg = DocumentsConfig::default();
-
-        let failed = doc_fixture(3, 0);
-        let batch = pending_from_doc(&failed, "docs/a.pdf", "hash", "repo:x", &cfg, true, false);
-        assert!(!batch.embedded, "no vectors => not embedded");
-        assert!(
-            batch.embed_attempted,
-            "a fresh embed-requested extraction counts as an attempt"
-        );
-        assert!(!batch.emit_rows, "a vectorless doc emits no LanceDB rows");
-
-        let ok = doc_fixture(3, 768);
-        let batch = pending_from_doc(&ok, "docs/a.pdf", "hash", "repo:x", &cfg, true, false);
-        assert!(
-            batch.embedded && batch.embed_attempted,
-            "a successful embed sets both flags"
-        );
-
-        let off = pending_from_doc(&failed, "docs/a.pdf", "hash", "repo:x", &cfg, false, false);
-        assert!(off.embedded, "embed off leaves the requirement trivially satisfied");
-        assert!(!off.embed_attempted, "embed off ran no attempt");
-
-        let reused = pending_from_doc(&ok, "docs/a.pdf", "hash", "repo:x", &cfg, true, true);
-        assert!(
-            !reused.embed_attempted,
-            "a reused blob ran no fresh attempt (already embedded)"
-        );
-    }
-
-    /// GAP-2 regression (#44 follow-up): the fast-path predicate must treat an already-attempted doc
-    /// as settled so a deterministically-unembeddable file stops thrashing, while a legacy entry
-    /// (attempt flag absent, deserialized `false`) still heals exactly once, and a content-hash or
-    /// preset change re-opens the attempt.
-    #[test]
-    fn doc_entry_settled_backs_off_after_a_failed_embed_attempt() {
-        use crate::store::DocEntry;
-        let base = DocEntry {
-            hash_hex: "h".to_string(),
-            embedding_preset: "balanced".to_string(),
-            size_bytes: 10,
-            mtime: 0,
-            embedded: false,
-            embed_attempted: true,
-        };
-        assert!(
-            doc_entry_settled(&base, "h", "balanced", true),
-            "attempted-but-vectorless: settled, do not re-extract every scan"
-        );
-
-        let legacy = DocEntry {
-            embed_attempted: false,
-            ..base.clone()
-        };
-        assert!(
-            !doc_entry_settled(&legacy, "h", "balanced", true),
-            "a pre-field entry heals exactly once (attempt flag defaults false)"
-        );
-
-        assert!(
-            !doc_entry_settled(&base, "h2", "balanced", true),
-            "a content-hash change re-opens the attempt"
-        );
-        assert!(
-            !doc_entry_settled(&base, "h", "multilingual", true),
-            "a preset change re-opens the attempt"
-        );
-        assert!(
-            doc_entry_settled(&legacy, "h", "balanced", false),
-            "no embed requested this pass: settled regardless of the attempt flag"
-        );
-    }
-
-    /// `doc_embed_requested` is the single gate both `extract_and_persist_doc` and the
-    /// `process_doc` unchanged fast path consult; this truth table is the contract that keeps the
-    /// two sides agreeing about "will this pass embed this rel" (a disagreement is the #44 loop).
-    #[test]
-    fn doc_embed_requested_truth_table() {
-        let on = DocumentsConfig {
-            embed: true,
-            ..DocumentsConfig::default()
-        };
-        assert!(
-            !doc_embed_requested("docs/a.pdf", &on, EmbedMode::Deferred),
-            "Deferred pass never embeds"
-        );
-        assert!(
-            doc_embed_requested("docs/a.pdf", &on, EmbedMode::Inline),
-            "Inline + embed on must embed"
-        );
-
-        let off = DocumentsConfig {
-            embed: false,
-            ..DocumentsConfig::default()
-        };
-        assert!(
-            !doc_embed_requested("docs/a.pdf", &off, EmbedMode::Inline),
-            "Inline with embed off must not embed"
-        );
-
-        let excluded = DocumentsConfig {
-            embed: true,
-            embed_exclude: vec!["docs/**".to_string()],
-            ..DocumentsConfig::default()
-        };
-        assert!(
-            !doc_embed_requested("docs/a.pdf", &excluded, EmbedMode::Inline),
-            "embed_exclude match must not embed"
-        );
-        assert!(
-            doc_embed_requested("notes/a.pdf", &excluded, EmbedMode::Inline),
-            "non-excluded path still embeds"
-        );
-    }
-
-    #[test]
-    fn preset_dim_for_unknown_errors() {
-        let err = preset_dim("does-not-exist").expect_err("unknown preset");
-        let msg = err.to_string();
-        assert!(
-            msg.contains("does-not-exist"),
-            "error should name the preset; got: {msg}"
-        );
-    }
-
-    #[test]
-    fn extract_archives_toggle_gates_only_archives_not_binaries() {
-        let default_cfg = DocumentsConfig::default();
-        assert!(!default_cfg.extract_archives, "archives rejected by default");
-        assert!(is_denied_binary_or_archive(
-            Path::new("bundle.zip"),
-            "application/zip",
-            &default_cfg
-        ));
-
-        let extract_cfg = DocumentsConfig {
-            extract_archives: true,
-            ..DocumentsConfig::default()
-        };
-        assert!(
-            !is_denied_binary_or_archive(Path::new("bundle.zip"), "application/zip", &extract_cfg),
-            "extract_archives=true must route archives to the extractor"
-        );
-        assert!(
-            is_denied_binary_or_archive(Path::new("libfoo.so"), "application/x-sharedlib", &extract_cfg),
-            "binaries stay denied even with extract_archives=true"
-        );
-        assert!(
-            is_denied_binary_or_archive(Path::new("mod.wasm"), "application/wasm", &extract_cfg),
-            "wasm binary stays denied"
-        );
-    }
-
-    #[test]
-    fn matches_mime_exact_and_prefix() {
-        assert!(matches_mime("application/pdf", "application/pdf"));
-        assert!(matches_mime("image/", "image/png"));
-        assert!(matches_mime("image/", "image/jpeg"));
-        assert!(!matches_mime("image/", "video/mp4"));
-        assert!(!matches_mime("application/pdf", "application/json"));
-        assert!(!matches_mime("image/", "imageprocessing/x"));
-    }
-
-    #[test]
-    fn doc_config_from_propagates_language_settings() {
-        use crate::config::DocLanguageConfig;
-        let cfg = DocumentsConfig {
-            language: DocLanguageConfig {
-                auto_detect: true,
-                min_confidence: 0.5,
-                detect_multiple: true,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        let doc_cfg = doc_config_from(&cfg, &LlmConfig::default(), &ResourcesConfig::default(), cfg.embed);
-        assert!(doc_cfg.language.auto_detect);
-        assert_eq!(doc_cfg.language.min_confidence, 0.5);
-        assert!(doc_cfg.language.detect_multiple);
-    }
-
-    #[test]
-    fn doc_config_from_propagates_extraction_limits() {
-        let cfg = DocumentsConfig {
-            max_pages: 37,
-            extraction_timeout_secs: 42,
-            ..Default::default()
-        };
-        let doc_cfg = doc_config_from(&cfg, &LlmConfig::default(), &ResourcesConfig::default(), cfg.embed);
-        assert_eq!(doc_cfg.max_pages, 37);
-        assert_eq!(doc_cfg.extraction_timeout_secs, 42);
-    }
-
-    #[test]
-    fn doc_config_from_propagates_summarization_and_llm() {
-        use crate::config::{SummarizationConfig, SummarizationStrategy};
-        let cfg = DocumentsConfig {
-            summarization: SummarizationConfig {
-                enabled: true,
-                strategy: SummarizationStrategy::Abstractive,
-                max_tokens: Some(150),
-            },
-            ..Default::default()
-        };
-        let llm = LlmConfig {
-            model: "openai/gpt-4o".to_string(),
-            ..Default::default()
-        };
-        let doc_cfg = doc_config_from(&cfg, &llm, &ResourcesConfig::default(), cfg.embed);
-        assert!(doc_cfg.summarization.enabled);
-        assert_eq!(doc_cfg.summarization.max_tokens, Some(150));
-        assert_eq!(doc_cfg.llm.model, "openai/gpt-4o");
-    }
-
-    #[test]
-    fn should_extract_document_respects_disabled_flag() {
-        let cfg = DocumentsConfig {
-            enabled: false,
-            ..Default::default()
-        };
-        let out = should_extract_document(Path::new("dummy.pdf"), &cfg);
-        assert!(out.is_none());
-    }
-
-    #[test]
-    fn should_extract_document_rejects_archives_and_binaries() {
-        let cfg = DocumentsConfig::default();
-        for path in [
-            "vendor/lib.zip",
-            "target/app.jar",
-            "dist/bundle.tar.gz",
-            "build/libfoo.so",
-            "pkg/module.wasm",
-            "out/Main.class",
-            "wheels/pkg-1.0.whl",
-            "bin/tool.exe",
-            "obj/thing.o",
-        ] {
-            assert!(
-                should_extract_document(Path::new(path), &cfg).is_none(),
-                "archive/binary must be denied: {path}"
-            );
-        }
-    }
-
-    #[test]
-    fn should_extract_document_allows_real_documents() {
-        let cfg = DocumentsConfig::default();
-        for path in ["docs/manual.pdf", "notes/readme.txt", "report.csv"] {
-            assert!(
-                should_extract_document(Path::new(path), &cfg).is_some(),
-                "extractable document must pass: {path}"
-            );
-        }
-    }
-
-    #[test]
-    fn should_extract_document_honors_extension_denylist_override() {
-        let cfg = DocumentsConfig {
-            extension_denylist: vec!["pdf".to_string()],
-            ..Default::default()
-        };
-        assert!(should_extract_document(Path::new("docs/manual.pdf"), &cfg).is_none());
-        assert!(should_extract_document(Path::new("vendor/lib.zip"), &cfg).is_none());
-    }
-
-    #[test]
-    fn images_pass_but_audio_video_denied() {
-        let cfg = DocumentsConfig::default();
-        assert!(should_extract_document(Path::new("assets/photo.png"), &cfg).is_some());
-        assert!(should_extract_document(Path::new("clips/audio.mp3"), &cfg).is_none());
-        assert!(should_extract_document(Path::new("clips/movie.mp4"), &cfg).is_none());
-    }
-
-    #[test]
-    fn doc_scope_keeps_default_for_repo_relative_paths() {
-        let cfg = crate::config::ConfigV1::with_defaults();
-        let scope = doc_scope_for("docs/manual.pdf", "repo:origin", &cfg);
-        assert_eq!(scope, "repo:origin");
-        assert!(matches!(scope, std::borrow::Cow::Borrowed(_)));
-    }
-
-    #[test]
-    fn doc_scope_namespaces_external_files_under_their_extra_root() {
-        let ext = tempfile::tempdir().expect("tempdir");
-        let ext_canonical = std::fs::canonicalize(ext.path()).unwrap();
-        let mut cfg = crate::config::ConfigV1::with_defaults();
-        cfg.scan.extra_roots = vec![ext.path().to_path_buf()];
-
-        let file_key = ext_canonical.join("pkg/notes.pdf");
-        let scope = doc_scope_for(file_key.to_str().unwrap(), "repo:origin", &cfg);
-        assert_eq!(scope, format!("path:{}", ext_canonical.to_str().unwrap()));
-    }
-}
+#[path = "scanner_docs_tests.rs"]
+mod tests;

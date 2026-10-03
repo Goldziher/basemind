@@ -32,6 +32,8 @@ pub const LANE_CODE_REMOVALS: &str = "code_removals";
 /// Purge of `documents` rows for docs removed since the last scan.
 #[cfg(feature = "documents")]
 pub const LANE_DOC_REMOVALS: &str = "doc_removals";
+/// Purge of vector / keyword rows for files no longer eligible after an embed-policy change.
+pub const LANE_EMBED_POLICY: &str = "embed_policy";
 /// Corpus-global BM25 statistics recompute.
 pub const LANE_BM25_STATS: &str = "bm25_stats";
 

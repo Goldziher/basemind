@@ -94,6 +94,11 @@ pub struct CodeChunkBlob {
     pub embedding_model: String,
     pub chunks: Vec<CodeChunk>,
     pub embeddings: Vec<Vec<f32>>,
+    /// Fingerprint ([`crate::config::rules::code_digest`]) of the chunking settings this blob was
+    /// produced under. A blob whose digest differs from the current config is re-chunked. Empty on
+    /// blobs written before the field existed; those are adopted (and stamped) on first reuse.
+    #[serde(default)]
+    pub config_digest: String,
 }
 
 /// A cheap partial decode of a [`CodeChunkBlob`] sidecar: only what `embed_state_satisfied` needs to
@@ -117,6 +122,9 @@ pub struct CodeChunkBlobPeek {
     pub chunks: Vec<serde::de::IgnoredAny>,
     /// Embedding count only — element contents discarded.
     pub embeddings: Vec<serde::de::IgnoredAny>,
+    /// See [`CodeChunkBlob::config_digest`]; `""` for a blob that predates it.
+    #[serde(default)]
+    pub config_digest: String,
 }
 
 /// A chunk before line numbers / ids / searchable_text are finalized.
@@ -518,6 +526,7 @@ mod tests {
     #[test]
     fn code_chunk_blob_round_trips_embedding_model() {
         let blob = CodeChunkBlob {
+            config_digest: String::new(),
             schema_ver: 7,
             embedding_dim: 768,
             embedding_model: "balanced".to_string(),

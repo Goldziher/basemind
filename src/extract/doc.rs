@@ -84,6 +84,12 @@ pub struct FileMapDoc {
     /// Tail field so older positional msgpack blobs remain readable.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub language_confidences: Vec<DocLanguageConfidence>,
+    /// Fingerprint ([`crate::config::rules::doc_digest`]) of the extraction settings this document
+    /// was produced under; a blob under a different digest is re-extracted. Stamped by the scanner,
+    /// empty straight out of `extract_doc` and on blobs that predate the field (adopted on first
+    /// reuse). Tail field for the same reason as `language_confidences`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub config_digest: String,
 }
 
 /// Stable mirror of xberg's per-language confidence metadata.
@@ -535,6 +541,7 @@ pub fn extract_doc(path: &Path, mime_type: Option<&str>, config: &DocConfig) -> 
     let language_confidences = map_language_confidences(result.detected_language_confidences.unwrap_or_default());
 
     Ok(FileMapDoc {
+        config_digest: String::new(),
         schema_ver: SCHEMA_VER,
         mime_type: result.mime_type.into_owned(),
         content: result.content,
