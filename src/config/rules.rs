@@ -113,11 +113,16 @@ pub fn doc_digest(cfg: &DocumentsConfig, resources: &ResourcesConfig, llm: &LlmC
             cfg.max_chunks_per_document,
             cfg.max_pages,
             cfg.extract_archives,
-            &cfg.language,
+            // Only the knobs that reach the extractor: `preferred_languages` and `[ocr]` are
+            // reserved, so editing them must not re-extract every document.
+            (
+                cfg.language.auto_detect,
+                cfg.language.min_confidence.to_bits(),
+                cfg.language.detect_multiple,
+            ),
             &cfg.keywords,
             &cfg.ner,
             &cfg.summarization,
-            &cfg.ocr,
             resources.document_models,
             &llm.model,
         ),
@@ -151,6 +156,31 @@ mod tests {
         compile_patterns(patterns.iter().copied())
             .expect("compiles")
             .is_match(path)
+    }
+
+    #[test]
+    fn doc_digest_ignores_reserved_fields_but_tracks_live_ones() {
+        let resources = ResourcesConfig::default();
+        let llm = LlmConfig::default();
+        let base = DocumentsConfig::default();
+        let digest = |cfg: &DocumentsConfig| doc_digest(cfg, &resources, &llm);
+
+        let mut reserved = base.clone();
+        reserved.language.preferred_languages = vec!["fra".into()];
+        reserved.ocr.languages = vec!["deu".into()];
+        reserved.ocr.backend = crate::config::documents::OcrBackend::Paddle;
+        assert_eq!(
+            digest(&base),
+            digest(&reserved),
+            "reserved keys must not invalidate documents"
+        );
+
+        let mut live = base.clone();
+        live.language.detect_multiple = !live.language.detect_multiple;
+        assert_ne!(digest(&base), digest(&live));
+        let mut live = base.clone();
+        live.max_pages += 1;
+        assert_ne!(digest(&base), digest(&live));
     }
 
     #[test]
@@ -289,5 +319,38 @@ mod tests {
         let mut other = base;
         other.code_search.max_characters += 1;
         assert_eq!(embed_policy_digest(&other), digest);
+    }
+
+    #[test]
+    fn a_lone_slash_is_used_verbatim_and_matches_nothing() {
+        assert_eq!(expand_pattern("/"), vec!["/".to_string()]);
+        assert!(!matches(&["/"], "a"));
+        assert!(!matches(&["/"], "src/lib.rs"));
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn compile_patterns_never_panics(pattern in ".{0,64}") {
+            let _ = compile_patterns([pattern.as_str()]);
+        }
+
+        #[test]
+        fn a_meta_free_pattern_always_compiles(pattern in "[a-zA-Z0-9_./ -]{0,32}") {
+            proptest::prop_assert!(compile_patterns([pattern.as_str()]).is_ok());
+        }
+
+        #[test]
+        fn a_bare_name_matches_whole_segments_only(name in "[a-z][a-z0-9_]{0,8}") {
+            let set = compile_patterns([name.as_str()]).unwrap();
+            let nested = format!("{name}/x/y");
+            let deep = format!("0/{name}/b");
+            let longer = format!("0/{name}q");
+            let prefixed = format!("q{name}/0");
+            proptest::prop_assert!(set.is_match(&name));
+            proptest::prop_assert!(set.is_match(&nested));
+            proptest::prop_assert!(set.is_match(&deep));
+            proptest::prop_assert!(!set.is_match(&longer));
+            proptest::prop_assert!(!set.is_match(&prefixed));
+        }
     }
 }
