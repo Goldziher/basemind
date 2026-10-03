@@ -48,6 +48,7 @@ All tunables live under a named section — there are no bare top-level options.
 | Section | Purpose |
 |---|---|
 | `[scan]` | What to index: globs, size caps, gitignore, submodules, L2, extra roots. |
+| `[code_intel]` | Precise, scope- and import-aware name resolution (`precise_resolution`, default `true`). |
 | `[watch]` | Live-watch debounce and whether the watcher extracts L2. |
 | `[cache]` | In-memory FileMap LRU size. |
 | `[mcp]` | MCP transport (`stdio`). |
@@ -59,7 +60,7 @@ All tunables live under a named section — there are no bare top-level options.
 | `[comms]` | Agent comms identity + retention (needs `--features comms`). |
 | `[shells]` | Agent-shell presentation (needs `--features shells`). |
 | `[llm]` | Shared LLM settings for reranking, NER, and summarization. |
-| `[languages]` | Per-grammar toggles and extension/file-name mappings. |
+| `[languages.<grammar>]` | Per-grammar toggles and extension/file-name mappings. |
 
 ### `[scan]` Section
 
@@ -67,23 +68,54 @@ All tunables live under a named section — there are no bare top-level options.
 [scan]
 include = ["**/*"]
 exclude = ["**/target/**", "**/node_modules/**", "**/bazel-*/**"]
+floor_allow = []
 respect_gitignore = true
+follow_symlinks = false
 max_file_bytes = 2097152          # 2 MiB
 skip_submodules = true
 eager_l2 = true
 extra_roots = ["/path/to/external/repo"]
+max_candidates = 500000
 ```
+
+Globs are repo-relative with forward slashes and case-sensitive; `*` also crosses `/`, so `src/*.rs`
+matches `src/a/b.rs`. A pattern with no glob characters is gitignore-like: `generated` matches every
+path segment of that name at any depth and everything beneath it, and `docs/api` is anchored at the
+root and matches that path and everything beneath it. Exclusion beats inclusion. The same syntax
+applies to every `include` / `exclude` / `embed_include` / `embed_exclude` list in the file. An
+invalid glob, or a negated pattern (`!foo`), is a config error. For `extra_roots` files the globs are
+matched against the path relative to that root.
 
 | Key | Type | Default | Notes |
 |---|---|---|---|
-| `include` | array of globs | `["**/*"]` | Files to index. Language detection still filters by tree-sitter support. |
-| `exclude` | array of globs | build/vendor dirs | Excludes `target/`, `node_modules/`, `dist/`, `.venv/`, `.git/`, `.basemind/`, and `bazel-*` trees. A bare name without glob characters (`generated`) matches that path segment at any depth and everything beneath it. |
-| `floor_allow` | array of strings | `[]` | Entries to remove from the always-on exclude floor, by directory (`build`, `vendor`) or by floor pattern (`**/build/**`). A directory also listed in the default `exclude` must be removed from `exclude` too. `.git` and `.basemind` can never be allowed; an entry naming nothing in the floor is ignored with a warning. |
+| `include` | array of globs | `["**/*"]` | Files to index; at least one entry is required (an empty list would index nothing and is rejected at load). Language detection still filters by tree-sitter support. |
+| `exclude` | array of globs | build/vendor dirs | Excludes `target/`, `node_modules/`, `dist/`, `.venv/`, `.git/`, `.basemind/`, and `bazel-*` trees. Applied on top of the always-on exclude floor below. |
+| `floor_allow` | array of strings | `[]` | Entries to remove from the always-on exclude floor, by directory (`build`, `vendor`), file name or glob (`.env.*`, `*.pem`), or floor pattern (`**/build/**`). A directory also listed in the default `exclude` must be removed from `exclude` too. `.git` and `.basemind` can never be allowed; an entry naming nothing in the floor is ignored with a warning. |
 | `respect_gitignore` | bool | `true` | Honor `.gitignore` during the walk. |
+| `follow_symlinks` | bool | `false` | Follow symlinks during the walk, including `extra_roots` walks. Symlinks often escape the repo (Bazel's `bazel-*` convenience links), so the repository's own `basemind.toml` cannot turn this on: it is forced to `false` with a warning unless the operator sets `BASEMIND_ALLOW_FOLLOW_SYMLINKS=1`. Without it, working-tree reads (including the watcher and `rescan paths`) refuse symlinked files and paths resolving outside the workspace. |
 | `max_file_bytes` | integer | `2097152` | Skip files larger than this (2 MiB). Prevents minified-bundle stalls. |
 | `skip_submodules` | bool | `true` | Skip paths under submodule roots listed in `.gitmodules`. |
 | `eager_l2` | bool | `true` | Extract L2 (call sites) inline with the scan. `false` trades reference search for a faster scan. |
-| `extra_roots` | array of paths | `[]` | Index directories outside the repo root (e.g., a Bazel external cache). External files are keyed by absolute path; (re-)indexed on full `basemind scan` only (not live-watched). Ignored unless the operator sets `BASEMIND_ALLOW_EXTRA_ROOTS=1` (or a `:`-separated list of workspace roots) in the environment, because `basemind.toml` is authored by the repository, not the operator. |
+| `extra_roots` | array of absolute paths | `[]` | Index directories outside the repo root (e.g., a Bazel external cache). External files are keyed by absolute path; (re-)indexed on full `basemind scan` only (not live-watched); they count toward `max_candidates`. Ignored with a warning unless the operator grants it (see [Trust boundary](#trust-boundary)). Missing roots, roots inside the repo, filesystem roots and credential directories (`.ssh`, `.aws`, `.gnupg`, `/etc`) are skipped. |
+| `max_candidates` | integer | `500000` | Ceiling on files one scan may keep, across the repo walk and every extra root (minimum 0). Exceeding it aborts before any extraction or index write, and the error names the heaviest directories. The walk also aborts if it visits far more entries than this. `0` disables both bounds. Does not apply to `--staged` / `--rev` scans. |
+
+#### Exclude floor
+
+Independent of `exclude`, a floor of paths is never indexed: `node_modules`, `dist`, `build`, `out`,
+`coverage`, `.next`, `.nuxt`, `.svelte-kit`, `.venv`, `venv`, `__pycache__`, `*.pyc`, the pytest /
+mypy / ruff caches, `.tox`, `target`, `.gradle`, `vendor`, `.terraform`, `bazel-*`, `.git`,
+`.basemind`, `.idea` and `.DS_Store`.
+
+The floor also holds credential and key material, so a secret never becomes searchable by every agent
+that can query the index: `.env` and `.env.*`, `.aws/`, `.ssh/`, `.gnupg/`, `.npmrc`, `.pypirc`,
+`.netrc`, `.git-credentials`, `id_rsa` / `id_dsa` / `id_ecdsa` / `id_ed25519`, and `*.pem`, `*.key`,
+`*.p12`, `*.pfx`, `*.jks`, `*.keystore`.
+
+<Aside type="caution">
+`.env.*` also matches `.env.example` and `.env.sample`. The floor has no finer exception, so
+`floor_allow = [".env.*"]` indexes every `.env.<suffix>` file, real secrets included. Prefer
+renaming the template (`env.example`) over allowing the pattern.
+</Aside>
 
 ### `[watch]` Section
 
@@ -127,16 +159,19 @@ max_chunks_per_document = 2000
 
 | Key | Type | Notes |
 |---|---|---|
-| `enabled` | bool | Enable/disable document indexing. Requires the model files, which download on first use. |
+| `enabled` | bool | Enable/disable document indexing (default `true`). Requires the model files, which download on first use. |
 | `embed` | bool | Generate vector embeddings for semantic search. Set `false` to keep full-text only. |
 | `embedding_preset` | string | Named embedding model preset used to embed chunks. |
-| `max_chunks_per_document` | integer | Cap on chunks embedded per document, so one pathological file can't explode a scan. |
+| `max_chunks_per_document` | integer | Cap on chunks embedded per document (default 2000), so one pathological file can't explode a scan. |
+| `max_pages` / `extraction_timeout_secs` | integer | Per-document extraction bounds: pages (default 500) and wall-clock seconds (default 600). |
+| `max_characters` / `overlap` | integer | Chunk size (default 1000, minimum 64) and overlap (default 200); `overlap` must stay below `max_characters`. |
+| `extract_archives` | bool | Extract the files inside archives (`.zip`, `.tar`, `.jar`, ...). Default `false`; true binaries are always rejected. In the daemon this also needs an operator grant (see [Trust boundary](#trust-boundary)). |
 | `mime_allowlist` | array of strings | Restrict extraction to specific MIME types (empty = accept all supported types). |
 | `extension_denylist` | array of strings | File extensions never routed to extraction (archives and binaries are denied by default). |
-| `include` | array of globs | Allow-list selecting which non-code files are indexed as documents. Empty = every non-code file that passes `[scan]`. `exclude` wins. |
+| `include` | array of globs | Allow-list selecting which non-code files are indexed as documents. Empty (default) = every non-code file that passes `[scan]`. `exclude` wins. |
 | `exclude` | array of globs | Deny-list applied to document indexing itself: matching files are not extracted, chunked or searchable. |
-| `max_file_bytes` | integer | Per-document size cap in bytes (minimum 1024, default 50 MiB), independent of `[scan] max_file_bytes`, so PDFs and Office files above the 2 MiB source cap are still extracted. |
-| `embed_include` / `embed_exclude` | array of globs | Embedding scope: with a non-empty `embed_include` only matching documents are embedded; `embed_exclude` beats it. Excluded documents stay keyword-searchable. Changing either removes the vector rows of newly excluded files on the next scan. |
+| `max_file_bytes` | integer | Per-document size cap in bytes (minimum 1024, default `52428800` = 50 MiB), independent of `[scan] max_file_bytes`, so PDFs and Office files above the 2 MiB source cap are still extracted. Larger files are skipped and counted as too large in the scan summary. |
+| `embed_include` / `embed_exclude` | array of globs | Embedding scope, only consulted when `embed = true`: with a non-empty `embed_include` only matching documents are embedded; `embed_exclude` beats it. Both only narrow what `include` / `exclude` already index. Excluded documents stay extracted and keyword-searchable. Changing either removes the vector rows of newly excluded files on the next scan. |
 
 The `[documents]` tree also carries sub-tables for reranking, keywords, NER, summarization, and OCR
 (`[documents.reranker]`, `[documents.keywords]`, and so on). `[documents.ocr] backend` / `languages`
@@ -186,9 +221,10 @@ enabled = false
 | Key | Type | Default | Notes |
 |---|---|---|---|
 | `enabled` | bool | `true` | Chunk + index source on scan. |
-| `max_characters` | integer | — | Max chunk size; longer chunks split into overlapping windows. |
-| `overlap` | integer | — | Overlap between split windows, in characters. |
-| `embed` | bool | `true` | Emit vector rows for the semantic lane. With `false`, the BM25 keyword lane still works but the vector lane returns nothing. |
+| `max_characters` | integer | `1500` | Max chunk size (minimum 64); longer chunks split into overlapping windows. |
+| `overlap` | integer | `200` | Overlap between split windows, in characters. |
+| `max_chunks_per_file` | integer | `2000` | Cap on chunks indexed per source file, so a generated table or bundle cannot fan out into an unbounded chunk count. |
+| `embed` | bool | `false` | Emit vector rows for the semantic lane. Off by default: the BM25 keyword lane covers most code queries and no ONNX model is downloaded. With `false` the vector lane returns nothing. |
 | `embed_include` | array of globs | `[]` | When non-empty only matching files are embedded; the rest stay chunked and keyword-searchable. Only used with `embed = true`. |
 | `embed_exclude` | array of globs | `[]` | Files that are chunked and indexed but never embedded. Beats `embed_include`. |
 | `[code_search.reranker] enabled` | bool | `false` | Optional cross-encoder rerank of fused hits (downloads an ONNX model on first use). |
@@ -206,9 +242,11 @@ default_visibility = "group"
 
 | Key | Type | Default | Notes |
 |---|---|---|---|
-| `enabled` | bool | `true` | Master switch (only meaningful with the `memory` feature). |
-| `scope_strategy` | enum | `git_remote_with_fallback` | How the repo scope key is derived. `git_remote_with_fallback` shares memory across clones of the same remote; `workdir_only` keeps each clone separate. |
-| `default_visibility` | enum | `group` | Default tier when a `memory` tool call omits `visibility`. `group` is shared; `individual` is private to the calling agent. |
+| `enabled` | bool | `true` | Reserved: the `memory` cargo feature alone decides whether memory is available. |
+| `scope_strategy` | enum | `git_remote_with_fallback` | Reserved. Intended: `git_remote_with_fallback` shares memory across clones of the same remote; `workdir_only` keeps each clone separate. |
+| `default_visibility` | enum | `group` | Reserved. Intended: default tier when a `memory` tool call omits `visibility` (`group` shared, `individual` private to the calling agent). |
+
+All three `[memory]` keys parse but currently have no effect (see [Reserved keys](#reserved-keys)).
 
 ### `[crawl]` Section
 
@@ -229,7 +267,10 @@ allow_private_network = false
 | `max_depth` | integer | `2` | Maximum link-following depth from the seed URL. |
 | `max_body_size` | integer | `4194304` | Truncate response bodies above this many bytes (4 MiB). |
 | `user_agent` | string | `basemind/<version>` | Identifies the crawler to site operators. |
-| `allow_private_network` | bool | `false` | Allow URLs resolving to private/loopback/link-local addresses. Off by default (SSRF guard). |
+| `allow_private_network` | bool | `false` | Allow URLs resolving to private/loopback/link-local addresses. Off by default (SSRF guard). Honoured from the repository's own file only with `BASEMIND_ALLOW_PRIVATE_HOSTS` (see [Trust boundary](#trust-boundary)). |
+
+The daemon caps `max_pages`, `max_depth` and `max_body_size`, and the per-call `web` `crawl`
+overrides for pages and depth, at operator-raisable ceilings (see [Daemon](#daemon)).
 
 ### `[comms]` Section
 
@@ -243,12 +284,16 @@ agent_id = "my-agent"
 
 | Key | Type | Default | Notes |
 |---|---|---|---|
-| `enabled` | bool | `true` | Connect to the comms daemon (only meaningful with the `comms` feature). |
+| `enabled` | bool | `true` | Reserved: the `comms` cargo feature alone decides whether comms runs. |
 | `agent_id` | string | auto | Stable identity presented to the broker. Falls back to `BASEMIND_AGENT_ID`, then a generated per-session id. |
-| `idle_timeout_secs` | integer | — | Idle window before the broker sheds caches. |
-| `max_messages_per_room` | integer | — | Per-thread front-matter retention cap. |
-| `retention_secs` | integer | — | Message retention window; older messages become prune-eligible. |
-| `max_rooms` | integer | — | Hard cap on concurrently registered threads. |
+| `idle_timeout_secs` | integer | `1800` | Reserved: idle window before the broker sheds caches. |
+| `max_messages_per_room` | integer | `1000` | Reserved: per-thread front-matter retention cap. |
+| `retention_secs` | integer | `604800` | Reserved: message retention window; older messages become prune-eligible. |
+| `max_rooms` | integer | `256` | Reserved: hard cap on concurrently registered threads. |
+| `workspace_root` | string | unset | Reserved. |
+
+Only `agent_id` is read. The other `[comms]` keys, including `enabled`, parse but currently have no
+effect (see [Reserved keys](#reserved-keys)).
 
 ### `[llm]` Section
 
@@ -258,34 +303,21 @@ dormant unless both `model` and `api_key` are supplied, so it imposes no config 
 ```toml
 [llm]
 model = "..."
-api_key = "sk-..."  # or the BASEMIND_LLM_API_KEY env var
+api_key = { env = "OPENAI_API_KEY" }   # or a literal string (discouraged); BASEMIND_LLM_API_KEY also works
 base_url = "https://api.openai.com/v1"
 ```
 
 | Key | Type | Notes |
 |---|---|---|
-| `model` | string | Model ID. LLM-backed features are a no-op until this and `api_key` are both set. |
-| `api_key` | string | API key for the provider. Also read from `BASEMIND_LLM_API_KEY`. |
-| `base_url` | string | Override the provider endpoint URL. |
+| `model` | string | `provider/model` ID (`openai/gpt-4o`). LLM-backed features are a no-op until this and `api_key` are both set. |
+| `api_key` | string or `{ env = "NAME" }` | API key, or the name of the environment variable holding it. Also read from `BASEMIND_LLM_API_KEY`. In the repository's own file an env reference is honoured only for the chosen provider's standard variable or `BASEMIND_LLM_API_KEY` (see [Trust boundary](#trust-boundary)). |
+| `base_url` | string | Override the provider endpoint URL. Ignored from the repository's own file without `BASEMIND_ALLOW_REPO_LLM`; a CLI flag or env override is always honoured. |
 | `temperature` | float | Sampling temperature. |
 | `timeout_secs` | integer | Per-request timeout. |
 | `max_retries` | integer | Retry budget on transient failures. |
 | `max_tokens` | integer | Cap on generated tokens. |
 
-## Environment Variables
-
-Settings map to environment variables by prefixing `BASEMIND_`, uppercasing, and joining the
-section and key with an underscore.
-
-```bash
-BASEMIND_SCAN_EAGER_L2=false
-BASEMIND_SCAN_EXTRA_ROOTS="/path/to/external"
-BASEMIND_DOCUMENTS_ENABLED=true
-BASEMIND_COMMS_AGENT_ID="my-agent"
-BASEMIND_LLM_API_KEY="sk-..."
-```
-
-### `[languages]` Section
+### `[languages.<grammar>]` Section
 
 Per-grammar overrides, keyed by a tree-sitter-language-pack grammar name.
 
@@ -299,21 +331,133 @@ filenames = ["Jinjafile"]  # exact file names mapped to this grammar
 preload = true             # also fetch the grammar in `basemind lang install`
 ```
 
-An unknown grammar name is a config error with near-match suggestions. Overrides take precedence
-over built-in detection; already-indexed files of a disabled or remapped language are updated on the
-next scan.
+| Key | Type | Default | Notes |
+|---|---|---|---|
+| `enabled` | bool | `true` | `false` stops parsing the grammar's files as code; they are handled as if no grammar recognised them and fall through to the document tier, where `[documents] exclude` can drop them. Use it for misdetections such as `.txt` (vimdoc) or `.conf` (nginx). |
+| `extensions` | array of strings | `[]` | Extra suffixes mapped to the grammar: leading dot optional, case-insensitive, compound suffixes like `.html.erb` allowed. |
+| `filenames` | array of strings | `[]` | Exact file names mapped to the grammar. A file name beats an extension. |
+| `preload` | bool | `false` | Also fetch the grammar in `basemind lang install`. By default only the languages basemind ships queries for are pre-fetched; the rest download on first use. |
+
+The table key must be a tree-sitter-language-pack grammar name (`basemind lang list` shows them). An
+unknown name is a config error with near-match suggestions. Overrides take precedence over built-in
+detection; already-indexed files of a disabled or remapped language are updated on the next scan
+(files of a disabled language are dropped).
+
+## Environment Variables
+
+Settings map to environment variables by prefixing `BASEMIND_`, uppercasing, and joining the
+section and key with an underscore. Only the `documents.*` and `llm.*` keys have CLI-flag and
+environment overrides; every other setting is file-only.
+
+```bash
+BASEMIND_DOCUMENTS_ENABLED=true
+BASEMIND_DOCUMENTS_OVERLAP=100
+BASEMIND_LLM_MODEL="openai/gpt-4o"
+BASEMIND_LLM_API_KEY="sk-..."
+```
 
 <Aside type="tip">
 Environment variables take precedence over the config file (but CLI flags and per-request MCP
 overrides still win over them). Useful for CI/CD where you don't want to commit secrets.
 </Aside>
 
-The environment variables below are read directly rather than mapped from a config key:
+### Trust boundary
+
+`basemind.toml` is authored by the repository, not by the operator running basemind, so settings that
+reach outside the process are honoured only when the operator grants them in the environment. The
+gate applies to the file layer only; env and CLI overrides are operator-supplied and never gated.
+Grant variables accept `1`, `true` or `yes` (case-insensitive).
+
+| Setting in the repo's file | Honoured only when |
+|---|---|
+| `[llm] base_url` | `BASEMIND_ALLOW_REPO_LLM=1`; otherwise ignored with a warning (a clone could aim it at a host that collects your API key and document text). Pass it with `--llm-base-url` / `BASEMIND_LLM_BASE_URL` instead. |
+| `[llm] api_key = { env = "NAME" }` | `NAME` is the chosen provider's standard variable (`OPENAI_API_KEY` for `openai/...`, `ANTHROPIC_API_KEY` for `anthropic/...`, ...) or `BASEMIND_LLM_API_KEY`, or `BASEMIND_ALLOW_REPO_LLM=1`; otherwise the key is treated as unset with a warning. |
+| `[crawl] allow_private_network = true` | `BASEMIND_ALLOW_PRIVATE_HOSTS=1`; otherwise reset to `false` with a warning. The same variable governs the URL guard for `web` fetches. |
+| `[scan] follow_symlinks = true` | `BASEMIND_ALLOW_FOLLOW_SYMLINKS=1`; otherwise reset to `false` with a warning. |
+| `[scan] extra_roots` | `BASEMIND_ALLOW_EXTRA_ROOTS` set to `1` / `true` / `yes` (every workspace the process scans), or to a list of absolute workspace roots separated by `:` (`;` on Windows) that grants only those workspaces and their descendants. A relative entry, or another word such as `on`, is ignored with a warning. Prefer the list form for a daemon, which serves many repositories: the bare `1` also opens `extra_roots` for any workspace it serves later. |
+| `[documents] extract_archives = true` | Daemon only: `BASEMIND_DAEMON_ALLOW_EXTRACT_ARCHIVES=1` in the daemon's environment; otherwise reset to `false` with a warning. |
+
+A `basemind.toml` that is a symlink leaving the workspace is not followed, so a parse error cannot
+quote a file the repository does not own.
+
+### Daemon
+
+The shared daemon serves every workspace on the machine, so it treats resource settings as ceilings:
+the effective value is the smaller of the file's value and the daemon's cap, and a file value meaning
+"no limit" (`0`, `"auto"`, `"off"`) resolves to the cap. The operator raises a cap in the daemon's own
+environment, which a repository cannot write. A cap variable must be a positive integer; anything else
+falls back to the default.
+
+| Variable | Caps | Default |
+|---|---|---|
+| `BASEMIND_DAEMON_MAX_SCAN_THREADS` | `[resources] scan_threads` | 4 |
+| `BASEMIND_DAEMON_MAX_EMBED_THREADS` | `[resources] embed_threads` | 4 |
+| `BASEMIND_DAEMON_MAX_EMBED_BATCH` | `[resources] embed_batch_size` | 8 |
+| `BASEMIND_DAEMON_MAX_CONCURRENT_DOCUMENTS` | `[resources] max_concurrent_documents` | 4 |
+| `BASEMIND_DAEMON_MAX_FOOTPRINT_MB` | `[resources] max_footprint_mb` | 3072 |
+| `BASEMIND_DAEMON_MAX_MAP_CACHE_MB` | `[resources] max_map_cache_mb` | 1024 |
+| `BASEMIND_DAEMON_MAX_CANDIDATES` | `[scan] max_candidates` | 2000000 |
+| `BASEMIND_DAEMON_MAX_FILE_BYTES` | `[scan] max_file_bytes` | 67108864 (64 MiB) |
+| `BASEMIND_DAEMON_MAX_DOCUMENT_BYTES` | `[documents] max_file_bytes` | 536870912 (512 MiB) |
+| `BASEMIND_DAEMON_MAX_DOCUMENT_PAGES` | `[documents] max_pages` | 5000 |
+| `BASEMIND_DAEMON_MAX_EXTRACTION_SECS` | `[documents] extraction_timeout_secs` | 1800 |
+| `BASEMIND_DAEMON_MAX_CHUNKS_PER_DOCUMENT` | `[documents] max_chunks_per_document` | 20000 |
+| `BASEMIND_DAEMON_MAX_CRAWL_PAGES` | `[crawl] max_pages` and the per-call `crawl` override | 500 |
+| `BASEMIND_DAEMON_MAX_CRAWL_DEPTH` | `[crawl] max_depth` and the per-call override | 8 |
+| `BASEMIND_DAEMON_MAX_CRAWL_BODY_BYTES` | `[crawl] max_body_size` | 67108864 (64 MiB) |
+| `BASEMIND_DAEMON_MIN_DEBOUNCE_MS` | floor for `[watch] debounce_ms` (a minimum, not a ceiling) | 50 |
+
+**Reload.** The daemon re-reads a workspace's `basemind.toml` on the next request after it changes
+(size and modification time, plus a content hash for very recent edits) and logs `config changed;
+reloaded`. A file that no longer parses keeps the last good config and logs a warning. A hosted read
+stack with live sessions keeps its config until they reconnect, and `scan_threads` is fixed for the
+process lifetime (the daemon logs that a restart is required). `admin status` reports `config_stamp`
+(`<bytes>B@<unix seconds>`) to spot an edit. The file watcher rebuilds its include/exclude filter on
+the same change.
+
+**Worktree seeding.** A new linked worktree's `working` view is cloned (copy-on-write where the
+filesystem allows) from a sibling checkout of the same repository, preferring the main worktree, so
+its first scan only re-reads files that differ. The vector store is not cloned; the first scan rebuilds
+its rows from the cached blobs without re-embedding. A sibling whose workspace lock is held, or one too
+large to copy without reflinks, is skipped and the new worktree scans from scratch.
+
+**ONNX memory.** Every process bounds ONNX Runtime (no memory-pattern planning, no retained CPU arena,
+so memory does not stay sized to the largest batch seen); intra-op threads are the auto embed-thread
+count (`max(2, logical CPUs / 4)`), or 2 in the comms daemon. The daemon drops its resident embedding models when the last concurrent
+embedding pass ends.
+
+**Git history.** Linked worktrees share one git-history index. A worktree whose HEAD descends from
+the indexed head appends; one that diverges leaves the index untouched and reads history by walking
+git directly.
+
+### Reserved keys
+
+These parse but nothing reads them yet; setting one to a non-default value logs a warning:
+`[watch] live_l2`, `[cache] file_map_lru`, `[memory] enabled` / `scope_strategy` /
+`default_visibility`, `[comms] enabled` / `idle_timeout_secs` / `max_messages_per_room` /
+`retention_secs` / `max_rooms` / `workspace_root`, `[shells] keep_on_exit`, `[documents.ocr] backend` /
+`languages`, and `[documents.language] preferred_languages`. (`[mcp] transport` is also unread, but
+`stdio` is its only value.)
+
+### Config changes
+
+Changes take effect on the next scan. Cached chunks and documents carry a fingerprint of the settings
+that shape them (`[code_search]` `max_characters` / `overlap` / `max_chunks_per_file`; `[documents]`
+chunk size, page cap, language detection, keywords, NER, summarization, `extract_archives`,
+`[resources] document_models` and `[llm] model`), so changing one re-chunks or re-extracts only the
+affected files. Embedding scope (`embed`, `embed_include`, `embed_exclude`, and the `enabled`
+switches) is reconciled as well: the first scan after a change deletes the vector rows of files that
+are no longer eligible (and, when `[code_search] enabled = false`, their keyword postings) and rebuilds
+the rows of files that became eligible from the cached blobs, without re-embedding.
+
+### Other variables
+
+Read directly rather than mapped from a config key:
 
 | Variable | Effect |
 |---|---|
-| `BASEMIND_NO_SEED` | Any non-empty value other than `0` stops a new linked-worktree view from being seeded from a sibling worktree's index; the first scan then builds it from scratch. |
-| `BASEMIND_ALLOW_PRIVATE_HOSTS` | `1`, `true` or `yes` lets crawl and URL fetches reach private and loopback hosts (also required for `[crawl] allow_private_network`). |
+| `BASEMIND_NO_SEED` | Any non-empty value other than `0` stops a new linked-worktree view from being seeded from a sibling worktree's index. |
+| `BASEMIND_DATA_HOME` | Overrides the global cache root. |
 
 ## Per-Request Overrides
 
@@ -381,23 +525,29 @@ When either schema changes (typically on minor version bumps), the next `basemin
 
 ## Directory Layout
 
-All state lives under `.basemind/` in the repository root (`--root` selects a different repo):
+Nothing basemind-owned is written into the repository. State lives in a machine-global cache
+(`~/.local/share/basemind/` on Linux, `~/Library/Application Support/basemind/` on macOS, or
+`$BASEMIND_DATA_HOME`):
 
 ```text
-.basemind/
-├── basemind.toml           # Config file (this file)
-├── blobs/
-│   ├── <hash>.l1.msgpack   # Outlines (symbols, signatures, imports)
-│   ├── <hash>.l2.msgpack   # Call sites (if eager_l2 = true)
-│   └── <hash>.l3.msgpack   # Structural hashes
-├── views/
-│   └── <view>/
-│       └── index.fjall/    # Fjall LSM index (secondary)
-├── git-cache/              # Precomputed git-history index
-└── lance/                  # Vector store (memory, documents, code search)
+<data>/cache/
+├── blobs/                      # content-addressed, shared by every workspace
+│   ├── <hash>.l1.msgpack       # Outlines (symbols, signatures, imports)
+│   ├── <hash>.l2.msgpack       # Call sites (if eager_l2 = true)
+│   └── <hash>.l3.msgpack       # Structural hashes
+└── workspaces/<workspace_key>/ # one per worktree root
+    ├── views/<view>/           # `working`, `staged`, ...
+    │   ├── index.msgpack
+    │   └── index.fjall/        # Fjall LSM index
+    ├── lance/                  # Vector store (documents, memory, code search)
+    ├── git-history.fjall/      # Precomputed git-history index
+    ├── git-cache/              # Cached git payloads
+    ├── workspace.json          # Records the worktree root this key was derived from
+    ├── status.json             # File counts + scan age for the statusline
+    └── .lock, .lock.meta       # Writer lock and its holder
 ```
 
-The `.basemind/` directory is safe to delete; `basemind scan` rebuilds it.
+The cache is safe to delete; `basemind scan` rebuilds it (`basemind cache clear` removes parts of it).
 
 ## Troubleshooting
 
@@ -407,4 +557,4 @@ The `.basemind/` directory is safe to delete; `basemind scan` rebuilds it.
 
 **Out of disk space?** Run `basemind cache gc` to reclaim unused blobs. `basemind cache stats` shows per-component sizes.
 
-**Schema mismatch after upgrade?** Run `basemind scan` to automatically rebuild. Or delete `.basemind/` and re-scan. No data loss — everything is rebuilt from source.
+**Schema mismatch after upgrade?** Run `basemind scan` to automatically rebuild. Or run `basemind cache clear` and re-scan. No data loss — everything is rebuilt from source.
