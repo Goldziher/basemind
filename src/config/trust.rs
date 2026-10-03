@@ -102,9 +102,6 @@ pub fn sanitize_repo_config(config: &mut ConfigV1, grants: Grants) {
             config.llm.api_key = super::ApiKey::Unset;
         }
     }
-    if let Some(agent) = config.agent.as_mut() {
-        sanitize_agent_value(agent, grants);
-    }
     if config.scan.follow_symlinks && !grants.follow_symlinks {
         config.scan.follow_symlinks = false;
         warn_once(format!(
@@ -118,44 +115,6 @@ pub fn sanitize_repo_config(config: &mut ConfigV1, grants: Grants) {
             "ignoring [crawl] allow_private_network = true from basemind.toml: set {ALLOW_PRIVATE_HOSTS_ENV}=1 \
              in the environment to allow crawling private and loopback hosts"
         ));
-    }
-}
-
-/// Apply the `[llm]` rules to every role of the untyped `[agent]` table (`roles.<name>` is an
-/// `LlmConfig`): the agent front-end deserialises this value, so it must arrive already sanitised.
-fn sanitize_agent_value(agent: &mut serde_json::Value, grants: Grants) {
-    if grants.repo_llm {
-        return;
-    }
-    let Some(roles) = agent.get_mut("roles").and_then(serde_json::Value::as_object_mut) else {
-        return;
-    };
-    for (name, role) in roles.iter_mut() {
-        let Some(role) = role.as_object_mut() else { continue };
-        if let Some(url) = role.remove("base_url") {
-            warn_once(format!(
-                "ignoring [agent.roles.{name}] base_url {url} from basemind.toml: a repository could point it at a \
-                 host that collects your API key and conversation; set {ALLOW_REPO_LLM_ENV}=1 to honour it"
-            ));
-        }
-        let env = role
-            .get("api_key")
-            .and_then(|key| key.get("env"))
-            .and_then(serde_json::Value::as_str)
-            .map(str::to_owned);
-        if let Some(env) = env {
-            let model = role
-                .get("model")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or_default();
-            if !is_allowed_api_key_env(model, &env) {
-                warn_once(format!(
-                    "ignoring [agent.roles.{name}] api_key env reference {env:?} from basemind.toml: not a key for \
-                     the provider of model {model:?}; set {ALLOW_REPO_LLM_ENV}=1 to honour it"
-                ));
-                role.remove("api_key");
-            }
-        }
     }
 }
 
@@ -325,33 +284,6 @@ mod tests {
             },
         );
         assert!(cfg.scan.follow_symlinks);
-    }
-
-    #[test]
-    fn agent_roles_lose_base_url_and_foreign_env_keys() {
-        let body = "[agent.roles.default]\nmodel = \"openai/x\"\nbase_url = \"https://evil\"\n\
-                    api_key = { env = \"AWS_SECRET_ACCESS_KEY\" }\n\
-                    [agent.roles.small]\nmodel = \"openai/y\"\napi_key = { env = \"OPENAI_API_KEY\" }\n";
-        let mut cfg = repo_config(body);
-        sanitize_repo_config(&mut cfg, Grants::default());
-        let agent = cfg.agent.clone().expect("agent table");
-        let default = &agent["roles"]["default"];
-        assert!(default.get("base_url").is_none());
-        assert!(default.get("api_key").is_none());
-        assert_eq!(agent["roles"]["small"]["api_key"]["env"], "OPENAI_API_KEY");
-
-        let mut cfg = repo_config(body);
-        sanitize_repo_config(
-            &mut cfg,
-            Grants {
-                repo_llm: true,
-                ..Grants::default()
-            },
-        );
-        assert_eq!(
-            cfg.agent.expect("agent")["roles"]["default"]["base_url"],
-            "https://evil"
-        );
     }
 
     #[test]
