@@ -762,6 +762,9 @@ fn a_changed_basemind_toml_replaces_the_cached_config_and_a_broken_one_keeps_it(
 
 #[test]
 fn pool_config_is_clamped_whatever_the_repo_asks_for() {
+    let _env = crate::config::daemon::TEST_ENV_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     store::init_isolated_cache();
     let pool = WorkspacePool::new(DEFAULT_HOT_CAP);
     let ws = workspace_with_sources();
@@ -771,7 +774,11 @@ fn pool_config_is_clamped_whatever_the_repo_asks_for() {
     )
     .expect("write toml");
     let config = pool.get_or_open(ws.path()).expect("open").config();
-    assert!(config.resources.max_footprint_mb.explicit_bytes().is_some());
-    assert_ne!(config.resources.max_map_cache_mb, 0);
-    assert_ne!(config.scan.max_candidates, 0);
+    use crate::config::daemon::{DEFAULT_MAX_CANDIDATES, DEFAULT_MAX_FOOTPRINT_MB, DEFAULT_MAX_MAP_CACHE_MB};
+    assert_eq!(
+        config.resources.max_footprint_mb,
+        crate::config::MaxFootprint::Mebibytes(DEFAULT_MAX_FOOTPRINT_MB)
+    );
+    assert!((1..=DEFAULT_MAX_MAP_CACHE_MB).contains(&config.resources.max_map_cache_mb));
+    assert!((1..=DEFAULT_MAX_CANDIDATES).contains(&config.scan.max_candidates));
 }
