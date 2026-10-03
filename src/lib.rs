@@ -27,6 +27,7 @@ pub mod intel;
 #[cfg(feature = "intelligence")]
 pub mod lance;
 pub mod lang;
+pub mod lang_rules;
 pub mod mcp;
 pub mod path;
 pub mod query;
@@ -46,6 +47,7 @@ pub mod scanner_file;
 pub(crate) mod scanner_filter;
 pub(crate) mod scanner_index_batch;
 pub mod scanner_lanes;
+pub(crate) mod scanner_policy;
 pub mod search;
 #[cfg(all(feature = "shells", any(unix, windows)))]
 pub mod shells;

@@ -666,11 +666,22 @@ respect_gitignore = true
 # Follow symlinks during the walk. Off by default — symlinks often escape the repo (e.g. Bazel's
 # bazel-* convenience symlinks). Turn on for repos that symlink real source into place.
 follow_symlinks = false
+# Glob syntax (include / exclude here, and every include / exclude / embed_* list below): paths are
+# repo-relative with forward slashes, matching is case-sensitive, and `*` also crosses `/` (so
+# `src/*.rs` matches `src/a/b.rs`). A pattern with no glob characters is gitignore-like: `generated`
+# matches every path segment of that name at any depth and everything beneath it; `docs/api` is
+# anchored at the root. Exclude beats include. An invalid glob, or an empty `include`, is a config
+# error. For `extra_roots` files the globs are matched against the path relative to that root.
+include = ["**/*"]
 # `exclude` is ADDED ON TOP of an always-on floor (node_modules, target, dist, build, out, .venv,
 # venv, __pycache__, *.pyc, .pytest_cache/.mypy_cache/.ruff_cache/.tox, .next/.nuxt/.svelte-kit,
-# vendor, .gradle, .terraform, coverage, bazel-*, .git, .basemind, .idea, .DS_Store). You can add to
-# it but not remove a floor entry.
+# vendor, .gradle, .terraform, coverage, bazel-*, .git, .basemind, .idea, .DS_Store).
 exclude = []
+# Remove entries from that floor so the tree is indexed, by directory name (`build`) or floor pattern
+# (`**/build/**`). `.git` and `.basemind` can never be allowed; an entry naming nothing is ignored
+# with a warning. The default `exclude` separately lists dist/target/node_modules/.venv/bazel-*, so
+# drop those from `exclude` too when allowing them.
+floor_allow = []
 # Index directories outside the repo root too — e.g. a Bazel external repo cache — so their
 # symbols resolve in search / references / outlines. External files are keyed by absolute path;
 # (re-)indexed on a full `basemind scan` only (not live-watched). Requires the operator to set
@@ -686,6 +697,22 @@ extra_roots = ["/private/var/tmp/_bazel_you/abc123/external"]
 # from git, not from a walk). 0 disables both bounds.
 max_candidates = 500_000
 
+# Per-grammar overrides, keyed by tree-sitter-language-pack grammar name (see `basemind lang list`;
+# an unknown key is a config error that suggests near matches).
+[languages.vimdoc]
+# false stops parsing that grammar's files as code (fixes misdetections: `.txt` is vimdoc, `.conf`
+# is nginx). They are then handled like any unrecognised file: routed to the document tier, where
+# `[documents] exclude` can drop them entirely. Already-indexed files are removed on the next scan.
+enabled = false
+[languages.jinja2]
+# Map extra suffixes (leading dot optional, case-insensitive, compound allowed) and exact file
+# names onto the grammar. Overrides beat built-in detection; a filename beats an extension.
+extensions = [".mako", ".tpl"]
+filenames = ["BUILD.in"]
+# `basemind lang install` also fetches this grammar (otherwise only the languages basemind ships
+# queries for are pre-fetched and the rest download on first use).
+preload = true
+
 [code_intel]
 # Precise, scope- and import-aware resolution (JS/TS via oxc; Python/Java via stack-graphs). On by
 # default. Set false to fall back to fast tree-sitter locals binding for every language. Applies to
@@ -700,7 +727,21 @@ embed = true
 # Changing the preset forces a FULL RE-EMBED of the corpus (time + CPU): every document is
 # re-encoded at the new model's dimension.
 embedding_preset = "balanced"
-# Documents that are extracted + indexed but never embedded (keyword-only).
+# Which non-code files become documents. Default (empty include) is everything that passes [scan];
+# exclude applies to document indexing itself and beats include.
+include = []
+exclude = []
+# Per-document size cap in bytes, independent of [scan] max_file_bytes (which caps source files), so
+# large PDFs / Office files are still extracted. Files over it are skipped and counted as too large
+# in the scan summary.
+max_file_bytes = 52428800
+# Extra extensions to skip on top of the built-in archive/binary floor (case-insensitive; ".pdf" and
+# "pdf" are the same).
+extension_denylist = []
+# Embedding scope: with a non-empty embed_include only matching documents are embedded; embed_exclude
+# always wins. Left-out documents stay extracted + keyword-searchable. Editing either (or `embed`)
+# deletes the vector rows of documents that stop being eligible on the next scan.
+embed_include = []
 embed_exclude = []
 # Route archives (.zip/.tar/.jar/…) into the recursive extractor. Off by default so one archive
 # can't explode into thousands of embeds; true binaries are always skipped.
@@ -713,6 +754,9 @@ enabled = true
 # regardless. Turn on only for vector search over code (downloads an ONNX model, re-embeds on
 # preset change).
 embed = false
+# Same semantics as the [documents] pair: allow-list, with embed_exclude winning. Files left out are
+# still chunked and keyword-searchable; newly ineligible files lose their vector rows on the next scan.
+embed_include = []
 embed_exclude = []
 # Cap on chunks indexed per source file. A generated parser table or a checked-in bundle otherwise
 # fans one file out into a chunk count bounded only by max_file_bytes, and every chunk costs a
@@ -781,6 +825,15 @@ logs a warning: `[watch] live_l2`, `[cache] file_map_lru`, `[mcp] transport`, `[
 `scope_strategy` / `default_visibility`, `[comms] enabled` / `idle_timeout_secs` /
 `max_messages_per_room` / `retention_secs` / `max_rooms` / `workspace_root`, `[shells] keep_on_exit`,
 `[documents.ocr] backend` / `languages`, and `[documents.language] preferred_languages`.
+
+**Config changes take effect on the next scan.** Cached chunks and documents carry a fingerprint of
+the settings that shape them (`[code_search]` `max_characters` / `overlap` / `max_chunks_per_file`;
+`[documents]` chunk size, page cap, language, keywords, NER, summarization, OCR, `extract_archives`,
+`[resources] document_models` and `[llm] model`), so changing one re-chunks or re-extracts only the
+affected files. Embedding scope (`embed`, `embed_include`, `embed_exclude`, and the `enabled` switches)
+is reconciled too: the first scan after a change deletes the vector rows of files that are no longer
+eligible (and, when `[code_search] enabled = false`, their keyword postings) and rebuilds the rows of
+files that became eligible from the cached blobs, without re-embedding.
 
 </details>
 
