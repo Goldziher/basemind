@@ -79,11 +79,6 @@ pub(super) fn spawn_initial_scan(state: Arc<ServerState>) {
                     ),
                     Err(error) => tracing::warn!(%error, "background writer embedding pass failed"),
                 }
-                #[cfg(feature = "intelligence")]
-                tracing::info!(
-                    dropped = crate::embeddings::release_engines(),
-                    "embedding pass finished; released resident embedding engines"
-                );
             });
         });
         return;

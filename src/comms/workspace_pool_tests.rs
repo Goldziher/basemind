@@ -782,3 +782,109 @@ fn pool_config_is_clamped_whatever_the_repo_asks_for() {
     assert!((1..=DEFAULT_MAX_MAP_CACHE_MB).contains(&config.resources.max_map_cache_mb));
     assert!((1..=DEFAULT_MAX_CANDIDATES).contains(&config.scan.max_candidates));
 }
+
+#[test]
+fn in_flight_operation_blocks_lru_eviction_and_idle_sweep() {
+    store::init_isolated_cache();
+    let pool = WorkspacePool::new(1);
+    let ws1 = workspace_with_sources();
+    let ws2 = workspace_with_sources();
+
+    let entry = pool.get_or_open(ws1.path()).expect("open ws1");
+    let busy = entry.begin_busy();
+    assert_eq!(
+        pool.evict_idle(Duration::ZERO),
+        0,
+        "a scanning entry is never idle-swept"
+    );
+
+    // ~keep Opening ws2 past the cap must not evict the scanning ws1: its `Arc` (and index lock) would
+    // ~keep outlive the map entry and the next open of ws1 would fail on the lock.
+    pool.get_or_open(ws2.path()).expect("open ws2");
+    assert_eq!(pool.len(), 2, "the busy entry is kept past the cap");
+
+    drop(busy);
+    drop(entry);
+    assert_eq!(
+        pool.evict_idle(Duration::ZERO),
+        2,
+        "both entries are sweepable once idle"
+    );
+}
+
+#[test]
+fn store_access_waits_a_bounded_time_then_reports_busy() {
+    store::init_isolated_cache();
+    let pool = WorkspacePool::new(2);
+    let ws = workspace_with_sources();
+    let entry = pool.get_or_open(ws.path()).expect("open");
+
+    // A scan holds the store lock; a forwarded read must fail as busy instead of parking forever.
+    let held = entry.store.lock().expect("hold store lock as a scan would");
+    let started = Instant::now();
+    let result = entry.lock_store_bounded();
+    assert!(matches!(result, Err(WorkspacePoolError::Busy { .. })));
+    assert!(
+        started.elapsed() >= STORE_LOCK_WAIT,
+        "waited the full bound before giving up"
+    );
+    drop(result);
+    drop(held);
+    assert!(entry.lock_store_bounded().is_ok(), "free lock is acquired at once");
+}
+
+#[cfg(all(feature = "comms", any(unix, windows)))]
+#[tokio::test]
+async fn gated_build_keeps_its_permit_until_the_build_ends_even_if_the_caller_is_dropped() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let gate = std::sync::Arc::new(tokio::sync::Semaphore::new(1));
+    let running = std::sync::Arc::new(AtomicUsize::new(0));
+    let peak = std::sync::Arc::new(AtomicUsize::new(0));
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    let (started_tx, started_rx) = std::sync::mpsc::channel::<()>();
+
+    let first = {
+        let (running, peak) = (running.clone(), peak.clone());
+        tokio::spawn(run_gated_build(gate.clone(), Duration::from_secs(5), move || {
+            let now = running.fetch_add(1, Ordering::SeqCst) + 1;
+            peak.fetch_max(now, Ordering::SeqCst);
+            started_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+            running.fetch_sub(1, Ordering::SeqCst);
+        }))
+    };
+    tokio::task::spawn_blocking(move || started_rx.recv().unwrap())
+        .await
+        .unwrap();
+    // The caller goes away mid-build (client disconnect / timeout / drain).
+    first.abort();
+    let _ = first.await;
+
+    let second = {
+        let (running, peak) = (running.clone(), peak.clone());
+        tokio::spawn(run_gated_build(gate.clone(), Duration::from_secs(5), move || {
+            let now = running.fetch_add(1, Ordering::SeqCst) + 1;
+            peak.fetch_max(now, Ordering::SeqCst);
+            running.fetch_sub(1, Ordering::SeqCst);
+        }))
+    };
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(
+        !second.is_finished(),
+        "second build must wait for the orphaned first build"
+    );
+    release_tx.send(()).unwrap();
+    second.await.unwrap().expect("second build runs after the first ends");
+    assert_eq!(peak.load(Ordering::SeqCst), 1, "builds never overlapped");
+}
+
+#[cfg(all(feature = "comms", any(unix, windows)))]
+#[tokio::test]
+async fn gated_build_times_out_instead_of_waiting_forever() {
+    let gate = std::sync::Arc::new(tokio::sync::Semaphore::new(1));
+    let _held = gate.clone().acquire_owned().await.unwrap();
+    let error = run_gated_build(gate, Duration::from_millis(50), || ())
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("timed out"), "{error}");
+}

@@ -445,7 +445,7 @@ impl Broker {
                 return;
             }
         };
-        let _conn = match self.workspaces.begin_conn(&hello.root) {
+        let _conn = match self.workspaces.begin_conn_async(&hello.root).await {
             Ok(guard) => guard,
             Err(error) => {
                 tracing::warn!(%error, "relay: connection accounting failed");
