@@ -53,6 +53,27 @@ const FLOOR_EXCLUDES: &[&str] = &[
     "**/.basemind/**",
     "**/.idea/**",
     "**/.DS_Store",
+    // Credentials and key material: indexing them makes the secret searchable by every agent that
+    // can query the index. `[scan] floor_allow` lists the entry (`.env.*`, `*.pem`) to opt back in.
+    "**/.env",
+    "**/.env.*",
+    "**/.aws/**",
+    "**/.ssh/**",
+    "**/.gnupg/**",
+    "**/.npmrc",
+    "**/.pypirc",
+    "**/.netrc",
+    "**/.git-credentials",
+    "**/id_rsa",
+    "**/id_dsa",
+    "**/id_ecdsa",
+    "**/id_ed25519",
+    "**/*.pem",
+    "**/*.key",
+    "**/*.p12",
+    "**/*.pfx",
+    "**/*.jks",
+    "**/*.keystore",
 ];
 
 /// Floor entries that `[scan] floor_allow` may never remove: indexing VCS internals or basemind's
@@ -746,6 +767,32 @@ mod tests {
         );
         assert!(!filters.allows(".git/config"), ".git can never be allowed");
         assert!(!filters.allows("out/x.rs"), "untouched floor entries stay");
+    }
+
+    #[test]
+    fn secrets_are_excluded_by_default_and_floor_allow_opts_back_in() {
+        let mut config = crate::config::default_for_root(Path::new("."));
+        let filters = Filters::build(&config, Vec::new()).expect("build filters");
+        for secret in [
+            ".env",
+            "svc/.env.production",
+            ".aws/credentials",
+            "home/.ssh/config",
+            ".npmrc",
+            "deploy/id_rsa",
+            "certs/server.pem",
+            "certs/tls.key",
+        ] {
+            assert!(!filters.allows(secret), "{secret} must not be indexed");
+        }
+        assert!(filters.allows("src/environment.rs"));
+        assert!(filters.allows("keys.rs"));
+
+        config.scan.floor_allow = vec![".env.*".to_string(), "*.pem".to_string()];
+        let filters = Filters::build(&config, Vec::new()).expect("build filters");
+        assert!(filters.allows("svc/.env.production"));
+        assert!(filters.allows("certs/server.pem"));
+        assert!(!filters.allows(".env"), "unlisted entries stay excluded");
     }
 
     #[test]
