@@ -825,4 +825,59 @@ mod tests {
         assert!(!entry.embedded && !entry.embed_attempted);
         assert_eq!(entry.config_digest, "");
     }
+
+    /// An `index.msgpack` written before `embed_policy`, `DocEntry::{embedded, embed_attempted,
+    /// config_digest}` existed must still decode, with those fields at their neutral defaults -- the
+    /// defaults the scanner's upgrade path (purge-without-reflush, cheap re-check) relies on.
+    #[test]
+    fn a_pre_digest_index_decodes_with_neutral_defaults() {
+        #[derive(Serialize)]
+        struct LegacyDoc {
+            hash_hex: String,
+            embedding_preset: String,
+            size_bytes: u64,
+            mtime: i64,
+        }
+        #[derive(Serialize)]
+        struct LegacyIndex {
+            schema_ver: u16,
+            files: AHashMap<RelPath, FileEntry>,
+            doc_files: AHashMap<RelPath, LegacyDoc>,
+        }
+        let mut files = AHashMap::new();
+        files.insert(
+            RelPath::from("a.rs"),
+            FileEntry {
+                hash_hex: "h1".to_string(),
+                language: "rust".to_string(),
+                size_bytes: 3,
+                mtime: 7,
+            },
+        );
+        let mut doc_files = AHashMap::new();
+        doc_files.insert(
+            RelPath::from("d.pdf"),
+            LegacyDoc {
+                hash_hex: "h2".to_string(),
+                embedding_preset: "balanced".to_string(),
+                size_bytes: 9,
+                mtime: 0,
+            },
+        );
+        let bytes = rmp_serde::to_vec_named(&LegacyIndex {
+            schema_ver: SCHEMA_VER,
+            files,
+            doc_files,
+        })
+        .expect("encode legacy index");
+
+        let index: Index = rmp_serde::from_slice(&bytes).expect("legacy index decodes");
+
+        assert!(index.embed_policy.is_empty(), "no recorded policy");
+        let doc = index.doc_files.get(&RelPath::from("d.pdf")).expect("doc entry kept");
+        assert_eq!(doc.hash_hex, "h2");
+        assert!(!doc.embedded && !doc.embed_attempted);
+        assert!(doc.config_digest.is_empty());
+        assert_eq!(index.files.len(), 1);
+    }
 }
