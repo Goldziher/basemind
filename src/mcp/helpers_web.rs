@@ -112,10 +112,10 @@ fn per_call_engine(
 ) -> Result<crawlberg::CrawlEngineHandle, McpError> {
     let mut cfg = state.shared.config.crawl.clone();
     if let Some(mp) = max_pages {
-        cfg.max_pages = mp;
+        cfg.max_pages = mp.min(crate::config::daemon::crawl_page_cap());
     }
     if let Some(md) = max_depth {
-        cfg.max_depth = md;
+        cfg.max_depth = md.min(crate::config::daemon::crawl_depth_cap());
     }
     crate::web::build_engine(&cfg).map_err(|e| mcp_internal("build per-call crawl engine", e))
 }
