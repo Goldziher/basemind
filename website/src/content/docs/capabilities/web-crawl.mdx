@@ -76,8 +76,11 @@ respect_robots_txt = true         # honor robots.txt (default: true)
 allow_private_network = false     # allow crawling localhost, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 (default: false)
 ```
 
-These are **config-file-only** settings — the MCP tools do not expose overrides for
-security.
+`respect_robots_txt` and `allow_private_network` are **config-file-only** settings — the MCP
+tools do not expose overrides for security, and a repository's own `basemind.toml` can enable
+`allow_private_network` only when the operator sets `BASEMIND_ALLOW_PRIVATE_HOSTS=1`. A `crawl` call may
+lower or raise `max_pages` and `max_depth` for that request, bounded by the daemon's caps
+(`BASEMIND_DAEMON_MAX_CRAWL_PAGES`, default 500; `BASEMIND_DAEMON_MAX_CRAWL_DEPTH`, default 8).
 
 ## Security
 
