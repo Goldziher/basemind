@@ -7,6 +7,7 @@ pub(crate) mod layered;
 mod overrides;
 mod resources;
 pub mod root_guard;
+pub mod rules;
 mod shells;
 mod source;
 pub mod trust;
@@ -29,7 +30,7 @@ pub use overrides::DocumentsCliOverrides;
 pub use resources::{DocumentModelProfile, FootprintKeyword, MaxFootprint, ResourcesConfig};
 pub use shells::{ShellsConfig, TerminalChoice, VisualMode};
 pub use source::{ConfigSource, ProvenanceMap};
-pub use v1::{CodeIntelConfig, ConfigV1, CrawlConfig};
+pub use v1::{CodeIntelConfig, ConfigV1, CrawlConfig, LanguageConfig};
 
 pub type Config = ConfigV1;
 
@@ -292,7 +293,9 @@ fn parse_v1(raw: &str) -> Result<Config, ConfigError> {
     match schema_tag {
         "v1" | "https://basemind.dev/schema/v1.json" => {
             validate::validate_v1(&json_value)?;
-            serde_json::from_value::<ConfigV1>(json_value).map_err(ConfigError::Deserialize)
+            let config = serde_json::from_value::<ConfigV1>(json_value).map_err(ConfigError::Deserialize)?;
+            rules::validate(&config).map_err(ConfigError::SchemaValidation)?;
+            Ok(config)
         }
         other => Err(ConfigError::UnknownSchema(other.to_string())),
     }

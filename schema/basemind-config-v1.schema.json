@@ -24,6 +24,7 @@
           "**/bazel-testlogs/**",
           "**/bazel-*/**"
         ],
+        "floor_allow": [],
         "respect_gitignore": true,
         "follow_symlinks": false,
         "max_file_bytes": 2097152,
@@ -59,6 +60,7 @@
       }
     },
     "languages": {
+      "description": "Per-grammar overrides keyed by tree-sitter-language-pack grammar name (`[languages.jinja2]`):\ndisable a grammar, map extra extensions / file names onto it, or pre-fetch it.",
       "type": "object",
       "additionalProperties": {
         "$ref": "#/$defs/LanguageConfig"
@@ -70,6 +72,9 @@
       "default": {
         "enabled": true,
         "mime_allowlist": [],
+        "include": [],
+        "exclude": [],
+        "max_file_bytes": 52428800,
         "extension_denylist": [],
         "max_chunks_per_document": 2000,
         "max_pages": 500,
@@ -78,6 +83,7 @@
         "overlap": 200,
         "embedding_preset": "balanced",
         "embed": true,
+        "embed_include": [],
         "embed_exclude": [],
         "extract_archives": false,
         "language": {
@@ -148,6 +154,7 @@
         "overlap": 200,
         "max_chunks_per_file": 2000,
         "embed": false,
+        "embed_include": [],
         "embed_exclude": [],
         "reranker": {
           "enabled": false,
@@ -222,16 +229,19 @@
       "type": "object",
       "properties": {
         "include": {
+          "description": "Allow-list of globs (repo-relative, forward-slash, case-sensitive; `*` crosses `/`). A file\nis scanned only when it matches at least one entry, so an empty list is rejected at load\n(it would silently index nothing). A bare name with no glob metacharacters (`src`,\n`docs/api`) matches that path and everything beneath it, like a `.gitignore` entry.",
           "type": "array",
           "items": {
             "type": "string",
             "minLength": 1
           },
+          "minItems": 1,
           "default": [
             "**/*"
           ]
         },
         "exclude": {
+          "description": "Deny-list of globs, same syntax as `include`; exclusion beats inclusion. Applied on top of\nthe always-on exclude floor (`build`, `out`, `vendor`, `coverage`, `venv`, `dist`, `target`,\n... see `floor_allow`). A bare name (`generated`) excludes every path segment called that,\nand everything beneath it. For `extra_roots` files the globs match the path relative to the\nextra root, not the absolute path.",
           "type": "array",
           "items": {
             "type": "string",
@@ -249,6 +259,15 @@
             "**/bazel-testlogs/**",
             "**/bazel-*/**"
           ]
+        },
+        "floor_allow": {
+          "description": "Entries to remove from the always-on exclude floor, named by directory (`build`, `vendor`)\nor by the floor pattern itself (`**/build/**`). Use it to index a tree the floor otherwise\ndrops. The default `exclude` list is separate: a directory also listed there (`dist`,\n`target`) must be removed from `exclude` too. `.git` and `.basemind` can never be allowed,\nand an entry naming nothing in the floor is ignored with a warning.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "default": []
         },
         "respect_gitignore": {
           "type": "boolean",
@@ -358,8 +377,32 @@
       "type": "object",
       "properties": {
         "enabled": {
+          "description": "`false` disables the language: its files are no longer parsed as code and are handled as if\nno grammar recognised them (so they fall through to the document tier, subject to\n`[documents]`). Use it for tree-sitter-language-pack misdetections such as `.txt` (vimdoc)\nor `.conf` (nginx). Already-indexed files of a disabled language are dropped on the next scan.",
           "type": "boolean",
           "default": true
+        },
+        "extensions": {
+          "description": "Extra file suffixes mapped to this grammar, e.g. `[\".mako\", \".tpl\"]` (leading dot optional,\ncase-insensitive, compound suffixes like `.html.erb` allowed). Overrides take precedence over\nbuilt-in detection. The table key must be a tree-sitter-language-pack grammar name.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "default": []
+        },
+        "filenames": {
+          "description": "Exact file names mapped to this grammar, e.g. `[\"BUILD.in\"]`. Takes precedence over\n`extensions` and built-in detection.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "default": []
+        },
+        "preload": {
+          "description": "Also fetch this grammar in `basemind lang install` (by default only the languages basemind\nships queries for are pre-fetched; others download on first use).",
+          "type": "boolean",
+          "default": false
         }
       },
       "additionalProperties": false
@@ -382,8 +425,33 @@
           },
           "default": []
         },
+        "include": {
+          "description": "Allow-list of globs (repo-relative, forward-slash) selecting which non-code files are indexed\nas documents. Empty (default) = every non-code file that passes `[scan]`. A bare name with no\nglob metacharacters (`docs`) matches that path and everything beneath it. `exclude` wins over\n`include`.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "default": []
+        },
+        "exclude": {
+          "description": "Deny-list of globs applied to document indexing itself (not just embedding): matching files\nare not extracted, chunked or searchable as documents. Same syntax as `include`.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "default": []
+        },
+        "max_file_bytes": {
+          "description": "Per-document size cap in bytes, independent of `[scan] max_file_bytes` (which only bounds\nsource files). Default 50 MiB, so PDFs and Office files above the 2 MiB scan cap are still\nextracted. Larger files are skipped and counted in the scan summary as too large.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 1024,
+          "default": 52428800
+        },
         "extension_denylist": {
-          "description": "Extra file extensions (lowercase, no dot) to skip on top of the built-in archive/binary\ndenylist. The built-in floor (`.zip/.tar/.jar/.so/.wasm/...`) is always applied — this only\nadds to it — so archives and binaries are never routed to xberg extraction + embedding.",
+          "description": "File extensions to skip on top of the built-in archive/binary denylist (`pdf` and `.PDF` are\nequivalent: case-insensitive, leading dot optional). The built-in floor\n(`.zip/.tar/.jar/.so/.wasm/...`) is always applied — this only adds to it — so archives and\nbinaries are never routed to xberg extraction + embedding.",
           "type": "array",
           "items": {
             "type": "string",
@@ -436,8 +504,17 @@
           "type": "boolean",
           "default": true
         },
+        "embed_include": {
+          "description": "Allow-list of globs for embedding: when non-empty only matching documents are embedded; the\nrest stay extracted + keyword-searchable. It only narrows what `include`/`exclude` already\nindex. Empty (default) = every indexed document is embedded. Only consulted when `embed = true`.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "default": []
+        },
         "embed_exclude": {
-          "description": "Glob patterns (repo-relative, forward-slash) for documents that are still extracted +\nindexed but **never** embedded. Keeps ONNX vectors off selected large or low-value documents\nwhile leaving their text searchable by keyword. Empty by default; only consulted when\n`embed = true`.",
+          "description": "Glob patterns (repo-relative, forward-slash) for documents that are still extracted +\nindexed but **never** embedded. Keeps ONNX vectors off selected large or low-value documents\nwhile leaving their text searchable by keyword. Beats `embed_include`. Empty by default; only\nconsulted when `embed = true`. Changing it removes the vector rows of newly excluded\ndocuments on the next scan.",
           "type": "array",
           "items": {
             "type": "string",
@@ -910,8 +987,17 @@
           "type": "boolean",
           "default": false
         },
+        "embed_include": {
+          "description": "Allow-list of globs for embedding: when non-empty only matching files are embedded; the rest\nare still chunked + keyword-searchable. Empty (default) = every chunked file is embedded.\nOnly consulted when `embed = true`.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "default": []
+        },
         "embed_exclude": {
-          "description": "Glob patterns (repo-relative, forward-slash) for files that are still chunked + indexed\n(BM25 / code-map) but **never** embedded. Use it to keep vectors off large generated or\nvendored files while leaving them searchable by keyword. Empty by default. Only consulted\nwhen `embed = true` — with embedding already off it is a no-op.",
+          "description": "Glob patterns (repo-relative, forward-slash) for files that are still chunked + indexed\n(BM25 / code-map) but **never** embedded. Use it to keep vectors off large generated or\nvendored files while leaving them searchable by keyword. Beats `embed_include`. Empty by\ndefault. Only consulted when `embed = true`; changing it removes the vector rows of newly\nexcluded files on the next scan.",
           "type": "array",
           "items": {
             "type": "string",

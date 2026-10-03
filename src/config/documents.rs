@@ -18,9 +18,28 @@ pub struct DocumentsConfig {
     #[serde(default)]
     #[schemars(inner(length(min = 1)))]
     pub mime_allowlist: Vec<String>,
-    /// Extra file extensions (lowercase, no dot) to skip on top of the built-in archive/binary
-    /// denylist. The built-in floor (`.zip/.tar/.jar/.so/.wasm/...`) is always applied — this only
-    /// adds to it — so archives and binaries are never routed to xberg extraction + embedding.
+    /// Allow-list of globs (repo-relative, forward-slash) selecting which non-code files are indexed
+    /// as documents. Empty (default) = every non-code file that passes `[scan]`. A bare name with no
+    /// glob metacharacters (`docs`) matches that path and everything beneath it. `exclude` wins over
+    /// `include`.
+    #[serde(default)]
+    #[schemars(inner(length(min = 1)))]
+    pub include: Vec<String>,
+    /// Deny-list of globs applied to document indexing itself (not just embedding): matching files
+    /// are not extracted, chunked or searchable as documents. Same syntax as `include`.
+    #[serde(default)]
+    #[schemars(inner(length(min = 1)))]
+    pub exclude: Vec<String>,
+    /// Per-document size cap in bytes, independent of `[scan] max_file_bytes` (which only bounds
+    /// source files). Default 50 MiB, so PDFs and Office files above the 2 MiB scan cap are still
+    /// extracted. Larger files are skipped and counted in the scan summary as too large.
+    #[serde(default = "DocumentsConfig::default_max_file_bytes")]
+    #[schemars(range(min = 1024))]
+    pub max_file_bytes: u64,
+    /// File extensions to skip on top of the built-in archive/binary denylist (`pdf` and `.PDF` are
+    /// equivalent: case-insensitive, leading dot optional). The built-in floor
+    /// (`.zip/.tar/.jar/.so/.wasm/...`) is always applied — this only adds to it — so archives and
+    /// binaries are never routed to xberg extraction + embedding.
     #[serde(default)]
     #[schemars(inner(length(min = 1)))]
     pub extension_denylist: Vec<String>,
@@ -53,10 +72,17 @@ pub struct DocumentsConfig {
     /// Generate embeddings (`true`) or skip vector storage entirely (`false`).
     #[serde(default = "DocumentsConfig::default_embed")]
     pub embed: bool,
+    /// Allow-list of globs for embedding: when non-empty only matching documents are embedded; the
+    /// rest stay extracted + keyword-searchable. It only narrows what `include`/`exclude` already
+    /// index. Empty (default) = every indexed document is embedded. Only consulted when `embed = true`.
+    #[serde(default)]
+    #[schemars(inner(length(min = 1)))]
+    pub embed_include: Vec<String>,
     /// Glob patterns (repo-relative, forward-slash) for documents that are still extracted +
     /// indexed but **never** embedded. Keeps ONNX vectors off selected large or low-value documents
-    /// while leaving their text searchable by keyword. Empty by default; only consulted when
-    /// `embed = true`.
+    /// while leaving their text searchable by keyword. Beats `embed_include`. Empty by default; only
+    /// consulted when `embed = true`. Changing it removes the vector rows of newly excluded
+    /// documents on the next scan.
     #[serde(default)]
     #[schemars(inner(length(min = 1)))]
     pub embed_exclude: Vec<String>,
@@ -123,6 +149,9 @@ impl DocumentsConfig {
     fn default_max_pages() -> usize {
         500
     }
+    fn default_max_file_bytes() -> u64 {
+        52_428_800
+    }
     fn default_extraction_timeout_secs() -> u64 {
         600
     }
@@ -133,6 +162,9 @@ impl Default for DocumentsConfig {
         Self {
             enabled: Self::default_enabled(),
             mime_allowlist: Vec::new(),
+            include: Vec::new(),
+            exclude: Vec::new(),
+            max_file_bytes: Self::default_max_file_bytes(),
             extension_denylist: Vec::new(),
             max_chunks_per_document: Self::default_max_chunks_per_document(),
             max_pages: Self::default_max_pages(),
@@ -141,6 +173,7 @@ impl Default for DocumentsConfig {
             overlap: Self::default_overlap(),
             embedding_preset: Self::default_embedding_preset(),
             embed: Self::default_embed(),
+            embed_include: Vec::new(),
             embed_exclude: Vec::new(),
             extract_archives: Self::default_extract_archives(),
             language: DocLanguageConfig::default(),

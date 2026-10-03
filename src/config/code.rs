@@ -47,10 +47,17 @@ pub struct CodeSearchConfig {
     /// to `true` only if you specifically want vector search over code.
     #[serde(default = "CodeSearchConfig::default_embed")]
     pub embed: bool,
+    /// Allow-list of globs for embedding: when non-empty only matching files are embedded; the rest
+    /// are still chunked + keyword-searchable. Empty (default) = every chunked file is embedded.
+    /// Only consulted when `embed = true`.
+    #[serde(default)]
+    #[schemars(inner(length(min = 1)))]
+    pub embed_include: Vec<String>,
     /// Glob patterns (repo-relative, forward-slash) for files that are still chunked + indexed
     /// (BM25 / code-map) but **never** embedded. Use it to keep vectors off large generated or
-    /// vendored files while leaving them searchable by keyword. Empty by default. Only consulted
-    /// when `embed = true` — with embedding already off it is a no-op.
+    /// vendored files while leaving them searchable by keyword. Beats `embed_include`. Empty by
+    /// default. Only consulted when `embed = true`; changing it removes the vector rows of newly
+    /// excluded files on the next scan.
     #[serde(default)]
     #[schemars(inner(length(min = 1)))]
     pub embed_exclude: Vec<String>,
@@ -103,6 +110,7 @@ impl Default for CodeSearchConfig {
             overlap: Self::default_overlap(),
             max_chunks_per_file: Self::default_max_chunks_per_file(),
             embed: Self::default_embed(),
+            embed_include: Vec::new(),
             embed_exclude: Vec::new(),
             reranker: RerankerConfig::default(),
         }

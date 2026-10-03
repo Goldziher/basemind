@@ -22,6 +22,8 @@ pub struct ConfigV1 {
     pub cache: CacheConfig,
     #[serde(default)]
     pub mcp: McpConfig,
+    /// Per-grammar overrides keyed by tree-sitter-language-pack grammar name (`[languages.jinja2]`):
+    /// disable a grammar, map extra extensions / file names onto it, or pre-fetch it.
     #[serde(default)]
     pub languages: std::collections::BTreeMap<String, LanguageConfig>,
     #[serde(default)]
@@ -55,12 +57,29 @@ pub struct ConfigV1 {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ScanConfig {
+    /// Allow-list of globs (repo-relative, forward-slash, case-sensitive; `*` crosses `/`). A file
+    /// is scanned only when it matches at least one entry, so an empty list is rejected at load
+    /// (it would silently index nothing). A bare name with no glob metacharacters (`src`,
+    /// `docs/api`) matches that path and everything beneath it, like a `.gitignore` entry.
     #[serde(default = "ScanConfig::default_include")]
-    #[schemars(inner(length(min = 1)))]
+    #[schemars(length(min = 1), inner(length(min = 1)))]
     pub include: Vec<String>,
+    /// Deny-list of globs, same syntax as `include`; exclusion beats inclusion. Applied on top of
+    /// the always-on exclude floor (`build`, `out`, `vendor`, `coverage`, `venv`, `dist`, `target`,
+    /// ... see `floor_allow`). A bare name (`generated`) excludes every path segment called that,
+    /// and everything beneath it. For `extra_roots` files the globs match the path relative to the
+    /// extra root, not the absolute path.
     #[serde(default = "ScanConfig::default_exclude")]
     #[schemars(inner(length(min = 1)))]
     pub exclude: Vec<String>,
+    /// Entries to remove from the always-on exclude floor, named by directory (`build`, `vendor`)
+    /// or by the floor pattern itself (`**/build/**`). Use it to index a tree the floor otherwise
+    /// drops. The default `exclude` list is separate: a directory also listed there (`dist`,
+    /// `target`) must be removed from `exclude` too. `.git` and `.basemind` can never be allowed,
+    /// and an entry naming nothing in the floor is ignored with a warning.
+    #[serde(default)]
+    #[schemars(inner(length(min = 1)))]
+    pub floor_allow: Vec<String>,
     #[serde(default = "ScanConfig::default_respect_gitignore")]
     pub respect_gitignore: bool,
     /// Follow symlinks during the walk. Default `false` — symlinks are a common way to escape the
@@ -178,6 +197,7 @@ impl Default for ScanConfig {
         Self {
             include: Self::default_include(),
             exclude: Self::default_exclude(),
+            floor_allow: Vec::new(),
             respect_gitignore: Self::default_respect_gitignore(),
             follow_symlinks: Self::default_follow_symlinks(),
             max_file_bytes: Self::default_max_file_bytes(),
@@ -300,8 +320,27 @@ pub enum McpTransport {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct LanguageConfig {
+    /// `false` disables the language: its files are no longer parsed as code and are handled as if
+    /// no grammar recognised them (so they fall through to the document tier, subject to
+    /// `[documents]`). Use it for tree-sitter-language-pack misdetections such as `.txt` (vimdoc)
+    /// or `.conf` (nginx). Already-indexed files of a disabled language are dropped on the next scan.
     #[serde(default = "LanguageConfig::default_enabled")]
     pub enabled: bool,
+    /// Extra file suffixes mapped to this grammar, e.g. `[".mako", ".tpl"]` (leading dot optional,
+    /// case-insensitive, compound suffixes like `.html.erb` allowed). Overrides take precedence over
+    /// built-in detection. The table key must be a tree-sitter-language-pack grammar name.
+    #[serde(default)]
+    #[schemars(inner(length(min = 1)))]
+    pub extensions: Vec<String>,
+    /// Exact file names mapped to this grammar, e.g. `["BUILD.in"]`. Takes precedence over
+    /// `extensions` and built-in detection.
+    #[serde(default)]
+    #[schemars(inner(length(min = 1)))]
+    pub filenames: Vec<String>,
+    /// Also fetch this grammar in `basemind lang install` (by default only the languages basemind
+    /// ships queries for are pre-fetched; others download on first use).
+    #[serde(default)]
+    pub preload: bool,
 }
 
 impl LanguageConfig {
@@ -314,6 +353,9 @@ impl Default for LanguageConfig {
     fn default() -> Self {
         Self {
             enabled: Self::default_enabled(),
+            extensions: Vec::new(),
+            filenames: Vec::new(),
+            preload: false,
         }
     }
 }

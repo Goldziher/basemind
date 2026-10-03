@@ -45,11 +45,18 @@ pub(crate) const INIT_SCAFFOLD_TOML: &str = r##"# basemind configuration — htt
 
 [scan]
 # Files to index. Default is "everything"; the tree-sitter language registry + a binary/size check
-# filter the long tail. Narrow it if you only care about specific languages.
+# filter the long tail. Narrow it if you only care about specific languages. Must not be empty.
+# Globs are repo-relative, forward-slash, case-sensitive; `*` also crosses `/`. A bare name with no
+# glob characters (`src`, `docs/api`) matches that path and everything beneath it, like .gitignore.
 # include = ["**/*"]
-# Extra exclude globs, ADDED ON TOP of the always-on floor (node_modules, target, dist, .venv,
-# __pycache__, .git, .basemind, bazel-*, .idea, .DS_Store, …). You cannot remove a floor entry.
+# Extra exclude globs, ADDED ON TOP of the always-on floor (node_modules, target, dist, build, out,
+# vendor, coverage, venv, .venv, __pycache__, .git, .basemind, bazel-*, .idea, .DS_Store, …). Same
+# syntax as include: `generated` excludes every directory of that name; exclude beats include.
 # exclude = []
+# Floor entries to drop so that tree gets indexed, by directory name (or the floor pattern itself).
+# `.git` and `.basemind` can never be allowed. The default exclude also lists dist/target/
+# node_modules/.venv, so remove those from exclude as well when allowing them.
+# floor_allow = []
 # Honor .gitignore / .git/info/exclude while walking. Leave on unless you deliberately want
 # ignored files indexed.
 # respect_gitignore = true
@@ -69,6 +76,19 @@ pub(crate) const INIT_SCAFFOLD_TOML: &str = r##"# basemind configuration — htt
 # list of workspace roots), because this file is authored by the repository. Symlinks inside them
 # are followed only when scan.follow_symlinks is on.
 # extra_roots = []
+
+# Per-grammar overrides, keyed by tree-sitter-language-pack name (`basemind lang list`).
+# enabled = false: stop parsing that grammar's files as code; they fall through to the document
+#   tier like any unrecognised file (use [documents] exclude to drop them entirely). Fixes
+#   misdetections such as `.txt` (vimdoc) and `.conf` (nginx).
+# extensions / filenames: map extra paths onto the grammar (override built-in detection).
+# preload = true: `basemind lang install` also fetches this grammar.
+# [languages.vimdoc]
+# enabled = false
+# [languages.jinja2]
+# extensions = [".mako", ".tpl"]
+# filenames = ["BUILD.in"]
+# preload = true
 
 [code_intel]
 # Precise, scope- and import-aware name resolution. On by default: JS/TS resolve via oxc, Python and
@@ -103,7 +123,18 @@ pub(crate) const INIT_SCAFFOLD_TOML: &str = r##"# basemind configuration — htt
 #   quality     — larger model, best English quality, slower
 #   multilingual— multilingual model for non-English corpora
 # embedding_preset = "balanced"
-# Globs for documents that are still extracted + indexed but NOT embedded (keyword-only).
+# Globs scoping which non-code files are indexed as documents. Empty include = everything that
+# passes [scan]; exclude applies to document indexing itself and beats include.
+# include = []
+# exclude = []
+# Per-document size cap in bytes (separate from scan.max_file_bytes, so big PDFs/Office files work).
+# max_file_bytes = 52428800
+# Extensions to skip on top of the built-in archive/binary floor (case-insensitive, dot optional).
+# extension_denylist = []
+# Embedding scope: when embed_include is non-empty only matching documents are embedded; embed_exclude
+# always wins. Non-embedded documents stay extracted + keyword-searchable. Changing either (or embed)
+# removes the vectors of newly ineligible documents on the next scan.
+# embed_include = []
 # embed_exclude = []
 # Route archives (.zip/.tar/.jar/…) into the recursive archive extractor. Off by default so one
 # archive can't explode into thousands of embeds. True binaries are always skipped.
@@ -117,8 +148,10 @@ pub(crate) const INIT_SCAFFOLD_TOML: &str = r##"# basemind configuration — htt
 # keyword lane over the same text). Chunking + BM25 keyword search work regardless. Turn on only if
 # you specifically want vector search over code (downloads an ONNX model, re-embeds on preset change).
 # embed = false
-# Globs for source files that are still chunked + BM25-indexed but NOT embedded (only used when
-# embed = true).
+# Embedding scope for source files (only used when embed = true): embed_include is an allow-list
+# (empty = all chunked files), embed_exclude wins over it; files left out are still chunked +
+# BM25-indexed. Changing either removes the vectors of newly ineligible files on the next scan.
+# embed_include = []
 # embed_exclude = []
 
 [resources]
@@ -688,6 +721,33 @@ fn report_dry_run(changes: &[Change]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Uncommenting every `# key = value` line of the scaffold must yield a config that parses and
+    /// validates, so a documented key that drifts from the schema fails here.
+    #[test]
+    fn scaffold_examples_parse_when_uncommented() {
+        let mut uncommented = String::new();
+        for line in INIT_SCAFFOLD_TOML.lines() {
+            let candidate = line.strip_prefix("# ").unwrap_or(line);
+            let is_example = line.starts_with("# ")
+                && !candidate.starts_with(' ')
+                && (candidate.starts_with('[')
+                    || toml::from_str::<toml::Table>(candidate).is_ok_and(|t| !t.is_empty()));
+            uncommented.push_str(if is_example { candidate } else { line });
+            uncommented.push('\n');
+        }
+        let cfg = config::parse_str(&uncommented).expect("uncommented scaffold parses and validates");
+        assert_eq!(
+            cfg.languages.len(),
+            2,
+            "language examples are live: {:?}",
+            cfg.languages
+        );
+        assert!(cfg.languages["jinja2"].preload);
+        assert!(!cfg.languages["vimdoc"].enabled);
+        assert_eq!(cfg.documents.max_file_bytes, 52_428_800);
+        assert!(cfg.scan.floor_allow.is_empty());
+    }
 
     #[test]
     fn splice_appends_block_when_no_markers() {
