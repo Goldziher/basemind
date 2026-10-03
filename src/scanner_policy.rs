@@ -36,6 +36,7 @@ pub(crate) fn detect(store: &Store, config: &Config) -> PolicyChange {
 /// record the digest with [`record`] and persist the index -- but only when this returns `true`: a
 /// purge that failed (store open / delete error) must stay unrecorded so the next scan retries it.
 pub(crate) fn reconcile(store: &mut Store, config: &Config, filters: &Filters, scope: &str) -> bool {
+    #[allow(unused_mut)]
     let mut applied = true;
     #[cfg(feature = "code-search")]
     {
