@@ -254,12 +254,14 @@ fn process_file(
     }
 
     let (bytes, size_bytes, mtime) = match source {
-        ScanSource::WorkingTree => match read_working_tree(root, rel, filters.max_file_bytes) {
-            Ok(triple) => triple,
-            Err(status) => {
-                return FileResult::bare(rel.to_string(), status);
+        ScanSource::WorkingTree => {
+            match read_working_tree(root, rel, filters.max_file_bytes, config.scan.follow_symlinks) {
+                Ok(triple) => triple,
+                Err(status) => {
+                    return FileResult::bare(rel.to_string(), status);
+                }
             }
-        },
+        }
         ScanSource::Staged(repo) => match read_via_git(filters.max_file_bytes, repo.read_blob_staged(rel)) {
             Ok(triple) => triple,
             Err(status) => {
@@ -445,10 +447,11 @@ fn process_doc(
     let Some(mime_type) = should_extract_document(&abs, &config.documents) else {
         return FileResult::bare(rel.to_string(), FileStatus::SkippedNoLang);
     };
-    let (bytes, size_bytes, mtime) = match read_working_tree(root, rel, filters.doc_max_file_bytes) {
-        Ok(triple) => triple,
-        Err(status) => return FileResult::bare(rel.to_string(), status),
-    };
+    let (bytes, size_bytes, mtime) =
+        match read_working_tree(root, rel, filters.doc_max_file_bytes, config.scan.follow_symlinks) {
+            Ok(triple) => triple,
+            Err(status) => return FileResult::bare(rel.to_string(), status),
+        };
     let hash = hashing::hash_bytes(&bytes);
     let hex_buf = hashing::hex_buf(&hash);
     let hash_hex = hashing::hex_str(&hex_buf);
@@ -551,22 +554,48 @@ fn mtime_nanos(metadata: &std::fs::Metadata) -> i64 {
         .unwrap_or(0)
 }
 
-fn read_working_tree(root: &Path, rel: &str, max_file_bytes: u64) -> Result<(Vec<u8>, u64, i64), FileStatus> {
+fn read_working_tree(
+    root: &Path,
+    rel: &str,
+    max_file_bytes: u64,
+    follow_symlinks: bool,
+) -> Result<(Vec<u8>, u64, i64), FileStatus> {
     use std::io::Read;
-    let abs = root.join(rel);
+
     let read_failed = |e: std::io::Error| FileStatus::ReadFailed {
         kind: e.kind(),
         msg: e.to_string(),
     };
+    let not_regular = |msg: &str| FileStatus::ReadFailed {
+        kind: std::io::ErrorKind::InvalidInput,
+        msg: msg.to_string(),
+    };
+    let abs = root.join(rel);
+    // A full scan never yields a symlink unless `follow_symlinks` is on, but the incremental path
+    // (watcher, `rescan paths=[..]`) hands over arbitrary paths: refuse links that could pull a file
+    // from outside the repo (`notes.md -> ~/.ssh/id_rsa`) or an endless device (`x.rs -> /dev/zero`).
+    if !follow_symlinks {
+        let link = std::fs::symlink_metadata(&abs).map_err(read_failed)?;
+        if !link.is_file() {
+            return Err(not_regular("not a regular file (symlinks are not followed)"));
+        }
+        if !rel.starts_with('/') {
+            // A symlinked *directory* on the way (`link -> /etc`, path `link/passwd`) passes the leaf check.
+            let inside = match (abs.canonicalize(), root.canonicalize()) {
+                (Ok(abs), Ok(root)) => abs.starts_with(root),
+                _ => false,
+            };
+            if !inside {
+                return Err(not_regular("resolves outside the workspace root"));
+            }
+        }
+    }
     let file = std::fs::File::open(&abs).map_err(read_failed)?;
     // `fstat` on the open handle, so the size checked is the file actually read (no metadata-then-read
     // race) and a device like `/dev/zero` (reported length 0) is refused rather than slurped.
     let metadata = file.metadata().map_err(read_failed)?;
     if !metadata.is_file() {
-        return Err(FileStatus::ReadFailed {
-            kind: std::io::ErrorKind::InvalidInput,
-            msg: "not a regular file".to_string(),
-        });
+        return Err(not_regular("not a regular file"));
     }
     if metadata.len() > max_file_bytes {
         return Err(FileStatus::SkippedTooLarge { size: metadata.len() });
@@ -630,12 +659,13 @@ mod tests {
     fn read_working_tree_refuses_devices_and_directories() {
         let dir = tempfile::tempdir().unwrap();
         // `join` with an absolute `rel` yields `rel`, which lets the test aim at a device node.
-        let zero = read_working_tree(dir.path(), "/dev/zero", 1024).unwrap_err();
+        let zero = read_working_tree(dir.path(), "/dev/zero", 1024, false).unwrap_err();
         assert!(matches!(zero, FileStatus::ReadFailed { .. }), "got {zero:?}");
         let sub = read_working_tree(
             dir.path().parent().unwrap(),
             dir.path().file_name().unwrap().to_str().unwrap(),
             1024,
+            false,
         );
         assert!(matches!(sub, Err(FileStatus::ReadFailed { .. })));
     }
@@ -645,11 +675,51 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("f.txt"), b"0123456789").unwrap();
         assert!(matches!(
-            read_working_tree(dir.path(), "f.txt", 9),
+            read_working_tree(dir.path(), "f.txt", 9, false),
             Err(FileStatus::SkippedTooLarge { size: 10 })
         ));
-        let (bytes, size, _) = read_working_tree(dir.path(), "f.txt", 10).unwrap();
+        let (bytes, size, _) = read_working_tree(dir.path(), "f.txt", 10, false).unwrap();
         assert_eq!((bytes.len(), size), (10, 10));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn working_tree_reads_refuse_symlinks_and_links_out_of_the_root() {
+        use std::os::unix::fs::symlink;
+
+        let outside = tempfile::tempdir().expect("tempdir");
+        let repo = tempfile::tempdir().expect("tempdir");
+        let root = repo.path();
+        std::fs::write(outside.path().join("secret"), "AKIA-secret").expect("write");
+        std::fs::write(root.join("real.rs"), "fn main() {}").expect("write");
+        symlink(outside.path().join("secret"), root.join("notes.md")).expect("file link");
+        symlink("/dev/zero", root.join("zero.rs")).expect("device link");
+        symlink(outside.path(), root.join("linkdir")).expect("dir link");
+
+        let read = |rel: &str, follow| read_working_tree(root, rel, 1024, follow);
+        assert!(read("real.rs", false).is_ok());
+        for rel in ["notes.md", "zero.rs", "linkdir/secret"] {
+            assert!(
+                matches!(read(rel, false), Err(FileStatus::ReadFailed { .. })),
+                "{rel} must be refused"
+            );
+        }
+        // An operator who granted `follow_symlinks` keeps the linked file, and a followed device
+        // still cannot grow past the cap.
+        assert!(read("notes.md", true).is_ok());
+        assert!(read("zero.rs", true).is_err());
+    }
+
+    #[test]
+    fn working_tree_reads_are_capped_by_size() {
+        let repo = tempfile::tempdir().expect("tempdir");
+        std::fs::write(repo.path().join("big.txt"), vec![b'x'; 4096]).expect("write");
+        assert!(matches!(
+            read_working_tree(repo.path(), "big.txt", 1024, false),
+            Err(FileStatus::SkippedTooLarge { .. })
+        ));
+    }
+
     }
 
     #[cfg(feature = "documents")]
