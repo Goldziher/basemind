@@ -17,9 +17,16 @@
     "url": "git+https://github.com/Goldziher/basemind.git",
     "directory": "opencode-plugin"
   },
-  "files": ["basemind.js", "skills/", "commands/", "README.md"],
+  "files": ["basemind.js", "tui.js", "skills/", "commands/", "README.md"],
   "type": "module",
   "main": "basemind.js",
+  "exports": {
+    ".": "./basemind.js",
+    "./tui": "./tui.js"
+  },
+  "dependencies": {
+    "@opencode/plugin": "^2.0.20"
+  },
   "engines": {
     "node": ">=22"
   }

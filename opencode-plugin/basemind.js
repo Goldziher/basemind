@@ -1,126 +1,111 @@
 /**
- * basemind plugin for OpenCode.ai
+ * basemind plugin for OpenCode (V2 API).
  *
- * Registers the basemind MCP server (`basemind serve`) and the skills
- * directory shipped with the repo. OpenCode discovers the plugin via the
- * `plugin` array in `opencode.json`; the function exported here is called
- * once at startup with the live client + directory and returns a config
- * hook that mutates OpenCode's resolved config in place.
+ * Registers the basemind MCP server (`basemind serve`) and the skills shipped
+ * with this package. OpenCode discovers the plugin from the `plugins` array in
+ * `opencode.json(c)`; the default export is a `Plugin.define({ id, setup })`
+ * definition whose `setup` registers domain transforms.
  *
- * Exported as both the default and a named export so OpenCode picks it up
- * regardless of which convention its plugin loader resolves first.
+ * The proactive agent-comms notifications live in the sibling `./tui`
+ * entrypoint (`tui.js`), which OpenCode loads into the terminal client, so this
+ * server-side half stays free of TUI imports.
  */
 
-import { execFile } from "child_process";
+import { Plugin } from "@opencode/plugin";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-const bundledLauncher = path.join(__dirname, "scripts", "mcp-launch.sh");
-const repoLauncher = path.join(__dirname, "..", "scripts", "mcp-launch.sh");
-const launcher = fs.existsSync(bundledLauncher) ? bundledLauncher : repoLauncher;
-
-let commsHighWaterMicros = 0;
-
-function readCommsInbox(directory, limit) {
-  return new Promise((resolve) => {
-    const child = execFile(
-      launcher,
-      ["agents", "inbox", "--root", directory, "--json", "--limit", String(limit)],
-      { timeout: 6000, cwd: directory },
-      (error, stdout) => {
-        if (error || !stdout) {
-          resolve(null);
-          return;
-        }
-        try {
-          resolve(JSON.parse(stdout));
-        } catch {
-          resolve(null);
-        }
-      },
-    );
-    child.on("error", () => resolve(null));
-  });
-}
-
-function formatMessages(messages) {
-  return messages.map((message) => `  • [${message.subject}] from ${message.from} (id: ${message.id})`).join("\n");
-}
-
+// The published package bundles `skills/`; a repo checkout has it at the same
+// relative path, so a single resolution works for both. ~keep
 const bundledSkillsDir = path.join(__dirname, "skills");
 const repoSkillsDir = path.join(__dirname, "..", "skills");
 const skillsDir = fs.existsSync(bundledSkillsDir) ? bundledSkillsDir : repoSkillsDir;
 
-const hooks = ({ client, directory } = {}) => {
-  const root = directory || process.cwd();
-
-  const surface = async (message) => {
-    const toast = client?.tui?.showToast;
-    if (toast) {
-      try {
-        await toast({ body: { message, variant: "info" } });
-        return;
-      } catch {
-        // TUI toast is best-effort; fall through to stderr so the message still surfaces.
+/// Strip a leading YAML frontmatter block, returning its fields and the body.
+/// The skills use plain scalar keys plus folded (`>-`) descriptions; a tiny
+/// parser is enough and avoids pulling a YAML dependency into the plugin.
+function parseSkill(text, fallbackId) {
+  const meta = {};
+  let body = text;
+  if (text.startsWith("---")) {
+    const end = text.indexOf("\n---", 3);
+    if (end !== -1) {
+      const raw = text.slice(3, end);
+      const lines = raw.split("\n");
+      for (let i = 0; i < lines.length; i += 1) {
+        const match = /^([A-Za-z0-9_-]+):\s*(.*)$/.exec(lines[i]);
+        if (!match) {
+          continue;
+        }
+        const [, key, inline] = match;
+        if (inline === ">" || inline === ">-" || inline === "|" || inline === "|-") {
+          const block = [];
+          while (i + 1 < lines.length && /^\s+\S/.test(lines[i + 1])) {
+            block.push(lines[i + 1].trim());
+            i += 1;
+          }
+          meta[key] = inline.startsWith("|") ? block.join("\n") : block.join(" ");
+        } else {
+          meta[key] = inline.replace(/^["']|["']$/g, "");
+        }
       }
+      body = text.slice(end + 4).replace(/^\s*\n/, "");
     }
-    console.error(`[basemind] ${message}`);
-  };
-
+  }
   return {
-    config: async (config) => {
-      config.skills = config.skills || {};
-      config.skills.paths = config.skills.paths || [];
-      if (!config.skills.paths.includes(skillsDir)) {
-        config.skills.paths.push(skillsDir);
-      }
-
-      config.mcp = config.mcp || {};
-      if (!config.mcp.basemind) {
-        config.mcp.basemind = {
-          type: "local",
-          command: ["basemind", "serve"],
-          enabled: true,
-        };
-      }
-    },
-
-    event: async ({ event } = {}) => {
-      if (!event?.type) {
-        return;
-      }
-
-      if (event.type === "session.created") {
-        const inbox = await readCommsInbox(root, 8);
-        const messages = inbox?.messages ?? [];
-        if (messages.length === 0) {
-          return;
-        }
-        commsHighWaterMicros = Math.max(commsHighWaterMicros, ...messages.map((message) => message.ts_micros ?? 0));
-        await surface(
-          `agent-comms: ${messages.length} recent message(s). Use agents mode message with message_id to read a body, or mode post with thread, subject, and body to reply.\n${formatMessages(messages)}`,
-        );
-        return;
-      }
-
-      if (event.type === "tool.execute.after") {
-        const inbox = await readCommsInbox(root, 30);
-        const messages = inbox?.messages ?? [];
-        const fresh = messages.filter((message) => (message.ts_micros ?? 0) > commsHighWaterMicros);
-        if (fresh.length === 0) {
-          return;
-        }
-        commsHighWaterMicros = Math.max(commsHighWaterMicros, ...fresh.map((message) => message.ts_micros ?? 0));
-        await surface(
-          `agent-comms: ${fresh.length} new message(s) since last turn. Reply with agents {mode:"post", thread, subject, body, reply_to:<id>} if warranted.\n${formatMessages(fresh)}`,
-        );
-      }
-    },
+    id: meta.name ? String(meta.name) : fallbackId,
+    name: meta.name ? String(meta.name) : fallbackId,
+    description: meta.description ? String(meta.description) : undefined,
+    autoinvoke: meta.autoinvoke === "true",
+    content: body,
   };
-};
+}
 
-export const BasemindPlugin = async (input) => hooks(input);
-export default async (input) => hooks(input);
+/// Enumerate `skills/<id>/SKILL.md`, parse each, and return `Skill.Info`-shaped
+/// records for `ctx.skill.transform.editor.add`.
+function loadSkills(dir) {
+  let entries;
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  const skills = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory()) {
+      continue;
+    }
+    const file = path.join(dir, entry.name, "SKILL.md");
+    if (!fs.existsSync(file)) {
+      continue;
+    }
+    const parsed = parseSkill(fs.readFileSync(file, "utf8"), entry.name);
+    skills.push({ ...parsed, path: file });
+  }
+  return skills;
+}
+
+export default Plugin.define({
+  id: "basemind",
+  async setup(ctx) {
+    await ctx.mcp.transform((editor) => {
+      if (!editor.get("basemind")) {
+        editor.set("basemind", { type: "local", command: ["basemind", "serve"] });
+      }
+    });
+
+    const skills = loadSkills(skillsDir);
+    if (skills.length > 0) {
+      await ctx.skill.transform((editor) => {
+        for (const skill of skills) {
+          if (!editor.get(skill.id)) {
+            editor.add(skill);
+          }
+        }
+      });
+    }
+  },
+});
