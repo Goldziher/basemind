@@ -20,20 +20,26 @@ const GLOB_META: &[char] = &['*', '?', '[', ']', '{', '}', '\\'];
 
 /// Expand a user pattern into the globs that implement its documented meaning.
 ///
-/// A pattern with glob metacharacters is used verbatim. A bare pattern (no metacharacters) is
+/// A pattern with glob metacharacters is used as written, minus a leading `./` or `/` and a trailing
+/// `/` (which makes it also match everything beneath). A bare pattern (no metacharacters) is
 /// gitignore-like: `generated` matches a path segment of that name at any depth and everything
 /// beneath it; `docs/api` (contains a slash) is anchored to the root and matches that path and
 /// everything beneath it.
 pub fn expand_pattern(pattern: &str) -> Vec<String> {
-    if pattern.contains(GLOB_META) {
-        return vec![pattern.to_string()];
-    }
-    let trimmed = pattern
-        .trim_start_matches("./")
-        .trim_start_matches('/')
-        .trim_end_matches('/');
+    // A leading `./` or `/` and a trailing `/` are path decoration in every form, glob or not.
+    let trimmed = pattern.trim_start_matches("./").trim_start_matches('/');
+    let dir_only = trimmed.ends_with('/');
+    let trimmed = trimmed.trim_end_matches('/');
     if trimmed.is_empty() {
         return vec![pattern.to_string()];
+    }
+    if trimmed.contains(GLOB_META) {
+        // `build/*/` names directories: match them and everything beneath.
+        return if dir_only {
+            vec![trimmed.to_string(), format!("{trimmed}/**")]
+        } else {
+            vec![trimmed.to_string()]
+        };
     }
     if trimmed.contains('/') {
         vec![trimmed.to_string(), format!("{trimmed}/**")]
@@ -46,6 +52,11 @@ pub fn expand_pattern(pattern: &str) -> Vec<String> {
 pub fn compile_patterns<'a>(patterns: impl IntoIterator<Item = &'a str>) -> Result<GlobSet, String> {
     let mut builder = GlobSetBuilder::new();
     for pattern in patterns {
+        if pattern.trim_start().starts_with('!') {
+            return Err(format!(
+                "{pattern:?}: negated patterns are not supported; list what to keep in `include` instead"
+            ));
+        }
         for expanded in expand_pattern(pattern) {
             let glob = Glob::new(&expanded).map_err(|e| format!("{pattern:?}: {e}"))?;
             builder.add(glob);
@@ -206,6 +217,38 @@ mod tests {
         assert!(matches(&["src/**"], "src/a/b.rs"));
         assert!(!matches(&["src/*.rs"], "lib/a.rs"));
         assert_eq!(expand_pattern("**/gen*"), vec!["**/gen*".to_string()]);
+    }
+
+    #[test]
+    fn path_decoration_is_normalised_for_glob_patterns_too() {
+        // Each form a user might copy from a .gitignore must select `src/a.rs`.
+        for pattern in [
+            "./src/**",
+            "/src/**",
+            "src/**",
+            "/src/*.rs",
+            "./src/*.rs",
+            "src/*/",
+            "/src/*/",
+        ] {
+            let hit = if pattern.ends_with('/') {
+                "src/sub/a.rs"
+            } else {
+                "src/a.rs"
+            };
+            assert!(matches(&[pattern], hit), "{pattern:?} should match {hit}");
+        }
+        assert_eq!(expand_pattern("/src/**"), expand_pattern("src/**"));
+        assert!(
+            matches(&["build/*/"], "build/out/a.rs"),
+            "trailing slash also covers everything beneath"
+        );
+    }
+
+    #[test]
+    fn negated_patterns_are_rejected_not_taken_literally() {
+        let err = compile_patterns(["!foo"]).expect_err("negation");
+        assert!(err.contains("negated"), "{err}");
     }
 
     #[test]

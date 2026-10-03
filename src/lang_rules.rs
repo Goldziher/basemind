@@ -63,6 +63,12 @@ impl LangRules {
             }
             for ext in &cfg.extensions {
                 let suffix = normalize_suffix(ext);
+                if suffix.contains('/') {
+                    return Err(format!(
+                        "[languages.{key}] extensions entry {ext:?} contains '/', so it could never match; \
+                         extensions are matched against the file name only"
+                    ));
+                }
                 if suffix.len() < 2 {
                     return Err(format!("[languages.{key}] extensions entry {ext:?} is empty"));
                 }
@@ -118,6 +124,8 @@ impl LangRules {
                 if let Some(&id) = self.by_filename.get(name) {
                     return Some(id);
                 }
+                // Strictly longer than the suffix: a file named exactly `.mako` has no stem, so it is
+                // matched through `filenames`, not `extensions`.
                 if !self.by_suffix.is_empty() {
                     let lower = name.to_ascii_lowercase();
                     if let Some((_, id)) = self
@@ -265,6 +273,8 @@ mod tests {
         assert!(err.contains("empty"), "{err}");
         let err = LangRules::from_config(&table(&[("python", cfg(&[], &["a/b"], true))])).expect_err("path filename");
         assert!(err.contains("bare file name"), "{err}");
+        let err = LangRules::from_config(&table(&[("python", cfg(&[".a/b"], &[], true))])).expect_err("path extension");
+        assert!(err.contains("could never match"), "{err}");
     }
 
     #[test]

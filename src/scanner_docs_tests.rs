@@ -519,6 +519,30 @@ fn doc_scope_namespaces_external_files_under_their_extra_root() {
     assert_eq!(scope, format!("path:{}", ext_canonical.to_str().unwrap()));
 }
 
+#[test]
+fn doc_scope_prefers_the_longest_root_and_respects_segment_boundaries() {
+    let base = tempfile::tempdir().expect("tempdir");
+    let base = std::fs::canonicalize(base.path()).unwrap();
+    for dir in ["foo", "foo/inner", "foobar"] {
+        std::fs::create_dir_all(base.join(dir)).unwrap();
+    }
+    let mut cfg = crate::config::ConfigV1::with_defaults();
+    cfg.scan.extra_roots = vec![base.join("foo"), base.join("foo/inner"), base.join("foobar")];
+    let scope_of = |rel: &str| doc_scope_for(base.join(rel).to_str().unwrap(), "repo:origin", &cfg).into_owned();
+
+    assert_eq!(scope_of("foo/a.pdf"), format!("path:{}", base.join("foo").display()));
+    assert_eq!(
+        scope_of("foo/inner/a.pdf"),
+        format!("path:{}", base.join("foo/inner").display()),
+        "nested root wins over its parent"
+    );
+    assert_eq!(
+        scope_of("foobar/a.pdf"),
+        format!("path:{}", base.join("foobar").display()),
+        "/foo must not claim /foobar"
+    );
+}
+
 fn seeded_doc_lance(store: &mut Store, paths: &[&str]) -> crate::lance::LanceStore {
     let lance = store.lance_or_open(768, "balanced").expect("open lance").clone();
     for path in paths {
