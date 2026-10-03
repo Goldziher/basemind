@@ -53,3 +53,38 @@ pub(crate) fn reconcile(store: &mut Store, config: &Config, filters: &Filters, s
 pub(crate) fn record(store: &mut Store, change: &PolicyChange) {
     store.index.embed_policy.clone_from(&change.digest);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detect_distinguishes_first_scan_unchanged_and_changed_policy() {
+        crate::store::init_isolated_cache();
+        let tmp = tempfile::tempdir().unwrap();
+        let mut store = Store::open(tmp.path(), crate::store::VIEW_WORKING).unwrap();
+        let mut config = crate::config::default_for_root(tmp.path());
+
+        let first = detect(&store, &config);
+        assert!(first.changed, "nothing recorded yet: purge once");
+        assert!(
+            !first.reflush,
+            "a missing record must not reprocess every file on upgrade"
+        );
+
+        record(&mut store, &first);
+        let again = detect(&store, &config);
+        assert!(!again.changed && !again.reflush, "recorded policy is in sync");
+
+        config.code_search.embed = !config.code_search.embed;
+        let flipped = detect(&store, &config);
+        assert!(
+            flipped.changed && flipped.reflush,
+            "a changed policy purges and reflushes"
+        );
+        assert_eq!(
+            store.index.embed_policy, first.digest,
+            "detect alone never records; only a completed purge does"
+        );
+    }
+}
