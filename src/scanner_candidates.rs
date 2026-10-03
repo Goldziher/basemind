@@ -426,7 +426,7 @@ fn walk_extra_roots(root: &Path, config: &Config, filters: &Filters, cancel: &Sc
             tracing::warn!(root = %extra.display(), "extra_root skipped: path is not valid UTF-8");
             continue;
         };
-        let pruner = filters.dir_pruner(None);
+        let pruner = filters.dir_pruner_for_extra_root(&extra);
         // `scan.follow_symlinks` (default `false`) governs here too. Following links used to be
         // hard-coded on, which is strictly worse out of an extra root than inside the repo: the
         // repo walk at least starts from a tree the operator chose and is bounded by that tree's own
@@ -457,7 +457,7 @@ fn walk_extra_roots(root: &Path, config: &Config, filters: &Filters, cancel: &Sc
             let Some(key) = key_str(path, &mut key_buf) else {
                 continue;
             };
-            if !filters.allows(key) {
+            if !filters.allows_in_extra_root(rel) {
                 continue;
             }
             if budget.accept(label, key) == Flow::Stop {

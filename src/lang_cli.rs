@@ -66,12 +66,27 @@ pub(crate) fn cmd_lang_list(no_color: bool) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn cmd_lang_install(verbosity: Verbosity, no_color: bool) -> Result<()> {
+pub(crate) fn cmd_lang_install(root: &std::path::Path, verbosity: Verbosity, no_color: bool) -> Result<()> {
     crate::bootstrap_grammars(verbosity, no_color)?;
     if verbosity != Verbosity::Quiet {
         let summary = basemind::lang::ensure_grammars().map_err(|e| anyhow::anyhow!("{e}"))?;
         if !summary.did_download() {
             println!("all {} supported grammars already cached", summary.already_cached.len());
+        }
+    }
+    let configured = match basemind::config::load(root) {
+        Ok(config) => basemind::lang_rules::LangRules::preload_names(&config.languages),
+        Err(basemind::config::ConfigError::NotFound(_)) => Vec::new(),
+        Err(e) => return Err(anyhow::anyhow!(e)),
+    };
+    if !configured.is_empty() {
+        let fetched = basemind::lang::ensure_extra_grammars(&configured).map_err(|e| anyhow::anyhow!("{e}"))?;
+        if verbosity != Verbosity::Quiet {
+            if fetched.is_empty() {
+                println!("all {} configured preload grammars already cached", configured.len());
+            } else {
+                println!("fetched configured grammars: {}", fetched.join(", "));
+            }
         }
     }
     Ok(())
