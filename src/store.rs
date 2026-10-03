@@ -798,4 +798,31 @@ mod tests {
         let err = StoreError::SchemaMismatch { found: 1, expected: 2 };
         assert!(!err.is_lock_contention());
     }
+
+    /// An `index.msgpack` written before `doc_files`, `embed_policy` and the per-document digest
+    /// fields existed must still decode, with the new fields at their neutral values.
+    #[test]
+    fn index_written_before_the_additive_fields_still_decodes() {
+        let legacy = serde_json::json!({
+            "schema_ver": SCHEMA_VER,
+            "files": {},
+        });
+        let bytes = rmp_serde::to_vec_named(&legacy).unwrap();
+        let index: Index = rmp_serde::from_slice(&bytes).expect("legacy index decodes");
+        assert!(index.doc_files.is_empty());
+        assert_eq!(index.embed_policy, "");
+
+        let legacy = serde_json::json!({
+            "schema_ver": SCHEMA_VER,
+            "files": {},
+            "doc_files": {
+                "docs/a.pdf": {"hash_hex": "ab", "embedding_preset": "fast", "size_bytes": 3, "mtime": 7},
+            },
+        });
+        let bytes = rmp_serde::to_vec_named(&legacy).unwrap();
+        let index: Index = rmp_serde::from_slice(&bytes).expect("legacy doc entry decodes");
+        let entry = index.doc_files.values().next().expect("one doc entry");
+        assert!(!entry.embedded && !entry.embed_attempted);
+        assert_eq!(entry.config_digest, "");
+    }
 }
