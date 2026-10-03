@@ -228,9 +228,11 @@ impl Filters {
         if self.extra_prefixes.is_empty() || !crate::path::is_external_key(key.as_bytes()) {
             return key;
         }
+        // Longest matching root wins, so a root nested inside another is scoped relative to itself.
         self.extra_prefixes
             .iter()
-            .find_map(|p| key.strip_prefix(p.as_str()))
+            .filter_map(|p| key.strip_prefix(p.as_str()))
+            .min_by_key(|rest| rest.len())
             .unwrap_or(key)
     }
 
@@ -759,6 +761,27 @@ mod tests {
             !filters.allows("/opt/build/ext/src/lib.rs"),
             "an absolute key under a floor-named directory is what the old check tripped on"
         );
+    }
+
+    #[test]
+    fn nested_extra_roots_scope_a_key_to_the_longest_matching_root() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let base = tmp.path().canonicalize().expect("canonicalize");
+        for dir in ["ext", "ext/inner", "extra"] {
+            fs::create_dir_all(base.join(dir)).expect("mkdir");
+        }
+        let mut config = crate::config::default_for_root(Path::new("."));
+        config.scan.extra_roots = vec![base.join("ext"), base.join("ext/inner"), base.join("extra")];
+        let filters = Filters::build(&config, Vec::new()).expect("build filters");
+        let key = |rel: &str| format!("{}/{rel}", base.display());
+
+        assert_eq!(filters.scoped(&key("ext/a.md")), "a.md");
+        assert_eq!(
+            filters.scoped(&key("ext/inner/a.md")),
+            "a.md",
+            "the nested root wins, not the first listed"
+        );
+        assert_eq!(filters.scoped(&key("extra/a.md")), "a.md", "/ext must not claim /extra");
     }
 
     #[test]
