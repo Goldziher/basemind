@@ -425,6 +425,10 @@ workspace, never inside your repo. The
 content-addressed blob store is machine-wide too: identical file content scanned from different repos
 or worktrees is extracted and stored once.
 
+A new linked worktree's working view is seeded from a sibling checkout's index with a copy-on-write
+clone, so its first scan only touches files that differ. Set `BASEMIND_NO_SEED=1` to opt out and build
+the view from scratch.
+
 A workspace root must be a project: a git repository, or a directory containing a basemind config
 (`basemind.toml` at the root, or under the `.config/` convention). Anything else is refused, because
 basemind opens a root read-write and indexes every file beneath
@@ -821,7 +825,7 @@ reconnect, and `scan_threads` is fixed for the process lifetime (the daemon logs
 required). `admin status` reports `config_stamp` (`<bytes>B@<unix seconds>`) to spot an edit.
 
 **Reserved keys.** These parse but nothing reads them yet, and setting one to a non-default value
-logs a warning: `[watch] live_l2`, `[cache] file_map_lru`, `[mcp] transport`, `[memory] enabled` /
+logs a warning (`[mcp] transport` has a single value, `stdio`, so it is reserved but cannot differ): `[watch] live_l2`, `[cache] file_map_lru`, `[mcp] transport`, `[memory] enabled` /
 `scope_strategy` / `default_visibility`, `[comms] enabled` / `idle_timeout_secs` /
 `max_messages_per_room` / `retention_secs` / `max_rooms` / `workspace_root`, `[shells] keep_on_exit`,
 `[documents.ocr] backend` / `languages`, and `[documents.language] preferred_languages`.

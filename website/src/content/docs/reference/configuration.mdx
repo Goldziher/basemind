@@ -59,7 +59,7 @@ All tunables live under a named section — there are no bare top-level options.
 | `[comms]` | Agent comms identity + retention (needs `--features comms`). |
 | `[shells]` | Agent-shell presentation (needs `--features shells`). |
 | `[llm]` | Shared LLM settings for reranking, NER, and summarization. |
-| `[languages]` | Per-language enable/disable toggles. |
+| `[languages]` | Per-grammar toggles and extension/file-name mappings. |
 
 ### `[scan]` Section
 
@@ -77,12 +77,13 @@ extra_roots = ["/path/to/external/repo"]
 | Key | Type | Default | Notes |
 |---|---|---|---|
 | `include` | array of globs | `["**/*"]` | Files to index. Language detection still filters by tree-sitter support. |
-| `exclude` | array of globs | build/vendor dirs | Excludes `target/`, `node_modules/`, `dist/`, `.venv/`, `.git/`, `.basemind/`, and `bazel-*` trees. |
+| `exclude` | array of globs | build/vendor dirs | Excludes `target/`, `node_modules/`, `dist/`, `.venv/`, `.git/`, `.basemind/`, and `bazel-*` trees. A bare name without glob characters (`generated`) matches that path segment at any depth and everything beneath it. |
+| `floor_allow` | array of strings | `[]` | Entries to remove from the always-on exclude floor, by directory (`build`, `vendor`) or by floor pattern (`**/build/**`). A directory also listed in the default `exclude` must be removed from `exclude` too. `.git` and `.basemind` can never be allowed; an entry naming nothing in the floor is ignored with a warning. |
 | `respect_gitignore` | bool | `true` | Honor `.gitignore` during the walk. |
 | `max_file_bytes` | integer | `2097152` | Skip files larger than this (2 MiB). Prevents minified-bundle stalls. |
 | `skip_submodules` | bool | `true` | Skip paths under submodule roots listed in `.gitmodules`. |
 | `eager_l2` | bool | `true` | Extract L2 (call sites) inline with the scan. `false` trades reference search for a faster scan. |
-| `extra_roots` | array of paths | `[]` | Index directories outside the repo root (e.g., a Bazel external cache). External files are keyed by absolute path; (re-)indexed on full `basemind scan` only (not live-watched). |
+| `extra_roots` | array of paths | `[]` | Index directories outside the repo root (e.g., a Bazel external cache). External files are keyed by absolute path; (re-)indexed on full `basemind scan` only (not live-watched). Ignored unless the operator sets `BASEMIND_ALLOW_EXTRA_ROOTS=1` (or a `:`-separated list of workspace roots) in the environment, because `basemind.toml` is authored by the repository, not the operator. |
 
 ### `[watch]` Section
 
@@ -95,7 +96,7 @@ live_l2 = false
 | Key | Type | Default | Notes |
 |---|---|---|---|
 | `debounce_ms` | integer | `250` | Coalesce filesystem events within this window (0–60000 ms). |
-| `live_l2` | bool | `false` | Extract L2 on live re-scans too (more work per change). |
+| `live_l2` | bool | `false` | Reserved: parsed but has no effect yet (a warning is logged when set). |
 
 ### `[cache]` and `[mcp]` Sections
 
@@ -109,8 +110,8 @@ transport = "stdio"
 
 | Key | Type | Default | Notes |
 |---|---|---|---|
-| `cache.file_map_lru` | integer | `256` | Max extracted FileMaps kept hot in memory. |
-| `mcp.transport` | string | `stdio` | MCP transport. `stdio` is the only option today. |
+| `cache.file_map_lru` | integer | `256` | Reserved: parsed but has no effect yet (a warning is logged when set). See `[resources] max_map_cache_mb` for the outline cache. |
+| `mcp.transport` | string | `stdio` | Reserved: `stdio` is the only transport and nothing reads this key. |
 
 ### `[documents]` Section
 
@@ -132,9 +133,14 @@ max_chunks_per_document = 2000
 | `max_chunks_per_document` | integer | Cap on chunks embedded per document, so one pathological file can't explode a scan. |
 | `mime_allowlist` | array of strings | Restrict extraction to specific MIME types (empty = accept all supported types). |
 | `extension_denylist` | array of strings | File extensions never routed to extraction (archives and binaries are denied by default). |
+| `include` | array of globs | Allow-list selecting which non-code files are indexed as documents. Empty = every non-code file that passes `[scan]`. `exclude` wins. |
+| `exclude` | array of globs | Deny-list applied to document indexing itself: matching files are not extracted, chunked or searchable. |
+| `max_file_bytes` | integer | Per-document size cap in bytes (minimum 1024, default 50 MiB), independent of `[scan] max_file_bytes`, so PDFs and Office files above the 2 MiB source cap are still extracted. |
+| `embed_include` / `embed_exclude` | array of globs | Embedding scope: with a non-empty `embed_include` only matching documents are embedded; `embed_exclude` beats it. Excluded documents stay keyword-searchable. Changing either removes the vector rows of newly excluded files on the next scan. |
 
 The `[documents]` tree also carries sub-tables for reranking, keywords, NER, summarization, and OCR
-(`[documents.reranker]`, `[documents.keywords]`, and so on). See the
+(`[documents.reranker]`, `[documents.keywords]`, and so on). `[documents.ocr] backend` / `languages`
+and `[documents.language] preferred_languages` are reserved: they parse but have no effect yet. See the
 [JSON Schema](https://github.com/Goldziher/basemind/blob/main/schema/basemind-config-v1.schema.json)
 for the exhaustive field set.
 
@@ -159,7 +165,7 @@ document_models = "code_only"
 | `scan_threads` | integer | `0` | Cap on the code-map scanner's rayon pool. `0` (auto) keeps rayon's default (one worker per logical CPU). The pool is built once per process and fixed after the first scan. |
 | `embed_threads` | integer | `0` | Cap on the ONNX embedding pool. `0` (auto) resolves to `max(2, logical_cpus / 4)`, so the embedder never pins the machine and ORT arenas aren't replicated across every core. Supersedes the deprecated `[documents].embed_max_threads`; `resources.embed_threads` wins whenever it's set (non-zero). |
 | `embed_batch_size` | integer | `32` | Number of chunks the embedder submits to ONNX per batch. Larger batches amortize per-call overhead at the cost of a higher transient memory spike; lower it to shrink that spike. |
-| `max_concurrent_documents` | integer | `0` | Upper bound on documents extracted concurrently. `0` (auto) leaves dispatch unbounded. Parsed today; enforcement is a later iteration — memory is bounded in the meantime by `max_footprint_mb` rather than by an in-flight document count. |
+| `max_concurrent_documents` | integer | `0` | Upper bound on documents extracted concurrently. `0` (auto) leaves dispatch unbounded. Documents beyond the bound wait for a free slot before they are read, so a burst of large files cannot all be held in memory at once. The daemon clamps the value (see `BASEMIND_DAEMON_MAX_CONCURRENT_DOCUMENTS`). |
 | `max_footprint_mb` | integer | `0` | Best-effort ceiling on process physical footprint, in mebibytes (macOS `phys_footprint`, which counts compressed + swapped-out pages; a no-op elsewhere). `0` disables the gate. When set, the `FootprintGate` samples the footprint at the document-extraction and code-chunk embedding admit points and parks over-ceiling workers on a bounded backoff. It never fails a scan: an unreadable sample or a sustained overshoot admits anyway after a capped wait, so the ceiling shapes the peak rather than enforcing a hard invariant. |
 | `document_models` | enum | `full` | Which model families run during document extraction. `full` runs every configured post-processor. `code_only` keeps embeddings but forces keyword extraction, NER, and summarization off and disables OCR. `none` also drops embeddings — documents are still extracted for text + metadata (keyword search) but never routed to any model. `[documents].enabled = false` remains the zero-cost total short-circuit. |
 
@@ -183,6 +189,8 @@ enabled = false
 | `max_characters` | integer | — | Max chunk size; longer chunks split into overlapping windows. |
 | `overlap` | integer | — | Overlap between split windows, in characters. |
 | `embed` | bool | `true` | Emit vector rows for the semantic lane. With `false`, the BM25 keyword lane still works but the vector lane returns nothing. |
+| `embed_include` | array of globs | `[]` | When non-empty only matching files are embedded; the rest stay chunked and keyword-searchable. Only used with `embed = true`. |
+| `embed_exclude` | array of globs | `[]` | Files that are chunked and indexed but never embedded. Beats `embed_include`. |
 | `[code_search.reranker] enabled` | bool | `false` | Optional cross-encoder rerank of fused hits (downloads an ONNX model on first use). |
 
 ### `[memory]` Section
@@ -277,10 +285,35 @@ BASEMIND_COMMS_AGENT_ID="my-agent"
 BASEMIND_LLM_API_KEY="sk-..."
 ```
 
+### `[languages]` Section
+
+Per-grammar overrides, keyed by a tree-sitter-language-pack grammar name.
+
+```toml
+[languages.vimdoc]
+enabled = false            # stop parsing .txt as vimdoc; the files fall through to the document tier
+
+[languages.jinja2]
+extensions = [".j2"]       # extra suffixes mapped to this grammar (leading dot optional)
+filenames = ["Jinjafile"]  # exact file names mapped to this grammar
+preload = true             # also fetch the grammar in `basemind lang install`
+```
+
+An unknown grammar name is a config error with near-match suggestions. Overrides take precedence
+over built-in detection; already-indexed files of a disabled or remapped language are updated on the
+next scan.
+
 <Aside type="tip">
 Environment variables take precedence over the config file (but CLI flags and per-request MCP
 overrides still win over them). Useful for CI/CD where you don't want to commit secrets.
 </Aside>
+
+The environment variables below are read directly rather than mapped from a config key:
+
+| Variable | Effect |
+|---|---|
+| `BASEMIND_NO_SEED` | Any non-empty value other than `0` stops a new linked-worktree view from being seeded from a sibling worktree's index; the first scan then builds it from scratch. |
+| `BASEMIND_ALLOW_PRIVATE_HOSTS` | `1`, `true` or `yes` lets crawl and URL fetches reach private and loopback hosts (also required for `[crawl] allow_private_network`). |
 
 ## Per-Request Overrides
 

@@ -22,6 +22,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `.config` (writes `.config/basemind.toml`) or `.config/basemind` (writes
   `.config/basemind/config.toml`); any other value is rejected, since there is no read-time
   config-path flag and a config written elsewhere would never be auto-discovered.
+- `[languages.<grammar>]` `extensions` / `filenames` / `preload` overrides, `[scan] floor_allow`,
+  `[documents]` `include` / `exclude` / `max_file_bytes` and `embed_include` (documents and code
+  search). Cached chunks and documents are fingerprinted against the settings that shape them, and
+  the first scan after an embedding-scope change removes the vector rows of files no longer eligible.
+- The daemon reloads a workspace's `basemind.toml` when it changes and applies operator-raisable
+  resource caps (`BASEMIND_DAEMON_MAX_*`).
+- A new linked worktree's working view is seeded from a sibling checkout; `BASEMIND_NO_SEED=1`
+  opts out.
+
+### Changed
+
+- Repo-supplied `[llm] base_url`, foreign `api_key` env references, `[crawl] allow_private_network`
+  and `[scan] extra_roots` now need an operator grant in the environment
+  (`BASEMIND_ALLOW_REPO_LLM`, `BASEMIND_ALLOW_PRIVATE_HOSTS`, `BASEMIND_ALLOW_EXTRA_ROOTS`).
+- `BASEMIND_ALLOW_PRIVATE_HOSTS` accepts `1`, `true` or `yes` in both the config gate and the URL
+  guard (the URL guard previously accepted only `1`).
+- Reserved config keys that nothing reads log a warning when set to a non-default value.
+- mimalloc is the global allocator; ONNX Runtime memory is bounded in the daemon.
+- Changing a reserved key (`[documents.language] preferred_languages`, `[documents.ocr]`) no longer
+  re-extracts every document.
 
 ## [0.27.4] - 2026-09-28
 
