@@ -438,8 +438,8 @@ queries by walking git directly (correct, just slower), rather than wiping and r
 worktree switch. The first build may come from any worktree.
 
 ONNX Runtime memory is bounded in every basemind process: no memory-pattern planning and no retained
-CPU arena, which otherwise grow to the largest batch seen and never shrink. Intra-op threads follow
-`embed_threads` (2 in the comms daemon). The daemon also drops its resident embedding models once the
+CPU arena, which otherwise grow to the largest batch seen and never shrink. Intra-op threads are the auto
+embed-thread count (`max(2, logical CPUs / 4)`), or 2 in the comms daemon. The daemon also drops its resident embedding models once the
 last concurrent embedding pass ends; the next pass reloads them.
 
 A workspace root must be a project: a git repository, or a directory containing a basemind config
