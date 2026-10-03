@@ -11,8 +11,15 @@ use xberg::{EmbeddingConfig, EmbeddingModelType};
 /// sized to the largest batch seen and never shrink, so one embedding pass over variable-length
 /// documents grew the daemon by ~2.7 GB. Trades some throughput for a bounded footprint.
 ///
-/// Call before the first embedding; resident engines keep the options they were built with.
+/// Call before the first embedding; resident engines keep the options they were built with. Only the
+/// first call in a process takes effect (changing options clears the engine caches, which must not
+/// happen under a live session), so an entry point that knows its mode calls this first and the
+/// generic CLI default never overrides it.
 pub fn bound_ort_memory(intra_threads: usize) {
+    static APPLIED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if APPLIED.swap(true, std::sync::atomic::Ordering::AcqRel) {
+        return;
+    }
     xberg::set_ort_session_options(xberg::OrtSessionOptions {
         memory_pattern: false,
         cpu_arena: false,
@@ -24,6 +31,36 @@ pub fn bound_ort_memory(intra_threads: usize) {
 /// embedding reloads the model. Returns how many engines were dropped.
 pub fn release_engines() -> usize {
     xberg::clear_engine_caches()
+}
+
+static EMBED_PASSES_IN_FLIGHT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// RAII marker for one embedding pass in this process. When the LAST concurrent pass ends, resident
+/// engines are released, so a pass for one workspace never frees the model out from under (or forces a
+/// reload for) a pass that is still running for another.
+#[must_use = "the engines are released when this guard drops"]
+pub struct EmbedPass(());
+
+/// Register the start of an embedding pass; see [`EmbedPass`].
+pub fn begin_embed_pass() -> EmbedPass {
+    EMBED_PASSES_IN_FLIGHT.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+    EmbedPass(())
+}
+
+impl Drop for EmbedPass {
+    fn drop(&mut self) {
+        if EMBED_PASSES_IN_FLIGHT.fetch_sub(1, std::sync::atomic::Ordering::AcqRel) == 1 {
+            tracing::info!(
+                dropped = release_engines(),
+                "embedding pass finished; released resident embedding engines"
+            );
+        }
+    }
+}
+
+/// Number of embedding passes currently in flight. Exposed for tests.
+pub fn embed_passes_in_flight() -> usize {
+    EMBED_PASSES_IN_FLIGHT.load(std::sync::atomic::Ordering::Acquire)
 }
 
 /// Global bounded rayon `ThreadPool` for all ONNX embed calls. Initialized once
@@ -162,6 +199,27 @@ impl SharedEmbedder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn embed_pass_guards_nest_and_count_down() {
+        let base = embed_passes_in_flight();
+        let first = begin_embed_pass();
+        let second = begin_embed_pass();
+        assert!(embed_passes_in_flight() >= base + 2);
+        drop(first);
+        assert!(
+            embed_passes_in_flight() > base,
+            "a pass is still running after the first ends"
+        );
+        drop(second);
+    }
+
+    #[test]
+    fn bound_ort_memory_is_first_call_wins() {
+        bound_ort_memory(2);
+        // A second call with another value is a no-op (it must not clear live engine caches).
+        bound_ort_memory(7);
+    }
 
     #[test]
     fn resolve_embed_threads_nonzero_passthrough() {

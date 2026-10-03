@@ -585,6 +585,11 @@ pub(super) async fn scan_and_refresh(
         store.ensure_dirs()?;
         let mut observer = RescanPaths::default();
         let cancel = crate::scanner::ScanCancel::new();
+        // A full Inline pass loads the embedding engine; release it once the pass is over (incremental
+        // watcher batches keep it warm for the searches that follow an edit).
+        #[cfg(feature = "intelligence")]
+        let _embed_pass = (matches!(embed, crate::scanner::EmbedMode::Inline) && scoped_paths.is_none())
+            .then(crate::embeddings::begin_embed_pass);
         let report = if let Some(paths) = scoped_paths {
             crate::scanner::scan_paths_with_observer(&root, &mut store, &config, &paths, embed, &cancel, &mut observer)
         } else {
