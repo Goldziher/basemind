@@ -8,7 +8,7 @@ Add to your `opencode.json` (global or project-level):
 
 ```json
 {
-  "plugin": ["basemind-opencode@latest"]
+  "plugins": ["basemind-opencode@latest"]
 }
 ```
 
@@ -29,7 +29,9 @@ basemind scan
 
 - **MCP server** named `basemind` running `basemind serve` over stdio. Exposes the full
   code-map, git, documents, and memory toolset.
-- **Skills directory** with pre-authored skills that document how to drive the MCP toolset.
+- **Skills** shipped with the package, registered into the skill catalog.
+- **Agent-comms notifications** (terminal plugin): new messages in the basemind agent-comms
+  inbox are surfaced as a toast when a session starts and after tool calls.
 
 See the [main README](https://github.com/Goldziher/basemind#readme) for the full MCP tool
 reference, architecture, and configuration.
