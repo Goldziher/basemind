@@ -354,27 +354,30 @@ pub(crate) fn delete_stale_code_chunks(store: &mut Store, config: &Config, scope
 /// Delete the `code_chunks` rows of `paths`, whether they left the scan set or stopped being
 /// embed-eligible. Shared tail of the stale purge and the embed-policy purge; same best-effort,
 /// never-create contract as [`delete_stale_code_chunks`].
-pub(crate) fn delete_code_rows(store: &mut Store, config: &Config, scope: &str, paths: &[String]) {
+///
+/// Returns `false` only when rows that exist could not be deleted (unknown preset, store open or
+/// delete error); "nothing to delete" and "no vector store" are both `true`.
+pub(crate) fn delete_code_rows(store: &mut Store, config: &Config, scope: &str, paths: &[String]) -> bool {
     let stale = paths;
     if stale.is_empty() {
-        return;
+        return true;
     }
     if store.lance.is_none() && !store.lance_dir_exists() {
-        return;
+        return true;
     }
     let model = &config.documents.embedding_preset;
     let dim = match SharedEmbedder::load(model, 0, config.resources.embed_batch_size) {
         Ok(embedder) => embedder.dim(),
         Err(error) => {
             tracing::warn!(?error, preset = %model, "code-chunk stale purge: unknown embedding preset; skipping");
-            return;
+            return false;
         }
     };
     let lance = match store.lance_or_open(dim, model) {
         Ok(lance) => lance.clone(),
         Err(error) => {
             tracing::warn!(?error, "code-chunk stale purge: open LanceStore failed; skipping");
-            return;
+            return false;
         }
     };
     if let Err(error) = lance.delete_code_chunks_for_paths(scope, stale) {
@@ -383,7 +386,9 @@ pub(crate) fn delete_code_rows(store: &mut Store, config: &Config, scope: &str, 
             ?error,
             "code-chunk purge failed; search_code may return a removed or no-longer-embedded path"
         );
+        return false;
     }
+    true
 }
 
 /// Drop the derived rows of every indexed source file that is no longer eligible under the current
@@ -391,7 +396,10 @@ pub(crate) fn delete_code_rows(store: &mut Store, config: &Config, scope: &str, 
 /// outside `embed_include` / inside `embed_exclude`), and — when `[code_search] enabled = false` —
 /// the BM25 keyword postings too, so a disabled tier leaves nothing queryable. Run when the embed
 /// policy changed since the last scan; see [`crate::scanner_policy`].
-pub(crate) fn purge_unembedded_code(store: &mut Store, config: &Config, filters: &Filters, scope: &str) {
+///
+/// Returns whether the purge fully applied; the caller records the policy only then, so a failed
+/// purge is retried by the next scan instead of being marked done.
+pub(crate) fn purge_unembedded_code(store: &mut Store, config: &Config, filters: &Filters, scope: &str) -> bool {
     let cfg = &config.code_search;
     let paths: Vec<String> = store
         .index
@@ -401,17 +409,16 @@ pub(crate) fn purge_unembedded_code(store: &mut Store, config: &Config, filters:
         .filter(|p| !(cfg.enabled && cfg.embed && filters.code_embed_allowed(p)))
         .collect();
     if paths.is_empty() {
-        return;
+        return true;
     }
-    delete_code_rows(store, config, scope, &paths);
-    if !cfg.enabled {
-        drop_keyword_postings(store, &paths);
-    }
+    let rows = delete_code_rows(store, config, scope, &paths);
+    let postings = cfg.enabled || drop_keyword_postings(store, &paths);
+    rows && postings
 }
 
-fn drop_keyword_postings(store: &Store, paths: &[String]) {
+fn drop_keyword_postings(store: &Store, paths: &[String]) -> bool {
     let Some(db) = store.index_db.as_ref() else {
-        return;
+        return true;
     };
     let mut writer = db.writer();
     for path in paths {
@@ -420,16 +427,17 @@ fn drop_keyword_postings(store: &Store, paths: &[String]) {
                 ?error,
                 "drop keyword postings failed; code search may return stale chunks"
             );
-            return;
+            return false;
         }
     }
     if let Err(error) = writer.commit() {
         tracing::warn!(?error, "commit keyword posting removal failed");
-        return;
+        return false;
     }
     if let Err(error) = db.recompute_bm25_stats() {
         tracing::warn!(?error, "recompute bm25 stats failed; keyword search may be stale");
     }
+    true
 }
 
 /// Stream every pending code batch into the `code_chunks` LanceDB table, one file at a time. Opens
@@ -726,6 +734,29 @@ mod tests {
         purge_unembedded_code(&mut store, &config, &filters, "repo:s");
         assert!(code_rows(&lance).is_empty(), "embed = false removes every vector row");
         assert!(store.lookup("src/a.rs").is_some(), "files stay indexed");
+    }
+
+    #[test]
+    fn a_purge_that_cannot_delete_reports_failure_and_leaves_the_rows() {
+        crate::store::init_isolated_cache();
+        let tmp = tempfile::tempdir().unwrap();
+        let mut store = Store::open(tmp.path(), crate::store::VIEW_WORKING).unwrap();
+        let lance = seeded_code_lance(&mut store, &["src/a.rs"]);
+
+        let mut config = crate::config::default_for_root(std::path::Path::new("."));
+        config.code_search.embed = false;
+        let filters = Filters::build(&config, Vec::new()).unwrap();
+
+        config.documents.embedding_preset = "no-such-preset".to_string();
+        assert!(
+            !purge_unembedded_code(&mut store, &config, &filters, "repo:s"),
+            "an unknown preset means the delete never ran: not applied"
+        );
+        assert_eq!(code_rows(&lance), vec!["src/a.rs".to_string()], "nothing was deleted");
+
+        config.documents.embedding_preset = "balanced".to_string();
+        assert!(purge_unembedded_code(&mut store, &config, &filters, "repo:s"));
+        assert!(code_rows(&lance).is_empty(), "the retry removes the row");
     }
 
     #[test]

@@ -480,6 +480,16 @@ impl LanceStore {
                 .execute()
                 .await
                 .with_context(|| format!("open {table_name} table"))?;
+            // Nothing stored for this scope (the common case on the first scan after an upgrade, or
+            // with embeddings off): skip the N/200 deletes, each of which scans the table and may
+            // commit a table version.
+            let in_scope = table
+                .count_rows(Some(format!("scope = '{}'", escape_sql_literal(scope))))
+                .await
+                .with_context(|| format!("count {table_name} rows in {scope}"))?;
+            if in_scope == 0 {
+                return anyhow::Ok(());
+            }
             for batch in paths.chunks(BATCH) {
                 let list = batch
                     .iter()

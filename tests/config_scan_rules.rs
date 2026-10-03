@@ -258,6 +258,39 @@ fn embed_policy_is_recorded_and_tracks_config_changes() {
 mod code_chunks {
     use super::*;
 
+    fn bm25_docs(store: &Store) -> u64 {
+        store
+            .index_db
+            .as_ref()
+            .and_then(|db| db.bm25_stats())
+            .map_or(0, |(n, _)| n)
+    }
+
+    #[test]
+    fn reenabling_code_search_rebuilds_the_keyword_postings_the_purge_dropped() {
+        let (dir, mut cfg) = repo();
+        let root = dir.path();
+        write(root, "a.rs", "pub fn keyword_target() -> u32 { 1 }\n");
+        let mut store = Store::open(root, VIEW_WORKING).unwrap();
+
+        run_scan(root, &mut store, &cfg);
+        assert!(
+            bm25_docs(&store) > 0,
+            "control: the keyword tier is built on the first scan"
+        );
+
+        cfg.code_search.enabled = false;
+        run_scan(root, &mut store, &cfg);
+        assert_eq!(bm25_docs(&store), 0, "disabling the tier drops its postings");
+
+        cfg.code_search.enabled = true;
+        run_scan(root, &mut store, &cfg);
+        assert!(
+            bm25_docs(&store) > 0,
+            "the unchanged file must be re-staged, not skipped as Unchanged"
+        );
+    }
+
     fn big_rust_file() -> String {
         let mut body = String::from("pub fn big_function() {\n");
         for i in 0..200 {

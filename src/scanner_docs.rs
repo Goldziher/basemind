@@ -477,22 +477,32 @@ fn open_existing_doc_lance(
     config: &crate::config::Config,
     what: &str,
 ) -> Option<crate::lance::LanceStore> {
+    try_open_existing_doc_lance(store, config, what).ok().flatten()
+}
+
+/// [`open_existing_doc_lance`] that tells "there is no vector store" (`Ok(None)`) apart from "there
+/// is one and it could not be opened" (`Err`).
+fn try_open_existing_doc_lance(
+    store: &mut Store,
+    config: &crate::config::Config,
+    what: &str,
+) -> Result<Option<crate::lance::LanceStore>, ()> {
     if store.lance.is_none() && !store.lance_dir_exists() {
-        return None;
+        return Ok(None);
     }
     let model = &config.documents.embedding_preset;
     let dim = match preset_dim(model) {
         Ok(dim) => dim,
         Err(error) => {
             tracing::warn!(?error, preset = %model, "{what}: unknown preset; skipping lance delete");
-            return None;
+            return Err(());
         }
     };
     match store.lance_or_open(dim, model) {
-        Ok(lance) => Some(lance.clone()),
+        Ok(lance) => Ok(Some(lance.clone())),
         Err(error) => {
             tracing::warn!(?error, "{what}: open LanceStore failed; skipping");
-            None
+            Err(())
         }
     }
 }
@@ -500,13 +510,14 @@ fn open_existing_doc_lance(
 /// Delete the `documents` vector rows of every tracked doc that is no longer embed-eligible
 /// (`[documents] embed = false`, or the path now falls outside `embed_include` / inside
 /// `embed_exclude`). The docs stay indexed and keyword-searchable; only their vectors go. Run when
-/// the embed policy changed since the last scan; see [`crate::scanner_policy`].
+/// the embed policy changed since the last scan; see [`crate::scanner_policy`]. Returns whether the
+/// purge fully applied (no vector store counts as applied).
 pub(crate) fn purge_unembedded_documents(
     store: &mut Store,
     config: &crate::config::Config,
     filters: &Filters,
     scope: &str,
-) {
+) -> bool {
     let cfg = &config.documents;
     let mut by_scope: ahash::AHashMap<String, Vec<String>> = ahash::AHashMap::new();
     for key in store.index.doc_files.keys() {
@@ -518,11 +529,14 @@ pub(crate) fn purge_unembedded_documents(
         by_scope.entry(doc_scope).or_default().push(path.into_owned());
     }
     if by_scope.is_empty() {
-        return;
+        return true;
     }
-    let Some(lance) = open_existing_doc_lance(store, config, "doc embed-policy purge") else {
-        return;
+    let lance = match try_open_existing_doc_lance(store, config, "doc embed-policy purge") {
+        Ok(Some(lance)) => lance,
+        Ok(None) => return true,
+        Err(()) => return false,
     };
+    let mut applied = true;
     for (doc_scope, paths) in by_scope {
         if let Err(error) = lance.delete_documents_for_paths(&doc_scope, &paths) {
             tracing::warn!(
@@ -530,8 +544,10 @@ pub(crate) fn purge_unembedded_documents(
                 ?error,
                 "doc embed-policy purge failed; search_documents may still return vectors for excluded paths"
             );
+            applied = false;
         }
     }
+    applied
 }
 
 /// Stream every pending document batch into LanceDB, one file at a time. Opens the store lazily — if

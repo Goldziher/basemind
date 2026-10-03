@@ -464,10 +464,15 @@ pub fn scan_with_observer(
     }
 
     if let Some(change) = &policy {
+        // Recorded only when the purge ran to completion (a panic leaves `applied` false too), so a
+        // failed purge is retried by the next scan instead of being marked done.
+        let mut applied = false;
         run_optional_lane(LANE_EMBED_POLICY, || {
-            crate::scanner_policy::reconcile(store, config, &filters, &scope);
+            applied = crate::scanner_policy::reconcile(store, config, &filters, &scope);
         });
-        crate::scanner_policy::record(store, change);
+        if applied {
+            crate::scanner_policy::record(store, change);
+        }
     }
 
     advance(&mut breadcrumb, PHASE_FLUSH, None);
