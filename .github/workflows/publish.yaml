@@ -446,11 +446,6 @@ jobs:
           cargo build --release --features "${{ matrix.features || 'full' }}" --bin basemind \
             --target "${{ matrix.triple }}"
 
-      # The agent TUI and desktop UI are not released yet: they build in CI (`cargo build ~keep
-      # --workspace`, plus the basemind-tui replay leg) but ship in no archive, and the launcher ~keep
-      # subcommands that would re-exec them are behind the root crate's `agent-tui` / `desktop-ui` ~keep
-      # features, which `full` deliberately omits. ~keep
-
       - name: Package release
         shell: bash
         run: ./scripts/package-release.sh ${{ matrix.triple }}

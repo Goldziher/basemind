@@ -68,16 +68,13 @@ const LIST_FILES_READ_MULTIPLIER: u64 = 2;
 /// response is a fraction of that. Modelled conservatively at 3× the returned payload.
 const WEB_INGEST_MULTIPLIER: u64 = 3;
 
-/// Rewrite an agent-registered tool name (`code_outline`) to the telemetry key the baseline table
-/// is written against (`code:outline`).
+/// Rewrite a tool name spelled `code_outline` to the telemetry key the baseline table is written
+/// against (`code:outline`).
 ///
-/// `basemind-agent` registers its LLM-facing tools under bare snake_case names because the provider
-/// tool-name pattern (`^[a-zA-Z0-9_-]{1,128}$`) rejects the colon the MCP surface uses, and it
-/// routes them through this estimator via `agent_api::estimate_tokens_saved`. The two vocabularies
-/// are otherwise the same `(domain, mode)` pairs, so one rewrite here keeps every baseline arm
-/// single-spelled. Carrying both spellings per arm is what previously made a rename able to zero
-/// the agent TUI's "tokens saved" readout in production without failing a test. A pair that is not
-/// a real domain/mode is returned unchanged and falls through to `unclassified`. ~keep
+/// The MCP surface spells a call `domain:mode`; some callers spell it `domain_mode`, since a colon
+/// is illegal in the provider tool-name pattern. The two vocabularies are otherwise the same
+/// `(domain, mode)` pairs, so one rewrite here keeps every baseline arm single-spelled. A pair that
+/// is not a real domain/mode is returned unchanged and falls through to `unclassified`. ~keep
 fn canonical_key(tool: &str) -> Cow<'_, str> {
     if tool.contains(':') {
         return Cow::Borrowed(tool);

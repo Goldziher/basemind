@@ -13,8 +13,6 @@ use serde_json::Value;
 use super::BasemindServer;
 use super::helpers::record_call;
 use super::lenient::Lenient;
-use super::mode::GitMode;
-use super::types::{BlameSymbolParams, DiffFileParams, RecentChangesParams};
 use super::types_git::GitParams;
 
 #[rmcp::tool_router(vis = "pub(super)", router = "tool_router_git")]
@@ -74,55 +72,5 @@ impl BasemindServer {
         let __result: Result<CallToolResult, McpError> = super::helpers_git::run_git(&self.state, p).await;
         record_call(&self.state, __key, &__params_json, __started, &__result);
         __result
-    }
-}
-
-/// Named in-process entry points for the three git operations the `basemind-agent` engine exposes
-/// as its own tools, bridged through [`super::agent_api`].
-///
-/// They are deliberately NOT `#[tool]`s: the MCP registry advertises exactly one `git` tool. Each
-/// builds the same [`GitParams`] an MCP caller would send, so telemetry, validation, and the
-/// response shape are identical to `git { mode: … }`.
-impl BasemindServer {
-    pub(crate) async fn recent_changes(
-        &self,
-        Parameters(p): Parameters<RecentChangesParams>,
-    ) -> Result<CallToolResult, McpError> {
-        self.git(Parameters(Lenient(GitParams {
-            limit: p.limit,
-            include_files: Some(p.include_files),
-            cursor: p.cursor,
-            ..GitParams::new(GitMode::Recent)
-        })))
-        .await
-    }
-
-    pub(crate) async fn blame_symbol(
-        &self,
-        Parameters(p): Parameters<BlameSymbolParams>,
-    ) -> Result<CallToolResult, McpError> {
-        self.git(Parameters(Lenient(GitParams {
-            path: Some(p.path),
-            name: Some(p.name),
-            kind: p.kind,
-            rev: p.rev,
-            limit: p.limit,
-            cursor: p.cursor,
-            ..GitParams::new(GitMode::BlameSymbol)
-        })))
-        .await
-    }
-
-    pub(crate) async fn diff_file(
-        &self,
-        Parameters(p): Parameters<DiffFileParams>,
-    ) -> Result<CallToolResult, McpError> {
-        self.git(Parameters(Lenient(GitParams {
-            path: Some(p.path),
-            rev_old: Some(p.rev_old),
-            rev_new: Some(p.rev_new),
-            ..GitParams::new(GitMode::Diff)
-        })))
-        .await
     }
 }

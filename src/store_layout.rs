@@ -252,10 +252,6 @@ fn inherited_isolated_root() -> Option<PathBuf> {
 /// The same treatment covers every other daemon family basemind can auto-spawn, because a daemon
 /// that survives the suite keeps an exclusive Fjall directory lock and blocks the next
 /// `basemind scan`:
-/// * **agent-ipc** (`basemind-agent-ipc`) already derives both its socket
-///   (`cache_root()/agent/<key>.sock`) and its session store from [`cache_root`], so
-///   `$BASEMIND_DATA_HOME` alone redirects it — but its shipped lifetime is a 2-minute bootstrap
-///   window and a 10-minute idle window, so the reap knobs are pinned short here too.
 /// * **shells/rmux** resolves its endpoint from `directories::ProjectDirs`, i.e. the user's REAL
 ///   data dir, unless `$BASEMIND_SHELLS_SOCKET` overrides it — so that override is pinned into the
 ///   tempdir, which is the only thing keeping a test off the developer's live rmux daemon.

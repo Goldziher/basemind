@@ -18,8 +18,6 @@ use serde_json::Value;
 use super::BasemindServer;
 use super::helpers::{LIST_LIMIT_DEFAULT, LIST_LIMIT_MAX, record_call};
 use super::lenient::Lenient;
-use super::mode::CodeMode;
-use super::types::{FindCallersParams, FindReferencesParams, OutlineParams, SearchSymbolsParams, WorkspaceGrepParams};
 use super::types_code::CodeParams;
 
 #[rmcp::tool_router(vis = "pub(super)", router = "tool_router_core")]
@@ -98,93 +96,6 @@ impl BasemindServer {
         let __result: Result<CallToolResult, McpError> = super::helpers_code::run_code(&self.state, p).await;
         record_call(&self.state, __key, &__params_json, __started, &__result);
         __result
-    }
-}
-
-/// Named in-process entry points for the five code-map operations the `basemind-agent` engine
-/// exposes as its own tools, bridged through [`super::agent_api`].
-///
-/// They are deliberately NOT `#[tool]`s: the MCP registry advertises exactly one `code` tool. Each
-/// builds the same [`CodeParams`] an MCP caller would send, so telemetry, validation, and the
-/// response shape are identical to `code { mode: … }`.
-impl BasemindServer {
-    pub(crate) async fn outline(
-        &self,
-        Parameters(Lenient(p)): Parameters<Lenient<OutlineParams>>,
-    ) -> Result<CallToolResult, McpError> {
-        self.code(Parameters(Lenient(CodeParams {
-            path: Some(p.path),
-            l2: Some(p.l2),
-            max_tokens: p.max_tokens,
-            format: p.format,
-            ..CodeParams::new(CodeMode::Outline)
-        })))
-        .await
-    }
-
-    pub(crate) async fn search_symbols(
-        &self,
-        Parameters(Lenient(p)): Parameters<Lenient<SearchSymbolsParams>>,
-    ) -> Result<CallToolResult, McpError> {
-        self.code(Parameters(Lenient(CodeParams {
-            name: Some(p.needle),
-            kind: p.kind,
-            limit: p.limit,
-            max_tokens: p.max_tokens,
-            format: p.format,
-            cursor: p.cursor,
-            ..CodeParams::new(CodeMode::Symbols)
-        })))
-        .await
-    }
-
-    pub(crate) async fn find_references(
-        &self,
-        Parameters(Lenient(p)): Parameters<Lenient<FindReferencesParams>>,
-    ) -> Result<CallToolResult, McpError> {
-        self.code(Parameters(Lenient(CodeParams {
-            name: Some(p.name),
-            limit: p.limit,
-            max_tokens: p.max_tokens,
-            format: p.format,
-            cursor: p.cursor,
-            ..CodeParams::new(CodeMode::References)
-        })))
-        .await
-    }
-
-    pub(crate) async fn find_callers(
-        &self,
-        Parameters(Lenient(p)): Parameters<Lenient<FindCallersParams>>,
-    ) -> Result<CallToolResult, McpError> {
-        self.code(Parameters(Lenient(CodeParams {
-            path: Some(p.path),
-            name: Some(p.name),
-            kind: p.kind,
-            limit: p.limit,
-            max_tokens: p.max_tokens,
-            cursor: p.cursor,
-            ..CodeParams::new(CodeMode::Callers)
-        })))
-        .await
-    }
-
-    pub(crate) async fn workspace_grep(
-        &self,
-        Parameters(Lenient(p)): Parameters<Lenient<WorkspaceGrepParams>>,
-    ) -> Result<CallToolResult, McpError> {
-        self.code(Parameters(Lenient(CodeParams {
-            pattern: Some(p.pattern),
-            language: p.language,
-            path_contains: p.path_contains,
-            limit: p.limit,
-            max_tokens: p.max_tokens,
-            format: p.format,
-            include_context: Some(p.include_context),
-            cursor: p.cursor,
-            ..CodeParams::new(CodeMode::Grep)
-        })))
-        .await
     }
 }
 

@@ -168,9 +168,8 @@ src/
 │   │                         fields per mode) + response structs, mirroring the
 │   │                         tools_/helpers_ area split
 │   ├── cursor.rs           — cursor encoding for paginated tools
-│   ├── savings.rs          — token-savings heuristics, keyed by domain:mode telemetry_key()
-│   │                         plus the bare pre-consolidation spellings basemind-agent still
-│   │                         registers its LLM-facing tools under
+│   ├── savings.rs          — token-savings heuristics, keyed by the domain:mode telemetry_key()
+│   │                         plus the bare pre-consolidation tool-name spellings
 │   ├── telemetry.rs        — per-call telemetry.jsonl writer
 │   └── budget.rs, toon.rs, lean.rs, lenient.rs, kneedle.rs, notifications.rs,
 │       completions.rs, prompts.rs, tokens.rs, background.rs, daemon_forward.rs,
