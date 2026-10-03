@@ -309,6 +309,27 @@ const FJALL_MAX_JOURNAL_BYTES: u64 = 64 * 1_024 * 1_024;
 /// Journal size past which `open` flushes every keyspace, so the next open does not replay it again.
 const JOURNAL_FLUSH_ON_OPEN_BYTES: u64 = 256 * 1_024 * 1_024;
 
+/// Total bytes of fjall journal files under `view_dir`'s index database, WITHOUT opening it (opening
+/// replays every journal into memtables, which is the cost being measured). Zero when absent.
+pub fn journal_bytes_on_disk(view_dir: &Path) -> u64 {
+    // fjall keeps its journals as `<n>.jnl` files directly under the database directory.
+    std::fs::read_dir(view_dir.join(INDEX_DIR))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "jnl"))
+        .filter_map(|entry| entry.metadata().ok())
+        .filter(std::fs::Metadata::is_file)
+        .map(|meta| meta.len())
+        .sum()
+}
+
+/// Whether the index database under `view_dir` carries a journal big enough that opening it is a
+/// memory spike (the threshold at which `open` itself flushes).
+pub fn journal_exceeds_open_budget(view_dir: &Path) -> bool {
+    journal_bytes_on_disk(view_dir) > JOURNAL_FLUSH_ON_OPEN_BYTES
+}
+
 /// Read the fjall `meta.schema_ver` under `view_dir` WITHOUT the wipe-on-mismatch that
 /// [`IndexDb::open`] performs. `Ok(None)` when the database carries no version. Used by the
 /// worktree view seeder to vet a cloned view before it is promoted into place.
@@ -405,7 +426,12 @@ impl IndexDb {
                 &proposals,
                 &meta,
             ] {
-                keyspace.rotate_memtable_and_wait()?;
+                // Best-effort: the flush only spares the NEXT open a replay. On a full or read-only disk
+                // it fails, and that must not make the workspace unopenable.
+                if let Err(error) = keyspace.rotate_memtable_and_wait() {
+                    tracing::warn!(%error, "index journal flush on open failed; continuing with the replayed journal");
+                    break;
+                }
             }
         }
 
