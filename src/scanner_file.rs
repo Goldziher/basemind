@@ -165,12 +165,16 @@ fn embed_state_satisfied(
     if peek.config_digest != filters.code_digest {
         return false;
     }
+    // A changed embed policy may have purged this file's keyword postings along with its vectors
+    // (`[code_search] enabled = false`), and the cached sidecar alone would leave them gone when the
+    // tier is switched back on. Send every file back through the cached-chunk path to re-stage them,
+    // whatever its own embed eligibility.
+    if filters.reflush_embeds {
+        return false;
+    }
     let cfg = &config.code_search;
     if !matches!(mode, EmbedMode::Inline) || !cfg.embed || !filters.code_embed_allowed(rel) {
         return true;
-    }
-    if filters.reflush_embeds {
-        return false;
     }
     peek.chunks.is_empty()
         || (peek.embedding_dim > 0
