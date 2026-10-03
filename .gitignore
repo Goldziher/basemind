@@ -59,7 +59,7 @@ GEMINI.md
 .github/commands/
 .github/skills/
 
-# Local secrets / API keys for the agent TUI — never commit
+# Local secrets / API keys — never commit
 .env
 .env.*
 !.env.example
