@@ -191,6 +191,15 @@ pub fn daemon_is_up() -> bool {
     if !paths.socket_path.exists() {
         return false;
     }
+    // A socket file whose listener ACCEPTS a connection is a live daemon: an orphaned file (crashed
+    // daemon) refuses. The ping round-trip of `probe_alive` is the wrong test here, because a busy
+    // daemon (CPU-starved, mid-sync) can miss its 500 ms read timeout four times running; the CLI
+    // then concludes "no daemon", loses the lock race for the index it could have proxied to, and
+    // silently live-walks. Fall back to the full probe only when the connect itself fails.
+    #[cfg(unix)]
+    if std::os::unix::net::UnixStream::connect(&paths.socket_path).is_ok() {
+        return true;
+    }
     crate::comms::singleton::probe_alive(&paths.socket_path)
 }
 
