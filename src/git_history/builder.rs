@@ -21,6 +21,10 @@ pub enum RebuildOutcome {
     Fresh,
     /// Appended `added` new commits reachable from the new HEAD.
     Incremental { added: u32 },
+    /// The index was left untouched because this checkout cannot advance it without a wipe: a linked
+    /// worktree whose HEAD does not descend from the indexed head (`reason` says why). Tools read via
+    /// the live walk at this head; the main checkout owns the index.
+    Skipped { reason: &'static str },
     /// Wiped and rebuilt from scratch (`reason` describes why), indexing `commits` commits.
     FullRebuild { reason: &'static str, commits: u32 },
 }
@@ -39,22 +43,29 @@ pub fn sync(index: &GitHistoryIndex, repo: &Repo, basemind_dir: &Path) -> Result
     // Run on a small dedicated pool, not rayon's global one: a first build walks hundreds of thousands
     // of commits in parallel, and on the global pool it starves every other par_iter in the process
     // (a read-stack warm that takes 12 s took 469 s while a 248k-commit build was running).
-    history_pool().install(|| sync_inner(index, repo, basemind_dir))
+    // Under thread exhaustion the pool cannot be built; degrade to the caller's thread (slower, and on
+    // rayon's global pool) rather than panicking.
+    match history_pool() {
+        Some(pool) => pool.install(|| sync_inner(index, repo, basemind_dir)),
+        None => sync_inner(index, repo, basemind_dir),
+    }
 }
 
 /// Threads given to history indexing. Enough to finish a first build in minutes without taking the
 /// scan and warm paths' cores.
 const HISTORY_POOL_THREADS: usize = 2;
 
-fn history_pool() -> &'static rayon::ThreadPool {
-    static POOL: std::sync::OnceLock<rayon::ThreadPool> = std::sync::OnceLock::new();
+fn history_pool() -> Option<&'static rayon::ThreadPool> {
+    static POOL: std::sync::OnceLock<Option<rayon::ThreadPool>> = std::sync::OnceLock::new();
     POOL.get_or_init(|| {
         rayon::ThreadPoolBuilder::new()
             .num_threads(HISTORY_POOL_THREADS)
             .thread_name(|i| format!("bm-history-{i}"))
             .build()
-            .expect("build git-history pool")
+            .map_err(|error| tracing::warn!(%error, "git-history pool unavailable; syncing on the caller's thread"))
+            .ok()
     })
+    .as_ref()
 }
 
 fn sync_inner(index: &GitHistoryIndex, repo: &Repo, basemind_dir: &Path) -> Result<RebuildOutcome, GitHistoryError> {
@@ -74,23 +85,26 @@ fn sync_inner(index: &GitHistoryIndex, repo: &Repo, basemind_dir: &Path) -> Resu
         return Ok(RebuildOutcome::Fresh);
     }
 
-    // The index tracks ONE head, and every worktree of a clone shares it. A linked worktree on its
-    // own branch is almost never a descendant of the head another worktree indexed, so letting it
-    // sync wipes and rebuilds the whole multi-100k-commit history (multi-GB, minutes) on every switch
-    // between worktrees, and the main checkout then wipes it back. Only the first build is left to a
-    // linked worktree; afterwards the main checkout owns the index. The index is a pure accelerator
-    // (tools use it only when `last_indexed_head == HEAD`), so a linked worktree at any other head
-    // reads via the live walk: correct, just slower.
-    if repo.is_linked_worktree() && !index.is_empty() {
-        return Ok(RebuildOutcome::Fresh);
-    }
-
+    // A descendant of the indexed head is always safe to append, from any worktree.
     if let Some(last_hex) = index.last_indexed_head_hex()
         && repo.has_commit(&last_hex)
         && repo.is_ancestor(&last_hex, &head)
         && fingerprint_ok(index, repo, &head)
     {
         return append_since(index, repo, &last_hex, &head);
+    }
+
+    // The index tracks ONE head, and every worktree of a clone shares it. A linked worktree on its
+    // own branch is usually NOT a descendant of the head another worktree indexed, so letting it
+    // fall through to the wipe below rebuilds the whole multi-100k-commit history (multi-GB, minutes)
+    // on every switch between worktrees, and the main checkout then wipes it back. Only the first
+    // build is left to a linked worktree; afterwards it may append (above) but never wipe. The index
+    // is a pure accelerator (tools use it only when `last_indexed_head == HEAD`), so a linked
+    // worktree at any other head reads via the live walk: correct, just slower.
+    if repo.is_linked_worktree() && !index.is_empty() {
+        return Ok(RebuildOutcome::Skipped {
+            reason: "linked worktree diverges from the indexed head",
+        });
     }
 
     let reason = if index.is_empty() { "initial" } else { "history-rewrite" };

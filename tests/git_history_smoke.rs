@@ -541,9 +541,43 @@ fn linked_worktree_leaves_populated_index_untouched() {
     assert!(Repo::discover(&wt).expect("discover worktree").is_linked_worktree());
 
     let (index, outcome) = sync_at(&wt, &bdir);
-    assert_eq!(outcome, RebuildOutcome::Fresh, "linked worktree must not rebuild");
+    assert!(
+        matches!(outcome, RebuildOutcome::Skipped { .. }),
+        "linked worktree must not rebuild, got {outcome:?}"
+    );
     assert_eq!(index.last_indexed_head_hex().as_deref(), Some(head_a.as_str()));
     assert_eq!(index.commit_count(), count);
+}
+
+#[test]
+fn linked_worktree_descending_from_indexed_head_appends() {
+    let dir = init_repo();
+    let root = dir.path();
+    commit_file(root, "a.rs", "fn a1() {}\n", "c1");
+    let bdir = basemind_dir(root);
+
+    let (index, _) = sync_at(root, &bdir);
+    assert_eq!(index.commit_count(), 1);
+    drop(index);
+
+    let holder = tempfile::tempdir().expect("tempdir");
+    let wt = holder.path().join("wt");
+    run(
+        root,
+        &["worktree", "add", "-q", "-b", "feature", wt.to_str().expect("utf8")],
+    );
+    run(&wt, &["config", "commit.gpgsign", "false"]);
+    commit_file(&wt, "a.rs", "fn a2() {}\n", "c2");
+    commit_file(&wt, "a.rs", "fn a3() {}\n", "c3");
+    assert!(Repo::discover(&wt).expect("discover worktree").is_linked_worktree());
+
+    let (index, outcome) = sync_at(&wt, &bdir);
+    assert_eq!(outcome, RebuildOutcome::Incremental { added: 2 });
+    assert_eq!(index.commit_count(), 3);
+    assert_eq!(
+        index.last_indexed_head_hex(),
+        Some(capture(&wt, &["rev-parse", "HEAD"]).trim().to_string())
+    );
 }
 
 #[test]
@@ -593,7 +627,7 @@ fn main_checkout_still_appends_after_linked_worktree_skipped() {
 
     let (_holder, wt) = diverged_linked_worktree(root);
     let (index, outcome) = sync_at(&wt, &bdir);
-    assert_eq!(outcome, RebuildOutcome::Fresh);
+    assert!(matches!(outcome, RebuildOutcome::Skipped { .. }), "got {outcome:?}");
     drop(index);
 
     commit_file(root, "a.rs", "fn a2() {}\n", "c2");

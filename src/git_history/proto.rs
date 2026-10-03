@@ -75,7 +75,9 @@ pub enum SyncOutcome {
 impl From<RebuildOutcome> for SyncOutcome {
     fn from(outcome: RebuildOutcome) -> Self {
         match outcome {
-            RebuildOutcome::Fresh => SyncOutcome::Fresh,
+            // A skipped sync leaves the index as it was; the wire enum predates `Skipped` and an
+            // unknown variant would fail to decode on a mixed-version client, so it reads as `Fresh`.
+            RebuildOutcome::Fresh | RebuildOutcome::Skipped { .. } => SyncOutcome::Fresh,
             RebuildOutcome::Incremental { added } => SyncOutcome::Incremental { added },
             RebuildOutcome::FullRebuild { reason, commits } => SyncOutcome::FullRebuild {
                 reason: reason.to_string(),
