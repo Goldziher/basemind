@@ -178,6 +178,12 @@ pub struct Index {
     /// `.doc.msgpack` blobs as GC-referenced so the blob GC stops reaping the doc cache.
     #[serde(default)]
     pub doc_files: AHashMap<RelPath, DocEntry>,
+    /// [`crate::config::rules::embed_policy_digest`] of the config the last complete full scan ran
+    /// under. A different value means the embed on/off switches or embed globs changed, so the next
+    /// full scan re-flushes eligible files and purges vector / keyword rows of ineligible ones.
+    /// `#[serde(default)]` keeps older `index.msgpack` files readable (additive, no schema bump).
+    #[serde(default)]
+    pub embed_policy: String,
 }
 
 impl Index {
@@ -186,6 +192,7 @@ impl Index {
             schema_ver: SCHEMA_VER,
             files: AHashMap::new(),
             doc_files: AHashMap::new(),
+            embed_policy: String::new(),
         }
     }
 }
@@ -236,6 +243,12 @@ pub struct DocEntry {
     /// exactly one healing re-process.
     #[serde(default)]
     pub embed_attempted: bool,
+    /// [`crate::config::rules::doc_digest`] of the settings the doc was processed under. The
+    /// unchanged fast path compares it with the current config, so changing a chunk-size / keyword /
+    /// OCR knob re-processes the doc. Empty on entries that predate the field, which costs one
+    /// cheap re-check (the cached blob is adopted and stamped, not re-extracted).
+    #[serde(default)]
+    pub config_digest: String,
 }
 
 pub struct Store {

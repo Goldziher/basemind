@@ -22,7 +22,8 @@ use crate::scanner_filter::{Filters, IndexFilter};
 #[cfg(feature = "documents")]
 use crate::scanner_lanes::LANE_DOC_REMOVALS;
 use crate::scanner_lanes::{
-    LANE_BM25_STATS, LANE_CODE_BATCHES, LANE_CODE_REMOVALS, LANE_DOC_BATCHES, LANE_RESOLVE, run_optional_lane,
+    LANE_BM25_STATS, LANE_CODE_BATCHES, LANE_CODE_REMOVALS, LANE_DOC_BATCHES, LANE_EMBED_POLICY, LANE_RESOLVE,
+    run_optional_lane,
 };
 use crate::store::{FileEntry, Store, StoreError};
 
@@ -70,6 +71,8 @@ pub enum ScanError {
     Store(#[from] StoreError),
     #[error("invalid glob in config: {0}")]
     BadGlob(String),
+    #[error("invalid [languages] config: {0}")]
+    BadLanguage(String),
     #[error("git error: {0}")]
     Git(#[from] GitError),
     /// The walk hit [`crate::config::ScanConfig::max_candidates`]. Raised from the walk loop
@@ -376,7 +379,11 @@ pub fn scan_with_observer(
     let _memory_log = crate::scan_evidence::MemoryLog::start(root);
 
     let submodule_roots = submodule_roots_for_source(root, &source);
-    let filters = Filters::build(config, submodule_roots)?;
+    let mut filters = Filters::build(config, submodule_roots)?;
+    let policy = matches!(source, ScanSource::WorkingTree)
+        .then(|| crate::scanner_policy::detect(store, config))
+        .filter(|p| matches!(embed, EmbedMode::Inline) && p.changed);
+    filters.reflush_embeds = policy.as_ref().is_some_and(|p| p.reflush);
     advance(&mut breadcrumb, PHASE_CANDIDATES, None);
     let candidates = candidates_for_source(root, config, &filters, &source, cancel)?;
     debug!(count = candidates.len(), kind = source.label(), "scan candidates");
@@ -454,6 +461,13 @@ pub fn scan_with_observer(
         }
         observer.on_file(FileResult::bare(k.clone(), FileStatus::Removed));
         report.stats.removed += 1;
+    }
+
+    if let Some(change) = &policy {
+        run_optional_lane(LANE_EMBED_POLICY, || {
+            crate::scanner_policy::reconcile(store, config, &filters, &scope);
+        });
+        crate::scanner_policy::record(store, change);
     }
 
     advance(&mut breadcrumb, PHASE_FLUSH, None);

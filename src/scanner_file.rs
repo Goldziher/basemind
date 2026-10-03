@@ -23,7 +23,6 @@ use crate::config::Config;
 use crate::extract::{self, ExtractError, FileMapL1, FileMapL2};
 use crate::git::GitError;
 use crate::hashing;
-use crate::lang;
 use crate::path::RelPath;
 use crate::scanner::{EmbedMode, FileResult, FileStatus, ScanCancel, ScanSource};
 #[cfg(feature = "documents")]
@@ -136,39 +135,60 @@ fn extraction_sidecars_present(store: &Store, config: &Config, hash_hex: &str) -
     true
 }
 
-/// True when the on-disk chunk sidecar already satisfies THIS scan's embedding requirement, so an
-/// otherwise-unchanged file may be short-circuited as `Unchanged`.
+/// True when the on-disk chunk sidecar already satisfies THIS scan's requirements, so an otherwise
+/// unchanged file may be short-circuited as `Unchanged`.
 ///
 /// This is distinct from [`extraction_sidecars_present`] (blob *presence*, which governs l1/l2/chunk
-/// reuse): a chunk-only sidecar is present but carries no vectors. A `Deferred` pass never embeds, so
-/// any present sidecar satisfies it; an `Inline` pass over an embed-eligible file requires embeddings
-/// for the current preset to already exist, else the file must be re-processed to fill them. The
-/// daemon writes chunk-only sidecars in `Deferred`, which a later `Inline` pass upgrades in place —
-/// without this gate the Inline pass would short-circuit past `chunk_and_embed` and never embed.
+/// reuse). The sidecar must have been chunked under the current `[code_search]` settings (its
+/// `config_digest`; a legacy digest-less sidecar is re-checked once so it can be stamped). Then, a
+/// `Deferred` pass never embeds, so any such sidecar satisfies it; an `Inline` pass over an
+/// embed-eligible file requires embeddings for the current preset to already exist, else the file
+/// must be re-processed to fill them, and a changed embed policy re-processes it so its vector rows
+/// are rebuilt. The daemon writes chunk-only sidecars in `Deferred`, which a later `Inline` pass
+/// upgrades in place — without this gate the Inline pass would short-circuit past `chunk_and_embed`
+/// and never embed.
 #[cfg(feature = "code-search")]
-fn embed_state_satisfied(store: &Store, config: &Config, rel: &str, hash_hex: &str, mode: EmbedMode) -> bool {
-    if !matches!(mode, EmbedMode::Inline) {
+fn embed_state_satisfied(
+    store: &Store,
+    config: &Config,
+    filters: &Filters,
+    rel: &str,
+    hash_hex: &str,
+    mode: EmbedMode,
+) -> bool {
+    if !crate::scanner_code::should_chunk(config) {
         return true;
+    }
+    let Ok(Some(peek)) = store.peek_chunk_state(hash_hex) else {
+        return false;
+    };
+    if peek.config_digest != filters.code_digest {
+        return false;
     }
     let cfg = &config.code_search;
-    if !cfg.embed || crate::scanner_filter::embed_excluded(rel, &cfg.embed_exclude) {
+    if !matches!(mode, EmbedMode::Inline) || !cfg.embed || !filters.code_embed_allowed(rel) {
         return true;
     }
-    match store.peek_chunk_state(hash_hex) {
-        Ok(Some(peek)) => {
-            peek.chunks.is_empty()
-                || (peek.embedding_dim > 0
-                    && peek.embedding_model == config.documents.embedding_preset
-                    && peek.embeddings.len() == peek.chunks.len())
-        }
-        _ => false,
+    if filters.reflush_embeds {
+        return false;
     }
+    peek.chunks.is_empty()
+        || (peek.embedding_dim > 0
+            && peek.embedding_model == config.documents.embedding_preset
+            && peek.embeddings.len() == peek.chunks.len())
 }
 
 /// Without `code-search` there is no embedding tier, so every scan's embed requirement is trivially
 /// satisfied.
 #[cfg(not(feature = "code-search"))]
-fn embed_state_satisfied(_store: &Store, _config: &Config, _rel: &str, _hash_hex: &str, _mode: EmbedMode) -> bool {
+fn embed_state_satisfied(
+    _store: &Store,
+    _config: &Config,
+    _filters: &Filters,
+    _rel: &str,
+    _hash_hex: &str,
+    _mode: EmbedMode,
+) -> bool {
     true
 }
 
@@ -195,7 +215,7 @@ fn process_file(
     {
         let _ = embed;
     }
-    let lang = match lang::detect(Path::new(rel)) {
+    let lang = match filters.detect_lang(rel).lang() {
         Some(l) => l,
         None => {
             #[cfg(feature = "documents")]
@@ -211,32 +231,33 @@ fn process_file(
     if matches!(source, ScanSource::WorkingTree)
         && let Some(existing) = store.lookup(rel)
         && existing.mtime != 0
+        && existing.language == lang
         && let Ok(meta) = std::fs::metadata(root.join(rel))
     {
         let mtime = mtime_nanos(&meta);
         if meta.len() == existing.size_bytes
             && mtime == existing.mtime
             && extraction_sidecars_present(store, config, &existing.hash_hex)
-            && embed_state_satisfied(store, config, rel, &existing.hash_hex, embed)
+            && embed_state_satisfied(store, config, filters, rel, &existing.hash_hex, embed)
         {
             return FileResult::bare(rel.to_string(), FileStatus::Unchanged);
         }
     }
 
     let (bytes, size_bytes, mtime) = match source {
-        ScanSource::WorkingTree => match read_working_tree(root, rel, filters) {
+        ScanSource::WorkingTree => match read_working_tree(root, rel, filters.max_file_bytes) {
             Ok(triple) => triple,
             Err(status) => {
                 return FileResult::bare(rel.to_string(), status);
             }
         },
-        ScanSource::Staged(repo) => match read_via_git(filters, repo.read_blob_staged(rel)) {
+        ScanSource::Staged(repo) => match read_via_git(filters.max_file_bytes, repo.read_blob_staged(rel)) {
             Ok(triple) => triple,
             Err(status) => {
                 return FileResult::bare(rel.to_string(), status);
             }
         },
-        ScanSource::Rev { repo, sha } => match read_via_git(filters, repo.read_blob_at_rev(sha, rel)) {
+        ScanSource::Rev { repo, sha } => match read_via_git(filters.max_file_bytes, repo.read_blob_at_rev(sha, rel)) {
             Ok(triple) => triple,
             Err(status) => {
                 return FileResult::bare(rel.to_string(), status);
@@ -259,23 +280,29 @@ fn process_file(
     let sidecars_present = extraction_sidecars_present(store, config, hash_hex_str);
     if let Some(existing) = store.lookup(rel)
         && existing.hash_hex == hash_hex_str
+        && existing.language == lang
         && sidecars_present
-        && embed_state_satisfied(store, config, rel, hash_hex_str, embed)
+        && embed_state_satisfied(store, config, filters, rel, hash_hex_str, embed)
     {
         return FileResult::bare(rel.to_string(), FileStatus::Unchanged);
     }
 
     let want_l2 = filters.eager_l2 && store.index_db.is_some();
 
+    let mut foreign_lang = false;
     let reused_pair: Option<(FileMapL1, Option<FileMapL2>)> = if sidecars_present {
         match store.read_l1_by_hex(hash_hex_str) {
-            Ok(Some(l1)) => {
+            Ok(Some(l1)) if l1.language == lang => {
                 let l2 = if want_l2 {
                     store.read_l2_by_hex(hash_hex_str).unwrap_or(None)
                 } else {
                     None
                 };
                 if want_l2 && l2.is_none() { None } else { Some((l1, l2)) }
+            }
+            Ok(Some(_)) => {
+                foreign_lang = true;
+                None
             }
             _ => None,
         }
@@ -314,8 +341,15 @@ fn process_file(
     };
 
     let l2: Option<FileMapL2> = l2_opt;
-    if !reused && let Err(e) = store.write_filemap_hex(hash_hex_str, &l1, l2.as_ref()) {
-        return FileResult::bare(rel.to_string(), FileStatus::ExtractFailed { msg: e.to_string() });
+    if !reused {
+        let written = if foreign_lang {
+            store.overwrite_filemap_hex(hash_hex_str, &l1, l2.as_ref())
+        } else {
+            store.write_filemap_hex(hash_hex_str, &l1, l2.as_ref())
+        };
+        if let Err(e) = written {
+            return FileResult::bare(rel.to_string(), FileStatus::ExtractFailed { msg: e.to_string() });
+        }
     }
 
     let rel_path = RelPath::from(rel);
@@ -325,7 +359,17 @@ fn process_file(
 
     #[cfg(feature = "code-search")]
     let code_batch = if crate::scanner_code::should_chunk(config) {
-        match crate::scanner_code::chunk_and_embed(store, rel, &bytes, &l1, l2.as_ref(), hash_hex_str, config, embed) {
+        match crate::scanner_code::chunk_and_embed(
+            store,
+            rel,
+            &bytes,
+            &l1,
+            l2.as_ref(),
+            hash_hex_str,
+            config,
+            filters,
+            embed,
+        ) {
             Ok(batch) => batch,
             Err(error) => {
                 tracing::debug!(
@@ -386,10 +430,13 @@ fn process_doc(
     let abs = root.join(rel);
     let effective_scope = crate::scanner_docs::doc_scope_for(rel, scope, config);
     let scope = effective_scope.as_ref();
+    if !filters.doc_allowed(rel) {
+        return FileResult::bare(rel.to_string(), FileStatus::SkippedNoLang);
+    }
     let Some(mime_type) = should_extract_document(&abs, &config.documents) else {
         return FileResult::bare(rel.to_string(), FileStatus::SkippedNoLang);
     };
-    let (bytes, size_bytes, mtime) = match read_working_tree(root, rel, filters) {
+    let (bytes, size_bytes, mtime) = match read_working_tree(root, rel, filters.doc_max_file_bytes) {
         Ok(triple) => triple,
         Err(status) => return FileResult::bare(rel.to_string(), status),
     };
@@ -402,7 +449,9 @@ fn process_doc(
             existing,
             hash_hex,
             &config.documents.embedding_preset,
-            crate::scanner_docs::doc_embed_requested(rel, &config.documents, embed),
+            crate::scanner_docs::doc_embed_requested(rel, &config.documents, embed, filters),
+            &filters.doc_digest,
+            filters.reflush_embeds,
         )
         && store.blob_path_doc_hex(hash_hex).exists()
     {
@@ -424,6 +473,7 @@ fn process_doc(
         &config.documents,
         &config.llm,
         &config.resources,
+        filters,
         scope,
         embed,
     ) {
@@ -440,6 +490,7 @@ fn process_doc(
                 mtime,
                 embedded: batch.embedded,
                 embed_attempted: batch.embed_attempted,
+                config_digest: filters.doc_digest.clone(),
             };
             let doc_upsert = match embed {
                 EmbedMode::Inline => Some(doc_entry),
@@ -491,13 +542,13 @@ fn mtime_nanos(metadata: &std::fs::Metadata) -> i64 {
         .unwrap_or(0)
 }
 
-fn read_working_tree(root: &Path, rel: &str, filters: &Filters) -> Result<(Vec<u8>, u64, i64), FileStatus> {
+fn read_working_tree(root: &Path, rel: &str, max_file_bytes: u64) -> Result<(Vec<u8>, u64, i64), FileStatus> {
     let abs = root.join(rel);
     let metadata = std::fs::metadata(&abs).map_err(|e| FileStatus::ReadFailed {
         kind: e.kind(),
         msg: e.to_string(),
     })?;
-    if metadata.len() > filters.max_file_bytes {
+    if metadata.len() > max_file_bytes {
         return Err(FileStatus::SkippedTooLarge { size: metadata.len() });
     }
     let bytes = std::fs::read(&abs).map_err(|e| FileStatus::ReadFailed {
@@ -509,7 +560,10 @@ fn read_working_tree(root: &Path, rel: &str, filters: &Filters) -> Result<(Vec<u
     Ok((bytes, size, mtime))
 }
 
-fn read_via_git(filters: &Filters, blob: Result<Option<Vec<u8>>, GitError>) -> Result<(Vec<u8>, u64, i64), FileStatus> {
+fn read_via_git(
+    max_file_bytes: u64,
+    blob: Result<Option<Vec<u8>>, GitError>,
+) -> Result<(Vec<u8>, u64, i64), FileStatus> {
     let blob = blob.map_err(|e| FileStatus::ReadFailed {
         kind: std::io::ErrorKind::Other,
         msg: e.to_string(),
@@ -518,7 +572,7 @@ fn read_via_git(filters: &Filters, blob: Result<Option<Vec<u8>>, GitError>) -> R
         kind: std::io::ErrorKind::NotFound,
         msg: "blob not present in this git source".to_string(),
     })?;
-    if bytes.len() as u64 > filters.max_file_bytes {
+    if bytes.len() as u64 > max_file_bytes {
         return Err(FileStatus::SkippedTooLarge {
             size: bytes.len() as u64,
         });
