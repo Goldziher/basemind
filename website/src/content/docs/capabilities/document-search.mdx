@@ -20,7 +20,7 @@ Web pages scraped or crawled into the same store are searchable the same way.
 - Web ingestion (`web` modes `scrape`, `crawl`, `map`) needs `--features crawl`. When that
   feature is off the `web` tool is not registered at all.
 - Documents must be scanned first: `basemind scan` with the documents feature extracts
-  and embeds them into `.basemind/`.
+  and embeds them into the global cache.
 
 ## Core tool
 
@@ -160,6 +160,10 @@ In `basemind.toml`:
 [documents]
 enabled = true
 embed = true  # set to false to disable embeddings (keyword search only)
+include = []  # globs selecting which non-code files become documents (empty = all that pass [scan])
+exclude = []  # globs never indexed as documents (wins over include)
+max_file_bytes = 52428800  # per-document size cap (50 MiB), independent of [scan] max_file_bytes
+embed_include = []  # embed only matching documents (empty = all); embed_exclude always wins
 
 [documents.reranker]
 enabled = true  # cross-encoder reranking for document chunks

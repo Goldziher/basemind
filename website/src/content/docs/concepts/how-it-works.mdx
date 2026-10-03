@@ -15,7 +15,7 @@ When files change, it updates only what's touched — no re-read of the whole co
 [tree-sitter](https://tree-sitter.github.io/tree-sitter/) across
 [300+ languages](https://github.com/Goldziher/tree-sitter-language-pack) and extracts text from
 your documents using [xberg](https://github.com/xberg-io/xberg), then saves the results to a local
-`.basemind/` cache.
+global cache (never inside your repo).
 
 This happens once at setup, then incrementally as you work: when you open a file editor, basemind
 detects the change and re-indexes only that file.
@@ -58,7 +58,7 @@ While the server isn't fully ready, `admin status` and every code-map read tool 
 | `state` | Meaning | `retry` |
 |---|---|---|
 | `warming_up` | Loading an existing index into memory. | `true` |
-| `building_index` | Indexing from scratch (no `.basemind/` yet). | `true` |
+| `building_index` | Indexing from scratch (no index for this workspace yet). | `true` |
 | `rescanning` | Incremental rescan after a file change; results are usable but may be stale. | `false` |
 
 Treat an empty or partial result carrying a `notice` as "retry shortly," not "no matches" — poll
@@ -92,7 +92,7 @@ flowchart LR
   A(["Coding agent"])
   R["Your project<br/>code · documents · git"]
   S["basemind scan<br/>map code & read documents"]
-  D[(".basemind/<br/>local index")]
+  D[("global cache<br/>local index")]
   V["basemind serve<br/>answers questions"]
   R --> S --> D --> V
   A <-->|asks questions| V

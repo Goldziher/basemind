@@ -63,7 +63,7 @@ when you want "code that means this" regardless of naming.
 }
 ```
 
-Requires embeddings to be enabled (`[code_search] embed = true`, the default).
+Requires embeddings to be enabled (`[code_search] embed = true`; the default is `false`, so this lane returns nothing until you opt in).
 
 ### `keyword`
 
@@ -101,7 +101,9 @@ In `basemind.toml`:
 
 ```toml
 [code_search]
-embed = true              # toggle embeddings (default: true)
+embed = false             # toggle embeddings (default: false; the keyword lane needs none)
+embed_include = []        # when non-empty, embed only matching files (globs, repo-relative)
+embed_exclude = []        # never embed these; still chunked + keyword-searchable (wins over embed_include)
 
 [code_search.reranker]
 enabled = true            # cross-encoder reranking (default: false)
