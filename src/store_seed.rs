@@ -334,7 +334,7 @@ mod tests {
     }
 
     #[test]
-    fn seeded_view_makes_identical_files_unchanged_and_reextracts_modified() {
+    fn seeded_view_reflushes_identical_files_from_cache_and_reextracts_modified() {
         let (_tmp, main, wt) = fixture();
         std::fs::write(wt.join("b.rs"), "pub fn b() { let _x = 1; }\n").expect("modify");
 
@@ -349,8 +349,19 @@ mod tests {
             EmbedMode::Inline,
         )
         .expect("scan wt");
-        assert_eq!(report.stats.skipped_unchanged, 2, "a.rs and c.rs are content-identical");
-        assert_eq!(report.stats.updated, 1, "only the modified b.rs is re-extracted");
+        // The clone carries no LanceDB rows and records the sentinel embed policy, so the first scan
+        // re-flushes every eligible file (`scanner_policy::detect`). The content-identical files
+        // therefore are not `Unchanged` -- but they take the cached-blob path (no re-extraction);
+        // only the modified file is extracted afresh.
+        assert_eq!(
+            report.stats.skipped_unchanged, 0,
+            "the sentinel policy forces a re-flush"
+        );
+        assert_eq!(report.stats.updated, 3, "every seeded file is re-flushed");
+        assert_eq!(
+            report.stats.reused_extraction, 2,
+            "a.rs and c.rs are content-identical: re-flushed from cached blobs, not re-extracted"
+        );
         drop(store);
         // The sibling is untouched by the clone.
         let m = Store::open(&main, VIEW_WORKING).expect("reopen main");
