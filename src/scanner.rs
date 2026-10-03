@@ -628,6 +628,15 @@ pub fn scan_paths_with_observer(
             continue;
         }
         if !filter.is_indexable(abs) {
+            // Exists but a full scan would no longer index it (newly excluded / gitignored, now a
+            // symlink or non-regular file): an entry left from an earlier scan is stale.
+            if store.lookup(&rel).is_some() {
+                removed.push(rel.clone());
+            }
+            #[cfg(feature = "documents")]
+            if store.lookup_doc(&rel).is_some() {
+                doc_removed.push(rel);
+            }
             continue;
         }
         rels.push(rel);
@@ -657,8 +666,33 @@ pub fn scan_paths_with_observer(
     let DriveOutcome {
         doc_batches,
         code_batches,
-        ..
+        seen,
+        #[cfg(feature = "documents")]
+        doc_seen,
     } = drive_scan(&drive, &rels, store, &mut report.stats, observer);
+
+    // A path that still exists but ended up neither kept as code nor as a document (its language
+    // was disabled, it grew past the size cap, turned binary, ...) is dropped exactly as a full
+    // scan drops it: judged by the same `seen` sets.
+    // Skipped on a cancelled pass: the paths the drive never reached are absent from the sets.
+    if !cancel.is_cancelled() {
+        for rel in &rels {
+            if !seen.contains(rel) && store.lookup(rel).is_some() {
+                removed.push(rel.clone());
+            }
+            #[cfg(feature = "documents")]
+            if !doc_seen.contains(rel) && store.lookup_doc(rel).is_some() {
+                doc_removed.push(rel.clone());
+            }
+        }
+    }
+    removed.sort();
+    removed.dedup();
+    #[cfg(feature = "documents")]
+    {
+        doc_removed.sort();
+        doc_removed.dedup();
+    }
 
     for rel in &removed {
         store.remove(rel);

@@ -234,6 +234,11 @@ fn process_file(
         && existing.language == lang
         && let Ok(meta) = std::fs::metadata(root.join(rel))
     {
+        // The cap outranks the unchanged shortcut: lowering `max_file_bytes` must evict an already
+        // indexed file that is now too large, not keep reporting it `Unchanged`.
+        if meta.len() > filters.max_file_bytes {
+            return FileResult::bare(rel.to_string(), FileStatus::SkippedTooLarge { size: meta.len() });
+        }
         let mtime = mtime_nanos(&meta);
         if meta.len() == existing.size_bytes
             && mtime == existing.mtime
@@ -543,18 +548,35 @@ fn mtime_nanos(metadata: &std::fs::Metadata) -> i64 {
 }
 
 fn read_working_tree(root: &Path, rel: &str, max_file_bytes: u64) -> Result<(Vec<u8>, u64, i64), FileStatus> {
+    use std::io::Read;
     let abs = root.join(rel);
-    let metadata = std::fs::metadata(&abs).map_err(|e| FileStatus::ReadFailed {
+    let read_failed = |e: std::io::Error| FileStatus::ReadFailed {
         kind: e.kind(),
         msg: e.to_string(),
-    })?;
+    };
+    let file = std::fs::File::open(&abs).map_err(read_failed)?;
+    // `fstat` on the open handle, so the size checked is the file actually read (no metadata-then-read
+    // race) and a device like `/dev/zero` (reported length 0) is refused rather than slurped.
+    let metadata = file.metadata().map_err(read_failed)?;
+    if !metadata.is_file() {
+        return Err(FileStatus::ReadFailed {
+            kind: std::io::ErrorKind::InvalidInput,
+            msg: "not a regular file".to_string(),
+        });
+    }
     if metadata.len() > max_file_bytes {
         return Err(FileStatus::SkippedTooLarge { size: metadata.len() });
     }
-    let bytes = std::fs::read(&abs).map_err(|e| FileStatus::ReadFailed {
-        kind: e.kind(),
-        msg: e.to_string(),
-    })?;
+    // Capped read: a file that grows after the stat still cannot exceed the limit by more than a byte.
+    let mut bytes = Vec::with_capacity(usize::try_from(metadata.len()).unwrap_or(0));
+    file.take(max_file_bytes.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(read_failed)?;
+    if bytes.len() as u64 > max_file_bytes {
+        return Err(FileStatus::SkippedTooLarge {
+            size: bytes.len() as u64,
+        });
+    }
     let mtime = mtime_nanos(&metadata);
     let size = metadata.len();
     Ok((bytes, size, mtime))
@@ -598,6 +620,33 @@ pub fn looks_binary(bytes: &[u8]) -> bool {
 mod tests {
     use super::*;
     use crate::scanner_lanes::run_optional_lane;
+
+    #[cfg(unix)]
+    #[test]
+    fn read_working_tree_refuses_devices_and_directories() {
+        let dir = tempfile::tempdir().unwrap();
+        // `join` with an absolute `rel` yields `rel`, which lets the test aim at a device node.
+        let zero = read_working_tree(dir.path(), "/dev/zero", 1024).unwrap_err();
+        assert!(matches!(zero, FileStatus::ReadFailed { .. }), "got {zero:?}");
+        let sub = read_working_tree(
+            dir.path().parent().unwrap(),
+            dir.path().file_name().unwrap().to_str().unwrap(),
+            1024,
+        );
+        assert!(matches!(sub, Err(FileStatus::ReadFailed { .. })));
+    }
+
+    #[test]
+    fn read_working_tree_enforces_the_size_cap_on_the_read_itself() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("f.txt"), b"0123456789").unwrap();
+        assert!(matches!(
+            read_working_tree(dir.path(), "f.txt", 9),
+            Err(FileStatus::SkippedTooLarge { size: 10 })
+        ));
+        let (bytes, size, _) = read_working_tree(dir.path(), "f.txt", 10).unwrap();
+        assert_eq!((bytes.len(), size), (10, 10));
+    }
 
     #[cfg(feature = "documents")]
     #[test]
