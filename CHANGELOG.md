@@ -22,26 +22,115 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `.config` (writes `.config/basemind.toml`) or `.config/basemind` (writes
   `.config/basemind/config.toml`); any other value is rejected, since there is no read-time
   config-path flag and a config written elsewhere would never be auto-discovered.
-- `[languages.<grammar>]` `extensions` / `filenames` / `preload` overrides, `[scan] floor_allow`,
-  `[documents]` `include` / `exclude` / `max_file_bytes` and `embed_include` (documents and code
-  search). Cached chunks and documents are fingerprinted against the settings that shape them, and
-  the first scan after an embedding-scope change removes the vector rows of files no longer eligible.
-- The daemon reloads a workspace's `basemind.toml` when it changes and applies operator-raisable
-  resource caps (`BASEMIND_DAEMON_MAX_*`).
-- A new linked worktree's working view is seeded from a sibling checkout; `BASEMIND_NO_SEED=1`
-  opts out.
+- `[languages.<grammar>]` per-grammar overrides keyed by tree-sitter-language-pack grammar name:
+  `enabled = false` stops parsing that grammar's files as code (they fall through to the document
+  tier; fixes `.txt` detected as vimdoc and `.conf` as nginx), `extensions` / `filenames` map extra
+  suffixes and exact file names onto a grammar ahead of built-in detection, and `preload` makes
+  `basemind lang install` fetch it. An unknown grammar name is a config error with near-match
+  suggestions.
+- `[scan] floor_allow`: remove entries from the always-on exclude floor by directory, file name,
+  glob or floor pattern. `.git` and `.basemind` can never be allowed; an entry naming nothing in the
+  floor is ignored with a warning.
+- `[documents] include` / `exclude` (which non-code files become documents), `max_file_bytes`
+  (per-document cap, default 50 MiB, independent of `[scan] max_file_bytes`), and `embed_include`
+  alongside the existing `embed_exclude`; `[code_search] embed_include` with the same semantics
+  (allow-list, `embed_exclude` wins, left-out files stay keyword-searchable).
+- Cached chunks and documents are fingerprinted against the settings that shape them, so changing a
+  chunk-size, page-cap, keyword, NER, summarization or `[llm] model` setting re-processes only the
+  affected files. The first scan after an embedding-scope change (`embed`, `embed_include`,
+  `embed_exclude`, the `enabled` switches) deletes the vector rows of files that are no longer
+  eligible and rebuilds the rows of newly eligible ones from cached blobs without re-embedding.
+- The shared daemon loads each workspace's config once, applies operator-raisable resource ceilings
+  (`BASEMIND_DAEMON_MAX_SCAN_THREADS`, `_EMBED_THREADS`, `_EMBED_BATCH`, `_CONCURRENT_DOCUMENTS`,
+  `_FOOTPRINT_MB`, `_MAP_CACHE_MB`, `_CANDIDATES`, `_FILE_BYTES`, `_DOCUMENT_BYTES`,
+  `_DOCUMENT_PAGES`, `_EXTRACTION_SECS`, `_CHUNKS_PER_DOCUMENT`, `_CRAWL_PAGES`, `_CRAWL_DEPTH`,
+  `_CRAWL_BODY_BYTES`, and the `BASEMIND_DAEMON_MIN_DEBOUNCE_MS` floor), and reloads a workspace's
+  `basemind.toml` on the next request after it changes. A file that no longer parses keeps the last
+  good config and logs a warning. `admin status` reports `config_stamp` to spot an edit.
+- Operator environment grants for settings a repository's own `basemind.toml` cannot set itself:
+  `BASEMIND_ALLOW_REPO_LLM`, `BASEMIND_ALLOW_FOLLOW_SYMLINKS`, `BASEMIND_ALLOW_EXTRA_ROOTS` and, in
+  the daemon, `BASEMIND_DAEMON_ALLOW_EXTRACT_ARCHIVES`. `BASEMIND_ALLOW_EXTRA_ROOTS` takes `1` /
+  `true` / `yes` for every workspace, or a `:`-separated list of absolute workspace roots that
+  grants only those (`;` on Windows); relative entries are ignored with a warning.
+- A new linked worktree's `working` view is seeded from a sibling checkout with a copy-on-write
+  clone, so its first scan only touches files that differ. A sibling whose workspace lock is held, or
+  one too large to copy without reflinks, is skipped; a crashed clone's `.seed-tmp` debris is swept
+  on open. `BASEMIND_NO_SEED=1` opts out.
+- A linked worktree whose HEAD descends from the indexed git-history head now appends to the shared
+  index instead of skipping it.
+- Reserved config keys that nothing reads log a warning when set to a non-default value.
 
 ### Changed
 
-- Repo-supplied `[llm] base_url`, foreign `api_key` env references, `[crawl] allow_private_network`
-  and `[scan] extra_roots` now need an operator grant in the environment
-  (`BASEMIND_ALLOW_REPO_LLM`, `BASEMIND_ALLOW_PRIVATE_HOSTS`, `BASEMIND_ALLOW_EXTRA_ROOTS`).
+- Bare names in every glob list (`[scan]`, `[documents]`, `[code_search]` `include` / `exclude` /
+  `embed_*`) are gitignore-like: `generated` matches that path segment at any depth and everything
+  beneath it, and `docs/api` is anchored at the root. A leading `./` or `/` and a trailing `/` are
+  ignored. A negated (`!`) pattern, an invalid glob, or an empty `[scan] include` is a config error.
+  For `extra_roots` files, globs match the path relative to the extra root.
+- Repo-supplied `[llm] base_url`, foreign `api_key` env references, `[crawl] allow_private_network`,
+  `[scan] follow_symlinks` and `[scan] extra_roots` now need an operator grant in the environment
+  (`BASEMIND_ALLOW_REPO_LLM`, `BASEMIND_ALLOW_PRIVATE_HOSTS`, `BASEMIND_ALLOW_FOLLOW_SYMLINKS`,
+  `BASEMIND_ALLOW_EXTRA_ROOTS`). An `api_key` env reference is still honoured for the chosen
+  provider's standard variable and `BASEMIND_LLM_API_KEY`.
 - `BASEMIND_ALLOW_PRIVATE_HOSTS` accepts `1`, `true` or `yes` in both the config gate and the URL
   guard (the URL guard previously accepted only `1`).
-- Reserved config keys that nothing reads log a warning when set to a non-default value.
-- mimalloc is the global allocator; ONNX Runtime memory is bounded in the daemon.
+- The daemon treats `[resources]`, `[scan] max_candidates` / `max_file_bytes`, `[documents]` limits,
+  `[crawl]` limits and `[watch] debounce_ms` as ceilings or floors, and clamps the per-call `web`
+  `crawl` `max_pages` / `max_depth` overrides to the same caps.
+- mimalloc is the global allocator. ONNX Runtime memory is bounded in every process (no
+  memory-pattern planning, no retained CPU arena; intra-op threads capped), and the daemon releases
+  resident embedding engines once the last concurrent embedding pass ends.
+- The daemon caps its runtime and pool threads, serializes read-stack builds, defers the startup GC,
+  bounds fjall worker threads and journal size (flushing an oversized journal on open), and runs
+  git-history index sync on a dedicated two-thread pool.
+- Blob chunk state is read from the envelope header alone instead of decoding the blob.
 - Changing a reserved key (`[documents.language] preferred_languages`, `[documents.ocr]`) no longer
   re-extracts every document.
+- `basemind.toml` scaffold comments written by `basemind init` describe the new keys, the credential
+  floor and the operator grants.
+
+### Fixed
+
+- Linked worktrees no longer wipe and rebuild the shared git-history index when they switch
+  branches.
+- The file watcher rebuilds its include/exclude filter when `basemind.toml` changes, and detects an
+  equal-length rewrite of the config inside one timestamp tick.
+- Incremental scans (watcher, `rescan paths`) evict files that became ineligible, skip symlinks, and
+  cap the bytes read.
+- The embed policy is recorded only after a complete purge, and keyword postings are rebuilt when
+  needed; empty-scope lance deletes are skipped and large ones are batched at 2000.
+- Extraction returns an error instead of panicking when its runtime cannot be built, and the
+  git-history pool falls back to the caller's thread instead of panicking under thread exhaustion.
+
+### Security
+
+- Credential and key material is excluded from the index by default, so no secret becomes
+  searchable by every agent that can query it: `.env` and `.env.*` (including `.env.example`),
+  `.aws/`, `.ssh/`, `.gnupg/`, `.npmrc`, `.pypirc`, `.netrc`, `.git-credentials`, `id_rsa` /
+  `id_dsa` / `id_ecdsa` / `id_ed25519`, `*.pem`, `*.key`, `*.p12`, `*.pfx`, `*.jks`, `*.keystore`.
+  `[scan] floor_allow` opts a class back in.
+- `follow_symlinks` is an operator decision: the repository's own `basemind.toml` cannot turn it on.
+  Working-tree reads, including the watcher and `rescan paths`, refuse symlinked files and paths that
+  resolve outside the workspace, and a `basemind.toml` that is a symlink leaving the workspace is not
+  followed.
+- Repository-authored `basemind.toml` can no longer redirect an LLM endpoint or read an arbitrary
+  environment variable as an API key, reach private hosts, follow symlinks, index directories outside
+  the repository, or expand archives in the daemon, without an operator grant (see Changed).
+  `extra_roots` additionally refuses credential directories (`.ssh`, `.aws`, `.gnupg`, `/etc`),
+  filesystem roots and roots inside the repository, grant or not.
+- Daemon resource ceilings bound what a hostile repository config can cost: scan and embed threads,
+  batch size, footprint, candidates, file and document sizes, pages, extraction time, chunks and
+  crawl pages, depth and body size.
+
+### Removed
+
+- The TUI and agent stack was removed upstream and is not part of this release: the
+  `basemind-tui`, `basemind-agent`, `basemind-agent-ipc` and `basemind-ui` crates, the
+  `basemind ui` and `basemind agent` subcommands, the `agent-tui` / `desktop-ui` features, and the
+  `[agent]` config table (now rejected as an unknown key; delete it from `basemind.toml`). None of it
+  has been in a release archive since 0.25.1 (`basemind agent` and `basemind-tui` last shipped in
+  0.25.0). `basemind agents` (multi-agent comms) is unrelated and unchanged.
+  ADR-0006 is marked withdrawn.
 
 ## [0.27.4] - 2026-09-28
 

@@ -193,7 +193,7 @@ Two persistent schemas, both tracking `RELEASE_MINOR` from `src/version.rs`:
 
 **Patch release** (`0.1.0` → `0.1.1`): `RELEASE_MINOR` unchanged. Blobs + index must stay compatible — no format changes.
 
-**Minor release** (`0.1.x` → `0.2.0`): `RELEASE_MINOR` increments. On next `basemind scan`, `.basemind/` is auto-wiped and rebuilt from source. Users are notified in release notes.
+**Minor release** (`0.1.x` → `0.2.0`): `RELEASE_MINOR` increments. On next `basemind scan`, the stale cache is auto-wiped and rebuilt from source. Users are notified in release notes.
 
 **Wipe-on-mismatch** is the explicit migration story. No manual steps — `basemind scan` handles it.
 
@@ -202,30 +202,29 @@ Two persistent schemas, both tracking `RELEASE_MINOR` from `src/version.rs`:
 Global cache at `~/.local/share/basemind/` (or `$BASEMIND_DATA_HOME`):
 
 ```text
-~/.local/share/basemind/
+~/.local/share/basemind/cache/
 ├── blobs/
-│   ├── abc123….l1.msgpack  # Outline: symbols, signatures, imports
-│   ├── abc123….l2.msgpack  # Calls (if eager_l2=true)
-│   └── abc123….l3.msgpack  # Structural hashes
+│   ├── abc123….l1.msgpack      # Outline: symbols, signatures, imports
+│   ├── abc123….l2.msgpack      # Calls (if eager_l2=true)
+│   ├── abc123….l3.msgpack      # Structural hashes
 │   └── (shared across all repos/worktrees via content hash)
-├── views/
-│   └── <workspace_hash>/
-│       └── <view>/
-│           └── index.fjall/    # Fjall LSM index (daemon is sole writer)
-├── git-cache/
-│   └── <workspace_hash>/
-│       ├── commit_files/       # Cached file lists per commit
-│       ├── log/                # Cached logs
-│       └── blame/              # Cached blame data
-├── lancedb/
-│   └── <workspace_hash>/       # Vector store (documents, memory, code search)
-└── agent-registry/             # Daemon-managed thread registry
+└── workspaces/
+    └── <workspace_key>/        # blake3 of the canonical worktree root
+        ├── views/<view>/
+        │   ├── index.msgpack
+        │   └── index.fjall/    # Fjall LSM index (one writer per workspace)
+        ├── git-history.fjall/  # Precomputed git-history index
+        ├── git-cache/          # Cached git payloads
+        ├── lance/              # Vector store (documents, memory, code search)
+        ├── workspace.json      # Worktree root this key was derived from
+        ├── status.json         # File counts + scan age for the statusline
+        └── .lock, .lock.meta   # Writer lock and its holder
 
 Per-repo configuration (repo-local):
 repo/basemind.toml             # Configuration
 ```
 
-The daemon manages the global cache; individual repos share no per-repo `.basemind/` directory.
+The daemon manages the global cache; individual repos hold no `.basemind/` directory.
 
 ## MCP Surface
 
