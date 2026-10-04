@@ -58,7 +58,8 @@ pub(crate) const INIT_SCAFFOLD_TOML: &str = r##"# basemind configuration — htt
 # *.keystore.
 # exclude = []
 # Floor entries to drop so that tree gets indexed, by directory name, file name or glob (`build`,
-# `.env.*`, `*.pem`), or the floor pattern itself. `.git` and `.basemind` can never be allowed. The
+# `.env.*`, `*.pem`), or the floor pattern itself. `.git` and `.basemind` can never be allowed, and
+# a credential entry is honoured only with the operator's BASEMIND_ALLOW_REPO_CREDENTIALS grant. The
 # default exclude also lists dist/target/node_modules/.venv, so remove those from exclude as well
 # when allowing them.
 # floor_allow = []

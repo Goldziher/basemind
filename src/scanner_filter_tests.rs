@@ -164,8 +164,8 @@ fn floor_allow_removes_named_floor_entries_but_never_git_or_basemind() {
 }
 
 #[test]
-fn secrets_are_excluded_by_default_and_floor_allow_opts_back_in() {
-    let mut config = crate::config::default_for_root(Path::new("."));
+fn secrets_are_excluded_by_default_and_opt_back_in_needs_the_grant() {
+    let config = crate::config::default_for_root(Path::new("."));
     let filters = Filters::build(&config, Vec::new()).expect("build filters");
     for secret in [
         ".env",
@@ -182,11 +182,34 @@ fn secrets_are_excluded_by_default_and_floor_allow_opts_back_in() {
     assert!(filters.allows("src/environment.rs"));
     assert!(filters.allows("keys.rs"));
 
-    config.scan.floor_allow = vec![".env.*".to_string(), "*.pem".to_string()];
-    let filters = Filters::build(&config, Vec::new()).expect("build filters");
-    assert!(filters.allows("svc/.env.production"));
-    assert!(filters.allows("certs/server.pem"));
-    assert!(!filters.allows(".env"), "unlisted entries stay excluded");
+    // A repository's own `floor_allow` cannot remove credential entries without the operator grant.
+    let entries = vec![".env.*".to_string(), "*.pem".to_string()];
+    let without = effective_floor(&entries, false);
+    assert!(
+        without.contains(&"**/.env.*") && without.contains(&"**/*.pem"),
+        "credentials stay in the floor without the grant"
+    );
+
+    // With the grant, the same entries are removed.
+    let with = effective_floor(&entries, true);
+    assert!(
+        !with.contains(&"**/.env.*") && !with.contains(&"**/*.pem"),
+        "the operator grant re-includes the named credential entries"
+    );
+
+    // A non-credential floor entry never needs the grant.
+    let build = effective_floor(&["build".to_string()], false);
+    assert!(!build.contains(&"**/build/**"), "build artifacts need no grant");
+}
+
+#[test]
+fn credential_floor_is_a_subset_of_the_exclude_floor() {
+    for pattern in FLOOR_CREDENTIALS {
+        assert!(
+            FLOOR_EXCLUDES.contains(pattern),
+            "{pattern} is a credential-floor entry and must also be in FLOOR_EXCLUDES"
+        );
+    }
 }
 
 #[test]
