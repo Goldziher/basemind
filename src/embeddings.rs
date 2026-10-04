@@ -1,6 +1,6 @@
 //! Shared embedding engine for the memory + documents MCP tools.
 
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock, PoisonError};
 
 use anyhow::{Context, Result, anyhow};
 use xberg::embeddings::EMBEDDING_PRESETS;
@@ -35,6 +35,12 @@ pub fn release_engines() -> usize {
 
 static EMBED_PASSES_IN_FLIGHT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
+/// Serializes [`begin_embed_pass`] against the last pass's release. Without it, a new pass could
+/// increment the counter in the window between the final decrement and [`release_engines`], and
+/// have the engines it is about to use freed underneath it. Held only across the counter update
+/// (and the release), never across the embedding work itself.
+static PASS_GATE: Mutex<()> = Mutex::new(());
+
 /// RAII marker for one embedding pass in this process. When the LAST concurrent pass ends, resident
 /// engines are released, so a pass for one workspace never frees the model out from under (or forces a
 /// reload for) a pass that is still running for another.
@@ -43,12 +49,14 @@ pub struct EmbedPass(());
 
 /// Register the start of an embedding pass; see [`EmbedPass`].
 pub fn begin_embed_pass() -> EmbedPass {
+    let _gate = PASS_GATE.lock().unwrap_or_else(PoisonError::into_inner);
     EMBED_PASSES_IN_FLIGHT.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
     EmbedPass(())
 }
 
 impl Drop for EmbedPass {
     fn drop(&mut self) {
+        let _gate = PASS_GATE.lock().unwrap_or_else(PoisonError::into_inner);
         if EMBED_PASSES_IN_FLIGHT.fetch_sub(1, std::sync::atomic::Ordering::AcqRel) == 1 {
             tracing::info!(
                 dropped = release_engines(),
