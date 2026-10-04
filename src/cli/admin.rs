@@ -110,6 +110,10 @@ pub enum AdminCmd {
         #[arg(long)]
         stdin: bool,
     },
+    /// Retrieval-quality + token-savings evaluation over a JSONL task file: scores each tool's
+    /// answer against gold (P/R/F1, hit@k, MRR, nDCG), measures latency and response tokens, and
+    /// compares against a grep/read baseline. See `benchmarks/eval/README.md`.
+    Eval(crate::eval::EvalArgs),
 }
 
 /// Count tokens in stdin and print just the integer, so a shell script can pipe straight into it.
@@ -223,6 +227,7 @@ pub async fn run(server: &BasemindServer, cmd: AdminCmd, opts: &Emit, out: &mut 
             ..AdminParams::new(AdminMode::Waste)
         },
         AdminCmd::Tokens { .. } => return run_tokens(out),
+        AdminCmd::Eval(args) => return crate::eval::run(server, &args, out).await,
     };
 
     let key = p.mode.telemetry_key();

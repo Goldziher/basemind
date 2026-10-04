@@ -14,6 +14,7 @@ pub mod config;
 pub mod daemon_lock;
 #[cfg(feature = "intelligence")]
 pub mod embeddings;
+pub mod eval;
 pub mod extract;
 pub mod git;
 pub mod git_cache;
