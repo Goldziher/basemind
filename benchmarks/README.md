@@ -167,3 +167,23 @@ whole) — that's what drives the 84.2% overall token delta despite four of the 
 tasks showing negative delta on their own. That's the expected shape of this benchmark: pick
 narrow, single-hit tasks and grep wins on tokens; pick broad or structural tasks and basemind
 wins by a wide margin.
+
+## Retrieval quality and token savings: `basemind admin eval`
+
+`run.sh` compares one CLI call to one baseline command per task and reports tokens and
+wall-clock. It does not check that basemind's answer was *right*. `basemind admin eval` does:
+it runs a JSONL task file against the indexed workspace through the same in-process tool code
+the MCP server uses (no per-call process startup), scores each answer against gold, measures
+server-side latency and response tokens, and, for tasks that carry a `baseline`, measures what
+the grep/read alternative would have cost.
+
+```sh
+basemind scan
+basemind admin eval --tasks tasks.jsonl --out results.ndjson \
+  --report report.json --markdown report.md
+basemind admin eval --tasks tasks.jsonl --report new.json --baseline report.json  # gate
+```
+
+Task files are generated per repository by the stdlib-only scripts in
+[`benchmarks/eval/`](eval/README.md), which also documents the task format, the metrics, and the
+comparison with the fixed multipliers in `src/mcp/savings.rs`.

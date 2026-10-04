@@ -552,6 +552,17 @@ you need.
 
 </details>
 
+<details>
+<summary><strong>Measure it on your own repo</strong></summary>
+
+`basemind admin eval` runs a task file of lookups through the same code the MCP tools use, scores
+each answer against gold generated from your repository (precision/recall, hit@k, MRR, nDCG),
+records latency and response tokens, and compares the token cost with the grep-and-read baseline
+an agent would otherwise pay. Savings only count when basemind's answer was actually correct.
+Gold generators and the workflow are in [`benchmarks/eval/`](benchmarks/eval/README.md).
+
+</details>
+
 ---
 
 ## Performance
