@@ -57,13 +57,18 @@ Finding the binary (in order of preference):
   instead, or stop the server first.
 - **Indexing directories outside the repo** — set `scan.extra_roots` in the repo-root `basemind.toml`
   to a list of absolute paths (e.g. a Bazel external repo cache) to index them alongside the repo.
-  This needs `BASEMIND_ALLOW_EXTRA_ROOTS=1` in the environment that launches basemind: the config
-  file lives inside the repository, so without that operator opt-in the entries are ignored with a
-  warning. A filesystem or volume root is refused either way.
+  This needs `BASEMIND_ALLOW_EXTRA_ROOTS` in the environment that launches basemind (`1`, or a
+  `:`-separated list of absolute workspace roots to grant only those): the config file lives inside
+  the repository, so without that operator opt-in the entries are ignored with a warning. A
+  filesystem or volume root and credential directories (`.ssh`, `.aws`, `.gnupg`, `/etc`) are
+  refused either way.
   Their files are keyed by absolute path (so results for them are absolute, not repo-relative) and
   are (re-)indexed on a full `scan` only — the live watcher does not track them. Git tools (blame)
   don't apply to external files; the code map (symbols / references / outlines) and document search
   do.
+- Credential and key files (`.env*`, `.aws/`, `.ssh/`, `.npmrc`, `*.pem`, `*.key`, ...) are never
+  indexed. `[scan] floor_allow` opts a class back in (`.env.*` also matches `.env.example`).
+  `[languages.<grammar>]` re-maps or disables a misdetected grammar.
 - After a successful scan, both the MCP tools and `basemind code …` have a fresh index.
 - The CLI shares the exact same machine-global cache as the MCP server — see the `basemind-cli`
   skill for the full query surface, or `basemind-code-search` / `basemind-git-history` /

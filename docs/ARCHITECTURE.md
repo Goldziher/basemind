@@ -93,7 +93,7 @@ src/
 ├── store.rs                — content-addressed msgpack blob store; Store facade; holds IndexDb
 ├── store_blob.rs           — blob (de)framing + atomic write
 ├── store_layout.rs         — cache root / workspace-dir mapping; workspace.json marker
-├── store_lock.rs           — .basemind/.lock flock + holder metadata + writer probe
+├── store_lock.rs           — workspace-cache `.lock` flock + holder metadata + writer probe
 ├── store_gc.rs             — cache garbage collection
 ├── store_gc_workspace.rs   — orphaned-workspace reaper for the machine-global cache
 ├── store_cache_admin.rs    — cache clear / stats admin surface (CLI + MCP)
@@ -123,7 +123,7 @@ src/
 │   ├── stackgraph.rs       — Python/Java via vendored .tsg stack-graphs
 │   │                         (feature code-intel-stack)
 │   └── tsg/{python,java}.tsg — vendored stack-graph name-binding rulesets
-├── git_history/            — precomputed git-history index (.basemind/git-history.fjall/,
+├── git_history/            — precomputed git-history index (`git-history.fjall/` in the workspace cache,
 │   │                         see "Git-history index" below)
 │   ├── mod.rs              — GitHistoryIndex; Local/Remote backend; CommitMeta; partitions
 │   ├── builder.rs          — sync: walk HEAD, populate partitions incrementally
@@ -447,7 +447,7 @@ Drop the disk cache with `basemind cache clear`. Disable per-run with
 
 ### Git-history index
 
-A separate, repo-level Fjall store at `.basemind/git-history.fjall/` — distinct from the
+A separate, per-workspace Fjall store at `git-history.fjall/` in the workspace cache directory — distinct from the
 `git-cache/` blame/log tier above. It turns the `git` tool's history modes (`touching`, `recent`,
 `by_path`, `churn`, the `symbol_history` commit walk, and full-text `search`) from live history
 walks into posting-list lookups. Source:
@@ -469,6 +469,10 @@ walks into posting-list lookups. Source:
   live-walk and report `partial: true`, so it can never serve stale results.
 - A linked worktree shares the MAIN worktree's index (keyed on the main worktree root) rather than
   rebuilding its own, since the commit graph is identical across worktrees of one clone.
+  The index tracks one head: a linked worktree whose HEAD descends from it appends the new commits,
+  while one that diverges leaves the index untouched (`RebuildOutcome::Skipped`) and answers by live
+  walk, so switching worktrees never wipes and rebuilds the history. The first build may come from any
+  worktree. Index sync runs on a dedicated two-thread pool.
 
 ## Resource governance
 
@@ -484,6 +488,13 @@ basemind's footprint on a constrained machine:
 | `document_models` | `full` | Model families document extraction runs: `full` \| `code_only` (embeddings only, no keywords/NER/summarization/OCR) \| `none` (metadata + keyword search only). |
 | `max_footprint_mb` | `0` (auto) | Ceiling on process memory footprint. A positive integer is an explicit mebibyte ceiling; `0` or `"auto"` derives one from the environment; `"off"` disables the gate. |
 | `max_map_cache_mb` | `256` | Byte budget for the MCP read stack's decoded-outline cache (`src/mcp/l1_cache.rs`), per workspace. `0` = unbounded. A miss costs one blob read and never changes an answer. The code-graph memo is charged at half this value, and a read-only session's projected call / implementation indexes are charged against it too. |
+
+In the shared daemon these values are ceilings, not settings: `src/config/daemon.rs` applies
+`min(file, cap)` to each (and to `[scan]` / `[documents]` / `[crawl]` limits), with `0` / `"auto"` /
+`"off"` resolving to the cap, and the operator raises a cap through `BASEMIND_DAEMON_MAX_*` in the
+daemon's environment. ONNX Runtime memory is bounded in every process (`embeddings::bound_ort_memory`:
+no memory-pattern planning, no retained CPU arena), and the daemon drops resident embedding engines
+when the last concurrent embedding pass ends.
 
 `[resources]` bounds **one** read stack. The daemon holds several, and that multiplier is its own
 bound (`src/comms/workspace_pool.rs`). A hot pool entry is an open `Store` handle, capped at 16

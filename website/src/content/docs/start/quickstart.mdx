@@ -25,7 +25,7 @@ and wire agent-instructions rules before you scan.
    <Code code={`basemind scan`} lang="bash" />
 
    This walks the tree, parses with tree-sitter, and writes a content-addressed
-   blob store + inverted index under `.basemind/`. Takes a few seconds for small
+   blob store + inverted index in the global cache (`~/.local/share/basemind/` on Linux, `~/Library/Application Support/basemind/` on macOS). Takes a few seconds for small
    repos, around 18 seconds for an 81k-file TypeScript monorepo.
 
 2. **Find where a symbol is defined**
