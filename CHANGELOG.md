@@ -12,6 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.28.0] - 2026-10-04
 
+> **Minor release — persisted schema bumped (`RELEASE_MINOR` 27 → 28).** The first `basemind scan`
+> after upgrading wipes and rebuilds the on-disk cache (blobs, the Fjall index, vector rows) from
+> source. No manual step is needed; a full re-scan is automatic.
+
 ### Added
 
 - Project-level `.config/` convention (<https://github.com/pi0/config-dir>): configuration is now
@@ -103,6 +107,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   needed; empty-scope lance deletes are skipped and large ones are batched at 2000.
 - Extraction returns an error instead of panicking when its runtime cannot be built, and the
   git-history pool falls back to the caller's thread instead of panicking under thread exhaustion.
+- Re-flushing an external-root (`extra_roots`) document replaces its existing vector rows instead of
+  leaving stale duplicates: the delete now uses the document's own per-root scope, matching the rows
+  it inserts.
+- The last concurrent embedding pass releases resident engines under a lock, so a pass that starts
+  concurrently cannot have the engines it is about to use freed underneath it.
 
 ### Security
 
@@ -110,7 +119,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   searchable by every agent that can query it: `.env` and `.env.*` (including `.env.example`),
   `.aws/`, `.ssh/`, `.gnupg/`, `.npmrc`, `.pypirc`, `.netrc`, `.git-credentials`, `id_rsa` /
   `id_dsa` / `id_ecdsa` / `id_ed25519`, `*.pem`, `*.key`, `*.p12`, `*.pfx`, `*.jks`, `*.keystore`.
-  `[scan] floor_allow` opts a class back in.
+  `[scan] floor_allow` opts a class back in, but a credential entry needs the operator's
+  `BASEMIND_ALLOW_REPO_CREDENTIALS` grant — a cloned repository's own `basemind.toml` cannot
+  un-exclude the operator's untracked secrets (build-artifact entries still need no grant).
 - `follow_symlinks` is an operator decision: the repository's own `basemind.toml` cannot turn it on.
   Working-tree reads, including the watcher and `rescan paths`, refuse symlinked files and paths that
   resolve outside the workspace, and a `basemind.toml` that is a symlink leaving the workspace is not
@@ -130,8 +141,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `basemind-tui`, `basemind-agent`, `basemind-agent-ipc` and `basemind-ui` crates, the
   `basemind ui` and `basemind agent` subcommands, the `agent-tui` / `desktop-ui` features, and the
   `[agent]` config table (now rejected as an unknown key; delete it from `basemind.toml`). None of it
-  has been in a release archive since 0.25.1 (`basemind agent` and `basemind-tui` last shipped in
-  0.25.0). `basemind agents` (multi-agent comms) is unrelated and unchanged.
+  was ever part of a release archive: the `agent-tui` / `desktop-ui` features were omitted from
+  `full` and the release workflow built only the `basemind` binary. `basemind agents` (multi-agent
+  comms) is unrelated and unchanged.
   ADR-0006 is marked withdrawn.
 
 ## [0.27.4] - 2026-09-28

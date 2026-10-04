@@ -4,7 +4,7 @@ priority: high
 
 # Crate Layout
 
-Basemind is a single Rust crate that builds a CLI binary (`basemind`) and exposes its internals as a library. Two binaries-in-one: `basemind scan` indexes a workspace into `.basemind/`; `basemind serve` runs the MCP stdio server.
+Basemind is a single Rust crate that builds a CLI binary (`basemind`) and exposes its internals as a library. Two binaries-in-one: `basemind scan` indexes a workspace into the machine-global cache (`~/.local/share/basemind/`, override `BASEMIND_DATA_HOME`); `basemind serve` runs the MCP stdio server.
 
 ## `src/`
 
@@ -12,7 +12,7 @@ Basemind is a single Rust crate that builds a CLI binary (`basemind`) and expose
 - `main.rs` — CLI entry (`scan`, `serve`).
 - `scanner.rs` — rayon-parallel file walker; orchestrates per-file extraction and writes blobs + index.
 - `scanner_docs.rs` — document-tier scan (PDF / Office / HTML → LanceDB) when `--features documents`.
-- `store.rs` — content-addressed msgpack blob store at `.basemind/blobs/<hash>.{l1,l2,l3}.msgpack`. Holds the `IndexDb` handle.
+- `store.rs` — content-addressed msgpack blob store at `~/.local/share/basemind/blobs/<hash>.{l1,l2,l3}.msgpack`. Holds the `IndexDb` handle.
 - `index/` — Fjall-backed secondary index (`mod.rs`, `keys.rs`, `writer.rs`).
 - `extract/` — tree-sitter extraction tiers:
   - `l1.rs` — outlines (symbols, signatures, imports, docs).
@@ -47,10 +47,10 @@ Basemind is a single Rust crate that builds a CLI binary (`basemind`) and expose
 - `git_smoke.rs` / `git_cache_smoke.rs` / `scan_smoke.rs` / `schema_bump.rs` / `config_schema.rs` — focused smoke tests.
 - `fixtures/` — small synthetic repos for unit tests.
 
-#### `.basemind/` (created at scan time)
+#### Global cache (`~/.local/share/basemind/`, created at scan time)
 
 - `blobs/<hash>.{l1,l2,l3}.msgpack` — content-addressed extraction blobs (dedup across files / views).
-- `views/<view>/index.fjall/` — Fjall LSM tree (the secondary index over those blobs).
+- `views/<workspace_hash>/<view>/index.fjall/` — Fjall LSM tree (the secondary index over those blobs).
 
 #### Other
 

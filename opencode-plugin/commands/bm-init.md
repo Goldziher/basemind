@@ -29,38 +29,60 @@ capabilities (documents/RAG, agent-comms, semantic search). Safe to re-run: it's
    - `AGENTS.md` — committed, shared with everyone on the repo
    - `none` — write no rules
 
-   Exception: if `.ai-rulez/config.toml` is present, ai-rulez owns governance — write the ai-rulez
-   rule file instead of asking (it never touches CLAUDE.md/AGENTS.md).
+   Exception: if `.ai-rulez/config.toml` is present, ai-rulez owns governance — write the
+   gitignored `.ai-rulez/local/rules/basemind-usage.md` instead of asking (never the committed
+   `.ai-rulez/rules/basemind-usage.md`, and never CLAUDE.md/AGENTS.md).
 
-3. **Run `basemind init` non-interactively** with the matching flags. Pass the user's rules choice
-   via `--rules-target <claude-local|agents-local|claude|agents|ai-rulez|none>` (default `auto`
-   resolves to the gitignored local file, never a committed one):
+3. **Ask about auto-approving basemind's MCP tools (one short question).** basemind can add one
+   `permissions.allow` glob entry so Claude Code stops prompting for approval on its own tools.
+   Present the choice:
+   - `.claude/settings.local.json` — personal, gitignored (**recommended default**)
+   - `.claude/settings.json` — committed, shared with everyone on the repo
+   - `none` — skip this step
+
+4. **Run `basemind init` non-interactively** with the matching flags. Pass the user's rules choice
+   via `--rules-target <claude-local|agents-local|claude|agents|ai-rulez-local|ai-rulez|none>`
+   (default `auto` resolves to the gitignored local file, never a committed one) and their
+   settings choice via `--settings-target <local|shared|none>` (omitting the flag is equivalent to
+   `none` in this non-interactive flow — it is never added silently):
 
    ```sh
-   basemind init --yes --rules-target claude-local
+   basemind init --yes --rules-target claude-local --settings-target local
    ```
 
    Narrow capabilities with repeatable `--with` (allow-list) or `--without` (subtract):
 
    ```sh
-   basemind init --yes --rules-target claude-local --with code-search-navigation --with git-history
+   basemind init --yes --rules-target claude-local --settings-target local --with code-search-navigation --with git-history
    ```
 
    Preview without writing using `--print`.
 
-4. **Report what changed** — which files were written or kept (`basemind.toml`, the chosen rules
-   file), and whether the delimited block was created or updated in place.
+5. **Report what changed** — which files were written or kept (`basemind.toml`, the chosen rules
+   file, the settings file if opted into), whether the delimited block was created or updated in
+   place, and any `.gitignore` pattern that was added (see below).
 
 ## Notes
 
 - `--rules-target auto` (the default) NEVER writes a committed `CLAUDE.md` / `AGENTS.md` unasked:
-  it routes to `.ai-rulez/rules/basemind-usage.md` when `.ai-rulez/config.toml` owns governance
-  (then tell the user to run `ai-rulez generate`; do NOT run it for them), otherwise to the
-  gitignored `CLAUDE.local.md` (or `AGENTS.local.md` when the repo uses AGENTS). Choosing `claude`
-  / `agents` explicitly opts into the committed file.
+  it routes to the gitignored `.ai-rulez/local/rules/basemind-usage.md` when `.ai-rulez/config.toml`
+  owns governance (then tell the user to run `ai-rulez generate`; do NOT run it for them), otherwise
+  to the gitignored `CLAUDE.local.md` (or `AGENTS.local.md` when the repo uses AGENTS). Choosing
+  `claude` / `agents` / `ai-rulez` explicitly opts into the corresponding committed file.
 - The block is wrapped in an idempotent `<!-- BEGIN basemind … -->` … `<!-- END basemind -->`
   block that is replaced in place on re-run, never duplicated. Content outside the markers is
   never touched.
+- **`.gitignore` coverage**: whenever `init` is about to write one of the gitignored-by-convention
+  files (`CLAUDE.local.md`, `AGENTS.local.md`, `.claude/settings.local.json`, anything under
+  `.ai-rulez/local/`), it checks whether an existing `.gitignore` already covers that path. If not,
+  it prompts `add "<pattern>" to .gitignore? [Y/n]` interactively, or appends the pattern
+  automatically with `--yes`, so a personal `.local` file is never one accidental `git add -A` away
+  from being committed.
+- The settings-permissions step is opt-in and defaults to **skipped** non-interactively — pass
+  `--settings-target local` (or `shared`) explicitly to enable it. The merge only ever
+  adds/dedupes basemind's own entry inside `permissions.allow`; every other key in
+  `.claude/settings*.json` (e.g. `skillOverrides`), and its position in the file, is left exactly
+  as it was.
 - An existing `basemind.toml` is kept verbatim, never clobbered.
 - If `basemind` isn't on `PATH`: use the plugin-managed cache binary or build a dev binary with
   `cargo build --release` and use `./target/release/basemind`.

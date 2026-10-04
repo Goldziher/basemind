@@ -90,7 +90,7 @@ matched against the path relative to that root.
 |---|---|---|---|
 | `include` | array of globs | `["**/*"]` | Files to index; at least one entry is required (an empty list would index nothing and is rejected at load). Language detection still filters by tree-sitter support. |
 | `exclude` | array of globs | build/vendor dirs | Excludes `target/`, `node_modules/`, `dist/`, `.venv/`, `.git/`, `.basemind/`, and `bazel-*` trees. Applied on top of the always-on exclude floor below. |
-| `floor_allow` | array of strings | `[]` | Entries to remove from the always-on exclude floor, by directory (`build`, `vendor`), file name or glob (`.env.*`, `*.pem`), or floor pattern (`**/build/**`). A directory also listed in the default `exclude` must be removed from `exclude` too. `.git` and `.basemind` can never be allowed; an entry naming nothing in the floor is ignored with a warning. |
+| `floor_allow` | array of strings | `[]` | Entries to remove from the always-on exclude floor, by directory (`build`, `vendor`), file name or glob (`.env.*`, `*.pem`), or floor pattern (`**/build/**`). A directory also listed in the default `exclude` must be removed from `exclude` too. A credential entry is honoured only with the operator's `BASEMIND_ALLOW_REPO_CREDENTIALS=1` grant. `.git` and `.basemind` can never be allowed; an entry naming nothing in the floor is ignored with a warning. |
 | `respect_gitignore` | bool | `true` | Honor `.gitignore` during the walk. |
 | `follow_symlinks` | bool | `false` | Follow symlinks during the walk, including `extra_roots` walks. Symlinks often escape the repo (Bazel's `bazel-*` convenience links), so the repository's own `basemind.toml` cannot turn this on: it is forced to `false` with a warning unless the operator sets `BASEMIND_ALLOW_FOLLOW_SYMLINKS=1`. Without it, working-tree reads (including the watcher and `rescan paths`) refuse symlinked files and paths resolving outside the workspace. |
 | `max_file_bytes` | integer | `2097152` | Skip files larger than this (2 MiB). Prevents minified-bundle stalls. |
@@ -113,8 +113,9 @@ that can query the index: `.env` and `.env.*`, `.aws/`, `.ssh/`, `.gnupg/`, `.np
 
 <Aside type="caution">
 `.env.*` also matches `.env.example` and `.env.sample`. The floor has no finer exception, so
-`floor_allow = [".env.*"]` indexes every `.env.<suffix>` file, real secrets included. Prefer
-renaming the template (`env.example`) over allowing the pattern.
+`floor_allow = [".env.*"]` indexes every `.env.<suffix>` file, real secrets included. A repository's
+own `basemind.toml` needs the operator's `BASEMIND_ALLOW_REPO_CREDENTIALS=1` grant to do this at all.
+Prefer renaming the template (`env.example`) over allowing the pattern.
 </Aside>
 
 ### `[watch]` Section
@@ -375,6 +376,7 @@ Grant variables accept `1`, `true` or `yes` (case-insensitive).
 | `[llm] api_key = { env = "NAME" }` | `NAME` is the chosen provider's standard variable (`OPENAI_API_KEY` for `openai/...`, `ANTHROPIC_API_KEY` for `anthropic/...`, ...) or `BASEMIND_LLM_API_KEY`, or `BASEMIND_ALLOW_REPO_LLM=1`; otherwise the key is treated as unset with a warning. |
 | `[crawl] allow_private_network = true` | `BASEMIND_ALLOW_PRIVATE_HOSTS=1`; otherwise reset to `false` with a warning. The same variable governs the URL guard for `web` fetches. |
 | `[scan] follow_symlinks = true` | `BASEMIND_ALLOW_FOLLOW_SYMLINKS=1`; otherwise reset to `false` with a warning. |
+| `[scan] floor_allow` (a credential entry) | `BASEMIND_ALLOW_REPO_CREDENTIALS=1`; otherwise the entry is ignored with a warning and the secret stays excluded. Build-artifact entries need no grant. |
 | `[scan] extra_roots` | `BASEMIND_ALLOW_EXTRA_ROOTS` set to `1` / `true` / `yes` (every workspace the process scans), or to a list of absolute workspace roots separated by `:` (`;` on Windows) that grants only those workspaces and their descendants. A relative entry, or another word such as `on`, is ignored with a warning. Prefer the list form for a daemon, which serves many repositories: the bare `1` also opens `extra_roots` for any workspace it serves later. |
 | `[documents] extract_archives = true` | Daemon only: `BASEMIND_DAEMON_ALLOW_EXTRACT_ARCHIVES=1` in the daemon's environment; otherwise reset to `false` with a warning. |
 
@@ -384,8 +386,9 @@ quote a file the repository does not own.
 ### Daemon
 
 The shared daemon serves every workspace on the machine, so it treats resource settings as ceilings:
-the effective value is the smaller of the file's value and the daemon's cap, and a file value meaning
-"no limit" (`0`, `"auto"`, `"off"`) resolves to the cap. The operator raises a cap in the daemon's own
+the effective value is the smaller of the file's value and the daemon's cap. The `[resources]`
+sentinels and `[scan] max_candidates = 0` mean "no limit" and resolve to the cap; the other limits
+are clamped directly (`min(file, cap)`). The operator raises a cap in the daemon's own
 environment, which a repository cannot write. A cap variable must be a positive integer; anything else
 falls back to the default.
 
