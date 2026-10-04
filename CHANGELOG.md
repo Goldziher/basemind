@@ -10,6 +10,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `basemind admin eval`: a repo-agnostic retrieval-quality and token-savings evaluation. It runs a
+  JSONL task file (modes `symbols`, `outline`, `references`, `callers`, `grep`, `find`,
+  `dependents`, `git_search`, `docs`) through the same in-process tool code the MCP server uses,
+  scores answers against gold (set P/R/F1; hit@1/@5, MRR and nDCG for ranked tasks), records
+  per-call latency and response tokens, and reports per-mode p50/p95 latency and quality as NDJSON,
+  JSON and markdown. Tasks may carry a `baseline` (grep command and/or whole-file reads); its
+  output is counted with the same tokenizer and savings are only credited when recall reaches
+  `--min-recall`, then compared with the fixed multipliers in `src/mcp/savings.rs` (modes deviating
+  more than 25% are flagged). `--baseline <report.json>` exits non-zero on a regression beyond
+  `--tolerance` / `--cost-tolerance`.
+- `benchmarks/eval/`: stdlib-only Python gold generators (`gen_symbols`, `gen_outline`,
+  `gen_references`, `gen_dependents`, `gen_grep`, `gen_find`, `gen_git_search`, `gen_docs`), deterministic
+  for a fixed HEAD sha and seed, with a workflow README.
+
 ## [0.28.0] - 2026-10-04
 
 > **Minor release — persisted schema bumped (`RELEASE_MINOR` 27 → 28).** The first `basemind scan`
