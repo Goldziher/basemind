@@ -190,7 +190,7 @@
         "max_pages": 32,
         "max_depth": 2,
         "max_body_size": 4194304,
-        "user_agent": "basemind/0.27.4 (+https://github.com/Goldziher/basemind)",
+        "user_agent": "basemind/0.28.0 (+https://github.com/Goldziher/basemind)",
         "allow_private_network": false
       }
     },
@@ -261,7 +261,7 @@
           ]
         },
         "floor_allow": {
-          "description": "Entries to remove from the always-on exclude floor, named by directory (`build`, `vendor`)\nor by the floor pattern itself (`**/build/**`). Use it to index a tree the floor otherwise\ndrops. The default `exclude` list is separate: a directory also listed there (`dist`,\n`target`) must be removed from `exclude` too. The floor also drops credential files (`.env`,\n`.env.*`, `.aws`, `.ssh`, `.gnupg`, `.npmrc`, `id_rsa`, `*.pem`, `*.key`, ...); list the\nentry (`.env.*`, `*.pem`) to index one deliberately. `.git` and `.basemind` can never be allowed,\nand an entry naming nothing in the floor is ignored with a warning.",
+          "description": "Entries to remove from the always-on exclude floor, named by directory (`build`, `vendor`)\nor by the floor pattern itself (`**/build/**`). Use it to index a tree the floor otherwise\ndrops. The default `exclude` list is separate: a directory also listed there (`dist`,\n`target`) must be removed from `exclude` too. The floor also drops credential files (`.env`,\n`.env.*`, `.aws`, `.ssh`, `.gnupg`, `.npmrc`, `id_rsa`, `*.pem`, `*.key`, ...); list the\nentry (`.env.*`, `*.pem`) to index one deliberately. A credential entry here is honoured only\nwhen the operator sets `BASEMIND_ALLOW_REPO_CREDENTIALS`, so a repository's own file cannot\nun-exclude the operator's secrets. `.git` and `.basemind` can never be allowed,\nand an entry naming nothing in the floor is ignored with a warning.",
           "type": "array",
           "items": {
             "type": "string",
@@ -1145,7 +1145,7 @@
           "description": "User-Agent header sent with every request. Override to identify your\ncrawler to operators; the default includes the basemind release\nversion + the upstream repo URL so site operators can trace traffic.",
           "type": "string",
           "minLength": 1,
-          "default": "basemind/0.27.4 (+https://github.com/Goldziher/basemind)"
+          "default": "basemind/0.28.0 (+https://github.com/Goldziher/basemind)"
         },
         "allow_private_network": {
           "description": "Allow crawling URLs that resolve to private, loopback, or link-local\naddresses (`127.0.0.0/8`, `10.0.0.0/8`, `169.254.0.0/16`, …). Default\n`false`: the engine rejects them with an SSRF-policy violation. Flip this\non only to scrape an internal docs server you control. **`true` in the repository's own\n`basemind.toml` is ignored (with a warning) unless the operator sets\n`BASEMIND_ALLOW_PRIVATE_HOSTS=1` in the environment**, because a cloned repository could\notherwise aim the crawler at internal services. (The `CRAWLBERG_ALLOW_PRIVATE_NETWORK` env\nvar is honoured as a process-wide override regardless of this setting.)",
