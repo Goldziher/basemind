@@ -317,8 +317,14 @@ fn main() -> Result<()> {
     // Every process that may build an ONNX session bounds its memory before the first one exists. The
     // comms daemon applies its own (tighter) thread cap in `comms_daemon::run`, which must win.
     #[cfg(feature = "intelligence")]
-    if !matches!(cli.cmd, Cmd::Comms { .. }) {
-        basemind::embeddings::bound_ort_memory(basemind::embeddings::resolve_embed_threads(0));
+    {
+        #[cfg(all(feature = "comms", any(unix, windows)))]
+        let is_comms = matches!(cli.cmd, Cmd::Comms { .. });
+        #[cfg(not(all(feature = "comms", any(unix, windows))))]
+        let is_comms = false;
+        if !is_comms {
+            basemind::embeddings::bound_ort_memory(basemind::embeddings::resolve_embed_threads(0));
+        }
     }
 
     let no_color = cli.no_color;
