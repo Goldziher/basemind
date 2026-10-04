@@ -53,9 +53,9 @@ pub(crate) struct PendingDocBatch {
     /// Content hash (hex) of the source document — the key under which the `.doc.msgpack` blob is
     /// content-addressed. The flush re-reads that blob to rebuild rows on demand.
     pub blob_hash: String,
-    /// LanceDB scope stamped onto this file's emitted rows (the repo scope, or `path:<extra_root>`
-    /// for an external-root document). The delete predicate uses the scan-wide scope, mirroring the
-    /// pre-streaming behavior; only the inserted rows carry this per-file scope.
+    /// LanceDB scope for this file's rows (the repo scope, or `path:<extra_root>` for an
+    /// external-root document). Both the delete predicate and the inserted rows use it, so
+    /// re-flushing an external-root document replaces its rows instead of leaving stale duplicates.
     pub doc_scope: String,
     /// Number of chunks indexed (zero is valid — xberg may yield no chunks
     /// when the file body is empty or below the chunk threshold).
@@ -561,12 +561,7 @@ pub(crate) fn purge_unembedded_documents(
 ///
 /// Returns the number of files for which rows were written. Errors are logged and skipped on a
 /// per-file basis so one malformed embedding doesn't abort the scan.
-pub(crate) fn flush_document_batches(
-    store: &mut Store,
-    scope: &str,
-    batches: Vec<PendingDocBatch>,
-    embedding_model: &str,
-) -> usize {
+pub(crate) fn flush_document_batches(store: &mut Store, batches: Vec<PendingDocBatch>, embedding_model: &str) -> usize {
     let mut inserted = 0usize;
     let Some(dim) = batches
         .iter()
@@ -624,7 +619,7 @@ pub(crate) fn flush_document_batches(
         if rows.is_empty() {
             continue;
         }
-        match lance.replace_document(scope, &batch.rel_path, rows) {
+        match lance.replace_document(&batch.doc_scope, &batch.rel_path, rows) {
             Ok(()) => inserted += 1,
             Err(error) => {
                 tracing::warn!(
