@@ -54,7 +54,9 @@ const FLOOR_EXCLUDES: &[&str] = &[
     "**/.idea/**",
     "**/.DS_Store",
     // Credentials and key material: indexing them makes the secret searchable by every agent that
-    // can query the index. `[scan] floor_allow` lists the entry (`.env.*`, `*.pem`) to opt back in.
+    // can query the index. `[scan] floor_allow` lists the entry (`.env.*`, `*.pem`) to opt back in,
+    // but a repository's own file may only do so with the operator grant
+    // [`ALLOW_REPO_CREDENTIALS_ENV`] — see [`FLOOR_CREDENTIALS`].
     "**/.env",
     "**/.env.*",
     "**/.aws/**",
@@ -76,6 +78,46 @@ const FLOOR_EXCLUDES: &[&str] = &[
     "**/*.keystore",
 ];
 
+/// The credential/key subset of [`FLOOR_EXCLUDES`]: a repository's own `[scan] floor_allow` may not
+/// remove one of these without the operator grant [`ALLOW_REPO_CREDENTIALS_ENV`]. Kept as an
+/// explicit subset (asserted in tests) so the gate names exactly the secret material rather than
+/// the whole floor — re-including a build artifact (`build`, `vendor`) needs no grant.
+const FLOOR_CREDENTIALS: &[&str] = &[
+    "**/.env",
+    "**/.env.*",
+    "**/.aws/**",
+    "**/.ssh/**",
+    "**/.gnupg/**",
+    "**/.npmrc",
+    "**/.pypirc",
+    "**/.netrc",
+    "**/.git-credentials",
+    "**/id_rsa",
+    "**/id_dsa",
+    "**/id_ecdsa",
+    "**/id_ed25519",
+    "**/*.pem",
+    "**/*.key",
+    "**/*.p12",
+    "**/*.pfx",
+    "**/*.jks",
+    "**/*.keystore",
+];
+
+/// Operator opt-in to let a repository's `[scan] floor_allow` remove a credential-floor entry
+/// (`.env`, `*.pem`, SSH keys, ...). Without it the entry is ignored, so a cloned repo cannot
+/// un-exclude the operator's untracked secrets and have them indexed.
+pub const ALLOW_REPO_CREDENTIALS_ENV: &str = "BASEMIND_ALLOW_REPO_CREDENTIALS";
+
+/// Whether the operator granted removal of credential-floor entries. Read from the process
+/// environment, which the operator supplies — never from the repository's `basemind.toml`.
+fn repo_credentials_granted() -> bool {
+    std::env::var(ALLOW_REPO_CREDENTIALS_ENV).is_ok_and(|v| {
+        let v = v.trim();
+        v.eq_ignore_ascii_case("1") || v.eq_ignore_ascii_case("true") || v.eq_ignore_ascii_case("yes")
+    })
+}
+
 /// Floor entries that `[scan] floor_allow` may never remove: indexing VCS internals or basemind's
 /// own state would corrupt the index.
 const FLOOR_PROTECTED: &[&str] = &["**/.git/**", "**/.basemind/**"];
@@ -93,13 +135,23 @@ fn floor_allow_names(entry: &str, pattern: &str) -> bool {
     e == pattern || e == floor_name(pattern) || format!("**/{e}/**") == pattern
 }
 
-/// The always-on exclude floor minus the entries the user removed via `[scan] floor_allow`.
-fn effective_floor(floor_allow: &[String]) -> Vec<&'static str> {
+/// The always-on exclude floor minus the entries removed via `[scan] floor_allow`. A credential
+/// entry may only be removed when the operator granted it (`credentials_granted`); otherwise the
+/// entry is ignored with a warning and the secret stays excluded.
+fn effective_floor(floor_allow: &[String], credentials_granted: bool) -> Vec<&'static str> {
     for entry in floor_allow {
         let matched = FLOOR_EXCLUDES.iter().any(|p| floor_allow_names(entry, p));
         let protected = FLOOR_PROTECTED.iter().any(|p| floor_allow_names(entry, p));
+        let credential = FLOOR_CREDENTIALS.iter().any(|p| floor_allow_names(entry, p));
         if protected {
             tracing::warn!(entry, "[scan] floor_allow cannot remove this entry; it stays excluded");
+        } else if credential && !credentials_granted {
+            tracing::warn!(
+                entry,
+                env = ALLOW_REPO_CREDENTIALS_ENV,
+                "refusing [scan] floor_allow on credential material from basemind.toml: it stays \
+                 excluded; set the grant to re-include secrets deliberately"
+            );
         } else if !matched {
             tracing::warn!(
                 entry,
@@ -110,7 +162,12 @@ fn effective_floor(floor_allow: &[String]) -> Vec<&'static str> {
     FLOOR_EXCLUDES
         .iter()
         .copied()
-        .filter(|p| FLOOR_PROTECTED.contains(p) || !floor_allow.iter().any(|e| floor_allow_names(e, p)))
+        .filter(|p| {
+            FLOOR_PROTECTED.contains(p)
+                || !floor_allow
+                    .iter()
+                    .any(|e| floor_allow_names(e, p) && (!FLOOR_CREDENTIALS.contains(p) || credentials_granted))
+        })
         .collect()
 }
 
@@ -192,7 +249,7 @@ impl Filters {
     pub(crate) fn build(config: &Config, submodule_roots: Vec<String>) -> Result<Self, ScanError> {
         let include_patterns: Vec<String> = config.scan.include.iter().flat_map(|p| expand_pattern(p)).collect();
         let include = compile_globs(include_patterns.iter().map(String::as_str))?;
-        let exclude_patterns: Vec<String> = effective_floor(&config.scan.floor_allow)
+        let exclude_patterns: Vec<String> = effective_floor(&config.scan.floor_allow, repo_credentials_granted())
             .into_iter()
             .map(str::to_string)
             .chain(config.scan.exclude.iter().flat_map(|p| expand_pattern(p)))

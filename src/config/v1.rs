@@ -77,7 +77,9 @@ pub struct ScanConfig {
     /// drops. The default `exclude` list is separate: a directory also listed there (`dist`,
     /// `target`) must be removed from `exclude` too. The floor also drops credential files (`.env`,
     /// `.env.*`, `.aws`, `.ssh`, `.gnupg`, `.npmrc`, `id_rsa`, `*.pem`, `*.key`, ...); list the
-    /// entry (`.env.*`, `*.pem`) to index one deliberately. `.git` and `.basemind` can never be allowed,
+    /// entry (`.env.*`, `*.pem`) to index one deliberately. A credential entry here is honoured only
+    /// when the operator sets `BASEMIND_ALLOW_REPO_CREDENTIALS`, so a repository's own file cannot
+    /// un-exclude the operator's secrets. `.git` and `.basemind` can never be allowed,
     /// and an entry naming nothing in the floor is ignored with a warning.
     #[serde(default)]
     #[schemars(inner(length(min = 1)))]
