@@ -60,7 +60,9 @@ Finding the binary (in order of preference):
   don't apply to external files; the code map (symbols / references / outlines) and document search
   do.
 - Credential and key files (`.env*`, `.aws/`, `.ssh/`, `.npmrc`, `*.pem`, `*.key`, ...) are never
-  indexed. `[scan] floor_allow` opts a class back in (`.env.*` also matches `.env.example`).
+  indexed. `[scan] floor_allow` opts a class back in (`.env.*` also matches `.env.example`), but a
+  credential entry needs `BASEMIND_ALLOW_REPO_CREDENTIALS` in the environment that launches
+  basemind — a repository's own file cannot un-exclude your secrets.
   `[languages.<grammar>]` re-maps or disables a misdetected grammar.
 - After a successful scan, both the MCP tools and `basemind code …` have a fresh index.
 - The CLI shares the exact same machine-global cache as the MCP server — see the `basemind-cli`

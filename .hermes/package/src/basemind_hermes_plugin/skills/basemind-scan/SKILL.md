@@ -9,8 +9,8 @@ description: >-
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:29a2324c53540a9c069867ba08000dddbd93b21aa2fabd7e7524e87a56e1185d
-Source-Hash: blake3:6f2699f20429ddffd4d1a629e633b102a04410544fbc311a4d0e336567e18123
+Content-Hash: blake3:976948273b58b51bcdbfaf097a564faca51b14e6453d09e46b1f1bbac4dac0f0
+Source-Hash: blake3:52b06bd4bbf872809bb8644d82c5c6ba6b5c6184d98918b1b442669d52c79519
 Schema-Version: v1
 -->
 
@@ -67,7 +67,9 @@ Finding the binary (in order of preference):
   don't apply to external files; the code map (symbols / references / outlines) and document search
   do.
 - Credential and key files (`.env*`, `.aws/`, `.ssh/`, `.npmrc`, `*.pem`, `*.key`, ...) are never
-  indexed. `[scan] floor_allow` opts a class back in (`.env.*` also matches `.env.example`).
+  indexed. `[scan] floor_allow` opts a class back in (`.env.*` also matches `.env.example`), but a
+  credential entry needs `BASEMIND_ALLOW_REPO_CREDENTIALS` in the environment that launches
+  basemind — a repository's own file cannot un-exclude your secrets.
   `[languages.<grammar>]` re-maps or disables a misdetected grammar.
 - After a successful scan, both the MCP tools and `basemind code …` have a fresh index.
 - The CLI shares the exact same machine-global cache as the MCP server — see the `basemind-cli`

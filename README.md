@@ -698,12 +698,15 @@ include = ["**/*"]
 # credential floor, so a secret never becomes searchable by every agent that can query the index:
 # .env and .env.*, .aws/, .ssh/, .gnupg/, .npmrc, .pypirc, .netrc, .git-credentials, id_rsa /
 # id_dsa / id_ecdsa / id_ed25519, *.pem, *.key, *.p12, *.pfx, *.jks, *.keystore. Note `.env.*` also
-# drops `.env.example`; list `.env.*` in floor_allow to index those templates.
+# drops `.env.example`; list `.env.*` in floor_allow to index those templates (needs the
+# BASEMIND_ALLOW_REPO_CREDENTIALS grant below).
 exclude = []
 # Remove entries from that floor so the tree is indexed, by directory name (`build`), file name or
-# glob (`.env.*`, `*.pem`) or floor pattern (`**/build/**`). `.git` and `.basemind` can never be allowed; an entry naming nothing is ignored
-# with a warning. The default `exclude` separately lists dist/target/node_modules/.venv/bazel-*, so
-# drop those from `exclude` too when allowing them.
+# glob (`.env.*`, `*.pem`) or floor pattern (`**/build/**`). `.git` and `.basemind` can never be
+# allowed; an entry naming nothing is ignored with a warning. A credential entry (`.env`, `*.pem`,
+# keys) is honoured only with BASEMIND_ALLOW_REPO_CREDENTIALS=1 in the environment — a repository's
+# own file cannot un-exclude your secrets. The default `exclude` separately lists
+# dist/target/node_modules/.venv/bazel-*, so drop those from `exclude` too when allowing them.
 floor_allow = []
 # Index directories outside the repo root too — e.g. a Bazel external repo cache — so their
 # symbols resolve in search / references / outlines. External files are keyed by absolute path;
@@ -820,6 +823,7 @@ reach outside the process are gated on the operator's environment:
 | `[llm] api_key = { env = "NAME" }` | `NAME` is the chosen provider's standard variable (`OPENAI_API_KEY` for `openai/...`, `ANTHROPIC_API_KEY` for `anthropic/...`, ...) or `BASEMIND_LLM_API_KEY`, or `BASEMIND_ALLOW_REPO_LLM=1`. |
 | `[crawl] allow_private_network = true` | `BASEMIND_ALLOW_PRIVATE_HOSTS=1`; otherwise reset to `false` with a warning. The same variable governs the URL guard for `web` fetches. |
 | `[scan] follow_symlinks = true` | `BASEMIND_ALLOW_FOLLOW_SYMLINKS=1`; otherwise reset to `false` with a warning (a tracked link can point at `~/.ssh`). |
+| `[scan] floor_allow` (a credential entry: `.env`, `*.pem`, `id_rsa`, ...) | `BASEMIND_ALLOW_REPO_CREDENTIALS=1`; otherwise the entry is ignored with a warning and the secret stays excluded (a clone could otherwise un-exclude your untracked `.env` and have every agent query it). Entries for build artifacts (`build`, `vendor`) need no grant. |
 | `[scan] extra_roots` | `BASEMIND_ALLOW_EXTRA_ROOTS=1` (every workspace this process scans) or a list of absolute workspace roots separated by `:` (`;` on Windows), which grants only those workspaces and their descendants. A relative entry is ignored with a warning, as is any other non-truthy word (`on`). A daemon is one long-lived process serving many repositories, so prefer the list form there: the bare `1` also opens `extra_roots` for any workspace it serves later. Credential directories (`.ssh`, `.aws`, `.gnupg`, `/etc`) and filesystem roots are refused even with the grant. |
 | `[documents] extract_archives = true` | In the daemon only: `BASEMIND_DAEMON_ALLOW_EXTRACT_ARCHIVES=1` in the daemon's environment; otherwise reset to `false` with a warning. |
 
@@ -829,14 +833,16 @@ environment; the env and CLI override layers are operator-supplied and never gat
 Credential and key files are not indexed by default: the exclude floor (see `[scan]` above) drops
 `.env`, `.env.*` (which includes `.env.example`), `.aws/`, `.ssh/`, `.gnupg/`, `.npmrc`, `.pypirc`,
 `.netrc`, `.git-credentials`, SSH private keys and `*.pem` / `*.key` / `*.p12` / `*.pfx` / `*.jks` /
-`*.keystore`. Opt a file class back in with `[scan] floor_allow = [".env.*"]`. Unless
+`*.keystore`. Opt a file class back in with `[scan] floor_allow = [".env.*"]` — a credential entry
+only takes effect with the operator's `BASEMIND_ALLOW_REPO_CREDENTIALS=1` grant, so a repository's
+own file cannot un-exclude it. Unless
 `follow_symlinks` is granted, working-tree reads (including the watcher and `rescan paths`) refuse a
 symlinked file or a path that resolves outside the workspace, and a `basemind.toml` that is a symlink
 leaving the workspace is not followed.
 
 **The daemon treats `[resources]` and `[scan] max_candidates` as ceilings.** The effective value is
-the smaller of the file's and the daemon's cap, and `0` / `"auto"` / `"off"` resolve to the cap. The
-operator raises a cap in the daemon's own environment (a repository cannot):
+the smaller of the file's and the daemon's cap; the `[resources]` sentinels `0` / `"auto"` / `"off"`
+resolve to the cap. The operator raises a cap in the daemon's own environment (a repository cannot):
 
 | Variable | Caps | Default |
 |---|---|---|
