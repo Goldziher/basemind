@@ -124,6 +124,9 @@ pub(crate) fn doc_config_from(
         embed_max_threads: resources.effective_embed_threads(cfg.embed_max_threads),
         embed_batch_size: resources.embed_batch_size,
         document_models: resources.document_models,
+        onnx_provider: resources.onnx_provider,
+        max_archive_bytes: usize::try_from(cfg.max_archive_bytes).unwrap_or(usize::MAX),
+        max_archive_entries: cfg.max_archive_entries,
     }
 }
 

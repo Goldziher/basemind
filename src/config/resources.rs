@@ -108,6 +108,14 @@ pub struct ResourcesConfig {
     /// workspaces. See [`DocumentModelProfile`].
     #[serde(default)]
     pub document_models: DocumentModelProfile,
+    /// ONNX Runtime execution provider for every model basemind loads (embeddings, reranking, layout
+    /// detection, NER). Defaults to `cpu`: on macOS the `auto` provider routes models through CoreML,
+    /// which compiles a fresh graph per input shape and measured 7.6 GB resident for one tiny document
+    /// against 0.8 GB on the CPU provider (and 3x slower), so a scan over a document-heavy repository
+    /// grew without bound. `auto` restores the platform default (CoreML on macOS, CUDA on a Linux
+    /// build with GPU support); `coreml`, `cuda` and `tensorrt` pin one.
+    #[serde(default)]
+    pub onnx_provider: OnnxProvider,
 }
 
 impl ResourcesConfig {
@@ -151,6 +159,7 @@ impl Default for ResourcesConfig {
             max_footprint_mb: MaxFootprint::default(),
             max_map_cache_mb: Self::default_max_map_cache_mb(),
             document_models: DocumentModelProfile::default(),
+            onnx_provider: OnnxProvider::default(),
         }
     }
 }
@@ -282,6 +291,26 @@ impl MaxFootprint {
             None => 0,
         }
     }
+}
+
+/// ONNX Runtime execution provider used for every model session; see
+/// [`ResourcesConfig::onnx_provider`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum OnnxProvider {
+    /// CPU execution provider. The default: bounded memory on every platform.
+    #[default]
+    Cpu,
+    /// Platform default: CoreML on macOS, CUDA on a Linux build with GPU support, CPU elsewhere.
+    Auto,
+    /// Apple CoreML (Neural Engine + GPU). Memory grows with the number of distinct input shapes.
+    #[serde(alias = "core_ml")]
+    CoreMl,
+    /// NVIDIA CUDA.
+    Cuda,
+    /// NVIDIA TensorRT.
+    #[serde(alias = "tensor_rt")]
+    TensorRt,
 }
 
 /// Selects which model families run during document extraction, trading recall
@@ -487,6 +516,26 @@ mod tests {
         } else {
             assert_eq!(resolved, 0, "an unsupported platform reports no ceiling");
         }
+    }
+
+    /// The default is the bounded-memory provider, and every documented spelling parses. A config that
+    /// predates the key (no `onnx_provider`) must keep loading unchanged.
+    #[test]
+    fn onnx_provider_defaults_to_cpu_and_parses_every_spelling() {
+        let absent: ResourcesConfig = toml::from_str("scan_threads = 2\n").expect("pre-existing config");
+        assert_eq!(absent.onnx_provider, OnnxProvider::Cpu);
+        for (text, expected) in [
+            ("cpu", OnnxProvider::Cpu),
+            ("auto", OnnxProvider::Auto),
+            ("coreml", OnnxProvider::CoreMl),
+            ("cuda", OnnxProvider::Cuda),
+            ("tensorrt", OnnxProvider::TensorRt),
+        ] {
+            let cfg: ResourcesConfig =
+                toml::from_str(&format!("onnx_provider = \"{text}\"\n")).expect("provider spelling");
+            assert_eq!(cfg.onnx_provider, expected, "{text}");
+        }
+        assert!(toml::from_str::<ResourcesConfig>("onnx_provider = \"metal\"\n").is_err());
     }
 
     #[test]

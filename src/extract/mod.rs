@@ -1,5 +1,7 @@
 #[cfg(feature = "documents")]
 pub mod doc;
+#[cfg(feature = "documents")]
+pub mod doc_cost;
 pub mod l1;
 pub mod l2;
 pub mod l3;

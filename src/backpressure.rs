@@ -11,16 +11,24 @@
 //!   limit, makes the gate a no-op ([`AdmitOutcome::Disabled`]).
 //! - a sampler that cannot read the footprint (an unsupported platform, or a failed syscall)
 //!   admits immediately ([`AdmitOutcome::Unavailable`]).
-//! - after `max_wait` over the ceiling the gate admits anyway ([`AdmitOutcome::WaitedOut`]),
-//!   trading a memory overshoot for guaranteed forward progress — the goal is to shave the
-//!   peak, not to enforce an invariant the allocator won't.
+//! - after `max_wait` over the ceiling the advisory [`FootprintGate::admit`] admits anyway
+//!   ([`AdmitOutcome::WaitedOut`]), trading a memory overshoot for guaranteed forward progress.
+//!   That is only safe for a leaf that is already serialised by something else. The document
+//!   tier is not: it used [`admit`](FootprintGate::admit) and, with every worker over the ceiling,
+//!   every worker was admitted after five seconds, so the ceiling bounded nothing. It uses
+//!   [`FootprintGate::admit_exclusive`] instead, which admits at most ONE worker at a time while
+//!   over the ceiling (an [`AdmitOutcome::Serialized`] admission holds a process-wide token for
+//!   the duration of its work) and admits immediately when nothing else is running, since waiting
+//!   on an idle process can never free memory.
 //!
 //! The gate holds no global state: the scanner constructs one per admit point from the
 //! injected [`Config`](crate::config), sampling [`crate::sysres::phys_footprint`]. Tests
 //! inject a stub sampler to drive the over-then-under transition deterministically without
 //! touching real memory.
 
-use std::sync::{Condvar, Mutex, OnceLock, PoisonError};
+use std::cell::Cell;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Condvar, Mutex, MutexGuard, OnceLock, PoisonError, TryLockError};
 use std::time::{Duration, Instant};
 
 use crate::config::MaxFootprint;
@@ -51,6 +59,65 @@ pub enum AdmitOutcome {
     /// The worker parked for the full `max_wait` while still over the ceiling and was admitted
     /// anyway to guarantee forward progress.
     WaitedOut,
+    /// Admitted while over the ceiling as the single overshoot admission: no other worker is
+    /// admitted over the ceiling until this one's [`Admission`] drops.
+    Serialized,
+}
+
+/// Shared bookkeeping behind [`FootprintGate::admit_exclusive`]: the overshoot token and the number
+/// of live admissions. Process-wide in production ([`GLOBAL_ADMISSIONS`]); tests build their own so
+/// they cannot observe one another.
+pub struct AdmissionState {
+    overshoot: Mutex<()>,
+    in_flight: AtomicUsize,
+}
+
+impl AdmissionState {
+    const fn new() -> Self {
+        Self {
+            overshoot: Mutex::new(()),
+            in_flight: AtomicUsize::new(0),
+        }
+    }
+}
+
+static GLOBAL_ADMISSIONS: AdmissionState = AdmissionState::new();
+
+thread_local! {
+    /// Address of the [`AdmissionState`] whose overshoot token this thread currently holds, or 0.
+    /// Lets nested admissions on the same thread pass through instead of deadlocking on the token
+    /// their own caller holds.
+    static HOLDS_OVERSHOOT: Cell<usize> = const { Cell::new(0) };
+}
+
+/// A live admission from [`FootprintGate::admit_exclusive`]. Hold it for the duration of the work it
+/// admitted: dropping it releases the overshoot token (if any) and the in-flight count.
+#[must_use = "the admission must be held while the admitted work runs"]
+pub struct Admission {
+    outcome: AdmitOutcome,
+    state: &'static AdmissionState,
+    token: Option<MutexGuard<'static, ()>>,
+}
+
+impl Admission {
+    fn new(state: &'static AdmissionState, outcome: AdmitOutcome, token: Option<MutexGuard<'static, ()>>) -> Self {
+        state.in_flight.fetch_add(1, Ordering::AcqRel);
+        Self { outcome, state, token }
+    }
+
+    /// How the gate admitted this worker.
+    pub fn outcome(&self) -> AdmitOutcome {
+        self.outcome
+    }
+}
+
+impl Drop for Admission {
+    fn drop(&mut self) {
+        self.state.in_flight.fetch_sub(1, Ordering::AcqRel);
+        if self.token.take().is_some() {
+            HOLDS_OVERSHOOT.with(|held| held.set(0));
+        }
+    }
 }
 
 /// A best-effort admission gate keyed on the process physical footprint. Cheap to construct (a
@@ -68,6 +135,7 @@ where
     sampler: S,
     poll_interval: Duration,
     max_wait: Duration,
+    admissions: &'static AdmissionState,
 }
 
 impl FootprintGate {
@@ -97,7 +165,28 @@ where
             sampler,
             poll_interval: DEFAULT_POLL_INTERVAL,
             max_wait: DEFAULT_MAX_WAIT,
+            admissions: &GLOBAL_ADMISSIONS,
         }
+    }
+
+    /// Use `state` instead of the process-wide admission bookkeeping. Test-only.
+    #[cfg(test)]
+    pub fn with_admissions(mut self, state: &'static AdmissionState) -> Self {
+        self.admissions = state;
+        self
+    }
+
+    /// True when a single piece of work estimated at `estimated_bytes` cannot fit under the ceiling
+    /// even on an otherwise idle process. Such work must be skipped, not waited for: no amount of
+    /// parking makes it fit, and admitting it anyway is exactly how a ceiling stops meaning anything.
+    /// Always false for a disabled gate.
+    pub fn exceeds_budget(&self, estimated_bytes: u64) -> bool {
+        self.limit_bytes != 0 && estimated_bytes > self.limit_bytes
+    }
+
+    /// The ceiling in mebibytes (0 when disabled). For log fields.
+    pub fn limit_mb(&self) -> u64 {
+        self.limit_bytes / BYTES_PER_MB
     }
 
     /// Override the poll interval and max wait. Test-only: production always uses the defaults
@@ -137,6 +226,77 @@ where
                             "footprint gate over ceiling for max_wait; admitting to guarantee progress"
                         );
                         return AdmitOutcome::WaitedOut;
+                    }
+                    parked = true;
+                    std::thread::sleep(self.poll_interval);
+                }
+            }
+        }
+    }
+}
+
+impl<S> FootprintGate<S>
+where
+    S: Fn() -> Option<u64>,
+{
+    /// Admit one unit of heavy work, serialising it while the process is over the ceiling.
+    ///
+    /// Under the ceiling this is [`admit`](Self::admit) (returns at once, any number of workers).
+    /// Over it, only the holder of the process-wide overshoot token proceeds:
+    /// - with nothing else in flight it proceeds immediately, because parking an idle process
+    ///   cannot release anything (the resident baseline alone can exceed a small ceiling; waiting
+    ///   there made every item stall the full `max_wait` for no benefit);
+    /// - otherwise it parks up to `max_wait` for in-flight work to finish and free memory, then
+    ///   proceeds anyway — but alone, so the overshoot is one unit of work, not one per worker.
+    ///
+    /// Workers that do not hold the token keep re-sampling and are admitted the moment the
+    /// footprint drops under the ceiling, or inherit the token when the holder's [`Admission`]
+    /// drops. A thread that already holds the token passes straight through.
+    pub fn admit_exclusive(&self) -> Admission {
+        let state = self.admissions;
+        if self.limit_bytes == 0 {
+            return Admission::new(state, AdmitOutcome::Disabled, None);
+        }
+        let identity = std::ptr::from_ref(state) as usize;
+        if HOLDS_OVERSHOOT.with(Cell::get) == identity {
+            return Admission::new(state, AdmitOutcome::Serialized, None);
+        }
+        let start = Instant::now();
+        let mut parked = false;
+        let mut token: Option<MutexGuard<'static, ()>> = None;
+        loop {
+            match (self.sampler)() {
+                None => return Admission::new(state, AdmitOutcome::Unavailable, None),
+                Some(footprint) if footprint <= self.limit_bytes => {
+                    let outcome = if parked {
+                        AdmitOutcome::Throttled
+                    } else {
+                        AdmitOutcome::Clear
+                    };
+                    return Admission::new(state, outcome, None);
+                }
+                Some(_) => {
+                    if token.is_none() {
+                        token = match state.overshoot.try_lock() {
+                            Ok(guard) => Some(guard),
+                            Err(TryLockError::Poisoned(poisoned)) => Some(poisoned.into_inner()),
+                            Err(TryLockError::WouldBlock) => None,
+                        };
+                    }
+                    if token.is_some() {
+                        let idle = state.in_flight.load(Ordering::Acquire) == 0;
+                        let elapsed = start.elapsed();
+                        if idle || elapsed >= self.max_wait {
+                            if !idle {
+                                tracing::warn!(
+                                    limit_mb = self.limit_bytes / BYTES_PER_MB,
+                                    waited_ms = elapsed.as_millis() as u64,
+                                    "footprint gate over ceiling for max_wait; admitting one unit of work alone"
+                                );
+                            }
+                            HOLDS_OVERSHOOT.with(|held| held.set(identity));
+                            return Admission::new(state, AdmitOutcome::Serialized, token);
+                        }
                     }
                     parked = true;
                     std::thread::sleep(self.poll_interval);
@@ -313,6 +473,166 @@ mod tests {
             acquire_doc_slot(1).is_some(),
             "a later bounded caller must still get a real semaphore"
         );
+    }
+
+    /// A fresh bookkeeping state per test: the production one is process-wide, so tests sharing it
+    /// would see each other's admissions.
+    fn isolated_state() -> &'static AdmissionState {
+        Box::leak(Box::new(AdmissionState::new()))
+    }
+
+    fn over_gate(state: &'static AdmissionState, max_wait: Duration) -> FootprintGate<impl Fn() -> Option<u64>> {
+        FootprintGate::with_sampler(100, || Some(500 * MB))
+            .with_timing(Duration::from_millis(1), max_wait)
+            .with_admissions(state)
+    }
+
+    /// The bug: every worker over the ceiling was admitted after `max_wait`, so N workers meant N
+    /// overshooting extractions and the ceiling bounded nothing. Over the ceiling exactly one
+    /// worker may be inside at a time, however many arrive.
+    #[test]
+    fn over_the_ceiling_the_gate_serialises_instead_of_opening_the_floodgates() {
+        let state = isolated_state();
+        let live = AtomicUsize::new(0);
+        let peak = AtomicUsize::new(0);
+        let admitted = AtomicUsize::new(0);
+        std::thread::scope(|scope| {
+            for _ in 0..8 {
+                scope.spawn(|| {
+                    let gate = over_gate(state, Duration::from_millis(5));
+                    let admission = gate.admit_exclusive();
+                    assert_eq!(admission.outcome(), AdmitOutcome::Serialized);
+                    peak.fetch_max(live.fetch_add(1, Ordering::SeqCst) + 1, Ordering::SeqCst);
+                    std::thread::sleep(Duration::from_millis(15));
+                    live.fetch_sub(1, Ordering::SeqCst);
+                    admitted.fetch_add(1, Ordering::SeqCst);
+                    drop(admission);
+                });
+            }
+        });
+        assert_eq!(admitted.load(Ordering::SeqCst), 8, "serialising must not starve anyone");
+        assert_eq!(
+            peak.load(Ordering::SeqCst),
+            1,
+            "more than one worker was inside while the process was over the ceiling"
+        );
+        assert_eq!(
+            state.in_flight.load(Ordering::SeqCst),
+            0,
+            "every admission must release"
+        );
+    }
+
+    /// The advisory `admit` keeps its documented behaviour (it is what the drive governor reads),
+    /// which is exactly why the document tier must not use it: all callers pass after `max_wait`.
+    #[test]
+    fn the_advisory_admit_still_admits_every_waiter_which_is_why_documents_do_not_use_it() {
+        let peak = AtomicUsize::new(0);
+        let live = AtomicUsize::new(0);
+        std::thread::scope(|scope| {
+            for _ in 0..4 {
+                scope.spawn(|| {
+                    let gate = FootprintGate::with_sampler(100, || Some(500 * MB))
+                        .with_timing(Duration::from_millis(1), Duration::from_millis(5));
+                    assert_eq!(gate.admit(), AdmitOutcome::WaitedOut);
+                    peak.fetch_max(live.fetch_add(1, Ordering::SeqCst) + 1, Ordering::SeqCst);
+                    std::thread::sleep(Duration::from_millis(30));
+                    live.fetch_sub(1, Ordering::SeqCst);
+                });
+            }
+        });
+        assert!(peak.load(Ordering::SeqCst) > 1, "advisory admission overlaps by design");
+    }
+
+    /// Parking an idle process frees nothing: the resident baseline alone can exceed a small ceiling,
+    /// and waiting `max_wait` per item there made scans crawl without lowering memory.
+    #[test]
+    fn an_idle_process_over_the_ceiling_is_admitted_without_waiting() {
+        let gate = over_gate(isolated_state(), Duration::from_secs(30));
+        let start = Instant::now();
+        let admission = gate.admit_exclusive();
+        assert_eq!(admission.outcome(), AdmitOutcome::Serialized);
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "nothing is running, so there is nothing to wait for (took {:?})",
+            start.elapsed()
+        );
+    }
+
+    /// With other work in flight, waiting can help: the gate parks the full `max_wait` for it to
+    /// finish, then proceeds alone.
+    #[test]
+    fn with_other_work_in_flight_the_gate_waits_max_wait_then_proceeds_alone() {
+        let state = isolated_state();
+        let under = FootprintGate::with_sampler(100, || Some(10 * MB)).with_admissions(state);
+        let running = under.admit_exclusive();
+        assert_eq!(running.outcome(), AdmitOutcome::Clear);
+
+        let gate = over_gate(state, Duration::from_millis(40));
+        let start = Instant::now();
+        let admission = gate.admit_exclusive();
+        assert_eq!(admission.outcome(), AdmitOutcome::Serialized);
+        assert!(
+            start.elapsed() >= Duration::from_millis(40),
+            "must give in-flight work its max_wait"
+        );
+        drop((admission, running));
+        assert_eq!(state.in_flight.load(Ordering::SeqCst), 0);
+    }
+
+    /// Workers that lost the token are admitted in parallel again the moment memory recovers; the
+    /// serialisation lasts only as long as the overshoot does.
+    #[test]
+    fn waiters_resume_in_parallel_once_the_footprint_drops() {
+        let state = isolated_state();
+        let over = std::sync::atomic::AtomicBool::new(true);
+        let gate = || {
+            FootprintGate::with_sampler(100, || {
+                Some(if over.load(Ordering::SeqCst) { 500 * MB } else { 10 * MB })
+            })
+            .with_timing(Duration::from_millis(1), Duration::from_secs(30))
+            .with_admissions(state)
+        };
+        let holder = gate().admit_exclusive();
+        assert_eq!(holder.outcome(), AdmitOutcome::Serialized);
+        std::thread::scope(|scope| {
+            let waiter = scope.spawn(|| gate().admit_exclusive().outcome());
+            std::thread::sleep(Duration::from_millis(20));
+            assert!(
+                !waiter.is_finished(),
+                "a second worker must wait while over the ceiling"
+            );
+            over.store(false, Ordering::SeqCst);
+            let outcome = waiter.join().expect("waiter");
+            assert_eq!(outcome, AdmitOutcome::Throttled, "admitted without needing the token");
+        });
+        drop(holder);
+    }
+
+    /// A thread that already holds the overshoot token (nested extraction on the same worker) must
+    /// pass straight through; blocking on its own token would deadlock the scan.
+    #[test]
+    fn a_nested_admission_on_the_token_holding_thread_does_not_deadlock() {
+        let state = isolated_state();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let outer = over_gate(state, Duration::from_millis(5)).admit_exclusive();
+            let inner = over_gate(state, Duration::from_millis(5)).admit_exclusive();
+            tx.send((outer.outcome(), inner.outcome())).ok();
+        });
+        let outcomes = rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("nested admission deadlocked on its own token");
+        assert_eq!(outcomes, (AdmitOutcome::Serialized, AdmitOutcome::Serialized));
+    }
+
+    #[test]
+    fn a_unit_of_work_larger_than_the_whole_ceiling_is_over_budget() {
+        let gate = FootprintGate::with_sampler(100, || Some(0));
+        assert!(!gate.exceeds_budget(100 * MB), "exactly the ceiling still fits");
+        assert!(gate.exceeds_budget(100 * MB + 1));
+        let disabled = FootprintGate::with_sampler(0, || Some(0));
+        assert!(!disabled.exceeds_budget(u64::MAX), "no ceiling, no verdict");
     }
 
     #[test]

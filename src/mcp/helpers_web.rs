@@ -128,11 +128,12 @@ async fn embedder(state: &ServerState) -> Result<Arc<SharedEmbedder>, McpError> 
         .resources
         .effective_embed_threads(state.shared.config.documents.embed_max_threads);
     let embed_batch_size = state.shared.config.resources.embed_batch_size;
+    let provider = state.shared.config.resources.onnx_provider;
     let embedder = state
         .shared
         .embedder
         .get_or_try_init(|| async {
-            SharedEmbedder::load(&preset, max_embed_threads, embed_batch_size)
+            SharedEmbedder::load_with_provider(&preset, max_embed_threads, embed_batch_size, provider)
                 .map(Arc::new)
                 .map_err(|e| format!("load embedder: {e}"))
         })

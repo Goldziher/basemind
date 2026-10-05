@@ -167,6 +167,7 @@ max_chunks_per_document = 2000
 | `max_pages` / `extraction_timeout_secs` | integer | Per-document extraction bounds: pages (default 500) and wall-clock seconds (default 600). |
 | `max_characters` / `overlap` | integer | Chunk size (default 1000, minimum 64) and overlap (default 200); `overlap` must stay below `max_characters`. |
 | `extract_archives` | bool | Extract the files inside archives (`.zip`, `.tar`, `.jar`, ...). Default `false`; true binaries are always rejected. In the daemon this also needs an operator grant (see [Trust boundary](#trust-boundary)). |
+| `max_archive_bytes` / `max_archive_entries` | integer | With `extract_archives = true`: cap on total uncompressed bytes (default 64 MiB) and entries (default 1000) unpacked from one archive. An archive past either cap fails extraction instead of being unpacked into memory. |
 | `mime_allowlist` | array of strings | Restrict extraction to specific MIME types (empty = accept all supported types). |
 | `extension_denylist` | array of strings | File extensions never routed to extraction (archives and binaries are denied by default). |
 | `include` | array of globs | Allow-list selecting which non-code files are indexed as documents. Empty (default) = every non-code file that passes `[scan]`. `exclude` wins. |
@@ -205,6 +206,7 @@ document_models = "code_only"
 | `max_footprint_mb` | integer, `"auto"` or `"off"` | `0` | Advisory memory ceiling in mebibytes. A positive integer is an explicit ceiling; `0` or `"auto"` derives one (75% of an enforced cgroup limit, else 50% of machine RAM, floored at 512 MiB); `"off"` disables it. Workers park at the document-extraction and code-chunk embedding admit points while the process is over the ceiling and are admitted anyway after a capped wait, so it shapes peak memory rather than enforcing a hard limit. The daemon clamps it (see `BASEMIND_DAEMON_MAX_FOOTPRINT_MB`). |
 | `max_map_cache_mb` | integer | `256` | Byte budget in MiB for the MCP read stack's decoded-outline cache, per workspace; `0` is unbounded. A miss costs one blob read and never changes an answer. The daemon clamps it (see `BASEMIND_DAEMON_MAX_MAP_CACHE_MB`). |
 | `document_models` | enum | `full` | Which model families run during document extraction. `full` runs every configured post-processor. `code_only` keeps embeddings but forces keyword extraction, NER, and summarization off and disables OCR. `none` also drops embeddings — documents are still extracted for text + metadata (keyword search) but never routed to any model. `[documents].enabled = false` remains the zero-cost total short-circuit. |
+| `onnx_provider` | enum | `cpu` | ONNX Runtime execution provider for every model basemind loads (embeddings, reranker, layout detection, NER): `cpu`, `auto`, `coreml`, `cuda` or `tensorrt`. The default is `cpu` because the platform default on macOS (CoreML) compiled a graph per input shape and measured 7.6 GB resident for one tiny document against 0.8 GB on CPU (and 3x slower), which let a document-heavy scan reach tens of GB. `auto` restores the platform default (CoreML on macOS, CUDA on a GPU-enabled Linux build). |
 
 ### `[code_search]` Section
 

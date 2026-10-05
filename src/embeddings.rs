@@ -6,6 +6,22 @@ use anyhow::{Context, Result, anyhow};
 use xberg::embeddings::EMBEDDING_PRESETS;
 use xberg::{EmbeddingConfig, EmbeddingModelType};
 
+use crate::config::OnnxProvider;
+
+/// Translate `[resources] onnx_provider` into xberg's acceleration setting. `Auto` yields `None`, so
+/// xberg applies its own platform default.
+pub fn acceleration(provider: OnnxProvider) -> Option<xberg::AccelerationConfig> {
+    use xberg::core::config::ExecutionProviderType as Provider;
+    let provider = match provider {
+        OnnxProvider::Auto => return None,
+        OnnxProvider::Cpu => Provider::Cpu,
+        OnnxProvider::CoreMl => Provider::CoreMl,
+        OnnxProvider::Cuda => Provider::Cuda,
+        OnnxProvider::TensorRt => Provider::TensorRt,
+    };
+    Some(xberg::AccelerationConfig { provider, device_id: 0 })
+}
+
 /// Bound ONNX Runtime's memory for every session built from now on: no memory-pattern planning, no
 /// retaining CPU arena, and at most `intra_threads` intra-op threads. ORT's defaults keep allocations
 /// sized to the largest batch seen and never shrink, so one embedding pass over variable-length
@@ -129,6 +145,16 @@ impl SharedEmbedder {
     /// (sourced from `[resources].embed_batch_size`). Larger batches amortise
     /// per-call overhead at a higher transient memory spike.
     pub fn load(preset: &str, max_embed_threads: usize, batch_size: usize) -> Result<Self> {
+        Self::load_with_provider(preset, max_embed_threads, batch_size, OnnxProvider::default())
+    }
+
+    /// [`load`](Self::load) with an explicit ONNX execution provider (`[resources] onnx_provider`).
+    pub fn load_with_provider(
+        preset: &str,
+        max_embed_threads: usize,
+        batch_size: usize,
+        provider: OnnxProvider,
+    ) -> Result<Self> {
         let meta = EMBEDDING_PRESETS.iter().find(|p| p.name == preset).ok_or_else(|| {
             anyhow!(
                 "unknown embedding preset '{preset}'; \
@@ -145,7 +171,7 @@ impl SharedEmbedder {
             batch_size,
             show_download_progress: false,
             cache_dir: None,
-            acceleration: None,
+            acceleration: acceleration(provider),
             max_embed_duration_secs: Some(60),
             max_sequence_length: None,
         };
@@ -175,13 +201,14 @@ impl SharedEmbedder {
         if text.is_empty() {
             return Err(anyhow!("embed: input text must not be empty"));
         }
-        embed_pool(self.max_embed_threads).install(|| {
-            let mut results = xberg::embeddings::embed_texts(&[text], &self.config)
-                .with_context(|| format!("embed_texts(preset={})", self.model_name))?;
+        let (config, model, text) = (self.config.clone(), self.model_name.clone(), text.to_string());
+        self.run_on_embed_pool(move || {
+            let mut results = xberg::embeddings::embed_texts(&[text.as_str()], &config)
+                .with_context(|| format!("embed_texts(preset={model})"))?;
             results
                 .pop()
                 .ok_or_else(|| anyhow!("embed_texts returned empty result"))
-        })
+        })?
     }
 
     /// Embed a batch of texts in one call. Returns one `Vec<f32>` of length `self.dim()` per
@@ -197,10 +224,38 @@ impl SharedEmbedder {
         if texts.is_empty() {
             return Ok(Vec::new());
         }
-        embed_pool(self.max_embed_threads).install(|| {
-            xberg::embeddings::embed_texts(texts, &self.config)
-                .with_context(|| format!("embed_texts(preset={}, batch={})", self.model_name, texts.len()))
-        })
+        let (config, model) = (self.config.clone(), self.model_name.clone());
+        let owned: Vec<String> = texts.iter().map(|t| (*t).to_string()).collect();
+        self.run_on_embed_pool(move || {
+            let refs: Vec<&str> = owned.iter().map(String::as_str).collect();
+            xberg::embeddings::embed_texts(&refs, &config)
+                .with_context(|| format!("embed_texts(preset={model}, batch={})", refs.len()))
+        })?
+    }
+
+    /// Run `work` on the bounded [`embed_pool`] and block the caller until it finishes.
+    ///
+    /// Not `ThreadPool::install`: when the caller is a worker of a *different* rayon pool (the scan
+    /// pool), `install` parks it in rayon's wait loop, which keeps executing queued jobs from the
+    /// caller's own pool while it waits. A scan worker holding a document slot then picked up another
+    /// document, blocked on the same slot, and the scan deadlocked (`max_concurrent_documents = 1`
+    /// with one scan thread hung forever; with more threads every slot ends up held by a blocked
+    /// frame). A plain channel wait never runs foreign work.
+    fn run_on_embed_pool<T, F>(&self, work: F) -> Result<T>
+    where
+        T: Send + 'static,
+        F: FnOnce() -> T + Send + 'static,
+    {
+        let pool = embed_pool(self.max_embed_threads);
+        if pool.current_thread_index().is_some() {
+            // Already on an embed worker: blocking it on its own pool could starve the pool.
+            return Ok(work());
+        }
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        pool.spawn(move || {
+            let _ = tx.send(work());
+        });
+        rx.recv().map_err(|_| anyhow!("embedding worker panicked"))
     }
 }
 
@@ -220,6 +275,81 @@ mod tests {
             "a pass is still running after the first ends"
         );
         drop(second);
+    }
+
+    /// The scan deadlock: a scan worker holding a document slot blocked on the embed pool via
+    /// `ThreadPool::install`, which parks a rayon worker in a loop that executes other queued jobs of
+    /// ITS pool. It picked up a second document, which blocked on the slot the first frame held.
+    /// One scan thread and one slot reproduce it deterministically: with `install` this test hangs.
+    #[test]
+    fn waiting_on_the_embed_pool_never_runs_foreign_work_on_the_waiting_worker() {
+        use std::sync::{Arc, Mutex, mpsc};
+        use std::time::Duration;
+
+        let embedder = SharedEmbedder::load("fast", 2, 8).expect("fast preset");
+        let scan_pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(1)
+            .build()
+            .expect("scan pool");
+        let slot = Arc::new(Mutex::new(()));
+        let (done_tx, done_rx) = mpsc::channel();
+        let (first_in_tx, first_in_rx) = mpsc::channel();
+
+        let (holder_slot, holder_embedder, holder_done) = (Arc::clone(&slot), embedder.clone(), done_tx.clone());
+        scan_pool.spawn(move || {
+            let _held = holder_slot.lock().unwrap();
+            first_in_tx.send(()).ok();
+            // Give the second job time to be queued behind us, then wait on the embed pool.
+            std::thread::sleep(Duration::from_millis(50));
+            let answer = holder_embedder.run_on_embed_pool(|| 7).expect("embed pool result");
+            holder_done.send(("first", answer)).ok();
+        });
+        first_in_rx.recv().expect("first job started");
+        let second_slot = Arc::clone(&slot);
+        scan_pool.spawn(move || {
+            let _held = second_slot.lock().unwrap();
+            done_tx.send(("second", 0)).ok();
+        });
+
+        let mut finished = vec![
+            done_rx
+                .recv_timeout(Duration::from_secs(10))
+                .expect("deadlock: the waiting worker ran the second job inside the first"),
+            done_rx
+                .recv_timeout(Duration::from_secs(10))
+                .expect("second job never ran"),
+        ];
+        finished.sort_unstable();
+        assert_eq!(finished, vec![("first", 7), ("second", 0)]);
+    }
+
+    #[test]
+    fn a_panicking_embed_job_is_an_error_not_a_hang() {
+        let embedder = SharedEmbedder::load("fast", 2, 8).expect("fast preset");
+        let result = embedder.run_on_embed_pool(|| -> u8 { panic!("boom") });
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn provider_setting_maps_onto_xberg_acceleration() {
+        use xberg::core::config::ExecutionProviderType as Provider;
+        assert!(
+            acceleration(OnnxProvider::Auto).is_none(),
+            "auto defers to xberg's platform default"
+        );
+        for (setting, expected) in [
+            (OnnxProvider::Cpu, Provider::Cpu),
+            (OnnxProvider::CoreMl, Provider::CoreMl),
+            (OnnxProvider::Cuda, Provider::Cuda),
+            (OnnxProvider::TensorRt, Provider::TensorRt),
+        ] {
+            assert_eq!(acceleration(setting).expect("pinned provider").provider, expected);
+        }
+        assert_eq!(
+            OnnxProvider::default(),
+            OnnxProvider::Cpu,
+            "the bounded-memory provider is the default"
+        );
     }
 
     #[test]

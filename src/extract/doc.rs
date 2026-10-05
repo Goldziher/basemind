@@ -24,7 +24,7 @@ use xberg::{ExtractInput, extract};
 use super::{ExtractError, SCHEMA_VER};
 use crate::config::{
     DocLanguageConfig, DocumentModelProfile, KeywordAlgorithm, KeywordsConfig, LlmConfig, NerBackend, NerConfig,
-    SummarizationConfig, SummarizationStrategy,
+    OnnxProvider, SummarizationConfig, SummarizationStrategy,
 };
 
 /// Per-file document extraction result. Mirrors the shape of `FileMapL1` —
@@ -204,6 +204,13 @@ pub struct DocConfig {
     /// profiles strip enrichment / embeddings to shrink the scan-time footprint — see
     /// [`crate::config::DocumentModelProfile`] and [`DocConfig::to_xberg`].
     pub document_models: DocumentModelProfile,
+    /// ONNX execution provider for the embedder and xberg's layout / NER models (from
+    /// `[resources].onnx_provider`).
+    pub onnx_provider: OnnxProvider,
+    /// Cap on total uncompressed bytes unpacked from one archive (from `[documents].max_archive_bytes`).
+    pub max_archive_bytes: usize,
+    /// Cap on entries in one archive (from `[documents].max_archive_entries`).
+    pub max_archive_entries: usize,
 }
 
 impl Default for DocConfig {
@@ -223,6 +230,9 @@ impl Default for DocConfig {
             embed_max_threads: 0,
             embed_batch_size: 32,
             document_models: DocumentModelProfile::default(),
+            onnx_provider: OnnxProvider::default(),
+            max_archive_bytes: 64 * 1024 * 1024,
+            max_archive_entries: 1000,
         }
     }
 }
@@ -265,6 +275,8 @@ impl DocConfig {
         });
         let security_limits = SecurityLimits {
             max_pages: Some(self.max_pages),
+            max_archive_size: self.max_archive_bytes,
+            max_files_in_archive: self.max_archive_entries,
             ..SecurityLimits::default()
         };
         ExtractionConfig {
@@ -275,6 +287,7 @@ impl DocConfig {
             ner,
             summarization,
             disable_ocr: strip_enrichment,
+            acceleration: crate::embeddings::acceleration(self.onnx_provider),
             concurrency,
             extraction_timeout_secs: Some(self.extraction_timeout_secs),
             security_limits: Some(security_limits),
@@ -485,9 +498,13 @@ pub fn extract_doc(path: &Path, mime_type: Option<&str>, config: &DocConfig) -> 
     let mut embedding_dim = 0;
     if embed_requested && !dense_inputs.is_empty() {
         let preset = config.embedding_preset.as_deref().unwrap_or("balanced");
-        let embedder =
-            crate::embeddings::SharedEmbedder::load(preset, config.embed_max_threads, config.embed_batch_size)
-                .map_err(|error| ExtractError::Document(format!("loading dense embedder: {error}")))?;
+        let embedder = crate::embeddings::SharedEmbedder::load_with_provider(
+            preset,
+            config.embed_max_threads,
+            config.embed_batch_size,
+            config.onnx_provider,
+        )
+        .map_err(|error| ExtractError::Document(format!("loading dense embedder: {error}")))?;
         let input_refs: Vec<&str> = dense_inputs.iter().map(String::as_str).collect();
         let vectors = embedder
             .embed_batch(&input_refs)
