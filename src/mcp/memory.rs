@@ -32,13 +32,19 @@ pub(super) async fn embed_query(state: &ServerState, text: &str) -> Result<Vec<f
         .resources
         .effective_embed_threads(state.shared.config.documents.embed_max_threads);
     let embed_batch_size = state.shared.config.resources.embed_batch_size;
+    let provider = state.shared.config.resources.onnx_provider;
     let embedder = state
         .shared
         .embedder
         .get_or_try_init(|| async {
-            crate::embeddings::SharedEmbedder::load(&preset, max_embed_threads, embed_batch_size)
-                .map(Arc::new)
-                .map_err(|e| format!("load embedder: {e}"))
+            crate::embeddings::SharedEmbedder::load_with_provider(
+                &preset,
+                max_embed_threads,
+                embed_batch_size,
+                provider,
+            )
+            .map(Arc::new)
+            .map_err(|e| format!("load embedder: {e}"))
         })
         .await
         .map_err(|e| McpError::internal_error(e.clone(), None))?;
@@ -59,6 +65,7 @@ pub(super) async fn lance_store(state: &ServerState) -> Result<Arc<crate::lance:
         .resources
         .effective_embed_threads(state.shared.config.documents.embed_max_threads);
     let embed_batch_size = state.shared.config.resources.embed_batch_size;
+    let provider = state.shared.config.resources.onnx_provider;
     state
         .shared
         .lance
@@ -67,9 +74,14 @@ pub(super) async fn lance_store(state: &ServerState) -> Result<Arc<crate::lance:
                 .shared
                 .embedder
                 .get_or_try_init(|| async {
-                    crate::embeddings::SharedEmbedder::load(&preset, max_embed_threads, embed_batch_size)
-                        .map(Arc::new)
-                        .map_err(|e| format!("load embedder: {e}"))
+                    crate::embeddings::SharedEmbedder::load_with_provider(
+                        &preset,
+                        max_embed_threads,
+                        embed_batch_size,
+                        provider,
+                    )
+                    .map(Arc::new)
+                    .map_err(|e| format!("load embedder: {e}"))
                 })
                 .await
                 .map_err(|e| format!("embedder init: {e}"))?;
@@ -560,6 +572,7 @@ pub(super) async fn run_search_documents(
         let krz_config = xberg::core::config::RerankerConfig {
             model: xberg::core::config::RerankerModelType::Preset { name: reranker_preset },
             top_k: Some(reranker_top_k),
+            acceleration: crate::embeddings::acceleration(state.shared.config.resources.onnx_provider),
             ..Default::default()
         };
         let documents: Vec<String> = hits.iter().map(|h| h.text.clone()).collect();

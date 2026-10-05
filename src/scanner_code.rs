@@ -200,12 +200,13 @@ pub(crate) fn chunk_and_embed(
         }));
     }
 
-    let embedder = match SharedEmbedder::load(
+    let embedder = match SharedEmbedder::load_with_provider(
         &config.documents.embedding_preset,
         config
             .resources
             .effective_embed_threads(config.documents.embed_max_threads),
         config.resources.embed_batch_size,
+        config.resources.onnx_provider,
     ) {
         Ok(embedder) => embedder,
         Err(error) => {

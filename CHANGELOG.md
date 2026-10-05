@@ -26,6 +26,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `gen_references`, `gen_dependents`, `gen_grep`, `gen_find`, `gen_git_search`, `gen_docs`), deterministic
   for a fixed HEAD sha and seed, with a workflow README.
 
+### Changed
+
+- **`[resources] onnx_provider` (new) defaults to `cpu`.** basemind previously left ONNX Runtime on
+  its platform default, which on macOS is CoreML. CoreML compiles a new graph per input shape and
+  measured 7.6 GB resident after embedding one 2 KB SVG, against 0.8 GB on the CPU provider (which
+  is also ~3x faster end to end here); a scan of a repository with images and office documents grew
+  to 33 GB. The setting covers the embedder, reranker, layout detection and NER. Set
+  `onnx_provider = "auto"` to restore the old platform default, or `"coreml"` / `"cuda"` /
+  `"tensorrt"` to pin one. Existing configs keep parsing; only the resource behaviour changes.
+- The document tier now serialises over the memory ceiling. `FootprintGate::admit` (unchanged, still
+  advisory for the drive governor and large-file parses) admitted every waiter after five seconds, so
+  N workers over `max_footprint_mb` meant N simultaneous extractions. Documents use the new
+  `admit_exclusive`: over the ceiling exactly one document runs at a time, and an otherwise idle
+  process is admitted immediately instead of stalling every item for the full wait.
+- `[documents] max_archive_bytes` (default 64 MiB) and `max_archive_entries` (default 1000) bound
+  archive extraction when `extract_archives = true` (xberg's own defaults were 500 MB and 10,000).
+
+### Fixed
+
+- A scan could deadlock with `max_concurrent_documents` set: a scan worker holding a document slot
+  waited on the embedding pool with `ThreadPool::install`, which keeps running queued jobs from the
+  worker's own pool, so it started a second document that blocked on the slot the first still held
+  (one scan thread and one slot hangs forever; more threads hang once every slot is held by a
+  blocked frame). The embed hand-off now blocks on a channel and never runs foreign work.
+- Documents whose own estimated working set exceeds `max_footprint_mb` are skipped (counted as too
+  large, with a warning naming the estimate and the limit) rather than extracted: a 7 MB-of-XML
+  `.docx` measured 12 GB with CoreML, and a 30,000 x 30,000 pixel image header is priced from its
+  dimensions, not its byte size.
+
 ## [0.28.0] - 2026-10-04
 
 > **Minor release — persisted schema bumped (`RELEASE_MINOR` 27 → 28).** The first `basemind scan`

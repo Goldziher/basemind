@@ -194,7 +194,7 @@ where
     /// counts toward recovery.
     pub(crate) fn admit(&mut self) -> DrivePlan {
         match self.gate.admit() {
-            AdmitOutcome::WaitedOut => self.narrow(),
+            AdmitOutcome::WaitedOut | AdmitOutcome::Serialized => self.narrow(),
             AdmitOutcome::Throttled => self.clear_streak = 0,
             AdmitOutcome::Clear | AdmitOutcome::Disabled | AdmitOutcome::Unavailable => self.widen(),
         }

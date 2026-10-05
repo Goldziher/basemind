@@ -93,6 +93,17 @@ pub struct DocumentsConfig {
     /// work. True binaries (`.so/.wasm/.exe/...`) are always rejected regardless of this flag.
     #[serde(default = "DocumentsConfig::default_extract_archives")]
     pub extract_archives: bool,
+    /// Cap on the total *uncompressed* bytes xberg may unpack from one archive when
+    /// `extract_archives = true`. An archive past the cap fails extraction (counted as an extract
+    /// failure) instead of being unpacked into memory. Default 64 MiB; xberg's own default is 500 MB.
+    #[serde(default = "DocumentsConfig::default_max_archive_bytes")]
+    #[schemars(range(min = 1024))]
+    pub max_archive_bytes: u64,
+    /// Cap on the number of entries in one archive when `extract_archives = true`. Default 1000;
+    /// xberg's own default is 10,000.
+    #[serde(default = "DocumentsConfig::default_max_archive_entries")]
+    #[schemars(range(min = 1))]
+    pub max_archive_entries: usize,
     /// Language detection + preferred languages for chunking / extraction.
     #[serde(default)]
     pub language: DocLanguageConfig,
@@ -143,6 +154,12 @@ impl DocumentsConfig {
     fn default_extract_archives() -> bool {
         false
     }
+    fn default_max_archive_bytes() -> u64 {
+        64 * 1024 * 1024
+    }
+    fn default_max_archive_entries() -> usize {
+        1000
+    }
     fn default_max_chunks_per_document() -> usize {
         2000
     }
@@ -176,6 +193,8 @@ impl Default for DocumentsConfig {
             embed_include: Vec::new(),
             embed_exclude: Vec::new(),
             extract_archives: Self::default_extract_archives(),
+            max_archive_bytes: Self::default_max_archive_bytes(),
+            max_archive_entries: Self::default_max_archive_entries(),
             language: DocLanguageConfig::default(),
             reranker: RerankerConfig::default(),
             keywords: KeywordsConfig::default(),

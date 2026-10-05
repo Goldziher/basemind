@@ -470,11 +470,29 @@ fn process_doc(
         return FileResult::bare(rel.to_string(), FileStatus::Unchanged);
     }
 
+    // A document whose own estimated working set exceeds the whole ceiling can never fit: waiting ~keep
+    // frees nothing and admitting it anyway is how the ceiling stopped meaning anything (a 7 MB ~keep
+    // docx measured 12 GB). Skip it with a logged reason; this is a verdict on the file, not a ~keep
+    // retry, and costs one header read. ~keep
+    let gate = crate::backpressure::FootprintGate::new(config.resources.max_footprint_mb);
+    let estimated = crate::extract::doc_cost::estimate_peak_bytes(&bytes, &mime_type);
+    if gate.exceeds_budget(estimated) {
+        tracing::warn!(
+            path = rel,
+            estimated_mb = estimated / (1024 * 1024),
+            limit_mb = gate.limit_mb(),
+            "skipping document: estimated extraction memory exceeds [resources] max_footprint_mb"
+        );
+        return FileResult::bare(rel.to_string(), FileStatus::SkippedTooLarge { size: size_bytes });
+    }
+
     // Both bounds, in the order that makes them complementary: take a concurrency slot first so at ~keep
-    // most `max_concurrent_documents` extractions can ever overlap, then wait out any footprint ~keep
-    // overshoot the ones already running caused. Both are leaf-advisory — neither can refuse. ~keep
+    // most `max_concurrent_documents` extractions can ever overlap, then serialise through the ~keep
+    // footprint gate: over the ceiling only one document is admitted at a time (see ~keep
+    // `FootprintGate::admit_exclusive`), so an overshoot is one document, not one per worker. ~keep
     let _doc_slot = crate::backpressure::acquire_doc_slot(config.resources.max_concurrent_documents);
-    crate::backpressure::FootprintGate::new(config.resources.max_footprint_mb).admit();
+    let admission = gate.admit_exclusive();
+    tracing::debug!(path = rel, estimated_mb = estimated / (1024 * 1024), admitted = ?admission.outcome(), "extracting document");
 
     match extract_and_persist_doc(
         store,
