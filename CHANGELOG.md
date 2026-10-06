@@ -10,6 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.28.1] - 2026-10-06
+
 ### Added
 
 - `basemind admin eval`: a repo-agnostic retrieval-quality and token-savings evaluation. It runs a
@@ -45,6 +47,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Stack-graph (L2) resolution no longer drives scan memory: each file is abandoned past 600,000
+  steps, 50,000 partial paths or 3 s, and at most two builds run at once. A wall-clock budget alone let
+  parallel workers stitching 100-200 KB files take a large-monorepo scan from ~2 GB to 9-13 GB.
 - A scan could deadlock with `max_concurrent_documents` set: a scan worker holding a document slot
   waited on the embedding pool with `ThreadPool::install`, which keeps running queued jobs from the
   worker's own pool, so it started a second document that blocked on the slot the first still held
