@@ -127,10 +127,11 @@ pub fn resolve_stackgraph(lang: LangId, source: &[u8]) -> Option<FileResolvedRef
     let src = std::str::from_utf8(source).ok()?;
     let engine = engine(lang)?;
 
+    let _slot = ResolveSlot::acquire();
     let intra = match resolve_intra(engine, lang, src) {
         Ok(edges) => edges,
         Err(err) => {
-            tracing::debug!(lang, error = %err, "stackgraph: intra-file resolution failed");
+            tracing::debug!(lang, bytes = source.len(), error = %err, "stackgraph: intra-file resolution failed");
             return None;
         }
     };
@@ -147,7 +148,51 @@ pub fn resolve_stackgraph(lang: LangId, source: &[u8]) -> Option<FileResolvedRef
 /// nesting / reference count, so a crafted or pathological file (within `max_file_bytes`) can't pin
 /// a scanner rayon worker indefinitely. On expiry the call errors and `resolve_stackgraph` degrades
 /// to the tree-sitter `locals` fallback. Generous enough to never trip on legitimate source.
-const STACKGRAPH_BUDGET: std::time::Duration = std::time::Duration::from_secs(5);
+const STACKGRAPH_BUDGET: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// Cap on partial paths one file may produce before resolution is abandoned. The wall-clock budget
+/// does not bound memory: several scan workers each stitching a pathological file for 5 s grew the
+/// process from ~2 GB to >11 GB on a large monorepo. Legitimate files stay orders of magnitude below.
+const MAX_PARTIAL_PATHS: usize = 50_000;
+
+/// Cap on stitcher/builder steps per file. A 5 s wall-clock budget alone let four parallel workers
+/// each reach several GB (measured: 2 GB -> 13 GB in one 5 s sample) on files of only 3-12 KB.
+const MAX_STEPS: usize = 600_000;
+
+/// Stack-graph builds that may run at once. Large legitimate files (100-200 KB of Python) each hold
+/// ~1-2 GB while stitching, so every scan worker resolving in parallel put the process at 9-13 GB;
+/// the rest of the pipeline keeps its parallelism and only this step queues.
+const MAX_CONCURRENT_RESOLVES: usize = 2;
+
+static RESOLVE_SLOTS: std::sync::LazyLock<(std::sync::Mutex<usize>, std::sync::Condvar)> =
+    std::sync::LazyLock::new(|| {
+        (
+            std::sync::Mutex::new(MAX_CONCURRENT_RESOLVES),
+            std::sync::Condvar::new(),
+        )
+    });
+
+struct ResolveSlot;
+
+impl ResolveSlot {
+    fn acquire() -> Self {
+        let (lock, cv) = &*RESOLVE_SLOTS;
+        let mut free = lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        while *free == 0 {
+            free = cv.wait(free).unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+        *free -= 1;
+        Self
+    }
+}
+
+impl Drop for ResolveSlot {
+    fn drop(&mut self) {
+        let (lock, cv) = &*RESOLVE_SLOTS;
+        *lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner) += 1;
+        cv.notify_one();
+    }
+}
 
 /// A shared wall-clock deadline implementing both the `stack_graphs` and `tree_sitter_stack_graphs`
 /// `CancellationFlag` traits (identical `check` shape, distinct error types), so one budget covers
@@ -155,6 +200,10 @@ const STACKGRAPH_BUDGET: std::time::Duration = std::time::Duration::from_secs(5)
 struct Deadline {
     limit: std::time::Duration,
     start: std::time::Instant,
+    /// Partial paths produced so far across the stitcher passes; see [`MAX_PARTIAL_PATHS`].
+    paths: std::sync::atomic::AtomicUsize,
+    /// Cancellation checks so far — one per stitcher/builder step, the closest proxy for allocation.
+    steps: std::sync::atomic::AtomicUsize,
 }
 
 impl Deadline {
@@ -162,10 +211,20 @@ impl Deadline {
         Self {
             limit,
             start: std::time::Instant::now(),
+            paths: std::sync::atomic::AtomicUsize::new(0),
+            steps: std::sync::atomic::AtomicUsize::new(0),
         }
     }
+    /// Count one produced path; the stitchers keep every path in an arena, so this is the memory
+    /// proxy that a wall-clock budget alone cannot provide.
+    fn note_path(&self) {
+        self.paths.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
     fn expired(&self) -> bool {
-        self.start.elapsed() > self.limit
+        let steps = self.steps.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        steps > MAX_STEPS
+            || self.paths.load(std::sync::atomic::Ordering::Relaxed) > MAX_PARTIAL_PATHS
+            || self.start.elapsed() > self.limit
     }
 }
 
@@ -209,6 +268,7 @@ fn resolve_intra(engine: &LangEngine, lang: LangId, src: &str) -> Result<Vec<Res
         StitcherConfig::default(),
         &deadline,
         |g, ps, path| {
+            deadline.note_path();
             db.add_partial_path(g, ps, path.clone());
         },
     )
@@ -224,6 +284,7 @@ fn resolve_intra(engine: &LangEngine, lang: LangId, src: &str) -> Result<Vec<Res
         StitcherConfig::default(),
         &deadline,
         |g, _ps, path| {
+            deadline.note_path();
             let use_node = path.start_node;
             let def_node = path.end_node;
             if !g[def_node].is_definition() || !g[def_node].is_in_file(file) {
@@ -247,7 +308,13 @@ fn resolve_intra(engine: &LangEngine, lang: LangId, src: &str) -> Result<Vec<Res
     )
     .map_err(|_| "find_all_complete_partial_paths cancelled".to_string())?;
 
-    let _ = lang;
+    tracing::debug!(
+        lang,
+        bytes = src.len(),
+        steps = deadline.steps.load(std::sync::atomic::Ordering::Relaxed),
+        paths = deadline.paths.load(std::sync::atomic::Ordering::Relaxed),
+        "stackgraph: resolved"
+    );
     Ok(edges)
 }
 
