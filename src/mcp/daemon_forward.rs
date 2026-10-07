@@ -107,7 +107,9 @@ async fn refresh_cache_after_scan(state: &Arc<ServerState>) -> Result<(), McpErr
     .map_err(|error| McpError::internal_error(format!("reopen read-only store: {error}"), None))?;
     *state.shared.store.write().await = store;
     if let Some(cache) = cache {
-        state.shared.cache.store(Arc::new(cache));
+        let cache = Arc::new(cache);
+        state.shared.cache.store(Arc::clone(&cache));
+        cache.warm_terms();
     }
     state.shared.cache_generation.fetch_add(1, Ordering::Relaxed);
     Ok(())

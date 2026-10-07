@@ -202,7 +202,9 @@ impl ServerState {
                 // the LanceStore read to a blocking thread so its block_on never nests on the reactor.
                 super::doc_links_cache::attach_async(&mut cache, &store, &self.shared.config, &self.shared.scope).await;
                 let files = cache.len();
-                self.shared.cache.store(Arc::new(cache));
+                let cache = Arc::new(cache);
+                self.shared.cache.store(Arc::clone(&cache));
+                cache.warm_terms();
                 self.shared.cache_generation.fetch_add(1, Relaxed);
                 let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
                 self.shared.cache_warm_ms.store(elapsed_ms, Relaxed);
@@ -395,6 +397,18 @@ impl MapCache {
                 self.for_each(|path, l1| visit(path, l1));
             }))
         })
+    }
+
+    /// Build the term index on a blocking thread so the first `symbols` / `dependents` call after
+    /// a full cache publish doesn't pay for it. A no-op outside a Tokio runtime (queries then build
+    /// it lazily).
+    pub(crate) fn warm_terms(self: &Arc<Self>) {
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            let cache = Arc::clone(self);
+            runtime.spawn_blocking(move || {
+                cache.terms();
+            });
+        }
     }
 
     /// Stream every `(path, outline)` in path order, stopping early when `f` returns `false`.
