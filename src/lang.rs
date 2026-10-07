@@ -228,6 +228,32 @@ pub fn detect(path: &Path) -> Option<LangId> {
     tree_sitter_language_pack::detect_language(path.to_str()?)
 }
 
+/// Grammars for files that are prose, data or configuration rather than code. The code map keeps
+/// only code (symbols an agent can navigate); these go to the document tier, where they are
+/// chunked and searched as text. Indexing a JSON file's keys or a README's headings as "symbols"
+/// only pollutes `symbols`/`outline`/`grep` results with noise.
+pub fn is_non_code(lang: &str) -> bool {
+    matches!(
+        lang,
+        "markdown"
+            | "rst"
+            | "asciidoc"
+            | "vimdoc"
+            | "csv"
+            | "json"
+            | "yaml"
+            | "toml"
+            | "ini"
+            | "xml"
+            | "properties"
+            | "dotenv"
+            | "diff"
+            | "gitignore"
+            | "gitattributes"
+            | "fluent"
+    )
+}
+
 /// Fetch the underlying tree-sitter Language for a given `LangId`.
 pub fn language(lang: LangId) -> Result<Language, LangError> {
     tree_sitter_language_pack::get_language(lang).map_err(|e| LangError::Pack(format!("{e}")))

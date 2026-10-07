@@ -217,6 +217,11 @@ pub enum FileStatus {
         reused: bool,
     },
     Unchanged,
+    /// The document-tier counterpart of [`FileStatus::Unchanged`]: the doc entry is current. Kept
+    /// distinct so the stale purge never mistakes a current document for a current code entry (a
+    /// path that changed tier would otherwise keep its old entry alive in the other tier).
+    #[cfg(feature = "documents")]
+    DocUnchanged,
     Removed,
     SkippedTooLarge {
         size: u64,

@@ -268,6 +268,20 @@ pub(crate) struct MapCache {
     /// forward with a refcount bump, not a deep clone of the whole vector.
     #[cfg(feature = "documents")]
     pub(crate) doc_links: std::sync::Arc<[codegraph::DocLink]>,
+    /// Every path of the document tier (markdown, config, data, PDFs ...), sorted. The code map
+    /// holds code only, so decision records (`docs/adr/*.md`) and path citations to prose / config
+    /// files resolve against this set instead of [`Self::files`]. Projected straight from the index
+    /// (no blob or LanceDB read), so it is rebuilt with every cache build and delta.
+    #[cfg(feature = "documents")]
+    pub(crate) doc_paths: std::sync::Arc<[crate::path::RelPath]>,
+}
+
+/// The sorted document-tier paths of `store`'s index.
+#[cfg(feature = "documents")]
+fn doc_paths_of(store: &Store) -> std::sync::Arc<[crate::path::RelPath]> {
+    let mut paths: Vec<crate::path::RelPath> = store.index.doc_files.keys().cloned().collect();
+    paths.sort_unstable();
+    paths.into()
 }
 
 impl MapCache {
@@ -301,6 +315,8 @@ impl MapCache {
             terms: Default::default(),
             #[cfg(feature = "documents")]
             doc_links: Default::default(),
+            #[cfg(feature = "documents")]
+            doc_paths: doc_paths_of(store),
         }
     }
 
@@ -320,6 +336,8 @@ impl MapCache {
             terms: Default::default(),
             #[cfg(feature = "documents")]
             doc_links: Default::default(),
+            #[cfg(feature = "documents")]
+            doc_paths: Default::default(),
         }
     }
 
@@ -350,6 +368,8 @@ impl MapCache {
             terms: Default::default(),
             #[cfg(feature = "documents")]
             doc_links: Default::default(),
+            #[cfg(feature = "documents")]
+            doc_paths: Default::default(),
         }
     }
 
@@ -364,6 +384,12 @@ impl MapCache {
     #[cfg(any(test, feature = "documents", feature = "memory"))]
     pub(crate) fn contains(&self, path: &crate::path::RelPath) -> bool {
         self.files.contains(path)
+    }
+
+    /// Whether `path` is a tracked document (non-code file in the document tier).
+    #[cfg(feature = "documents")]
+    pub(crate) fn contains_doc(&self, path: &crate::path::RelPath) -> bool {
+        self.doc_paths.binary_search(path).is_ok()
     }
 
     /// The language recorded for `path` at scan time, without faulting in its outline.
@@ -481,6 +507,8 @@ impl MapCache {
             terms: Default::default(),
             #[cfg(feature = "documents")]
             doc_links: std::sync::Arc::clone(&self.doc_links),
+            #[cfg(feature = "documents")]
+            doc_paths: doc_paths_of(store),
         };
         if let Some(terms) = self.terms.get() {
             let _ = next

@@ -64,18 +64,17 @@ While the server isn't fully ready, `admin status` and every code-map read tool 
 Treat an empty or partial result carrying a `notice` as "retry shortly," not "no matches" — poll
 `admin status` (or just retry the call) until the notice clears.
 
-## Markdown and Obsidian as first-class
+## Code versus documents
 
-Markdown and Obsidian vaults are indexed like code:
+The code map holds code only. Prose, data and configuration files (Markdown, reStructuredText,
+AsciiDoc, JSON, YAML, TOML, XML, CSV, INI, `.env`, diffs and the like) are routed to the document
+tier instead: chunked, embedded and searched as text with `memory documents`, never listed as
+symbols. That keeps `code outline`, `code symbols` and `code grep` free of README headings and
+config keys. `[documents] include` / `exclude` and `mime_allowlist` decide which of those files are
+indexed; with the `documents` feature compiled out they fall back to the code map.
 
-- **Headings** become navigable symbols — `code outline` and `code symbols` work over a notes vault.
-- **Wikilinks** (`[[Note]]`), **embeds** (`![[Note.md]]`), and standard **links** (`[text](Note.md)`)
-  all become references — so `code references "Note"` returns that note's backlinks regardless of
-  link style.
-- **Tags** (`#project` inline or in YAML frontmatter) become references too — so
-  `code references "#project"` lists every note carrying that tag.
-
-This means you can navigate your documentation and personal notes with the same tools you use for code.
+Markdown notes and Obsidian vaults are therefore searched by meaning and by keyword, and a decision
+record such as `docs/adr/0007-*.md` still resolves as a graph decision node.
 
 ## Vector search and memory
 

@@ -293,6 +293,19 @@ fn row_for(res: &FileResult, verbosity: Verbosity) -> Option<Row<'_>> {
                 })
             }
         }
+        #[cfg(feature = "documents")]
+        FileStatus::DocUnchanged => {
+            if v == Verbosity::Verbose {
+                Some(Row {
+                    symbol: '·',
+                    label: "same",
+                    style: Style::new().dimmed(),
+                    detail: String::new(),
+                })
+            } else {
+                None
+            }
+        }
         FileStatus::Unchanged => {
             if v == Verbosity::Verbose {
                 Some(Row {
