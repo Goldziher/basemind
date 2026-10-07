@@ -255,6 +255,10 @@ pub(crate) struct MapCache {
     /// no-op daemon scan from transiently doubling serve's resident memory. `0` on the
     /// [`empty`](Self::empty) boot placeholder, which never matches a populated index.
     pub(crate) fingerprint: u64,
+    /// Searchable symbol-name / import text of every file, built on first use (or by the cache
+    /// warm) and patched rather than rebuilt by [`with_delta`](Self::with_delta). Backs the
+    /// substring sweeps of `symbols` and `dependents`.
+    terms: std::sync::OnceLock<Arc<super::term_index::TermIndex>>,
     /// Persisted document→code links (ADR-0008), loaded from the LanceDB document store by the async
     /// cache-warm path ([`super::background::spawn_cache_warm`]) and the view watcher. Empty until
     /// loaded; the codegraph `documents` lane reads it. Preserved across incremental
@@ -292,6 +296,7 @@ impl MapCache {
             calls,
             impls,
             projections_capped,
+            terms: Default::default(),
             #[cfg(feature = "documents")]
             doc_links: Default::default(),
         }
@@ -310,6 +315,7 @@ impl MapCache {
             calls: None,
             impls: None,
             projections_capped: false,
+            terms: Default::default(),
             #[cfg(feature = "documents")]
             doc_links: Default::default(),
         }
@@ -339,6 +345,7 @@ impl MapCache {
             calls: None,
             impls: None,
             projections_capped: false,
+            terms: Default::default(),
             #[cfg(feature = "documents")]
             doc_links: Default::default(),
         }
@@ -378,6 +385,16 @@ impl MapCache {
     pub(crate) fn get(&self, path: &crate::path::RelPath) -> Option<Arc<FileMapL1>> {
         let meta = self.files.get(path)?;
         self.l1.load(&meta.hash_hex)
+    }
+
+    /// The term index, building it from one corpus stream on first use. Later calls (and the
+    /// snapshots derived by [`with_delta`](Self::with_delta)) reuse it.
+    pub(crate) fn terms(&self) -> &super::term_index::TermIndex {
+        self.terms.get_or_init(|| {
+            Arc::new(super::term_index::TermIndex::build(|visit| {
+                self.for_each(|path, l1| visit(path, l1));
+            }))
+        })
     }
 
     /// Stream every `(path, outline)` in path order, stopping early when `f` returns `false`.
@@ -440,16 +457,23 @@ impl MapCache {
             #[cfg(not(feature = "documents"))]
             return Self::build(store, self.l1.budget_bytes());
         }
-        Self {
+        let next = Self {
             fingerprint: map_fingerprint::index_fingerprint(store),
             files: self.files.with_delta(store, updated, removed),
             l1: Arc::clone(&self.l1),
             calls: None,
             impls: None,
             projections_capped: self.projections_capped,
+            terms: Default::default(),
             #[cfg(feature = "documents")]
             doc_links: std::sync::Arc::clone(&self.doc_links),
+        };
+        if let Some(terms) = self.terms.get() {
+            let _ = next
+                .terms
+                .set(Arc::new(terms.patched(updated, removed, |p| next.get(p))));
         }
+        next
     }
 }
 

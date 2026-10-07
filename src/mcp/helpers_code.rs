@@ -11,6 +11,7 @@
 use rmcp::ErrorData as McpError;
 use rmcp::model::CallToolResult;
 
+use super::MapCache;
 use super::ServerState;
 use super::helpers::{
     RefsSource, SEARCH_LIMIT_DEFAULT, SEARCH_LIMIT_MAX, elapsed_us, json_result, kind_to_str, parse_kind,
@@ -525,6 +526,31 @@ async fn run_outline(
     super::toon::format_result(&response, super::toon::ResponseFormat::parse(params.format.as_deref()))
 }
 
+fn search_hit(path: &crate::path::RelPath, sym: &crate::extract::Symbol) -> SearchHitView {
+    SearchHitView {
+        path: path.clone(),
+        name: sym.name.clone(),
+        kind: kind_to_str(sym.kind),
+        start_row: sym.start_row,
+        start_col: sym.start_col,
+        signature: sym.signature.clone(),
+    }
+}
+
+/// Decode `path`'s outline once and project the symbols at `page` into `results`.
+fn push_hits(cache: &MapCache, path: &crate::path::RelPath, page: &[usize], results: &mut Vec<SearchHitView>) {
+    if page.is_empty() {
+        return;
+    }
+    if let Some(l1) = cache.get(path) {
+        results.extend(
+            page.iter()
+                .filter_map(|&i| l1.symbols.get(i))
+                .map(|s| search_hit(path, s)),
+        );
+    }
+}
+
 /// Body of the `symbols` mode: a case-sensitive substring sweep of every indexed symbol name in the
 /// in-RAM map, bounded by [`search_max_total`](super::tools::search_max_total).
 async fn run_search_symbols(
@@ -573,42 +599,52 @@ async fn run_search_symbols(
     let mut seen: usize = 0;
     let mut total_is_partial = false;
     let cache = state.shared.cache.load_full();
-    // Streamed rather than iterated over a resident whole-corpus map: each hit is projected into
-    // an owned `SearchHitView` and the outline is dropped, so the live set is one chunk however
-    // large the repo is. `max_total` still cuts the scan at the same point it always did.
-    cache.for_each_while(|path, l1| {
-        for sym in &l1.symbols {
-            if finder.find(sym.name.as_bytes()).is_none() {
-                continue;
-            }
-            if let Some(k) = kind
-                && sym.kind != k
-            {
-                continue;
-            }
-            if seen < skip {
+    // Swept over the resident term index (names only); only the returned page is decoded, via the
+    // L1 cache. Needles holding the blob separator can't be answered from it and stream instead.
+    if finder.needle().contains(&0) {
+        cache.for_each_while(|path, l1| {
+            for sym in &l1.symbols {
+                if finder.find(sym.name.as_bytes()).is_none() || kind.is_some_and(|k| sym.kind != k) {
+                    continue;
+                }
+                if seen < skip {
+                    seen += 1;
+                    continue;
+                }
                 seen += 1;
-                continue;
+                total += 1;
+                if results.len() < limit {
+                    results.push(search_hit(path, sym));
+                }
+                if total >= max_total {
+                    total_is_partial = true;
+                    return false;
+                }
             }
-            seen += 1;
-            total += 1;
-            if results.len() < limit {
-                results.push(SearchHitView {
-                    path: path.clone(),
-                    name: sym.name.clone(),
-                    kind: kind_to_str(sym.kind),
-                    start_row: sym.start_row,
-                    start_col: sym.start_col,
-                    signature: sym.signature.clone(),
-                });
+            true
+        });
+    } else {
+        'sweep: for (path, terms) in cache.terms().iter() {
+            let mut page: Vec<usize> = Vec::new();
+            for idx in terms.matching_symbols(&finder, kind) {
+                if seen < skip {
+                    seen += 1;
+                    continue;
+                }
+                seen += 1;
+                total += 1;
+                if results.len() + page.len() < limit {
+                    page.push(idx);
+                }
+                if total >= max_total {
+                    total_is_partial = true;
+                    push_hits(&cache, path, &page, &mut results);
+                    break 'sweep;
+                }
             }
-            if total >= max_total {
-                total_is_partial = true;
-                return false;
-            }
+            push_hits(&cache, path, &page, &mut results);
         }
-        true
-    });
+    }
     let truncated = total > limit || total_is_partial;
     let budget = super::budget::apply_budget(results, params.max_tokens);
     let results = budget.items;
@@ -650,13 +686,23 @@ async fn run_dependents(
     state.await_cache_ready().await;
     let finder = memchr::memmem::Finder::new(module.as_bytes());
     let mut paths: Vec<crate::path::RelPath> = Vec::new();
-    // The stream is in path order, so `paths` comes out sorted — the order `dependents_of`
-    // produced with an explicit sort.
-    state.shared.cache.load().for_each(|path, l1| {
-        if crate::extract::l3::imports_mention(&module, &finder, &l1.imports) {
-            paths.push(path.clone());
-        }
-    });
+    let cache = state.shared.cache.load_full();
+    if module.as_bytes().contains(&0) {
+        cache.for_each(|path, l1| {
+            if crate::extract::l3::imports_mention(&module, &finder, &l1.imports) {
+                paths.push(path.clone());
+            }
+        });
+    } else {
+        // Path order, so `paths` comes out sorted.
+        paths.extend(
+            cache
+                .terms()
+                .iter()
+                .filter(|(_, t)| t.mentions_import(&finder))
+                .map(|(p, _)| p.clone()),
+        );
+    }
     json_result(&DependentsResponse {
         module,
         paths,

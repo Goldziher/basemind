@@ -84,6 +84,7 @@ mod shared_state;
 mod state;
 mod tasks;
 mod telemetry;
+mod term_index;
 pub(crate) mod tokens;
 mod tools;
 mod tools_admin;
