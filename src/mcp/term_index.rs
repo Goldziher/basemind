@@ -86,10 +86,6 @@ impl FileTerms {
     pub(crate) fn mentions_import(&self, finder: &memchr::memmem::Finder<'_>) -> bool {
         !self.imports.is_empty() && finder.find(&self.imports).is_some()
     }
-
-    fn heap_bytes(&self) -> usize {
-        self.names.len() + self.name_ends.len() * 4 + self.kinds.len() + self.imports.len()
-    }
 }
 
 /// Path-ordered terms of every indexed file.
@@ -130,14 +126,6 @@ impl TermIndex {
 
     pub(crate) fn iter(&self) -> impl Iterator<Item = (&RelPath, &FileTerms)> {
         self.files.iter().map(|(p, t)| (p, &**t))
-    }
-
-    /// Approximate resident bytes, for diagnostics.
-    pub(crate) fn heap_bytes(&self) -> usize {
-        self.files
-            .iter()
-            .map(|(p, t)| t.heap_bytes() + p.as_bytes().len() + 64)
-            .sum()
     }
 }
 
