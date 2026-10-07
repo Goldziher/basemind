@@ -87,6 +87,7 @@ impl FileTerms {
         !self.imports.is_empty() && finder.find(&self.imports).is_some()
     }
 
+    #[allow(dead_code)] // diagnostics accessor with no caller yet (pre-existing)
     fn heap_bytes(&self) -> usize {
         self.names.len() + self.name_ends.len() * 4 + self.kinds.len() + self.imports.len()
     }
@@ -133,6 +134,7 @@ impl TermIndex {
     }
 
     /// Approximate resident bytes, for diagnostics.
+    #[allow(dead_code)] // diagnostics accessor with no caller yet (pre-existing)
     pub(crate) fn heap_bytes(&self) -> usize {
         self.files
             .iter()

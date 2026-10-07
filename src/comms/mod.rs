@@ -64,6 +64,8 @@ pub mod http_auth;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 pub mod http_frontend;
 #[cfg(all(feature = "comms", any(unix, windows)))]
+pub mod index_read_proto;
+#[cfg(all(feature = "comms", any(unix, windows)))]
 pub mod keys;
 #[cfg(all(feature = "comms", feature = "memory"))]
 pub mod memory_proto;
@@ -75,7 +77,6 @@ pub mod proposals_proto;
 pub mod protocol;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 pub mod relay;
-#[cfg(all(feature = "comms", any(unix, windows)))]
 pub mod resolved_proto;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 pub mod scope;

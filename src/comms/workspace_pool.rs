@@ -816,6 +816,14 @@ impl crate::mcp::HostBackend for WorkspacePool {
         .map_err(|error| error.to_string())?
     }
 
+    fn host_index_read(
+        &self,
+        root: &Path,
+        query: crate::comms::index_read_proto::IndexReadQuery,
+    ) -> Result<crate::comms::index_read_proto::IndexReadResult, String> {
+        super::daemon_forward_handlers::index_read_via_pool(self, root, &query)
+    }
+
     fn host_resolved_refs(
         &self,
         root: &Path,

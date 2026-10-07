@@ -10,6 +10,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `code references`, `callers` and `implementations` from a daemon-backed session (the standard
+  deployment: the daemon owns the single-writer fjall index, so sessions cannot open it) are now
+  COMPLETE. They used to answer from an in-RAM projection of every call site capped at
+  `[resources] max_map_cache_mb`, so on a large monorepo `references name=get_arg` returned a
+  truncated lower bound (`total` 575 on a 74k-file tree) behind a `projections_capped` notice. The
+  scan is now forwarded to the daemon (new `IndexRead` request, also reached in-process by
+  daemon-hosted connections), which runs the same scan code a writer session runs against the same
+  index, so results, totals and cursors are identical to a writer session's and the session holds no
+  projection (zero extra RAM). The in-RAM projection is now built lazily and only as a last resort
+  when no daemon is reachable (a failed forward degrades to it rather than erroring), and the
+  `projections_capped` notice appears only when that fallback is genuinely truncated.
+
 ## [0.28.1] - 2026-10-06
 
 ### Added

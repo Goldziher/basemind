@@ -532,7 +532,7 @@ pub(super) struct StatusResponse {
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(super) struct ReferenceHit {
+pub(crate) struct ReferenceHit {
     pub path: RelPath,
     /// 1-based.
     pub line: u32,

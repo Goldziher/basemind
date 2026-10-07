@@ -48,6 +48,15 @@ pub(crate) trait HostBackend: Send + Sync {
         query: crate::comms::resolved_proto::ResolvedRefQuery,
     ) -> Result<crate::comms::resolved_proto::ResolvedRefResult, String>;
 
+    /// Run a `references` / `callers` / `implementations` scan against the workspace's read-write
+    /// fjall index. The hosted stack's own store is index-less, so without this seam the scan would
+    /// fall back to a byte-budgeted in-RAM projection that truncates on a large corpus.
+    fn host_index_read(
+        &self,
+        root: &Path,
+        query: crate::comms::index_read_proto::IndexReadQuery,
+    ) -> Result<crate::comms::index_read_proto::IndexReadResult, String>;
+
     /// Answer the code-search keyword (BM25) + exact (symbol-name) lanes against the workspace's
     /// read-write fjall index. Same rationale as [`Self::host_resolved_refs`]: both lanes live only
     /// in fjall, which an index-less serve cannot open, and a hosted stack reaches them straight

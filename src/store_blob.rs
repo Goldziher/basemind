@@ -85,6 +85,22 @@ pub fn read_l1_blob_in(blobs_dir: &Path, hash_hex: &str) -> Result<Option<FileMa
     Ok(Some(map))
 }
 
+/// Read one file's L2 calls straight out of the global blob directory — the [`Store`]-free twin of
+/// [`read_l1_blob_in`]. `Ok(None)` when the blob is absent or carries no L2 tier.
+pub fn read_l2_blob_in(blobs_dir: &Path, hash_hex: &str) -> Result<Option<FileMapL2>, StoreError> {
+    let path = blobs_dir.join(format!("{hash_hex}.fm.msgpack"));
+    let Some(bytes) = read_if_exists(&path)? else {
+        return Ok(None);
+    };
+    match parse_filemap_l2(&path, &bytes)? {
+        Some(map) => {
+            check_schema(map.schema_ver)?;
+            Ok(Some(map))
+        }
+        None => Ok(None),
+    }
+}
+
 /// Split a legacy combined-filemap frame `[l1_len: u32 LE][l1][l2]` into byte slices.
 fn frame_slices(bytes: &[u8]) -> Option<(&[u8], &[u8])> {
     let header: [u8; 4] = bytes.get(0..4)?.try_into().ok()?;
@@ -514,17 +530,7 @@ impl Store {
     /// is absent and when it carries no L2 tier (the file was scanned with `eager_l2 = false`
     /// or L2 extraction failed) — callers escalate via `query::file_outline_l2`.
     pub fn read_l2_by_hex(&self, hash_hex: &str) -> Result<Option<FileMapL2>, StoreError> {
-        let path = self.blob_path_fm_hex(hash_hex);
-        let Some(bytes) = read_if_exists(&path)? else {
-            return Ok(None);
-        };
-        match parse_filemap_l2(&path, &bytes)? {
-            Some(map) => {
-                check_schema(map.schema_ver)?;
-                Ok(Some(map))
-            }
-            None => Ok(None),
-        }
+        read_l2_blob_in(&self.blobs_dir, hash_hex)
     }
 
     /// Write the combined-filemap blob for a file. Holds both tiers in one content-addressed blob,
