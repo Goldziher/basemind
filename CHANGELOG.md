@@ -10,6 +10,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The code map now indexes code only. Markdown, reStructuredText, AsciiDoc, vimdoc, CSV, JSON, YAML,
+  TOML, INI, XML, `.properties`, `.env`, diffs, `.gitignore`/`.gitattributes` and Fluent files are
+  routed to the document tier (chunked and searchable with `memory documents`) instead of being
+  outlined as symbols, so `symbols`, `outline` and `grep` no longer return README headings or config
+  keys. `[documents] include` / `exclude` and the MIME allowlist gate them as for any document.
+  Existing indexes migrate on the next scan or incremental rescan: stale code-map entries (file map,
+  blobs references, index and keyword postings, code-search chunks) are purged, and a path that
+  changes tier is moved either way. A build without the `documents` feature keeps the old behaviour.
+  Document-link citations and ADR/RFC decision records now resolve against the document tier.
+
 ## [0.28.1] - 2026-10-06
 
 ### Added

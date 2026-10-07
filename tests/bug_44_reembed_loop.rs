@@ -24,8 +24,9 @@ use basemind::store::Store;
 use tempfile::TempDir;
 
 /// Seven small distinct docs. SVG because it is xberg-extractable yet NOT a tree-sitter language,
-/// so it routes to the document tier (`.md`/`.txt`/`.csv` all have TSLP grammars and would land in
-/// the code tier instead) — the same choice `scan_smoke` and `embed_streaming_smoke` make.
+/// so it is unambiguously a document (`.md`/`.csv` etc. are routed to the document tier too, but
+/// SVG keeps the fixture independent of that rule) — the same choice `scan_smoke` and
+/// `embed_streaming_smoke` make.
 const DOC_NAMES: &[&str] = &[
     "alpha.svg",
     "beta.svg",

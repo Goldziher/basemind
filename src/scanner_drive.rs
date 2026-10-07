@@ -361,6 +361,8 @@ fn apply_outcomes(ctx: &mut DriveCtx<'_>, outcomes: Vec<FileResult>) {
                 }
             }
             FileStatus::Unchanged => ctx.stats.skipped_unchanged += 1,
+            #[cfg(feature = "documents")]
+            FileStatus::DocUnchanged => ctx.stats.skipped_unchanged += 1,
             FileStatus::SkippedTooLarge { .. } => ctx.stats.skipped_too_large += 1,
             FileStatus::SkippedNonUtf8 => ctx.stats.skipped_non_utf8 += 1,
             FileStatus::SkippedNoLang => ctx.stats.skipped_no_lang += 1,
@@ -386,10 +388,7 @@ fn apply_outcomes(ctx: &mut DriveCtx<'_>, outcomes: Vec<FileResult>) {
         // A `DocIndexed` status is set by exactly the `process_doc` arm that attaches a doc batch, ~keep
         // so the status is a faithful stand-in for a `doc_batch` this loop is about to take. ~keep
         #[cfg(feature = "documents")]
-        if matches!(
-            o.status,
-            FileStatus::DocIndexed { .. } | FileStatus::Updated { .. } | FileStatus::Unchanged
-        ) {
+        if matches!(o.status, FileStatus::DocIndexed { .. } | FileStatus::DocUnchanged) {
             ctx.out.doc_seen.insert(o.path.clone());
         }
         if let Some(entry) = o.upsert.take() {

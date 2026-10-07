@@ -123,7 +123,7 @@ fn scan_indexes_dynamic_language_without_override_queries() {
     let (dir, cfg) = fresh_repo();
     let root = dir.path();
 
-    fs::write(root.join("data.json"), b"{ \"alpha\": 1 }\n").unwrap();
+    fs::write(root.join("style.css"), b".alpha { color: red; }\n").unwrap();
 
     let mut store = Store::open(root, basemind::store::VIEW_WORKING).unwrap();
     let report = scan(
@@ -134,14 +134,14 @@ fn scan_indexes_dynamic_language_without_override_queries() {
         basemind::scanner::EmbedMode::Inline,
     )
     .unwrap();
-    assert_eq!(report.stats.updated, 1, "json file should be processed");
-    assert_eq!(report.stats.skipped_no_lang, 0, "json must not be skipped");
+    assert_eq!(report.stats.updated, 1, "css file should be processed");
+    assert_eq!(report.stats.skipped_no_lang, 0, "css must not be skipped");
 
-    let entry = store.lookup("data.json").expect("data.json indexed");
-    assert_eq!(entry.language, "json", "language stored as TSLP pack name");
+    let entry = store.lookup("style.css").expect("style.css indexed");
+    assert_eq!(entry.language, "css", "language stored as TSLP pack name");
 
     let hits = basemind::query::search_symbols(&store, "alpha", None).unwrap();
-    assert!(hits.is_empty(), "json has no tags.scm; symbols stay empty");
+    assert!(hits.is_empty(), "css has no tags.scm; symbols stay empty");
 }
 
 #[test]
@@ -984,6 +984,9 @@ fn scan_paths_prunes_deleted_indexed_file() {
     assert!(store.lookup("a.rs").is_none());
 }
 
+/// Markdown is code-mapped only when the document tier is compiled out; with it, markdown is prose
+/// and goes to the document tier (see `tests/non_code_routing.rs`).
+#[cfg(not(feature = "documents"))]
 #[test]
 fn markdown_headings_and_obsidian_references_are_indexed() {
     let (dir, cfg) = fresh_repo();

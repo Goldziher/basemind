@@ -219,7 +219,15 @@ fn process_file(
     {
         let _ = embed;
     }
-    let lang = match filters.detect_lang(rel).lang() {
+    // Only code is code-mapped. Prose, data and config files belong to the document tier (chunked,
+    // searchable text); a markdown "outline" or a JSON file's keys are noise in the symbol index.
+    // When the documents tier is compiled out there is nowhere else for them to go, so they keep
+    // their grammar.
+    #[cfg(feature = "documents")]
+    let detected = filters.detect_lang(rel).lang().filter(|l| !crate::lang::is_non_code(l));
+    #[cfg(not(feature = "documents"))]
+    let detected = filters.detect_lang(rel).lang();
+    let lang = match detected {
         Some(l) => l,
         None => {
             #[cfg(feature = "documents")]
@@ -467,7 +475,7 @@ fn process_doc(
         )
         && store.blob_path_doc_hex(hash_hex).exists()
     {
-        return FileResult::bare(rel.to_string(), FileStatus::Unchanged);
+        return FileResult::bare(rel.to_string(), FileStatus::DocUnchanged);
     }
 
     // A document whose own estimated working set exceeds the whole ceiling can never fit: waiting ~keep

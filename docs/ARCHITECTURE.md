@@ -73,7 +73,8 @@ src/
 ├── scanner_lanes.rs        — fault containment (catch_unwind) for the lanes that run after
 │                             the code-map persist barrier
 ├── scanner_code.rs         — code-search branch: L1/L2 → code chunks (feature code-search)
-├── scanner_docs.rs         — document-tier scan (PDF/Office/HTML → LanceDB, feature documents)
+├── scanner_docs.rs         — document-tier scan (PDF/Office/HTML → LanceDB, feature documents); also takes
+│                             prose/data/config (md/json/yaml/toml, `lang::is_non_code`): the code map is code-only
 ├── scanner_candidates.rs   — candidate enumeration + the [scan] max_candidates ceilings and
 │                             the BASEMIND_ALLOW_EXTRA_ROOTS grant for extra_roots
 ├── scanner_index_batch.rs  — per-worker index write batch: commits on files OR staged bytes

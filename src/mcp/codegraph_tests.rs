@@ -227,14 +227,22 @@ fn rationale_annotates_the_enclosing_symbol() {
 fn rationale_cites_resolve_to_decision_or_virtual_name() {
     use crate::extract::RationaleKind;
     // `m.rs` cites ADR-0001 (present as a decision file) and ADR-0099 (absent).
-    let cache = cache_with_rationale(&[
-        (
-            "m.rs",
-            vec![sym("helper", 0, 20)],
-            vec![rationale(RationaleKind::Why, 5, &["ADR-0001", "ADR-0099"])],
-        ),
-        ("docs/adr/0001-codegraph.md", vec![], vec![]),
-    ]);
+    #[cfg_attr(feature = "documents", allow(unused_mut))]
+    let mut files = vec![(
+        "m.rs",
+        vec![sym("helper", 0, 20)],
+        vec![rationale(RationaleKind::Why, 5, &["ADR-0001", "ADR-0099"])],
+    )];
+    // With the document tier the decision record is prose, so it is tracked as a document rather
+    // than code-mapped; without it there is nowhere else for it to live.
+    #[cfg(not(feature = "documents"))]
+    files.push(("docs/adr/0001-codegraph.md", vec![], vec![]));
+    #[cfg_attr(not(feature = "documents"), allow(unused_mut))]
+    let mut cache = cache_with_rationale(&files);
+    #[cfg(feature = "documents")]
+    {
+        cache.doc_paths = vec![crate::path::RelPath::from("docs/adr/0001-codegraph.md")].into();
+    }
     let g = build_from(&cache, EdgeKindSet::all());
     let cites: Vec<&CodeEdge> = g.edges.iter().filter(|e| e.kind == EdgeKind::Cites).collect();
     assert_eq!(cites.len(), 2, "one cite per citation");

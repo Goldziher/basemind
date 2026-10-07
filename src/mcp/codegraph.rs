@@ -785,7 +785,12 @@ pub(crate) fn build(idx: Option<&IndexDb>, cache: &MapCache, opts: &BuildOpts) -
     if kinds.annotates || kinds.cites {
         let mut decisions_by_id: AHashMap<String, Vec<&RelPath>> = AHashMap::new();
         if kinds.cites {
-            for path in cache.paths() {
+            // Decision records are prose: they live in the document tier, not the (code-only) map.
+            #[cfg(feature = "documents")]
+            let doc_paths = cache.doc_paths.iter();
+            #[cfg(not(feature = "documents"))]
+            let doc_paths = std::iter::empty::<&RelPath>();
+            for path in cache.paths().chain(doc_paths) {
                 if let Some(id) = decision_id_of_path(path) {
                     decisions_by_id.entry(id).or_default().push(path);
                 }
@@ -864,7 +869,7 @@ pub(crate) fn build(idx: Option<&IndexDb>, cache: &MapCache, opts: &BuildOpts) -
             match &link.mention {
                 DocMention::Name(name) => resolve_named_edge(&mut push, &defs_by_name, from, name, EdgeKind::Documents),
                 DocMention::Path(target) => {
-                    if cache.contains(target) {
+                    if cache.contains(target) || cache.contains_doc(target) {
                         push(
                             from,
                             NodeKey::File { path: target.clone() },
