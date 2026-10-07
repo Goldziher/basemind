@@ -150,7 +150,10 @@ fn archive_extraction_honours_the_configured_uncompressed_cap() {
         open.stats
     );
 
-    // Cap below the entry's size: nothing may be unpacked.
+    // Cap below the entry's size: nothing may be unpacked. A different payload, so the content-
+    // addressed extraction cache can't answer for the first scan's identical archive.
+    let text = format!("capped run\n{text}");
+    let archive = stored_zip("notes.txt", text.as_bytes());
     let dir = tempfile::tempdir().expect("tempdir");
     let mut cfg = offline_config();
     cfg.documents.extract_archives = true;
