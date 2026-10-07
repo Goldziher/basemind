@@ -152,8 +152,12 @@ pub(super) fn spawn_cache_warm(state: Arc<ServerState>) {
         match built {
             Ok(cache) => {
                 let files = cache.len();
-                state.shared.cache.store(Arc::new(cache));
+                let cache = Arc::new(cache);
+                state.shared.cache.store(Arc::clone(&cache));
                 state.shared.cache_generation.fetch_add(1, Ordering::Relaxed);
+                // Build the `symbols` / `dependents` term index off the query path so the first
+                // lookup after boot is as fast as every later one.
+                cache.warm_terms();
                 state
                     .shared
                     .cache_warm_ms
