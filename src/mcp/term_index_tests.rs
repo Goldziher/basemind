@@ -43,7 +43,8 @@ fn corpus() -> Vec<(RelPath, FileMapL1)> {
                 .collect();
             let imports = (0..lcg(&mut rng) % 4)
                 .map(|_| Import {
-                    module: (lcg(&mut rng) % 3 != 0).then(|| format!("pkg.{}.{}", WORDS[lcg(&mut rng) % 5], f % 7)),
+                    module: (!lcg(&mut rng).is_multiple_of(3))
+                        .then(|| format!("pkg.{}.{}", WORDS[lcg(&mut rng) % 5], f % 7)),
                     raw: format!("import {} from {}", WORDS[lcg(&mut rng) % 5], WORDS[lcg(&mut rng) % 5]),
                     start_byte: 0,
                     end_byte: 0,

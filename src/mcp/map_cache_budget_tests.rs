@@ -151,15 +151,22 @@ fn read_only_projections_are_capped_and_report_it() {
     assert!(store.index_db.is_none(), "the read-only opener must not open an index");
 
     let tight = MapCache::build(&store, 2048);
-    assert!(tight.calls.is_some() && tight.impls.is_some(), "projections are built");
     assert!(
-        tight.projections_capped,
+        !tight.projections_capped(),
+        "projections are lazy: nothing is built, so nothing is capped, until a fallback scan asks"
+    );
+    tight.calls_projection();
+    tight.impls_projection();
+    assert!(
+        tight.projections_capped(),
         "a 4 KiB budget cannot hold the projections for this corpus"
     );
 
     let roomy = MapCache::build(&store, 0);
+    roomy.calls_projection();
+    roomy.impls_projection();
     assert!(
-        !roomy.projections_capped,
+        !roomy.projections_capped(),
         "an unbounded budget must never report truncation"
     );
 }

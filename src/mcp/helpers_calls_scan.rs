@@ -12,7 +12,7 @@ use super::cursor::Cursor;
 use super::helpers_calls::resolve_call_line_col;
 use super::types::ReferenceHit;
 
-pub(super) struct CallScanPage {
+pub(crate) struct CallScanPage {
     pub total: u32,
     pub total_is_partial: bool,
     pub hits: Vec<ReferenceHit>,
@@ -70,7 +70,7 @@ pub(super) fn budget_call_page(page: CallScanPage, max_tokens: Option<u32>) -> B
 /// When `cursor_after` is `Some`, the scan resumes from the key immediately following
 /// the cursor (exclusive). The cursor returned in [`CallScanPage::next_cursor`] is the
 /// last key emitted on this page — pass it back on the next call to advance.
-fn scan_calls_by_name(
+pub(crate) fn scan_calls_by_name(
     idx: &crate::index::IndexDb,
     name: &str,
     limit: usize,
@@ -136,39 +136,35 @@ fn scan_calls_by_name(
     })
 }
 
-/// Route a call scan to the Fjall index when it's open, or to the in-RAM index
-/// built from the L2 blobs when it isn't.
-///
-/// `index_db == None` happens on a read-only `serve` session that lost the
-/// single-holder Fjall lock to another process (fjall is single-process; see
-/// `tests/multisession_smoke.rs`). Such a session still has the concurrently
-/// readable blobs, so `find_references` / `find_callers` answer from
-/// [`InRamCallIndex`] instead of failing — letting many sessions share one repo.
-pub(super) fn scan_calls(
-    idx: Option<&crate::index::IndexDb>,
-    cache: &super::MapCache,
-    name: &str,
-    limit: usize,
-    cursor_after: Option<&[u8]>,
-) -> Result<CallScanPage, McpError> {
-    match idx {
-        Some(idx) => scan_calls_by_name(idx, name, limit, cursor_after),
-        None => Ok(match cache.calls.as_ref() {
-            Some(calls) => scan_calls_in_ram(calls, name, limit, cursor_after),
-            None => empty_call_page(),
-        }),
+/// Every call site in `path` from the Fjall `calls_by_path` keyspace, in start-byte order. The one
+/// reader behind the writer session's per-file lookups and the daemon's forwarded
+/// `CallsInFiles`, so the two cannot drift.
+pub(crate) fn calls_in_file_fjall(
+    idx: &crate::index::IndexDb,
+    path: &crate::path::RelPath,
+) -> Result<Vec<CallRef>, McpError> {
+    let prefix = crate::index::keys::calls_by_path_prefix(path);
+    let upper: Bound<Vec<u8>> = match super::cursor::prefix_upper_bound(&prefix) {
+        Some(b) => Bound::Excluded(b),
+        None => Bound::Unbounded,
+    };
+    let mut out = Vec::new();
+    for guard in idx.calls_by_path.range::<Vec<u8>, _>((Bound::Included(prefix), upper)) {
+        let (_, v) = guard
+            .into_inner()
+            .map_err(|e| McpError::internal_error(format!("index iter: {e}"), None))?;
+        let call: crate::extract::Call = match rmp_serde::from_slice(&v) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        out.push(CallRef {
+            line: call.start_row + 1,
+            column: call.start_col,
+            callee: call.callee,
+            start_byte: call.start_byte,
+        });
     }
-}
-
-fn empty_call_page() -> CallScanPage {
-    CallScanPage {
-        total: 0,
-        total_is_partial: false,
-        hits: Vec::new(),
-        next_cursor: None,
-        hit_keys: Vec::new(),
-        hit_starts: Vec::new(),
-    }
+    Ok(out)
 }
 
 /// In-RAM `scan_calls_by_name` twin over [`InRamCallIndex`]. Same case-sensitive
@@ -268,6 +264,7 @@ struct InRamCall {
 }
 
 /// A call site within a file: the callee identifier, its start byte offset, and its position.
+#[derive(Clone)]
 pub(crate) struct CallRef {
     pub callee: String,
     pub start_byte: u32,
@@ -283,14 +280,14 @@ impl InRamCallIndex {
     ///
     /// Reads/decodes run in parallel a chunk at a time; the two views are assembled serially per
     /// chunk. See [`capped`](Self::capped) for what happens when the budget is reached.
-    pub(crate) fn build(store: &crate::store::Store, budget_bytes: u64) -> Self {
+    pub(crate) fn build(
+        files: &super::l1_cache::FileIndexView,
+        blobs_dir: &std::path::Path,
+        budget_bytes: u64,
+    ) -> Self {
         use rayon::prelude::*;
-        let paths: Vec<(&crate::path::RelPath, &str)> = store
-            .index
-            .files
-            .iter()
-            .map(|(rel, entry)| (rel, entry.hash_hex.as_str()))
-            .collect();
+        let paths: Vec<(&crate::path::RelPath, &str)> =
+            files.iter().map(|(rel, meta)| (rel, &*meta.hash_hex)).collect();
         let mut entries: Vec<InRamCall> = Vec::new();
         let mut by_path: ahash::AHashMap<crate::path::RelPath, Vec<CallRef>> =
             ahash::AHashMap::with_capacity(paths.len());
@@ -304,7 +301,10 @@ impl InRamCallIndex {
             let per_file: Vec<(crate::path::RelPath, Vec<crate::extract::Call>)> = chunk
                 .par_iter()
                 .filter_map(|(rel, hash_hex)| {
-                    let calls = store.read_l2_by_hex(hash_hex).ok().flatten()?.calls;
+                    let calls = crate::store_blob::read_l2_blob_in(blobs_dir, hash_hex)
+                        .ok()
+                        .flatten()?
+                        .calls;
                     Some(((*rel).clone(), calls))
                 })
                 .collect();

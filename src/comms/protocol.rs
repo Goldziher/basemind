@@ -305,6 +305,16 @@ pub enum CommsRequest {
         /// The lookup to run against that workspace's read-write index.
         query: crate::comms::resolved_proto::ResolvedRefQuery,
     },
+    /// Forward a fjall-backed reference read (`references` / `callers` / `implementations` scans) to
+    /// the daemon. A `daemon_writer` serve holds no fjall index, so these range scans only exist
+    /// daemon-side; answering them there is what keeps the results complete without projecting the
+    /// whole call graph into every session's RAM. A pure read.
+    IndexRead {
+        /// Canonical workspace root, selecting the daemon's hot workspace.
+        root: std::path::PathBuf,
+        /// The scan to run against that workspace's read-write index.
+        query: crate::comms::index_read_proto::IndexReadQuery,
+    },
     /// Forward the code-search keyword (BM25) and exact (symbol-name) lanes to the daemon. Both are
     /// answered from fjall, which a reader `serve` cannot open, so without this they return nothing
     /// at all — and did so silently. Ranking only; the caller hydrates bodies from blobs. A pure
@@ -390,6 +400,7 @@ impl CommsRequest {
             Self::Governance { .. } => "governance",
             Self::GitHistory { .. } => "git_history",
             Self::ResolvedRefs { .. } => "resolved_refs",
+            Self::IndexRead { .. } => "index_read",
             Self::CodeSearchLanes { .. } => "code_search_lanes",
             Self::AccessedPaths { .. } => "accessed_paths",
             Self::WorkspacesList { .. } => "workspaces_list",
@@ -498,6 +509,8 @@ pub enum CommsResponse {
     },
     /// Reply to [`CommsRequest::ResolvedRefs`]: the resolved edges.
     ResolvedRefs(crate::comms::resolved_proto::ResolvedRefResult),
+    /// Reply to [`CommsRequest::IndexRead`]: the scanned page.
+    IndexRead(crate::comms::index_read_proto::IndexReadResult),
     /// Reply to [`CommsRequest::CodeSearchLanes`]: ranked chunk ids for the keyword + exact lanes.
     CodeSearchLanes(crate::comms::code_search_proto::CodeSearchLaneResult),
     /// Reply to [`CommsRequest::GitHistory`]: the sync outcome, the indexed HEAD, or a page of
