@@ -182,7 +182,7 @@ fn build_symbol(q: &Query, m: &QueryMatch, source: &[u8]) -> Option<Symbol> {
             start_row = p.row as u32;
             start_col = p.column as u32;
             if let Ok(text) = node.utf8_text(source) {
-                signature = signature_slice(text);
+                signature = signature_slice(header_text(node, text));
                 if matches!(kind, Some(SymbolKind::Method))
                     && let Some(promoted) = detect_accessor(text)
                 {
@@ -221,6 +221,19 @@ fn detect_accessor(slice: &str) -> Option<SymbolKind> {
         }
     }
     None
+}
+
+/// The part of a definition's text that precedes its body, when the grammar names the body.
+///
+/// The brace/semicolon scan in [`signature_slice`] suits C-family syntax but not indentation-based
+/// languages: a Python `def` has no `{`, so its whole body (up to the first dict literal or `;`)
+/// became the "signature", several times larger than the declaration it summarises. A `body` field
+/// ends the header exactly where the grammar says the body begins.
+fn header_text<'a>(node: Node, text: &'a str) -> &'a str {
+    node.child_by_field_name("body")
+        .map(|body| body.start_byte().saturating_sub(node.start_byte()))
+        .and_then(|len| text.get(..len))
+        .unwrap_or(text)
 }
 
 /// Reduce a symbol's full body text down to a single-line signature header.
@@ -446,6 +459,19 @@ const N: u32 = 42;
         assert!(!map.imports.is_empty(), "expected at least one import");
         assert!(!map.had_errors, "clean source must not flag errors");
         assert_eq!(map.error_count, 0);
+    }
+
+    #[test]
+    fn python_signature_stops_at_the_body_instead_of_the_first_brace() {
+        let src = b"def handler(context, key):\n    data = {\"a\": 1}\n    return data\n";
+        let map = extract_l1("python", src).expect("extract");
+        let sig = map
+            .symbols
+            .iter()
+            .find(|s| s.name == "handler")
+            .and_then(|s| s.signature.as_deref())
+            .expect("handler signature");
+        assert_eq!(sig, "def handler(context, key):");
     }
 
     #[test]
