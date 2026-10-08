@@ -10,45 +10,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `code grep` trigram bloom prefilter. The scanner keeps one small trigram bloom filter per indexed
+  file (a new `grep_bloom` index keyspace, about 12.8 % of the indexed code bytes), built from the
+  bytes the scan already reads, and a grep skips every file whose bloom proves it cannot contain a
+  literal the pattern requires (extracted with `regex-syntax`; patterns with no required 3-byte
+  literal, such as `.*` or `(?i)k`, still sweep everything). A file is skipped only when its filter
+  rejects the pattern and its size and mtime still match the scan, so results, totals, hit order,
+  cursors and context lines are identical to the full sweep, including for files edited, added or
+  deleted since the last scan. On the armis checkout the 15 `t_grep` tasks drop from several seconds
+  to ~130 ms p50 with identical precision and recall. No index wipe: an existing index greps
+  correctly immediately and gains its blooms on the next scan. `BASEMIND_GREP_BLOOM=0` forces the
+  full sweep. See ADR-0012.
+- `EXTRACT_EPOCH`, an extractor-output revision recorded on every file entry and L1 blob. The next
+  scan re-extracts only the files whose entry or blob predates it, inside the normal memory-bounded
+  pass and keeping their call tier, so a patch release can fix extraction output without bumping the
+  release minor (and wiping every cache). The scan summary shows `tier_migrated` and `refreshed`
+  counts. The first epoch refreshes symbol signatures produced before the header-only fix.
+- `BASEMIND_BLOB_GC_GRACE_SECS` overrides the 6 hour age below which the blob sweep keeps a blob.
+
 ### Changed
-
-- Upgrading an existing index is now self-cleaning. The blob sweep is tier-aware: a markdown, json,
-  yaml or toml file that moved to the document tier keeps its content hash, so its stale `.fm`,
-  `.chunk` and `.rref` blobs used to be pinned by the live `.doc` blob forever; they are now
-  reclaimed, and `cache stats` counts them as orphans. A scan that migrated paths across tiers,
-  re-extracted blobs, or reset a view after a release-minor bump runs a cross-workspace
-  reference-counted sweep and prints `cleanup: reclaimed N orphaned blob(s)`; the daemon does the same
-  a minute after such a pass. `basemind cache gc` now performs that sweep (it was report-only), serialised
-  machine-wide by `cache/gc.lock`; blobs younger than 6 hours are kept, `BASEMIND_BLOB_GC_GRACE_SECS`
-  overrides. See `docs/UPGRADING.md`.
-- Symbol signatures produced before the header-only fix are refreshed without a cache wipe. A new
-  `EXTRACT_EPOCH`, recorded on every file entry and L1 blob, makes the next scan re-extract only the
-  files whose entry or blob predates it, inside the normal memory-bounded pass, keeping their call
-  tier. The scan summary shows `tier_migrated` and `refreshed` counts. Patch releases keep using this
-  instead of bumping the release minor.
-
-- Dependencies upgraded to their latest releases: `lancedb` 0.37 to 0.40 (now built with its `remote`
-  feature, which 0.38-0.40 need to compile; `lance` 10 to 13), `gix` 0.88 to 0.89, `oxc_*` 0.152 to
-  0.153, `crawlberg` 1.8 to 1.10, `xberg` 1.3.3 to 1.3.6, `tree-sitter-language-pack` 1.20 to 1.21,
-  plus lockfile refreshes (`rmcp` 3.5.1, `sysinfo` 0.39, `hyper`, `clap`, `jsonschema`, `hf-xet`).
-  `arrow-*` stays at 58 (lancedb 0.40 requires `^58`), `rustix` at 1.1.4 (rmux-client needs its
-  public `runtime` module) and `bincode` at 2.0.1 (3.0.0 is a `compile_error!` placeholder).
-- `code grep` sweeps the corpus with a reusable per-thread read buffer (capped at 1 MiB retained per
-  worker, so resident scratch stays bounded) instead of allocating a `String` per file, rejects a
-  literal pattern on raw bytes before paying for UTF-8 validation, and no longer builds two path
-  buffers per file. Results, `total_matches`, hit order, cursors and context lines are unchanged
-  (checked against the previous implementation over a generated corpus, including paging).
-- `code grep` no longer opens most files. The scanner keeps one small trigram bloom filter per
-  indexed file (a new `grep_bloom` index keyspace, about 12.8 % of the indexed code bytes), built
-  from the bytes the scan already reads, and a grep skips every file whose bloom proves it cannot
-  contain a literal the pattern requires (extracted with `regex-syntax`; patterns with no required
-  3-byte literal, such as `.*` or `(?i)k`, still sweep everything). A file is skipped only when its
-  filter rejects the pattern and its size and mtime still match the scan, so results, totals, hit
-  order, cursors and context lines are identical to the full sweep, including for files edited,
-  added or deleted since the last scan. On the armis checkout the 15 `t_grep` tasks drop from
-  several seconds to ~130 ms p50 with identical precision and recall. No index wipe: an existing
-  index greps correctly immediately and gains its blooms on the next scan. `BASEMIND_GREP_BLOOM=0`
-  forces the full sweep. See ADR-0012.
 
 - The code map now indexes code only. Markdown, reStructuredText, AsciiDoc, vimdoc, CSV, JSON, YAML,
   TOML, INI, XML, `.properties`, `.env`, diffs, `.gitignore`/`.gitattributes` and Fluent files are
@@ -59,12 +41,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   blobs references, index and keyword postings, code-search chunks) are purged, and a path that
   changes tier is moved either way. A build without the `documents` feature keeps the old behaviour.
   Document-link citations and ADR/RFC decision records now resolve against the document tier.
+- Upgrading an existing index is now self-cleaning. The blob sweep is tier-aware: a markdown, json,
+  yaml or toml file that moved to the document tier keeps its content hash, so its stale `.fm`,
+  `.chunk` and `.rref` blobs used to be pinned by the live `.doc` blob forever; they are now
+  reclaimed, and `cache stats` counts them as orphans. A scan that migrated paths across tiers,
+  re-extracted blobs, or reset a view after a release-minor bump runs a cross-workspace
+  reference-counted sweep and prints `cleanup: reclaimed N orphaned blob(s)`; the daemon does the same
+  a minute after such a pass. `basemind cache gc` now performs that sweep (it was report-only),
+  serialised machine-wide by `cache/gc.lock`; blobs younger than 6 hours are kept. The MCP `admin`
+  mode `gc` and `basemind admin gc` remain non-destructive reports. See `docs/UPGRADING.md`.
+- `symbols` and `dependents` are answered from a resident term index instead of streaming every
+  outline. It holds only the searchable text (symbol names and import strings, no spans or
+  signatures) in one compact allocation per file, so a query is a `memmem` sweep over contiguous
+  bytes and only the returned page is decoded. It is built in the background when a full cache is
+  published and patched, not rebuilt, by an incremental rescan. Results are unchanged.
 - `code references`, `callers` and `implementations` no longer walk every call site or impl in the
   index. The index process keeps a small resident dictionary of the distinct callee and trait names
   (a few MB at monorepo scale), answers the substring match from it, and range-scans only the
-  matching names' keys. Results, key order, totals, the `total_is_partial` cap, cursors and the
-  language filter are byte-identical. The first query after the index opens still walks the
-  partition while the dictionary builds in the background.
+  matching names' keys; a needle matching over 5 % of the distinct names goes back to the full walk,
+  which reaches the result cap after a handful of keys. Results, key order, totals, the
+  `total_is_partial` cap, cursors and the language filter are byte-identical. The first query after
+  the index opens still walks the partition while the dictionary builds in the background.
+- `code grep` sweeps the corpus with a reusable per-thread read buffer (capped at 1 MiB retained per
+  worker, so resident scratch stays bounded) instead of allocating a `String` per file, rejects a
+  literal pattern on raw bytes before paying for UTF-8 validation, and no longer builds two path
+  buffers per file. Results, `total_matches`, hit order, cursors and context lines are unchanged
+  (checked against the previous implementation over a generated corpus, including paging).
+- Dependencies upgraded to their latest releases: `lancedb` 0.37 to 0.40 (now built with its `remote`
+  feature, which 0.38-0.40 need to compile; `lance` 10 to 13), `gix` 0.88 to 0.89, `oxc_*` 0.152 to
+  0.153, `crawlberg` 1.8 to 1.10, `xberg` 1.3.3 to 1.3.6, `tree-sitter-language-pack` 1.20 to 1.21,
+  plus lockfile refreshes (`rmcp` 3.5.1, `sysinfo` 0.39, `hyper`, `clap`, `jsonschema`, `hf-xet`).
+  `arrow-*` stays at 58 (lancedb 0.40 requires `^58`), `rustix` at 1.1.4 (rmux-client needs its
+  public `runtime` module) and `bincode` at 2.0.1 (3.0.0 is a `compile_error!` placeholder).
 
 ### Fixed
 
@@ -79,15 +87,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   projection (zero extra RAM). The in-RAM projection is now built lazily and only as a last resort
   when no daemon is reachable (a failed forward degrades to it rather than erroring), and the
   `projections_capped` notice appears only when that fallback is genuinely truncated.
-
-### Fixed
-
+- Symbol signatures in indentation-based languages (Python and similar) end at the grammar's body
+  field instead of embedding the whole body. Existing indexes refresh without a cache wipe through
+  `EXTRACT_EPOCH`.
 - macOS: the process heap no longer shows up as GBs of "GPU" memory. mimalloc tags its mappings
   with Mach VM tag 100 by default, which is `VM_MEMORY_IOACCELERATOR`, so `footprint`, `vmmap` and
   Activity Monitor attributed the whole allocator heap to `IOAccelerator` even with
   `onnx_provider = "cpu"` and no Metal or CoreML device ever created. basemind now retags the heap to
   254 (application-specific) at startup, so the memory reports as ordinary application memory and
   real GPU allocations are distinguishable.
+- A panic inside an embedding job no longer aborts the process. rayon aborts when a spawned closure
+  unwinds; the panic is now contained and surfaces as an `embedding worker panicked` error.
 
 ## [0.28.1] - 2026-10-06
 
@@ -347,7 +357,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > **Never published as a GitHub release.** The source below was tagged and pushed, but the Linux
 > archives failed to build and the release record was never promoted. It is superseded by
 > [0.27.3]; no registry version was cut from it.
-
+>
 > **Patch release — memory-safety follow-ups to [#62], a stricter plugin launcher, and a
 > release-workflow fix.** No schema or MCP-surface change: `RELEASE_MINOR` stays 27, so the
 > on-disk blob and index formats are untouched.

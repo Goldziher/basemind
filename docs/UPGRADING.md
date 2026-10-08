@@ -13,7 +13,9 @@ is cleaned up.
 | Prose, data and config files (markdown, json, yaml, toml, xml, csv, ini, ...) left the code map for the document tier | The next scan, full or incremental, notices a path indexed in the other tier, purges its code-map rows (file map, fjall `files` / calls / implementations / resolved / bm25 entries, code-search chunks) and indexes it as a document | Documents are chunked, and embedded when `[documents] embed` is on |
 | Symbol `signature` now ends at the grammar's body field instead of embedding the body | `EXTRACT_EPOCH` (see below): only files whose entry or blob predates the epoch are re-extracted, in the normal bounded scan | One parse per affected file, no wipe |
 | Release-minor schema bump (`0.27.x` to `0.28.x`) | `RELEASE_MINOR` mismatch: each view's `index.msgpack` and fjall index are reset on open and every file is re-extracted, overwriting stale blobs in place | Full re-extraction, by design |
+| `grep_bloom` index keyspace (per-file trigram bloom for `code grep`) | A new keyspace, so `INDEX_SCHEMA_VER` is not bumped. An index without it opens with an empty `grep_bloom` and greps correctly at once (every file is a candidate); the next scan builds the rows from the bytes it reads, and an unchanged file with no row is read once to backfill it | One read per unchanged file, once; about 12.8 % of the indexed code bytes on disk |
 | Resident term index, name dictionaries, heap retag | In memory only. Nothing on disk, nothing to migrate | none |
+| `[resources] onnx_provider` defaults to `cpu` | Behaviour only: models load on the CPU provider instead of the platform default (CoreML on macOS). Set `onnx_provider = "auto"` to restore it. No on-disk change | none |
 | Daemon `IndexRead` forwarding | Wire protocol only | none |
 
 ## The extractor epoch
@@ -76,8 +78,9 @@ tens of MB per version and is not touched by the above.
 
 ## Adding a new on-disk component (checklist)
 
-A derived index (for example a grep trigram index) should plug into the same hooks so it upgrades and
-cleans up like the rest:
+A derived index should plug into the same hooks so it upgrades and cleans up like the rest (the grep
+trigram bloom, `src/index/grep_bloom.rs`, is a worked example: a versioned row per file, a missing or
+older row reads as "no information" and is backfilled by the next scan):
 
 1. Stamp the component with its own format version and treat a mismatch as "rebuild lazily", never as an
    error. If it is per-file, store the stamp on the `FileEntry` (or the blob) the way `extract_epoch`
