@@ -50,14 +50,7 @@ pub(crate) struct ServerState {
     ///
     /// Bounded at [`COMMS_CLIENT_CAP`] because the key comes off the wire — see that constant.
     #[cfg(all(feature = "comms", any(unix, windows)))]
-    pub(crate) comms_clients: tokio::sync::Mutex<
-        lru::LruCache<
-            crate::comms::ids::AgentId,
-            std::sync::Arc<
-                tokio::sync::OnceCell<std::sync::Arc<tokio::sync::Mutex<crate::comms::client::CommsClient>>>,
-            >,
-        >,
-    >,
+    pub(crate) comms_clients: tokio::sync::Mutex<lru::LruCache<crate::comms::ids::AgentId, CommsClientCell>>,
     /// Bounded per-session high-water cache for mailbox notices piggybacked onto tool responses.
     #[cfg(all(feature = "comms", any(unix, windows)))]
     pub(crate) delivered_notifications: tokio::sync::Mutex<lru::LruCache<String, ()>>,
@@ -80,6 +73,12 @@ pub(crate) struct ServerState {
     /// in-memory test serve overrides it directly.
     pub(crate) lean: std::sync::atomic::AtomicBool,
 }
+
+/// A lazily-initialised, shared handle to one identity's broker client. The cell is what a slow connect
+/// waits on, so the registry lock is held only to find or insert it.
+#[cfg(all(feature = "comms", any(unix, windows)))]
+pub(crate) type CommsClientCell =
+    std::sync::Arc<tokio::sync::OnceCell<std::sync::Arc<tokio::sync::Mutex<crate::comms::client::CommsClient>>>>;
 
 /// State of the delivery-notice probe: its own broker connection and the time of the last probe.
 #[cfg(all(feature = "comms", any(unix, windows)))]
