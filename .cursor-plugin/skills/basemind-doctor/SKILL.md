@@ -28,6 +28,10 @@ basemind admin status
 - Errors / "no index" / `file_count: 0` with blobs present → the index is missing or lost. Build
   it: `basemind scan` (see the `basemind-scan` skill / `/bm-scan`).
 - Healthy `file_count` → the index is fine; the problem is the server connection (step 4).
+- `outline` says "file not indexed" for a README, JSON, YAML or TOML file → expected, not a fault:
+  those are documents, not code. Use `memory { mode: "documents", query }` (or Read the file).
+- A `notice` of `warming_up` / `building_index` means the index is still loading: wait and retry
+  (`admin { mode: "status" }` shows `indexing` / `warming`).
 
 ## 2. Is a server already running (holding the lock)?
 

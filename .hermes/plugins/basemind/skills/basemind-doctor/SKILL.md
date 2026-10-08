@@ -9,8 +9,8 @@ description: >-
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:aac2f0263d4ef84dcaf0292a0c00c6f90c8e31d68eefbd553500bd75df5573c6
-Source-Hash: blake3:c1a08b89b18aa5d4c2259405307482d21d84a33d481461a2a4e78b954c6234cb
+Content-Hash: blake3:1756d67bcdba353b6647679ec2dbf7c503a952d9466de0446684adc86f6b579e
+Source-Hash: blake3:d0ef8fea0654cc62042ee8040ad0fadbea594d97b0930187ff9f42359e443bd0
 Schema-Version: v1
 -->
 
@@ -35,6 +35,10 @@ basemind admin status
 - Errors / "no index" / `file_count: 0` with blobs present → the index is missing or lost. Build
   it: `basemind scan` (see the `basemind-scan` skill / `/bm-scan`).
 - Healthy `file_count` → the index is fine; the problem is the server connection (step 4).
+- `outline` says "file not indexed" for a README, JSON, YAML or TOML file → expected, not a fault:
+  those are documents, not code. Use `memory { mode: "documents", query }` (or Read the file).
+- A `notice` of `warming_up` / `building_index` means the index is still loading: wait and retry
+  (`admin { mode: "status" }` shows `indexing` / `warming`).
 
 ## 2. Is a server already running (holding the lock)?
 

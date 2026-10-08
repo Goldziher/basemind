@@ -32,10 +32,10 @@ session="$(printf '%s' "${input}" | jq -r '.session_id // "nosession"' 2>/dev/nu
 # Tailor the suggestion to the tool. Anything outside the matcher set just proceeds.
 case "${tool}" in
 Grep)
-  alt="basemind: code mode=symbols (definitions), code mode=references / mode=callers (call sites), or code mode=grep (indexed regex over content)"
+  alt="basemind: code mode=symbols (definitions), code mode=references / mode=callers (call sites), or code mode=grep (indexed regex over code content; markdown/config/data files: memory mode=documents)"
   ;;
 Glob)
-  alt="basemind: code mode=files (indexed paths, with language / path filters), or code mode=find (fuzzy path search)"
+  alt="basemind: code mode=files (indexed code paths, with language / path filters), or code mode=find (fuzzy path search)"
   ;;
 *)
   exit 0

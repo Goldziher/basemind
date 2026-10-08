@@ -43,8 +43,11 @@ Finding the binary (in order of preference):
 
 - The scan writes the content-addressed blob store + Fjall inverted index into the machine-global
   cache (never inside the repo). Seconds for small repos; ~22 s for an ~80k-file TypeScript monorepo.
-- Files tree-sitter doesn't recognize as code go through the document tier; anything that isn't an
-  extractable document (e.g. an exotic source file) is **skipped**, not counted as a failure.
+- The code map holds code only. Markdown, JSON, YAML, TOML, XML, CSV, INI and similar prose/config/data
+  files go to the document tier instead (chunked, searchable with `memory` mode `documents`; they
+  never appear in `symbols`, `outline`, `files` or `grep`). Anything that is neither code nor an
+  extractable document is **skipped**, not counted as a failure. Existing indexes migrate on the
+  next scan, which also reclaims stale blobs (`cleanup: reclaimed N orphaned blob(s)`).
 - If a `basemind serve` MCP server is already running for this repo it holds the store lock, so a
   CLI `scan` will fail with a lock error. Use `admin { mode: "rescan" }` over MCP (it re-indexes in-process)
   instead, or stop the server first.
