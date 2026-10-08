@@ -9,8 +9,8 @@ description: >-
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:976948273b58b51bcdbfaf097a564faca51b14e6453d09e46b1f1bbac4dac0f0
-Source-Hash: blake3:c1a08b89b18aa5d4c2259405307482d21d84a33d481461a2a4e78b954c6234cb
+Content-Hash: blake3:ef2d6802f115e5aff8db5a18d9abc5f7b567f1a6ebfed5c5a1116646a37ca79b
+Source-Hash: blake3:d0ef8fea0654cc62042ee8040ad0fadbea594d97b0930187ff9f42359e443bd0
 Schema-Version: v1
 -->
 
@@ -50,8 +50,11 @@ Finding the binary (in order of preference):
 
 - The scan writes the content-addressed blob store + Fjall inverted index into the machine-global
   cache (never inside the repo). Seconds for small repos; ~22 s for an ~80k-file TypeScript monorepo.
-- Files tree-sitter doesn't recognize as code go through the document tier; anything that isn't an
-  extractable document (e.g. an exotic source file) is **skipped**, not counted as a failure.
+- The code map holds code only. Markdown, JSON, YAML, TOML, XML, CSV, INI and similar prose/config/data
+  files go to the document tier instead (chunked, searchable with `memory` mode `documents`; they
+  never appear in `symbols`, `outline`, `files` or `grep`). Anything that is neither code nor an
+  extractable document is **skipped**, not counted as a failure. Existing indexes migrate on the
+  next scan, which also reclaims stale blobs (`cleanup: reclaimed N orphaned blob(s)`).
 - If a `basemind serve` MCP server is already running for this repo it holds the store lock, so a
   CLI `scan` will fail with a lock error. Use `admin { mode: "rescan" }` over MCP (it re-indexes in-process)
   instead, or stop the server first.

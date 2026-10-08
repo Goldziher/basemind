@@ -42,7 +42,7 @@ pub struct CodeParams {
     /// exactly against the definitions in `path`. Required by those four modes.
     #[serde(default, alias = "needle", alias = "symbol", alias = "q")]
     pub name: Option<String>,
-    /// Free-text query. `find` matches it as a fuzzy subsequence against every indexed path;
+    /// Free-text query. `find` matches it as a fuzzy subsequence against every indexed code path;
     /// `semantic` embeds / tokenizes it for retrieval. Required by both.
     #[serde(default, alias = "text")]
     pub query: Option<String>,

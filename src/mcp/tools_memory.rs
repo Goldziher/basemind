@@ -35,8 +35,10 @@ impl BasemindServer {
         the vector store. `audit` re-verifies stored notes against the LIVE code index — file and \
         symbol provenance, structural-hash drift — decaying importance and archiving records stale \
         for over 90 days; `dry_run` previews the verdicts (default 100, max 1000). `documents` is \
-        semantic search over indexed PDFs, Office files, HTML, email and OCR'd images — read the \
-        matching chunks instead of opening the file; `mime_type` filters exactly and `scope` picks \
+        semantic search over indexed documents — PDFs, Office files, HTML, email, OCR'd images, and \
+        also markdown, config and data files (JSON/YAML/TOML/XML/CSV), which the code map does not \
+        hold — read the matching chunks instead of opening the file; `mime_type` filters exactly, \
+        `entity_category` / `keywords_contains` filter by NER category / keyword, and `scope` picks \
         the ingestion scope (pages ingested by the `web` tool live under `web:<host>`), \
         `max_tokens` budgets the hits and `format:\"toon\"` compacts them. `mine` derives \
         co-change proposals from git history (a candidate needs `min_support` co-changes and \

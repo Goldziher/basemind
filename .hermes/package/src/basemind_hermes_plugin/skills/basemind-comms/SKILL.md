@@ -9,8 +9,8 @@ description: >-
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:9aec4476b9251bef662de7dba2ee4f5140947c0e8d8458c756c2a1f54ace9e92
-Source-Hash: blake3:c1a08b89b18aa5d4c2259405307482d21d84a33d481461a2a4e78b954c6234cb
+Content-Hash: blake3:b16afbd8320bda096344c788951c045d17e9cded6d7ddcf97254a1d025ad2362
+Source-Hash: blake3:d0ef8fea0654cc62042ee8040ad0fadbea594d97b0930187ff9f42359e443bd0
 Schema-Version: v1
 -->
 
@@ -112,6 +112,8 @@ didn't load; check the CLI before assuming silence. Use the `basemind-doctor` sk
 | `agents { mode: "register", … }` | `basemind agents register --name <handle>` | Record your handle. |
 | `agents { mode: "list" }` | `basemind agents list` | List active agents. |
 | `agents { mode: "wait" }` | `basemind agents wait [--thread …]` | Wait for a peer message. |
+| `agents { mode: "status" }` | `basemind agents status` | Active/stale agent counts, last maintenance. |
+| `agents { mode: "cleanup" }` | `basemind agents cleanup [--apply]` | Preview retention; MCP is preview-only, `--apply` is CLI-only. |
 
 ## Notes
 

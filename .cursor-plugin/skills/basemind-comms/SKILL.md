@@ -105,6 +105,8 @@ didn't load; check the CLI before assuming silence. Use the `basemind-doctor` sk
 | `agents { mode: "register", … }` | `basemind agents register --name <handle>` | Record your handle. |
 | `agents { mode: "list" }` | `basemind agents list` | List active agents. |
 | `agents { mode: "wait" }` | `basemind agents wait [--thread …]` | Wait for a peer message. |
+| `agents { mode: "status" }` | `basemind agents status` | Active/stale agent counts, last maintenance. |
+| `agents { mode: "cleanup" }` | `basemind agents cleanup [--apply]` | Preview retention; MCP is preview-only, `--apply` is CLI-only. |
 
 ## Notes
 

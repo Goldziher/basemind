@@ -16,19 +16,19 @@ use std::fmt::Write as _;
 /// rendered rules block. Order here is the display order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Capability {
-    /// `search_symbols` / `find_references` / `find_callers` / `workspace_grep` — code navigation.
+    /// `code` modes `symbols` / `references` / `callers` / `grep` — code navigation.
     CodeSearchNavigation,
-    /// `outline` / `architecture_map` — file + repo structure without opening source.
+    /// `code` mode `outline` / `graph` mode `map` — file + repo structure without opening source.
     CodeMappingArchitecture,
-    /// `recent_changes` / `blame_symbol` / `commits_touching` — git history without shelling out.
+    /// `git` modes `recent` / `blame_symbol` / `touching` — git history without shelling out.
     GitHistory,
-    /// `find_files` — fuzzy fzf/fd-style filename / path search.
+    /// `code` mode `find` — fuzzy fzf/fd-style filename / path search.
     FileFinding,
     /// `agents` modes `post` / `inbox` — multi-agent thread coordination.
     AgentComms,
     /// `workspace` modes — daemon registry + worktree coordination.
     WorktreeCoordination,
-    /// `memory` mode `documents` — RAG over PDFs / Office / HTML / the web.
+    /// `memory` mode `documents` — RAG over PDFs / Office / HTML / markdown / config / the web.
     DocumentsRag,
     /// Semantic (vector) code search over the same index.
     SemanticSearch,
@@ -86,19 +86,19 @@ impl Capability {
     fn routing_row(self) -> (&'static str, &'static str) {
         match self {
             Capability::CodeSearchNavigation => (
-                "`search_symbols` / `goto_definition` / `find_references` / `find_callers` / `find_implementations` / `call_graph` / `workspace_grep`",
+                "`code` modes `symbols` / `definition` / `references` / `callers` / `implementations` / `grep`, `graph` mode `calls`",
                 "`grep` / `rg` / opening files to find a symbol",
             ),
             Capability::CodeMappingArchitecture => (
-                "`outline` / `architecture_map`",
+                "`code` mode `outline` (code files only) / `graph` mode `map`",
                 "reading whole files to learn their shape",
             ),
             Capability::GitHistory => (
-                "`recent_changes` / `blame_symbol` / `commits_touching` / `diff_file`",
+                "`git` modes `recent` / `blame_symbol` / `touching` / `diff`",
                 "`git log` / `git blame` / `git diff`",
             ),
             Capability::FileFinding => (
-                "`find_files` (fuzzy path search)",
+                "`code` mode `find` (fuzzy path search)",
                 "`find` / `fd` / `ls -R` to locate a file by name",
             ),
             Capability::AgentComms => (
@@ -110,11 +110,11 @@ impl Capability {
                 "editing a worktree another session may already own",
             ),
             Capability::DocumentsRag => (
-                "`memory` mode `documents` / `web` (modes `scrape` / `crawl` / `map`)",
-                "manually reading PDFs / docs or ad-hoc fetching",
+                "`memory` mode `documents` (PDFs, Office, markdown, config and data files; the code map holds code only) / `web` (modes `scrape` / `crawl` / `map`)",
+                "manually reading PDFs / docs / config files or ad-hoc fetching",
             ),
             Capability::SemanticSearch => (
-                "semantic code search over the index",
+                "`code` mode `semantic` (then `chunk`)",
                 "keyword-only guessing at where a concept lives",
             ),
         }
@@ -166,13 +166,13 @@ fn render_usage_rules(out: &mut String, caps: &[Capability]) {
 
     out.push_str("### Red flags — stop and re-route\n\n");
     if caps.contains(&Capability::CodeSearchNavigation) {
-        out.push_str("- About to `grep` / `rg`? → `workspace_grep`.\n");
-        out.push_str("- About to open a file just to find a symbol? → `outline` / `search_symbols`.\n");
+        out.push_str("- About to `grep` / `rg`? → `code` mode `grep`.\n");
+        out.push_str("- About to open a file just to find a symbol? → `code` modes `outline` / `symbols`.\n");
     } else if caps.contains(&Capability::CodeMappingArchitecture) {
-        out.push_str("- About to open a file just to learn its shape? → `outline`.\n");
+        out.push_str("- About to open a file just to learn its shape? → `code` mode `outline`.\n");
     }
     if caps.contains(&Capability::GitHistory) {
-        out.push_str("- About to `git log` / `git blame`? → `recent_changes` / `blame_symbol`.\n");
+        out.push_str("- About to `git log` / `git blame`? → `git` modes `recent` / `blame_symbol`.\n");
     }
     out.push_str("- Already mapped a file with basemind? Don't re-read it.\n\n");
 }
@@ -227,9 +227,9 @@ mod tests {
         };
         let only_git = vec![Capability::GitHistory];
         let body = render_block_body(&only_git, sections);
-        assert!(body.contains("`recent_changes`"), "git row present");
+        assert!(body.contains("`git` modes `recent`"), "git row present");
         assert!(
-            !body.contains("`workspace_grep`"),
+            !body.contains("`grep`, `graph`"),
             "code-search row absent when unselected"
         );
     }
