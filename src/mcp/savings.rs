@@ -294,10 +294,10 @@ mod tests {
         }
     }
 
-    /// `basemind-agent` registers its LLM-facing tools under `domain_mode` (a colon is illegal in
-    /// the provider tool-name pattern) and routes them through this estimator, so the underscore
-    /// spelling must reach the same baseline as the `domain:mode` key the MCP surface records.
-    /// Without the rewrite the agent TUI's "tokens saved" readout silently reports zero.
+    /// LLM clients register tools under `domain_mode` (a colon is illegal in the provider
+    /// tool-name pattern) and route them through this estimator, so the underscore spelling must
+    /// reach the same baseline as the `domain:mode` key the MCP surface records. Without the
+    /// rewrite their "tokens saved" readout silently reports zero.
     #[test]
     fn agent_tool_names_model_the_same_baseline_as_their_modes() {
         let text = "a".repeat(400);

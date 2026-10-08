@@ -108,7 +108,7 @@ Refresh the index, inspect health and cache footprint, and shrink what an agent 
 | Mode | Purpose |
 |---|---|
 | `status` | Index health for this workspace: file counts, languages, scan age. |
-| `repo` | Repository identity and layout: root, git remote, branch, view. |
+| `repo` | Repository identity: workdir, branch, HEAD sha. |
 | `rescan` | Re-index changed files, or the whole workspace when no paths are given. |
 | `cache_stats` | On-disk size, blob accounting (tier-aware orphan count, `last_gc`) and process RAM for the machine-global cache. |
 | `gc` | Report blobs no live view references — non-destructive, deletes nothing. To reclaim them, run `basemind cache gc`, which performs the cross-workspace reference-counted sweep. |

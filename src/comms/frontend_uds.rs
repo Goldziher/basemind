@@ -29,7 +29,7 @@ mod imp {
     use tokio_util::codec::{Decoder, Encoder, LengthDelimitedCodec};
 
     use crate::comms::daemon::Broker;
-    use crate::comms::protocol::{CommsOut, CommsRequest};
+    use crate::comms::protocol::{CommsOut, CommsRequest, CommsResponse};
     use crate::comms::transport::{CommsFrontend, CommsLink, MAX_FRAME_BYTES, PeerCred, serve_link};
 
     /// Read chunk size pulled from the socket per `read_buf` call.
@@ -177,6 +177,132 @@ mod imp {
         }
     }
 
+    /// A [`UdsLink`] that replays one already-read request before reading from the socket, so a
+    /// connection that parked on the readiness gate hands its first real request to the broker.
+    struct ReplayLink {
+        first: Option<CommsRequest>,
+        inner: UdsLink,
+    }
+
+    impl CommsLink for ReplayLink {
+        async fn recv(&mut self) -> std::io::Result<Option<CommsRequest>> {
+            match self.first.take() {
+                Some(req) => Ok(Some(req)),
+                None => self.inner.recv().await,
+            }
+        }
+
+        async fn send(&mut self, out: CommsOut) -> std::io::Result<()> {
+            self.inner.send(out).await
+        }
+
+        fn peer_cred(&self) -> PeerCred {
+            self.inner.peer_cred()
+        }
+    }
+
+    /// The accept loop that runs while the broker is still being built (the comms store open is
+    /// fsync-heavy and can take tens of seconds on a contended disk). A `Ping` is answered at once
+    /// so liveness probes (`ensure_daemon`) see a healthy daemon; every other request, and relay
+    /// connections, park until [`EarlyAccept::finish`] publishes the broker and are then served
+    /// exactly as if they had arrived afterwards. Nothing is dropped, nothing errors.
+    pub struct EarlyAccept {
+        broker_tx: watch::Sender<Option<Arc<Broker>>>,
+        stop_tx: tokio::sync::oneshot::Sender<()>,
+        task: tokio::task::JoinHandle<UnixListener>,
+        socket_path: PathBuf,
+    }
+
+    impl EarlyAccept {
+        /// Start accepting on `listener` immediately.
+        pub fn start(listener: UnixListener, socket_path: PathBuf) -> Self {
+            let (broker_tx, broker_rx) = watch::channel(None);
+            let (stop_tx, mut stop_rx) = tokio::sync::oneshot::channel::<()>();
+            let task = tokio::spawn(async move {
+                let my_uid = super::daemon_uid();
+                loop {
+                    tokio::select! {
+                        accepted = listener.accept() => {
+                            let Ok((stream, _addr)) = accepted else { continue };
+                            let peer = peer_cred_of(&stream);
+                            if let Some(uid) = peer.uid && uid != my_uid {
+                                tracing::warn!(peer_uid = uid, daemon_uid = my_uid, "comms: rejecting cross-user connection");
+                                continue;
+                            }
+                            tokio::spawn(serve_while_starting(stream, peer, broker_rx.clone()));
+                        }
+                        _ = &mut stop_rx => break,
+                    }
+                }
+                listener
+            });
+            Self {
+                broker_tx,
+                stop_tx,
+                task,
+                socket_path,
+            }
+        }
+
+        /// Publish the finished broker, stop the early loop, and hand the listener back as the
+        /// regular front-end. Connections accepted so far continue on their own tasks.
+        pub async fn finish(self, broker: Arc<Broker>) -> std::io::Result<UdsFrontend> {
+            let _ = self.stop_tx.send(());
+            let listener = self.task.await.map_err(std::io::Error::other)?;
+            let _ = self.broker_tx.send(Some(broker));
+            Ok(UdsFrontend::from_listener(listener, self.socket_path))
+        }
+    }
+
+    /// Serve one connection accepted before the broker exists. See [`EarlyAccept`].
+    async fn serve_while_starting(
+        stream: UnixStream,
+        peer: PeerCred,
+        mut broker_rx: watch::Receiver<Option<Arc<Broker>>>,
+    ) {
+        let is_relay = peek_first_byte(&stream).await == Some(crate::comms::relay::RELAY_MAGIC[0]);
+        if is_relay {
+            let Some(broker) = wait_for_broker(&mut broker_rx).await else {
+                return;
+            };
+            let guard = broker.register_link();
+            broker.serve_relay_connection(stream, guard).await;
+            return;
+        }
+        let mut link = UdsLink::new(stream, peer);
+        loop {
+            match link.recv().await {
+                Ok(Some(CommsRequest::Ping)) => {
+                    if link.send(CommsOut::Response(CommsResponse::Pong)).await.is_err() {
+                        return;
+                    }
+                }
+                Ok(Some(first)) => {
+                    let Some(broker) = wait_for_broker(&mut broker_rx).await else {
+                        return;
+                    };
+                    let guard = broker.register_link();
+                    serve_link(
+                        broker,
+                        ReplayLink {
+                            first: Some(first),
+                            inner: link,
+                        },
+                        guard,
+                    )
+                    .await;
+                    return;
+                }
+                Ok(None) | Err(_) => return,
+            }
+        }
+    }
+
+    /// Park until the broker is published; `None` when the daemon gave up before building one.
+    async fn wait_for_broker(rx: &mut watch::Receiver<Option<Arc<Broker>>>) -> Option<Arc<Broker>> {
+        rx.wait_for(Option::is_some).await.ok()?.clone()
+    }
+
     /// Read the peer's credentials from a connected stream. Best-effort: returns an empty
     /// [`PeerCred`] when the platform call fails, in which case the daemon relies on the
     /// socket's filesystem permissions.
@@ -223,7 +349,7 @@ mod imp {
 }
 
 #[cfg(unix)]
-pub use imp::{UdsFrontend, UdsLink};
+pub use imp::{EarlyAccept, UdsFrontend, UdsLink};
 
 /// The daemon's own real user id. Used to reject cross-user socket connections.
 #[cfg(unix)]
@@ -389,6 +515,46 @@ mod tests {
             resp,
             CommsOut::Response(CommsResponse::Pong),
             "B's Ping must be answered with Pong"
+        );
+    }
+
+    /// While the broker is still being built (slow store open) the early accept loop answers `Ping`
+    /// at once and parks every other request, which is then served normally once the broker lands.
+    #[tokio::test]
+    async fn early_accept_pings_immediately_and_parks_other_requests_until_the_broker_is_ready() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let socket = dir.path().join("early.sock");
+        let listener = UnixListener::bind(&socket).expect("bind");
+        let early = super::EarlyAccept::start(listener, socket.clone());
+
+        let mut pinger = UnixStream::connect(&socket).await.expect("connect pinger");
+        send_req(&mut pinger, &CommsRequest::Ping).await;
+        let pong = tokio::time::timeout(Duration::from_secs(3), read_resp(&mut pinger))
+            .await
+            .expect("Ping must be answered before any broker exists");
+        assert_eq!(pong, CommsOut::Response(CommsResponse::Pong));
+
+        let mut client = UnixStream::connect(&socket).await.expect("connect client");
+        send_req(&mut client, &CommsRequest::Status).await;
+        let parked = tokio::time::timeout(Duration::from_millis(300), read_resp(&mut client)).await;
+        assert!(
+            parked.is_err(),
+            "a store-dependent request must wait, not error or be answered"
+        );
+
+        // Simulate the slow store open finishing.
+        let store = Arc::new(CommsStore::open(dir.path()).expect("store"));
+        let broker = Arc::new(Broker::new(store));
+        let frontend = early.finish(broker.clone()).await.expect("finish");
+        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+        tokio::spawn(Box::new(frontend).serve(broker, shutdown_rx));
+
+        let resp = tokio::time::timeout(Duration::from_secs(5), read_resp(&mut client))
+            .await
+            .expect("the parked request is served once the broker is ready");
+        assert!(
+            matches!(resp, CommsOut::Response(ref r) if !matches!(r, CommsResponse::Error { .. })),
+            "parked request got {resp:?}"
         );
     }
 }
