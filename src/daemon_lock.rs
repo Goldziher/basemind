@@ -1,6 +1,6 @@
 //! Single-owner daemon lock, pidfile, and the machine-wide live-daemon registry + ceiling.
 //!
-//! Shared by every daemon family basemind spawns — the comms broker, the agent-ipc daemon, the
+//! Shared by every daemon family basemind spawns — the comms broker and the
 //! shells/rmux daemon (see [`DaemonKind`]) — so one lock discipline, one registry and one ceiling
 //! cover all of them. The registry itself is feature-independent; its consumers stay feature-gated.
 //!
@@ -70,8 +70,6 @@ pub enum DaemonKind {
     // field at all — still deserializes instead of being pruned as corrupt. See `read_record`. ~keep
     #[default]
     Comms,
-    /// The agent-ipc daemon backing `basemind agent`.
-    Agent,
     /// The shells / rmux daemon.
     Shells,
 }
@@ -82,7 +80,6 @@ impl DaemonKind {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Comms => "comms",
-            Self::Agent => "agent",
             Self::Shells => "shells",
         }
     }
@@ -405,21 +402,40 @@ mod tests {
     fn the_ceiling_counts_each_kind_separately() {
         let machine = tempfile::tempdir().expect("machine tempdir");
         let comms = tempfile::tempdir().expect("comms tempdir");
-        let agent = tempfile::tempdir().expect("agent tempdir");
+        let shells = tempfile::tempdir().expect("shells tempdir");
         let _comms_lock =
             DaemonLock::acquire_at(DaemonKind::Comms, comms.path(), "9.9.9", machine.path()).expect("comms acquire");
-        let _agent_lock =
-            DaemonLock::acquire_at(DaemonKind::Agent, agent.path(), "9.9.9", machine.path()).expect("agent acquire");
+        let _shells_lock =
+            DaemonLock::acquire_at(DaemonKind::Shells, shells.path(), "9.9.9", machine.path()).expect("shells acquire");
 
         assert_eq!(live_daemons_in(machine.path()).len(), 2, "both families are registered");
         let comms_only = live_daemons_of_in(machine.path(), DaemonKind::Comms);
-        assert_eq!(comms_only.len(), 1, "an agent daemon does not count against comms");
+        assert_eq!(comms_only.len(), 1, "a shells daemon does not count against comms");
         assert_eq!(comms_only[0].dir, comms.path(), "the comms entry names the comms dir");
         assert_eq!(
             live_daemons_of_in(machine.path(), DaemonKind::Shells).len(),
-            0,
-            "no shells daemon is registered"
+            1,
+            "the shells daemon is counted under its own kind"
         );
+    }
+
+    #[test]
+    fn a_record_naming_the_removed_agent_kind_is_reaped_without_crashing() {
+        let machine = tempfile::tempdir().expect("machine tempdir");
+        let path = machine.path().join("legacy.pid");
+        let record = |kind: &str| {
+            format!(
+                r#"{{"pid":{},"kind":"{kind}","dir":"/tmp/x","version":"1","started_unix":1}}"#,
+                std::process::id()
+            )
+        };
+        // Control: the same record with a live kind parses, so only the kind can explain the reap.
+        std::fs::write(&path, record("comms")).expect("write control record");
+        assert!(read_record(&path).is_some(), "fixture is otherwise valid");
+        std::fs::write(&path, record("agent")).expect("write legacy record");
+        assert!(read_record(&path).is_none(), "the removed kind no longer parses");
+        assert!(live_daemons_in(machine.path()).is_empty());
+        assert!(!path.exists(), "the unreadable record is reaped like any corrupt one");
     }
 
     #[test]
