@@ -257,6 +257,9 @@ fn process_file(
             && extraction_sidecars_present(store, config, &existing.hash_hex)
             && embed_state_satisfied(store, config, filters, rel, &existing.hash_hex, embed)
         {
+            // Bytes were not read, so a missing grep bloom (an index that predates it) is backfilled
+            // here rather than leaving the file a permanent grep candidate.
+            index_batch.backfill_grep_bloom(root, &RelPath::from(rel), meta.len(), mtime);
             return FileResult::bare(rel.to_string(), FileStatus::Unchanged);
         }
     }
@@ -303,6 +306,11 @@ fn process_file(
         && sidecars_present
         && embed_state_satisfied(store, config, filters, rel, hash_hex_str, embed)
     {
+        // Content is unchanged but the stamp moved (touch, checkout): re-stamp the bloom from the
+        // bytes already in hand so grep keeps trusting it.
+        if matches!(source, ScanSource::WorkingTree) {
+            index_batch.restamp_grep_bloom(&RelPath::from(rel), &bytes, size_bytes, mtime);
+        }
         return FileResult::bare(rel.to_string(), FileStatus::Unchanged);
     }
 
@@ -374,6 +382,10 @@ fn process_file(
     let rel_path = RelPath::from(rel);
     if !index_batch.stage(&rel_path, &l1, l2.as_ref()) {
         tracing::warn!(rel, "index upsert failed; reference search may be incomplete");
+    }
+    // Grep reads the working tree, so only a working-tree scan describes what it will sweep.
+    if matches!(source, ScanSource::WorkingTree) {
+        index_batch.stage_grep_bloom(&rel_path, &bytes, size_bytes, mtime);
     }
 
     #[cfg(feature = "code-search")]
@@ -571,7 +583,7 @@ fn is_unsupported_format_error(msg: &str) -> bool {
 /// would have to reproduce the exact nanosecond mtime to be missed. The value is only ever compared
 /// against a previously-stored one (never displayed), so the unit is a pure internal detail. `i64`
 /// nanos overflow in year 2262; saturate rather than wrap.
-fn mtime_nanos(metadata: &std::fs::Metadata) -> i64 {
+pub fn mtime_nanos(metadata: &std::fs::Metadata) -> i64 {
     metadata
         .modified()
         .ok()

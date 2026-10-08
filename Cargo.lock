@@ -867,6 +867,7 @@ dependencies = [
  "proptest",
  "rayon",
  "regex",
+ "regex-syntax",
  "rmcp",
  "rmp-serde",
  "rmux-client",
