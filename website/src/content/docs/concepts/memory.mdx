@@ -10,8 +10,8 @@ them by meaning, and propose new notes worth remembering based on how files chan
 
 ## How it works
 
-Each repository (keyed by its normalized git `origin` URL) has its own memory store. When you clone
-a repo, its memory comes with you. When you work on an unrelated project, that memory stays
+Each repository (keyed by its normalized git `origin` URL) has its own memory store. Clones and worktrees of
+the same repo on one machine share that store. When you work on an unrelated project, that memory stays
 separate — no leakage.
 
 Any agent can:
@@ -52,9 +52,11 @@ This is a suggestion, not a stored fact — you approve before anything is kept.
 
 ### Proposal workflow
 
-1. **Mine for candidates:** `memory mine {commits: 10, min_count: 3}` analyzes the last 10
-   commits and finds groups of files that changed together at least 3 times. The mode returns
-   pending suggestions.
+1. **Mine for candidates:** `memory mine {window: 200, min_support: 5}` analyzes the last 200
+   commits (the default; max 2000) and finds groups of files that changed together at least 5
+   times (the default) with a confidence of at least 0.6 (`min_confidence`). Commits touching more
+   than 25 files (`max_files_per_commit`) are skipped so bulk changes do not dominate. The mode
+   returns pending suggestions.
 2. **List pending:** `memory proposals {}` shows the suggestions awaiting your decision (optional
    kind filter).
 3. **Accept:** `memory accept {id: "prop-1", key: "file-pattern-migrations"}` stores a suggestion
@@ -81,7 +83,7 @@ with `memory search {query: "SQL injection prevention"}`.
 
 Memory is indexed by the repository's git origin URL, so:
 
-- Two clones of the same repo on different machines share the same memory.
+- Two clones or worktrees of the same repo on the same machine share the same memory. The store lives in the machine-global cache, so it is not synced between machines.
 - Forks or different remotes have separate memory stores (different URLs).
 - Each unrelated repo has its own memory (different URL).
 

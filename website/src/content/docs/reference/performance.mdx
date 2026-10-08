@@ -23,11 +23,16 @@ Measured with the hardening harness, which clones each project fresh, then runs 
 
 The TypeScript compiler is the worst case — 81k files in 18 seconds. This is dominated by tree-sitter parsing (~30% of time) and per-file index commits (~14% mutex contention on Fjall). Blob I/O and serialization consume ~16%. Allocations are under 2%.
 
-Once running, most code questions answer in **under a millisecond**, symbol and call-graph searches in a few milliseconds, because the map is held in memory rather than read from disk each time.
+The table above comes from the hardening harness on upstream repositories, measured on an earlier
+release; it does not reflect the code-only code map (prose, data and config files now go to the
+document tier) or the memory-bounded scan. For a large monorepo see
+[Large-monorepo numbers](#large-monorepo-numbers) below.
+
+Once the daemon has the index open, code questions answer from a bounded outline cache, resident name indexes and an on-disk index rather than by re-reading the project.
 
 ## Document Search
 
-Document indexing and semantic search (PDFs, Office, HTML, images, email) adds a separate pass after code scanning. Full-text + semantic queries over the document index run in approximately **200 ms** on a typical project, because the vector store (LanceDB) is in-memory and indexed for KNN.
+Document indexing and semantic search (PDFs, Office, HTML, images, email) adds a separate pass after code scanning. Full-text + semantic queries over the document index measured **106 ms p50 and 260 ms p95** in-process on a 74k-file monorepo with documents indexed (60 queries).
 
 ## Git-History Queries
 
@@ -58,19 +63,66 @@ To measure: `cargo bench --bench git_history` or the git-ops block in `scripts/h
 
 ## Query Latency Summary
 
-Once the index is in memory (after `basemind serve` starts):
+With the daemon holding the index (in-process p50 on a 74k-file monorepo, see below):
 
-- **Code questions** (outline, symbol search, call-graph): **< 1 ms** (in-memory hash lookup + tree walk)
-- **Reference search** (`code` mode `references`): **a few ms** (Fjall prefix scan, bounded by `scan_cap = limit * 8`)
-- **Git history** (`git` modes `touching`, `blame_symbol`): **tens of µs** (posting-list lookup)
-- **Document search**: **~200 ms** (LanceDB KNN with embeddings)
+- **Outline**: about **1 ms**
+- **Symbols, references, callers, dependents**: **1-5 ms**
+- **`code grep`**: low hundreds of ms with the bloom prefilter, several seconds without
+- **Git history** (`git` modes `touching`, `recent`): **tens of µs** (posting-list lookup)
+- **Git commit search** (`git` mode `search`): **~55 ms**
+- **Document search**: **~100 ms**
 
-All are returned over MCP stdio, so network latency (if running remotely) adds on top.
+These are in-process figures. They exclude MCP transport and process start-up, so an MCP client
+sees slightly more.
+
+## Large-monorepo numbers
+
+Measured by `basemind admin eval --warmup` (see [Evaluation](/reference/evaluation/)) on a 74k-file
+monorepo, 60 tasks per mode, in-process:
+
+| Mode | p50 | p95 |
+|---|---|---|
+| `outline` | 1.0 ms | 2.2 ms |
+| `references` | 1.4 ms | 6.0 ms |
+| `symbols` | 3.7 ms | 5.3 ms |
+| `dependents` | 4.0 ms | 5.6 ms |
+| `callers` | 4.6 ms | 10.4 ms |
+| `find` | 6.6 ms | 9.0 ms |
+| `git_search` | 55 ms | 96 ms |
+| `docs` | 106 ms | 260 ms |
+
+Scan cost on the 83k-file checkout of the same repository (ADR-0012), peak RSS: a full rebuild
+after a schema migration peaked at 3.68 GB with the grep bloom filters (4.96 GB without them in the
+same comparison), and an unchanged rescan at 1.06-1.14 GB (1.15 GB without). Full-rebuild CPU time rose about 3 %
+(2,355 s against 2,277 s user plus system); rescan CPU was unchanged.
+
+### Code grep
+
+`code grep` is a full-corpus scan, so its cost used to be the time to open every indexed file. A
+per-file trigram bloom filter (a new `grep_bloom` index keyspace, about 12.8 % of the indexed code
+bytes, built from bytes the scan already reads) lets a grep skip every file that provably cannot contain
+a literal the pattern requires. On 15 benchmark patterns over 38,265 Python files (216 MB) of that
+monorepo, interleaved runs measured (ADR-0012):
+
+| Run | p50 | p95 | Precision / recall |
+|---|---|---|---|
+| prefilter off | 3.6-7.8 s | 4.4-9.9 s | 0.906 / 1.000 |
+| prefilter on | 125-134 ms | 190-268 ms | 0.906 / 1.000 |
+
+The machine was under heavy unrelated load, so absolute times are inflated; the ranking and the
+results were identical across all runs. Results, totals, hit order, cursors and context lines are
+unchanged by the prefilter. A file is skipped only when its filter rejects the pattern and its size
+and mtime still match the scan. Patterns with no required 3-byte literal (`.*`, `(?i)k`) still sweep
+everything. `BASEMIND_GREP_BLOOM=0` forces the full sweep. An index built before the filters existed
+needs no wipe: it greps correctly at once and gains its filters on the next scan. On this repository
+(code only, a fresh index) the filters added about 1.9 % to the index size.
 
 ## Memory Usage
 
-`basemind serve` holds the index in memory so it can answer without re-reading the project. The
-footprint scales with project size; `basemind cache stats` reports both the on-disk cache
+Memory is bounded rather than proportional to repository size: a capped outline cache
+(`[resources] max_map_cache_mb`), a compact resident term index, small name dictionaries, a footprint
+ceiling on document extraction and embedding, and the CPU ONNX provider by default. See
+[Memory and resources](/reference/memory/). `basemind cache stats` reports both the on-disk cache
 (per-component, matching `du`) and process RAM for your project.
 
 ## Scaling
@@ -78,7 +130,7 @@ footprint scales with project size; `basemind cache stats` reports both the on-d
 Performance is stable across project size:
 
 - **Scan time** scales roughly linearly with file count (tree-sitter parsing dominates).
-- **Query latency** stays flat: the map is held in memory, so lookups don't grow with history depth.
+- **Git query latency** stays flat in history depth: the newest-first posting lists decode only the commits a query returns.
 - **Git-history index** costs **6–22 % of `.git`** on disk (the one index size that is measured).
 
 Eager L2 (call-site extraction) is on by default and adds to scan time. Set `eager_l2 = false` to

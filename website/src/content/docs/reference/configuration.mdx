@@ -149,7 +149,10 @@ transport = "stdio"
 ### `[documents]` Section
 
 Document indexing (PDFs, Office, HTML, etc.) and full-text + semantic search. Requires
-`--features documents`.
+`--features documents`. The document tier also holds the prose, data and config files the code map
+no longer indexes (Markdown, reStructuredText, AsciiDoc, JSON, YAML, TOML, XML, CSV, INI, `.env`,
+diffs and the like), so `include` / `exclude` and `mime_allowlist` decide which of those are
+searchable. A build without the `documents` feature keeps them in the code map.
 
 ```toml
 [documents]
@@ -161,8 +164,8 @@ max_chunks_per_document = 2000
 | Key | Type | Notes |
 |---|---|---|
 | `enabled` | bool | Enable/disable document indexing (default `true`). Requires the model files, which download on first use. |
-| `embed` | bool | Generate vector embeddings for semantic search. Set `false` to keep full-text only. |
-| `embedding_preset` | string | Named embedding model preset used to embed chunks. |
+| `embed` | bool | Generate vector embeddings for semantic search (default `true`). Set `false` to keep full-text only. |
+| `embedding_preset` | string | Named embedding model preset used to embed chunks (default `balanced`). |
 | `max_chunks_per_document` | integer | Cap on chunks embedded per document (default 2000), so one pathological file can't explode a scan. |
 | `max_pages` / `extraction_timeout_secs` | integer | Per-document extraction bounds: pages (default 500) and wall-clock seconds (default 600). |
 | `max_characters` / `overlap` | integer | Chunk size (default 1000, minimum 64) and overlap (default 200); `overlap` must stay below `max_characters`. |
@@ -203,8 +206,8 @@ document_models = "code_only"
 | `embed_threads` | integer | `0` | Cap on the ONNX embedding pool. `0` (auto) resolves to `max(2, logical_cpus / 4)`, so the embedder never pins the machine and ORT arenas aren't replicated across every core. Supersedes the deprecated `[documents].embed_max_threads`; `resources.embed_threads` wins whenever it's set (non-zero). |
 | `embed_batch_size` | integer | `32` | Number of chunks the embedder submits to ONNX per batch. Larger batches amortize per-call overhead at the cost of a higher transient memory spike; lower it to shrink that spike. |
 | `max_concurrent_documents` | integer | `0` | Upper bound on documents extracted concurrently. `0` (auto) leaves dispatch unbounded. Documents beyond the bound wait for a free slot before they are read, so a burst of large files cannot all be held in memory at once. The daemon clamps the value (see `BASEMIND_DAEMON_MAX_CONCURRENT_DOCUMENTS`). |
-| `max_footprint_mb` | integer, `"auto"` or `"off"` | `0` | Advisory memory ceiling in mebibytes. A positive integer is an explicit ceiling; `0` or `"auto"` derives one (75% of an enforced cgroup limit, else 50% of machine RAM, floored at 512 MiB); `"off"` disables it. Workers park at the document-extraction and code-chunk embedding admit points while the process is over the ceiling and are admitted anyway after a capped wait, so it shapes peak memory rather than enforcing a hard limit. The daemon clamps it (see `BASEMIND_DAEMON_MAX_FOOTPRINT_MB`). |
-| `max_map_cache_mb` | integer | `256` | Byte budget in MiB for the MCP read stack's decoded-outline cache, per workspace; `0` is unbounded. A miss costs one blob read and never changes an answer. The daemon clamps it (see `BASEMIND_DAEMON_MAX_MAP_CACHE_MB`). |
+| `max_footprint_mb` | integer, `"auto"` or `"off"` | `0` | Advisory memory ceiling in mebibytes. A positive integer is an explicit ceiling; `0` or `"auto"` derives one (75% of an enforced cgroup limit, else 50% of machine RAM, floored at 512 MiB); `"off"` disables it. Workers park at the document-extraction and code-chunk embedding admit points while the process is over the ceiling. Document extraction then runs one document at a time (an otherwise idle process is admitted immediately), and a document whose own estimated working set exceeds the ceiling is skipped, counted as too large, with a warning naming the estimate and the limit. The ceiling shapes peak memory rather than enforcing a hard limit. The daemon clamps it (see `BASEMIND_DAEMON_MAX_FOOTPRINT_MB`). |
+| `max_map_cache_mb` | integer | `256` | Byte budget in MiB for the MCP read stack's decoded-outline cache, per workspace; `0` is unbounded. A miss costs one blob read and never changes an answer. `references`, `callers` and `implementations` from a daemon-backed session are forwarded to the daemon and hold no projection in the session, so this budget only bounds the last-resort in-RAM call/implementation projection used when no daemon is reachable (the `projections_capped` notice appears only then). The daemon clamps it (see `BASEMIND_DAEMON_MAX_MAP_CACHE_MB`). |
 | `document_models` | enum | `full` | Which model families run during document extraction. `full` runs every configured post-processor. `code_only` keeps embeddings but forces keyword extraction, NER, and summarization off and disables OCR. `none` also drops embeddings — documents are still extracted for text + metadata (keyword search) but never routed to any model. `[documents].enabled = false` remains the zero-cost total short-circuit. |
 | `onnx_provider` | enum | `cpu` | ONNX Runtime execution provider for every model basemind loads (embeddings, reranker, layout detection, NER): `cpu`, `auto`, `coreml`, `cuda` or `tensorrt`. The default is `cpu` because the platform default on macOS (CoreML) compiled a graph per input shape and measured 7.6 GB resident for one tiny document against 0.8 GB on CPU (and 3x slower), which let a document-heavy scan reach tens of GB. `auto` restores the platform default (CoreML on macOS, CUDA on a GPU-enabled Linux build). |
 
@@ -298,6 +301,25 @@ agent_id = "my-agent"
 
 Only `agent_id` is read. The other `[comms]` keys, including `enabled`, parse but currently have no
 effect (see [Reserved keys](#reserved-keys)).
+
+### `[shells]` Section
+
+Agent-shell presentation. Requires `--features shells`.
+
+```toml
+[shells]
+enabled = true
+visual = "headless"
+terminal = "auto"
+```
+
+| Key | Type | Default | Notes |
+|---|---|---|---|
+| `enabled` | bool | `true` | `false` keeps the `shell` tools wired but never spawns a session. |
+| `visual` | enum | `headless` | How a spawned session is surfaced: `headless` (not presented), `current` (a tab in the open terminal), `window` (a new terminal window) or `web`. |
+| `terminal` | enum | `auto` | Emulator the visual launcher drives: `auto` (detect from the environment), `iterm2`, `terminal_app`, `windows_terminal`, `gnome_terminal`, `konsole`, `wezterm`, `alacritty`, `kitty` or `xterm`. |
+| `default_cols` / `default_rows` | integer | `200` / `50` | Initial pseudo-terminal size (minimum 1). |
+| `keep_on_exit` | bool | `true` | Reserved (see [Reserved keys](#reserved-keys)). |
 
 ### `[llm]` Section
 
@@ -464,6 +486,12 @@ Read directly rather than mapped from a config key:
 |---|---|
 | `BASEMIND_NO_SEED` | Any non-empty value other than `0` stops a new linked-worktree view from being seeded from a sibling worktree's index. |
 | `BASEMIND_DATA_HOME` | Overrides the global cache root. |
+| `BASEMIND_GREP_BLOOM` | `0` disables the per-file trigram bloom prefilter of `code grep` and forces the full sweep. Anything else (or unset) leaves it on. See [Performance](/reference/performance/#code-grep). |
+| `BASEMIND_BLOB_GC_GRACE_SECS` | Whole seconds a blob must age before the sweep (`basemind cache gc`, post-migration cleanup, the daemon's hourly sweep) may reclaim it. Default `21600` (6 h); `0` reclaims every unreferenced blob at once. |
+
+Daemon-side knobs that are not config keys (`BASEMIND_WARM_READ_STACKS`, `BASEMIND_CACHE_BUDGET_MB`,
+`BASEMIND_INDEX_CACHE_BYTES`, `BASEMIND_MAX_DAEMONS`, `BASEMIND_NO_AUTOSPAWN`) are listed in
+[Memory and resources](/reference/memory/#operator-variables).
 
 ## Per-Request Overrides
 
@@ -527,7 +555,7 @@ basemind uses `RELEASE_MINOR` from `src/version.rs` as the single source of trut
 - **`INDEX_SCHEMA_VER`** — Fjall keyspace format (`<cache>/workspaces/<key>/views/<view>/index.fjall/`)
 - **`SCHEMA_VER`** — msgpack blob format (`<cache>/blobs/<hash>.{l1,l2,l3}.msgpack`, global + content-addressed)
 
-When either schema changes (typically on minor version bumps), the next `basemind scan` automatically wipes the old caches and rebuilds from source. Patch releases are always cache-compatible.
+When either schema changes (a minor version bump), the next `basemind scan` automatically wipes the old caches and rebuilds from source. Patch releases are always cache-compatible: a change to what extraction should produce for an unchanged file bumps an internal extractor epoch instead, and only the files whose entry or blob predates it are re-extracted. See [Upgrading](/start/upgrading/).
 
 ## Directory Layout
 
@@ -540,7 +568,10 @@ Nothing basemind-owned is written into the repository. State lives in a machine-
 ├── blobs/                      # content-addressed, shared by every workspace
 │   ├── <hash>.l1.msgpack       # Outlines (symbols, signatures, imports)
 │   ├── <hash>.l2.msgpack       # Call sites (if eager_l2 = true)
-│   └── <hash>.l3.msgpack       # Structural hashes
+│   ├── <hash>.l3.msgpack       # Structural hashes
+│   └── <hash>.{fm,chunk,rref,doc}.msgpack  # Frontmatter, code chunks, doc-link refs, documents
+├── gc.lock                     # Machine-wide blob sweep lock
+├── gc-state.json               # Last sweep result (shown as `last_gc` by `cache stats`)
 └── workspaces/<workspace_key>/ # one per worktree root
     ├── views/<view>/           # `working`, `staged`, ...
     │   ├── index.msgpack
@@ -561,6 +592,6 @@ The cache is safe to delete; `basemind scan` rebuilds it (`basemind cache clear`
 
 **`basemind serve` not starting?** Check that `basemind` is on your PATH (`which basemind`). In `.mcp.json`, use the full path if needed: `"command": "/path/to/basemind"`.
 
-**Out of disk space?** Run `basemind cache gc` to reclaim unused blobs. `basemind cache stats` shows per-component sizes.
+**Out of disk space?** Run `basemind cache gc` to reclaim blobs no workspace on the machine references (blobs younger than six hours are kept). `basemind cache stats` shows per-component sizes.
 
 **Schema mismatch after upgrade?** Run `basemind scan` to automatically rebuild. Or run `basemind cache clear` and re-scan. No data loss — everything is rebuilt from source.
