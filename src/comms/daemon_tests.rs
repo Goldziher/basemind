@@ -969,6 +969,44 @@ async fn subscribe_inbox_notifies_matching_discoverable_thread() {
 mod maintenance_tests;
 
 #[tokio::test]
+async fn inbox_scan_is_bounded_by_the_page_limit_not_the_backlog() {
+    let (_d, broker) = temp_broker();
+    let (tx, _rx) = mpsc::channel(32);
+    let mut alice = hello(&broker, &tx, "alice").await;
+    let thread = start_thread(&broker, &mut alice, &tx, &["bob"]).await;
+    let mut bob = hello(&broker, &tx, "bob").await;
+    for n in 0..700 {
+        post(&broker, &mut alice, &tx, &thread, &format!("m{n}")).await;
+    }
+    let read = |cursor| CommsRequest::Inbox {
+        remote: None,
+        cwd: None,
+        cursor,
+        limit: Some(1),
+        mark_read: false,
+        since_micros: None,
+    };
+
+    let CommsResponse::Inbox {
+        messages,
+        unread,
+        next_cursor: Some(cursor),
+    } = broker.handle(read(None), &mut bob, &tx).await
+    else {
+        panic!("expected a paginated inbox");
+    };
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0].meta.subject, "m0");
+    // 1 returned + a 500-row slack scanned + 1 for the truncation marker; the true backlog is 699.
+    assert_eq!(unread, 501, "the unread count is a lower bound once the scan cap is hit");
+
+    let CommsResponse::Inbox { messages, .. } = broker.handle(read(Some(cursor)), &mut bob, &tx).await else {
+        panic!("expected the next page");
+    };
+    assert_eq!(messages[0].meta.subject, "m1", "the cursor resumes right after the first page");
+}
+
+#[tokio::test]
 async fn correlated_call_is_answered_with_a_reply_echoing_its_id() {
     let (_d, broker) = temp_broker();
     let (tx, _rx) = mpsc::channel(8);

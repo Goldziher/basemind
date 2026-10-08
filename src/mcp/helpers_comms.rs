@@ -34,8 +34,13 @@ use crate::comms::model::now_micros;
 
 /// Default page size when a mode omits `limit`. Mirrors the broker's `DEFAULT_LIMIT`.
 const DEFAULT_LIMIT: u32 = 100;
-const DELIVERY_SCAN_LIMIT: u32 = 1_000;
+/// Rows the delivery probe asks for. The broker bounds its own scan to a constant past this, so the
+/// probe costs the same regardless of how large the unread backlog is.
+const DELIVERY_SCAN_LIMIT: u32 = 200;
+/// Minimum spacing between delivery probes for one session.
+const DELIVERY_PROBE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
 const DELIVERY_NOTICE_LIMIT: usize = 5;
+const DELIVERY_CONNECT_BUDGET: std::time::Duration = std::time::Duration::from_secs(2);
 const DELIVERY_BUDGET: std::time::Duration = std::time::Duration::from_millis(200);
 
 /// Default recency window for modes `history` / `inbox` when the caller omits `since_hours`.
@@ -135,19 +140,30 @@ pub(super) async fn resolve_comms_client(
 /// Failure and contention are deliberately silent so mailbox delivery can never make another MCP
 /// capability slow or unavailable.
 pub(super) async fn take_delivery_notice(state: &ServerState) -> Option<String> {
-    let handle = tokio::time::timeout(DELIVERY_BUDGET, resolve_comms_client(state, None))
-        .await
-        .ok()?
-        .ok()?;
-    let page = tokio::time::timeout(DELIVERY_BUDGET, async {
-        let mut client = handle.lock().await;
-        client
-            .read_inbox(None, None, None, DELIVERY_SCAN_LIMIT, false, None)
-            .await
-    })
-    .await
-    .ok()?
-    .ok()?;
+    // Contention means another tool call is already probing; skip rather than queue behind it.
+    let mut probe = state.delivery_probe.try_lock().ok()?;
+    if probe.last_probe.is_some_and(|at| at.elapsed() < DELIVERY_PROBE_INTERVAL) {
+        return None;
+    }
+    probe.last_probe = Some(std::time::Instant::now());
+    if probe.client.is_none() {
+        // Dialing gets its own, longer budget: a daemon that has to be reached or spawned would
+        // otherwise never finish inside the read budget and the probe would never connect.
+        match tokio::time::timeout(DELIVERY_CONNECT_BUDGET, connect_ephemeral_client(state)).await {
+            Ok(Ok(client)) => probe.client = Some(client),
+            _ => return None,
+        }
+    }
+    let page = match tokio::time::timeout(DELIVERY_BUDGET, probe_inbox(&mut probe.client)).await {
+        Ok(Ok(page)) => page,
+        // A failed or timed-out probe leaves the connection in an unknown state: drop it so the next
+        // probe dials a fresh one. It is private to the probe, so nothing else is disturbed.
+        _ => {
+            probe.client = None;
+            return None;
+        }
+    };
+    drop(probe);
     let (messages, unread, _) = page;
     let mut delivered = state.delivered_notifications.lock().await;
     let unseen: Vec<_> = messages
@@ -177,6 +193,17 @@ pub(super) async fn take_delivery_notice(state: &ServerState) -> Option<String> 
     }
     notice.push_str("Use agents mode message with the message id to read a body; ack only after handling it.");
     Some(notice)
+}
+
+/// One bounded inbox read over the probe's private connection.
+async fn probe_inbox(
+    slot: &mut Option<CommsClient>,
+) -> Result<(Vec<crate::comms::protocol::SeqMeta>, u32, Option<crate::comms::cursor::Cursor>), McpError> {
+    let client = slot.as_mut().ok_or_else(|| comms_err("delivery probe has no connection"))?;
+    client
+        .read_inbox(None, None, None, DELIVERY_SCAN_LIMIT, false, None)
+        .await
+        .map_err(comms_err)
 }
 
 /// Open a fresh, un-cached broker connection for the server's own identity. Long forwarded

@@ -510,7 +510,13 @@ impl Broker {
                 })
                 .unwrap_or_default();
             let after = read_seq.max(cursor_seq);
-            let rows = self.store.history_with_seq(thread, after, usize::MAX)?;
+            // Bound the scan: past the page limit only a count is needed, and counting an unbounded
+            // backlog made every inbox read (and the per-tool-call delivery probe) cost O(backlog).
+            // One row over the cap detects truncation; the count is then a lower bound.
+            let scan_cap = limit.saturating_add(INBOX_UNREAD_SCAN_SLACK);
+            let mut rows = self.store.history_with_seq(thread, after, scan_cap.saturating_add(1))?;
+            let truncated = rows.len() > scan_cap;
+            rows.truncate(scan_cap);
             let mut high = after;
             let mut blocked = false;
             for (seq, meta) in rows {
@@ -524,6 +530,9 @@ impl Broker {
                 } else if !blocked {
                     high = seq;
                 }
+            }
+            if truncated {
+                unread_remaining = unread_remaining.saturating_add(1);
             }
             progress.push((thread.as_str().to_string(), high));
             if mark_read && high > after {
@@ -862,6 +871,9 @@ fn not_member(thread: &ThreadId) -> CommsResponse {
         message: format!("agent is not a member of thread {}", thread.as_str()),
     }
 }
+
+/// Rows scanned past the page limit when counting a thread's unread remainder.
+const INBOX_UNREAD_SCAN_SLACK: usize = 500;
 
 fn clamp_limit(limit: Option<u32>) -> usize {
     usize::try_from(limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT)).unwrap_or(DEFAULT_LIMIT as usize)

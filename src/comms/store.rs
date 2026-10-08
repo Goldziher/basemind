@@ -412,9 +412,12 @@ impl CommsStore {
         after_seq: u64,
         limit: usize,
     ) -> Result<Vec<(u64, MessageMeta)>, CommsStoreError> {
-        let prefix = keys::messages_by_thread_prefix(thread.as_str());
+        // Seek straight to `after_seq + 1` (the seq suffix is big-endian, so keys sort by seq) rather
+        // than walking the thread from its first message past every already-read row.
+        let start = keys::message_by_thread(thread.as_str(), after_seq.saturating_add(1));
+        let end = keys::message_by_thread(thread.as_str(), u64::MAX);
         let mut out = Vec::new();
-        for guard in self.messages_by_thread.prefix(&prefix) {
+        for guard in self.messages_by_thread.range(start..=end) {
             let (k, v) = guard.into_inner()?;
             let Some((_, seq)) = keys::parse_message_by_thread(&k) else {
                 continue;
