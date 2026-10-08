@@ -55,7 +55,9 @@ pub const REQUEST_TIMEOUT_ENV: &str = "BASEMIND_COMMS_REQUEST_TIMEOUT_SECS";
 /// Env var overriding how long the connect + `Hello` handshake may take, in seconds.
 pub const HANDSHAKE_TIMEOUT_ENV: &str = "BASEMIND_COMMS_HANDSHAKE_TIMEOUT_SECS";
 const DEFAULT_REQUEST_TIMEOUT_SECS: u64 = 10;
-const DEFAULT_HANDSHAKE_TIMEOUT_SECS: u64 = 5;
+/// Generous because `Hello` is the first store-dependent request: a cold daemon answers it only once
+/// its store has finished opening, which on a large store takes tens of seconds.
+const DEFAULT_HANDSHAKE_TIMEOUT_SECS: u64 = 30;
 
 /// A positive whole-second duration from `var`, else `default_secs`.
 fn timeout_from_env(var: &str, default_secs: u64) -> std::time::Duration {
