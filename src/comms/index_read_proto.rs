@@ -23,6 +23,10 @@ use crate::path::RelPath;
 /// workspace lock.
 pub const MAX_CALLS_IN_FILES: usize = 512;
 
+/// Ceiling on the files one [`IndexReadQuery::GrepBloom`] may name. Enforced daemon-side (the list
+/// arrives off the wire); the client splits a larger window into requests of at most this many.
+pub const MAX_GREP_BLOOM_PATHS: usize = 16_384;
+
 /// A fjall-backed reference read forwarded to the daemon.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum IndexReadQuery {
@@ -38,6 +42,15 @@ pub enum IndexReadQuery {
     /// Every call site of each named file (`calls_by_path`), for the `callers` resolved refinement.
     CallsInFiles {
         /// Files to read, at most [`MAX_CALLS_IN_FILES`].
+        paths: Vec<RelPath>,
+    },
+    /// The per-file trigram bloom prefilter behind `code grep` (ADR-0012): which of `paths` provably
+    /// cannot match `pattern`. The daemon compiles the pattern's required literals itself, so the
+    /// client and the index can never disagree about them.
+    GrepBloom {
+        /// The grep regex source.
+        pattern: String,
+        /// Files to test, at most [`MAX_GREP_BLOOM_PATHS`].
         paths: Vec<RelPath>,
     },
     /// The `implementations_by_trait` scan behind `implementations`.
@@ -62,6 +75,9 @@ pub enum IndexReadResult {
     CallsInFiles(Vec<Vec<WireCall>>),
     /// Reply to [`IndexReadQuery::ImplScan`].
     ImplScan(WireImplScan),
+    /// Reply to [`IndexReadQuery::GrepBloom`]: one flag per requested path, in request order; `true`
+    /// means the file provably cannot match and may be skipped.
+    GrepSkip(Vec<bool>),
 }
 
 /// One page of the call-site name scan.

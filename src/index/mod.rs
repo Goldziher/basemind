@@ -17,6 +17,7 @@
 //! msgpack blobs. This is fast (no parsing — just decode each L1, push to secondary
 //! indexes) and keeps the on-disk format free to evolve.
 
+pub mod grep_bloom;
 pub mod keys;
 pub mod keys_governance;
 pub(crate) mod name_dict;
@@ -78,6 +79,7 @@ const KEYSPACE_MEMTABLE_BYTES: &[(&str, u64)] = &[
     ("refs_by_path", MEMTABLE_WARM_BYTES),
     ("code_bm25_postings", MEMTABLE_HOT_BYTES),
     ("code_bm25_by_path", MEMTABLE_WARM_BYTES),
+    ("grep_bloom", MEMTABLE_COLD_BYTES),
     ("embeddings", MEMTABLE_COLD_BYTES),
     ("memory_by_key", MEMTABLE_COLD_BYTES),
     ("memory_archive", MEMTABLE_COLD_BYTES),
@@ -286,6 +288,11 @@ pub struct IndexDb {
     /// `code_bm25_by_path`: forward companion keyed by file → its chunks' `(chunk_id, doclen,
     /// terms)`, so a re-scan deletes the previous postings in O(prefix). Always created.
     pub(crate) code_bm25_by_path: Keyspace,
+    /// `grep_bloom`: file path -> per-file trigram bloom filter + the `(size, mtime_ns)` stamp it was
+    /// built under (see [`grep_bloom`]). A candidate PREFILTER for `code grep` only; a missing or
+    /// stale row means "candidate", which is why this partition was added without a schema bump and
+    /// backfills on rescan.
+    pub(crate) grep_bloom: Keyspace,
     #[allow(dead_code)]
     pub(crate) embeddings: Keyspace,
     /// `memory_by_key`: scope + key → msgpack `MemoryRecord`.
@@ -405,6 +412,7 @@ impl IndexDb {
         let refs_by_path = open_keyspace(&db, "refs_by_path")?;
         let code_bm25_postings = open_keyspace(&db, "code_bm25_postings")?;
         let code_bm25_by_path = open_keyspace(&db, "code_bm25_by_path")?;
+        let grep_bloom = open_keyspace(&db, "grep_bloom")?;
         let embeddings = open_keyspace(&db, "embeddings")?;
         let memory_by_key = open_keyspace(&db, "memory_by_key")?;
         let memory_archive = open_keyspace(&db, "memory_archive")?;
@@ -426,6 +434,7 @@ impl IndexDb {
                 &refs_by_path,
                 &code_bm25_postings,
                 &code_bm25_by_path,
+                &grep_bloom,
                 &embeddings,
                 &memory_by_key,
                 &memory_archive,
@@ -458,6 +467,7 @@ impl IndexDb {
             refs_by_path,
             code_bm25_postings,
             code_bm25_by_path,
+            grep_bloom,
             embeddings,
             memory_by_key,
             memory_archive,
