@@ -797,7 +797,7 @@ a reconnect. Bare requests (status probes, `Hello`) still get an uncorrelated `R
 
 Nothing waits forever. A coordination request must be answered within
 `BASEMIND_COMMS_REQUEST_TIMEOUT_SECS` (default 10) and the connect + `Hello` within
-`BASEMIND_COMMS_HANDSHAKE_TIMEOUT_SECS` (default 5), else the call fails with the retryable
+`BASEMIND_COMMS_HANDSHAKE_TIMEOUT_SECS` (default 30: a cold daemon answers `Hello` only once its store is open), else the call fails with the retryable
 `comms: broker unresponsive`. Forwarded work (scan, embed, memory, git-history, index reads) is
 exempt. The stdio relay answers a request the daemon has not replied to within
 `BASEMIND_RELAY_REQUEST_TIMEOUT_SECS` (default 180, `0` disables) with a retryable `-32002
