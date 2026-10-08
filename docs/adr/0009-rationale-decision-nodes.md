@@ -15,6 +15,9 @@ XXX/SAFETY markers + normalized `ADR-`/`RFC-NNNN` citations). `Annotates` attach
 nearest enclosing/following symbol by proximity (INFERRED); `Cites` resolves a citation to its ADR/RFC
 file (EXTRACTED) or a virtual node when unresolved (INFERRED), so `docs/adr/` is self-hosting.
 
+Since the code map became code-only, ADR/RFC files are Markdown documents in the document tier, and
+`Cites` resolves against that tier rather than the code map (`src/mcp/codegraph.rs`).
+
 The persisted-state change landed as a `#[serde(default)]` field on the L1 blob, which is
 backward-compatible, so it did **not** require a hand-edited `RELEASE_MINOR` bump: existing repos
 populate `rationale` on their next rescan, and the full cache wipe rides the next minor-release cut via
