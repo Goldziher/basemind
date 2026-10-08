@@ -353,6 +353,13 @@ fn apply_outcomes(ctx: &mut DriveCtx<'_>, outcomes: Vec<FileResult>) {
                 reused,
             } => {
                 ctx.stats.updated += 1;
+                if ctx
+                    .store
+                    .lookup(&o.path)
+                    .is_some_and(|prior| prior.extract_epoch < crate::extract::EXTRACT_EPOCH)
+                {
+                    ctx.stats.refreshed_extraction += 1;
+                }
                 if *had_errors {
                     ctx.stats.updated_with_warnings += 1;
                 }

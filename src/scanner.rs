@@ -159,6 +159,21 @@ pub struct ScanStats {
     /// fresh xberg extraction (+ embedding). Mirrors `reused_extraction` for the doc tier: rename /
     /// rewrite churn should show up here, never as fresh extraction work (issue #44).
     pub reused_doc_extraction: usize,
+    /// Subset of `updated` re-extracted only because the entry's blob predated
+    /// [`crate::extract::EXTRACT_EPOCH`] (an extractor fix that changes the output of unchanged
+    /// files, e.g. shorter symbol signatures). Zero once an index has caught up.
+    pub refreshed_extraction: usize,
+    /// Paths that changed tier in this pass: a code-mapped path now routed to the document tier
+    /// (prose, data and config files), or the reverse. Their old-tier index rows were purged.
+    pub tier_migrated: usize,
+}
+
+impl ScanStats {
+    /// True when this pass displaced blobs, index rows or chunks that no live entry references any
+    /// more, so a blob sweep is worth running now rather than at the next maintenance tick.
+    pub fn displaced_artifacts(&self) -> bool {
+        self.tier_migrated > 0 || self.refreshed_extraction > 0
+    }
 }
 
 /// Per-file result. Every file the scanner *considered* shows up here.
@@ -447,6 +462,14 @@ pub fn scan_with_observer(
         .map(|k| k.to_str_lossy().into_owned())
         .collect();
 
+    // A path in both "stale code entry" and "seen as document" (or the reverse) changed tier. Counted
+    // here, where both sets are still alive, so the report can say a migration happened.
+    #[cfg(feature = "documents")]
+    {
+        report.stats.tier_migrated = stale.iter().filter(|k| driven.doc_seen.contains(k.as_str())).count()
+            + doc_stale.iter().filter(|k| driven.seen.contains(k.as_str())).count();
+    }
+
     // The path sets have done their job; only the metadata-only batch descriptors outlive them.
     let DriveOutcome {
         doc_batches,
@@ -689,10 +712,17 @@ pub fn scan_paths_with_observer(
         for rel in &rels {
             if !seen.contains(rel) && store.lookup(rel).is_some() {
                 removed.push(rel.clone());
+                #[cfg(feature = "documents")]
+                if doc_seen.contains(rel) {
+                    report.stats.tier_migrated += 1;
+                }
             }
             #[cfg(feature = "documents")]
             if !doc_seen.contains(rel) && store.lookup_doc(rel).is_some() {
                 doc_removed.push(rel.clone());
+                if seen.contains(rel) {
+                    report.stats.tier_migrated += 1;
+                }
             }
         }
     }

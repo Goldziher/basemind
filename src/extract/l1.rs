@@ -47,6 +47,7 @@ pub(crate) fn extract_l1_from_tree(
         imports,
         implementations,
         rationale,
+        extract_epoch: super::EXTRACT_EPOCH,
     })
 }
 

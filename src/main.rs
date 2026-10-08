@@ -643,6 +643,7 @@ fn cmd_scan(root: &std::path::Path, args: &ScanArgs, verbosity: Verbosity, no_co
     )
     .context("scan")?;
     render::render_summary(&mut out, &report.stats, verbosity);
+    reclaim_after_scan(&mut out, &report.stats, std::mem::take(&mut store.reset_stale_schema));
     sync_git_history_after_scan(root, !args.no_git_history, args.rebuild_git_history, &mut out);
     Ok(())
 }
@@ -684,8 +685,25 @@ fn cmd_rescan(root: &std::path::Path, args: &RescanArgs, verbosity: Verbosity, n
         .context("rescan (paths)")?
     };
     render::render_summary(&mut out, &report.stats, verbosity);
+    reclaim_after_scan(&mut out, &report.stats, std::mem::take(&mut store.reset_stale_schema));
     sync_git_history_after_scan(root, !args.no_git_history, args.rebuild_git_history, &mut out);
     Ok(())
+}
+
+/// Reap what a migrating, re-extracting or schema-resetting pass orphaned. Gated on the pass having displaced anything,
+/// so an ordinary no-op or edit-only scan never pays for the cross-workspace reference count.
+fn reclaim_after_scan(
+    out: &mut anstream::AutoStream<std::io::Stdout>,
+    stats: &basemind::scanner::ScanStats,
+    schema_reset: bool,
+) {
+    if !stats.displaced_artifacts() && !schema_reset {
+        return;
+    }
+    match basemind::store_gc::reclaim_displaced_blobs() {
+        Ok(report) => render::render_cleanup(out, &report),
+        Err(error) => tracing::warn!(%error, "post-scan blob cleanup failed; the daemon's next sweep will retry"),
+    }
 }
 
 fn cmd_watch(root: &std::path::Path, verbosity: Verbosity, no_color: bool) -> Result<()> {

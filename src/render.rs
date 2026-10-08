@@ -131,6 +131,14 @@ pub fn render_summary(w: &mut AutoStream<std::io::Stdout>, stats: &ScanStats, ve
         let docs_line = pair("docs_indexed", stats.docs_indexed, style_ok);
         let _ = writeln!(w, "{docs_line}");
     }
+    if stats.tier_migrated > 0 || stats.refreshed_extraction > 0 {
+        let _ = writeln!(
+            w,
+            "{migrated}  {refreshed}",
+            migrated = pair("tier_migrated", stats.tier_migrated, style_warn),
+            refreshed = pair("refreshed", stats.refreshed_extraction, style_warn),
+        );
+    }
     if stats.skipped_too_large > 0 {
         let too_large = pair("too_large", stats.skipped_too_large, style_warn);
         let _ = writeln!(
@@ -138,6 +146,18 @@ pub fn render_summary(w: &mut AutoStream<std::io::Stdout>, stats: &ScanStats, ve
             "{too_large} (over [scan] max_file_bytes, or [documents] max_file_bytes for documents)"
         );
     }
+}
+
+/// Print what the post-scan blob cleanup reclaimed. Silent when nothing was orphaned.
+pub fn render_cleanup(w: &mut AutoStream<std::io::Stdout>, report: &crate::store_gc::GcReport) {
+    if report.removed == 0 {
+        return;
+    }
+    let _ = writeln!(
+        w,
+        "cleanup: reclaimed {} orphaned blob(s), {} bytes",
+        report.removed, report.bytes_freed
+    );
 }
 
 /// Print a one-line summary of the grammar bootstrap.

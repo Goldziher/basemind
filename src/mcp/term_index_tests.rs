@@ -60,6 +60,7 @@ fn corpus() -> Vec<(RelPath, FileMapL1)> {
                 imports,
                 implementations: Vec::new(),
                 rationale: Vec::new(),
+                extract_epoch: crate::extract::EXTRACT_EPOCH,
             };
             (RelPath::from(format!("d{}/f{f:02}.py", f % 5).as_str()), l1)
         })

@@ -689,6 +689,7 @@ mod tests {
                     language: "rust".to_string(),
                     size_bytes: 1,
                     mtime: 0,
+                    extract_epoch: crate::extract::EXTRACT_EPOCH,
                 },
             );
         }
@@ -781,6 +782,7 @@ mod tests {
                 language: "rust".to_string(),
                 size_bytes: 1,
                 mtime: 0,
+                extract_epoch: crate::extract::EXTRACT_EPOCH,
             },
         );
 

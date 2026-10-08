@@ -308,6 +308,10 @@ pub(crate) struct WorkspacePool {
     /// than holding a separate one, so `begin_drain` trips a single flag that every scan path — socket
     /// or hosted — observes at per-file granularity.
     scan_cancel: ScanCancel,
+    /// Raised whenever a completed pass displaced artifacts (tier migration or epoch re-extraction),
+    /// so the daemon reclaims the orphaned blobs promptly instead of waiting out the maintenance
+    /// interval. A stored permit coalesces any number of passes into one wake-up.
+    cleanup_signal: std::sync::Arc<tokio::sync::Notify>,
 }
 
 impl WorkspacePool {
@@ -318,7 +322,13 @@ impl WorkspacePool {
             open_lock: Mutex::new(()),
             cap: cap.max(1),
             scan_cancel: ScanCancel::new(),
+            cleanup_signal: std::sync::Arc::new(tokio::sync::Notify::new()),
         }
+    }
+
+    /// The signal raised after a pass that displaced artifacts; the daemon's cleanup task waits on it.
+    pub(crate) fn cleanup_signal(&self) -> std::sync::Arc<tokio::sync::Notify> {
+        std::sync::Arc::clone(&self.cleanup_signal)
     }
 
     /// The pool's drain token, for the broker to adopt as its own so a single `cancel()` stops
@@ -389,6 +399,9 @@ impl WorkspacePool {
         } else {
             scanner::scan_with_cancel(&entry.root, &mut store, &config, ScanSource::WorkingTree, mode, cancel)?
         };
+        if report.stats.displaced_artifacts() || std::mem::take(&mut store.reset_stale_schema) {
+            self.cleanup_signal.notify_one();
+        }
         if !incremental && !report.cancelled {
             let generation = entry.full_scan_gen.fetch_add(1, std::sync::atomic::Ordering::AcqRel) + 1;
             *entry.last_full.lock().unwrap_or_else(PoisonError::into_inner) = Some((generation, mode, report.stats));

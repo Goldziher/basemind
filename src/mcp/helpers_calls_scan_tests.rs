@@ -94,6 +94,7 @@ fn l1(impls: &[(String, String)]) -> FileMapL1 {
             })
             .collect(),
         rationale: Vec::new(),
+        extract_epoch: crate::extract::EXTRACT_EPOCH,
     }
 }
 

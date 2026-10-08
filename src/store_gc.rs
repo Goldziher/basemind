@@ -21,14 +21,14 @@
 use std::path::Path;
 use std::time::{Duration, SystemTime};
 
-use ahash::AHashSet;
 use serde::Serialize;
 use thiserror::Error;
 
 use crate::store::{
-    CACHE_DIR, INDEX_FILE, StoreError, VIEWS_DIR, WORKSPACES_DIR, acquire_lock, cache_root, global_blobs_dir,
-    read_index,
+    CACHE_DIR, INDEX_FILE, StoreError, VIEWS_DIR, WORKSPACES_DIR, cache_root, global_blobs_dir, read_index,
 };
+pub use crate::store_gc_live::LiveBlobs;
+use crate::store_gc_live::{SweepLock, collect_workspace_hashes_healing_stale_views};
 
 /// The blob filename suffixes the scanner emits today, all keyed by one content hash.
 /// Used to strip the suffix off a blob filename to recover its hex stem. The four suffixes are
@@ -51,6 +51,22 @@ const LEGACY_BLOB_SUFFIXES: [&str; 2] = [".l1.msgpack", ".l2.msgpack"];
 /// (issue #44). Reaping inside that window forces a full re-extract + re-embed on the next
 /// encounter; the grace costs only delayed reclamation.
 const BLOB_GC_GRACE: Duration = Duration::from_secs(6 * 60 * 60);
+
+/// Env override for [`BLOB_GC_GRACE`], in whole seconds (`0` reclaims every unreferenced blob at
+/// once). Meant for operators clearing a known-dead cache and for the upgrade regression tests; the
+/// default protects entry-less blobs that a concurrent scan is about to reference.
+pub const BLOB_GC_GRACE_ENV: &str = "BASEMIND_BLOB_GC_GRACE_SECS";
+
+/// The grace the destructive sweeps apply: [`BLOB_GC_GRACE_ENV`] when set to a number, else
+/// [`BLOB_GC_GRACE`].
+fn blob_gc_grace() -> Duration {
+    grace_from(std::env::var(BLOB_GC_GRACE_ENV).ok().as_deref())
+}
+
+fn grace_from(raw: Option<&str>) -> Duration {
+    raw.and_then(|raw| raw.trim().parse::<u64>().ok())
+        .map_or(BLOB_GC_GRACE, Duration::from_secs)
+}
 
 /// The orphaned-workspace reaper — the other half of keeping the machine-global cache bounded.
 /// Lives in its own module (like `store_lock.rs`) to keep this file under the module size cap;
@@ -153,8 +169,8 @@ pub struct GcReport {
 /// referenced — orphaning the entire store. Refusing to sweep when the live set might be
 /// incomplete is the safe failure mode: the caller surfaces the error and the operator can
 /// re-scan to rebuild the offending view's index before retrying GC.
-pub fn collect_referenced_hashes(basemind_dir: &Path) -> Result<AHashSet<String>, GcError> {
-    let mut referenced = AHashSet::new();
+pub fn collect_referenced_hashes(basemind_dir: &Path) -> Result<LiveBlobs, GcError> {
+    let mut referenced = LiveBlobs::default();
     let views_dir = basemind_dir.join(VIEWS_DIR);
     if !views_dir.exists() {
         return Ok(referenced);
@@ -178,10 +194,10 @@ pub fn collect_referenced_hashes(basemind_dir: &Path) -> Result<AHashSet<String>
             Err(e) => return Err(GcError::Store(e)),
         };
         for entry in index.files.values() {
-            referenced.insert(entry.hash_hex.clone());
+            referenced.code.insert(entry.hash_hex.clone());
         }
         for entry in index.doc_files.values() {
-            referenced.insert(entry.hash_hex.clone());
+            referenced.docs.insert(entry.hash_hex.clone());
         }
     }
     Ok(referenced)
@@ -197,8 +213,8 @@ pub fn collect_referenced_hashes(basemind_dir: &Path) -> Result<AHashSet<String>
 /// delete) blobs other workspaces still need — which is why the standalone in-process auto-GC is
 /// disabled (`Store::blobs_shared == true`) and cross-workspace reference-counted GC is deferred
 /// to the daemon.
-pub fn gc_blobs(referenced: &AHashSet<String>) -> Result<GcReport, GcError> {
-    gc_blobs_in(&global_blobs_dir(), referenced, BLOB_GC_GRACE)
+pub fn gc_blobs(referenced: &LiveBlobs) -> Result<GcReport, GcError> {
+    gc_blobs_in(&global_blobs_dir(), referenced, blob_gc_grace())
 }
 
 /// Sweep an explicit blob directory. The seam production reaches via [`gc_blobs`] (passing the
@@ -206,7 +222,7 @@ pub fn gc_blobs(referenced: &AHashSet<String>) -> Result<GcReport, GcError> {
 /// `Duration::ZERO` grace), so tests never touch — nor race on — the machine-global blob store
 /// or each other. Unreferenced blobs younger than `grace` are kept (see [`BLOB_GC_GRACE`]);
 /// legacy split-tier blobs are dead format and reaped regardless of age.
-fn gc_blobs_in(blobs_dir: &Path, referenced: &AHashSet<String>, grace: Duration) -> Result<GcReport, GcError> {
+fn gc_blobs_in(blobs_dir: &Path, referenced: &LiveBlobs, grace: Duration) -> Result<GcReport, GcError> {
     let now = SystemTime::now();
     let mut report = GcReport::default();
     if !blobs_dir.exists() {
@@ -225,7 +241,7 @@ fn gc_blobs_in(blobs_dir: &Path, referenced: &AHashSet<String>, grace: Duration)
             continue;
         };
         let is_legacy = LEGACY_BLOB_SUFFIXES.iter().any(|suffix| file_name.ends_with(suffix));
-        let Some(stem) = blob_stem(file_name) else {
+        let Some(_) = blob_stem(file_name) else {
             report.scanned += 1;
             if is_legacy {
                 let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
@@ -239,7 +255,7 @@ fn gc_blobs_in(blobs_dir: &Path, referenced: &AHashSet<String>, grace: Duration)
             continue;
         };
         report.scanned += 1;
-        if referenced.contains(stem) {
+        if referenced.keeps(file_name) {
             continue;
         }
         let meta = std::fs::metadata(&path).map_err(|source| GcError::Io {
@@ -273,15 +289,15 @@ fn gc_blobs_in(blobs_dir: &Path, referenced: &AHashSet<String>, grace: Duration)
 /// sole fjall writer, which alone sees every workspace) sweeps against. Schema-mismatched or corrupt
 /// view caches are removed under the workspace lock and rebuilt lazily; transient I/O and lock
 /// failures still abort the sweep so an incomplete live set never drives a delete.
-pub fn collect_referenced_hashes_global() -> Result<AHashSet<String>, GcError> {
+pub fn collect_referenced_hashes_global() -> Result<LiveBlobs, GcError> {
     collect_referenced_hashes_global_in(&cache_root().join(CACHE_DIR).join(WORKSPACES_DIR))
 }
 
 /// [`collect_referenced_hashes_global`] against an explicit workspaces directory. Production passes
 /// the global `cache/workspaces`; unit tests pass a per-test temp dir so they never read (nor race
 /// on) the machine-global cache.
-pub(crate) fn collect_referenced_hashes_global_in(workspaces_dir: &Path) -> Result<AHashSet<String>, GcError> {
-    let mut referenced = AHashSet::new();
+pub(crate) fn collect_referenced_hashes_global_in(workspaces_dir: &Path) -> Result<LiveBlobs, GcError> {
+    let mut referenced = LiveBlobs::default();
     if !workspaces_dir.exists() {
         return Ok(referenced);
     }
@@ -299,64 +315,33 @@ pub(crate) fn collect_referenced_hashes_global_in(workspaces_dir: &Path) -> Resu
     Ok(referenced)
 }
 
-/// Collect one workspace's live hashes, healing view indexes that the current binary cannot read.
-///
-/// A schema-mismatched or corrupt `index.msgpack` is rebuildable cache state, not durable data. If
-/// it remains in the global mark set it blocks every workspace's GC forever. Remove only the bad
-/// view while holding the workspace lock, preserving `workspace.json`, `agent-id`, and durable
-/// memory. Transient I/O and lock failures remain fatal so an incomplete live set never drives a
-/// destructive sweep.
-fn collect_workspace_hashes_healing_stale_views(workspace_dir: &Path) -> Result<AHashSet<String>, GcError> {
-    match collect_referenced_hashes(workspace_dir) {
-        Ok(referenced) => Ok(referenced),
-        Err(GcError::Store(error)) if is_rebuildable_view_error(&error) => {
-            let _lock = acquire_lock(workspace_dir)?;
-            let views_dir = workspace_dir.join(VIEWS_DIR);
-            for entry in read_dir(&views_dir)? {
-                let entry = entry.map_err(|source| GcError::Io {
-                    path: views_dir.clone(),
-                    source,
-                })?;
-                let view_dir = entry.path();
-                if !view_dir.is_dir() || !view_dir.join(INDEX_FILE).exists() {
-                    continue;
-                }
-                if let Err(error) = read_index(&view_dir) {
-                    if !is_rebuildable_view_error(&error) {
-                        return Err(GcError::Store(error));
-                    }
-                    std::fs::remove_dir_all(&view_dir).map_err(|source| GcError::Io {
-                        path: view_dir.clone(),
-                        source,
-                    })?;
-                    tracing::warn!(
-                        workspace = %workspace_dir.display(),
-                        view = %view_dir.display(),
-                        %error,
-                        "removed unreadable rebuildable view so global GC can continue"
-                    );
-                }
-            }
-            collect_referenced_hashes(workspace_dir)
-        }
-        Err(error) => Err(error),
-    }
-}
-
-fn is_rebuildable_view_error(error: &StoreError) -> bool {
-    matches!(error, StoreError::SchemaMismatch { .. } | StoreError::Decode(_))
-}
-
 /// Cross-workspace reference-counted GC over the machine-global blob store: reference-count against
 /// EVERY workspace and reap blobs no workspace points at. This is the destructive counterpart to
 /// [`gc_report_only`] — safe ONLY because the daemon (the sole writer) is the single caller that can
 /// enumerate every workspace's references at once. Returns the sweep report.
 pub fn gc_global_blobs() -> Result<GcReport, GcError> {
-    gc_global_blobs_in(
-        &cache_root().join(CACHE_DIR).join(WORKSPACES_DIR),
-        &global_blobs_dir(),
-        BLOB_GC_GRACE,
-    )
+    let cache = cache_root().join(CACHE_DIR);
+    // One destructive sweep at a time machine-wide: the daemon's maintenance tick and a CLI scan's
+    // post-migration cleanup both build a whole-cache live set, so running two at once only doubles
+    // the transient memory. A contended sweep is skipped (the holder is doing the same work).
+    let Some(_sweep) = SweepLock::try_acquire(&cache) else {
+        tracing::debug!("global blob sweep already running in another process; skipping");
+        return Ok(GcReport::default());
+    };
+    gc_global_blobs_in(&cache.join(WORKSPACES_DIR), &global_blobs_dir(), blob_gc_grace())
+}
+
+/// The cleanup a scan runs for itself when it displaced artifacts (see
+/// [`crate::scanner::ScanStats::displaced_artifacts`]): reference-count against every workspace and
+/// reap the blobs the pass orphaned (the `.fm` / `.chunk` / `.rref` blobs of paths that moved to the
+/// document tier, the pre-epoch blobs a re-extraction replaced), then record the outcome where
+/// `admin cache_stats` reports it. The same bounded, grace-protected sweep the daemon runs, so it is
+/// safe against other workspaces' references and in-flight writes; unlike the daemon's it does not
+/// reap workspaces or enforce the size budget.
+pub fn reclaim_displaced_blobs() -> Result<GcReport, GcError> {
+    let report = gc_global_blobs()?;
+    persist_gc_state(&report);
+    Ok(report)
 }
 
 /// [`gc_global_blobs`] against explicit workspaces + blobs directories, so tests reference-count and
@@ -408,17 +393,16 @@ pub fn reap_gc_and_enforce_budget() -> Result<GcReport, GcError> {
     Ok(report)
 }
 
-/// Blob GC entry point for the CLI `cache gc` / a single-workspace caller.
-///
-/// The blob store is machine-global now (shared by every workspace), so a single caller can only
-/// enumerate ONE workspace's references — never the full live set across the machine. A real sweep
-/// from here would reap blobs other workspaces still need, so this is a non-destructive report
-/// (`removed == 0`) that still inspects the store (`scanned` = current blob count). Cross-workspace
-/// reference-counted GC is the daemon's job (Track E). The `basemind_dir` is taken under the
-/// store's advisory lock so the report is consistent against a concurrent scan of that workspace.
+/// Blob GC entry point for the offline CLI `cache gc`: the cross-workspace reference-counted sweep
+/// ([`gc_global_blobs`]). It reference-counts against EVERY workspace's indexes (not just
+/// `basemind_dir`'s), so it cannot reap a blob another workspace still needs, honours the same
+/// young-blob grace and machine-wide sweep lock as the daemon's, and reports what it removed.
+/// `basemind_dir` is accepted for the call-site shape only: the sweep is machine-wide.
 pub fn run_gc(basemind_dir: &Path) -> Result<GcReport, GcError> {
-    let _lock = acquire_lock(basemind_dir)?;
-    gc_report_only()
+    let _ = basemind_dir;
+    let report = gc_global_blobs()?;
+    persist_gc_state(&report);
+    Ok(report)
 }
 
 /// Non-destructive GC report over the GLOBAL blob store: counts every blob file (`scanned`) and
@@ -460,6 +444,10 @@ pub(crate) fn read_dir(dir: &Path) -> Result<std::fs::ReadDir, GcError> {
 }
 
 #[cfg(test)]
+#[path = "store_gc_tier_tests.rs"]
+mod tier_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::store::{BLOBS_DIR, FileEntry, INDEX_FILE, Index};
@@ -474,17 +462,17 @@ mod tests {
     /// temp `blobs/` dir under `basemind_dir` and drive GC / stats through the `gc_blobs_in` /
     /// `cache_stats_in` seams — never the real global store. That keeps each test hermetic and
     /// parallel-safe (colliding hex stems across tests can't clobber one another).
-    struct Fixture {
+    pub(super) struct Fixture {
         _tmp: tempfile::TempDir,
-        basemind_dir: PathBuf,
+        pub(super) basemind_dir: PathBuf,
         /// Per-fixture blob directory (`basemind_dir/blobs`), passed to the `_in` seams.
-        blobs_dir: PathBuf,
+        pub(super) blobs_dir: PathBuf,
         referenced_stem: String,
         orphan_stem: String,
         orphan_len: u64,
     }
 
-    fn build_fixture() -> Fixture {
+    pub(super) fn build_fixture() -> Fixture {
         let tmp = tempfile::tempdir().expect("tempdir");
         let basemind_dir = tmp.path().join(".basemind");
         let blobs = basemind_dir.join(BLOBS_DIR);
@@ -508,6 +496,7 @@ mod tests {
                 language: "rust".to_string(),
                 size_bytes: 2,
                 mtime: 0,
+                extract_epoch: crate::extract::EXTRACT_EPOCH,
             },
         );
         let bytes = rmp_serde::to_vec_named(&index).expect("encode index");
@@ -521,6 +510,18 @@ mod tests {
             orphan_stem,
             orphan_len,
         }
+    }
+
+    #[test]
+    fn the_blob_grace_override_parses_seconds_and_falls_back_on_garbage() {
+        assert_eq!(grace_from(None), BLOB_GC_GRACE);
+        assert_eq!(grace_from(Some("0")), Duration::ZERO);
+        assert_eq!(grace_from(Some(" 90 ")), Duration::from_secs(90));
+        assert_eq!(
+            grace_from(Some("soon")),
+            BLOB_GC_GRACE,
+            "an unparseable override is ignored"
+        );
     }
 
     #[test]
@@ -599,7 +600,7 @@ mod tests {
     fn should_collect_only_referenced_stem() {
         let fx = build_fixture();
         let referenced = collect_referenced_hashes(&fx.basemind_dir).expect("collect");
-        assert_eq!(referenced.len(), 1, "exactly one live stem");
+        assert_eq!(referenced.code.len(), 1, "exactly one live stem");
         assert!(referenced.contains(&fx.referenced_stem), "live stem present");
         assert!(
             !referenced.contains(&fx.orphan_stem),
@@ -745,6 +746,7 @@ mod tests {
                     language: "rust".to_string(),
                     size_bytes: 2,
                     mtime: 0,
+                    extract_epoch: crate::extract::EXTRACT_EPOCH,
                 },
             );
             let bytes = rmp_serde::to_vec_named(&index).expect("encode");
@@ -847,6 +849,7 @@ mod tests {
                     language: "rust".to_string(),
                     size_bytes: 2,
                     mtime: 0,
+                    extract_epoch: crate::extract::EXTRACT_EPOCH,
                 },
             );
         }
@@ -873,7 +876,7 @@ mod tests {
         seed_workspace(&workspaces, "key-b", &[&stem_b]);
 
         let referenced = collect_referenced_hashes_global_in(&workspaces).expect("union");
-        assert_eq!(referenced.len(), 2, "the union spans both workspaces");
+        assert_eq!(referenced.code.len(), 2, "the union spans both workspaces");
         assert!(referenced.contains(&stem_a) && referenced.contains(&stem_b));
         assert!(!referenced.contains(&orphan), "orphan referenced by no workspace");
 
