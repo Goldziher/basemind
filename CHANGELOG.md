@@ -28,6 +28,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   blobs references, index and keyword postings, code-search chunks) are purged, and a path that
   changes tier is moved either way. A build without the `documents` feature keeps the old behaviour.
   Document-link citations and ADR/RFC decision records now resolve against the document tier.
+- `code references`, `callers` and `implementations` no longer walk every call site or impl in the
+  index. The index process keeps a small resident dictionary of the distinct callee and trait names
+  (a few MB at monorepo scale), answers the substring match from it, and range-scans only the
+  matching names' keys. Results, key order, totals, the `total_is_partial` cap, cursors and the
+  language filter are byte-identical. The first query after the index opens still walks the
+  partition while the dictionary builds in the background.
 
 ### Fixed
 
@@ -42,6 +48,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   projection (zero extra RAM). The in-RAM projection is now built lazily and only as a last resort
   when no daemon is reachable (a failed forward degrades to it rather than erroring), and the
   `projections_capped` notice appears only when that fallback is genuinely truncated.
+
+### Fixed
+
+- macOS: the process heap no longer shows up as GBs of "GPU" memory. mimalloc tags its mappings
+  with Mach VM tag 100 by default, which is `VM_MEMORY_IOACCELERATOR`, so `footprint`, `vmmap` and
+  Activity Monitor attributed the whole allocator heap to `IOAccelerator` even with
+  `onnx_provider = "cpu"` and no Metal or CoreML device ever created. basemind now retags the heap to
+  254 (application-specific) at startup, so the memory reports as ordinary application memory and
+  real GPU allocations are distinguishable.
 
 ## [0.28.1] - 2026-10-06
 

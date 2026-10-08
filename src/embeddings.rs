@@ -252,10 +252,15 @@ impl SharedEmbedder {
             return Ok(work());
         }
         let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        // rayon aborts the whole process when a `spawn`ed closure unwinds (no panic handler is
+        // installed), so the panic must be contained here and reported through the channel.
         pool.spawn(move || {
-            let _ = tx.send(work());
+            let _ = tx.send(std::panic::catch_unwind(std::panic::AssertUnwindSafe(work)));
         });
-        rx.recv().map_err(|_| anyhow!("embedding worker panicked"))
+        match rx.recv() {
+            Ok(Ok(value)) => Ok(value),
+            Ok(Err(_)) | Err(_) => Err(anyhow!("embedding worker panicked")),
+        }
     }
 }
 

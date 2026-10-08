@@ -19,6 +19,7 @@
 
 pub mod keys;
 pub mod keys_governance;
+pub(crate) mod name_dict;
 pub mod writer;
 
 use std::path::{Path, PathBuf};
@@ -256,6 +257,9 @@ pub struct IndexDb {
     pub(crate) symbols_by_name: Keyspace,
     pub(crate) calls_by_path: Keyspace,
     pub(crate) calls_by_callee: Keyspace,
+    /// Distinct callee names of `calls_by_callee`; lets the substring name scan range-scan only the
+    /// matching names instead of walking the partition.
+    pub(crate) callee_names: std::sync::Arc<name_dict::NameDict>,
     /// Reserved fast-path partition: written on every upsert so that future
     /// `dependents`-by-module queries can use a prefix scan instead of iterating the
     /// full import set. Not yet read by any MCP query path; kept to avoid a schema
@@ -264,6 +268,8 @@ pub struct IndexDb {
     pub(crate) imports_by_path: Keyspace,
     /// `implementations_by_trait`: prefix scans on trait name — backs `find_implementations`.
     pub(crate) implementations_by_trait: Keyspace,
+    /// Distinct trait names of `implementations_by_trait`, as [`Self::callee_names`] is for callees.
+    pub(crate) trait_names: std::sync::Arc<name_dict::NameDict>,
     /// `implementations_by_path`: companion to keep the per-file delete on upsert O(prefix).
     pub(crate) implementations_by_path: Keyspace,
     /// `refs_by_def`: scope/import-resolved reference edges keyed by defining site — backs the
@@ -442,9 +448,11 @@ impl IndexDb {
             symbols_by_name,
             calls_by_path,
             calls_by_callee,
+            callee_names: std::sync::Arc::default(),
             imports_by_module,
             imports_by_path,
             implementations_by_trait,
+            trait_names: std::sync::Arc::default(),
             implementations_by_path,
             refs_by_def,
             refs_by_path,

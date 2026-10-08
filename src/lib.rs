@@ -1,5 +1,6 @@
 #![allow(missing_docs)]
 
+pub mod alloc_tag;
 pub mod backpressure;
 #[cfg(feature = "code-search")]
 pub mod chunk;

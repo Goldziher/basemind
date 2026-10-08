@@ -90,7 +90,9 @@ pub(crate) fn scan_calls_by_name(
     let scan_cap = limit.saturating_mul(8).max(2_000);
     let mut has_more = false;
     let mut matched: usize = 0;
-    for guard in idx.calls_by_callee.range::<Vec<u8>, _>((lower, Bound::Unbounded)) {
+    for guard in
+        crate::index::name_dict::name_ordered_keys(&idx.calls_by_callee, &idx.callee_names, name, cursor_after, lower)
+    {
         let (k, _) = guard
             .into_inner()
             .map_err(|e| McpError::internal_error(format!("index iter: {e}"), None))?;
@@ -362,3 +364,7 @@ impl InRamCallIndex {
         self.by_path.get(rel).map_or(&[], Vec::as_slice)
     }
 }
+
+#[cfg(test)]
+#[path = "helpers_calls_scan_tests.rs"]
+mod tests;
