@@ -92,9 +92,18 @@ impl ServerHandler for BasemindServer {
             )));
         }
         let should_deliver_comms = request.name != "agents";
+        let cancel_aware = tasks::is_cancel_aware_read(&request.name, request.arguments.as_ref());
         let _admission = admission;
         let tcc = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
-        let response = self.tool_router.call(tcc).await?;
+        // Pure read-only heavy modes race the client's cancellation: the handler future (and the
+        // admission permit it keeps alive alongside) is dropped the moment the request is cancelled.
+        // Mutating modes never take this branch — see `tasks::CANCEL_AWARE_READS`.
+        let response = if cancel_aware {
+            let ct = tcc.request_context.ct.clone();
+            tasks::run_until_cancelled(ct.cancelled(), self.tool_router.call(tcc)).await?
+        } else {
+            self.tool_router.call(tcc).await?
+        };
         #[cfg(all(feature = "comms", any(unix, windows)))]
         let mut response = response;
         #[cfg(all(feature = "comms", any(unix, windows)))]

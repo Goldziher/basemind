@@ -14,6 +14,61 @@ use rmcp::task_manager::{TaskExit, TaskOptions};
 
 use super::BasemindServer;
 
+tokio::task_local! {
+    /// The task a slow tool is running inside, set around the router call by [`spawn_slow_tool`].
+    /// Lets [`super::notifications::emit_progress`] mirror each progress message onto the task's
+    /// `statusMessage`, so a client polling `tasks/get` sees the same counter a progress-token
+    /// subscriber does.
+    pub(super) static CURRENT_TASK: rmcp::task_manager::TaskContext;
+}
+
+/// Pure read-only modes that are safe to abandon mid-flight: they only read the in-RAM map / index
+/// (or the vector store) and write nothing durable, so dropping the handler future on client
+/// cancellation loses only recomputable work. NEVER add a mode that writes (rescan, put, accept,
+/// cache or registry mutation): dropping those at an await point could strand a half-applied write.
+/// Keyed like [`SLOW_CALLS`] on `domain:mode`.
+pub(super) const CANCEL_AWARE_READS: &[&str] = &[
+    "code:grep",
+    "code:semantic",
+    "graph:map",
+    "graph:calls",
+    "memory:documents",
+];
+
+/// Whether this call is one of the [`CANCEL_AWARE_READS`].
+pub(super) fn is_cancel_aware_read(name: &str, arguments: Option<&serde_json::Map<String, serde_json::Value>>) -> bool {
+    let Some(mode) = arguments
+        .and_then(|args| args.get("mode"))
+        .and_then(serde_json::Value::as_str)
+    else {
+        return false;
+    };
+    CANCEL_AWARE_READS.iter().any(|read| {
+        read.split_once(':')
+            .is_some_and(|(tool, read_mode)| tool == name && read_mode == mode)
+    })
+}
+
+/// JSON-RPC code for a request the client cancelled (the LSP `RequestCancelled` code).
+const REQUEST_CANCELLED_CODE: i32 = -32800;
+
+/// Race `work` against the request's cancellation signal. On cancellation the work future is dropped
+/// (releasing every guard it holds) and a `request_cancelled` error is returned immediately.
+pub(super) async fn run_until_cancelled<T>(
+    cancelled: impl std::future::Future<Output = ()>,
+    work: impl std::future::Future<Output = Result<T, McpError>>,
+) -> Result<T, McpError> {
+    tokio::select! {
+        biased;
+        () = cancelled => Err(McpError::new(
+            rmcp::model::ErrorCode(REQUEST_CANCELLED_CODE),
+            "request_cancelled",
+            None,
+        )),
+        result = work => result,
+    }
+}
+
 /// Calls whose work can dominate the transport for long enough that a task-capable client is better
 /// served an async handle it can poll than a blocked `tools/call`. Kept deliberately small and
 /// centralized: only operations that routinely run for seconds belong here. Feature-gated entries
@@ -176,5 +231,78 @@ mod tests {
             Some(&args(serde_json::json!({ "mode": "sniff" })))
         ));
         assert!(!is_slow_tool("web", Some(&args(serde_json::json!({ "mode": 7 })))));
+    }
+
+    #[test]
+    fn should_race_cancellation_only_for_the_pure_read_modes() {
+        for (tool, mode) in [
+            ("code", "grep"),
+            ("code", "semantic"),
+            ("graph", "map"),
+            ("graph", "calls"),
+            ("memory", "documents"),
+        ] {
+            assert!(is_cancel_aware_read(
+                tool,
+                Some(&args(serde_json::json!({ "mode": mode })))
+            ));
+        }
+        for (tool, mode) in [
+            ("admin", "rescan"),
+            ("memory", "put"),
+            ("memory", "accept"),
+            ("code", "outline"),
+            ("web", "crawl"),
+        ] {
+            assert!(!is_cancel_aware_read(
+                tool,
+                Some(&args(serde_json::json!({ "mode": mode })))
+            ));
+        }
+        assert!(!is_cancel_aware_read("code", None));
+    }
+
+    /// Holds a heavy admission permit; dropping it (as a cancelled handler future does) frees it.
+    #[tokio::test]
+    async fn cancelling_a_read_returns_promptly_and_releases_the_permit() {
+        use super::super::admission::{HeavyAdmission, WorkClass};
+        let admission = HeavyAdmission::new(1, std::time::Duration::from_millis(50));
+        let permit = admission.admit(WorkClass::Heavy).await.expect("permit");
+        let (cancel, cancelled) = tokio::sync::oneshot::channel::<()>();
+        let work = async move {
+            let _held = permit;
+            std::future::pending::<Result<(), McpError>>().await
+        };
+        let call = tokio::spawn(run_until_cancelled(
+            async {
+                let _ = cancelled.await;
+            },
+            work,
+        ));
+        assert!(
+            admission.admit(WorkClass::Heavy).await.is_err(),
+            "permit is held while the read runs"
+        );
+        cancel.send(()).expect("send cancel");
+        let started = std::time::Instant::now();
+        let error = tokio::time::timeout(std::time::Duration::from_secs(2), call)
+            .await
+            .expect("cancelled call returns promptly")
+            .expect("join")
+            .expect_err("cancelled call is an error");
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+        assert_eq!(error.code, rmcp::model::ErrorCode(REQUEST_CANCELLED_CODE));
+        admission
+            .admit(WorkClass::Heavy)
+            .await
+            .expect("permit released after cancel");
+    }
+
+    #[tokio::test]
+    async fn an_uncancelled_read_returns_its_result() {
+        let value = run_until_cancelled(std::future::pending::<()>(), async { Ok::<_, McpError>(7) })
+            .await
+            .expect("result");
+        assert_eq!(value, 7);
     }
 }

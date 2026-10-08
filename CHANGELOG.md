@@ -29,6 +29,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   release minor (and wiping every cache). The scan summary shows `tier_migrated` and `refreshed`
   counts. The first epoch refreshes symbol signatures produced before the header-only fix.
 - `BASEMIND_BLOB_GC_GRACE_SECS` overrides the 6 hour age below which the blob sweep keeps a blob.
+- `code grep`, `code semantic`, `graph map`, `graph calls` and `memory documents` now honour client
+  cancellation: a `notifications/cancelled` drops the in-flight read and releases its admission permit
+  immediately, answering `-32800 request_cancelled`. Mutating modes (`rescan`, `put`, `accept`, ...) are
+  deliberately excluded and always run to completion.
 
 ### Changed
 - MCP logging is retired (SEP-2577 deprecates it): the server no longer advertises the `logging`
