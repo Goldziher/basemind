@@ -85,8 +85,8 @@ pub(crate) async fn serve_link<L: CommsLink>(broker: Arc<Broker>, mut link: L, g
             inbound = link.recv() => {
                 match inbound {
                     Ok(Some(req)) => {
-                        let resp = broker.handle(req, &mut session, &link_tx).await;
-                        if link.send(CommsOut::Response(resp)).await.is_err() {
+                        let out = broker.handle_framed(req, &mut session, &link_tx).await;
+                        if link.send(out).await.is_err() {
                             break;
                         }
                     }

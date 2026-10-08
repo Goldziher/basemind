@@ -967,3 +967,29 @@ async fn subscribe_inbox_notifies_matching_discoverable_thread() {
 
 #[path = "daemon_maintenance_tests.rs"]
 mod maintenance_tests;
+
+#[tokio::test]
+async fn correlated_call_is_answered_with_a_reply_echoing_its_id() {
+    let (_d, broker) = temp_broker();
+    let (tx, _rx) = mpsc::channel(8);
+    let mut session = Session::default();
+    let framed = broker
+        .handle_framed(
+            CommsRequest::Call {
+                id: 41,
+                request: Box::new(CommsRequest::Ping),
+            },
+            &mut session,
+            &tx,
+        )
+        .await;
+    assert_eq!(
+        framed,
+        CommsOut::Reply {
+            id: 41,
+            response: CommsResponse::Pong
+        }
+    );
+    let bare = broker.handle_framed(CommsRequest::Ping, &mut session, &tx).await;
+    assert_eq!(bare, CommsOut::Response(CommsResponse::Pong));
+}

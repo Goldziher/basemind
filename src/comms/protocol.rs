@@ -19,8 +19,10 @@ use super::model::{AgentCard, MessageMeta, Thread};
 /// response / notification shapes. Negotiated in [`CommsRequest::Hello`]. Bumped 1→2 for the
 /// room→thread redesign; bumped 2→3 for [`CommsRequest::SubscribeInbox`] (an old client talking
 /// to a new daemon, or vice versa, now fails the Hello skew check instead of risking a decode
-/// error on the new variant).
-pub const PROTO_VER: u32 = 3;
+/// error on the new variant); bumped 3→4 for request correlation ([`CommsRequest::Call`] /
+/// [`CommsOut::Reply`]), so a skewed peer fails the Hello check with a clear error and the daemon
+/// takeover in `ensure_daemon` replaces an older daemon.
+pub const PROTO_VER: u32 = 4;
 
 /// A request from a client to the broker. `method` selects the variant; `params` are the
 /// flattened fields.
@@ -363,6 +365,17 @@ pub enum CommsRequest {
     Stop,
     /// Report daemon status (pid / version / uptime / thread + subscriber counts).
     Status,
+    /// A correlated request: the broker handles `request` and answers with a [`CommsOut::Reply`]
+    /// echoing `id`, so a client that abandoned an earlier request (a cancelled future) can tell
+    /// the stale reply from the one it is waiting for. A bare request is still answered with an
+    /// uncorrelated [`CommsOut::Response`]. `Hello` is always sent bare (it negotiates the
+    /// protocol version, so it must stay decodable by a peer that speaks a different one).
+    Call {
+        /// Client-chosen id, unique per link and echoed in the reply.
+        id: u64,
+        /// The wrapped request.
+        request: Box<CommsRequest>,
+    },
 }
 
 impl CommsRequest {
@@ -411,6 +424,7 @@ impl CommsRequest {
             Self::Ping => "ping",
             Self::Stop => "stop",
             Self::Status => "status",
+            Self::Call { request, .. } => request.method(),
         }
     }
 }
@@ -650,8 +664,15 @@ pub enum CommsNotification {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CommsOut {
-    /// A reply to a specific request.
+    /// An uncorrelated reply to a bare request.
     Response(CommsResponse),
+    /// The reply to a [`CommsRequest::Call`], carrying the request's id.
+    Reply {
+        /// The id of the `Call` this answers.
+        id: u64,
+        /// The response.
+        response: CommsResponse,
+    },
     /// An out-of-band push.
     Notification(CommsNotification),
 }

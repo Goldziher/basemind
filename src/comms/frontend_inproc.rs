@@ -108,8 +108,8 @@ async fn serve_link(broker: Arc<Broker>, mut link: InProcLink, link_tx: mpsc::Se
     let _link_guard = guard;
     let mut session = Session::default();
     while let Ok(Some(req)) = link.recv().await {
-        let resp = broker.handle(req, &mut session, &link_tx).await;
-        if link.send(CommsOut::Response(resp)).await.is_err() {
+        let out = broker.handle_framed(req, &mut session, &link_tx).await;
+        if link.send(out).await.is_err() {
             break;
         }
     }
@@ -130,7 +130,7 @@ mod tests {
     async fn expect_response(link: &mut InProcClientLink) -> CommsResponse {
         loop {
             match link.recv().await.expect("frame") {
-                CommsOut::Response(r) => return r,
+                CommsOut::Response(r) | CommsOut::Reply { response: r, .. } => return r,
                 CommsOut::Notification(_) => continue,
             }
         }
