@@ -70,13 +70,15 @@ basemind is built on one discipline: **prefer structure over content**.
 `basemind scan` reads your project once, in parallel, and forwards the result to a
 background daemon that manages a machine-global cache under `~/.local/share/basemind/`.
 All repos/worktrees on one machine share this cache. After scanning, `basemind serve`
-loads the map into memory and answers questions instantly — no re-reading the project
-for each one. When files change, it signals the daemon to update only what changed.
+relays your client to that daemon, which answers from the index it already holds — no
+re-reading the project for each question. When files change, only what changed is updated.
 
-Outlines are held in RAM. Git history is precomputed and indexed. Documents are
-vectorized once and cached. The result: most code questions answer in **under a
-millisecond**, call-graph searches in a few milliseconds, and document searches
-in around 200 ms.
+Decoded outlines sit in a bounded in-memory cache, symbol and import names in a compact
+resident index, and the rest in an on-disk index. Git history is precomputed and indexed.
+Documents are vectorized once and cached. The result, measured in-process on a 74k-file
+monorepo: an outline in about a millisecond (p50), symbol, reference and caller lookups in
+1–5 ms, and document searches in roughly 100–260 ms (p50–p95). Smaller repos are faster. See
+[Performance](/reference/performance/).
 
 ### 2. Multi-agent comms
 

@@ -8,7 +8,7 @@ description: >-
 import { Steps, Code, Aside, CardGrid, LinkCard } from '@astrojs/starlight/components';
 
 After installing, index a repository and ask it questions. Most answers come back
-in **under a millisecond** — queries are answered from RAM, not disk.
+in **about a millisecond** — the index is held by a background daemon, so a query never re-reads your project.
 
 <Aside type="tip">
 New to a repo? Run `basemind init` (or `/bm-init`) first — see
@@ -77,9 +77,10 @@ src/extract.rs:57:20 processFile`} lang="text" />
 - **Index build**: Seconds for small repos; the largest test case (81k TypeScript
   files) scans in around 18 seconds. Re-scans are much faster — only changed
   files are re-indexed.
-- **Query latency**: Under a millisecond for symbol and reference lookups.
-  Call-graph searches in a few milliseconds. Git history lookups in **tens of
-  microseconds**.
+- **Query latency**: about a millisecond for an outline and 1–5 ms for symbol, reference
+  and caller lookups on a 74k-file monorepo (in-process, p50; smaller repos are
+  faster). Git history lookups in **tens of microseconds**.
+  See [Performance](/reference/performance/).
 - **Outline before you read**: Use `code` (`mode: outline`) to see a file's
   structure (symbols, signatures, line numbers, imports) without opening it.
 
@@ -98,7 +99,7 @@ src/extract.rs:57:20 processFile`} lang="text" />
   <LinkCard
     title="How it works"
     href="/concepts/how-it-works/"
-    description="One scan, then instant answers — the architecture behind basemind."
+    description="One scan, then fast answers — the architecture behind basemind."
   />
   <LinkCard
     title="MCP tools"
