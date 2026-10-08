@@ -412,7 +412,7 @@ pub async fn ensure_daemon_explicit(paths: &CommsPaths) -> Result<(), SingletonE
 }
 
 async fn ensure_daemon_with_spawn_policy(paths: &CommsPaths, policy: SpawnPolicy) -> Result<(), SingletonError> {
-    if let Some(report) = daemon_status(&paths.socket_path) {
+    if let Some(report) = off_worker(|| daemon_status(&paths.socket_path)) {
         let ours = env!("CARGO_PKG_VERSION");
         let compatible = report.proto_ver == PROTO_VER && !version_is_older(&report.version, ours);
         if compatible {
@@ -440,12 +440,12 @@ async fn ensure_daemon_with_spawn_policy(paths: &CommsPaths, policy: SpawnPolicy
         request_stop(&paths.socket_path);
         let deadline = std::time::Instant::now() + TAKEOVER_DRAIN_TIMEOUT;
         while std::time::Instant::now() < deadline {
-            if !probe_alive(&paths.socket_path) {
+            if !off_worker(|| probe_alive(&paths.socket_path)) {
                 break;
             }
             tokio::time::sleep(SPAWN_POLL_INTERVAL).await;
         }
-        if probe_alive(&paths.socket_path) {
+        if off_worker(|| probe_alive(&paths.socket_path)) {
             return Err(SingletonError::StalePredecessor {
                 version: report.version,
                 pid: report.pid,
@@ -461,7 +461,13 @@ async fn ensure_daemon_with_spawn_policy(paths: &CommsPaths, policy: SpawnPolicy
     if live >= max {
         return Err(SingletonError::TooManyDaemons { count: live, max });
     }
-    ensure_daemon_with_policy(paths, policy, probe_alive, spawn_detached_daemon).await
+    ensure_daemon_with_policy(
+        paths,
+        policy,
+        |socket| off_worker(|| probe_alive(socket)),
+        spawn_detached_daemon,
+    )
+    .await
 }
 
 /// True when `daemon`'s `MAJOR.MINOR.PATCH` is strictly older than `ours`. Pre-release suffixes
@@ -542,6 +548,19 @@ fn open_endpoint(socket_path: &Path) -> Option<impl std::io::Read + std::io::Wri
         .write(true)
         .open(socket_path)
         .ok()
+}
+
+/// Run blocking `work` without parking an async worker: on a multi-thread runtime the worker is
+/// handed off via `block_in_place`; on a current-thread runtime (or none) it just runs inline, since
+/// `block_in_place` panics there. For the synchronous probes ([`probe_alive`], [`daemon_status`]) that
+/// async bring-up paths call — a wedged daemon makes them burn up to ~2 s of std socket timeouts.
+pub(crate) fn off_worker<T>(work: impl FnOnce() -> T) -> T {
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => {
+            tokio::task::block_in_place(work)
+        }
+        _ => work(),
+    }
 }
 
 /// How many times [`probe_alive`] pings before declaring a daemon dead, and the backoff between
