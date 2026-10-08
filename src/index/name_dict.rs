@@ -36,10 +36,10 @@ const FOLD_EXTRA_AT: usize = 16_384;
 /// stepping through its remaining keys.
 const SEEK_AFTER_RUN: usize = 8;
 
-/// A needle matching more than this percentage of the distinct names is answered by the full walk:
+/// A needle matching more than this percentage of the distinct names (5%) is answered by the full walk:
 /// each matching name costs a seek, while a walk over a near-universal needle reaches the result
 /// cap after a handful of keys.
-const WALK_ABOVE_PERCENT: usize = 25;
+const WALK_ABOVE_PERCENT: usize = 5;
 
 /// Order of a name's key range within the keyspace: the `u16` length prefix, then the bytes.
 fn key_order(a: &[u8], b: &[u8]) -> std::cmp::Ordering {
