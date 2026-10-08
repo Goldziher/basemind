@@ -142,11 +142,10 @@ hyper = { version = "1", features = ["server", "http1", "http2"], optional = tru
 hyper-util = { version = "0.1", features = ["server-auto", "tokio"], optional = true }
 ignore = "0.4"
 jsonschema = "0.58"
-# ~keep Held at 0.37: lancedb 0.38.0, 0.39.0 AND 0.40.0 (latest) do not compile without their `remote`
-# ~keep feature -- `error.rs` gates the `Error::Http` variant behind `#[cfg(feature = "remote")]`
-# ~keep while `job.rs` references it unconditionally. Enabling `remote` would pull an HTTP
-# ~keep client stack in for no benefit here. Revisit when upstream fixes the gate.
-lancedb = { version = "0.37.1", optional = true }
+# ~keep `remote` is enabled only because lancedb 0.38-0.40 do not compile without it: `error.rs`
+# ~keep gates `Error::Http` behind `#[cfg(feature = "remote")]` while `job.rs` uses it unconditionally.
+# ~keep It pulls tonic/arrow-flight/reqwest in but nothing is invoked; drop it once upstream fixes the gate.
+lancedb = { version = "0.40.0", features = ["remote"], optional = true }
 libc = "0.2"
 lru = "0.18.5"
 memchr = "2"
