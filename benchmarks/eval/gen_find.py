@@ -8,6 +8,11 @@ unique in the repo and queries it in one of three mutated forms:
   abbrev    the consonant skeleton of the stem, keeping its first letter (`wdgt`)
 
 Gold is the single source path; scoring is `ranked` (hit@1/@5, MRR, nDCG).
+
+`find` covers every path basemind indexes (code map plus document tier), and what is indexed depends
+on the repo's `[scan]` / `[documents]` config: a tracked `.yaml` that no tier accepts is unreachable,
+not a miss. Pass `--indexed FILE` (one repo-relative path per line, e.g. the paths
+`basemind code files` lists) to draw tasks only from indexed files.
 """
 
 import argparse
@@ -41,10 +46,19 @@ def main() -> None:
     p.add_argument(
         "--k", type=int, default=10, help="rank cut-off for the ranked scoring"
     )
+    p.add_argument(
+        "--indexed",
+        metavar="FILE",
+        help="newline-separated list of paths basemind indexes; tasks are drawn only from these",
+    )
     a = p.parse_args()
 
     repo = c.Repo(a.repo, a.exclude, a.ext, a.max_bytes)
     files = repo.files()
+    if a.indexed:
+        with open(a.indexed, encoding="utf-8") as fh:
+            indexed = {line.rstrip("\n") for line in fh}
+        files = [f for f in files if f in indexed]
     stems: dict[str, int] = {}
     for f in files:
         stem = f.rsplit("/", 1)[-1].rsplit(".", 1)[0]
