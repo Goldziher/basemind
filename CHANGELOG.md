@@ -43,6 +43,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   capability, no longer handles `logging/setLevel`, and `admin rescan` no longer emits the
   `rescan_complete` log notification. The rescan summary counts are in the tool result and the rescan
   progress notifications are unchanged.
+- The production `rmcp` dependency drops its default features (only `base64` was dropped).
 - `code outline`, `symbols` and the code map no longer index names bound inside a function, method or
   lambda body (Python `x = ...` in a `def`, JS/TS `const` in a function, Rust `let`/nested `fn`, Go
   locals, Java/C#/C locals ...): a symbol with a function-like ancestor node is dropped, matched by node
