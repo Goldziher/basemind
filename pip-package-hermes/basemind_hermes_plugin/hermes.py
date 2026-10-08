@@ -39,6 +39,7 @@ _DISCIPLINE = (
     "reading source. Default workflow: use code mode outline before opening a file (then read only "
     "the span you need); code mode symbols instead of grep for a definition; code modes references "
     "and callers instead of grepping call sites; code mode grep instead of shelling out to ripgrep; "
+    "memory mode documents for markdown, config, data and PDF files (the code map holds code only); "
     "admin mode rescan after edits instead of reconnecting. Do not re-read a file basemind already "
     "mapped."
 )

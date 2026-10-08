@@ -9,7 +9,10 @@ description: >-
 
 # basemind-code-search — navigate code without reading it
 
-basemind pre-indexes the repo into a tree-sitter code map across 300+ languages. Structural
+basemind pre-indexes the repo into a tree-sitter code map across 300+ languages. The map holds
+**code only**: markdown, JSON, YAML, TOML, XML, CSV, INI and `.env` files are documents, so none of
+the modes below sees them (`outline` on one errors "file not indexed") — search them with `memory`
+mode `documents` (see `basemind-documents`) or just Read them. Structural
 questions — where a symbol lives, what calls it, what shape a file has — resolve from the index in
 milliseconds and return **paths, line numbers, and signatures, not file bodies**. That is a fraction
 of the tokens of reading source, so it is the default, not an optimization.
@@ -27,7 +30,8 @@ raw shell only when no tool covers the question.
 - **Use `code` modes `references` / `callers` instead of grepping call sites.** Indexed call edges, not
   text matches.
 - **Use `code` mode `grep` instead of shelling out to ripgrep** when you genuinely need regex over
-  content — it runs over the in-RAM index and returns capped, structured hits.
+  code content — it sweeps every indexed file (a trigram filter skips files that cannot match) and
+  returns capped, structured hits with an exact `total_matches`.
 - **Do not re-read a file basemind already mapped.** If the outline answered the question, stop.
 - **Use `admin` mode `rescan` after you edit code**, not a server reconnect. Pass `paths: [...]` to limit it.
 
@@ -44,7 +48,10 @@ raw shell only when no tool covers the question.
 | "Trace the call graph from a function?" | `graph { mode: "calls", name }` (bounded BFS) | `basemind graph calls "name" [--direction --max-depth]` |
 | "What implements / extends / inherits X?" | `code { mode: "implementations", trait_name: "X" }` | `basemind code implementations "X"` |
 | "What imports module M?" | `code { mode: "dependents", module: "M" }` | `basemind code dependents "M"` |
-| "What files are indexed?" | `code { mode: "files" }` (filter by language/path) | `basemind code files [--language --path-contains]` |
+| "What code files are indexed?" | `code { mode: "files" }` (filter by language/path) | `basemind code files [--language --path-contains]` |
+| "Which file is named like X?" | `code { mode: "find", query: "X" }` (fuzzy) | `basemind code find "X"` |
+| "Show one symbol's body" | `code { mode: "expand", path: F, name }` | `basemind code expand F name` |
+| "Find code by meaning?" | `code { mode: "semantic", query }`, then `code { mode: "chunk", path, chunk_id }` | `basemind code semantic "q"` |
 | "Regex over file contents?" | `code { mode: "grep", pattern: "…" }` | `basemind code grep "pattern" [--language --path-contains]` |
 | "What's indexed?" | `admin { mode: "status" }` | `basemind admin status` |
 | "Refresh the index after editing?" | `admin { mode: "rescan", paths: […] }` | `basemind admin rescan [path…]` |
@@ -68,11 +75,19 @@ code { mode: "outline", path: "src/mcp/tools.rs" }
 
 ## Notes
 
-- Matching on symbol names is **substring**: `code` mode `references` with `name: "bar"` matches
-  `Foo::bar()` and `bar()` alike. There is no scope resolution — cross-check with `code` mode
-  `outline` when disambiguation matters.
-- Lists are capped (`limit`, default 100, max 1000). Index scanners use `scan_cap = limit * 8` to
-  bound work on common names.
+- `symbols` is a case-sensitive **substring** over names. `references` is name-only: `name: "bar"`
+  matches `Foo::bar()` and `bar()` alike, with no scope resolution, but it is the fast, complete
+  floor. For one specific definition use `callers` (scope-resolved: hits it proves are marked
+  `resolved`; trust `total` for completeness before a refactor). `dependents` is a substring over
+  recorded imports and is unpaged.
+- Lists are capped (`limit`: `symbols`/`grep`/`references`/`callers`/`implementations` default 100,
+  max 1000; `files`/`find` 200, max 5000; `semantic` 10, max 100). Scanners stop at
+  `scan_cap = limit * 8` (min 2000) and set `total_is_partial`; `grep` never caps files, so its
+  `total_matches` is exact. `max_tokens` budgets a list, `format: "toon"` compacts it.
+- Cursors from `references`/`callers`/`implementations` survive rescans; `symbols`/`grep`/`files`/
+  `find` cursors do not (`cursor_invalidated`: restart the query).
+- A `notice` (`warming_up`, `building_index`, `rescanning`) means results may be incomplete or a
+  moment stale; a `projections_capped` notice appears only when no daemon was reachable.
 - Needs an index in the machine-global cache (Linux `~/.local/share/basemind/`, macOS
   `~/Library/Application Support/basemind/`; override `BASEMIND_DATA_HOME`) — run `basemind scan`
   first (see the `basemind-scan` skill). "No indexed files" means the scan hasn't run in this repo yet.

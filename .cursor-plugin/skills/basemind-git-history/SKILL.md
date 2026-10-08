@@ -23,7 +23,7 @@ rebasing, anything that mutates history).
 |---|---|---|
 | "What changed recently?" | `git { mode: "recent" }` | `basemind git recent [--limit N]` |
 | "Which commits touched path P?" | `git { mode: "touching", path: P }` | `basemind git touching P` |
-| "Path-filtered commit log?" | `git { mode: "by_path", pattern: P }` | `basemind git by-path P` |
+| "Commits whose changed paths match regex P?" | `git { mode: "by_path", pattern: P }` | `basemind git by-path P` |
 | "When did symbol X last change?" | `git { mode: "symbol_history", path: F, name: X }` | `basemind git symbol-history F X` |
 | "Who wrote this line?" | `git { mode: "blame", path: F }` | `basemind git blame F` |
 | "Who wrote this symbol / when did its body change?" | `git { mode: "blame_symbol", path: F, name: X }` | `basemind git blame-symbol F X` |
@@ -55,8 +55,11 @@ git { mode: "diff_outline", path: "src/mcp/tools.rs", rev: "HEAD~5" }
   they return a clear error.
 - History queries are indexed: `git` mode `touching` and friends resolve in tens of microseconds vs a
   live walk. The index auto-builds on first use and is a fraction of the size of `.git`.
-- All paths are repository-relative with forward-slash separators. Lists are capped
-  (`limit`, default 100, max 1000).
+- All paths are repository-relative with forward-slash separators. `recent` and `search` return
+  at most 100 commits per page (`limit` default 20); `recent` is a recency window, so use `search`
+  to find an author or message arbitrarily far back. Page with `next_cursor` -> `cursor`; a moved
+  HEAD invalidates it (`cursor_invalidated`). A shallow clone sets `truncated`: absence is then
+  inconclusive.
 
 For code structure see `basemind-code-search`; for document RAG and semantic search see
 `basemind-documents`; for agent coordination see `basemind-comms`.

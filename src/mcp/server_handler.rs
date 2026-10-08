@@ -221,9 +221,8 @@ impl ServerHandler for BasemindServer {
             "basemind is this repository's indexed context layer: a tree-sitter code map (symbols, \
              references, callers, call graphs), git history and blame at symbol resolution, \
              full-text and semantic search, document RAG, and shared cross-session memory. The \
-             index lives in a machine-global cache keyed by workspace (override \
-             BASEMIND_DATA_HOME); nothing is written into the repo, and a daemon is its sole \
-             writer, so any number of sessions read and write concurrently.\n\
+             index lives in a machine-global cache (override BASEMIND_DATA_HOME); nothing is \
+             written into the repo and any number of sessions share it.\n\
              Every tool takes a required mode; read its description for the modes it offers.\n\
              basemind first, shell/grep/git fallback. These tools return paths, line numbers, and \
              signatures rather than file bodies, so they cost a fraction of the tokens of reading \
@@ -232,7 +231,8 @@ impl ServerHandler for BasemindServer {
              over grepping call sites; code mode grep over ripgrep; code mode find to locate a file \
              by name; git modes recent, blame, blame_symbol, diff and touching over git log or git \
              blame; graph modes calls, neighbors and map to see what reaches what; memory mode \
-             documents over opening PDFs; web modes scrape, crawl and map for the web. Do not \
+             documents over opening PDFs, markdown, config or data files (the code map holds code \
+             only); web modes scrape, crawl and map for the web. Do not \
              re-read a file basemind already mapped. Run admin mode rescan after edits; if a tool \
              reports no indexed files, run basemind scan first.\n\
              You may be one of several agents in this repo, so coordinate rather than assuming you \
