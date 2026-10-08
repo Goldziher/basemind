@@ -49,6 +49,40 @@ const READ_CHUNK: usize = 8 * 1024;
 #[cfg(windows)]
 const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
+/// Env var overriding how long a coordination request waits for the broker's reply, in seconds.
+pub const REQUEST_TIMEOUT_ENV: &str = "BASEMIND_COMMS_REQUEST_TIMEOUT_SECS";
+/// Env var overriding how long the connect + `Hello` handshake may take, in seconds.
+pub const HANDSHAKE_TIMEOUT_ENV: &str = "BASEMIND_COMMS_HANDSHAKE_TIMEOUT_SECS";
+const DEFAULT_REQUEST_TIMEOUT_SECS: u64 = 10;
+const DEFAULT_HANDSHAKE_TIMEOUT_SECS: u64 = 5;
+
+/// A positive whole-second duration from `var`, else `default_secs`.
+fn timeout_from_env(var: &str, default_secs: u64) -> std::time::Duration {
+    let secs = std::env::var(var)
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u64>().ok())
+        .filter(|secs| *secs > 0)
+        .unwrap_or(default_secs);
+    std::time::Duration::from_secs(secs)
+}
+
+/// How long `req` may wait for its reply. Forwarded work (scans, embeds, memory, git-history and
+/// index reads) legitimately runs for minutes and is unbounded here; everything else is a quick
+/// broker round trip, so silence past the timeout means the broker is wedged, not busy.
+fn request_timeout(req: &CommsRequest) -> Option<std::time::Duration> {
+    match req {
+        CommsRequest::Rescan { .. }
+        | CommsRequest::Cleanup { .. }
+        | CommsRequest::GitHistory { .. }
+        | CommsRequest::ResolvedRefs { .. }
+        | CommsRequest::IndexRead { .. }
+        | CommsRequest::CodeSearchLanes { .. } => None,
+        #[cfg(feature = "memory")]
+        CommsRequest::Memory { .. } | CommsRequest::Governance { .. } => None,
+        _ => Some(timeout_from_env(REQUEST_TIMEOUT_ENV, DEFAULT_REQUEST_TIMEOUT_SECS)),
+    }
+}
+
 /// Cap on [`CommsClient::pending_notifications`]; the oldest is dropped once it is reached.
 ///
 /// The queue is opportunistic, and for most clients nothing ever drains it: the only consumers are
@@ -101,6 +135,15 @@ pub enum CommsClientError {
         /// The request whose reply was malformed.
         request: &'static str,
     },
+    /// The broker accepted the connection but did not answer in time. Retryable: the request may
+    /// or may not have been applied, so re-read before repeating a mutation.
+    #[error("broker unresponsive: no reply to {what} within {secs}s (retryable)")]
+    Unresponsive {
+        /// What was being waited on (a request method or the handshake).
+        what: &'static str,
+        /// The elapsed bound, in seconds.
+        secs: u64,
+    },
     /// The daemon's protocol version differs from this build's.
     #[error("protocol skew: daemon speaks {daemon}, client speaks {client}")]
     ProtoSkew {
@@ -136,6 +179,8 @@ pub struct CommsClient {
     /// a half-written frame on the socket, so the link can no longer be framed correctly and the
     /// next request must reconnect instead of reusing it.
     write_incomplete: bool,
+    /// Explicit reply timeout for every request, overriding the per-method default and the env var.
+    request_timeout_override: Option<std::time::Duration>,
 }
 
 impl CommsClient {
@@ -202,7 +247,20 @@ impl CommsClient {
         cwd: Option<PathBuf>,
         spawn: impl Fn(&CommsPaths) -> std::io::Result<()> + Send + Sync + 'static,
     ) -> Result<Self, CommsClientError> {
-        let (stream, codec) = Self::dial(paths).await?;
+        let handshake_timeout = timeout_from_env(HANDSHAKE_TIMEOUT_ENV, DEFAULT_HANDSHAKE_TIMEOUT_SECS);
+        Self::connect_bounded(paths, agent, remote, cwd, spawn, handshake_timeout).await
+    }
+
+    /// [`CommsClient::connect_with_respawn`] with an explicit bound on the dial + `Hello` handshake.
+    async fn connect_bounded(
+        paths: &CommsPaths,
+        agent: AgentId,
+        remote: Option<String>,
+        cwd: Option<PathBuf>,
+        spawn: impl Fn(&CommsPaths) -> std::io::Result<()> + Send + Sync + 'static,
+        handshake_timeout: std::time::Duration,
+    ) -> Result<Self, CommsClientError> {
+        let (stream, codec) = bounded("connect", Some(handshake_timeout), Self::dial(paths)).await?;
         let mut client = Self {
             stream,
             codec,
@@ -215,8 +273,9 @@ impl CommsClient {
             spawn: Box::new(spawn),
             next_id: 1,
             write_incomplete: false,
+            request_timeout_override: None,
         };
-        client.handshake().await?;
+        bounded("handshake", Some(handshake_timeout), client.handshake()).await?;
         Ok(client)
     }
 
@@ -308,13 +367,22 @@ impl CommsClient {
     async fn reconnect(&mut self) -> Result<(), CommsClientError> {
         let spawn = &self.spawn;
         singleton::ensure_daemon_with(&self.paths, singleton::probe_alive, |paths| spawn(paths)).await?;
-        let (stream, codec) = Self::dial(&self.paths).await?;
+        let handshake_timeout = timeout_from_env(HANDSHAKE_TIMEOUT_ENV, DEFAULT_HANDSHAKE_TIMEOUT_SECS);
+        let (stream, codec) = bounded("connect", Some(handshake_timeout), Self::dial(&self.paths)).await?;
         self.stream = stream;
         self.codec = codec;
         self.read_buf.clear();
         self.pending_notifications.clear();
         self.write_incomplete = false;
-        self.handshake().await
+        bounded("handshake", Some(handshake_timeout), self.handshake()).await
+    }
+
+    /// Bound every request's wait for a reply to `timeout`, overriding the per-method default and
+    /// [`REQUEST_TIMEOUT_ENV`].
+    #[must_use]
+    pub fn with_request_timeout(mut self, timeout: std::time::Duration) -> Self {
+        self.request_timeout_override = Some(timeout);
+        self
     }
 
     /// The agent id this client authenticated as.
@@ -776,11 +844,13 @@ impl CommsClient {
         if self.write_incomplete {
             self.reconnect().await?;
         }
-        match self.send_correlated(req.clone()).await {
+        let timeout = self.request_timeout_override.or_else(|| request_timeout(&req));
+        let what = req.method();
+        match bounded(what, timeout, self.send_correlated(req.clone())).await {
             Ok(resp) => Ok(resp),
             Err(err) if is_connection_lost(&err) => {
                 self.reconnect().await?;
-                self.send_correlated(req).await
+                bounded(what, timeout, self.send_correlated(req)).await
             }
             Err(err) => Err(err),
         }
@@ -855,6 +925,23 @@ impl CommsClient {
             }
         }
     }
+}
+
+/// Await `fut`, failing with [`CommsClientError::Unresponsive`] if `limit` elapses first.
+async fn bounded<T>(
+    what: &'static str,
+    limit: Option<std::time::Duration>,
+    fut: impl std::future::Future<Output = Result<T, CommsClientError>>,
+) -> Result<T, CommsClientError> {
+    let Some(limit) = limit else {
+        return fut.await;
+    };
+    tokio::time::timeout(limit, fut)
+        .await
+        .unwrap_or(Err(CommsClientError::Unresponsive {
+            what,
+            secs: limit.as_secs(),
+        }))
 }
 
 /// Classify an error as "the link to the broker is gone" — the only class the single-shot
@@ -1042,10 +1129,75 @@ mod tests {
         let abandoned = tokio::time::timeout(std::time::Duration::from_millis(30), client.list_agents(None)).await;
         assert!(abandoned.is_err(), "the first request must be cut off mid-flight");
 
-        let workspaces = client.accessed_paths().await.expect("second request gets its own reply");
+        let workspaces = client
+            .accessed_paths()
+            .await
+            .expect("second request gets its own reply");
         assert!(workspaces.is_empty());
 
         server.abort();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A broker that stops answering must surface a retryable `broker unresponsive` error within the
+    /// bound rather than hanging the caller forever, and the client must still work afterwards.
+    #[tokio::test]
+    async fn silent_broker_yields_a_retryable_unresponsive_error() {
+        let (paths, server, dir) = scripted_broker(vec![std::time::Duration::from_secs(30)]);
+        let agent = AgentId::parse("agent-1".to_string()).expect("agent");
+        let mut client = CommsClient::connect_with_respawn(&paths, agent, None, None, |_| Ok(()))
+            .await
+            .expect("connect")
+            .with_request_timeout(std::time::Duration::from_millis(100));
+
+        let started = std::time::Instant::now();
+        let err = client.list_agents(None).await.expect_err("no reply must time out");
+        assert!(
+            matches!(
+                err,
+                CommsClientError::Unresponsive {
+                    what: "list_agents",
+                    ..
+                }
+            ),
+            "{err:?}"
+        );
+        assert!(err.to_string().contains("broker unresponsive"), "{err}");
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+
+        server.abort();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A daemon that accepts the connection but never answers `Hello` must fail the connect inside
+    /// the handshake bound.
+    #[tokio::test]
+    async fn handshake_against_a_mute_listener_times_out() {
+        let dir = std::env::temp_dir().join(format!("bm-mute-{}-{}", std::process::id(), rand_suffix()));
+        std::fs::create_dir_all(&dir).expect("dir");
+        let socket_path = dir.join("m.sock");
+        let _listener = tokio::net::UnixListener::bind(&socket_path).expect("bind");
+        let paths = CommsPaths {
+            comms_dir: dir.clone(),
+            socket_path,
+        };
+        let agent = AgentId::parse("agent-1".to_string()).expect("agent");
+        let Err(err) = CommsClient::connect_bounded(
+            &paths,
+            agent,
+            None,
+            None,
+            |_| Ok(()),
+            std::time::Duration::from_millis(100),
+        )
+        .await
+        else {
+            panic!("a mute listener must time out");
+        };
+        assert!(
+            matches!(err, CommsClientError::Unresponsive { what: "handshake", .. }),
+            "{err:?}"
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 
