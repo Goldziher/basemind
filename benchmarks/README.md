@@ -60,7 +60,7 @@ build) that this round didn't set up — left for a follow-up.
    fast with a clear message if `file_count` is `0`. Populate it once with:
 
    ```sh
-   ./target/debug/basemind admin scan
+   ./target/debug/basemind scan
    ```
 
    `run.sh` does not run this for you (a full scan can be slow on a large repo the first
@@ -187,3 +187,35 @@ basemind admin eval --tasks tasks.jsonl --report new.json --baseline report.json
 Task files are generated per repository by the stdlib-only scripts in
 [`benchmarks/eval/`](eval/README.md), which also documents the task format, the metrics, and the
 comparison with the fixed multipliers in `src/mcp/savings.rs`.
+
+### Measured results
+
+One run of the nine generated task files (`benchmarks/eval/`, `--warmup`, tokenizer `o200k`) against a
+74k-file, ~350 MB monorepo checkout (the armis repository), on development builds of the changes listed
+under `[Unreleased]` in the CHANGELOG, 2026-10-08. Latency is the in-process tool call; `grep` is taken from
+[ADR-0012](../docs/adr/0012-grep-content-prefilter.md) (the run with the trigram prefilter on, 125-134 ms
+p50). Token ratios are `baseline_tokens / basemind_tokens` over tasks whose recall reached 0.8; the
+baseline is a targeted `git grep` plus up to three whole-file reads.
+
+| mode | tasks | p50 | p95 | P | R | ranked | median token ratio | credited / withheld | `savings.rs` assumes |
+|---|---|---|---|---|---|---|---|---|---|
+| `symbols` | 60 | 3.7 ms | 5.3 ms | 0.97 | 1.00 | | 21.6x (p90 98.9x) | 60 / 0 | 3x |
+| `outline` | 60 | 1.0 ms | 2.2 ms | 1.00 | 1.00 | | 0.68x (p90 1.21x) | 60 / 0 | 5x |
+| `references` | 60 | 1.4 ms | 6.0 ms | 0.81 | 1.00 | | 1.20x (p90 1.80x) | 60 / 0 | 3x |
+| `callers` | 60 | 4.6 ms | 10.4 ms | 0.87 | 1.00 | | 0.75x (p90 1.12x) | 60 / 0 | 3x |
+| `dependents` | 60 | 4.0 ms | 5.6 ms | 0.84 | 1.00 | | 0.64x (p90 0.90x) | 60 / 0 | 2x |
+| `grep` | 15 | ~130 ms | 190-270 ms | 0.91 | 1.00 | | 0.41x (p90 0.61x) | 15 / 0 | 1x |
+| `find` | 60 | 6.6 ms | 9.0 ms | 0.29 | 0.75 | hit@1 0.72, MRR 0.73 | 0.12x (p90 0.42x) | 18 / 2 | 1x |
+| `git_search` | 60 | 55 ms | 96 ms | 1.00 | 0.91 | hit@1 1.00, nDCG 0.94 | 0.16x (p90 0.67x) | 49 / 11 | 1x |
+| `docs` | 60 | 106 ms | 260 ms | 0.18 | 0.63 | hit@1 0.48, hit@5 0.63, MRR 0.54 | 0.15x (p90 5.67x) | 38 / 22 | 5x |
+
+How to read it: the ratio only compares answer size with the baseline's. A definition lookup
+(`symbols`) replaces a grep plus file reads and is far cheaper than the dashboard's fixed 3x; a
+single narrow hit (`outline` of a small file, `references`, `callers`, `dependents`, `find`) can be
+*cheaper* with `grep`, because basemind's structured response carries per-call overhead. That is why
+the harness flags every mode whose measured median deviates from `src/mcp/savings.rs` by more than 25%
+(all of them here) and why `basemind admin telemetry` savings are estimates. The latency columns are
+the point of the resident term index, name dictionaries and grep prefilter: the same `symbols`,
+`dependents` and `grep` tasks took seconds before them (`symbols` and `dependents` p50 4.1 s and 4.6 s on
+the previous implementation; `grep` 3.6-7.8 s). Rerun the workflow in
+[`eval/README.md`](eval/README.md) on your own repository before relying on any of these.
