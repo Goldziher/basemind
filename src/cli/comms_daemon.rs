@@ -57,6 +57,15 @@ const STARTUP_GC_DELAY: std::time::Duration = std::time::Duration::from_secs(10 
 #[cfg(unix)]
 const OWNERSHIP_CHECK_EVERY: std::time::Duration = std::time::Duration::from_secs(30);
 
+/// Test-only hook: artificially delay the comms store open by this many milliseconds, so tests can
+/// prove the daemon answers `Ping` while the store is still opening. Unset in production.
+const TEST_STORE_OPEN_DELAY_ENV: &str = "BASEMIND_TEST_COMMS_STORE_OPEN_DELAY_MS";
+
+fn test_store_open_delay() -> Option<std::time::Duration> {
+    let millis = std::env::var(TEST_STORE_OPEN_DELAY_ENV).ok()?.parse::<u64>().ok()?;
+    Some(std::time::Duration::from_millis(millis))
+}
+
 /// Hard bound on the runtime teardown at the end of [`run`]. Dropping the runtime implicitly waits
 /// *forever* for in-flight `spawn_blocking` work — which is exactly how a SIGTERM'd daemon used to
 /// hang until SIGKILL while a big rescan finished. The drain already trips the broker's scan-cancel
@@ -129,7 +138,22 @@ pub fn run() -> Result<()> {
             Err(e) => return Err(anyhow::anyhow!("bind comms socket: {e}")),
         };
 
-        let store = match CommsStore::open(&paths.comms_dir) {
+        // Answer `Ping` (and park everything else) while the store opens: the open is fsync-heavy
+        // and can take tens of seconds on a contended disk, and a liveness probe must not read that
+        // as a dead daemon. Unix only; the Windows pipe front-end still starts after the open.
+        #[cfg(unix)]
+        let early = crate::comms::frontend_uds::EarlyAccept::start(listener, paths.socket_path.clone());
+
+        let comms_dir = paths.comms_dir.clone();
+        let opened = tokio::task::spawn_blocking(move || {
+            if let Some(delay) = test_store_open_delay() {
+                std::thread::sleep(delay);
+            }
+            CommsStore::open(&comms_dir)
+        })
+        .await
+        .context("join comms store open")?;
+        let store = match opened {
             Ok(store) => Arc::new(store),
             // The store flock is the second per-comms-dir guard. If a peer holds it we lost the race
             // (e.g. a socket false-reclaim): converge quietly rather than exiting non-zero.
@@ -310,7 +334,7 @@ pub fn run() -> Result<()> {
 
         #[cfg(unix)]
         let frontend: Box<dyn CommsFrontendObj> = Box::new(UdsFrontendBox(
-            crate::comms::frontend_uds::UdsFrontend::from_listener(listener, paths.socket_path.clone()),
+            early.finish(broker.clone()).await.context("hand the socket to the front-end")?,
         ));
         #[cfg(windows)]
         let frontend: Box<dyn CommsFrontendObj> = Box::new(NamedPipeFrontendBox(
