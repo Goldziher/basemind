@@ -60,8 +60,7 @@ pub enum VisualMode {
     Current,
     /// Open the session in a brand-new terminal window.
     Window,
-    /// Surface the session over a web frontend. No terminal is launched (command-building returns `None`); the
-    /// caller is handed the attach command instead.
+    /// Surface the session over a web frontend. No terminal is launched (no command is built); the caller gets the attach command.
     Web,
     /// Do not present the session at all; it runs headless. This is the default for agent work.
     #[default]
