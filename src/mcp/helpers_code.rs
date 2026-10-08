@@ -177,6 +177,7 @@ pub(super) async fn run_code(state: &ServerState, params: CodeParams) -> Result<
                 },
                 started,
             )
+            .await
         }
         CodeMode::Files => {
             run_list_files(

@@ -37,7 +37,7 @@ const GREP_BYTE_BUDGET: u64 = 2 * 1024 * 1024 * 1024;
 /// `total_files_matched` are exact for the scanned window. Supports in-memory pagination via
 /// `cursor` / `next_cursor` on the same `encode_in_memory(offset, generation)` scheme as
 /// `list_files`.
-pub(super) fn run_workspace_grep(
+pub(super) async fn run_workspace_grep(
     state: &ServerState,
     params: WorkspaceGrepParams,
     started: std::time::Instant,
@@ -97,7 +97,17 @@ pub(super) fn run_workspace_grep(
 
     let root = state.shared.root.as_path();
     let paths: Vec<&RelPath> = scanned.iter().map(|(path, _)| *path).collect();
-    let counts = count_all(root, &paths, &re, literal.as_ref(), skip_hits);
+    // Files the per-file trigram blooms prove cannot match are never opened. They keep their slot in
+    // `paths` (counted as zero), so window order, `file_idx` and every cursor are those of the full sweep.
+    let skip = if bloom_prefilter_enabled() {
+        super::index_route::IndexRoute::resolve(state)
+            .await
+            .grep_skip(root, &params.pattern, &paths)
+            .await
+    } else {
+        None
+    };
+    let counts = count_all(root, &paths, skip.as_deref(), &re, literal.as_ref(), skip_hits);
 
     let total_matches = counts.iter().fold(0u32, |acc, &c| acc.saturating_add(c));
     let total_files_matched = counts.iter().filter(|&&c| c > 0).count();
@@ -151,6 +161,12 @@ pub(super) fn run_workspace_grep(
     )
 }
 
+/// Operator kill switch for the trigram-bloom prefilter: `BASEMIND_GREP_BLOOM=0` forces the full
+/// sweep. The prefilter never changes a result, so this exists for A/B timing and as an escape hatch.
+fn bloom_prefilter_enabled() -> bool {
+    std::env::var_os("BASEMIND_GREP_BLOOM").is_none_or(|v| v != "0")
+}
+
 /// The in-memory cursor carries one `u64` offset, but grep must resume at a HIT, not at a file: a
 /// single file can hold more matches than `limit`. A file-granular cursor would either replay that
 /// file's leading hits forever (no forward progress) or drop its tail (silent loss). Packing
@@ -190,13 +206,20 @@ fn apply_byte_budget<'a, 'b>(
 fn count_all(
     root: &Path,
     scanned: &[&RelPath],
+    skip: Option<&[bool]>,
     re: &Regex,
     literal: Option<&Finder<'static>>,
     skip_hits: u32,
 ) -> Vec<u32> {
     let mut counts: Vec<u32> = scanned
         .par_iter()
-        .map(|path| with_indexed_bytes(root, path, |bytes| count_matches(bytes, re, literal)).unwrap_or(0))
+        .enumerate()
+        .map(|(i, path)| {
+            if skip.is_some_and(|s| s.get(i).copied().unwrap_or(false)) {
+                return 0;
+            }
+            with_indexed_bytes(root, path, |bytes| count_matches(bytes, re, literal)).unwrap_or(0)
+        })
         .collect();
     if let Some(first) = counts.first_mut() {
         *first = first.saturating_sub(skip_hits);
@@ -618,7 +641,7 @@ mod tests {
             let re = Regex::new(pattern).expect("regex");
             let literal = (regex::escape(pattern) == pattern).then(|| Finder::new(pattern.as_bytes()).into_owned());
             for skip_hits in [0u32, 3] {
-                let new_counts = count_all(dir.path(), &refs, &re, literal.as_ref(), skip_hits);
+                let new_counts = count_all(dir.path(), &refs, None, &re, literal.as_ref(), skip_hits);
                 let old_counts = reference::count(dir.path(), &refs, &re, literal.as_ref(), skip_hits);
                 assert_eq!(
                     new_counts, old_counts,
@@ -634,7 +657,7 @@ mod tests {
                         let (mut skip_files, mut skip_hits) = (0usize, skip_hits);
                         loop {
                             let window = &refs[skip_files.min(refs.len())..];
-                            let counts = count_all(dir.path(), window, &re, literal.as_ref(), skip_hits);
+                            let counts = count_all(dir.path(), window, None, &re, literal.as_ref(), skip_hits);
                             let (sel, resume) = select_hits(&counts, limit, skip_files, skip_hits);
                             let new = materialize(dir.path(), window, &sel, &re, ctx, skip_files);
                             let old_counts = reference::count(dir.path(), window, &re, literal.as_ref(), skip_hits);
@@ -653,6 +676,150 @@ mod tests {
                 }
             }
         }
+    }
+
+    // ---- trigram-bloom prefilter equivalence -------------------------------------------------
+
+    /// Index the current bytes and stat of every readable file, as a scan would.
+    fn scan_blooms(db: &crate::index::IndexDb, dir: &Path, paths: &[RelPath]) {
+        let mut writer = db.writer();
+        for rel in paths {
+            let abs = dir.join(rel.to_path_buf());
+            let (Ok(bytes), Ok(meta)) = (std::fs::read(&abs), std::fs::metadata(&abs)) else {
+                continue;
+            };
+            let row = crate::index::grep_bloom::build_row(&bytes, meta.len(), crate::scanner_file::mtime_nanos(&meta));
+            writer.upsert_grep_bloom(rel, row);
+        }
+        writer.commit().expect("commit blooms");
+    }
+
+    fn set_mtime_ahead(path: &Path, secs: u64) {
+        let file = std::fs::OpenOptions::new().write(true).open(path).expect("open");
+        file.set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(secs))
+            .expect("set mtime");
+    }
+
+    #[test]
+    fn the_bloom_prefilter_never_changes_a_result_even_after_edits_deletes_and_new_files() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let idx_dir = tempfile::tempdir().expect("index dir");
+        let db = crate::index::IndexDb::open(idx_dir.path()).expect("index");
+        let mut paths = generate_corpus(dir.path());
+
+        // A long single line with the needle only at the very end, and a unique token in one file.
+        let mut long_line = "abc def ghi ".repeat(20_000);
+        long_line.push_str("tail_marker_xyz");
+        std::fs::write(dir.path().join("d1/long.txt"), long_line).expect("write long");
+        paths.push(RelPath::from("d1/long.txt"));
+        std::fs::write(dir.path().join("d2/unique.txt"), "alpha unique_token_qq beta\n").expect("write");
+        paths.push(RelPath::from("d2/unique.txt"));
+
+        scan_blooms(&db, dir.path(), &paths);
+
+        // After the scan: an edit that adds a token (size changes), a same-size edit with a bumped
+        // mtime, a deletion, and a file the scan never saw.
+        std::fs::write(dir.path().join("d3/f3.txt"), "now holds unique_token_qq and needle\n").expect("edit");
+        let same_size = dir.path().join("d4/f4.txt");
+        let before = std::fs::read(&same_size).expect("read");
+        let mut edited = vec![b'q'; before.len()];
+        let marker = b"unique_token_qq";
+        if edited.len() >= marker.len() {
+            edited[..marker.len()].copy_from_slice(marker);
+        }
+        std::fs::write(&same_size, &edited).expect("same-size edit");
+        set_mtime_ahead(&same_size, 5);
+        std::fs::remove_file(dir.path().join("d1/f1.txt")).expect("delete");
+        std::fs::write(dir.path().join("d0/new.txt"), "brand new unique_token_qq needle\n").expect("new");
+        paths.push(RelPath::from("d0/new.txt"));
+
+        let refs: Vec<&RelPath> = paths.iter().collect();
+        let patterns = [
+            "needle",
+            "NEEDLE",
+            "(?i)needle",
+            "(?i)NeEdLe",
+            "needle|hay",
+            "post_processing",
+            "post_proc",
+            "naïve",
+            "日本語",
+            "😀",
+            "unique_token_qq",
+            "unique_token_qq|tail_marker_xyz",
+            "tail_marker_xyz$",
+            "^alpha unique",
+            r"unique_token_\w+",
+            r"tail_marker_xyz\b",
+            "zzz_absent_literal",
+            "zzz_absent_literal|needle",
+            "(?i)zzz_absent",
+            r"fn\s+\w+",
+            ".*",
+            "ab",
+            "",
+        ];
+        let mut skipped_somewhere = false;
+        for pattern in patterns {
+            let re = Regex::new(pattern).expect("regex");
+            let literal = (regex::escape(pattern) == pattern).then(|| Finder::new(pattern.as_bytes()).into_owned());
+            let skip = crate::index::grep_bloom::Needle::compile(pattern)
+                .map(|needle| db.grep_skip_verdicts(dir.path(), &refs, &needle));
+            skipped_somewhere |= skip.as_ref().is_some_and(|s| s.iter().any(|&x| x));
+            for skip_hits in [0u32, 2] {
+                let filtered = count_all(dir.path(), &refs, skip.as_deref(), &re, literal.as_ref(), skip_hits);
+                let oracle = reference::count(dir.path(), &refs, &re, literal.as_ref(), skip_hits);
+                assert_eq!(filtered, oracle, "counts diverge for {pattern:?} skip_hits={skip_hits}");
+                for limit in [7usize, 1000] {
+                    let (sel_f, resume_f) = select_hits(&filtered, limit, 0, skip_hits);
+                    let (sel_o, resume_o) = select_hits(&oracle, limit, 0, skip_hits);
+                    assert_eq!(resume_f, resume_o, "cursor diverges for {pattern:?}");
+                    let hits_f = materialize(dir.path(), &refs, &sel_f, &re, true, 0);
+                    let hits_o = reference::materialize(dir.path(), &refs, &sel_o, &re, true, 0);
+                    assert_eq!(hits_f.1, hits_o.1);
+                    assert_eq!(
+                        serde_json::to_string(&hits_f.0).expect("json"),
+                        serde_json::to_string(&hits_o.0).expect("json"),
+                        "hits diverge for {pattern:?} limit={limit}"
+                    );
+                }
+            }
+        }
+        assert!(skipped_somewhere, "the prefilter must actually skip files on this corpus");
+
+        // The stale and new files must stay candidates for the token they now hold.
+        let needle = crate::index::grep_bloom::Needle::compile("unique_token_qq").expect("needle");
+        let skip = db.grep_skip_verdicts(dir.path(), &refs, &needle);
+        for (rel, skipped) in paths.iter().zip(&skip) {
+            if ["d3/f3.txt", "d4/f4.txt", "d0/new.txt", "d2/unique.txt"].contains(&rel.to_string().as_str()) {
+                assert!(!skipped, "{rel} holds the token and must not be skipped");
+            }
+        }
+        assert!(
+            paths.iter().zip(&skip).any(|(_, skipped)| *skipped),
+            "files without the token are skipped"
+        );
+    }
+
+    #[test]
+    fn a_missing_or_foreign_bloom_row_is_a_candidate() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let idx_dir = tempfile::tempdir().expect("index dir");
+        let db = crate::index::IndexDb::open(idx_dir.path()).expect("index");
+        std::fs::write(dir.path().join("a.txt"), "nothing relevant here\n").expect("write");
+        let rel = RelPath::from("a.txt");
+        let needle = crate::index::grep_bloom::Needle::compile("absent_literal").expect("needle");
+        assert_eq!(db.grep_skip_verdicts(dir.path(), &[&rel], &needle), vec![false], "no row");
+        let mut writer = db.writer();
+        writer.upsert_grep_bloom(&rel, vec![99; 40]);
+        writer.commit().expect("commit");
+        assert_eq!(db.grep_skip_verdicts(dir.path(), &[&rel], &needle), vec![false], "foreign row");
+        scan_blooms(&db, dir.path(), std::slice::from_ref(&rel));
+        assert_eq!(db.grep_skip_verdicts(dir.path(), &[&rel], &needle), vec![true], "current row");
+        let mut writer = db.writer();
+        writer.remove_file(&rel).expect("remove");
+        writer.commit().expect("commit");
+        assert!(db.grep_bloom_row(&rel).is_none(), "removing the file removes its row");
     }
 
     #[test]

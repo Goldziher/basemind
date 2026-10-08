@@ -33,6 +33,7 @@ pub(crate) fn index_read_against(store: &Store, query: &IndexReadQuery) -> Resul
     match query {
         IndexReadQuery::CallScan { name, limit, cursor } => call_scan(idx, name, *limit, cursor.as_deref()),
         IndexReadQuery::CallsInFiles { paths } => calls_in_files(idx, paths),
+        IndexReadQuery::GrepBloom { pattern, paths } => grep_skip(idx, &store.root, pattern, paths),
         IndexReadQuery::ImplScan {
             trait_name,
             language,
@@ -70,6 +71,29 @@ pub(crate) fn call_scan(
 ) -> Result<IndexReadResult, String> {
     let page = scan_calls_by_name(idx, name, clamp_limit(limit), cursor).map_err(|error| error.message.to_string())?;
     Ok(IndexReadResult::CallScan(call_page_to_wire(page)))
+}
+
+/// The `GrepBloom` arm on its own, so the daemon can run it holding only a cloned [`IndexDb`] handle
+/// and the workspace root instead of the store lock: it fetches a row and `stat`s a file per path.
+pub(crate) fn grep_skip(
+    idx: &IndexDb,
+    root: &std::path::Path,
+    pattern: &str,
+    paths: &[crate::path::RelPath],
+) -> Result<IndexReadResult, String> {
+    use crate::comms::index_read_proto::MAX_GREP_BLOOM_PATHS;
+    if paths.len() > MAX_GREP_BLOOM_PATHS {
+        return Err(format!(
+            "grep bloom names {} files; at most {MAX_GREP_BLOOM_PATHS} per request",
+            paths.len()
+        ));
+    }
+    // No usable literal: nothing can be skipped, and saying so is the answer, not an error.
+    let Some(needle) = crate::index::grep_bloom::Needle::compile(pattern) else {
+        return Ok(IndexReadResult::GrepSkip(vec![false; paths.len()]));
+    };
+    let refs: Vec<&crate::path::RelPath> = paths.iter().collect();
+    Ok(IndexReadResult::GrepSkip(idx.grep_skip_verdicts(root, &refs, &needle)))
 }
 
 fn calls_in_files(idx: &IndexDb, paths: &[crate::path::RelPath]) -> Result<IndexReadResult, String> {

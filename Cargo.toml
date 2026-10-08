@@ -164,6 +164,7 @@ oxc_span = { version = "0.152.0", optional = true }
 oxc_syntax = { version = "0.152.0", optional = true }
 rayon = "1"
 regex = "1.13.1"
+regex-syntax = "0.8"
 rmcp = { version = "3.5", features = ["server", "macros", "schemars", "transport-async-rw"] }
 rmp-serde = "1"
 rmux-client = { version = "0.10", default-features = false, optional = true }
