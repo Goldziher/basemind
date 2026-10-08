@@ -36,6 +36,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   when no daemon is reachable (a failed forward degrades to it rather than erroring), and the
   `projections_capped` notice appears only when that fallback is genuinely truncated.
 
+### Fixed
+
+- macOS: the process heap no longer shows up as GBs of "GPU" memory. mimalloc tags its mappings
+  with Mach VM tag 100 by default, which is `VM_MEMORY_IOACCELERATOR`, so `footprint`, `vmmap` and
+  Activity Monitor attributed the whole allocator heap to `IOAccelerator` even with
+  `onnx_provider = "cpu"` and no Metal or CoreML device ever created. basemind now retags the heap to
+  254 (application-specific) at startup, so the memory reports as ordinary application memory and
+  real GPU allocations are distinguishable.
+
 ## [0.28.1] - 2026-10-06
 
 ### Added
