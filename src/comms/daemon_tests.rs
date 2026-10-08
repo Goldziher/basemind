@@ -998,12 +998,18 @@ async fn inbox_scan_is_bounded_by_the_page_limit_not_the_backlog() {
     assert_eq!(messages.len(), 1);
     assert_eq!(messages[0].meta.subject, "m0");
     // 1 returned + a 500-row slack scanned + 1 for the truncation marker; the true backlog is 699.
-    assert_eq!(unread, 501, "the unread count is a lower bound once the scan cap is hit");
+    assert_eq!(
+        unread, 501,
+        "the unread count is a lower bound once the scan cap is hit"
+    );
 
     let CommsResponse::Inbox { messages, .. } = broker.handle(read(Some(cursor)), &mut bob, &tx).await else {
         panic!("expected the next page");
     };
-    assert_eq!(messages[0].meta.subject, "m1", "the cursor resumes right after the first page");
+    assert_eq!(
+        messages[0].meta.subject, "m1",
+        "the cursor resumes right after the first page"
+    );
 }
 
 #[tokio::test]

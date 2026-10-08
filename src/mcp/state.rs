@@ -53,7 +53,9 @@ pub(crate) struct ServerState {
     pub(crate) comms_clients: tokio::sync::Mutex<
         lru::LruCache<
             crate::comms::ids::AgentId,
-            std::sync::Arc<tokio::sync::Mutex<crate::comms::client::CommsClient>>,
+            std::sync::Arc<
+                tokio::sync::OnceCell<std::sync::Arc<tokio::sync::Mutex<crate::comms::client::CommsClient>>>,
+            >,
         >,
     >,
     /// Bounded per-session high-water cache for mailbox notices piggybacked onto tool responses.

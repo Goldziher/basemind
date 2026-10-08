@@ -40,6 +40,8 @@ const DELIVERY_SCAN_LIMIT: u32 = 200;
 /// Minimum spacing between delivery probes for one session.
 const DELIVERY_PROBE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
 const DELIVERY_NOTICE_LIMIT: usize = 5;
+/// Upper bound on dialing (and, if need be, spawning) the broker for a cached identity.
+const CONNECT_BUDGET: std::time::Duration = std::time::Duration::from_secs(15);
 const DELIVERY_CONNECT_BUDGET: std::time::Duration = std::time::Duration::from_secs(2);
 const DELIVERY_BUDGET: std::time::Duration = std::time::Duration::from_millis(200);
 
@@ -123,17 +125,37 @@ pub(super) async fn resolve_comms_client(
         None => AgentId::parse(state.agent_id.clone())
             .map_err(|e| comms_err(format!("invalid agent id {:?}: {e}", state.agent_id)))?,
     };
-    let mut map = state.comms_clients.lock().await;
-    if let Some(handle) = map.get(&target) {
-        return Ok(handle.clone());
-    }
-    let client = connect_comms_client(state, target.clone()).await?;
-    let handle = Arc::new(Mutex::new(client));
-    // ~keep `put` past the cap drops the least-recently-used client, closing its broker socket. Safe
-    // ~keep because callers hold the returned `Arc` for the duration of their call: an evicted client
-    // ~keep stays alive until the last in-flight handle drops, and the identity reconnects on next use.
-    map.put(target, handle.clone());
-    Ok(handle)
+    // Hold the map lock only to find or create this identity's cell. Connecting happens under the
+    // cell's own once-init, so a slow or wedged connect for one identity cannot block lookups (or
+    // connects) for any other, and a failed connect leaves the cell empty for the next caller.
+    let cell = {
+        let mut map = state.comms_clients.lock().await;
+        match map.get(&target) {
+            Some(cell) => cell.clone(),
+            None => {
+                let cell = Arc::new(tokio::sync::OnceCell::new());
+                // ~keep `put` past the cap drops the least-recently-used cell; callers hold the
+                // ~keep returned `Arc`, so an evicted client stays alive until its last in-flight
+                // ~keep handle drops, and the identity reconnects on next use.
+                map.put(target.clone(), cell.clone());
+                cell
+            }
+        }
+    };
+    let handle = cell
+        .get_or_try_init(|| async {
+            let client = tokio::time::timeout(CONNECT_BUDGET, connect_comms_client(state, target.clone()))
+                .await
+                .map_err(|_| {
+                    comms_err(format!(
+                        "broker unresponsive: connect did not finish within {}s (retryable)",
+                        CONNECT_BUDGET.as_secs()
+                    ))
+                })??;
+            Ok::<_, McpError>(Arc::new(Mutex::new(client)))
+        })
+        .await?;
+    Ok(handle.clone())
 }
 
 /// Return a bounded, exactly-once-per-session front-matter notice for an ordinary tool response.
@@ -142,7 +164,10 @@ pub(super) async fn resolve_comms_client(
 pub(super) async fn take_delivery_notice(state: &ServerState) -> Option<String> {
     // Contention means another tool call is already probing; skip rather than queue behind it.
     let mut probe = state.delivery_probe.try_lock().ok()?;
-    if probe.last_probe.is_some_and(|at| at.elapsed() < DELIVERY_PROBE_INTERVAL) {
+    if probe
+        .last_probe
+        .is_some_and(|at| at.elapsed() < DELIVERY_PROBE_INTERVAL)
+    {
         return None;
     }
     probe.last_probe = Some(std::time::Instant::now());
@@ -198,8 +223,17 @@ pub(super) async fn take_delivery_notice(state: &ServerState) -> Option<String> 
 /// One bounded inbox read over the probe's private connection.
 async fn probe_inbox(
     slot: &mut Option<CommsClient>,
-) -> Result<(Vec<crate::comms::protocol::SeqMeta>, u32, Option<crate::comms::cursor::Cursor>), McpError> {
-    let client = slot.as_mut().ok_or_else(|| comms_err("delivery probe has no connection"))?;
+) -> Result<
+    (
+        Vec<crate::comms::protocol::SeqMeta>,
+        u32,
+        Option<crate::comms::cursor::Cursor>,
+    ),
+    McpError,
+> {
+    let client = slot
+        .as_mut()
+        .ok_or_else(|| comms_err("delivery probe has no connection"))?;
     client
         .read_inbox(None, None, None, DELIVERY_SCAN_LIMIT, false, None)
         .await
