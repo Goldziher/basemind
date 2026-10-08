@@ -29,6 +29,7 @@ impl BasemindServer {
     // `$ref` into `$defs` — the construct that silently dropped the whole registry in GH #50. The
     // per-mode shapes are documented in the description instead. ~keep
     #[tool(
+        title = "Code graph",
         description = "Navigate the unified code-graph: who calls this, what does this reach, how \
         do these two connect, what are this repo's modules and hubs, and render or show the graph. \
         `mode` is required. `calls` BFS-walks the call chain from one function — \

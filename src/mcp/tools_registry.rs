@@ -29,6 +29,7 @@ impl BasemindServer {
     // The annotations are the union of the five modes': `claim`/`release` write, so the tool cannot
     // claim `read_only_hint`, but every mode is idempotent and none destroys data. ~keep
     #[tool(
+        title = "Workspace registry",
         description = "Find out which repos, worktrees and branches this machine has, and who is \
         already working them, before you edit a shared checkout. `mode` is required. `workspaces` \
         lists every workspace the daemon has seen — git checkouts and plain directories — with its \
