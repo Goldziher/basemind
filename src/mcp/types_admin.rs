@@ -128,7 +128,7 @@ pub(super) struct CacheStatsResponse {
     pub other_bytes: u64,
     /// Total blob files on disk (every suffix counts as one file).
     pub blob_count: usize,
-    /// Blob files whose hex stem is referenced by no view — reclaimable by `cache_gc`. Meaningful
+    /// Blob files whose hex stem is referenced by no view — reclaimable by `basemind cache gc`. Meaningful
     /// only when `blob_accounting_ok` is `true`.
     pub orphan_blob_count: usize,
     /// Whether orphan accounting ran. `false` = a view index was unreadable (stale schema /
