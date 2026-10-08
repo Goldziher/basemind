@@ -786,6 +786,29 @@ not *do not use one*. `basemind daemon ensure` honours it, like every other impl
 A working unit — with the install steps, the environment.d wiring, and the commands that verify the
 ceiling is real rather than merely configured — ships at `docs/systemd/basemind-comms.service`.
 
+### Request correlation, timeouts and the daemon log
+
+Every client request after `Hello` travels as a `Call { id, request }` and is answered by a
+`Reply { id, response }` (protocol version 4; `ensure_daemon` replaces an older daemon on its
+version check, and a skewed peer fails `Hello` with `proto_skew`). A client that abandons a request
+mid-flight (a timeout, a cancelled tool call) therefore cannot mistake the late reply for the next
+request's answer: stale ids are discarded, and only a drop in the middle of writing a frame forces
+a reconnect. Bare requests (status probes, `Hello`) still get an uncorrelated `Response`.
+
+Nothing waits forever. A coordination request must be answered within
+`BASEMIND_COMMS_REQUEST_TIMEOUT_SECS` (default 10) and the connect + `Hello` within
+`BASEMIND_COMMS_HANDSHAKE_TIMEOUT_SECS` (default 5), else the call fails with the retryable
+`comms: broker unresponsive`. Forwarded work (scan, embed, memory, git-history, index reads) is
+exempt. The stdio relay answers a request the daemon has not replied to within
+`BASEMIND_RELAY_REQUEST_TIMEOUT_SECS` (default 180, `0` disables) with a retryable `-32002
+backend_timeout` and drops the late reply. The MCP `wait` mode is capped at 40 s, returns early
+when the host cancels the call or the connection closes (the ephemeral link, and so its
+subscription, is dropped at once), and does not return messages a previous `wait` already returned.
+
+The detached daemon's stdout and stderr are appended to `<comms_dir>/daemon.log` (mode 0600,
+rotated to `daemon.log.1` past 8 MiB at spawn and trimmed in place while running). `basemind comms
+doctor` prints the path for every comms daemon (`log` in `--json`).
+
 ### Evidence a killed process leaves behind
 
 A daemon that *diagnoses* its own failure records it (`comms/store_health.rs` writes
