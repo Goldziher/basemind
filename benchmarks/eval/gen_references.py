@@ -65,10 +65,9 @@ def main() -> None:
                         getattr(node.func, "end_lineno", node.lineno) or node.lineno,
                     )
                 )
-            elif isinstance(
-                node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
-            ):
-                defs[node.name].append(path)
+        # Definitions as basemind indexes them: module/class scope only, never function-nested.
+        for name, _ in c.python_symbols(tree, assignments=False):
+            defs[name].append(path)
 
     names = sorted(n for n in calls if len(n) >= a.min_len and not n.startswith("__"))
     rng = repo.rng("references", a.seed)

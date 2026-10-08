@@ -178,28 +178,45 @@ def parse_python(src: str) -> ast.AST | None:
         return None
 
 
-def python_symbols(tree: ast.AST) -> list[tuple[str, int]]:
+def python_symbols(
+    tree: ast.AST, *, assignments: bool = True
+) -> list[tuple[str, int]]:
     """`(name, 1-based line)` for everything basemind's Python outline lists.
 
-    Measured against basemind: every def/async def/class at any depth (methods and nested
-    definitions included), and every simple `Name` target of `=` / annotated-with-value `:`
-    assignment at any depth (tuple-unpacking, bare annotations and `self.x` are not listed).
-    A decorated def is reported at its `def` line, which is what `ast` calls `lineno`.
+    Module- and class-scope only: every def/async def/class, and every simple `Name` target of
+    `=` / annotated-with-value `:` assignment, at module level or in a class body (including inside
+    module-level `if`/`try`/`with`/loops). Function-local variables and nested definitions are
+    implementation detail and are not indexed, so the walk never descends into a function or
+    lambda body. Tuple-unpacking, bare annotations and `self.x` are not listed. A decorated def is
+    reported at its `def` line, which is what `ast` calls `lineno`. `assignments=False` keeps only
+    the def/class names.
     """
     out: list[tuple[str, int]] = []
-    for node in ast.walk(tree):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            out.append((node.name, node.lineno))
-        elif isinstance(node, ast.Assign):
-            out.extend(
-                (t.id, t.lineno) for t in node.targets if isinstance(t, ast.Name)
-            )
-        elif (
-            isinstance(node, ast.AnnAssign)
-            and node.value is not None
-            and isinstance(node.target, ast.Name)
-        ):
-            out.append((node.target.id, node.target.lineno))
+
+    def visit(node: ast.AST) -> None:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                out.append((child.name, child.lineno))
+                continue  # body is function scope
+            if isinstance(child, ast.Lambda):
+                continue
+            if isinstance(child, ast.ClassDef):
+                out.append((child.name, child.lineno))
+            elif not assignments:
+                pass
+            elif isinstance(child, ast.Assign):
+                out.extend(
+                    (t.id, t.lineno) for t in child.targets if isinstance(t, ast.Name)
+                )
+            elif (
+                isinstance(child, ast.AnnAssign)
+                and child.value is not None
+                and isinstance(child.target, ast.Name)
+            ):
+                out.append((child.target.id, child.target.lineno))
+            visit(child)
+
+    visit(tree)
     return out
 
 

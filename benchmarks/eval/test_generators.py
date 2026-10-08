@@ -33,6 +33,25 @@ def run_everything():
     w = make_widget()
     return w.spin()
 """
+SCOPED = """REGISTRY_SIZE = 4
+
+
+class Holder:
+    slot_count = 2
+
+    def keep(self):
+        scratch_value = 1
+
+        def inner_helper():
+            return scratch_value
+
+        return inner_helper
+
+
+def drive():
+    local_total = 0
+    return local_total
+"""
 GUIDE = "# Guide\n\nCall `make_widget` from `pkg/use.py` whenever you need a fresh instance to spin.\n"
 
 
@@ -60,6 +79,7 @@ class GeneratorTests(unittest.TestCase):
         (cls.repo / "docs").mkdir()
         (cls.repo / "pkg/widget.py").write_text(WIDGET)
         (cls.repo / "pkg/use.py").write_text(USE)
+        (cls.repo / "pkg/scoped.py").write_text(SCOPED)
         git(cls.repo, "add", "-A")
         git(cls.repo, "commit", "-qm", "introduce gizmo pipeline scaffolding")
         (cls.repo / "docs/guide.md").write_text(GUIDE)
@@ -117,6 +137,19 @@ class GeneratorTests(unittest.TestCase):
             ],
         )
 
+    def test_outline_and_symbols_skip_function_locals(self) -> None:
+        tasks = self.run_gen("outline", "--min-symbols", "3")
+        scoped = next(t for t in tasks if t["args"]["path"] == "pkg/scoped.py")
+        # REGISTRY_SIZE, Holder, slot_count, keep, drive: no scratch_value / inner_helper / local_total.
+        self.assertEqual(
+            scoped["gold"], [f"pkg/scoped.py:{n}" for n in (1, 4, 5, 7, 16)]
+        )
+        names = {
+            t["args"]["name"] for t in self.run_gen("symbols", "--min-len", "5")
+        }
+        self.assertTrue({"scratch_value", "inner_helper", "local_total"}.isdisjoint(names))
+        self.assertIn("slot_count", names)
+
     def test_references_are_call_sites_only_and_callers_name_the_definition(
         self,
     ) -> None:
@@ -167,6 +200,14 @@ class GeneratorTests(unittest.TestCase):
                 f"{p}:{n}" for p, n in (l.split(":")[1:3] for l in out.splitlines())
             )
             self.assertEqual(sorted(t["gold"]), expected, t["args"])
+
+    def test_find_indexed_list_limits_gold_to_indexed_paths(self) -> None:
+        listing = Path(self._tmp.name) / "indexed.txt"
+        listing.write_text("pkg/widget.py\ndocs/guide.md\n")
+        tasks = self.run_gen("find", "--ext", "", "--indexed", str(listing))
+        self.assertTrue(tasks)
+        for t in tasks:
+            self.assertIn(t["gold"][0], {"pkg/widget.py", "docs/guide.md"})
 
     def test_find_mutates_real_paths(self) -> None:
         tasks = self.run_gen("find", "--ext", "")

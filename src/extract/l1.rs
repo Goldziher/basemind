@@ -111,7 +111,11 @@ fn run_combined(lang: LangId, root: tree_sitter::Node, source: &[u8]) -> Result<
             }
         }
     });
-    Ok((dedupe_symbols(symbols), imports, implementations))
+    let mut symbols = dedupe_symbols(symbols);
+    for sym in &mut symbols {
+        trim_signature(sym);
+    }
+    Ok((symbols, imports, implementations))
 }
 
 /// Merge query matches that hit the same (`start_byte`, `name`) — happens when a generic
@@ -161,6 +165,7 @@ fn build_symbol(q: &Query, m: &QueryMatch, source: &[u8]) -> Option<Symbol> {
     let mut start_col = 0u32;
     let mut signature: Option<String> = None;
     let mut decorators: Vec<String> = Vec::new();
+    let mut symbol_node: Option<Node> = None;
 
     for cap in m.captures() {
         let cname = capture_name(q, cap.index);
@@ -176,6 +181,7 @@ fn build_symbol(q: &Query, m: &QueryMatch, source: &[u8]) -> Option<Symbol> {
             }
         } else if let Some(suffix) = cname.strip_prefix("symbol.") {
             kind = Some(SymbolKind::from_capture_suffix(suffix));
+            symbol_node = Some(node);
             start_byte = node.start_byte() as u32;
             end_byte = node.end_byte() as u32;
             let p = node.start_position();
@@ -192,6 +198,12 @@ fn build_symbol(q: &Query, m: &QueryMatch, source: &[u8]) -> Option<Symbol> {
         }
     }
 
+    // The outline is a map of what a file exposes, not of what its function bodies compute:
+    // bindings and nested definitions inside a function/method/lambda are implementation detail.
+    if symbol_node.is_some_and(is_function_local) {
+        return None;
+    }
+
     Some(Symbol {
         name: name?,
         kind: kind.unwrap_or(SymbolKind::Unknown),
@@ -202,6 +214,94 @@ fn build_symbol(q: &Query, m: &QueryMatch, source: &[u8]) -> Option<Symbol> {
         signature,
         decorators,
     })
+}
+
+/// Node kinds (across the bundled grammars) whose subtree is a function, method or lambda body.
+/// Matched by kind name so the check is language-generic; a kind that a grammar does not use
+/// simply never matches.
+const FUNCTION_SCOPE_KINDS: &[&str] = &[
+    "function_definition",
+    "function_declaration",
+    "function_item",
+    "function_expression",
+    "function",
+    "generator_function",
+    "generator_function_declaration",
+    "arrow_function",
+    "method_definition",
+    "method_declaration",
+    "method",
+    "singleton_method",
+    "constructor_declaration",
+    "lambda",
+    "lambda_expression",
+    "lambda_literal",
+    "closure_expression",
+    "func_literal",
+    "function_literal",
+    "local_function_statement",
+    "anonymous_function",
+    "anonymous_function_creation_expression",
+];
+
+/// True when `node` sits inside a function-like scope (it has a function/method/lambda ancestor).
+/// The node itself being a function does not count: top-level and class-level functions and methods
+/// are kept, as are class fields and module-level bindings; function locals and nested definitions
+/// are not.
+fn is_function_local(node: Node) -> bool {
+    let mut cur = node.parent();
+    while let Some(n) = cur {
+        if FUNCTION_SCOPE_KINDS.contains(&n.kind()) {
+            return true;
+        }
+        cur = n.parent();
+    }
+    false
+}
+
+/// Longest signature kept for a value-like symbol (variable, constant, field). Their "signature" is
+/// the whole initialiser, which can be a multi-line call; the outline only needs its shape.
+const VALUE_SIGNATURE_MAX_CHARS: usize = 80;
+
+/// Drop signature text that costs tokens without adding information: for value-like symbols the
+/// name is already a field of the entry, so `MAX_RETRIES = 3` is stored as `= 3`, and a long
+/// initialiser is cut at [`VALUE_SIGNATURE_MAX_CHARS`]. Definitions (functions, classes ...) keep
+/// their full header.
+fn trim_signature(sym: &mut Symbol) {
+    if !matches!(sym.kind, SymbolKind::Variable | SymbolKind::Const | SymbolKind::Field) {
+        return;
+    }
+    let Some(sig) = sym.signature.as_deref() else {
+        return;
+    };
+    let mut out = match sig.find(sym.name.as_str()) {
+        Some(i) if whole_word(sig, i, sym.name.len()) => {
+            let mut t = String::with_capacity(sig.len());
+            t.push_str(sig[..i].trim_end());
+            if !t.is_empty() {
+                t.push(' ');
+            }
+            t.push_str(sig[i + sym.name.len()..].trim_start());
+            t
+        }
+        _ => sig.to_string(),
+    };
+    if out.chars().count() > VALUE_SIGNATURE_MAX_CHARS {
+        let cut = out
+            .char_indices()
+            .nth(VALUE_SIGNATURE_MAX_CHARS)
+            .map_or(out.len(), |(i, _)| i);
+        out.truncate(cut);
+        out.push('…');
+    }
+    sym.signature = if out.is_empty() { None } else { Some(out) };
+}
+
+fn whole_word(s: &str, start: usize, len: usize) -> bool {
+    let is_word = |c: char| c.is_alphanumeric() || c == '_' || c == '$';
+    let before = s[..start].chars().next_back().is_none_or(|c| !is_word(c));
+    let after = s[start + len..].chars().next().is_none_or(|c| !is_word(c));
+    before && after
 }
 
 /// Promote a `method_definition` capture to `Getter` or `Setter` when the source slice
@@ -576,6 +676,116 @@ pub fn locked() {}
         assert!(
             names.contains(&"add"),
             "the commented Ruby method `add` must be extracted despite the leading @doc capture; got {names:?}"
+        );
+    }
+
+    fn names_of(map: &FileMapL1) -> Vec<&str> {
+        map.symbols.iter().map(|s| s.name.as_str()).collect()
+    }
+
+    #[test]
+    fn python_function_locals_are_not_symbols() {
+        let src = b"LIMIT = 3\n\nclass A:\n    field = 1\n    def m(self):\n        inner = 2\n        return inner\n\ndef f():\n    local = 1\n    def nested():\n        pass\n    return local\n";
+        let map = extract_l1("python", src).expect("extract");
+        let names = names_of(&map);
+        for want in ["LIMIT", "A", "field", "m", "f"] {
+            assert!(names.contains(&want), "{want} missing from {names:?}");
+        }
+        for bad in ["inner", "local", "nested"] {
+            assert!(!names.contains(&bad), "{bad} must be excluded: {names:?}");
+        }
+    }
+
+    #[test]
+    fn javascript_function_locals_are_not_symbols() {
+        let src = b"const TOP = 1;\nfunction f() { const a = 1; function g() {} const h = () => 1; return a; }\nclass C { m() { const b = 2; return b; } }\nconst arrow = () => { const c = 3; return c; };\n";
+        let map = extract_l1("javascript", src).expect("extract");
+        let names = names_of(&map);
+        for want in ["TOP", "f", "C", "m", "arrow"] {
+            assert!(names.contains(&want), "{want} missing from {names:?}");
+        }
+        for bad in ["a", "g", "h", "b", "c"] {
+            assert!(!names.contains(&bad), "{bad} must be excluded: {names:?}");
+        }
+    }
+
+    #[test]
+    fn typescript_function_locals_are_not_symbols() {
+        let src = b"export const TOP: number = 1;\nexport function f(): void { const a = 1; }\nexport class C { x = 1; m(): void { const b = 2; } }\n";
+        let map = extract_l1("typescript", src).expect("extract");
+        let names = names_of(&map);
+        for want in ["TOP", "f", "C", "m"] {
+            assert!(names.contains(&want), "{want} missing from {names:?}");
+        }
+        for bad in ["a", "b"] {
+            assert!(!names.contains(&bad), "{bad} must be excluded: {names:?}");
+        }
+    }
+
+    #[test]
+    fn rust_function_locals_are_not_symbols() {
+        let src = b"const TOP: u32 = 1;\nstruct S { f: u32 }\nimpl S { fn m(&self) { const LOCAL: u32 = 2; fn inner() {} } }\nfn free() { let x = 1; fn nested() {} }\n";
+        let map = extract_l1("rust", src).expect("extract");
+        let names = names_of(&map);
+        for want in ["TOP", "S", "m", "free"] {
+            assert!(names.contains(&want), "{want} missing from {names:?}");
+        }
+        for bad in ["LOCAL", "inner", "x", "nested"] {
+            assert!(!names.contains(&bad), "{bad} must be excluded: {names:?}");
+        }
+    }
+
+    #[test]
+    fn go_function_locals_are_not_symbols() {
+        let src = b"package p\n\nvar Top = 1\n\nfunc F() {\n\tvar local = 2\n\t_ = local\n}\n\nfunc (s S) M() {\n\tconst c = 3\n}\n\ntype S struct{}\n";
+        let map = extract_l1("go", src).expect("extract");
+        let names = names_of(&map);
+        for want in ["Top", "F", "M", "S"] {
+            assert!(names.contains(&want), "{want} missing from {names:?}");
+        }
+        for bad in ["local", "c"] {
+            assert!(!names.contains(&bad), "{bad} must be excluded: {names:?}");
+        }
+    }
+
+    #[test]
+    fn java_function_locals_are_not_symbols() {
+        let src = b"class A {\n  int field = 1;\n  void m() { int local = 2; }\n}\n";
+        let Ok(map) = extract_l1("java", src) else { return };
+        let names = names_of(&map);
+        assert!(names.contains(&"A") && names.contains(&"m"), "{names:?}");
+        assert!(!names.contains(&"local"), "{names:?}");
+    }
+
+    #[test]
+    fn c_function_locals_are_not_symbols() {
+        let src = b"int top = 1;\nint f(void) { int local = 2; return local; }\n";
+        let Ok(map) = extract_l1("c", src) else { return };
+        let names = names_of(&map);
+        if names.is_empty() {
+            return; // no symbol query for this grammar in this environment
+        }
+        assert!(names.contains(&"f"), "{names:?}");
+        assert!(!names.contains(&"local"), "{names:?}");
+    }
+
+    #[test]
+    fn value_signatures_drop_the_repeated_name_and_cap_length() {
+        let long = "x".repeat(300);
+        let src = format!("MAX_RETRIES = 3\nBIG = make({long})\n");
+        let map = extract_l1("python", src.as_bytes()).expect("extract");
+        let sig = |n: &str| {
+            map.symbols
+                .iter()
+                .find(|s| s.name == n)
+                .and_then(|s| s.signature.clone())
+                .unwrap_or_default()
+        };
+        assert_eq!(sig("MAX_RETRIES"), "= 3");
+        assert!(
+            sig("BIG").chars().count() <= VALUE_SIGNATURE_MAX_CHARS + 1,
+            "{}",
+            sig("BIG")
         );
     }
 }
