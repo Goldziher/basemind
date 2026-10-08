@@ -9,8 +9,8 @@
 
 ## Implementation note
 
-Landed as the `display` MCP tool (`src/mcp/{tools,helpers,types}_graphview.rs`), co-located with
-`graph_export` so it reuses the module-private `build_graph_view` + `write_export` without widening
+Landed as the `display` MCP tool (now `graph` mode `display` after ADR-0011; bodies in
+`src/mcp/{helpers,types}_graphview.rs`), co-located with `graph_export` so it reuses the module-private `build_graph_view` + `write_export` without widening
 their visibility. The shipped slice is the ADR's **reliable baseline**: it renders the canonical
 `GraphView` (ADR-0005) to a *visual* format (`html` interactive by default, or `svg`), always writes
 the content-addressed export to the workspace cache, and then opens it in the human's default desktop
@@ -24,7 +24,9 @@ The **rich native-window push** — dropping a typed descriptor onto a running b
 the agent-layer IPC — is deliberately deferred with **ADR-0006**: with no UI window built yet there is
 no channel consumer, so coding the display channel now would be building against nothing. `method`
 reserves `"window"` for it; until then a browser-opened self-contained interactive HTML page is the
-"agent opened a view for the human" primitive. Broadening the view descriptor beyond the graph (search
+"agent opened a view for the human" primitive. (`graph` mode `open` additionally returns a live
+`http://…/ui` URL served by the daemon's opt-in HTTP front-end, falling back to the same `file://`
+export.) Broadening the view descriptor beyond the graph (search
 results, file spans) waits on renderers for those shapes.
 
 ## Context

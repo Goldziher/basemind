@@ -58,7 +58,7 @@ every candidate, so a bloom false positive costs a read, never a wrong result. I
 1. **Required literals.** `regex_syntax::hir::literal::Extractor` runs twice on the parsed `Hir`,
    once as `Prefix` (every match starts with one of the literals) and once as `Suffix` (every match
    ends with one). There is no separate "inner" kind in `regex-syntax`; the two necessary
-   conditions are ANDed instead. A set is used only when it is finite, non-empty and every member
+   conditions are combined with AND instead. A set is used only when it is finite, non-empty and every member
    is at least 3 bytes; otherwise that condition is dropped, and with neither usable the grep is
    the unchanged full sweep (`.*`, `\w+`, `ab`, `(?i)k`, `^`). Case-insensitive flags and classes
    are expanded by the extractor itself (or make the set infinite), so they need no special case.
@@ -79,8 +79,8 @@ every candidate, so a bloom false positive costs a read, never a wrong result. I
    falls back to the full sweep.
 4. **Staleness.** The sweep reads live disk; the bloom reflects scan time. A file is skipped only
    when its row rejects the needle AND a `stat` still shows the exact `(size, mtime_ns)` the row was
-   built under. This replaces the watcher-invalidation idea above: it needs no daemon protocol and
-   is correct for edits the watcher has not yet processed. The `stat` is paid only for files the
+   built under. This needs no watcher or daemon protocol and is correct for edits the watcher has not
+   yet processed. The `stat` is paid only for files the
    bloom rejects (the cheap majority-case rejection), never a read. A missing, older-version or
    malformed row is a candidate.
 5. **Lifecycle and migration.** A rescan replaces a row when a file's bytes are read; a file whose

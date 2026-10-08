@@ -34,7 +34,7 @@ Keep ADRs short — a decision, not a design doc. Link related ADRs by number.
 
 ## Index
 
-The ADRs below (0001–0010) form one roadmap: give basemind a knowledge-graph capability layer
+ADRs 0001–0010 form one roadmap: give basemind a knowledge-graph capability layer
 (typed graph, traversal, communities), a rendering engine, an interactive UI, and document/rationale
 graph edges. They are sequenced by dependency — foundations first, then the capabilities built on
 them.
@@ -52,3 +52,5 @@ them.
 | [0008](0008-documents-code-graph.md) | Documents ↔ code graph | Accepted |
 | [0009](0009-rationale-decision-nodes.md) | Rationale / decision nodes | Accepted |
 | [0010](0010-branch-integration-release-strategy.md) | Branch, integration & release strategy | Accepted |
+| [0011](0011-mcp-tool-surface-redesign.md) | MCP tool-surface redesign — consolidation into nine domains | Accepted (§2 withdrawn) |
+| [0012](0012-grep-content-prefilter.md) | Per-file trigram bloom prefilter for `code grep` | Accepted |

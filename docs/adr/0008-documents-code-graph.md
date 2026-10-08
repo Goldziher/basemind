@@ -19,6 +19,10 @@ hazard). Resolution is deferred to the build lane: a name mention resolves again
 per the ADR: audio/video transcription and model-based entity linking — the producer is a deterministic
 text heuristic.
 
+Prose, data and config files (Markdown, JSON, YAML, TOML, ...) are now routed to this document tier
+rather than the code map, so they are the documents this graph links from; see the CHANGELOG entry
+"The code map now indexes code only".
+
 ## Context
 
 basemind already indexes documents — PDF, Office, HTML, and images via OCR — into a searchable RAG
