@@ -27,7 +27,7 @@ impl BasemindServer {
                 self.complete_prompt_argument(&prompt.name, &params.argument.name, &params.argument.value)
             }
             Reference::Resource(_) => Vec::new(),
-            // `Reference` is #[non_exhaustive] in rmcp 2.1; basemind exposes no resources and
+            // `Reference` is #[non_exhaustive] in rmcp 3.x; basemind exposes no resources and
             _ => Vec::new(),
         };
         let info = CompletionInfo::new(values).unwrap_or_default();

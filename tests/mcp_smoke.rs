@@ -3977,32 +3977,24 @@ async fn completes_prompt_arguments_from_the_code_map() {
     let _ = server.cancel().await;
 }
 
-/// 0.8.0: `rescan` emits a logging notification (with counts) and progress notifications when
-/// the client supplies a progress token. Uses a capturing client handler to observe both.
-#[allow(deprecated)]
+/// `rescan` emits progress notifications when the client supplies a progress token, carries the
+/// summary counts in the tool result, and no longer advertises the (SEP-2577 deprecated) logging
+/// capability. Uses a capturing client handler to observe the notifications.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn rescan_emits_logging_and_progress_notifications() {
+async fn rescan_emits_progress_and_no_logging() {
     use std::sync::Arc;
     use std::sync::Mutex as StdMutex;
 
-    use rmcp::model::{LoggingMessageNotificationParam, NumberOrString, ProgressNotificationParam};
+    use rmcp::model::{NumberOrString, ProgressNotificationParam};
     use rmcp::service::NotificationContext;
     use rmcp::{ClientHandler, RoleClient};
 
     #[derive(Clone, Default)]
     struct Capture {
-        logs: Arc<StdMutex<Vec<LoggingMessageNotificationParam>>>,
         progress: Arc<StdMutex<Vec<ProgressNotificationParam>>>,
     }
 
     impl ClientHandler for Capture {
-        async fn on_logging_message(
-            &self,
-            params: LoggingMessageNotificationParam,
-            _context: NotificationContext<RoleClient>,
-        ) {
-            self.logs.lock().unwrap().push(params);
-        }
         async fn on_progress(&self, params: ProgressNotificationParam, _context: NotificationContext<RoleClient>) {
             self.progress.lock().unwrap().push(params);
         }
@@ -4013,7 +4005,6 @@ async fn rescan_emits_logging_and_progress_notifications() {
     run_scan(root);
 
     let capture = Capture::default();
-    let logs = Arc::clone(&capture.logs);
     let progress = Arc::clone(&capture.progress);
 
     let transport = basemind::mcp::serve_in_memory(root, "working")
@@ -4026,20 +4017,21 @@ async fn rescan_emits_logging_and_progress_notifications() {
         &mut params,
         rmcp::model::ProgressToken(NumberOrString::String("rescan-1".into())),
     );
-    server.call_tool(params).await.expect("rescan call");
+    let result = server.call_tool(params).await.expect("rescan call");
+    assert!(
+        format!("{result:?}").contains("scanned"),
+        "rescan summary must be in the tool result: {result:?}"
+    );
+    assert!(
+        server
+            .peer_info()
+            .is_some_and(|info| info.capabilities.logging.is_none()),
+        "logging capability must not be advertised"
+    );
 
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
-    let captured_logs = logs.lock().unwrap().clone();
     let captured_progress = progress.lock().unwrap().clone();
-
-    assert!(
-        captured_logs
-            .iter()
-            .any(|l| l.data.get("event").and_then(|v| v.as_str()) == Some("rescan_complete")),
-        "rescan must emit a `rescan_complete` logging notification, got: {:?}",
-        captured_logs.iter().map(|l| &l.data).collect::<Vec<_>>()
-    );
 
     assert!(
         captured_progress.len() >= 2,

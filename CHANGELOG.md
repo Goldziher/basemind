@@ -31,6 +31,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `BASEMIND_BLOB_GC_GRACE_SECS` overrides the 6 hour age below which the blob sweep keeps a blob.
 
 ### Changed
+- MCP logging is retired (SEP-2577 deprecates it): the server no longer advertises the `logging`
+  capability, no longer handles `logging/setLevel`, and `admin rescan` no longer emits the
+  `rescan_complete` log notification. The rescan summary counts are in the tool result and the rescan
+  progress notifications are unchanged.
 - `code outline`, `symbols` and the code map no longer index names bound inside a function, method or
   lambda body (Python `x = ...` in a `def`, JS/TS `const` in a function, Rust `let`/nested `fn`, Go
   locals, Java/C#/C locals ...): a symbol with a function-like ancestor node is dropped, matched by node
@@ -57,7 +61,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `gen_references.py` resolves definitions the same way), `gen_find.py` takes `--indexed FILE` so tasks
   come only from indexed files, and `gen_docs.py` models the docs baseline as a keyword grep plus
   opening the document.
-
 - Dependencies upgraded to their latest releases: `lancedb` 0.37 to 0.40 (now built with its `remote`
   feature, which 0.38-0.40 need to compile; `lance` 10 to 13), `gix` 0.88 to 0.89, `oxc_*` 0.152 to
   0.153, `crawlberg` 1.8 to 1.10, `xberg` 1.3.3 to 1.3.6, `tree-sitter-language-pack` 1.20 to 1.21,
@@ -69,7 +72,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   literal pattern on raw bytes before paying for UTF-8 validation, and no longer builds two path
   buffers per file. Results, `total_matches`, hit order, cursors and context lines are unchanged
   (checked against the previous implementation over a generated corpus, including paging).
-
 - The code map now indexes code only. Markdown, reStructuredText, AsciiDoc, vimdoc, CSV, JSON, YAML,
   TOML, INI, XML, `.properties`, `.env`, diffs, `.gitignore`/`.gitattributes` and Fluent files are
   routed to the document tier (chunked and searchable with `memory documents`) instead of being
@@ -1863,7 +1865,6 @@ addressed and rebuilds losslessly).
 Wide hot-path allocation + algorithmic sweep across the scanner, extraction, git, and MCP query
 paths. All changes are internal — no behavior, response-shape, or on-disk-format change, and the
 determinism assertions are unchanged.
-
 - **`call_graph`** (`bfs_callees`) precomputes a name→sites map once instead of re-scanning every
   indexed symbol for each discovered callee — O(max_nodes × symbols) → O(symbols + max_nodes).
 - **`architecture_map`**: `callee_counts` no longer allocates a `String` on every one of up to 4M
@@ -2190,7 +2191,6 @@ it the same way they do over source. All of this is on by default — `.md` is s
 file, headings ship via a `src/queries/markdown.scm` override, and the reference graph is harvested
 by a fence-aware byte-scan in `extract/l2.rs` (the tree-sitter block grammar models none of these
 inline constructs).
-
 - **Headings → outline.** ATX (`#`…`######`) and setext headings become `Heading` symbols, so
   `outline` and `search_symbols` (optionally `kind: "heading"`) navigate a note's structure.
 - **Wikilinks → backlinks.** `[[Note]]`, `[[Note#Heading|alias]]`, and `![[Embed]]` become

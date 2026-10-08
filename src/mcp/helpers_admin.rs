@@ -428,10 +428,10 @@ async fn clear_live_component(state: Arc<ServerState>, component: CacheComponent
 
 /// Body for `admin` mode `rescan`. Re-indexes the working tree (or `paths`) in-process and,
 /// because it is one of the few genuinely slow operations, emits MCP progress (when the client
-/// supplies a token) and a completion logging notification.
+/// supplies a token); the summary counts are in the tool result.
 ///
 /// `peer` is `None` on the CLI path: a one-shot `basemind admin rescan` has no MCP peer to notify,
-/// so the notifications are skipped while the scan itself is identical.
+/// so the progress notifications are skipped while the scan itself is identical.
 async fn run_rescan(
     state: Arc<ServerState>,
     params: super::types::RescanParams,
@@ -461,24 +461,6 @@ async fn run_rescan(
 
     let stats = fetch_rescan_stats(&state, scoped_paths).await?;
 
-    if let Some(peer) = peer {
-        #[allow(deprecated)]
-        super::notifications::emit_log(
-            peer,
-            &state.log_level,
-            rmcp::model::LoggingLevel::Info,
-            "basemind.rescan",
-            serde_json::json!({
-                "event": "rescan_complete",
-                "scanned": stats.scanned,
-                "updated": stats.updated,
-                "removed": stats.removed,
-                "extract_failed": stats.extract_failed,
-                "elapsed_ms": started.elapsed().as_millis() as u64,
-            }),
-        )
-        .await;
-    }
     if let (Some(peer), Some(token)) = (peer, progress_token) {
         let scanned = stats.scanned as f64;
         super::notifications::emit_progress(

@@ -1,7 +1,7 @@
 //! `ServerHandler` trait implementation for [`BasemindServer`], split out of `mod.rs` to keep both
 //! files under the 1000-line module cap. Behavior is unchanged: this is the same `#[tool_handler]`
 //! impl the macro would generate around the hand-written `list_tools` / `call_tool` / `get_tool` /
-//! prompt / logging / completion overrides.
+//! prompt / completion overrides.
 
 use rmcp::ServerHandler;
 use rmcp::model::{
@@ -10,7 +10,7 @@ use rmcp::model::{
 };
 use rmcp::tool_handler;
 
-use super::{BasemindServer, lean, notifications, tasks};
+use super::{BasemindServer, lean, tasks};
 
 /// SEP-2549 cache TTL advertised on `tools/list` and `prompts/list`. The advertised tool and prompt
 /// sets are fixed for the lifetime of a server process (they change only with the binary/schema, not
@@ -173,21 +173,6 @@ impl ServerHandler for BasemindServer {
         self.prompt_router.get_prompt(prompt_context).await
     }
 
-    /// `logging/setLevel`: record the minimum severity the client wants. Subsequent log
-    /// notifications (e.g. from `rescan`) are gated on this threshold.
-    #[allow(deprecated)]
-    async fn set_level(
-        &self,
-        request: rmcp::model::SetLevelRequestParams,
-        _context: rmcp::service::RequestContext<rmcp::RoleServer>,
-    ) -> Result<(), rmcp::ErrorData> {
-        self.state.log_level.store(
-            notifications::level_ordinal(request.level),
-            std::sync::atomic::Ordering::Relaxed,
-        );
-        Ok(())
-    }
-
     /// `completion/complete`: autocomplete a prompt argument from the indexed code map (symbol
     /// names for `trace-symbol`, file paths for `explain-file`). Pure in-RAM prefix scan.
     async fn complete(
@@ -199,14 +184,12 @@ impl ServerHandler for BasemindServer {
         Ok(self.complete_argument(&request))
     }
 
-    #[allow(deprecated)]
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(
             ServerCapabilities::builder()
                 .enable_tools()
                 .enable_prompts()
                 .enable_completions()
-                .enable_logging()
                 .enable_tasks()
                 .build(),
         )
