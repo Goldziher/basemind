@@ -425,6 +425,8 @@ impl IndexWriter {
     /// Stage the L2 call sites for `rel` into both call partitions.
     fn stage_call_inserts(&mut self, rel: &RelPath, l2: &FileMapL2) -> Result<(), IndexError> {
         let (db, batch, staged_bytes) = (&self.db, &mut self.batch, &mut self.staged_bytes);
+        // Before the keys are staged: the dictionary must never miss a name that has a key.
+        db.callee_names.record(l2.calls.iter().map(|call| call.callee.as_str()));
         for call in &l2.calls {
             let path_key = keys::call_by_path(rel, call.start_byte);
             let value = rmp_serde::to_vec_named(call)?;
@@ -478,6 +480,9 @@ impl IndexWriter {
                 }
             }
         }
+        // Before the keys are staged: the dictionary must never miss a name that has a key.
+        db.trait_names
+            .record(l1.implementations.iter().map(|imp| imp.trait_name.as_str()));
         for imp in &l1.implementations {
             match (
                 keys::impl_by_trait(&imp.trait_name, &imp.impl_type, rel, imp.start_byte),

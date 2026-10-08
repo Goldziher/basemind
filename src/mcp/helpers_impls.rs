@@ -108,10 +108,13 @@ pub(crate) fn scan_impls_fjall(
     let mut has_more = false;
     let mut matched: usize = 0;
 
-    for guard in idx
-        .implementations_by_trait
-        .range::<Vec<u8>, _>((lower, Bound::Unbounded))
-    {
+    for guard in crate::index::name_dict::name_ordered_keys(
+        &idx.implementations_by_trait,
+        &idx.trait_names,
+        trait_name,
+        cursor_after,
+        lower,
+    ) {
         let (k, _) = guard
             .into_inner()
             .map_err(|e| McpError::internal_error(format!("impl index iter: {e}"), None))?;
