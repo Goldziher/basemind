@@ -298,6 +298,7 @@ fn default_log_directive(verbosity: Verbosity) -> &'static str {
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 fn main() -> Result<()> {
+    basemind::alloc_tag::retag_heap_pages();
     let process_started = std::time::Instant::now();
     #[cfg(all(feature = "shells", any(unix, windows)))]
     if let Some(result) = basemind::shells::intercept_internal_reexec() {
