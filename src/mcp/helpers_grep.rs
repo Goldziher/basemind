@@ -1,6 +1,9 @@
 //! `run_workspace_grep` helper — kept in its own file so `helpers.rs` stays under the
 //! 1000-line cap as the MCP surface grows.
 
+use std::cell::RefCell;
+use std::io::Read;
+use std::path::Path;
 use std::sync::atomic::Ordering;
 
 use memchr::memmem::Finder;
@@ -92,13 +95,15 @@ pub(super) fn run_workspace_grep(
     let window = candidates.get(skip_files.min(candidates.len())..).unwrap_or(&[]);
     let (scanned, byte_budget_hit) = apply_byte_budget(window);
 
-    let counts = count_all(state, scanned, &re, literal.as_ref(), skip_hits);
+    let root = state.shared.root.as_path();
+    let paths: Vec<&RelPath> = scanned.iter().map(|(path, _)| *path).collect();
+    let counts = count_all(root, &paths, &re, literal.as_ref(), skip_hits);
 
     let total_matches = counts.iter().fold(0u32, |acc, &c| acc.saturating_add(c));
     let total_files_matched = counts.iter().filter(|&&c| c > 0).count();
 
     let (selected, limit_resume) = select_hits(&counts, limit, skip_files, skip_hits);
-    let (hits, hit_cursors) = materialize(state, scanned, &selected, &re, params.include_context, skip_files);
+    let (hits, hit_cursors) = materialize(root, &paths, &selected, &re, params.include_context, skip_files);
 
     let (truncated, truncation_reason, next_cursor) = match (limit_resume, byte_budget_hit) {
         (Some(offset), _) => (
@@ -183,18 +188,15 @@ fn apply_byte_budget<'a, 'b>(
 /// `skip_hits` discounts the matches the caller already consumed inside the file it resumed in, so
 /// the totals mean "matches remaining from the cursor position", not "matches in the repo".
 fn count_all(
-    state: &ServerState,
-    scanned: &[(&RelPath, &super::l1_cache::FileMeta)],
+    root: &Path,
+    scanned: &[&RelPath],
     re: &Regex,
     literal: Option<&Finder<'static>>,
     skip_hits: u32,
 ) -> Vec<u32> {
     let mut counts: Vec<u32> = scanned
         .par_iter()
-        .map(|(path, _)| match read_indexed(state, path) {
-            Some(source) => count_matches(&source, re, literal),
-            None => 0,
-        })
+        .map(|path| with_indexed_bytes(root, path, |bytes| count_matches(bytes, re, literal)).unwrap_or(0))
         .collect();
     if let Some(first) = counts.first_mut() {
         *first = first.saturating_sub(skip_hits);
@@ -202,25 +204,58 @@ fn count_all(
     counts
 }
 
-/// Read an indexed file as UTF-8. Non-UTF-8 and unreadable files (deleted since the scan, permission
-/// denied) are skipped rather than failing the whole grep.
-fn read_indexed(state: &ServerState, path: &RelPath) -> Option<String> {
-    let abs = state.shared.root.join(path.to_path_buf());
-    match std::fs::read_to_string(&abs) {
-        Ok(source) => Some(source),
-        Err(e) => {
-            tracing::debug!(path = %abs.display(), error = %e, "workspace_grep: skipping unreadable file");
-            None
-        }
-    }
+/// Largest read buffer a worker thread keeps between files. A bigger file still reads fine — its
+/// buffer is dropped right after — so the sweep's resident scratch is bounded at
+/// `threads x RETAINED_BUF_CAP` however large the corpus's biggest file is.
+const RETAINED_BUF_CAP: usize = 1024 * 1024;
+
+thread_local! {
+    /// Per-thread read buffer: the sweep reads tens of thousands of files, and a fresh `String`
+    /// allocation (plus a free) per file is pure allocator churn on the hot path.
+    static READ_BUF: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
 }
 
-fn count_matches(source: &str, re: &Regex, literal: Option<&Finder<'static>>) -> u32 {
+/// Read an indexed file's raw bytes into the calling thread's reusable buffer and hand them to `f`.
+/// Unreadable files (deleted since the scan, permission denied) yield `None` and are skipped rather
+/// than failing the whole grep. UTF-8 validity is the closure's concern, so a file that cannot match
+/// is rejected on raw bytes without paying for validation.
+fn with_indexed_bytes<R>(root: &Path, path: &RelPath, f: impl FnOnce(&[u8]) -> R) -> Option<R> {
+    let abs = root.join(path);
+    let read = |buf: &mut Vec<u8>| -> std::io::Result<()> {
+        let mut file = std::fs::File::open(&abs)?;
+        buf.clear();
+        if let Ok(meta) = file.metadata() {
+            buf.reserve(usize::try_from(meta.len()).unwrap_or(0).saturating_add(1));
+        }
+        file.read_to_end(buf).map(|_| ())
+    };
+    READ_BUF.with(|cell| {
+        let mut buf = cell.borrow_mut();
+        let outcome = read(&mut buf);
+        let result = match outcome {
+            Ok(()) => Some(f(&buf)),
+            Err(e) => {
+                tracing::debug!(path = %abs.display(), error = %e, "workspace_grep: skipping unreadable file");
+                None
+            }
+        };
+        if buf.capacity() > RETAINED_BUF_CAP {
+            *buf = Vec::new();
+        }
+        result
+    })
+}
+
+/// Matches of `re` in a file's bytes; non-UTF-8 files count zero (they were never greppable).
+fn count_matches(bytes: &[u8], re: &Regex, literal: Option<&Finder<'static>>) -> u32 {
     if let Some(finder) = literal
-        && finder.find(source.as_bytes()).is_none()
+        && finder.find(bytes).is_none()
     {
         return 0;
     }
+    let Ok(source) = std::str::from_utf8(bytes) else {
+        return 0;
+    };
     re.find_iter(source).count().min(u32::MAX as usize) as u32
 }
 
@@ -268,8 +303,8 @@ fn select_hits(counts: &[u32], limit: usize, skip_files: usize, skip_hits: u32) 
 /// Returns the hits alongside, for each hit, the packed cursor that resumes AT that hit — the token
 /// budget uses it to page a dropped tail exactly.
 fn materialize(
-    state: &ServerState,
-    scanned: &[(&RelPath, &super::l1_cache::FileMeta)],
+    root: &Path,
+    scanned: &[&RelPath],
     selected: &[Selection],
     re: &Regex,
     include_context: bool,
@@ -278,11 +313,14 @@ fn materialize(
     let per_file: Vec<Vec<(u64, GrepHit)>> = selected
         .par_iter()
         .map(|sel| {
-            let (path, _) = scanned[sel.file_idx];
-            let Some(source) = read_indexed(state, path) else {
-                return Vec::new();
-            };
-            collect_hits(path, &source, re, sel, include_context, skip_files + sel.file_idx)
+            let path = scanned[sel.file_idx];
+            with_indexed_bytes(root, path, |bytes| {
+                std::str::from_utf8(bytes).map_or_else(
+                    |_| Vec::new(),
+                    |source| collect_hits(path, source, re, sel, include_context, skip_files + sel.file_idx),
+                )
+            })
+            .unwrap_or_default()
         })
         .collect();
 
@@ -409,9 +447,220 @@ mod tests {
     fn counts_every_match_and_the_prefilter_never_changes_the_count() {
         let re = Regex::new("needle").expect("regex");
         let finder = Finder::new("needle".as_bytes()).into_owned();
-        let source = "needle\nhay\nneedle needle\n";
+        let source = b"needle\nhay\nneedle needle\n";
         assert_eq!(count_matches(source, &re, None), 3);
         assert_eq!(count_matches(source, &re, Some(&finder)), 3);
-        assert_eq!(count_matches("hay only", &re, Some(&finder)), 0);
+        assert_eq!(count_matches(b"hay only", &re, Some(&finder)), 0);
+        assert_eq!(
+            count_matches(b"needle \xff", &re, Some(&finder)),
+            0,
+            "non-UTF-8 is never greppable"
+        );
+    }
+
+    // ---- equivalence against the pre-optimisation sweep -------------------------------------
+
+    /// The sweep exactly as it was before the buffer-reuse rewrite: `read_to_string` per file, count
+    /// pass, then a second read of the selected files. Kept verbatim as the oracle.
+    mod reference {
+        use super::*;
+
+        pub(super) fn read(root: &Path, path: &RelPath) -> Option<String> {
+            std::fs::read_to_string(root.join(path.to_path_buf())).ok()
+        }
+
+        pub(super) fn count(
+            root: &Path,
+            scanned: &[&RelPath],
+            re: &Regex,
+            literal: Option<&Finder<'static>>,
+            skip_hits: u32,
+        ) -> Vec<u32> {
+            let mut counts: Vec<u32> = scanned
+                .iter()
+                .map(|p| match read(root, p) {
+                    Some(source) => {
+                        if let Some(f) = literal
+                            && f.find(source.as_bytes()).is_none()
+                        {
+                            0
+                        } else {
+                            re.find_iter(&source).count().min(u32::MAX as usize) as u32
+                        }
+                    }
+                    None => 0,
+                })
+                .collect();
+            if let Some(first) = counts.first_mut() {
+                *first = first.saturating_sub(skip_hits);
+            }
+            counts
+        }
+
+        pub(super) fn materialize(
+            root: &Path,
+            scanned: &[&RelPath],
+            selected: &[Selection],
+            re: &Regex,
+            ctx: bool,
+            skip_files: usize,
+        ) -> (Vec<GrepHit>, Vec<u64>) {
+            let mut hits = Vec::new();
+            let mut cursors = Vec::new();
+            for sel in selected {
+                let path = scanned[sel.file_idx];
+                let Some(source) = read(root, path) else { continue };
+                for (c, h) in collect_hits(path, &source, re, sel, ctx, skip_files + sel.file_idx) {
+                    hits.push(h);
+                    cursors.push(c);
+                }
+            }
+            (hits, cursors)
+        }
+    }
+
+    /// Deterministic xorshift so the generated corpus is identical on every run.
+    struct Rng(u64);
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            self.0
+        }
+        fn pick<'a>(&mut self, xs: &[&'a str]) -> &'a str {
+            xs[(self.next() % xs.len() as u64) as usize]
+        }
+    }
+
+    const WORDS: &[&str] = &[
+        "needle",
+        "Needle",
+        "NEEDLE",
+        "hay",
+        "fn",
+        "def",
+        "class",
+        "post_processing",
+        "naïve",
+        "日本語",
+        "x",
+        "foo_bar",
+        "\t",
+        "  ",
+        "😀",
+        "needle needle",
+    ];
+
+    fn generate_corpus(dir: &Path) -> Vec<RelPath> {
+        let mut rng = Rng(0x9E37_79B9_7F4A_7C15);
+        let mut paths = Vec::new();
+        for i in 0..120 {
+            let rel = format!("d{}/f{i}.txt", i % 5);
+            std::fs::create_dir_all(dir.join(format!("d{}", i % 5))).expect("mkdir");
+            let mut body = String::new();
+            // Some files are deliberately dense (more matches than any page limit), some empty.
+            let lines = match i % 7 {
+                0 => 0,
+                1 => 60,
+                _ => (rng.next() % 12) as usize,
+            };
+            let eol = if i % 3 == 0 { "\r\n" } else { "\n" };
+            for _ in 0..lines {
+                for _ in 0..(1 + rng.next() % 5) {
+                    body.push_str(rng.pick(WORDS));
+                    body.push(' ');
+                }
+                body.push_str(eol);
+            }
+            let bytes = match i {
+                // Invalid UTF-8: must count zero in both implementations.
+                10 | 11 => {
+                    let mut b = body.into_bytes();
+                    b.extend_from_slice(b"needle \xff\xfe");
+                    b
+                }
+                _ => body.into_bytes(),
+            };
+            std::fs::write(dir.join(&rel), bytes).expect("write");
+            paths.push(RelPath::from(rel));
+        }
+        // Indexed but gone from disk, as after a delete between scan and query.
+        paths.push(RelPath::from("d0/deleted.txt"));
+        paths
+    }
+
+    #[test]
+    fn the_optimised_sweep_is_byte_identical_to_the_original_over_a_generated_corpus() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let paths = generate_corpus(dir.path());
+        let refs: Vec<&RelPath> = paths.iter().collect();
+
+        let patterns = [
+            "needle",
+            "NEEDLE",
+            "(?i)needle",
+            "needle|hay",
+            r"fn\s+\w+",
+            "post_processing",
+            "naïve",
+            "日本語",
+            "😀",
+            r"\bx\b",
+            "^needle",
+            "needle$",
+            "ne+dle",
+            "zzz_absent",
+            "(?m)^$",
+            "",
+        ];
+        for pattern in patterns {
+            let re = Regex::new(pattern).expect("regex");
+            let literal = (regex::escape(pattern) == pattern).then(|| Finder::new(pattern.as_bytes()).into_owned());
+            for skip_hits in [0u32, 3] {
+                let new_counts = count_all(dir.path(), &refs, &re, literal.as_ref(), skip_hits);
+                let old_counts = reference::count(dir.path(), &refs, &re, literal.as_ref(), skip_hits);
+                assert_eq!(
+                    new_counts, old_counts,
+                    "counts diverge for {pattern:?} skip_hits={skip_hits}"
+                );
+
+                // Walk every page of every limit, comparing hits, cursors and resume points.
+                for limit in [25usize, 1000] {
+                    for ctx in [false, true] {
+                        if skip_hits != 0 && limit != 1000 {
+                            continue; // keep the paging walk affordable in debug builds
+                        }
+                        let (mut skip_files, mut skip_hits) = (0usize, skip_hits);
+                        loop {
+                            let window = &refs[skip_files.min(refs.len())..];
+                            let counts = count_all(dir.path(), window, &re, literal.as_ref(), skip_hits);
+                            let (sel, resume) = select_hits(&counts, limit, skip_files, skip_hits);
+                            let new = materialize(dir.path(), window, &sel, &re, ctx, skip_files);
+                            let old_counts = reference::count(dir.path(), window, &re, literal.as_ref(), skip_hits);
+                            assert_eq!(counts, old_counts);
+                            let old = reference::materialize(dir.path(), window, &sel, &re, ctx, skip_files);
+                            assert_eq!(new.1, old.1, "cursors diverge for {pattern:?} limit={limit}");
+                            assert_eq!(
+                                serde_json::to_string(&new.0).expect("json"),
+                                serde_json::to_string(&old.0).expect("json"),
+                                "hits diverge for {pattern:?} limit={limit} ctx={ctx}"
+                            );
+                            let Some(next) = resume else { break };
+                            (skip_files, skip_hits) = unpack_cursor(next);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_read_buffer_does_not_retain_a_giant_files_capacity() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("big.txt"), vec![b'a'; RETAINED_BUF_CAP * 3]).expect("write");
+        let len = with_indexed_bytes(dir.path(), &RelPath::from("big.txt"), <[u8]>::len);
+        assert_eq!(len, Some(RETAINED_BUF_CAP * 3));
+        READ_BUF.with(|b| assert!(b.borrow().capacity() <= RETAINED_BUF_CAP, "scratch stays bounded"));
     }
 }
