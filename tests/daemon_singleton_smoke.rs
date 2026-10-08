@@ -48,7 +48,8 @@ impl ReapingDaemon {
             comms_dir: comms_dir.to_path_buf(),
             data_home: data_home.to_path_buf(),
         };
-        let deadline = Instant::now() + Duration::from_secs(15);
+        // A cold daemon opens its fjall store (many F_FULLFSYNC calls) before it accepts, which stalls for tens of seconds when the disk is contended, so wait generously.
+        let deadline = Instant::now() + Duration::from_secs(180);
         while Instant::now() < deadline {
             if daemon.is_alive() {
                 return daemon;
