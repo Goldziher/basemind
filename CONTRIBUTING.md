@@ -67,7 +67,9 @@ basemind is a hot-path scanner. Before merging diffs that touch
 See [`.ai-rulez/skills/language-support/SKILL.md`](.ai-rulez/skills/language-support/SKILL.md)
 for the end-to-end checklist. The short version: drop a hand-written extraction
 query at `src/queries/<pack-name>.scm` with `;; section: symbols / imports / calls / docs`
-sections; the override wins over the upstream `tags.scm` fallback.
+sections; the override wins over the upstream `tags.scm` fallback. Prose, data and config grammars
+(markdown, json, yaml, toml, ...) are not code: `lang::is_non_code` routes them to the document tier,
+so a new grammar of that kind belongs in that list rather than getting a code-map query.
 
 ## Adding an MCP tool
 
@@ -86,8 +88,19 @@ the relevant constant:
 - `INDEX_SCHEMA_VER` in `src/index/mod.rs` — Fjall partition / key encoding
 - `SCHEMA_VER` in `src/extract/mod.rs` — msgpack blob format
 
-Both auto-wipe on version mismatch; the next `basemind scan` rebuilds from
-source. Mention the bump in the commit body.
+Both track the release minor and auto-reset on version mismatch; the next `basemind scan` rebuilds from
+source. Mention the bump in the commit body. Never bump either from a patch release: if an extractor
+fix changes what an unchanged file's blob should contain but not its serialized shape, bump
+`EXTRACT_EPOCH` in `src/extract/mod.rs` instead, and the next scan re-extracts only the stale files. A
+brand-new Fjall keyspace whose absence reads as "nothing known" needs no bump. When you add an on-disk
+component, follow the checklist in [`docs/UPGRADING.md`](docs/UPGRADING.md) (blob suffixes, cache
+clear/stats, `tests/upgrade_from_release.rs`).
+
+## Changelog
+
+User-visible changes get an entry under `## [Unreleased]` in `CHANGELOG.md`, grouped under `### Added`,
+`### Changed` and `### Fixed` (one heading of each kind, no duplicates). Use measured numbers only,
+with the corpus they were measured on.
 
 ## Reporting bugs
 

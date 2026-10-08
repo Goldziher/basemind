@@ -357,7 +357,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > **Never published as a GitHub release.** The source below was tagged and pushed, but the Linux
 > archives failed to build and the release record was never promoted. It is superseded by
 > [0.27.3]; no registry version was cut from it.
-
+>
 > **Patch release — memory-safety follow-ups to [#62], a stricter plugin launcher, and a
 > release-workflow fix.** No schema or MCP-surface change: `RELEASE_MINOR` stays 27, so the
 > on-disk blob and index formats are untouched.
