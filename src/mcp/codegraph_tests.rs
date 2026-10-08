@@ -545,9 +545,9 @@ fn output_is_deterministic() {
 }
 
 #[test]
-fn call_attributes_to_innermost_enclosing_function() {
-    // `inner` is nested inside `outer`; the call to `helper` sits in `inner`'s body, so the
-    // call edge must originate from the innermost enclosing symbol (`inner`), not `outer`.
+fn call_attributes_to_innermost_enclosing_symbol() {
+    // `inner` is nested inside `outer`, and function-local definitions are not symbols, so the call
+    // to `helper` in `inner`'s body attributes to the innermost enclosing INDEXED symbol (`outer`).
     let (_d, store, cache) = scan_repo(&[(
         "nested.rs",
         "pub fn helper() {}\n\
@@ -563,8 +563,8 @@ fn call_attributes_to_innermost_enclosing_function() {
         .expect("a call edge to helper");
     assert_eq!(
         name_of("nested.rs", &call.from, &cache).as_deref(),
-        Some("inner"),
-        "a call in the nested fn must attribute to the innermost enclosing symbol"
+        Some("outer"),
+        "a call in a nested fn must attribute to the innermost enclosing indexed symbol"
     );
 }
 

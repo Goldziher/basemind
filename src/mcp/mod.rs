@@ -866,3 +866,7 @@ mod map_cache_tests {
         );
     }
 }
+
+#[cfg(all(test, feature = "documents"))]
+#[path = "find_files_tests.rs"]
+mod find_files_tests;

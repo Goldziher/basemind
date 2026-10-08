@@ -31,6 +31,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `BASEMIND_BLOB_GC_GRACE_SECS` overrides the 6 hour age below which the blob sweep keeps a blob.
 
 ### Changed
+- `code outline`, `symbols` and the code map no longer index names bound inside a function, method or
+  lambda body (Python `x = ...` in a `def`, JS/TS `const` in a function, Rust `let`/nested `fn`, Go
+  locals, Java/C#/C locals ...): a symbol with a function-like ancestor node is dropped, matched by node
+  kind so it applies to every grammar. Module-level and class-level definitions, methods and class fields
+  are unchanged. Value-like symbols (variable, const, field) also store a shorter signature: the repeated
+  name is removed (`MAX_RETRIES = 3` is kept as `= 3`) and long initialisers are cut at 80 characters;
+  function and type headers are untouched. On the armis eval corpus outline precision rises from 0.67 to
+  1.00 and the mean outline response shrinks from 1384 to 747 tokens (median outline saving versus
+  reading the file: 0.71x to 1.24x). The L1 schema is unchanged, so existing indexes keep working, but
+  their stored outlines still carry the old symbols until a file is re-extracted.
+- `code find` and `code files` cover every indexed path: the code map plus the document tier
+  (markdown, rst, docx, PDFs ... whatever `[documents]` admits), with the grammar name (`markdown`) or
+  extension (`pdf`) as the language label and `language` filter value. `find` also drops candidates
+  scoring under 85 % of the best match instead of always filling the page (order stays descending score,
+  path ascending). On a 90-task eval (60 code, 30 document) with limit 10: recall 0.59 to 0.83, hit@1
+  0.58 to 0.82, precision 0.28 to 0.62. Precision rises with the floor (0.44 at 50 %, 0.62 at 85 %, 0.70 at
+  95 %) at unchanged recall until the floor reaches 100 %, which loses a hit.
+- Token-savings estimates (`src/mcp/savings.rs`, the dashboard and statusline) are recalibrated from the
+  eval's measured median ratios instead of fixed heuristics: outline 5x to 1.2x, symbols 3x to 25x,
+  references and implementations 3x to 1.2x, docs 5x to 2.5x (against grep plus opening the document),
+  and callers, dependents, find and files 1x (basemind's response is larger than the plain `rg` /
+  `git ls-files` output there, so no saving is claimed). Each row still discloses its baseline.
+- The eval generators follow the new symbol scope (`python_symbols` never enters a function body,
+  `gen_references.py` resolves definitions the same way), `gen_find.py` takes `--indexed FILE` so tasks
+  come only from indexed files, and `gen_docs.py` models the docs baseline as a keyword grep plus
+  opening the document.
+
+- Dependencies upgraded to their latest releases: `lancedb` 0.37 to 0.40 (now built with its `remote`
+  feature, which 0.38-0.40 need to compile; `lance` 10 to 13), `gix` 0.88 to 0.89, `oxc_*` 0.152 to
+  0.153, `crawlberg` 1.8 to 1.10, `xberg` 1.3.3 to 1.3.6, `tree-sitter-language-pack` 1.20 to 1.21,
+  plus lockfile refreshes (`rmcp` 3.5.1, `sysinfo` 0.39, `hyper`, `clap`, `jsonschema`, `hf-xet`).
+  `arrow-*` stays at 58 (lancedb 0.40 requires `^58`), `rustix` at 1.1.4 (rmux-client needs its
+  public `runtime` module) and `bincode` at 2.0.1 (3.0.0 is a `compile_error!` placeholder).
+- `code grep` sweeps the corpus with a reusable per-thread read buffer (capped at 1 MiB retained per
+  worker, so resident scratch stays bounded) instead of allocating a `String` per file, rejects a
+  literal pattern on raw bytes before paying for UTF-8 validation, and no longer builds two path
+  buffers per file. Results, `total_matches`, hit order, cursors and context lines are unchanged
+  (checked against the previous implementation over a generated corpus, including paging).
 
 - The code map now indexes code only. Markdown, reStructuredText, AsciiDoc, vimdoc, CSV, JSON, YAML,
   TOML, INI, XML, `.properties`, `.env`, diffs, `.gitignore`/`.gitattributes` and Fluent files are

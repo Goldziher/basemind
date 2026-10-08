@@ -44,9 +44,11 @@ impl BasemindServer {
         pattern, a string literal or a comment, and prefer `symbols` for a plain identifier; \
         `limit` caps hits, never files, so `total_matches` is exact, and `language` / \
         `path_contains` narrow the sweep. A per-file trigram filter skips files that cannot \
-        match, so patterns with a literal of 3+ bytes are fast; `.*` or `(?i)k` sweep all. `files` enumerates indexed code paths (`path_contains` / `language` \
-        filters). `find` is fuzzy filename search (fzf/fd-style subsequence, case-insensitive, \
-        ranked by score) — reach for it instead of `find` / `fd` / `ls -R`. `definition` \
+        match, so patterns with a literal of 3+ bytes are fast; `.*` or `(?i)k` sweep all. \
+        `files` enumerates indexed paths, documents included (`path_contains` / `language` \
+        filters). `find` is fuzzy filename search over code AND document files (fzf/fd-style \
+        subsequence, case-insensitive, ranked by score, weak matches cut) — reach for it instead \
+        of `find` / `fd` / `ls -R`. `definition` \
         resolves the reference at `path`:`line`:`column` to the definition it BINDS to — \
         scope-resolved, not name-matched, so it never conflates same-named symbols, and it \
         follows cross-file imports for JS/TS; `line` is 1-based, `column` 0-based bytes; a \

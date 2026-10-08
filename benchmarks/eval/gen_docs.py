@@ -74,8 +74,11 @@ def main() -> None:
             "k": a.k,
         }
         if word:
+            # Without semantic search an agent greps a keyword, then opens the document the hit
+            # points at: grep alone returns bare lines, not the passage the question needs.
             task["baseline"] = {
-                "grep": "git grep -n -i -w " + c.shell_quote(word) + " -- '*.md'"
+                "grep": "git grep -n -i -w " + c.shell_quote(word) + " -- '*.md'",
+                "read": [path],
             }
         tasks.append(task)
     c.emit(tasks, a.out)
