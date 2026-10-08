@@ -1264,7 +1264,7 @@
           "const": "window"
         },
         {
-          "description": "Surface the session over a web frontend (wired by the lead; command-building is a no-op).",
+          "description": "Surface the session over a web frontend. No terminal is launched (no command is built); the caller gets the attach command.",
           "type": "string",
           "const": "web"
         },

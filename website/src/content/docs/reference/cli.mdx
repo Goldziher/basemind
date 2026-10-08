@@ -165,7 +165,7 @@ basemind admin eval --tasks <FILE> [--out --report --markdown --baseline --toler
 | Command | Purpose |
 |---|---|
 | `status` | Index health for this workspace: file counts, languages, scan age. |
-| `repo` | Repository identity and layout: root, git remote, branch, view. |
+| `repo` | Repository identity: workdir, branch, HEAD sha. |
 | `rescan [PATH...] [--full]` | Re-index changed files, or the whole workspace when no paths are given. |
 | `cache-stats` | On-disk size, blob accounting and process RAM for the machine-global cache. |
 | `gc` | Report blobs no live view references — non-destructive, deletes nothing (same as the MCP `admin` mode `gc`). To reclaim them use `basemind cache gc`. |

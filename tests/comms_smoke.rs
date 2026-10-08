@@ -657,3 +657,59 @@ async fn inbox_wait_with_no_peer_activity_times_out() {
         "elapsed {elapsed:?} should be close to the 500ms timeout"
     );
 }
+
+/// A cold daemon whose store open is artificially slow still answers `Ping` immediately, while a
+/// store-dependent request (the client `Hello`) waits for readiness and then succeeds.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn daemon_answers_ping_while_the_store_is_still_opening() {
+    const OPEN_DELAY: Duration = Duration::from_secs(8);
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let comms_dir = tmp.path().join("comms");
+    let socket = comms_socket_path(&comms_dir);
+    let child = Command::new(BIN)
+        .args(["comms", "daemon"])
+        .env("BASEMIND_COMMS_DIR", &comms_dir)
+        .env("BASEMIND_DATA_HOME", &comms_dir)
+        .env(
+            "BASEMIND_TEST_COMMS_STORE_OPEN_DELAY_MS",
+            OPEN_DELAY.as_millis().to_string(),
+        )
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn comms daemon");
+    let daemon = Daemon {
+        child,
+        comms_dir: comms_dir.clone(),
+        socket: socket.clone(),
+    };
+
+    // Process start-up (loading a large binary) can take tens of seconds on a busy machine, so the
+    // clock starts when the daemon binds its socket, which is when the store open begins.
+    let deadline = Instant::now() + Duration::from_secs(180);
+    while !socket.exists() {
+        assert!(Instant::now() < deadline, "daemon never bound its socket");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let bound = Instant::now();
+    while !probe_alive(&socket) {
+        assert!(Instant::now() < deadline, "daemon never answered Ping");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(
+        bound.elapsed() < OPEN_DELAY / 2,
+        "Ping must be answered while the {OPEN_DELAY:?} store open is still running, took {:?}",
+        bound.elapsed()
+    );
+
+    // The handshake needs the store: it waits, then completes once the open finishes.
+    let _client = connect(&socket, "agent-early", tmp.path()).await;
+    assert!(
+        bound.elapsed() >= OPEN_DELAY - Duration::from_secs(1),
+        "the store-dependent Hello must not be served before the store is open, took {:?}",
+        bound.elapsed()
+    );
+    drop(daemon);
+}

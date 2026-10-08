@@ -41,8 +41,8 @@ pub enum AdminCmd {
     },
     /// On-disk size, blob accounting, and process RAM for the machine-global cache.
     CacheStats,
-    /// Reap blobs no workspace on this machine references (cross-workspace reference-counted; blobs younger than
-    /// 6 h are kept — override with `BASEMIND_BLOB_GC_GRACE_SECS`).
+    /// Report blobs no workspace on this machine references — non-destructive, deletes nothing (use `basemind cache
+    /// gc` to sweep).
     Gc,
     /// Delete a cache component. `views`/`all` are refused here — use `basemind cache clear`.
     CacheClear {
@@ -238,9 +238,10 @@ pub async fn run(server: &BasemindServer, cmd: AdminCmd, opts: &Emit, out: &mut 
 
 #[derive(Subcommand, Debug)]
 pub enum CacheCmd {
-    /// Garbage-collect orphaned extraction blobs from `.basemind/blobs/`.
+    /// Garbage-collect orphaned extraction blobs from the machine-global cache (blobs younger than 6 h are kept;
+    /// override with `BASEMIND_BLOB_GC_GRACE_SECS`).
     Gc,
-    /// Report on-disk size + blob accounting for the `.basemind/` cache.
+    /// Report on-disk size + blob accounting for the machine-global cache.
     Stats,
     /// Clear a cache component (`blobs|views|lance|git-cache|telemetry|all`), or a
     /// single view with `views:<name>` (e.g. `views:rev-abc1234`).

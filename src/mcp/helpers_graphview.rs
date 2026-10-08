@@ -354,7 +354,7 @@ fn report_for_outcome(outcome: OpenOutcome) -> (bool, &'static str, Option<Strin
 /// Attempt to open `target` in the user's default desktop viewer, best-effort. Never fails the tool:
 /// any inability to launch degrades to [`OpenOutcome::Skipped`] with a reason, so the caller always
 /// still has the written export path (or the served URL). `target` is either a filesystem path to
-/// basemind's own export (the `display` tool and the `open` file fallback) or a loopback
+/// basemind's own export (`graph` mode `display` and the `open` file fallback) or a loopback
 /// `http://127.0.0.1:<port>/ui…` URL (the `open` served path) — the platform openers accept both.
 ///
 /// Injection surface: a path's *parent directories* come from the workspace path /
@@ -528,7 +528,7 @@ pub(super) async fn run_display(
 }
 
 /// The rendered UI payload plus the counts and format the `open` surfaces report. Produced by
-/// [`render_ui_parts`] and consumed by both [`run_ui`] (the tool) and the `/ui` HTTP route, so the two
+/// [`render_ui_parts`] and consumed by both [`run_ui`] (`graph` mode `open`) and the `/ui` HTTP route, so the two
 /// surfaces render byte-identically from one code path.
 pub(super) struct UiParts {
     pub content: String,
@@ -541,7 +541,7 @@ pub(super) struct UiParts {
 }
 
 /// Parse the UI knobs (visual formats only, like `display`), build the canonical graph view, and
-/// render it. The single producer shared by the `graph` mode `open` and the `/ui` route; it neither awaits the
+/// render it. The single producer shared by `graph` mode `open` and the `/ui` route; it neither awaits the
 /// cache nor writes or opens anything — the caller owns those side effects.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn render_ui_parts(
@@ -602,7 +602,7 @@ const UI_NOT_SERVED_DETAIL: &str = "no basemind daemon is serving the interactiv
      front-end is opt-in: set BASEMIND_ALLOW_HTTP=1 in the daemon's environment and restart it); \
      using the written export file";
 
-/// `open` (ADR-0006) — open the interactive basemind UI for a human. Renders the graph, always writes
+/// `graph` mode `open` (ADR-0006) — open the interactive basemind UI for a human. Renders the graph, always writes
 /// the self-contained export (so there is a durable `file://` artifact), and resolves a URL: a live
 /// `http://<addr>/ui?root=…` page when a basemind daemon is serving HTTP for this machine, otherwise
 /// the `file://` export. `open` (default) launches the URL in the human's default viewer, reusing the
