@@ -52,14 +52,22 @@ fn scan_writes_refreshes_and_removes_bloom_rows() {
     std::fs::write(root.join("b.rs"), "pub fn beta_function_name() -> u32 { 2 }\n").unwrap();
 
     let store = scan(root);
-    assert_eq!(stamp(&store, "a.rs"), Some(live_stamp(root, "a.rs")), "scan stamps the row");
+    assert_eq!(
+        stamp(&store, "a.rs"),
+        Some(live_stamp(root, "a.rs")),
+        "scan stamps the row"
+    );
     assert_eq!(stamp(&store, "b.rs"), Some(live_stamp(root, "b.rs")));
     drop(store);
 
     // Edit: the row follows the new bytes.
     std::fs::write(root.join("a.rs"), "pub fn alpha_function_name() -> u32 { 100_000 }\n").unwrap();
     let store = scan(root);
-    assert_eq!(stamp(&store, "a.rs"), Some(live_stamp(root, "a.rs")), "edit refreshes the row");
+    assert_eq!(
+        stamp(&store, "a.rs"),
+        Some(live_stamp(root, "a.rs")),
+        "edit refreshes the row"
+    );
     drop(store);
 
     // Delete: the row goes with the file.
@@ -85,5 +93,9 @@ fn rescan_backfills_a_row_an_older_index_lacks() {
 
     // Nothing changed on disk, so the scan classes the file Unchanged -- and must still backfill.
     let store = scan(root);
-    assert_eq!(stamp(&store, "a.rs"), Some(live_stamp(root, "a.rs")), "rescan backfills the row");
+    assert_eq!(
+        stamp(&store, "a.rs"),
+        Some(live_stamp(root, "a.rs")),
+        "rescan backfills the row"
+    );
 }

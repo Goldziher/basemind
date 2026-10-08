@@ -785,7 +785,10 @@ mod tests {
                 }
             }
         }
-        assert!(skipped_somewhere, "the prefilter must actually skip files on this corpus");
+        assert!(
+            skipped_somewhere,
+            "the prefilter must actually skip files on this corpus"
+        );
 
         // The stale and new files must stay candidates for the token they now hold.
         let needle = crate::index::grep_bloom::Needle::compile("unique_token_qq").expect("needle");
@@ -809,13 +812,25 @@ mod tests {
         std::fs::write(dir.path().join("a.txt"), "nothing relevant here\n").expect("write");
         let rel = RelPath::from("a.txt");
         let needle = crate::index::grep_bloom::Needle::compile("absent_literal").expect("needle");
-        assert_eq!(db.grep_skip_verdicts(dir.path(), &[&rel], &needle), vec![false], "no row");
+        assert_eq!(
+            db.grep_skip_verdicts(dir.path(), &[&rel], &needle),
+            vec![false],
+            "no row"
+        );
         let mut writer = db.writer();
         writer.upsert_grep_bloom(&rel, vec![99; 40]);
         writer.commit().expect("commit");
-        assert_eq!(db.grep_skip_verdicts(dir.path(), &[&rel], &needle), vec![false], "foreign row");
+        assert_eq!(
+            db.grep_skip_verdicts(dir.path(), &[&rel], &needle),
+            vec![false],
+            "foreign row"
+        );
         scan_blooms(&db, dir.path(), std::slice::from_ref(&rel));
-        assert_eq!(db.grep_skip_verdicts(dir.path(), &[&rel], &needle), vec![true], "current row");
+        assert_eq!(
+            db.grep_skip_verdicts(dir.path(), &[&rel], &needle),
+            vec![true],
+            "current row"
+        );
         let mut writer = db.writer();
         writer.remove_file(&rel).expect("remove");
         writer.commit().expect("commit");

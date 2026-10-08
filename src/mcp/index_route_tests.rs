@@ -493,3 +493,67 @@ fn an_oversized_file_batch_is_refused_not_scanned() {
         .expect_err("an unbounded wire batch must be rejected");
     assert!(error.contains("at most"), "{error}");
 }
+
+fn corpus_paths() -> Vec<RelPath> {
+    let mut paths: Vec<RelPath> = (0..FILES)
+        .map(|k| RelPath::from(format!("pkg{}/m{k}.rs", k % 6).as_bytes()))
+        .collect();
+    paths.push(RelPath::from("py/a.py"));
+    paths
+}
+
+#[test]
+fn grep_bloom_verdicts_are_identical_on_the_local_and_forwarded_routes() {
+    let fx = fixture();
+    let paths = corpus_paths();
+    let refs: Vec<&RelPath> = paths.iter().collect();
+    for pattern in [
+        "driver_7\\(",
+        "shared_helper_3",
+        "(?i)OTHER_5",
+        "Child\\(Tr1\\)",
+        "zzz_not_in_corpus",
+    ] {
+        let local = block_on(fx.local.grep_skip(&fx.root, pattern, &refs)).expect("local verdicts");
+        let host = block_on(fx.host.grep_skip(&fx.root, pattern, &refs)).expect("forwarded verdicts");
+        assert_eq!(local, host, "{pattern}: routes must agree");
+        assert_eq!(local.len(), paths.len());
+        let re = regex::Regex::new(pattern).expect("regex");
+        for (rel, skipped) in paths.iter().zip(&local) {
+            let text = std::fs::read_to_string(fx.root.join(rel.to_path_buf())).expect("read");
+            assert!(
+                !(*skipped && re.is_match(&text)),
+                "{pattern}: {rel} matches but was skipped"
+            );
+        }
+        assert!(local.iter().any(|&s| s), "{pattern}: a selective literal skips files");
+    }
+}
+
+#[test]
+fn a_pattern_without_a_required_literal_or_a_failed_forward_means_no_prefilter() {
+    let fx = fixture();
+    let paths = corpus_paths();
+    let refs: Vec<&RelPath> = paths.iter().collect();
+    assert!(block_on(fx.local.grep_skip(&fx.root, r"\w+", &refs)).is_none());
+    assert!(block_on(fx.host.grep_skip(&fx.root, ".*", &refs)).is_none());
+    assert!(block_on(fx.broken_host.grep_skip(&fx.root, "driver_7", &refs)).is_none());
+}
+
+#[test]
+fn an_oversized_grep_bloom_batch_is_refused() {
+    let fx = fixture();
+    let paths: Vec<RelPath> = (0..=crate::comms::index_read_proto::MAX_GREP_BLOOM_PATHS)
+        .map(|i| RelPath::from(format!("pkg0/m{i}.rs").as_bytes()))
+        .collect();
+    let store = fx.store.store.lock().expect("store");
+    let error = super::index_read::index_read_against(
+        &store,
+        &IndexReadQuery::GrepBloom {
+            pattern: "driver".into(),
+            paths,
+        },
+    )
+    .expect_err("an unbounded wire batch must be rejected");
+    assert!(error.contains("at most"), "{error}");
+}

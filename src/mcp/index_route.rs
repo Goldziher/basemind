@@ -148,7 +148,7 @@ impl IndexRoute {
                     None => return None,
                 }
             }
-            return Some(skip);
+            Some(skip)
         }
         #[cfg(not(all(feature = "comms", any(unix, windows))))]
         None

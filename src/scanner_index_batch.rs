@@ -215,7 +215,9 @@ impl<'a> WorkerIndexBatch<'a> {
             return;
         };
         let row = crate::index::grep_bloom::build_row(bytes, size, mtime_ns);
-        self.writer.get_or_insert_with(|| index.writer()).upsert_grep_bloom(rel, row);
+        self.writer
+            .get_or_insert_with(|| index.writer())
+            .upsert_grep_bloom(rel, row);
         self.commit_if_full();
     }
 
@@ -223,7 +225,10 @@ impl<'a> WorkerIndexBatch<'a> {
     /// content-unchanged-but-restamped path, which is re-entered on every scan until the store's own
     /// entry is refreshed and must not rewrite an identical row each time.
     pub(crate) fn restamp_grep_bloom(&mut self, rel: &RelPath, bytes: &[u8], size: u64, mtime_ns: i64) {
-        if self.index.is_some_and(|index| index.grep_bloom_current(rel, size, mtime_ns)) {
+        if self
+            .index
+            .is_some_and(|index| index.grep_bloom_current(rel, size, mtime_ns))
+        {
             return;
         }
         self.stage_grep_bloom(rel, bytes, size, mtime_ns);
@@ -724,7 +729,10 @@ mod tests {
 
         let mut batch = WorkerIndexBatch::with_budget(Some(&db), u64::MAX, &LEDGER);
         batch.backfill_grep_bloom(dir.path(), &rel, size, mtime);
-        assert!(LEDGER.in_flight() > 0, "the staged bloom row must count against the byte ledger");
+        assert!(
+            LEDGER.in_flight() > 0,
+            "the staged bloom row must count against the byte ledger"
+        );
         batch.finish();
         assert_eq!(LEDGER.in_flight(), 0);
         assert!(db.grep_bloom_current(&rel, size, mtime), "backfill wrote the row");
