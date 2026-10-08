@@ -1,0 +1,471 @@
+use super::*;
+use crate::extract::{Call, FileMapL2, Import, SymbolKind};
+use tempfile::TempDir;
+
+fn fresh_db() -> (TempDir, IndexDb) {
+    let dir = tempfile::tempdir().unwrap();
+    let db = IndexDb::open(dir.path()).unwrap();
+    (dir, db)
+}
+
+fn synthetic_l1(syms: &[(&str, SymbolKind, u32)]) -> FileMapL1 {
+    FileMapL1 {
+        schema_ver: crate::extract::SCHEMA_VER,
+        language: "rust".to_string(),
+        size_bytes: 0,
+        had_errors: false,
+        error_count: 0,
+        symbols: syms
+            .iter()
+            .map(|(name, kind, start)| Symbol {
+                name: name.to_string(),
+                kind: *kind,
+                start_byte: *start,
+                end_byte: *start + 1,
+                start_row: 0,
+                start_col: 0,
+                signature: None,
+                decorators: Vec::new(),
+            })
+            .collect(),
+        imports: Vec::new(),
+        implementations: Vec::new(),
+        rationale: Vec::new(),
+        extract_epoch: crate::extract::EXTRACT_EPOCH,
+    }
+}
+
+#[test]
+fn upsert_and_query_symbols_by_name() {
+    let (_d, db) = fresh_db();
+    let mut w = db.writer();
+    let rel = RelPath::from("src/a.rs");
+    let l1 = synthetic_l1(&[("alpha", SymbolKind::Function, 0)]);
+    w.upsert_file(&rel, &l1, None).unwrap();
+    w.commit().unwrap();
+
+    let prefix = keys::symbols_by_name_prefix("alpha");
+    let mut hits = 0;
+    for guard in db.symbols_by_name.prefix(prefix) {
+        let (k, _) = guard.into_inner().unwrap();
+        let (name, _, _, _) = keys::parse_symbol_by_name(&k).unwrap();
+        assert_eq!(name, "alpha");
+        hits += 1;
+    }
+    assert_eq!(hits, 1);
+}
+
+#[test]
+fn upsert_then_remove_clears_partitions() {
+    let (_d, db) = fresh_db();
+    let mut w = db.writer();
+    let rel = RelPath::from("src/a.rs");
+    let l1 = synthetic_l1(&[("alpha", SymbolKind::Function, 0)]);
+    w.upsert_file(&rel, &l1, None).unwrap();
+    w.commit().unwrap();
+
+    let mut w = db.writer();
+    w.remove_file(&rel).unwrap();
+    w.commit().unwrap();
+
+    assert!(
+        db.symbols_by_path.iter().next().is_none(),
+        "symbols_by_path should be empty after remove_file"
+    );
+    assert!(
+        db.symbols_by_name.iter().next().is_none(),
+        "symbols_by_name should be empty after remove_file"
+    );
+}
+
+#[test]
+fn calls_index_round_trip() {
+    let (_d, db) = fresh_db();
+    let mut w = db.writer();
+    let rel = RelPath::from("src/main.rs");
+    let l1 = synthetic_l1(&[("main", SymbolKind::Function, 0)]);
+    let l2 = FileMapL2 {
+        schema_ver: crate::extract::SCHEMA_VER,
+        language: "rust".to_string(),
+        calls: vec![
+            Call {
+                callee: "spawn".to_string(),
+                start_byte: 10,
+                end_byte: 15,
+                start_row: 0,
+                start_col: 0,
+            },
+            Call {
+                callee: "spawn".to_string(),
+                start_byte: 30,
+                end_byte: 35,
+                start_row: 0,
+                start_col: 0,
+            },
+            Call {
+                callee: "spawn_blocking".to_string(),
+                start_byte: 50,
+                end_byte: 64,
+                start_row: 0,
+                start_col: 0,
+            },
+        ],
+        docs: Vec::new(),
+    };
+    w.upsert_file(&rel, &l1, Some(&l2)).unwrap();
+    w.commit().unwrap();
+
+    let prefix = keys::calls_by_callee_prefix("spawn");
+    let mut spawn_hits = 0;
+    for guard in db.calls_by_callee.prefix(prefix) {
+        let (k, _) = guard.into_inner().unwrap();
+        let (callee, _, _) = keys::parse_call_by_callee(&k).unwrap();
+        assert_eq!(callee, "spawn", "prefix scan must not bleed into spawn_blocking");
+        spawn_hits += 1;
+    }
+    assert_eq!(spawn_hits, 2);
+}
+
+#[test]
+fn imports_by_module_round_trip() {
+    let (_d, db) = fresh_db();
+    let mut w = db.writer();
+    let rel = RelPath::from("src/foo.py");
+    let mut l1 = synthetic_l1(&[]);
+    l1.imports = vec![
+        Import {
+            module: Some("os".to_string()),
+            raw: "import os".to_string(),
+            start_byte: 0,
+            end_byte: 9,
+        },
+        Import {
+            module: Some("os.path".to_string()),
+            raw: "import os.path".to_string(),
+            start_byte: 10,
+            end_byte: 24,
+        },
+    ];
+    w.upsert_file(&rel, &l1, None).unwrap();
+    w.commit().unwrap();
+
+    let prefix = keys::imports_by_module_prefix("os");
+    let mut os_hits = 0;
+    for guard in db.imports_by_module.prefix(prefix) {
+        let (k, _) = guard.into_inner().unwrap();
+        let (module, _, _) = keys::parse_import_by_module(&k).unwrap();
+        assert_eq!(module, "os");
+        os_hits += 1;
+    }
+    assert_eq!(os_hits, 1, "prefix scan must isolate `os` from `os.path`");
+}
+
+fn synthetic_l1_with_impls(impls: &[(&str, &str, u32)]) -> FileMapL1 {
+    let mut l1 = synthetic_l1(&[]);
+    l1.implementations = impls
+        .iter()
+        .map(|(t, i, sb)| crate::extract::Implementation {
+            trait_name: t.to_string(),
+            impl_type: i.to_string(),
+            start_byte: *sb,
+            start_row: 0,
+            start_col: 0,
+        })
+        .collect();
+    l1
+}
+
+/// Iteration-3 dual-partition test for implementations. Mirrors
+/// `imports_by_path_roundtrip_and_dual_partition_consistency`: upsert two rows, verify
+/// both partitions have 2 entries; re-upsert with one row dropped, verify both
+/// partitions have 1 entry; remove the file, verify both partitions empty.
+#[test]
+fn implementations_dual_partition_consistency() {
+    let (_d, db) = fresh_db();
+    let rel = RelPath::from("src/foo.rs");
+
+    let mut w = db.writer();
+    w.upsert_file(
+        &rel,
+        &synthetic_l1_with_impls(&[("Display", "Foo", 0), ("Debug", "Foo", 10)]),
+        None,
+    )
+    .unwrap();
+    w.commit().unwrap();
+
+    assert_eq!(db.implementations_by_trait.iter().count(), 2);
+    assert_eq!(db.implementations_by_path.iter().count(), 2);
+
+    let prefix = keys::impls_by_trait_prefix("Display");
+    let mut display_hits = 0;
+    for guard in db.implementations_by_trait.prefix(prefix) {
+        let (k, _) = guard.into_inner().unwrap();
+        let (trait_name, impl_type, back_rel, _) = keys::parse_impl_by_trait(&k).unwrap();
+        assert_eq!(trait_name, "Display");
+        assert_eq!(impl_type, "Foo");
+        assert_eq!(back_rel, rel);
+        display_hits += 1;
+    }
+    assert_eq!(display_hits, 1);
+
+    let mut w = db.writer();
+    w.upsert_file(&rel, &synthetic_l1_with_impls(&[("Display", "Foo", 0)]), None)
+        .unwrap();
+    w.commit().unwrap();
+
+    assert_eq!(db.implementations_by_trait.iter().count(), 1);
+    assert_eq!(db.implementations_by_path.iter().count(), 1);
+
+    let mut w = db.writer();
+    w.remove_file(&rel).unwrap();
+    w.commit().unwrap();
+
+    assert!(db.implementations_by_trait.iter().next().is_none());
+    assert!(db.implementations_by_path.iter().next().is_none());
+}
+
+#[test]
+fn imports_by_path_roundtrip_and_dual_partition_consistency() {
+    let (_d, db) = fresh_db();
+    let mut w = db.writer();
+    let rel = RelPath::from("src/foo.py");
+    let mut l1 = synthetic_l1(&[]);
+    l1.imports = vec![
+        Import {
+            module: Some("os".to_string()),
+            raw: "import os".to_string(),
+            start_byte: 0,
+            end_byte: 9,
+        },
+        Import {
+            module: Some("os.path".to_string()),
+            raw: "import os.path".to_string(),
+            start_byte: 10,
+            end_byte: 24,
+        },
+    ];
+    w.upsert_file(&rel, &l1, None).unwrap();
+    w.commit().unwrap();
+
+    assert_eq!(db.imports_by_module.iter().count(), 2);
+    assert_eq!(db.imports_by_path.iter().count(), 2);
+
+    let prefix = keys::imports_by_path_prefix(&rel);
+    let mut path_hits = 0;
+    for guard in db.imports_by_path.prefix(prefix) {
+        let (k, _) = guard.into_inner().unwrap();
+        let (back_rel, _, _) = keys::parse_import_by_path(&k).unwrap();
+        assert_eq!(back_rel, rel);
+        path_hits += 1;
+    }
+    assert_eq!(path_hits, 2);
+
+    let mut l1 = synthetic_l1(&[]);
+    l1.imports = vec![Import {
+        module: Some("os".to_string()),
+        raw: "import os".to_string(),
+        start_byte: 0,
+        end_byte: 9,
+    }];
+    let mut w = db.writer();
+    w.upsert_file(&rel, &l1, None).unwrap();
+    w.commit().unwrap();
+
+    assert_eq!(db.imports_by_module.iter().count(), 1);
+    assert_eq!(db.imports_by_path.iter().count(), 1);
+
+    let mut w = db.writer();
+    w.remove_file(&rel).unwrap();
+    w.commit().unwrap();
+
+    assert!(db.imports_by_module.iter().next().is_none());
+    assert!(db.imports_by_path.iter().next().is_none());
+}
+
+/// Mixed oversized/normal upsert: the normal symbol must land in both partitions, the
+/// oversized symbol must land only in `symbols_by_path` (outline stays complete). No
+/// panic, no error propagated.
+#[test]
+fn oversized_identifier_skipped_gracefully() {
+    let (_d, db) = fresh_db();
+    let rel = RelPath::from("src/big.rs");
+    let huge_name = "x".repeat(65536);
+    let l1 = synthetic_l1(&[
+        ("normal_fn", SymbolKind::Function, 0),
+        (&huge_name, SymbolKind::Function, 100),
+    ]);
+    let mut w = db.writer();
+    w.upsert_file(&rel, &l1, None).unwrap();
+    w.commit().unwrap();
+
+    assert_eq!(
+        db.symbols_by_path.iter().count(),
+        2,
+        "both symbols must be in symbols_by_path"
+    );
+    assert_eq!(
+        db.symbols_by_name.iter().count(),
+        1,
+        "only the normal symbol must be in symbols_by_name"
+    );
+    let prefix = keys::symbols_by_name_prefix("normal_fn");
+    let hits: Vec<_> = db
+        .symbols_by_name
+        .prefix(prefix)
+        .map(|g| g.into_inner().unwrap())
+        .collect();
+    assert_eq!(hits.len(), 1);
+}
+
+#[test]
+fn resolved_edges_dual_partition_consistency() {
+    use crate::intel::model::{FileResolvedRefs, ResolvedEdge};
+    let (_d, db) = fresh_db();
+    let rel = RelPath::from("src/app.ts");
+
+    let mut refs = FileResolvedRefs::new("typescript");
+    refs.intra = vec![
+        ResolvedEdge {
+            use_start: 100,
+            use_end: 103,
+            def_start: 4,
+            def_end: 7,
+        },
+        ResolvedEdge {
+            use_start: 200,
+            use_end: 203,
+            def_start: 4,
+            def_end: 7,
+        },
+    ];
+    let mut w = db.writer();
+    w.upsert_resolved_file(&rel, &refs).unwrap();
+    w.commit().unwrap();
+
+    assert_eq!(db.refs_by_def.iter().count(), 2);
+    assert_eq!(db.refs_by_path.iter().count(), 2);
+
+    let mut uses: Vec<u32> = db
+        .refs_by_def
+        .prefix(keys::refs_by_def_prefix(&rel, 4))
+        .map(|g| {
+            let (k, _) = g.into_inner().unwrap();
+            let (_dp, dstart, _up, ustart) = keys::parse_ref_by_def(&k).unwrap();
+            assert_eq!(dstart, 4);
+            ustart
+        })
+        .collect();
+    uses.sort_unstable();
+    assert_eq!(uses, vec![100, 200], "both uses must resolve to def@4");
+
+    let defs: Vec<u32> = db
+        .refs_by_path
+        .prefix(keys::refs_by_use_prefix(&rel, 100))
+        .map(|g| {
+            let (k, _) = g.into_inner().unwrap();
+            let (_up, ustart, _dp, dstart) = keys::parse_ref_by_path(&k).unwrap();
+            assert_eq!(ustart, 100);
+            dstart
+        })
+        .collect();
+    assert_eq!(defs, vec![4], "use@100 must resolve to def@4");
+
+    refs.intra.truncate(1);
+    let mut w = db.writer();
+    w.upsert_resolved_file(&rel, &refs).unwrap();
+    w.commit().unwrap();
+    assert_eq!(db.refs_by_def.iter().count(), 1);
+    assert_eq!(db.refs_by_path.iter().count(), 1);
+
+    let mut w = db.writer();
+    w.remove_resolved_file(&rel).unwrap();
+    w.commit().unwrap();
+    assert!(db.refs_by_def.iter().next().is_none());
+    assert!(db.refs_by_path.iter().next().is_none());
+}
+
+#[cfg(any(feature = "code-intel-js", feature = "code-intel-stack"))]
+#[test]
+fn definition_of_prefers_cross_file_target_over_import_binding() {
+    use crate::intel::model::{FileResolvedRefs, ResolvedEdge};
+    let (_d, db) = fresh_db();
+    let importer = RelPath::from("src/app.py");
+    let target = RelPath::from("src/module.py");
+
+    let mut refs = FileResolvedRefs::new("python");
+    refs.intra.push(ResolvedEdge {
+        use_start: 100,
+        use_end: 101,
+        def_start: 4,
+        def_end: 5,
+    });
+    let mut writer = db.writer();
+    writer.upsert_resolved_file(&importer, &refs).unwrap();
+    writer.upsert_cross_file_edge(&target, 8, &importer, 100).unwrap();
+    writer.commit().unwrap();
+
+    assert_eq!(db.definition_of(&importer, 100), Some((target, 8)));
+}
+
+#[cfg(feature = "code-search")]
+#[test]
+fn bm25_dual_partition_consistency() {
+    use crate::search::bm25::ChunkPosting;
+    let (_d, db) = fresh_db();
+    let rel = RelPath::from("src/foo.rs");
+
+    let postings = vec![
+        ChunkPosting {
+            chunk_id: "h:0".to_string(),
+            doclen: 3,
+            terms: vec![("spawn".to_string(), 2), ("task".to_string(), 1)],
+        },
+        ChunkPosting {
+            chunk_id: "h:1".to_string(),
+            doclen: 1,
+            terms: vec![("spawn".to_string(), 1)],
+        },
+    ];
+    let mut w = db.writer();
+    w.upsert_bm25_file(&rel, &postings).unwrap();
+    w.commit().unwrap();
+
+    assert_eq!(db.code_bm25_postings.iter().count(), 3);
+    assert_eq!(db.code_bm25_by_path.iter().count(), 2);
+
+    let mut spawn_docs: Vec<(String, u32, u32)> = db
+        .code_bm25_postings
+        .prefix(keys::code_bm25_postings_prefix("spawn"))
+        .map(|g| {
+            let (k, v) = g.into_inner().unwrap();
+            let chunk_id = keys::parse_code_bm25_posting_chunk_id(&k).unwrap().to_string();
+            let (tf, doclen) = keys::parse_code_bm25_posting_value(&v).unwrap();
+            (chunk_id, tf, doclen)
+        })
+        .collect();
+    spawn_docs.sort();
+    assert_eq!(spawn_docs, vec![("h:0".to_string(), 2, 3), ("h:1".to_string(), 1, 1)]);
+
+    let mut w = db.writer();
+    w.upsert_bm25_file(
+        &rel,
+        &[ChunkPosting {
+            chunk_id: "h:0".to_string(),
+            doclen: 1,
+            terms: vec![("spawn".to_string(), 1)],
+        }],
+    )
+    .unwrap();
+    w.commit().unwrap();
+    assert_eq!(db.code_bm25_postings.iter().count(), 1);
+    assert_eq!(db.code_bm25_by_path.iter().count(), 1);
+
+    db.recompute_bm25_stats().unwrap();
+    assert_eq!(db.bm25_stats(), Some((1, 1)));
+
+    let mut w = db.writer();
+    w.remove_bm25_file(&rel).unwrap();
+    w.commit().unwrap();
+    assert!(db.code_bm25_postings.iter().next().is_none());
+    assert!(db.code_bm25_by_path.iter().next().is_none());
+}
