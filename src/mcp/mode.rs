@@ -180,7 +180,7 @@ define_mode! {
         domain: "admin",
         summary: "Administrative operation to run.",
         Status => "status", "index health for this workspace: file counts, languages, scan age";
-        Repo => "repo", "repository identity and layout: root, git remote, branch, view";
+        Repo => "repo", "repository identity: workdir, branch, HEAD sha";
         Rescan => "rescan", "re-index changed files, or the whole workspace when no paths are given";
         CacheStats => "cache_stats", "on-disk size and entry counts for the machine-global cache";
         Gc => "gc", "report blobs no live view references — non-destructive, it deletes nothing";
