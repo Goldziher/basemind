@@ -65,9 +65,9 @@ basemind graph path <from> <to> [--from-path --to-path --edges --include-contain
 basemind graph subgraph <name> [--path --depth --edges --min-confidence --max-nodes]
 basemind graph communities [--edges --algorithm --min-confidence --max-communities --members-per-community]
 basemind graph map [--granularity --focus --depth --edges --include-churn --churn-window --max-nodes --max-edges --max-tokens]
-basemind graph export [--format --focus --edges --algorithm --min-confidence --max-nodes --write]
-basemind graph display [--format --focus --edges --algorithm --min-confidence --max-nodes --no-open]
-basemind graph open [--format --focus --edges --algorithm --min-confidence --max-nodes --no-open]
+basemind graph export [--format --focus --edges --algorithm --min-confidence --max-nodes --max-edges --write]
+basemind graph display [--format --focus --edges --algorithm --min-confidence --max-nodes --max-edges --no-open]
+basemind graph open [--format --focus --edges --algorithm --min-confidence --max-nodes --max-edges --no-open]
 ```
 
 | Command | Purpose |
@@ -78,9 +78,9 @@ basemind graph open [--format --focus --edges --algorithm --min-confidence --max
 | `subgraph <name> [--path --depth --edges --min-confidence --max-nodes]` | A symbol's neighborhood cut to its most central nodes. |
 | `communities [--edges --algorithm --min-confidence --max-communities --members-per-community]` | Cluster the graph into de-facto modules. `--algorithm` is `label_propagation` (default) or `louvain`. |
 | `map [--granularity --focus --depth --edges --include-churn --churn-window --max-nodes --max-edges --max-tokens]` | Whole-repo architecture: hub modules by centrality, plus dependency cycles. |
-| `export [--format --focus --edges --algorithm --min-confidence --max-nodes --write]` | Render as `node_link`/`dot`/`mermaid`/`graphml`/`cypher`/`html`/`svg`. `--write` also caches the export and prints its path. |
-| `display [--format --focus --edges --algorithm --min-confidence --max-nodes --no-open]` | Render a visual view and open it in your default desktop viewer; `--no-open` only writes + prints the path. |
-| `open [--format --focus --edges --algorithm --min-confidence --max-nodes --no-open]` | Return a live browsable URL for the interactive graph page (a `file://` export when no daemon is serving). |
+| `export [--format --focus --edges --algorithm --min-confidence --max-nodes --max-edges --write]` | Render as `node_link`/`dot`/`mermaid`/`graphml`/`cypher`/`html`/`svg`. `--write` also caches the export and prints its path. |
+| `display [--format --focus --edges --algorithm --min-confidence --max-nodes --max-edges --no-open]` | Render a visual view and open it in your default desktop viewer; `--no-open` only writes + prints the path. |
+| `open [--format --focus --edges --algorithm --min-confidence --max-nodes --max-edges --no-open]` | Return a live browsable URL for the interactive graph page (a `file://` export when no daemon is serving). |
 
 ## `git` — git history
 
@@ -158,6 +158,8 @@ basemind admin compress [--path --text --level --target-tokens --no-preserve-cod
 basemind admin delta --old <FILE> [--new <FILE>]
 basemind admin checkpoint [--text]
 basemind admin waste [--log <FILE>]
+basemind admin tokens --stdin
+basemind admin eval --tasks <FILE> [--out --report --markdown --baseline --tolerance --cost-tolerance --min-recall --warmup --mode]
 ```
 
 | Command | Purpose |
@@ -165,14 +167,16 @@ basemind admin waste [--log <FILE>]
 | `status` | Index health for this workspace: file counts, languages, scan age. |
 | `repo` | Repository identity and layout: root, git remote, branch, view. |
 | `rescan [PATH...] [--full]` | Re-index changed files, or the whole workspace when no paths are given. |
-| `cache-stats` | On-disk size and entry counts for the machine-global cache. |
-| `gc` | Report blobs no live view references — non-destructive, deletes nothing. |
+| `cache-stats` | On-disk size, blob accounting and process RAM for the machine-global cache. |
+| `gc` | Report blobs no live view references — non-destructive, deletes nothing (same as the MCP `admin` mode `gc`). To reclaim them use `basemind cache gc`. |
 | `cache-clear [--component --confirm]` | Delete this workspace's cached index outright. |
 | `telemetry [--window --tool]` | Aggregate recorded tool calls into a usage and token-savings summary. |
 | `compress [--path --text --level --target-tokens --no-preserve-code]` | Shrink a prior response for re-use in a smaller context: an indexed file's outline, or a prose pass read from `--text`/stdin. |
 | `delta --old <FILE> [--new <FILE>]` | What changed since a named checkpoint — a compact `+N/-M` line diff. `--new` defaults to stdin. |
 | `checkpoint [--text]` | Name the current response so a later delta can diff against it. Reads stdin when `--text` is omitted. |
 | `waste [--log <FILE>]` | Flag repeated or redundant tool calls in a JSON-Lines tool-call log. Reads stdin when `--log` is omitted. |
+| `tokens --stdin` | Count tokens in stdin with the o200k tokenizer and print just the integer (needs the `tokenizer` feature, which `documents` includes). CLI-only; no `--json` envelope. |
+| `eval --tasks <FILE> [...]` | Score retrieval quality, latency and token savings over a JSONL task file. CLI-only; see [Evaluation](/reference/evaluation/). |
 
 ## `web` — on-demand web ingestion
 
@@ -214,6 +218,8 @@ basemind agents message <message-id> [--as-agent]
 basemind agents inbox [--cursor --limit --mark-read --since-hours --as-agent]
 basemind agents ack [--message-id --thread --to-seq --as-agent]
 basemind agents wait [--thread --timeout-secs --since-hours --cursor --as-agent]
+basemind agents cleanup [--dry-run --apply --message-ttl-hours --thread-idle-hours --thread-retention-hours --agent-ttl-hours --claim-ttl-hours --as-agent]
+basemind agents status [--agent-ttl-hours --as-agent]
 ```
 
 | Command | Purpose |
@@ -234,6 +240,8 @@ basemind agents wait [--thread --timeout-secs --since-hours --cursor --as-agent]
 | `inbox [--cursor --limit --mark-read --since-hours --as-agent]` | Unread messages across your joined threads, front-matter only. `--mark-read` advances read cursors. |
 | `ack [--message-id --thread --to-seq --as-agent]` | Clear messages you have read from your inbox. |
 | `wait [--thread --timeout-secs --since-hours --cursor --as-agent]` | Block until a peer posts, or the timeout elapses (default 30s, max 300s). |
+| `cleanup [--dry-run --apply ...]` | Preview stale agent, claim, message and thread retention; `--apply` performs it. TTL flags override the windows in hours. |
+| `status [--agent-ttl-hours --as-agent]` | Active and stale agent counts plus the last maintenance time. |
 
 ## `workspace` — machine-wide repo/worktree registry
 
@@ -291,7 +299,7 @@ basemind comms daemon
 basemind comms start
 basemind comms stop [--all]
 basemind comms status
-basemind comms doctor
+basemind comms doctor [--probe]
 ```
 
 | Command | Purpose |
@@ -300,7 +308,7 @@ basemind comms doctor
 | `start` | Ensure the daemon is running (spawn if needed); no-op when already alive. |
 | `stop [--all]` | Ask the running daemon to drain and stop. `--all` stops every live daemon registered on this machine, not just the current one. |
 | `status` | Report the daemon's pid / version / uptime / room + subscriber counts. |
-| `doctor` | List every live daemon on this machine (pid / comms dir / version / uptime), flag a pile-up over the ceiling, and prune dead registry entries. |
+| `doctor [--probe]` | List every live daemon on this machine (pid / comms dir / version / uptime), flag a pile-up over the ceiling, and prune dead registry entries. Reports process liveness only unless `--probe` is given. |
 
 ## Other commands
 
@@ -309,7 +317,7 @@ basemind scan [--staged | --rev <REV>] [--no-git-history --rebuild-git-history]
 basemind rescan [PATH...] [--full --no-git-history --rebuild-git-history]
 basemind watch
 basemind serve [--git-cache-mem --no-git-cache-disk --no-watch]
-basemind init [--yes --with --without --rules-target --config-dir .config|.config/basemind --no-rules --no-usage-rules]
+basemind init [--yes --with --without --rules-target --settings-target --config-dir .config|.config/basemind --no-rules --no-usage-rules --no-setup-notes --print]
 basemind lang list|install|clean
 basemind hook install
 basemind cache gc|stats|clear [--component]
@@ -327,10 +335,10 @@ basemind detect-waste
 | `rescan [PATH...] [--full --no-git-history --rebuild-git-history]` | Update one or more paths incrementally, or the whole tree with `--full`. |
 | `watch` | Long-running watcher; keeps the code map current as files change (no server). |
 | `serve [--git-cache-mem --no-git-cache-disk --no-watch]` | Ensure the daemon is up and relay this process's stdio to it as the MCP server. Default keeps the index fresh; `--no-watch` disables auto-refresh. |
-| `init [--yes --with --without --rules-target --no-rules --no-usage-rules]` | Re-runnable onboarding: write `basemind.toml`, select capabilities, inject usage rules into a rules file. |
-| `lang list\|install\|clean` | Manage downloaded tree-sitter grammars. |
+| `init [--yes --with --without --rules-target --settings-target --config-dir --no-rules --no-usage-rules --no-setup-notes --print]` | Re-runnable onboarding: write `basemind.toml`, select capabilities, inject usage rules into a gitignored local rules file by default, optionally auto-approve basemind's tools in Claude Code settings. See [Get started](/start/installation/#get-started). |
+| `lang list\|install\|clean` | Manage downloaded tree-sitter grammars. `install` also fetches every grammar marked `preload = true` under `[languages.<name>]`. |
 | `hook install` | Add a git pre-commit hook that runs `basemind scan --staged`. |
-| `cache gc\|stats\|clear [--component]` | Offline path directly against the workspace's global cache directory — the only way to clear `views`/`all`, which `admin cache-clear` refuses because they back the live index. |
+| `cache gc\|stats\|clear [--component]` | Offline path directly against the machine-global cache. `gc` runs the real cross-workspace reference-counted sweep (blobs younger than six hours are kept; `BASEMIND_BLOB_GC_GRACE_SECS` overrides) and prints what it removed. `clear` is the only way to clear `views`/`all`, which `admin cache-clear` refuses because they back the live index. |
 | `daemon ensure` | Ensure the daemon's streamable-HTTP MCP transport is up; idempotent. Needs `--features comms`. |
 | `statusline` | Print a one-line summary of the daemon's hot workspaces, for a shell statusline. Silent and exits 0 when no daemon is running. |
 | `compress-output [--family]` | Backend for the output-compression guardrail: compress stdin (e.g. piped command output) by detected or given family. |

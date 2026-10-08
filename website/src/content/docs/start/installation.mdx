@@ -215,6 +215,22 @@ documents, OCR, search, web crawl, shared memory, agent comms, and agent shells
 — so the first run downloads the models it needs. The plain `cargo install`
 builds the code-map and git tools only.
 
+### Using a local build with the plugin
+
+The plugin launcher (`scripts/mcp-launch.sh`) normally downloads the release binary that matches the
+plugin manifest into `~/.cache/basemind/bin/<version>/` and verifies its checksum. To run a binary you
+built yourself, point `BASEMIND_BIN` at it in the environment your client starts the server from:
+
+<Code code={`cargo build --release --features full\nexport BASEMIND_BIN="$PWD/target/release/basemind"`} lang="bash" />
+
+`BASEMIND_BIN` is an explicit pin: it is honoured whatever version the binary reports. When that
+version differs from the plugin manifest the launcher logs `BASEMIND_BIN pins basemind X while the
+plugin manifest pins Y; using the pin` and carries on, so you do not need to set anything else. A
+build on a different schema minor than your existing cache rebuilds the cache on its first scan.
+`BASEMIND_FORCE_VERSION` is internal to the launcher's release-window fallback and is not needed here.
+The daemon is spawned from the same executable; `BASEMIND_DAEMON_BINARY` overrides which binary it
+spawns when the running one is not `basemind` itself.
+
 ## Get started
 
 After installing, run **`basemind init`** (CLI) — or **`/bm-init`** if your
@@ -228,16 +244,24 @@ to call again later:
   `--without <capability>`). Capability slugs: `code-search-navigation`,
   `code-mapping-architecture`, `git-history`, `agent-comms`, `documents-rag`,
   `semantic-search`.
-- Injects a "prefer basemind over grep/read/git" rules block into your repo's
-  agent-instructions file — `.ai-rulez/rules/basemind-usage.md` if
-  `.ai-rulez/config.toml` is present (run `ai-rulez generate` afterward), else
-  `CLAUDE.md`, else `AGENTS.md`, else a new `CLAUDE.md`. The block is delimited
-  (`<!-- BEGIN basemind ... -->` / `<!-- END basemind -->`) so re-running
-  replaces it in place instead of duplicating it.
+- Injects a "prefer basemind over grep/read/git" rules block into an agent-instructions
+  file. By default it never touches a committed file: with `.ai-rulez/config.toml` present
+  it writes the gitignored `.ai-rulez/local/rules/basemind-usage.md`, otherwise the personal,
+  gitignored `CLAUDE.local.md` (or `AGENTS.local.md` in a repo that has only `AGENTS.md`).
+  The block is delimited (`<!-- BEGIN basemind ... -->` / `<!-- END basemind -->`) so
+  re-running replaces it in place instead of duplicating it.
+- Offers to add the `.local` file to `.gitignore` when no existing rule covers it.
+- Optionally adds basemind's MCP tools to Claude Code's auto-approved permissions
+  (`--settings-target local|shared|none`). A non-interactive run skips this unless the
+  flag is passed.
 
 Preview changes without writing with `--print`; skip the rules step with
 `--no-rules`; steer the target explicitly with
-`--rules-target <auto|claude|agents|ai-rulez|none>`.
+`--rules-target <auto|claude|claude-local|agents|agents-local|ai-rulez|ai-rulez-local|none>`
+(the non-`local` values write a committed file, so they are opt-in only). Leave out the
+routing table with `--no-usage-rules` or the setup notes with `--no-setup-notes`.
+To keep the config under the `.config/` convention, pass `--config-dir .config` or
+`--config-dir .config/basemind`.
 
 ### Statusline (Claude Code)
 

@@ -9,8 +9,8 @@ basemind exposes **nine domain tools** over stdio MCP — `code`, `graph`, `git`
 `web`, `agents`, `workspace`, `shell` — each dispatching on a required `mode` rather than one tool
 per operation. The CLI mirrors the same nine groups (`basemind <domain> <mode>`), enforced as a
 strict bijection by the test suite. All paths are byte-precise repo-relative (`RelPath`). Lists are
-capped at 1000 items, 100 by default; index scans use `scan_cap = limit * 8` to bound work on common
-names. Mode descriptions state matching semantics (substring, prefix, scope-aware) and what's
+capped per mode (see [Metadata & pagination](#metadata--pagination)); index scans use
+`scan_cap = limit * 8` (at least 2000) to bound work on common names. Mode descriptions state matching semantics (substring, prefix, scope-aware) and what's
 indexed (name-only vs scope-resolved) — they're the routing surface an agent searches by, so read
 them before guessing.
 
@@ -23,7 +23,7 @@ calls, and definitions.
 |---|---|---|
 | `outline` | A file's full structure: symbols, line/col, signatures, imports — read this instead of the file. | scope-aware |
 | `symbols` | Find a definition by name across every indexed file. | substring |
-| `grep` | Pattern search across the workspace, filtered by language or path. | regex |
+| `grep` | Pattern search across the indexed code files, filtered by language or path; a per-file trigram bloom prefilter skips files that cannot match. Code only: prose, data and config files are in the document tier. | regex |
 | `files` | Enumerate indexed files, optional `path_contains` and `language` filters. | substring |
 | `find` | Locate a file by a fuzzy fragment of its name or path (fzf/fd-style, nucleo-matcher ranked). | fuzzy substring |
 | `definition` | Resolve a reference position to the definition it binds to. | scope-aware |
@@ -110,8 +110,8 @@ Refresh the index, inspect health and cache footprint, and shrink what an agent 
 | `status` | Index health for this workspace: file counts, languages, scan age. |
 | `repo` | Repository identity and layout: root, git remote, branch, view. |
 | `rescan` | Re-index changed files, or the whole workspace when no paths are given. |
-| `cache_stats` | On-disk size and entry counts for the machine-global cache. |
-| `gc` | Report blobs no live view references — non-destructive, deletes nothing. |
+| `cache_stats` | On-disk size, blob accounting (tier-aware orphan count, `last_gc`) and process RAM for the machine-global cache. |
+| `gc` | Report blobs no live view references — non-destructive, deletes nothing. To reclaim them, run `basemind cache gc`, which performs the cross-workspace reference-counted sweep. |
 | `cache_clear` | Delete this workspace's cached index outright. |
 | `telemetry` | Aggregate recorded tool calls into a usage and token-savings summary. |
 | `compress` | Shrink a prior tool response, a file's outline, or prose for re-use in a smaller context. |
@@ -155,6 +155,8 @@ with a recency-filtered inbox. Requires `--features comms`.
 | `inbox` | Unread messages across your joined threads, front-matter only. |
 | `ack` | Clear messages you have read from your inbox. |
 | `wait` | Block until a peer posts, or until the timeout elapses — a long-poll replacement for looping `inbox` / `thread_list`. |
+| `cleanup` | Preview stale agent, claim, message and thread retention; TTLs are overridable in hours. Preview-only over MCP: `apply` must be omitted or false, and `basemind agents cleanup --apply` applies it. |
+| `status` | Active and stale agent counts plus the last maintenance time. |
 
 See [Agent Comms](/concepts/agent-comms/) for orchestration examples.
 
@@ -194,12 +196,21 @@ See [Agent Shells](/capabilities/agent-shells/) for examples.
 
 All list-returning modes:
 
-- **`limit`** parameter: 1–1000 items (default 100).
+- **`limit`** parameter: `code` modes `symbols` / `grep` / `references` / `callers` /
+  `implementations` and most other lists default to 100 (max 1000); `files` / `find` default to 200
+  (max 5000); `semantic` defaults to 10 (max 100).
+- **`max_tokens`** (`code` modes): a token budget for the returned list. Entries are kept in result
+  order until the budget is hit; the response then carries `budgeted: true` and, where the mode pages,
+  a `next_cursor`.
+- **`format`** (`code` modes): `json` (default) or `toon`, a compact tabular encoding that costs far
+  fewer tokens than JSON for large result sets.
 - **`cursor`** for pagination: opaque token returned in response; pass back to continue.
 - **`any_truncated`** flag: set to `true` if the result hit the limit and more results exist.
 
-For index scans (`code` modes `symbols` / `references` / `callers` / `implementations`), basemind
-internally uses `scan_cap = limit * 8` to bound work on common names.
+For index scans (`code` modes `references` / `callers` / `implementations`), basemind internally
+uses `scan_cap = limit * 8` (at least 2000) to bound work on common names. Cursors for those
+Fjall-backed modes stay valid across rescans; for the in-memory modes (`symbols`, `grep`, `files`,
+`find`) a rescan invalidates them and the response sets `cursor_invalidated`.
 
 <Aside>
 Mode descriptions are the routing surface for agents. Read them carefully — they describe matching
@@ -209,7 +220,7 @@ trades off. This helps agents pick the right mode for the question.
 
 ## Lifecycle notices
 
-`basemind serve` warms the code map in the background after answering the MCP handshake. While
+The server warms the code map in the background after answering the MCP handshake. While
 it isn't fully ready, `admin status` and every `code` read mode may include a `notice` object instead
 of, or alongside, their normal result:
 
