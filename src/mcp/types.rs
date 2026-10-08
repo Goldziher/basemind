@@ -62,9 +62,10 @@ impl LifecycleNotice {
     pub(crate) fn projections_capped() -> Self {
         Self {
             state: "projections_capped",
-            message: "This session has no writable index and its in-memory reference projections hit \
-                      the `[resources] max_map_cache_mb` budget, so reference / implementation \
-                      results are truncated. Raise the budget for complete results.",
+            message: "No daemon was reachable, so this session answered from in-memory reference \
+                      projections that hit the `[resources] max_map_cache_mb` budget; reference / \
+                      implementation results are truncated. Start the daemon or raise the budget \
+                      for complete results.",
             retry: false,
         }
     }

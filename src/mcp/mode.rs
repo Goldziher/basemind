@@ -179,17 +179,17 @@ define_mode! {
     pub enum AdminMode {
         domain: "admin",
         summary: "Administrative operation to run.",
-        Status => "status", "index health for this workspace: file counts, languages, scan age";
-        Repo => "repo", "repository identity and layout: root, git remote, branch, view";
+        Status => "status", "index health: file counts, languages, whether a scan is running";
+        Repo => "repo", "repository identity: workdir, branch, HEAD sha";
         Rescan => "rescan", "re-index changed files, or the whole workspace when no paths are given";
-        CacheStats => "cache_stats", "on-disk size and entry counts for the machine-global cache";
-        Gc => "gc", "report blobs no live view references — non-destructive, it deletes nothing";
-        CacheClear => "cache_clear", "delete this workspace's cached index outright";
+        CacheStats => "cache_stats", "on-disk bytes per cache component, blob and orphan counts, RSS, last GC outcome";
+        Gc => "gc", "report orphaned blobs no live view references; deletes nothing (`basemind cache gc` sweeps)";
+        CacheClear => "cache_clear", "delete one cache component (`component`); `blobs` needs `confirm`, `views`/`all` refused";
         Telemetry => "telemetry", "aggregate recorded tool calls into a usage and token-savings summary";
-        Compress => "compress", "shrink a prior tool response for re-use in a smaller context";
-        Delta => "delta", "what changed in a response since a named checkpoint";
-        Checkpoint => "checkpoint", "name the current response so a later delta can diff against it";
-        Waste => "waste", "flag repeated or redundant tool calls in this session";
+        Compress => "compress", "shrink an indexed file (`path`, outline) or prose (`text`) to cost less context";
+        Delta => "delta", "compact +N/-M line diff from `old` to `new`";
+        Checkpoint => "checkpoint", "distill session `text` into decisions, errors and changed files";
+        Waste => "waste", "flag redundant reads and repeated queries in a tool-call `log`";
     }
 }
 
@@ -213,12 +213,12 @@ define_mode! {
         summary: "Memory operation to run.",
         Put => "put", "write a durable note other sessions and agents will read";
         Get => "get", "read one memory entry by key";
-        List => "list", "enumerate memory entries, newest first";
+        List => "list", "enumerate memory entries in key order";
         Search => "search", "semantic search across stored memory";
         Delete => "delete", "remove a memory entry by key";
-        Audit => "audit", "the write history behind a memory entry";
-        Documents => "documents", "semantic search over indexed PDFs, Office files and HTML \
-                     instead of opening them";
+        Audit => "audit", "re-verify stored notes against the live code index and decay stale ones";
+        Documents => "documents", "semantic search over indexed PDFs, Office, HTML, markdown, \
+                     config and data files instead of opening them";
         Mine => "mine", "derive co-change proposals from git history";
         Proposals => "proposals", "list proposals awaiting review";
         Accept => "accept", "accept a proposal into memory";

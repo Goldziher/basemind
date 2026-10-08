@@ -34,9 +34,10 @@ impl BasemindServer {
         ~100 files) and returns scanned / updated / removed counts. `cache_stats` reports \
         basemind's resource footprint: on-disk bytes per component (blobs / views / lance / \
         git-cache / telemetry / git-history), the `du`-accurate `total_bytes`, blob and orphan \
-        counts, and the serving process's current + peak RSS. `gc` reports how much of the blob \
-        store is orphaned and reclaimable — non-destructive in-session, `removed` is always 0 \
-        here; `basemind cache gc` and the daemon do the cross-workspace sweep. `cache_clear` deletes one cache component (`component`: \
+        counts, the serving process's current + peak RSS, and `last_gc` (outcome of the last \
+        destructive sweep). `gc` reports how much of the blob store is orphaned and reclaimable \
+        — report-only over MCP, `removed` is always 0; the CLI `basemind cache gc` performs the \
+        cross-workspace sweep. `cache_clear` deletes one cache component (`component`: \
         blobs|views|lance|git-cache|telemetry|all, or views:<name>); `blobs` needs `confirm=true`, \
         and `views`/`all` are refused in-process because they back the live index — stop the server \
         and run `basemind cache clear` instead. `telemetry` aggregates recorded calls into a usage \
