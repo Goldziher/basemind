@@ -96,10 +96,11 @@ pub struct ResourcesConfig {
     /// spans three orders of magnitude (a ~1.4 KB median against a measured
     /// 697 KB maximum), so an entry cap would bound the count and not the
     /// footprint. A miss costs one content-addressed blob read and never
-    /// changes an answer. Read-only sessions charge their projected call /
-    /// implementation indexes — the substitute for a Fjall index they cannot
-    /// open — against the same budget, since it is the one knob bounding the
-    /// read stack.
+    /// changes an answer. A read-only session that can reach neither a Fjall
+    /// index nor the daemon that holds it (a daemon-backed session forwards
+    /// reference reads and builds nothing) charges its last-resort projected
+    /// call / implementation indexes against the same budget, since it is the
+    /// one knob bounding the read stack.
     #[serde(default = "ResourcesConfig::default_max_map_cache_mb")]
     pub max_map_cache_mb: usize,
     /// Which model families run during document extraction. `Full` (default)

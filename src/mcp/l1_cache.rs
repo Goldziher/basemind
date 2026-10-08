@@ -209,6 +209,11 @@ impl L1Cache {
         Self::new(PathBuf::new(), 0)
     }
 
+    /// The global content-addressed blob directory this cache reads from.
+    pub(crate) fn blobs_dir(&self) -> &std::path::Path {
+        &self.blobs_dir
+    }
+
     pub(crate) fn budget_bytes(&self) -> u64 {
         self.budget_bytes
     }

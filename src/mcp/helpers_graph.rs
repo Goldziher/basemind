@@ -154,6 +154,17 @@ pub(super) async fn run_graph(state: &super::ServerState, params: GraphParams) -
     let cache = state.shared.cache.load_full();
     let shared = &state.shared;
     let idx = idx.as_ref();
+    if idx.is_none() {
+        // The graph walks read every file's call sites, so a session with no Fjall index serves them
+        // from the in-RAM projection. Build it now so the notice below reflects whether its byte
+        // budget truncated it; the projection is lazy and nothing else builds it for a graph call.
+        let projected = std::sync::Arc::clone(&cache);
+        tokio::task::spawn_blocking(move || {
+            projected.calls_projection();
+        })
+        .await
+        .map_err(|error| McpError::internal_error(format!("build call projection: {error}"), None))?;
+    }
     let notice = state.lifecycle_notice();
     let edges_or = |fallback: &str| edges.clone().unwrap_or_else(|| fallback.to_string());
     let algorithm_or = || algorithm.clone().unwrap_or_else(|| DEFAULT_ALGORITHM.to_string());

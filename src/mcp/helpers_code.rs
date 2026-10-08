@@ -18,6 +18,7 @@ use super::helpers::{
     run_find_callers, run_find_files, run_find_implementations, run_find_references, run_list_files,
     run_workspace_grep,
 };
+use super::index_route::IndexRoute;
 use super::mode::{CodeMode, reject_unsupported};
 use super::types::{
     CallView, DependentsResponse, DocView, FindCallersParams, FindFilesParams, FindReferencesParams,
@@ -220,12 +221,10 @@ pub(super) async fn run_code(state: &ServerState, params: CodeParams) -> Result<
         CodeMode::References => {
             let name = require_field(mode, "name", name)?;
             state.await_cache_ready().await;
-            let store = state.shared.store.read().await;
-            let idx = store.index_db.as_ref().cloned();
-            drop(store);
+            let route = IndexRoute::resolve(state).await;
             let cache = state.shared.cache.load_full();
             run_find_references(
-                idx.as_ref(),
+                &route,
                 FindReferencesParams {
                     name,
                     limit,
@@ -234,9 +233,10 @@ pub(super) async fn run_code(state: &ServerState, params: CodeParams) -> Result<
                     cursor,
                 },
                 &cache,
-                state.lifecycle_notice(),
+                || state.lifecycle_notice(),
                 started,
             )
+            .await
         }
         CodeMode::Callers => {
             let callers = FindCallersParams {
@@ -252,12 +252,10 @@ pub(super) async fn run_code(state: &ServerState, params: CodeParams) -> Result<
         CodeMode::Implementations => {
             let trait_name = require_field(mode, "trait_name", trait_name)?;
             state.await_cache_ready().await;
-            let store = state.shared.store.read().await;
-            let idx = store.index_db.as_ref().cloned();
-            drop(store);
+            let route = IndexRoute::resolve(state).await;
             let cache = state.shared.cache.load_full();
             run_find_implementations(
-                idx.as_ref(),
+                &route,
                 FindImplementationsParams {
                     trait_name,
                     language,
@@ -266,9 +264,10 @@ pub(super) async fn run_code(state: &ServerState, params: CodeParams) -> Result<
                     cursor,
                 },
                 &cache,
-                state.lifecycle_notice(),
+                || state.lifecycle_notice(),
                 started,
             )
+            .await
         }
         CodeMode::Dependents => run_dependents(state, require_field(mode, "module", module)?, started).await,
         CodeMode::Expand => {
@@ -378,6 +377,7 @@ async fn run_callers(
     started: std::time::Instant,
 ) -> Result<CallToolResult, McpError> {
     state.await_cache_ready().await;
+    let route = IndexRoute::resolve(state).await;
     let store = state.shared.store.read().await;
     let cache = state.shared.cache.load_full();
     #[cfg(all(feature = "comms", any(unix, windows)))]
@@ -402,10 +402,11 @@ async fn run_callers(
     run_find_callers(
         &store,
         refs,
+        &route,
         &state.shared.root,
         &cache,
         params,
-        state.lifecycle_notice(),
+        || state.lifecycle_notice(),
         started,
     )
     .await

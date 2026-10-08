@@ -4,18 +4,16 @@
 //! cap. Both tools share the same `calls_by_callee` range scan; the only difference is
 //! `find_callers` resolves a definition first.
 
-use std::ops::Bound;
-
 use rmcp::ErrorData as McpError;
 use rmcp::model::CallToolResult;
 
 use super::MapCache;
-use super::cursor::{Cursor, prefix_upper_bound};
+use super::cursor::Cursor;
 use super::helpers::{SEARCH_LIMIT_DEFAULT, SEARCH_LIMIT_MAX, json_result, kind_to_str, parse_kind};
 pub(crate) use super::helpers_calls_scan::InRamCallIndex;
-use super::helpers_calls_scan::{CallScanPage, budget_call_page, scan_calls};
+use super::helpers_calls_scan::{CallRef, CallScanPage, budget_call_page, calls_in_file_fjall};
+use super::index_route::IndexRoute;
 use super::types::ReferenceHit;
-use crate::extract::Call;
 use crate::index::IndexDb;
 use crate::path::RelPath;
 
@@ -100,46 +98,32 @@ impl RefsSource<'_> {
 }
 
 /// Invoke `f(callee, start_byte)` for every call site in `path`, from whichever backend
-/// is live (Fjall index when open, in-RAM call index for read-only sessions). Returning
+/// is live (Fjall index when open, in-RAM call projection for read-only sessions). Returning
 /// `false` from `f` stops iteration early — used to enforce per-file scan caps.
 ///
 /// Shared by `helpers_archmap::RepoGraph::build`, `helpers_archmap::run_tier_symbol`,
 /// and `codegraph::build` (which backs `call_graph`). Keeping the dual-backend dispatch
-/// here removes the duplicate scan loops those callers previously maintained inline.
+/// here removes the duplicate scan loops those callers previously maintained inline. These are
+/// whole-corpus walks, so a read-only session serves them from the (byte-budgeted) projection
+/// rather than one daemon round trip per file; `references` / `callers` / `implementations` are the
+/// point queries that forward instead.
 pub(super) fn for_each_call_in_file<F: FnMut(&str, u32) -> bool>(
     idx: Option<&IndexDb>,
     cache: &MapCache,
     path: &RelPath,
     mut f: F,
 ) -> Result<(), McpError> {
-    match idx {
+    let owned: Vec<CallRef>;
+    let refs: &[CallRef] = match idx {
         Some(idx) => {
-            let prefix = crate::index::keys::calls_by_path_prefix(path);
-            let upper: Bound<Vec<u8>> = match prefix_upper_bound(&prefix) {
-                Some(b) => Bound::Excluded(b),
-                None => Bound::Unbounded,
-            };
-            for guard in idx.calls_by_path.range::<Vec<u8>, _>((Bound::Included(prefix), upper)) {
-                let (_, v) = guard
-                    .into_inner()
-                    .map_err(|e| McpError::internal_error(format!("index iter: {e}"), None))?;
-                let call: Call = match rmp_serde::from_slice(&v) {
-                    Ok(c) => c,
-                    Err(_) => continue,
-                };
-                if !f(&call.callee, call.start_byte) {
-                    return Ok(());
-                }
-            }
+            owned = calls_in_file_fjall(idx, path)?;
+            &owned
         }
-        None => {
-            if let Some(calls) = cache.calls.as_ref() {
-                for cref in calls.calls_in_file(path) {
-                    if !f(&cref.callee, cref.start_byte) {
-                        return Ok(());
-                    }
-                }
-            }
+        None => cache.calls_projection().calls_in_file(path),
+    };
+    for cref in refs {
+        if !f(&cref.callee, cref.start_byte) {
+            return Ok(());
         }
     }
     Ok(())
@@ -165,20 +149,22 @@ pub(super) fn resolve_call_line_col(
     (call.start_row + 1, call.start_col)
 }
 
-/// Body of the `code` tool's `references` mode. Takes a snapshot of the IndexDb (cheap clone) so the caller
-/// can release the store lock before iterating.
-pub(super) fn run_find_references(
-    idx: Option<&crate::index::IndexDb>,
+/// Body of the `code` tool's `references` mode. `route` decides where the `calls_by_callee` scan
+/// runs; the caller releases the store lock before awaiting it.
+pub(super) async fn run_find_references(
+    route: &IndexRoute,
     params: super::types::FindReferencesParams,
     cache: &super::MapCache,
-    notice: Option<super::types::LifecycleNotice>,
+    notice: impl FnOnce() -> Option<super::types::LifecycleNotice>,
     started: std::time::Instant,
 ) -> Result<CallToolResult, McpError> {
     use super::types::FindReferencesResponse;
     let format = super::toon::ResponseFormat::parse(params.format.as_deref());
     let limit = params.limit.unwrap_or(SEARCH_LIMIT_DEFAULT).min(SEARCH_LIMIT_MAX) as usize;
     let cursor_bytes = params.cursor.as_ref().map(|c| c.decode_fjall()).transpose()?;
-    let scan = scan_calls(idx, cache, &params.name, limit, cursor_bytes.as_deref())?;
+    let scan = route
+        .scan_calls(cache, &params.name, limit, cursor_bytes.as_deref())
+        .await?;
     let total = scan.total;
     let total_is_partial = scan.total_is_partial;
     let budgeted = budget_call_page(scan, params.max_tokens);
@@ -190,7 +176,7 @@ pub(super) fn run_find_references(
             budgeted: budgeted.budgeted,
             hits: budgeted.hits,
             next_cursor: budgeted.next_cursor,
-            notice,
+            notice: notice(),
             elapsed_us: super::helpers::elapsed_us(started),
         },
         format,
@@ -223,13 +209,15 @@ pub(super) fn run_find_references(
 /// Holds the store read guard for the call (like `goto_definition`): the resolution layer reads the
 /// concurrently-readable `.rref` blobs plus, when open, the Fjall index; the scan reads
 /// `store.index_db` or the in-RAM call cache for a read-only multi-session serve.
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn run_find_callers(
     store: &crate::store::Store,
     refs: RefsSource<'_>,
+    route: &IndexRoute,
     root: &std::path::Path,
     cache: &super::MapCache,
     params: super::types::FindCallersParams,
-    notice: Option<super::types::LifecycleNotice>,
+    notice: impl FnOnce() -> Option<super::types::LifecycleNotice>,
     started: std::time::Instant,
 ) -> Result<CallToolResult, McpError> {
     use super::types::{DefinitionView, FindCallersResponse};
@@ -250,16 +238,12 @@ pub(super) async fn run_find_callers(
     });
 
     let cursor_bytes = params.cursor.as_ref().map(|c| c.decode_fjall()).transpose()?;
-    let scan = scan_calls(
-        store.index_db.as_ref(),
-        cache,
-        &params.name,
-        limit,
-        cursor_bytes.as_deref(),
-    )?;
+    let scan = route
+        .scan_calls(cache, &params.name, limit, cursor_bytes.as_deref())
+        .await?;
 
     let resolved = match symbol.as_ref() {
-        Some(sym) => resolved_callers(store, &refs, root, cache, &params.path, sym, &params.name, limit).await,
+        Some(sym) => resolved_callers(store, &refs, route, root, cache, &params.path, sym, &params.name, limit).await,
         None => None,
     };
     let resolved_total = resolved.as_ref().map_or(0, |r| r.total);
@@ -276,7 +260,7 @@ pub(super) async fn run_find_callers(
         budgeted: budgeted.budgeted,
         hits: budgeted.hits,
         next_cursor: budgeted.next_cursor,
-        notice,
+        notice: notice(),
         elapsed_us: super::helpers::elapsed_us(started),
     })
 }
@@ -308,58 +292,26 @@ struct CallSite {
     column: u32,
 }
 
-/// Every call site in `path`, keyed by start byte, from whichever backend is live. Same
-/// dual-backend dispatch as [`for_each_call_in_file`], but it carries line/column so resolved hits
-/// get their position from the index — the same source the name scan uses — instead of re-reading
-/// and re-scanning the file for a byte offset.
-fn call_sites_in_file(
-    idx: Option<&IndexDb>,
-    cache: &MapCache,
-    path: &RelPath,
-) -> Result<ahash::AHashMap<u32, CallSite>, McpError> {
-    let mut sites: ahash::AHashMap<u32, CallSite> = ahash::AHashMap::new();
-    match idx {
-        Some(idx) => {
-            let prefix = crate::index::keys::calls_by_path_prefix(path);
-            let upper: Bound<Vec<u8>> = match prefix_upper_bound(&prefix) {
-                Some(b) => Bound::Excluded(b),
-                None => Bound::Unbounded,
-            };
-            for guard in idx.calls_by_path.range::<Vec<u8>, _>((Bound::Included(prefix), upper)) {
-                let (_, v) = guard
-                    .into_inner()
-                    .map_err(|e| McpError::internal_error(format!("index iter: {e}"), None))?;
-                let call: Call = match rmp_serde::from_slice(&v) {
-                    Ok(c) => c,
-                    Err(_) => continue,
-                };
-                sites.insert(
-                    call.start_byte,
-                    CallSite {
-                        callee: call.callee,
-                        line: call.start_row + 1,
-                        column: call.start_col,
-                    },
-                );
-            }
-        }
-        None => {
-            if let Some(calls) = cache.calls.as_ref() {
-                for cref in calls.calls_in_file(path) {
-                    sites.insert(
-                        cref.start_byte,
-                        CallSite {
-                            callee: cref.callee.clone(),
-                            line: cref.line,
-                            column: cref.column,
-                        },
-                    );
-                }
-            }
-        }
-    }
-    Ok(sites)
+/// A call site as `CallRef` carries it, re-keyed by start byte for the resolved-use probe.
+fn index_by_start(calls: Vec<CallRef>) -> ahash::AHashMap<u32, CallSite> {
+    calls
+        .into_iter()
+        .map(|c| {
+            (
+                c.start_byte,
+                CallSite {
+                    callee: c.callee,
+                    line: c.line,
+                    column: c.column,
+                },
+            )
+        })
+        .collect()
 }
+
+/// How many use-files `resolved_callers` fetches per round trip. Bounds the decoded call sites
+/// live at once, and the size of each forwarded `CallsInFiles` request.
+const CALL_SITE_BATCH: usize = 128;
 
 /// Build the resolved refinement for the definition `symbol` in `def_path`, or `None` when nothing
 /// resolves. Cross-file uses come from the index via [`RefsSource`]: read locally when it is open,
@@ -380,6 +332,7 @@ fn call_sites_in_file(
 async fn resolved_callers(
     store: &crate::store::Store,
     ref_source: &RefsSource<'_>,
+    route: &IndexRoute,
     root: &std::path::Path,
     cache: &MapCache,
     def_path: &crate::path::RelPath,
@@ -431,40 +384,39 @@ async fn resolved_callers(
     let mut total: u32 = 0;
 
     uses.sort_unstable_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
-    let mut probed = 0usize;
-    let mut file_calls: Option<(&crate::path::RelPath, ahash::AHashMap<u32, CallSite>)> = None;
-    for (use_path, use_start) in &uses {
-        if file_calls.as_ref().is_none_or(|(p, _)| *p != use_path) {
-            if probed >= probe_cap {
-                break;
+    // Uses are sorted by path, so each file's uses are one contiguous run. Fetch the files' call
+    // sites a batch at a time (one forwarded round trip per batch on a daemon-backed session).
+    let mut runs: Vec<(&crate::path::RelPath, &[(crate::path::RelPath, u32)])> = Vec::new();
+    for group in uses.chunk_by(|a, b| a.0 == b.0) {
+        runs.push((&group[0].0, group));
+    }
+    runs.truncate(probe_cap);
+    for batch in runs.chunks(CALL_SITE_BATCH) {
+        let paths: Vec<crate::path::RelPath> = batch.iter().map(|(path, _)| (*path).clone()).collect();
+        let per_file = route.calls_in_files(cache, &paths).await.ok()?;
+        for ((use_path, run), calls) in batch.iter().zip(per_file) {
+            let calls = index_by_start(calls);
+            for (_, use_start) in *run {
+                let Some(site) = calls.get(use_start) else {
+                    continue;
+                };
+                total += 1;
+                sites.entry((*use_path).clone()).or_default().insert(*use_start);
+                if finder.find(site.callee.as_bytes()).is_none()
+                    && let Some(key) = crate::index::keys::call_by_callee(&site.callee, use_path, *use_start)
+                {
+                    aliased.push((
+                        key,
+                        ReferenceHit {
+                            path: (*use_path).clone(),
+                            line: site.line,
+                            column: site.column,
+                            callee: site.callee.clone(),
+                            resolved: Some(true),
+                        },
+                    ));
+                }
             }
-            probed += 1;
-            file_calls = Some((
-                use_path,
-                call_sites_in_file(store.index_db.as_ref(), cache, use_path).ok()?,
-            ));
-        }
-        let Some((_, calls)) = file_calls.as_ref() else {
-            continue;
-        };
-        let Some(site) = calls.get(use_start) else {
-            continue;
-        };
-        total += 1;
-        sites.entry(use_path.clone()).or_default().insert(*use_start);
-        if finder.find(site.callee.as_bytes()).is_none()
-            && let Some(key) = crate::index::keys::call_by_callee(&site.callee, use_path, *use_start)
-        {
-            aliased.push((
-                key,
-                ReferenceHit {
-                    path: use_path.clone(),
-                    line: site.line,
-                    column: site.column,
-                    callee: site.callee.clone(),
-                    resolved: Some(true),
-                },
-            ));
         }
     }
     if total == 0 {
@@ -546,7 +498,7 @@ fn merge_resolved(
 
 #[cfg(test)]
 mod tests {
-    use super::super::helpers_calls_scan::{InRamCallIndex, scan_calls_in_ram};
+    use super::super::helpers_calls_scan::scan_calls_in_ram;
     use crate::config::ConfigV1;
     use crate::scanner::{ScanSource, scan};
     use crate::store::{Store, VIEW_WORKING};
@@ -563,6 +515,11 @@ mod tests {
             })
             .unwrap_or_default();
         serde_json::from_str(&text).expect("tool response is JSON")
+    }
+
+    /// The route a writer session takes: its own open fjall index.
+    fn local_route(store: &Store) -> super::IndexRoute {
+        super::IndexRoute::Local(store.index_db.clone().expect("a writer store opens the fjall index"))
     }
 
     /// Scan `root` and return the store plus its map cache.
@@ -626,20 +583,21 @@ mod tests {
             .expect("runtime");
 
         let references = decode(
-            &super::run_find_references(
-                store.index_db.as_ref(),
-                FindReferencesParams {
-                    name: "target".to_string(),
-                    limit: Some(500),
-                    max_tokens: None,
-                    format: None,
-                    cursor: None,
-                },
-                &cache,
-                None,
-                std::time::Instant::now(),
-            )
-            .expect("find_references"),
+            &runtime
+                .block_on(super::run_find_references(
+                    &local_route(&store),
+                    FindReferencesParams {
+                        name: "target".to_string(),
+                        limit: Some(500),
+                        max_tokens: None,
+                        format: None,
+                        cursor: None,
+                    },
+                    &cache,
+                    || None,
+                    std::time::Instant::now(),
+                ))
+                .expect("find_references"),
         );
         assert_eq!(
             references.get("total").and_then(serde_json::Value::as_u64),
@@ -652,6 +610,7 @@ mod tests {
                 .block_on(super::run_find_callers(
                     &store,
                     super::RefsSource::Local(&store),
+                    &local_route(&store),
                     root,
                     &cache,
                     FindCallersParams {
@@ -662,7 +621,7 @@ mod tests {
                         max_tokens: None,
                         cursor: None,
                     },
-                    None,
+                    || None,
                     std::time::Instant::now(),
                 ))
                 .expect("find_callers"),
@@ -736,6 +695,7 @@ mod tests {
                 .block_on(super::run_find_callers(
                     &store,
                     super::RefsSource::Local(&store),
+                    &local_route(&store),
                     root,
                     &cache,
                     FindCallersParams {
@@ -746,7 +706,7 @@ mod tests {
                         max_tokens: None,
                         cursor: None,
                     },
-                    None,
+                    || None,
                     std::time::Instant::now(),
                 ))
                 .expect("find_callers"),
@@ -796,8 +756,8 @@ mod tests {
         )
         .expect("scan");
 
-        let index = InRamCallIndex::build(&store, 0);
-        let page = scan_calls_in_ram(&index, "alpha", 100, None);
+        let cache = crate::mcp::MapCache::build(&store, 0);
+        let page = scan_calls_in_ram(cache.calls_projection(), "alpha", 100, None);
         assert_eq!(page.total, 2, "two alpha() call sites in b.rs");
         assert_eq!(page.hits.len(), 2);
         assert!(page.hits.iter().all(|h| h.callee == "alpha"));
@@ -860,6 +820,7 @@ mod tests {
                 .block_on(super::run_find_callers(
                     &store,
                     super::RefsSource::Local(&store),
+                    &local_route(&store),
                     root,
                     &cache,
                     FindCallersParams {
@@ -870,7 +831,7 @@ mod tests {
                         max_tokens: None,
                         cursor: None,
                     },
-                    None,
+                    || None,
                     std::time::Instant::now(),
                 ))
                 .expect("find_callers"),

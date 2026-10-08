@@ -1191,3 +1191,220 @@ async fn should_drain_cleanly_with_an_in_flight_rescan_and_reload_registry_after
     drop(client);
     daemon.stop();
 }
+
+/// Run a `--json` CLI query in-process (no daemon exists yet, and none may be spawned), returning
+/// the exact payload a writer session produces. This is the ground truth the daemon-backed paths
+/// are held to.
+fn writer_truth(repo: &Path, comms_dir: &Path, args: &[&str]) -> Value {
+    let output = Command::new(BIN)
+        .current_dir(repo)
+        .env("BASEMIND_DATA_HOME", comms_dir)
+        .env("BASEMIND_COMMS_DIR", comms_dir)
+        .env("BASEMIND_NO_AUTOSPAWN", "1")
+        .arg("--json")
+        .args(args)
+        .output()
+        .expect("run writer-path query");
+    assert!(
+        output.status.success(),
+        "{args:?} failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout).unwrap_or_else(|error| panic!("{args:?} is not JSON: {error}"))
+}
+
+/// The tool payload inside a hosted JSON-RPC `tools/call` response.
+fn hosted_payload(response: &Value) -> Value {
+    let text = response["result"]["content"]
+        .as_array()
+        .and_then(|content| content.first())
+        .and_then(|content| content["text"].as_str())
+        .unwrap_or_else(|| panic!("hosted response has no text content: {response}"));
+    serde_json::from_str(text).unwrap_or_else(|error| panic!("hosted payload is not JSON ({error}): {text}"))
+}
+
+/// Page through a hosted `code` query via `next_cursor`, returning the reported total and every hit.
+async fn hosted_paginated(addr: &str, token: &str, repo: &Path, tool_args: Value) -> (Value, Vec<Value>) {
+    const HOSTED_CALL_BOUND: Duration = Duration::from_secs(30);
+    let mut hits: Vec<Value> = Vec::new();
+    let mut cursor: Option<String> = None;
+    let mut total = Value::Null;
+    for id in 1..200usize {
+        let mut arguments = tool_args.clone();
+        if arguments["mode"] == "references" {
+            // Only `references` takes a wire format; pin JSON so the hits decode.
+            arguments["format"] = json!("json");
+        }
+        if let Some(cursor) = &cursor {
+            arguments["cursor"] = json!(cursor);
+        }
+        let response = tokio::time::timeout(
+            HOSTED_CALL_BOUND,
+            hosted_tool_call(addr, token, repo, "refs-hosted", id, "code", arguments),
+        )
+        .await
+        .expect("hosted call completes");
+        let payload = hosted_payload(&response);
+        if id == 1 {
+            // `total` counts matches from the cursor onward, so only the first page reports the whole.
+            total = payload["total"].clone();
+        }
+        assert!(
+            payload.get("notice").is_none() || payload["notice"].is_null(),
+            "a complete answer carries no truncation notice: {payload}"
+        );
+        hits.extend(payload["hits"].as_array().cloned().unwrap_or_default());
+        cursor = payload["next_cursor"].as_str().map(str::to_string);
+        if cursor.is_none() {
+            break;
+        }
+    }
+    (total, hits)
+}
+
+/// The bug this pins: a daemon-backed session used to answer `references` / `implementations` from
+/// an in-RAM projection capped at `max_map_cache_mb`, so on a big corpus the result was a silently
+/// truncated lower bound. Both daemon-backed shapes — a socket front-end and a daemon-hosted
+/// connection — must now return exactly what a writer session returns, cursor pagination included.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn daemon_backed_references_and_implementations_equal_the_writer_session() {
+    use basemind::comms::index_read_proto::{IndexReadQuery, IndexReadResult};
+
+    const FILES: usize = 150;
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let comms_dir = tmp.path().join("comms");
+    let repo = tmp.path().join("repo");
+    for k in 0..FILES {
+        let dir = repo.join(format!("pkg{}", k % 5));
+        std::fs::create_dir_all(&dir).expect("mkdir pkg");
+        std::fs::write(
+            dir.join(format!("f{k}.rs")),
+            format!(
+                "pub trait Tr{t} {{ fn run(&self); }}\npub struct S{k};\n\
+                 impl Tr{t} for S{k} {{ fn run(&self) {{ get_arg(); }} }}\n\
+                 pub fn d{k}() {{ get_arg(); other_{o}(); }}\n",
+                t = k % 3,
+                o = k % 4,
+            ),
+        )
+        .expect("write source");
+    }
+    std::fs::write(
+        repo.join("basemind.toml"),
+        b"\"$schema\" = \"v1\"\n\n[code_search]\nembed = false\n",
+    )
+    .expect("write embed-disabled config");
+    let scan = Command::new(BIN)
+        .current_dir(&repo)
+        .env("BASEMIND_DATA_HOME", &comms_dir)
+        .arg("scan")
+        .output()
+        .expect("scan fixture");
+    assert!(
+        scan.status.success(),
+        "fixture scan must succeed: {}",
+        String::from_utf8_lossy(&scan.stderr)
+    );
+
+    let truth_refs = writer_truth(&repo, &comms_dir, &["code", "references", "get_arg", "--limit", "1000"]);
+    let truth_impls = writer_truth(
+        &repo,
+        &comms_dir,
+        &["code", "implementations", "Tr1", "--limit", "1000"],
+    );
+    assert_eq!(
+        truth_refs["total"],
+        (FILES * 2) as u64,
+        "ground truth sees every get_arg call: {truth_refs}"
+    );
+    assert_eq!(
+        truth_impls["total"],
+        (FILES / 3) as u64,
+        "ground truth sees every Tr1 impl"
+    );
+
+    let daemon = Daemon::start(&comms_dir);
+    let socket = daemon.socket().to_path_buf();
+
+    // Socket front-end shape: the exact request a `daemon_writer` serve sends.
+    let mut client = connect(&socket, "refs-socket-client", &repo).await;
+    let reply = client
+        .index_read(
+            repo.clone(),
+            IndexReadQuery::CallScan {
+                name: "get_arg".to_string(),
+                limit: 1000,
+                cursor: None,
+            },
+        )
+        .await
+        .expect("forwarded call scan");
+    let IndexReadResult::CallScan(page) = reply else {
+        panic!("a call scan must be answered with a call-scan page");
+    };
+    assert_eq!(u64::from(page.total), truth_refs["total"].as_u64().unwrap());
+    assert!(!page.total_is_partial && !page.has_more);
+    let forwarded: Vec<(String, u64, u64)> = page
+        .hits
+        .iter()
+        .map(|hit| (hit.path.to_string(), u64::from(hit.line), u64::from(hit.column)))
+        .collect();
+    let truth: Vec<(String, u64, u64)> = truth_refs["hits"]
+        .as_array()
+        .expect("truth hits")
+        .iter()
+        .map(|hit| {
+            (
+                hit["path"].as_str().expect("path").to_string(),
+                hit["line"].as_u64().expect("line"),
+                hit["column"].as_u64().expect("column"),
+            )
+        })
+        .collect();
+    assert_eq!(
+        forwarded, truth,
+        "the socket path must return the writer's hits, in order"
+    );
+    drop(client);
+
+    // Daemon-hosted shape: the real MCP tool, paginated.
+    let addr = http_frontend::await_http_ready(&comms_dir, Duration::from_secs(10))
+        .await
+        .expect("daemon-hosted MCP transport ready");
+    let token = http_frontend::published_token(&comms_dir).expect("the daemon publishes its bearer token");
+    let (total, hits) = hosted_paginated(
+        &addr,
+        &token,
+        &repo,
+        json!({"mode": "references", "name": "get_arg", "limit": 40}),
+    )
+    .await;
+    assert_eq!(
+        total, truth_refs["total"],
+        "hosted references total equals the writer's"
+    );
+    assert_eq!(
+        Value::Array(hits),
+        truth_refs["hits"],
+        "hosted references, paginated, equal the writer's hits in order"
+    );
+    let (total, hits) = hosted_paginated(
+        &addr,
+        &token,
+        &repo,
+        json!({"mode": "implementations", "trait_name": "Tr1", "limit": 9}),
+    )
+    .await;
+    assert_eq!(
+        total, truth_impls["total"],
+        "hosted implementations total equals the writer's"
+    );
+    assert_eq!(
+        Value::Array(hits),
+        truth_impls["hits"],
+        "hosted implementations, paginated, equal the writer's hits in order"
+    );
+
+    daemon.stop();
+}
