@@ -244,6 +244,7 @@ fn process_file(
         && let Some(existing) = store.lookup(rel)
         && existing.mtime != 0
         && existing.language == lang
+        && existing.extract_epoch >= extract::EXTRACT_EPOCH
         && let Ok(meta) = std::fs::metadata(root.join(rel))
     {
         // The cap outranks the unchanged shortcut: lowering `max_file_bytes` must evict an already
@@ -300,6 +301,7 @@ fn process_file(
     if let Some(existing) = store.lookup(rel)
         && existing.hash_hex == hash_hex_str
         && existing.language == lang
+        && existing.extract_epoch >= extract::EXTRACT_EPOCH
         && sidecars_present
         && embed_state_satisfied(store, config, filters, rel, hash_hex_str, embed)
     {
@@ -309,8 +311,17 @@ fn process_file(
     let want_l2 = filters.eager_l2 && store.index_db.is_some();
 
     let mut foreign_lang = false;
+    // Set when a schema-current blob of the right language predates `EXTRACT_EPOCH`: it is rewritten
+    // in place (its L2 calls, which the epoch does not touch, are carried over).
+    let mut stale_epoch = false;
+    let mut carried_l2: Option<FileMapL2> = None;
     let reused_pair: Option<(FileMapL1, Option<FileMapL2>)> = if sidecars_present {
         match store.read_l1_by_hex(hash_hex_str) {
+            Ok(Some(l1)) if l1.language == lang && l1.extract_epoch < extract::EXTRACT_EPOCH => {
+                stale_epoch = true;
+                carried_l2 = store.read_l2_by_hex(hash_hex_str).unwrap_or(None);
+                None
+            }
             Ok(Some(l1)) if l1.language == lang => {
                 let l2 = if want_l2 {
                     store.read_l2_by_hex(hash_hex_str).unwrap_or(None)
@@ -359,9 +370,9 @@ fn process_file(
         }
     };
 
-    let l2: Option<FileMapL2> = l2_opt;
+    let l2: Option<FileMapL2> = l2_opt.or(carried_l2);
     if !reused {
-        let written = if foreign_lang {
+        let written = if foreign_lang || stale_epoch {
             store.overwrite_filemap_hex(hash_hex_str, &l1, l2.as_ref())
         } else {
             store.write_filemap_hex(hash_hex_str, &l1, l2.as_ref())
@@ -415,6 +426,7 @@ fn process_file(
         language: lang.to_string(),
         size_bytes,
         mtime,
+        extract_epoch: crate::extract::EXTRACT_EPOCH,
     };
     FileResult {
         path: rel.to_string(),

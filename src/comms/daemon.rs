@@ -704,6 +704,13 @@ impl Broker {
         result
     }
 
+    /// The signal raised when a pass displaced artifacts (see
+    /// [`WorkspacePool::cleanup_signal`](super::workspace_pool::WorkspacePool)); the daemon's cleanup
+    /// task waits on it to run a prompt blob sweep.
+    pub fn cleanup_signal(&self) -> Arc<tokio::sync::Notify> {
+        self.workspaces.cleanup_signal()
+    }
+
     /// Handle one request on a link. Returns the direct response.
     pub async fn handle(
         &self,

@@ -12,6 +12,7 @@ fn sample_l1() -> FileMapL1 {
         imports: Vec::new(),
         implementations: Vec::new(),
         rationale: Vec::new(),
+        extract_epoch: crate::extract::EXTRACT_EPOCH,
     }
 }
 

@@ -293,6 +293,7 @@ mod tests {
             imports: Vec::new(),
             implementations: Vec::new(),
             rationale: Vec::new(),
+            extract_epoch: crate::extract::EXTRACT_EPOCH,
         }
     }
 

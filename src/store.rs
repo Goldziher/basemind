@@ -207,6 +207,11 @@ pub struct FileEntry {
     /// read + blake3 hash. Nanosecond resolution keeps that fast-path effectively race-free. Only
     /// ever compared against a stored value, never displayed, so the unit is internal.
     pub mtime: i64,
+    /// The [`crate::extract::EXTRACT_EPOCH`] the entry's blob was extracted under; `0` for entries
+    /// written before the field existed. An entry below the current epoch is never short-circuited
+    /// as unchanged, so the scan re-extracts it (see `process_file`).
+    #[serde(default)]
+    pub extract_epoch: u16,
 }
 
 /// Per-document index entry — the doc-tier analogue of [`FileEntry`]. Records the content hash of
@@ -278,6 +283,10 @@ pub struct Store {
     /// vanilla code-only scan doesn't pay the LanceDB startup cost.
     #[cfg(feature = "intelligence")]
     pub lance: Option<LanceStore>,
+    /// True when this open discarded a view index written under another schema (a release-minor
+    /// bump): every blob that index referenced is now unreferenced, so the first scan of the
+    /// rebuilt view should be followed by a blob sweep (see `Store::displaced_blobs_pending`).
+    pub reset_stale_schema: bool,
     _lock: Option<File>,
 }
 
@@ -315,10 +324,12 @@ impl Store {
         }
         ensure_dir(&view_dir)?;
         ensure_workspace_marker(&basemind_dir, root);
+        let mut reset_stale_schema = false;
         let index = match read_index(&view_dir) {
             Ok(Some(idx)) => idx,
             Ok(None) => Index::empty(),
             Err(StoreError::SchemaMismatch { found, expected }) => {
+                reset_stale_schema = true;
                 tracing::info!(
                     found,
                     expected,
@@ -342,6 +353,7 @@ impl Store {
             index_db,
             #[cfg(feature = "intelligence")]
             lance: None,
+            reset_stale_schema,
             _lock: Some(lock),
         })
     }
@@ -434,6 +446,7 @@ impl Store {
             index_db,
             #[cfg(feature = "intelligence")]
             lance: None,
+            reset_stale_schema: false,
             _lock: None,
         })
     }
@@ -852,6 +865,7 @@ mod tests {
                 language: "rust".to_string(),
                 size_bytes: 3,
                 mtime: 7,
+                extract_epoch: crate::extract::EXTRACT_EPOCH,
             },
         );
         let mut doc_files = AHashMap::new();

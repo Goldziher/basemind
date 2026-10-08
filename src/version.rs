@@ -19,6 +19,10 @@
 //! Patch releases (`0.1.0` → `0.1.1`) MUST be blob-and-index-compatible — never bump
 //! `RELEASE_MINOR` from a patch commit; if a serialized shape change is required, it
 //! gates the next minor.
+//!
+//! A patch release that fixes what an extractor emits for UNCHANGED files, without changing how a blob
+//! is serialized, bumps [`crate::extract::EXTRACT_EPOCH`] instead: the scan re-extracts only the files
+//! whose entry or blob predates it, with no cache wipe.
 
 /// Persisted-schema version. Synced to the release minor: `0.X.y` → `X` (and
 /// `M.X.y` → `M * 100 + X` once `1.0` ships).

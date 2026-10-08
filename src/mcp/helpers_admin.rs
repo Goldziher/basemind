@@ -7,12 +7,12 @@
 //!
 //! ## GC is a non-destructive report while the blob store is machine-global
 //!
-//! The blob store is a single machine-global directory shared by every workspace, so neither the
-//! MCP `cache_gc` tool (this file) nor the offline CLI `cache gc`
-//! ([`crate::store_gc::run_gc`]) can safely mark-and-sweep: a single session enumerates only ONE
-//! workspace's references and would reap blobs other workspaces still need. Both paths therefore
-//! return a non-destructive report ([`crate::store_gc::gc_report_only`], `removed == 0`).
-//! Reference-counted GC that spans every workspace is the daemon's job (Track E).
+//! The blob store is a single machine-global directory shared by every workspace, so the MCP
+//! `cache_gc` tool (this file) cannot mark-and-sweep from inside a session: it would race that
+//! session's own rescans. It returns a non-destructive report ([`crate::store_gc::gc_report_only`],
+//! `removed == 0`). The cross-workspace reference-counted sweep is the daemon's maintenance task
+//! and the offline CLI `cache gc` ([`crate::store_gc::run_gc`]), both via
+//! [`crate::store_gc::gc_global_blobs`].
 
 use std::collections::BTreeMap;
 use std::sync::Arc;

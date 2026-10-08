@@ -260,7 +260,7 @@ fn is_current_filemap_blob(path: &Path) -> bool {
     let Ok(l1) = parse_filemap_l1(path, &bytes) else {
         return false;
     };
-    if l1.schema_ver != SCHEMA_VER {
+    if l1.schema_ver != SCHEMA_VER || l1.extract_epoch < crate::extract::EXTRACT_EPOCH {
         return false;
     }
     match parse_filemap_l2(path, &bytes) {

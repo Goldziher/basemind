@@ -35,8 +35,8 @@ impl BasemindServer {
         basemind's resource footprint: on-disk bytes per component (blobs / views / lance / \
         git-cache / telemetry / git-history), the `du`-accurate `total_bytes`, blob and orphan \
         counts, and the serving process's current + peak RSS. `gc` reports how much of the blob \
-        store is orphaned and reclaimable — non-destructive, `removed` is always 0 while the blob \
-        store is machine-global. `cache_clear` deletes one cache component (`component`: \
+        store is orphaned and reclaimable — non-destructive in-session, `removed` is always 0 \
+        here; `basemind cache gc` and the daemon do the cross-workspace sweep. `cache_clear` deletes one cache component (`component`: \
         blobs|views|lance|git-cache|telemetry|all, or views:<name>); `blobs` needs `confirm=true`, \
         and `views`/`all` are refused in-process because they back the live index — stop the server \
         and run `basemind cache clear` instead. `telemetry` aggregates recorded calls into a usage \

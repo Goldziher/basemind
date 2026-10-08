@@ -370,7 +370,7 @@ async fn concurrent_rescan_and_blob_gc_never_reaps_a_referenced_blob() {
         "the scanned workspace must reference at least one blob"
     );
     let blobs_dir = crate::store::global_blobs_dir();
-    for stem in &referenced {
+    for stem in referenced.stems() {
         let prefix = format!("{stem}.");
         let present = std::fs::read_dir(&blobs_dir)
             .expect("read blobs dir")

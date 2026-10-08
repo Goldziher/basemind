@@ -158,6 +158,7 @@ fn cache_with_rationale(
             imports: Vec::new(),
             implementations: Vec::new(),
             rationale: rationale.clone(),
+            extract_epoch: crate::extract::EXTRACT_EPOCH,
         };
         synthetic.push((RelPath::from(*path), l1));
     }

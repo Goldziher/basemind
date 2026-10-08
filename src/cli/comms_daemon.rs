@@ -45,6 +45,10 @@ const DAEMON_ASYNC_WORKERS: usize = 4;
 /// Ceiling on the daemon runtime's `spawn_blocking` pool.
 const DAEMON_MAX_BLOCKING_THREADS: usize = 16;
 
+/// How long the displaced-artifacts cleanup waits after the pass that raised it, so a burst of
+/// migrating passes shares one sweep.
+const CLEANUP_DEBOUNCE: std::time::Duration = std::time::Duration::from_secs(60);
+
 /// Delay before the first blob GC after daemon start.
 const STARTUP_GC_DELAY: std::time::Duration = std::time::Duration::from_secs(10 * 60);
 
@@ -251,6 +255,21 @@ pub fn run() -> Result<()> {
             loop {
                 tick.tick().await;
                 run_gc_cycle(&broker_for_gc).await;
+            }
+        });
+
+        // Prompt cleanup after a pass that moved paths across tiers or re-extracted pre-epoch blobs:
+        // the orphans it left are known to exist, so waiting for the hourly tick (or the 10 minute
+        // startup delay) would only keep them on disk. Debounced so a burst of passes (many
+        // workspaces rescanning on the first start of a new version) shares one sweep; the sweep
+        // itself is the same lock-bounded, grace-protected one the maintenance tick runs.
+        let broker_for_cleanup = broker.clone();
+        let cleanup_signal = broker.cleanup_signal();
+        tokio::spawn(async move {
+            loop {
+                cleanup_signal.notified().await;
+                tokio::time::sleep(CLEANUP_DEBOUNCE).await;
+                run_gc_cycle(&broker_for_cleanup).await;
             }
         });
 

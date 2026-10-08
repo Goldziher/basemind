@@ -41,7 +41,8 @@ pub enum AdminCmd {
     },
     /// On-disk size, blob accounting, and process RAM for the machine-global cache.
     CacheStats,
-    /// Report blobs no live view references (non-destructive while the store is machine-global).
+    /// Reap blobs no workspace on this machine references (cross-workspace reference-counted; blobs younger than
+    /// 6 h are kept — override with `BASEMIND_BLOB_GC_GRACE_SECS`).
     Gc,
     /// Delete a cache component. `views`/`all` are refused here — use `basemind cache clear`.
     CacheClear {

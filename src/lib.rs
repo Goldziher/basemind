@@ -59,6 +59,7 @@ mod store_blob_codec;
 pub mod store_cache_admin;
 pub mod store_gc;
 pub mod store_gc_budget;
+pub(crate) mod store_gc_live;
 pub mod store_gc_workspace;
 pub mod store_layout;
 mod store_lock;

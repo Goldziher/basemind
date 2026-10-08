@@ -33,6 +33,7 @@ fn synthetic_l1(names: &[&str]) -> FileMapL1 {
         imports: Vec::new(),
         implementations: Vec::new(),
         rationale: Vec::new(),
+        extract_epoch: basemind::extract::EXTRACT_EPOCH,
     }
 }
 

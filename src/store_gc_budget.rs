@@ -469,6 +469,7 @@ mod tests {
                 language: "rust".to_string(),
                 size_bytes: 2,
                 mtime: 0,
+                extract_epoch: crate::extract::EXTRACT_EPOCH,
             },
         );
         fs::write(
