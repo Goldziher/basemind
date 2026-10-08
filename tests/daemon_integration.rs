@@ -60,7 +60,8 @@ impl Daemon {
             comms_dir: comms_dir.to_path_buf(),
             socket,
         };
-        let deadline = Instant::now() + Duration::from_secs(10);
+        // A cold daemon opens its fjall store (many F_FULLFSYNC calls) before it accepts, which stalls for tens of seconds when the disk is contended, so wait generously.
+        let deadline = Instant::now() + Duration::from_secs(180);
         while Instant::now() < deadline {
             if probe_alive(&daemon.socket) {
                 return daemon;
@@ -595,7 +596,8 @@ fn comms_stop_terminates_the_daemon_without_an_external_kill() {
         .spawn()
         .expect("spawn comms daemon");
 
-    let ready_by = Instant::now() + Duration::from_secs(10);
+    // A cold daemon opens its fjall store (many F_FULLFSYNC calls) before it accepts, which stalls for tens of seconds when the disk is contended, so wait generously.
+    let ready_by = Instant::now() + Duration::from_secs(180);
     while Instant::now() < ready_by && !probe_alive(&socket) {
         std::thread::sleep(Duration::from_millis(50));
     }
@@ -670,7 +672,8 @@ async fn sigterm_mid_scan_exits_within_grace_and_index_reopens_cleanly() {
         .stderr(std::process::Stdio::null())
         .spawn()
         .expect("spawn comms daemon");
-    let ready_by = Instant::now() + Duration::from_secs(10);
+    // A cold daemon opens its fjall store (many F_FULLFSYNC calls) before it accepts, which stalls for tens of seconds when the disk is contended, so wait generously.
+    let ready_by = Instant::now() + Duration::from_secs(180);
     while Instant::now() < ready_by && !probe_alive(&socket) {
         std::thread::sleep(Duration::from_millis(50));
     }
@@ -837,7 +840,8 @@ async fn should_converge_on_one_live_daemon_when_two_processes_race_a_cold_bind(
     let mut child_a = spawn_one();
     let mut child_b = spawn_one();
 
-    let deadline = Instant::now() + Duration::from_secs(20);
+    // A cold daemon opens its fjall store (many F_FULLFSYNC calls) before it accepts, which stalls for tens of seconds when the disk is contended, so wait generously.
+    let deadline = Instant::now() + Duration::from_secs(180);
     let mut alive = false;
     while Instant::now() < deadline {
         if probe_alive(&socket) {
@@ -991,7 +995,8 @@ async fn should_self_terminate_when_its_socket_is_reclaimed_by_another_daemon() 
         .spawn()
         .expect("spawn daemon A");
 
-    let deadline = Instant::now() + Duration::from_secs(10);
+    // A cold daemon opens its fjall store (many F_FULLFSYNC calls) before it accepts, which stalls for tens of seconds when the disk is contended, so wait generously.
+    let deadline = Instant::now() + Duration::from_secs(180);
     while Instant::now() < deadline && !probe_alive(&socket) {
         std::thread::sleep(Duration::from_millis(50));
     }
@@ -1009,7 +1014,8 @@ async fn should_self_terminate_when_its_socket_is_reclaimed_by_another_daemon() 
         .spawn()
         .expect("spawn daemon B");
 
-    let deadline = Instant::now() + Duration::from_secs(10);
+    // A cold daemon opens its fjall store (many F_FULLFSYNC calls) before it accepts, which stalls for tens of seconds when the disk is contended, so wait generously.
+    let deadline = Instant::now() + Duration::from_secs(180);
     while Instant::now() < deadline && !probe_alive(&socket) {
         std::thread::sleep(Duration::from_millis(50));
     }

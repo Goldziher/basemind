@@ -583,7 +583,8 @@ fn ensure_real_daemon() {
         .stderr(std::process::Stdio::null())
         .spawn()
         .expect("spawn comms daemon");
-    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    // A cold daemon opens its fjall store (many F_FULLFSYNC calls) before it accepts, which stalls for tens of seconds when the disk is contended, so wait generously.
+    let deadline = std::time::Instant::now() + Duration::from_secs(180);
     while std::time::Instant::now() < deadline {
         if basemind::comms::singleton::probe_alive(&paths.socket_path) {
             return;
