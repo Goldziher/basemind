@@ -320,8 +320,9 @@ impl Repo {
         }
         local
             .merge_base(and, desc)
-            .map(|base| base.detach() == and)
-            .unwrap_or(false)
+            .ok()
+            .flatten()
+            .is_some_and(|base| base.detach() == and)
     }
 
     /// True when the object named by `sha` exists in the repository.
