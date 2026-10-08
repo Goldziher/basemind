@@ -402,6 +402,11 @@ impl BasemindServer {
                     .expect("notification cache capacity is non-zero"),
             )),
             #[cfg(all(feature = "comms", any(unix, windows)))]
+            waited_messages: tokio::sync::Mutex::new(lru::LruCache::new(
+                std::num::NonZeroUsize::new(state::DELIVERED_NOTIFICATION_CAP)
+                    .expect("notification cache capacity is non-zero"),
+            )),
+            #[cfg(all(feature = "comms", any(unix, windows)))]
             delivery_probe: tokio::sync::Mutex::new(state::DeliveryProbe::default()),
             log_level: std::sync::atomic::AtomicU8::new(notifications::DEFAULT_LOG_ORDINAL),
             lean: std::sync::atomic::AtomicBool::new(lean::lean_mode_enabled()),

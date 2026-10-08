@@ -15,6 +15,7 @@ use tokio::net::UnixStream as PlatformStream;
 use tokio::net::windows::named_pipe::NamedPipeClient as PlatformStream;
 use tokio_util::bytes::{Bytes, BytesMut};
 use tokio_util::codec::{Decoder, Encoder, LengthDelimitedCodec};
+use tokio_util::sync::CancellationToken;
 
 use super::cursor::Cursor;
 use super::ids::{AgentId, ThreadId};
@@ -144,6 +145,9 @@ pub enum CommsClientError {
         /// The elapsed bound, in seconds.
         secs: u64,
     },
+    /// The caller cancelled a long-poll; the client should be dropped, not reused.
+    #[error("wait cancelled")]
+    Cancelled,
     /// The daemon's protocol version differs from this build's.
     #[error("protocol skew: daemon speaks {daemon}, client speaks {client}")]
     ProtoSkew {
@@ -643,16 +647,56 @@ impl CommsClient {
         limit: u32,
         timeout: std::time::Duration,
     ) -> Result<(bool, Vec<SeqMeta>, u32, Option<Cursor>), CommsClientError> {
-        let sub = self.subscribe_inbox(thread).await?;
+        self.wait_inbox_unseen(
+            remote,
+            cwd,
+            thread,
+            since_micros,
+            cursor,
+            limit,
+            timeout,
+            &CancellationToken::new(),
+            |_| false,
+        )
+        .await
+    }
+
+    /// [`CommsClient::wait_inbox`] that skips rows the caller already `is_seen` and stops promptly
+    /// when `cancel` fires.
+    ///
+    /// `is_seen` is what keeps a poll loop that never acks from spinning: an unread-but-already-
+    /// reported backlog no longer satisfies the immediate read, so the call blocks for something
+    /// genuinely new. On cancellation the sink is NOT unsubscribed over the wire (the caller is gone;
+    /// the request would only queue behind a dead consumer): the caller drops this client, and the
+    /// broker reaps the subscription when the link closes. Returns [`CommsClientError::Cancelled`].
+    #[allow(clippy::too_many_arguments)]
+    pub async fn wait_inbox_unseen(
+        &mut self,
+        remote: Option<String>,
+        cwd: Option<PathBuf>,
+        thread: Option<ThreadId>,
+        since_micros: Option<i64>,
+        cursor: Option<Cursor>,
+        limit: u32,
+        timeout: std::time::Duration,
+        cancel: &CancellationToken,
+        is_seen: impl Fn(&SeqMeta) -> bool,
+    ) -> Result<(bool, Vec<SeqMeta>, u32, Option<Cursor>), CommsClientError> {
+        let sub = tokio::select! {
+            () = cancel.cancelled() => return Err(CommsClientError::Cancelled),
+            sub = self.subscribe_inbox(thread) => sub?,
+        };
         let outcome = self
-            .wait_inbox_after_subscribe(remote, cwd, since_micros, cursor, limit, timeout)
+            .wait_inbox_after_subscribe(remote, cwd, since_micros, cursor, limit, timeout, cancel, is_seen)
             .await;
-        let _ = self.unsubscribe(sub).await;
+        if !matches!(outcome, Err(CommsClientError::Cancelled)) {
+            let _ = self.unsubscribe(sub).await;
+        }
         outcome
     }
 
-    /// The body of [`CommsClient::wait_inbox`] once the sink is live: immediate check, then block.
-    /// Split out so the caller can wrap it in a single unsubscribe-on-every-exit point.
+    /// The body of [`CommsClient::wait_inbox_unseen`] once the sink is live: check, then block, and
+    /// re-check on every wake until something unseen shows up or `timeout` elapses.
     #[allow(clippy::too_many_arguments)]
     async fn wait_inbox_after_subscribe(
         &mut self,
@@ -662,26 +706,37 @@ impl CommsClient {
         cursor: Option<Cursor>,
         limit: u32,
         timeout: std::time::Duration,
+        cancel: &CancellationToken,
+        is_seen: impl Fn(&SeqMeta) -> bool,
     ) -> Result<(bool, Vec<SeqMeta>, u32, Option<Cursor>), CommsClientError> {
-        let (rows, unread, next) = self
-            .read_inbox(remote.clone(), cwd.clone(), cursor.clone(), limit, false, since_micros)
-            .await?;
-        if !rows.is_empty() {
-            return Ok((false, rows, unread, next));
-        }
-
-        match tokio::time::timeout(timeout, self.poll_notification()).await {
-            Ok(Ok(Some(CommsNotification::Message(_)))) => {
-                let (rows, unread, next) = self.read_inbox(remote, cwd, cursor, limit, false, since_micros).await?;
-                Ok((false, rows, unread, next))
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            let (rows, unread, next) = tokio::select! {
+                () = cancel.cancelled() => return Err(CommsClientError::Cancelled),
+                read = self.read_inbox(remote.clone(), cwd.clone(), cursor.clone(), limit, false, since_micros) => read?,
+            };
+            let fresh: Vec<SeqMeta> = rows.into_iter().filter(|row| !is_seen(row)).collect();
+            if !fresh.is_empty() {
+                return Ok((false, fresh, unread, next));
             }
-            // Discovery metadata is consumed directly through `subscribe_inbox` plus
-            // `poll_notification`. Keep the legacy message-only wait shape exhaustive without
-            // misreporting a live wake as a timeout.
-            Ok(Ok(Some(CommsNotification::ThreadDiscovered(_)))) => Ok((false, Vec::new(), unread, None)),
-            Ok(Ok(Some(CommsNotification::Shutdown))) | Ok(Ok(None)) => Ok((true, Vec::new(), 0, None)),
-            Ok(Err(err)) => Err(err),
-            Err(_elapsed) => Ok((true, Vec::new(), unread, None)),
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                return Ok((true, Vec::new(), unread, None));
+            }
+            let note = tokio::select! {
+                () = cancel.cancelled() => return Err(CommsClientError::Cancelled),
+                note = tokio::time::timeout(remaining, self.poll_notification()) => note,
+            };
+            match note {
+                Ok(Ok(Some(CommsNotification::Message(_)))) => continue,
+                // Discovery metadata is consumed directly through `subscribe_inbox` plus
+                // `poll_notification`. Keep the legacy message-only wait shape exhaustive without
+                // misreporting a live wake as a timeout.
+                Ok(Ok(Some(CommsNotification::ThreadDiscovered(_)))) => return Ok((false, Vec::new(), unread, None)),
+                Ok(Ok(Some(CommsNotification::Shutdown))) | Ok(Ok(None)) => return Ok((true, Vec::new(), 0, None)),
+                Ok(Err(err)) => return Err(err),
+                Err(_elapsed) => return Ok((true, Vec::new(), unread, None)),
+            }
         }
     }
 

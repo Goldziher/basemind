@@ -61,6 +61,10 @@ pub(crate) struct ServerState {
     /// Bounded per-session high-water cache for mailbox notices piggybacked onto tool responses.
     #[cfg(all(feature = "comms", any(unix, windows)))]
     pub(crate) delivered_notifications: tokio::sync::Mutex<lru::LruCache<String, ()>>,
+    /// Messages already returned by a `wait`, so a poll loop that never acks is not answered instantly
+    /// with its own backlog on every call.
+    #[cfg(all(feature = "comms", any(unix, windows)))]
+    pub(crate) waited_messages: tokio::sync::Mutex<lru::LruCache<String, ()>>,
     /// Dedicated, rate-limited connection for the per-tool-call delivery-notice probe, so a slow or
     /// abandoned probe can never desynchronise or head-of-line-block the shared `comms_clients`.
     #[cfg(all(feature = "comms", any(unix, windows)))]
@@ -102,6 +106,11 @@ impl ServerState {
             )),
             #[cfg(all(feature = "comms", any(unix, windows)))]
             delivered_notifications: tokio::sync::Mutex::new(lru::LruCache::new(
+                std::num::NonZeroUsize::new(DELIVERED_NOTIFICATION_CAP)
+                    .expect("notification cache capacity is non-zero"),
+            )),
+            #[cfg(all(feature = "comms", any(unix, windows)))]
+            waited_messages: tokio::sync::Mutex::new(lru::LruCache::new(
                 std::num::NonZeroUsize::new(DELIVERED_NOTIFICATION_CAP)
                     .expect("notification cache capacity is non-zero"),
             )),
