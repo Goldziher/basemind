@@ -1,0 +1,78 @@
+---
+title: Upgrading
+description: What happens to an existing index when you upgrade basemind, what is cleaned up automatically, and how to downgrade.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+An upgrade never asks you to wipe the cache. basemind keeps its index in a machine-global cache
+(`BASEMIND_DATA_HOME`, default `~/.local/share/basemind`): per-workspace views, LanceDB tables and git
+history under `cache/workspaces/<key>/`, and one content-addressed blob store under `cache/blobs/`
+shared by every workspace. The next scan migrates what changed and cleans up what it displaced.
+
+## What changes on upgrade
+
+| Change | How it migrates | Cost |
+|---|---|---|
+| Prose, data and config files (Markdown, JSON, YAML, TOML, XML, CSV, INI, ...) left the code map for the document tier | The next scan, full or incremental, notices a path indexed in the other tier, purges its code-map rows and indexes it as a document | Documents are chunked, and embedded when `[documents] embed` is on |
+| Symbol `signature` now ends at the grammar's body field instead of embedding the body | Only files whose entry or blob predates the new extractor epoch are re-extracted, in the normal memory-bounded scan | One parse per affected file, no wipe |
+| Release-minor schema bump (for example `0.27.x` to `0.28.x`) | Each view's index is reset on open and every file is re-extracted, overwriting stale blobs in place | Full re-extraction, by design |
+| Resident term index, name dictionaries, macOS heap retag | In memory only | None |
+| Daemon `IndexRead` forwarding for `references`, `callers`, `implementations` | Wire protocol only | None |
+| Grep bloom filters | Built on the next scan; until then `code grep` runs the full sweep | Small, at scan time |
+
+Patch releases keep the persisted format. A change that alters what an unchanged file's blob should
+contain, without changing how it is serialized, bumps an internal extractor epoch instead of the
+release minor. Every file entry and blob records the epoch it was produced under, so only stale
+files are re-extracted, and the scan summary reports them as `refreshed` (and `tier_migrated` for
+tier moves).
+
+<Aside type="note">
+A minor release bumps the persisted schema and the first `basemind scan` after upgrading rebuilds the
+cache from source. No manual step is needed. See [Schema versioning](/reference/configuration/#schema-versioning).
+</Aside>
+
+## Automatic cleanup
+
+Content-addressed blobs are shared and never rewritten on their own, so a migration can orphan some
+of them. For example, the old `.fm`, `.chunk` and `.rref` blobs of a Markdown file that became a
+document kept the same content hash as its live document blob and were pinned forever.
+
+- The sweep is tier-aware: a document blob is live only if some workspace's document table references
+  the hash; code-lane blobs are live only if a code-map file entry does.
+- It reference-counts against every workspace on the machine, keeps blobs younger than six hours (a
+  concurrent scan may be about to reference them), and takes a machine-wide `cache/gc.lock` so two
+  sweeps never run at once. `BASEMIND_BLOB_GC_GRACE_SECS` overrides the six hours; `0` reclaims every
+  unreferenced blob immediately.
+- A scan that migrated a path, refreshed an extraction, or reset a view for a schema bump runs the
+  sweep itself and prints `cleanup: reclaimed N orphaned blob(s), B bytes`. In the daemon the same
+  condition triggers a sweep a minute later, and the daemon also sweeps hourly.
+- `basemind cache gc` now performs the same sweep. It used to be report-only.
+- `cache stats` shows the result as `last_gc`, and its `orphan_blob_count` is tier-aware and drops
+  to `0` after the sweep.
+
+A second scan after the upgrade is a no-op: nothing is migrated, refreshed or reclaimed.
+
+<Aside type="caution">
+The `admin` tool's `gc` mode (`basemind admin gc`, MCP `admin` mode `gc`) is still report-only. A
+session cannot sweep from inside itself without racing its own rescans. Use `basemind cache gc` to
+reclaim space.
+</Aside>
+
+## Clearing and downgrading
+
+`basemind cache clear --component blobs|views|lance|git-cache|telemetry|all` covers every on-disk
+component a migration touches. The term index and name dictionaries are memory only. The sweep lock
+is an empty file removed with the cache root, and `git-history.fjall` is removed only by `all`
+because the daemon holds it open.
+
+Opening upgraded data with an older binary fails safe. The index extras are ignored; a binary on the
+same schema minor re-maps the files it still treats as code (and drops their document entries), and
+one on a different minor resets the view and re-extracts, as for any schema change. Going back and
+forth costs re-extraction, never correctness, and the next sweep reclaims what is left.
+
+## Plugin binaries
+
+The plugin launcher keeps one `~/.cache/basemind/bin/<version>/` per release, reaps processes of
+other versions and removes older version directories on every launch of the current one. That cache
+is a few tens of MB per version and is not touched by the migration above.

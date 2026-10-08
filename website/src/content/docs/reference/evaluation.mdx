@@ -1,0 +1,155 @@
+---
+title: Evaluation
+description: Measure basemind's retrieval quality, latency and token savings against gold from your own repository with basemind admin eval.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+`basemind admin eval` scores basemind's lookups against gold generated from the repository itself
+and checks whether the token savings the dashboard claims hold up. It is repo-agnostic: the gold
+generators only need a git checkout. The harness runs each task through the same in-process tool code
+the MCP server uses, so the latency it reports excludes transport and process start-up and is a lower
+bound of what an MCP client sees.
+
+It is a CLI command only; there is no MCP mode for it. The generators and a workflow README live in
+`benchmarks/eval/` in the basemind repository.
+
+## Workflow
+
+```bash
+cd /path/to/repo && basemind scan                 # the index must exist and match HEAD
+E=/path/to/basemind/benchmarks/eval
+
+python3 $E/gen_symbols.py    --repo . --seed 1 --n 60 --out symbols.jsonl
+python3 $E/gen_outline.py    --repo . --seed 1 --n 40 --out outline.jsonl
+python3 $E/gen_references.py --repo . --seed 1 --n 60 --mode both --out references.jsonl
+python3 $E/gen_dependents.py --repo . --seed 1 --n 40 --out dependents.jsonl
+python3 $E/gen_grep.py       --repo . --seed 1 --n 60 --language python --ext py --out grep.jsonl
+python3 $E/gen_find.py       --repo . --seed 1 --n 60 --out find.jsonl
+python3 $E/gen_git_search.py --repo . --seed 1 --n 40 --out git_search.jsonl
+python3 $E/gen_docs.py       --repo . --seed 1 --n 30 --out docs.jsonl   # needs the documents feature
+
+cat *.jsonl > tasks.jsonl
+basemind admin eval --tasks tasks.jsonl --warmup \
+  --out results.ndjson --report report.json --markdown report.md
+```
+
+For honest numbers:
+
+- **Use a clean checkout with the index at HEAD.** Gold is read from the HEAD tree, never the working
+  tree, so output is reproducible for a fixed HEAD and `--seed`. basemind queries the working tree, so
+  uncommitted edits show up as misses. Rescan after moving HEAD.
+- **Mirror your scan config.** Pass the same ignore globs to `--exclude` that your `basemind.toml`
+  excludes from the scan. Gold for files basemind never indexed would be unreachable, not a miss.
+- **Use the same tokenizer on both sides.** With the `tokenizer` feature (part of `documents`) tokens
+  are real o200k counts; without it they are bytes / 4. The report records which, and `--baseline`
+  refuses to compare across the two.
+
+The AST-based generators (`symbols`, `outline`, `references`, `dependents`) emit Python gold only. The
+harness and the other generators are language-agnostic. `docs` and semantic lookups need the
+`documents` build.
+
+## Task file
+
+One JSON object per line; blank lines and `#` lines are skipped and ids must be unique.
+
+```json
+{"id":"symbols-0003","mode":"symbols","args":{"name":"Widget","limit":200},
+ "gold":["pkg/widget.py:1"],"scoring":"set","k":10,"line_slack":0,
+ "baseline":{"grep":"git grep -n ...","read":["pkg/widget.py"]}}
+```
+
+| Field | Meaning |
+|---|---|
+| `mode` | `symbols`, `outline`, `references`, `callers`, `grep`, `find`, `dependents`, `git_search` or `docs`. |
+| `args` | The tool's arguments without `mode` (`name`, `pattern`, `path`, `query`, `module`, `language`, `limit`, ...). |
+| `gold` | Expected items: `path` or `path:line`. Gold with any `path:line` entry is scored at line level. |
+| `scoring` | `set` (order-insensitive) or `ranked`. |
+| `k` | Rank cut-off for ranked tasks (default 10). |
+| `line_slack` | Tolerated off-by-n lines. |
+| `baseline` | Optional: what an agent would do without basemind. `grep` is a shell command or list, run with `sh -c` in the workspace root (exit 0 or 1 are fine); `read` lists files read whole. |
+
+A returned item is `path:line` (1-based) for `symbols`, `outline`, `references`, `callers` and `grep`,
+a `path` for `find`, `dependents` and `docs`, and a commit sha for `git_search`. Unknown fields are
+ignored.
+
+## Flags
+
+| Flag | Default | Effect |
+|---|---|---|
+| `--tasks <FILE>` | required | The JSONL task file. |
+| `--out <FILE>` | stdout | Per-task NDJSON results. |
+| `--report <FILE>` | none | Aggregate per-mode report as JSON. |
+| `--markdown <FILE>` | none | Aggregate report as markdown. |
+| `--baseline <REPORT_JSON>` | none | Compare against an earlier `--report`; exit non-zero on regression. |
+| `--tolerance` | `0.02` | Allowed absolute drop in F1, recall, hit@n, MRR or nDCG before it counts as a regression. |
+| `--cost-tolerance` | `0.25` | Allowed relative rise in p95 latency and mean response tokens. |
+| `--min-recall` | `0.8` | Recall a task must reach before its token savings are credited. |
+| `--warmup` | off | Run every task once untimed first so the measured run sees a warm server. |
+| `--mode <MODE>` | all | Run only tasks of these modes (repeatable). |
+
+## What is reported
+
+Each NDJSON row carries `elapsed_us` (the in-process call), `tokens` (the response text as an agent
+receives it) and the score.
+
+- **Set tasks:** precision, recall and F1 over de-duplicated items (by path, or by path and line when
+  the gold has lines, so ten hits in one file do not count ten times against a path-level gold).
+- **Ranked tasks** add: the answer cut to `k`, hit@1, hit@5, hit@k, MRR and nDCG@k with binary
+  relevance.
+- **Errors:** a tool error is a failed task, scored as an empty answer and listed on stderr.
+
+The aggregate per mode gives task and error counts, p50 and p95 latency (nearest-rank), mean P/R/F1,
+hit@1, hit@5, MRR and nDCG (means over ranked tasks only), mean response tokens and the savings block.
+
+## Measuring token savings
+
+For a task with a `baseline`, the harness runs it in the workspace root, counts the output of the
+commands plus the whole files in `read` with the same tokenizer, and records
+`baseline_tokens / basemind_tokens`. **Savings count only when the answer was correct:** recall must
+reach `--min-recall` and the gold must be non-empty, otherwise the task is listed as withheld. A cheap
+wrong answer is not a saving.
+
+Per mode the report gives the credited distribution (median and p90 of the ratio and of tokens saved)
+and compares the median ratio with the fixed multiplier the dashboard assumes for the same response
+in `src/mcp/savings.rs`. A mode whose measured median deviates by more than 25 % is flagged
+`DEVIATES`. The harness only reports; it never changes `savings.rs`.
+
+The ratio depends on how heavy the baseline is. The generated baselines model a reasonable agent (a
+targeted `git grep` plus up to three whole-file reads); edit them in the task file to model a
+different one. Ratios below 1 are real: for a single narrow hit, `grep` is cheaper than a structured
+response.
+
+## Regression gate
+
+```bash
+basemind admin eval --tasks tasks.jsonl --report new.json \
+  --baseline committed-report.json --tolerance 0.02 --cost-tolerance 0.25
+```
+
+It prints `REGRESSION` lines and exits non-zero when, for any mode, mean F1, recall, hit@1, hit@5, MRR
+or nDCG drops by more than `--tolerance` (absolute), p95 latency or mean response tokens rise by more
+than `--cost-tolerance` (relative; latency also by over 1 ms), errors increase, or a mode disappears.
+Run both reports from the same task file.
+
+## Example run
+
+One run against a 74k-file monorepo (o200k tokens, `--warmup`, 60 tasks per mode). The `grep` row is
+left out here; its measurement with the bloom prefilter is on the [Performance](/reference/performance/#code-grep) page.
+
+| Mode | p50 | p95 | Precision | Recall | Mean response tokens |
+|---|---|---|---|---|---|
+| `outline` | 1.0 ms | 2.2 ms | 1.00 | 1.00 | 1048 |
+| `references` | 1.4 ms | 6.0 ms | 0.81 | 1.00 | 185 |
+| `symbols` | 3.7 ms | 5.3 ms | 0.97 | 1.00 | 148 |
+| `dependents` | 4.0 ms | 5.6 ms | 0.84 | 1.00 | 130 |
+| `callers` | 4.6 ms | 10.4 ms | 0.87 | 1.00 | 177 |
+| `find` | 6.6 ms | 9.0 ms | 0.29 | 0.75 | 204 |
+| `git_search` | 55 ms | 96 ms | 1.00 | 0.91 | 6324 |
+| `docs` | 106 ms | 260 ms | 0.18 | 0.63 | 2575 |
+
+The measured median savings ratios in that run were far from uniform: 21.6x for `symbols` (the dashboard
+assumes 3x), 1.2x for `references`, and below 1x for `outline` (0.68), `callers` (0.75), `dependents`
+(0.64), `docs` (0.15), `git_search` (0.16) and `find` (0.12). Every mode was flagged `DEVIATES` against its
+`savings.rs` multiplier. The ratio depends on the baseline, so use your own task baselines before quoting
+a savings number for your repository.

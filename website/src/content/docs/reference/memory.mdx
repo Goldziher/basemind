@@ -1,0 +1,123 @@
+---
+title: Memory and resources
+description: How basemind bounds its memory and CPU use, and which knobs and environment variables control it.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+basemind runs as one machine-global daemon that serves every workspace, so its memory is bounded
+in layers rather than left to scale with repository size. This page explains the layers and
+where each knob lives. Exact keys and defaults are in [Configuration](/reference/configuration/).
+
+## Bounds at a glance
+
+| Layer | What it bounds | Controlled by |
+|---|---|---|
+| Scanner pool | Threads parsing code | `[resources] scan_threads` |
+| Embedder | Threads and batch size of the ONNX embedding pool | `embed_threads`, `embed_batch_size` |
+| Document tier | Documents extracted at once, and total footprint | `max_concurrent_documents`, `max_footprint_mb`, `[documents] max_file_bytes` |
+| Model families | Which models run on documents | `document_models` |
+| ONNX provider | Which runtime backend the models use | `onnx_provider` (default `cpu`) |
+| Read stack | Decoded outlines held per workspace | `max_map_cache_mb` |
+| Daemon pool | How many workspaces keep a read stack warm | `BASEMIND_WARM_READ_STACKS` |
+| Stack-graph resolution | Memory per file in Python/Java name binding | fixed internal caps |
+| On-disk cache | Total size of the machine-global cache | `BASEMIND_CACHE_BUDGET_MB` |
+
+## The footprint ceiling
+
+`max_footprint_mb` is a best-effort ceiling on the process footprint. It defaults to auto, not off:
+75 % of an enforced cgroup limit, otherwise 50 % of machine RAM, never below 512 MiB. Set an
+integer for an explicit ceiling or `"off"` to disable it. The daemon additionally caps the value
+at `BASEMIND_DAEMON_MAX_FOOTPRINT_MB` (default 3072).
+
+Workers check the footprint at the document-extraction and code-chunk embedding points and wait
+while the process is over the ceiling. Over the ceiling, documents are extracted one at a time; an
+idle process is always admitted immediately. A document whose own estimated working set exceeds the
+ceiling is skipped, counted as too large in the scan summary, and logged with the estimate and the
+limit. The size is estimated from the file header, so a 30,000 x 30,000 pixel image is priced by its
+dimensions, not its byte size.
+
+<Aside type="note">
+The ceiling shapes peak memory; it is not a hard limit. After a capped wait, work is admitted anyway
+so a scan always makes progress.
+</Aside>
+
+## Why the ONNX provider defaults to CPU
+
+ONNX Runtime's platform default on macOS is CoreML, which compiles a new graph for each input shape.
+Embedding a single 2 KB SVG measured 7.6 GB resident under CoreML against 0.8 GB on the CPU
+provider, which was also about three times faster end to end on that machine. A scan of a repository
+with images and office documents grew to 33 GB. `onnx_provider = "cpu"` is therefore the default for
+the embedder, reranker, layout detection and NER. Set `"auto"` to restore the platform default, or
+pin `"coreml"`, `"cuda"` or `"tensorrt"`.
+
+Every process also runs ONNX Runtime with no memory-pattern planning and no retained CPU arena, so
+memory does not stay sized to the largest batch ever seen, and the daemon drops resident embedding
+engines when the last concurrent embedding pass ends.
+
+On macOS the allocator heap used to appear as gigabytes of "GPU" memory (`IOAccelerator`) in
+`footprint`, `vmmap` and Activity Monitor because mimalloc's default Mach VM tag is the
+IOAccelerator one. basemind retags the heap at startup, so it now reads as ordinary application
+memory.
+
+## Fewer, cheaper reads on the query side
+
+The daemon is the only process that opens the index. A session answers from:
+
+- an LRU cache of decoded outlines, capped at `max_map_cache_mb` per workspace (default 256 MiB);
+  a miss costs one blob read and never changes an answer;
+- a resident term index of symbol names and import strings behind `symbols` and `dependents`,
+  built in the background when a full cache is published;
+- small resident dictionaries of the distinct callee and trait names behind `references`,
+  `callers` and `implementations` (a few MB at monorepo scale), so a substring query range-scans
+  only the matching names instead of walking every call site.
+
+`references`, `callers` and `implementations` from a daemon-backed session are forwarded to the
+daemon, which runs the same scan as a writer session. The session holds no call-graph copy and the
+results and totals are complete. Only when no daemon is reachable does a session build an in-RAM
+projection, charged against `max_map_cache_mb` and flagged with a `projections_capped` notice if it
+is truncated.
+
+The daemon keeps at most three workspaces' read stacks warm at once (`BASEMIND_WARM_READ_STACKS`,
+default 3) and drops an idle one after about ten minutes. Dropping a stack changes latency, not
+answers; the next connection rebuilds it from the on-disk blobs.
+
+## Stack-graph resolution caps
+
+Python and Java name binding runs on stack graphs. Each file is abandoned past 600,000 steps,
+50,000 partial paths or 3 seconds, and at most two builds run at once. A wall-clock budget alone
+let parallel workers stitching 100-200 KB files take a large-monorepo scan from about 2 GB to
+9-13 GB. An abandoned file degrades to tree-sitter locals binding.
+
+## Daemon ceilings
+
+Inside the shared daemon, `[resources]`, `[scan]`, `[documents]` and `[crawl]` limits are ceilings:
+the effective value is the smaller of the repository's setting and the daemon's cap, and
+`0` / `"auto"` / `"off"` resolve to the cap. A repository cannot raise its own cap; the operator does
+that through `BASEMIND_DAEMON_MAX_*` in the daemon's environment. The full table is in
+[Configuration](/reference/configuration/#daemon). The daemon also caps its runtime and pool threads,
+bounds Fjall worker threads and journal size, and runs git-history sync on a dedicated two-thread pool.
+
+## Operator variables
+
+Machine-global daemon knobs read from the environment rather than from `basemind.toml`:
+
+| Variable | Effect | Default |
+|---|---|---|
+| `BASEMIND_WARM_READ_STACKS` | Read stacks kept warm at once. Zero or unparseable falls back to the default. | 3 |
+| `BASEMIND_CACHE_BUDGET_MB` | Size budget for the whole cache in MiB. `0` disables enforcement. | 20480 (20 GiB) |
+| `BASEMIND_INDEX_CACHE_BYTES` | Overrides the computed Fjall block cache size, in bytes. | computed |
+| `BASEMIND_MAX_DAEMONS` | Ceiling on concurrently live daemons before a spawn is refused. | 8 |
+| `BASEMIND_NO_AUTOSPAWN` | Stops any process from spawning the daemon, so a service manager can own it inside a cgroup `MemoryMax`. | unset |
+| `BASEMIND_GREP_BLOOM` | `0` disables the `code grep` bloom prefilter and forces a full sweep. | on |
+| `BASEMIND_BLOB_GC_GRACE_SECS` | Age in seconds a blob must reach before the sweep may reclaim it. `0` reclaims every unreferenced blob at once. | 21600 (6 h) |
+
+Run the daemon under systemd with a memory limit if you want a hard bound: auto-spawn from a shell
+leaves the daemon in the spawning process's cgroup, outside any limit you configured for the
+service. Set `BASEMIND_NO_AUTOSPAWN` and start `basemind comms daemon` from the unit.
+
+## Measuring
+
+`basemind cache stats` (or `admin` mode `cache_stats`) reports on-disk size per component, blob
+accounting including orphans, and process RAM. `basemind admin status` reports index health.
+The scan summary prints counts of documents skipped as too large.
