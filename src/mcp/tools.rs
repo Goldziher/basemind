@@ -27,6 +27,7 @@ impl BasemindServer {
     // schemars emits as `$ref` into `$defs` — the construct that silently dropped the whole
     // registry in GH #50. The per-mode shapes are documented in the description instead. ~keep
     #[tool(
+        title = "Code map",
         description = "Read this repository's code map instead of opening files: grep it, find \
         where something is defined, see who calls this, locate a file by name, and pull one \
         symbol's body. Everything is served from the index — paths, lines, columns and \

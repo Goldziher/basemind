@@ -36,6 +36,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `web crawl` reports MCP progress, one notification per page indexed out of the pages visited. When the
   call is offloaded as a task, every progress message (rescan and crawl) is also mirrored onto the task's
   `statusMessage`, so `tasks/get` pollers see the same counter.
+- Each of the nine tools advertises a human-readable `title`.
 
 ### Changed
 - MCP logging is retired (SEP-2577 deprecates it): the server no longer advertises the `logging`

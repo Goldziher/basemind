@@ -32,6 +32,7 @@ impl BasemindServer {
     // Nothing here destroys data — `ack` advances a private read cursor and `archive` is
     // reversible-by-reading. ~keep
     #[tool(
+        title = "Agent comms",
         description = "Talk to the other agents working this repository: message another agent, \
         find out who else is here, ask a question and get a reply, and check your inbox. Use it \
         when you start, finish, hit a decision, or are about to touch code someone else may already \

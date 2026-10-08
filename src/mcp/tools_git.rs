@@ -22,6 +22,7 @@ impl BasemindServer {
     // emits as `$ref` into `$defs` — the construct that silently dropped the whole registry in
     // GH #50. The per-mode shapes are documented in the description instead. ~keep
     #[tool(
+        title = "Git history",
         description = "Read this repository's git history without shelling out to `git log`, \
         `git blame`, `git diff` or `git status`. `mode` is required. `status` is `git status` for \
         an agent: staged adds/modifies/deletes, working-tree modifications, untracked files, and \
