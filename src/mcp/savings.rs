@@ -42,26 +42,52 @@ fn tokens_for_text(text: &str) -> u64 {
     super::tokens::count_tokens(text)
 }
 
-/// Grep-style name search (`code:symbols`, `code:references`, `code:callers`,
-/// `code:implementations`): the agent pays for the grep output (≈ the matching hits we
-/// already return) plus opening a few top hits to confirm them. Modelled as the response
-/// payload times this multiplier — corpus-independent, since a real `rg` emits matching
-/// lines, not whole files, and the agent reads only the top results.
-const GREP_READ_MULTIPLIER: u64 = 3;
+/// Scale a response's token count by a baseline multiplier expressed in percent (`120` = 1.2x).
+/// Multipliers are fractional because several lookups save little: the baseline is a plain `rg`
+/// output, which is already compact.
+fn scaled(actual: u64, pct: u64) -> u64 {
+    actual.saturating_mul(pct) / 100
+}
 
-/// `dependents` baseline multiplier. Imports are sparse and a reverse-import lookup leaves
-/// less follow-up file reading than a name search, so this is lower than `GREP_READ_MULTIPLIER`.
-const DEPENDENTS_READ_MULTIPLIER: u64 = 2;
+// Baseline multipliers, in percent. Each is the MEDIAN token ratio (baseline tokens / basemind
+// response tokens) measured by `basemind admin eval` (benchmarks/eval) on a ~63k-file Python/TS
+// monorepo, over the tasks where basemind's answer was correct (recall >= 0.8), rounded down. A mode
+// whose measured median is below 1 claims 100: basemind did not beat its baseline there, so it
+// claims no saving. The baseline each figure is measured against is the disclosed `baseline` field
+// of the row; re-run the eval and update these when a response shape changes.
 
-/// `memory:documents` baseline multiplier. The agent's alternative is reading whole documents
-/// to find the relevant passages; the response returns just the matching chunks. Modelled like
-/// `outline` (~5×) — the source documents are typically several times the extracted snippet.
-const DOCUMENT_READ_MULTIPLIER: u64 = 5;
+/// `code:outline` vs reading the whole file. Measured median 1.24x (p90 2.6x) over files with 3-60
+/// symbols: a short file costs about as much to outline (symbols plus every import line) as to read.
+const OUTLINE_PCT: u64 = 120;
 
-/// `list_files` baseline multiplier. The alternative is shelling out to `find` / `ls -R` and
-/// then reading the (unfiltered, noisier) listing the agent must scan by hand. A modest 2× —
-/// basemind returns the already-filtered set, saving the agent the extra listing it reads.
-const LIST_FILES_READ_MULTIPLIER: u64 = 2;
+/// `code:symbols` vs `git grep` plus whole-file reads of the (up to three) files holding the hits.
+/// Measured median 27.9x (p25 12x, p90 89x); large source files dominate the baseline.
+const SYMBOLS_PCT: u64 = 2500;
+
+/// `code:references` vs the `git grep -n -w` line listing. Measured median 1.22x (p90 2.5x).
+/// `code:implementations` returns the same response shape and has no eval mode of its own, so it
+/// shares this figure.
+const REFERENCES_PCT: u64 = 120;
+
+/// `code:callers` vs the `git grep -n -w` line listing. Measured median 0.76x: grouping callers
+/// costs more tokens than the bare grep lines, so no saving is claimed.
+const CALLERS_PCT: u64 = 100;
+
+/// `code:dependents` vs `git grep -l` of the import lines. Measured median 0.64x (a bare path list
+/// is hard to beat), so no saving is claimed.
+const DEPENDENTS_PCT: u64 = 100;
+
+/// `code:find` vs `git ls-files | grep`. Measured median 0.30x: the baseline is one path line,
+/// basemind's value is the fuzzy/typo-tolerant match, not fewer tokens. No saving is claimed.
+const FIND_PCT: u64 = 100;
+
+/// `code:files` vs `find` / `git ls-files` plus a filter. Same response shape as `find` (measured
+/// 0.30x there), no eval mode of its own: no saving is claimed.
+const LIST_FILES_PCT: u64 = 100;
+
+/// `memory:documents` vs `git grep` of a keyword plus opening the document it points at. Measured
+/// median 2.54x (p90 7.5x) on the docs eval, where grep alone returns only bare lines.
+const DOCUMENT_READ_PCT: u64 = 250;
 
 /// Web-ingestion baseline multiplier (`web:scrape` / `web:crawl` / `web:map`). The alternative
 /// is the agent browsing the page(s) and pasting raw page text into context; the cleaned/extracted
@@ -106,18 +132,17 @@ fn canonical_key(tool: &str) -> Cow<'_, str> {
 pub fn estimate_from_text(tool: &str, _corpus_bytes: u64, resp_text: &str) -> SavingsRow {
     let actual = tokens_for_text(resp_text);
     let (baseline, baseline_name) = match canonical_key(tool).as_ref() {
-        "code:outline" => (actual.saturating_mul(5), "full_file_read"),
+        "code:outline" => (scaled(actual, OUTLINE_PCT), "full_file_read"),
 
-        "code:symbols" => (actual.saturating_mul(GREP_READ_MULTIPLIER), "grep_plus_read_top_hits"),
+        "code:symbols" => (scaled(actual, SYMBOLS_PCT), "grep_plus_read_top_hits"),
 
-        "code:references" | "code:callers" => (actual.saturating_mul(GREP_READ_MULTIPLIER), "grep_top_hits"),
+        "code:references" | "code:implementations" => (scaled(actual, REFERENCES_PCT), "grep_top_hits"),
 
-        "code:implementations" => (actual.saturating_mul(GREP_READ_MULTIPLIER), "grep_top_hits"),
+        "code:callers" => (scaled(actual, CALLERS_PCT), "grep_top_hits"),
 
-        "code:dependents" => (
-            actual.saturating_mul(DEPENDENTS_READ_MULTIPLIER),
-            "grep_imports_top_hits",
-        ),
+        "code:dependents" => (scaled(actual, DEPENDENTS_PCT), "grep_imports_top_hits"),
+
+        "code:find" => (scaled(actual, FIND_PCT), "git_ls_files_grep"),
 
         "git:churn" => (actual.saturating_mul(3), "git_log_per_file"),
 
@@ -130,9 +155,9 @@ pub fn estimate_from_text(tool: &str, _corpus_bytes: u64, resp_text: &str) -> Sa
         "graph:calls" | "graph:neighbors" | "graph:path" | "graph:subgraph" | "graph:communities" | "graph:map"
         | "graph:export" | "graph:display" | "graph:open" => (actual, "no_baseline"),
 
-        "memory:documents" => (actual.saturating_mul(DOCUMENT_READ_MULTIPLIER), "full_document_read"),
+        "memory:documents" => (scaled(actual, DOCUMENT_READ_PCT), "grep_plus_document_read"),
 
-        "code:files" => (actual.saturating_mul(LIST_FILES_READ_MULTIPLIER), "find_plus_filter"),
+        "code:files" => (scaled(actual, LIST_FILES_PCT), "find_plus_filter"),
 
         "web:scrape" | "web:crawl" | "web:map" => (actual.saturating_mul(WEB_INGEST_MULTIPLIER), "manual_browse_paste"),
 
@@ -181,22 +206,22 @@ mod tests {
     /// Baseline-model assertions that hold for both tiers: the per-tool multiplier and the
     /// saturating-subtraction savings, expressed relative to whatever `actual` was counted.
     /// Used by the structural tests so they pass under `documents` (real o200k) too.
-    fn assert_grep_model(s: &SavingsRow, expected_baseline: &str) {
+    fn assert_grep_model(s: &SavingsRow, expected_baseline: &str, pct: u64) {
         assert_eq!(s.baseline, expected_baseline);
-        assert_eq!(s.baseline_tokens, s.actual_tokens.saturating_mul(GREP_READ_MULTIPLIER));
+        assert_eq!(s.baseline_tokens, scaled(s.actual_tokens, pct));
         assert_eq!(s.est_tokens_saved, s.baseline_tokens.saturating_sub(s.actual_tokens));
     }
 
     #[test]
-    fn outline_baseline_is_5x_response() {
+    fn outline_baseline_is_1_2x_response() {
         let s = estimate_from_text("code:outline", 1_000_000, &"a".repeat(400));
-        assert_eq!(s.baseline_tokens, s.actual_tokens.saturating_mul(5));
+        assert_eq!(s.baseline_tokens, scaled(s.actual_tokens, 120));
         assert_eq!(s.baseline, "full_file_read");
         #[cfg(not(feature = "tokenizer"))]
         {
             assert_eq!(s.actual_tokens, 100);
-            assert_eq!(s.baseline_tokens, 500);
-            assert_eq!(s.est_tokens_saved, 400);
+            assert_eq!(s.baseline_tokens, 120);
+            assert_eq!(s.est_tokens_saved, 20);
         }
     }
 
@@ -206,24 +231,24 @@ mod tests {
         let big = estimate_from_text("code:symbols", 1_000_000, &text);
         let empty = estimate_from_text("code:symbols", 0, &text);
         assert_eq!(big.est_tokens_saved, empty.est_tokens_saved);
-        assert_grep_model(&big, "grep_plus_read_top_hits");
+        assert_grep_model(&big, "grep_plus_read_top_hits", 2500);
         #[cfg(not(feature = "tokenizer"))]
         {
             assert_eq!(big.actual_tokens, 100);
-            assert_eq!(big.baseline_tokens, 300);
-            assert_eq!(big.est_tokens_saved, 200);
+            assert_eq!(big.baseline_tokens, 2_500);
+            assert_eq!(big.est_tokens_saved, 2_400);
         }
     }
 
     #[test]
     fn find_references_grep_baseline_floors_at_zero_for_empty_corpus() {
         let s = estimate_from_text("code:references", 0, &"a".repeat(200));
-        assert_grep_model(&s, "grep_top_hits");
+        assert_grep_model(&s, "grep_top_hits", 120);
         #[cfg(not(feature = "tokenizer"))]
         {
             assert_eq!(s.actual_tokens, 50);
-            assert_eq!(s.baseline_tokens, 150);
-            assert_eq!(s.est_tokens_saved, 100);
+            assert_eq!(s.baseline_tokens, 60);
+            assert_eq!(s.est_tokens_saved, 10);
         }
     }
 
@@ -238,7 +263,7 @@ mod tests {
             small.est_tokens_saved
         );
         #[cfg(not(feature = "tokenizer"))]
-        assert_eq!(large.est_tokens_saved, 2_000);
+        assert_eq!(large.est_tokens_saved, 24_000);
     }
 
     #[test]
@@ -320,30 +345,33 @@ mod tests {
     }
 
     #[test]
-    fn search_documents_models_full_document_read_at_5x() {
+    fn search_documents_models_grep_plus_document_read_at_2_5x() {
         let s = estimate_from_text("memory:documents", 1_000_000, &"a".repeat(400));
-        assert_eq!(s.baseline, "full_document_read");
-        assert_eq!(s.baseline_tokens, s.actual_tokens.saturating_mul(5));
+        assert_eq!(s.baseline, "grep_plus_document_read");
+        assert_eq!(s.baseline_tokens, scaled(s.actual_tokens, 250));
         assert_eq!(s.est_tokens_saved, s.baseline_tokens.saturating_sub(s.actual_tokens));
         #[cfg(not(feature = "tokenizer"))]
         {
             assert_eq!(s.actual_tokens, 100);
-            assert_eq!(s.baseline_tokens, 500);
-            assert_eq!(s.est_tokens_saved, 400);
+            assert_eq!(s.baseline_tokens, 250);
+            assert_eq!(s.est_tokens_saved, 150);
         }
     }
 
+    /// Modes whose eval-measured median ratio is below 1 (basemind's response costs more tokens than
+    /// the plain `rg` / `git ls-files` baseline) keep their disclosed baseline but claim no saving.
     #[test]
-    fn list_files_models_find_plus_filter_at_2x() {
-        let s = estimate_from_text("code:files", 1_000_000, &"a".repeat(400));
-        assert_eq!(s.baseline, "find_plus_filter");
-        assert_eq!(s.baseline_tokens, s.actual_tokens.saturating_mul(2));
-        assert_eq!(s.est_tokens_saved, s.baseline_tokens.saturating_sub(s.actual_tokens));
-        #[cfg(not(feature = "tokenizer"))]
-        {
-            assert_eq!(s.actual_tokens, 100);
-            assert_eq!(s.baseline_tokens, 200);
-            assert_eq!(s.est_tokens_saved, 100);
+    fn modes_that_did_not_beat_their_baseline_claim_no_saving() {
+        for (tool, baseline) in [
+            ("code:callers", "grep_top_hits"),
+            ("code:dependents", "grep_imports_top_hits"),
+            ("code:find", "git_ls_files_grep"),
+            ("code:files", "find_plus_filter"),
+        ] {
+            let s = estimate_from_text(tool, 1_000_000, &"a".repeat(400));
+            assert_eq!(s.baseline, baseline, "{tool} baseline label");
+            assert_eq!(s.baseline_tokens, s.actual_tokens, "{tool} must model a 1x baseline");
+            assert_eq!(s.est_tokens_saved, 0, "{tool} must not claim savings");
         }
     }
 
@@ -385,7 +413,7 @@ mod tests {
     fn estimate_from_text_is_bytes_over_four_under_heuristic() {
         let s = estimate_from_text("code:outline", 0, &"x".repeat(800));
         assert_eq!(s.actual_tokens, 200);
-        assert_eq!(s.baseline_tokens, 1_000);
-        assert_eq!(s.est_tokens_saved, 800);
+        assert_eq!(s.baseline_tokens, 240);
+        assert_eq!(s.est_tokens_saved, 40);
     }
 }

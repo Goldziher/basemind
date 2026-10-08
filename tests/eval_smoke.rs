@@ -212,7 +212,7 @@ fn report_aggregates_per_mode_and_markdown_is_written() {
 fn savings_are_credited_only_for_correct_answers() {
     let repo = fixture();
     // Word-like text, so both the o200k tokenizer and its offline word-count fallback see many tokens.
-    let big = "lorem ipsum dolor ".repeat(400);
+    let big = "lorem ipsum dolor ".repeat(4000);
     std::fs::write(repo.path().join("big.txt"), big).unwrap();
     let good =
         r#"{"id":"good","mode":"symbols","args":{"name":"alpha"},"gold":["a.rs:1"],"baseline":{"read":["big.txt"]}}"#;
@@ -238,8 +238,8 @@ fn savings_are_credited_only_for_correct_answers() {
     let rep: Value = serde_json::from_str(&std::fs::read_to_string(&report).unwrap()).unwrap();
     let sv = &rep["modes"]["symbols"]["savings"];
     assert_eq!((sv["credited"].as_u64(), sv["uncredited"].as_u64()), (Some(1), Some(1)));
-    assert_eq!(f(sv, "model_ratio"), 3.0, "savings.rs models code:symbols at 3x");
-    assert!(f(sv, "ratio.median") > 3.0 * 1.25 && sv["flagged"] == true, "{sv}");
+    assert_eq!(f(sv, "model_ratio"), 25.0, "savings.rs models code:symbols at 25x");
+    assert!(f(sv, "ratio.median") > 25.0 * 1.25 && sv["flagged"] == true, "{sv}");
 }
 
 #[test]
