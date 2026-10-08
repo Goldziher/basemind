@@ -373,7 +373,7 @@ impl MapCache {
 
     /// Whether either projection has been built. Test seam for the memory bound: a daemon-backed
     /// session must answer its reference reads without ever allocating one.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "comms", any(unix, windows)))]
     pub(crate) fn projections_built(&self) -> bool {
         self.calls.get().is_some() || self.impls.get().is_some()
     }

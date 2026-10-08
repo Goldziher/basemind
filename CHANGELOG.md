@@ -27,6 +27,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   tier. The scan summary shows `tier_migrated` and `refreshed` counts. Patch releases keep using this
   instead of bumping the release minor.
 
+- Dependencies upgraded to their latest releases: `lancedb` 0.37 to 0.40 (now built with its `remote`
+  feature, which 0.38-0.40 need to compile; `lance` 10 to 13), `gix` 0.88 to 0.89, `oxc_*` 0.152 to
+  0.153, `crawlberg` 1.8 to 1.10, `xberg` 1.3.3 to 1.3.6, `tree-sitter-language-pack` 1.20 to 1.21,
+  plus lockfile refreshes (`rmcp` 3.5.1, `sysinfo` 0.39, `hyper`, `clap`, `jsonschema`, `hf-xet`).
+  `arrow-*` stays at 58 (lancedb 0.40 requires `^58`), `rustix` at 1.1.4 (rmux-client needs its
+  public `runtime` module) and `bincode` at 2.0.1 (3.0.0 is a `compile_error!` placeholder).
+- `code grep` sweeps the corpus with a reusable per-thread read buffer (capped at 1 MiB retained per
+  worker, so resident scratch stays bounded) instead of allocating a `String` per file, rejects a
+  literal pattern on raw bytes before paying for UTF-8 validation, and no longer builds two path
+  buffers per file. Results, `total_matches`, hit order, cursors and context lines are unchanged
+  (checked against the previous implementation over a generated corpus, including paging).
+- `code grep` no longer opens most files. The scanner keeps one small trigram bloom filter per
+  indexed file (a new `grep_bloom` index keyspace, about 12.8 % of the indexed code bytes), built
+  from the bytes the scan already reads, and a grep skips every file whose bloom proves it cannot
+  contain a literal the pattern requires (extracted with `regex-syntax`; patterns with no required
+  3-byte literal, such as `.*` or `(?i)k`, still sweep everything). A file is skipped only when its
+  filter rejects the pattern and its size and mtime still match the scan, so results, totals, hit
+  order, cursors and context lines are identical to the full sweep, including for files edited,
+  added or deleted since the last scan. On the armis checkout the 15 `t_grep` tasks drop from
+  several seconds to ~130 ms p50 with identical precision and recall. No index wipe: an existing
+  index greps correctly immediately and gains its blooms on the next scan. `BASEMIND_GREP_BLOOM=0`
+  forces the full sweep. See ADR-0012.
+
 - The code map now indexes code only. Markdown, reStructuredText, AsciiDoc, vimdoc, CSV, JSON, YAML,
   TOML, INI, XML, `.properties`, `.env`, diffs, `.gitignore`/`.gitattributes` and Fluent files are
   routed to the document tier (chunked and searchable with `memory documents`) instead of being

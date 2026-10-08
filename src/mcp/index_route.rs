@@ -112,6 +112,48 @@ impl IndexRoute {
         }
     }
 
+    /// Which of `paths` provably cannot match the grep `pattern` (`true` = skip), per the per-file
+    /// trigram blooms. `None` means "no prefilter available" (no reachable index, a forward that
+    /// failed, an unusable reply): the caller then sweeps every file, which is always correct.
+    pub(super) async fn grep_skip(
+        &self,
+        root: &std::path::Path,
+        pattern: &str,
+        paths: &[&RelPath],
+    ) -> Option<Vec<bool>> {
+        if let Self::Local(idx) = self {
+            let needle = crate::index::grep_bloom::Needle::compile(pattern)?;
+            return Some(blocking(|| idx.grep_skip_verdicts(root, paths, &needle)));
+        }
+        #[cfg(all(feature = "comms", any(unix, windows)))]
+        {
+            // Compiled here too so a pattern with no usable literal costs no round trip.
+            crate::index::grep_bloom::Needle::compile(pattern)?;
+            let mut skip = Vec::with_capacity(paths.len());
+            for chunk in paths.chunks(crate::comms::index_read_proto::MAX_GREP_BLOOM_PATHS) {
+                let query = IndexReadQuery::GrepBloom {
+                    pattern: pattern.to_owned(),
+                    paths: chunk.iter().map(|&path| path.clone()).collect(),
+                };
+                match self.forward(query).await {
+                    Some(Ok(IndexReadResult::GrepSkip(part))) if part.len() == chunk.len() => skip.extend(part),
+                    Some(Ok(_)) => {
+                        tracing::warn!("daemon answered a grep bloom test with the wrong reply; sweeping every file");
+                        return None;
+                    }
+                    Some(Err(error)) => {
+                        tracing::warn!(%error, "forwarded grep bloom test failed; sweeping every file");
+                        return None;
+                    }
+                    None => return None,
+                }
+            }
+            Some(skip)
+        }
+        #[cfg(not(all(feature = "comms", any(unix, windows))))]
+        None
+    }
+
     /// The `calls_by_callee` name scan behind `references` and `callers`.
     pub(super) async fn scan_calls(
         &self,

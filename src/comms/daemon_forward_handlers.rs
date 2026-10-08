@@ -201,8 +201,9 @@ impl Broker {
 /// Run a forwarded [`IndexReadQuery`](crate::comms::index_read_proto::IndexReadQuery) against the
 /// pool's workspace.
 ///
-/// The name scan walks the whole `calls_by_callee` partition, so it takes only a cloned
-/// [`IndexDb`](crate::index::IndexDb) handle out of the workspace lock and scans outside it: holding
+/// The name scan walks the whole `calls_by_callee` partition and the grep bloom test touches a row and
+/// a file per path, so both take only a cloned
+/// [`IndexDb`](crate::index::IndexDb) handle out of the workspace lock and scan outside it: holding
 /// the per-workspace store lock for that long would stall a rescan behind a read. The other two
 /// reads are bounded (a capped file batch, a small keyspace) and run under the lock because they
 /// also need the store's file entries and blobs.
@@ -218,6 +219,13 @@ pub(crate) fn index_read_via_pool(
             .map_err(|error| error.to_string())?
             .ok_or_else(|| "the daemon holds this workspace without a fjall index".to_string())?;
         return crate::mcp::index_read::call_scan(&idx, name, *limit, cursor.as_deref());
+    }
+    if let IndexReadQuery::GrepBloom { pattern, paths } = query {
+        let (idx, store_root) = pool
+            .with_workspace(root, |store| (store.index_db.clone(), store.root.clone()))
+            .map_err(|error| error.to_string())?;
+        let idx = idx.ok_or_else(|| "the daemon holds this workspace without a fjall index".to_string())?;
+        return crate::mcp::index_read::grep_skip(&idx, &store_root, pattern, paths);
     }
     pool.with_workspace(root, |store| crate::mcp::index_read::index_read_against(store, query))
         .map_err(|error| error.to_string())?

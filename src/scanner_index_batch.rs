@@ -206,6 +206,62 @@ impl<'a> WorkerIndexBatch<'a> {
         self.commit_if_full();
     }
 
+    /// Stage the grep trigram bloom for a file whose bytes the scanner already holds, stamped with
+    /// the `(size, mtime_ns)` they were read under. No extra read: the bloom is built from the very
+    /// buffer the extractor parsed. Counts against the byte budget (rows are up to 1/8 of the file)
+    /// and may force a commit, exactly as [`Self::stage_bm25`] does. A `None` index is a no-op.
+    pub(crate) fn stage_grep_bloom(&mut self, rel: &RelPath, bytes: &[u8], size: u64, mtime_ns: i64) {
+        let Some(index) = self.index else {
+            return;
+        };
+        let row = crate::index::grep_bloom::build_row(bytes, size, mtime_ns);
+        self.writer
+            .get_or_insert_with(|| index.writer())
+            .upsert_grep_bloom(rel, row);
+        self.commit_if_full();
+    }
+
+    /// [`Self::stage_grep_bloom`] unless the stored row already carries this exact stamp. For the
+    /// content-unchanged-but-restamped path, which is re-entered on every scan until the store's own
+    /// entry is refreshed and must not rewrite an identical row each time.
+    pub(crate) fn restamp_grep_bloom(&mut self, rel: &RelPath, bytes: &[u8], size: u64, mtime_ns: i64) {
+        if self
+            .index
+            .is_some_and(|index| index.grep_bloom_current(rel, size, mtime_ns))
+        {
+            return;
+        }
+        self.stage_grep_bloom(rel, bytes, size, mtime_ns);
+    }
+
+    /// Backfill the bloom of a file the scan classed `Unchanged` (so its bytes were NOT read): an
+    /// index built before blooms existed, or one whose row went stale, gets its row on the next
+    /// rescan without a wipe. A current row costs one point lookup; only a missing/stale one costs
+    /// a read, once. A file that cannot be read is left rowless (a candidate, never skipped).
+    pub(crate) fn backfill_grep_bloom(&mut self, root: &std::path::Path, rel: &RelPath, size: u64, mtime_ns: i64) {
+        use std::io::Read;
+        let Some(index) = self.index else {
+            return;
+        };
+        if index.grep_bloom_current(rel, size, mtime_ns) {
+            return;
+        }
+        let Ok(file) = std::fs::File::open(root.join(rel.to_path_buf())) else {
+            return;
+        };
+        let Ok(meta) = file.metadata() else {
+            return;
+        };
+        if !meta.is_file() {
+            return;
+        }
+        let mut bytes = Vec::with_capacity(usize::try_from(meta.len()).unwrap_or(0));
+        if file.take(meta.len().saturating_add(1)).read_to_end(&mut bytes).is_err() {
+            return;
+        }
+        self.stage_grep_bloom(rel, &bytes, meta.len(), crate::scanner_file::mtime_nanos(&meta));
+    }
+
     /// Report what the writer has staged since the last report to the ledger, and commit when
     /// this worker is over either of its own bounds or the process is over the shared ceiling.
     /// Called only at whole-file staging boundaries, so a commit never splits one upsert.
@@ -658,5 +714,40 @@ mod tests {
 
         assert_eq!(dump_all(&eager), dump_all(&lazy));
         assert_eq!(LEDGER.in_flight(), 0);
+    }
+
+    /// A bloom row is staged through the same byte ledger as every other entry, a rescan backfills a
+    /// row an older index lacks, and a row that is already current costs no write at all.
+    #[test]
+    fn grep_bloom_rows_are_budgeted_backfilled_and_not_rewritten_when_current() {
+        static LEDGER: StagedByteLedger = StagedByteLedger::new(u64::MAX);
+        let (_index_dir, db) = fresh_index();
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("a.rs"), "fn needle_function() {}\n".repeat(40)).expect("write");
+        let meta = std::fs::metadata(dir.path().join("a.rs")).expect("stat");
+        let (size, mtime) = (meta.len(), crate::scanner_file::mtime_nanos(&meta));
+        let rel = RelPath::from("a.rs");
+
+        let mut batch = WorkerIndexBatch::with_budget(Some(&db), u64::MAX, &LEDGER);
+        batch.backfill_grep_bloom(dir.path(), &rel, size, mtime);
+        assert!(
+            LEDGER.in_flight() > 0,
+            "the staged bloom row must count against the byte ledger"
+        );
+        batch.finish();
+        assert_eq!(LEDGER.in_flight(), 0);
+        assert!(db.grep_bloom_current(&rel, size, mtime), "backfill wrote the row");
+
+        let mut again = WorkerIndexBatch::with_budget(Some(&db), u64::MAX, &LEDGER);
+        again.backfill_grep_bloom(dir.path(), &rel, size, mtime);
+        again.restamp_grep_bloom(&rel, b"ignored", size, mtime);
+        assert_eq!(LEDGER.in_flight(), 0, "a current row is neither rebuilt nor restaged");
+        again.finish();
+
+        let mut moved = WorkerIndexBatch::with_budget(Some(&db), u64::MAX, &LEDGER);
+        moved.restamp_grep_bloom(&rel, b"fn needle_function() {}", size, mtime + 1);
+        assert!(LEDGER.in_flight() > 0, "a moved stamp re-stages the row");
+        moved.finish();
+        assert!(db.grep_bloom_current(&rel, size, mtime + 1));
     }
 }
