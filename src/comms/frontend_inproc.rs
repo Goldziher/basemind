@@ -543,4 +543,125 @@ mod wait_inbox_tests {
         let _ = shutdown_tx.send(true);
         let _ = serve.await;
     }
+
+    /// Firing the cancel token ends the wait promptly with `Cancelled`; dropping the client then
+    /// releases the broker-side subscription at once, not after the 30 s wait would have elapsed.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cancel_token_ends_the_wait_and_frees_the_subscriber() {
+        let (mut alice, _bob, _thread, shutdown_tx, serve, _dir, broker) = two_clients_in_a_thread().await;
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let token = cancel.clone();
+        let waiter = tokio::spawn(async move {
+            let outcome = alice
+                .wait_inbox_unseen(
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    100,
+                    Duration::from_secs(30),
+                    &token,
+                    |_| false,
+                )
+                .await;
+            drop(alice);
+            outcome
+        });
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while broker.subscriber_count() == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("wait subscription was not registered");
+
+        let started = Instant::now();
+        cancel.cancel();
+        let outcome = tokio::time::timeout(Duration::from_secs(2), waiter)
+            .await
+            .expect("cancelled wait did not return promptly")
+            .expect("wait task panicked");
+        assert!(matches!(
+            outcome,
+            Err(crate::comms::client::CommsClientError::Cancelled)
+        ));
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while broker.subscriber_count() != 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("cancelled wait leaked its subscription");
+        assert!(started.elapsed() < Duration::from_secs(2));
+
+        let _ = shutdown_tx.send(true);
+        let _ = serve.await;
+    }
+
+    /// Unread rows the caller already `is_seen` must not satisfy the wait: it blocks for something
+    /// new, so a poll loop that never acks does not spin on its own backlog.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn seen_backlog_does_not_return_instantly() {
+        let (mut alice, mut bob, thread, shutdown_tx, serve, _dir, _broker) = two_clients_in_a_thread().await;
+        bob.post_message(thread.clone(), "old".to_string(), Vec::new(), Vec::new(), None)
+            .await
+            .expect("post old");
+
+        let started = Instant::now();
+        let (timed_out, rows, unread, _) = alice
+            .wait_inbox_unseen(
+                None,
+                None,
+                None,
+                None,
+                None,
+                100,
+                Duration::from_millis(300),
+                &tokio_util::sync::CancellationToken::new(),
+                |row| row.meta.subject == "old",
+            )
+            .await
+            .expect("wait");
+        assert!(timed_out && rows.is_empty(), "the seen backlog must not wake the wait");
+        assert_eq!(
+            unread, 0,
+            "`unread` counts only rows beyond the page, and the page held the backlog"
+        );
+        assert!(
+            started.elapsed() >= Duration::from_millis(250),
+            "it blocked for the timeout"
+        );
+
+        let waiter = tokio::spawn(async move {
+            alice
+                .wait_inbox_unseen(
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    100,
+                    Duration::from_secs(10),
+                    &tokio_util::sync::CancellationToken::new(),
+                    |row| row.meta.subject == "old",
+                )
+                .await
+        });
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        bob.post_message(thread, "new".to_string(), Vec::new(), Vec::new(), None)
+            .await
+            .expect("post new");
+        let (timed_out, rows, _, _) = tokio::time::timeout(Duration::from_secs(5), waiter)
+            .await
+            .expect("woken")
+            .expect("join")
+            .expect("wait");
+        assert!(!timed_out);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].meta.subject, "new");
+
+        let _ = shutdown_tx.send(true);
+        let _ = serve.await;
+    }
 }

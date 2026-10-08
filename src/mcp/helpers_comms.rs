@@ -51,9 +51,10 @@ const DEFAULT_SINCE_HOURS: u32 = 24;
 /// Default long-poll timeout for mode `wait` when the caller omits `timeout_secs`.
 const DEFAULT_WAIT_SECS: u32 = 30;
 
-/// Hard cap on mode `wait`'s `timeout_secs`. Comfortably under the daemon's 30-minute idle-reap
-/// window and short enough that one outstanding wait cannot meaningfully delay a drain.
-const MAX_WAIT_SECS: u32 = 300;
+/// Hard cap on mode `wait`'s `timeout_secs`. Kept under typical MCP host request timeouts (~60 s) so
+/// a wait ends with a clean `timed_out` answer rather than being abandoned by the host, and short
+/// enough that one outstanding wait cannot meaningfully delay a drain.
+const MAX_WAIT_SECS: u32 = 40;
 
 /// Microseconds in one hour — the scale factor for the `since_hours` → `since_micros` cutoff.
 const MICROS_PER_HOUR: i64 = 3_600_000_000;
@@ -340,7 +341,11 @@ fn require_field<T>(mode: AgentsMode, field: &str, value: Option<T>) -> Result<T
 /// Validation runs before the broker connection so a malformed call costs no daemon round-trip, and
 /// fields belonging to another mode are rejected rather than dropped: a silently ignored `thread` on
 /// an `inbox` call reads to an agent as a successful single-thread read.
-pub(super) async fn run_agents(state: &ServerState, params: AgentsParams) -> Result<CallToolResult, McpError> {
+pub(super) async fn run_agents(
+    state: &ServerState,
+    params: AgentsParams,
+    cancel: &tokio_util::sync::CancellationToken,
+) -> Result<CallToolResult, McpError> {
     let AgentsParams {
         mode,
         thread,
@@ -573,6 +578,7 @@ pub(super) async fn run_agents(state: &ServerState, params: AgentsParams) -> Res
         AgentsMode::Wait => {
             run_inbox_wait(
                 state,
+                cancel,
                 InboxWaitParams {
                     timeout_secs,
                     thread,
@@ -938,7 +944,11 @@ async fn run_inbox_ack(state: &ServerState, params: InboxAckParams) -> Result<Ca
 /// tool call for this identity (agent_list, thread_post, inbox_read, …) for the whole wait. A
 /// fresh connection per wait avoids that at the cost of one extra link + broker sink per
 /// outstanding call — an accepted trade-off (see the design brief's risk notes).
-async fn run_inbox_wait(state: &ServerState, params: InboxWaitParams) -> Result<CallToolResult, McpError> {
+async fn run_inbox_wait(
+    state: &ServerState,
+    cancel: &tokio_util::sync::CancellationToken,
+    params: InboxWaitParams,
+) -> Result<CallToolResult, McpError> {
     let timeout_secs = params.timeout_secs.unwrap_or(DEFAULT_WAIT_SECS).clamp(1, MAX_WAIT_SECS);
     let cursor = params.cursor.map(crate::comms::cursor::Cursor);
     let since = since_cutoff(params.since_hours);
@@ -949,10 +959,21 @@ async fn run_inbox_wait(state: &ServerState, params: InboxWaitParams) -> Result<
         None => AgentId::parse(state.agent_id.clone())
             .map_err(|e| comms_err(format!("invalid agent id {:?}: {e}", state.agent_id)))?,
     };
-    let mut client = connect_comms_client(state, agent).await?;
+    let mut client = tokio::select! {
+        () = cancel.cancelled() => return Err(comms_err("wait cancelled")),
+        client = connect_comms_client(state, agent) => client?,
+    };
 
-    let (timed_out, metas, unread, next_cursor) = client
-        .wait_inbox(
+    // Messages an earlier `wait` already returned must not satisfy this one: a poll loop that does
+    // not `ack` would otherwise return instantly, forever, on its own backlog.
+    let already_waited: std::collections::HashSet<String> = {
+        let waited = state.waited_messages.lock().await;
+        waited.iter().map(|(id, ())| id.clone()).collect()
+    };
+    // Dropping `client` on any exit (including cancellation) closes the link, and the broker reaps
+    // the subscription with it.
+    let (timed_out, metas, unread, next_cursor) = match client
+        .wait_inbox_unseen(
             remote,
             cwd,
             params.thread,
@@ -960,9 +981,22 @@ async fn run_inbox_wait(state: &ServerState, params: InboxWaitParams) -> Result<
             cursor,
             DEFAULT_LIMIT,
             std::time::Duration::from_secs(u64::from(timeout_secs)),
+            cancel,
+            |row| already_waited.contains(&row.meta.id),
         )
         .await
-        .map_err(comms_err)?;
+    {
+        Ok(outcome) => outcome,
+        Err(crate::comms::client::CommsClientError::Cancelled) => return Err(comms_err("wait cancelled")),
+        Err(error) => return Err(comms_err(error)),
+    };
+    drop(client);
+    {
+        let mut waited = state.waited_messages.lock().await;
+        for row in &metas {
+            waited.put(row.meta.id.clone(), ());
+        }
+    }
 
     let now = now_micros();
     let messages: Vec<MessageFrontMatter> = metas

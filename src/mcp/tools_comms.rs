@@ -52,7 +52,7 @@ impl BasemindServer {
         so scan the front-matter and fetch only the \
         bodies you need. Both default to the last 24h (`since_hours`, `0` for all history) and \
         paginate (`limit` default 100 max 1000, `cursor` from the previous `next_cursor`). `wait` \
-        long-polls up to `timeout_secs` (default 30, max 300) and returns the moment a peer posts, \
+        long-polls up to `timeout_secs` (default 30, max 40; call again to keep waiting) and returns the moment a peer posts, \
         instead of you looping `inbox`; it never marks anything read. `ack` clears messages you \
         have handled by ADVANCING your own per-thread read cursors (`message_ids`, and/or `thread` \
         + `to_seq`) — it deletes nothing and touches no other agent's inbox. `register` publishes \
@@ -75,11 +75,13 @@ impl BasemindServer {
     pub(crate) async fn agents(
         &self,
         Parameters(Lenient(p)): Parameters<Lenient<AgentsParams>>,
+        ctx: rmcp::service::RequestContext<rmcp::RoleServer>,
     ) -> Result<CallToolResult, McpError> {
         let __started = std::time::Instant::now();
         let __key = p.mode.telemetry_key();
         let __params_json = serde_json::to_value(&p).unwrap_or(Value::Null);
-        let __result: Result<CallToolResult, McpError> = super::helpers_comms::run_agents(&self.state, p).await;
+        let __result: Result<CallToolResult, McpError> =
+            super::helpers_comms::run_agents(&self.state, p, &ctx.ct).await;
         record_call(&self.state, __key, &__params_json, __started, &__result);
         __result
     }
