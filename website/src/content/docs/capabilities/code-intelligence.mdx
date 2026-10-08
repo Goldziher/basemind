@@ -6,7 +6,9 @@ description: Navigate code structure across 300+ languages — symbols, referenc
 import { Aside, Badge, Card, CardGrid } from '@astrojs/starlight/components';
 
 basemind pre-indexes your codebase using tree-sitter, mapping symbols, calls, and imports
-across 300+ languages. Structural queries resolve in milliseconds and return **paths, line
+across 300+ languages. Structural queries resolve in milliseconds (an outline in about a
+millisecond, symbol and reference lookups in single-digit milliseconds on a 74k-file monorepo;
+see [Performance](/reference/performance/)) and return **paths, line
 numbers, and signatures — not file bodies** — so they cost a fraction of the tokens of
 reading source.
 
@@ -64,7 +66,7 @@ Find symbols by **substring** across all indexed files. Optionally filter by `ki
 
 ```json
 {
-  "needle": "process_file",
+  "name": "process_file",
   "kind": "function"
 }
 ```
@@ -85,7 +87,10 @@ Find all call sites of any callee whose identifier matches `name`. **No scope re
 ```
 
 Backed by an indexed call-site table, returns tens of thousands of hits capped by `limit`
-(default 100, max 1000).
+(default 100, max 1000). From a daemon-backed session (the standard deployment) the scan runs in
+the daemon against the same index, so `total` and cursors are complete and identical to what a
+writer session sees; only when no daemon is reachable does a session fall back to an in-RAM
+projection capped by `[resources] max_map_cache_mb`, flagged with a `projections_capped` notice.
 
 ### `code callers`
 
@@ -162,14 +167,16 @@ inheritance, TypeScript/JavaScript class declarations.
 
 ```json
 {
-  "name": "Iterator"
+  "trait_name": "Iterator"
 }
 ```
 
 ### `code grep`
 
-Pattern search (regex) over file contents, backed by the in-RAM index. Returns capped,
-structured hits with path, line, and matching text.
+Pattern search (Rust `regex` syntax) over the contents of indexed code files. Returns capped,
+structured hits with path, line, and matching text, plus one line of context either side
+(`include_context: false` drops it). `total_matches` and `total_files_matched` are exact for
+the scanned window.
 
 ```json
 {
@@ -179,7 +186,16 @@ structured hits with path, line, and matching text.
 }
 ```
 
-Faster than shelling out to ripgrep when you already have the index in memory.
+The scanner keeps a small per-file trigram bloom filter (about 12.8 % of the indexed code
+bytes). A grep skips every file whose filter proves it cannot contain a literal the pattern
+requires, so on a 74k-file monorepo the 15 benchmark patterns dropped from several seconds to
+about 130 ms p50 with identical results (ADR-0012). A file is skipped only when its size and
+mtime still match the scan, so edited, added or deleted files are still searched. Patterns with
+no required 3-byte literal (`.*`, `(?i)k`) sweep every file. Set `BASEMIND_GREP_BLOOM=0` to force
+the full sweep. An existing index gains its filters on the next scan; no wipe is needed.
+
+`grep` covers code only. Prose, data and config files (Markdown, JSON, YAML, TOML, ...) live in
+the document tier: search them with `memory` mode `documents`.
 
 ## Supporting tools
 
@@ -230,15 +246,16 @@ URL, on-disk cache size, and index build time.
 - **`code references` / `code callers` instead of grepping call sites.** Indexed call
   edges, not text matches.
 - **`code grep` instead of shelling out to ripgrep** when you genuinely need regex —
-  it runs over the in-RAM index and returns capped, structured results.
+  it searches the indexed code files and returns capped, structured results.
 - **Do not re-read a file basemind already mapped.** If the outline answered the question,
   stop.
 - **`admin rescan` after you edit code**, not a server reconnect. Pass `paths: [...]` to limit
   it.
 
 <Aside type="note">
-Lists are capped (`limit`, default 100, max 1000). Index scanners use `scan_cap = limit * 8`
-to bound work on common names.
+Lists are capped (`limit`: default 100, max 1000 for `symbols` / `grep` / `references` /
+`callers` / `implementations`; default 200, max 5000 for `files` / `find`). Index scanners use
+`scan_cap = limit * 8` (at least 2000) to bound work on common names.
 </Aside>
 
 ## See also

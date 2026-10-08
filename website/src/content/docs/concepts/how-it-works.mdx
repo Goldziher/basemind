@@ -1,12 +1,12 @@
 ---
 title: How it works
 description: >
-  One scan indexes your code and documents; basemind serve holds the map in memory
-  and answers questions instantly. Re-scans touch only what changed.
+  One scan indexes your code and documents; a background daemon holds the index
+  and answers questions in milliseconds. Re-scans touch only what changed.
 ---
 
 basemind turns your project into an always-current map through two simple steps: a one-time
-parallel scan that reads everything, then an in-memory server that answers questions instantly.
+parallel scan that reads everything, then a background daemon that answers questions in milliseconds.
 When files change, it updates only what's touched — no re-read of the whole codebase.
 
 ## The scan
@@ -34,11 +34,17 @@ OCR for images) and indexes their content for semantic search.
 
 ## The server
 
-`basemind serve` loads the index into memory and exposes it as an MCP server. From here, code
-questions answer in milliseconds: "Where is `parseQuery` defined?", "What calls `processFile`?",
-"Show me the outline of this file." — all instant, because the map is already in RAM.
+`basemind serve` is a thin stdio relay: it makes sure the machine-global daemon is up and
+forwards your client's MCP traffic to it. The daemon is the single writer of the index and hosts
+the read side for every session. Code questions answer in milliseconds: "Where is `parseQuery`
+defined?", "What calls `processFile`?", "Show me the outline of this file."
 
-Each tool call resolves to a lookup in the in-memory index, not a re-read of the project.
+Each tool call resolves to a lookup in the index, not a re-read of the project. Memory use is
+bounded rather than proportional to the repo: decoded outlines live in an LRU cache capped by
+`[resources] max_map_cache_mb`, symbol and import names in a compact resident term index, and
+callee and trait names in small resident dictionaries, with the rest read from the on-disk index
+on demand. `references`, `callers` and `implementations` are scanned inside the daemon, so a
+session holds no copy of the call graph. See [Memory and resources](/reference/memory/).
 
 ## Re-scans
 

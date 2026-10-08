@@ -44,18 +44,20 @@ The plugin nudges agents toward the cheap path by default:
 
 ## Optional guardrails
 
-Three environment variables enforce token discipline at the moment a tool is used:
+The plugin ships three hooks that enforce token discipline at the moment a tool is used. The guard is on by default; the other two are opt-in:
 
 ### Guard: redirect wasteful searches
 
 ```bash
-BASEMIND_GUARD=off      # disable (default: on)
-BASEMIND_GUARD=redirect # block instead of nudge
+BASEMIND_GUARD=nudge    # default: allow the call, add a one-time advisory
+BASEMIND_GUARD=redirect # deny the call and point at the basemind mode
+BASEMIND_GUARD=off      # disable
 ```
 
-When an agent reaches for a built-in `Grep`/`Glob`-style search, `Guard` gently redirects it to
-the matching basemind mode (`code grep` for patterns, `code symbols` for names,
-`code references` for call sites). Set `redirect` to block the command instead of nudging.
+When an agent reaches for a built-in `Grep` or `Glob` search, the guard points it at the matching
+basemind mode (`code grep` for patterns, `code symbols` for names, `code references` for call
+sites). In the default `nudge` mode the call goes through with an advisory, shown once per session
+per tool; `redirect` denies it. The guard needs `jq` and quietly does nothing without it.
 
 ### Output compressor: shrink large results
 
@@ -63,10 +65,10 @@ the matching basemind mode (`code grep` for patterns, `code symbols` for names,
 BASEMIND_COMPRESS_OUTPUT=1
 ```
 
-When a tool returns a long result (e.g., 100 matching files), the compressor shrinks the output
-by keeping only the essential shape — file paths, signatures, keywords — and dropping verbose
-details. It never touches anything that looks like a credential and leaves output alone if it
-can't help.
+Off by default; `1`, `on`, `true` or `yes` turns it on. When a Bash command returns long output (a
+build log, a directory listing), the compressor replaces it with a shorter summary chosen by the
+command family. It leaves the output alone when it detects a credential or would save under 10 %.
+The backend is the `basemind compress-output` command, which reads stdin.
 
 ### Re-read shortcut: show only what changed
 
@@ -74,8 +76,9 @@ can't help.
 BASEMIND_DELTA_READS=1
 ```
 
-When an agent re-reads a file it already read earlier in the session, `BASEMIND_DELTA_READS` shows
-just the changed lines instead of resending the whole file.
+Off by default; `1`, `on`, `true` or `yes` turns it on. When an agent re-reads a file it already
+read earlier in the session, the hook shows just the changed lines (`basemind delta`) instead of
+resending the whole file, and only when the diff is meaningfully smaller.
 
 ## Compression that understands code
 
