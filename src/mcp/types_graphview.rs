@@ -167,7 +167,7 @@ pub struct DisplayResponse {
     pub elapsed_us: u64,
 }
 
-/// Parameters for the `ui` tool (ADR-0006): open the interactive basemind UI for a human. Shapes the
+/// Parameters for `graph` mode `open` (ADR-0006): open the interactive basemind UI for a human. Shapes the
 /// same code-graph as [`DisplayParams`] but the product is a durable, agent-drivable *surface* — a
 /// served `http://…/ui` page when a basemind daemon is up, else the same self-contained export file.
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
@@ -203,7 +203,7 @@ pub struct UiParams {
     pub open: bool,
 }
 
-/// Response from the `ui` tool (ADR-0006). Like `display`, the rendered bytes are not returned inline;
+/// Response from `graph` mode `open` (ADR-0006). Like `display`, the rendered bytes are not returned inline;
 /// the product is a URL to the interactive UI plus the stable export path that always backs it.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub struct UiResponse {
