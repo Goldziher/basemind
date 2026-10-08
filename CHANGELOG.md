@@ -12,6 +12,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Upgrading an existing index is now self-cleaning. The blob sweep is tier-aware: a markdown, json,
+  yaml or toml file that moved to the document tier keeps its content hash, so its stale `.fm`,
+  `.chunk` and `.rref` blobs used to be pinned by the live `.doc` blob forever; they are now
+  reclaimed, and `cache stats` counts them as orphans. A scan that migrated paths across tiers,
+  re-extracted blobs, or reset a view after a release-minor bump runs a cross-workspace
+  reference-counted sweep and prints `cleanup: reclaimed N orphaned blob(s)`; the daemon does the same
+  a minute after such a pass. `basemind cache gc` now performs that sweep (it was report-only), serialised
+  machine-wide by `cache/gc.lock`; blobs younger than 6 hours are kept, `BASEMIND_BLOB_GC_GRACE_SECS`
+  overrides. See `docs/UPGRADING.md`.
+- Symbol signatures produced before the header-only fix are refreshed without a cache wipe. A new
+  `EXTRACT_EPOCH`, recorded on every file entry and L1 blob, makes the next scan re-extract only the
+  files whose entry or blob predates it, inside the normal memory-bounded pass, keeping their call
+  tier. The scan summary shows `tier_migrated` and `refreshed` counts. Patch releases keep using this
+  instead of bumping the release minor.
+
 - The code map now indexes code only. Markdown, reStructuredText, AsciiDoc, vimdoc, CSV, JSON, YAML,
   TOML, INI, XML, `.properties`, `.env`, diffs, `.gitignore`/`.gitattributes` and Fluent files are
   routed to the document tier (chunked and searchable with `memory documents`) instead of being
