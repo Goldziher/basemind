@@ -34,7 +34,7 @@ use crate::store_gc::{self, CacheComponent};
 
 /// The progress channel `rescan` reports on: the calling peer and the progress token it supplied.
 /// `None` on the CLI path, which has no MCP peer.
-type Progress<'a> = Option<(&'a rmcp::Peer<rmcp::RoleServer>, Option<rmcp::model::ProgressToken>)>;
+pub(super) type Progress<'a> = Option<(&'a rmcp::Peer<rmcp::RoleServer>, Option<rmcp::model::ProgressToken>)>;
 
 /// Fail a mode that was given a field belonging to some other mode.
 ///

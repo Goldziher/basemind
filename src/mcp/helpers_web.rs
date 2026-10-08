@@ -23,6 +23,7 @@ use rmcp::model::CallToolResult;
 
 use super::ServerState;
 use super::helpers::json_result;
+use super::helpers_admin::Progress;
 use super::memory::lance_store;
 use super::mode::{WebMode, reject_unsupported};
 use super::types::{
@@ -152,7 +153,11 @@ fn engine(state: &ServerState) -> Result<&crawlberg::CrawlEngineHandle, McpError
 ///
 /// Fields that belong to another mode are rejected rather than dropped: a silently ignored
 /// `max_depth` on a `scrape` call reads to an agent as a successful bounded crawl.
-pub(super) async fn run_web(state: &ServerState, params: WebParams) -> Result<CallToolResult, McpError> {
+pub(super) async fn run_web(
+    state: &ServerState,
+    params: WebParams,
+    progress: Progress<'_>,
+) -> Result<CallToolResult, McpError> {
     let WebParams {
         mode,
         url,
@@ -191,6 +196,7 @@ pub(super) async fn run_web(state: &ServerState, params: WebParams) -> Result<Ca
                     max_depth,
                     scope,
                 },
+                progress,
             )
             .await
         }
@@ -273,7 +279,11 @@ async fn run_web_scrape(state: &ServerState, params: WebScrapeParams) -> Result<
     json_result(&response)
 }
 
-async fn run_web_crawl(state: &ServerState, params: WebCrawlParams) -> Result<CallToolResult, McpError> {
+async fn run_web_crawl(
+    state: &ServerState,
+    params: WebCrawlParams,
+    progress: Progress<'_>,
+) -> Result<CallToolResult, McpError> {
     engine(state)?;
     reject_zero_override("max_pages", params.max_pages)?;
     reject_zero_override("max_depth", params.max_depth)?;
@@ -392,7 +402,21 @@ async fn run_web_crawl(state: &ServerState, params: WebCrawlParams) -> Result<Ca
         });
     }
 
+    // The page count is only known once crawlberg has fetched the site, so progress covers the
+    // index phase: one notification per page settled, out of `pages_visited`.
+    let mut pages_done = 0usize;
     while let Some((slot, outcome)) = futs.next().await {
+        pages_done += 1;
+        if let Some((peer, Some(token))) = progress.as_ref() {
+            super::notifications::emit_progress(
+                peer,
+                token.clone(),
+                pages_done as f64,
+                Some(pages_visited as f64),
+                format!("web crawl: indexed {pages_done}/{pages_visited} pages"),
+            )
+            .await;
+        }
         if outcome.indexed {
             pages_indexed += 1;
             total_chunks += outcome.chunks_indexed;

@@ -145,10 +145,11 @@ pub(super) fn spawn_slow_tool(
         Box::pin(async move {
             // The real work runs on a detached-on-cancel child task (see the fn-level note); the
             // outer future only races the tool's completion against cancellation.
+            let task_ctx = ctx.clone();
             let mut work = tokio::spawn(async move {
                 let _admission = admission;
                 let tcc = rmcp::handler::server::tool::ToolCallContext::new(&server, request, context);
-                server.tool_router.call(tcc).await
+                CURRENT_TASK.scope(task_ctx, server.tool_router.call(tcc)).await
             });
             let outcome = tokio::select! {
                 biased;

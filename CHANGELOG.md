@@ -33,6 +33,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cancellation: a `notifications/cancelled` drops the in-flight read and releases its admission permit
   immediately, answering `-32800 request_cancelled`. Mutating modes (`rescan`, `put`, `accept`, ...) are
   deliberately excluded and always run to completion.
+- `web crawl` reports MCP progress, one notification per page indexed out of the pages visited. When the
+  call is offloaded as a task, every progress message (rescan and crawl) is also mirrored onto the task's
+  `statusMessage`, so `tasks/get` pollers see the same counter.
 
 ### Changed
 - MCP logging is retired (SEP-2577 deprecates it): the server no longer advertises the `logging`
