@@ -12,6 +12,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `code grep` sweeps the corpus with a reusable per-thread read buffer (capped at 1 MiB retained per
+  worker, so resident scratch stays bounded) instead of allocating a `String` per file, rejects a
+  literal pattern on raw bytes before paying for UTF-8 validation, and no longer builds two path
+  buffers per file. Results, `total_matches`, hit order, cursors and context lines are unchanged
+  (checked against the previous implementation over a generated corpus, including paging). A
+  trigram-bloom prefilter that would avoid reading most files is designed in ADR-0012 (proposed).
+
 - The code map now indexes code only. Markdown, reStructuredText, AsciiDoc, vimdoc, CSV, JSON, YAML,
   TOML, INI, XML, `.properties`, `.env`, diffs, `.gitignore`/`.gitattributes` and Fluent files are
   routed to the document tier (chunked and searchable with `memory documents`) instead of being
