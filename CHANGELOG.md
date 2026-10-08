@@ -21,6 +21,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   blobs references, index and keyword postings, code-search chunks) are purged, and a path that
   changes tier is moved either way. A build without the `documents` feature keeps the old behaviour.
   Document-link citations and ADR/RFC decision records now resolve against the document tier.
+- `code references`, `callers` and `implementations` no longer walk every call site or impl in the
+  index. The index process keeps a small resident dictionary of the distinct callee and trait names
+  (a few MB at monorepo scale), answers the substring match from it, and range-scans only the
+  matching names' keys. Results, key order, totals, the `total_is_partial` cap, cursors and the
+  language filter are byte-identical. The first query after the index opens still walks the
+  partition while the dictionary builds in the background.
 
 ### Fixed
 
