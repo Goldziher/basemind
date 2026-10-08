@@ -12,6 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- MCP resources: `basemind://status`, `basemind://repo/map`, and the templates
+  `basemind://outline/{path}` and `basemind://memory/{key}`, with `{path}` completion. Reads reuse the
+  `admin`, `graph`, `code` and `memory` helpers, so bodies equal the tool results; paths are
+  validated against traversal. Listed on demand, so no always-loaded token cost. No subscribe support.
 - `code grep` trigram bloom prefilter. The scanner keeps one small trigram bloom filter per indexed
   file (a new `grep_bloom` index keyspace, about 12.8 % of the indexed code bytes), built from the
   bytes the scan already reads, and a grep skips every file whose bloom proves it cannot contain a

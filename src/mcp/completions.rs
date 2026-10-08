@@ -26,7 +26,9 @@ impl BasemindServer {
             Reference::Prompt(prompt) => {
                 self.complete_prompt_argument(&prompt.name, &params.argument.name, &params.argument.value)
             }
-            Reference::Resource(_) => Vec::new(),
+            Reference::Resource(resource) => {
+                self.complete_resource_argument(&resource.uri, &params.argument.name, &params.argument.value)
+            }
             // `Reference` is #[non_exhaustive] in rmcp 2.1; basemind exposes no resources and
             _ => Vec::new(),
         };
@@ -64,7 +66,7 @@ impl BasemindServer {
 
     /// Indexed repo-relative file paths that start with `prefix`, capped at [`MAX_COMPLETIONS`].
     /// The file view is sorted, so keys are already ordered and prefix matches are contiguous.
-    fn complete_file_paths(&self, prefix: &str) -> Vec<String> {
+    pub(super) fn complete_file_paths(&self, prefix: &str) -> Vec<String> {
         let cache = self.state.shared.cache.load_full();
         cache
             .paths()
