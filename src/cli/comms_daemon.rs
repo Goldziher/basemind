@@ -40,7 +40,7 @@ const DAEMON_POOL_ENV: [(&str, &str); 2] = [("RAYON_NUM_THREADS", "6"), ("LANCE_
 const DAEMON_ORT_THREADS: usize = 2;
 
 /// Async worker threads for the daemon runtime.
-const DAEMON_ASYNC_WORKERS: usize = 4;
+const DAEMON_ASYNC_WORKERS: usize = 8;
 
 /// Ceiling on the daemon runtime's `spawn_blocking` pool.
 const DAEMON_MAX_BLOCKING_THREADS: usize = 16;

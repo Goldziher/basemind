@@ -370,7 +370,12 @@ impl CommsClient {
     /// no longer exists.
     async fn reconnect(&mut self) -> Result<(), CommsClientError> {
         let spawn = &self.spawn;
-        singleton::ensure_daemon_with(&self.paths, singleton::probe_alive, |paths| spawn(paths)).await?;
+        singleton::ensure_daemon_with(
+            &self.paths,
+            |socket| singleton::off_worker(|| singleton::probe_alive(socket)),
+            |paths| spawn(paths),
+        )
+        .await?;
         let handshake_timeout = timeout_from_env(HANDSHAKE_TIMEOUT_ENV, DEFAULT_HANDSHAKE_TIMEOUT_SECS);
         let (stream, codec) = bounded("connect", Some(handshake_timeout), Self::dial(&self.paths)).await?;
         self.stream = stream;
