@@ -9,8 +9,8 @@ description: >-
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:ed4abcbab49937e10184cb71155d796164b6fc26ebb9735f28626edd43f44185
-Source-Hash: blake3:c1a08b89b18aa5d4c2259405307482d21d84a33d481461a2a4e78b954c6234cb
+Content-Hash: blake3:dec34df09c0d20f0d7bd11bc7942cbad869638ce5cedb40d74a09d9f86d4d89c
+Source-Hash: blake3:d0ef8fea0654cc62042ee8040ad0fadbea594d97b0930187ff9f42359e443bd0
 Schema-Version: v1
 -->
 
@@ -30,7 +30,7 @@ rebasing, anything that mutates history).
 |---|---|---|
 | "What changed recently?" | `git { mode: "recent" }` | `basemind git recent [--limit N]` |
 | "Which commits touched path P?" | `git { mode: "touching", path: P }` | `basemind git touching P` |
-| "Path-filtered commit log?" | `git { mode: "by_path", pattern: P }` | `basemind git by-path P` |
+| "Commits whose changed paths match regex P?" | `git { mode: "by_path", pattern: P }` | `basemind git by-path P` |
 | "When did symbol X last change?" | `git { mode: "symbol_history", path: F, name: X }` | `basemind git symbol-history F X` |
 | "Who wrote this line?" | `git { mode: "blame", path: F }` | `basemind git blame F` |
 | "Who wrote this symbol / when did its body change?" | `git { mode: "blame_symbol", path: F, name: X }` | `basemind git blame-symbol F X` |
@@ -62,8 +62,11 @@ git { mode: "diff_outline", path: "src/mcp/tools.rs", rev: "HEAD~5" }
   they return a clear error.
 - History queries are indexed: `git` mode `touching` and friends resolve in tens of microseconds vs a
   live walk. The index auto-builds on first use and is a fraction of the size of `.git`.
-- All paths are repository-relative with forward-slash separators. Lists are capped
-  (`limit`, default 100, max 1000).
+- All paths are repository-relative with forward-slash separators. `recent` and `search` return
+  at most 100 commits per page (`limit` default 20); `recent` is a recency window, so use `search`
+  to find an author or message arbitrarily far back. Page with `next_cursor` -> `cursor`; a moved
+  HEAD invalidates it (`cursor_invalidated`). A shallow clone sets `truncated`: absence is then
+  inconclusive.
 
 For code structure see `basemind-code-search`; for document RAG and semantic search see
 `basemind-documents`; for agent coordination see `basemind-comms`.

@@ -10,8 +10,8 @@ description: >-
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:197b16796000588b0af439044dd27f61fd7eab65ab3348c6af1bbd0a63405e89
-Source-Hash: blake3:c1a08b89b18aa5d4c2259405307482d21d84a33d481461a2a4e78b954c6234cb
+Content-Hash: blake3:69863c390185a9ceaedc8ea8888cf25c42da25403cf47bcc10a5297cff139326
+Source-Hash: blake3:d0ef8fea0654cc62042ee8040ad0fadbea594d97b0930187ff9f42359e443bd0
 Schema-Version: v1
 -->
 
@@ -25,11 +25,12 @@ without you reading whole files.
 ## Capabilities
 
 - **Code map across 300+ languages** — tree-sitter outlines, symbol search, references,
-  callers, call graphs, implementations, dependents.
+  callers, call graphs, implementations, dependents. It holds **code only**: markdown, JSON,
+  YAML, TOML, XML, CSV, INI and similar files are documents, searched with `memory` mode `documents`.
 - **Full-text + symbol search** — `code` modes `grep` and `symbols`.
 - **Git intelligence** — history, blame, and structural diffs at symbol resolution, plus churn.
-- **Document RAG over 90+ file formats** — PDFs, Office, HTML, email, images (OCR) → semantic
-  search with cross-encoder reranking (`memory` mode `documents`).
+- **Document RAG over 90+ file formats** — PDFs, Office, HTML, email, images (OCR), markdown and
+  config/data files → semantic search with cross-encoder reranking (`memory` mode `documents`).
 - **Shared memory** — per-repo, scope-keyed key-value + semantic memory across sessions.
 - **Web crawl** — scrape / follow-link crawl into the same searchable document store.
 
@@ -71,7 +72,8 @@ default workflow, not an optimization:
 - **Use `code` modes `references` / `callers` instead of grepping call sites.** Indexed call edges,
   not text matches.
 - **Use `code` mode `grep` instead of shelling out to ripgrep** when you genuinely need regex over
-  content — it runs over the in-RAM index and returns capped, structured hits.
+  code content — it sweeps every indexed file (a trigram filter skips files that cannot match) and
+  returns capped, structured hits with an exact `total_matches`.
 - **Use `admin` mode `rescan` after you edit code**, not a server reconnect. Pass `paths: [...]` to limit it to
   the files you touched.
 - **Do not re-read a file basemind already mapped.** If the outline answered the question, stop.
@@ -99,7 +101,10 @@ git only when no basemind tool covers the question.
 | "Trace the call graph from a function?" | `graph { mode: "calls", name: X }` |
 | "What implements / extends / inherits from X?" | `code { mode: "implementations", trait_name: X }` |
 | "What imports module M?" | `code { mode: "dependents", module: M }` |
-| "What files are indexed?" | `code { mode: "files" }` |
+| "Which file is named like X?" | `code { mode: "find", query: X }` (fuzzy; not `find`/`ls -R`) |
+| "Show me this one symbol's body" | `code { mode: "expand", path: F, name: X }` |
+| "Find code by meaning, not spelling" | `code { mode: "semantic", query }` then `code { mode: "chunk", path, chunk_id }` |
+| "What code files are indexed?" | `code { mode: "files" }` |
 | "What changed recently?" | `git` modes `recent`, `touching`, or `by_path` |
 | "When did symbol X last change?" | `git { mode: "symbol_history", path: F, name: X }` |
 | "Who wrote this line / symbol?" | `git` mode `blame` or `blame_symbol` |
@@ -108,7 +113,7 @@ git only when no basemind tool covers the question.
 | "What's HEAD / branch?" | `admin { mode: "repo" }` |
 | "Show diff between revs for file F" | `git` mode `diff` or `diff_outline` |
 | "What's indexed?" | `admin { mode: "status" }` |
-| "Semantic search over PDFs / Office docs?" | `memory { mode: "documents", query }` |
+| "Search PDFs / Office docs / markdown / config / data files?" | `memory { mode: "documents", query }` |
 | "Recall something the agent stored earlier?" | `memory` mode `get`, `list`, or `search` |
 | "Remember this for future sessions?" | `memory { mode: "put", key, value }` |
 | "Refresh the index after editing code?" | `admin { mode: "rescan", paths?: […] }` |
@@ -176,11 +181,16 @@ A 1000-line file becomes a 30-line table of contents.
 ## Notes
 
 - All paths are repository-relative with forward-slash separators.
-- Lists are capped (`limit`, default 100, max 1000). Index scanners use
-  `scan_cap = limit * 8` to bound work on common names.
-- Matching is substring on names — `code` mode `references` with `name: "bar"` matches
-  `Foo::bar()` and `bar()` alike. There is no scope resolution; cross-check with mode `outline` if
-  disambiguation matters.
+- Lists are capped (`limit`: `symbols`/`grep`/`references`/`callers`/`implementations` default 100,
+  max 1000; `files`/`find` 200, max 5000). Index scanners stop at `scan_cap = limit * 8` (min 2000)
+  and set `total_is_partial`. `max_tokens` budgets a list; `format: "toon"` compacts it.
+- `symbols` is a case-sensitive substring over names. `references` is a name-only substring: `name:
+  "bar"` matches `Foo::bar()` and `bar()` alike, and it is complete (the fast floor). For one
+  specific definition use `callers` (scope-resolved, marks proven hits `resolved`).
+- Cursors from `references`/`callers`/`implementations` survive rescans; `symbols`/`grep`/`files`/
+  `find` cursors do not (`cursor_invalidated`: restart the query).
+- `outline`/`files`/`find`/`grep`/`symbols` do not see markdown or config/data files (`outline` on
+  one errors "file not indexed"). Use `memory` mode `documents`, or Read the file.
 - Git tools require `basemind serve` to be running inside a git repository. Outside a git repo they return a clear error.
 - `memory` modes require basemind to be built with
   `--features full` (or the individual `documents` / `memory` flags). Without them the
@@ -192,7 +202,7 @@ A 1000-line file becomes a 30-line table of contents.
   When that feature is off they are NOT registered on the server at all — agents will simply
   not see them in the tool list. Crawled pages land in the `documents` LanceDB table tagged
   with scope `web:<host>`; `memory` mode `documents` finds them alongside every other ingested
-  document. It searches across ALL documents and has **no `scope` parameter** — you cannot
-  filter results to a single host at query time.
+  document. By default it searches this repo's scope; pass `scope: "web:<host>"` to search one host's
+  pages.
   robots.txt is honoured by default; only `[crawl].respect_robots_txt = false` in
   the repo-root `basemind.toml` (config-file-only) disables it.

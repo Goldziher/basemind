@@ -18,10 +18,11 @@ when you're scripting, batching queries, running in headless environments, or CI
 ## Capabilities
 
 - **Code map across 300+ languages** — tree-sitter outlines, symbol search, references, callers,
-  call graphs, implementations, dependents.
-- **Full-text + symbol search** — indexed regex over content and substring symbol lookup.
+  call graphs, implementations, dependents. Code only: markdown, JSON, YAML, TOML, XML, CSV and
+  similar files are documents (`basemind memory documents`), not in the code map.
+- **Full-text + symbol search** — indexed regex over code content and substring symbol lookup.
 - **Git intelligence** — history, blame, and structural diffs at symbol resolution, plus churn.
-- **Document RAG over 90+ file formats** — PDFs, Office, HTML, email, images (OCR) → semantic search.
+- **Document RAG over 90+ file formats** — PDFs, Office, HTML, email, images (OCR), markdown and config/data files → semantic search.
 - **Shared memory** — per-repo, scope-keyed key-value + semantic memory across sessions.
 - **Web crawl** — scrape / follow-link crawl into the searchable document store.
 - **Cache management** — stats, garbage collection, selective and full clears.
@@ -32,7 +33,8 @@ when you're scripting, batching queries, running in headless environments, or CI
 - Batching multiple queries without interactive delays.
 - Integrating basemind into shell scripts or non-MCP tooling.
 - Controlling tool routing explicitly (no agent routing decisions).
-- Clearing caches destructively (only the CLI allows `--component all`).
+- Clearing or sweeping caches destructively (only the offline `basemind cache clear` accepts
+  `views` / `all`, and only `basemind cache gc` deletes orphaned blobs).
 
 **basemind first, shell/grep/git fallback.** Prefer `basemind code` / `graph` over reading files, over
 `grep`/`rg`, and over naked `git`: use it for code parsing (outlines, references, callers), git
@@ -47,12 +49,14 @@ command covers the question.
 |---|---|---|
 | "Where is X defined?" | `basemind code symbols "X"` | Substring match, optional `--kind` filter. |
 | "What's the shape of file F?" | `basemind code outline path/F` | Add `--l2` for calls + docs. |
-| "What calls X?" (any name) | `basemind code references "X"` | Name match, no scope resolution. |
+| "What calls X?" (any name) | `basemind code references "X"` | Name-only substring, no scope resolution; complete. |
 | "What calls this specific definition?" | `basemind code callers path name [--kind]` | Specific definition lookup. |
 | "Trace the call graph?" | `basemind graph calls "name" [--direction --max-depth]` | BFS over calls. |
 | "What implements / extends X?" | `basemind code implementations "X"` | Rust, Python, TS/TSX, JS. |
 | "What imports module M?" | `basemind code dependents "M"` | Reverse-lookup via imports. |
-| "What files are indexed?" | `basemind code files [--language --path-contains]` | Filter by language/path. |
+| "What code files are indexed?" | `basemind code files [--language --path-contains]` | Code only; filter by language/path. |
+| "Which file is named like X?" | `basemind code find "X"` | Fuzzy filename search. |
+| "One symbol's body?" | `basemind code expand path name` | Raw source of that symbol. |
 | "What changed recently?" | `basemind git recent [--limit N]` | Recent commits with paths. |
 | "When did symbol X last change?" | `basemind git symbol-history path name` | Cross-commit structural hash. |
 | "Who wrote this line / symbol?" | `basemind git blame path` / `blame-symbol path name` | Per-line / per-symbol. |
@@ -61,13 +65,15 @@ command covers the question.
 | "Diff a file between revs?" | `basemind git diff path old new` / `diff-outline path` | File / outline diffs. |
 | "What's indexed?" | `basemind admin status` | File count, languages, cache dir. |
 | "What's HEAD / branch?" | `basemind admin repo` | Branch, HEAD, origin. |
-| "Regex over file contents?" | `basemind code grep "pattern" [--language --path-contains]` | Full-text search. |
-| "Semantic search over docs?" | `basemind memory documents "query"` | Needs `documents` feature. |
+| "Regex over code contents?" | `basemind code grep "pattern" [--language --path-contains]` | Indexed code files; exact total. |
+| "Search markdown / config / PDFs?" | `basemind memory documents "query"` | Needs `documents` feature. |
 | "Recall something stored earlier?" | `basemind memory get "key"` / `list` / `search "q"` | KNN + exact match. |
 | "Remember this for future sessions?" | `basemind memory put "key" "value"` | Delete with `memory delete "key"`. |
 | "Cache size?" | `basemind admin cache-stats` | On-disk size + orphan accounting. |
 | "What cache space is reclaimable?" | `basemind admin gc` | Report orphaned blobs without deleting them. |
-| "Clear caches?" | `basemind admin cache-clear --component blobs --confirm` | Destructive; `views` / `all` require the offline cache command. |
+| "Reclaim orphaned blobs?" | `basemind cache gc` | Cross-workspace sweep (blobs under 6 h old are kept). |
+| "Score retrieval quality?" | `basemind admin eval --tasks tasks.jsonl` | CLI-only; see `benchmarks/eval/README.md`. |
+| "Clear caches?" | `basemind admin cache-clear --component blobs --confirm` | Destructive; `views` / `all` require the offline `basemind cache clear`. |
 | "Pull this URL into RAG?" | `basemind web scrape <url>` | Single page (requires `--features crawl`). |
 | "Ingest a docs site?" | `basemind web crawl <seed-url>` | Link-following crawl. |
 | "What URLs exist on this site?" | `basemind web map <url>` | Sitemap + link discovery. |
@@ -156,9 +162,11 @@ basemind admin cache-clear --component blobs --confirm
 
 - All paths are repository-relative with forward-slash separators.
 - The CLI opens the index read-only; safe to run alongside a live `basemind serve` process.
-- Lists are capped (`--limit`, default 100, max 1000).
-- Matching on symbol names is substring-based; `code` mode `references` with `name: "bar"` matches
-  `Foo::bar()` and `bar()` alike.
+- Lists are capped (`--limit`: symbols/grep/references/callers/implementations default 100, max
+  1000; files/find 200, max 5000).
+- `symbols` is a case-sensitive substring; `references` is a name-only substring (`bar` matches
+  `Foo::bar()` and `bar()`) and complete; `callers` is scope-resolved for one definition.
+- `outline` on a markdown/config/data file errors "file not indexed"; use `memory documents`.
 - Git tools require basemind to be running inside a git repository.
 - `memory` modes require basemind to be built with `--features full`
   (or the individual `documents` / `memory` flags).
