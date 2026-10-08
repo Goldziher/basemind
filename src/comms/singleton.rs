@@ -521,7 +521,7 @@ fn roundtrip(socket_path: &Path, req: &CommsRequest) -> Option<CommsResponse> {
     let mut buf = vec![0u8; rlen];
     stream.read_exact(&mut buf).ok()?;
     match rmp_serde::from_slice::<CommsOut>(&buf).ok()? {
-        CommsOut::Response(resp) => Some(resp),
+        CommsOut::Response(resp) | CommsOut::Reply { response: resp, .. } => Some(resp),
         CommsOut::Notification(_) => None,
     }
 }
