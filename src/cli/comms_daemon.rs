@@ -223,6 +223,17 @@ pub fn run() -> Result<()> {
             }
         });
 
+        // The detached daemon's stdout/stderr land in `daemon.log` (see `singleton_spawn`); keep it
+        // bounded for a daemon that stays up for weeks.
+        let comms_dir_for_log = paths.comms_dir.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(600));
+            loop {
+                tick.tick().await;
+                crate::comms::singleton::trim_daemon_log(&comms_dir_for_log);
+            }
+        });
+
         let store_for_prune = store.clone();
         let broker_for_prune = broker.clone();
         tokio::spawn(async move {

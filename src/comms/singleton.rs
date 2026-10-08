@@ -632,7 +632,7 @@ pub fn probe_alive(_socket_path: &Path) -> bool {
 /// an executable that is not `basemind` is refused outright rather than merely discouraged.
 #[path = "singleton_spawn.rs"]
 mod spawn;
-pub use spawn::{DAEMON_BINARY_ENV, spawn_detached_daemon};
+pub use spawn::{DAEMON_BINARY_ENV, daemon_log_path, spawn_detached_daemon, trim_daemon_log};
 
 #[cfg(test)]
 mod tests {
