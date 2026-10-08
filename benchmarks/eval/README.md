@@ -41,7 +41,7 @@ Every generator takes `--repo`, `--seed`, `--n`, `--exclude GLOB` (repeatable), 
 | generator | mode(s) | gold |
 |---|---|---|
 | `gen_symbols.py` | `symbols` | every def / class / simple assignment target (any depth) whose name contains the query, as `path:line` |
-| `gen_outline.py` | `outline` | `path:line` of every symbol in the file |
+| `gen_outline.py` | `outline` | `path:line` of every module- and class-level def, class and assignment (never function locals) |
 | `gen_references.py` | `references`, `callers` | `path:line` of every `ast.Call` whose callee identifier is the name, cross-checked with `git grep -n -w` |
 | `gen_dependents.py` | `dependents` | files whose import statement text contains the module string |
 | `gen_grep.py` | `grep` | `git grep -n -E` lines with the same path/language filters |
@@ -105,9 +105,10 @@ files in `read` with the same tokenizer, and records `baseline_tokens / basemind
 gold must be non-empty; otherwise the task is listed as withheld. A cheap wrong answer is not a saving.
 
 Per mode the report gives the credited distribution (median and p90 of the ratio and of tokens saved) and compares the
-median ratio with what `src/mcp/savings.rs` would assume for the same response (its fixed multiplier: 3x for
-symbols/references/callers, 5x for outlines, 2x for dependents, 1x "no baseline" for grep, find and git search). A mode
-whose measured median deviates by more than 25% is flagged `DEVIATES`. The harness only reports; it does not change `savings.rs`.
+median ratio with what `src/mcp/savings.rs` would assume for the same response (its fixed per-mode multiplier, calibrated
+from this eval: see the constants in that file; 1x "no baseline" for grep and git search). A mode whose measured median
+deviates by more than 25% is flagged `DEVIATES`. The harness only reports; it does not change `savings.rs`, so re-run it
+and update the constants when a response shape changes. A mode whose median is below 1 claims no saving there.
 
 The measured ratio depends on how heavy your baseline is. Generated baselines model a reasonable agent (a targeted
 `git grep` plus up to three whole-file reads); edit them in the task file to model a different one. Ratios below 1 are
@@ -133,6 +134,7 @@ across hash seeds, the cross-language guard). The harness itself is covered by `
 ## Limitations
 
 - The AST generators (`symbols`, `outline`, `references`, `dependents`) emit Python gold only. The harness and the other generators are language-agnostic.
-- `outline`/`symbols` gold encodes basemind's Python symbol rules as measured today; a grammar change can shift them.
+- `outline`/`symbols` gold encodes basemind's Python symbol rules: module- and class-scope definitions and assignments only. Names bound inside a function or lambda (locals, nested defs) are not indexed, so the generators never descend into function bodies.
+- `find` covers every path basemind indexes (code map plus document tier). Pass `--indexed FILE` to `gen_find.py` (one indexed path per line) so tasks are never drawn from files the scan config leaves out; use `--ext md,rst,...` for a documents-only batch.
 - `docs` and semantic lookups need the `documents` build; without it those tasks error.
 - Gold is derived by syntax and text, not by scope resolution, so it is exact for basemind's name-based tools and only an approximation of "the right answer" for an agent that wanted a specific binding.
