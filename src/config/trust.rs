@@ -123,6 +123,7 @@ pub fn sanitize_repo_config(config: &mut ConfigV1, grants: Grants) {
 const INERT_FIELDS: &[&str] = &[
     "watch.live_l2",
     "cache.file_map_lru",
+    "mcp.transport",
     "memory.enabled",
     "memory.scope_strategy",
     "memory.default_visibility",
