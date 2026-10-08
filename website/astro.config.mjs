@@ -46,7 +46,14 @@ export default defineConfig({
       ],
       plugins: [
         starlightLlmsTxt({
-          exclude: ["reference/cli", "reference/configuration", "reference/architecture", "reference/performance"],
+          exclude: [
+            "reference/cli",
+            "reference/configuration",
+            "reference/architecture",
+            "reference/performance",
+            "reference/memory",
+            "reference/evaluation",
+          ],
           promote: ["index*", "start/**", "concepts/**"],
           minify: { collapseCodeBlocks: true },
           details:
@@ -62,6 +69,7 @@ export default defineConfig({
             { label: "Introduction", slug: "start/introduction" },
             { label: "Installation", slug: "start/installation" },
             { label: "Quickstart", slug: "start/quickstart" },
+            { label: "Upgrading", slug: "start/upgrading" },
           ],
         },
         {
@@ -92,6 +100,8 @@ export default defineConfig({
             { label: "Configuration", slug: "reference/configuration" },
             { label: "Architecture", slug: "reference/architecture" },
             { label: "Performance", slug: "reference/performance" },
+            { label: "Memory and resources", slug: "reference/memory" },
+            { label: "Evaluation", slug: "reference/evaluation" },
           ],
         },
       ],
