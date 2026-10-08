@@ -100,6 +100,20 @@ impl CommsClient {
         }
     }
 
+    /// Forward a fjall-backed reference scan to the daemon (the sole fjall writer). Backs
+    /// `references` / `callers` / `implementations` on a `daemon_writer` serve, which has no index
+    /// to scan. A pure read, so the transparent reconnect-and-retry is replay-safe.
+    pub async fn index_read(
+        &mut self,
+        root: PathBuf,
+        query: crate::comms::index_read_proto::IndexReadQuery,
+    ) -> Result<crate::comms::index_read_proto::IndexReadResult, CommsClientError> {
+        match self.request(CommsRequest::IndexRead { root, query }).await? {
+            CommsResponse::IndexRead(result) => Ok(result),
+            other => Err(self.shape_err(other, "index_read")),
+        }
+    }
+
     /// Forward the code-search keyword (BM25) + exact (symbol-name) lanes to the daemon — the sole
     /// fjall writer, and therefore the only process that can read the BM25 postings and
     /// `symbols_by_name`. Backs `code` mode `semantic` on a reader session, where both lanes would

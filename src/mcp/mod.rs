@@ -63,6 +63,11 @@ mod host;
 mod identity;
 #[cfg(feature = "test-support")]
 pub mod in_memory;
+#[cfg(all(feature = "comms", any(unix, windows)))]
+pub(crate) mod index_read;
+mod index_route;
+#[cfg(test)]
+mod index_route_tests;
 mod kneedle;
 mod l1_cache;
 mod lean;
@@ -822,7 +827,7 @@ mod map_cache_tests {
         let cache = MapCache::build(&store, 0);
         assert_eq!(sym_names(&cache, "a.rs"), vec!["alpha".to_string()]);
         assert_eq!(sym_names(&cache, "b.rs"), vec!["beta".to_string()]);
-        assert!(cache.calls.is_none() && cache.impls.is_none());
+        assert!(!cache.projections_capped());
 
         fs::write(root.join("a.rs"), b"pub fn alpha2() {}\npub fn alpha3() {}\n").unwrap();
         let report = crate::scanner::scan_paths(

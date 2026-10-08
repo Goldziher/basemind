@@ -38,6 +38,30 @@ impl Broker {
         }
     }
 
+    /// Answer a forwarded `references` / `callers` / `implementations` scan from the workspace's
+    /// read-write fjall index. The scans are blocking range walks over whole keyspaces, so they run
+    /// on a blocking thread. A pool/open error becomes a `CommsResponse::Error` (never a torn
+    /// link), which the caller degrades past rather than mistaking for an empty result set.
+    pub(super) async fn on_index_read(
+        &self,
+        root: std::path::PathBuf,
+        query: crate::comms::index_read_proto::IndexReadQuery,
+    ) -> CommsResponse {
+        self.mark_active().await;
+        let pool = Arc::clone(&self.workspaces);
+        match tokio::task::spawn_blocking(move || index_read_via_pool(&pool, &root, &query)).await {
+            Ok(Ok(result)) => CommsResponse::IndexRead(result),
+            Ok(Err(message)) => CommsResponse::Error {
+                code: "index_read_failed".to_string(),
+                message,
+            },
+            Err(join) => CommsResponse::Error {
+                code: "index_read_panicked".to_string(),
+                message: join.to_string(),
+            },
+        }
+    }
+
     /// Answer a forwarded code-search lane read from the workspace's read-write fjall index. Both
     /// lanes live only in fjall — BM25 postings and `symbols_by_name` — so a reader `serve` gets
     /// nothing from either; the daemon holds the sole writer handle and can. Ranking only: chunk
@@ -172,6 +196,31 @@ impl Broker {
             },
         }
     }
+}
+
+/// Run a forwarded [`IndexReadQuery`](crate::comms::index_read_proto::IndexReadQuery) against the
+/// pool's workspace.
+///
+/// The name scan walks the whole `calls_by_callee` partition, so it takes only a cloned
+/// [`IndexDb`](crate::index::IndexDb) handle out of the workspace lock and scans outside it: holding
+/// the per-workspace store lock for that long would stall a rescan behind a read. The other two
+/// reads are bounded (a capped file batch, a small keyspace) and run under the lock because they
+/// also need the store's file entries and blobs.
+pub(crate) fn index_read_via_pool(
+    pool: &super::workspace_pool::WorkspacePool,
+    root: &std::path::Path,
+    query: &crate::comms::index_read_proto::IndexReadQuery,
+) -> Result<crate::comms::index_read_proto::IndexReadResult, String> {
+    use crate::comms::index_read_proto::IndexReadQuery;
+    if let IndexReadQuery::CallScan { name, limit, cursor } = query {
+        let idx = pool
+            .with_workspace(root, |store| store.index_db.clone())
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "the daemon holds this workspace without a fjall index".to_string())?;
+        return crate::mcp::index_read::call_scan(&idx, name, *limit, cursor.as_deref());
+    }
+    pool.with_workspace(root, |store| crate::mcp::index_read::index_read_against(store, query))
+        .map_err(|error| error.to_string())?
 }
 
 /// Answer a [`ResolvedRefQuery`] against an open workspace store. Delegates to the shared

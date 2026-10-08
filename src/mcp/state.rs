@@ -224,7 +224,7 @@ impl ServerState {
             self.shared
                 .cache
                 .load()
-                .projections_capped
+                .projections_capped()
                 .then(types::LifecycleNotice::projections_capped)
         })
     }
@@ -237,20 +237,14 @@ pub(crate) struct MapCache {
     /// content hash. Shared with the snapshot this cache was derived from, so an incremental
     /// rescan is a refcount bump rather than a rebuild.
     l1: Arc<l1_cache::L1Cache>,
-    /// In-RAM callee index, populated ONLY when the Fjall index is unavailable —
-    /// i.e. a read-only `serve` session that lost the single-holder lock to another
-    /// process, or a `daemon_writer` front-end whose store is index-less. Lets
-    /// `find_references` / `find_callers` / `call_graph` answer from the shared L2
-    /// blobs so multiple sessions can use one repo at once. `None` on a writer
-    /// session, which uses the live Fjall index (no extra RAM/build cost).
-    pub(crate) calls: Option<helpers_calls::InRamCallIndex>,
-    /// In-RAM trait→impl index, same read-only-only gating as `calls`. Backs
-    /// `find_implementations` from the L1 blobs when Fjall is held elsewhere.
-    pub(crate) impls: Option<helpers_impls::InRamImplIndex>,
-    /// True when a read-only session's projected call/impl indexes hit their byte cap and were
-    /// truncated, so the answers they back are incomplete. Surfaced through
-    /// [`ServerState::lifecycle_notice`] rather than silently degrading a result to "no matches".
-    pub(crate) projections_capped: bool,
+    /// In-RAM callee index: the LAST-RESORT fallback for a session that has neither a Fjall index
+    /// nor a daemon to forward `references` / `callers` to, and the backing for the whole-corpus
+    /// graph walks (`call_graph`, the architecture map), which cannot afford a round trip per file.
+    /// Built on first use ([`calls_projection`](Self::calls_projection)) and never otherwise, so a
+    /// daemon-backed session that only asks point queries holds none of it.
+    calls: std::sync::OnceLock<helpers_calls::InRamCallIndex>,
+    /// In-RAM trait→impl index, same lazy last-resort role as `calls` for `find_implementations`.
+    impls: std::sync::OnceLock<helpers_impls::InRamImplIndex>,
     /// Fingerprint of the indexed file set this map was built from — see
     /// [`map_fingerprint::index_fingerprint`]. The refresh paths compare it against a freshly
     /// reopened store and SKIP the whole-corpus rebuild when it matches, which is what keeps a
@@ -290,28 +284,18 @@ impl MapCache {
     ///
     /// Unlike the whole-corpus map this replaces, `build` decodes NO L1 blobs: it projects the
     /// index into [`l1_cache::FileIndexView`] and leaves the outlines to be faulted in on demand.
-    /// The read-only projections (`calls` / `impls`) are the exception — a session with no Fjall
-    /// index has nothing else to answer reference queries from — and they are charged against the
-    /// same budget.
+    /// The read-only projections (`calls` / `impls`) are not built here either: they are the
+    /// last-resort fallback for a session that can reach no Fjall index, built lazily on first use
+    /// and charged against the same budget.
     pub(crate) fn build(store: &Store, budget_bytes: u64) -> Self {
         let files = l1_cache::FileIndexView::build(store);
         let l1 = Arc::new(l1_cache::L1Cache::new(store.blobs_dir.clone(), budget_bytes));
-        let mut projections_capped = false;
-        let (calls, impls) = if store.index_db.is_none() {
-            let calls = helpers_calls::InRamCallIndex::build(store, budget_bytes);
-            let impls = helpers_impls::InRamImplIndex::build(&files, &l1, budget_bytes);
-            projections_capped = calls.capped() || impls.capped();
-            (Some(calls), Some(impls))
-        } else {
-            (None, None)
-        };
         Self {
             fingerprint: map_fingerprint::index_fingerprint(store),
             files,
             l1,
-            calls,
-            impls,
-            projections_capped,
+            calls: Default::default(),
+            impls: Default::default(),
             terms: Default::default(),
             #[cfg(feature = "documents")]
             doc_links: Default::default(),
@@ -330,9 +314,8 @@ impl MapCache {
             fingerprint: 0,
             files: l1_cache::FileIndexView::default(),
             l1: Arc::new(l1_cache::L1Cache::placeholder()),
-            calls: None,
-            impls: None,
-            projections_capped: false,
+            calls: Default::default(),
+            impls: Default::default(),
             terms: Default::default(),
             #[cfg(feature = "documents")]
             doc_links: Default::default(),
@@ -362,15 +345,46 @@ impl MapCache {
             fingerprint: 0,
             files: l1_cache::FileIndexView::from_pairs(metas),
             l1,
-            calls: None,
-            impls: None,
-            projections_capped: false,
+            calls: Default::default(),
+            impls: Default::default(),
             terms: Default::default(),
             #[cfg(feature = "documents")]
             doc_links: Default::default(),
             #[cfg(feature = "documents")]
             doc_paths: Default::default(),
         }
+    }
+
+    /// The in-RAM call projection, built on first use. Only reached by a session with no reachable
+    /// Fjall index (see [`calls`](Self::calls)); a build that hits the byte budget is truncated and
+    /// reports it through [`projections_capped`](Self::projections_capped).
+    pub(crate) fn calls_projection(&self) -> &helpers_calls::InRamCallIndex {
+        self.calls.get_or_init(|| {
+            helpers_calls::InRamCallIndex::build(&self.files, self.l1.blobs_dir(), self.l1.budget_bytes())
+        })
+    }
+
+    /// The in-RAM implementation projection, built on first use. See
+    /// [`calls_projection`](Self::calls_projection).
+    pub(crate) fn impls_projection(&self) -> &helpers_impls::InRamImplIndex {
+        self.impls
+            .get_or_init(|| helpers_impls::InRamImplIndex::build(&self.files, &self.l1, self.l1.budget_bytes()))
+    }
+
+    /// Whether either projection has been built. Test seam for the memory bound: a daemon-backed
+    /// session must answer its reference reads without ever allocating one.
+    #[cfg(test)]
+    pub(crate) fn projections_built(&self) -> bool {
+        self.calls.get().is_some() || self.impls.get().is_some()
+    }
+
+    /// True when a projection this session has ALREADY built hit its byte cap, so the answers it
+    /// backed are incomplete. Surfaced through [`ServerState::lifecycle_notice`] rather than
+    /// silently degrading a result to "no matches". `false` until a projection exists, which is why
+    /// the handlers that fall back to one read the notice AFTER running the scan.
+    pub(crate) fn projections_capped(&self) -> bool {
+        self.calls.get().is_some_and(helpers_calls::InRamCallIndex::capped)
+            || self.impls.get().is_some_and(helpers_impls::InRamImplIndex::capped)
     }
 
     /// Number of indexed files this map covers.
@@ -475,35 +489,22 @@ impl MapCache {
     /// an updated path's new view entry names a new hash, so a reader still holding `self` keeps
     /// resolving the old hash and cannot observe the newer content.
     ///
-    /// Only valid on a writer session, where `calls`/`impls` are `None` (a read-only fallback
-    /// session serves those from the blobs and never reaches the rescan path — `scan_and_refresh`
-    /// early-returns on `state.read_only`). If they are somehow present, fall back to a full rebuild
-    /// rather than let the in-RAM call/impl indexes drift out of sync.
+    /// The lazy `calls`/`impls` projections start empty on the derived snapshot, so they are
+    /// rebuilt from the post-rescan file view if ever needed and cannot drift out of sync.
     pub(crate) fn with_delta(
         &self,
         store: &Store,
         updated: &[crate::path::RelPath],
         removed: &[crate::path::RelPath],
     ) -> Self {
-        if self.calls.is_some() || self.impls.is_some() {
-            // Carry doc↔code links (ADR-0008) forward from the previous cache rather than dropping
-            // them: a degraded full rebuild has no off-reactor context to reload the LanceStore.
-            #[cfg(feature = "documents")]
-            {
-                let mut rebuilt = Self::build(store, self.l1.budget_bytes());
-                rebuilt.doc_links = std::sync::Arc::clone(&self.doc_links);
-                return rebuilt;
-            }
-            #[cfg(not(feature = "documents"))]
-            return Self::build(store, self.l1.budget_bytes());
-        }
         let next = Self {
             fingerprint: map_fingerprint::index_fingerprint(store),
             files: self.files.with_delta(store, updated, removed),
             l1: Arc::clone(&self.l1),
-            calls: None,
-            impls: None,
-            projections_capped: self.projections_capped,
+            // Fresh and empty: a derived snapshot rebuilds its projections lazily, so they can never
+            // describe the pre-rescan corpus.
+            calls: Default::default(),
+            impls: Default::default(),
             terms: Default::default(),
             #[cfg(feature = "documents")]
             doc_links: std::sync::Arc::clone(&self.doc_links),
