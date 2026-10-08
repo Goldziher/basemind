@@ -41,9 +41,9 @@ impl BasemindServer {
         content search (Rust `regex` syntax) over EVERY indexed file — use it for a pattern, \
         a string literal or a comment, and prefer `symbols` for a plain identifier; `limit` \
         caps hits, never files, so `total_matches` is exact, and `language` / `path_contains` \
-        narrow the sweep. `files` enumerates indexed paths (`path_contains` / `language` \
-        filters). `find` is fuzzy filename search (fzf/fd-style subsequence, case-insensitive, \
-        ranked by score) — reach for it instead of `find` / `fd` / `ls -R`. `definition` \
+        narrow the sweep. `files` enumerates indexed paths, documents included (`path_contains` / \
+        `language` filters). `find` is fuzzy filename search over code AND document files \
+        (fzf/fd-style subsequence, case-insensitive, ranked by score, weak matches cut) — reach for it instead of `find` / `fd` / `ls -R`. `definition` \
         resolves the reference at `path`:`line`:`column` to the definition it BINDS to — \
         scope-resolved, not name-matched, so it never conflates same-named symbols, and it \
         follows cross-file imports for JS/TS; `line` is 1-based, `column` 0-based bytes; a \
