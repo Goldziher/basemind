@@ -31,6 +31,8 @@ mod daemon_forward_handlers;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 mod daemon_guards;
 #[cfg(all(feature = "comms", any(unix, windows)))]
+mod daemon_handler_helpers;
+#[cfg(all(feature = "comms", any(unix, windows)))]
 mod daemon_handlers;
 /// Second `impl Broker` block: terminal-store-failure detection and the self-shutdown it triggers,
 /// split out of `daemon.rs` for the line cap.
