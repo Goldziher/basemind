@@ -123,6 +123,8 @@ bstr = { version = "1", features = ["serde"] }
 # Streamable-HTTP MCP front-end (comms daemon only): response bodies + query parsing + hyper server. ~keep
 bytes = { version = "1", optional = true }
 clap = { version = "4", features = ["derive", "env"] }
+clap_complete = "4"
+clap_mangen = "0.2"
 crawlberg = { version = "1.10.2", default-features = false, features = ["native-runtime"], optional = true }
 directories = "6"
 fjall = "3.1.12"

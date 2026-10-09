@@ -151,27 +151,27 @@ fn paths_that_resolve_to_the_filesystem_root_are_refused_even_under_the_env_hatc
     );
 }
 
-/// `basemind admin rescan` is a full working-tree walk that reaches `crate::scanner::scan`
+/// `basemind rescan` is a full working-tree walk that reaches `crate::scanner::scan`
 /// in-process, but the tool-subcommand dispatcher never calls the CLI's root guard — so
-/// `cd / && basemind admin rescan` reproduced issue #62 on a verb the guard missed. The guard now
+/// `cd / && basemind rescan` reproduced issue #62 on a verb the guard missed. The guard now
 /// sits at `mcp::helpers::scan_and_refresh`, which is also what the `admin` MCP tool funnels through.
 #[test]
-fn admin_rescan_refuses_a_non_project_root() {
+fn rescan_refuses_a_non_project_root() {
     basemind::store::init_isolated_cache();
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path().canonicalize().expect("canonicalize");
     std::fs::write(root.join("a.rs"), b"pub fn alpha() {}\n").expect("write source");
     let root_str = root.to_str().expect("utf-8 root");
 
-    let (ok, output) = run(&["--root", root_str, "admin", "rescan"], &[]);
-    assert!(!ok, "`basemind admin rescan` on a plain directory must fail: {output}");
+    let (ok, output) = run(&["--root", root_str, "rescan"], &[]);
+    assert!(!ok, "`basemind rescan` on a plain directory must fail: {output}");
     assert!(
         output.contains("refusing to use") && output.contains("basemind init"),
         "the operator gets the same guidance as from `scan`: {output}"
     );
     assert!(
         !working_index(&root).exists(),
-        "a refused `admin rescan` must not have walked the tree"
+        "a refused `rescan` must not have walked the tree"
     );
 }
 

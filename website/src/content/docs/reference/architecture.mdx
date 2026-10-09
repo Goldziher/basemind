@@ -200,7 +200,7 @@ Location: `~/.local/share/basemind/cache/workspaces/<workspace_key>/git-cache/`
 
 Two-tier caching:
 
-- **In-process LRU** (1024 entries per category by default; tune via `basemind serve --git-cache-mem`)
+- **In-process LRU** (1024 entries per category)
 - **Disk store** (SHA-keyed):
   - `commit_files/<sha>.msgpack` — file list for a commit (immutable, never stales)
   - `log/<head_sha>__<scope>.msgpack` — commit log (keyed by HEAD, rolls off naturally)

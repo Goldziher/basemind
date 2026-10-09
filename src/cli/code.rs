@@ -14,24 +14,10 @@ use clap::Subcommand;
 
 use crate::mcp::BasemindServer;
 use crate::mcp::params::*;
-use crate::path::{RelPath, normalize_query_path};
 
+use super::choices::{SearchLane, WireFormat};
 use super::render::{Emit, emit};
-use super::run_tool;
-
-/// Resolve a user-supplied CLI path into the repo-relative `RelPath` key the
-/// index is keyed by (scanner-produced: no leading `./`, never absolute).
-///
-/// `code outline /abs/repo/src/foo.rs` and `code outline ./src/foo.rs` both
-/// resolve to `src/foo.rs`. Paths that escape or fall outside the repository
-/// can't match an indexed file, so we fall back to the raw input and let the
-/// downstream tool report "file not indexed" rather than silently mangling it.
-fn resolve_path(server: &BasemindServer, path: &str) -> RelPath {
-    match normalize_query_path(path, &server.state.shared.root) {
-        Some(rel) => RelPath::from(rel),
-        None => RelPath::from(path),
-    }
-}
+use super::{resolve_path, run_tool};
 
 #[derive(Subcommand, Debug)]
 pub enum CodeCmd {
@@ -136,16 +122,17 @@ pub enum CodeCmd {
         #[arg(long)]
         limit: Option<u32>,
         /// Retrieval lane: `hybrid` (default), `semantic`, or `keyword`.
-        #[arg(long)]
-        lane: Option<String>,
+        #[arg(long, value_enum)]
+        lane: Option<SearchLane>,
         /// Run the cross-encoder rerank pass over the fused hits (first call downloads a model).
         #[arg(long)]
         rerank: bool,
         /// Reranker preset name (default `bge-reranker-base`).
         #[arg(long)]
         rerank_preset: Option<String>,
-        #[arg(long)]
-        format: Option<String>,
+        /// Wire encoding of the response body.
+        #[arg(long, value_enum)]
+        format: Option<WireFormat>,
     },
     /// Fetch one code chunk's source body by path. Needs `--features code-search`.
     Chunk {
@@ -260,10 +247,10 @@ pub async fn run(server: &BasemindServer, cmd: CodeCmd, opts: &Emit, out: &mut i
         } => CodeParams {
             query: Some(query),
             limit,
-            lane,
+            lane: lane.map(|l| l.as_str().to_string()),
             rerank: rerank.then_some(true),
             rerank_preset,
-            format,
+            format: format.map(|f| f.as_str().to_string()),
             ..CodeParams::new(CodeMode::Semantic)
         },
         CodeCmd::Chunk {

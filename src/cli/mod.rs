@@ -14,12 +14,14 @@
 pub mod admin;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 pub mod agents;
+pub mod choices;
 pub mod code;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 pub mod comms_daemon;
 pub mod context;
 pub mod git;
 pub mod graph;
+pub mod hook;
 pub mod init;
 pub mod init_gitignore;
 pub mod init_rules;
@@ -65,14 +67,30 @@ pub enum ToolCmd {
     /// On-demand web ingestion (needs `--features crawl`).
     #[command(subcommand)]
     Web(web::WebCmd),
-    /// Server + cache administration: status, repo, rescan, caches, telemetry, compression.
+    /// Server administration: repo identity, telemetry, compression, tokens, eval.
     #[command(subcommand)]
     Admin(admin::AdminCmd),
+    /// Index health for this workspace: file counts, languages, scan age.
+    Status,
     /// Headless agent shell sessions: spawn / send / capture / kill / list / broadcast
     /// (needs `--features shells`).
     #[cfg(all(feature = "shells", any(unix, windows)))]
     #[command(subcommand)]
     Shell(shell::ShellCmd),
+}
+
+/// Resolve a user-supplied CLI path into the repo-relative `RelPath` key the index is keyed by
+/// (scanner-produced: no leading `./`, never absolute). Every path argument of every tool subcommand
+/// goes through this, so `/abs/repo/src/foo.rs`, `./src/foo.rs` and `src/foo.rs` are the same file.
+///
+/// Relative inputs are taken relative to the repository root (not the shell's cwd). Paths that
+/// escape or fall outside the repository can't match an indexed file, so the raw input is kept and
+/// the downstream tool reports "file not indexed" rather than silently mangling it.
+pub(crate) fn resolve_path(server: &crate::mcp::BasemindServer, path: &str) -> crate::path::RelPath {
+    match crate::path::normalize_query_path(path, &server.state.shared.root) {
+        Some(rel) => crate::path::RelPath::from(rel),
+        None => crate::path::RelPath::from(path),
+    }
 }
 
 /// Map a tool `Result<CallToolResult, McpError>` into an `anyhow::Result`,
@@ -123,6 +141,7 @@ pub fn run(
             ToolCmd::Memory(m) => memory::run(&server, m, &opts, &mut out).await?,
             ToolCmd::Web(w) => web::run(&server, w, &opts, &mut out).await?,
             ToolCmd::Admin(a) => admin::run(&server, a, &opts, &mut out).await?,
+            ToolCmd::Status => admin::run_status(&server, &opts, &mut out).await?,
             #[cfg(all(feature = "shells", any(unix, windows)))]
             ToolCmd::Shell(s) => shell::run(&server, s, &opts, &mut out).await?,
         }

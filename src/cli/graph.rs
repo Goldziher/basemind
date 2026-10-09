@@ -14,27 +14,18 @@ use clap::Subcommand;
 
 use crate::mcp::BasemindServer;
 use crate::mcp::params::*;
-use crate::path::{RelPath, normalize_query_path};
 
+use super::choices::*;
 use super::render::{Emit, emit};
-use super::run_tool;
-
-/// Resolve a user-supplied CLI path into the repo-relative key the index is keyed by, falling back
-/// to the raw input so the tool reports "not indexed" rather than silently mangling it.
-fn resolve_path(server: &BasemindServer, path: &str) -> RelPath {
-    match normalize_query_path(path, &server.state.shared.root) {
-        Some(rel) => RelPath::from(rel),
-        None => RelPath::from(path),
-    }
-}
+use super::{resolve_path, run_tool};
 
 #[derive(Subcommand, Debug)]
 pub enum GraphCmd {
     /// Walk the call chain up (callers) or down (callees) from one function.
     Calls {
         name: String,
-        #[arg(long, default_value = "callers")]
-        direction: String,
+        #[arg(long, value_enum, default_value_t = CallDirection::Callers)]
+        direction: CallDirection,
         #[arg(long)]
         path: Option<String>,
         #[arg(long)]
@@ -47,12 +38,12 @@ pub enum GraphCmd {
         name: String,
         #[arg(long)]
         path: Option<String>,
-        #[arg(long, default_value = "both")]
-        direction: String,
+        #[arg(long, value_enum, default_value_t = NeighborDirection::Both)]
+        direction: NeighborDirection,
         #[arg(long)]
         depth: Option<u32>,
-        #[arg(long, default_value = "all")]
-        edges: String,
+        #[arg(long, value_enum, default_value_t = EdgeLane::All)]
+        edges: EdgeLane,
         #[arg(long)]
         min_confidence: Option<f32>,
         #[arg(long)]
@@ -66,8 +57,8 @@ pub enum GraphCmd {
         from_path: Option<String>,
         #[arg(long)]
         to_path: Option<String>,
-        #[arg(long, default_value = "all")]
-        edges: String,
+        #[arg(long, value_enum, default_value_t = EdgeLane::All)]
+        edges: EdgeLane,
         /// Include containment (file→symbol) edges in the search.
         #[arg(long)]
         include_contains: bool,
@@ -81,8 +72,8 @@ pub enum GraphCmd {
         path: Option<String>,
         #[arg(long)]
         depth: Option<u32>,
-        #[arg(long, default_value = "all")]
-        edges: String,
+        #[arg(long, value_enum, default_value_t = EdgeLane::All)]
+        edges: EdgeLane,
         #[arg(long)]
         min_confidence: Option<f32>,
         #[arg(long)]
@@ -90,10 +81,10 @@ pub enum GraphCmd {
     },
     /// Cluster the code-graph into de-facto modules.
     Communities {
-        #[arg(long, default_value = "all")]
-        edges: String,
-        #[arg(long, default_value = "label_propagation")]
-        algorithm: String,
+        #[arg(long, value_enum, default_value_t = EdgeLane::All)]
+        edges: EdgeLane,
+        #[arg(long, value_enum, default_value_t = CommunityAlgorithm::LabelPropagation)]
+        algorithm: CommunityAlgorithm,
         #[arg(long)]
         min_confidence: Option<f32>,
         #[arg(long)]
@@ -103,16 +94,17 @@ pub enum GraphCmd {
     },
     /// Whole-repo architecture map ranked by graph centrality + git churn.
     Map {
-        #[arg(long, default_value = "module")]
-        granularity: String,
+        #[arg(long, value_enum, default_value_t = Granularity::Module)]
+        granularity: Granularity,
         #[arg(long)]
         focus: Option<String>,
         #[arg(long)]
         depth: Option<u32>,
-        #[arg(long, default_value = "calls")]
-        edges: String,
-        #[arg(long, default_value_t = true)]
-        include_churn: bool,
+        #[arg(long, value_enum, default_value_t = EdgeLane::Calls)]
+        edges: EdgeLane,
+        /// Skip the git-churn overlay (it is on by default).
+        #[arg(long)]
+        no_churn: bool,
         #[arg(long)]
         churn_window: Option<u32>,
         #[arg(long)]
@@ -124,14 +116,14 @@ pub enum GraphCmd {
     },
     /// Render the code-graph to a text format (node_link/dot/mermaid/graphml/cypher/html/svg).
     Export {
-        #[arg(long, default_value = "node_link")]
-        format: String,
+        #[arg(long, value_enum, default_value_t = ExportFormat::NodeLink)]
+        format: ExportFormat,
         #[arg(long)]
         focus: Option<String>,
-        #[arg(long, default_value = "all")]
-        edges: String,
-        #[arg(long, default_value = "label_propagation")]
-        algorithm: String,
+        #[arg(long, value_enum, default_value_t = EdgeLane::All)]
+        edges: EdgeLane,
+        #[arg(long, value_enum, default_value_t = CommunityAlgorithm::LabelPropagation)]
+        algorithm: CommunityAlgorithm,
         #[arg(long)]
         min_confidence: Option<f32>,
         #[arg(long)]
@@ -144,14 +136,14 @@ pub enum GraphCmd {
     },
     /// Render a visual view (html/svg) and open it in your default desktop viewer.
     Display {
-        #[arg(long, default_value = "html")]
-        format: String,
+        #[arg(long, value_enum, default_value_t = VisualFormat::Html)]
+        format: VisualFormat,
         #[arg(long)]
         focus: Option<String>,
-        #[arg(long, default_value = "all")]
-        edges: String,
-        #[arg(long, default_value = "label_propagation")]
-        algorithm: String,
+        #[arg(long, value_enum, default_value_t = EdgeLane::All)]
+        edges: EdgeLane,
+        #[arg(long, value_enum, default_value_t = CommunityAlgorithm::LabelPropagation)]
+        algorithm: CommunityAlgorithm,
         #[arg(long)]
         min_confidence: Option<f32>,
         #[arg(long)]
@@ -165,14 +157,14 @@ pub enum GraphCmd {
     /// Return a browsable URL for the interactive graph UI — a live `http://…/ui` page when a
     /// basemind daemon is serving, else a `file://` export.
     Open {
-        #[arg(long, default_value = "html")]
-        format: String,
+        #[arg(long, value_enum, default_value_t = VisualFormat::Html)]
+        format: VisualFormat,
         #[arg(long)]
         focus: Option<String>,
-        #[arg(long, default_value = "all")]
-        edges: String,
-        #[arg(long, default_value = "label_propagation")]
-        algorithm: String,
+        #[arg(long, value_enum, default_value_t = EdgeLane::All)]
+        edges: EdgeLane,
+        #[arg(long, value_enum, default_value_t = CommunityAlgorithm::LabelPropagation)]
+        algorithm: CommunityAlgorithm,
         #[arg(long)]
         min_confidence: Option<f32>,
         #[arg(long)]
@@ -196,7 +188,7 @@ pub async fn run(server: &BasemindServer, cmd: GraphCmd, opts: &Emit, out: &mut 
             max_nodes,
         } => GraphParams {
             name: Some(name),
-            direction: Some(direction),
+            direction: Some(direction.as_str().to_string()),
             path: path.map(|s| resolve_path(server, &s)),
             max_depth,
             max_nodes,
@@ -213,9 +205,9 @@ pub async fn run(server: &BasemindServer, cmd: GraphCmd, opts: &Emit, out: &mut 
         } => GraphParams {
             name: Some(name),
             path: path.map(|s| resolve_path(server, &s)),
-            direction: Some(direction),
+            direction: Some(direction.as_str().to_string()),
             depth,
-            edges: Some(edges),
+            edges: Some(edges.as_str().to_string()),
             min_confidence,
             max_nodes,
             ..GraphParams::new(GraphMode::Neighbors)
@@ -233,7 +225,7 @@ pub async fn run(server: &BasemindServer, cmd: GraphCmd, opts: &Emit, out: &mut 
             from_path: from_path.map(|s| resolve_path(server, &s)),
             to: Some(to),
             to_path: to_path.map(|s| resolve_path(server, &s)),
-            edges: Some(edges),
+            edges: Some(edges.as_str().to_string()),
             include_contains: Some(include_contains),
             min_confidence,
             ..GraphParams::new(GraphMode::Path)
@@ -249,7 +241,7 @@ pub async fn run(server: &BasemindServer, cmd: GraphCmd, opts: &Emit, out: &mut 
             name: Some(name),
             path: path.map(|s| resolve_path(server, &s)),
             depth,
-            edges: Some(edges),
+            edges: Some(edges.as_str().to_string()),
             min_confidence,
             max_nodes,
             ..GraphParams::new(GraphMode::Subgraph)
@@ -261,8 +253,8 @@ pub async fn run(server: &BasemindServer, cmd: GraphCmd, opts: &Emit, out: &mut 
             max_communities,
             members_per_community,
         } => GraphParams {
-            edges: Some(edges),
-            algorithm: Some(algorithm),
+            edges: Some(edges.as_str().to_string()),
+            algorithm: Some(algorithm.as_str().to_string()),
             min_confidence,
             max_communities,
             members_per_community,
@@ -273,17 +265,17 @@ pub async fn run(server: &BasemindServer, cmd: GraphCmd, opts: &Emit, out: &mut 
             focus,
             depth,
             edges,
-            include_churn,
+            no_churn,
             churn_window,
             max_nodes,
             max_edges,
             max_tokens,
         } => GraphParams {
-            granularity: Some(granularity),
-            focus: focus.map(RelPath::from),
+            granularity: Some(granularity.as_str().to_string()),
+            focus: focus.map(|s| resolve_path(server, &s)),
             depth,
-            edges: Some(edges),
-            include_churn: Some(include_churn),
+            edges: Some(edges.as_str().to_string()),
+            include_churn: Some(!no_churn),
             churn_window,
             max_nodes,
             max_edges,
@@ -300,10 +292,10 @@ pub async fn run(server: &BasemindServer, cmd: GraphCmd, opts: &Emit, out: &mut 
             max_edges,
             write,
         } => GraphParams {
-            format: Some(format),
-            focus: focus.map(RelPath::from),
-            edges: Some(edges),
-            algorithm: Some(algorithm),
+            format: Some(format.as_str().to_string()),
+            focus: focus.map(|s| resolve_path(server, &s)),
+            edges: Some(edges.as_str().to_string()),
+            algorithm: Some(algorithm.as_str().to_string()),
             min_confidence,
             max_nodes,
             max_edges,
@@ -320,10 +312,10 @@ pub async fn run(server: &BasemindServer, cmd: GraphCmd, opts: &Emit, out: &mut 
             max_edges,
             no_open,
         } => GraphParams {
-            format: Some(format),
-            focus: focus.map(RelPath::from),
-            edges: Some(edges),
-            algorithm: Some(algorithm),
+            format: Some(format.as_str().to_string()),
+            focus: focus.map(|s| resolve_path(server, &s)),
+            edges: Some(edges.as_str().to_string()),
+            algorithm: Some(algorithm.as_str().to_string()),
             min_confidence,
             max_nodes,
             max_edges,
@@ -340,10 +332,10 @@ pub async fn run(server: &BasemindServer, cmd: GraphCmd, opts: &Emit, out: &mut 
             max_edges,
             no_open,
         } => GraphParams {
-            format: Some(format),
-            focus: focus.map(RelPath::from),
-            edges: Some(edges),
-            algorithm: Some(algorithm),
+            format: Some(format.as_str().to_string()),
+            focus: focus.map(|s| resolve_path(server, &s)),
+            edges: Some(edges.as_str().to_string()),
+            algorithm: Some(algorithm.as_str().to_string()),
             min_confidence,
             max_nodes,
             max_edges,

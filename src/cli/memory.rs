@@ -18,6 +18,7 @@ use crate::mcp::mode::MemoryMode;
 use crate::mcp::params::{Lenient, Parameters};
 use crate::mcp::types_memory::{MemoryParams, Visibility};
 
+use super::choices::ProposalKind;
 use super::render::{Emit, emit};
 use super::run_tool;
 
@@ -129,8 +130,8 @@ pub enum MemoryCmd {
     /// List pending governance proposals.
     Proposals {
         /// Filter by kind: `skill` or `memory` (default: all).
-        #[arg(long)]
-        kind: Option<String>,
+        #[arg(long, value_enum)]
+        kind: Option<ProposalKind>,
         /// Maximum results to return (default 100).
         #[arg(long)]
         limit: Option<u32>,
@@ -275,7 +276,7 @@ pub async fn run(server: &BasemindServer, cmd: MemoryCmd, opts: &Emit, out: &mut
             ..params(MemoryMode::Mine)
         },
         MemoryCmd::Proposals { kind, limit } => MemoryParams {
-            kind,
+            kind: kind.map(|k| k.as_str().to_string()),
             limit,
             ..params(MemoryMode::Proposals)
         },

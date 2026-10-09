@@ -12,8 +12,9 @@ use clap::Subcommand;
 use crate::mcp::BasemindServer;
 use crate::mcp::params::*;
 
+use super::choices::{CommitField, HashMode};
 use super::render::{Emit, emit};
-use super::run_tool;
+use super::{resolve_path, run_tool};
 
 #[derive(Subcommand, Debug)]
 pub enum GitCmd {
@@ -35,8 +36,8 @@ pub enum GitCmd {
         pattern: String,
         /// Field to search: `author` (name + email), `message` (summary + body), or `all`
         /// (default).
-        #[arg(long)]
-        field: Option<String>,
+        #[arg(long, value_enum)]
+        field: Option<CommitField>,
         /// Max commits to return (default 20, max 100).
         #[arg(long)]
         limit: Option<u32>,
@@ -105,8 +106,8 @@ pub enum GitCmd {
         kind: Option<String>,
         #[arg(long)]
         limit: Option<u32>,
-        #[arg(long)]
-        hash_mode: Option<String>,
+        #[arg(long, value_enum)]
+        hash_mode: Option<HashMode>,
     },
 }
 
@@ -121,12 +122,12 @@ pub async fn run(server: &BasemindServer, cmd: GitCmd, opts: &Emit, out: &mut im
         },
         GitCmd::Search { pattern, field, limit } => GitParams {
             pattern: Some(pattern),
-            field,
+            field: field.map(|f| f.as_str().to_string()),
             limit,
             ..GitParams::new(GitMode::Search)
         },
         GitCmd::Touching { path, limit } => GitParams {
-            path: Some(path.as_str().into()),
+            path: Some(resolve_path(server, &path)),
             limit,
             ..GitParams::new(GitMode::Touching)
         },
@@ -142,13 +143,13 @@ pub async fn run(server: &BasemindServer, cmd: GitCmd, opts: &Emit, out: &mut im
             ..GitParams::new(GitMode::Churn)
         },
         GitCmd::Diff { path, rev_old, rev_new } => GitParams {
-            path: Some(path.as_str().into()),
+            path: Some(resolve_path(server, &path)),
             rev_old: Some(rev_old),
             rev_new: Some(rev_new),
             ..GitParams::new(GitMode::Diff)
         },
         GitCmd::DiffOutline { path, rev } => GitParams {
-            path: Some(path.as_str().into()),
+            path: Some(resolve_path(server, &path)),
             rev,
             ..GitParams::new(GitMode::DiffOutline)
         },
@@ -159,7 +160,7 @@ pub async fn run(server: &BasemindServer, cmd: GitCmd, opts: &Emit, out: &mut im
             rev,
             limit,
         } => GitParams {
-            path: Some(path.as_str().into()),
+            path: Some(resolve_path(server, &path)),
             line_start,
             line_end,
             rev,
@@ -173,7 +174,7 @@ pub async fn run(server: &BasemindServer, cmd: GitCmd, opts: &Emit, out: &mut im
             rev,
             limit,
         } => GitParams {
-            path: Some(path.as_str().into()),
+            path: Some(resolve_path(server, &path)),
             name: Some(name),
             kind,
             rev,
@@ -187,11 +188,11 @@ pub async fn run(server: &BasemindServer, cmd: GitCmd, opts: &Emit, out: &mut im
             limit,
             hash_mode,
         } => GitParams {
-            path: Some(path.as_str().into()),
+            path: Some(resolve_path(server, &path)),
             name: Some(name),
             kind,
             limit,
-            hash_mode,
+            hash_mode: hash_mode.map(|m| m.as_str().to_string()),
             ..GitParams::new(GitMode::SymbolHistory)
         },
     };

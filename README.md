@@ -1023,7 +1023,7 @@ machine-readable output.
 | `path <from> <to> [--edges --include-contains]` | Confidence-weighted shortest route between two symbols. |
 | `subgraph <name> [--depth --edges --max-nodes]` | The neighborhood cut to its most central nodes — readable, not a dump. |
 | `communities [--algorithm --max-communities]` | Cluster the graph into de-facto modules with deterministic labels. |
-| `map [--granularity --focus --depth --edges --include-churn]` | Architecture overview: hub modules/symbols ranked by centrality + churn, plus dependency cycles (SCCs). `--edges` selects lanes (`calls`/`imports`/`inherits`/`both`/`all`); every edge carries a provenance tag (`extracted`/`inferred`/`ambiguous`) + confidence. |
+| `map [--granularity --focus --depth --edges --no-churn]` | Architecture overview: hub modules/symbols ranked by centrality + churn, plus dependency cycles (SCCs). `--edges` selects lanes (`calls`/`imports`/`inherits`/`both`/`all`); every edge carries a provenance tag (`extracted`/`inferred`/`ambiguous`) + confidence. |
 | `export [--format --focus --edges --write]` | Render as node-link JSON / DOT / Mermaid / GraphML / Cypher / HTML / SVG. |
 | `display [--format --no-open]` | Open a rendered view in the human's desktop viewer. `--no-open` writes the artifact and returns its path. |
 | `open [--format --no-open]` | Return a live `http://…/ui` URL for the interactive graph (or a `file://` export). The live page needs the daemon's HTTP front-end, which is opt-in — set `BASEMIND_ALLOW_HTTP=1` in the daemon's environment; without it you get the `file://` export. `--no-open` launches nothing. |
@@ -1049,8 +1049,8 @@ machine-readable output.
 | `list [--prefix]` | List keys, optionally by prefix. |
 | `search <query>` | Search stored values by meaning. |
 | `documents <query>` | Search indexed PDFs / Office / HTML / images by meaning. |
-| `mine [--commits --min-count --min-confidence --max-files]` | Suggest notes from files that change together. |
-| `proposals [--kind --limit]` | List pending suggestions. |
+| `mine [--window --min-support --min-confidence --max-files-per-commit]` | Suggest notes from files that change together. |
+| `proposals [--kind skill\|memory --limit]` | List pending suggestions. |
 | `accept <id> [--key]` / `reject <id> [--reason]` | Keep a suggestion / dismiss it for good. |
 | `audit [--key --individual --dry-run --include-archived]` | Recompute memory importance, archive stale entries, refresh verdicts. |
 
@@ -1058,21 +1058,21 @@ machine-readable output.
 
 | Command | Purpose |
 |---|---|
-| `status` / `repo` | Index health (files, languages, scan state) / git identity (branch, HEAD, origin). |
-| `rescan [PATH…] [--full]` | Re-index the working tree, or only the given paths. |
-| `cache-stats` / `gc` | On-disk footprint + process RAM / non-destructive report of reclaimable blobs (the sweep itself is `basemind cache gc`). |
-| `cache-clear --component <c> [--confirm]` | Clear one cache component (`views`/`all` need the offline `basemind cache clear`). |
-| `telemetry [--window --tool]` | What's been queried and how many tokens were saved. |
-| `compress` / `delta` / `checkpoint` / `waste` | Outline a file, diff a re-read, summarize a session, flag wasteful tool use. |
+| `repo` | Git identity (branch, HEAD, origin). Index health is the top-level `basemind status`. |
+| `telemetry [--window --tool]` | What's been queried and how many tokens were saved. `--window` is one of `today`, `1h`, `24h`, `all`. |
+| `compress [--path --text --level --target-tokens --no-preserve-code]` | Outline an indexed file, or shrink prose. `--level` is one of `off`, `light`, `moderate`, `aggressive`, `maximum`. |
 | `eval --tasks <file> [--out --report --markdown --baseline --tolerance --cost-tolerance --min-recall --warmup --mode]` | Score retrieval quality and token savings against gold from a JSONL task file; `--baseline` gates regressions. See [`benchmarks/eval/`](benchmarks/eval/README.md). |
 | `tokens --stdin` | Count tokens in stdin with the real o200k tokenizer (needs the `tokenizer` feature). |
+
+The other former `admin` verbs live at the top level: `status`, `rescan`, `cache stats|gc|clear`, `delta`,
+`checkpoint` and `detect-waste`.
 
 **Cache (`basemind cache`)**
 
 | Command | Purpose |
 |---|---|
 | `stats` | Disk footprint (per-component + total, matches `du`) and process RAM. |
-| `gc` | Reap blobs no workspace on the machine references. Cross-workspace reference-counted, keeps blobs younger than 6 h (`BASEMIND_BLOB_GC_GRACE_SECS`), serialised by a machine-wide lock. |
+| `gc [--dry-run]` | Reap blobs no workspace on the machine references. Cross-workspace reference-counted, keeps blobs younger than 6 h (`BASEMIND_BLOB_GC_GRACE_SECS`), serialised by a machine-wide lock. `--dry-run` only counts the blobs in the store and deletes nothing. |
 | `clear --component <comp>` | Clear part of the cache (`views`, `blobs`, `git-cache`, `all`, …). |
 
 **Web (`basemind web`)**
@@ -1128,15 +1128,18 @@ Every command takes `--as-agent <ID>` to act as a named sub-identity.
 | Command | Purpose |
 |---|---|
 | `scan` / `rescan <path>` | Full scan / update one path. |
+| `status` | Index health for this workspace: file counts, languages, scan age. |
+| `doctor` | Check root, config, index, grammars, pre-commit hook and daemon; exits 1 on a failed check. |
+| `completions <shell>` / `man` | Print a shell completion script (`bash`, `zsh`, `fish`, `elvish`, `powershell`) / the man page (roff) to stdout. |
 | `watch` | Keep the index fresh as files change (no server). |
-| `serve [--no-watch]` | Stdio MCP entry point: ensures the daemon and relays to it (needs `--features comms`). The daemon keeps the index fresh by default. |
+| `serve` | Stdio MCP entry point: ensures the daemon and relays to it (needs `--features comms`). The daemon keeps the index fresh by default. |
 | `daemon ensure` | Ensure the daemon and its HTTP transport are up and print the MCP URL (needs `--features comms`). |
 | `statusline` | One-line summary of the daemon's active workspaces for a shell prompt; prints nothing when no daemon runs. |
 | `init [--config-dir .config\|.config/basemind --rules-target --settings-target --print]` | Re-runnable onboarding: write `basemind.toml` (at the root or under the `.config/` convention), select capabilities, inject usage rules. |
 | `lang <list\|install\|clean>` | Manage downloaded language grammars. |
-| `hook install` | Add a git pre-commit hook that runs `basemind scan --staged`. |
-| `compress-output` / `delta --old <path>` | Backends for the optional guardrails above. |
-| `checkpoint` / `detect-waste` | Summarize a session / flag wasteful tool use. |
+| `hook install [--force]` | Add a git pre-commit hook that runs `basemind scan --staged`. Honours `core.hooksPath`, works in linked worktrees, never blocks a commit, and refuses to overwrite a hook it did not write unless `--force` (the old one is kept as `pre-commit.bak`). |
+| `compress-output` / `delta --old <path> [--new <path>]` | Backends for the optional guardrails above. |
+| `checkpoint` / `detect-waste [--log <path>]` | Summarize a session / flag wasteful tool use. |
 
 <!-- markdownlint-enable MD013 -->
 

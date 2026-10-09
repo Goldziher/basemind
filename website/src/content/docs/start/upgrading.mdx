@@ -54,7 +54,7 @@ document kept the same content hash as its live document blob and were pinned fo
 A second scan after the upgrade is a no-op: nothing is migrated, refreshed or reclaimed.
 
 <Aside type="caution">
-The `admin` tool's `gc` mode (`basemind admin gc`, MCP `admin` mode `gc`) is still report-only. A
+The MCP `admin` tool's `gc` mode is still report-only (the CLI equivalent is `basemind cache gc --dry-run`). A
 session cannot sweep from inside itself without racing its own rescans. Use `basemind cache gc` to
 reclaim space.
 </Aside>

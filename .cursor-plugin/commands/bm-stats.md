@@ -18,7 +18,7 @@ RAM usage.
 
 Invoke `/bm-stats` (default window `today`) or `/bm-stats <today|1h|24h|all>`. Window: $ARGUMENTS
 
-1. **Resource footprint.** MCP `admin { mode: "cache_stats" }`, or CLI `basemind admin cache-stats` (add `--json` to
+1. **Resource footprint.** MCP `admin { mode: "cache_stats" }`, or CLI `basemind cache stats` (add `--json` to
    parse). Report: `total_bytes` (matches `du`), the per-component breakdown (blobs / views /
    git-history / lance / git-cache / telemetry / other), and process RAM (`rss_bytes` +
    `peak_rss_bytes`). If `blob_accounting_ok` is `false`, note that orphan accounting was skipped
