@@ -24,6 +24,7 @@ impl BasemindServer {
     // emits as `$ref` into `$defs` — the construct that silently dropped the whole registry in
     // GH #50. The per-mode shapes are documented in the description instead. ~keep
     #[tool(
+        title = "Memory and documents",
         description = "Durable repo-scoped memory plus retrieval over indexed documents: remember \
         this, recall what we know, search the PDFs, and review mined suggestions. `mode` is \
         required. `put` writes (upserts) a note under a key so later sessions and other agents \

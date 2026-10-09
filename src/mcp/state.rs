@@ -31,7 +31,7 @@ use crate::store::Store;
 ///
 /// Holds one [`Arc<SharedReadStack>`](super::SharedReadStack) (the heavy read state, shared across
 /// connections) plus this connection's own identity. Field accesses to the shared read stack go
-/// through [`shared`](Self::shared); the identity fields (`agent_id`, `comms_clients`, `log_level`)
+/// through [`shared`](Self::shared); the identity fields (`agent_id`, `comms_clients`)
 /// are read directly.
 pub(crate) struct ServerState {
     /// The workspace-level read stack shared across every connection to this `(root, view)`.
@@ -59,10 +59,6 @@ pub(crate) struct ServerState {
     /// Bounded per-session high-water cache for mailbox notices piggybacked onto tool responses.
     #[cfg(all(feature = "comms", any(unix, windows)))]
     pub(crate) delivered_notifications: tokio::sync::Mutex<lru::LruCache<String, ()>>,
-    /// Minimum logging severity the client asked for via `logging/setLevel`, as an ordinal
-    /// (see [`super::notifications::level_ordinal`]). Defaults to `Info`. Checked before every log emit so
-    /// the server honors the client's verbosity preference. Per-connection.
-    pub(crate) log_level: std::sync::atomic::AtomicU8,
     /// Whether this server advertises the lean three-tool surface (see [`super::lean`]). Resolved
     /// ONCE at construction from `BASEMIND_MCP_LEAN` (the value does not change mid-session), so the
     /// decision is stable and per-server rather than a per-request global-env read — which lets
@@ -91,7 +87,6 @@ impl ServerState {
                 std::num::NonZeroUsize::new(DELIVERED_NOTIFICATION_CAP)
                     .expect("notification cache capacity is non-zero"),
             )),
-            log_level: std::sync::atomic::AtomicU8::new(super::notifications::DEFAULT_LOG_ORDINAL),
             lean: std::sync::atomic::AtomicBool::new(super::lean::lean_mode_enabled()),
         }
     }

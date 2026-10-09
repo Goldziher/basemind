@@ -401,7 +401,6 @@ impl BasemindServer {
                 std::num::NonZeroUsize::new(state::DELIVERED_NOTIFICATION_CAP)
                     .expect("notification cache capacity is non-zero"),
             )),
-            log_level: std::sync::atomic::AtomicU8::new(notifications::DEFAULT_LOG_ORDINAL),
             lean: std::sync::atomic::AtomicBool::new(lean::lean_mode_enabled()),
         });
         Self::spawn_comms_presence(&state);

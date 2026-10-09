@@ -22,6 +22,7 @@ impl BasemindServer {
     // emits as `$ref` into `$defs` — the construct that silently dropped the whole registry in
     // GH #50. The per-mode shapes are documented in the description instead. ~keep
     #[tool(
+        title = "Admin",
         description = "Operate basemind itself: index health, re-indexing, cache footprint and \
         cleanup, usage telemetry, and context-shrinking text tools. `mode` is required. `status` \
         reports this workspace's indexed state — file count, per-language breakdown, total bytes, \

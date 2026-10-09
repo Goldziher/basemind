@@ -1,7 +1,7 @@
 //! `ServerHandler` trait implementation for [`BasemindServer`], split out of `mod.rs` to keep both
 //! files under the 1000-line module cap. Behavior is unchanged: this is the same `#[tool_handler]`
 //! impl the macro would generate around the hand-written `list_tools` / `call_tool` / `get_tool` /
-//! prompt / logging / completion overrides.
+//! prompt / completion overrides.
 
 use rmcp::ServerHandler;
 use rmcp::model::{
@@ -10,7 +10,7 @@ use rmcp::model::{
 };
 use rmcp::tool_handler;
 
-use super::{BasemindServer, lean, notifications, tasks};
+use super::{BasemindServer, lean, tasks};
 
 /// SEP-2549 cache TTL advertised on `tools/list` and `prompts/list`. The advertised tool and prompt
 /// sets are fixed for the lifetime of a server process (they change only with the binary/schema, not
@@ -92,9 +92,18 @@ impl ServerHandler for BasemindServer {
             )));
         }
         let should_deliver_comms = request.name != "agents";
+        let cancel_aware = tasks::is_cancel_aware_read(&request.name, request.arguments.as_ref());
         let _admission = admission;
         let tcc = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
-        let response = self.tool_router.call(tcc).await?;
+        // Pure read-only heavy modes race the client's cancellation: the handler future (and the
+        // admission permit it keeps alive alongside) is dropped the moment the request is cancelled.
+        // Mutating modes never take this branch — see `tasks::CANCEL_AWARE_READS`.
+        let response = if cancel_aware {
+            let ct = tcc.request_context.ct.clone();
+            tasks::run_until_cancelled(ct.cancelled(), self.tool_router.call(tcc)).await?
+        } else {
+            self.tool_router.call(tcc).await?
+        };
         #[cfg(all(feature = "comms", any(unix, windows)))]
         let mut response = response;
         #[cfg(all(feature = "comms", any(unix, windows)))]
@@ -173,21 +182,6 @@ impl ServerHandler for BasemindServer {
         self.prompt_router.get_prompt(prompt_context).await
     }
 
-    /// `logging/setLevel`: record the minimum severity the client wants. Subsequent log
-    /// notifications (e.g. from `rescan`) are gated on this threshold.
-    #[allow(deprecated)]
-    async fn set_level(
-        &self,
-        request: rmcp::model::SetLevelRequestParams,
-        _context: rmcp::service::RequestContext<rmcp::RoleServer>,
-    ) -> Result<(), rmcp::ErrorData> {
-        self.state.log_level.store(
-            notifications::level_ordinal(request.level),
-            std::sync::atomic::Ordering::Relaxed,
-        );
-        Ok(())
-    }
-
     /// `completion/complete`: autocomplete a prompt argument from the indexed code map (symbol
     /// names for `trace-symbol`, file paths for `explain-file`). Pure in-RAM prefix scan.
     async fn complete(
@@ -199,14 +193,12 @@ impl ServerHandler for BasemindServer {
         Ok(self.complete_argument(&request))
     }
 
-    #[allow(deprecated)]
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(
             ServerCapabilities::builder()
                 .enable_tools()
                 .enable_prompts()
                 .enable_completions()
-                .enable_logging()
                 .enable_tasks()
                 .build(),
         )

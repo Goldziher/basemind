@@ -29,6 +29,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   release minor (and wiping every cache). The scan summary shows `tier_migrated` and `refreshed`
   counts. The first epoch refreshes symbol signatures produced before the header-only fix.
 - `BASEMIND_BLOB_GC_GRACE_SECS` overrides the 6 hour age below which the blob sweep keeps a blob.
+- `code grep`, `code semantic`, `graph map`, `graph calls` and `memory documents` now honour client
+  cancellation: a `notifications/cancelled` drops the in-flight read and releases its admission permit
+  immediately, answering `-32800 request_cancelled`. Mutating modes (`rescan`, `put`, `accept`, ...) are
+  deliberately excluded and always run to completion.
+- `web crawl` reports MCP progress, one notification per page indexed out of the pages visited. When the
+  call is offloaded as a task, every progress message (rescan and crawl) is also mirrored onto the task's
+  `statusMessage`, so `tasks/get` pollers see the same counter.
+- Each of the nine tools advertises a human-readable `title`.
 
 ### Changed
 
@@ -41,6 +49,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   argument any more. `entity_category` / `keywords_contains` now serialize like their sibling
   optional fields. Per-field descriptions across the `agents`, `code`, `git`, `graph`, `admin`,
   `shell`, `web`, `workspace` and `memory` schemas were tightened (same modes and parameters).
+- MCP logging is retired (SEP-2577 deprecates it): the server no longer advertises the `logging`
+  capability, no longer handles `logging/setLevel`, and `admin rescan` no longer emits the
+  `rescan_complete` log notification. The rescan summary counts are in the tool result and the rescan
+  progress notifications are unchanged.
+- The production `rmcp` dependency drops its default features (only `base64` was dropped).
 - `code outline`, `symbols` and the code map no longer index names bound inside a function, method or
   lambda body (Python `x = ...` in a `def`, JS/TS `const` in a function, Rust `let`/nested `fn`, Go
   locals, Java/C#/C locals ...): a symbol with a function-like ancestor node is dropped, matched by node
@@ -67,7 +80,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `gen_references.py` resolves definitions the same way), `gen_find.py` takes `--indexed FILE` so tasks
   come only from indexed files, and `gen_docs.py` models the docs baseline as a keyword grep plus
   opening the document.
-
 - Dependencies upgraded to their latest releases: `lancedb` 0.37 to 0.40 (now built with its `remote`
   feature, which 0.38-0.40 need to compile; `lance` 10 to 13), `gix` 0.88 to 0.89, `oxc_*` 0.152 to
   0.153, `crawlberg` 1.8 to 1.10, `xberg` 1.3.3 to 1.3.6, `tree-sitter-language-pack` 1.20 to 1.21,
@@ -79,7 +91,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   literal pattern on raw bytes before paying for UTF-8 validation, and no longer builds two path
   buffers per file. Results, `total_matches`, hit order, cursors and context lines are unchanged
   (checked against the previous implementation over a generated corpus, including paging).
-
 - The code map now indexes code only. Markdown, reStructuredText, AsciiDoc, vimdoc, CSV, JSON, YAML,
   TOML, INI, XML, `.properties`, `.env`, diffs, `.gitignore`/`.gitattributes` and Fluent files are
   routed to the document tier (chunked and searchable with `memory documents`) instead of being
@@ -1873,7 +1884,6 @@ addressed and rebuilds losslessly).
 Wide hot-path allocation + algorithmic sweep across the scanner, extraction, git, and MCP query
 paths. All changes are internal — no behavior, response-shape, or on-disk-format change, and the
 determinism assertions are unchanged.
-
 - **`call_graph`** (`bfs_callees`) precomputes a name→sites map once instead of re-scanning every
   indexed symbol for each discovered callee — O(max_nodes × symbols) → O(symbols + max_nodes).
 - **`architecture_map`**: `callee_counts` no longer allocates a `String` on every one of up to 4M
@@ -2200,7 +2210,6 @@ it the same way they do over source. All of this is on by default — `.md` is s
 file, headings ship via a `src/queries/markdown.scm` override, and the reference graph is harvested
 by a fence-aware byte-scan in `extract/l2.rs` (the tree-sitter block grammar models none of these
 inline constructs).
-
 - **Headings → outline.** ATX (`#`…`######`) and setext headings become `Heading` symbols, so
   `outline` and `search_symbols` (optionally `kind: "heading"`) navigate a note's structure.
 - **Wikilinks → backlinks.** `[[Note]]`, `[[Note#Heading|alias]]`, and `![[Embed]]` become
