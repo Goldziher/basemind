@@ -52,10 +52,11 @@ impl Drop for Stop<'_> {
     }
 }
 
-/// Extract a JSON string field's value, e.g. `"id":"th-..."` → `th-...`.
+/// Extract a JSON string field's value, e.g. `"id": "th-..."` → `th-...`.
 fn json_str_field<'a>(haystack: &'a str, field: &str) -> Option<&'a str> {
-    let needle = format!("\"{field}\":\"");
-    haystack.split(&needle).nth(1).and_then(|s| s.split('"').next())
+    let key = format!("\"{field}\":");
+    let after = haystack.split(&key).nth(1)?.trim_start();
+    after.strip_prefix('"')?.split('"').next()
 }
 
 #[test]
@@ -164,7 +165,7 @@ fn thread_archive_removes_from_active_listing() {
     let (ok, active, e) = agents(&comms_dir, "agent-alice", &["thread-list", "--root", &root, "--json"]);
     assert!(ok, "thread-list failed: {e}");
     assert!(
-        active.contains("\"total\":0"),
+        active.contains("\"total\": 0"),
         "archived thread must not be in the active listing: {active}"
     );
 

@@ -55,7 +55,10 @@ fn cache_clear_single_view_leaves_others_intact() {
         .find(|n| n.starts_with("rev-"))
         .expect("a rev-* view exists after `scan --rev`");
 
-    let out = run(root, &["cache", "clear", "--component", &format!("views:{rev_view}")]);
+    let out = run(
+        root,
+        &["cache", "clear", "--component", &format!("views:{rev_view}"), "--yes"],
+    );
     assert!(
         out.status.success(),
         "single-view clear failed: {}",

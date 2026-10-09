@@ -307,7 +307,21 @@ mod tests {
     fn should_expose_one_subcommand_per_advertised_admin_mode() {
         let command = AdminCmd::augment_subcommands(Harness::command());
         let names: Vec<String> = command.get_subcommands().map(|s| s.get_name().to_string()).collect();
-        for mode in crate::mcp::mode::AdminMode::ALL_MODES {
+        // Modes whose CLI home is a top-level command (`tests/cli_parity/` maps them).
+        const TOP_LEVEL: &[&str] = &[
+            "status",
+            "rescan",
+            "cache_stats",
+            "gc",
+            "cache_clear",
+            "delta",
+            "checkpoint",
+            "waste",
+        ];
+        for mode in crate::mcp::mode::AdminMode::ALL_MODES
+            .iter()
+            .filter(|m| !TOP_LEVEL.contains(m))
+        {
             let expected = mode.replace('_', "-");
             assert!(
                 names.contains(&expected),
