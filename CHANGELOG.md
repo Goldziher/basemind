@@ -230,6 +230,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stale purge is skipped), prints the summary and exits `130`; a second Ctrl-C exits immediately.
 - Cancelling an offloaded (SEP-2663 task) call now reaches the running tool: its cancellation token fires and pure reads (`agents wait`, `code grep`, `graph map`, ...) are aborted, so an abandoned wait releases its comms link and broker subscriber at once instead of after its full duration. Mutating tools such as `rescan` still run to completion.
 
+- A comms or shells daemon starting just as the previous one exits no longer mistakes a just-released lock for a live peer and exits silently: the daemon lock waits up to 300 ms when it reads as held but no live process is recorded as the holder.
 - Comms/MCP unresponsiveness. Comms requests are now correlated by id (protocol version 4), so a
   request abandoned mid-flight, such as the per-tool-call delivery-notice probe timing out, can no
   longer leave a stale reply that the next request misreads as `unexpected response shape` (and a
