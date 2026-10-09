@@ -139,6 +139,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Comms daemon stalls under slow disk. Every blocking `CommsStore` call in the request handlers
+  (thread, member, message, inbox, ack, status, retention) and every machine-registry write now runs on
+  the blocking pool instead of a runtime worker, so a slow fsync or a full `list_threads` scan no
+  longer freezes `Ping`/`Status` and every other connection. Mutations stay serialized through one
+  write gate, so message `seq` assignment keeps its order. The hourly retention sweep moved off the
+  runtime too.
 - Comms/MCP unresponsiveness. Comms requests are now correlated by id (protocol version 4), so a
   request abandoned mid-flight, such as the per-tool-call delivery-notice probe timing out, can no
   longer leave a stale reply that the next request misreads as `unexpected response shape` (and a

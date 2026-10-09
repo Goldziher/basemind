@@ -173,7 +173,13 @@ pub fn run() -> Result<()> {
             Err(error) => return Err(anyhow::anyhow!("open comms store: {error}")),
         };
         log_retention_policy();
-        run_retention_maintenance(&store);
+        // The sweep scans every message/thread/agent range and may fsync; keep it off the runtime.
+        {
+            let store = store.clone();
+            if let Err(error) = tokio::task::spawn_blocking(move || run_retention_maintenance(&store)).await {
+                tracing::warn!(%error, "comms: startup retention maintenance task failed");
+            }
+        }
         let machine_registry = match crate::registry::Registry::from_data_home() {
             Ok(registry) => registry,
             Err(error) => {
@@ -251,7 +257,10 @@ pub fn run() -> Result<()> {
             prune_missing_registry_rows(&broker_for_prune).await;
             loop {
                 tick.tick().await;
-                run_retention_maintenance(&store_for_prune);
+                let store = store_for_prune.clone();
+                if let Err(error) = tokio::task::spawn_blocking(move || run_retention_maintenance(&store)).await {
+                    tracing::warn!(%error, "comms: retention maintenance task failed");
+                }
                 let evicted = broker_for_prune.evict_idle_workspaces(WORKSPACE_HOT_TTL);
                 if evicted > 0 {
                     tracing::info!(evicted, "daemon: shed idle hot workspaces from RAM");

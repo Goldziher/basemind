@@ -396,3 +396,108 @@ async fn archive_idle_threads_flips_stale_active_threads() {
     assert_eq!(archived, 1);
     assert!(!broker.store.get_thread(&thread).unwrap().unwrap().active);
 }
+
+/// A slow store call (injected latency on the blocking pool) must not stall other connections. The
+/// test runtime is single-threaded, so if the call ran inline on the worker the `Ping` and `Status`
+/// below could not even be polled until it finished.
+#[tokio::test]
+async fn slow_store_call_does_not_block_other_connections() {
+    // `Status` reports the build id, which hashes the binary on first use (the daemon warms it at
+    // startup); do the same so the timing below measures only the store.
+    let _ = crate::version::build_id();
+    let (_d, broker) = temp_broker();
+    let (tx, _rx) = mpsc::channel(8);
+    let mut slow_session = hello(&broker, &tx, "slow").await;
+
+    broker.store_delay_ms.store(1500, Ordering::SeqCst);
+    let slow_broker = Arc::clone(&broker);
+    let slow_tx = tx.clone();
+    let slow = tokio::spawn(async move {
+        let request = CommsRequest::ThreadList {
+            remote: None,
+            cwd: None,
+            subject_contains: None,
+            include_archived: false,
+        };
+        slow_broker.handle(request, &mut slow_session, &slow_tx).await
+    });
+    // The hook is one-shot: it reads zero once the slow call is parked on its blocking thread.
+    while broker.store_delay_ms.load(Ordering::SeqCst) != 0 {
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+
+    let started = Instant::now();
+    let mut other = Session::default();
+    let pong = broker.handle(CommsRequest::Ping, &mut other, &tx).await;
+    let status = broker.handle(CommsRequest::Status, &mut other, &tx).await;
+    assert!(matches!(pong, CommsResponse::Pong), "ping answered: {pong:?}");
+    assert!(
+        matches!(status, CommsResponse::Status(_)),
+        "status answered: {status:?}"
+    );
+    assert!(
+        started.elapsed() < Duration::from_millis(1000),
+        "Ping/Status waited {:?} behind a slow store call",
+        started.elapsed()
+    );
+
+    let listed = slow.await.expect("slow task");
+    assert!(
+        matches!(listed, CommsResponse::Threads(_)),
+        "slow call completed: {listed:?}"
+    );
+}
+
+/// Concurrent posts to one thread still get distinct, gap-free seqs: the write gate keeps the
+/// `seq` read-modify-write atomic now that handlers run on the blocking pool.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_posts_keep_seq_order() {
+    let (_d, broker) = temp_broker();
+    let (tx, _rx) = mpsc::channel(8);
+    let mut alice = hello(&broker, &tx, "alice").await;
+    let started = broker
+        .handle(
+            CommsRequest::ThreadStart {
+                subject: Some("seq".to_string()),
+                path: None,
+                members: vec![agent("bob")],
+            },
+            &mut alice,
+            &tx,
+        )
+        .await;
+    let CommsResponse::Thread(thread) = started else {
+        panic!("thread start: {started:?}");
+    };
+    let mut tasks = Vec::new();
+    for n in 0..24 {
+        let broker = Arc::clone(&broker);
+        let (tx, id) = (tx.clone(), thread.id.clone());
+        let mut session = Session {
+            agent: Some(agent("alice")),
+            chain: None,
+        };
+        tasks.push(tokio::spawn(async move {
+            broker
+                .handle(
+                    CommsRequest::ThreadPost {
+                        thread: id,
+                        subject: format!("m{n}"),
+                        tags: Vec::new(),
+                        reply_to: None,
+                        body: b"x".to_vec(),
+                    },
+                    &mut session,
+                    &tx,
+                )
+                .await
+        }));
+    }
+    for task in tasks {
+        let posted = task.await.expect("post task");
+        assert!(matches!(posted, CommsResponse::Posted { .. }), "post: {posted:?}");
+    }
+    let rows = broker.store.history(&thread.id, 0, 100).expect("history").messages;
+    let seqs: Vec<u64> = rows.iter().map(|(seq, _)| *seq).collect();
+    assert_eq!(seqs, (1..=24).collect::<Vec<u64>>());
+}
