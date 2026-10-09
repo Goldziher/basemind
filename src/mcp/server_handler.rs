@@ -182,6 +182,33 @@ impl ServerHandler for BasemindServer {
         self.prompt_router.get_prompt(prompt_context).await
     }
 
+    /// `resources/list`: the static resources (see [`super::resources`]).
+    async fn list_resources(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> Result<rmcp::model::ListResourcesResult, rmcp::ErrorData> {
+        Ok(self.list_resources_result())
+    }
+
+    /// `resources/templates/list`: the parameterised resources.
+    async fn list_resource_templates(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> Result<rmcp::model::ListResourceTemplatesResult, rmcp::ErrorData> {
+        Ok(self.list_resource_templates_result())
+    }
+
+    /// `resources/read`: delegates to the same dispatchers the matching tools use.
+    async fn read_resource(
+        &self,
+        request: rmcp::model::ReadResourceRequestParams,
+        _context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> Result<rmcp::model::ReadResourceResponse, rmcp::ErrorData> {
+        Ok(self.read_resource_uri(&request.uri).await?.into())
+    }
+
     /// `completion/complete`: autocomplete a prompt argument from the indexed code map (symbol
     /// names for `trace-symbol`, file paths for `explain-file`). Pure in-RAM prefix scan.
     async fn complete(
@@ -198,6 +225,7 @@ impl ServerHandler for BasemindServer {
             ServerCapabilities::builder()
                 .enable_tools()
                 .enable_prompts()
+                .enable_resources()
                 .enable_completions()
                 .enable_tasks()
                 .build(),
