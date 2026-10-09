@@ -135,6 +135,7 @@ pub struct MemoryParams {
     pub max_tokens: Option<u32>,
     /// `documents`: `"json"` (default) or `"toon"`.
     #[serde(default, alias = "encoding")]
+    #[schemars(extend("enum" = ["json", "toon"]))]
     pub format: Option<String>,
     /// `documents`: exact MIME-type filter.
     #[serde(default)]
@@ -164,6 +165,7 @@ pub struct MemoryParams {
 
     /// `proposals` only: filter by proposal kind — `"skill"` or `"memory"`. Omit for all.
     #[serde(default)]
+    #[schemars(extend("enum" = ["skill", "memory"]))]
     pub kind: Option<String>,
     /// Proposal id as returned by `proposals`. Required by `accept` and `reject`.
     #[serde(default)]

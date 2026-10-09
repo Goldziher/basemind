@@ -79,7 +79,6 @@ const BROKER: &str = "comms-broker daemon lifecycle; the MCP surface reaches the
 #[cfg(not(feature = "crawl"))]
 const NO_CRAWL: &str =
     "the MCP `web` tool is compiled out without the `crawl` feature; the CLI reports the missing feature";
-const OFFLINE_CACHE: &str = "TODO parity: offline `cache` group overlaps the `admin` cache modes with different semantics (admin gc reports, cache gc deletes)";
 
 pub fn table() -> Vec<Row> {
     #[allow(unused_mut)]
@@ -109,17 +108,17 @@ pub fn table() -> Vec<Row> {
         pair("graph", "display", "graph display"),
         pair("graph", "open", "graph open"),
         // ---- admin ----
-        pair("admin", "status", "admin status"),
+        pair("admin", "status", "status"),
         pair("admin", "repo", "admin repo"),
-        pair("admin", "rescan", "admin rescan"),
-        pair("admin", "cache_stats", "admin cache-stats"),
-        pair("admin", "gc", "admin gc"),
-        pair("admin", "cache_clear", "admin cache-clear"),
+        pair("admin", "rescan", "rescan"),
+        pair("admin", "cache_stats", "cache stats"),
+        pair("admin", "gc", "cache gc"),
+        pair("admin", "cache_clear", "cache clear"),
         pair("admin", "telemetry", "admin telemetry"),
         pair("admin", "compress", "admin compress"),
-        pair("admin", "delta", "admin delta"),
-        pair("admin", "checkpoint", "admin checkpoint"),
-        pair("admin", "waste", "admin waste"),
+        pair("admin", "delta", "delta"),
+        pair("admin", "checkpoint", "checkpoint"),
+        pair("admin", "waste", "detect-waste"),
         // ---- git ----
         pair("git", "status", "git status"),
         pair("git", "recent", "git recent"),
@@ -161,25 +160,18 @@ pub fn table() -> Vec<Row> {
         cli_only("lang install", "tree-sitter grammar cache management"),
         cli_only("lang clean", "tree-sitter grammar cache management"),
         cli_only(
-            "rescan",
-            "TODO parity: top-level duplicate of `admin rescan` with a different (in-process, unlocked) implementation",
-        ),
-        cli_only(
             "compress-output",
-            "TODO parity: stdin filter duplicating `admin compress` (hook helper)",
+            "hook filter: family-detected compression of command output read from stdin, failing open to raw passthrough; `admin compress` takes an explicit level/target instead",
         ),
         cli_only(
-            "delta",
-            "TODO parity: stdin filter duplicating `admin delta` (hook helper)",
+            "doctor",
+            "installation and workspace health check printing human diagnostics and exiting 1 on failure; an MCP client is already connected",
         ),
         cli_only(
-            "checkpoint",
-            "TODO parity: stdin filter duplicating `admin checkpoint` (hook helper)",
+            "completions",
+            "emits a shell completion script for the CLI's own grammar",
         ),
-        cli_only(
-            "detect-waste",
-            "TODO parity: stdin filter duplicating `admin waste` (hook helper)",
-        ),
+        cli_only("man", "emits the CLI man page (roff)"),
         cli_only(
             "admin tokens",
             "CLI-only benchmark primitive: prints a bare integer, no JSON envelope (`benchmarks/run.sh`)",
@@ -188,9 +180,6 @@ pub fn table() -> Vec<Row> {
             "admin eval",
             "offline evaluation harness over a JSONL task file; drives the tools rather than being one",
         ),
-        cli_only("cache gc", OFFLINE_CACHE),
-        cli_only("cache stats", OFFLINE_CACHE),
-        cli_only("cache clear", OFFLINE_CACHE),
     ];
     #[cfg(feature = "crawl")]
     rows.extend([

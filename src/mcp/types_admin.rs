@@ -32,6 +32,7 @@ pub struct AdminParams {
     pub full: Option<bool>,
     /// `telemetry` only. Aggregation window: `today` (default), `1h`, `24h`, `all`.
     #[serde(default)]
+    #[schemars(extend("enum" = ["today", "1h", "24h", "all"]))]
     pub window: Option<String>,
     /// `telemetry` only. Exact tool-name filter, e.g. `"code"` or `"admin:rescan"`.
     #[serde(default)]
@@ -53,6 +54,7 @@ pub struct AdminParams {
     pub path: Option<RelPath>,
     /// `compress`: `off|light|moderate|aggressive|maximum`.
     #[serde(default)]
+    #[schemars(extend("enum" = ["off", "light", "moderate", "aggressive", "maximum"]))]
     pub level: Option<String>,
     /// `compress` only. When true (the default), code blocks inside prose are left intact.
     #[serde(default)]
