@@ -25,6 +25,7 @@ impl BasemindServer {
     // emits as `$ref` into `$defs` — the construct that silently dropped the whole registry in
     // GH #50. The per-mode shapes are documented in the description instead. ~keep
     #[tool(
+        title = "Web",
         description = "Pull the web into basemind: fetch a page, crawl a docs site, or list a \
         site's URLs. `mode` is required. `scrape` fetches one http/https URL, extracts markdown, \
         and chunks + embeds it into the documents vector store (scope `web:<host>`) so it is \
@@ -49,12 +50,28 @@ impl BasemindServer {
     pub(crate) async fn web(
         &self,
         Parameters(Lenient(p)): Parameters<Lenient<WebParams>>,
+        peer: rmcp::Peer<rmcp::RoleServer>,
+        meta: rmcp::model::RequestMetaObject,
     ) -> Result<CallToolResult, McpError> {
         let __started = std::time::Instant::now();
         let __key = p.mode.telemetry_key();
         let __params_json = serde_json::to_value(&p).unwrap_or(Value::Null);
-        let __result: Result<CallToolResult, McpError> = super::helpers_web::run_web(&self.state, p).await;
+        let __result: Result<CallToolResult, McpError> =
+            super::helpers_web::run_web(&self.state, p, Some((&peer, meta.get_progress_token()))).await;
         record_call(&self.state, __key, &__params_json, __started, &__result);
         __result
+    }
+}
+
+impl BasemindServer {
+    /// The `web` tool for a caller that has no MCP peer — the CLI's entry point. Identical body to
+    /// the `#[tool]` shim minus progress notifications, which need a peer to deliver to.
+    pub(crate) async fn web_cli(&self, p: WebParams) -> Result<CallToolResult, McpError> {
+        let started = std::time::Instant::now();
+        let key = p.mode.telemetry_key();
+        let params_json = serde_json::to_value(&p).unwrap_or(Value::Null);
+        let result = super::helpers_web::run_web(&self.state, p, None).await;
+        record_call(&self.state, key, &params_json, started, &result);
+        result
     }
 }

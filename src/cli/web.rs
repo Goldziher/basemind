@@ -97,7 +97,7 @@ pub async fn run(server: &BasemindServer, cmd: WebCmd, opts: &Emit, out: &mut im
     };
 
     let key = p.mode.telemetry_key();
-    let r = run_tool(key, server.web(Parameters(Lenient(p))).await)?;
+    let r = run_tool(key, server.web_cli(p).await)?;
     emit(key, &r, opts, out)
 }
 

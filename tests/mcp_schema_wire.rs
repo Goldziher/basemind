@@ -97,3 +97,23 @@ async fn instructions_stay_under_the_client_ceiling() {
 
     let _ = service.cancel().await;
 }
+
+/// Every advertised tool carries a human-readable `title`, so clients can show a label that is not
+/// the bare `code` / `graph` identifier.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn every_tool_has_a_title() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(dir.path().join("lib.rs"), "pub fn seed() {}\n").expect("seed file");
+    let transport = basemind::mcp::serve_in_memory(dir.path(), "working")
+        .await
+        .expect("in-memory serve");
+    let service = ().serve(transport).await.expect("rmcp handshake");
+    let tools = service.list_all_tools().await.expect("list tools");
+    let untitled: Vec<_> = tools
+        .iter()
+        .filter(|tool| tool.title.as_deref().is_none_or(|title| title.trim().is_empty()))
+        .map(|tool| tool.name.to_string())
+        .collect();
+    assert!(untitled.is_empty(), "tools without a title: {untitled:?}");
+    let _ = service.cancel().await;
+}

@@ -31,6 +31,7 @@ impl BasemindServer {
     // `idempotent_hint`, and it must advertise `destructive_hint` — a client that auto-approves
     // non-destructive tools must not be able to reach `kill` through this name. ~keep
     #[tool(
+        title = "Shell sessions",
         description = "Run a long-lived background terminal session — a build, a dev server, a \
         test watcher, a REPL — and read its output later, instead of blocking on a one-shot \
         command. Backed by the embedded rmux daemon; sessions are headless by default, while \
