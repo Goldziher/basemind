@@ -88,6 +88,7 @@ pub struct GraphParams {
     /// `map`, whose historical default is `"calls"`. Not accepted by `calls`, which is a
     /// call-lane-only walk.
     #[serde(default)]
+    #[schemars(extend("enum" = ["all", "calls", "imports", "inherits", "both", "contains"]))]
     pub edges: Option<String>,
     /// `path` only. Include containment (file→symbol) edges in the search. Default false — they
     /// yield structurally valid but meaningless routes.
@@ -100,6 +101,7 @@ pub struct GraphParams {
     /// `communities` / `export` / `display` / `open`. Community-detection algorithm:
     /// `"label_propagation"` (default, near-linear) or `"louvain"` (higher-quality modularity).
     #[serde(default, alias = "algo")]
+    #[schemars(extend("enum" = ["label_propagation", "louvain"]))]
     pub algorithm: Option<String>,
     /// `communities` only. Cap on communities returned, largest first. Default 50, max 200.
     #[serde(default)]
@@ -111,6 +113,7 @@ pub struct GraphParams {
     /// `map` only. `"module"` (default; directory-level dependency graph), `"file"`, or `"symbol"`
     /// (hub functions ranked by specificity-weighted fan-in).
     #[serde(default, alias = "tier")]
+    #[schemars(extend("enum" = ["module", "file", "symbol"]))]
     pub granularity: Option<String>,
     /// `map` / `export` / `display` / `open`. Repo-relative path prefix scoping the graph (e.g.
     /// `"src/mcp"`). Omit for the whole repository.
@@ -126,6 +129,7 @@ pub struct GraphParams {
     /// `export`: `"node_link"` (default), `"dot"`, `"mermaid"`, `"graphml"`, `"cypher"`, `"html"`,
     /// or `"svg"`. `display` / `open`: the visual formats only — `"html"` (default) or `"svg"`.
     #[serde(default)]
+    #[schemars(extend("enum" = ["node_link", "dot", "mermaid", "graphml", "cypher", "html", "svg"]))]
     pub format: Option<String>,
     /// `export`: also write to the cache and return `output_path` (default false).
     #[serde(default)]
