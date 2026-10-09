@@ -124,8 +124,11 @@ impl Env {
         names
     }
 
+    /// Paths the code map itself holds. `code files` also lists the document tier on current
+    /// builds, so each candidate is confirmed by asking for its outline, which only a code-mapped
+    /// file can answer.
     fn code_paths(&self, bin: &Path) -> Vec<String> {
-        self.json(bin, &["code", "files"])["files"]
+        let listed: Vec<String> = self.json(bin, &["code", "files"])["files"]
             .as_array()
             .map(|files| {
                 files
@@ -133,7 +136,15 @@ impl Env {
                     .filter_map(|f| f["path"].as_str().map(String::from))
                     .collect()
             })
-            .unwrap_or_default()
+            .unwrap_or_default();
+        listed
+            .into_iter()
+            .filter(|path| {
+                self.run(bin, &["--json", "code", "outline", path], None)
+                    .status
+                    .success()
+            })
+            .collect()
     }
 }
 
