@@ -43,7 +43,8 @@ struct Cli {
     /// Emit machine-readable JSON instead of the human-readable rendering. Applies to the tool
     /// subcommands (code / git / graph / memory / web / shell / admin / status / cache), the
     /// coordination groups (agents / workspace / comms / daemon) and doctor. It is ignored, with a
-    /// warning, on init / scan / rescan / watch / hook / lang / serve and the stdin filters.
+    /// warning, on init / scan / rescan / watch / hook / lang / completions / man / statusline /
+    /// serve and the stdin filters (compress-output / delta / checkpoint / detect-waste).
     #[arg(long, global = true)]
     json: bool,
 
@@ -90,7 +91,7 @@ enum Cmd {
     #[cfg(all(feature = "shells", any(unix, windows)))]
     #[command(subcommand)]
     Shell(basemind::cli::shell::ShellCmd),
-    /// Server + cache administration: status, repo, rescan, caches, telemetry, compression.
+    /// Repository identity, telemetry, compression, token counting and retrieval evaluation.
     #[command(subcommand)]
     Admin(basemind::cli::admin::AdminCmd),
     /// Manage the git pre-commit hook that runs `basemind scan --staged`.
@@ -135,7 +136,7 @@ enum Cmd {
     /// Print a compact one-line summary of the daemon's currently-hot workspaces, for a shell
     /// statusline. Fast and silent: prints nothing and exits 0 when no daemon is running.
     Statusline,
-    /// Manage the `.basemind/` caches (gc / stats / clear). Offline path.
+    /// Manage the machine-global caches (gc / stats / clear). Offline path.
     #[command(subcommand)]
     Cache(basemind::cli::admin::CacheCmd),
     /// Manage the user-global agent-comms broker daemon (needs `--features comms`).
@@ -218,7 +219,8 @@ struct ScanArgs {
     #[arg(long, conflicts_with = "rev")]
     staged: bool,
     /// Index the tree at the given revision (HEAD, branch name, sha, HEAD~3).
-    /// Writes under .basemind/views/rev-<sha7>/ — separate from the working-tree view.
+    /// Written as the `rev-<sha7>` view in the machine-global workspace cache, separate from the
+    /// working-tree view.
     #[arg(long, value_name = "REV")]
     rev: Option<String>,
     /// Skip building the git-history index after the scan (overrides config). The history tools
@@ -334,7 +336,7 @@ fn run() -> Result<()> {
     if root != start {
         tracing::info!(
             resolved_root = %root.display(),
-            from = "ancestor .basemind",
+            from = "ancestor basemind.toml",
             "resolved repo root upward"
         );
     }

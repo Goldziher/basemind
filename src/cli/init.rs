@@ -219,6 +219,12 @@ pub enum RulesTarget {
     None,
 }
 
+/// Clap value parser accepting exactly the [`Capability`] slugs; keeps `--help` and validation in
+/// sync with the enum.
+fn capability_slugs() -> clap::builder::PossibleValuesParser {
+    clap::builder::PossibleValuesParser::new(Capability::ALL.map(Capability::slug))
+}
+
 /// Flags for `basemind init`. Flattened into the `Cmd::Init` clap variant in `main.rs`.
 #[derive(Args, Debug, Default)]
 pub struct InitArgs {
@@ -227,13 +233,12 @@ pub struct InitArgs {
     #[arg(long)]
     pub yes: bool,
 
-    /// Enable only these capabilities (repeatable). Slugs: code-search-navigation,
-    /// code-mapping-architecture, git-history, agent-comms, documents-rag, semantic-search.
-    #[arg(long = "with", value_name = "CAPABILITY")]
+    /// Enable only these capabilities (repeatable); the accepted slugs are listed below.
+    #[arg(long = "with", value_name = "CAPABILITY", value_parser = capability_slugs())]
     pub with: Vec<String>,
 
     /// Disable these capabilities (repeatable). Same slugs as `--with`.
-    #[arg(long = "without", value_name = "CAPABILITY")]
+    #[arg(long = "without", value_name = "CAPABILITY", value_parser = capability_slugs())]
     pub without: Vec<String>,
 
     /// Where to inject usage rules. `auto` (default) detects the source of truth.
@@ -731,6 +736,27 @@ fn report_dry_run(changes: &[Change]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::{CommandFactory, Parser};
+
+    #[derive(Parser)]
+    struct Wrapper {
+        #[command(flatten)]
+        args: InitArgs,
+    }
+
+    /// `--with` / `--without` must accept and advertise every `Capability`, so the help cannot drift.
+    #[test]
+    fn capability_flags_cover_every_capability_slug() {
+        let mut cmd = Wrapper::command();
+        let help = cmd.render_long_help().to_string();
+        for cap in Capability::ALL {
+            let slug = cap.slug();
+            assert!(help.contains(slug), "help omits `{slug}`");
+            let parsed = Wrapper::try_parse_from(["x", "--with", slug, "--without", slug]).expect("slug accepted");
+            assert_eq!(parsed.args.with, [slug]);
+        }
+        assert!(Wrapper::try_parse_from(["x", "--with", "bogus"]).is_err());
+    }
 
     /// Uncommenting every `# key = value` line of the scaffold must yield a config that parses and
     /// validates, so a documented key that drifts from the schema fails here.
