@@ -210,6 +210,10 @@ pub enum AgentsCmd {
         /// Act as this sub-identity instead of the CLI's default agent id.
         #[arg(long)]
         as_agent: Option<String>,
+        /// Caller-chosen key: re-sending it for the same agent and thread returns the original
+        /// message id instead of storing a duplicate. Generated when omitted.
+        #[arg(long)]
+        idempotency_key: Option<String>,
     },
     /// Read a thread's history (front-matter only; bodies via `message`).
     History {
@@ -618,14 +622,20 @@ async fn dispatch(root: &Path, json: bool, cmd: AgentsCmd, out: &mut impl Write)
             tags,
             reply_to,
             as_agent,
+            idempotency_key,
         } => {
             let mut client = connect_as(root, as_agent).await?;
             let thread_id = ThreadId::parse(thread).context("thread id")?;
             let body = body.unwrap_or_default().into_bytes();
-            let message_id = client
-                .post_message(thread_id, subject, body, tags, reply_to)
-                .await
-                .map_err(|e| anyhow::anyhow!("post: {e}"))?;
+            let message_id = match idempotency_key {
+                Some(key) => {
+                    client
+                        .post_message_keyed(thread_id, subject, body, tags, reply_to, key)
+                        .await
+                }
+                None => client.post_message(thread_id, subject, body, tags, reply_to).await,
+            }
+            .map_err(|e| anyhow::anyhow!("post: {e}"))?;
             if json {
                 render_response(&ThreadPostResponse { message_id }, out)?;
             } else {
