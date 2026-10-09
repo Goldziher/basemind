@@ -282,7 +282,18 @@ fn default_log_directive(verbosity: Verbosity) -> &'static str {
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
-fn main() -> Result<()> {
+/// Exit-code contract: see [`basemind::cli::exit`].
+fn main() -> std::process::ExitCode {
+    match run() {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("Error: {error:?}");
+            std::process::ExitCode::from(basemind::cli::exit::exit_code_for(&error))
+        }
+    }
+}
+
+fn run() -> Result<()> {
     basemind::alloc_tag::retag_heap_pages();
     let process_started = std::time::Instant::now();
     #[cfg(all(feature = "shells", any(unix, windows)))]
@@ -503,8 +514,8 @@ fn writer_collision_notice(root: &std::path::Path) -> Option<String> {
         basemind::store::WriterProbe::Free => None,
         basemind::store::WriterProbe::Held { holder: Some(meta) } => Some(format!(
             "`{}` (pid {}) is already running against this repo and keeping the index fresh — \
-             running this directly is unnecessary and would collide with it. Use that server's \
-             `rescan` tool to refresh the index, or stop it first.",
+             running this directly is unnecessary and would collide with it. Use `basemind rescan` \
+             (forwarded to the daemon when one is running) to refresh the index, or stop it first.",
             meta.command, meta.pid
         )),
         basemind::store::WriterProbe::Held { holder: None } => Some(basemind::store::LOCK_CONTENTION_HELP.to_string()),
@@ -573,6 +584,7 @@ fn scan_streaming(
     root: &std::path::Path,
     store: &mut Store,
     config: &basemind::config::Config,
+    cancel: &basemind::scanner::ScanCancel,
 ) -> std::result::Result<basemind::scanner::ScanReport, basemind::scanner::ScanError> {
     let mut observer = render::ScanLineObserver::new(no_color, verbosity);
     basemind::scanner::scan_with_observer(
@@ -581,12 +593,30 @@ fn scan_streaming(
         config,
         source,
         basemind::scanner::EmbedMode::Inline,
-        &basemind::scanner::ScanCancel::new(),
+        cancel,
         &mut observer,
     )
 }
 
+/// Turn an interrupted scan into the exit-`130` error after printing what did land. The scan stops
+/// at a file boundary with its completed batches committed and the stale purge skipped, so the
+/// index is consistent but incomplete — the message says to rerun.
+fn interrupted(
+    out: &mut anstream::AutoStream<std::io::Stdout>,
+    report: &basemind::scanner::ScanReport,
+    verbosity: Verbosity,
+    what: &str,
+) -> Result<()> {
+    render::render_summary(out, &report.stats, verbosity);
+    Err(basemind::cli::exit::CliExit::interrupted(format!(
+        "{what} interrupted: files already indexed are committed and the index is consistent but incomplete; \
+         rerun to finish"
+    )))
+}
+
 fn cmd_scan(root: &std::path::Path, args: &ScanArgs, verbosity: Verbosity, no_color: bool) -> Result<()> {
+    // ~keep Installed first: from here on Ctrl-C asks the scan to stop cleanly instead of killing the process.
+    let cancel = basemind::cli::interrupt::install();
     let root = &guard_workspace_root(root)?;
     bootstrap_grammars(verbosity, no_color)?;
     let config = load_or_default_with(root, Some(args.documents.clone()))?;
@@ -603,8 +633,12 @@ fn cmd_scan(root: &std::path::Path, args: &ScanArgs, verbosity: Verbosity, no_co
             root,
             &mut store,
             &config,
+            &cancel,
         )
         .context("scan staged")?;
+        if report.cancelled {
+            return interrupted(&mut out, &report, verbosity, "scan --staged");
+        }
         render::render_summary(&mut out, &report.stats, verbosity);
         return Ok(());
     }
@@ -625,17 +659,18 @@ fn cmd_scan(root: &std::path::Path, args: &ScanArgs, verbosity: Verbosity, no_co
             root,
             &mut store,
             &config,
+            &cancel,
         )
         .context("scan rev")?;
+        if report.cancelled {
+            return interrupted(&mut out, &report, verbosity, "scan --rev");
+        }
         render::render_summary(&mut out, &report.stats, verbosity);
         return Ok(());
     }
 
     if let Some(notice) = writer_collision_notice(root) {
-        use std::io::Write as _;
-        render::render_scan_header(&mut out, "scan", verbosity);
-        let _ = writeln!(out, "{notice}");
-        return Ok(());
+        return Err(basemind::cli::exit::CliExit::busy(notice));
     }
     let mut store = open_store_for_write(root, basemind::store::VIEW_WORKING, "scan", LockHolder::Scan)?;
     let report = scan_streaming(
@@ -645,8 +680,12 @@ fn cmd_scan(root: &std::path::Path, args: &ScanArgs, verbosity: Verbosity, no_co
         root,
         &mut store,
         &config,
+        &cancel,
     )
     .context("scan")?;
+    if report.cancelled {
+        return interrupted(&mut out, &report, verbosity, "scan");
+    }
     render::render_summary(&mut out, &report.stats, verbosity);
     reclaim_after_scan(&mut out, &report.stats, std::mem::take(&mut store.reset_stale_schema));
     sync_git_history_after_scan(root, !args.no_git_history, args.rebuild_git_history, &mut out);
@@ -654,18 +693,38 @@ fn cmd_scan(root: &std::path::Path, args: &ScanArgs, verbosity: Verbosity, no_co
 }
 
 fn cmd_rescan(root: &std::path::Path, args: &RescanArgs, verbosity: Verbosity, no_color: bool) -> Result<()> {
+    use std::io::Write as _;
+
     let root = &guard_workspace_root(root)?;
+    let full = args.full || args.paths.is_empty();
+    // ~keep Validate before touching any lock or daemon, so a bad path is a clean exit 2.
+    let abs = if full {
+        Vec::new()
+    } else {
+        basemind::cli::rescan::resolve_paths(root, &args.paths)?
+    };
+    let mut out = render::stdout(no_color);
+    // ~keep A running daemon is the sole index writer: hand it the scan instead of opening a second,
+    // ~keep unlocked-by-it writer. Never fall through to a local scan after a daemon failure.
+    #[cfg(all(feature = "comms", any(unix, windows)))]
+    if basemind::cli::rescan::daemon_is_up() {
+        let report = basemind::cli::rescan::rescan_via_daemon(root, (!full).then_some(abs), full)?;
+        let _ = writeln!(
+            out,
+            "rescan via daemon: {} scanned, {} updated, {} docs indexed, {} removed ({} ms)",
+            report.scanned, report.updated, report.docs_indexed, report.removed, report.elapsed_ms
+        );
+        return Ok(());
+    }
+    let cancel = basemind::cli::interrupt::install();
     bootstrap_grammars(verbosity, no_color)?;
     let config = load_or_default(root)?;
-    let mut out = render::stdout(no_color);
     if let Some(notice) = writer_collision_notice(root) {
-        use std::io::Write as _;
-        let _ = writeln!(out, "{notice}");
-        return Ok(());
+        return Err(basemind::cli::exit::CliExit::busy(notice));
     }
     let mut store = open_store_for_write(root, basemind::store::VIEW_WORKING, "rescan", LockHolder::Rescan)?;
 
-    let report = if args.full || args.paths.is_empty() {
+    let report = if full {
         scan_streaming(
             no_color,
             verbosity,
@@ -673,10 +732,10 @@ fn cmd_rescan(root: &std::path::Path, args: &RescanArgs, verbosity: Verbosity, n
             root,
             &mut store,
             &config,
+            &cancel,
         )
         .context("rescan (full)")?
     } else {
-        let abs: Vec<PathBuf> = args.paths.iter().map(|p| root.join(p)).collect();
         let mut observer = render::ScanLineObserver::new(no_color, verbosity);
         basemind::scanner::scan_paths_with_observer(
             root,
@@ -684,11 +743,14 @@ fn cmd_rescan(root: &std::path::Path, args: &RescanArgs, verbosity: Verbosity, n
             &config,
             &abs,
             basemind::scanner::EmbedMode::Inline,
-            &basemind::scanner::ScanCancel::new(),
+            &cancel,
             &mut observer,
         )
         .context("rescan (paths)")?
     };
+    if report.cancelled {
+        return interrupted(&mut out, &report, verbosity, "rescan");
+    }
     render::render_summary(&mut out, &report.stats, verbosity);
     reclaim_after_scan(&mut out, &report.stats, std::mem::take(&mut store.reset_stale_schema));
     sync_git_history_after_scan(root, !args.no_git_history, args.rebuild_git_history, &mut out);

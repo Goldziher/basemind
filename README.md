@@ -1000,6 +1000,21 @@ machine-readable output (the same response types the MCP tools return, including
 
 <!-- markdownlint-disable MD013 -->
 
+**Exit codes**
+
+| Code | Meaning |
+|---|---|
+| `0` | Success. |
+| `1` | Runtime error. |
+| `2` | Usage error: bad flag or argument (including an invalid `rescan` path, or a destructive command without `--yes`). |
+| `3` | Busy: another process holds the workspace writer lock. Retry later, or use `basemind rescan`, which the daemon serves. |
+| `4` | A required daemon is unreachable. |
+| `130` | Interrupted by Ctrl-C; completed work is committed and the index stays consistent. |
+
+With a comms daemon running, the one-shot CLI forwards memory operations, reference/caller reads,
+the grep prefilter and rescans to it (the daemon is the sole index writer) instead of failing or
+degrading to a truncated in-memory view.
+
 **Code (`basemind code`)**
 
 | Command | Purpose |
@@ -1077,7 +1092,7 @@ The other former `admin` verbs live at the top level: `status`, `rescan`, `cache
 |---|---|
 | `stats` | Disk footprint (per-component + total, matches `du`) and process RAM. |
 | `gc [--dry-run]` | Reap blobs no workspace on the machine references. Cross-workspace reference-counted, keeps blobs younger than 6 h (`BASEMIND_BLOB_GC_GRACE_SECS`), serialised by a machine-wide lock. `--dry-run` only counts the blobs in the store and deletes nothing. |
-| `clear --component <comp>` | Clear part of the cache (`views`, `blobs`, `git-cache`, `all`, …). |
+| `clear --component <comp> [--yes]` | Clear part of the cache (`views`, `blobs`, `git-cache`, `all`, …). Everything but `git-cache` asks for confirmation on a terminal and needs `--yes` otherwise. `blobs` is the **machine-global** store shared by every workspace. Refuses (exit 3) while a writer holds the workspace lock, and for `blobs` while the daemon runs. |
 
 **Web (`basemind web`)**
 
