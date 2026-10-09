@@ -24,13 +24,19 @@ use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 use clap::Subcommand;
-use serde_json::json;
 
+use crate::cli::render::render_json;
 use crate::comms::client::{CommsClient, scope_context_for};
 use crate::comms::cursor::Cursor;
 use crate::comms::ids::{AgentId, ThreadId};
 use crate::comms::model::{AgentCard, Thread};
 use crate::comms::protocol::SeqMeta;
+use crate::mcp::types_comms::{
+    AgentListResponse, AgentRegisterResponse, AgentSummary, CursorAdvance, InboxAckResponse, InboxReadResponse,
+    InboxWaitResponse, MessageFrontMatter, MessageGetResponse, ThreadArchiveResponse, ThreadHistoryResponse,
+    ThreadListResponse, ThreadMemberChangeResponse, ThreadMembersResponse, ThreadMembershipResponse,
+    ThreadPostResponse, ThreadStartResponse, ThreadSummary,
+};
 
 /// Default page size for `history` / `inbox` when `--limit` is omitted.
 const DEFAULT_LIMIT: u32 = 100;
@@ -397,7 +403,13 @@ async fn dispatch(root: &Path, json: bool, cmd: AgentsCmd, out: &mut impl Write)
                 .await
                 .map_err(|e| anyhow::anyhow!("register: {e}"))?;
             if json {
-                writeln!(out, "{}", json!({ "agent_id": agent_id, "registered": true }))?;
+                render_response(
+                    &AgentRegisterResponse {
+                        agent_id,
+                        registered: true,
+                    },
+                    out,
+                )?;
             } else {
                 writeln!(out, "registered as {agent_id}")?;
             }
@@ -410,17 +422,14 @@ async fn dispatch(root: &Path, json: bool, cmd: AgentsCmd, out: &mut impl Write)
                 .await
                 .map_err(|e| anyhow::anyhow!("list agents: {e}"))?;
             if json {
-                let rows: Vec<_> = agents
-                    .iter()
-                    .map(|a| {
-                        json!({
-                            "agent_id": a.agent_id.as_str(),
-                            "name": a.card.name,
-                            "version": a.card.version,
-                        })
-                    })
-                    .collect();
-                writeln!(out, "{}", json!({ "total": rows.len(), "agents": rows }))?;
+                let agents: Vec<AgentSummary> = agents.iter().map(AgentSummary::from_record).collect();
+                render_response(
+                    &AgentListResponse {
+                        total: agents.len(),
+                        agents,
+                    },
+                    out,
+                )?;
             } else if agents.is_empty() {
                 writeln!(out, "no agents")?;
             } else {
@@ -456,8 +465,14 @@ async fn dispatch(root: &Path, json: bool, cmd: AgentsCmd, out: &mut impl Write)
                 .map_err(|e| anyhow::anyhow!("list threads: {e}"))?;
             let now = crate::comms::model::now_micros();
             if json {
-                let rows: Vec<_> = threads.iter().map(|t| thread_json(t, now)).collect();
-                writeln!(out, "{}", json!({ "total": rows.len(), "threads": rows }))?;
+                let threads: Vec<ThreadSummary> = threads.iter().map(|t| ThreadSummary::from_thread(t, now)).collect();
+                render_response(
+                    &ThreadListResponse {
+                        total: threads.len(),
+                        threads,
+                    },
+                    out,
+                )?;
             } else if threads.is_empty() {
                 writeln!(out, "no threads")?;
             } else {
@@ -483,7 +498,7 @@ async fn dispatch(root: &Path, json: bool, cmd: AgentsCmd, out: &mut impl Write)
                 .join_thread(thread_id)
                 .await
                 .map_err(|e| anyhow::anyhow!("join: {e}"))?;
-            render_flag(json, out, "thread", &label, "joined")?;
+            render_flag(json, out, &label, "joined")?;
         }
         AgentsCmd::Leave { thread, as_agent } => {
             let mut client = connect_as(root, as_agent).await?;
@@ -493,7 +508,7 @@ async fn dispatch(root: &Path, json: bool, cmd: AgentsCmd, out: &mut impl Write)
                 .leave_thread(thread_id)
                 .await
                 .map_err(|e| anyhow::anyhow!("leave: {e}"))?;
-            render_flag(json, out, "thread", &label, "left")?;
+            render_flag(json, out, &label, "left")?;
         }
         AgentsCmd::Members { thread, as_agent } => {
             let mut client = connect_as(root, as_agent).await?;
@@ -505,7 +520,13 @@ async fn dispatch(root: &Path, json: bool, cmd: AgentsCmd, out: &mut impl Write)
                 .map_err(|e| anyhow::anyhow!("members: {e}"))?;
             let ids: Vec<String> = members.iter().map(|m| m.as_str().to_string()).collect();
             if json {
-                writeln!(out, "{}", json!({ "thread": label, "members": ids }))?;
+                render_response(
+                    &ThreadMembersResponse {
+                        thread: label,
+                        members: ids,
+                    },
+                    out,
+                )?;
             } else if ids.is_empty() {
                 writeln!(out, "no members")?;
             } else {
@@ -529,10 +550,14 @@ async fn dispatch(root: &Path, json: bool, cmd: AgentsCmd, out: &mut impl Write)
                 .await
                 .map_err(|e| anyhow::anyhow!("add member: {e}"))?;
             if json {
-                writeln!(
+                render_response(
+                    &ThreadMemberChangeResponse {
+                        thread: label,
+                        member: member_label,
+                        added: true,
+                        removed: false,
+                    },
                     out,
-                    "{}",
-                    json!({ "thread": label, "member": member_label, "added": true })
                 )?;
             } else {
                 writeln!(out, "added {member_label} to {label}")?;
@@ -553,10 +578,14 @@ async fn dispatch(root: &Path, json: bool, cmd: AgentsCmd, out: &mut impl Write)
                 .await
                 .map_err(|e| anyhow::anyhow!("remove member: {e}"))?;
             if json {
-                writeln!(
+                render_response(
+                    &ThreadMemberChangeResponse {
+                        thread: label,
+                        member: member_label,
+                        added: false,
+                        removed: true,
+                    },
                     out,
-                    "{}",
-                    json!({ "thread": label, "member": member_label, "removed": true })
                 )?;
             } else {
                 writeln!(out, "removed {member_label} from {label}")?;
@@ -571,7 +600,13 @@ async fn dispatch(root: &Path, json: bool, cmd: AgentsCmd, out: &mut impl Write)
                 .await
                 .map_err(|e| anyhow::anyhow!("archive: {e}"))?;
             if json {
-                writeln!(out, "{}", json!({ "thread": label, "archived": true }))?;
+                render_response(
+                    &ThreadArchiveResponse {
+                        thread: label,
+                        archived: true,
+                    },
+                    out,
+                )?;
             } else {
                 writeln!(out, "archived {label}")?;
             }
@@ -592,7 +627,7 @@ async fn dispatch(root: &Path, json: bool, cmd: AgentsCmd, out: &mut impl Write)
                 .await
                 .map_err(|e| anyhow::anyhow!("post: {e}"))?;
             if json {
-                writeln!(out, "{}", json!({ "message_id": message_id }))?;
+                render_response(&ThreadPostResponse { message_id }, out)?;
             } else {
                 writeln!(out, "{message_id}")?;
             }
@@ -626,10 +661,13 @@ async fn dispatch(root: &Path, json: bool, cmd: AgentsCmd, out: &mut impl Write)
                 .map_err(|e| anyhow::anyhow!("message: {e}"))?;
             let text = body.map(|b| String::from_utf8_lossy(&b).into_owned());
             if json {
-                writeln!(
+                render_response(
+                    &MessageGetResponse {
+                        message_id: id,
+                        found: text.is_some(),
+                        body: text,
+                    },
                     out,
-                    "{}",
-                    json!({ "message_id": id, "found": text.is_some(), "body": text })
                 )?;
             } else {
                 match text {
@@ -676,11 +714,20 @@ async fn dispatch(root: &Path, json: bool, cmd: AgentsCmd, out: &mut impl Write)
                 .await
                 .map_err(|e| anyhow::anyhow!("ack: {e}"))?;
             if json {
-                let rows: Vec<_> = cursors
+                let cursors_advanced: Vec<CursorAdvance> = cursors
                     .iter()
-                    .map(|(thread, seq)| json!({ "thread": thread, "seq": seq }))
+                    .map(|(thread, seq)| CursorAdvance {
+                        thread: thread.clone(),
+                        seq: *seq,
+                    })
                     .collect();
-                writeln!(out, "{}", json!({ "acked": acked, "cursors_advanced": rows }))?;
+                render_response(
+                    &InboxAckResponse {
+                        acked: acked as usize,
+                        cursors_advanced,
+                    },
+                    out,
+                )?;
             } else {
                 writeln!(out, "acked: {acked}")?;
                 for (thread, seq) in &cursors {
@@ -714,17 +761,21 @@ async fn dispatch(root: &Path, json: bool, cmd: AgentsCmd, out: &mut impl Write)
                 .await
                 .map_err(|e| anyhow::anyhow!("wait: {e}"))?;
             if json {
-                let rows: Vec<_> = messages.iter().map(front_matter_json).collect();
-                let mut obj = json!({
-                    "timed_out": timed_out,
-                    "total": rows.len(),
-                    "unread": unread,
-                    "messages": rows,
-                });
-                if let Some(c) = &next_cursor {
-                    obj["next_cursor"] = json!(c.0);
-                }
-                writeln!(out, "{obj}")?;
+                let now = crate::comms::model::now_micros();
+                let messages: Vec<MessageFrontMatter> = messages
+                    .iter()
+                    .map(|sm| MessageFrontMatter::from_seq_meta(sm, now))
+                    .collect();
+                render_response(
+                    &InboxWaitResponse {
+                        timed_out,
+                        total: messages.len(),
+                        unread,
+                        messages,
+                        next_cursor,
+                    },
+                    out,
+                )?;
             } else {
                 writeln!(out, "timed_out: {timed_out}")?;
                 render_front_matter(&messages, next_cursor.as_ref(), Some(unread), json, out)?;
@@ -738,10 +789,15 @@ fn hours_or_default(hours: Option<u32>, default: std::time::Duration) -> u64 {
     hours.map_or(default.as_secs(), |value| u64::from(value).saturating_mul(60 * 60))
 }
 
+/// Print a response type as pretty JSON, the same rendering the tool-backed subcommands use.
+fn render_response(value: &impl serde::Serialize, out: &mut impl Write) -> Result<()> {
+    render_json(&serde_json::to_value(value)?, out)
+}
+
 fn render_serializable(value: &impl serde::Serialize, json: bool, out: &mut impl Write) -> Result<()> {
     let value = serde_json::to_value(value)?;
     if json {
-        writeln!(out, "{value}")?;
+        render_json(&value, out)?;
     } else if let Some(fields) = value.as_object() {
         for (name, value) in fields {
             writeln!(out, "{name}: {value}")?;
@@ -751,9 +807,18 @@ fn render_serializable(value: &impl serde::Serialize, json: bool, out: &mut impl
 }
 
 /// Render a `{key: value, flag: true}` JSON object (or a plain line) for a membership toggle.
-fn render_flag(json: bool, out: &mut impl Write, key: &str, value: &str, flag: &str) -> Result<()> {
+fn render_flag(json: bool, out: &mut impl Write, value: &str, flag: &str) -> Result<()> {
     if json {
-        writeln!(out, "{}", json!({ key: value, flag: true }))?;
+        let mut membership = ThreadMembershipResponse {
+            thread: value.to_string(),
+            joined: false,
+            left: false,
+        };
+        match flag {
+            "joined" => membership.joined = true,
+            _ => membership.left = true,
+        }
+        render_response(&membership, out)?;
     } else {
         writeln!(out, "{flag} {value}")?;
     }
@@ -765,28 +830,14 @@ fn is_stale(thread: &Thread, now_micros: i64) -> bool {
     thread.last_activity == 0 || (now_micros - thread.last_activity) > STALE_AFTER_HOURS * MICROS_PER_HOUR
 }
 
-/// JSON view of a thread front-matter row.
-fn thread_json(thread: &Thread, now_micros: i64) -> serde_json::Value {
-    json!({
-        "id": thread.id.as_str(),
-        "subject": thread.subject,
-        "path": thread.path,
-        "members": thread.members.iter().map(|m| m.as_str()).collect::<Vec<_>>(),
-        "creator": thread.creator.as_str(),
-        "active": thread.active,
-        "created_at": thread.created_at,
-        "last_activity": thread.last_activity,
-        "stale": is_stale(thread, now_micros),
-    })
-}
-
 /// Render a single thread (started / fetched).
 fn render_thread(thread: &Thread, json: bool, out: &mut impl Write) -> Result<()> {
     if json {
-        writeln!(
+        render_response(
+            &ThreadStartResponse {
+                thread: ThreadSummary::from_thread(thread, crate::comms::model::now_micros()),
+            },
             out,
-            "{}",
-            json!({ "thread": thread_json(thread, crate::comms::model::now_micros()) })
         )?;
     } else {
         writeln!(
@@ -799,23 +850,6 @@ fn render_thread(thread: &Thread, json: bool, out: &mut impl Write) -> Result<()
     Ok(())
 }
 
-/// JSON view of one message front-matter row (never the body).
-fn front_matter_json(sm: &SeqMeta) -> serde_json::Value {
-    let m = &sm.meta;
-    json!({
-        "message_ref": crate::comms::model::message_reference(&m.id),
-        "id": m.id,
-        "thread": m.thread.as_str(),
-        "from": m.from.as_str(),
-        "ts_micros": m.ts_micros,
-        "subject": m.subject,
-        "tags": m.tags,
-        "reply_to": m.reply_to,
-        "seq": sm.seq,
-        "body_len": m.body_len,
-    })
-}
-
 /// Render a page of message FRONT-MATTER (never bodies). `unread` is `Some` for inbox output.
 fn render_front_matter(
     messages: &[SeqMeta],
@@ -825,16 +859,32 @@ fn render_front_matter(
     out: &mut impl Write,
 ) -> Result<()> {
     if json {
-        let rows: Vec<_> = messages.iter().map(front_matter_json).collect();
-        let mut obj = json!({ "total": rows.len(), "messages": rows });
-        if let Some(u) = unread {
-            obj["unread"] = json!(u);
-        }
-        if let Some(c) = next_cursor {
-            obj["next_cursor"] = json!(c.0);
-        }
-        writeln!(out, "{obj}")?;
-        return Ok(());
+        let now = crate::comms::model::now_micros();
+        let messages: Vec<MessageFrontMatter> = messages
+            .iter()
+            .map(|sm| MessageFrontMatter::from_seq_meta(sm, now))
+            .collect();
+        let total = messages.len();
+        let next_cursor = next_cursor.cloned();
+        return match unread {
+            Some(unread) => render_response(
+                &InboxReadResponse {
+                    total,
+                    unread,
+                    messages,
+                    next_cursor,
+                },
+                out,
+            ),
+            None => render_response(
+                &ThreadHistoryResponse {
+                    total,
+                    messages,
+                    next_cursor,
+                },
+                out,
+            ),
+        };
     }
     if let Some(u) = unread {
         writeln!(out, "unread: {u}")?;
@@ -858,4 +908,60 @@ fn render_front_matter(
         writeln!(out, "next_cursor: {}", c.0)?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn json_of(render: impl FnOnce(&mut Vec<u8>) -> Result<()>) -> serde_json::Value {
+        let mut buf = Vec::new();
+        render(&mut buf).expect("render");
+        serde_json::from_slice(&buf).expect("pretty JSON")
+    }
+
+    /// `--json` must carry the MCP `ThreadSummary` shape, not a CLI-private one: the field is
+    /// `last_activity_micros` (the CLI used to say `last_activity`).
+    #[test]
+    fn thread_json_matches_the_mcp_thread_summary() {
+        let thread = Thread {
+            id: ThreadId::parse("thread-1".to_string()).expect("thread id"),
+            subject: Some("topic".into()),
+            path: None,
+            members: vec![],
+            creator: AgentId::parse("alice".to_string()).expect("agent id"),
+            active: true,
+            created_at: 5,
+            last_activity: 0,
+        };
+        let value = json_of(|out| render_thread(&thread, true, out));
+        let row = &value["thread"];
+        assert_eq!(row["last_activity_micros"], 0);
+        assert_eq!(row["stale"], true);
+        assert!(row.get("last_activity").is_none(), "{row}");
+        assert!(
+            row.get("path").is_none(),
+            "None fields are omitted like the MCP type: {row}"
+        );
+    }
+
+    #[test]
+    fn membership_flag_json_matches_the_mcp_response() {
+        let joined = json_of(|out| render_flag(true, out, "t1", "joined"));
+        assert_eq!(joined, serde_json::json!({"thread": "t1", "joined": true}));
+        let left = json_of(|out| render_flag(true, out, "t1", "left"));
+        assert_eq!(left, serde_json::json!({"thread": "t1", "left": true}));
+    }
+
+    #[test]
+    fn empty_inbox_json_carries_unread_and_cursor() {
+        let cursor = Cursor("abc".into());
+        let value = json_of(|out| render_front_matter(&[], Some(&cursor), Some(3), true, out));
+        assert_eq!(
+            value,
+            serde_json::json!({"total": 0, "unread": 3, "messages": [], "next_cursor": "abc"})
+        );
+        let history = json_of(|out| render_front_matter(&[], None, None, true, out));
+        assert_eq!(history, serde_json::json!({"total": 0, "messages": []}));
+    }
 }

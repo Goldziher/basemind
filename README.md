@@ -723,7 +723,7 @@ $ basemind code symbols run_workspace_grep --limit 1 --json
 
 $ basemind code references parse_kind --limit 3
 ...
-(6.5 ms query · 852.9 ms startup)
+(6.5 ms query · 852.9 ms startup)    # stderr: stdout carries only the answer
 ```
 
 That first example is the whole point: the query took 90 µs, while the process spent ~0.96 s getting
@@ -992,7 +992,11 @@ files that became eligible from the cached blobs, without re-embedding.
 <summary><strong>Full command list</strong> — code · graph · git · memory · admin · cache · web · agents · workspace · shell</summary>
 
 CLI commands mirror the MCP tools 1:1 (enforced by `tests/cli_parity.rs`). Add `--json` for
-machine-readable output.
+machine-readable output (the same response types the MCP tools return, including `agents` and
+`workspace`). Human output prints source bodies, diffs and exports in full; only table cells are cut
+(to 200 characters, with a note on stderr), and the timing line goes to stderr. List commands take
+`--cursor` (resume from a previous `next_cursor`) and `--max-tokens`; `code semantic` also takes
+`--rerank-top-k`; `--format toon` returns compact TOON tables.
 
 <!-- markdownlint-disable MD013 -->
 

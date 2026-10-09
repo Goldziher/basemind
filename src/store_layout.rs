@@ -234,8 +234,14 @@ const ISOLATION_MARKER: &str = ".basemind-isolated-test-cache";
 /// An inherited `$BASEMIND_DATA_HOME` that [`init_isolated_cache`] created in an ancestor process.
 #[cfg(any(feature = "test-support", test))]
 fn inherited_isolated_root() -> Option<PathBuf> {
-    let path = PathBuf::from(std::env::var_os(DATA_HOME_ENV)?);
-    path.join(ISOLATION_MARKER).is_file().then_some(path)
+    isolated_root_of(std::env::var_os(DATA_HOME_ENV)?.into())
+}
+
+/// `candidate` when it carries [`ISOLATION_MARKER`]. Split out so a test can probe an unmarked
+/// directory without mutating the process environment, which every other test in the binary reads.
+#[cfg(any(feature = "test-support", test))]
+fn isolated_root_of(candidate: PathBuf) -> Option<PathBuf> {
+    candidate.join(ISOLATION_MARKER).is_file().then_some(candidate)
 }
 
 /// Sets `$BASEMIND_DATA_HOME` exactly once (via [`std::sync::Once`]) to a leaked [`tempfile::TempDir`]
@@ -423,14 +429,9 @@ mod daemon_isolation_tests {
     #[test]
     fn an_unmarked_inherited_data_home_is_never_adopted() {
         let real = tempfile::tempdir().expect("tempdir");
-        let previous = std::env::var_os(DATA_HOME_ENV);
-        // SAFETY: single-threaded within this test; the previous value is restored before returning.
-        unsafe { std::env::set_var(DATA_HOME_ENV, real.path()) };
-        let resolved = inherited_isolated_root();
-        match previous {
-            Some(value) => unsafe { std::env::set_var(DATA_HOME_ENV, value) },
-            None => unsafe { std::env::remove_var(DATA_HOME_ENV) },
-        }
+        // Probed by path, not by pointing `$BASEMIND_DATA_HOME` at it: a transient `set_var` here
+        // raced `every_daemon_family_resolves_inside_the_temp_cache`, which reads that variable.
+        let resolved = isolated_root_of(real.path().to_path_buf());
         assert_eq!(
             resolved, None,
             "an unmarked data home is the developer's real cache and must not be adopted"

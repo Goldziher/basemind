@@ -21,10 +21,14 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use clap::Subcommand;
-use serde_json::json;
 
+use crate::cli::render::render_json;
 use crate::comms::client::{CommsClient, scope_context_for};
 use crate::comms::ids::AgentId;
+use crate::mcp::types_registry::{
+    BranchDto, BranchesResponse, WorkspaceDto, WorkspacesResponse, WorktreeClaimResponse, WorktreeDto,
+    WorktreesResponse,
+};
 
 /// The `workspace` domain's CLI subcommands, one per MCP mode; they talk to the broker daemon
 /// directly.
@@ -115,20 +119,14 @@ async fn dispatch(root: &Path, json: bool, cmd: WorkspaceCmd, out: &mut impl Wri
                 .await
                 .map_err(|e| anyhow::anyhow!("list workspaces: {e}"))?;
             if json {
-                let rows: Vec<_> = workspaces
-                    .iter()
-                    .map(|w| {
-                        json!({
-                            "key": w.key,
-                            "kind": if w.kind == crate::registry::WorkspaceKind::Git { "git" } else { "plain" },
-                            "root": w.root,
-                            "repo_id": w.repo_id,
-                            "main_worktree": w.main_worktree,
-                            "last_seen": w.last_seen,
-                        })
-                    })
-                    .collect();
-                writeln!(out, "{}", json!({ "total": rows.len(), "workspaces": rows }))?;
+                let workspaces: Vec<WorkspaceDto> = workspaces.iter().map(WorkspaceDto::from).collect();
+                render_response(
+                    &WorkspacesResponse {
+                        total: workspaces.len(),
+                        workspaces,
+                    },
+                    out,
+                )?;
             } else if workspaces.is_empty() {
                 writeln!(out, "no workspaces")?;
             } else {
@@ -157,25 +155,14 @@ async fn dispatch(root: &Path, json: bool, cmd: WorkspaceCmd, out: &mut impl Wri
                 .await
                 .map_err(|e| anyhow::anyhow!("list worktrees: {e}"))?;
             if json {
-                let rows: Vec<_> = worktrees
-                    .iter()
-                    .map(|w| {
-                        json!({
-                            "repo_id": w.repo_id,
-                            "name": w.name,
-                            "path": w.path,
-                            "head_sha": w.head_sha,
-                            "branch": w.branch,
-                            "detached": w.detached,
-                            "claimed_by": w.claimed_by,
-                            "last_seen": w.last_seen,
-                        })
-                    })
-                    .collect();
-                writeln!(
+                let worktrees: Vec<WorktreeDto> = worktrees.iter().map(WorktreeDto::from).collect();
+                render_response(
+                    &WorktreesResponse {
+                        repo_id: label,
+                        total: worktrees.len(),
+                        worktrees,
+                    },
                     out,
-                    "{}",
-                    json!({ "repo_id": label, "total": rows.len(), "worktrees": rows })
                 )?;
             } else if worktrees.is_empty() {
                 writeln!(out, "no worktrees")?;
@@ -200,21 +187,14 @@ async fn dispatch(root: &Path, json: bool, cmd: WorkspaceCmd, out: &mut impl Wri
                 .await
                 .map_err(|e| anyhow::anyhow!("list branches: {e}"))?;
             if json {
-                let rows: Vec<_> = branches
-                    .iter()
-                    .map(|b| {
-                        json!({
-                            "repo_id": b.repo_id,
-                            "name": b.name,
-                            "head_sha": b.head_sha,
-                            "last_seen": b.last_seen,
-                        })
-                    })
-                    .collect();
-                writeln!(
+                let branches: Vec<BranchDto> = branches.iter().map(BranchDto::from).collect();
+                render_response(
+                    &BranchesResponse {
+                        repo_id: label,
+                        total: branches.len(),
+                        branches,
+                    },
                     out,
-                    "{}",
-                    json!({ "repo_id": label, "total": rows.len(), "branches": rows })
                 )?;
             } else if branches.is_empty() {
                 writeln!(out, "no branches")?;
@@ -256,6 +236,11 @@ async fn dispatch(root: &Path, json: bool, cmd: WorkspaceCmd, out: &mut impl Wri
     Ok(())
 }
 
+/// Print a response type as pretty JSON, the same rendering the tool-backed subcommands use.
+fn render_response(value: &impl serde::Serialize, out: &mut impl Write) -> Result<()> {
+    render_json(&serde_json::to_value(value)?, out)
+}
+
 /// Render a claim / release outcome, honoring `--json`. `held` reflects whether the claim is now
 /// held (claim) or was cleared (release) by `claimant`; `verb` is the human label.
 #[allow(clippy::too_many_arguments)]
@@ -269,10 +254,14 @@ fn render_claim(
     verb: &str,
 ) -> Result<()> {
     if json {
-        writeln!(
+        render_response(
+            &WorktreeClaimResponse {
+                repo_id: repo_id.to_string(),
+                name: name.to_string(),
+                claimant: claimant.to_string(),
+                held,
+            },
             out,
-            "{}",
-            json!({ "repo_id": repo_id, "name": name, "claimant": claimant, "held": held })
         )?;
     } else if held {
         writeln!(out, "{verb} {name} in {repo_id} (as {claimant})")?;
@@ -280,4 +269,22 @@ fn render_claim(
         writeln!(out, "not {verb}: {name} in {repo_id} (held by another or unknown)")?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn claim_json_matches_the_mcp_response_and_is_pretty() {
+        let mut buf = Vec::new();
+        render_claim(true, &mut buf, "repo", "wt", "alice", true, "claimed").expect("render");
+        let text = String::from_utf8(buf).expect("utf8");
+        assert!(text.contains("\n  \"held\": true"), "uniform pretty JSON: {text}");
+        let value: serde_json::Value = serde_json::from_str(&text).expect("json");
+        assert_eq!(
+            value,
+            serde_json::json!({"repo_id": "repo", "name": "wt", "claimant": "alice", "held": true})
+        );
+    }
 }
