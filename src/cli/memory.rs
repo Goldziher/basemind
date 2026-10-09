@@ -14,11 +14,12 @@ use anyhow::Result;
 use clap::Subcommand;
 
 use crate::mcp::BasemindServer;
+use crate::mcp::cursor::Cursor;
 use crate::mcp::mode::MemoryMode;
 use crate::mcp::params::{Lenient, Parameters};
 use crate::mcp::types_memory::{MemoryParams, Visibility};
 
-use super::render::{Emit, emit};
+use super::render::{Emit, WireFormat, emit, wire};
 use super::run_tool;
 
 /// Map the `--individual` flag onto a [`Visibility`]. Absent leaves the field unset, which the
@@ -61,6 +62,9 @@ pub enum MemoryCmd {
         /// List the per-agent (individual) tier instead of shared (group).
         #[arg(long)]
         individual: bool,
+        /// Resume token: pass the previous page's `next_cursor`.
+        #[arg(long)]
+        cursor: Option<String>,
     },
     /// Vector KNN search over stored memory.
     Search {
@@ -110,6 +114,12 @@ pub enum MemoryCmd {
         /// `web:<host>`.
         #[arg(long)]
         scope: Option<String>,
+        /// Token budget for the returned hits; overflow is dropped and flagged `budgeted`.
+        #[arg(long)]
+        max_tokens: Option<u32>,
+        /// Response encoding: `json` (default) or `toon` (compact tabular).
+        #[arg(long, value_enum)]
+        format: Option<WireFormat>,
     },
     /// Mine co-change skill proposals from recent git history.
     Mine {
@@ -134,6 +144,9 @@ pub enum MemoryCmd {
         /// Maximum results to return (default 100).
         #[arg(long)]
         limit: Option<u32>,
+        /// Resume token: pass the previous page's `next_cursor`.
+        #[arg(long)]
+        cursor: Option<String>,
     },
     /// Accept a proposal and promote it to a searchable skill memory.
     Accept {
@@ -212,10 +225,12 @@ pub async fn run(server: &BasemindServer, cmd: MemoryCmd, opts: &Emit, out: &mut
             tag,
             limit,
             individual,
+            cursor,
         } => MemoryParams {
             prefix,
             tag,
             limit,
+            cursor: cursor.map(Cursor),
             visibility: visibility(individual),
             ..params(MemoryMode::List)
         },
@@ -255,11 +270,15 @@ pub async fn run(server: &BasemindServer, cmd: MemoryCmd, opts: &Emit, out: &mut
             limit,
             mime_type,
             scope,
+            max_tokens,
+            format,
         } => MemoryParams {
             query: Some(query),
             limit,
             mime_type,
             scope,
+            max_tokens,
+            format: wire(format),
             ..params(MemoryMode::Documents)
         },
         MemoryCmd::Mine {
@@ -274,9 +293,10 @@ pub async fn run(server: &BasemindServer, cmd: MemoryCmd, opts: &Emit, out: &mut
             max_files_per_commit,
             ..params(MemoryMode::Mine)
         },
-        MemoryCmd::Proposals { kind, limit } => MemoryParams {
+        MemoryCmd::Proposals { kind, limit, cursor } => MemoryParams {
             kind,
             limit,
+            cursor: cursor.map(Cursor),
             ..params(MemoryMode::Proposals)
         },
         MemoryCmd::Accept { id, key } => MemoryParams {

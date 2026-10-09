@@ -453,11 +453,21 @@ mod tests {
             0,
             "dropping the lock deregisters the daemon"
         );
-        match DaemonLock::acquire_at(DaemonKind::Comms, comms.path(), "9.9.9", machine.path())
-            .expect("re-acquire after drop")
-        {
-            DaemonLockOutcome::Acquired(_) => {}
-            other => panic!("the lock is free after drop, got {other:?}"),
+        // The flock is released when the dropped `File` closes, but a sibling test thread that
+        // forks a child (`Command::spawn`) in the same instant hands the child a copy of the fd
+        // until it execs, which keeps the lock held for a few milliseconds. Retry briefly rather
+        // than treat that as a failure; a lock that is genuinely stuck still fails after 5 s.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            match DaemonLock::acquire_at(DaemonKind::Comms, comms.path(), "9.9.9", machine.path())
+                .expect("re-acquire after drop")
+            {
+                DaemonLockOutcome::Acquired(_) => break,
+                other if std::time::Instant::now() >= deadline => {
+                    panic!("the lock is free after drop, got {other:?}")
+                }
+                _ => std::thread::sleep(std::time::Duration::from_millis(20)),
+            }
         }
     }
 }

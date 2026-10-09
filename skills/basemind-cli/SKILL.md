@@ -90,7 +90,10 @@ By default, all commands return **human-readable text**. For machine consumption
 basemind code symbols "parseQuery" --json
 ```
 
-This returns the raw `JsonSchema`-derived response structure, same as MCP.
+This returns the raw `JsonSchema`-derived response structure, same as MCP (`agents` and `workspace`
+included). Human output never shortens source bodies, diffs or exports; the timing footer is written
+to stderr. Page long lists with `--limit` plus `--cursor <next_cursor>`, bound them with
+`--max-tokens`, and add `--format toon` for compact tables.
 
 ## Setup (one-time per repo)
 
