@@ -31,6 +31,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `BASEMIND_BLOB_GC_GRACE_SECS` overrides the 6 hour age below which the blob sweep keeps a blob.
 
 ### Changed
+
+- MCP `tools/list` is smaller: the `memory` tool no longer exposes the ~26 `documents.*` / `llm.*`
+  config-override fields (`llm_api_key`, `llm_base_url`, `llm_model`, `reranker_*`, `ner_enabled`,
+  `summarization_*`, `keywords_*`, `language_*`, `embedding_preset`, `max_characters`, `overlap`,
+  `output_format`, `enabled`, ...) that were CLI-flag leftovers. They remain CLI flags and env vars and
+  `basemind.toml` keys; over MCP, `memory` mode `documents` keeps `format`, `max_tokens`, `mime_type`,
+  `scope`, `entity_category` and `keywords_contains`. In particular no API key travels as a tool
+  argument any more. `entity_category` / `keywords_contains` now serialize like their sibling
+  optional fields. Per-field descriptions across the `agents`, `code`, `git`, `graph`, `admin`,
+  `shell`, `web`, `workspace` and `memory` schemas were tightened (same modes and parameters).
 - `code outline`, `symbols` and the code map no longer index names bound inside a function, method or
   lambda body (Python `x = ...` in a `def`, JS/TS `const` in a function, Rust `let`/nested `fn`, Go
   locals, Java/C#/C locals ...): a symbol with a function-like ancestor node is dropped, matched by node

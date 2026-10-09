@@ -88,29 +88,26 @@ pub struct MemoryParams {
     /// `put` only, required: the note body to store.
     #[serde(default)]
     pub value: Option<String>,
-    /// `put` only: tags attached to the entry, matched exactly by `list` / `search`.
+    /// `put`: tags for exact filtering by `list`/`search`.
     #[serde(default)]
     pub tags: Option<Vec<String>>,
-    /// `put` only: also embed the value into LanceDB so `search` can reach it. Default true.
+    /// `put`: also embed for `search` (default true).
     #[serde(default)]
     pub embed: Option<bool>,
-    /// Memory tier for `put` / `get` / `list` / `search` / `delete` / `audit`: `group` (shared
-    /// across agents, the default) or `individual` (private to the calling agent).
+    /// `group` (shared, default) or `individual` (this agent only).
     #[serde(default)]
     pub visibility: Option<Visibility>,
 
-    /// `list` only: key-PREFIX filter (not substring).
+    /// `list`: key-prefix filter.
     #[serde(default)]
     pub prefix: Option<String>,
-    /// `list` and `search` only: exact tag filter.
+    /// `list`/`search`: exact tag filter.
     #[serde(default)]
     pub tag: Option<String>,
-    /// Result cap for `list` / `search` / `audit` / `documents` / `proposals`. `list`, `audit` and
-    /// `proposals` default to 100 (max 1000); `search` and `documents` default to 10 (max 100).
+    /// Result cap: `search`/`documents` default 10 (max 100); `list`/`audit`/`proposals` default 100 (max 1000).
     #[serde(default)]
     pub limit: Option<u32>,
-    /// Resume token from the previous call's `next_cursor` — `list` and `proposals` only. Stable
-    /// across rescans because the underlying Fjall keys are content-addressed.
+    /// `list`/`proposals`: resume token from `next_cursor`.
     #[serde(default)]
     pub cursor: Option<Cursor>,
 
@@ -126,33 +123,30 @@ pub struct MemoryParams {
     )]
     pub query: Option<String>,
 
-    /// `audit` only: compute verdicts and return them without persisting any mutation.
+    /// `audit`: return verdicts without persisting.
     #[serde(default)]
     pub dry_run: Option<bool>,
-    /// `audit` only: also scan the archived (`memory_archive`) keyspace.
+    /// `audit`: also scan archived records.
     #[serde(default)]
     pub include_archived: Option<bool>,
 
-    /// `documents` only: token budget bounding the returned `hits` list (best-first; sets
-    /// `budgeted`).
+    /// `documents`: token budget for `hits`.
     #[serde(default, alias = "token_budget", alias = "budget")]
     pub max_tokens: Option<u32>,
-    /// `documents` only: wire format for the response — `"json"` (default) or `"toon"`.
+    /// `documents`: `"json"` (default) or `"toon"`.
     #[serde(default, alias = "encoding")]
     pub format: Option<String>,
-    /// `documents` only: exact MIME-type filter.
+    /// `documents`: exact MIME-type filter.
     #[serde(default)]
     pub mime_type: Option<String>,
-    /// `documents` only: which ingestion scope to search. Defaults to this repo's; pages ingested
-    /// by the `web` tool live under `web:<host>` (it echoes the scope back).
+    /// `documents`: ingestion scope (default this repo; web pages live under `web:<host>`).
     #[serde(default)]
     pub scope: Option<String>,
-    /// `documents` only: case-insensitive substring match against a parent document's entity
-    /// categories (NER). Combined with `keywords_contains` via AND semantics when both are set.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// `documents`: case-insensitive substring over NER entity categories (ANDed with `keywords_contains`).
+    #[serde(default)]
     pub entity_category: Option<String>,
-    /// `documents` only: case-insensitive substring match against a parent document's keywords.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// `documents`: case-insensitive substring over document keywords.
+    #[serde(default)]
     pub keywords_contains: Option<String>,
 
     /// `mine` only: number of recent commits to inspect (default 200, max 2000).
@@ -161,11 +155,10 @@ pub struct MemoryParams {
     /// `mine` only: minimum co-change count for a candidate to be emitted (default 5).
     #[serde(default)]
     pub min_support: Option<u32>,
-    /// `mine` only: minimum `support / anchor_freq` for a candidate (default 0.6).
+    /// `mine`: minimum support / anchor_freq (default 0.6).
     #[serde(default)]
     pub min_confidence: Option<f32>,
-    /// `mine` only: skip commits touching more than this many files (default 25), so bulk/vendor
-    /// commits do not dominate the co-change map.
+    /// `mine`: skip commits touching more files (default 25).
     #[serde(default)]
     pub max_files_per_commit: Option<u32>,
 
@@ -178,11 +171,6 @@ pub struct MemoryParams {
     /// `reject` only: human-readable reason. Logged, never persisted.
     #[serde(default)]
     pub reason: Option<String>,
-
-    /// `documents` only: per-query overrides for any `documents.*` config knob, taking precedence
-    /// over serve-time config and CLI flags. Unrecognized fields are ignored — flatten semantics.
-    #[serde(flatten, default)]
-    pub overrides: crate::config::DocumentsCliOverrides,
 }
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
@@ -423,19 +411,6 @@ mod param_alias_tests {
         let by_name: MemoryParams =
             serde_json::from_value(serde_json::json!({ "mode": "get", "name": "skill/foo" })).unwrap();
         assert_eq!(by_name.key.as_deref(), Some("skill/foo"));
-    }
-
-    /// The flattened documents overrides must keep landing in `overrides`, not vanish, or a
-    /// per-call `reranker_preset` would be accepted and ignored.
-    #[test]
-    fn memory_params_capture_flattened_documents_overrides() {
-        let params: MemoryParams = serde_json::from_value(serde_json::json!({
-            "mode": "documents",
-            "query": "retry",
-            "reranker_preset": "bge-reranker-base",
-        }))
-        .unwrap();
-        assert!(params.overrides.any(), "documents overrides must survive the flatten");
     }
 
     /// The published input schema must stay inside the Anthropic subset — one `oneOf`/`$ref`

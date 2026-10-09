@@ -25,17 +25,13 @@ use crate::registry::{BranchRecord, WorkspaceKind, WorkspaceRecord, WorktreeReco
 pub struct WorkspaceParams {
     /// Which operation to run.
     pub mode: WorkspaceMode,
-    /// Required by `worktrees`, `branches`, `claim` and `release`; rejected by `workspaces`. The
-    /// repo id is a normalized remote URL, else `path:<root>` — run mode `workspaces` to see the
-    /// known ids.
+    /// Required by `worktrees`, `branches`, `claim`, `release`. Normalized remote URL or `path:<root>`; see `workspaces`.
     #[serde(default)]
     pub repo_id: Option<String>,
-    /// Required by `claim` and `release`; rejected by the list modes. The worktree name is `(main)`
-    /// for the primary checkout, else the linked-worktree directory name.
+    /// Required by `claim` and `release`: `(main)` or the linked-worktree directory name.
     #[serde(default)]
     pub name: Option<String>,
-    /// Every mode. Optional sub-identity to act as; defaults to the server's own agent. Lets one
-    /// orchestrator drive many named subagents, each claiming worktrees under its own identity.
+    /// Sub-identity to act as; defaults to this server's agent.
     #[serde(default)]
     pub as_agent: Option<String>,
 }

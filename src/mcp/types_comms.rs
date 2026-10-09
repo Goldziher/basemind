@@ -32,102 +32,91 @@ use crate::comms::protocol::SeqMeta;
 pub struct AgentsParams {
     /// Which operation to run.
     pub mode: AgentsMode,
-    /// `join`, `leave`, `members`, `add_member`, `remove_member`, `archive`, `post`, `history` —
-    /// the thread to act on, required. `list`, `ack`, `wait` — an optional filter narrowing the
-    /// call to one thread.
+    /// Thread to act on (required by join/leave/members/add_member/remove_member/archive/post/history; optional filter for list/ack/wait).
     #[serde(default)]
     pub thread: Option<ThreadId>,
-    /// `add_member`, `remove_member`. The agent id to add or remove. Required by both.
+    /// Agent id for add_member / remove_member.
     #[serde(default)]
     pub member: Option<AgentId>,
-    /// `thread_start` only. Additional member agent ids; you are added automatically.
+    /// `thread_start`: extra member agent ids (you are added automatically).
     #[serde(default)]
     pub members: Option<Vec<AgentId>>,
-    /// `message` only. Id of the message whose body to read — the `id` of a front-matter row
-    /// returned by `history` or `inbox`. Required by that mode.
+    /// `message`: id of the front-matter row whose body to read.
     #[serde(default, alias = "id")]
     pub message_id: Option<String>,
-    /// `ack` only. Message ids to acknowledge.
+    /// `ack`: message ids to acknowledge.
     #[serde(default)]
     pub message_ids: Option<Vec<String>>,
-    /// `ack` only. Advance `thread`'s read cursor straight to this per-thread seq. Requires
-    /// `thread`.
+    /// `ack`: advance `thread`'s read cursor to this seq.
     #[serde(default)]
     pub to_seq: Option<u64>,
-    /// `thread_start` — the thread's topic string, one of the addressing dimensions. `post` — the
-    /// message's subject line, required.
+    /// `thread_start`: topic. `post`: subject line (required).
     #[serde(default)]
     pub subject: Option<String>,
-    /// `thread_list` only. Case-sensitive substring filter over thread subjects.
+    /// `thread_list`: case-sensitive subject substring filter.
     #[serde(default)]
     pub subject_contains: Option<String>,
-    /// `thread_start` only. A path or globset glob (e.g. `src/**`) for path-based discovery, one of
-    /// the addressing dimensions.
+    /// `thread_start`: path or glob (e.g. `src/**`).
     #[serde(default)]
     pub path: Option<String>,
-    /// `post` only. Message body (markdown). Stored separately from front-matter and read back only
-    /// through mode `message`. Omit it entirely for a subject-only post; supplying an empty or
-    /// whitespace-only body is refused, because it would be stored and read back later as
-    /// `found: true, body: ""` — indistinguishable from a failed retrieval.
+    /// `post`: markdown body. Omit for a subject-only post; empty or whitespace-only is refused.
     #[serde(default)]
     pub body: Option<String>,
-    /// `post` only. Free-form tags for filtering.
+    /// `post`: free-form tags.
     #[serde(default)]
     pub tags: Option<Vec<String>>,
-    /// `post` only. Id of the message this one replies to, for threading.
+    /// `post`: id of the message replied to.
     #[serde(default)]
     pub reply_to: Option<String>,
-    /// `thread_list` only. Also return archived threads. Default false.
+    /// `thread_list`: include archived threads.
     #[serde(default)]
     pub include_archived: Option<bool>,
-    /// `inbox` only. Advance read cursors past the returned messages. Default false.
+    /// `inbox`: advance read cursors past the returned messages.
     #[serde(default)]
     pub mark_read: Option<bool>,
-    /// `history`, `inbox`, `wait`. Resume token from the previous page's `next_cursor`.
+    /// Resume token from the previous `next_cursor` (history, inbox, wait).
     #[serde(default)]
     pub cursor: Option<String>,
-    /// `history`, `inbox`. Page size. Default 100, max 1000.
+    /// Page size for history / inbox (default 100, max 1000).
     #[serde(default)]
     pub limit: Option<u32>,
-    /// `history`, `inbox`, `wait`. Only consider messages from the last N hours. Default 24; pass 0
-    /// for ALL history.
+    /// history / inbox / wait: look back N hours (default 24; 0 = all).
     #[serde(default)]
     pub since_hours: Option<u32>,
-    /// `wait` only. Seconds to block before returning `timed_out: true`. Default 30, max 300.
+    /// `wait`: seconds to block (default 30, max 300).
     #[serde(default)]
     pub timeout_secs: Option<u32>,
-    /// `register` only. Human-readable agent name.
+    /// `register`: agent name.
     #[serde(default)]
     pub name: Option<String>,
-    /// `register` only. One-line description of this agent's purpose.
+    /// `register`: one-line purpose.
     #[serde(default)]
     pub description: Option<String>,
-    /// `register` only. Agent version string (e.g. "1.0.0").
+    /// `register`: version string.
     #[serde(default)]
     pub version: Option<String>,
-    /// `register` only. Skill labels advertised to peers.
+    /// `register`: skill labels.
     #[serde(default)]
     pub skills: Option<Vec<String>>,
-    /// `cleanup` only. MCP cleanup is preview-only, so this must be omitted or false.
+    /// `cleanup`: must be omitted or false over MCP (preview only).
     #[serde(default)]
     pub apply: Option<bool>,
-    /// `cleanup` only. Override the message retention window in hours.
+    /// `cleanup`: message retention window override.
     #[serde(default)]
     pub message_ttl_hours: Option<u32>,
-    /// `cleanup` only. Override the idle-thread archive window in hours.
+    /// `cleanup`: idle-thread archive window override.
     #[serde(default)]
     pub thread_idle_hours: Option<u32>,
-    /// `cleanup` only. Override the archived-thread purge window in hours.
+    /// `cleanup`: archived-thread purge window override.
     #[serde(default)]
     pub thread_retention_hours: Option<u32>,
-    /// `cleanup` and `status`. Override the generated-agent stale window in hours.
+    /// `cleanup` / `status`: stale-agent window override.
     #[serde(default)]
     pub agent_ttl_hours: Option<u32>,
-    /// `cleanup` only. Override the identity-claim stale window in hours.
+    /// `cleanup`: stale identity-claim window override.
     #[serde(default)]
     pub claim_ttl_hours: Option<u32>,
-    /// Every mode. Sub-identity to act as; defaults to this server's own agent. Lets one
-    /// orchestrator drive many named subagents, each with its own membership and inbox.
+    /// Sub-identity to act as (any mode); defaults to this server's agent.
     #[serde(default)]
     pub as_agent: Option<String>,
 }

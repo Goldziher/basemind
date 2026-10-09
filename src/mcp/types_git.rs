@@ -25,8 +25,7 @@ use crate::path::RelPath;
 pub struct GitParams {
     /// Which operation to run.
     pub mode: GitMode,
-    /// `touching`, `diff`, `diff_outline`, `blame`, `blame_symbol`, `symbol_history`. Repository-
-    /// relative path (forward-slash, no leading `/`). Required by each of those modes.
+    /// Repo-relative path; required by touching/diff/diff_outline/blame/blame_symbol/symbol_history.
     #[serde(default)]
     pub path: Option<RelPath>,
     /// `by_path` — a regular expression matched against each commit's changed **file paths**; and
@@ -40,25 +39,21 @@ pub struct GitParams {
         alias = "q",
         alias = "search"
     )]
+    /// `by_path`: regex over changed file paths. `search`: AND-matched full-text query over author + message. Required by both.
     pub pattern: Option<String>,
-    /// `search` only. Field to scope the query to: `author` (name + email), `message` (summary +
-    /// body), or `all` (default). `summary` / `body` are accepted as aliases for `message`.
+    /// `search`: `author`, `message` or `all` (default).
     #[serde(default)]
     pub field: Option<String>,
-    /// `blame_symbol` and `symbol_history`. Name of the symbol to resolve in `path`. Required by
-    /// both modes.
+    /// `blame_symbol`/`symbol_history`: symbol name in `path` (required).
     #[serde(default, alias = "symbol")]
     pub name: Option<String>,
-    /// `blame_symbol` and `symbol_history`. Symbol-kind filter that disambiguates same-named
-    /// symbols (`function`, `struct`, `class`, …).
+    /// `blame_symbol`/`symbol_history`: symbol kind to disambiguate (`function`, `struct`, ...).
     #[serde(default)]
     pub kind: Option<String>,
-    /// `recent`, `touching`, `by_path`, `search`, `blame`, `blame_symbol`, `symbol_history`. Page
-    /// size; the default and cap differ per mode (see the tool description).
+    /// Page size; default and cap vary per mode (see tool description).
     #[serde(default)]
     pub limit: Option<u32>,
-    /// `recent`, `touching`, `by_path`, `search`, `blame`, `blame_symbol`, `symbol_history`. Resume
-    /// token returned by the previous call's `next_cursor`.
+    /// Resume token from the previous `next_cursor`.
     #[serde(default)]
     pub cursor: Option<Cursor>,
     /// `recent` only. Include each commit's per-file change list. Default true.
@@ -67,8 +62,7 @@ pub struct GitParams {
     /// `churn` only. How many files to keep in the churn ranking. Default 20, max 200.
     #[serde(default)]
     pub top_k: Option<u32>,
-    /// `by_path` and `churn`. How many commits back from HEAD to inspect before filtering
-    /// (`by_path` default 200 / max 1000; `churn` default 200 / max 2000).
+    /// `by_path`/`churn`: commits back from HEAD to inspect (default 200).
     #[serde(default)]
     pub window: Option<u32>,
     /// `diff_outline`, `blame`, `blame_symbol`. Revision to read at. Defaults to HEAD.
@@ -80,12 +74,10 @@ pub struct GitParams {
     /// `diff` only. Right-hand revision. Required by that mode.
     #[serde(default)]
     pub rev_new: Option<String>,
-    /// `blame` only. 1-based first line of the range to blame. Must be supplied together with
-    /// `line_end`.
+    /// `blame`: 1-based first line; pair with `line_end`.
     #[serde(default)]
     pub line_start: Option<u32>,
-    /// `blame` only. 1-based last line (inclusive) of the range to blame. Must be supplied together
-    /// with `line_start`.
+    /// `blame`: 1-based last line, inclusive; pair with `line_start`.
     #[serde(default)]
     pub line_end: Option<u32>,
     /// `symbol_history` only. Fingerprint strategy for detecting body changes between commits:

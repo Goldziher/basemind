@@ -21,9 +21,7 @@ pub struct WebParams {
     /// Absolute http or https URL: the page to fetch (`scrape`), the crawl seed (`crawl`), or the
     /// site to enumerate (`map`).
     pub url: crate::url::Url,
-    /// `scrape` only. When true (the default), chunk + embed + write to LanceDB so the page is
-    /// reachable via `memory` mode `documents`. When false, fetch and return metadata only —
-    /// useful for previewing a URL before paying the embedding cost.
+    /// `scrape`: chunk, embed and store for `memory` mode `documents` (default true); false = metadata only.
     #[serde(default)]
     pub index: Option<bool>,
     /// `scrape` and `crawl` only. LanceDB `scope` tag; defaults to `"web:<host>"`. Override to

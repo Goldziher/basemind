@@ -84,32 +84,22 @@ pub struct CodeParams {
     /// `grep` only. Include one line of context before and after each hit. Default true.
     #[serde(default)]
     pub include_context: Option<bool>,
-    /// Result cap, per mode: `symbols` / `grep` / `references` / `callers` / `implementations`
-    /// default 100, max 1000; `files` / `find` default 200, max 5000; `semantic` default 10,
-    /// max 100.
+    /// Result cap: `files`/`find` default 200 (max 5000), `semantic` 10 (max 100), others 100 (max 1000).
     #[serde(default)]
     pub limit: Option<u32>,
-    /// Token budget bounding the returned list (never the whole envelope). Entries are kept in
-    /// result order until the budget is hit; the rest are dropped and the response carries
-    /// `budgeted: true` plus, where the mode pages, a `next_cursor`.
+    /// Token budget bounding the returned list; overflow is dropped and flagged `budgeted: true`.
     #[serde(default, alias = "token_budget", alias = "budget")]
     pub max_tokens: Option<u32>,
-    /// Wire format for the response: `"json"` (default) or `"toon"` — a compact tabular encoding of
-    /// the result list, far fewer tokens than JSON for large result sets.
+    /// `"json"` (default) or `"toon"` (compact tabular).
     #[serde(default, alias = "encoding")]
     pub format: Option<String>,
-    /// Resume token from the previous call's `next_cursor`. Fjall-backed modes (`references`,
-    /// `callers`, `implementations`) keep cursors stable across rescans; in-memory modes
-    /// (`symbols`, `grep`, `files`, `find`) invalidate them, setting `cursor_invalidated`.
+    /// Resume token from the previous `next_cursor`.
     #[serde(default)]
     pub cursor: Option<Cursor>,
-    /// `semantic` only. Retrieval lane: `"hybrid"` (default — RRF fusion of the vector, keyword and
-    /// exact-symbol lanes), `"semantic"` (vector KNN only), or `"keyword"` (native BM25 only).
-    /// Named `lane` rather than `mode` because `mode` selects the domain operation here.
+    /// `semantic`: `hybrid` (default), `semantic` (vector only) or `keyword` (BM25 only).
     #[serde(default, alias = "strategy")]
     pub lane: Option<String>,
-    /// `semantic` only. Run the cross-encoder rerank pass over the fused hits. Defaults to the
-    /// `[code_search.reranker] enabled` config knob; the first rerank downloads an ONNX model.
+    /// `semantic`: cross-encoder rerank of fused hits (default from config; first use downloads a model).
     #[serde(default, alias = "reranker_enabled")]
     pub rerank: Option<bool>,
     /// `semantic` only. Reranker preset name (default `bge-reranker-base`).

@@ -1260,16 +1260,6 @@ async fn mcp_server_exercises_representative_tools() {
         }
     }
 
-    let override_result = service
-        .call_tool(call_params(
-            "memory",
-            json!({ "mode": "documents",  "query": "hello", "reranker_preset": "bge-reranker-base" }),
-        ))
-        .await;
-    if let Ok(r) = &override_result {
-        let _ = r;
-    }
-
     #[cfg(feature = "documents")]
     {
         let json_result = service
@@ -1278,7 +1268,7 @@ async fn mcp_server_exercises_representative_tools() {
         let toon_result = service
             .call_tool(call_params(
                 "memory",
-                json!({ "mode": "documents",  "query": "hello", "output_format": "toon" }),
+                json!({ "mode": "documents",  "query": "hello", "format": "toon" }),
             ))
             .await;
         if let (Ok(json_resp), Ok(toon_resp)) = (&json_result, &toon_result) {
@@ -1320,7 +1310,7 @@ async fn mcp_server_exercises_representative_tools() {
         let _ = service
             .call_tool(call_params(
                 "memory",
-                json!({ "mode": "documents",  "query": "hello", "output_format": "toon" }),
+                json!({ "mode": "documents",  "query": "hello", "format": "toon" }),
             ))
             .await;
     }
@@ -2908,7 +2898,7 @@ async fn reranks_search_results() {
     let no_rerank = service
         .call_tool(call_params(
             "memory",
-            json!({ "mode": "documents",  "query": "function", "reranker_enabled": false }),
+            json!({ "mode": "documents",  "query": "function" }),
         ))
         .await;
     if let Ok(ref resp) = no_rerank {
@@ -2925,13 +2915,25 @@ async fn reranks_search_results() {
         }
     }
 
+    let _ = service.cancel().await;
+
+    // Per-query reranker overrides are no longer part of the MCP surface; the reranker is driven
+    // by `[documents.reranker]` in basemind.toml.
+    std::fs::write(
+        root.join("basemind.toml"),
+        "[documents.reranker]\nenabled = true\npreset = \"bge-reranker-base\"\n",
+    )
+    .unwrap();
+    let transport = basemind::mcp::serve_in_memory(root, "working")
+        .await
+        .expect("in-memory serve");
+    let service = ().serve(transport).await.expect("rmcp handshake");
+
     let reranked = service
         .call_tool(call_params(
             "memory",
             json!({ "mode": "documents",
                 "query": "function",
-                "reranker_enabled": true,
-                "reranker_preset": "bge-reranker-base",
             }),
         ))
         .await;
@@ -2966,6 +2968,11 @@ async fn reranks_search_results() {
 async fn summarizes_via_extractive_default() {
     let dir = build_repo();
     let root = dir.path();
+    std::fs::write(
+        root.join("basemind.toml"),
+        "[documents.summarization]\nenabled = true\nstrategy = \"extractive\"\nmax_tokens = 100\n",
+    )
+    .unwrap();
     run_scan(root);
 
     let transport = basemind::mcp::serve_in_memory(root, "working")
@@ -2979,9 +2986,6 @@ async fn summarizes_via_extractive_default() {
             json!({ "mode": "documents",
                 "query": "test",
                 "limit": 5,
-                "summarization_enabled": true,
-                "summarization_strategy": "extractive",
-                "summarization_max_tokens": 100,
             }),
         ))
         .await;

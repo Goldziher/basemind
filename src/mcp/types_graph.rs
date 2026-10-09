@@ -127,15 +127,10 @@ pub struct GraphParams {
     /// or `"svg"`. `display` / `open`: the visual formats only — `"html"` (default) or `"svg"`.
     #[serde(default)]
     pub format: Option<String>,
-    /// `export` only. Also write the rendered content to basemind's machine-global cache
-    /// (`<cache>/exports/graph-<hash>.<ext>`) and return its absolute `output_path`. Off by
-    /// default; the content is returned inline regardless.
+    /// `export`: also write to the cache and return `output_path` (default false).
     #[serde(default)]
     pub write: Option<bool>,
-    /// `display` / `open` only. When true (the default), launch the human's default viewer /
-    /// browser. Set false to only render and return the path (`display`) or the URL (`open`)
-    /// without spawning anything — the right choice for headless automation, tests, and agents
-    /// that drive the served page themselves.
+    /// `display`/`open`: launch the viewer (default true); false only renders and returns the path or URL.
     #[serde(default)]
     pub open: Option<bool>,
 }

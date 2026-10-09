@@ -1,5 +1,5 @@
-//! `DocumentsCliOverrides` — the single struct that backs both `clap` flags
-//! and (in iter 3) MCP per-query params. Every field mirrors a
+//! `DocumentsCliOverrides` — the struct that backs the `clap` flags and env vars
+//! (it is deliberately NOT part of any MCP schema). Every field mirrors a
 //! [`DocumentsConfig`](super::DocumentsConfig) field but is wrapped in
 //! `Option<T>`, so "not provided" stays distinguishable from "explicitly
 //! reset to default".
@@ -14,8 +14,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// Optional per-call overrides for the document tier. Backs `#[command(flatten)]`
-/// on `ScanArgs` / `ServeArgs` and (iter 3) `#[serde(flatten)]` on MCP request
-/// types.
+/// on `ScanArgs` / `ServeArgs`. Never flattened into an MCP request type: every
+/// field would be paid for by every session, and `llm_api_key` is a secret.
 #[derive(Args, Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct DocumentsCliOverrides {

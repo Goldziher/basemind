@@ -158,7 +158,7 @@ src/
 │   ├── code.rs             — [code_search] config table
 │   ├── shells.rs           — [shells] config table
 │   ├── comms.rs            — [comms] config table (broker daemon + identity)
-│   ├── overrides.rs        — DocumentsCliOverrides — backs clap and MCP flatten
+│   ├── overrides.rs        — DocumentsCliOverrides — backs the clap flags
 │   ├── layered.rs          — merge_layers (Mcp > Cli > Env > File > Default)
 │   └── source.rs           — ConfigSource + ProvenanceMap ledger
 ├── mcp/                    — MCP server: nine domain tools (code, graph, git, memory, web,
