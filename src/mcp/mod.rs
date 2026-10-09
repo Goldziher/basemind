@@ -105,14 +105,14 @@ mod tools_registry;
 mod tools_shells;
 #[cfg(feature = "crawl")]
 mod tools_web;
-mod toon;
+pub(crate) mod toon;
 mod traverse;
 mod types;
 mod types_admin;
 mod types_archmap;
 mod types_code;
 #[cfg(all(feature = "comms", any(unix, windows)))]
-mod types_comms;
+pub(crate) mod types_comms;
 mod types_community;
 mod types_compress;
 mod types_documents;
@@ -123,7 +123,7 @@ mod types_graphview;
 mod types_impls;
 pub(crate) mod types_memory;
 #[cfg(all(feature = "comms", any(unix, windows)))]
-mod types_registry;
+pub(crate) mod types_registry;
 #[cfg(all(feature = "shells", any(unix, windows)))]
 mod types_shells;
 mod types_traverse;

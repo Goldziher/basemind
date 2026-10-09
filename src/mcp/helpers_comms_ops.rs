@@ -27,18 +27,7 @@ pub(super) async fn run_agent_list(state: &ServerState, params: AgentListParams)
     let handle = resolve_comms_client(state, params.as_agent).await?;
     let mut client = handle.lock().await;
     let records = client.list_agents(params.thread).await.map_err(comms_err)?;
-    let agents: Vec<AgentSummary> = records
-        .iter()
-        .map(|r| AgentSummary {
-            agent_id: r.agent_id.as_str().to_string(),
-            name: r.card.name.clone(),
-            description: r.card.description.clone(),
-            version: r.card.version.clone(),
-            skills: r.card.skills.clone(),
-            first_seen: r.first_seen,
-            last_seen: r.last_seen,
-        })
-        .collect();
+    let agents: Vec<AgentSummary> = records.iter().map(AgentSummary::from_record).collect();
     json_result(&AgentListResponse {
         total: agents.len(),
         agents,

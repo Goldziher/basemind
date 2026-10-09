@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use super::mode::AgentsMode;
 use crate::comms::cursor::Cursor;
 use crate::comms::ids::{AgentId, ThreadId};
-use crate::comms::model::Thread;
+use crate::comms::model::{AgentRecord, Thread};
 use crate::comms::protocol::SeqMeta;
 
 /// Wire parameters for the `agents` tool.
@@ -144,7 +144,7 @@ pub struct AgentRegisterParams {
 
 /// Response for mode `register`.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(super) struct AgentRegisterResponse {
+pub(crate) struct AgentRegisterResponse {
     /// The agent id the card was registered under.
     pub agent_id: String,
     /// Always true on success.
@@ -165,7 +165,7 @@ pub struct AgentListParams {
 
 /// One agent row in a mode `list` response (front-matter view of an `AgentRecord`).
 #[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(super) struct AgentSummary {
+pub(crate) struct AgentSummary {
     /// Stable agent identity.
     pub agent_id: String,
     /// Self-described name.
@@ -182,9 +182,24 @@ pub(super) struct AgentSummary {
     pub last_seen: i64,
 }
 
+impl AgentSummary {
+    /// Build the front-matter row for one registered agent.
+    pub(crate) fn from_record(record: &AgentRecord) -> Self {
+        Self {
+            agent_id: record.agent_id.as_str().to_string(),
+            name: record.card.name.clone(),
+            description: record.card.description.clone(),
+            version: record.card.version.clone(),
+            skills: record.card.skills.clone(),
+            first_seen: record.first_seen,
+            last_seen: record.last_seen,
+        }
+    }
+}
+
 /// Response for mode `list`.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(super) struct AgentListResponse {
+pub(crate) struct AgentListResponse {
     /// Number of agents returned.
     pub total: usize,
     /// The agent rows.
@@ -193,7 +208,7 @@ pub(super) struct AgentListResponse {
 
 /// A thread front-matter view shared by modes `thread_start` and `thread_list`.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(super) struct ThreadSummary {
+pub(crate) struct ThreadSummary {
     /// Stable thread id.
     pub id: String,
     /// Topic string, when addressed by subject.
@@ -217,11 +232,11 @@ pub(super) struct ThreadSummary {
 }
 
 /// The staleness window for a thread, in hours. 168h = 7 days.
-pub(super) const STALE_AFTER_HOURS: i64 = 168;
+pub(crate) const STALE_AFTER_HOURS: i64 = 168;
 
 impl ThreadSummary {
     /// Build a thread summary, computing `stale` against `now_micros`.
-    pub(super) fn from_thread(thread: &Thread, now_micros: i64) -> Self {
+    pub(crate) fn from_thread(thread: &Thread, now_micros: i64) -> Self {
         let last = thread.last_activity;
         let window_micros = STALE_AFTER_HOURS * 3_600_000_000;
         let stale = last == 0 || (now_micros - last) > window_micros;
@@ -259,7 +274,7 @@ pub struct ThreadStartParams {
 
 /// Response for mode `thread_start`.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(super) struct ThreadStartResponse {
+pub(crate) struct ThreadStartResponse {
     /// The created thread.
     pub thread: ThreadSummary,
 }
@@ -282,7 +297,7 @@ pub struct ThreadListParams {
 
 /// Response for mode `thread_list`.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(super) struct ThreadListResponse {
+pub(crate) struct ThreadListResponse {
     /// Number of threads returned.
     pub total: usize,
     /// The thread rows.
@@ -311,7 +326,7 @@ pub struct ThreadLeaveParams {
 
 /// Response for modes `join` / `leave`.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(super) struct ThreadMembershipResponse {
+pub(crate) struct ThreadMembershipResponse {
     /// The thread acted on.
     pub thread: String,
     /// True after a successful join.
@@ -334,7 +349,7 @@ pub struct ThreadMembersParams {
 
 /// Response for mode `members`.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(super) struct ThreadMembersResponse {
+pub(crate) struct ThreadMembersResponse {
     /// The thread queried.
     pub thread: String,
     /// The member agent ids.
@@ -355,7 +370,7 @@ pub struct ThreadMemberParams {
 
 /// Response for modes `add_member` / `remove_member`.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(super) struct ThreadMemberChangeResponse {
+pub(crate) struct ThreadMemberChangeResponse {
     /// The thread acted on.
     pub thread: String,
     /// The member agent id.
@@ -380,7 +395,7 @@ pub struct ThreadArchiveParams {
 
 /// Response for mode `archive`.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(super) struct ThreadArchiveResponse {
+pub(crate) struct ThreadArchiveResponse {
     /// The thread archived.
     pub thread: String,
     /// Always true on success.
@@ -410,7 +425,7 @@ pub struct ThreadPostParams {
 
 /// Response for mode `post`.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(super) struct ThreadPostResponse {
+pub(crate) struct ThreadPostResponse {
     /// The id of the message just stored.
     pub message_id: String,
 }
@@ -437,7 +452,7 @@ pub struct ThreadHistoryParams {
 /// Front-matter view of a message. Surfaces [`MessageMeta`] front-matter plus its per-thread
 /// `seq` — NO body. Fetch the body with mode `message`.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(super) struct MessageFrontMatter {
+pub(crate) struct MessageFrontMatter {
     /// Compact message reference (preferred for mode `message`, mode `ack`, and `reply_to`).
     pub message_ref: String,
     /// Globally unique legacy message id (accepted for backward compatibility).
@@ -466,7 +481,7 @@ pub(super) struct MessageFrontMatter {
 
 impl MessageFrontMatter {
     /// Build a front-matter row from a [`SeqMeta`], stamping `age_secs` against `now_micros`.
-    pub(super) fn from_seq_meta(sm: &SeqMeta, now_micros: i64) -> Self {
+    pub(crate) fn from_seq_meta(sm: &SeqMeta, now_micros: i64) -> Self {
         let meta = &sm.meta;
         Self {
             message_ref: crate::comms::model::message_reference(&meta.id),
@@ -487,7 +502,7 @@ impl MessageFrontMatter {
 
 /// Response for mode `history`.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(super) struct ThreadHistoryResponse {
+pub(crate) struct ThreadHistoryResponse {
     /// Number of messages in this page.
     pub total: usize,
     /// Front-matter rows, oldest-first.
@@ -509,7 +524,7 @@ pub struct MessageGetParams {
 
 /// Response for mode `message`.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(super) struct MessageGetResponse {
+pub(crate) struct MessageGetResponse {
     /// The message id queried.
     pub message_id: String,
     /// True when a body was found for the id.
@@ -541,7 +556,7 @@ pub struct InboxReadParams {
 
 /// Response for mode `inbox`.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(super) struct InboxReadResponse {
+pub(crate) struct InboxReadResponse {
     /// Number of messages in this page.
     pub total: usize,
     /// Count of unread messages remaining after this page.
@@ -578,7 +593,7 @@ pub struct InboxAckParams {
 
 /// One `(thread, new_seq)` cursor advance recorded by mode `ack`.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(super) struct CursorAdvance {
+pub(crate) struct CursorAdvance {
     /// The thread whose per-agent read cursor advanced.
     pub thread: String,
     /// The cursor's new seq after the advance.
@@ -587,7 +602,7 @@ pub(super) struct CursorAdvance {
 
 /// Response for mode `ack`.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(super) struct InboxAckResponse {
+pub(crate) struct InboxAckResponse {
     /// Number of message ids that resolved and were acked.
     pub acked: usize,
     /// The `(thread, new_seq)` cursor advances this call produced.
@@ -619,7 +634,7 @@ pub struct InboxWaitParams {
 
 /// Response for mode `wait`.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(super) struct InboxWaitResponse {
+pub(crate) struct InboxWaitResponse {
     /// True when the call returned because `timeout_secs` elapsed with nothing new to report.
     pub timed_out: bool,
     /// Number of messages in this page.

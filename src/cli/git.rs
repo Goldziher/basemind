@@ -10,6 +10,7 @@ use anyhow::Result;
 use clap::Subcommand;
 
 use crate::mcp::BasemindServer;
+use crate::mcp::cursor::Cursor;
 use crate::mcp::params::*;
 
 use super::choices::{CommitField, HashMode};
@@ -27,6 +28,9 @@ pub enum GitCmd {
         /// Omit the per-file change list.
         #[arg(long)]
         no_files: bool,
+        /// Resume token: pass the previous page's `next_cursor`.
+        #[arg(long)]
+        cursor: Option<String>,
     },
     /// Full-text search over commit history (author / message / all) at full branch depth.
     /// This is the "what did <author> do" / "which commit mentions <X>" mode — it scans every
@@ -41,12 +45,18 @@ pub enum GitCmd {
         /// Max commits to return (default 20, max 100).
         #[arg(long)]
         limit: Option<u32>,
+        /// Resume token: pass the previous page's `next_cursor`.
+        #[arg(long)]
+        cursor: Option<String>,
     },
     /// Commits that modified a given path.
     Touching {
         path: String,
         #[arg(long)]
         limit: Option<u32>,
+        /// Resume token: pass the previous page's `next_cursor`.
+        #[arg(long)]
+        cursor: Option<String>,
     },
     /// Path-filtered commit log (regex over changed paths).
     ByPath {
@@ -55,6 +65,9 @@ pub enum GitCmd {
         window: Option<u32>,
         #[arg(long)]
         limit: Option<u32>,
+        /// Resume token: pass the previous page's `next_cursor`.
+        #[arg(long)]
+        cursor: Option<String>,
     },
     /// Churn-ranked files in a recent commit window.
     Churn {
@@ -86,6 +99,9 @@ pub enum GitCmd {
         rev: Option<String>,
         #[arg(long)]
         limit: Option<u32>,
+        /// Resume token: pass the previous page's `next_cursor`.
+        #[arg(long)]
+        cursor: Option<String>,
     },
     /// Blame clamped to a named symbol.
     BlameSymbol {
@@ -97,6 +113,9 @@ pub enum GitCmd {
         rev: Option<String>,
         #[arg(long)]
         limit: Option<u32>,
+        /// Resume token: pass the previous page's `next_cursor`.
+        #[arg(long)]
+        cursor: Option<String>,
     },
     /// Commits where a symbol's body changed.
     SymbolHistory {
@@ -108,6 +127,9 @@ pub enum GitCmd {
         limit: Option<u32>,
         #[arg(long, value_enum)]
         hash_mode: Option<HashMode>,
+        /// Resume token: pass the previous page's `next_cursor`.
+        #[arg(long)]
+        cursor: Option<String>,
     },
 }
 
@@ -115,26 +137,44 @@ pub enum GitCmd {
 pub async fn run(server: &BasemindServer, cmd: GitCmd, opts: &Emit, out: &mut impl Write) -> Result<()> {
     let p = match cmd {
         GitCmd::Status => GitParams::new(GitMode::Status),
-        GitCmd::Recent { limit, no_files } => GitParams {
+        GitCmd::Recent {
             limit,
+            no_files,
+            cursor,
+        } => GitParams {
+            limit,
+            cursor: cursor.map(Cursor),
             include_files: no_files.then_some(false),
             ..GitParams::new(GitMode::Recent)
         },
-        GitCmd::Search { pattern, field, limit } => GitParams {
+        GitCmd::Search {
+            pattern,
+            field,
+            limit,
+            cursor,
+        } => GitParams {
             pattern: Some(pattern),
             field: field.map(|f| f.as_str().to_string()),
             limit,
+            cursor: cursor.map(Cursor),
             ..GitParams::new(GitMode::Search)
         },
-        GitCmd::Touching { path, limit } => GitParams {
+        GitCmd::Touching { path, limit, cursor } => GitParams {
             path: Some(resolve_path(server, &path)),
             limit,
+            cursor: cursor.map(Cursor),
             ..GitParams::new(GitMode::Touching)
         },
-        GitCmd::ByPath { pattern, window, limit } => GitParams {
+        GitCmd::ByPath {
+            pattern,
+            window,
+            limit,
+            cursor,
+        } => GitParams {
             pattern: Some(pattern),
             window,
             limit,
+            cursor: cursor.map(Cursor),
             ..GitParams::new(GitMode::ByPath)
         },
         GitCmd::Churn { window, top_k } => GitParams {
@@ -159,12 +199,14 @@ pub async fn run(server: &BasemindServer, cmd: GitCmd, opts: &Emit, out: &mut im
             line_end,
             rev,
             limit,
+            cursor,
         } => GitParams {
             path: Some(resolve_path(server, &path)),
             line_start,
             line_end,
             rev,
             limit,
+            cursor: cursor.map(Cursor),
             ..GitParams::new(GitMode::Blame)
         },
         GitCmd::BlameSymbol {
@@ -173,12 +215,14 @@ pub async fn run(server: &BasemindServer, cmd: GitCmd, opts: &Emit, out: &mut im
             kind,
             rev,
             limit,
+            cursor,
         } => GitParams {
             path: Some(resolve_path(server, &path)),
             name: Some(name),
             kind,
             rev,
             limit,
+            cursor: cursor.map(Cursor),
             ..GitParams::new(GitMode::BlameSymbol)
         },
         GitCmd::SymbolHistory {
@@ -187,12 +231,14 @@ pub async fn run(server: &BasemindServer, cmd: GitCmd, opts: &Emit, out: &mut im
             kind,
             limit,
             hash_mode,
+            cursor,
         } => GitParams {
             path: Some(resolve_path(server, &path)),
             name: Some(name),
             kind,
             limit,
             hash_mode: hash_mode.map(|m| m.as_str().to_string()),
+            cursor: cursor.map(Cursor),
             ..GitParams::new(GitMode::SymbolHistory)
         },
     };

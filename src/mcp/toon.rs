@@ -70,7 +70,7 @@ pub(super) fn format_result<T: Serialize>(value: &T, fmt: ResponseFormat) -> Res
 
 /// Encode a `serde_json::Value` as TOON, falling back to compact JSON for anything that is not a
 /// uniform array of flat objects (directly, or as the array field of a flat envelope object).
-pub(super) fn encode(value: &Value) -> String {
+pub(crate) fn encode(value: &Value) -> String {
     match value {
         Value::Array(items) => match encode_table(items) {
             Some(table) => table,
