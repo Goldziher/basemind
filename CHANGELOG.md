@@ -55,6 +55,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   check is now a pure function and no test mutates that variable.
 - Stale docs: `serve` flags, `memory mine` flags, `--json` help text and the admin command tables.
 
+- CLI `--cursor` (resume from a previous `next_cursor`) on `code` symbols/grep/files/find/references/
+  callers/implementations, `git` recent/search/touching/by-path/blame/blame-symbol/symbol-history and
+  `memory` list/proposals; `--max-tokens` on `code` outline/symbols/grep/files/find/references/callers/
+  implementations/semantic and `memory documents`; `--rerank-top-k` on `code semantic`; `--format
+  json|toon` on the `code` list modes and `memory documents`. All are passed straight to the MCP params.
 - MCP resources: `basemind://status`, `basemind://repo/map`, and the templates
   `basemind://outline/{path}` and `basemind://memory/{key}`, with `{path}` completion. Reads reuse the
   `admin`, `graph`, `code` and `memory` helpers, so bodies equal the tool results; paths are
@@ -87,6 +92,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Breaking (CLI):** the human-mode timing footer (`(N ms query · M ms startup)`) is now written to
+  stderr instead of stdout, so piped stdout carries only the answer. `--json` is unchanged
+  (`elapsed_us` and `startup_us` stay in the payload).
+- **Breaking (CLI):** `code semantic --format` and `memory documents --format` accept only `json` or
+  `toon` (was a free string).
 - MCP `tools/list` is smaller: the `memory` tool no longer exposes the ~26 `documents.*` / `llm.*`
   config-override fields (`llm_api_key`, `llm_base_url`, `llm_model`, `reranker_*`, `ner_enabled`,
   `summarization_*`, `keywords_*`, `language_*`, `embedding_preset`, `max_characters`, `overlap`,
@@ -182,6 +192,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- CLI `--format toon` crashed the renderer (it only parsed JSON). Human mode now renders the TOON
+  response and `--json` still prints JSON.
+- CLI human output no longer cuts every string to 200 characters: `code expand`/`chunk`, `git diff`,
+  `graph export`, `admin compress`/`delta`/`checkpoint` and every other key/value field print in full
+  (multi-line values raw, under `key:`). Only table cells are shortened, and the CLI says so on stderr.
+- CLI `agents`/`workspace` `--json` now serialize the MCP response types (`ThreadSummary`,
+  `MessageFrontMatter`, `AgentSummary`, ...) and print pretty JSON like every other command. Fields
+  that differed: `agents list` gains `description`/`skills`/`first_seen`/`last_seen`; threads use
+  `last_activity_micros`; message rows gain `age_secs`/`body_sha`; empty optionals are omitted.
+- Flaky tests `daemon_lock::tests::drop_releases_the_lock_and_removes_the_registry_entry` and
+  `store_layout::daemon_isolation_tests::every_daemon_family_resolves_inside_the_temp_cache` (an env-var
+  race with a test that temporarily repointed `BASEMIND_DATA_HOME`).
 - Comms/MCP unresponsiveness. Comms requests are now correlated by id (protocol version 4), so a
   request abandoned mid-flight, such as the per-tool-call delivery-notice probe timing out, can no
   longer leave a stale reply that the next request misreads as `unexpected response shape` (and a

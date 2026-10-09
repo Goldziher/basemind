@@ -79,11 +79,6 @@ choice_enum! {
 }
 
 choice_enum! {
-    /// Wire encoding of a tool response body.
-    WireFormat { Json => "json", Toon => "toon" }
-}
-
-choice_enum! {
     /// `git search` field.
     CommitField { Author => "author", Message => "message", All => "all" }
 }
