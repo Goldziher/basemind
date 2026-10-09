@@ -991,7 +991,7 @@ files that became eligible from the cached blobs, without re-embedding.
 <details>
 <summary><strong>Full command list</strong> — code · graph · git · memory · admin · cache · web · agents · workspace · shell</summary>
 
-CLI commands mirror the MCP tools 1:1 (enforced by `tests/cli_parity.rs`). Add `--json` for
+CLI commands mirror the MCP tools 1:1 (enforced by `tests/cli_parity/`). Add `--json` for
 machine-readable output.
 
 <!-- markdownlint-disable MD013 -->
