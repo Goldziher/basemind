@@ -84,8 +84,6 @@ pub const GLOBAL_FLAGS: &[(&str, &str)] = &[
     ),
 ];
 
-const PAGING: &str =
-    "TODO parity: pagination/token-budget/format parameter not exposed on the CLI (cli-output work item)";
 const GRAPH_KNOBS: &str =
     "TODO parity: graph traversal knob not exposed on the CLI; the command runs with the MCP default";
 const INVERTED: &str = "CLI spells the negation (`--no-X`) of the MCP boolean `X`";
@@ -93,10 +91,6 @@ const STDIN: &str = "CLI reads this from stdin, MCP takes it as a required param
 
 pub fn all() -> Vec<Exception> {
     vec![
-        // ---- MCP-only parameters present on many commands ----
-        mcp_only("*", "cursor", PAGING),
-        mcp_only("*", "max_tokens", PAGING),
-        mcp_only("*", "format", PAGING),
         // ---- renamed / sense-inverted arguments ----
         alias("code grep", "no_context", "include_context", INVERTED),
         alias("git recent", "no_files", "include_files", INVERTED),
@@ -118,7 +112,14 @@ pub fn all() -> Vec<Exception> {
             "skills",
             "repeatable CLI flag for the MCP list",
         ),
-        alias("admin rescan", "path", "paths", "variadic positional for the MCP list"),
+        alias("rescan", "path", "paths", "variadic positional for the MCP list"),
+        alias("graph map", "no_churn", "include_churn", INVERTED),
+        alias(
+            "cache clear",
+            "yes",
+            "confirm",
+            "CLI `--yes` skips the interactive prompt; MCP has no terminal, so the caller confirms with `confirm`",
+        ),
         alias(
             "memory *",
             "individual",
@@ -131,7 +132,23 @@ pub fn all() -> Vec<Exception> {
             "dry_run",
             "no-op flag (preview is the default); MCP expresses intent through `apply`",
         ),
+        cli_only(
+            "cache gc",
+            "dry_run",
+            "the CLI deletes by default and `--dry-run` selects the report; the MCP `gc` mode is always the read-only report",
+        ),
+        cli_only(
+            "rescan",
+            "no_git_history",
+            "TODO parity: the MCP `rescan` cannot skip the git-history index build",
+        ),
+        cli_only(
+            "rescan",
+            "rebuild_git_history",
+            "TODO parity: the MCP `rescan` cannot wipe and rebuild the git-history index",
+        ),
         // ---- MCP-only parameters ----
+        mcp_only("checkpoint", "text", STDIN),
         mcp_only("graph communities", "max_communities", GRAPH_KNOBS),
         mcp_only("graph communities", "members_per_community", GRAPH_KNOBS),
         mcp_only("graph export", "algorithm", GRAPH_KNOBS),
@@ -157,14 +174,29 @@ pub fn all() -> Vec<Exception> {
         mcp_only("graph subgraph", "edges", GRAPH_KNOBS),
         mcp_only("graph subgraph", "max_nodes", GRAPH_KNOBS),
         mcp_only("graph subgraph", "min_confidence", GRAPH_KNOBS),
+        // ---- allowed values ----
+        values(
+            "graph calls",
+            "direction",
+            "the MCP `direction` field is shared with `neighbors` (`both|out|in`) and also accepts `callers`/`callees` synonyms there, so no single enum fits",
+        ),
+        values(
+            "graph display",
+            "format",
+            "the MCP `format` enum is the `export` set; `display` accepts only the visual subset `html|svg`",
+        ),
+        values(
+            "graph open",
+            "format",
+            "the MCP `format` enum is the `export` set; `open` accepts only the visual subset `html|svg`",
+        ),
         // ---- required-ness ----
         required(
-            "admin cache-clear",
+            "cache clear",
             "component",
             "TODO parity: MCP requires `component`; the CLI defaults to `git-cache`",
         ),
-        required("admin checkpoint", "text", STDIN),
-        required("admin delta", "new", STDIN),
-        required("admin waste", "log", STDIN),
+        required("delta", "new", STDIN),
+        required("detect-waste", "log", STDIN),
     ]
 }
