@@ -68,6 +68,10 @@ pub struct AgentsParams {
     /// `post`: id of the message replied to.
     #[serde(default)]
     pub reply_to: Option<String>,
+    /// `post`: caller-chosen key making a retried post return the original message id instead of
+    /// storing a duplicate. Generated when omitted.
+    #[serde(default)]
+    pub idempotency_key: Option<String>,
     /// `thread_list`: include archived threads.
     #[serde(default)]
     pub include_archived: Option<bool>,
@@ -403,6 +407,9 @@ pub struct ThreadPostParams {
     /// Id of the message this one replies to, for threading.
     #[serde(default)]
     pub reply_to: Option<String>,
+    /// Retry key: a repeat with the same key returns the original message id. Generated when omitted.
+    #[serde(default)]
+    pub idempotency_key: Option<String>,
     /// Optional sub-identity to act as; defaults to the server's own agent.
     #[serde(default)]
     pub as_agent: Option<String>,

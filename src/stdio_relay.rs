@@ -22,6 +22,85 @@ const DEFAULT_REQUEST_TIMEOUT_SECS: u64 = 180;
 /// Cap on remembered abandoned request ids (late replies to these are dropped).
 const ABANDONED_CAP: usize = 1_024;
 
+/// JSON-RPC methods that only read, so re-sending them on a new backend is harmless.
+const REPLAYABLE_METHODS: &[&str] = &[
+    "ping",
+    "tools/list",
+    "resources/list",
+    "resources/read",
+    "resources/templates/list",
+    "prompts/list",
+    "prompts/get",
+    "completion/complete",
+];
+/// Tools whose every mode is read-only.
+const READ_ONLY_TOOLS: &[&str] = &["code", "git", "graph"];
+/// `agents` modes that are reads or naturally idempotent (`post` is made so by a key).
+const REPLAYABLE_AGENTS_MODES: &[&str] = &[
+    "list",
+    "thread_list",
+    "members",
+    "history",
+    "message",
+    "inbox",
+    "ack",
+    "wait",
+    "status",
+];
+
+/// A request the relay may re-send once after a backend restart.
+struct Replayable {
+    line: String,
+    replayed: bool,
+}
+
+/// Decide whether a `tools/call` / read request is safe to replay, rewriting an `agents` `post` to
+/// carry a relay-generated `idempotency_key` (when the caller gave none) so the replay cannot store
+/// a second copy. Returns the line to forward and whether it is replayable.
+fn classify_request(message: &mut Value, line: &str) -> (String, bool) {
+    let Some(method) = message.get("method").and_then(Value::as_str) else {
+        return (line.to_owned(), false);
+    };
+    if REPLAYABLE_METHODS.contains(&method) {
+        return (line.to_owned(), true);
+    }
+    if method != "tools/call" {
+        return (line.to_owned(), false);
+    }
+    let tool = message
+        .pointer("/params/name")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let mode = message
+        .pointer("/params/arguments/mode")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if READ_ONLY_TOOLS.contains(&tool) || (tool == "agents" && REPLAYABLE_AGENTS_MODES.contains(&mode)) {
+        return (line.to_owned(), true);
+    }
+    if tool == "agents" && mode == "post" {
+        let has_key = message
+            .pointer("/params/arguments/idempotency_key")
+            .is_some_and(|key| !key.is_null());
+        if has_key {
+            return (line.to_owned(), true);
+        }
+        if let Some(arguments) = message.pointer_mut("/params/arguments").and_then(Value::as_object_mut) {
+            arguments.insert("idempotency_key".to_owned(), Value::String(relay_idempotency_key()));
+            let mut rewritten = message.to_string();
+            if line.ends_with('\n') {
+                rewritten.push('\n');
+            }
+            return (rewritten, true);
+        }
+    }
+    (line.to_owned(), false)
+}
+
+fn relay_idempotency_key() -> String {
+    format!("relay-{}", basemind::comms::new_idempotency_key())
+}
+
 fn request_deadline_from_env() -> Option<Duration> {
     let secs = std::env::var(REQUEST_TIMEOUT_ENV)
         .ok()
@@ -39,15 +118,18 @@ struct SessionState {
     pending: BTreeMap<String, Value>,
     /// When each pending request was first forwarded, for the per-request deadline.
     started: BTreeMap<String, tokio::time::Instant>,
+    /// Pending requests that may be re-sent once to a replacement backend instead of failing.
+    replay: BTreeMap<String, Replayable>,
     /// Ids already answered with a timeout error; the backend's late reply is dropped so the host
     /// never sees two responses for one request.
     abandoned: std::collections::VecDeque<String>,
 }
 
 impl SessionState {
-    fn observe_client(&mut self, line: &str) {
-        let Ok(message) = serde_json::from_str::<Value>(line) else {
-            return;
+    /// Track a host frame; returns the line to forward (rewritten for a keyless `post`).
+    fn observe_client(&mut self, line: &str) -> String {
+        let Ok(mut message) = serde_json::from_str::<Value>(line) else {
+            return line.to_owned();
         };
         let method = message.get("method").and_then(Value::as_str);
         let id = message.get("id").filter(|id| !id.is_null());
@@ -57,12 +139,33 @@ impl SessionState {
         } else if method == Some("notifications/initialized") {
             self.initialized = Some(line.to_owned());
         }
-        if method.is_some()
-            && let Some(id) = id
+        if method == Some("notifications/cancelled")
+            && let Some(request_id) = message.pointer("/params/requestId")
         {
-            self.pending.insert(id_key(id), id.clone());
-            self.started.insert(id_key(id), tokio::time::Instant::now());
+            self.replay.remove(&id_key(request_id));
         }
+        let mut forward = line.to_owned();
+        if method.is_some()
+            && let Some(id) = id.cloned()
+        {
+            let key = id_key(&id);
+            if method != Some("initialize") {
+                let (rewritten, replayable) = classify_request(&mut message, line);
+                if replayable {
+                    self.replay.insert(
+                        key.clone(),
+                        Replayable {
+                            line: rewritten.clone(),
+                            replayed: false,
+                        },
+                    );
+                }
+                forward = rewritten;
+            }
+            self.pending.insert(key.clone(), id);
+            self.started.insert(key, tokio::time::Instant::now());
+        }
+        forward
     }
 
     /// Track a backend frame; returns `false` when it is the late reply to a request the relay
@@ -81,6 +184,7 @@ impl SessionState {
             }
             self.pending.remove(&key);
             self.started.remove(&key);
+            self.replay.remove(&key);
             if self.initialize_id.as_ref() == Some(id) {
                 self.initialize_complete = true;
             }
@@ -110,6 +214,7 @@ impl SessionState {
         let mut errors = Vec::with_capacity(expired.len());
         for key in expired {
             self.started.remove(&key);
+            self.replay.remove(&key);
             let Some(id) = self.pending.remove(&key) else {
                 continue;
             };
@@ -136,9 +241,40 @@ impl SessionState {
         errors
     }
 
+    /// Fail every in-flight request that cannot be replayed; replayable ones that have not yet been
+    /// re-sent stay pending for [`Self::take_replays`]. A request already replayed once fails too,
+    /// so a backend that keeps dying cannot loop it forever.
+    /// Lines to re-send on the replacement backend, marking each as replayed and restarting its
+    /// deadline clock.
+    fn take_replays(&mut self) -> Vec<String> {
+        let now = tokio::time::Instant::now();
+        let mut lines = Vec::with_capacity(self.replay.len());
+        for (key, entry) in &mut self.replay {
+            entry.replayed = true;
+            self.started.insert(key.clone(), now);
+            lines.push(entry.line.clone());
+        }
+        lines
+    }
+
     fn drain_restart_errors(&mut self) -> Vec<String> {
-        self.started.clear();
-        std::mem::take(&mut self.pending)
+        let keep: Vec<String> = self
+            .replay
+            .iter()
+            .filter(|(key, entry)| !entry.replayed && self.pending.contains_key(*key))
+            .map(|(key, _)| key.clone())
+            .collect();
+        self.replay.retain(|key, _| keep.contains(key));
+        let mut failing = std::mem::take(&mut self.pending);
+        let mut kept = BTreeMap::new();
+        for key in &keep {
+            if let Some(id) = failing.remove(key) {
+                kept.insert(key.clone(), id);
+            }
+        }
+        self.pending = kept;
+        self.started.retain(|key, _| self.pending.contains_key(key));
+        failing
             .into_values()
             .filter(|id| self.initialize_id.as_ref() != Some(id))
             .map(|id| {
@@ -206,7 +342,7 @@ where
                         return Ok(());
                     };
                     client_line.push('\n');
-                    state.observe_client(&client_line);
+                    let client_line = state.observe_client(&client_line);
                     if write_half.write_all(client_line.as_bytes()).await.is_err()
                         || write_half.flush().await.is_err()
                     {
@@ -250,7 +386,15 @@ where
         }
         output.flush().await?;
 
-        let (replacement, initialize_response, buffered) = reconnect_and_replay(&mut reconnect, &mut state).await?;
+        let (mut replacement, initialize_response, buffered) = reconnect_and_replay(&mut reconnect, &mut state).await?;
+        for line in state.take_replays() {
+            // A write failure here just means the replacement died too; the read half sees EOF and
+            // the loop reconnects, failing the (now already replayed) requests.
+            if replacement.write_all(line.as_bytes()).await.is_err() {
+                break;
+            }
+        }
+        let _ = replacement.flush().await;
         if let Some(response) = initialize_response {
             output.write_all(response.as_bytes()).await?;
         }
@@ -396,7 +540,7 @@ mod tests {
             .await
             .expect("send initialized");
         client_write
-            .write_all(request_line(2).as_bytes())
+            .write_all(call_line(2, "shell", "run").as_bytes())
             .await
             .expect("send interrupted request");
 
@@ -524,6 +668,92 @@ mod tests {
             0,
             "proxy closes the backend write half after client EOF"
         );
+    }
+
+    fn call_line(id: u64, tool: &str, mode: &str) -> String {
+        format!(
+            "{{\"jsonrpc\":\"2.0\",\"id\":{id},\"method\":\"tools/call\",\"params\":{{\"name\":\"{tool}\",\"arguments\":{{\"mode\":\"{mode}\"}}}}}}\n"
+        )
+    }
+
+    #[test]
+    fn keyless_post_is_stamped_with_an_idempotency_key_and_is_replayable() {
+        let mut state = SessionState::default();
+        let forwarded = state.observe_client(&call_line(1, "agents", "post"));
+        let message: Value = serde_json::from_str(&forwarded).expect("forwarded JSON");
+        let key = message["params"]["arguments"]["idempotency_key"].as_str().expect("key");
+        assert!(key.starts_with("relay-"));
+        assert!(forwarded.ends_with('\n'));
+        assert_eq!(state.replay.get("1").expect("replayable").line, forwarded);
+
+        let keyed = "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"agents\",\"arguments\":{\"mode\":\"post\",\"idempotency_key\":\"mine\"}}}\n";
+        assert_eq!(state.observe_client(keyed), keyed);
+        assert!(state.replay.contains_key("2"));
+    }
+
+    #[test]
+    fn only_reads_and_keyed_posts_are_replayable() {
+        let mut state = SessionState::default();
+        state.observe_client(&request_line(1));
+        state.observe_client(&call_line(2, "code", "outline"));
+        state.observe_client(&call_line(3, "agents", "inbox"));
+        state.observe_client(&call_line(4, "agents", "thread_start"));
+        state.observe_client(&call_line(5, "shell", "run"));
+        state.observe_client(&call_line(6, "memory", "store"));
+        let errors = state.drain_restart_errors();
+        let failed: Vec<Value> = errors
+            .iter()
+            .map(|e| serde_json::from_str::<Value>(e).expect("json")["id"].clone())
+            .collect();
+        assert_eq!(
+            failed,
+            vec![serde_json::json!(4), serde_json::json!(5), serde_json::json!(6)]
+        );
+        assert_eq!(state.take_replays().len(), 3);
+        // A second restart fails what was already replayed once.
+        assert_eq!(state.drain_restart_errors().len(), 3);
+    }
+
+    /// An in-flight keyed post survives a backend restart: the replacement backend receives the
+    /// identical line (same key) once, and the host sees only the real reply, no `backend_restarted`.
+    #[tokio::test]
+    async fn in_flight_post_is_replayed_once_on_the_replacement_backend() {
+        let (client_input, proxy_input) = tokio::io::duplex(4096);
+        let (proxy_output, client_output) = tokio::io::duplex(4096);
+        let (proxy_backend_one, backend_one) = tokio::io::duplex(4096);
+        let (proxy_backend_two, backend_two) = tokio::io::duplex(4096);
+        let replacements = Arc::new(Mutex::new(VecDeque::from([proxy_backend_two])));
+        let connector = Arc::clone(&replacements);
+        let proxy = tokio::spawn(run(proxy_input, proxy_output, proxy_backend_one, move || {
+            std::future::ready(connector.lock().expect("lock").pop_front().ok_or("none"))
+        }));
+
+        let mut client_write = client_input;
+        let mut client_read = BufReader::new(client_output);
+        client_write
+            .write_all(call_line(9, "agents", "post").as_bytes())
+            .await
+            .expect("send post");
+
+        let mut first = BufReader::new(backend_one);
+        let mut sent = String::new();
+        first.read_line(&mut sent).await.expect("first backend sees post");
+        drop(first);
+
+        let (read, mut write) = tokio::io::split(backend_two);
+        let mut read = BufReader::new(read);
+        let mut replayed = String::new();
+        read.read_line(&mut replayed).await.expect("replayed post");
+        assert_eq!(replayed, sent, "same line, same idempotency key");
+        write.write_all(response_line(9).as_bytes()).await.expect("reply");
+
+        let mut line = String::new();
+        client_read.read_line(&mut line).await.expect("response");
+        assert_eq!(response_id(&line), serde_json::json!(9));
+        assert!(line.contains("result"));
+
+        drop(client_write);
+        let _ = proxy.await;
     }
 
     fn initialize_line() -> String {

@@ -209,8 +209,9 @@ pub(super) async fn run_thread_post(state: &ServerState, params: ThreadPostParam
     let tags = params.tags.unwrap_or_default();
     let handle = resolve_comms_client(state, params.as_agent).await?;
     let mut client = handle.lock().await;
+    let key = params.idempotency_key.unwrap_or_else(crate::comms::new_idempotency_key);
     let message_id = client
-        .post_message(params.thread, params.subject, body, tags, params.reply_to)
+        .post_message_keyed(params.thread, params.subject, body, tags, params.reply_to, key)
         .await
         .map_err(comms_err)?;
     json_result(&ThreadPostResponse { message_id })
