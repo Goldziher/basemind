@@ -88,8 +88,10 @@ impl Broker {
 
     /// Advisory-claim a worktree. An unknown `(repo_id, name)` returns `held = false`.
     pub(super) async fn on_worktree_claim(&self, repo_id: String, name: String, claimant: String) -> CommsResponse {
-        let mut registry = self.machine_registry.lock().await;
-        match registry.claim_worktree(&repo_id, &name, &claimant) {
+        match self
+            .registry_blocking(move |registry| registry.claim_worktree(&repo_id, &name, &claimant))
+            .await
+        {
             Ok(held) => CommsResponse::ClaimOutcome { held },
             Err(error) => registry_error(error),
         }
@@ -103,8 +105,7 @@ impl Broker {
     /// maintenance pass; a failure is logged and reported as zero rather than propagated, because a
     /// prune is opportunistic housekeeping and must never take the daemon down.
     pub async fn prune_missing_registry_rows(&self) -> usize {
-        let mut registry = self.machine_registry.lock().await;
-        match registry.prune_missing() {
+        match self.registry_blocking(|registry| registry.prune_missing()).await {
             Ok(removed) => removed,
             Err(error) => {
                 tracing::warn!(%error, "comms: machine registry prune failed");
@@ -115,8 +116,10 @@ impl Broker {
 
     /// Release an advisory worktree claim held by `claimant`.
     pub(super) async fn on_worktree_release(&self, repo_id: String, name: String, claimant: String) -> CommsResponse {
-        let mut registry = self.machine_registry.lock().await;
-        match registry.release_worktree(&repo_id, &name, &claimant) {
+        match self
+            .registry_blocking(move |registry| registry.release_worktree(&repo_id, &name, &claimant))
+            .await
+        {
             Ok(held) => CommsResponse::ClaimOutcome { held },
             Err(error) => registry_error(error),
         }
