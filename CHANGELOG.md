@@ -10,278 +10,177 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.29.0] - 2026-10-09
+
+0.29.0 reshapes the CLI (one home for each command, a documented exit-code contract, honest output and
+daemon forwarding), makes the code map code-only with a separate document tier, adds a trigram prefilter
+for `code grep`, MCP resources, and a more robust comms protocol (v4). Read **Breaking changes** and
+[Upgrading](website/src/content/docs/start/upgrading.mdx) before installing.
+
+### Breaking changes
+
+- **First scan after upgrading rebuilds the index.** `RELEASE_MINOR` goes 28 to 29, so every view's
+  `index.msgpack` and Fjall index are reset on open and every file is re-extracted (blobs are
+  overwritten in place at their content-hash path; the git cache refills lazily). The LanceDB document
+  tables and the blob store are not wiped; orphaned blobs are reclaimed by the post-scan sweep. Stop
+  the old daemon first with `basemind comms stop` so the new binary starts its own.
+- **CLI renames and removals, no aliases kept** (the MCP `admin` tool is unchanged):
+
+  | Removed | Use instead |
+  | --- | --- |
+  | `admin status` | `status` |
+  | `admin rescan` | `rescan` (also takes `--no-git-history`, `--rebuild-git-history`; runs the root guard) |
+  | `admin cache-stats` / `admin gc` / `admin cache-clear` | `cache stats` / `cache gc` / `cache clear` |
+  | `admin delta` / `admin checkpoint` / `admin waste` | `delta` / `checkpoint` / `detect-waste` |
+  | `graph map --include-churn` | `graph map --no-churn` (churn is on by default) |
+  | `serve --git-cache-mem`, `--no-git-cache-disk`, `--no-watch`, `--documents-*` | none; `serve` is a stdio relay to the daemon and ignored them |
+
+  `admin` keeps `repo`, `telemetry`, `compress`, `tokens` and `eval`.
+- **Exit-code contract:** `0` ok, `1` error, `2` usage, `3` writer lock held by another process, `4`
+  required daemon unreachable, `130` interrupted. `scan` and `rescan` used to print the lock notice and
+  exit `0`; they now exit `3`. An invalid `rescan` path (outside the repo, or neither on disk nor
+  indexed) and invalid tool parameters exit `2`.
+- **`cache clear` needs `--yes`** (or a terminal confirmation) for every component except `git-cache`,
+  refuses with exit `3` while a writer holds the workspace lock, and refuses `blobs` while the daemon
+  runs. `blobs` is the machine-global store shared by every workspace.
+- **`cache gc` deletes; `--dry-run` reports.** The old `admin gc` reported while `cache gc` was a no-op.
+- **Output changes:** the human-mode timing footer moved from stdout to stderr (`--json` keeps
+  `elapsed_us` / `startup_us`); human output no longer truncates strings to 200 characters (only table
+  cells are shortened, and stderr says so).
+- **`--format` accepts only `json` or `toon`** on `code semantic` and `memory documents`; the other
+  closed-set flags are now value enums (see Added).
+- **`agents` / `workspace` `--json` reshaped** to the MCP response types and pretty-printed. `agents
+  list` gains `description`, `skills`, `first_seen`, `last_seen`; threads use `last_activity_micros`;
+  message rows gain `age_secs` and `body_sha`; empty optionals are omitted.
+- **`hook install` is safer, so old hooks should be refreshed.** It asks git for the hooks directory
+  (honours `core.hooksPath` and linked worktrees), refuses to overwrite a pre-commit hook it did not
+  write unless `--force` (the old one is kept as `pre-commit.bak`), and the generated hook is
+  fail-open (exit 0 when `basemind` is missing or the scan fails). Re-run `hook install`.
+- **Code map is code-only.** Markdown, reStructuredText, AsciiDoc, vimdoc, CSV, JSON, YAML, TOML, INI,
+  XML, `.properties`, `.env`, diffs, `.gitignore` / `.gitattributes` and Fluent files go to the document
+  tier (searchable with `memory documents`), so `symbols`, `outline` and `grep` no longer return README
+  headings or config keys. `[documents] include` / `exclude` and the MIME allowlist gate them. Builds
+  without the `documents` feature keep the old behaviour.
+- **`code outline` / `symbols` no longer index names bound inside function, method or lambda bodies**
+  (locals, nested functions); module- and class-level definitions are unchanged. Value-like symbols
+  store a shorter signature (`MAX_RETRIES = 3` becomes `= 3`; initialisers cut at 80 characters).
+- **MCP logging is retired** (SEP-2577): no `logging` capability, no `logging/setLevel`, and `rescan`
+  no longer emits the `rescan_complete` log notification. Counts are in the tool result; progress
+  notifications are unchanged.
+- **MCP `memory` tool schema dropped ~26 `documents.*` / `llm.*` override fields** (`llm_api_key`,
+  `llm_model`, `reranker_*`, `embedding_preset`, ...). They remain CLI flags, env vars and
+  `basemind.toml` keys; `memory` mode `documents` keeps `format`, `max_tokens`, `mime_type`, `scope`,
+  `entity_category` and `keywords_contains`. No API key travels as a tool argument any more.
+- **`agents` `wait` is capped at 40 s** (was 300).
+- **Comms protocol version 4:** requests carry ids. Stop the old daemon (`basemind comms stop`) after
+  upgrading so clients and daemon speak the same version.
+
 ### Added
 
-- `basemind doctor`: checks the root, config, index, grammars, pre-commit hook and daemon with
-  filesystem and process probes only (no index open, no daemon spawn); `--json` for scripts; exits 1
-  when a check fails.
-- `basemind status`: top-level home of the index-health report (formerly `admin status`).
-- `basemind completions <shell>` (bash, zsh, fish, elvish, powershell) and `basemind man` print a
-  completion script and the roff man page to stdout.
-- `basemind hook install --force`, `basemind cache gc --dry-run`, `basemind delta --new <FILE>` and
-  `basemind detect-waste --log <FILE>`.
-- Flags with a closed value set are now clap value enums (parse-time errors listing the choices, and
-  shell completion): `graph` `--direction` / `--edges` / `--algorithm` / `--granularity` / `--format`,
-  `code semantic` `--lane` / `--format`, `git search --field`, `git symbol-history --hash-mode`,
-  `memory proposals --kind`, `admin telemetry --window`, `admin compress --level`.
-
-### Changed (breaking CLI)
-
-- The `admin` group no longer duplicates top-level commands. Removed: `admin status` (use `status`),
-  `admin rescan` (use `rescan`, which also accepts `--no-git-history` and `--rebuild-git-history` and
-  runs the root guard), `admin cache-stats` / `admin gc` / `admin cache-clear` (use `cache stats` /
-  `cache gc` / `cache clear`), and `admin delta` / `admin checkpoint` / `admin waste` (use `delta` /
-  `checkpoint` / `detect-waste`). `admin` keeps `repo`, `telemetry`, `compress`, `tokens` and `eval`.
-  No aliases are kept; the MCP `admin` tool is unchanged.
-- `cache gc` is the one GC command: it sweeps, and `--dry-run` only reports (the old `admin gc` reported
-  while `cache gc` deleted).
-- `graph map --include-churn` (default on, so it could not be turned off) is replaced by `--no-churn`.
-- `serve` no longer accepts `--git-cache-mem`, `--no-git-cache-disk`, `--no-watch` or the `--documents-*`
-  overrides: it is a stdio relay to the daemon and ignored them all.
-- `hook install` asks git for the hooks directory (honours `core.hooksPath`, works in linked
-  worktrees), refuses to overwrite a pre-commit hook it did not write unless `--force` (the old one is
-  kept as `pre-commit.bak`), and the generated hook is fail-open: it exits 0 when `basemind` is missing
-  or the scan fails instead of blocking the commit. Re-run `hook install` to refresh an old hook.
-- Every tool subcommand path argument, including `git` paths and `graph --focus`, is normalized to the
-  repo-relative index key the way `code` paths already were (absolute, `./`-prefixed and repo-relative
-  spellings are the same file).
-
-### Fixed
-
-- Flaky `daemon_lock::tests::drop_releases_the_lock_and_removes_the_registry_entry`: a sibling test's
-  fork/exec briefly inherits the released flock, so the re-acquire now waits out that window.
-- Flaky `store_layout::daemon_isolation_tests::every_daemon_family_resolves_inside_the_temp_cache`: a
-  sibling test pointed the process-global `BASEMIND_DATA_HOME` at an unmarked directory; the marker
-  check is now a pure function and no test mutates that variable.
-- Stale docs: `serve` flags, `memory mine` flags, `--json` help text and the admin command tables.
-
-- CLI `--cursor` (resume from a previous `next_cursor`) on `code` symbols/grep/files/find/references/
-  callers/implementations, `git` recent/search/touching/by-path/blame/blame-symbol/symbol-history and
-  `memory` list/proposals; `--max-tokens` on `code` outline/symbols/grep/files/find/references/callers/
-  implementations/semantic and `memory documents`; `--rerank-top-k` on `code semantic`; `--format
-  json|toon` on the `code` list modes and `memory documents`. All are passed straight to the MCP params.
-- CLI/MCP parity test (`tests/cli_parity/`): a checked-in capability table maps every MCP `tool`+`mode` to a
-  CLI command (or declares it `cli_only`/`mcp_only` with a required reason); the test walks the live
-  tool schemas and the built binary's command tree, compares per-mode parameters (probed from the
-  server's own validator) against reasoned exceptions, and checks that representative read-only
-  queries return equal `--json` payloads over MCP and the CLI. Adding a mode or command without a
-  table row fails with the row to add.
-- Idempotent `post`: `agents post` takes an optional `idempotency_key` (generated when omitted) and the
-  comms `ThreadPost` request carries it additively. The daemon stores the key durably per
-  (agent, thread) for an hour and returns the original message id on a repeat, so a retry after a
-  timeout, a lost reply, or a daemon restart never double-posts. The stdio relay stamps keyless posts
-  and replays them, plus read-only requests, once on a replacement backend instead of failing them
-  with `backend_restarted`; other in-flight requests still fail clearly.
-- MCP resources: `basemind://status`, `basemind://repo/map`, and the templates
-  `basemind://outline/{path}` and `basemind://memory/{key}`, with `{path}` completion. Reads reuse the
-  `admin`, `graph`, `code` and `memory` helpers, so bodies equal the tool results; paths are
-  validated against traversal. Listed on demand, so no always-loaded token cost. No subscribe support.
-- `code grep` trigram bloom prefilter. The scanner keeps one small trigram bloom filter per indexed
-  file (a new `grep_bloom` index keyspace, about 12.8 % of the indexed code bytes), built from the
-  bytes the scan already reads, and a grep skips every file whose bloom proves it cannot contain a
-  literal the pattern requires (extracted with `regex-syntax`; patterns with no required 3-byte
-  literal, such as `.*` or `(?i)k`, still sweep everything). A file is skipped only when its filter
-  rejects the pattern and its size and mtime still match the scan, so results, totals, hit order,
-  cursors and context lines are identical to the full sweep, including for files edited, added or
-  deleted since the last scan. On the armis checkout the 15 `t_grep` tasks drop from several seconds
-  to ~130 ms p50 with identical precision and recall. No index wipe: an existing index greps
-  correctly immediately and gains its blooms on the next scan. `BASEMIND_GREP_BLOOM=0` forces the
-  full sweep. See ADR-0012.
-- `EXTRACT_EPOCH`, an extractor-output revision recorded on every file entry and L1 blob. The next
-  scan re-extracts only the files whose entry or blob predates it, inside the normal memory-bounded
-  pass and keeping their call tier, so a patch release can fix extraction output without bumping the
-  release minor (and wiping every cache). The scan summary shows `tier_migrated` and `refreshed`
-  counts. The first epoch refreshes symbol signatures produced before the header-only fix.
+- `basemind doctor` (root, config, index, grammars, pre-commit hook and daemon checked with filesystem
+  and process probes only; `--json`; exits 1 when a check fails), top-level `status`, `completions
+  <shell>` (bash, zsh, fish, elvish, powershell) and `man`.
+- `hook install --force`, `cache gc --dry-run`, `delta --new <FILE>`, `detect-waste --log <FILE>`.
+- Value-enum flags (parse-time errors listing the choices, shell completion): `graph` `--direction` /
+  `--edges` / `--algorithm` / `--granularity` / `--format`, `code semantic` `--lane` / `--format`, `git
+  search --field`, `git symbol-history --hash-mode`, `memory proposals --kind`, `admin telemetry
+  --window`, `admin compress --level`.
+- CLI pagination and size controls passed straight to the MCP params: `--cursor` on `code`
+  symbols / grep / files / find / references / callers / implementations, `git` recent / search /
+  touching / by-path / blame / blame-symbol / symbol-history and `memory` list / proposals;
+  `--max-tokens` on `code` outline / symbols / grep / files / find / references / callers /
+  implementations / semantic and `memory documents`; `--rerank-top-k` on `code semantic`; `--format
+  json|toon` on the `code` list modes and `memory documents`.
+- CLI forwards to a running daemon: `memory`, references / callers / graph reads and the grep prefilter
+  no longer fail with `memory_by_key index not available` or degrade to a truncating in-RAM
+  projection. With no daemon and another process holding the index lock, the error names the remedy
+  and exits `3`.
+- Tool subcommand paths (including `git` paths and `graph --focus`) normalize to the repo-relative
+  index key: absolute, `./`-prefixed and relative spellings are the same file. `rescan` also
+  validates paths and routes through the daemon instead of racing it.
+- CLI/MCP parity test (`tests/cli_parity/`): a capability table maps every MCP tool and mode to a CLI
+  command (or declares it `cli_only` / `mcp_only` with a reason), compares per-mode parameters
+  against reasoned exceptions, and checks that representative reads return equal `--json` payloads.
+- MCP resources `basemind://status`, `basemind://repo/map` and the templates
+  `basemind://outline/{path}` and `basemind://memory/{key}` (with `{path}` completion). Bodies equal
+  the tool results; paths are validated against traversal; listed on demand; no subscribe support.
+- Human-readable `title` on each of the nine tools.
+- `agents post` takes an optional `idempotency_key` (generated when omitted); the daemon stores it per
+  (agent, thread) for an hour and returns the original message id on a repeat. The stdio relay
+  replays keyed posts and read-only requests once on a replacement backend instead of failing with
+  `backend_restarted`.
+- Cancellation: `code grep`, `code semantic`, `graph map`, `graph calls`, `memory documents` and
+  `agents wait` honour `notifications/cancelled` (answering `-32800 request_cancelled`), and
+  cancelling an offloaded task reaches the running tool. Mutating modes (`rescan`, `put`, ...) always
+  run to completion.
+- `web crawl` reports MCP progress per page; task `statusMessage` mirrors rescan and crawl progress.
+- `code grep` trigram bloom prefilter: one bloom filter per indexed file (new `grep_bloom` keyspace,
+  about 12.8 % of indexed code bytes) lets grep skip files that cannot match a required literal.
+  Results, totals, hit order and cursors are identical to the full sweep, including for files edited
+  since the last scan. No index wipe; blooms are built on the next scan. `BASEMIND_GREP_BLOOM=0`
+  forces the full sweep. See ADR-0012.
+- `EXTRACT_EPOCH`: extractor-output revision on every file entry and blob. The next scan re-extracts
+  only stale files, so a patch release can fix extraction without a minor bump. The scan summary shows
+  `tier_migrated` and `refreshed`. Epoch 1 refreshes signatures produced before the header-only fix.
+- Comms: `BASEMIND_COMMS_REQUEST_TIMEOUT_SECS`, `BASEMIND_COMMS_HANDSHAKE_TIMEOUT_SECS` (default 30 s),
+  `BASEMIND_RELAY_REQUEST_TIMEOUT_SECS`; the detached daemon logs to a size-rotated
+  `<comms_dir>/daemon.log`, shown by `comms doctor`.
 - `BASEMIND_BLOB_GC_GRACE_SECS` overrides the 6 hour age below which the blob sweep keeps a blob.
-- `code grep`, `code semantic`, `graph map`, `graph calls` and `memory documents` now honour client
-  cancellation: a `notifications/cancelled` drops the in-flight read and releases its admission permit
-  immediately, answering `-32800 request_cancelled`. Mutating modes (`rescan`, `put`, `accept`, ...) are
-  deliberately excluded and always run to completion.
-- `web crawl` reports MCP progress, one notification per page indexed out of the pages visited. When the
-  call is offloaded as a task, every progress message (rescan and crawl) is also mirrored onto the task's
-  `statusMessage`, so `tasks/get` pollers see the same counter.
-- Each of the nine tools advertises a human-readable `title`.
 
 ### Changed
 
-- **Breaking (CLI):** the human-mode timing footer (`(N ms query · M ms startup)`) is now written to
-  stderr instead of stdout, so piped stdout carries only the answer. `--json` is unchanged
-  (`elapsed_us` and `startup_us` stay in the payload).
-- **Breaking (CLI):** `code semantic --format` and `memory documents --format` accept only `json` or
-  `toon` (was a free string).
-- Breaking: CLI exit-code contract (documented in the README): `0` ok, `1` error, `2` usage, `3` writer
-  lock held by another process, `4` required daemon unreachable, `130` interrupted. `scan` and `rescan`
-  used to print the lock-collision notice and exit `0`; they now exit `3`. An invalid `rescan` path
-  (outside the repo, or neither on disk nor indexed) exits `2` instead of `0`.
-- Breaking: `rescan` and `admin rescan` normalize their paths (`./a.rs`, absolute paths, `..`), validate
-  them, and route through the daemon when one runs instead of racing it with an unlocked in-process scan;
-  without a daemon `admin rescan` now takes the workspace writer lock.
-- Breaking: `cache clear` requires `--yes` (or a terminal confirmation) for every component except
-  `git-cache`, refuses (exit `3`) while a writer holds the workspace lock, and refuses `blobs` while the
-  daemon runs. The prompt and help state that `blobs` is the machine-global store shared by every workspace.
-- With a daemon running, the one-shot CLI is built in the same `daemon_writer` shape as the daemon relay:
-  `memory`, references/callers/graph reads and the grep prefilter are forwarded to the daemon instead of
-  failing with `memory_by_key index not available` or degrading to the truncating in-RAM projection. When no
-  daemon is reachable and another process holds the index lock, that error now names the remedy and exits `3`.
-- Invalid-parameter tool errors exit `2`.
-
-- MCP `tools/list` is smaller: the `memory` tool no longer exposes the ~26 `documents.*` / `llm.*`
-  config-override fields (`llm_api_key`, `llm_base_url`, `llm_model`, `reranker_*`, `ner_enabled`,
-  `summarization_*`, `keywords_*`, `language_*`, `embedding_preset`, `max_characters`, `overlap`,
-  `output_format`, `enabled`, ...) that were CLI-flag leftovers. They remain CLI flags and env vars and
-  `basemind.toml` keys; over MCP, `memory` mode `documents` keeps `format`, `max_tokens`, `mime_type`,
-  `scope`, `entity_category` and `keywords_contains`. In particular no API key travels as a tool
-  argument any more. `entity_category` / `keywords_contains` now serialize like their sibling
-  optional fields. Per-field descriptions across the `agents`, `code`, `git`, `graph`, `admin`,
-  `shell`, `web`, `workspace` and `memory` schemas were tightened (same modes and parameters).
-- MCP logging is retired (SEP-2577 deprecates it): the server no longer advertises the `logging`
-  capability, no longer handles `logging/setLevel`, and `admin rescan` no longer emits the
-  `rescan_complete` log notification. The rescan summary counts are in the tool result and the rescan
-  progress notifications are unchanged.
-- The production `rmcp` dependency drops its default features (only `base64` was dropped).
-- `code outline`, `symbols` and the code map no longer index names bound inside a function, method or
-  lambda body (Python `x = ...` in a `def`, JS/TS `const` in a function, Rust `let`/nested `fn`, Go
-  locals, Java/C#/C locals ...): a symbol with a function-like ancestor node is dropped, matched by node
-  kind so it applies to every grammar. Module-level and class-level definitions, methods and class fields
-  are unchanged. Value-like symbols (variable, const, field) also store a shorter signature: the repeated
-  name is removed (`MAX_RETRIES = 3` is kept as `= 3`) and long initialisers are cut at 80 characters;
-  function and type headers are untouched. On the armis eval corpus outline precision rises from 0.67 to
-  1.00 and the mean outline response shrinks from 1384 to 747 tokens (median outline saving versus
-  reading the file: 0.71x to 1.24x). The L1 schema is unchanged, so existing indexes keep working, but
-  their stored outlines still carry the old symbols until a file is re-extracted.
-- `code find` and `code files` cover every indexed path: the code map plus the document tier
-  (markdown, rst, docx, PDFs ... whatever `[documents]` admits), with the grammar name (`markdown`) or
-  extension (`pdf`) as the language label and `language` filter value. `find` also drops candidates
-  scoring under 85 % of the best match instead of always filling the page (order stays descending score,
-  path ascending). On a 90-task eval (60 code, 30 document) with limit 10: recall 0.59 to 0.83, hit@1
-  0.58 to 0.82, precision 0.28 to 0.62. Precision rises with the floor (0.44 at 50 %, 0.62 at 85 %, 0.70 at
-  95 %) at unchanged recall until the floor reaches 100 %, which loses a hit.
-- Token-savings estimates (`src/mcp/savings.rs`, the dashboard and statusline) are recalibrated from the
-  eval's measured median ratios instead of fixed heuristics: outline 5x to 1.2x, symbols 3x to 25x,
-  references and implementations 3x to 1.2x, docs 5x to 2.5x (against grep plus opening the document),
-  and callers, dependents, find and files 1x (basemind's response is larger than the plain `rg` /
-  `git ls-files` output there, so no saving is claimed). Each row still discloses its baseline.
-- The eval generators follow the new symbol scope (`python_symbols` never enters a function body,
-  `gen_references.py` resolves definitions the same way), `gen_find.py` takes `--indexed FILE` so tasks
-  come only from indexed files, and `gen_docs.py` models the docs baseline as a keyword grep plus
-  opening the document.
-- Dependencies upgraded to their latest releases: `lancedb` 0.37 to 0.40 (now built with its `remote`
-  feature, which 0.38-0.40 need to compile; `lance` 10 to 13), `gix` 0.88 to 0.89, `oxc_*` 0.152 to
-  0.153, `crawlberg` 1.8 to 1.10, `xberg` 1.3.3 to 1.3.6, `tree-sitter-language-pack` 1.20 to 1.21,
-  plus lockfile refreshes (`rmcp` 3.5.1, `sysinfo` 0.39, `hyper`, `clap`, `jsonschema`, `hf-xet`).
-  `arrow-*` stays at 58 (lancedb 0.40 requires `^58`), `rustix` at 1.1.4 (rmux-client needs its
-  public `runtime` module) and `bincode` at 2.0.1 (3.0.0 is a `compile_error!` placeholder).
-- `code grep` sweeps the corpus with a reusable per-thread read buffer (capped at 1 MiB retained per
-  worker, so resident scratch stays bounded) instead of allocating a `String` per file, rejects a
-  literal pattern on raw bytes before paying for UTF-8 validation, and no longer builds two path
-  buffers per file. Results, `total_matches`, hit order, cursors and context lines are unchanged
-  (checked against the previous implementation over a generated corpus, including paging).
-- The code map now indexes code only. Markdown, reStructuredText, AsciiDoc, vimdoc, CSV, JSON, YAML,
-  TOML, INI, XML, `.properties`, `.env`, diffs, `.gitignore`/`.gitattributes` and Fluent files are
-  routed to the document tier (chunked and searchable with `memory documents`) instead of being
-  outlined as symbols, so `symbols`, `outline` and `grep` no longer return README headings or config
-  keys. `[documents] include` / `exclude` and the MIME allowlist gate them as for any document.
-  Existing indexes migrate on the next scan or incremental rescan: stale code-map entries (file map,
-  blobs references, index and keyword postings, code-search chunks) are purged, and a path that
-  changes tier is moved either way. A build without the `documents` feature keeps the old behaviour.
-  Document-link citations and ADR/RFC decision records now resolve against the document tier.
-- Upgrading an existing index is now self-cleaning. The blob sweep is tier-aware: a markdown, json,
-  yaml or toml file that moved to the document tier keeps its content hash, so its stale `.fm`,
-  `.chunk` and `.rref` blobs used to be pinned by the live `.doc` blob forever; they are now
-  reclaimed, and `cache stats` counts them as orphans. A scan that migrated paths across tiers,
-  re-extracted blobs, or reset a view after a release-minor bump runs a cross-workspace
-  reference-counted sweep and prints `cleanup: reclaimed N orphaned blob(s)`; the daemon does the same
-  a minute after such a pass. `basemind cache gc` now performs that sweep (it was report-only),
-  serialised machine-wide by `cache/gc.lock`; blobs younger than 6 hours are kept. The MCP `admin`
-  mode `gc` and `basemind admin gc` remain non-destructive reports. See `docs/UPGRADING.md`.
-- `symbols` and `dependents` are answered from a resident term index instead of streaming every
-  outline. It holds only the searchable text (symbol names and import strings, no spans or
-  signatures) in one compact allocation per file, so a query is a `memmem` sweep over contiguous
-  bytes and only the returned page is decoded. It is built in the background when a full cache is
-  published and patched, not rebuilt, by an incremental rescan. Results are unchanged.
-- `code references`, `callers` and `implementations` no longer walk every call site or impl in the
-  index. The index process keeps a small resident dictionary of the distinct callee and trait names
-  (a few MB at monorepo scale), answers the substring match from it, and range-scans only the
-  matching names' keys; a needle matching over 5 % of the distinct names goes back to the full walk,
-  which reaches the result cap after a handful of keys. Results, key order, totals, the
-  `total_is_partial` cap, cursors and the language filter are byte-identical. The first query after
-  the index opens still walks the partition while the dictionary builds in the background.
-- `code grep` sweeps the corpus with a reusable per-thread read buffer (capped at 1 MiB retained per
-  worker, so resident scratch stays bounded) instead of allocating a `String` per file, rejects a
-  literal pattern on raw bytes before paying for UTF-8 validation, and no longer builds two path
-  buffers per file. Results, `total_matches`, hit order, cursors and context lines are unchanged
-  (checked against the previous implementation over a generated corpus, including paging).
-- Dependencies upgraded to their latest releases: `lancedb` 0.37 to 0.40 (now built with its `remote`
-  feature, which 0.38-0.40 need to compile; `lance` 10 to 13), `gix` 0.88 to 0.89, `oxc_*` 0.152 to
-  0.153, `crawlberg` 1.8 to 1.10, `xberg` 1.3.3 to 1.3.6, `tree-sitter-language-pack` 1.20 to 1.21,
-  plus lockfile refreshes (`rmcp` 3.5.1, `sysinfo` 0.39, `hyper`, `clap`, `jsonschema`, `hf-xet`).
-  `arrow-*` stays at 58 (lancedb 0.40 requires `^58`), `rustix` at 1.1.4 (rmux-client needs its
-  public `runtime` module) and `bincode` at 2.0.1 (3.0.0 is a `compile_error!` placeholder).
+- `code find` and `code files` cover every indexed path (code map plus document tier), labelling
+  documents by grammar name or extension. `find` drops candidates scoring under 85 % of the best match.
+  On a 90-task eval: recall 0.59 to 0.83, hit@1 0.58 to 0.82, precision 0.28 to 0.62.
+- Outline eval precision rises from 0.67 to 1.00 and the mean outline response shrinks from 1384 to
+  747 tokens with the narrower symbol scope.
+- Token-savings estimates are recalibrated from measured eval ratios (outline 1.2x, symbols 25x,
+  references and implementations 1.2x, docs 2.5x; callers, dependents, find and files claim no saving).
+- Upgrading is self-cleaning: the blob sweep is tier-aware, and `cache gc` performs it (serialised
+  machine-wide by `cache/gc.lock`; blobs younger than 6 hours are kept). A scan that migrated paths,
+  re-extracted blobs or reset a view prints `cleanup: reclaimed N orphaned blob(s)`; the daemon does the
+  same a minute later. The MCP `admin` mode `gc` stays a non-destructive report. See
+  `docs/UPGRADING.md`.
+- Performance: `symbols` and `dependents` answer from a resident term index; `references`,
+  `callers` and `implementations` use a resident name dictionary (needles matching over 5 % of names
+  fall back to the full walk); `code grep` reuses a per-thread read buffer. Results are unchanged.
+- Comms daemon runtime has 8 workers (was 4) and liveness probes run off the async workers.
+- The production `rmcp` dependency drops its default features. Dependencies upgraded: `lancedb` 0.37 to
+  0.40 (with its `remote` feature; `lance` 10 to 13), `gix` 0.89, `oxc_*` 0.153, `crawlberg` 1.10,
+  `xberg` 1.3.6, `tree-sitter-language-pack` 1.21, plus lockfile refreshes.
+- Eval generators follow the new symbol scope; `gen_find.py` takes `--indexed FILE`.
 
 ### Fixed
 
-- CLI `--format toon` crashed the renderer (it only parsed JSON). Human mode now renders the TOON
-  response and `--json` still prints JSON.
-- CLI human output no longer cuts every string to 200 characters: `code expand`/`chunk`, `git diff`,
-  `graph export`, `admin compress`/`delta`/`checkpoint` and every other key/value field print in full
-  (multi-line values raw, under `key:`). Only table cells are shortened, and the CLI says so on stderr.
-- CLI `agents`/`workspace` `--json` now serialize the MCP response types (`ThreadSummary`,
-  `MessageFrontMatter`, `AgentSummary`, ...) and print pretty JSON like every other command. Fields
-  that differed: `agents list` gains `description`/`skills`/`first_seen`/`last_seen`; threads use
-  `last_activity_micros`; message rows gain `age_secs`/`body_sha`; empty optionals are omitted.
-- Flaky tests `daemon_lock::tests::drop_releases_the_lock_and_removes_the_registry_entry` and
-  `store_layout::daemon_isolation_tests::every_daemon_family_resolves_inside_the_temp_cache` (an env-var
-  race with a test that temporarily repointed `BASEMIND_DATA_HOME`).
-- Ctrl-C during `scan` / `rescan` stops the scan at a file boundary (completed batches stay committed, the
-  stale purge is skipped), prints the summary and exits `130`; a second Ctrl-C exits immediately.
-- Cancelling an offloaded (SEP-2663 task) call now reaches the running tool: its cancellation token fires and pure reads (`agents wait`, `code grep`, `graph map`, ...) are aborted, so an abandoned wait releases its comms link and broker subscriber at once instead of after its full duration. Mutating tools such as `rescan` still run to completion.
-
-- A comms or shells daemon starting just as the previous one exits no longer mistakes a just-released lock for a live peer and exits silently: the daemon lock waits up to 300 ms when it reads as held but no live process is recorded as the holder.
-- Comms daemon stalls under slow disk. Every blocking `CommsStore` call in the request handlers
-  (thread, member, message, inbox, ack, status, retention) and every machine-registry write now runs on
-  the blocking pool instead of a runtime worker, so a slow fsync or a full `list_threads` scan no
-  longer freezes `Ping`/`Status` and every other connection. Mutations stay serialized through one
-  write gate, so message `seq` assignment keeps its order. The hourly retention sweep moved off the
-  runtime too.
-- Comms/MCP unresponsiveness. Comms requests are now correlated by id (protocol version 4), so a
-  request abandoned mid-flight, such as the per-tool-call delivery-notice probe timing out, can no
-  longer leave a stale reply that the next request misreads as `unexpected response shape` (and a
-  `post` that was stored reporting an error). Client requests and handshakes time out with a
-  retryable `comms: broker unresponsive` (`BASEMIND_COMMS_REQUEST_TIMEOUT_SECS`,
-  `BASEMIND_COMMS_HANDSHAKE_TIMEOUT_SECS`), the stdio relay answers an unreplied request with
-  `backend_timeout` (`BASEMIND_RELAY_REQUEST_TIMEOUT_SECS`), and a slow connect for one identity no
-  longer blocks the others.
-- The inbox read bounds its unread scan instead of decoding every unread row (`unread` is a lower
-  bound past roughly 500 rows past the page), and the delivery-notice probe now uses its own
-  connection and runs at most once every 2 s.
-- `agents` mode `wait` stops as soon as the host cancels the call or the connection closes instead of
-  holding a link and subscriber for the full timeout, is capped at 40 s (was 300), and no longer
-  returns instantly on messages a previous `wait` already returned.
-- The detached comms daemon now logs to `<comms_dir>/daemon.log` (size-rotated; shown by `comms
-  doctor`) instead of `/dev/null`, runs its synchronous liveness probes off the async workers, and
-  has 8 workers (was 4).
-- `code references`, `callers` and `implementations` from a daemon-backed session (the standard
-  deployment: the daemon owns the single-writer fjall index, so sessions cannot open it) are now
-  COMPLETE. They used to answer from an in-RAM projection of every call site capped at
-  `[resources] max_map_cache_mb`, so on a large monorepo `references name=get_arg` returned a
-  truncated lower bound (`total` 575 on a 74k-file tree) behind a `projections_capped` notice. The
-  scan is now forwarded to the daemon (new `IndexRead` request, also reached in-process by
-  daemon-hosted connections), which runs the same scan code a writer session runs against the same
-  index, so results, totals and cursors are identical to a writer session's and the session holds no
-  projection (zero extra RAM). The in-RAM projection is now built lazily and only as a last resort
-  when no daemon is reachable (a failed forward degrades to it rather than erroring), and the
-  `projections_capped` notice appears only when that fallback is genuinely truncated.
-- Symbol signatures in indentation-based languages (Python and similar) end at the grammar's body
-  field instead of embedding the whole body. Existing indexes refresh without a cache wipe through
-  `EXTRACT_EPOCH`.
-- macOS: the process heap no longer shows up as GBs of "GPU" memory. mimalloc tags its mappings
-  with Mach VM tag 100 by default, which is `VM_MEMORY_IOACCELERATOR`, so `footprint`, `vmmap` and
-  Activity Monitor attributed the whole allocator heap to `IOAccelerator` even with
-  `onnx_provider = "cpu"` and no Metal or CoreML device ever created. basemind now retags the heap to
-  254 (application-specific) at startup, so the memory reports as ordinary application memory and
-  real GPU allocations are distinguishable.
-- A panic inside an embedding job no longer aborts the process. rayon aborts when a spawned closure
-  unwinds; the panic is now contained and surfaces as an `embedding worker panicked` error.
+- CLI `--format toon` crashed the renderer; human mode now renders the TOON response.
+- `code references`, `callers` and `implementations` from a daemon-backed session are complete. They
+  used to answer from an in-RAM projection capped at `[resources] max_map_cache_mb` and returned a
+  truncated lower bound behind a `projections_capped` notice. The scan is now forwarded to the daemon
+  (`IndexRead`); the projection is a last-resort fallback only.
+- Ctrl-C during `scan` / `rescan` stops at a file boundary (completed batches stay committed, the stale
+  purge is skipped), prints the summary and exits `130`; a second Ctrl-C exits immediately.
+- Comms unresponsiveness: replies are correlated by request id, so an abandoned request (such as the
+  delivery-notice probe timing out) can no longer leave a stale reply misread as `unexpected response
+  shape`; requests and handshakes time out with a retryable `comms: broker unresponsive`, the relay
+  answers `backend_timeout`, and a slow connect for one identity no longer blocks the others.
+- Comms daemon stalls under slow disk: blocking `CommsStore` calls and registry writes run on the
+  blocking pool (mutations stay serialized through one write gate, so `seq` order holds), and the hourly
+  retention sweep moved off the runtime.
+- The inbox read bounds its unread scan (`unread` is a lower bound past roughly 500 rows) and the
+  delivery probe uses its own connection, at most once every 2 s.
+- `agents wait` stops as soon as the host cancels or the connection closes, and no longer returns
+  instantly on messages a previous `wait` already returned.
+- A comms or shells daemon starting as the previous one exits no longer mistakes a just-released lock
+  for a live peer and exits silently (the lock waits up to 300 ms).
+- Symbol signatures in indentation-based languages end at the grammar's body field instead of embedding
+  the whole body; existing indexes refresh through `EXTRACT_EPOCH`.
+- macOS: the heap no longer shows up as GBs of "GPU" memory; mimalloc's default Mach VM tag 100
+  (`VM_MEMORY_IOACCELERATOR`) is retagged to 254 at startup.
+- A panic inside an embedding job no longer aborts the process; it surfaces as an `embedding worker
+  panicked` error.
+- Flaky `daemon_lock` and `store_layout` tests (a sibling test's fork/exec holding a released flock; a
+  test mutating the process-global `BASEMIND_DATA_HOME`).
+- Stale docs: `serve` flags, `memory mine` flags, `--json` help text and the admin command tables.
 
 ## [0.28.1] - 2026-10-06
 

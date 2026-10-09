@@ -9,8 +9,8 @@ description: >-
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:6be6a357b4c9a561d7be3fa855c8e38458dcf4e02d4ea09c57ca96e5f911a005
-Source-Hash: blake3:2eee3eb4fe8e0cd3029634e4a8728976df0cff767bc90ab2516dadd0565fcd0d
+Content-Hash: blake3:165531a86d93374a7e423244dd3dd324e5066c39ff7d03edb7e9cf2f482769bd
+Source-Hash: blake3:36dad38afc8a716a210a7f724cc29942cc9ef1d96e5f9ea2e9bc8e4cb2eeb8b7
 Schema-Version: v1
 -->
 
@@ -29,6 +29,7 @@ make sure the index is healthy and clear anything blocking a restart.
 ## 1. Is there an index?
 
 ```sh
+basemind doctor   # root, config, index, grammars, hook, daemon; exits 1 when a check fails
 basemind status
 ```
 
@@ -50,7 +51,7 @@ directory under the machine-global cache (Linux `~/.local/share/basemind/`, macO
 in the repo.
 
 - If that `pid` is **alive** (`ps -p <pid>`), the server is up — use the MCP tools, or the
-  `admin { mode: "rescan" }` to refresh. Don't run a CLI `scan` (it will contend on the lock).
+  `admin { mode: "rescan" }` or `basemind rescan` to refresh. Don't run a CLI `scan` (it will contend on the lock and exit 3).
 - If that `pid` is **dead**, the lock is stale. The OS releases the advisory lock when a process
   dies, so a fresh `basemind scan` / `basemind serve` should just work — retry it. (You may delete
   the stale `.lock.meta` sidecar in that workspace cache dir to clear the advisory holder record.)

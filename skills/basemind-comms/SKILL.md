@@ -69,6 +69,10 @@ flooding your context — you pull the messages relevant to your task, not the w
 
 Keep posts concise — subject is a one-liner, body is a few sentences. No fluff, no emojis.
 
+To make a retried post safe, pass `idempotency_key` on `post`: a repeat with the same key returns the
+original `message_id` instead of storing a duplicate (a key is generated when omitted). The MCP relay
+also replays reads and keyed posts after a broker restart, so reuse the same key when you retry.
+
 ## Delivery and explicit waiting
 
 Do not build a polling loop. New-message notices are delivered once at the next supported host turn

@@ -45,12 +45,12 @@ Finding the binary (in order of preference):
   cache (never inside the repo). Seconds for small repos; ~22 s for an ~80k-file TypeScript monorepo.
 - The code map holds code only. Markdown, JSON, YAML, TOML, XML, CSV, INI and similar prose/config/data
   files go to the document tier instead (chunked, searchable with `memory` mode `documents`; they
-  never appear in `symbols`, `outline`, `files` or `grep`). Anything that is neither code nor an
+  never appear in `symbols`, `outline` or `grep`; `files` and `find` list them). Anything that is neither code nor an
   extractable document is **skipped**, not counted as a failure. Existing indexes migrate on the
   next scan, which also reclaims stale blobs (`cleanup: reclaimed N orphaned blob(s)`).
 - If a `basemind serve` MCP server is already running for this repo it holds the store lock, so a
-  CLI `scan` will fail with a lock error. Use `admin { mode: "rescan" }` over MCP (it re-indexes in-process)
-  instead, or stop the server first.
+  CLI `scan` will fail with a lock error. Use `basemind rescan [path…]` (the CLI forwards to the running daemon) or
+  `admin { mode: "rescan" }` over MCP instead; the lock error exits with code 3.
 - **Indexing directories outside the repo** — set `scan.extra_roots` in the repo-root `basemind.toml`
   to a list of absolute paths (e.g. a Bazel external repo cache) to index them alongside the repo.
   This needs `BASEMIND_ALLOW_EXTRA_ROOTS` in the environment that launches basemind (`1`, or a

@@ -69,6 +69,9 @@ default workflow, not an optimization:
   returns capped, structured hits with an exact `total_matches`.
 - **Use `admin` mode `rescan` after you edit code**, not a server reconnect. Pass `paths: [...]` to limit it to
   the files you touched.
+- MCP resources are available for hosts that attach them: `basemind://status`, `basemind://repo/map`,
+  `basemind://outline/{path}` and `basemind://memory/{key}` (same data as `admin` `status`, `graph`
+  `map`, `code` `outline`, `memory` `get`).
 - **Do not re-read a file basemind already mapped.** If the outline answered the question, stop.
 
 Rule of thumb: if a question is about _where_, _what calls_, _what shape_, _who changed_, or
@@ -182,8 +185,9 @@ A 1000-line file becomes a 30-line table of contents.
   specific definition use `callers` (scope-resolved, marks proven hits `resolved`).
 - Cursors from `references`/`callers`/`implementations` survive rescans; `symbols`/`grep`/`files`/
   `find` cursors do not (`cursor_invalidated`: restart the query).
-- `outline`/`files`/`find`/`grep`/`symbols` do not see markdown or config/data files (`outline` on
-  one errors "file not indexed"). Use `memory` mode `documents`, or Read the file.
+- `outline`/`grep`/`symbols` do not see markdown or config/data files (`outline` on one errors
+  "file not indexed"); `files` and `find` list documents too. Search their contents with `memory`
+  mode `documents`, or Read the file.
 - Git tools require `basemind serve` to be running inside a git repository. Outside a git repo they return a clear error.
 - `memory` modes require basemind to be built with
   `--features full` (or the individual `documents` / `memory` flags). Without them the

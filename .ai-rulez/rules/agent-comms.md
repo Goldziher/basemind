@@ -24,7 +24,7 @@ or a subject filter) — never globally — and joined explicitly (no auto-join)
 thread_list` for threads in scope, then `agents history` on the relevant one); `history` and `inbox`
 return front-matter only (subject / from / id) — call `agents message` with an id to read a body.
 `agents thread_start {subject, path_glob?, members?}` opens a thread (you're the creator/admin; a
-human is also admin). Post a concise `agents post {thread, subject, body, reply_to?}` when you begin,
+human is also admin). Post a concise `agents post {thread, subject, body, reply_to?, idempotency_key?}` when you begin,
 finish, or hit a decision, and reply (`reply_to`) to messages about your work. `agents ack` clears
 read messages; idle threads auto-archive (or `agents archive` closes one). Don't stay silent when
 collaborating. An orchestrator can drive many named subagents via `as_agent` (each with its own

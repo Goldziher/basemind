@@ -166,7 +166,7 @@ src/
 │                             on a required `mode` — see "MCP surface" below
 │   ├── mod.rs, state.rs    — server bootstrap; shared ServerState
 │   ├── mode.rs             — define_mode!: the mode enums, wire spellings, telemetry_key(),
-│   │                         and domain_modes() (what tests/cli_parity.rs walks)
+│   │                         and domain_modes() (what tests/cli_parity/ walks)
 │   ├── tools.rs            — the `code` tool shim (#[tool], thin wrapper; 1000-line cap)
 │   ├── tools_<area>.rs     — one shim per remaining domain: admin, comms (→ `agents`),
 │   │                         git, graph, memory, registry (→ `workspace`), shells
@@ -226,6 +226,11 @@ src/
 │                             registry (the `workspace` group), shell, web;
 │                             comms_daemon.rs is `basemind comms` — daemon lifecycle only
 │                             (daemon/start/stop/status/doctor)
+│                             choices.rs holds the clap value enums, exit.rs the exit-code
+│                             contract (0/1/2/3/4/130), interrupt.rs the Ctrl-C scan cancel,
+│                             context.rs the one-shot server (daemon-forwarding when one is up)
+├── doctor_cli.rs, lang_cli.rs, comms_cli.rs — `doctor`, `lang`, and `comms`/`daemon`/`statusline`
+│                             entry points in the binary crate
 ├── queries/<pack-name>.scm — hand-written extraction queries (override TSLP tags.scm)
 ├── render.rs, hashing.rs, watcher.rs                   — supporting modules
 
@@ -503,8 +508,8 @@ directly (opt-in via `BASEMIND_ALLOW_HTTP`, bearer token in `<comms_dir>/http.ad
 contract is `tests/mcp_smoke.rs`.
 
 The surface is **nine domain tools**, each dispatching on a required, non-defaulted `mode` — not
-one tool per verb (ADR-0011). The same nine names are the CLI groups, enforced as a strict
-`(domain, mode)` bijection by `tests/cli_parity.rs`. `src/mcp/mode.rs` (`define_mode!`) is the
+one tool per verb (ADR-0011). The same nine names are the CLI groups, checked per
+`(domain, mode)` by `tests/cli_parity/` (see [ADR-0014](adr/0014-cli-mcp-parity-guard.md)). `src/mcp/mode.rs` (`define_mode!`) is the
 single source of the wire spellings, the CLI parity table, and the telemetry keys.
 
 | Tool / CLI group | `mode` values | Gate |
@@ -806,6 +811,56 @@ subscription, is dropped at once), and does not return messages a previous `wait
 The detached daemon's stdout and stderr are appended to `<comms_dir>/daemon.log` (mode 0600,
 rotated to `daemon.log.1` past 8 MiB at spawn and trimmed in place while running). `basemind comms
 doctor` prints the path for every comms daemon (`log` in `--json`).
+
+### Daemon runtime, store access and early accept
+
+The daemon is mostly an idle I/O relay, so it runs a small multi-thread tokio runtime of 8 async
+workers (`DAEMON_ASYNC_WORKERS` in `src/cli/comms_daemon.rs`) and a capped blocking pool. The comms
+store is Fjall, so every call is blocking disk I/O. Handlers never run it on a worker: reads go
+through `Broker::store_blocking` and mutations through `Broker::store_write`
+(`src/comms/daemon_store_blocking.rs`), both of which hand a closure to `spawn_blocking`. Writers
+additionally take a plain-mutex write gate so read-modify-write sequences (a post's `seq`
+allocation, thread-record updates) stay serialized exactly as when every handler ran inline. A slow
+disk therefore cannot stall `Ping` or `Status` on another link, and a plain inbox read skips the
+gate.
+
+On Unix the singleton socket is accepted before the store has finished opening (`EarlyAccept` in
+`src/comms/frontend_uds.rs`). Until the broker is published, only `Ping` is answered, so
+`ensure_daemon` sees a healthy daemon. Every other request, and relay connections, park until the
+broker exists and are then served as if they had arrived afterwards; nothing is dropped.
+
+### Idempotent posts and relay replay
+
+`agents` `post` accepts an `idempotency_key` (1-128 printable ASCII characters; the MCP layer
+generates one when the caller omits it). The store records `(from, thread, key) -> message id` in the
+`meta` keyspace in the same batch as the message, so rows survive a daemon restart. A repeat within
+the one-hour window (`IDEMPOTENCY_TTL`) returns the original id and appends nothing; older rows are
+pruned.
+
+The stdio relay (`src/stdio_relay.rs`) uses this to survive a backend restart without closing the
+host's pipes. It reconnects with a 250 ms to 5 s backoff and re-sends each in-flight request at most
+once (5 s replay timeout), but only when re-sending is safe:
+
+- the read methods `ping`, `tools/list`, `resources/list`, `resources/read`,
+  `resources/templates/list`, `prompts/list`, `prompts/get` and `completion/complete`;
+- every `code`, `git` and `graph` call;
+- `agents` modes `list`, `thread_list`, `members`, `history`, `message`, `inbox`, `ack`, `wait` and
+  `status`;
+- `agents` `post`, which the relay stamps with a `relay-` key when the caller gave none.
+
+Every other in-flight request is answered with a retryable `-32001 backend_restarted` rather than
+guessed at, and a request the backend never answered within the relay deadline gets `-32002
+backend_timeout`.
+
+### Delivery probe
+
+An ordinary MCP tool response can carry a short notice of unread agent messages. Each tool call may
+run a probe (`take_delivery_notice` in `src/mcp/helpers_comms.rs`) over a dedicated broker
+connection so it never contends with the session's interactive client. It is rate-limited to one per
+2 s per session, has a 200 ms read budget and a 2 s connect budget, scans at most 200 inbox rows
+(the broker bounds its own scan, so the cost does not grow with the backlog), and lists up to five
+messages, each at most once per session. Failure and contention are silent, so mailbox delivery
+cannot make another tool slow or unavailable.
 
 ### Evidence a killed process leaves behind
 

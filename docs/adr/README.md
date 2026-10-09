@@ -54,3 +54,5 @@ them.
 | [0010](0010-branch-integration-release-strategy.md) | Branch, integration & release strategy | Accepted |
 | [0011](0011-mcp-tool-surface-redesign.md) | MCP tool-surface redesign — consolidation into nine domains | Accepted (§2 withdrawn) |
 | [0012](0012-grep-content-prefilter.md) | Per-file trigram bloom prefilter for `code grep` | Accepted |
+| [0013](0013-comms-robustness-idempotency-replay.md) | Comms robustness: correlated requests, bounded waits, idempotent posts, relay replay | Accepted |
+| [0014](0014-cli-mcp-parity-guard.md) | Executable CLI/MCP parity guard | Accepted |

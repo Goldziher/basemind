@@ -74,7 +74,7 @@ command covers the question.
 | "What cache space is reclaimable?" | `basemind cache gc --dry-run` | Report orphaned blobs without deleting them. |
 | "Reclaim orphaned blobs?" | `basemind cache gc` | Cross-workspace sweep (blobs under 6 h old are kept). |
 | "Score retrieval quality?" | `basemind admin eval --tasks tasks.jsonl` | CLI-only; see `benchmarks/eval/README.md`. |
-| "Clear caches?" | `basemind cache clear --component blobs` | Destructive; `views` / `all` require the offline `basemind cache clear`. |
+| "Clear caches?" | `basemind cache clear --component blobs --yes` | Destructive; `--yes` is required off a terminal. `views` / `all` need the offline CLI. |
 | "Pull this URL into RAG?" | `basemind web scrape <url>` | Single page (requires `--features crawl`). |
 | "Ingest a docs site?" | `basemind web crawl <seed-url>` | Link-following crawl. |
 | "What URLs exist on this site?" | `basemind web map <url>` | Sitemap + link discovery. |
@@ -82,6 +82,12 @@ command covers the question.
 | "Refresh the index after edits?" | `basemind scan` | Full or incremental scan. |
 | "Refresh changed paths?" | `basemind rescan [path…]` | Re-index in the live server. |
 | "Per-operation activity summary?" | `basemind admin telemetry` | Histogram + estimated tokens saved. |
+| "Is this install healthy?" | `basemind doctor` | Checks root, config, index, grammars, hook, daemon; exits 1 on failure. |
+| "Re-read a changed file cheaply?" | `basemind delta --old <prev> < new` | `+N/-M` line diff; stdin is the new content. |
+| "Checkpoint a session?" | `basemind checkpoint < session.txt` | Decisions / errors / changed files, credential-safe. |
+| "Spot wasteful tool use?" | `basemind detect-waste < calls.jsonl` | Redundant reads, repeated queries, oversized reads. |
+| "Block commits from staling the index?" | `basemind hook install` | Pre-commit `scan --staged`; see Notes. |
+| "Shell completions / man page?" | `basemind completions <shell>` / `basemind man` | Print to stdout. |
 
 ## Output format
 
@@ -159,11 +165,22 @@ basemind git blame-symbol src/scanner.rs "process_file"
 ```bash
 basemind cache stats
 basemind cache gc --dry-run
-basemind cache clear --component blobs
+basemind cache clear --component blobs --yes
 ```
+
+## Exit codes
+
+`0` ok, `1` error, `2` usage (bad flag, or a destructive command without `--yes`), `3` busy (another
+process holds the workspace writer lock; retry), `4` daemon unreachable, `130` interrupted. Ctrl-C
+stops a scan cleanly: work already committed is kept.
 
 ## Notes
 
+- `basemind hook install` resolves the hooks dir through git (`core.hooksPath` and linked worktrees
+  work), never overwrites a pre-commit hook it did not write unless `--force` (the old one is kept
+  as `pre-commit.bak`), and the installed hook fails open: it can never block a commit.
+- Memory, `references`/`callers`, the grep prefilter and `rescan` are forwarded to a running daemon
+  when there is one, so they work alongside a live server.
 - All paths are repository-relative with forward-slash separators.
 - The CLI opens the index read-only; safe to run alongside a live `basemind serve` process.
 - Lists are capped (`--limit`: symbols/grep/references/callers/implementations default 100, max

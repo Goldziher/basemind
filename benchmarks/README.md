@@ -92,8 +92,9 @@ egress, not a real network outage). That made `--features documents` (and `code-
 which also touches `ort` via reranking) unbuildable here.
 
 Given that, `benchmarks/tasks.example.yaml`'s `documents`-tier tasks use `basemind code grep
---path-contains <file>` (full-text, structured content search) against a single markdown doc
-instead of true semantic search — it only needs the `tokenizer` feature, so it actually runs
+--path-contains <file>` (full-text, structured content search) against a single source file's
+doc comments instead of true semantic search (markdown is document-tier now, so `code grep`
+cannot see it) — it only needs the `tokenizer` feature, so it actually runs
 in this environment. If you have a binary built with `--features documents` in an environment
 where the ONNX download succeeds, swap those two tasks for real `basemind memory documents
 <query>` calls; the harness itself doesn't care which CLI surface a task uses.
@@ -199,22 +200,24 @@ baseline is a targeted `git grep` plus up to three whole-file reads.
 
 | mode | tasks | p50 | p95 | P | R | ranked | median token ratio | credited / withheld | `savings.rs` assumes |
 |---|---|---|---|---|---|---|---|---|---|
-| `symbols` | 60 | 3.7 ms | 5.3 ms | 0.97 | 1.00 | | 21.6x (p90 98.9x) | 60 / 0 | 3x |
-| `outline` | 60 | 1.0 ms | 2.2 ms | 1.00 | 1.00 | | 0.68x (p90 1.21x) | 60 / 0 | 5x |
-| `references` | 60 | 1.4 ms | 6.0 ms | 0.81 | 1.00 | | 1.20x (p90 1.80x) | 60 / 0 | 3x |
-| `callers` | 60 | 4.6 ms | 10.4 ms | 0.87 | 1.00 | | 0.75x (p90 1.12x) | 60 / 0 | 3x |
-| `dependents` | 60 | 4.0 ms | 5.6 ms | 0.84 | 1.00 | | 0.64x (p90 0.90x) | 60 / 0 | 2x |
+| `symbols` | 60 | 3.7 ms | 5.3 ms | 0.97 | 1.00 | | 21.6x (p90 98.9x) | 60 / 0 | 25x |
+| `outline` | 60 | 1.0 ms | 2.2 ms | 1.00 | 1.00 | | 0.68x (p90 1.21x) | 60 / 0 | 1.2x |
+| `references` | 60 | 1.4 ms | 6.0 ms | 0.81 | 1.00 | | 1.20x (p90 1.80x) | 60 / 0 | 1.2x |
+| `callers` | 60 | 4.6 ms | 10.4 ms | 0.87 | 1.00 | | 0.75x (p90 1.12x) | 60 / 0 | 1x |
+| `dependents` | 60 | 4.0 ms | 5.6 ms | 0.84 | 1.00 | | 0.64x (p90 0.90x) | 60 / 0 | 1x |
 | `grep` | 15 | ~130 ms | 190-270 ms | 0.91 | 1.00 | | 0.41x (p90 0.61x) | 15 / 0 | 1x |
 | `find` | 60 | 6.6 ms | 9.0 ms | 0.29 | 0.75 | hit@1 0.72, MRR 0.73 | 0.12x (p90 0.42x) | 18 / 2 | 1x |
 | `git_search` | 60 | 55 ms | 96 ms | 1.00 | 0.91 | hit@1 1.00, nDCG 0.94 | 0.16x (p90 0.67x) | 49 / 11 | 1x |
-| `docs` | 60 | 106 ms | 260 ms | 0.18 | 0.63 | hit@1 0.48, hit@5 0.63, MRR 0.54 | 0.15x (p90 5.67x) | 38 / 22 | 5x |
+| `docs` | 60 | 106 ms | 260 ms | 0.18 | 0.63 | hit@1 0.48, hit@5 0.63, MRR 0.54 | 0.15x (p90 5.67x) | 38 / 22 | 2.5x |
 
 How to read it: the ratio only compares answer size with the baseline's. A definition lookup
-(`symbols`) replaces a grep plus file reads and is far cheaper than the dashboard's fixed 3x; a
+(`symbols`) replaces a grep plus file reads and is close to the 25x that `src/mcp/savings.rs` credits it; a
 single narrow hit (`outline` of a small file, `references`, `callers`, `dependents`, `find`) can be
 *cheaper* with `grep`, because basemind's structured response carries per-call overhead. That is why
-the harness flags every mode whose measured median deviates from `src/mcp/savings.rs` by more than 25%
-(all of them here) and why `basemind admin telemetry` savings are estimates. The latency columns are
+`savings.rs` claims no saving (1x) for `callers`, `dependents`, `find`, `files`, `grep` and `git_search`,
+credits `outline` and `references` only 1.2x and `docs` 2.5x, and why the harness flags every mode whose
+measured median deviates from those multipliers by more than 25% (`outline`, `dependents`, `grep`,
+`find`, `git_search` and `docs` here) and `basemind admin telemetry` savings are estimates. The latency columns are
 the point of the resident term index, name dictionaries and grep prefilter: the same `symbols`,
 `dependents` and `grep` tasks took seconds before them (`symbols` and `dependents` p50 4.1 s and 4.6 s on
 the previous implementation; `grep` 3.6-7.8 s). Rerun the workflow in

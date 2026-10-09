@@ -9,16 +9,16 @@ description: >-
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:7d1d61676ab6ca844bc68f230210ca0a7cb7a404df5c6c813c51aafb2e1909c0
-Source-Hash: blake3:2eee3eb4fe8e0cd3029634e4a8728976df0cff767bc90ab2516dadd0565fcd0d
+Content-Hash: blake3:6c68be577a5c277c1c22a8af2e788cef967085cad4b716eadea94da0b30fbb79
+Source-Hash: blake3:36dad38afc8a716a210a7f724cc29942cc9ef1d96e5f9ea2e9bc8e4cb2eeb8b7
 Schema-Version: v1
 -->
 
 # basemind-code-search — navigate code without reading it
 
 basemind pre-indexes the repo into a tree-sitter code map across 300+ languages. The map holds
-**code only**: markdown, JSON, YAML, TOML, XML, CSV, INI and `.env` files are documents, so none of
-the modes below sees them (`outline` on one errors "file not indexed") — search them with `memory`
+**code only**: markdown, JSON, YAML, TOML, XML, CSV, INI and `.env` files are documents, so no content mode below
+sees them (`outline` on one errors "file not indexed"; `files` and `find` still list them) — search them with `memory`
 mode `documents` (see `basemind-documents`) or just Read them. Structural
 questions — where a symbol lives, what calls it, what shape a file has — resolve from the index in
 milliseconds and return **paths, line numbers, and signatures, not file bodies**. That is a fraction

@@ -9,8 +9,8 @@ description: >-
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:b16afbd8320bda096344c788951c045d17e9cded6d7ddcf97254a1d025ad2362
-Source-Hash: blake3:2eee3eb4fe8e0cd3029634e4a8728976df0cff767bc90ab2516dadd0565fcd0d
+Content-Hash: blake3:7a0a443f940cf2e0cfaa3c25415fa855c9fa0a4ed0296ca46ebe577fcd28f57e
+Source-Hash: blake3:36dad38afc8a716a210a7f724cc29942cc9ef1d96e5f9ea2e9bc8e4cb2eeb8b7
 Schema-Version: v1
 -->
 
@@ -75,6 +75,10 @@ flooding your context — you pull the messages relevant to your task, not the w
    changed, what's left).
 
 Keep posts concise — subject is a one-liner, body is a few sentences. No fluff, no emojis.
+
+To make a retried post safe, pass `idempotency_key` on `post`: a repeat with the same key returns the
+original `message_id` instead of storing a duplicate (a key is generated when omitted). The MCP relay
+also replays reads and keyed posts after a broker restart, so reuse the same key when you retry.
 
 ## Delivery and explicit waiting
 

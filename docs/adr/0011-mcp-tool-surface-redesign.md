@@ -112,7 +112,7 @@ unreachable.
 
 - **Breaking.** Tool names change. This is a minor-release cut with a `RELEASE_MINOR` bump, a
   CHANGELOG entry, and a rename table for anyone with pinned tool names.
-- **CLI parity must move in lock-step.** `tests/cli_parity.rs` asserts a strict bijection, so every
+- **CLI parity must move in lock-step.** `tests/cli_parity/` asserts a mode-by-mode mapping, so every
   consolidation needs the matching CLI verb reshaped in the same commit — this is the completeness
   gate, and it is what keeps the two surfaces honest.
 - **Per-tool schemas get larger** (a union of each mode's parameters). The wire-shape guard still
@@ -160,7 +160,7 @@ were named in the original draft, and each fails quietly rather than loudly:
 
 ### CLI parity had to be re-keyed, not just updated
 
-`tests/cli_parity.rs` enumerates the live surface by runtime router introspection and checks it
+`tests/cli_parity/` enumerates the live surface by runtime router introspection and checks it
 against a name table. Left alone it would have verified **nine names** and stopped covering the 85
 operations beneath them — losing the completeness gate precisely when the migration needed it most.
 It is now keyed on `(tool, mode)` and walks `mode::domain_modes()`, generated from the same enums the

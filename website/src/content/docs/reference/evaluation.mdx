@@ -148,8 +148,9 @@ left out here; its measurement with the bloom prefilter is on the [Performance](
 | `git_search` | 55 ms | 96 ms | 1.00 | 0.91 | 6324 |
 | `docs` | 106 ms | 260 ms | 0.18 | 0.63 | 2575 |
 
-The measured median savings ratios in that run were far from uniform: 21.6x for `symbols` (the dashboard
-assumes 3x), 1.2x for `references`, and below 1x for `outline` (0.68), `callers` (0.75), `dependents`
-(0.64), `docs` (0.15), `git_search` (0.16) and `find` (0.12). Every mode was flagged `DEVIATES` against its
-`savings.rs` multiplier. The ratio depends on the baseline, so use your own task baselines before quoting
+The measured median savings ratios in that run were far from uniform: 21.6x for `symbols` (`savings.rs`
+credits 25x), 1.2x for `references` (credited 1.2x), and below 1x for `outline` (0.68; credited 1.2x),
+`callers` (0.75), `dependents` (0.64), `docs` (0.15; credited 2.5x), `git_search` (0.16) and `find` (0.12), the
+rest credited 1x. The modes whose measured median differs from the credited multiplier by more than 25 %
+are flagged `DEVIATES`. The ratio depends on the baseline, so use your own task baselines before quoting
 a savings number for your repository.

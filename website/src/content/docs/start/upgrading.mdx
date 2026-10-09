@@ -10,15 +10,55 @@ An upgrade never asks you to wipe the cache. basemind keeps its index in a machi
 history under `cache/workspaces/<key>/`, and one content-addressed blob store under `cache/blobs/`
 shared by every workspace. The next scan migrates what changed and cleans up what it displaced.
 
+## Upgrading from 0.28 to 0.29
+
+0.29 bumps the release minor, so the first scan rebuilds the index, and it reshapes the CLI.
+
+1. Stop the old daemon before the first scan: `basemind comms stop` (add `--all` to stop every daemon
+   on the machine). Otherwise the previous binary's daemon keeps running with the old schema and
+   still owns the index.
+2. Run `basemind scan`. Each view's `index.msgpack` and Fjall index are reset on open and every file is
+   re-extracted, overwriting stale blobs in place; the git cache refills lazily. The LanceDB document
+   tables and the blob store are not wiped, and the scan's cleanup pass reclaims orphaned blobs.
+   Expect a full-scan duration once.
+3. Re-run `basemind hook install`. The new hook honours `core.hooksPath` and linked worktrees, fails
+   open, and it will not overwrite a pre-commit hook it did not write unless you pass `--force` (the
+   old one is kept as `pre-commit.bak`).
+4. Update scripts for the renamed commands. No aliases remain:
+
+| 0.28 | 0.29 |
+|---|---|
+| `admin status` | `status` |
+| `admin rescan` | `rescan` |
+| `admin cache-stats` | `cache stats` |
+| `admin gc` | `cache gc` (deletes; `--dry-run` reports) |
+| `admin cache-clear` | `cache clear` (needs `--yes` outside a terminal) |
+| `admin delta` | `delta` |
+| `admin checkpoint` | `checkpoint` |
+| `admin waste` | `detect-waste` |
+| `graph map --include-churn` | `graph map --no-churn` |
+| `serve --git-cache-mem`, `--no-git-cache-disk`, `--no-watch`, `--documents-*` | removed (`serve` takes no flags) |
+
+Also check scripts for these behaviour changes:
+
+- Exit codes are `0` ok, `1` error, `2` usage, `3` writer lock held, `4` daemon unreachable, `130`
+  interrupted. `scan` and `rescan` exit `3` (not `0`) when another process holds the lock.
+- The timing footer is on stderr; stdout carries only the answer. Human output no longer truncates
+  values to 200 characters.
+- `--format` on `code semantic` and `memory documents` takes only `json` or `toon`.
+- `agents` and `workspace` `--json` now use the MCP response shapes.
+- MCP logging is gone, and the `memory` tool no longer accepts the `documents.*` / `llm.*` override fields.
+
 ## What changes on upgrade
 
 | Change | How it migrates | Cost |
 |---|---|---|
 | Prose, data and config files (Markdown, JSON, YAML, TOML, XML, CSV, INI, ...) left the code map for the document tier | The next scan, full or incremental, notices a path indexed in the other tier, purges its code-map rows and indexes it as a document | Documents are chunked, and embedded when `[documents] embed` is on |
 | Symbol `signature` now ends at the grammar's body field instead of embedding the body | Only files whose entry or blob predates the new extractor epoch are re-extracted, in the normal memory-bounded scan | One parse per affected file, no wipe |
-| Release-minor schema bump (for example `0.27.x` to `0.28.x`) | Each view's index is reset on open and every file is re-extracted, overwriting stale blobs in place | Full re-extraction, by design |
+| Release-minor schema bump (for example `0.28.x` to `0.29.x`) | Each view's index is reset on open and every file is re-extracted, overwriting stale blobs in place | Full re-extraction, by design |
 | Resident term index, name dictionaries, macOS heap retag | In memory only | None |
 | Daemon `IndexRead` forwarding for `references`, `callers`, `implementations` | Wire protocol only | None |
+| Code map is code-only; `find` / `files` cover documents | Same tier migration as the first row | See above |
 | Grep bloom filters | Built on the next scan; until then `code grep` runs the full sweep | Small, at scan time |
 
 Patch releases keep the persisted format. A change that alters what an unchanged file's blob should
@@ -47,7 +87,7 @@ document kept the same content hash as its live document blob and were pinned fo
 - A scan that migrated a path, refreshed an extraction, or reset a view for a schema bump runs the
   sweep itself and prints `cleanup: reclaimed N orphaned blob(s), B bytes`. In the daemon the same
   condition triggers a sweep a minute later, and the daemon also sweeps hourly.
-- `basemind cache gc` now performs the same sweep. It used to be report-only.
+- `basemind cache gc` performs the same sweep; `--dry-run` only reports. It used to be report-only.
 - `cache stats` shows the result as `last_gc`, and its `orphan_blob_count` is tier-aware and drops
   to `0` after the sweep.
 
@@ -61,7 +101,7 @@ reclaim space.
 
 ## Clearing and downgrading
 
-`basemind cache clear --component blobs|views|lance|git-cache|telemetry|all` covers every on-disk
+`basemind cache clear --component blobs|views|lance|git-cache|telemetry|all --yes` covers every on-disk
 component a migration touches. The term index and name dictionaries are memory only. The sweep lock
 is an empty file removed with the cache root, and `git-history.fjall` is removed only by `all`
 because the daemon holds it open.
