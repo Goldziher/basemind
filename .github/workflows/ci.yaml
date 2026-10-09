@@ -144,6 +144,20 @@ jobs:
         with:
           command: check
 
+  hermes:
+    name: hermes plugin package
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      # ~keep The tests import the GENERATED package under .hermes/package (conftest.py puts it first
+      # ~keep on sys.path), so this also fails when the checked-in generated output is missing.
+      - name: pytest
+        run: uv run --with pytest python -m pytest pip-package-hermes/tests
+      - name: build the wheel
+        run: uv build --wheel --out-dir /tmp/basemind-hermes-wheel .hermes/package
+
   memory-ceiling:
     name: scan under a 1 GiB cgroup (Linux)
     runs-on: ubuntu-latest

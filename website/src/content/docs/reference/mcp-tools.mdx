@@ -7,8 +7,8 @@ import { Aside, Badge } from '@astrojs/starlight/components';
 
 basemind exposes **nine domain tools** over stdio MCP — `code`, `graph`, `git`, `memory`, `admin`,
 `web`, `agents`, `workspace`, `shell` — each dispatching on a required `mode` rather than one tool
-per operation. The CLI mirrors the same nine groups (`basemind <domain> <mode>`), enforced as a
-strict bijection by the test suite. All paths are byte-precise repo-relative (`RelPath`). Lists are
+per operation. The CLI mirrors the same nine groups (`basemind <domain> <mode>`); `tests/cli_parity/` fails the build
+when an MCP mode has no CLI command or the two disagree on parameters or results. All paths are byte-precise repo-relative (`RelPath`). Lists are
 capped per mode (see [Metadata & pagination](#metadata--pagination)); index scans use
 `scan_cap = limit * 8` (at least 2000) to bound work on common names. Mode descriptions state matching semantics (substring, prefix, scope-aware) and what's
 indexed (name-only vs scope-resolved) — they're the routing surface an agent searches by, so read
@@ -24,8 +24,8 @@ calls, and definitions.
 | `outline` | A file's full structure: symbols, line/col, signatures, imports — read this instead of the file. | scope-aware |
 | `symbols` | Find a definition by name across every indexed file. | substring |
 | `grep` | Pattern search across the indexed code files, filtered by language or path; a per-file trigram bloom prefilter skips files that cannot match. Code only: prose, data and config files are in the document tier. | regex |
-| `files` | Enumerate indexed files, optional `path_contains` and `language` filters. | substring |
-| `find` | Locate a file by a fuzzy fragment of its name or path (fzf/fd-style, nucleo-matcher ranked). | fuzzy substring |
+| `files` | Enumerate indexed files, documents included, with optional `path_contains` and `language` filters. | substring |
+| `find` | Locate a file by a fuzzy fragment of its name or path, over code and document files (fzf/fd-style, nucleo-matcher ranked). | fuzzy substring |
 | `definition` | Resolve a reference position to the definition it binds to. | scope-aware |
 | `references` | Every call site of a name — no scope resolution; `Foo::bar()` and `bar()` both match `name="bar"`. | substring |
 | `callers` | Callers of one specific definition, disambiguated by path — resolves the definition first, then runs the same name-based scan as `references`. | resolves def, then name-only |
@@ -112,12 +112,12 @@ Refresh the index, inspect health and cache footprint, and shrink what an agent 
 | `rescan` | Re-index changed files, or the whole workspace when no paths are given. |
 | `cache_stats` | On-disk size, blob accounting (tier-aware orphan count, `last_gc`) and process RAM for the machine-global cache. |
 | `gc` | Report blobs no live view references — non-destructive, deletes nothing. To reclaim them, run `basemind cache gc`, which performs the cross-workspace reference-counted sweep. |
-| `cache_clear` | Delete this workspace's cached index outright. |
+| `cache_clear` | Delete one cache component (`component`). `blobs` needs `confirm`; `views` and `all` back the live index and are refused over MCP (use `basemind cache clear --yes`). |
 | `telemetry` | Aggregate recorded tool calls into a usage and token-savings summary. |
-| `compress` | Shrink a prior tool response, a file's outline, or prose for re-use in a smaller context. |
-| `delta` | What changed in a response since a named checkpoint. |
-| `checkpoint` | Name the current response so a later delta can diff against it. |
-| `waste` | Flag repeated or redundant tool calls in this session. |
+| `compress` | Shrink an indexed file (`path`, as an outline) or prose (`text`) for re-use in a smaller context. |
+| `delta` | Compact `+N/-M` line diff from `old` to `new`. |
+| `checkpoint` | Distill session `text` into decisions, errors and changed files. |
+| `waste` | Flag redundant reads and repeated queries in a tool-call `log`. |
 
 ## `web` — web crawl
 
@@ -149,12 +149,12 @@ with a recency-filtered inbox. Requires `--features comms`.
 | `add_member` | Add an agent to a thread you created. |
 | `remove_member` | Remove an agent from a thread you created. |
 | `archive` | Close a thread; creator or human admin only. |
-| `post` | Send a message to a thread. |
+| `post` | Send a message to a thread. Takes an optional `idempotency_key` (1-128 printable ASCII characters); a retry with the same key returns the original message id instead of storing a duplicate. Generated when omitted. |
 | `history` | A thread's messages as front-matter only; bodies come from `message`. |
 | `message` | Read one message body by id — the only path to a body. |
 | `inbox` | Unread messages across your joined threads, front-matter only. |
 | `ack` | Clear messages you have read from your inbox. |
-| `wait` | Block until a peer posts, or until the timeout elapses — a long-poll replacement for looping `inbox` / `thread_list`. |
+| `wait` | Block until a peer posts, or until `timeout_secs` elapses (default 30, max 40) — a long-poll replacement for looping `inbox` / `thread_list`. Cancel-aware: a cancelled call stops waiting at once. |
 | `cleanup` | Preview stale agent, claim, message and thread retention; TTLs are overridable in hours. Preview-only over MCP: `apply` must be omitted or false, and `basemind agents cleanup --apply` applies it. |
 | `status` | Active and stale agent counts plus the last maintenance time. |
 
@@ -192,6 +192,28 @@ Let agents spawn, type into, and read terminal sessions in the background. Requi
 
 See [Agent Shells](/capabilities/agent-shells/) for examples.
 
+## Tool titles and annotations
+
+Each tool carries a human-readable title and MCP annotation hints, so a client can show a readable
+name and decide what to auto-approve. The hints describe the union of a tool's modes.
+
+| Tool | Title | Read-only | Destructive | Idempotent | Open-world |
+|---|---|---|---|---|---|
+| `code` | Code map | yes | no | yes | no |
+| `git` | Git history | yes | — | — | no |
+| `graph` | Code graph | no | no | no | yes |
+| `memory` | Memory and documents | no | yes | no | no |
+| `admin` | Admin | no | yes | no | no |
+| `web` | Web | no | no | no | yes |
+| `agents` | Agent comms | no | no | no | no |
+| `workspace` | Workspace registry | no | no | yes | no |
+| `shell` | Shell sessions | no | yes | no | yes |
+
+A dash means the hint is left unset. `graph` is open-world and not read-only because `display` and
+`open` launch a viewer or serve a page. The server no longer emits MCP logging notifications; use
+`daemon.log` and `RUST_LOG` for diagnostics. The `mode` parameter is a flat string enum in the tool
+schema, so a client sees every valid mode and an invalid one is rejected with the accepted list.
+
 ## MCP resources
 
 Besides the tools, basemind serves a small set of MCP resources. They are listed on demand
@@ -210,6 +232,17 @@ mode, over the daemon stdio relay and over the HTTP front-end.
 Paths are validated before they reach the index: absolute paths, `..` or `.` segments, empty
 segments, backslashes and NUL are rejected. `completion/complete` completes `{path}` from the index.
 `resources/subscribe` is not supported.
+
+## Cancellation and tasks
+
+A client cancellation (`notifications/cancelled`) abandons these read-only calls at once and
+answers `request_cancelled` (-32800): `code` `grep` and `semantic`, `graph` `map` and `calls`,
+`memory` `documents`, and `agents` `wait`. Writing modes are never dropped mid-flight.
+
+When the client declares the tasks extension (`io.modelcontextprotocol/tasks`), the slow calls
+(`admin` `rescan`, `graph` `map`, `code` `semantic`, `memory` `documents`, and `web` `scrape` /
+`crawl` / `map`) return a pollable task handle (`tasks/get`) instead of blocking the connection.
+Clients that did not declare the extension get the synchronous result.
 
 ## Metadata & pagination
 

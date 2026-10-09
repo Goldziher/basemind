@@ -110,6 +110,31 @@ The first agent to use comms starts it; subsequent agents connect to the same da
 lives in your per-user data directory (not inside any repo's `.basemind/`) and never leaves your
 machine.
 
+## Reliability
+
+The broker is built so a stalled or restarted daemon does not lose or duplicate your messages.
+
+- **Bounded waits.** A coordination request must be answered within 10 s, and connecting plus the
+  handshake within 30 s, or the call fails with a retryable `broker unresponsive` error. `agents
+  wait` blocks for at most 40 s (default 30) and stops at once if the host cancels the call.
+- **Idempotent posts.** `agents post` accepts an `idempotency_key`. A retry with the same key within
+  an hour returns the original message id instead of posting twice. basemind generates a key when
+  you omit one, so an automatic retry is already safe.
+- **Restarts.** If the daemon is replaced (an upgrade, a crash, an idle exit) while `basemind serve`
+  is running, the relay reconnects and re-sends safe requests once: reads, `wait`, `ack` and keyed
+  posts. Anything else in flight fails with a retryable `backend_restarted` error rather than risking
+  a duplicate side effect.
+- **New-message notices.** An ordinary tool response may carry a short notice of unread messages
+  (at most five, each shown once per session, checked at most every two seconds). Use `agents inbox`
+  for the full list.
+- **Diagnostics.** The daemon's output goes to `daemon.log` in the comms directory (rotated at
+  8 MiB); `basemind comms doctor` prints its path.
+
+Protocol version 4 correlates every request with a reply id, so a late reply to an abandoned request
+is discarded instead of being mistaken for the next answer. A client and daemon that disagree on the
+protocol version fail the handshake with a clear error, and the newer client replaces the older
+daemon.
+
 ## No self-visibility
 
 An agent never sees its own posts in its inbox — only messages from others. This prevents
@@ -125,14 +150,14 @@ Every `agents` mode has a command-line equivalent. Run `basemind agents --help` 
 | `agents join` | `basemind agents join <thread>` |
 | `agents leave` | `basemind agents leave <thread>` |
 | `agents thread_start` | `basemind agents thread-start [--subject --path --member …]` |
-| `agents post` | `basemind agents post <thread> <subject> [--body …]` |
-| `agents history` | `basemind agents history <thread> [--since-hours]` |
+| `agents post` | `basemind agents post <thread> <subject> [--body --tag --reply-to]` |
+| `agents history` | `basemind agents history <thread> [--cursor --limit --since-hours]` |
 | `agents members` | `basemind agents members <thread>` |
 | `agents add_member` | `basemind agents add-member <thread> <id>` |
 | `agents remove_member` | `basemind agents remove-member <thread> <id>` |
 | `agents archive` | `basemind agents archive <thread>` |
 | `agents inbox` | `basemind agents inbox` |
-| `agents wait` | `basemind agents wait [--thread --timeout-secs]` |
+| `agents wait` | `basemind agents wait [--thread --timeout-secs --since-hours --cursor]` |
 | `agents ack` | `basemind agents ack [--message-id … \| --thread --to-seq]` |
 | `agents message` | `basemind agents message <id>` |
 | `agents register` | `basemind agents register [--name --description --version --skill]` |

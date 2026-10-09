@@ -37,12 +37,12 @@ tasks:
 
   - name: bm_init_doc_settings_mention
     tier: documents
-    description: "Find where commands/bm-init.md discusses the settings.local.json permissions step"
-    basemind: "code grep settings.local.json --path-contains commands/bm-init.md"
-    baseline: "grep -n settings.local.json commands/bm-init.md"
+    description: "Find where the daemon's early-accept loop is described in its doc comments"
+    basemind: "code grep EarlyAccept --path-contains src/comms/frontend_uds.rs"
+    baseline: "grep -n EarlyAccept src/comms/frontend_uds.rs"
 
   - name: readme_performance_section
     tier: documents
-    description: "Find the Performance section reference/heading in the top-level README"
-    basemind: "code grep Performance --path-contains README.md"
-    baseline: "grep -n Performance README.md"
+    description: "Find where the idempotency key is documented in the comms protocol comments"
+    basemind: "code grep idempotency --path-contains src/comms/protocol.rs"
+    baseline: "grep -n idempotency src/comms/protocol.rs"

@@ -373,7 +373,8 @@ detection; already-indexed files of a disabled or remapped language are updated 
 
 Settings map to environment variables by prefixing `BASEMIND_`, uppercasing, and joining the
 section and key with an underscore. Only the `documents.*` and `llm.*` keys have CLI-flag and
-environment overrides; every other setting is file-only.
+environment overrides (the flags are `--documents-*` and `--llm-*` on `basemind scan`); every other
+setting is file-only.
 
 ```bash
 BASEMIND_DOCUMENTS_ENABLED=true
@@ -488,6 +489,18 @@ Read directly rather than mapped from a config key:
 | `BASEMIND_DATA_HOME` | Overrides the global cache root. |
 | `BASEMIND_GREP_BLOOM` | `0` disables the per-file trigram bloom prefilter of `code grep` and forces the full sweep. Anything else (or unset) leaves it on. See [Performance](/reference/performance/#code-grep). |
 | `BASEMIND_BLOB_GC_GRACE_SECS` | Whole seconds a blob must age before the sweep (`basemind cache gc`, post-migration cleanup, the daemon's hourly sweep) may reclaim it. Default `21600` (6 h); `0` reclaims every unreferenced blob at once. |
+| `BASEMIND_GH_INDEX` | `0` disables the git-history index (the history tools then walk git directly); `scan` / `rescan --no-git-history` does the same per run. |
+| `BASEMIND_GIT_DISCOVER_PARENTS` | Restores indexing an ancestor repository's history for a workspace root that is only a subdirectory of it. |
+| `BASEMIND_BLAME_MAX_BYTES` / `BASEMIND_BLAME_MAX_LINES` | Size limits past which `git blame` refuses a file (defaults 1 MiB and 5000 lines). |
+| `BASEMIND_PARSE_TIMEOUT_MS` | Hard ceiling on one tree-sitter parse, in milliseconds (default 5000). |
+| `BASEMIND_GRAMMAR_OFFLINE` | Any non-empty value other than `0` stops basemind downloading tree-sitter grammars. |
+| `BASEMIND_MCP_LEAN` | Advertises three lean wrapper tools in `tools/list` instead of the nine domain tools. |
+| `BASEMIND_COMMS_DIR` | Overrides the comms directory (singleton socket, `daemon.log`, `http.addr`). Keep the path short: a Unix socket path has a length limit. |
+| `BASEMIND_HTTP_ADDR` | `host:port` for the opt-in HTTP front-end (default `127.0.0.1:51786`; needs `BASEMIND_ALLOW_HTTP`). |
+| `BASEMIND_COMMS_REQUEST_TIMEOUT_SECS` | Seconds a coordination request waits for the broker's reply (default 10). Forwarded work is exempt. |
+| `BASEMIND_COMMS_HANDSHAKE_TIMEOUT_SECS` | Seconds for connect plus `Hello` (default 30; a cold daemon answers only once its store is open). |
+| `BASEMIND_RELAY_REQUEST_TIMEOUT_SECS` | Seconds the `basemind serve` relay waits for the daemon before answering `-32002 backend_timeout` (default 180; `0` disables). |
+| `BASEMIND_COMMS_IDLE_REAP_SECS` / `BASEMIND_COMMS_IDLE_CHECK_SECS` | How long an unused daemon lingers before exiting (default 600) and how often that is checked (default 60). |
 
 Daemon-side knobs that are not config keys (`BASEMIND_WARM_READ_STACKS`, `BASEMIND_CACHE_BUDGET_MB`,
 `BASEMIND_INDEX_CACHE_BYTES`, `BASEMIND_MAX_DAEMONS`, `BASEMIND_NO_AUTOSPAWN`) are listed in

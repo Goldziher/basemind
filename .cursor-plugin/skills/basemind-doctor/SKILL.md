@@ -22,6 +22,7 @@ make sure the index is healthy and clear anything blocking a restart.
 ## 1. Is there an index?
 
 ```sh
+basemind doctor   # root, config, index, grammars, hook, daemon; exits 1 when a check fails
 basemind status
 ```
 
@@ -43,7 +44,7 @@ directory under the machine-global cache (Linux `~/.local/share/basemind/`, macO
 in the repo.
 
 - If that `pid` is **alive** (`ps -p <pid>`), the server is up — use the MCP tools, or the
-  `admin { mode: "rescan" }` to refresh. Don't run a CLI `scan` (it will contend on the lock).
+  `admin { mode: "rescan" }` or `basemind rescan` to refresh. Don't run a CLI `scan` (it will contend on the lock and exit 3).
 - If that `pid` is **dead**, the lock is stale. The OS releases the advisory lock when a process
   dies, so a fresh `basemind scan` / `basemind serve` should just work — retry it. (You may delete
   the stale `.lock.meta` sidecar in that workspace cache dir to clear the advisory holder record.)

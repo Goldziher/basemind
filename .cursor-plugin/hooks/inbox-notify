@@ -41,14 +41,14 @@ HWM="$(tr -cd '0-9' <"$HWM_FILE" 2>/dev/null)"
 
 NEW_LINES="$(printf '%s' "$INBOX_JSON" |
   jq -r --argjson hwm "$HWM" \
-    '.messages[] | select(.ts_micros > $hwm) | "  • [\(.subject)] from \(.from) (id: \(.id))"' \
+    '.messages[] | select(.ts_micros > $hwm) | "  • [\(.subject)] from \(.from) (ref: \(.message_ref // .id))"' \
     2>/dev/null)"
 [ -n "$NEW_LINES" ] || exit 0
 
 # Advance the high-water mark so these messages are not re-injected next turn.
 printf '%s' "$MAXTS" >"$HWM_FILE" 2>/dev/null || true
 
-CONTEXT="New basemind agent-comms message(s) since your last turn (front-matter only — call agents mode message with message_id to read a body):
+CONTEXT="New basemind agent-comms message(s) since your last turn (front-matter only — call agents mode message with the ref to read a body):
 ${NEW_LINES}
 Reply with agents {mode: \"post\", thread: \"…\", subject: \"…\", body: \"…\", reply_to: \"<id>\"} if warranted."
 

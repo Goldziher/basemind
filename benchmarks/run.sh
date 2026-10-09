@@ -47,7 +47,7 @@ STATUS_JSON="$("$BASEMIND_BIN" status --json 2>/dev/null)" || die \
   "'$BASEMIND_BIN status --json' failed; is $REPO_ROOT a basemind-indexed repo?"
 FILE_COUNT="$(echo "$STATUS_JSON" | jq -r '.file_count // 0')"
 if [[ "$FILE_COUNT" -eq 0 ]]; then
-  die "index has 0 files. Run '$BASEMIND_BIN admin scan' first, then re-run this benchmark."
+  die "index has 0 files. Run '$BASEMIND_BIN scan' first, then re-run this benchmark."
 fi
 
 count_tokens() {

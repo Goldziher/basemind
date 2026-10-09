@@ -106,7 +106,8 @@ gold must be non-empty; otherwise the task is listed as withheld. A cheap wrong 
 
 Per mode the report gives the credited distribution (median and p90 of the ratio and of tokens saved) and compares the
 median ratio with what `src/mcp/savings.rs` would assume for the same response (its fixed per-mode multiplier, calibrated
-from this eval: see the constants in that file; 1x "no baseline" for grep and git search). A mode whose measured median
+from this eval: `outline` 1.2x, `symbols` 25x, `references` / `implementations` 1.2x, `docs` 2.5x; 1x, i.e. no saving, for
+`callers`, `dependents`, `find`, `files`, `grep` and `git search`; see the constants in that file). A mode whose measured median
 deviates by more than 25% is flagged `DEVIATES`. The harness only reports; it does not change `savings.rs`, so re-run it
 and update the constants when a response shape changes. A mode whose median is below 1 claims no saving there.
 

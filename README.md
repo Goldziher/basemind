@@ -44,7 +44,7 @@ about your code costs a small fraction of the tokens it takes to read the source
 
 | Capability | What it does | Key tools |
 |---|---|---|
-| **Code intelligence** | Read the code map instead of opening files: a file's structure (`outline`), find a definition by name (`symbols`), regex content search (`grep`), enumerate or fuzzy-find files (`files` · `find`), resolve a reference position to the definition it binds to (`definition` — **scope- and import-aware**, JS/TS via oxc, Python & Java via in-tree [stack-graphs](#how-it-works)), every call site of a name (`references`, name-only) or of one specific definition (`callers`), implementors of a trait / interface / base class (`implementations`), the reverse import lookup (`dependents`), one symbol's raw body (`expand`), and search by meaning over indexed chunks (`semantic` → `chunk`, needs `--features code-search`). Layered over [300+ languages](#how-it-works). | `code` (`outline` · `symbols` · `grep` · `files` · `find` · `definition` · `references` · `callers` · `implementations` · `dependents` · `expand` · `semantic` · `chunk`) |
+| **Code intelligence** | Read the code map instead of opening files: a file's structure (`outline`), find a definition by name (`symbols`), regex content search (`grep`), enumerate or fuzzy-find files (`files` · `find`, documents included), resolve a reference position to the definition it binds to (`definition` — **scope- and import-aware**, JS/TS via oxc, Python & Java via in-tree [stack-graphs](#how-it-works)), every call site of a name (`references`, name-only) or of one specific definition (`callers`), implementors of a trait / interface / base class (`implementations`), the reverse import lookup (`dependents`), one symbol's raw body (`expand`), and search by meaning over indexed chunks (`semantic` → `chunk`, needs `--features code-search`). Layered over [300+ languages](#how-it-works). | `code` (`outline` · `symbols` · `grep` · `files` · `find` · `definition` · `references` · `callers` · `implementations` · `dependents` · `expand` · `semantic` · `chunk`) |
 | **Code graph** | Walk the typed code-graph: who calls what and what a function reaches (`calls`), a symbol's n-hop blast radius (`neighbors`), the confidence-weighted shortest route between two symbols (`path`), a readable centrality-cut neighborhood (`subgraph`), the repo's de-facto modules (`communities`), and the whole-repo architecture ranked by PageRank + git churn with its dependency cycles (`map`). Render it as node-link JSON / DOT / Mermaid / GraphML / Cypher / offline interactive HTML / static SVG (`export`), **show it to a human** in their desktop viewer (`display`), or **open the interactive UI** at a live `http://…/ui` URL (`open`, which needs the daemon's opt-in HTTP front-end and otherwise falls back to a `file://` export) — both take `open: false` to return the path or URL without launching anything. Every edge carries provenance + confidence; every result is deterministic and bounded. | `graph` (`calls` · `neighbors` · `path` · `subgraph` · `communities` · `map` · `export` · `display` · `open`) |
 | **Git intelligence** | Ask what changed recently, who last touched a function or a line, where the churn is, when a symbol's body actually changed, how a file's structure differs across commits, and full-text search commit authors + messages at full branch depth. | `git` (`status` · `recent` · `touching` · `by_path` · `churn` · `diff` · `diff_outline` · `blame` · `blame_symbol` · `symbol_history` · `search`) |
 | **Memory & documents** | A per-repo memory agents write to and search by meaning — clones of the same repo share it, unrelated repos stay separate — plus semantic search over PDFs, Office files, HTML, email, and images (OCR included, no extra setup), and a review queue of notes mined from files that change together, which you approve before anything is kept. | `memory` (`put` · `get` · `list` · `search` · `delete` · `audit` · `documents` · `mine` · `proposals` · `accept` · `reject`) |
@@ -227,8 +227,11 @@ then register it:
 }
 ```
 
-Each tool says whether it only reads or can change things, so your client can auto-approve the safe
-ones and ask before the rest. If `basemind` isn't found, use the full path from `which basemind`.
+Each tool has a title and says whether it only reads or can change things, so your client can
+auto-approve the safe ones and ask before the rest. The server also exposes four on-demand MCP
+resources whose bodies equal the matching tool result: `basemind://status`, `basemind://repo/map`,
+`basemind://outline/{path}` and `basemind://memory/{key}`. If `basemind` isn't found, use the full path
+from `which basemind`.
 
 <details>
 <summary><strong>Per-tool specifics</strong> (Claude Code · Cursor · Windsurf · Codex · Gemini · Copilot · Droid · Cline · Continue · OpenCode · Hermes)</summary>
@@ -300,8 +303,8 @@ commands — from the repo root. It's re-runnable and safe to call again later:
 - Writes a commented `basemind.toml` scaffold at the repo root, if one doesn't already exist.
 - Lets you pick which capabilities to advertise (interactive prompt in a TTY, or non-interactive
   with `--yes`, `--with <capability>`, `--without <capability>`). Capability slugs:
-  `code-search-navigation`, `code-mapping-architecture`, `git-history`, `agent-comms`,
-  `documents-rag`, `semantic-search`.
+  `code-search-navigation`, `code-mapping-architecture`, `git-history`, `file-finding`, `agent-comms`,
+  `worktree-coordination`, `documents-rag`, `semantic-search`.
 - Injects a "prefer basemind over grep/read/git" rules block. By default it never writes a committed
   file unasked: with `.ai-rulez/config.toml` present it writes the gitignored
   `.ai-rulez/local/rules/basemind-usage.md`; otherwise a terminal run asks, defaulting to the
@@ -390,7 +393,8 @@ The code map is **code only**. Prose, data and config files — Markdown, reStru
 vimdoc, CSV, JSON, YAML, TOML, INI, XML, `.properties`, `.env`, diffs, `.gitignore`/`.gitattributes`
 and Fluent — go to the document tier instead: they are chunked and searched as text with `memory`
 mode `documents` (gated by `[documents] include` / `exclude`), and no longer show up as symbols in
-`code` modes `outline`, `symbols` and `grep`. An existing index migrates on its next scan. A build
+`code` modes `outline`, `symbols` and `grep`. `files` and `find` still cover them, labelled by
+grammar name or extension. An existing index migrates on its next scan. A build
 without the `documents` feature keeps the old behaviour, where those files are outlined as code.
 
 ```mermaid
@@ -519,7 +523,20 @@ tools and different repos on the same machine. Agents coordinate in **threads** 
 at least two of subject / path-glob / members, discovered by scope rather than joined globally — and
 each has a personal **inbox**. Messages come in two parts: a short headline (subject and sender)
 that's cheap to skim, and the full body, fetched only when an agent wants to read it. An agent never
-sees its own posts in its inbox. Idle threads auto-archive.
+sees its own posts in its inbox. Idle threads auto-archive. `wait` blocks for 30 seconds by default
+(at most 40) and ends early when the client cancels the request.
+
+The client–daemon protocol is version 4: the daemon serves it on an 8-worker async runtime, and
+every request carries an id, so replies are matched to
+requests and most calls have a deadline (`BASEMIND_COMMS_REQUEST_TIMEOUT_SECS`, 10 s;
+`BASEMIND_COMMS_HANDSHAKE_TIMEOUT_SECS`, 30 s). After an upgrade, run `basemind comms stop` so the
+old daemon is replaced. A `post` can carry an `idempotency_key`: a retry with the same key returns the
+original message id instead of storing a duplicate (keys are remembered for an hour, and generated when
+omitted). The stdio relay replays read-only requests and keyed posts once if the daemon restarts
+underneath it, instead of failing the call, and fails a request that outlives
+`BASEMIND_RELAY_REQUEST_TIMEOUT_SECS` (180 s). Other tool responses carry a short notice when you have
+unread messages. A detached daemon logs to a size-rotated `<comms_dir>/daemon.log`, which
+`basemind comms doctor` shows.
 
 The plugin makes sure agents notice messages without being asked — through the built-in instructions,
 a notice at session start and each turn, and a quiet background check every few seconds.
@@ -968,7 +985,7 @@ reconnect, and `scan_threads` is fixed for the process lifetime (the daemon logs
 required). `admin status` reports `config_stamp` (`<bytes>B@<unix seconds>`) to spot an edit.
 
 **Reserved keys.** These parse but nothing reads them yet, and setting one to a non-default value
-logs a warning: `[watch] live_l2`, `[cache] file_map_lru`, `[memory] enabled` /
+logs a warning: `[watch] live_l2`, `[cache] file_map_lru`, `[mcp] transport`, `[memory] enabled` /
 `scope_strategy` / `default_visibility`, `[comms] enabled` / `idle_timeout_secs` /
 `max_messages_per_room` / `retention_secs` / `max_rooms` / `workspace_root`, `[shells] keep_on_exit`,
 `[documents.ocr] backend` / `languages`, and `[documents.language] preferred_languages`.
@@ -991,7 +1008,8 @@ files that became eligible from the cached blobs, without re-embedding.
 <details>
 <summary><strong>Full command list</strong> — code · graph · git · memory · admin · cache · web · agents · workspace · shell</summary>
 
-CLI commands mirror the MCP tools 1:1 (enforced by `tests/cli_parity/`). Add `--json` for
+Every MCP tool mode maps to a CLI command, or is declared CLI-only / MCP-only with a reason (enforced
+by `tests/cli_parity/`). Add `--json` for
 machine-readable output (the same response types the MCP tools return, including `agents` and
 `workspace`). Human output prints source bodies, diffs and exports in full; only table cells are cut
 (to 200 characters, with a note on stderr), and the timing line goes to stderr. List commands take
@@ -1092,7 +1110,7 @@ The other former `admin` verbs live at the top level: `status`, `rescan`, `cache
 |---|---|
 | `stats` | Disk footprint (per-component + total, matches `du`) and process RAM. |
 | `gc [--dry-run]` | Reap blobs no workspace on the machine references. Cross-workspace reference-counted, keeps blobs younger than 6 h (`BASEMIND_BLOB_GC_GRACE_SECS`), serialised by a machine-wide lock. `--dry-run` only counts the blobs in the store and deletes nothing. |
-| `clear --component <comp> [--yes]` | Clear part of the cache (`views`, `blobs`, `git-cache`, `all`, …). Everything but `git-cache` asks for confirmation on a terminal and needs `--yes` otherwise. `blobs` is the **machine-global** store shared by every workspace. Refuses (exit 3) while a writer holds the workspace lock, and for `blobs` while the daemon runs. |
+| `clear --component <comp> [--yes]` | Clear part of the cache (`blobs`, `views`, `views:<name>`, `lance`, `git-cache`, `telemetry`, `all`; default `git-cache`). Everything but `git-cache` asks for confirmation on a terminal and needs `--yes` otherwise. `blobs` is the **machine-global** store shared by every workspace. Refuses (exit 3) while a writer holds the workspace lock, and for `blobs` while the daemon runs. |
 
 **Web (`basemind web`)**
 
@@ -1146,7 +1164,8 @@ Every command takes `--as-agent <ID>` to act as a named sub-identity.
 
 | Command | Purpose |
 |---|---|
-| `scan` / `rescan <path>` | Full scan / update one path. |
+| `scan [--staged \| --rev <REV>] [--no-git-history] [--rebuild-git-history]` | Full scan, or index the git index / one revision. Ctrl-C stops it cleanly. |
+| `rescan [<path>…] [--full] [--no-git-history] [--rebuild-git-history]` | Update the given paths, or the whole tree. Routed through the daemon when one runs. |
 | `status` | Index health for this workspace: file counts, languages, scan age. |
 | `doctor` | Check root, config, index, grammars, pre-commit hook and daemon; exits 1 on a failed check. |
 | `completions <shell>` / `man` | Print a shell completion script (`bash`, `zsh`, `fish`, `elvish`, `powershell`) / the man page (roff) to stdout. |
@@ -1158,7 +1177,7 @@ Every command takes `--as-agent <ID>` to act as a named sub-identity.
 | `lang <list\|install\|clean>` | Manage downloaded language grammars. |
 | `hook install [--force]` | Add a git pre-commit hook that runs `basemind scan --staged`. Honours `core.hooksPath`, works in linked worktrees, never blocks a commit, and refuses to overwrite a hook it did not write unless `--force` (the old one is kept as `pre-commit.bak`). |
 | `compress-output` / `delta --old <path> [--new <path>]` | Backends for the optional guardrails above. |
-| `checkpoint` / `detect-waste [--log <path>]` | Summarize a session / flag wasteful tool use. |
+| `checkpoint` / `detect-waste [--log <path>]` | Summarize session text from stdin / flag wasteful tool use from a JSON-Lines log. |
 
 <!-- markdownlint-enable MD013 -->
 

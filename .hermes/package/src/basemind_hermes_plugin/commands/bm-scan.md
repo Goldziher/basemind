@@ -6,8 +6,8 @@ argument-hint: [path]
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:9dcec864744e510480745eb2d0ccdcf9ae34e9cf8f7c1ef9094bb5c27215969f
-Source-Hash: blake3:2eee3eb4fe8e0cd3029634e4a8728976df0cff767bc90ab2516dadd0565fcd0d
+Content-Hash: blake3:8ab1a7f320d8915e6b15699eccfe4ac4317a7369ea572e5781b738d5caa12c41
+Source-Hash: blake3:36dad38afc8a716a210a7f724cc29942cc9ef1d96e5f9ea2e9bc8e4cb2eeb8b7
 Schema-Version: v1
 -->
 
@@ -37,7 +37,7 @@ basemind scan ${ARGUMENTS:-}
 - Report files scanned / updated / skipped and elapsed time. Non-extractable files are
   **skipped**, not failures.
 - If a `basemind serve` MCP server already holds the store lock for this repo, `scan` errors on
-  the lock — use `admin { mode: "rescan" }` over MCP instead, or stop the server first.
+  the lock — use `basemind rescan [path…]` (forwards to the running daemon) or `admin { mode: "rescan" }` over MCP instead (lock errors exit 3).
 
 ## See also
 

@@ -31,6 +31,26 @@ pointers, not source. `git recent` shows what happened (commits + file list), no
 See [How it works](/concepts/how-it-works/) to understand how basemind builds the map that makes
 this possible.
 
+## How savings are estimated
+
+The saved-token figure in `admin telemetry` and the statusline is an estimate, not a measurement of
+your session. For each call, basemind counts the response tokens and multiplies them by a fixed
+per-mode factor modelling what a `grep` plus file reads would have cost:
+
+| Mode | Factor |
+|---|---|
+| `code symbols` | 25x |
+| `code outline`, `code references`, `code implementations` | 1.2x |
+| `memory documents` | 2.5x |
+| `web scrape` / `crawl` / `map` | 3x |
+| `git symbol_history` | 4x |
+| `git churn` | 3x |
+| `code callers`, `dependents`, `find`, `files`, `grep`, graph modes, other git and admin modes | 1x (no saving claimed) |
+
+The factors are calibrated from medians measured by `basemind admin eval` (see
+[Evaluation](/reference/evaluation/)); a mode where basemind did not beat its baseline claims 1x.
+Treat the total as an order of magnitude.
+
 ## Good habits the plugin sets up
 
 The plugin nudges agents toward the cheap path by default:

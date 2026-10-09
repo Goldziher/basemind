@@ -25,6 +25,12 @@ nine groups (`basemind <domain> <mode>`).
 | `memory` mode `documents` / `web` modes `scrape` / `crawl` / `map` | manually reading PDFs / docs or ad-hoc fetching |
 | `code` mode `semantic` | keyword-only guessing at where a concept lives |
 
+The code map is code-only; markdown, JSON, YAML, TOML and other prose/config/data files are a separate
+document tier (search them with `memory` mode `documents`; `code` modes `files` and `find` list them,
+`outline`/`grep`/`symbols` do not). MCP resources `basemind://status`, `basemind://repo/map`,
+`basemind://outline/{path}` and `basemind://memory/{key}` expose the same data as `admin` `status`,
+`graph` `map`, `code` `outline` and `memory` `get`.
+
 ### Red flags — stop and re-route
 
 - About to `grep` / `rg`? → `code grep`.

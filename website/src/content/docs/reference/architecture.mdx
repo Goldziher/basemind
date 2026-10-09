@@ -267,6 +267,8 @@ Tool conventions:
 - **Index scans**: internally use `scan_cap = limit * 8` (at least 2000) to bound work on common names
 - **Descriptions**: state matching semantics (substring vs. prefix, scope-aware vs. name-only)
 - **Stability**: new fields are additive with `#[serde(default)]`
+- **Annotations**: every tool has a title and read-only / destructive / idempotent / open-world hints, coarsened to the union of its modes
+- **Resources**: `basemind://status`, `basemind://repo/map`, `basemind://outline/{path}` and `basemind://memory/{key}` re-expose tool output on demand (see [MCP tools](/reference/mcp-tools/#mcp-resources))
 
 Tool bodies live in `src/mcp/helpers*.rs` (sliced by area: `helpers_documents.rs`, `helpers_calls.rs`, `helpers_graph.rs`, etc.); `src/mcp/tools*.rs` contain only thin `#[tool]` shims.
 
@@ -279,6 +281,8 @@ The background daemon (singleton per user) manages agent communication and share
 - **Registry**: tracks active workspaces, worktrees, and advisory branch claims for collision detection
 - **Memory**: namespaced by `(scope, visibility, owner)` — group memory is shared, individual memory is private to one agent
 - **Vectors**: LanceDB stores embeddings for memory + document search
+
+The broker protocol (version 4) correlates every request after the handshake with a reply id, bounds every wait (10 s for requests, 30 s for the handshake, 180 s in the stdio relay), runs all store access off the async workers (`spawn_blocking`, with a write gate for mutations), and deduplicates keyed posts for an hour. On Unix the daemon accepts connections before its store opens and answers only `Ping` until it does. After a backend restart the relay re-sends reads and keyed posts once and fails everything else with a retryable error. The detached daemon logs to `daemon.log` (rotated at 8 MiB). See [Agent coordination](/concepts/agent-comms/#reliability) and ADR-0013.
 
 Why a daemon? Content-addressed blobs and a single Fjall writer are the key wins: all repos/worktrees on one machine share blob deduplication, and N sessions can read concurrently from a single index without downgrade-to-read-only issues. The daemon is the sole Fjall writer and enforces this via socket-bind-as-lock (singleton enforcement).
 

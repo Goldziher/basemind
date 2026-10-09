@@ -6,13 +6,52 @@ basemind keeps its index in a machine-global cache (`BASEMIND_DATA_HOME`, defaul
 workspace. An upgrade never asks you to wipe it. This page says what happens to the old shape and what
 is cleaned up.
 
+## Upgrading from 0.28 to 0.29
+
+0.29 bumps the release minor, so the first scan rebuilds the index, and it reshapes the CLI.
+
+1. Stop the old daemon before the first scan: `basemind comms stop` (add `--all` to stop every daemon
+   on the machine). Otherwise the previous binary's daemon keeps running with the old schema and
+   still owns the index.
+2. Run `basemind scan`. Each view's `index.msgpack` and Fjall index are reset on open and every file is
+   re-extracted, overwriting stale blobs in place; the git cache refills lazily. The LanceDB document
+   tables and the blob store are not wiped, and the scan's cleanup pass reclaims orphaned blobs.
+   Expect a full-scan duration once.
+3. Re-run `basemind hook install`. The new hook honours `core.hooksPath` and linked worktrees, fails
+   open, and it will not overwrite a pre-commit hook it did not write unless you pass `--force` (the
+   old one is kept as `pre-commit.bak`).
+4. Update scripts for the renamed commands. No aliases remain:
+
+| 0.28 | 0.29 |
+| --- | --- |
+| `admin status` | `status` |
+| `admin rescan` | `rescan` |
+| `admin cache-stats` | `cache stats` |
+| `admin gc` | `cache gc` (deletes; `--dry-run` reports) |
+| `admin cache-clear` | `cache clear` (needs `--yes` outside a terminal) |
+| `admin delta` | `delta` |
+| `admin checkpoint` | `checkpoint` |
+| `admin waste` | `detect-waste` |
+| `graph map --include-churn` | `graph map --no-churn` |
+| `serve --git-cache-mem`, `--no-git-cache-disk`, `--no-watch`, `--documents-*` | removed (`serve` takes no flags) |
+
+Also check scripts for these behaviour changes:
+
+- Exit codes are `0` ok, `1` error, `2` usage, `3` writer lock held, `4` daemon unreachable, `130`
+  interrupted. `scan` and `rescan` exit `3` (not `0`) when another process holds the lock.
+- The timing footer is on stderr; stdout carries only the answer. Human output no longer truncates
+  values to 200 characters.
+- `--format` on `code semantic` and `memory documents` takes only `json` or `toon`.
+- `agents` and `workspace` `--json` now use the MCP response shapes.
+- MCP logging is gone, and the `memory` tool no longer accepts the `documents.*` / `llm.*` override fields.
+
 ## What changes on upgrade, and how it migrates
 
 | Change | Mechanism | Cost |
 | --- | --- | --- |
 | Prose, data and config files (markdown, json, yaml, toml, xml, csv, ini, ...) left the code map for the document tier | The next scan, full or incremental, notices a path indexed in the other tier, purges its code-map rows (file map, fjall `files` / calls / implementations / resolved / bm25 entries, code-search chunks) and indexes it as a document | Documents are chunked, and embedded when `[documents] embed` is on |
 | Symbol `signature` now ends at the grammar's body field instead of embedding the body | `EXTRACT_EPOCH` (see below): only files whose entry or blob predates the epoch are re-extracted, in the normal bounded scan | One parse per affected file, no wipe |
-| Release-minor schema bump (`0.27.x` to `0.28.x`) | `RELEASE_MINOR` mismatch: each view's `index.msgpack` and fjall index are reset on open and every file is re-extracted, overwriting stale blobs in place | Full re-extraction, by design |
+| Release-minor schema bump (`0.28.x` to `0.29.x`) | `RELEASE_MINOR` mismatch: each view's `index.msgpack` and fjall index are reset on open and every file is re-extracted, overwriting stale blobs in place | Full re-extraction, by design |
 | `grep_bloom` index keyspace (per-file trigram bloom for `code grep`) | A new keyspace, so `INDEX_SCHEMA_VER` is not bumped. An index without it opens with an empty `grep_bloom` and greps correctly at once (every file is a candidate); the next scan builds the rows from the bytes it reads, and an unchanged file with no row is read once to backfill it | One read per unchanged file, once; about 12.8 % of the indexed code bytes on disk |
 | Resident term index, name dictionaries, heap retag | In memory only. Nothing on disk, nothing to migrate | none |
 | `[resources] onnx_provider` defaults to `cpu` | Behaviour only: models load on the CPU provider instead of the platform default (CoreML on macOS). Set `onnx_provider = "auto"` to restore it. No on-disk change | none |

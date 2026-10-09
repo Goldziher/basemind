@@ -10,8 +10,8 @@ description: >-
 # basemind-code-search — navigate code without reading it
 
 basemind pre-indexes the repo into a tree-sitter code map across 300+ languages. The map holds
-**code only**: markdown, JSON, YAML, TOML, XML, CSV, INI and `.env` files are documents, so none of
-the modes below sees them (`outline` on one errors "file not indexed") — search them with `memory`
+**code only**: markdown, JSON, YAML, TOML, XML, CSV, INI and `.env` files are documents, so no content mode below
+sees them (`outline` on one errors "file not indexed"; `files` and `find` still list them) — search them with `memory`
 mode `documents` (see `basemind-documents`) or just Read them. Structural
 questions — where a symbol lives, what calls it, what shape a file has — resolve from the index in
 milliseconds and return **paths, line numbers, and signatures, not file bodies**. That is a fraction
