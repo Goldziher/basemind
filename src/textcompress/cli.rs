@@ -56,15 +56,18 @@ pub fn run(args: &CompressOutputArgs) -> Result<()> {
 
 /// Arguments for `basemind delta`.
 ///
-/// The NEW content is read from stdin; the OLD content is read from the
-/// `--old` file path. The stateless [`delta`] primitive emits a compact
+/// The OLD content is read from the `--old` file path; the NEW content from the `--new` file path, or
+/// stdin when that is omitted. The stateless [`delta`] primitive emits a compact
 /// `+N/-M` line-diff (or a full-content bail marker on oversize input).
 #[derive(clap::Args, Debug)]
 pub struct DeltaArgs {
     /// Path to the OLD (previously seen) content. The NEW content is read from
     /// stdin.
-    #[arg(long)]
+    #[arg(long, value_name = "FILE")]
     pub old: std::path::PathBuf,
+    /// Path to the NEW content. Read from stdin when omitted.
+    #[arg(long, value_name = "FILE")]
+    pub new: Option<std::path::PathBuf>,
 }
 
 /// Read the OLD content from `--old` and the NEW content from stdin, run the
@@ -75,10 +78,16 @@ pub fn run_delta(args: &DeltaArgs) -> Result<()> {
     let old_raw = std::fs::read(&args.old).with_context(|| format!("read old content from {}", args.old.display()))?;
     let old = String::from_utf8_lossy(&old_raw);
 
-    let mut new_raw = Vec::new();
-    std::io::stdin()
-        .read_to_end(&mut new_raw)
-        .context("read new content from stdin")?;
+    let new_raw = match &args.new {
+        Some(path) => std::fs::read(path).with_context(|| format!("read new content from {}", path.display()))?,
+        None => {
+            let mut raw = Vec::new();
+            std::io::stdin()
+                .read_to_end(&mut raw)
+                .context("read new content from stdin")?;
+            raw
+        }
+    };
     let new = String::from_utf8_lossy(&new_raw);
 
     let outcome = delta(old.as_ref(), new.as_ref());
@@ -167,7 +176,11 @@ fn changed_files(root: &std::path::Path) -> Vec<String> {
 /// A JSON-Lines log of tool invocations is read from stdin; the analysis is
 /// pure (no repo root needed) and never executes anything.
 #[derive(clap::Args, Debug)]
-pub struct DetectWasteArgs {}
+pub struct DetectWasteArgs {
+    /// File holding the JSON-Lines log. Read from stdin when omitted.
+    #[arg(long, value_name = "FILE")]
+    pub log: Option<std::path::PathBuf>,
+}
 
 /// Read a JSON-Lines tool-call log from stdin, leniently parse it (malformed or
 /// `tool`-less lines are skipped), run the pure
@@ -175,9 +188,15 @@ pub struct DetectWasteArgs {}
 /// [`WasteReport`](super::waste::WasteReport) as pretty JSON to stdout, and a
 /// one-line stat to stderr. stdin is read lossily so non-UTF-8 content never
 /// aborts the pipe.
-pub fn run_detect_waste(_args: &DetectWasteArgs) -> Result<()> {
-    let mut raw = Vec::new();
-    std::io::stdin().read_to_end(&mut raw).context("read stdin")?;
+pub fn run_detect_waste(args: &DetectWasteArgs) -> Result<()> {
+    let raw = match &args.log {
+        Some(path) => std::fs::read(path).with_context(|| format!("read log from {}", path.display()))?,
+        None => {
+            let mut raw = Vec::new();
+            std::io::stdin().read_to_end(&mut raw).context("read stdin")?;
+            raw
+        }
+    };
     let text = String::from_utf8_lossy(&raw);
 
     let calls = parse_calls(text.as_ref());

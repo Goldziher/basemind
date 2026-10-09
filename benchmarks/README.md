@@ -56,7 +56,7 @@ build) that this round didn't set up — left for a follow-up.
    (`--features documents` also includes `tokenizer`, plus real semantic/document search —
    see the note below on why that's not what the example tasks use.)
 
-2. **The index must be populated.** `run.sh` calls `basemind admin status --json` and fails
+2. **The index must be populated.** `run.sh` calls `basemind status --json` and fails
    fast with a clear message if `file_count` is `0`. Populate it once with:
 
    ```sh

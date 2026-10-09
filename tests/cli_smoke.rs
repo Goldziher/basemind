@@ -131,11 +131,11 @@ fn admin_status_reports_file_count() {
     let root = dir.path();
     let v = assert_json_fields(
         root,
-        &["admin", "status"],
+        &["status"],
         &["file_count", "total_size_bytes", "languages", "schema_version"],
     );
     assert_eq!(v["file_count"], 2);
-    assert_human_contains(root, &["admin", "status"], "file_count");
+    assert_human_contains(root, &["status"], "file_count");
 }
 
 #[test]
@@ -181,7 +181,7 @@ fn rescan_full_reindexes_new_file() {
 
     let search = assert_json_fields(root, &["code", "symbols", "delta"], &["total", "results"]);
     assert_eq!(search["total"], 1, "rescan --full must index the new symbol");
-    let status = assert_json_fields(root, &["admin", "status"], &["file_count"]);
+    let status = assert_json_fields(root, &["status"], &["file_count"]);
     assert_eq!(status["file_count"], 3, "rescan --full must index the new file");
 }
 

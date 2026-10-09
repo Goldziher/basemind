@@ -53,8 +53,8 @@ raw shell only when no tool covers the question.
 | "Show one symbol's body" | `code { mode: "expand", path: F, name }` | `basemind code expand F name` |
 | "Find code by meaning?" | `code { mode: "semantic", query }`, then `code { mode: "chunk", path, chunk_id }` | `basemind code semantic "q"` |
 | "Regex over file contents?" | `code { mode: "grep", pattern: "…" }` | `basemind code grep "pattern" [--language --path-contains]` |
-| "What's indexed?" | `admin { mode: "status" }` | `basemind admin status` |
-| "Refresh the index after editing?" | `admin { mode: "rescan", paths: […] }` | `basemind admin rescan [path…]` |
+| "What's indexed?" | `admin { mode: "status" }` | `basemind status` |
+| "Refresh the index after editing?" | `admin { mode: "rescan", paths: […] }` | `basemind rescan [path…]` |
 | "Fetch the next page?" | pass `next_cursor` from the prior response as `cursor` | — |
 
 ## Examples

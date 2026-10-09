@@ -64,7 +64,7 @@ basemind graph neighbors <name> [--path --direction --depth --edges --min-confid
 basemind graph path <from> <to> [--from-path --to-path --edges --include-contains --min-confidence]
 basemind graph subgraph <name> [--path --depth --edges --min-confidence --max-nodes]
 basemind graph communities [--edges --algorithm --min-confidence --max-communities --members-per-community]
-basemind graph map [--granularity --focus --depth --edges --include-churn --churn-window --max-nodes --max-edges --max-tokens]
+basemind graph map [--granularity --focus --depth --edges --no-churn --churn-window --max-nodes --max-edges --max-tokens]
 basemind graph export [--format --focus --edges --algorithm --min-confidence --max-nodes --max-edges --write]
 basemind graph display [--format --focus --edges --algorithm --min-confidence --max-nodes --max-edges --no-open]
 basemind graph open [--format --focus --edges --algorithm --min-confidence --max-nodes --max-edges --no-open]
@@ -77,7 +77,7 @@ basemind graph open [--format --focus --edges --algorithm --min-confidence --max
 | `path <from> <to> [--from-path --to-path --edges --include-contains --min-confidence]` | Confidence-weighted shortest path between two symbols. Containment edges excluded unless `--include-contains`. |
 | `subgraph <name> [--path --depth --edges --min-confidence --max-nodes]` | A symbol's neighborhood cut to its most central nodes. |
 | `communities [--edges --algorithm --min-confidence --max-communities --members-per-community]` | Cluster the graph into de-facto modules. `--algorithm` is `label_propagation` (default) or `louvain`. |
-| `map [--granularity --focus --depth --edges --include-churn --churn-window --max-nodes --max-edges --max-tokens]` | Whole-repo architecture: hub modules by centrality, plus dependency cycles. |
+| `map [--granularity --focus --depth --edges --no-churn --churn-window --max-nodes --max-edges --max-tokens]` | Whole-repo architecture: hub modules by centrality, plus dependency cycles. |
 | `export [--format --focus --edges --algorithm --min-confidence --max-nodes --max-edges --write]` | Render as `node_link`/`dot`/`mermaid`/`graphml`/`cypher`/`html`/`svg`. `--write` also caches the export and prints its path. |
 | `display [--format --focus --edges --algorithm --min-confidence --max-nodes --max-edges --no-open]` | Render a visual view and open it in your default desktop viewer; `--no-open` only writes + prints the path. |
 | `open [--format --focus --edges --algorithm --min-confidence --max-nodes --max-edges --no-open]` | Return a live browsable URL for the interactive graph page (a `file://` export when no daemon is serving). |
@@ -144,37 +144,24 @@ basemind memory reject <id> [--reason]
 | `accept <id> [--key]` | Accept a proposal into memory. |
 | `reject <id> [--reason]` | Reject a proposal. |
 
-## `admin` — server + cache administration
+## `admin` — server administration
 
 ```bash
-basemind admin status
 basemind admin repo
-basemind admin rescan [PATH...] [--full]
-basemind admin cache-stats
-basemind admin gc
-basemind admin cache-clear [--component --confirm]
-basemind admin telemetry [--window --tool]
-basemind admin compress [--path --text --level --target-tokens --no-preserve-code]
-basemind admin delta --old <FILE> [--new <FILE>]
-basemind admin checkpoint [--text]
-basemind admin waste [--log <FILE>]
+basemind admin telemetry [--window today|1h|24h|all] [--tool]
+basemind admin compress [--path --text --level off|light|moderate|aggressive|maximum --target-tokens --no-preserve-code]
 basemind admin tokens --stdin
 basemind admin eval --tasks <FILE> [--out --report --markdown --baseline --tolerance --cost-tolerance --min-recall --warmup --mode]
 ```
 
+The rest of the former `admin` verbs live at the top level: `status`, `rescan`, `cache stats|gc|clear`, `delta`,
+`checkpoint` and `detect-waste` (see [Other commands](#other-commands)).
+
 | Command | Purpose |
 |---|---|
-| `status` | Index health for this workspace: file counts, languages, scan age. |
 | `repo` | Repository identity: workdir, branch, HEAD sha. |
-| `rescan [PATH...] [--full]` | Re-index changed files, or the whole workspace when no paths are given. |
-| `cache-stats` | On-disk size, blob accounting and process RAM for the machine-global cache. |
-| `gc` | Report blobs no live view references — non-destructive, deletes nothing (same as the MCP `admin` mode `gc`). To reclaim them use `basemind cache gc`. |
-| `cache-clear [--component --confirm]` | Delete this workspace's cached index outright. |
 | `telemetry [--window --tool]` | Aggregate recorded tool calls into a usage and token-savings summary. |
-| `compress [--path --text --level --target-tokens --no-preserve-code]` | Shrink a prior response for re-use in a smaller context: an indexed file's outline, or a prose pass read from `--text`/stdin. |
-| `delta --old <FILE> [--new <FILE>]` | What changed since a named checkpoint — a compact `+N/-M` line diff. `--new` defaults to stdin. |
-| `checkpoint [--text]` | Name the current response so a later delta can diff against it. Reads stdin when `--text` is omitted. |
-| `waste [--log <FILE>]` | Flag repeated or redundant tool calls in a JSON-Lines tool-call log. Reads stdin when `--log` is omitted. |
+| `compress [--path --text --level --target-tokens --no-preserve-code]` | Shrink content for re-use in a smaller context: an indexed file's outline, or a prose pass read from `--text`/stdin. |
 | `tokens --stdin` | Count tokens in stdin with the o200k tokenizer and print just the integer (needs the `tokenizer` feature, which `documents` includes). CLI-only; no `--json` envelope. |
 | `eval --tasks <FILE> [...]` | Score retrieval quality, latency and token savings over a JSONL task file. CLI-only; see [Evaluation](/reference/evaluation/). |
 
@@ -316,17 +303,23 @@ basemind comms doctor [--probe]
 basemind scan [--staged | --rev <REV>] [--no-git-history --rebuild-git-history]
 basemind rescan [PATH...] [--full --no-git-history --rebuild-git-history]
 basemind watch
-basemind serve [--git-cache-mem --no-git-cache-disk --no-watch]
+basemind serve
+basemind status
+basemind doctor
+basemind completions <bash|zsh|fish|elvish|powershell>
+basemind man
 basemind init [--yes --with --without --rules-target --settings-target --config-dir .config|.config/basemind --no-rules --no-usage-rules --no-setup-notes --print]
 basemind lang list|install|clean
-basemind hook install
-basemind cache gc|stats|clear [--component]
+basemind hook install [--force]
+basemind cache stats
+basemind cache gc [--dry-run]
+basemind cache clear [--component]
 basemind daemon ensure
 basemind statusline
 basemind compress-output [--family]
-basemind delta --old <FILE>
+basemind delta --old <FILE> [--new <FILE>]
 basemind checkpoint
-basemind detect-waste
+basemind detect-waste [--log <FILE>]
 ```
 
 | Command | Purpose |
@@ -334,22 +327,26 @@ basemind detect-waste
 | `scan [--staged \| --rev <REV>] [--no-git-history --rebuild-git-history]` | Full index of the project. `--staged` indexes the git index instead of the working tree; `--rev` indexes a revision into a separate `rev-<sha7>` view. |
 | `rescan [PATH...] [--full --no-git-history --rebuild-git-history]` | Update one or more paths incrementally, or the whole tree with `--full`. |
 | `watch` | Long-running watcher; keeps the code map current as files change (no server). |
-| `serve [--git-cache-mem --no-git-cache-disk --no-watch]` | Ensure the daemon is up and relay this process's stdio to it as the MCP server. Default keeps the index fresh; `--no-watch` disables auto-refresh. |
+| `serve` | Ensure the daemon is up and relay this process's stdio to it as the MCP server. The daemon keeps the index fresh. |
+| `status` | Index health for this workspace: file counts, languages, scan age. |
+| `doctor` | Check root, config, index, grammars, pre-commit hook and daemon; exits 1 when a check fails. |
+| `completions <shell>` | Print a shell completion script to stdout. |
+| `man` | Print the man page (roff) to stdout. |
 | `init [--yes --with --without --rules-target --settings-target --config-dir --no-rules --no-usage-rules --no-setup-notes --print]` | Re-runnable onboarding: write `basemind.toml`, select capabilities, inject usage rules into a gitignored local rules file by default, optionally auto-approve basemind's tools in Claude Code settings. See [Get started](/start/installation/#get-started). |
 | `lang list\|install\|clean` | Manage downloaded tree-sitter grammars. `install` also fetches every grammar marked `preload = true` under `[languages.<name>]`. |
-| `hook install` | Add a git pre-commit hook that runs `basemind scan --staged`. |
-| `cache gc\|stats\|clear [--component]` | Offline path directly against the machine-global cache. `gc` runs the real cross-workspace reference-counted sweep (blobs younger than six hours are kept; `BASEMIND_BLOB_GC_GRACE_SECS` overrides) and prints what it removed. `clear` is the only way to clear `views`/`all`, which `admin cache-clear` refuses because they back the live index. |
+| `hook install [--force]` | Add a git pre-commit hook that runs `basemind scan --staged`. Honours `core.hooksPath`, works in linked worktrees, never blocks a commit, and refuses to replace a hook basemind did not write unless `--force` (the old one is kept as `pre-commit.bak`). |
+| `cache stats`, `cache gc [--dry-run]`, `cache clear [--component]` | Offline path directly against the machine-global cache. `gc` runs the real cross-workspace reference-counted sweep (blobs younger than six hours are kept; `BASEMIND_BLOB_GC_GRACE_SECS` overrides) and prints what it removed. `clear` is the only way to clear `views`/`all`, which the MCP `admin` `cache_clear` mode refuses because they back the live index. `gc --dry-run` only counts blobs and deletes nothing. |
 | `daemon ensure` | Ensure the daemon's streamable-HTTP MCP transport is up; idempotent. Needs `--features comms`. |
 | `statusline` | Print a one-line summary of the daemon's hot workspaces, for a shell statusline. Silent and exits 0 when no daemon is running. |
 | `compress-output [--family]` | Backend for the output-compression guardrail: compress stdin (e.g. piped command output) by detected or given family. |
-| `delta --old <FILE>` | Backend for the delta-reads guardrail: diff the `--old` file against stdin, emitting a compact `+N/-M` line diff. |
+| `delta --old <FILE> [--new <FILE>]` | Backend for the delta-reads guardrail: diff the `--old` file against `--new` (stdin when omitted), emitting a compact `+N/-M` line diff. |
 | `checkpoint` | Extract decisions/errors/changed-files from session text on stdin into a JSON checkpoint. |
 | `detect-waste` | Flag wasteful tool use from a JSON-Lines tool-call log on stdin. |
 
 <Aside type="note">
 Global flags (`--root`, `--quiet`, `--verbose`, `--no-color`, `--json`, `--view`) apply across all
 subcommands, though `--json` and `--view` only take effect on the tool subcommands (`code`, `git`,
-`graph`, `memory`, `web`, `admin`, `cache`, and — with `--features comms` — `comms`, `agents`,
+`graph`, `memory`, `web`, `admin`, `status`, `cache`, `doctor`, and — with `--features comms` — `comms`, `agents`,
 `workspace`, `daemon`; and with `--features shells` — `shell`). Cursor-based pagination
 (`--cursor`) is exposed on `agents history`, `agents inbox`, and `agents wait`.
 </Aside>

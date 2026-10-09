@@ -29,7 +29,7 @@ make sure the index is healthy and clear anything blocking a restart.
 ## 1. Is there an index?
 
 ```sh
-basemind admin status
+basemind status
 ```
 
 - Errors / "no index" / `file_count: 0` with blobs present → the index is missing or lost. Build

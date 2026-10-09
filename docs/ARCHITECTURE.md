@@ -547,16 +547,14 @@ Conventions:
 `gix`-backed log, blame, diff, and status. The git cache at
 `<cache>/cache/workspaces/<workspace_key>/git-cache/` has two tiers:
 
-- An in-process LRU (1024 entries per category by default; tune via
-  `basemind serve --git-cache-mem`).
+- An in-process LRU (1024 entries per category).
 - A sha-keyed disk store: `commit_files/<sha>.msgpack`,
   `log/<head_sha>__<scope>.msgpack`, `blame/<sha>__<path_hash>.msgpack`.
 
 Commits are immutable, so once a sha-keyed entry is on disk it's valid forever.
 HEAD-keyed entries (`log`) roll off naturally when HEAD moves.
 
-Drop the disk cache with `basemind cache clear`. Disable per-run with
-`basemind serve --no-git-cache-disk`.
+Drop the disk cache with `basemind cache clear`.
 
 ### Git-history index
 

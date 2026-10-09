@@ -12,6 +12,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `basemind doctor`: checks the root, config, index, grammars, pre-commit hook and daemon with
+  filesystem and process probes only (no index open, no daemon spawn); `--json` for scripts; exits 1
+  when a check fails.
+- `basemind status`: top-level home of the index-health report (formerly `admin status`).
+- `basemind completions <shell>` (bash, zsh, fish, elvish, powershell) and `basemind man` print a
+  completion script and the roff man page to stdout.
+- `basemind hook install --force`, `basemind cache gc --dry-run`, `basemind delta --new <FILE>` and
+  `basemind detect-waste --log <FILE>`.
+- Flags with a closed value set are now clap value enums (parse-time errors listing the choices, and
+  shell completion): `graph` `--direction` / `--edges` / `--algorithm` / `--granularity` / `--format`,
+  `code semantic` `--lane` / `--format`, `git search --field`, `git symbol-history --hash-mode`,
+  `memory proposals --kind`, `admin telemetry --window`, `admin compress --level`.
+
+### Changed (breaking CLI)
+
+- The `admin` group no longer duplicates top-level commands. Removed: `admin status` (use `status`),
+  `admin rescan` (use `rescan`, which also accepts `--no-git-history` and `--rebuild-git-history` and
+  runs the root guard), `admin cache-stats` / `admin gc` / `admin cache-clear` (use `cache stats` /
+  `cache gc` / `cache clear`), and `admin delta` / `admin checkpoint` / `admin waste` (use `delta` /
+  `checkpoint` / `detect-waste`). `admin` keeps `repo`, `telemetry`, `compress`, `tokens` and `eval`.
+  No aliases are kept; the MCP `admin` tool is unchanged.
+- `cache gc` is the one GC command: it sweeps, and `--dry-run` only reports (the old `admin gc` reported
+  while `cache gc` deleted).
+- `graph map --include-churn` (default on, so it could not be turned off) is replaced by `--no-churn`.
+- `serve` no longer accepts `--git-cache-mem`, `--no-git-cache-disk`, `--no-watch` or the `--documents-*`
+  overrides: it is a stdio relay to the daemon and ignored them all.
+- `hook install` asks git for the hooks directory (honours `core.hooksPath`, works in linked
+  worktrees), refuses to overwrite a pre-commit hook it did not write unless `--force` (the old one is
+  kept as `pre-commit.bak`), and the generated hook is fail-open: it exits 0 when `basemind` is missing
+  or the scan fails instead of blocking the commit. Re-run `hook install` to refresh an old hook.
+- Every tool subcommand path argument, including `git` paths and `graph --focus`, is normalized to the
+  repo-relative index key the way `code` paths already were (absolute, `./`-prefixed and repo-relative
+  spellings are the same file).
+
+### Fixed
+
+- Flaky `daemon_lock::tests::drop_releases_the_lock_and_removes_the_registry_entry`: a sibling test's
+  fork/exec briefly inherits the released flock, so the re-acquire now waits out that window.
+- Flaky `store_layout::daemon_isolation_tests::every_daemon_family_resolves_inside_the_temp_cache`: a
+  sibling test pointed the process-global `BASEMIND_DATA_HOME` at an unmarked directory; the marker
+  check is now a pure function and no test mutates that variable.
+- Stale docs: `serve` flags, `memory mine` flags, `--json` help text and the admin command tables.
+
 - MCP resources: `basemind://status`, `basemind://repo/map`, and the templates
   `basemind://outline/{path}` and `basemind://memory/{key}`, with `{path}` completion. Reads reuse the
   `admin`, `graph`, `code` and `memory` helpers, so bodies equal the tool results; paths are

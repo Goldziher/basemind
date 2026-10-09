@@ -70,23 +70,23 @@ command covers the question.
 | "Where's the churn?" | `basemind git churn [--window N --top-k K]` | Churn-ranked files. |
 | "What's dirty in the working tree?" | `basemind git status` | Staged/unstaged summary. |
 | "Diff a file between revs?" | `basemind git diff path old new` / `diff-outline path` | File / outline diffs. |
-| "What's indexed?" | `basemind admin status` | File count, languages, cache dir. |
+| "What's indexed?" | `basemind status` | File count, languages, cache dir. |
 | "What's HEAD / branch?" | `basemind admin repo` | Branch, HEAD, origin. |
 | "Regex over code contents?" | `basemind code grep "pattern" [--language --path-contains]` | Indexed code files; exact total. |
 | "Search markdown / config / PDFs?" | `basemind memory documents "query"` | Needs `documents` feature. |
 | "Recall something stored earlier?" | `basemind memory get "key"` / `list` / `search "q"` | KNN + exact match. |
 | "Remember this for future sessions?" | `basemind memory put "key" "value"` | Delete with `memory delete "key"`. |
-| "Cache size?" | `basemind admin cache-stats` | On-disk size + orphan accounting. |
-| "What cache space is reclaimable?" | `basemind admin gc` | Report orphaned blobs without deleting them. |
+| "Cache size?" | `basemind cache stats` | On-disk size + orphan accounting. |
+| "What cache space is reclaimable?" | `basemind cache gc --dry-run` | Report orphaned blobs without deleting them. |
 | "Reclaim orphaned blobs?" | `basemind cache gc` | Cross-workspace sweep (blobs under 6 h old are kept). |
 | "Score retrieval quality?" | `basemind admin eval --tasks tasks.jsonl` | CLI-only; see `benchmarks/eval/README.md`. |
-| "Clear caches?" | `basemind admin cache-clear --component blobs --confirm` | Destructive; `views` / `all` require the offline `basemind cache clear`. |
+| "Clear caches?" | `basemind cache clear --component blobs` | Destructive; `views` / `all` require the offline `basemind cache clear`. |
 | "Pull this URL into RAG?" | `basemind web scrape <url>` | Single page (requires `--features crawl`). |
 | "Ingest a docs site?" | `basemind web crawl <seed-url>` | Link-following crawl. |
 | "What URLs exist on this site?" | `basemind web map <url>` | Sitemap + link discovery. |
 | "Keep index fresh?" | `basemind watch` | Live re-index watcher; no MCP server (that's `serve`). |
 | "Refresh the index after edits?" | `basemind scan` | Full or incremental scan. |
-| "Refresh changed paths?" | `basemind admin rescan [path…]` | Re-index in the live server. |
+| "Refresh changed paths?" | `basemind rescan [path…]` | Re-index in the live server. |
 | "Per-operation activity summary?" | `basemind admin telemetry` | Histogram + estimated tokens saved. |
 
 ## Output format
@@ -160,9 +160,9 @@ basemind git blame-symbol src/scanner.rs "process_file"
 ### Manage cache space
 
 ```bash
-basemind admin cache-stats
-basemind admin gc
-basemind admin cache-clear --component blobs --confirm
+basemind cache stats
+basemind cache gc --dry-run
+basemind cache clear --component blobs
 ```
 
 ## Notes

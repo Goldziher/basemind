@@ -453,11 +453,19 @@ mod tests {
             0,
             "dropping the lock deregisters the daemon"
         );
-        match DaemonLock::acquire_at(DaemonKind::Comms, comms.path(), "9.9.9", machine.path())
-            .expect("re-acquire after drop")
-        {
-            DaemonLockOutcome::Acquired(_) => {}
-            other => panic!("the lock is free after drop, got {other:?}"),
+        // flock belongs to the open file description, so a sibling test thread that forks (any
+        // `Command::spawn`) inherits it until its exec closes the CLOEXEC fd. That window is a few
+        // milliseconds, so the lock can read as held right after our drop; wait it out rather than
+        // asserting on a race the production code cannot and need not prevent. ~keep
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            match DaemonLock::acquire_at(DaemonKind::Comms, comms.path(), "9.9.9", machine.path())
+                .expect("re-acquire after drop")
+            {
+                DaemonLockOutcome::Acquired(_) => break,
+                other if std::time::Instant::now() >= deadline => panic!("the lock is free after drop, got {other:?}"),
+                _ => std::thread::sleep(std::time::Duration::from_millis(10)),
+            }
         }
     }
 }

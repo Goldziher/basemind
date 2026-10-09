@@ -43,8 +43,8 @@ fi
 rm -f /tmp/basemind_bench_tokens_err.$$
 
 # --- Sanity check #2: the index must actually have files in it. ---
-STATUS_JSON="$("$BASEMIND_BIN" admin status --json 2>/dev/null)" || die \
-  "'$BASEMIND_BIN admin status --json' failed; is $REPO_ROOT a basemind-indexed repo?"
+STATUS_JSON="$("$BASEMIND_BIN" status --json 2>/dev/null)" || die \
+  "'$BASEMIND_BIN status --json' failed; is $REPO_ROOT a basemind-indexed repo?"
 FILE_COUNT="$(echo "$STATUS_JSON" | jq -r '.file_count // 0')"
 if [[ "$FILE_COUNT" -eq 0 ]]; then
   die "index has 0 files. Run '$BASEMIND_BIN admin scan' first, then re-run this benchmark."
