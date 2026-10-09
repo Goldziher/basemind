@@ -9,8 +9,8 @@ description: >-
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:58935e1455938640fc0a673a546158205076fd352ec0b23bc7edbad387bc7196
-Source-Hash: blake3:d0ef8fea0654cc62042ee8040ad0fadbea594d97b0930187ff9f42359e443bd0
+Content-Hash: blake3:2eecf8fb86c721b5d330766ab4be5a0e146bb8c32dea355125b3af3ca09fda0a
+Source-Hash: blake3:2eee3eb4fe8e0cd3029634e4a8728976df0cff767bc90ab2516dadd0565fcd0d
 Schema-Version: v1
 -->
 
@@ -41,7 +41,8 @@ when you're scripting, batching queries, running in headless environments, or CI
 - Integrating basemind into shell scripts or non-MCP tooling.
 - Controlling tool routing explicitly (no agent routing decisions).
 - Clearing or sweeping caches destructively (only the offline `basemind cache clear` accepts
-  `views` / `all`, and only `basemind cache gc` deletes orphaned blobs).
+  `views` / `all`, it needs `--yes` off a terminal, and `blobs` wipes the machine-global store; only
+  `basemind cache gc` deletes orphaned blobs).
 
 **basemind first, shell/grep/git fallback.** Prefer `basemind code` / `graph` over reading files, over
 `grep`/`rg`, and over naked `git`: use it for code parsing (outlines, references, callers), git
@@ -97,7 +98,10 @@ By default, all commands return **human-readable text**. For machine consumption
 basemind code symbols "parseQuery" --json
 ```
 
-This returns the raw `JsonSchema`-derived response structure, same as MCP.
+This returns the raw `JsonSchema`-derived response structure, same as MCP (`agents` and `workspace`
+included). Human output never shortens source bodies, diffs or exports; the timing footer is written
+to stderr. Page long lists with `--limit` plus `--cursor <next_cursor>`, bound them with
+`--max-tokens`, and add `--format toon` for compact tables.
 
 ## Setup (one-time per repo)
 
