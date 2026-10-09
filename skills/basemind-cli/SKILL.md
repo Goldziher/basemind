@@ -34,7 +34,8 @@ when you're scripting, batching queries, running in headless environments, or CI
 - Integrating basemind into shell scripts or non-MCP tooling.
 - Controlling tool routing explicitly (no agent routing decisions).
 - Clearing or sweeping caches destructively (only the offline `basemind cache clear` accepts
-  `views` / `all`, and only `basemind cache gc` deletes orphaned blobs).
+  `views` / `all`, it needs `--yes` off a terminal, and `blobs` wipes the machine-global store; only
+  `basemind cache gc` deletes orphaned blobs).
 
 **basemind first, shell/grep/git fallback.** Prefer `basemind code` / `graph` over reading files, over
 `grep`/`rg`, and over naked `git`: use it for code parsing (outlines, references, callers), git

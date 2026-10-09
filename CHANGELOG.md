@@ -97,6 +97,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`elapsed_us` and `startup_us` stay in the payload).
 - **Breaking (CLI):** `code semantic --format` and `memory documents --format` accept only `json` or
   `toon` (was a free string).
+- Breaking: CLI exit-code contract (documented in the README): `0` ok, `1` error, `2` usage, `3` writer
+  lock held by another process, `4` required daemon unreachable, `130` interrupted. `scan` and `rescan`
+  used to print the lock-collision notice and exit `0`; they now exit `3`. An invalid `rescan` path
+  (outside the repo, or neither on disk nor indexed) exits `2` instead of `0`.
+- Breaking: `rescan` and `admin rescan` normalize their paths (`./a.rs`, absolute paths, `..`), validate
+  them, and route through the daemon when one runs instead of racing it with an unlocked in-process scan;
+  without a daemon `admin rescan` now takes the workspace writer lock.
+- Breaking: `cache clear` requires `--yes` (or a terminal confirmation) for every component except
+  `git-cache`, refuses (exit `3`) while a writer holds the workspace lock, and refuses `blobs` while the
+  daemon runs. The prompt and help state that `blobs` is the machine-global store shared by every workspace.
+- With a daemon running, the one-shot CLI is built in the same `daemon_writer` shape as the daemon relay:
+  `memory`, references/callers/graph reads and the grep prefilter are forwarded to the daemon instead of
+  failing with `memory_by_key index not available` or degrading to the truncating in-RAM projection. When no
+  daemon is reachable and another process holds the index lock, that error now names the remedy and exits `3`.
+- Invalid-parameter tool errors exit `2`.
+
 - MCP `tools/list` is smaller: the `memory` tool no longer exposes the ~26 `documents.*` / `llm.*`
   config-override fields (`llm_api_key`, `llm_base_url`, `llm_model`, `reranker_*`, `ner_enabled`,
   `summarization_*`, `keywords_*`, `language_*`, `embedding_preset`, `max_characters`, `overlap`,
@@ -204,6 +220,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Flaky tests `daemon_lock::tests::drop_releases_the_lock_and_removes_the_registry_entry` and
   `store_layout::daemon_isolation_tests::every_daemon_family_resolves_inside_the_temp_cache` (an env-var
   race with a test that temporarily repointed `BASEMIND_DATA_HOME`).
+- Ctrl-C during `scan` / `rescan` stops the scan at a file boundary (completed batches stay committed, the
+  stale purge is skipped), prints the summary and exits `130`; a second Ctrl-C exits immediately.
 - Comms/MCP unresponsiveness. Comms requests are now correlated by id (protocol version 4), so a
   request abandoned mid-flight, such as the per-tool-call delivery-notice probe timing out, can no
   longer leave a stale reply that the next request misreads as `unexpected response shape` (and a
