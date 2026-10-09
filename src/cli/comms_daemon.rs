@@ -144,6 +144,12 @@ pub fn run() -> Result<()> {
         #[cfg(unix)]
         let early = crate::comms::frontend_uds::EarlyAccept::start(listener, paths.socket_path.clone());
 
+        // `build_id` hashes the whole executable on first use. Do it here, off the request path and
+        // alongside the store open, so the first `Status` never stalls an async worker on it.
+        tokio::task::spawn_blocking(|| {
+            crate::version::build_id();
+        });
+
         let comms_dir = paths.comms_dir.clone();
         let opened = tokio::task::spawn_blocking(move || {
             if let Some(delay) = test_store_open_delay() {
