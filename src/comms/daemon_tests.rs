@@ -83,6 +83,7 @@ async fn post(
     match broker
         .handle(
             CommsRequest::ThreadPost {
+                idempotency_key: None,
                 thread: thread.clone(),
                 subject: subject.to_string(),
                 tags: vec![],
@@ -137,6 +138,7 @@ async fn compact_message_reference_fetches_acks_and_replies() {
     let reply = broker
         .handle(
             CommsRequest::ThreadPost {
+                idempotency_key: None,
                 thread: thread.clone(),
                 subject: "reply".to_string(),
                 tags: vec![],
@@ -271,6 +273,7 @@ async fn post_requires_hello() {
     let resp = broker
         .handle(
             CommsRequest::ThreadPost {
+                idempotency_key: None,
                 thread: ThreadId::parse("t").expect("t"),
                 subject: "s".to_string(),
                 tags: vec![],

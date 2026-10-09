@@ -576,3 +576,70 @@ fn agent_records_round_trip() {
     store.put_agent(&rec).expect("put");
     assert_eq!(store.get_agent(&agent_id("agent-1")).expect("get"), Some(rec));
 }
+
+fn keyed_meta(id: &str, thread: &ThreadId, agent: &str) -> MessageMeta {
+    build_meta(
+        id.to_string(),
+        thread.clone(),
+        agent_id(agent),
+        "s".to_string(),
+        vec![],
+        None,
+        b"b",
+    )
+}
+
+#[test]
+fn keyed_post_dedups_per_agent_thread_and_key_and_survives_reopen() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let thread = thread_id("th-1");
+    {
+        let store = CommsStore::open(dir.path()).expect("open");
+        store.put_thread(&sample_thread("th-1")).expect("thread");
+        let stored = store
+            .post_keyed(
+                &thread,
+                keyed_meta("m-1", &thread, "agent-1"),
+                MessageBody(b"b".to_vec()),
+                "k",
+            )
+            .expect("post");
+        assert!(matches!(stored, PostOutcome::Stored(1, _)));
+        let dup = store
+            .post_keyed(
+                &thread,
+                keyed_meta("m-2", &thread, "agent-1"),
+                MessageBody(b"b".to_vec()),
+                "k",
+            )
+            .expect("repeat");
+        assert!(matches!(dup, PostOutcome::Duplicate(ref id) if id == "m-1"));
+        // A different agent or key is a different post.
+        for (id, agent, key) in [("m-3", "agent-2", "k"), ("m-4", "agent-1", "k2")] {
+            let outcome = store
+                .post_keyed(&thread, keyed_meta(id, &thread, agent), MessageBody(b"b".to_vec()), key)
+                .expect("post");
+            assert!(matches!(outcome, PostOutcome::Stored(..)), "{id}");
+        }
+    }
+    let store = CommsStore::open(dir.path()).expect("reopen");
+    let dup = store
+        .post_keyed(
+            &thread,
+            keyed_meta("m-5", &thread, "agent-1"),
+            MessageBody(b"b".to_vec()),
+            "k",
+        )
+        .expect("repeat after reopen");
+    assert!(matches!(dup, PostOutcome::Duplicate(ref id) if id == "m-1"));
+    assert_eq!(store.history(&thread, 0, 10).expect("history").messages.len(), 3);
+}
+
+#[test]
+fn idempotency_key_validation_rejects_empty_oversized_and_control_bytes() {
+    assert!(valid_idempotency_key("relay-1f-0-abc"));
+    assert!(!valid_idempotency_key(""));
+    assert!(!valid_idempotency_key("a\0b"));
+    assert!(!valid_idempotency_key("has space"));
+    assert!(!valid_idempotency_key(&"x".repeat(MAX_IDEMPOTENCY_KEY_BYTES + 1)));
+}

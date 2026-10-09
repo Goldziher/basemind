@@ -25,6 +25,15 @@ use super::store::{self, CommsStore, CommsStoreError, MessageReferenceResolution
 pub(crate) const MIN_RETENTION_SECS: u64 = 60;
 pub(crate) const MAX_RETENTION_SECS: u64 = 365 * 24 * 60 * 60;
 
+/// The caller-supplied parts of a `ThreadPost`.
+pub(super) struct PostFields {
+    pub(super) subject: String,
+    pub(super) tags: Vec<String>,
+    pub(super) reply_to: Option<String>,
+    pub(super) body: Vec<u8>,
+    pub(super) idempotency_key: Option<String>,
+}
+
 impl Broker {
     pub(super) async fn on_agents_cleanup_request(&self, request: super::protocol::CommsRequest) -> CommsResponse {
         let super::protocol::CommsRequest::Cleanup {
@@ -456,14 +465,26 @@ impl Broker {
         &self,
         session: &Session,
         thread: ThreadId,
-        subject: String,
-        tags: Vec<String>,
-        reply_to: Option<String>,
-        body: Vec<u8>,
+        fields: PostFields,
     ) -> Result<CommsResponse, CommsStoreError> {
+        let PostFields {
+            subject,
+            tags,
+            reply_to,
+            body,
+            idempotency_key,
+        } = fields;
         let Some(agent) = session.agent.clone() else {
             return Ok(need_hello());
         };
+        if let Some(key) = idempotency_key.as_deref()
+            && !store::valid_idempotency_key(key)
+        {
+            return Ok(CommsResponse::Error {
+                code: "bad_idempotency_key".to_string(),
+                message: "idempotency_key must be 1-128 printable ASCII characters".to_string(),
+            });
+        }
         // One write-gated pass: the seq allocation inside `store.post` and the thread-record update
         // after it stay atomic with respect to every other mutation, so ids and seqs keep their order.
         let outcome = self
@@ -493,7 +514,15 @@ impl Broker {
                     };
                     let id = mint_message_id(&thread, &agent);
                     let meta = store::build_meta(id, thread.clone(), agent, subject, tags, reply_to, &body);
-                    let (_, stored) = store.post(&thread, meta, MessageBody(body))?;
+                    let stored = match idempotency_key {
+                        Some(key) => match store.post_keyed(&thread, meta, MessageBody(body), &key)? {
+                            store::PostOutcome::Stored(_, stored) => stored,
+                            store::PostOutcome::Duplicate(message_id) => {
+                                return Ok(Err(CommsResponse::Posted { message_id }));
+                            }
+                        },
+                        None => store.post(&thread, meta, MessageBody(body))?.1,
+                    };
                     if let Some(mut record) = store.get_thread(&thread)? {
                         record.last_activity = stored.ts_micros;
                         store.put_thread(&record)?;

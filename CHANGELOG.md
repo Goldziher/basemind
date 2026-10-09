@@ -66,6 +66,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   server's own validator) against reasoned exceptions, and checks that representative read-only
   queries return equal `--json` payloads over MCP and the CLI. Adding a mode or command without a
   table row fails with the row to add.
+- Idempotent `post`: `agents post` takes an optional `idempotency_key` (generated when omitted) and the
+  comms `ThreadPost` request carries it additively. The daemon stores the key durably per
+  (agent, thread) for an hour and returns the original message id on a repeat, so a retry after a
+  timeout, a lost reply, or a daemon restart never double-posts. The stdio relay stamps keyless posts
+  and replays them, plus read-only requests, once on a replacement backend instead of failing them
+  with `backend_restarted`; other in-flight requests still fail clearly.
 - MCP resources: `basemind://status`, `basemind://repo/map`, and the templates
   `basemind://outline/{path}` and `basemind://memory/{key}`, with `{path}` completion. Reads reuse the
   `admin`, `graph`, `code` and `memory` helpers, so bodies equal the tool results; paths are

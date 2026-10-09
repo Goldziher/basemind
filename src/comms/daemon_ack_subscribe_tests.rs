@@ -169,6 +169,7 @@ async fn subscribe_then_post_fans_out_notification() {
     let posted = broker
         .handle(
             CommsRequest::ThreadPost {
+                idempotency_key: None,
                 thread: thread.clone(),
                 subject: "hi".to_string(),
                 tags: vec![],

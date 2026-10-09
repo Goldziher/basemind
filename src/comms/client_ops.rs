@@ -93,7 +93,9 @@ impl CommsClient {
             .await
     }
 
-    /// Post a message to a thread. Returns the new message id.
+    /// Post a message to a thread. Returns the new message id. Carries a freshly generated
+    /// idempotency key, so the transparent reconnect-retry (or any caller retry through
+    /// [`Self::post_message_keyed`]) can never store a second copy.
     pub async fn post_message(
         &mut self,
         thread: ThreadId,
@@ -102,6 +104,28 @@ impl CommsClient {
         tags: Vec<String>,
         reply_to: Option<String>,
     ) -> Result<String, CommsClientError> {
+        self.post_message_keyed(
+            thread,
+            subject,
+            body,
+            tags,
+            reply_to,
+            crate::comms::new_idempotency_key(),
+        )
+        .await
+    }
+
+    /// [`Self::post_message`] with a caller-chosen idempotency key: re-sending the same key for
+    /// the same agent and thread within the window returns the original message id.
+    pub async fn post_message_keyed(
+        &mut self,
+        thread: ThreadId,
+        subject: String,
+        body: Vec<u8>,
+        tags: Vec<String>,
+        reply_to: Option<String>,
+        idempotency_key: String,
+    ) -> Result<String, CommsClientError> {
         match self
             .request(CommsRequest::ThreadPost {
                 thread,
@@ -109,6 +133,7 @@ impl CommsClient {
                 tags,
                 reply_to,
                 body,
+                idempotency_key: Some(idempotency_key),
             })
             .await?
         {
