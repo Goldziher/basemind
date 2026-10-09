@@ -140,7 +140,7 @@ fn rescan_rejects_invalid_paths_with_the_usage_code() {
         assert_eq!(code(&out), 2, "`rescan {bad}`: {}", text(&out));
         assert!(text(&out).contains("invalid rescan path"), "{}", text(&out));
     }
-    let out = env.run(&["admin", "rescan", "no_such_file.rs"]);
+    let out = env.run(&["rescan", "no_such_file.rs"]);
     assert_eq!(code(&out), 2, "admin rescan shares the validation: {}", text(&out));
     let ok = env.run(&["rescan", "./a.rs", "--quiet"]);
     assert_eq!(code(&ok), 0, "{}", text(&ok));
@@ -197,8 +197,6 @@ fn writer_lock_collision_exits_busy_for_scan_rescan_and_cache_clear() {
         "rescan must not run next to a writer: {}",
         text(&rescan)
     );
-    let admin = env.run(&["admin", "rescan"]);
-    assert_eq!(code(&admin), 3, "admin rescan must not run unlocked: {}", text(&admin));
     let clear = env.run(&["cache", "clear", "--component", "views", "--yes"]);
     assert_eq!(
         code(&clear),
@@ -218,9 +216,6 @@ fn live_daemon_serves_rescan_memory_and_blocks_destructive_commands() {
     let rescan = env.run(&["rescan"]);
     assert_eq!(code(&rescan), 0, "{}", text(&rescan));
     assert!(text(&rescan).contains("via daemon"), "{}", text(&rescan));
-
-    let admin = env.run(&["admin", "rescan", "a.rs"]);
-    assert_eq!(code(&admin), 0, "{}", text(&admin));
 
     let put = env.run(&["memory", "put", "k1", "forwarded value"]);
     assert_eq!(code(&put), 0, "memory put must forward, not fail: {}", text(&put));

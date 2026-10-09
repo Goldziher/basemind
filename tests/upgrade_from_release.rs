@@ -112,6 +112,16 @@ impl Env {
         serde_json::from_str(&stdout[start..]).expect("valid JSON")
     }
 
+    /// A new `scan` refuses to run next to a writer (exit 3), and any command of an old release may
+    /// have auto-spawned a daemon that holds the lock, so stop every daemon first, as a real
+    /// upgrade does.
+    fn scan_after_stopping_daemons(&self, old: &Path, new: &Path) -> String {
+        for bin in [old, new] {
+            let _ = self.run(bin, &["comms", "stop"], None);
+        }
+        self.ok(new, &["scan"], Some("0"))
+    }
+
     fn blob_names(&self) -> Vec<String> {
         let mut names: Vec<String> = fs::read_dir(self.data.join("cache").join("blobs"))
             .map(|dir| {
@@ -200,7 +210,7 @@ fn upgrade_from(old: &Path) {
     }
 
     // --- upgrade: first scan with the new build -------------------------------------------------
-    let first = env.ok(new, &["scan"], Some("0"));
+    let first = env.scan_after_stopping_daemons(old, new);
     assert!(
         first.contains("cleanup: reclaimed"),
         "{}: the migrating scan reports what it reclaimed:\n{first}",
@@ -244,7 +254,7 @@ fn upgrade_from(old: &Path) {
 
     // --- converge: a second scan is a no-op and the blob set is stable --------------------------
     let blobs_after_first = env.blob_names();
-    let second = env.ok(new, &["scan"], Some("0"));
+    let second = env.scan_after_stopping_daemons(old, new);
     assert!(second.contains("updated 0"), "second scan is a no-op:\n{second}");
     assert!(!second.contains("tier_migrated"), "nothing left to migrate:\n{second}");
     assert!(!second.contains("cleanup:"), "nothing left to reclaim:\n{second}");
@@ -257,7 +267,7 @@ fn upgrade_from(old: &Path) {
         "{}: the old binary still reads and rewrites the shared data",
         old.display()
     );
-    env.ok(new, &["scan"], Some("0"));
+    env.scan_after_stopping_daemons(old, new);
     let stats = env.json(new, &["cache", "stats"]);
     assert_eq!(stats["orphan_blob_count"], 0, "re-upgrade converges again: {stats}");
     assert_eq!(env.code_paths(new).len(), 3);
