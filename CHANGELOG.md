@@ -60,6 +60,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `memory` list/proposals; `--max-tokens` on `code` outline/symbols/grep/files/find/references/callers/
   implementations/semantic and `memory documents`; `--rerank-top-k` on `code semantic`; `--format
   json|toon` on the `code` list modes and `memory documents`. All are passed straight to the MCP params.
+- CLI/MCP parity test (`tests/cli_parity/`): a checked-in capability table maps every MCP `tool`+`mode` to a
+  CLI command (or declares it `cli_only`/`mcp_only` with a required reason); the test walks the live
+  tool schemas and the built binary's command tree, compares per-mode parameters (probed from the
+  server's own validator) against reasoned exceptions, and checks that representative read-only
+  queries return equal `--json` payloads over MCP and the CLI. Adding a mode or command without a
+  table row fails with the row to add.
 - MCP resources: `basemind://status`, `basemind://repo/map`, and the templates
   `basemind://outline/{path}` and `basemind://memory/{key}`, with `{path}` completion. Reads reuse the
   `admin`, `graph`, `code` and `memory` helpers, so bodies equal the tool results; paths are
