@@ -70,7 +70,7 @@ pub const BOOTSTRAP_TIMEOUT: Duration = Duration::from_secs(120);
 pub const BOOTSTRAP_TIMEOUT_ENV: &str = "BASEMIND_COMMS_BOOTSTRAP_SECS";
 
 /// Env var overriding [`IDLE_REAP_AFTER`], in whole seconds. Exists so tests can exercise the reap
-/// without sleeping for half an hour; also a field escape hatch for a machine that wants daemons to
+/// without sleeping for ten minutes; also a field escape hatch for a machine that wants daemons to
 /// linger (or vanish) more aggressively.
 pub const IDLE_REAP_AFTER_ENV: &str = "BASEMIND_COMMS_IDLE_REAP_SECS";
 /// Env var overriding [`IDLE_REAP_CHECK_EVERY`], in whole seconds. See [`IDLE_REAP_AFTER_ENV`].
