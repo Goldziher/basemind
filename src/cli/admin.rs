@@ -180,7 +180,7 @@ pub async fn run_status(server: &BasemindServer, opts: &Emit, out: &mut impl Wri
     emit(key, &r, opts, out)
 }
 
-/// Dispatch a `cache` subcommand against the on-disk `.basemind/` directory.
+/// Dispatch a `cache` subcommand against the machine-global cache directories.
 ///
 /// These never touch the server: they operate directly on the offline
 /// `store_gc` primitives, which is why this is the only safe place to clear the
