@@ -34,8 +34,15 @@ use crate::comms::model::now_micros;
 
 /// Default page size when a mode omits `limit`. Mirrors the broker's `DEFAULT_LIMIT`.
 const DEFAULT_LIMIT: u32 = 100;
-const DELIVERY_SCAN_LIMIT: u32 = 1_000;
+/// Rows the delivery probe asks for. The broker bounds its own scan to a constant past this, so the
+/// probe costs the same regardless of how large the unread backlog is.
+const DELIVERY_SCAN_LIMIT: u32 = 200;
+/// Minimum spacing between delivery probes for one session.
+const DELIVERY_PROBE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
 const DELIVERY_NOTICE_LIMIT: usize = 5;
+/// Upper bound on dialing (and, if need be, spawning) the broker for a cached identity.
+const CONNECT_BUDGET: std::time::Duration = std::time::Duration::from_secs(15);
+const DELIVERY_CONNECT_BUDGET: std::time::Duration = std::time::Duration::from_secs(2);
 const DELIVERY_BUDGET: std::time::Duration = std::time::Duration::from_millis(200);
 
 /// Default recency window for modes `history` / `inbox` when the caller omits `since_hours`.
@@ -44,9 +51,10 @@ const DEFAULT_SINCE_HOURS: u32 = 24;
 /// Default long-poll timeout for mode `wait` when the caller omits `timeout_secs`.
 const DEFAULT_WAIT_SECS: u32 = 30;
 
-/// Hard cap on mode `wait`'s `timeout_secs`. Comfortably under the daemon's 30-minute idle-reap
-/// window and short enough that one outstanding wait cannot meaningfully delay a drain.
-const MAX_WAIT_SECS: u32 = 300;
+/// Hard cap on mode `wait`'s `timeout_secs`. Kept under typical MCP host request timeouts (~60 s) so
+/// a wait ends with a clean `timed_out` answer rather than being abandoned by the host, and short
+/// enough that one outstanding wait cannot meaningfully delay a drain.
+const MAX_WAIT_SECS: u32 = 40;
 
 /// Microseconds in one hour — the scale factor for the `since_hours` → `since_micros` cutoff.
 const MICROS_PER_HOUR: i64 = 3_600_000_000;
@@ -118,36 +126,70 @@ pub(super) async fn resolve_comms_client(
         None => AgentId::parse(state.agent_id.clone())
             .map_err(|e| comms_err(format!("invalid agent id {:?}: {e}", state.agent_id)))?,
     };
-    let mut map = state.comms_clients.lock().await;
-    if let Some(handle) = map.get(&target) {
-        return Ok(handle.clone());
-    }
-    let client = connect_comms_client(state, target.clone()).await?;
-    let handle = Arc::new(Mutex::new(client));
-    // ~keep `put` past the cap drops the least-recently-used client, closing its broker socket. Safe
-    // ~keep because callers hold the returned `Arc` for the duration of their call: an evicted client
-    // ~keep stays alive until the last in-flight handle drops, and the identity reconnects on next use.
-    map.put(target, handle.clone());
-    Ok(handle)
+    // Hold the map lock only to find or create this identity's cell. Connecting happens under the
+    // cell's own once-init, so a slow or wedged connect for one identity cannot block lookups (or
+    // connects) for any other, and a failed connect leaves the cell empty for the next caller.
+    let cell = {
+        let mut map = state.comms_clients.lock().await;
+        match map.get(&target) {
+            Some(cell) => cell.clone(),
+            None => {
+                let cell = Arc::new(tokio::sync::OnceCell::new());
+                // ~keep `put` past the cap drops the least-recently-used cell; callers hold the
+                // ~keep returned `Arc`, so an evicted client stays alive until its last in-flight
+                // ~keep handle drops, and the identity reconnects on next use.
+                map.put(target.clone(), cell.clone());
+                cell
+            }
+        }
+    };
+    let handle = cell
+        .get_or_try_init(|| async {
+            let client = tokio::time::timeout(CONNECT_BUDGET, connect_comms_client(state, target.clone()))
+                .await
+                .map_err(|_| {
+                    comms_err(format!(
+                        "broker unresponsive: connect did not finish within {}s (retryable)",
+                        CONNECT_BUDGET.as_secs()
+                    ))
+                })??;
+            Ok::<_, McpError>(Arc::new(Mutex::new(client)))
+        })
+        .await?;
+    Ok(handle.clone())
 }
 
 /// Return a bounded, exactly-once-per-session front-matter notice for an ordinary tool response.
 /// Failure and contention are deliberately silent so mailbox delivery can never make another MCP
 /// capability slow or unavailable.
 pub(super) async fn take_delivery_notice(state: &ServerState) -> Option<String> {
-    let handle = tokio::time::timeout(DELIVERY_BUDGET, resolve_comms_client(state, None))
-        .await
-        .ok()?
-        .ok()?;
-    let page = tokio::time::timeout(DELIVERY_BUDGET, async {
-        let mut client = handle.lock().await;
-        client
-            .read_inbox(None, None, None, DELIVERY_SCAN_LIMIT, false, None)
-            .await
-    })
-    .await
-    .ok()?
-    .ok()?;
+    // Contention means another tool call is already probing; skip rather than queue behind it.
+    let mut probe = state.delivery_probe.try_lock().ok()?;
+    if probe
+        .last_probe
+        .is_some_and(|at| at.elapsed() < DELIVERY_PROBE_INTERVAL)
+    {
+        return None;
+    }
+    probe.last_probe = Some(std::time::Instant::now());
+    if probe.client.is_none() {
+        // Dialing gets its own, longer budget: a daemon that has to be reached or spawned would
+        // otherwise never finish inside the read budget and the probe would never connect.
+        match tokio::time::timeout(DELIVERY_CONNECT_BUDGET, connect_ephemeral_client(state)).await {
+            Ok(Ok(client)) => probe.client = Some(client),
+            _ => return None,
+        }
+    }
+    let page = match tokio::time::timeout(DELIVERY_BUDGET, probe_inbox(&mut probe.client)).await {
+        Ok(Ok(page)) => page,
+        // A failed or timed-out probe leaves the connection in an unknown state: drop it so the next
+        // probe dials a fresh one. It is private to the probe, so nothing else is disturbed.
+        _ => {
+            probe.client = None;
+            return None;
+        }
+    };
+    drop(probe);
     let (messages, unread, _) = page;
     let mut delivered = state.delivered_notifications.lock().await;
     let unseen: Vec<_> = messages
@@ -177,6 +219,26 @@ pub(super) async fn take_delivery_notice(state: &ServerState) -> Option<String> 
     }
     notice.push_str("Use agents mode message with the message id to read a body; ack only after handling it.");
     Some(notice)
+}
+
+/// One bounded inbox read over the probe's private connection.
+async fn probe_inbox(
+    slot: &mut Option<CommsClient>,
+) -> Result<
+    (
+        Vec<crate::comms::protocol::SeqMeta>,
+        u32,
+        Option<crate::comms::cursor::Cursor>,
+    ),
+    McpError,
+> {
+    let client = slot
+        .as_mut()
+        .ok_or_else(|| comms_err("delivery probe has no connection"))?;
+    client
+        .read_inbox(None, None, None, DELIVERY_SCAN_LIMIT, false, None)
+        .await
+        .map_err(comms_err)
 }
 
 /// Open a fresh, un-cached broker connection for the server's own identity. Long forwarded
@@ -279,7 +341,11 @@ fn require_field<T>(mode: AgentsMode, field: &str, value: Option<T>) -> Result<T
 /// Validation runs before the broker connection so a malformed call costs no daemon round-trip, and
 /// fields belonging to another mode are rejected rather than dropped: a silently ignored `thread` on
 /// an `inbox` call reads to an agent as a successful single-thread read.
-pub(super) async fn run_agents(state: &ServerState, params: AgentsParams) -> Result<CallToolResult, McpError> {
+pub(super) async fn run_agents(
+    state: &ServerState,
+    params: AgentsParams,
+    cancel: &tokio_util::sync::CancellationToken,
+) -> Result<CallToolResult, McpError> {
     let AgentsParams {
         mode,
         thread,
@@ -512,6 +578,7 @@ pub(super) async fn run_agents(state: &ServerState, params: AgentsParams) -> Res
         AgentsMode::Wait => {
             run_inbox_wait(
                 state,
+                cancel,
                 InboxWaitParams {
                     timeout_secs,
                     thread,
@@ -877,7 +944,11 @@ async fn run_inbox_ack(state: &ServerState, params: InboxAckParams) -> Result<Ca
 /// tool call for this identity (agent_list, thread_post, inbox_read, …) for the whole wait. A
 /// fresh connection per wait avoids that at the cost of one extra link + broker sink per
 /// outstanding call — an accepted trade-off (see the design brief's risk notes).
-async fn run_inbox_wait(state: &ServerState, params: InboxWaitParams) -> Result<CallToolResult, McpError> {
+async fn run_inbox_wait(
+    state: &ServerState,
+    cancel: &tokio_util::sync::CancellationToken,
+    params: InboxWaitParams,
+) -> Result<CallToolResult, McpError> {
     let timeout_secs = params.timeout_secs.unwrap_or(DEFAULT_WAIT_SECS).clamp(1, MAX_WAIT_SECS);
     let cursor = params.cursor.map(crate::comms::cursor::Cursor);
     let since = since_cutoff(params.since_hours);
@@ -888,10 +959,21 @@ async fn run_inbox_wait(state: &ServerState, params: InboxWaitParams) -> Result<
         None => AgentId::parse(state.agent_id.clone())
             .map_err(|e| comms_err(format!("invalid agent id {:?}: {e}", state.agent_id)))?,
     };
-    let mut client = connect_comms_client(state, agent).await?;
+    let mut client = tokio::select! {
+        () = cancel.cancelled() => return Err(comms_err("wait cancelled")),
+        client = connect_comms_client(state, agent) => client?,
+    };
 
-    let (timed_out, metas, unread, next_cursor) = client
-        .wait_inbox(
+    // Messages an earlier `wait` already returned must not satisfy this one: a poll loop that does
+    // not `ack` would otherwise return instantly, forever, on its own backlog.
+    let already_waited: std::collections::HashSet<String> = {
+        let waited = state.waited_messages.lock().await;
+        waited.iter().map(|(id, ())| id.clone()).collect()
+    };
+    // Dropping `client` on any exit (including cancellation) closes the link, and the broker reaps
+    // the subscription with it.
+    let (timed_out, metas, unread, next_cursor) = match client
+        .wait_inbox_unseen(
             remote,
             cwd,
             params.thread,
@@ -899,9 +981,22 @@ async fn run_inbox_wait(state: &ServerState, params: InboxWaitParams) -> Result<
             cursor,
             DEFAULT_LIMIT,
             std::time::Duration::from_secs(u64::from(timeout_secs)),
+            cancel,
+            |row| already_waited.contains(&row.meta.id),
         )
         .await
-        .map_err(comms_err)?;
+    {
+        Ok(outcome) => outcome,
+        Err(crate::comms::client::CommsClientError::Cancelled) => return Err(comms_err("wait cancelled")),
+        Err(error) => return Err(comms_err(error)),
+    };
+    drop(client);
+    {
+        let mut waited = state.waited_messages.lock().await;
+        for row in &metas {
+            waited.put(row.meta.id.clone(), ());
+        }
+    }
 
     let now = now_micros();
     let messages: Vec<MessageFrontMatter> = metas

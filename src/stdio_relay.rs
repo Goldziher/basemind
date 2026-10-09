@@ -14,6 +14,21 @@ const INITIAL_RECONNECT_DELAY: Duration = Duration::from_millis(250);
 const MAX_RECONNECT_DELAY: Duration = Duration::from_secs(5);
 const REPLAY_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_JSON_LINE_BYTES: usize = 8 * 1024 * 1024;
+/// JSON-RPC code answering a request the backend never replied to within the relay deadline.
+const BACKEND_TIMEOUT_CODE: i64 = -32002;
+/// Env var overriding the per-request deadline, in seconds. `0` disables it.
+pub(crate) const REQUEST_TIMEOUT_ENV: &str = "BASEMIND_RELAY_REQUEST_TIMEOUT_SECS";
+const DEFAULT_REQUEST_TIMEOUT_SECS: u64 = 180;
+/// Cap on remembered abandoned request ids (late replies to these are dropped).
+const ABANDONED_CAP: usize = 1_024;
+
+fn request_deadline_from_env() -> Option<Duration> {
+    let secs = std::env::var(REQUEST_TIMEOUT_ENV)
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u64>().ok())
+        .unwrap_or(DEFAULT_REQUEST_TIMEOUT_SECS);
+    (secs > 0).then(|| Duration::from_secs(secs))
+}
 
 #[derive(Default)]
 struct SessionState {
@@ -22,6 +37,11 @@ struct SessionState {
     initialize_id: Option<Value>,
     initialize_complete: bool,
     pending: BTreeMap<String, Value>,
+    /// When each pending request was first forwarded, for the per-request deadline.
+    started: BTreeMap<String, tokio::time::Instant>,
+    /// Ids already answered with a timeout error; the backend's late reply is dropped so the host
+    /// never sees two responses for one request.
+    abandoned: std::collections::VecDeque<String>,
 }
 
 impl SessionState {
@@ -41,24 +61,83 @@ impl SessionState {
             && let Some(id) = id
         {
             self.pending.insert(id_key(id), id.clone());
+            self.started.insert(id_key(id), tokio::time::Instant::now());
         }
     }
 
-    fn observe_backend(&mut self, line: &str) {
+    /// Track a backend frame; returns `false` when it is the late reply to a request the relay
+    /// already answered with a timeout error, which must not reach the host.
+    fn observe_backend(&mut self, line: &str) -> bool {
         let Ok(message) = serde_json::from_str::<Value>(line) else {
-            return;
+            return true;
         };
         if message.get("method").is_none()
             && let Some(id) = message.get("id").filter(|id| !id.is_null())
         {
-            self.pending.remove(&id_key(id));
+            let key = id_key(id);
+            if let Some(at) = self.abandoned.iter().position(|abandoned| *abandoned == key) {
+                self.abandoned.remove(at);
+                return false;
+            }
+            self.pending.remove(&key);
+            self.started.remove(&key);
             if self.initialize_id.as_ref() == Some(id) {
                 self.initialize_complete = true;
             }
         }
+        true
+    }
+
+    /// The instant the oldest pending request (other than `initialize`) hits `deadline`.
+    fn next_expiry(&self, deadline: Duration) -> Option<tokio::time::Instant> {
+        self.started
+            .iter()
+            .filter(|(key, _)| self.initialize_id.as_ref().map(id_key).as_ref() != Some(*key))
+            .map(|(_, at)| *at + deadline)
+            .min()
+    }
+
+    /// Fail every pending request older than `deadline` with a retryable timeout error.
+    fn expire(&mut self, deadline: Duration) -> Vec<String> {
+        let now = tokio::time::Instant::now();
+        let init_key = self.initialize_id.as_ref().map(id_key);
+        let expired: Vec<String> = self
+            .started
+            .iter()
+            .filter(|(key, at)| Some(*key) != init_key.as_ref() && now.duration_since(**at) >= deadline)
+            .map(|(key, _)| key.clone())
+            .collect();
+        let mut errors = Vec::with_capacity(expired.len());
+        for key in expired {
+            self.started.remove(&key);
+            let Some(id) = self.pending.remove(&key) else {
+                continue;
+            };
+            if self.abandoned.len() >= ABANDONED_CAP {
+                self.abandoned.pop_front();
+            }
+            self.abandoned.push_back(key);
+            errors.push(
+                serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "error": {
+                        "code": BACKEND_TIMEOUT_CODE,
+                        "message": format!(
+                            "backend_timeout: no reply within {}s; the request may or may not have been applied",
+                            deadline.as_secs()
+                        ),
+                        "data": { "retryable": true }
+                    }
+                })
+                .to_string(),
+            );
+        }
+        errors
     }
 
     fn drain_restart_errors(&mut self) -> Vec<String> {
+        self.started.clear();
         std::mem::take(&mut self.pending)
             .into_values()
             .filter(|id| self.initialize_id.as_ref() != Some(id))
@@ -85,7 +164,27 @@ fn id_key(id: &Value) -> String {
 /// Relay newline-framed MCP messages until the client closes stdin. When the backend disappears,
 /// every in-flight request fails once with `backend_restarted`; the proxy reconnects, silently
 /// replays MCP initialization, and forwards later requests over the replacement connection.
-pub(crate) async fn run<R, W, S, C, F, E>(input: R, mut output: W, mut stream: S, mut reconnect: C) -> io::Result<()>
+pub(crate) async fn run<R, W, S, C, F, E>(input: R, output: W, stream: S, reconnect: C) -> io::Result<()>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+    S: AsyncRead + AsyncWrite + Unpin,
+    C: FnMut() -> F,
+    F: Future<Output = Result<S, E>>,
+    E: std::fmt::Display,
+{
+    run_with_deadline(input, output, stream, reconnect, request_deadline_from_env()).await
+}
+
+/// [`run`] with an explicit per-request `deadline`: a request still unanswered after it gets a
+/// retryable `backend_timeout` error instead of hanging the host silently.
+async fn run_with_deadline<R, W, S, C, F, E>(
+    input: R,
+    mut output: W,
+    mut stream: S,
+    mut reconnect: C,
+    deadline: Option<Duration>,
+) -> io::Result<()>
 where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
@@ -120,9 +219,24 @@ where
                         Ok(None) | Err(_) => break,
                     };
                     backend_line.push('\n');
-                    state.observe_backend(&backend_line);
-                    output.write_all(backend_line.as_bytes()).await?;
-                    output.flush().await?;
+                    if state.observe_backend(&backend_line) {
+                        output.write_all(backend_line.as_bytes()).await?;
+                        output.flush().await?;
+                    }
+                }
+                () = async {
+                    match deadline.and_then(|limit| state.next_expiry(limit)) {
+                        Some(at) => tokio::time::sleep_until(at).await,
+                        None => std::future::pending().await,
+                    }
+                } => {
+                    if let Some(limit) = deadline {
+                        for error in state.expire(limit) {
+                            output.write_all(error.as_bytes()).await?;
+                            output.write_all(b"\n").await?;
+                        }
+                        output.flush().await?;
+                    }
                 }
             }
         }
@@ -312,6 +426,57 @@ mod tests {
         proxy.await.expect("proxy join").expect("proxy result");
         first_backend.await.expect("first backend join");
         second_backend.await.expect("second backend join");
+    }
+
+    /// A backend that swallows a request must not hang the host: the relay answers with a retryable
+    /// `backend_timeout` and drops the backend's late reply so the host never sees two responses.
+    #[tokio::test(start_paused = true)]
+    async fn unanswered_request_gets_a_timeout_error_and_the_late_reply_is_dropped() {
+        let (client_input, proxy_input) = tokio::io::duplex(4096);
+        let (proxy_output, client_output) = tokio::io::duplex(4096);
+        let (proxy_backend, backend) = tokio::io::duplex(4096);
+        let proxy = tokio::spawn(run_with_deadline(
+            proxy_input,
+            proxy_output,
+            proxy_backend,
+            || std::future::ready(Err::<tokio::io::DuplexStream, _>("no replacement")),
+            Some(Duration::from_secs(30)),
+        ));
+        let (backend_read, mut backend_write) = tokio::io::split(backend);
+        let mut backend_read = BufReader::new(backend_read);
+
+        let mut client_write = client_input;
+        let mut client_read = BufReader::new(client_output);
+        client_write.write_all(request_line(5).as_bytes()).await.expect("send");
+        let mut line = String::new();
+        backend_read
+            .read_line(&mut line)
+            .await
+            .expect("backend sees the request");
+
+        line.clear();
+        client_read.read_line(&mut line).await.expect("timeout error");
+        let error: Value = serde_json::from_str(&line).expect("error JSON");
+        assert_eq!(error["id"], serde_json::json!(5));
+        assert_eq!(error["error"]["code"], BACKEND_TIMEOUT_CODE);
+        assert_eq!(error["error"]["data"]["retryable"], true);
+
+        // The late reply is swallowed; the next request's reply is the next thing the host reads.
+        backend_write
+            .write_all(response_line(5).as_bytes())
+            .await
+            .expect("late reply");
+        client_write.write_all(request_line(6).as_bytes()).await.expect("send");
+        backend_write
+            .write_all(response_line(6).as_bytes())
+            .await
+            .expect("reply");
+        line.clear();
+        client_read.read_line(&mut line).await.expect("next response");
+        assert_eq!(response_id(&line), serde_json::json!(6));
+
+        drop(client_write);
+        let _ = proxy.await;
     }
 
     async fn fake_first_backend(stream: tokio::io::DuplexStream) {
