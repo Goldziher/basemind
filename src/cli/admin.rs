@@ -9,7 +9,7 @@
 //! in-process `admin cache-clear` refuses because they back the live index. They are kept
 //! alongside, not folded in, precisely because the in-process tool cannot do that job.
 
-use std::io::{Read, Write};
+use std::io::{IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
@@ -21,6 +21,7 @@ use crate::mcp::params::*;
 use crate::path::{RelPath, normalize_query_path};
 use crate::store_gc::{self, CacheComponent};
 
+use super::exit::CliExit;
 use super::render::{Emit, emit, render_human, render_json};
 use super::run_tool;
 
@@ -248,11 +249,19 @@ pub enum CacheCmd {
     ///
     /// Run with no `--component` to clear `git-cache` (back-compat with the old
     /// `basemind cache clear`).
+    ///
+    /// Everything except `git-cache` is destructive: it asks for confirmation on a terminal and
+    /// requires `--yes` otherwise. `blobs` is the MACHINE-GLOBAL extraction store shared by every
+    /// workspace on this machine, not just this repo. The command refuses (exit 3) while a writer
+    /// holds this workspace's lock, and for `blobs` while the comms daemon is running.
     Clear {
         /// Component to clear (`blobs|views|lance|git-cache|telemetry|all`), or
         /// `views:<name>` for a single view. Defaults to `git-cache` for back-compat.
         #[arg(long, default_value = "git-cache")]
         component: String,
+        /// Skip the confirmation prompt (required when stdin is not a terminal).
+        #[arg(short = 'y', long)]
+        yes: bool,
     },
 }
 
@@ -293,7 +302,8 @@ pub fn run_cache(root: &Path, cmd: CacheCmd, json: bool, out: &mut impl Write) -
                 render_human("admin:cache_stats", &value, out)
             }
         }
-        CacheCmd::Clear { component } => {
+        CacheCmd::Clear { component, yes } => {
+            guard_clear(&basemind_dir, &component, yes)?;
             let value = if let Some(name) = component.strip_prefix("views:") {
                 store_gc::clear_single_view(&basemind_dir, name)
                     .with_context(|| format!("clear single view {name}"))?;
@@ -310,6 +320,62 @@ pub fn run_cache(root: &Path, cmd: CacheCmd, json: bool, out: &mut impl Write) -
                 render_human("admin:cache_clear", &value, out)
             }
         }
+    }
+}
+
+/// Refuse or confirm a destructive `cache clear` before touching disk.
+///
+/// `git-cache` is a cheap, regenerable cache and clears unprompted. Anything else first checks that
+/// no writer is using what it would delete — this workspace's lock for every component, and the
+/// running daemon for `blobs`, the one component shared by all workspaces — then asks the user (on
+/// a terminal) or demands `--yes` (anywhere else). Refusals carry the exit-code contract: `3` for a
+/// busy writer, `2` for a missing confirmation.
+fn guard_clear(basemind_dir: &Path, component: &str, yes: bool) -> Result<()> {
+    if component == CacheComponent::GitCache.as_str() {
+        return Ok(());
+    }
+    if let crate::store::WriterProbe::Held { holder } = crate::store::probe_writer_lock(basemind_dir) {
+        let who = holder.map_or_else(
+            || "another basemind process".to_string(),
+            |meta| format!("`{}` (pid {})", meta.command, meta.pid),
+        );
+        return Err(CliExit::busy(format!(
+            "refusing to clear `{component}`: {who} holds this workspace's index lock. Stop it first \
+             (`basemind comms stop` for the daemon), then retry."
+        )));
+    }
+    let global = component == CacheComponent::Blobs.as_str();
+    if global && super::rescan::daemon_is_up() {
+        return Err(CliExit::busy(
+            "refusing to clear `blobs`: the basemind daemon is running and reads the machine-global blob \
+             store on behalf of every workspace. Stop it with `basemind comms stop`, then retry.",
+        ));
+    }
+    if yes {
+        return Ok(());
+    }
+    let what = if global {
+        format!(
+            "`blobs` is the MACHINE-GLOBAL extraction store ({}) shared by EVERY workspace on this machine; \
+             clearing it forces all of them to re-extract on their next scan",
+            crate::store::global_blobs_dir().display()
+        )
+    } else {
+        format!("clear `{component}` under {}", basemind_dir.display())
+    };
+    if !std::io::stdin().is_terminal() {
+        return Err(CliExit::usage(format!(
+            "refusing to {what} without confirmation; pass --yes to proceed"
+        )));
+    }
+    eprint!("About to {what}. Continue? [y/N] ");
+    std::io::stderr().flush().context("flush prompt")?;
+    let mut answer = String::new();
+    std::io::stdin().read_line(&mut answer).context("read confirmation")?;
+    if matches!(answer.trim(), "y" | "Y" | "yes" | "YES") {
+        Ok(())
+    } else {
+        Err(CliExit::usage("aborted: nothing was cleared"))
     }
 }
 

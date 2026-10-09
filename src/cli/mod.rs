@@ -18,16 +18,19 @@ pub mod code;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 pub mod comms_daemon;
 pub mod context;
+pub mod exit;
 pub mod git;
 pub mod graph;
 pub mod init;
 pub mod init_gitignore;
 pub mod init_rules;
 pub mod init_settings;
+pub mod interrupt;
 pub mod memory;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 pub mod registry;
 pub mod render;
+pub mod rescan;
 #[cfg(all(feature = "shells", any(unix, windows)))]
 pub mod shell;
 pub mod web;
@@ -79,8 +82,25 @@ pub enum ToolCmd {
 /// surfacing the tool's own error message verbatim. Tools that return an
 /// `is_error` result still produce `Ok(...)` — the JSON payload describes the
 /// condition, so we render it rather than fail the process.
+///
+/// Two failures are classified for the exit-code contract ([`exit`]): invalid params are usage
+/// errors (`2`), and an unavailable fjall index gets an actionable hint instead of the bare
+/// internal message.
 pub fn run_tool(tool: &str, result: Result<CallToolResult, McpError>) -> Result<CallToolResult> {
-    result.map_err(|e| anyhow::anyhow!("{tool}: {e}"))
+    result.map_err(|e| {
+        let message = e.message.to_string();
+        if e.code == rmcp::model::ErrorCode::INVALID_PARAMS {
+            return exit::CliExit::usage(format!("{tool}: {message}"));
+        }
+        if message.contains("index not available") {
+            return exit::CliExit::busy(format!(
+                "{tool}: {message}. Another basemind process holds the index lock and no daemon is \
+                 reachable to forward to. Start the daemon with `basemind comms start` (it becomes the \
+                 sole writer and serves this call), or stop the process holding the lock and retry."
+            ));
+        }
+        anyhow::anyhow!("{tool}: {e}")
+    })
 }
 
 /// Dispatch a tool subcommand group. Builds one one-shot server per invocation
@@ -108,8 +128,18 @@ pub fn run(
         .build()
         .context("build tokio runtime")?;
 
+    let intent = match &cmd {
+        ToolCmd::Admin(admin::AdminCmd::Rescan { paths, full }) => {
+            // ~keep Validate before any store is opened, so a bad path costs no lock and exits 2.
+            if !*full {
+                rescan::resolve_paths(root, paths)?;
+            }
+            context::Intent::Rescan
+        }
+        _ => context::Intent::Read,
+    };
     runtime.block_on(async move {
-        let server = context::build_server(root, view, documents)?;
+        let server = context::build_server_for(root, view, documents, intent)?;
         let stdout = std::io::stdout();
         let mut out = stdout.lock();
         let opts = Emit {
