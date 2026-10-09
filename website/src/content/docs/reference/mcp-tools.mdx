@@ -192,6 +192,25 @@ Let agents spawn, type into, and read terminal sessions in the background. Requi
 
 See [Agent Shells](/capabilities/agent-shells/) for examples.
 
+## MCP resources
+
+Besides the tools, basemind serves a small set of MCP resources. They are listed on demand
+(`resources/list`, `resources/templates/list`), so they add nothing to the always-loaded prompt.
+Each read runs the same code as the matching tool, so the body equals the tool result, including the
+code-only policy: an outline of a non-code file errors with "not indexed". They are served in lean
+mode, over the daemon stdio relay and over the HTTP front-end.
+
+| URI | Backing call |
+|---|---|
+| `basemind://status` | `admin` mode `status` |
+| `basemind://repo/map` | `graph` mode `map` |
+| `basemind://outline/{path}` | `code` mode `outline`; `{path}` is repo-relative and percent-encoded |
+| `basemind://memory/{key}` | `memory` mode `get` (shared tier) |
+
+Paths are validated before they reach the index: absolute paths, `..` or `.` segments, empty
+segments, backslashes and NUL are rejected. `completion/complete` completes `{path}` from the index.
+`resources/subscribe` is not supported.
+
 ## Metadata & pagination
 
 All list-returning modes:
