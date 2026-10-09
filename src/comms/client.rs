@@ -15,6 +15,7 @@ use tokio::net::UnixStream as PlatformStream;
 use tokio::net::windows::named_pipe::NamedPipeClient as PlatformStream;
 use tokio_util::bytes::{Bytes, BytesMut};
 use tokio_util::codec::{Decoder, Encoder, LengthDelimitedCodec};
+use tokio_util::sync::CancellationToken;
 
 use super::cursor::Cursor;
 use super::ids::{AgentId, ThreadId};
@@ -48,6 +49,42 @@ const READ_CHUNK: usize = 8 * 1024;
 /// while the server mints its next instance during a client hand-off.
 #[cfg(windows)]
 const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Env var overriding how long a coordination request waits for the broker's reply, in seconds.
+pub const REQUEST_TIMEOUT_ENV: &str = "BASEMIND_COMMS_REQUEST_TIMEOUT_SECS";
+/// Env var overriding how long the connect + `Hello` handshake may take, in seconds.
+pub const HANDSHAKE_TIMEOUT_ENV: &str = "BASEMIND_COMMS_HANDSHAKE_TIMEOUT_SECS";
+const DEFAULT_REQUEST_TIMEOUT_SECS: u64 = 10;
+/// Generous because `Hello` is the first store-dependent request: a cold daemon answers it only once
+/// its store has finished opening, which on a large store takes tens of seconds.
+const DEFAULT_HANDSHAKE_TIMEOUT_SECS: u64 = 30;
+
+/// A positive whole-second duration from `var`, else `default_secs`.
+fn timeout_from_env(var: &str, default_secs: u64) -> std::time::Duration {
+    let secs = std::env::var(var)
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u64>().ok())
+        .filter(|secs| *secs > 0)
+        .unwrap_or(default_secs);
+    std::time::Duration::from_secs(secs)
+}
+
+/// How long `req` may wait for its reply. Forwarded work (scans, embeds, memory, git-history and
+/// index reads) legitimately runs for minutes and is unbounded here; everything else is a quick
+/// broker round trip, so silence past the timeout means the broker is wedged, not busy.
+fn request_timeout(req: &CommsRequest) -> Option<std::time::Duration> {
+    match req {
+        CommsRequest::Rescan { .. }
+        | CommsRequest::Cleanup { .. }
+        | CommsRequest::GitHistory { .. }
+        | CommsRequest::ResolvedRefs { .. }
+        | CommsRequest::IndexRead { .. }
+        | CommsRequest::CodeSearchLanes { .. } => None,
+        #[cfg(feature = "memory")]
+        CommsRequest::Memory { .. } | CommsRequest::Governance { .. } => None,
+        _ => Some(timeout_from_env(REQUEST_TIMEOUT_ENV, DEFAULT_REQUEST_TIMEOUT_SECS)),
+    }
+}
 
 /// Cap on [`CommsClient::pending_notifications`]; the oldest is dropped once it is reached.
 ///
@@ -101,6 +138,18 @@ pub enum CommsClientError {
         /// The request whose reply was malformed.
         request: &'static str,
     },
+    /// The broker accepted the connection but did not answer in time. Retryable: the request may
+    /// or may not have been applied, so re-read before repeating a mutation.
+    #[error("broker unresponsive: no reply to {what} within {secs}s (retryable)")]
+    Unresponsive {
+        /// What was being waited on (a request method or the handshake).
+        what: &'static str,
+        /// The elapsed bound, in seconds.
+        secs: u64,
+    },
+    /// The caller cancelled a long-poll; the client should be dropped, not reused.
+    #[error("wait cancelled")]
+    Cancelled,
     /// The daemon's protocol version differs from this build's.
     #[error("protocol skew: daemon speaks {daemon}, client speaks {client}")]
     ProtoSkew {
@@ -130,6 +179,14 @@ pub struct CommsClient {
     cwd: Option<PathBuf>,
     /// Respawn strategy used by [`CommsClient::reconnect`] when the socket is dead.
     spawn: SpawnFn,
+    /// Id of the next correlated request ([`CommsRequest::Call`]) on this link.
+    next_id: u64,
+    /// True while a request frame is being written. A request future dropped in that window leaves
+    /// a half-written frame on the socket, so the link can no longer be framed correctly and the
+    /// next request must reconnect instead of reusing it.
+    write_incomplete: bool,
+    /// Explicit reply timeout for every request, overriding the per-method default and the env var.
+    request_timeout_override: Option<std::time::Duration>,
 }
 
 impl CommsClient {
@@ -196,7 +253,20 @@ impl CommsClient {
         cwd: Option<PathBuf>,
         spawn: impl Fn(&CommsPaths) -> std::io::Result<()> + Send + Sync + 'static,
     ) -> Result<Self, CommsClientError> {
-        let (stream, codec) = Self::dial(paths).await?;
+        let handshake_timeout = timeout_from_env(HANDSHAKE_TIMEOUT_ENV, DEFAULT_HANDSHAKE_TIMEOUT_SECS);
+        Self::connect_bounded(paths, agent, remote, cwd, spawn, handshake_timeout).await
+    }
+
+    /// [`CommsClient::connect_with_respawn`] with an explicit bound on the dial + `Hello` handshake.
+    async fn connect_bounded(
+        paths: &CommsPaths,
+        agent: AgentId,
+        remote: Option<String>,
+        cwd: Option<PathBuf>,
+        spawn: impl Fn(&CommsPaths) -> std::io::Result<()> + Send + Sync + 'static,
+        handshake_timeout: std::time::Duration,
+    ) -> Result<Self, CommsClientError> {
+        let (stream, codec) = bounded("connect", Some(handshake_timeout), Self::dial(paths)).await?;
         let mut client = Self {
             stream,
             codec,
@@ -207,8 +277,11 @@ impl CommsClient {
             remote,
             cwd,
             spawn: Box::new(spawn),
+            next_id: 1,
+            write_incomplete: false,
+            request_timeout_override: None,
         };
-        client.handshake().await?;
+        bounded("handshake", Some(handshake_timeout), client.handshake()).await?;
         Ok(client)
     }
 
@@ -272,12 +345,15 @@ impl CommsClient {
     /// Send the `Hello` and validate the `Welcome`, using this client's retained scope context.
     async fn handshake(&mut self) -> Result<(), CommsClientError> {
         let resp = self
-            .send_and_await(CommsRequest::Hello {
-                agent: self.agent.clone(),
-                proto_ver: PROTO_VER,
-                remote: self.remote.clone(),
-                cwd: self.cwd.clone(),
-            })
+            .send_and_await(
+                CommsRequest::Hello {
+                    agent: self.agent.clone(),
+                    proto_ver: PROTO_VER,
+                    remote: self.remote.clone(),
+                    cwd: self.cwd.clone(),
+                },
+                None,
+            )
             .await?;
         match resp {
             CommsResponse::Welcome { proto_ver, .. } if proto_ver == PROTO_VER => Ok(()),
@@ -296,13 +372,28 @@ impl CommsClient {
     /// no longer exists.
     async fn reconnect(&mut self) -> Result<(), CommsClientError> {
         let spawn = &self.spawn;
-        singleton::ensure_daemon_with(&self.paths, singleton::probe_alive, |paths| spawn(paths)).await?;
-        let (stream, codec) = Self::dial(&self.paths).await?;
+        singleton::ensure_daemon_with(
+            &self.paths,
+            |socket| singleton::off_worker(|| singleton::probe_alive(socket)),
+            |paths| spawn(paths),
+        )
+        .await?;
+        let handshake_timeout = timeout_from_env(HANDSHAKE_TIMEOUT_ENV, DEFAULT_HANDSHAKE_TIMEOUT_SECS);
+        let (stream, codec) = bounded("connect", Some(handshake_timeout), Self::dial(&self.paths)).await?;
         self.stream = stream;
         self.codec = codec;
         self.read_buf.clear();
         self.pending_notifications.clear();
-        self.handshake().await
+        self.write_incomplete = false;
+        bounded("handshake", Some(handshake_timeout), self.handshake()).await
+    }
+
+    /// Bound every request's wait for a reply to `timeout`, overriding the per-method default and
+    /// [`REQUEST_TIMEOUT_ENV`].
+    #[must_use]
+    pub fn with_request_timeout(mut self, timeout: std::time::Duration) -> Self {
+        self.request_timeout_override = Some(timeout);
+        self
     }
 
     /// The agent id this client authenticated as.
@@ -563,16 +654,56 @@ impl CommsClient {
         limit: u32,
         timeout: std::time::Duration,
     ) -> Result<(bool, Vec<SeqMeta>, u32, Option<Cursor>), CommsClientError> {
-        let sub = self.subscribe_inbox(thread).await?;
+        self.wait_inbox_unseen(
+            remote,
+            cwd,
+            thread,
+            since_micros,
+            cursor,
+            limit,
+            timeout,
+            &CancellationToken::new(),
+            |_| false,
+        )
+        .await
+    }
+
+    /// [`CommsClient::wait_inbox`] that skips rows the caller already `is_seen` and stops promptly
+    /// when `cancel` fires.
+    ///
+    /// `is_seen` is what keeps a poll loop that never acks from spinning: an unread-but-already-
+    /// reported backlog no longer satisfies the immediate read, so the call blocks for something
+    /// genuinely new. On cancellation the sink is NOT unsubscribed over the wire (the caller is gone;
+    /// the request would only queue behind a dead consumer): the caller drops this client, and the
+    /// broker reaps the subscription when the link closes. Returns [`CommsClientError::Cancelled`].
+    #[allow(clippy::too_many_arguments)]
+    pub async fn wait_inbox_unseen(
+        &mut self,
+        remote: Option<String>,
+        cwd: Option<PathBuf>,
+        thread: Option<ThreadId>,
+        since_micros: Option<i64>,
+        cursor: Option<Cursor>,
+        limit: u32,
+        timeout: std::time::Duration,
+        cancel: &CancellationToken,
+        is_seen: impl Fn(&SeqMeta) -> bool,
+    ) -> Result<(bool, Vec<SeqMeta>, u32, Option<Cursor>), CommsClientError> {
+        let sub = tokio::select! {
+            () = cancel.cancelled() => return Err(CommsClientError::Cancelled),
+            sub = self.subscribe_inbox(thread) => sub?,
+        };
         let outcome = self
-            .wait_inbox_after_subscribe(remote, cwd, since_micros, cursor, limit, timeout)
+            .wait_inbox_after_subscribe(remote, cwd, since_micros, cursor, limit, timeout, cancel, is_seen)
             .await;
-        let _ = self.unsubscribe(sub).await;
+        if !matches!(outcome, Err(CommsClientError::Cancelled)) {
+            let _ = self.unsubscribe(sub).await;
+        }
         outcome
     }
 
-    /// The body of [`CommsClient::wait_inbox`] once the sink is live: immediate check, then block.
-    /// Split out so the caller can wrap it in a single unsubscribe-on-every-exit point.
+    /// The body of [`CommsClient::wait_inbox_unseen`] once the sink is live: check, then block, and
+    /// re-check on every wake until something unseen shows up or `timeout` elapses.
     #[allow(clippy::too_many_arguments)]
     async fn wait_inbox_after_subscribe(
         &mut self,
@@ -582,26 +713,37 @@ impl CommsClient {
         cursor: Option<Cursor>,
         limit: u32,
         timeout: std::time::Duration,
+        cancel: &CancellationToken,
+        is_seen: impl Fn(&SeqMeta) -> bool,
     ) -> Result<(bool, Vec<SeqMeta>, u32, Option<Cursor>), CommsClientError> {
-        let (rows, unread, next) = self
-            .read_inbox(remote.clone(), cwd.clone(), cursor.clone(), limit, false, since_micros)
-            .await?;
-        if !rows.is_empty() {
-            return Ok((false, rows, unread, next));
-        }
-
-        match tokio::time::timeout(timeout, self.poll_notification()).await {
-            Ok(Ok(Some(CommsNotification::Message(_)))) => {
-                let (rows, unread, next) = self.read_inbox(remote, cwd, cursor, limit, false, since_micros).await?;
-                Ok((false, rows, unread, next))
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            let (rows, unread, next) = tokio::select! {
+                () = cancel.cancelled() => return Err(CommsClientError::Cancelled),
+                read = self.read_inbox(remote.clone(), cwd.clone(), cursor.clone(), limit, false, since_micros) => read?,
+            };
+            let fresh: Vec<SeqMeta> = rows.into_iter().filter(|row| !is_seen(row)).collect();
+            if !fresh.is_empty() {
+                return Ok((false, fresh, unread, next));
             }
-            // Discovery metadata is consumed directly through `subscribe_inbox` plus
-            // `poll_notification`. Keep the legacy message-only wait shape exhaustive without
-            // misreporting a live wake as a timeout.
-            Ok(Ok(Some(CommsNotification::ThreadDiscovered(_)))) => Ok((false, Vec::new(), unread, None)),
-            Ok(Ok(Some(CommsNotification::Shutdown))) | Ok(Ok(None)) => Ok((true, Vec::new(), 0, None)),
-            Ok(Err(err)) => Err(err),
-            Err(_elapsed) => Ok((true, Vec::new(), unread, None)),
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                return Ok((true, Vec::new(), unread, None));
+            }
+            let note = tokio::select! {
+                () = cancel.cancelled() => return Err(CommsClientError::Cancelled),
+                note = tokio::time::timeout(remaining, self.poll_notification()) => note,
+            };
+            match note {
+                Ok(Ok(Some(CommsNotification::Message(_)))) => continue,
+                // Discovery metadata is consumed directly through `subscribe_inbox` plus
+                // `poll_notification`. Keep the legacy message-only wait shape exhaustive without
+                // misreporting a live wake as a timeout.
+                Ok(Ok(Some(CommsNotification::ThreadDiscovered(_)))) => return Ok((false, Vec::new(), unread, None)),
+                Ok(Ok(Some(CommsNotification::Shutdown))) | Ok(Ok(None)) => return Ok((true, Vec::new(), 0, None)),
+                Ok(Err(err)) => return Err(err),
+                Err(_elapsed) => return Ok((true, Vec::new(), unread, None)),
+            }
         }
     }
 
@@ -633,7 +775,7 @@ impl CommsClient {
         loop {
             match self.read_frame().await? {
                 Some(CommsOut::Notification(n)) => return Ok(Some(n)),
-                Some(CommsOut::Response(_)) => continue,
+                Some(CommsOut::Response(_) | CommsOut::Reply { .. }) => continue,
                 None => return Ok(None),
             }
         }
@@ -754,25 +896,62 @@ impl CommsClient {
     /// is narrow (a crash between store-commit and socket-write) and the worst case is a duplicate
     /// coordination message — not corruption — which is an accepted trade-off for making `thread_post`
     /// survive the daemon dying at all. (A client-supplied idempotency key would close it; deferred.)
+    ///
+    /// Cancel safety: every request is a correlated [`CommsRequest::Call`] and only the reply
+    /// echoing its id is accepted. If a previous request future was dropped after its frame was
+    /// written (a timeout, an aborted tool call), its reply is still in flight; it is recognised by
+    /// its stale id and discarded rather than mistaken for this request's answer. If the drop
+    /// landed mid-write the link is unusable, so the next request reconnects first.
     pub(super) async fn request(&mut self, req: CommsRequest) -> Result<CommsResponse, CommsClientError> {
-        match self.send_and_await(req.clone()).await {
+        if self.write_incomplete {
+            self.reconnect().await?;
+        }
+        let timeout = self.request_timeout_override.or_else(|| request_timeout(&req));
+        let what = req.method();
+        match bounded(what, timeout, self.send_correlated(req.clone())).await {
             Ok(resp) => Ok(resp),
             Err(err) if is_connection_lost(&err) => {
                 self.reconnect().await?;
-                self.send_and_await(req).await
+                bounded(what, timeout, self.send_correlated(req)).await
             }
             Err(err) => Err(err),
         }
     }
 
-    /// Write the request and read frames until the direct response arrives, buffering any
-    /// notifications seen in the meantime. No reconnect — the single-shot retry lives in
+    /// Wrap `req` in a [`CommsRequest::Call`] with a fresh id and await the matching reply.
+    async fn send_correlated(&mut self, req: CommsRequest) -> Result<CommsResponse, CommsClientError> {
+        let id = self.next_id;
+        self.next_id = self.next_id.wrapping_add(1);
+        self.send_and_await(
+            CommsRequest::Call {
+                id,
+                request: Box::new(req),
+            },
+            Some(id),
+        )
+        .await
+    }
+
+    /// Write the frame and read until the response for `expect_id` arrives (or, for a bare request
+    /// with `None`, the first uncorrelated response), buffering notifications and discarding stale
+    /// replies to abandoned requests. No reconnect — the single-shot retry lives in
     /// [`CommsClient::request`].
-    async fn send_and_await(&mut self, req: CommsRequest) -> Result<CommsResponse, CommsClientError> {
+    async fn send_and_await(
+        &mut self,
+        req: CommsRequest,
+        expect_id: Option<u64>,
+    ) -> Result<CommsResponse, CommsClientError> {
         self.write_request(&req).await?;
         loop {
             match self.read_frame().await? {
-                Some(CommsOut::Response(resp)) => return Ok(resp),
+                Some(CommsOut::Reply { id, response }) if Some(id) == expect_id => return Ok(response),
+                Some(CommsOut::Response(response)) if expect_id.is_none() => return Ok(response),
+                Some(CommsOut::Reply { id, .. }) => {
+                    tracing::debug!(stale_id = id, expected = ?expect_id, "comms: discarding reply to an abandoned request");
+                }
+                Some(CommsOut::Response(_)) => {
+                    tracing::debug!(expected = ?expect_id, "comms: discarding uncorrelated response");
+                }
                 Some(CommsOut::Notification(n)) => buffer_notification(&mut self.pending_notifications, n),
                 None => return Err(CommsClientError::Closed),
             }
@@ -783,8 +962,10 @@ impl CommsClient {
         let body = rmp_serde::to_vec_named(req)?;
         let mut framed = BytesMut::new();
         self.codec.encode(Bytes::from(body), &mut framed)?;
+        self.write_incomplete = true;
         self.stream.write_all(&framed).await?;
         self.stream.flush().await?;
+        self.write_incomplete = false;
         Ok(())
     }
 
@@ -806,6 +987,23 @@ impl CommsClient {
             }
         }
     }
+}
+
+/// Await `fut`, failing with [`CommsClientError::Unresponsive`] if `limit` elapses first.
+async fn bounded<T>(
+    what: &'static str,
+    limit: Option<std::time::Duration>,
+    fut: impl std::future::Future<Output = Result<T, CommsClientError>>,
+) -> Result<T, CommsClientError> {
+    let Some(limit) = limit else {
+        return fut.await;
+    };
+    tokio::time::timeout(limit, fut)
+        .await
+        .unwrap_or(Err(CommsClientError::Unresponsive {
+            what,
+            secs: limit.as_secs(),
+        }))
 }
 
 /// Classify an error as "the link to the broker is gone" — the only class the single-shot
@@ -914,6 +1112,155 @@ mod tests {
             !queue.iter().any(|n| matches!(n, CommsNotification::Message(_))),
             "the evicted entry must be gone from the queue entirely"
         );
+    }
+
+    /// A scripted broker on a Unix socket: answers `Hello` bare, then each correlated `Call` in
+    /// order, sleeping `delays[i]` before reply `i`. Returns the paths to dial.
+    fn scripted_broker(
+        delays: Vec<std::time::Duration>,
+    ) -> (CommsPaths, tokio::task::JoinHandle<()>, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!("bm-client-{}-{}", std::process::id(), rand_suffix()));
+        std::fs::create_dir_all(&dir).expect("dir");
+        let socket_path = dir.join("c.sock");
+        let listener = tokio::net::UnixListener::bind(&socket_path).expect("bind");
+        let paths = CommsPaths {
+            comms_dir: dir.clone(),
+            socket_path,
+        };
+        let handle = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("accept");
+            let mut codec = LengthDelimitedCodec::new();
+            let mut buf = BytesMut::new();
+            let mut served = 0usize;
+            loop {
+                let frame = loop {
+                    if let Some(f) = codec.decode(&mut buf).expect("decode") {
+                        break f;
+                    }
+                    if stream.read_buf(&mut buf).await.expect("read") == 0 {
+                        return;
+                    }
+                };
+                let req: CommsRequest = rmp_serde::from_slice(&frame).expect("req");
+                let out = match req {
+                    CommsRequest::Hello { .. } => CommsOut::Response(CommsResponse::Welcome {
+                        proto_ver: PROTO_VER,
+                        daemon_version: "test".to_string(),
+                    }),
+                    CommsRequest::Call { id, request } => {
+                        if let Some(d) = delays.get(served) {
+                            tokio::time::sleep(*d).await;
+                        }
+                        served += 1;
+                        let response = match *request {
+                            CommsRequest::ListAgents { .. } => CommsResponse::Agents(Vec::new()),
+                            CommsRequest::AccessedPaths => CommsResponse::Accessed { workspaces: Vec::new() },
+                            other => panic!("unscripted request {other:?}"),
+                        };
+                        CommsOut::Reply { id, response }
+                    }
+                    other => panic!("bare request {other:?}"),
+                };
+                let body = rmp_serde::to_vec_named(&out).expect("encode");
+                let mut framed = BytesMut::new();
+                codec.encode(Bytes::from(body), &mut framed).expect("frame");
+                stream.write_all(&framed).await.expect("write");
+            }
+        });
+        (paths, handle, dir)
+    }
+
+    fn rand_suffix() -> u128 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    }
+
+    /// The reported failure: a request abandoned after its frame was written (the delivery-notice
+    /// probe's 200 ms timeout) leaves its reply on the socket. The next request must still get ITS
+    /// answer, not the stale frame ("unexpected response shape").
+    #[tokio::test]
+    async fn dropped_request_does_not_poison_the_next_response() {
+        let (paths, server, dir) = scripted_broker(vec![std::time::Duration::from_millis(200)]);
+        let agent = AgentId::parse("agent-1".to_string()).expect("agent");
+        let mut client = CommsClient::connect_with_respawn(&paths, agent, None, None, |_| Ok(()))
+            .await
+            .expect("connect");
+
+        let abandoned = tokio::time::timeout(std::time::Duration::from_millis(30), client.list_agents(None)).await;
+        assert!(abandoned.is_err(), "the first request must be cut off mid-flight");
+
+        let workspaces = client
+            .accessed_paths()
+            .await
+            .expect("second request gets its own reply");
+        assert!(workspaces.is_empty());
+
+        server.abort();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A broker that stops answering must surface a retryable `broker unresponsive` error within the
+    /// bound rather than hanging the caller forever, and the client must still work afterwards.
+    #[tokio::test]
+    async fn silent_broker_yields_a_retryable_unresponsive_error() {
+        let (paths, server, dir) = scripted_broker(vec![std::time::Duration::from_secs(30)]);
+        let agent = AgentId::parse("agent-1".to_string()).expect("agent");
+        let mut client = CommsClient::connect_with_respawn(&paths, agent, None, None, |_| Ok(()))
+            .await
+            .expect("connect")
+            .with_request_timeout(std::time::Duration::from_millis(100));
+
+        let started = std::time::Instant::now();
+        let err = client.list_agents(None).await.expect_err("no reply must time out");
+        assert!(
+            matches!(
+                err,
+                CommsClientError::Unresponsive {
+                    what: "list_agents",
+                    ..
+                }
+            ),
+            "{err:?}"
+        );
+        assert!(err.to_string().contains("broker unresponsive"), "{err}");
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+
+        server.abort();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A daemon that accepts the connection but never answers `Hello` must fail the connect inside
+    /// the handshake bound.
+    #[tokio::test]
+    async fn handshake_against_a_mute_listener_times_out() {
+        let dir = std::env::temp_dir().join(format!("bm-mute-{}-{}", std::process::id(), rand_suffix()));
+        std::fs::create_dir_all(&dir).expect("dir");
+        let socket_path = dir.join("m.sock");
+        let _listener = tokio::net::UnixListener::bind(&socket_path).expect("bind");
+        let paths = CommsPaths {
+            comms_dir: dir.clone(),
+            socket_path,
+        };
+        let agent = AgentId::parse("agent-1".to_string()).expect("agent");
+        let Err(err) = CommsClient::connect_bounded(
+            &paths,
+            agent,
+            None,
+            None,
+            |_| Ok(()),
+            std::time::Duration::from_millis(100),
+        )
+        .await
+        else {
+            panic!("a mute listener must time out");
+        };
+        assert!(
+            matches!(err, CommsClientError::Unresponsive { what: "handshake", .. }),
+            "{err:?}"
+        );
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     fn test_message_meta() -> crate::comms::model::MessageMeta {

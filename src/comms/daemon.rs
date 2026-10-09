@@ -711,6 +711,24 @@ impl Broker {
         self.workspaces.cleanup_signal()
     }
 
+    /// Handle one request on a link and frame its answer: a [`CommsRequest::Call`] is unwrapped and
+    /// answered with a [`CommsOut::Reply`] echoing its id; a bare request gets the uncorrelated
+    /// [`CommsOut::Response`].
+    pub async fn handle_framed(
+        &self,
+        req: CommsRequest,
+        session: &mut Session,
+        link_tx: &mpsc::Sender<CommsOut>,
+    ) -> CommsOut {
+        match req {
+            CommsRequest::Call { id, request } => CommsOut::Reply {
+                id,
+                response: self.handle(*request, session, link_tx).await,
+            },
+            bare => CommsOut::Response(self.handle(bare, session, link_tx).await),
+        }
+    }
+
     /// Handle one request on a link. Returns the direct response.
     pub async fn handle(
         &self,
@@ -843,6 +861,11 @@ impl Broker {
             CommsRequest::Ping => Ok(CommsResponse::Pong),
             CommsRequest::Status => self.on_status().await,
             CommsRequest::Stop => Ok(self.on_stop().await),
+            // `handle_framed` unwraps the one legal level of `Call`; a nested one is malformed.
+            CommsRequest::Call { .. } => Ok(CommsResponse::Error {
+                code: "nested_call".to_string(),
+                message: "a correlated call cannot wrap another call".to_string(),
+            }),
         }
     }
 

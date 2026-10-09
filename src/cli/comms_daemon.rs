@@ -40,7 +40,7 @@ const DAEMON_POOL_ENV: [(&str, &str); 2] = [("RAYON_NUM_THREADS", "6"), ("LANCE_
 const DAEMON_ORT_THREADS: usize = 2;
 
 /// Async worker threads for the daemon runtime.
-const DAEMON_ASYNC_WORKERS: usize = 4;
+const DAEMON_ASYNC_WORKERS: usize = 8;
 
 /// Ceiling on the daemon runtime's `spawn_blocking` pool.
 const DAEMON_MAX_BLOCKING_THREADS: usize = 16;
@@ -220,6 +220,17 @@ pub fn run() -> Result<()> {
                     "comms: no client connected within the bootstrap window; self-terminating"
                 );
                 broker_for_bootstrap.begin_drain().await;
+            }
+        });
+
+        // The detached daemon's stdout/stderr land in `daemon.log` (see `singleton_spawn`); keep it
+        // bounded for a daemon that stays up for weeks.
+        let comms_dir_for_log = paths.comms_dir.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(600));
+            loop {
+                tick.tick().await;
+                crate::comms::singleton::trim_daemon_log(&comms_dir_for_log);
             }
         });
 

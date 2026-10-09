@@ -85,6 +85,50 @@ const INHERITED_IDENTITY_VARS: [&str; 3] = ["BASEMIND_AGENT_ID", "BASEMIND_PAREN
 /// with.
 const INHERITED_CWD_VARS: [&str; 2] = ["PWD", "OLDPWD"];
 
+/// File name of the detached daemon's combined stdout/stderr log, inside the comms dir.
+pub const DAEMON_LOG_FILE: &str = "daemon.log";
+/// Size past which the log is rotated at spawn and trimmed while the daemon runs.
+pub const DAEMON_LOG_MAX_BYTES: u64 = 8 * 1024 * 1024;
+
+/// Where the daemon for `comms_dir` writes its log.
+pub fn daemon_log_path(comms_dir: &Path) -> PathBuf {
+    comms_dir.join(DAEMON_LOG_FILE)
+}
+
+/// Open the daemon log for append, first rotating an oversized one to `daemon.log.1` (replacing any
+/// previous rotation). `None` when it cannot be opened — the daemon then runs with null stdio rather
+/// than failing to start over a log file.
+fn open_daemon_log(comms_dir: &Path) -> Option<std::fs::File> {
+    let path = daemon_log_path(comms_dir);
+    if std::fs::metadata(&path).is_ok_and(|meta| meta.len() > DAEMON_LOG_MAX_BYTES) {
+        let _ = std::fs::rename(&path, comms_dir.join(format!("{DAEMON_LOG_FILE}.1")));
+    }
+    let mut options = std::fs::OpenOptions::new();
+    options.create(true).append(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options.open(path).ok()
+}
+
+/// Keep a long-running daemon's log bounded: once it passes [`DAEMON_LOG_MAX_BYTES`], preserve the
+/// content as `daemon.log.1` and truncate in place. The daemon holds the file open in append mode,
+/// so truncating (rather than renaming) keeps its stdout/stderr pointed at the live file.
+pub fn trim_daemon_log(comms_dir: &Path) {
+    let path = daemon_log_path(comms_dir);
+    if !std::fs::metadata(&path).is_ok_and(|meta| meta.len() > DAEMON_LOG_MAX_BYTES) {
+        return;
+    }
+    if std::fs::copy(&path, comms_dir.join(format!("{DAEMON_LOG_FILE}.1"))).is_ok() {
+        let _ = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .and_then(|f| f.set_len(0));
+    }
+}
+
 /// The `basemind comms daemon` invocation, minus the platform detach flags: argv, working
 /// directory, stdio and the environment scrub. Split out so the hygiene above is assertable without
 /// launching a process — the properties that matter here are all visible on the [`Command`] itself.
@@ -96,9 +140,17 @@ fn daemon_command(exe: &Path, paths: &CommsPaths) -> std::process::Command {
         .arg("comms")
         .arg("daemon")
         .current_dir(&paths.comms_dir)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
+        .stdin(std::process::Stdio::null());
+    match open_daemon_log(&paths.comms_dir).and_then(|log| log.try_clone().ok().map(|dup| (log, dup))) {
+        Some((out, err)) => {
+            command.stdout(out).stderr(err);
+        }
+        None => {
+            command
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null());
+        }
+    }
     // Targeted removals, never `env_clear`: the daemon needs PATH, HOME, the XDG dirs, the proxy
     // variables and the model configuration to function at all.
     for key in INHERITED_IDENTITY_VARS.iter().chain(INHERITED_CWD_VARS.iter()) {
@@ -108,7 +160,7 @@ fn daemon_command(exe: &Path, paths: &CommsPaths) -> std::process::Command {
 }
 
 /// Spawn `basemind comms daemon` detached so it outlives the spawning process. stdout/stderr
-/// are redirected to null; the daemon's own tracing goes to its log sink.
+/// are appended to `<comms_dir>/daemon.log` (size-rotated), falling back to null if it cannot be opened.
 ///
 /// The child is placed in `paths.comms_dir` rather than inheriting the spawner's cwd. The comms dir
 /// is created by `resolve_paths`, is stable for the daemon's whole life, and — decisively — is never
@@ -257,6 +309,27 @@ mod tests {
             comms_dir: comms_dir.to_path_buf(),
             socket_path: comms_dir.join("comms.sock"),
         }
+    }
+
+    #[test]
+    fn oversized_daemon_log_is_rotated_at_spawn_and_trimmed_in_place() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let log = daemon_log_path(dir.path());
+        let big = vec![b'x'; usize::try_from(DAEMON_LOG_MAX_BYTES).expect("fits") + 1];
+
+        std::fs::write(&log, &big).expect("seed");
+        drop(open_daemon_log(dir.path()).expect("open"));
+        assert_eq!(
+            std::fs::metadata(&log).expect("fresh log").len(),
+            0,
+            "spawn starts a fresh log"
+        );
+        assert!(dir.path().join("daemon.log.1").exists(), "the old log is kept as .1");
+
+        std::fs::write(&log, &big).expect("grow");
+        trim_daemon_log(dir.path());
+        assert_eq!(std::fs::metadata(&log).expect("trimmed").len(), 0);
+        assert!(std::fs::metadata(dir.path().join("daemon.log.1")).expect(".1").len() > DAEMON_LOG_MAX_BYTES);
     }
 
     /// Issue #62's root cause in one assertion: a daemon that inherits the spawner's cwd inherits

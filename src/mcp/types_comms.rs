@@ -83,7 +83,7 @@ pub struct AgentsParams {
     /// history / inbox / wait: look back N hours (default 24; 0 = all).
     #[serde(default)]
     pub since_hours: Option<u32>,
-    /// `wait`: seconds to block (default 30, max 300).
+    /// `wait` only. Seconds to block before returning `timed_out: true`. Default 30, max 40.
     #[serde(default)]
     pub timeout_secs: Option<u32>,
     /// `register`: agent name.
@@ -600,7 +600,7 @@ pub(super) struct InboxAckResponse {
 /// page. A long-poll replacement for a caller looping mode `inbox` / mode `thread_list`.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct InboxWaitParams {
-    /// Maximum seconds to block before returning `timed_out: true` (default 30, max 300).
+    /// Maximum seconds to block before returning `timed_out: true` (default 30, max 40).
     #[serde(default)]
     pub timeout_secs: Option<u32>,
     /// Restrict the wake to this thread only. `None` wakes on ANY joined thread.

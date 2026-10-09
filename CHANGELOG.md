@@ -139,6 +139,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Comms/MCP unresponsiveness. Comms requests are now correlated by id (protocol version 4), so a
+  request abandoned mid-flight, such as the per-tool-call delivery-notice probe timing out, can no
+  longer leave a stale reply that the next request misreads as `unexpected response shape` (and a
+  `post` that was stored reporting an error). Client requests and handshakes time out with a
+  retryable `comms: broker unresponsive` (`BASEMIND_COMMS_REQUEST_TIMEOUT_SECS`,
+  `BASEMIND_COMMS_HANDSHAKE_TIMEOUT_SECS`), the stdio relay answers an unreplied request with
+  `backend_timeout` (`BASEMIND_RELAY_REQUEST_TIMEOUT_SECS`), and a slow connect for one identity no
+  longer blocks the others.
+- The inbox read bounds its unread scan instead of decoding every unread row (`unread` is a lower
+  bound past roughly 500 rows past the page), and the delivery-notice probe now uses its own
+  connection and runs at most once every 2 s.
+- `agents` mode `wait` stops as soon as the host cancels the call or the connection closes instead of
+  holding a link and subscriber for the full timeout, is capped at 40 s (was 300), and no longer
+  returns instantly on messages a previous `wait` already returned.
+- The detached comms daemon now logs to `<comms_dir>/daemon.log` (size-rotated; shown by `comms
+  doctor`) instead of `/dev/null`, runs its synchronous liveness probes off the async workers, and
+  has 8 workers (was 4).
 - `code references`, `callers` and `implementations` from a daemon-backed session (the standard
   deployment: the daemon owns the single-writer fjall index, so sessions cannot open it) are now
   COMPLETE. They used to answer from an in-RAM projection of every call site capped at
