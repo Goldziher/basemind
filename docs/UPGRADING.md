@@ -63,7 +63,8 @@ set stops changing.
 `basemind cache clear --component blobs|views|lance|git-cache|telemetry|all` covers every on-disk
 component the migration touches; the term index and name dictionaries are memory only. The sweep lock
 (`cache/gc.lock`) is an empty file and is removed with the cache root. `git-history.fjall` is only
-removed by `all`: the daemon holds it open.
+removed by `all`: the daemon holds it open. `cache clear` refuses while a writer holds the workspace
+lock (and `blobs` while the daemon runs), and everything except `git-cache` needs `--yes` off a terminal.
 
 Opening upgraded data with an older binary fails safe. The index extras are ignored, a binary on the same
 schema minor re-maps the files it still treats as code (and drops their document entries), and one on a
