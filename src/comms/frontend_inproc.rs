@@ -180,6 +180,7 @@ mod tests {
 
         writer
             .send_request(CommsRequest::ThreadPost {
+                idempotency_key: None,
                 thread: thread.clone(),
                 subject: "status".to_string(),
                 tags: vec!["daily".to_string()],
@@ -279,6 +280,7 @@ mod tests {
 
         writer
             .send_request(CommsRequest::ThreadPost {
+                idempotency_key: None,
                 thread: thread.clone(),
                 subject: "mine".to_string(),
                 tags: vec![],

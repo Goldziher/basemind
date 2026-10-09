@@ -35,7 +35,10 @@ use super::model::{
     AgentRecord, MESSAGE_REFERENCE_PREFIX, Membership, MessageBody, MessageMeta, Thread, message_reference, now_micros,
 };
 
+mod idempotency;
 mod retention;
+
+pub use idempotency::{IDEMPOTENCY_TTL, MAX_IDEMPOTENCY_KEY_BYTES, PostOutcome, valid_idempotency_key};
 
 const META_SCHEMA_VER: &[u8] = b"schema_ver";
 const META_LAST_MAINTENANCE: &[u8] = b"last_maintenance_micros";
@@ -124,6 +127,8 @@ pub struct CommsStore {
     thread_subs: Keyspace,
     cursors: Keyspace,
     agents: Keyspace,
+    /// Serializes keyed posts so a retry racing its original cannot both pass the dedup lookup.
+    post_lock: std::sync::Mutex<()>,
     /// Held for the lifetime of the store; released on drop (Draining → Stopped).
     _lock: File,
 }
@@ -197,6 +202,7 @@ impl CommsStore {
             thread_subs,
             cursors,
             agents,
+            post_lock: std::sync::Mutex::new(()),
             _lock: lock,
         })
     }
@@ -334,8 +340,22 @@ impl CommsStore {
         meta: MessageMeta,
         body: MessageBody,
     ) -> Result<(u64, MessageMeta), CommsStoreError> {
+        self.post_with_row(thread, meta, body, None)
+    }
+
+    /// [`Self::post`] plus an optional extra `meta`-keyspace row committed in the same batch.
+    fn post_with_row(
+        &self,
+        thread: &ThreadId,
+        meta: MessageMeta,
+        body: MessageBody,
+        extra_meta_row: Option<(Vec<u8>, Vec<u8>)>,
+    ) -> Result<(u64, MessageMeta), CommsStoreError> {
         let seq = self.current_seq(thread)?.saturating_add(1);
         let mut batch = self.db.batch();
+        if let Some((key, value)) = extra_meta_row {
+            batch.insert(&self.meta, key, value);
+        }
         batch.insert(
             &self.meta,
             keys::thread_seq_meta_key(thread.as_str()),
