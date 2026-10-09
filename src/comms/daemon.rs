@@ -199,7 +199,12 @@ pub struct Broker {
     pub(super) registry: Mutex<Registry>,
     /// The machine-wide repo/worktree/branch/workspace registry (distinct from the `registry` sink
     /// map above). The daemon is its sole writer; coordination tools read/mutate through it.
-    machine_registry: Mutex<MachineRegistry>,
+    machine_registry: Arc<Mutex<MachineRegistry>>,
+    /// Serializes store mutations (see [`Broker::store_write`]); held only on blocking threads.
+    pub(super) store_write_gate: Arc<std::sync::Mutex<()>>,
+    /// Test hook: milliseconds the NEXT store call sleeps for on its blocking thread, then resets.
+    #[cfg(test)]
+    pub(super) store_delay_ms: Arc<AtomicU64>,
     /// Serializes destructive global blob GC against in-flight rescans. Rescans take the READ side
     /// (many workspaces rescan concurrently); the GC sweep takes the WRITE side. A rescan writes new
     /// content-addressed blobs BEFORE its `index.msgpack` (which `collect_referenced_hashes` reads)
@@ -288,7 +293,10 @@ impl Broker {
                 sinks: AHashMap::new(),
                 state: LifecycleState::Starting,
             }),
-            machine_registry: Mutex::new(machine_registry),
+            machine_registry: Arc::new(Mutex::new(machine_registry)),
+            store_write_gate: Arc::new(std::sync::Mutex::new(())),
+            #[cfg(test)]
+            store_delay_ms: Arc::new(AtomicU64::new(0)),
             blob_gc_lock: RwLock::new(()),
             shutdown: std::sync::OnceLock::new(),
             comms_dir: std::sync::OnceLock::new(),
@@ -737,13 +745,16 @@ impl Broker {
         link_tx: &mpsc::Sender<CommsOut>,
     ) -> CommsResponse {
         self.touch();
-        if let Some(agent) = session.agent.as_ref()
-            && let Err(error) = self
-                .store
-                .touch_agent_if_stale(agent, super::store::AGENT_TOUCH_INTERVAL)
-        {
-            self.note_store_error("touch_agent", &error).await;
-            tracing::warn!(%error, agent = %agent, "comms: refresh agent activity failed");
+        if let Some(agent) = session.agent.clone() {
+            let touched = {
+                let agent = agent.clone();
+                self.store_write(move |store| store.touch_agent_if_stale(&agent, super::store::AGENT_TOUCH_INTERVAL))
+                    .await
+            };
+            if let Err(error) = touched {
+                self.note_store_error("touch_agent", &error).await;
+                tracing::warn!(%error, agent = %agent, "comms: refresh agent activity failed");
+            }
         }
         let method = req.method();
         match self.dispatch(req, session, link_tx).await {
@@ -771,30 +782,33 @@ impl Broker {
                 remote,
                 cwd,
             } => {
-                let resp = self.on_hello(agent, proto_ver, remote, cwd.clone(), session)?;
+                let resp = self.on_hello(agent, proto_ver, remote, cwd.clone(), session).await?;
                 if let (CommsResponse::Welcome { .. }, Some(root)) = (&resp, cwd) {
-                    let mut registry = self.machine_registry.lock().await;
-                    if let Err(error) = registry.register_workspace(&root) {
+                    let target = root.clone();
+                    if let Err(error) = self.registry_blocking(move |reg| reg.register_workspace(&target)).await {
                         tracing::warn!(%error, root = %root.display(), "comms: registry auto-register failed");
                     }
                 }
                 Ok(resp)
             }
-            CommsRequest::Register { card } => self.on_register(session, card),
-            CommsRequest::ListAgents { thread } => self.on_list_agents(thread),
-            request @ CommsRequest::Cleanup { .. } => Ok(self.on_agents_cleanup_request(request)),
-            CommsRequest::AgentsStatus { agent_ttl_secs } => Ok(self.on_agents_status(agent_ttl_secs)),
+            CommsRequest::Register { card } => self.on_register(session, card).await,
+            CommsRequest::ListAgents { thread } => self.on_list_agents(thread).await,
+            request @ CommsRequest::Cleanup { .. } => Ok(self.on_agents_cleanup_request(request).await),
+            CommsRequest::AgentsStatus { agent_ttl_secs } => Ok(self.on_agents_status(agent_ttl_secs).await),
             CommsRequest::ThreadStart { subject, path, members } => {
                 self.on_thread_start(session, subject, path, members).await
             }
-            CommsRequest::ThreadJoin { thread } => self.on_thread_join(session, thread),
-            CommsRequest::ThreadLeave { thread } => self.on_thread_leave(session, thread),
+            CommsRequest::ThreadJoin { thread } => self.on_thread_join(session, thread).await,
+            CommsRequest::ThreadLeave { thread } => self.on_thread_leave(session, thread).await,
             CommsRequest::ThreadList {
                 remote,
                 cwd,
                 subject_contains,
                 include_archived,
-            } => self.on_thread_list(session, remote, cwd, subject_contains, include_archived),
+            } => {
+                self.on_thread_list(session, remote, cwd, subject_contains, include_archived)
+                    .await
+            }
             CommsRequest::ThreadPost {
                 thread,
                 subject,
@@ -807,26 +821,28 @@ impl Broker {
                 cursor,
                 limit,
                 since_micros,
-            } => self.on_history(thread, cursor, limit, since_micros),
-            CommsRequest::ThreadMembers { thread } => self.on_thread_members(thread),
-            CommsRequest::ThreadAddMember { thread, member } => self.on_thread_add_member(session, thread, member),
-            CommsRequest::ThreadRemoveMember { thread, member } => {
-                self.on_thread_remove_member(session, thread, member)
+            } => self.on_history(thread, cursor, limit, since_micros).await,
+            CommsRequest::ThreadMembers { thread } => self.on_thread_members(thread).await,
+            CommsRequest::ThreadAddMember { thread, member } => {
+                self.on_thread_add_member(session, thread, member).await
             }
-            CommsRequest::ThreadArchive { thread } => self.on_thread_archive(session, thread),
-            CommsRequest::GetBody { message_id } => self.on_get_body(session, message_id),
+            CommsRequest::ThreadRemoveMember { thread, member } => {
+                self.on_thread_remove_member(session, thread, member).await
+            }
+            CommsRequest::ThreadArchive { thread } => self.on_thread_archive(session, thread).await,
+            CommsRequest::GetBody { message_id } => self.on_get_body(session, message_id).await,
             CommsRequest::Inbox {
                 cursor,
                 limit,
                 mark_read,
                 since_micros,
                 ..
-            } => self.on_inbox(session, cursor, limit, mark_read, since_micros),
+            } => self.on_inbox(session, cursor, limit, mark_read, since_micros).await,
             CommsRequest::AckInbox {
                 message_ids,
                 thread,
                 to_seq,
-            } => self.on_ack(session, message_ids, thread, to_seq),
+            } => self.on_ack(session, message_ids, thread, to_seq).await,
             CommsRequest::Subscribe { thread } => self.on_subscribe(session, thread, link_tx).await,
             CommsRequest::SubscribeInbox { thread } => self.on_subscribe_inbox(session, thread, link_tx).await,
             CommsRequest::Unsubscribe { sub } => self.on_unsubscribe(sub).await,
@@ -882,6 +898,9 @@ pub struct Session {
 
 #[path = "daemon_workspace_handlers.rs"]
 mod workspace_handlers;
+
+#[path = "daemon_store_blocking.rs"]
+mod store_blocking;
 
 #[path = "daemon_response.rs"]
 mod response;

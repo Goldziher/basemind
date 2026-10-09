@@ -11,18 +11,22 @@ use tokio::sync::mpsc;
 
 use super::cursor::Cursor;
 use super::daemon::threads::{build_chain, mint_message_id, mint_thread_id, validate_dimensions};
-use super::daemon::{Broker, DEFAULT_LIMIT, LifecycleState, MAX_LIMIT, Session, SubScope, SubSink};
+use super::daemon::{Broker, LifecycleState, Session, SubScope, SubSink};
+use super::daemon_handler_helpers::{
+    INBOX_UNREAD_SCAN_SLACK, clamp_limit, decode_after, keep_since, need_hello, not_creator, not_member,
+    reference_error, unknown_thread, upsert_high, validate_retention_policy,
+};
 use super::ids::{AgentId, ThreadId};
 use super::model::{AgentCard, AgentKind, AgentRecord, Membership, MessageBody, MessageMeta, Thread, now_micros};
 use super::protocol::{CommsNotification, CommsOut, CommsResponse, PROTO_VER, SeqMeta, StatusReport};
 use super::scope;
-use super::store::{self, CommsStoreError, MessageReferenceResolution};
+use super::store::{self, CommsStore, CommsStoreError, MessageReferenceResolution};
 
 pub(crate) const MIN_RETENTION_SECS: u64 = 60;
 pub(crate) const MAX_RETENTION_SECS: u64 = 365 * 24 * 60 * 60;
 
 impl Broker {
-    pub(super) fn on_agents_cleanup_request(&self, request: super::protocol::CommsRequest) -> CommsResponse {
+    pub(super) async fn on_agents_cleanup_request(&self, request: super::protocol::CommsRequest) -> CommsResponse {
         let super::protocol::CommsRequest::Cleanup {
             apply,
             message_ttl_secs,
@@ -57,9 +61,12 @@ impl Broker {
             agent_ttl_secs,
             claim_ttl_secs,
         )
+        .await
     }
 
-    pub(super) fn on_agents_cleanup(
+    /// The retention sweep scans every message/thread/agent range and rewrites claim files, so the
+    /// whole pass runs on the blocking pool, not a runtime worker.
+    pub(super) async fn on_agents_cleanup(
         &self,
         apply: bool,
         message_ttl_secs: u64,
@@ -68,50 +75,60 @@ impl Broker {
         agent_ttl_secs: u64,
         claim_ttl_secs: u64,
     ) -> CommsResponse {
-        let result = self.store.cleanup(
-            apply,
-            std::time::Duration::from_secs(message_ttl_secs),
-            std::time::Duration::from_secs(thread_idle_ttl_secs),
-            std::time::Duration::from_secs(thread_retention_ttl_secs),
-            std::time::Duration::from_secs(agent_ttl_secs),
-        );
-        match result {
-            Ok(mut report) => {
-                match crate::comms::identity::cleanup_expired_claims(
-                    std::time::Duration::from_secs(claim_ttl_secs),
+        // Every outcome (including the per-stage error codes) is a response, never a store error.
+        let outcome = self
+            .store_write(move |store| {
+                let result = store.cleanup(
                     apply,
-                ) {
-                    Ok(count) => report.stale_claims = count,
-                    Err(error) => {
-                        return CommsResponse::Error {
-                            code: "claim_cleanup_error".to_string(),
-                            message: error.to_string(),
-                        };
+                    std::time::Duration::from_secs(message_ttl_secs),
+                    std::time::Duration::from_secs(thread_idle_ttl_secs),
+                    std::time::Duration::from_secs(thread_retention_ttl_secs),
+                    std::time::Duration::from_secs(agent_ttl_secs),
+                );
+                Ok(match result {
+                    Ok(mut report) => {
+                        match crate::comms::identity::cleanup_expired_claims(
+                            std::time::Duration::from_secs(claim_ttl_secs),
+                            apply,
+                        ) {
+                            Ok(count) => report.stale_claims = count,
+                            Err(error) => {
+                                return Ok(CommsResponse::Error {
+                                    code: "claim_cleanup_error".to_string(),
+                                    message: error.to_string(),
+                                });
+                            }
+                        }
+                        if apply && let Err(error) = store.record_maintenance() {
+                            return Ok(CommsResponse::Error {
+                                code: "maintenance_timestamp_error".to_string(),
+                                message: error.to_string(),
+                            });
+                        }
+                        CommsResponse::Cleanup(report)
                     }
-                }
-                if apply && let Err(error) = self.store.record_maintenance() {
-                    return CommsResponse::Error {
-                        code: "maintenance_timestamp_error".to_string(),
+                    Err(error) => CommsResponse::Error {
+                        code: "cleanup_error".to_string(),
                         message: error.to_string(),
-                    };
-                }
-                CommsResponse::Cleanup(report)
-            }
-            Err(error) => CommsResponse::Error {
-                code: "cleanup_error".to_string(),
-                message: error.to_string(),
-            },
-        }
+                    },
+                })
+            })
+            .await;
+        outcome.unwrap_or_else(|error| CommsResponse::Error {
+            code: "cleanup_error".to_string(),
+            message: error.to_string(),
+        })
     }
 
-    pub(super) fn on_agents_status(&self, agent_ttl_secs: u64) -> CommsResponse {
+    pub(super) async fn on_agents_status(&self, agent_ttl_secs: u64) -> CommsResponse {
         if !(MIN_RETENTION_SECS..=MAX_RETENTION_SECS).contains(&agent_ttl_secs) {
             return CommsResponse::Error {
                 code: "invalid_retention_policy".to_string(),
                 message: format!("agent_ttl_secs must be between {MIN_RETENTION_SECS} and {MAX_RETENTION_SECS}"),
             };
         }
-        match self.store.agent_status(std::time::Duration::from_secs(agent_ttl_secs)) {
+        let ttl = std::time::Duration::from_secs(agent_ttl_secs);
+        match self.store_blocking(move |store| store.agent_status(ttl)).await {
             Ok(report) => CommsResponse::AgentsStatus(report),
             Err(error) => CommsResponse::Error {
                 code: "status_error".to_string(),
@@ -120,7 +137,7 @@ impl Broker {
         }
     }
 
-    pub(super) fn on_hello(
+    pub(super) async fn on_hello(
         &self,
         agent: AgentId,
         proto_ver: u32,
@@ -138,20 +155,23 @@ impl Broker {
         session.chain = Some(build_chain(remote, cwd));
 
         let now = now_micros();
-        let record = match self.store.get_agent(&agent)? {
-            Some(mut existing) => {
-                existing.last_seen = now;
-                existing
-            }
-            None => AgentRecord {
-                agent_id: agent,
-                card: AgentCard::default(),
-                kind: AgentKind::Other,
-                first_seen: now,
-                last_seen: now,
-            },
-        };
-        self.store.put_agent(&record)?;
+        self.store_write(move |store| {
+            let record = match store.get_agent(&agent)? {
+                Some(mut existing) => {
+                    existing.last_seen = now;
+                    existing
+                }
+                None => AgentRecord {
+                    agent_id: agent,
+                    card: AgentCard::default(),
+                    kind: AgentKind::Other,
+                    first_seen: now,
+                    last_seen: now,
+                },
+            };
+            store.put_agent(&record)
+        })
+        .await?;
 
         Ok(CommsResponse::Welcome {
             proto_ver: PROTO_VER,
@@ -159,43 +179,51 @@ impl Broker {
         })
     }
 
-    pub(super) fn on_register(&self, session: &Session, card: AgentCard) -> Result<CommsResponse, CommsStoreError> {
+    pub(super) async fn on_register(
+        &self,
+        session: &Session,
+        card: AgentCard,
+    ) -> Result<CommsResponse, CommsStoreError> {
         let Some(agent) = session.agent.clone() else {
             return Ok(need_hello());
         };
         let now = now_micros();
-        let record = match self.store.get_agent(&agent)? {
-            Some(mut existing) => {
-                existing.card = card;
-                existing.last_seen = now;
-                existing
-            }
-            None => AgentRecord {
-                agent_id: agent,
-                card,
-                kind: AgentKind::Other,
-                first_seen: now,
-                last_seen: now,
-            },
-        };
-        self.store.put_agent(&record)?;
+        self.store_write(move |store| {
+            let record = match store.get_agent(&agent)? {
+                Some(mut existing) => {
+                    existing.card = card;
+                    existing.last_seen = now;
+                    existing
+                }
+                None => AgentRecord {
+                    agent_id: agent,
+                    card,
+                    kind: AgentKind::Other,
+                    first_seen: now,
+                    last_seen: now,
+                },
+            };
+            store.put_agent(&record)
+        })
+        .await?;
         Ok(CommsResponse::Ok)
     }
 
-    pub(super) fn on_list_agents(&self, thread: Option<ThreadId>) -> Result<CommsResponse, CommsStoreError> {
-        let agents = match thread {
-            None => self.store.list_agents()?,
-            Some(thread) => {
-                let members = self.store.members(&thread)?;
-                let mut out = Vec::new();
-                for id in members {
-                    if let Some(rec) = self.store.get_agent(&id)? {
-                        out.push(rec);
+    pub(super) async fn on_list_agents(&self, thread: Option<ThreadId>) -> Result<CommsResponse, CommsStoreError> {
+        let agents = self
+            .store_blocking(move |store| match thread {
+                None => store.list_agents(),
+                Some(thread) => {
+                    let mut out = Vec::new();
+                    for id in store.members(&thread)? {
+                        if let Some(rec) = store.get_agent(&id)? {
+                            out.push(rec);
+                        }
                     }
+                    Ok(out)
                 }
-                out
-            }
-        };
+            })
+            .await?;
         Ok(CommsResponse::Agents(agents))
     }
 
@@ -239,38 +267,24 @@ impl Broker {
             created_at: now,
             last_activity: 0,
         };
-        self.store.put_thread(&thread)?;
-        for agent in &member_set {
-            self.store.add_member(&Membership {
-                agent_id: agent.clone(),
-                thread: id.clone(),
-                created_at: now,
-            })?;
-        }
+        let stored = thread.clone();
+        self.store_write(move |store| {
+            store.put_thread(&stored)?;
+            for agent in &member_set {
+                store.add_member(&Membership {
+                    agent_id: agent.clone(),
+                    thread: id.clone(),
+                    created_at: now,
+                })?;
+            }
+            Ok(())
+        })
+        .await?;
         self.fan_out_discovery(&thread).await;
         Ok(CommsResponse::Thread(thread))
     }
 
-    pub(super) fn on_thread_join(&self, session: &Session, thread: ThreadId) -> Result<CommsResponse, CommsStoreError> {
-        let Some(agent) = session.agent.clone() else {
-            return Ok(need_hello());
-        };
-        let Some(mut record) = self.store.get_thread(&thread)? else {
-            return Ok(unknown_thread(&thread));
-        };
-        self.store.add_member(&Membership {
-            agent_id: agent.clone(),
-            thread: thread.clone(),
-            created_at: now_micros(),
-        })?;
-        if !record.members.contains(&agent) {
-            record.members.push(agent);
-            self.store.put_thread(&record)?;
-        }
-        Ok(CommsResponse::Ok)
-    }
-
-    pub(super) fn on_thread_leave(
+    pub(super) async fn on_thread_join(
         &self,
         session: &Session,
         thread: ThreadId,
@@ -278,17 +292,46 @@ impl Broker {
         let Some(agent) = session.agent.clone() else {
             return Ok(need_hello());
         };
-        self.store.remove_member(&thread, &agent)?;
-        if let Some(mut record) = self.store.get_thread(&thread)? {
-            record.members.retain(|m| m != &agent);
-            self.store.put_thread(&record)?;
-        }
-        Ok(CommsResponse::Ok)
+        self.store_write(move |store| {
+            let Some(mut record) = store.get_thread(&thread)? else {
+                return Ok(unknown_thread(&thread));
+            };
+            store.add_member(&Membership {
+                agent_id: agent.clone(),
+                thread: thread.clone(),
+                created_at: now_micros(),
+            })?;
+            if !record.members.contains(&agent) {
+                record.members.push(agent);
+                store.put_thread(&record)?;
+            }
+            Ok(CommsResponse::Ok)
+        })
+        .await
+    }
+
+    pub(super) async fn on_thread_leave(
+        &self,
+        session: &Session,
+        thread: ThreadId,
+    ) -> Result<CommsResponse, CommsStoreError> {
+        let Some(agent) = session.agent.clone() else {
+            return Ok(need_hello());
+        };
+        self.store_write(move |store| {
+            store.remove_member(&thread, &agent)?;
+            if let Some(mut record) = store.get_thread(&thread)? {
+                record.members.retain(|m| m != &agent);
+                store.put_thread(&record)?;
+            }
+            Ok(CommsResponse::Ok)
+        })
+        .await
     }
 
     /// List threads DISCOVERABLE to the caller: member OR cwd matches the path glob OR (when set)
     /// the subject substring filter matches. Never all threads. Archived excluded unless requested.
-    pub(super) fn on_thread_list(
+    pub(super) async fn on_thread_list(
         &self,
         session: &Session,
         remote: Option<String>,
@@ -300,7 +343,8 @@ impl Broker {
         let chain = build_chain(remote, cwd);
         let filter = subject_contains.filter(|s| !s.is_empty());
         let mut out = Vec::new();
-        for thread in self.store.list_threads()? {
+        // The full thread scan runs on the blocking pool; the discoverability filter below is pure.
+        for thread in self.store_blocking(|store| store.list_threads()).await? {
             if !thread.active && !include_archived {
                 continue;
             }
@@ -320,16 +364,19 @@ impl Broker {
         Ok(CommsResponse::Threads(out))
     }
 
-    pub(super) fn on_thread_members(&self, thread: ThreadId) -> Result<CommsResponse, CommsStoreError> {
-        if self.store.get_thread(&thread)?.is_none() {
-            return Ok(unknown_thread(&thread));
-        }
-        Ok(CommsResponse::Members {
-            members: self.store.members(&thread)?,
+    pub(super) async fn on_thread_members(&self, thread: ThreadId) -> Result<CommsResponse, CommsStoreError> {
+        self.store_blocking(move |store| {
+            if store.get_thread(&thread)?.is_none() {
+                return Ok(unknown_thread(&thread));
+            }
+            Ok(CommsResponse::Members {
+                members: store.members(&thread)?,
+            })
         })
+        .await
     }
 
-    pub(super) fn on_thread_add_member(
+    pub(super) async fn on_thread_add_member(
         &self,
         session: &Session,
         thread: ThreadId,
@@ -338,25 +385,28 @@ impl Broker {
         let Some(agent) = session.agent.clone() else {
             return Ok(need_hello());
         };
-        let Some(mut record) = self.store.get_thread(&thread)? else {
-            return Ok(unknown_thread(&thread));
-        };
-        if record.creator != agent {
-            return Ok(not_creator());
-        }
-        self.store.add_member(&Membership {
-            agent_id: member.clone(),
-            thread: thread.clone(),
-            created_at: now_micros(),
-        })?;
-        if !record.members.contains(&member) {
-            record.members.push(member);
-            self.store.put_thread(&record)?;
-        }
-        Ok(CommsResponse::Ok)
+        self.store_write(move |store| {
+            let Some(mut record) = store.get_thread(&thread)? else {
+                return Ok(unknown_thread(&thread));
+            };
+            if record.creator != agent {
+                return Ok(not_creator());
+            }
+            store.add_member(&Membership {
+                agent_id: member.clone(),
+                thread: thread.clone(),
+                created_at: now_micros(),
+            })?;
+            if !record.members.contains(&member) {
+                record.members.push(member);
+                store.put_thread(&record)?;
+            }
+            Ok(CommsResponse::Ok)
+        })
+        .await
     }
 
-    pub(super) fn on_thread_remove_member(
+    pub(super) async fn on_thread_remove_member(
         &self,
         session: &Session,
         thread: ThreadId,
@@ -365,19 +415,22 @@ impl Broker {
         let Some(agent) = session.agent.clone() else {
             return Ok(need_hello());
         };
-        let Some(mut record) = self.store.get_thread(&thread)? else {
-            return Ok(unknown_thread(&thread));
-        };
-        if record.creator != agent {
-            return Ok(not_creator());
-        }
-        self.store.remove_member(&thread, &member)?;
-        record.members.retain(|m| m != &member);
-        self.store.put_thread(&record)?;
-        Ok(CommsResponse::Ok)
+        self.store_write(move |store| {
+            let Some(mut record) = store.get_thread(&thread)? else {
+                return Ok(unknown_thread(&thread));
+            };
+            if record.creator != agent {
+                return Ok(not_creator());
+            }
+            store.remove_member(&thread, &member)?;
+            record.members.retain(|m| m != &member);
+            store.put_thread(&record)?;
+            Ok(CommsResponse::Ok)
+        })
+        .await
     }
 
-    pub(super) fn on_thread_archive(
+    pub(super) async fn on_thread_archive(
         &self,
         session: &Session,
         thread: ThreadId,
@@ -385,15 +438,18 @@ impl Broker {
         let Some(agent) = session.agent.clone() else {
             return Ok(need_hello());
         };
-        let Some(mut record) = self.store.get_thread(&thread)? else {
-            return Ok(unknown_thread(&thread));
-        };
-        if record.creator != agent {
-            return Ok(not_creator());
-        }
-        record.active = false;
-        self.store.put_thread(&record)?;
-        Ok(CommsResponse::Ok)
+        self.store_write(move |store| {
+            let Some(mut record) = store.get_thread(&thread)? else {
+                return Ok(unknown_thread(&thread));
+            };
+            if record.creator != agent {
+                return Ok(not_creator());
+            }
+            record.active = false;
+            store.put_thread(&record)?;
+            Ok(CommsResponse::Ok)
+        })
+        .await
     }
 
     pub(super) async fn on_post(
@@ -408,39 +464,53 @@ impl Broker {
         let Some(agent) = session.agent.clone() else {
             return Ok(need_hello());
         };
-        if self.store.get_thread(&thread)?.is_none() {
-            return Ok(unknown_thread(&thread));
-        }
-        let reply_to = if let Some(reference) = reply_to {
-            let (message_id, reply_thread) = match self.store.resolve_message_reference(&reference)? {
-                MessageReferenceResolution::Found { message_id, thread, .. } => (message_id, thread),
-                resolution => return Ok(reference_error(&reference, resolution)),
-            };
-            if !self.store.is_member(&reply_thread, &agent)? {
-                return Ok(not_member(&reply_thread));
-            }
-            if reply_thread != thread {
-                return Ok(CommsResponse::Error {
-                    code: "reply_thread_mismatch".to_string(),
-                    message: "reply target belongs to another thread".to_string(),
-                });
-            }
-            Some(message_id)
-        } else {
-            None
+        // One write-gated pass: the seq allocation inside `store.post` and the thread-record update
+        // after it stay atomic with respect to every other mutation, so ids and seqs keep their order.
+        let outcome = self
+            .store_write({
+                let thread = thread.clone();
+                move |store| {
+                    if store.get_thread(&thread)?.is_none() {
+                        return Ok(Err(unknown_thread(&thread)));
+                    }
+                    let reply_to = if let Some(reference) = reply_to {
+                        let (message_id, reply_thread) = match store.resolve_message_reference(&reference)? {
+                            MessageReferenceResolution::Found { message_id, thread, .. } => (message_id, thread),
+                            resolution => return Ok(Err(reference_error(&reference, resolution))),
+                        };
+                        if !store.is_member(&reply_thread, &agent)? {
+                            return Ok(Err(not_member(&reply_thread)));
+                        }
+                        if reply_thread != thread {
+                            return Ok(Err(CommsResponse::Error {
+                                code: "reply_thread_mismatch".to_string(),
+                                message: "reply target belongs to another thread".to_string(),
+                            }));
+                        }
+                        Some(message_id)
+                    } else {
+                        None
+                    };
+                    let id = mint_message_id(&thread, &agent);
+                    let meta = store::build_meta(id, thread.clone(), agent, subject, tags, reply_to, &body);
+                    let (_, stored) = store.post(&thread, meta, MessageBody(body))?;
+                    if let Some(mut record) = store.get_thread(&thread)? {
+                        record.last_activity = stored.ts_micros;
+                        store.put_thread(&record)?;
+                    }
+                    Ok(Ok(stored))
+                }
+            })
+            .await?;
+        let stored = match outcome {
+            Ok(stored) => stored,
+            Err(response) => return Ok(response),
         };
-        let id = mint_message_id(&thread, &agent);
-        let meta = store::build_meta(id, thread.clone(), agent, subject, tags, reply_to, &body);
-        let (_, stored) = self.store.post(&thread, meta, MessageBody(body))?;
-        if let Some(mut record) = self.store.get_thread(&thread)? {
-            record.last_activity = stored.ts_micros;
-            self.store.put_thread(&record)?;
-        }
         self.fan_out(&thread, &stored).await;
         Ok(CommsResponse::Posted { message_id: stored.id })
     }
 
-    pub(super) fn on_history(
+    pub(super) async fn on_history(
         &self,
         thread: ThreadId,
         cursor: Option<Cursor>,
@@ -449,7 +519,11 @@ impl Broker {
     ) -> Result<CommsResponse, CommsStoreError> {
         let after = decode_after(cursor.as_ref(), thread.as_str());
         let limit = clamp_limit(limit);
-        let page = self.store.history_since(&thread, after, limit, since_micros)?;
+        let page = {
+            let thread = thread.clone();
+            self.store_blocking(move |store| store.history_since(&thread, after, limit, since_micros))
+                .await?
+        };
         let next = page.more.then(|| Cursor::encode(thread.as_str(), page.last_seq));
         let messages = page
             .messages
@@ -462,24 +536,31 @@ impl Broker {
         })
     }
 
-    pub(super) fn on_get_body(&self, session: &Session, message_id: String) -> Result<CommsResponse, CommsStoreError> {
-        let Some(agent) = session.agent.as_ref() else {
+    pub(super) async fn on_get_body(
+        &self,
+        session: &Session,
+        message_id: String,
+    ) -> Result<CommsResponse, CommsStoreError> {
+        let Some(agent) = session.agent.clone() else {
             return Ok(need_hello());
         };
-        let (canonical_id, thread) = match self.store.resolve_message_reference(&message_id)? {
-            MessageReferenceResolution::Found { message_id, thread, .. } => (message_id, thread),
-            resolution => return Ok(reference_error(&message_id, resolution)),
-        };
-        if !self.store.is_member(&thread, agent)? {
-            return Ok(not_member(&thread));
-        }
-        let body = self.store.get_body(&canonical_id)?;
-        Ok(CommsResponse::Body { body })
+        self.store_blocking(move |store| {
+            let (canonical_id, thread) = match store.resolve_message_reference(&message_id)? {
+                MessageReferenceResolution::Found { message_id, thread, .. } => (message_id, thread),
+                resolution => return Ok(reference_error(&message_id, resolution)),
+            };
+            if !store.is_member(&thread, &agent)? {
+                return Ok(not_member(&thread));
+            }
+            let body = store.get_body(&canonical_id)?;
+            Ok(CommsResponse::Body { body })
+        })
+        .await
     }
 
-    pub(super) fn on_inbox(
+    pub(super) async fn on_inbox(
         &self,
-        session: &mut Session,
+        session: &Session,
         cursor: Option<Cursor>,
         limit: Option<u32>,
         mark_read: bool,
@@ -490,66 +571,75 @@ impl Broker {
         };
         let limit = clamp_limit(limit);
         let resume = cursor.as_ref().and_then(|value| value.decode().ok());
-        let mut threads = self.store.threads_for_agent(&agent)?;
-        threads.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+        // The per-thread scans and read-cursor writes are one blocking unit. Only `mark_read`
+        // mutates, so a plain inbox read (and the per-tool-call delivery probe) skips the write gate.
+        let scan = move |store: &CommsStore| -> Result<CommsResponse, CommsStoreError> {
+            let mut threads = store.threads_for_agent(&agent)?;
+            threads.sort_by(|a, b| a.as_str().cmp(b.as_str()));
 
-        let mut collected = Vec::with_capacity(limit);
-        let mut unread_remaining = 0u32;
-        let mut progress = Vec::with_capacity(threads.len());
-        for thread in &threads {
-            let read_seq = self.store.read_cursor(&agent, thread)?;
-            let cursor_seq = resume
-                .as_ref()
-                .and_then(|position| {
-                    position
-                        .threads
-                        .iter()
-                        .find(|(name, _)| name == thread.as_str())
-                        .map(|(_, seq)| *seq)
-                        .or_else(|| (position.thread == thread.as_str()).then_some(position.seq))
-                })
-                .unwrap_or_default();
-            let after = read_seq.max(cursor_seq);
-            // Bound the scan: past the page limit only a count is needed, and counting an unbounded
-            // backlog made every inbox read (and the per-tool-call delivery probe) cost O(backlog).
-            // One row over the cap detects truncation; the count is then a lower bound.
-            let scan_cap = limit.saturating_add(INBOX_UNREAD_SCAN_SLACK);
-            let mut rows = self.store.history_with_seq(thread, after, scan_cap.saturating_add(1))?;
-            let truncated = rows.len() > scan_cap;
-            rows.truncate(scan_cap);
-            let mut high = after;
-            let mut blocked = false;
-            for (seq, meta) in rows {
-                let eligible = meta.from != agent && keep_since(meta.ts_micros, since_micros);
-                if eligible && collected.len() < limit {
-                    collected.push(SeqMeta { seq, meta });
-                    high = seq;
-                } else if eligible {
+            let mut collected = Vec::with_capacity(limit);
+            let mut unread_remaining = 0u32;
+            let mut progress = Vec::with_capacity(threads.len());
+            for thread in &threads {
+                let read_seq = store.read_cursor(&agent, thread)?;
+                let cursor_seq = resume
+                    .as_ref()
+                    .and_then(|position| {
+                        position
+                            .threads
+                            .iter()
+                            .find(|(name, _)| name == thread.as_str())
+                            .map(|(_, seq)| *seq)
+                            .or_else(|| (position.thread == thread.as_str()).then_some(position.seq))
+                    })
+                    .unwrap_or_default();
+                let after = read_seq.max(cursor_seq);
+                // Bound the scan: past the page limit only a count is needed, and counting an unbounded
+                // backlog made every inbox read (and the per-tool-call delivery probe) cost O(backlog).
+                // One row over the cap detects truncation; the count is then a lower bound.
+                let scan_cap = limit.saturating_add(INBOX_UNREAD_SCAN_SLACK);
+                let mut rows = store.history_with_seq(thread, after, scan_cap.saturating_add(1))?;
+                let truncated = rows.len() > scan_cap;
+                rows.truncate(scan_cap);
+                let mut high = after;
+                let mut blocked = false;
+                for (seq, meta) in rows {
+                    let eligible = meta.from != agent && keep_since(meta.ts_micros, since_micros);
+                    if eligible && collected.len() < limit {
+                        collected.push(SeqMeta { seq, meta });
+                        high = seq;
+                    } else if eligible {
+                        unread_remaining = unread_remaining.saturating_add(1);
+                        blocked = true;
+                    } else if !blocked {
+                        high = seq;
+                    }
+                }
+                if truncated {
                     unread_remaining = unread_remaining.saturating_add(1);
-                    blocked = true;
-                } else if !blocked {
-                    high = seq;
+                }
+                progress.push((thread.as_str().to_string(), high));
+                if mark_read && high > after {
+                    store.set_read_cursor(&agent, thread, high)?;
                 }
             }
-            if truncated {
-                unread_remaining = unread_remaining.saturating_add(1);
-            }
-            progress.push((thread.as_str().to_string(), high));
-            if mark_read && high > after {
-                self.store.set_read_cursor(&agent, thread, high)?;
-            }
+
+            let next_cursor = (unread_remaining > 0).then(|| Cursor::encode_inbox(progress));
+
+            Ok(CommsResponse::Inbox {
+                messages: collected,
+                unread: unread_remaining,
+                next_cursor,
+            })
+        };
+        if mark_read {
+            self.store_write(scan).await
+        } else {
+            self.store_blocking(scan).await
         }
-
-        let next_cursor = (unread_remaining > 0).then(|| Cursor::encode_inbox(progress));
-
-        Ok(CommsResponse::Inbox {
-            messages: collected,
-            unread: unread_remaining,
-            next_cursor,
-        })
     }
 
-    pub(super) fn on_ack(
+    pub(super) async fn on_ack(
         &self,
         session: &Session,
         message_ids: Vec<String>,
@@ -567,42 +657,45 @@ impl Broker {
             });
         }
 
-        let mut targets: Vec<(ThreadId, u64)> = Vec::new();
-        let mut acked: u32 = 0;
-        if !message_ids.is_empty() {
-            for reference in &message_ids {
-                let (thread, seq) = match self.store.resolve_message_reference(reference)? {
-                    MessageReferenceResolution::Found { thread, seq, .. } => (thread, seq),
-                    resolution => return Ok(reference_error(reference, resolution)),
-                };
-                if !self.store.is_member(&thread, &agent)? {
+        self.store_write(move |store| {
+            let mut targets: Vec<(ThreadId, u64)> = Vec::new();
+            let mut acked: u32 = 0;
+            if !message_ids.is_empty() {
+                for reference in &message_ids {
+                    let (thread, seq) = match store.resolve_message_reference(reference)? {
+                        MessageReferenceResolution::Found { thread, seq, .. } => (thread, seq),
+                        resolution => return Ok(reference_error(reference, resolution)),
+                    };
+                    if !store.is_member(&thread, &agent)? {
+                        return Ok(not_member(&thread));
+                    }
+                    acked = acked.saturating_add(1);
+                    upsert_high(&mut targets, &thread, seq);
+                }
+            }
+            if let (Some(thread), Some(seq)) = (thread, to_seq) {
+                if !store.is_member(&thread, &agent)? {
                     return Ok(not_member(&thread));
                 }
-                acked = acked.saturating_add(1);
                 upsert_high(&mut targets, &thread, seq);
             }
-        }
-        if let (Some(thread), Some(seq)) = (thread, to_seq) {
-            if !self.store.is_member(&thread, &agent)? {
-                return Ok(not_member(&thread));
-            }
-            upsert_high(&mut targets, &thread, seq);
-        }
 
-        let mut cursors_advanced: Vec<(String, u64)> = Vec::new();
-        for (thread, seq) in &targets {
-            let before = self.store.read_cursor(&agent, thread)?;
-            self.store.set_read_cursor(&agent, thread, *seq)?;
-            let after = self.store.read_cursor(&agent, thread)?;
-            if after > before {
-                cursors_advanced.push((thread.as_str().to_string(), after));
+            let mut cursors_advanced: Vec<(String, u64)> = Vec::new();
+            for (thread, seq) in &targets {
+                let before = store.read_cursor(&agent, thread)?;
+                store.set_read_cursor(&agent, thread, *seq)?;
+                let after = store.read_cursor(&agent, thread)?;
+                if after > before {
+                    cursors_advanced.push((thread.as_str().to_string(), after));
+                }
             }
-        }
 
-        Ok(CommsResponse::Acked {
-            acked,
-            cursors_advanced,
+            Ok(CommsResponse::Acked {
+                acked,
+                cursors_advanced,
+            })
         })
+        .await
     }
 
     pub(super) async fn on_subscribe(
@@ -614,14 +707,25 @@ impl Broker {
         let Some(agent) = session.agent.clone() else {
             return Ok(need_hello());
         };
-        if self.store.get_thread(&thread)?.is_none() {
-            return Ok(unknown_thread(&thread));
+        let joined = self
+            .store_write({
+                let (thread, agent) = (thread.clone(), agent.clone());
+                move |store| {
+                    if store.get_thread(&thread)?.is_none() {
+                        return Ok(Some(unknown_thread(&thread)));
+                    }
+                    store.add_member(&Membership {
+                        agent_id: agent,
+                        thread,
+                        created_at: now_micros(),
+                    })?;
+                    Ok(None)
+                }
+            })
+            .await?;
+        if let Some(rejection) = joined {
+            return Ok(rejection);
         }
-        self.store.add_member(&Membership {
-            agent_id: agent.clone(),
-            thread: thread.clone(),
-            created_at: now_micros(),
-        })?;
         let sub = self.next_sub.fetch_add(1, Ordering::Relaxed);
         {
             let mut reg = self.registry.lock().await;
@@ -653,15 +757,25 @@ impl Broker {
         let Some(agent) = session.agent.clone() else {
             return Ok(need_hello());
         };
-        if let Some(thread) = &thread {
-            if self.store.get_thread(thread)?.is_none() {
-                return Ok(unknown_thread(thread));
-            }
-            if !self.store.members(thread)?.contains(&agent) {
-                return Ok(CommsResponse::Error {
-                    code: "not_member".to_string(),
-                    message: format!("not a member of {}", thread.as_str()),
-                });
+        if let Some(thread) = thread.clone() {
+            let rejection = self
+                .store_blocking({
+                    let agent = agent.clone();
+                    move |store| {
+                        if store.get_thread(&thread)?.is_none() {
+                            return Ok(Some(unknown_thread(&thread)));
+                        }
+                        Ok(
+                            (!store.members(&thread)?.contains(&agent)).then(|| CommsResponse::Error {
+                                code: "not_member".to_string(),
+                                message: format!("not a member of {}", thread.as_str()),
+                            }),
+                        )
+                    }
+                })
+                .await?;
+            if let Some(rejection) = rejection {
+                return Ok(rejection);
             }
         }
         let sub = self.next_sub.fetch_add(1, Ordering::Relaxed);
@@ -699,7 +813,9 @@ impl Broker {
         // store could not be read is the same defect the report is meant to expose — it looks like
         // a healthy empty broker. Failing here is what lets `comms status` and `doctor --probe`
         // tell "serving" apart from "holding the socket and refusing every request". ~keep
-        let threads = self.store.list_threads()?.iter().filter(|th| th.active).count();
+        let threads = self
+            .store_blocking(|store| Ok(store.list_threads()?.iter().filter(|th| th.active).count()))
+            .await?;
         Ok(CommsResponse::Status(StatusReport {
             pid: std::process::id(),
             version: self.version.clone(),
@@ -719,7 +835,11 @@ impl Broker {
     /// whose channel is full or closed is dropped; a membership-read failure is logged and treated
     /// as "no inbox sinks wake" for this post rather than failing the post itself.
     async fn fan_out(&self, thread: &ThreadId, meta: &MessageMeta) {
-        let members = self.store.members(thread).unwrap_or_else(|error| {
+        let members = {
+            let thread = thread.clone();
+            self.store_blocking(move |store| store.members(&thread)).await
+        }
+        .unwrap_or_else(|error| {
             tracing::warn!(%error, thread = thread.as_str(), "comms: fan_out membership read failed");
             Vec::new()
         });
@@ -802,105 +922,5 @@ impl Broker {
                 tracing::debug!("comms: broker idle (no subscribers); socket + flock retained");
             }
         }
-    }
-}
-
-fn validate_retention_policy(
-    message_ttl_secs: u64,
-    thread_idle_ttl_secs: u64,
-    thread_retention_ttl_secs: u64,
-    agent_ttl_secs: u64,
-    claim_ttl_secs: u64,
-) -> Result<(), String> {
-    for (name, value) in [
-        ("message_ttl_secs", message_ttl_secs),
-        ("thread_idle_ttl_secs", thread_idle_ttl_secs),
-        ("thread_retention_ttl_secs", thread_retention_ttl_secs),
-        ("agent_ttl_secs", agent_ttl_secs),
-        ("claim_ttl_secs", claim_ttl_secs),
-    ] {
-        if !(MIN_RETENTION_SECS..=MAX_RETENTION_SECS).contains(&value) {
-            return Err(format!(
-                "{name} must be between {MIN_RETENTION_SECS} and {MAX_RETENTION_SECS}"
-            ));
-        }
-    }
-    if thread_retention_ttl_secs < thread_idle_ttl_secs {
-        return Err("thread_retention_ttl_secs must be greater than or equal to thread_idle_ttl_secs".to_string());
-    }
-    Ok(())
-}
-
-fn reference_error(reference: &str, resolution: MessageReferenceResolution) -> CommsResponse {
-    let (code, detail) = match resolution {
-        MessageReferenceResolution::Malformed => ("malformed_message_ref", "is malformed"),
-        MessageReferenceResolution::Missing => ("missing_message_ref", "does not exist"),
-        MessageReferenceResolution::Ambiguous => ("ambiguous_message_ref", "matches more than one message"),
-        MessageReferenceResolution::Found { .. } => ("invalid_message_ref", "could not be resolved"),
-    };
-    CommsResponse::Error {
-        code: code.to_string(),
-        message: format!("message reference `{reference}` {detail}"),
-    }
-}
-
-fn need_hello() -> CommsResponse {
-    CommsResponse::Error {
-        code: "no_hello".to_string(),
-        message: "send Hello before any other request".to_string(),
-    }
-}
-
-fn unknown_thread(thread: &ThreadId) -> CommsResponse {
-    CommsResponse::Error {
-        code: "unknown_thread".to_string(),
-        message: format!("no thread {}", thread.as_str()),
-    }
-}
-
-fn not_creator() -> CommsResponse {
-    CommsResponse::Error {
-        code: "not_creator".to_string(),
-        message: "only the thread creator may manage membership or archive it".to_string(),
-    }
-}
-
-fn not_member(thread: &ThreadId) -> CommsResponse {
-    CommsResponse::Error {
-        code: "not_member".to_string(),
-        message: format!("agent is not a member of thread {}", thread.as_str()),
-    }
-}
-
-/// Rows scanned past the page limit when counting a thread's unread remainder.
-const INBOX_UNREAD_SCAN_SLACK: usize = 500;
-
-fn clamp_limit(limit: Option<u32>) -> usize {
-    usize::try_from(limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT)).unwrap_or(DEFAULT_LIMIT as usize)
-}
-
-fn decode_after(cursor: Option<&Cursor>, thread: &str) -> u64 {
-    match cursor.and_then(|c| c.decode().ok()) {
-        Some(pos) if pos.thread == thread || pos.thread.is_empty() => pos.seq,
-        _ => 0,
-    }
-}
-
-/// Whether a message with `ts_micros` passes the optional recency cutoff.
-fn keep_since(ts_micros: i64, since_micros: Option<i64>) -> bool {
-    match since_micros {
-        Some(cut) => ts_micros >= cut,
-        None => true,
-    }
-}
-
-/// Record the highest delivered `seq` for `thread` in a small per-page accumulator.
-fn upsert_high(acc: &mut Vec<(ThreadId, u64)>, thread: &ThreadId, seq: u64) {
-    if let Some(entry) = acc.iter_mut().find(|(t, _)| t == thread) {
-        if seq > entry.1 {
-            entry.1 = seq;
-        }
-    } else {
-        acc.push((thread.clone(), seq));
     }
 }
