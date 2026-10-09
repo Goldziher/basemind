@@ -30,6 +30,7 @@ use tokio::sync::RwLock;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
 
+use super::daemon_handlers::PostFields;
 use super::git_history_ops::HistoryEntry;
 use super::ids::{AgentId, ThreadId};
 use super::protocol::{CommsOut, CommsRequest, CommsResponse};
@@ -815,7 +816,17 @@ impl Broker {
                 tags,
                 reply_to,
                 body,
-            } => self.on_post(session, thread, subject, tags, reply_to, body).await,
+                idempotency_key,
+            } => {
+                let fields = PostFields {
+                    subject,
+                    tags,
+                    reply_to,
+                    body,
+                    idempotency_key,
+                };
+                self.on_post(session, thread, fields).await
+            }
             CommsRequest::ThreadHistory {
                 thread,
                 cursor,

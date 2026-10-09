@@ -128,6 +128,7 @@ impl CommsStore {
         if pruned > 0 {
             batch.commit()?;
         }
+        self.prune_idempotency()?;
         Ok(pruned)
     }
 

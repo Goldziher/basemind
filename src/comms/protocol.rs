@@ -130,6 +130,11 @@ pub enum CommsRequest {
         reply_to: Option<String>,
         /// The message body bytes.
         body: Vec<u8>,
+        /// Client-generated key making a retried post return the original id instead of storing a
+        /// second copy (deduplicated per agent and thread for an hour). Additive: an older daemon
+        /// ignores it.
+        #[serde(default)]
+        idempotency_key: Option<String>,
     },
     /// Read a thread's history, oldest-first, paginated. Returns front-matter only.
     ThreadHistory {
@@ -684,6 +689,7 @@ mod tests {
     #[test]
     fn request_round_trips_through_msgpack() {
         let req = CommsRequest::ThreadPost {
+            idempotency_key: None,
             thread: ThreadId::parse("th-1").expect("thread"),
             subject: "hi".to_string(),
             tags: vec!["t".to_string()],

@@ -486,6 +486,7 @@ async fn concurrent_posts_keep_seq_order() {
                         tags: Vec::new(),
                         reply_to: None,
                         body: b"x".to_vec(),
+                        idempotency_key: None,
                     },
                     &mut session,
                     &tx,
