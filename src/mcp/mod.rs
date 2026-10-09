@@ -749,6 +749,21 @@ impl BasemindServer {
             .map(|tool| tool.name.to_string())
             .collect()
     }
+
+    /// Every advertised tool paired with its JSON input schema (the `inputSchema` of `tools/list`).
+    /// Exposed for the `tests/cli_parity.rs` parameter-parity layer.
+    pub fn tool_input_schemas(&self) -> Vec<(String, serde_json::Value)> {
+        self.tool_router
+            .list_all()
+            .into_iter()
+            .map(|tool| {
+                (
+                    tool.name.to_string(),
+                    serde_json::Value::Object((*tool.input_schema).clone()),
+                )
+            })
+            .collect()
+    }
 }
 
 #[cfg(test)]
