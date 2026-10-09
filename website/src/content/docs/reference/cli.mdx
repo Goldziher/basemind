@@ -7,7 +7,7 @@ import { Aside } from '@astrojs/starlight/components';
 
 The CLI mirrors the MCP surface exactly: **nine domains**, each a real clap subcommand group
 (`basemind <domain> <mode>`), enforced as a strict bijection against the MCP tools by
-`tests/cli_parity.rs`. Multi-word mode names are kebab-cased on the CLI (`by_path` → `by-path`) but
+`tests/cli_parity/`. Multi-word mode names are kebab-cased on the CLI (`by_path` → `by-path`) but
 keep their snake_case spelling on the wire (MCP mode name, `--json` field names). Add `--json` to
 any tool subcommand for machine-readable output.
 

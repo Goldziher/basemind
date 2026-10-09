@@ -991,7 +991,7 @@ files that became eligible from the cached blobs, without re-embedding.
 <details>
 <summary><strong>Full command list</strong> — code · graph · git · memory · admin · cache · web · agents · workspace · shell</summary>
 
-CLI commands mirror the MCP tools 1:1 (enforced by `tests/cli_parity.rs`). Add `--json` for
+CLI commands mirror the MCP tools 1:1 (enforced by `tests/cli_parity/`). Add `--json` for
 machine-readable output (the same response types the MCP tools return, including `agents` and
 `workspace`). Human output prints source bodies, diffs and exports in full; only table cells are cut
 (to 200 characters, with a note on stderr), and the timing line goes to stderr. List commands take
