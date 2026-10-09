@@ -92,12 +92,14 @@ pub struct CodeParams {
     pub max_tokens: Option<u32>,
     /// `"json"` (default) or `"toon"` (compact tabular).
     #[serde(default, alias = "encoding")]
+    #[schemars(extend("enum" = ["json", "toon"]))]
     pub format: Option<String>,
     /// Resume token from the previous `next_cursor`.
     #[serde(default)]
     pub cursor: Option<Cursor>,
     /// `semantic`: `hybrid` (default), `semantic` (vector only) or `keyword` (BM25 only).
     #[serde(default, alias = "strategy")]
+    #[schemars(extend("enum" = ["hybrid", "semantic", "keyword"]))]
     pub lane: Option<String>,
     /// `semantic`: cross-encoder rerank of fused hits (default from config; first use downloads a model).
     #[serde(default, alias = "reranker_enabled")]

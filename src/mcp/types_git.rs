@@ -43,6 +43,7 @@ pub struct GitParams {
     pub pattern: Option<String>,
     /// `search`: `author`, `message` or `all` (default).
     #[serde(default)]
+    #[schemars(extend("enum" = ["author", "message", "all"]))]
     pub field: Option<String>,
     /// `blame_symbol`/`symbol_history`: symbol name in `path` (required).
     #[serde(default, alias = "symbol")]
@@ -83,6 +84,7 @@ pub struct GitParams {
     /// `symbol_history` only. Fingerprint strategy for detecting body changes between commits:
     /// `normalized` (default), `structural`, or `structural_loose`.
     #[serde(default)]
+    #[schemars(extend("enum" = ["normalized", "structural", "structural_loose"]))]
     pub hash_mode: Option<String>,
 }
 
