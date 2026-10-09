@@ -495,20 +495,12 @@ Daemon-side knobs that are not config keys (`BASEMIND_WARM_READ_STACKS`, `BASEMI
 
 ## Per-Request Overrides
 
-MCP tools accept one-off overrides that apply to that request only and take the highest precedence.
-These cover the documents + LLM settings — for example an `llm_api_key` or `rerank_enabled` on a
-`memory` mode `documents` / `code` mode `semantic` call:
-
-```json
-{
-  "tool": "memory",
-  "params": {
-    "mode": "documents",
-    "query": "how to authenticate",
-    "llm_api_key": "sk-override..."
-  }
-}
-```
+The `documents.*` and `llm.*` overrides are CLI flags and environment variables only; the MCP tools
+do not accept them (they used to inflate every session's tool schema, and `llm_api_key` would have
+put a secret in tool arguments). Set those keys in `basemind.toml`. The per-call knobs MCP does
+expose are the ones that change a single query: `memory` mode `documents` takes `format`,
+`max_tokens`, `mime_type`, `scope`, `entity_category` and `keywords_contains`, and `code` mode
+`semantic` takes `lane`, `rerank`, `rerank_preset` and `rerank_top_k`.
 
 ## Cargo Features
 

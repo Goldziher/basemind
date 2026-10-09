@@ -891,7 +891,7 @@ onnx_provider = "cpu"
 environment variable (each flag's name is in `--help`; the variable is the flag upper-cased with a
 `BASEMIND_` prefix and underscores, e.g. `--llm-model` is `BASEMIND_LLM_MODEL`, `--documents-overlap`
 is `BASEMIND_DOCUMENTS_OVERLAP`). Every other setting is file-only. Overrides apply to the CLI
-command they are passed to and, per request, to `search_documents`; a daemon-hosted scan or read
+command they are passed to (the MCP tools do not accept them); a daemon-hosted scan or read
 stack loads only the file (plus the daemon caps below), so set those keys in `basemind.toml` for
 daemon workloads. Overrides are validated after merging, so an override cannot smuggle in a value
 the file would be rejected for (`documents.max_characters` under 64, `overlap >= max_characters`,

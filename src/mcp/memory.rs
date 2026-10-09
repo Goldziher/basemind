@@ -505,19 +505,7 @@ pub(super) async fn run_search_documents(
     params: SearchDocumentsParams,
 ) -> Result<CallToolResult, McpError> {
     let __body = std::time::Instant::now();
-    let (output_format, reranker_enabled, reranker_preset, reranker_top_k) = if params.overrides.any() {
-        let mut effective = (*state.shared.config).clone();
-        crate::config::layered::apply_documents_overrides(
-            &mut effective,
-            &params.overrides,
-            crate::config::ConfigSource::Mcp,
-            None,
-        );
-        crate::config::validate_merged(&effective)
-            .map_err(|e| McpError::invalid_params(format!("invalid documents override: {e}"), None))?;
-        let r = &effective.documents.reranker;
-        (effective.documents.output.format, r.enabled, r.preset.clone(), r.top_k)
-    } else {
+    let (output_format, reranker_enabled, reranker_preset, reranker_top_k) = {
         let r = &state.shared.config.documents.reranker;
         (
             state.shared.config.documents.output.format,

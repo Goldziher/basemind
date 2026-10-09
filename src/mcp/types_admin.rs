@@ -24,12 +24,10 @@ use crate::path::RelPath;
 pub struct AdminParams {
     /// Which operation to run.
     pub mode: AdminMode,
-    /// `rescan` only. Repo-relative paths to re-index incrementally. Omit to walk the whole
-    /// working tree. Forward-slash, no leading `/`.
+    /// `rescan`: repo-relative paths to re-index (omit for the whole tree).
     #[serde(default)]
     pub paths: Option<Vec<String>>,
-    /// `rescan` only. Force a complete working-tree re-index even when `paths` is supplied
-    /// (full wins). Use when the index is stale or reports "no indexed files".
+    /// `rescan`: force a complete re-index; wins over `paths`.
     #[serde(default)]
     pub full: Option<bool>,
     /// `telemetry` only. Aggregation window: `today` (default), `1h`, `24h`, `all`.
@@ -42,8 +40,7 @@ pub struct AdminParams {
     /// `views:<name>` for a single non-live view. Required by that mode.
     #[serde(default)]
     pub component: Option<String>,
-    /// `cache_clear` only. Required gate for the destructive components that back the live code
-    /// map. Ignored for the non-live caches.
+    /// `cache_clear`: required for components backing the live code map.
     #[serde(default)]
     pub confirm: Option<bool>,
     /// `compress` (prose input) and `checkpoint` (session transcript). Required by `checkpoint`;
@@ -54,13 +51,13 @@ pub struct AdminParams {
     /// Mutually exclusive with `text`.
     #[serde(default)]
     pub path: Option<RelPath>,
-    /// `compress` only. Reduction intensity: `off|light|moderate|aggressive|maximum`.
+    /// `compress`: `off|light|moderate|aggressive|maximum`.
     #[serde(default)]
     pub level: Option<String>,
     /// `compress` only. When true (the default), code blocks inside prose are left intact.
     #[serde(default)]
     pub preserve_code: Option<bool>,
-    /// `compress` only. Soft token budget hint, echoed back; it does not hard-cap the output.
+    /// `compress`: soft token budget hint; not a hard cap.
     #[serde(default)]
     pub target_tokens: Option<u32>,
     /// `delta` only. Previously seen content. Required by that mode.

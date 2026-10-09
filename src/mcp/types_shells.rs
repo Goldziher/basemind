@@ -35,7 +35,7 @@ pub struct ShellParams {
     /// Forward-slash separated, no leading `/`.
     #[serde(default)]
     pub cwd: Option<RelPath>,
-    /// `spawn` only. Environment-variable overrides applied to the spawned process.
+    /// `spawn`: environment-variable overrides.
     #[serde(default)]
     pub env: Option<Vec<ShellEnv>>,
     /// `spawn` only. Human-readable title for the session (advisory; address the session by the
@@ -51,8 +51,7 @@ pub struct ShellParams {
     /// `send` / `broadcast`. Text to write to the session's stdin. Required by those modes.
     #[serde(default)]
     pub text: Option<String>,
-    /// `send` / `broadcast`. When `true` (default), a trailing newline is appended so the line is
-    /// executed. Set `false` to send a raw keystroke fragment without a return.
+    /// `send`/`broadcast`: append a newline (default true); false sends raw keystrokes.
     #[serde(default)]
     pub enter: Option<bool>,
     /// `capture` only. Cap on trailing non-blank rows of recent retained pane output. Maximum 500;
