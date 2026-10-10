@@ -1,8 +1,9 @@
 # License: MIT OR Apache-2.0 (see LICENSE-MIT / LICENSE-APACHE — upstream copyright retained).
 [package]
+include = ["/Cargo.toml", "/Cargo.lock", "/src/**", "/README.md", "/LICENSE-MIT", "/LICENSE-APACHE"]
 name = "basemind-lsp-positions"
 version = "0.3.4"
-description = "LSP-compatible character positions (maintained basemind fork, tree-sitter 0.26 port)"
+description = "LSP-compatible character positions (maintained basemind fork, tree-sitter 0.27 port)"
 homepage = "https://github.com/Goldziher/basemind"
 repository = "https://github.com/Goldziher/basemind"
 readme = "README.md"
@@ -19,8 +20,8 @@ bincode = ["dep:bincode"]
 tree-sitter = ["dep:tree-sitter"]
 
 [dependencies]
-# 3.0.0 is a placeholder crate containing an unconditional compile_error!; 2.0.1 is the latest usable release. ~keep
-bincode = { version = "=2.0.1", optional = true }
+# ~keep bincode 3 is a placeholder; the compatible 2.x requirement stays on the usable API.
+bincode = { version = "2.0.1", optional = true }
 memchr = "2.8"
 serde = { version = "1", features = ["derive"], optional = true }
 tree-sitter = { version = "0.27", optional = true }

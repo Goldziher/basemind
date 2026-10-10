@@ -1,5 +1,37 @@
 
 [package]
+include = [
+  "/Cargo.toml",
+  "/Cargo.lock",
+  "/src/**",
+  "/README.md",
+  "/LICENSE",
+  "/ATTRIBUTIONS.md",
+  "/build.rs",
+  "/schema/basemind-config-v1.schema.json",
+  "!/src/scanner_filter_tests.rs",
+  "!/src/watcher_tests.rs",
+  "!/src/scanner_docs_security_tests.rs",
+  "!/src/scanner_docs_tests.rs",
+  "!/src/store_blob_tests.rs",
+  "!/src/store_gc_tier_tests.rs",
+  "!/src/comms/client_tests.rs",
+  "!/src/comms/store_tests.rs",
+  "!/src/comms/workspace_pool_tests.rs",
+  "!/src/comms/daemon_tests.rs",
+  "!/src/comms/daemon_forward_tests.rs",
+  "!/src/lance/tests.rs",
+  "!/src/mcp/helpers_calls_scan_tests.rs",
+  "!/src/mcp/helpers_governance/tests.rs",
+  "!/src/mcp/codegraph_tests.rs",
+  "!/src/mcp/index_route_tests.rs",
+  "!/src/mcp/lazy_cache_tests.rs",
+  "!/src/mcp/find_files_tests.rs",
+  "!/src/mcp/map_cache_budget_tests.rs",
+  "!/src/mcp/term_index_tests.rs",
+  "!/src/registry/tests.rs",
+  "!/src/index/writer_tests.rs",
+]
 name = "basemind"
 version = "0.29.0"
 authors = ["Na'aman Hirschfeld <nhirschfeld@gmail.com>"]
@@ -18,12 +50,7 @@ categories = ["command-line-utilities", "development-tools"]
 # dependency's comment), so machete's unused-dependency scan must skip it.
 ignored = ["serde_toon_format", "rustix"]
 [workspace]
-members = [
-    "crates/lsp-positions",
-    "crates/stack-graphs",
-    "crates/tree-sitter-graph",
-    "crates/tree-sitter-stack-graphs",
-]
+members = ["crates/lsp-positions", "crates/stack-graphs", "crates/tree-sitter-graph", "crates/tree-sitter-stack-graphs"]
 
 [workspace.lints.clippy]
 all = "warn"
@@ -39,13 +66,7 @@ path = "src/main.rs"
 [features]
 default = []
 
-intelligence = [
-    "dep:xberg",
-    "dep:lancedb",
-    "dep:arrow-array",
-    "dep:arrow-schema",
-    "dep:futures",
-]
+intelligence = ["dep:xberg", "dep:lancedb", "dep:arrow-array", "dep:arrow-schema", "dep:futures"]
 
 # Just the real o200k tokenizer (`xberg::chunking::count_tokens`), used by `basemind admin tokens`
 # and `src/mcp/savings.rs`. `xberg/chunking-tokenizers` is a pure-Rust `tokenizers` crate underneath
@@ -54,73 +75,60 @@ intelligence = [
 tokenizer = ["dep:xberg", "xberg/chunking-tokenizers"]
 
 documents = [
-    "intelligence",
-    "tokenizer",
-    "xberg/formats",
-    "xberg/analysis",
-    "xberg/embeddings",
-    "xberg/reranker",
-    "xberg/reranker-presets",
-    "xberg/ocr",
-    "xberg/paddle-ocr",
-    "xberg/layout-detection",
-    "xberg/auto-rotate",
-    "xberg/ner-onnx",
-    "xberg/keywords-yake",
-    "xberg/keywords-rake",
-    "xberg/summarization",
-    "xberg/summarization-llm",
-    "xberg/redaction",
-    "xberg/qr-codes",
-    "dep:serde_toon_format",
+  "intelligence",
+  "tokenizer",
+  "xberg/formats",
+  "xberg/analysis",
+  "xberg/embeddings",
+  "xberg/reranker",
+  "xberg/reranker-presets",
+  "xberg/ocr",
+  "xberg/paddle-ocr",
+  "xberg/layout-detection",
+  "xberg/auto-rotate",
+  "xberg/ner-onnx",
+  "xberg/keywords-yake",
+  "xberg/keywords-rake",
+  "xberg/summarization",
+  "xberg/summarization-llm",
+  "xberg/redaction",
+  "xberg/qr-codes",
+  "dep:serde_toon_format",
 ]
 
-code-search = [
-    "intelligence",
-    "xberg/embeddings",
-    "xberg/reranker",
-    "xberg/reranker-presets",
-]
+code-search = ["intelligence", "xberg/embeddings", "xberg/reranker", "xberg/reranker-presets"]
 
 memory = ["intelligence", "xberg/embeddings", "xberg/keywords", "xberg/ner-onnx"]
 
 crawl = ["documents", "dep:crawlberg", "dep:url"]
 
 comms = [
-    "dep:hyper",
-    "dep:hyper-util",
-    "dep:http",
-    "dep:http-body-util",
-    "dep:bytes",
-    "dep:form_urlencoded",
-    "dep:getrandom",
-    "rmcp/transport-streamable-http-server",
+  "dep:hyper",
+  "dep:hyper-util",
+  "dep:http",
+  "dep:http-body-util",
+  "dep:bytes",
+  "dep:form_urlencoded",
+  "dep:getrandom",
+  "rmcp/transport-streamable-http-server",
 ]
 
 shells = ["dep:rmux-sdk", "dep:rmux-server", "dep:rmux-client"]
 
 code-intel-js = [
-    "dep:oxc_allocator",
-    "dep:oxc_parser",
-    "dep:oxc_semantic",
-    "dep:oxc_span",
-    "dep:oxc_syntax",
-    "dep:oxc_resolver",
+  "dep:oxc_allocator",
+  "dep:oxc_parser",
+  "dep:oxc_semantic",
+  "dep:oxc_span",
+  "dep:oxc_syntax",
+  "dep:oxc_resolver",
 ]
 
 code-intel-stack = ["dep:stack-graphs", "dep:tree-sitter-graph", "dep:tree-sitter-stack-graphs"]
 
 code-intel = ["code-intel-js", "code-intel-stack"]
 
-full = [
-    "documents",
-    "memory",
-    "crawl",
-    "comms",
-    "shells",
-    "code-intel",
-    "code-search",
-]
+full = ["documents", "memory", "crawl", "comms", "shells", "code-intel", "code-search"]
 
 test-support = ["dep:tempfile"]
 
@@ -132,10 +140,10 @@ anstream = "1.0"
 anstyle = "1"
 anyhow = "1"
 arc-swap = "1.9.2"
-# Pinned to match LanceDB's transitive arrow: lancedb 0.37 -> lance 10 -> datafusion 54 -> arrow 58. ~keep
+# ~keep Arrow major 58 matches LanceDB 0.40 so public schema and array types share one identity.
 # Bumping past 58 forks arrow into two versions and breaks Scannable/Schema type identity. ~keep
-arrow-array = { version = "=58", optional = true }
-arrow-schema = { version = "=58", optional = true }
+arrow-array = { version = "58", optional = true }
+arrow-schema = { version = "58", optional = true }
 blake3 = "1"
 bstr = { version = "1", features = ["serde"] }
 # Streamable-HTTP MCP front-end (comms daemon only): response bodies + query parsing + hyper server. ~keep
@@ -203,16 +211,16 @@ streaming-iterator = "0.1"
 tempfile = { version = "3", optional = true }
 thiserror = "2"
 tokio = { version = "1", features = [
-    "rt-multi-thread",
-    "macros",
-    "signal",
-    "sync",
-    "io-util",
-    "io-std",
-    "time",
-    "net",
-    "fs",
-    "process",
+  "rt-multi-thread",
+  "macros",
+  "signal",
+  "sync",
+  "io-util",
+  "io-std",
+  "time",
+  "net",
+  "fs",
+  "process",
 ] }
 tokio-util = { version = "0.7", features = ["codec"] }
 toml = "1.1"

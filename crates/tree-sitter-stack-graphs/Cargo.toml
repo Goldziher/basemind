@@ -1,8 +1,9 @@
 # License: MIT OR Apache-2.0 (see LICENSE-MIT / LICENSE-APACHE — upstream copyright retained).
 [package]
+include = ["/Cargo.toml", "/Cargo.lock", "/src/**", "/README.md", "/LICENSE-MIT", "/LICENSE-APACHE"]
 name = "basemind-tree-sitter-stack-graphs"
 version = "0.10.0"
-description = "Create stack graphs using tree-sitter parsers (maintained basemind fork, tree-sitter 0.26 port)"
+description = "Create stack graphs using tree-sitter parsers (maintained basemind fork, tree-sitter 0.27 port)"
 homepage = "https://github.com/Goldziher/basemind"
 repository = "https://github.com/Goldziher/basemind"
 readme = "README.md"
@@ -17,7 +18,7 @@ test = false
 [dependencies]
 controlled-option = "0.4.1"
 lsp-positions = { package = "basemind-lsp-positions", version = "0.3.4", path = "../lsp-positions", features = [
-    "tree-sitter",
+  "tree-sitter",
 ] }
 once_cell = "1"
 stack-graphs = { package = "basemind-stack-graphs", version = "0.14.1", path = "../stack-graphs" }

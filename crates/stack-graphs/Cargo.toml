@@ -1,5 +1,6 @@
 # License: MIT OR Apache-2.0 (see LICENSE-MIT / LICENSE-APACHE — upstream copyright retained).
 [package]
+include = ["/Cargo.toml", "/Cargo.lock", "/src/**", "/README.md", "/LICENSE-MIT", "/LICENSE-APACHE"]
 name = "basemind-stack-graphs"
 version = "0.14.1"
 description = "Name binding for arbitrary programming languages (maintained basemind fork)"
