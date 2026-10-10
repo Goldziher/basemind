@@ -100,8 +100,16 @@ async fn resources_list_read_and_complete() {
         .expect("map");
 
     // Policy and validation errors.
+    // Markdown is code-mapped without the document tier, so only a `documents` build rejects it.
+    #[cfg(feature = "documents")]
+    assert!(
+        service
+            .read_resource(ReadResourceRequestParams::new("basemind://outline/notes.md"))
+            .await
+            .is_err(),
+        "document-tier outline must error"
+    );
     for bad in [
-        "basemind://outline/notes.md",
         "basemind://outline/../etc/passwd",
         "basemind://outline/%2e%2e/x",
         "basemind://memory/no-such-key",

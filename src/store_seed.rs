@@ -349,19 +349,31 @@ mod tests {
             EmbedMode::Inline,
         )
         .expect("scan wt");
-        // The clone carries no LanceDB rows and records the sentinel embed policy, so the first scan
-        // re-flushes every eligible file (`scanner_policy::detect`). The content-identical files
-        // therefore are not `Unchanged` -- but they take the cached-blob path (no re-extraction);
-        // only the modified file is extracted afresh.
-        assert_eq!(
-            report.stats.skipped_unchanged, 0,
-            "the sentinel policy forces a re-flush"
-        );
-        assert_eq!(report.stats.updated, 3, "every seeded file is re-flushed");
-        assert_eq!(
-            report.stats.reused_extraction, 2,
-            "a.rs and c.rs are content-identical: re-flushed from cached blobs, not re-extracted"
-        );
+        // The clone records the sentinel embed policy, so the first scan re-flushes every file
+        // (`scanner_policy::detect`) -- but only where an embedding tier exists to be rebuilt.
+        // Re-flushed files take the cached-blob path (no re-extraction); only the modified file
+        // is extracted afresh.
+        #[cfg(feature = "code-search")]
+        {
+            assert_eq!(
+                report.stats.skipped_unchanged, 0,
+                "the sentinel policy forces a re-flush"
+            );
+            assert_eq!(report.stats.updated, 3, "every seeded file is re-flushed");
+            assert_eq!(
+                report.stats.reused_extraction, 2,
+                "a.rs and c.rs are content-identical: re-flushed from cached blobs, not re-extracted"
+            );
+        }
+        // Without `code-search` nothing consumes the reflush flag, so identical files stay unchanged.
+        #[cfg(not(feature = "code-search"))]
+        {
+            assert_eq!(
+                report.stats.skipped_unchanged, 2,
+                "a.rs and c.rs are content-identical: unchanged"
+            );
+            assert_eq!(report.stats.updated, 1, "only the modified b.rs is re-extracted");
+        }
         drop(store);
         // The sibling is untouched by the clone.
         let m = Store::open(&main, VIEW_WORKING).expect("reopen main");
