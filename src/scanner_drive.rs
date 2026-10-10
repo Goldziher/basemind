@@ -382,11 +382,19 @@ fn apply_outcomes(ctx: &mut DriveCtx<'_>, outcomes: Vec<FileResult>) {
                 ctx.stats.parse_timeouts += 1;
             }
             #[cfg(feature = "documents")]
-            FileStatus::DocIndexed { reused, .. } => {
+            FileStatus::DocIndexed { reused, degraded, .. } => {
                 ctx.stats.docs_indexed += 1;
                 if *reused {
                     ctx.stats.reused_doc_extraction += 1;
                 }
+                if *degraded {
+                    ctx.stats.docs_degraded += 1;
+                }
+            }
+            #[cfg(feature = "documents")]
+            FileStatus::DocTimedOut => {
+                ctx.stats.extract_failed += 1;
+                ctx.stats.doc_timeouts += 1;
             }
         }
         if matches!(o.status, FileStatus::Updated { .. } | FileStatus::Unchanged) {

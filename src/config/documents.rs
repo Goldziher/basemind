@@ -54,10 +54,25 @@ pub struct DocumentsConfig {
     #[serde(default = "DocumentsConfig::default_max_pages")]
     #[schemars(range(min = 1))]
     pub max_pages: usize,
-    /// Maximum wall-clock time xberg may spend extracting one document.
+    /// Maximum wall-clock time one document's extraction (including chunking) may take. Enforced by a
+    /// watchdog: a document that overruns is abandoned, skipped and counted as `doc_timeouts` in the scan
+    /// summary, so one pathological file cannot stall a scan.
     #[serde(default = "DocumentsConfig::default_extraction_timeout_secs")]
     #[schemars(range(min = 1))]
     pub extraction_timeout_secs: u64,
+    /// Largest text-like document (markdown, csv, json, yaml, xml, toml, ini, ...) in bytes still chunked
+    /// with xberg's structure-aware markdown splitter. The splitter re-scans every remaining element
+    /// per chunk, so its cost grows with the square of the document: a multi-megabyte file can stall a
+    /// scan worker for minutes. Larger files are chunked by a linear fixed-size chunker instead (counted
+    /// as `docs_degraded` in the scan summary). Never applies to binary formats (PDF, Office, ...).
+    #[serde(default = "DocumentsConfig::default_markdown_chunk_max_bytes")]
+    #[schemars(range(min = 1024))]
+    pub markdown_chunk_max_bytes: u64,
+    /// Like `markdown_chunk_max_bytes` but for plain text (`text/plain`: `.txt`, `.log`, ...), which has no
+    /// markdown structure for the splitter to exploit, so the cutover is lower.
+    #[serde(default = "DocumentsConfig::default_plain_text_chunk_max_bytes")]
+    #[schemars(range(min = 1024))]
+    pub plain_text_chunk_max_bytes: u64,
     /// Maximum chunk size in characters.
     #[serde(default = "DocumentsConfig::default_max_characters")]
     #[schemars(range(min = 64))]
@@ -172,6 +187,12 @@ impl DocumentsConfig {
     fn default_extraction_timeout_secs() -> u64 {
         600
     }
+    fn default_markdown_chunk_max_bytes() -> u64 {
+        256 * 1024
+    }
+    fn default_plain_text_chunk_max_bytes() -> u64 {
+        128 * 1024
+    }
 }
 
 impl Default for DocumentsConfig {
@@ -186,6 +207,8 @@ impl Default for DocumentsConfig {
             max_chunks_per_document: Self::default_max_chunks_per_document(),
             max_pages: Self::default_max_pages(),
             extraction_timeout_secs: Self::default_extraction_timeout_secs(),
+            markdown_chunk_max_bytes: Self::default_markdown_chunk_max_bytes(),
+            plain_text_chunk_max_bytes: Self::default_plain_text_chunk_max_bytes(),
             max_characters: Self::default_max_characters(),
             overlap: Self::default_overlap(),
             embedding_preset: Self::default_embedding_preset(),

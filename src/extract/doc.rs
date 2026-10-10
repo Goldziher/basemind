@@ -21,6 +21,7 @@ use xberg::core::config::{ConcurrencyConfig, ExtractionConfig};
 use xberg::extractors::security::SecurityLimits;
 use xberg::{ExtractInput, extract};
 
+use super::doc_guard::{self, ChunkCutovers, DeadlineError};
 use super::{ExtractError, SCHEMA_VER};
 use crate::config::{
     DocLanguageConfig, DocumentModelProfile, KeywordAlgorithm, KeywordsConfig, LlmConfig, NerBackend, NerConfig,
@@ -90,6 +91,10 @@ pub struct FileMapDoc {
     /// reuse). Tail field for the same reason as `language_confidences`.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub config_digest: String,
+    /// True when the chunks came from the linear fixed-size chunker instead of xberg's markdown
+    /// splitter (large text-like files; see [`super::doc_guard`]). Tail field, absent in older blobs.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub linear_chunked: bool,
 }
 
 /// Stable mirror of xberg's per-language confidence metadata.
@@ -181,6 +186,12 @@ pub struct DocChunk {
 pub struct DocConfig {
     pub max_pages: usize,
     pub extraction_timeout_secs: u64,
+    /// Size cutovers above which text-like files skip xberg's quadratic markdown splitter.
+    pub chunk_cutovers: ChunkCutovers,
+    /// Chunk-count cap (`[documents] max_chunks_per_document`). Beyond it no vector rows are written, so
+    /// a linearly-chunked document over the cap skips embedding entirely rather than embedding chunks
+    /// that would be thrown away.
+    pub max_chunks_per_document: usize,
     pub max_characters: usize,
     pub overlap: usize,
     pub embedding_preset: Option<String>,
@@ -218,6 +229,11 @@ impl Default for DocConfig {
         Self {
             max_pages: 500,
             extraction_timeout_secs: 600,
+            chunk_cutovers: ChunkCutovers {
+                markdown_bytes: 256 * 1024,
+                plain_text_bytes: 128 * 1024,
+            },
+            max_chunks_per_document: 2000,
             max_characters: 1000,
             overlap: 200,
             embedding_preset: Some("balanced".to_string()),
@@ -460,12 +476,35 @@ fn extraction_runtime() -> Result<&'static tokio::runtime::Runtime, ExtractError
 /// `mime_type` may be supplied by the caller (e.g. from `lang::detect`); when
 /// `None`, xberg sniffs the file content.
 pub fn extract_doc(path: &Path, mime_type: Option<&str>, config: &DocConfig) -> Result<FileMapDoc, ExtractError> {
-    let krz_config = config.to_xberg();
+    let mut krz_config = config.to_xberg();
+    let file_len = std::fs::metadata(path).map_or(0, |m| m.len());
+    let linear = doc_guard::prefers_linear_chunking(mime_type.unwrap_or(""), file_len, config.chunk_cutovers);
+    if linear {
+        tracing::info!(
+            path = %path.display(),
+            bytes = file_len,
+            "large text document: using linear chunking instead of the markdown splitter"
+        );
+        krz_config.chunking = None;
+    }
     let mut input = ExtractInput::from_uri(path.to_string_lossy().into_owned());
     input.mime_type = mime_type.map(str::to_string);
-    let mut extraction = extraction_runtime()?
-        .block_on(extract(input, &krz_config))
-        .map_err(|e| ExtractError::Document(e.to_string()))?;
+    let runtime = extraction_runtime()?;
+    let budget = std::time::Duration::from_secs(config.extraction_timeout_secs);
+    let outcome = doc_guard::run_with_deadline(budget, move || runtime.block_on(extract(input, &krz_config))).map_err(
+        |error| match error {
+            DeadlineError::Elapsed => {
+                tracing::warn!(
+                    path = %path.display(),
+                    budget_secs = budget.as_secs(),
+                    "document extraction exceeded [documents] extraction_timeout_secs; abandoning it"
+                );
+                ExtractError::DocTimeout(budget)
+            }
+            DeadlineError::Failed(message) => ExtractError::Document(message),
+        },
+    )?;
+    let mut extraction = outcome.map_err(|e| ExtractError::Document(e.to_string()))?;
     let result = extraction.results.pop().ok_or_else(|| {
         let message = extraction
             .errors
@@ -479,7 +518,19 @@ pub fn extract_doc(path: &Path, mime_type: Option<&str>, config: &DocConfig) -> 
     let mut chunks: Vec<DocChunk> = Vec::new();
     let mut dense_inputs = Vec::new();
     let embed_requested = config.embed && !matches!(config.document_models, DocumentModelProfile::None_);
-    if let Some(input_chunks) = result.chunks {
+    if linear {
+        for (start, end) in doc_guard::linear_chunk_spans(&result.content, config.max_characters, config.overlap) {
+            let (chunk, dense_input) = prepare_doc_chunk(
+                result.content[start..end].to_string(),
+                start,
+                end,
+                None,
+                embed_requested,
+            );
+            chunks.push(chunk);
+            dense_inputs.extend(dense_input);
+        }
+    } else if let Some(input_chunks) = result.chunks {
         for c in input_chunks {
             let (chunk, dense_input) = prepare_doc_chunk(
                 c.content,
@@ -495,6 +546,15 @@ pub fn extract_doc(path: &Path, mime_type: Option<&str>, config: &DocConfig) -> 
         }
     }
 
+    if linear && chunks.len() > config.max_chunks_per_document {
+        tracing::warn!(
+            path = %path.display(),
+            chunks = chunks.len(),
+            cap = config.max_chunks_per_document,
+            "linearly chunked document exceeds max_chunks_per_document; skipping embedding"
+        );
+        dense_inputs.clear();
+    }
     let mut embedding_dim = 0;
     if embed_requested && !dense_inputs.is_empty() {
         let preset = config.embedding_preset.as_deref().unwrap_or("balanced");
@@ -576,6 +636,7 @@ pub fn extract_doc(path: &Path, mime_type: Option<&str>, config: &DocConfig) -> 
         entities,
         summary,
         language_confidences,
+        linear_chunked: linear,
     })
 }
 

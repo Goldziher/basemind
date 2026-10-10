@@ -131,6 +131,14 @@ pub fn render_summary(w: &mut AutoStream<std::io::Stdout>, stats: &ScanStats, ve
         let docs_line = pair("docs_indexed", stats.docs_indexed, style_ok);
         let _ = writeln!(w, "{docs_line}");
     }
+    if stats.docs_degraded > 0 || stats.doc_timeouts > 0 {
+        let _ = writeln!(
+            w,
+            "{degraded}  {timeouts} (large text documents use linear chunking; see [documents] markdown_chunk_max_bytes)",
+            degraded = pair("docs_degraded", stats.docs_degraded, style_warn),
+            timeouts = pair("doc_timeouts", stats.doc_timeouts, style_fail),
+        );
+    }
     if stats.tier_migrated > 0 || stats.refreshed_extraction > 0 {
         let _ = writeln!(
             w,
@@ -410,6 +418,13 @@ fn row_for(res: &FileResult, verbosity: Verbosity) -> Option<Row<'_>> {
             style: Style::new().fg_color(Some(Color::Ansi(AnsiColor::Red))),
             detail: format!("(read failed: {msg})"),
         }),
+        #[cfg(feature = "documents")]
+        FileStatus::DocTimedOut => Some(Row {
+            symbol: '✗',
+            label: "fail",
+            style: Style::new().fg_color(Some(Color::Ansi(AnsiColor::Red))),
+            detail: "(document extraction timed out; see [documents] extraction_timeout_secs)".to_string(),
+        }),
         FileStatus::ExtractFailed { msg } => Some(Row {
             symbol: '✗',
             label: "fail",
@@ -421,11 +436,17 @@ fn row_for(res: &FileResult, verbosity: Verbosity) -> Option<Row<'_>> {
             chunk_count,
             embedding_dim,
             reused,
+            degraded,
         } => {
             if v == Verbosity::Quiet {
                 None
             } else {
                 let cached = if *reused { ", cached" } else { "" };
+                let cached = if *degraded {
+                    format!("{cached}, linear chunking")
+                } else {
+                    cached.to_string()
+                };
                 Some(Row {
                     symbol: '✓',
                     label: "doc",

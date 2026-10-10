@@ -2,6 +2,8 @@
 pub mod doc;
 #[cfg(feature = "documents")]
 pub mod doc_cost;
+#[cfg(feature = "documents")]
+pub mod doc_guard;
 pub mod l1;
 pub mod l2;
 pub mod l3;
@@ -96,6 +98,11 @@ pub enum ExtractError {
     #[cfg(feature = "documents")]
     #[error("xberg extraction failed: {0}")]
     Document(String),
+    /// Document extraction overran its wall-clock budget (`[documents] extraction_timeout_secs`) and
+    /// was abandoned.
+    #[cfg(feature = "documents")]
+    #[error("document extraction exceeded its {0:?} budget and was abandoned")]
+    DocTimeout(std::time::Duration),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

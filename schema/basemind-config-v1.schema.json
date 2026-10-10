@@ -79,6 +79,8 @@
         "max_chunks_per_document": 2000,
         "max_pages": 500,
         "extraction_timeout_secs": 600,
+        "markdown_chunk_max_bytes": 262144,
+        "plain_text_chunk_max_bytes": 131072,
         "max_characters": 1000,
         "overlap": 200,
         "embedding_preset": "balanced",
@@ -477,11 +479,25 @@
           "default": 500
         },
         "extraction_timeout_secs": {
-          "description": "Maximum wall-clock time xberg may spend extracting one document.",
+          "description": "Maximum wall-clock time one document's extraction (including chunking) may take. Enforced by a\nwatchdog: a document that overruns is abandoned, skipped and counted as `doc_timeouts` in the scan\nsummary, so one pathological file cannot stall a scan.",
           "type": "integer",
           "format": "uint64",
           "minimum": 1,
           "default": 600
+        },
+        "markdown_chunk_max_bytes": {
+          "description": "Largest text-like document (markdown, csv, json, yaml, xml, toml, ini, ...) in bytes still chunked\nwith xberg's structure-aware markdown splitter. The splitter re-scans every remaining element\nper chunk, so its cost grows with the square of the document: a multi-megabyte file can stall a\nscan worker for minutes. Larger files are chunked by a linear fixed-size chunker instead (counted\nas `docs_degraded` in the scan summary). Never applies to binary formats (PDF, Office, ...).",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 1024,
+          "default": 262144
+        },
+        "plain_text_chunk_max_bytes": {
+          "description": "Like `markdown_chunk_max_bytes` but for plain text (`text/plain`: `.txt`, `.log`, ...), which has no\nmarkdown structure for the splitter to exploit, so the cutover is lower.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 1024,
+          "default": 131072
         },
         "max_characters": {
           "description": "Maximum chunk size in characters.",

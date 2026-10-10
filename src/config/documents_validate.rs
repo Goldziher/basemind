@@ -6,6 +6,9 @@ use super::documents::DocumentsConfig;
 /// Smallest chunk the chunker accepts; mirrors the schema minimum of `documents.max_characters`.
 const MIN_MAX_CHARACTERS: usize = 64;
 
+/// Smallest accepted splitter cutover; mirrors the schema minimum of the `*_chunk_max_bytes` knobs.
+const MIN_CHUNK_CUTOVER_BYTES: u64 = 1024;
+
 impl DocumentsConfig {
     /// Returns a human-readable error naming the offending values on violation.
     pub fn validate(&self) -> Result<(), String> {
@@ -21,6 +24,19 @@ impl DocumentsConfig {
                  >= max_characters collapses the chunker step to 1 character",
                 self.overlap, self.max_characters
             ));
+        }
+        for (name, value) in [
+            ("markdown_chunk_max_bytes", self.markdown_chunk_max_bytes),
+            ("plain_text_chunk_max_bytes", self.plain_text_chunk_max_bytes),
+        ] {
+            if value < MIN_CHUNK_CUTOVER_BYTES {
+                return Err(format!(
+                    "[documents] {name} ({value}) must be at least {MIN_CHUNK_CUTOVER_BYTES}"
+                ));
+            }
+        }
+        if self.extraction_timeout_secs == 0 {
+            return Err("[documents] extraction_timeout_secs must be at least 1".to_string());
         }
         let confidence = self.language.min_confidence;
         if !(0.0..=1.0).contains(&confidence) {
@@ -80,6 +96,30 @@ mod tests {
             ..Default::default()
         };
         assert!(d.validate().unwrap_err().contains("min_confidence"));
+    }
+
+    #[test]
+    fn rejects_chunk_cutover_below_minimum() {
+        for (markdown, plain, name) in [
+            (1023, 4096, "markdown_chunk_max_bytes"),
+            (4096, 0, "plain_text_chunk_max_bytes"),
+        ] {
+            let d = DocumentsConfig {
+                markdown_chunk_max_bytes: markdown,
+                plain_text_chunk_max_bytes: plain,
+                ..Default::default()
+            };
+            assert!(d.validate().unwrap_err().contains(name), "{name}");
+        }
+    }
+
+    #[test]
+    fn rejects_zero_extraction_timeout() {
+        let d = DocumentsConfig {
+            extraction_timeout_secs: 0,
+            ..Default::default()
+        };
+        assert!(d.validate().unwrap_err().contains("extraction_timeout_secs"));
     }
 
     #[test]

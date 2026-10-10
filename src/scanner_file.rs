@@ -544,6 +544,7 @@ fn process_doc(
                 chunk_count: batch.chunk_count,
                 embedding_dim: batch.embedding_dim,
                 reused: batch.reused,
+                degraded: batch.degraded,
             };
             let doc_entry = crate::store::DocEntry {
                 hash_hex: hash_hex.to_string(),
@@ -570,6 +571,13 @@ fn process_doc(
         }
         Ok(None) => FileResult::bare(rel.to_string(), FileStatus::SkippedNoLang),
         Err(error) => {
+            if matches!(
+                error.downcast_ref::<crate::extract::ExtractError>(),
+                Some(crate::extract::ExtractError::DocTimeout(_))
+            ) {
+                tracing::warn!(path = rel, "skipping document: {error:#}");
+                return FileResult::bare(rel.to_string(), FileStatus::DocTimedOut);
+            }
             let msg = format!("document extract: {error:#}");
             if is_unsupported_format_error(&msg) {
                 tracing::debug!(path = rel, reason = %msg, "skipping file: not an extractable document");

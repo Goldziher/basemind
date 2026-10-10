@@ -10,6 +10,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A large text document could stall a scan for tens of minutes.** xberg's markdown splitter re-collects
+  and re-sorts every remaining element for each chunk it emits, so chunking time grows with the square of
+  the document (measured: 0.9 s at 256 KB, 3.3 s at 512 KB, 11.6 s at 1 MB, 40 s at 2 MB of log text, and 17 s at 256 KB of
+  densely marked-up markdown, in a debug build). 0.29.0 routes csv, json, yaml, xml, txt and similar files to the document tier, so
+  multi-megabyte data files reached it. Text-like documents over the new `[documents]
+  markdown_chunk_max_bytes` (default 256 KiB) / `plain_text_chunk_max_bytes` (default 128 KiB) cutovers
+  are now chunked by a linear fixed-size chunker; smaller documents chunk exactly as before. Degraded
+  documents are logged and counted as `docs_degraded` in the scan summary.
+- **`[documents] extraction_timeout_secs` is now enforced.** It was passed to xberg but could not
+  interrupt CPU-bound work. Extraction now runs under a watchdog: an overrunning document is abandoned,
+  logged, skipped, retried on the next scan, and counted as `doc_timeouts` (also in `failed`).
+
 ## [0.29.0] - 2026-10-09
 
 0.29.0 reshapes the CLI (one home for each command, a documented exit-code contract, honest output and
