@@ -18,23 +18,15 @@ import warnings
 from collections.abc import Iterable, Iterator
 from pathlib import Path
 
-warnings.simplefilter(
-    "ignore"
-)  # old code trips SyntaxWarning (invalid escapes) on parse
+warnings.simplefilter("ignore")  # old code trips SyntaxWarning (invalid escapes) on parse
 
-DEFAULT_MAX_BYTES = (
-    512 * 1024
-)  # skip generated/minified giants; basemind skips oversized files too
+DEFAULT_MAX_BYTES = 512 * 1024  # skip generated/minified giants; basemind skips oversized files too
 
 
 def add_common_args(p: argparse.ArgumentParser, *, ext_default: str = "py") -> None:
-    p.add_argument(
-        "--repo", default=".", help="git repository to generate gold from (default: .)"
-    )
+    p.add_argument("--repo", default=".", help="git repository to generate gold from (default: .)")
     p.add_argument("--seed", type=int, default=0, help="sampling seed (default 0)")
-    p.add_argument(
-        "--n", type=int, default=50, help="number of tasks to emit (default 50)"
-    )
+    p.add_argument("--n", type=int, default=50, help="number of tasks to emit (default 50)")
     p.add_argument(
         "--exclude",
         action="append",
@@ -107,9 +99,7 @@ class Repo:
         self.root = str(Path(root).resolve())
         self.head = self.git("rev-parse", "HEAD").strip()
         self.excluded = Excluder(exclude)
-        self.exts = tuple(
-            "." + e.strip().lstrip(".") for e in exts.split(",") if e.strip()
-        )
+        self.exts = tuple("." + e.strip().lstrip(".") for e in exts.split(",") if e.strip())
         self.max_bytes = max_bytes
         self._all: list[str] | None = None
 
@@ -166,9 +156,7 @@ class Repo:
                     continue
 
     def rng(self, name: str, seed: int) -> random.Random:
-        return random.Random(
-            f"{self.head}:{seed}:{name}"
-        )  # str seeds are hashed with sha512: stable across runs
+        return random.Random(f"{self.head}:{seed}:{name}")  # str seeds are hashed with sha512: stable across runs
 
 
 def parse_python(src: str) -> ast.AST | None:
@@ -178,9 +166,7 @@ def parse_python(src: str) -> ast.AST | None:
         return None
 
 
-def python_symbols(
-    tree: ast.AST, *, assignments: bool = True
-) -> list[tuple[str, int]]:
+def python_symbols(tree: ast.AST, *, assignments: bool = True) -> list[tuple[str, int]]:
     """`(name, 1-based line)` for everything basemind's Python outline lists.
 
     Module- and class-scope only: every def/async def/class, and every simple `Name` target of
@@ -205,14 +191,8 @@ def python_symbols(
             elif not assignments:
                 pass
             elif isinstance(child, ast.Assign):
-                out.extend(
-                    (t.id, t.lineno) for t in child.targets if isinstance(t, ast.Name)
-                )
-            elif (
-                isinstance(child, ast.AnnAssign)
-                and child.value is not None
-                and isinstance(child.target, ast.Name)
-            ):
+                out.extend((t.id, t.lineno) for t in child.targets if isinstance(t, ast.Name))
+            elif isinstance(child, ast.AnnAssign) and child.value is not None and isinstance(child.target, ast.Name):
                 out.append((child.target.id, child.target.lineno))
             visit(child)
 
@@ -224,9 +204,7 @@ def shell_quote(s: str) -> str:
     return "'" + s.replace("'", "'\\''") + "'"
 
 
-def git_grep_lines(
-    repo: Repo, *args: str, pathspec: list[str] | None = None
-) -> list[tuple[str, int]]:
+def git_grep_lines(repo: Repo, *args: str, pathspec: list[str] | None = None) -> list[tuple[str, int]]:
     """`(path, line)` of `git grep -n` matches in the HEAD tree, sorted."""
     cmd = ["grep", "-n", "-I", *args, "HEAD"]
     if pathspec:
@@ -259,15 +237,11 @@ def appears_outside(repo: Repo, needle: str, exts: tuple[str, ...]) -> bool:
         *pathspec,
         check=False,
     )
-    return any(
-        not repo.excluded(line.removeprefix("HEAD:")) for line in out.splitlines()
-    )
+    return any(not repo.excluded(line.removeprefix("HEAD:")) for line in out.splitlines())
 
 
 def emit(tasks: list[dict], out: str) -> None:
-    lines = "".join(
-        json.dumps(t, sort_keys=True, ensure_ascii=False) + "\n" for t in tasks
-    )
+    lines = "".join(json.dumps(t, sort_keys=True, ensure_ascii=False) + "\n" for t in tasks)
     if out == "-":
         sys.stdout.write(lines)
     else:

@@ -33,25 +33,17 @@ def callee_name(func: ast.expr) -> str | None:
 
 
 def main() -> None:
-    p = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
-    )
+    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     c.add_common_args(p)
-    p.add_argument(
-        "--mode", choices=["references", "callers", "both"], default="references"
-    )
+    p.add_argument("--mode", choices=["references", "callers", "both"], default="references")
     p.add_argument("--max-gold", type=int, default=40)
     p.add_argument("--min-len", type=int, default=5)
     p.add_argument("--no-cross-language-check", action="store_true")
     a = p.parse_args()
 
     repo = c.Repo(a.repo, a.exclude, a.ext, a.max_bytes)
-    calls: dict[str, list[tuple[str, int, int]]] = defaultdict(
-        list
-    )  # name -> (path, start, func_end)
-    defs: dict[str, list[str]] = defaultdict(
-        list
-    )  # name -> [defining paths] (def/class only)
+    calls: dict[str, list[tuple[str, int, int]]] = defaultdict(list)  # name -> (path, start, func_end)
+    defs: dict[str, list[str]] = defaultdict(list)  # name -> [defining paths] (def/class only)
     for path, src in repo.blobs(repo.files()):
         tree = c.parse_python(src)
         if tree is None:
@@ -81,9 +73,7 @@ def main() -> None:
             break
         if a.mode == "callers" and len(set(defs[name])) != 1:
             continue
-        grep_hits = c.git_grep_lines(
-            repo, "-w", "-F", "-e", name, pathspec=["*" + e for e in exts]
-        )
+        grep_hits = c.git_grep_lines(repo, "-w", "-F", "-e", name, pathspec=["*" + e for e in exts])
         grep_set = set(grep_hits)
         gold = set()
         for path, start, end in calls[name]:

@@ -11,9 +11,7 @@ import _common as c
 
 
 def main() -> None:
-    p = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
-    )
+    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     c.add_common_args(p)
     p.add_argument("--min-symbols", type=int, default=3)
     p.add_argument("--max-symbols", type=int, default=60)

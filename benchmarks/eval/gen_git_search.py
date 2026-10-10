@@ -45,9 +45,7 @@ STOP = {
 
 
 def main() -> None:
-    p = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
-    )
+    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     c.add_common_args(p, ext_default="")
     p.add_argument(
         "--history",
@@ -66,9 +64,7 @@ def main() -> None:
     a = p.parse_args()
 
     repo = c.Repo(a.repo, a.exclude, a.ext, a.max_bytes)
-    raw = repo.git(
-        "log", f"-n{a.history}", "--no-merges", "--format=%H%x1f%s%x1f%b%x1e"
-    )
+    raw = repo.git("log", f"-n{a.history}", "--no-merges", "--format=%H%x1f%s%x1f%b%x1e")
     commits = []  # newest first: (sha, subject, token set)
     for rec in raw.split("\x1e"):
         parts = rec.strip("\n").split("\x1f")
@@ -88,11 +84,7 @@ def main() -> None:
         if len(tasks) >= a.n:
             break
         subj_tokens = sorted(
-            {
-                t
-                for t in TOKEN.findall(subject.lower())
-                if len(t) >= 4 and t not in STOP and not t.isdigit()
-            }
+            {t for t in TOKEN.findall(subject.lower()) if len(t) >= 4 and t not in STOP and not t.isdigit()}
         )
         if len(subj_tokens) < 2:
             continue
@@ -100,9 +92,7 @@ def main() -> None:
         gold = sorted(s for s, _, ts in commits if all(t in ts for t in chosen))
         if sha not in gold or len(gold) > a.max_gold:
             continue
-        files = repo.git(
-            "diff-tree", "--no-commit-id", "--name-only", "-r", "-m", "--root", sha
-        ).split()
+        files = repo.git("diff-tree", "--no-commit-id", "--name-only", "-r", "-m", "--root", sha).split()
         tasks.append(
             {
                 "id": f"git_search-{len(tasks):04d}",
@@ -113,8 +103,7 @@ def main() -> None:
                 "k": 10,
                 "meta": {"origin": sha, "subject": subject, "files": sorted(files)},
                 "baseline": {
-                    "grep": "git log --oneline -i --all-match "
-                    + " ".join("--grep=" + c.shell_quote(t) for t in chosen)
+                    "grep": "git log --oneline -i --all-match " + " ".join("--grep=" + c.shell_quote(t) for t in chosen)
                 },
             }
         )

@@ -19,9 +19,7 @@ CODEISH = re.compile(r"^[\w./-]+(\.\w+|/[\w./-]*)$|^[A-Za-z_]\w{4,}(\(\))?$")
 
 
 def sentences(md: str) -> list[str]:
-    md = re.sub(
-        r"```.*?```", " ", md, flags=re.DOTALL
-    )  # fenced blocks are code, not prose
+    md = re.sub(r"```.*?```", " ", md, flags=re.DOTALL)  # fenced blocks are code, not prose
     out = []
     for block in re.split(r"\n\s*\n", md):
         if block.lstrip().startswith(("|", "#", "<", "-", "*", ">", "[")):
@@ -32,9 +30,7 @@ def sentences(md: str) -> list[str]:
 
 
 def main() -> None:
-    p = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
-    )
+    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     c.add_common_args(p, ext_default="md")
     p.add_argument("--min-words", type=int, default=8)
     p.add_argument("--max-words", type=int, default=40)
@@ -47,9 +43,7 @@ def main() -> None:
         for s in sentences(md):
             words = len(s.split())
             ticked = TICKED.findall(s)
-            if a.min_words <= words <= a.max_words and any(
-                CODEISH.match(t) for t in ticked
-            ):
+            if a.min_words <= words <= a.max_words and any(CODEISH.match(t) for t in ticked):
                 found.setdefault(s, []).append(path)
     unique = sorted((s, fs[0]) for s, fs in found.items() if len(set(fs)) == 1)
     counts = Counter(p for _, p in unique)
@@ -62,9 +56,7 @@ def main() -> None:
             continue
         query = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", sentence)  # [text](url) -> text
         query = re.sub(r"[`*]", "", query)
-        word = max(
-            re.findall(r"[A-Za-z_]{5,}", query) or [""], key=lambda w: (len(w), w)
-        )
+        word = max(re.findall(r"[A-Za-z_]{5,}", query) or [""], key=lambda w: (len(w), w))
         task = {
             "id": f"docs-{len(tasks):04d}",
             "mode": "docs",

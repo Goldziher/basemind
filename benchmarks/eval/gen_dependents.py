@@ -13,9 +13,7 @@ import _common as c
 
 
 def main() -> None:
-    p = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
-    )
+    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     c.add_common_args(p)
     p.add_argument("--max-gold", type=int, default=60)
     p.add_argument("--min-len", type=int, default=4)
@@ -48,9 +46,7 @@ def main() -> None:
     for module in candidates:
         if len(tasks) >= a.n:
             break
-        gold = sorted(
-            path for path, texts in stmts.items() if any(module in t for t in texts)
-        )
+        gold = sorted(path for path, texts in stmts.items() if any(module in t for t in texts))
         if not gold or len(gold) > a.max_gold:
             continue
         if not a.no_cross_language_check and c.appears_outside(repo, module, exts):

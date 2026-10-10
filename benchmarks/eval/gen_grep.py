@@ -25,9 +25,7 @@ WORD = re.compile(r"[A-Za-z_][A-Za-z0-9_]{5,}")
 
 
 def main() -> None:
-    p = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
-    )
+    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     c.add_common_args(p)
     p.add_argument("--max-gold", type=int, default=300)
     p.add_argument(
@@ -43,13 +41,9 @@ def main() -> None:
 
     repo = c.Repo(a.repo, a.exclude, a.ext, a.max_bytes)
     exts = tuple("." + e.strip() for e in a.ext.split(","))
-    language = a.language or (
-        LANGUAGES.get(a.ext.strip()) if "," not in a.ext else None
-    )
+    language = a.language or (LANGUAGES.get(a.ext.strip()) if "," not in a.ext else None)
     if not language:
-        sys.exit(
-            "need --language when --ext lists several extensions (grep gold must use identical filters)"
-        )
+        sys.exit("need --language when --ext lists several extensions (grep gold must use identical filters)")
 
     files = repo.files()
     freq: Counter[str] = Counter()
@@ -72,18 +66,11 @@ def main() -> None:
             sub = rng.choice(dirs)
             args["path_contains"] = sub
         hits = c.git_grep_lines(repo, "-E", "-e", pat, pathspec=pathspec)
-        if (
-            "path_contains" in args
-        ):  # git pathspecs OR together, so intersect the directory filter here
+        if "path_contains" in args:  # git pathspecs OR together, so intersect the directory filter here
             hits = [(path, ln) for path, ln in hits if args["path_contains"] in path]
         if not hits or len(hits) > a.max_gold:
             continue
-        cmd = (
-            "git grep -n -E "
-            + c.shell_quote(pat)
-            + " -- "
-            + " ".join(c.shell_quote(s) for s in pathspec)
-        )
+        cmd = "git grep -n -E " + c.shell_quote(pat) + " -- " + " ".join(c.shell_quote(s) for s in pathspec)
         tasks.append(
             {
                 "id": f"grep-{len(tasks):04d}",

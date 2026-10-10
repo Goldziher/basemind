@@ -31,21 +31,15 @@ def mutate(stem: str, kind: str, rng) -> str | None:
             return stem[:i] + stem[i + 1] + stem[i] + stem[i + 2 :]
         return stem[:i] + stem[i + 1 :]
     if kind == "abbrev":
-        skeleton = stem[0] + "".join(
-            ch for ch in stem[1:] if ch not in VOWELS and ch not in "_-"
-        )
+        skeleton = stem[0] + "".join(ch for ch in stem[1:] if ch not in VOWELS and ch not in "_-")
         return skeleton if len(skeleton) >= 3 and skeleton != stem else None
     return None
 
 
 def main() -> None:
-    p = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
-    )
+    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     c.add_common_args(p, ext_default="")
-    p.add_argument(
-        "--k", type=int, default=10, help="rank cut-off for the ranked scoring"
-    )
+    p.add_argument("--k", type=int, default=10, help="rank cut-off for the ranked scoring")
     p.add_argument(
         "--indexed",
         metavar="FILE",
@@ -63,12 +57,7 @@ def main() -> None:
     for f in files:
         stem = f.rsplit("/", 1)[-1].rsplit(".", 1)[0]
         stems[stem] = stems.get(stem, 0) + 1
-    unique = [
-        f
-        for f in files
-        if stems[f.rsplit("/", 1)[-1].rsplit(".", 1)[0]] == 1
-        and len(f.rsplit("/", 1)[-1]) >= 6
-    ]
+    unique = [f for f in files if stems[f.rsplit("/", 1)[-1].rsplit(".", 1)[0]] == 1 and len(f.rsplit("/", 1)[-1]) >= 6]
     rng = repo.rng("find", a.seed)
     tasks = []
     kinds = ["basename", "typo", "abbrev"]
@@ -90,9 +79,7 @@ def main() -> None:
             "k": a.k,
         }
         if kind == "basename":
-            task["baseline"] = {
-                "grep": "git ls-files | grep -i -F " + c.shell_quote(query)
-            }
+            task["baseline"] = {"grep": "git ls-files | grep -i -F " + c.shell_quote(query)}
         tasks.append(task)
     c.emit(tasks, a.out)
 

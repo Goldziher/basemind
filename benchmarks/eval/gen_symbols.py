@@ -14,9 +14,7 @@ import _common as c
 
 
 def main() -> None:
-    p = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
-    )
+    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     c.add_common_args(p)
     p.add_argument(
         "--max-gold",
@@ -29,19 +27,13 @@ def main() -> None:
     a = p.parse_args()
 
     repo = c.Repo(a.repo, a.exclude, a.ext, a.max_bytes)
-    where: dict[str, list[tuple[str, int]]] = defaultdict(
-        list
-    )  # name -> [(path, line)]
+    where: dict[str, list[tuple[str, int]]] = defaultdict(list)  # name -> [(path, line)]
     for path, src in repo.blobs(repo.files()):
         tree = c.parse_python(src)
         if tree is not None:
             for name, line in c.python_symbols(tree):
                 where[name].append((path, line))
-    names = sorted(
-        n
-        for n in where
-        if len(n) >= a.min_len and n.isidentifier() and not n.startswith("__")
-    )
+    names = sorted(n for n in where if len(n) >= a.min_len and n.isidentifier() and not n.startswith("__"))
     rng = repo.rng("symbols", a.seed)
     rng.shuffle(names)
 
@@ -50,14 +42,7 @@ def main() -> None:
     for name in names:
         if len(tasks) >= a.n:
             break
-        gold = sorted(
-            {
-                (path, line)
-                for other, locs in where.items()
-                if name in other
-                for path, line in locs
-            }
-        )
+        gold = sorted({(path, line) for other, locs in where.items() if name in other for path, line in locs})
         if not gold or len(gold) > a.max_gold:
             continue
         if not a.no_cross_language_check and c.appears_outside(repo, name, exts):
@@ -72,9 +57,7 @@ def main() -> None:
                 "scoring": "set",
                 "baseline": {
                     "grep": "git grep -n -E "
-                    + c.shell_quote(
-                        f"(def|class)[[:space:]]+[A-Za-z_0-9]*{name}|{name}[[:space:]]*="
-                    )
+                    + c.shell_quote(f"(def|class)[[:space:]]+[A-Za-z_0-9]*{name}|{name}[[:space:]]*=")
                     + " -- "
                     + " ".join(c.shell_quote("*" + e) for e in exts),
                     "read": files,

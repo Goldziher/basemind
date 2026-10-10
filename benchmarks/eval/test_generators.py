@@ -63,9 +63,7 @@ def git(repo: Path, *args: str) -> None:
         "GIT_COMMITTER_NAME": "t",
         "GIT_COMMITTER_EMAIL": "t@e.x",
     }
-    subprocess.run(
-        ["git", "-C", str(repo), *args], check=True, capture_output=True, env=env
-    )
+    subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True, env=env)
 
 
 class GeneratorTests(unittest.TestCase):
@@ -117,10 +115,7 @@ class GeneratorTests(unittest.TestCase):
         self.assertEqual(by_name["Widget"]["gold"], ["pkg/widget.py:1"])
         self.assertEqual(by_name["LIMIT_VALUE"]["gold"], ["pkg/widget.py:10"])
         unguarded = {
-            t["args"]["name"]: t
-            for t in self.run_gen(
-                "symbols", "--min-len", "4", "--no-cross-language-check"
-            )
+            t["args"]["name"]: t for t in self.run_gen("symbols", "--min-len", "4", "--no-cross-language-check")
         }
         self.assertEqual(unguarded["make_widget"]["gold"], ["pkg/widget.py:6"])
 
@@ -141,35 +136,20 @@ class GeneratorTests(unittest.TestCase):
         tasks = self.run_gen("outline", "--min-symbols", "3")
         scoped = next(t for t in tasks if t["args"]["path"] == "pkg/scoped.py")
         # REGISTRY_SIZE, Holder, slot_count, keep, drive: no scratch_value / inner_helper / local_total.
-        self.assertEqual(
-            scoped["gold"], [f"pkg/scoped.py:{n}" for n in (1, 4, 5, 7, 16)]
-        )
-        names = {
-            t["args"]["name"] for t in self.run_gen("symbols", "--min-len", "5")
-        }
+        self.assertEqual(scoped["gold"], [f"pkg/scoped.py:{n}" for n in (1, 4, 5, 7, 16)])
+        names = {t["args"]["name"] for t in self.run_gen("symbols", "--min-len", "5")}
         self.assertTrue({"scratch_value", "inner_helper", "local_total"}.isdisjoint(names))
         self.assertIn("slot_count", names)
 
     def test_references_are_call_sites_only_and_callers_name_the_definition(
         self,
     ) -> None:
-        refs = {
-            t["args"]["name"]: t
-            for t in self.run_gen("references", "--no-cross-language-check")
-        }
-        self.assertEqual(
-            refs["make_widget"]["gold"], ["pkg/use.py:5"]
-        )  # the import on line 1 is not a call
-        self.assertEqual(
-            refs["Widget"]["gold"], ["pkg/widget.py:7"]
-        )  # `class Widget:` is a definition, not a call
-        callers = self.run_gen(
-            "references", "--mode", "callers", "--no-cross-language-check"
-        )
+        refs = {t["args"]["name"]: t for t in self.run_gen("references", "--no-cross-language-check")}
+        self.assertEqual(refs["make_widget"]["gold"], ["pkg/use.py:5"])  # the import on line 1 is not a call
+        self.assertEqual(refs["Widget"]["gold"], ["pkg/widget.py:7"])  # `class Widget:` is a definition, not a call
+        callers = self.run_gen("references", "--mode", "callers", "--no-cross-language-check")
         task = next(t for t in callers if t["args"]["name"] == "make_widget")
-        self.assertEqual(
-            (task["mode"], task["args"]["path"]), ("callers", "pkg/widget.py")
-        )
+        self.assertEqual((task["mode"], task["args"]["path"]), ("callers", "pkg/widget.py"))
 
     def test_dependents_match_import_statement_text(self) -> None:
         tasks = {t["args"]["module"]: t for t in self.run_gen("dependents")}
@@ -196,9 +176,7 @@ class GeneratorTests(unittest.TestCase):
                 text=True,
                 check=False,
             ).stdout
-            expected = sorted(
-                f"{p}:{n}" for p, n in (l.split(":")[1:3] for l in out.splitlines())
-            )
+            expected = sorted(f"{p}:{n}" for p, n in (l.split(":")[1:3] for l in out.splitlines()))
             self.assertEqual(sorted(t["gold"]), expected, t["args"])
 
     def test_find_indexed_list_limits_gold_to_indexed_paths(self) -> None:
@@ -224,9 +202,7 @@ class GeneratorTests(unittest.TestCase):
             self.assertEqual(t["scoring"], "ranked")
             self.assertIn(t["gold"][0], tracked)
         basename = next(t for t in tasks if t["id"].endswith("0000"))
-        self.assertEqual(
-            basename["args"]["query"], basename["gold"][0].rsplit("/", 1)[-1]
-        )
+        self.assertEqual(basename["args"]["query"], basename["gold"][0].rsplit("/", 1)[-1])
 
     def test_git_search_gold_contains_the_origin_commit(self) -> None:
         tasks = self.run_gen("git_search", "--ext", "")
