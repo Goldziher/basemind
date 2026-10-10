@@ -61,10 +61,12 @@ pub(super) async fn run_list_files(state: &ServerState, params: ListFilesParams)
     let mut seen: usize = 0;
     // Code map first, then the document tier (markdown, config, data, PDFs ...) in sorted order:
     // a file listing covers every indexed path, not just the code-mapped ones.
-    let code = store
-        .index
-        .files
-        .iter()
+    // The index map iterates in hash order, which differs per process; a cursor is an offset into
+    // this listing, so the order must be stable across calls.
+    let mut code_sorted: Vec<_> = store.index.files.iter().collect();
+    code_sorted.sort_unstable_by(|a, b| a.0.cmp(b.0));
+    let code = code_sorted
+        .into_iter()
         .map(|(p, e)| (p, e.language.clone(), e.size_bytes));
     #[cfg(feature = "documents")]
     let docs = state
