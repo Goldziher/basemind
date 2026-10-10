@@ -327,3 +327,8 @@ harness = false
 [[bench]]
 name = "git_history"
 harness = false
+
+# ~keep issue #72: unpublished fixes (xberg linear Markdown splitter, tree-sitter-language-pack) via local checkouts; drop once released.
+[patch.crates-io]
+xberg = { path = "../xberg-io/xberg/crates/xberg" }
+tree-sitter-language-pack = { path = "../xberg-io/tree-sitter-language-pack/crates/ts-pack-core" }
