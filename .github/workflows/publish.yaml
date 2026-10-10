@@ -880,7 +880,7 @@ jobs:
           npm publish --provenance --access public --tag "$npm_tag"
 
   publish_opencode:
-    name: Publish npm (basemind-opencode)
+    name: Publish npm (basemind-opencode, OpenCode and Pi)
     needs: [meta, finalize_release]
     if: always() && needs.meta.outputs.opencode_exists != 'true' && needs.finalize_release.result == 'success'
     runs-on: ubuntu-latest
@@ -894,18 +894,33 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
-          node-version: "20"
+          node-version: "22"
           registry-url: "https://registry.npmjs.org"
 
       - name: Update npm
         run: npm install -g npm@11
+
+      - name: Stage and verify the combined agent package
+        run: |
+          set -euo pipefail
+          package_dir="$(mktemp -d)"
+          bash scripts/stage-agent-package.sh "$package_dir"
+          npm pack "$package_dir" --json --pack-destination "$RUNNER_TEMP" > "$RUNNER_TEMP/pi-pack.json"
+          node - "$RUNNER_TEMP/pi-pack.json" <<'JS'
+          const fs = require('node:fs');
+          const files = JSON.parse(fs.readFileSync(process.argv[2]))[0].files.map((file) => file.path);
+          const skills = files.filter((file) => /^skills\/[^/]+\/SKILL\.md$/.test(file));
+          if (skills.length !== 10 || !files.includes('.pi/extensions/basemind.ts') || !files.includes('basemind.js') || !files.includes('tui.js')) {
+            throw new Error(`Incomplete agent package: ${skills.length} skills`);
+          }
+          console.log(`Packed ${skills.length} skills, the Pi extension, and OpenCode adapters`);
+          JS
 
       - name: Publish to npm
         env:
           NODE_AUTH_TOKEN: ""
         run: |
           unset NODE_AUTH_TOKEN
-          cd opencode-plugin
           version="${{ needs.meta.outputs.version }}"
           if [[ "$version" == *"-rc."* ]]; then
             npm_tag="beta"
@@ -913,7 +928,8 @@ jobs:
             npm_tag="latest"
           fi
 
-          npm publish --provenance --access public --tag "$npm_tag"
+          archive="$(jq -r '.[0].filename' "$RUNNER_TEMP/pi-pack.json")"
+          npm publish "$RUNNER_TEMP/$archive" --provenance --access public --tag "$npm_tag"
 
   publish_pypi:
     name: Publish PyPI

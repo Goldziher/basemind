@@ -1,6 +1,6 @@
 # basemind-opencode
 
-OpenCode plugin for [basemind](https://github.com/Goldziher/basemind) — full AI context layer for coding agents.
+OpenCode and Pi package for [basemind](https://github.com/Goldziher/basemind) — full AI context layer for coding agents.
 
 ## Install
 
@@ -25,7 +25,32 @@ cd /path/to/your/repo
 basemind scan
 ```
 
-## What this registers
+## Pi
+
+The next release adds Pi resources to this existing npm package. Install the
+`basemind` binary first, then run `pi install npm:basemind-opencode` after that
+release. Git installation is also available:
+
+```sh
+pi install git:github.com/Goldziher/basemind
+```
+
+Pi loads ten skills and a native extension that injects basemind context at
+session start and after compaction. It uses the CLI through its shell tool;
+no MCP bridge or binary is bundled. OpenCode continues using the existing
+JavaScript and terminal adapters below.
+
+## Package maintenance
+
+`scripts/sync-plugin-skills.sh` mirrors the canonical `.pi/extensions/basemind.ts`
+and product skills into this package. `task package:plugin` stages the combined
+package from canonical sources and runs a real npm pack without changing the
+checkout. The existing `publish_opencode` job checks the ten skills, native Pi
+extension, and both OpenCode adapters before publishing the packed archive.
+The existing package name, version bump, and npm trusted publisher are shared;
+Pi does not require another registry package.
+
+## What OpenCode registers
 
 - **MCP server** named `basemind` running `basemind serve` over stdio. Exposes the full
   code-map, git, documents, and memory toolset.

@@ -11,7 +11,7 @@ Three ways to run basemind, easiest first. All three share the same local index
 and are safe to run side by side.
 
 <Aside type="tip">
-The plugin downloads the basemind program for you on first use. The MCP server
+The MCP plugin downloads the basemind program for you on first use. Pi, the MCP server,
 and CLI paths need it installed yourself — see [Install the program](#install-the-program).
 </Aside>
 
@@ -88,13 +88,24 @@ agent-comms features, and the slash commands. Pick your coding tool.
     Comms auto-notifications are best-effort; the chat tools work regardless.
   </TabItem>
 
-  <TabItem label="Antigravity & pi">
+  <TabItem label="Antigravity">
     **Antigravity** uses a shared MCP config — [install the program](#install-the-program),
     then add the [generic MCP block](#2-as-an-mcp-server). If you already use the
     Gemini extension, `agy plugin import gemini` brings it across.
+  </TabItem>
 
-    **pi**: `pi install git:github.com/Goldziher/basemind`. pi has no MCP support,
-    so basemind runs through its [CLI](#3-as-a-cli) here.
+  <TabItem label="Pi">
+    [Install the basemind program](#install-the-program) first, then install the package:
+
+    <Code code={`pi install git:github.com/Goldziher/basemind`} lang="bash" />
+
+    The package includes ten skills and a native extension that loads basemind context at
+    session start and after compaction. Pi runs the [CLI](#3-as-a-cli) through its shell tool;
+    no MCP bridge or binary is included. Add `-l` for a project-scoped installation.
+
+    The next release adds these resources to the existing `basemind-opencode` npm package.
+    After that release, `pi install npm:basemind-opencode` provides registry installation
+    and Pi package-catalog discovery. Both installation paths include the same resources.
   </TabItem>
 </Tabs>
 

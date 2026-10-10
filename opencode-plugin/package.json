@@ -1,8 +1,8 @@
 {
   "name": "basemind-opencode",
   "version": "0.29.0",
-  "description": "Full AI context layer over MCP — tree-sitter code-map, document RAG (PDF/Office/HTML/email + OCR + reranker), shared agent memory, on-demand web crawl, git history + blame + per-symbol diff. 300+ languages, 10+ coding-agent harnesses, content-addressed Fjall + LanceDB.",
-  "keywords": ["agent-context", "code-map", "mcp", "rag", "tree-sitter"],
+  "description": "Full AI context layer over MCP \u2014 tree-sitter code-map, document RAG (PDF/Office/HTML/email + OCR + reranker), shared agent memory, on-demand web crawl, git history + blame + per-symbol diff. 300+ languages, 10+ coding-agent harnesses, content-addressed Fjall + LanceDB.",
+  "keywords": ["agent-context", "code-map", "mcp", "rag", "tree-sitter", "pi-package"],
   "homepage": "https://github.com/Goldziher/basemind#opencode",
   "bugs": {
     "url": "https://github.com/Goldziher/basemind/issues"
@@ -17,7 +17,7 @@
     "url": "git+https://github.com/Goldziher/basemind.git",
     "directory": "opencode-plugin"
   },
-  "files": ["basemind.js", "tui.js", "skills/", "commands/", "README.md"],
+  "files": ["basemind.js", "tui.js", "skills/", "commands/", "README.md", ".pi/extensions/"],
   "type": "module",
   "main": "basemind.js",
   "exports": {
@@ -29,5 +29,9 @@
   },
   "engines": {
     "node": ">=22"
+  },
+  "pi": {
+    "extensions": ["./.pi/extensions"],
+    "skills": ["./skills"]
   }
 }

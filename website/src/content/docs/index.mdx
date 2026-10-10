@@ -55,8 +55,9 @@ source.
 
 ## Install in one step
 
-The plugin sets up the server, helper skills, comms, and slash commands — and downloads the
-`basemind` program for you on first use. Or install the program directly with a package manager.
+The MCP plugin sets up the server, helper skills, comms, and slash commands — and downloads the
+`basemind` program for you on first use. Pi uses the CLI and needs the program installed separately.
+Or install the program directly with a package manager.
 
 <Tabs syncKey="installer">
     <TabItem label="Claude Code">
@@ -82,6 +83,13 @@ The plugin sets up the server, helper skills, comms, and slash commands — and 
             code={`copilot plugin marketplace add Goldziher/basemind\ncopilot plugin install basemind@basemind`}
             lang="bash"
         />
+    </TabItem>
+    <TabItem label="Pi">
+        <Code code={`npm install -g basemind\npi install git:github.com/Goldziher/basemind`} lang="bash" />
+
+        Loads ten skills and a native extension for session context. Pi uses the CLI through its shell tool;
+        no MCP bridge is bundled. The next release adds these resources to `basemind-opencode` on npm.
+        See [Pi installation](/start/installation/#1-as-a-plugin-recommended) for details.
     </TabItem>
     <TabItem label="Homebrew">
         <Code code={`brew install Goldziher/tap/basemind`} lang="bash" />

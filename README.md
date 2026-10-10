@@ -63,8 +63,8 @@ about your code costs a small fraction of the tokens it takes to read the source
 Three ways to run basemind, easiest first. All three share the same local index and are safe to run
 side by side.
 
-> **The plugin downloads the basemind program for you** on first use. The MCP-server and CLI paths
-> need it installed yourself — see [Install the program](#install-the-program).
+> **The MCP plugin downloads the basemind program for you** on first use. Pi, the MCP-server,
+> and CLI paths need it installed yourself — see [Install the program](#install-the-program).
 
 ### 1. As a plugin (recommended)
 
@@ -196,14 +196,30 @@ Comms auto-notifications are best-effort; the chat tools work regardless.
 </details>
 
 <details>
-<summary><strong>Antigravity &amp; pi</strong></summary>
+<summary><strong>Antigravity</strong></summary>
 
 **Antigravity** uses a shared MCP config — [install the program](#install-the-program), then add the
 [generic MCP block](#2-as-an-mcp-server). If you already use the Gemini extension,
 `agy plugin import gemini` brings it across.
 
-**pi**: `pi install git:github.com/Goldziher/basemind`. pi has no MCP support, so basemind runs
-through its [CLI](#3-as-a-cli) here.
+</details>
+
+<details>
+<summary><strong>Pi</strong></summary>
+
+[Install the basemind program](#install-the-program) first, then install the Pi package:
+
+```sh
+pi install git:github.com/Goldziher/basemind
+```
+
+The package includes ten skills and a native extension that loads basemind context at session start
+and after compaction. Pi runs basemind through its shell tool using the [CLI](#3-as-a-cli).
+No MCP bridge or binary is included. Add `-l` to save the package in the current project's configuration.
+
+The next release adds these resources to the existing `basemind-opencode` npm package.
+After that release, use `pi install npm:basemind-opencode` for registry installation and
+Pi package-catalog discovery. Both installation paths carry the same extension and skills.
 
 </details>
 

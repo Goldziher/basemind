@@ -64,6 +64,9 @@ for tree in "${TREES[@]}"; do
   printf 'sync-plugin-skills: %s ← skills + commands\n' "$tree"
 done
 
+mkdir -p opencode-plugin/.pi/extensions
+cp .pi/extensions/basemind.ts opencode-plugin/.pi/extensions/basemind.ts
+
 AI_RULEZ="${AI_RULEZ:-ai-rulez}"
 command -v "$AI_RULEZ" >/dev/null 2>&1 || {
   printf 'sync-plugin-skills: ai-rulez is required to generate Hermes packages\n' >&2

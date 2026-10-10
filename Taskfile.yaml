@@ -31,6 +31,16 @@ tasks:
       - rm -rf /tmp/basemind-hermes-wheel
       - uv build --wheel --out-dir /tmp/basemind-hermes-wheel .hermes/package
 
+  package:plugin:
+    aliases: [package:pi]
+    desc: Stage and pack the combined OpenCode and Pi package without changing the checkout
+    cmds:
+      - |
+        package_dir="$(mktemp -d)"
+        trap 'rm -rf "$package_dir"' EXIT
+        bash scripts/stage-agent-package.sh "$package_dir"
+        npm pack "$package_dir" --pack-destination "$package_dir"
+
   test:verbose:
     desc: Run tests with verbose output
     cmds:
