@@ -76,7 +76,6 @@ memory = ["intelligence", "xberg/embeddings", "xberg/keywords", "xberg/ner-onnx"
 crawl = ["documents", "dep:crawlberg", "dep:url"]
 
 comms = [
-  "dep:tokio-util",
   "dep:hyper",
   "dep:hyper-util",
   "dep:http",
@@ -196,7 +195,7 @@ tokio = { version = "1", features = [
   "fs",
   "process",
 ] }
-tokio-util = { version = "0.7", features = ["codec"], optional = true }
+tokio-util = { version = "0.7", features = ["codec"] }
 toml = "1.1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
@@ -218,7 +217,7 @@ insta = "1"
 proptest = "1"
 rmcp = { version = "3.5", features = ["client", "transport-async-rw", "transport-child-process"] }
 tempfile = "3"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "test-util"] }
 wiremock = "0.6"
 
 # ~keep `version::build_id` streams the whole executable (~1.3 GB in a debug build) through blake3;
