@@ -167,7 +167,8 @@ max_chunks_per_document = 2000
 | `embed` | bool | Generate vector embeddings for semantic search (default `true`). Set `false` to keep full-text only. |
 | `embedding_preset` | string | Named embedding model preset used to embed chunks (default `balanced`). |
 | `max_chunks_per_document` | integer | Cap on chunks embedded per document (default 2000), so one pathological file can't explode a scan. |
-| `max_pages` / `extraction_timeout_secs` | integer | Per-document extraction bounds: pages (default 500) and wall-clock seconds (default 600). |
+| `max_pages` / `extraction_timeout_secs` | integer | Per-document extraction bounds: pages (default 500) and wall-clock seconds (default 600). A document that overruns the time budget is abandoned and counted as `doc_timeouts`. |
+| `markdown_chunk_max_bytes` / `plain_text_chunk_max_bytes` | integer | Size cutovers (bytes, minimum 1024; defaults 262144 and 131072) above which a text-like document (csv, json, yaml, xml, markdown; plain `text/plain` for the second key) is chunked by a linear fixed-size chunker instead of xberg's quadratic markdown splitter. Counted as `docs_degraded` in the scan summary; PDFs and Office files are never affected. |
 | `max_characters` / `overlap` | integer | Chunk size (default 1000, minimum 64) and overlap (default 200); `overlap` must stay below `max_characters`. |
 | `extract_archives` | bool | Extract the files inside archives (`.zip`, `.tar`, `.jar`, ...). Default `false`; true binaries are always rejected. In the daemon this also needs an operator grant (see [Trust boundary](#trust-boundary)). |
 | `max_archive_bytes` / `max_archive_entries` | integer | With `extract_archives = true`: cap on total uncompressed bytes (default 64 MiB) and entries (default 1000) unpacked from one archive. An archive past either cap fails extraction instead of being unpacked into memory. |

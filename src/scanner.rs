@@ -159,6 +159,12 @@ pub struct ScanStats {
     /// fresh xberg extraction (+ embedding). Mirrors `reused_extraction` for the doc tier: rename /
     /// rewrite churn should show up here, never as fresh extraction work (issue #44).
     pub reused_doc_extraction: usize,
+    /// Subset of `docs_indexed` chunked by the linear fallback instead of xberg's markdown splitter
+    /// because the file exceeded `[documents] markdown_chunk_max_bytes` / `plain_text_chunk_max_bytes`.
+    pub docs_degraded: usize,
+    /// Documents abandoned because extraction overran `[documents] extraction_timeout_secs` (also
+    /// counted in `extract_failed`). They are retried on the next scan.
+    pub doc_timeouts: usize,
     /// Subset of `updated` re-extracted only because the entry's blob predated
     /// [`crate::extract::EXTRACT_EPOCH`] (an extractor fix that changes the output of unchanged
     /// files, e.g. shorter symbol signatures). Zero once an index has caught up.
@@ -266,7 +272,13 @@ pub enum FileStatus {
         /// True when the doc was served from the cached `.doc.msgpack` blob rather than freshly
         /// extracted (mirrors `Updated::reused`); drives the `reused_doc_extraction` counter.
         reused: bool,
+        /// True when the linear fallback chunker produced the chunks (drives `docs_degraded`).
+        degraded: bool,
     },
+    /// Subset of ExtractFailed: document extraction overran `[documents] extraction_timeout_secs`
+    /// and was abandoned.
+    #[cfg(feature = "documents")]
+    DocTimedOut,
 }
 
 /// Aggregate outcome of one scan. Per-file outcomes are delivered to the caller's

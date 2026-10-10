@@ -180,6 +180,7 @@ fn write_doc_overwrites_vectorless_blob_with_embedded_doc() {
 
     let vectorless = FileMapDoc {
         config_digest: String::new(),
+        linear_chunked: false,
         schema_ver: SCHEMA_VER,
         mime_type: "text/plain".to_string(),
         content: "hello".to_string(),

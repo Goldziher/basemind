@@ -116,8 +116,18 @@ pub fn code_digest(cfg: &CodeSearchConfig) -> String {
 /// entities and summary. `output` (MCP response format) and the embedding preset / threads are
 /// deliberately excluded: they do not change what is stored.
 pub fn doc_digest(cfg: &DocumentsConfig, resources: &ResourcesConfig, llm: &LlmConfig) -> String {
+    // The splitter cutovers decide which chunker a text file gets, so they belong in the digest, but only
+    // when moved off their defaults: folding the defaults in would change every existing digest and
+    // re-extract every document on upgrade.
+    let defaults = DocumentsConfig::default();
+    let cutovers = (cfg.markdown_chunk_max_bytes, cfg.plain_text_chunk_max_bytes);
+    let tag = if cutovers == (defaults.markdown_chunk_max_bytes, defaults.plain_text_chunk_max_bytes) {
+        "doc/1".to_string()
+    } else {
+        format!("doc/1/cutover={},{}", cutovers.0, cutovers.1)
+    };
     digest_of(
-        "doc/1",
+        &tag,
         &(
             cfg.max_characters,
             cfg.overlap,
@@ -192,6 +202,22 @@ mod tests {
         let mut live = base.clone();
         live.max_pages += 1;
         assert_ne!(digest(&base), digest(&live));
+    }
+
+    #[test]
+    fn doc_digest_tracks_chunker_cutovers_only_off_their_defaults() {
+        let resources = ResourcesConfig::default();
+        let llm = LlmConfig::default();
+        let base = DocumentsConfig::default();
+        let digest = |cfg: &DocumentsConfig| doc_digest(cfg, &resources, &llm);
+
+        let mut moved = base.clone();
+        moved.markdown_chunk_max_bytes += 1;
+        assert_ne!(digest(&base), digest(&moved), "a moved cutover re-chunks documents");
+        let mut moved_plain = base.clone();
+        moved_plain.plain_text_chunk_max_bytes += 1;
+        assert_ne!(digest(&base), digest(&moved_plain));
+        assert_ne!(digest(&moved), digest(&moved_plain));
     }
 
     #[test]

@@ -14,6 +14,7 @@ fn cached_doc_not_reusable_when_preset_model_differs_at_same_dim() {
     use crate::extract::doc::{DocChunk, FileMapDoc};
     let doc = FileMapDoc {
         config_digest: String::new(),
+        linear_chunked: false,
         schema_ver: 0,
         mime_type: "application/pdf".to_string(),
         content: "hello".to_string(),
@@ -74,6 +75,7 @@ fn pending_doc_batch_is_metadata_only() {
         embedded: true,
         embed_attempted: true,
         reused: false,
+        degraded: false,
     };
     assert!(batch.emit_rows);
     assert_eq!(batch.chunk_count, 3);
@@ -93,6 +95,7 @@ fn doc_fixture(chunk_count: usize, embedding_dim: u16) -> crate::extract::doc::F
         .collect();
     FileMapDoc {
         config_digest: String::new(),
+        linear_chunked: false,
         schema_ver: 0,
         mime_type: "application/pdf".to_string(),
         content: "body".to_string(),

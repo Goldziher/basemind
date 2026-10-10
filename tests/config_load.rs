@@ -49,6 +49,8 @@ preload = true
 include = ["docs"]
 exclude = ["docs/drafts"]
 max_file_bytes = 4096
+markdown_chunk_max_bytes = 2048
+plain_text_chunk_max_bytes = 1024
 embed_include = ["docs/public"]
 
 [code_search]
@@ -67,6 +69,8 @@ embed_include = ["src"]
     assert_eq!(cfg.documents.include, ["docs"]);
     assert_eq!(cfg.documents.exclude, ["docs/drafts"]);
     assert_eq!(cfg.documents.max_file_bytes, 4096);
+    assert_eq!(cfg.documents.markdown_chunk_max_bytes, 2048);
+    assert_eq!(cfg.documents.plain_text_chunk_max_bytes, 1024);
     assert_eq!(cfg.documents.embed_include, ["docs/public"]);
     assert_eq!(cfg.code_search.embed_include, ["src"]);
 }
@@ -77,6 +81,22 @@ fn documents_max_file_bytes_below_the_schema_minimum_is_rejected() {
     let dir = repo_with("[documents]\nmax_file_bytes = 1023\n");
     let err = config::load_with_overrides(dir.path(), None, None).expect_err("below minimum");
     assert!(err.to_string().contains("max_file_bytes"), "{err}");
+}
+
+#[test]
+fn documents_chunk_cutovers_default_and_reject_values_below_the_minimum() {
+    let _env = no_grants();
+    let dir = repo_with("[documents]\nenabled = true\n");
+    let cfg = config::load_with_overrides(dir.path(), None, None)
+        .expect("defaults load")
+        .config;
+    assert_eq!(cfg.documents.markdown_chunk_max_bytes, 256 * 1024);
+    assert_eq!(cfg.documents.plain_text_chunk_max_bytes, 128 * 1024);
+    for key in ["markdown_chunk_max_bytes", "plain_text_chunk_max_bytes"] {
+        let dir = repo_with(&format!("[documents]\n{key} = 1023\n"));
+        let err = config::load_with_overrides(dir.path(), None, None).expect_err("below minimum");
+        assert!(err.to_string().contains(key), "{err}");
+    }
 }
 
 #[test]

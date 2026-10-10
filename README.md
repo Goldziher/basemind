@@ -857,6 +857,16 @@ exclude = []
 # large PDFs / Office files are still extracted. Files over it are skipped and counted as too large
 # in the scan summary.
 max_file_bytes = 52428800
+# xberg's markdown splitter is quadratic in document size, so a multi-megabyte csv/log/yaml file could
+# stall a scan worker for minutes. Text-like documents over these sizes (bytes, minimum 1024) are
+# chunked by a linear fixed-size chunker instead and counted as `docs_degraded` in the scan summary.
+# PDFs / Office files are never affected. text/plain (.txt, .log) has no markup to exploit, so its
+# cutover is lower.
+markdown_chunk_max_bytes = 262144
+plain_text_chunk_max_bytes = 131072
+# Wall-clock budget (seconds) for one document's extraction + chunking. A document that overruns is
+# abandoned, skipped, and counted as `doc_timeouts` (and retried on the next scan).
+extraction_timeout_secs = 600
 # Extra extensions to skip on top of the built-in archive/binary floor (case-insensitive; ".pdf" and
 # "pdf" are the same).
 extension_denylist = []

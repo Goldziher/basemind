@@ -32,6 +32,7 @@ use xberg::embeddings::{EMBEDDING_PRESETS, EmbeddingPreset};
 
 use crate::config::{DocumentsConfig, LlmConfig, ResourcesConfig};
 use crate::extract::doc::{DocConfig, FileMapDoc, extract_doc};
+use crate::extract::doc_guard::ChunkCutovers;
 use crate::hashing::{self, Hash};
 use crate::lance::DocumentRow;
 use crate::scanner::EmbedMode;
@@ -81,6 +82,9 @@ pub(crate) struct PendingDocBatch {
     /// rather than a fresh xberg extraction. Drives the `reused_doc_extraction` scan counter — the
     /// observable proof that churn (renames, rewrites) does not re-run extraction or embedding.
     pub reused: bool,
+    /// True when the document was chunked by the linear fallback instead of xberg's markdown splitter
+    /// (large text-like file). Drives the `docs_degraded` scan counter.
+    pub degraded: bool,
 }
 
 /// Look the configured embedding preset up in xberg's preset table and
@@ -112,6 +116,11 @@ pub(crate) fn doc_config_from(
     DocConfig {
         max_pages: cfg.max_pages,
         extraction_timeout_secs: cfg.extraction_timeout_secs,
+        max_chunks_per_document: cfg.max_chunks_per_document,
+        chunk_cutovers: ChunkCutovers {
+            markdown_bytes: cfg.markdown_chunk_max_bytes,
+            plain_text_bytes: cfg.plain_text_chunk_max_bytes,
+        },
         max_characters: cfg.max_characters,
         overlap: cfg.overlap,
         embedding_preset: Some(cfg.embedding_preset.clone()),
@@ -411,6 +420,7 @@ fn pending_from_doc(
         // (the reuse gate requires them), so `embedded` covers it and the flag is moot there. ~keep
         embed_attempted: embed && !reused,
         reused,
+        degraded: doc.linear_chunked,
     }
 }
 
