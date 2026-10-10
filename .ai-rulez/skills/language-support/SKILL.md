@@ -1,6 +1,12 @@
 ---
-priority: medium
-description: "Adding tree-sitter language coverage"
+type: Playbook
+title: Language Support
+description: Adding tree-sitter language coverage
+x-ai-rulez:
+  kind: skill
+  id: language-support
+  metadata:
+    priority: medium
 ---
 
 # Language Support

@@ -1,5 +1,11 @@
 ---
-priority: high
+type: Decision
+title: Basemind Usage
+x-ai-rulez:
+  kind: rule
+  id: basemind-usage
+  metadata:
+    priority: high
 ---
 
 # basemind usage

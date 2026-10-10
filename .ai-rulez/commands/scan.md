@@ -1,8 +1,15 @@
 ---
-priority: high
-aliases: [s]
-usage: "/scan [path]"
-description: "Run basemind scan against the current working tree (or a path argument)"
+type: Reference
+title: Scan
+description: Run basemind scan against the current working tree (or a path argument)
+x-ai-rulez:
+  kind: command
+  id: scan
+  metadata:
+    priority: high
+    aliases:
+      - s
+    usage: /scan [path]
 ---
 
 # Scan

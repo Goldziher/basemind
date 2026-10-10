@@ -1,6 +1,12 @@
 ---
-priority: medium
-description: "Picking and asserting harden-harness canaries"
+type: Playbook
+title: Harness Canary Authoring
+description: Picking and asserting harden-harness canaries
+x-ai-rulez:
+  kind: skill
+  id: harness-canary-authoring
+  metadata:
+    priority: medium
 ---
 
 # Harness Canary Authoring

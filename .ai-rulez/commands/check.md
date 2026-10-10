@@ -1,8 +1,15 @@
 ---
-priority: high
-aliases: [c]
-usage: "/check"
-description: "Run the local lint + test triad before committing"
+type: Reference
+title: Check
+description: Run the local lint + test triad before committing
+x-ai-rulez:
+  kind: command
+  id: check
+  metadata:
+    priority: high
+    aliases:
+      - c
+    usage: /check
 ---
 
 # Check

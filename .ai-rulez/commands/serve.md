@@ -1,7 +1,13 @@
 ---
-priority: medium
-usage: "/serve"
-description: "Start the basemind MCP stdio server"
+type: Reference
+title: Serve
+description: Start the basemind MCP stdio server
+x-ai-rulez:
+  kind: command
+  id: serve
+  metadata:
+    priority: medium
+    usage: /serve
 ---
 
 # Serve

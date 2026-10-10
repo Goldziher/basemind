@@ -1,5 +1,11 @@
 ---
-priority: high
+type: Decision
+title: Release Versioning
+x-ai-rulez:
+  kind: rule
+  id: release-versioning
+  metadata:
+    priority: high
 ---
 
 # Release Versioning

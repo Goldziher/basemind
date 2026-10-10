@@ -1,5 +1,11 @@
 ---
-priority: high
+type: Decision
+title: Schema And Blob Compat
+x-ai-rulez:
+  kind: rule
+  id: schema-and-blob-compat
+  metadata:
+    priority: high
 ---
 
 # Schema + Blob Compatibility

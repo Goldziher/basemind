@@ -1,5 +1,11 @@
 ---
-priority: high
+type: Concept
+title: Mcp Surface
+x-ai-rulez:
+  kind: context
+  id: mcp-surface
+  metadata:
+    priority: high
 ---
 
 # MCP Surface

@@ -1,7 +1,13 @@
 ---
-name: rust-perf-engineer
+type: Reference
+title: Rust Perf Engineer
 description: Reviews diffs touching the basemind scanner / extract / store / index paths for hot-path regressions — allocations, missed memmem opportunities, hashmap churn, parser pool misuse.
-model: sonnet
+x-ai-rulez:
+  kind: agent
+  id: rust-perf-engineer
+  metadata:
+    model: sonnet
+    name: rust-perf-engineer
 ---
 
 # rust-perf-engineer

@@ -1,7 +1,13 @@
 ---
-name: harness-interpreter
+type: Reference
+title: Harness Interpreter
 description: Reads /tmp/basemind-harden-*.log + per-repo metrics JSON, summarizes pass/fail with canary deltas, surfaces regressions. Cheap read-mostly subagent.
-model: sonnet
+x-ai-rulez:
+  kind: agent
+  id: harness-interpreter
+  metadata:
+    model: sonnet
+    name: harness-interpreter
 ---
 
 # harness-interpreter

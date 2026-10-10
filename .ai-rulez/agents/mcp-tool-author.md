@@ -1,7 +1,13 @@
 ---
-name: mcp-tool-author
+type: Reference
+title: Mcp Tool Author
 description: Adds a mode to one of basemind's 9 MCP domains end-to-end — mode enum variant, params, shim arm, helper body, CLI subcommand, smoke assertion, README row.
-model: sonnet
+x-ai-rulez:
+  kind: agent
+  id: mcp-tool-author
+  metadata:
+    model: sonnet
+    name: mcp-tool-author
 ---
 
 # mcp-tool-author

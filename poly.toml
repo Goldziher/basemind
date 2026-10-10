@@ -32,7 +32,7 @@ exclude = [
 ]
 
 [lint.markdown.rumdl]
-disable = ["MD013", "MD024", "MD033", "MD036", "MD041"]
+disable = ["MD025", "MD013", "MD024", "MD033", "MD036", "MD041"]
 
 # The quality tier's budgets are tuned to this repo's reality: the MCP/CLI
 # handlers are long by construction, most ships in vendored tree-sitter crates,
@@ -94,7 +94,7 @@ preserve_patterns = [
   "limitations under the license",
 ]
 [fmt.markdown.rumdl]
-disable = ["MD013", "MD024", "MD033", "MD036", "MD041"]
+disable = ["MD025", "MD013", "MD024", "MD033", "MD036", "MD041"]
 
 [lint.typos]
 extend_words = { patern = "patern", pattrn = "pattrn", ser = "ser", certifi = "certifi", ratatui = "ratatui", Ratatui = "Ratatui" }

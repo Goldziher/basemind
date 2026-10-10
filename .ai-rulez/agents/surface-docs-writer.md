@@ -1,7 +1,13 @@
 ---
-name: surface-docs-writer
+type: Reference
+title: Surface Docs Writer
 description: Rewrites basemind's docs, skills, and plugin manifests against the 9-domain MCP/CLI surface — knows the ai-rulez generation source, the four parallel skill trees, and the hand-synced command mirrors.
-model: sonnet
+x-ai-rulez:
+  kind: agent
+  id: surface-docs-writer
+  metadata:
+    model: sonnet
+    name: surface-docs-writer
 ---
 
 # surface-docs-writer

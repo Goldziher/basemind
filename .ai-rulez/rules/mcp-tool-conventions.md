@@ -1,5 +1,11 @@
 ---
-priority: high
+type: Decision
+title: Mcp Tool Conventions
+x-ai-rulez:
+  kind: rule
+  id: mcp-tool-conventions
+  metadata:
+    priority: high
 ---
 
 # MCP Tool Conventions

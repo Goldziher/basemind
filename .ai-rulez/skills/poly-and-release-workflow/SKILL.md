@@ -1,6 +1,12 @@
 ---
-priority: medium
-description: "Commit step lint/test/harness order"
+type: Playbook
+title: Poly And Release Workflow
+description: Commit step lint/test/harness order
+x-ai-rulez:
+  kind: skill
+  id: poly-and-release-workflow
+  metadata:
+    priority: medium
 ---
 
 # Poly + Release Workflow

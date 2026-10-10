@@ -1,5 +1,11 @@
 ---
-priority: high
+type: Concept
+title: Crate Layout
+x-ai-rulez:
+  kind: context
+  id: crate-layout
+  metadata:
+    priority: high
 ---
 
 # Crate Layout

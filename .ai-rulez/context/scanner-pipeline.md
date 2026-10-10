@@ -1,5 +1,11 @@
 ---
-priority: high
+type: Concept
+title: Scanner Pipeline
+x-ai-rulez:
+  kind: context
+  id: scanner-pipeline
+  metadata:
+    priority: high
 ---
 
 # Scanner Pipeline

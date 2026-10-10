@@ -1,6 +1,12 @@
 ---
-priority: medium
-description: "Adding Fjall partitions and key encodings safely"
+type: Playbook
+title: Index Keyspace Evolution
+description: Adding Fjall partitions and key encodings safely
+x-ai-rulez:
+  kind: skill
+  id: index-keyspace-evolution
+  metadata:
+    priority: medium
 ---
 
 # Index Keyspace Evolution

@@ -1,5 +1,11 @@
 ---
-priority: high
+type: Decision
+title: Tdd And Poly
+x-ai-rulez:
+  kind: rule
+  id: tdd-and-poly
+  metadata:
+    priority: high
 ---
 
 # TDD + poly Workflow

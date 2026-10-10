@@ -1,7 +1,13 @@
 ---
-name: mcp-domain-migrator
+type: Reference
+title: Mcp Domain Migrator
 description: Migrates one basemind MCP domain from flat per-verb tools onto a single mode-dispatched tool plus a CLI subcommand group — mode enum, params, shim, helpers, CLI — without touching shared files.
-model: opus
+x-ai-rulez:
+  kind: agent
+  id: mcp-domain-migrator
+  metadata:
+    model: opus
+    name: mcp-domain-migrator
 ---
 
 # mcp-domain-migrator

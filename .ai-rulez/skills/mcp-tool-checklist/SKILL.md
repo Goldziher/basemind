@@ -1,6 +1,12 @@
 ---
-priority: medium
-description: "End-to-end checklist for adding a mode to one of basemind's MCP domains"
+type: Playbook
+title: Mcp Tool Checklist
+description: End-to-end checklist for adding a mode to one of basemind's MCP domains
+x-ai-rulez:
+  kind: skill
+  id: mcp-tool-checklist
+  metadata:
+    priority: medium
 ---
 
 # MCP Tool Checklist

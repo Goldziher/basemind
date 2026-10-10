@@ -1,5 +1,11 @@
 ---
-priority: high
+type: Concept
+title: Inverted Index
+x-ai-rulez:
+  kind: context
+  id: inverted-index
+  metadata:
+    priority: high
 ---
 
 # Inverted Index (Fjall)

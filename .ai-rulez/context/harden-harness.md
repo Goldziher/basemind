@@ -1,5 +1,11 @@
 ---
-priority: high
+type: Concept
+title: Harden Harness
+x-ai-rulez:
+  kind: context
+  id: harden-harness
+  metadata:
+    priority: high
 ---
 
 # Harden Harness

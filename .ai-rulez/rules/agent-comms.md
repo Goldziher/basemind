@@ -1,5 +1,11 @@
 ---
-priority: high
+type: Decision
+title: Agent Comms
+x-ai-rulez:
+  kind: rule
+  id: agent-comms
+  metadata:
+    priority: high
 ---
 
 # Agent comms & basemind-first

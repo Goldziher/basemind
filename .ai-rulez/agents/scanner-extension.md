@@ -1,7 +1,13 @@
 ---
-name: scanner-extension
+type: Reference
+title: Scanner Extension
 description: Adds tree-sitter language coverage to basemind via the language-support skill — sources upstream queries from tree-sitter-<lang>/queries/tags.scm, adapts to basemind's Symbol/Call/Import shape.
-model: sonnet
+x-ai-rulez:
+  kind: agent
+  id: scanner-extension
+  metadata:
+    model: sonnet
+    name: scanner-extension
 ---
 
 # scanner-extension

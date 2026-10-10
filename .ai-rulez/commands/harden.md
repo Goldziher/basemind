@@ -1,8 +1,15 @@
 ---
-priority: high
-aliases: [h]
-usage: "/harden"
-description: "Run the real-OSS harden harness against the 8 canary repos"
+type: Reference
+title: Harden
+description: Run the real-OSS harden harness against the 8 canary repos
+x-ai-rulez:
+  kind: command
+  id: harden
+  metadata:
+    priority: high
+    aliases:
+      - h
+    usage: /harden
 ---
 
 # Harden

@@ -1,5 +1,11 @@
 ---
-priority: high
+type: Decision
+title: Perf Discipline
+x-ai-rulez:
+  kind: rule
+  id: perf-discipline
+  metadata:
+    priority: high
 ---
 
 # Performance Discipline

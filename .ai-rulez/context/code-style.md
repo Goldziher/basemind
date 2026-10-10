@@ -1,5 +1,11 @@
 ---
-priority: high
+type: Concept
+title: Code Style
+x-ai-rulez:
+  kind: context
+  id: code-style
+  metadata:
+    priority: high
 ---
 
 # Code Style
