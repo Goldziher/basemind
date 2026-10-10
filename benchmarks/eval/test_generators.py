@@ -176,7 +176,7 @@ class GeneratorTests(unittest.TestCase):
                 text=True,
                 check=False,
             ).stdout
-            expected = sorted(f"{p}:{n}" for p, n in (l.split(":")[1:3] for l in out.splitlines()))
+            expected = sorted(f"{p}:{n}" for p, n in (line.split(":")[1:3] for line in out.splitlines()))
             self.assertEqual(sorted(t["gold"]), expected, t["args"])
 
     def test_find_indexed_list_limits_gold_to_indexed_paths(self) -> None:

@@ -80,7 +80,7 @@ def main() -> None:
     pool = commits[: a.recent]
     rng = repo.rng("git_search", a.seed)
     tasks = []
-    for sha, subject, toks in c.sample(rng, pool, len(pool)):
+    for sha, subject, _toks in c.sample(rng, pool, len(pool)):
         if len(tasks) >= a.n:
             break
         subj_tokens = sorted(
