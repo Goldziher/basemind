@@ -239,21 +239,25 @@ pub(super) async fn run_find_files(state: &ServerState, params: FindFilesParams)
     // ~keep: (not the grand total across all pages), so `total > limit` / `total > files.len()`
     // ~keep: read the same way.
     let total = scored.len().saturating_sub(skip);
-    let mut page: Vec<FindFilesEntry> = scored
+    let page: Vec<FindFilesEntry> = scored
         .into_iter()
         .skip(skip)
         .take(limit)
         .map(|(_, entry)| entry)
         .collect();
     #[cfg(feature = "documents")]
-    if page.iter().any(|e| cache.contains_doc(&e.path)) {
-        let store = state.shared.store.read().await;
-        for e in &mut page {
-            if let Some(doc) = store.lookup_doc(&e.path) {
-                e.size_bytes = doc.size_bytes;
+    let page = {
+        let mut page = page;
+        if page.iter().any(|e| cache.contains_doc(&e.path)) {
+            let store = state.shared.store.read().await;
+            for e in &mut page {
+                if let Some(doc) = store.lookup_doc(&e.path) {
+                    e.size_bytes = doc.size_bytes;
+                }
             }
         }
-    }
+        page
+    };
     let truncated = total > limit;
 
     let budget = super::budget::apply_budget(page, params.max_tokens);

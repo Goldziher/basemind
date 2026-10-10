@@ -75,6 +75,7 @@ const fn mcp_only(tool: &'static str, mode: &'static str, reason: &'static str) 
 
 /// The reasons below are shared by several rows.
 const LIFECYCLE: &str = "process/index lifecycle, not a query an agent issues over MCP";
+#[cfg(all(feature = "comms", any(unix, windows)))]
 const BROKER: &str = "comms-broker daemon lifecycle; the MCP surface reaches the broker through `agents`/`workspace`";
 #[cfg(not(feature = "crawl"))]
 const NO_CRAWL: &str =

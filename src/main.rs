@@ -695,8 +695,6 @@ fn cmd_scan(root: &std::path::Path, args: &ScanArgs, verbosity: Verbosity, no_co
 }
 
 fn cmd_rescan(root: &std::path::Path, args: &RescanArgs, verbosity: Verbosity, no_color: bool) -> Result<()> {
-    use std::io::Write as _;
-
     let root = &guard_workspace_root(root)?;
     let full = args.full || args.paths.is_empty();
     // ~keep Validate before touching any lock or daemon, so a bad path is a clean exit 2.
@@ -710,6 +708,7 @@ fn cmd_rescan(root: &std::path::Path, args: &RescanArgs, verbosity: Verbosity, n
     // ~keep unlocked-by-it writer. Never fall through to a local scan after a daemon failure.
     #[cfg(all(feature = "comms", any(unix, windows)))]
     if basemind::cli::rescan::daemon_is_up() {
+        use std::io::Write as _;
         let report = basemind::cli::rescan::rescan_via_daemon(root, (!full).then_some(abs), full)?;
         let _ = writeln!(
             out,
