@@ -19,10 +19,10 @@ categories = ["command-line-utilities", "development-tools"]
 ignored = ["serde_toon_format", "rustix"]
 [workspace]
 members = [
-  "crates/lsp-positions",
-  "crates/stack-graphs",
-  "crates/tree-sitter-graph",
-  "crates/tree-sitter-stack-graphs",
+    "crates/lsp-positions",
+    "crates/stack-graphs",
+    "crates/tree-sitter-graph",
+    "crates/tree-sitter-stack-graphs",
 ]
 
 [workspace.lints.clippy]
@@ -39,7 +39,13 @@ path = "src/main.rs"
 [features]
 default = []
 
-intelligence = ["dep:xberg", "dep:lancedb", "dep:arrow-array", "dep:arrow-schema", "dep:futures"]
+intelligence = [
+    "dep:xberg",
+    "dep:lancedb",
+    "dep:arrow-array",
+    "dep:arrow-schema",
+    "dep:futures",
+]
 
 # Just the real o200k tokenizer (`xberg::chunking::count_tokens`), used by `basemind admin tokens`
 # and `src/mcp/savings.rs`. `xberg/chunking-tokenizers` is a pure-Rust `tokenizers` crate underneath
@@ -48,60 +54,73 @@ intelligence = ["dep:xberg", "dep:lancedb", "dep:arrow-array", "dep:arrow-schema
 tokenizer = ["dep:xberg", "xberg/chunking-tokenizers"]
 
 documents = [
-  "intelligence",
-  "tokenizer",
-  "xberg/formats",
-  "xberg/analysis",
-  "xberg/embeddings",
-  "xberg/reranker",
-  "xberg/reranker-presets",
-  "xberg/ocr",
-  "xberg/paddle-ocr",
-  "xberg/layout-detection",
-  "xberg/auto-rotate",
-  "xberg/ner-onnx",
-  "xberg/keywords-yake",
-  "xberg/keywords-rake",
-  "xberg/summarization",
-  "xberg/summarization-llm",
-  "xberg/redaction",
-  "xberg/qr-codes",
-  "dep:serde_toon_format",
+    "intelligence",
+    "tokenizer",
+    "xberg/formats",
+    "xberg/analysis",
+    "xberg/embeddings",
+    "xberg/reranker",
+    "xberg/reranker-presets",
+    "xberg/ocr",
+    "xberg/paddle-ocr",
+    "xberg/layout-detection",
+    "xberg/auto-rotate",
+    "xberg/ner-onnx",
+    "xberg/keywords-yake",
+    "xberg/keywords-rake",
+    "xberg/summarization",
+    "xberg/summarization-llm",
+    "xberg/redaction",
+    "xberg/qr-codes",
+    "dep:serde_toon_format",
 ]
 
-code-search = ["intelligence", "xberg/embeddings", "xberg/reranker", "xberg/reranker-presets"]
+code-search = [
+    "intelligence",
+    "xberg/embeddings",
+    "xberg/reranker",
+    "xberg/reranker-presets",
+]
 
 memory = ["intelligence", "xberg/embeddings", "xberg/keywords", "xberg/ner-onnx"]
 
 crawl = ["documents", "dep:crawlberg", "dep:url"]
 
 comms = [
-  "dep:hyper",
-  "dep:hyper-util",
-  "dep:http",
-  "dep:http-body-util",
-  "dep:bytes",
-  "dep:form_urlencoded",
-  "dep:getrandom",
-  "rmcp/transport-streamable-http-server",
+    "dep:hyper",
+    "dep:hyper-util",
+    "dep:http",
+    "dep:http-body-util",
+    "dep:bytes",
+    "dep:form_urlencoded",
+    "dep:getrandom",
+    "rmcp/transport-streamable-http-server",
 ]
 
 shells = ["dep:rmux-sdk", "dep:rmux-server", "dep:rmux-client"]
 
 code-intel-js = [
-  "dep:oxc_allocator",
-  "dep:oxc_parser",
-  "dep:oxc_semantic",
-  "dep:oxc_span",
-  "dep:oxc_syntax",
-  "dep:oxc_resolver",
+    "dep:oxc_allocator",
+    "dep:oxc_parser",
+    "dep:oxc_semantic",
+    "dep:oxc_span",
+    "dep:oxc_syntax",
+    "dep:oxc_resolver",
 ]
 
 code-intel-stack = ["dep:stack-graphs", "dep:tree-sitter-graph", "dep:tree-sitter-stack-graphs"]
 
 code-intel = ["code-intel-js", "code-intel-stack"]
 
-full = ["documents", "memory", "crawl", "comms", "shells", "code-intel", "code-search"]
+full = [
+    "documents",
+    "memory",
+    "crawl",
+    "comms",
+    "shells",
+    "code-intel",
+    "code-search",
+]
 
 test-support = ["dep:tempfile"]
 
@@ -148,10 +167,10 @@ jsonschema = "0.58"
 # ~keep It pulls tonic/arrow-flight/reqwest in but nothing is invoked; drop it once upstream fixes the gate.
 lancedb = { version = "0.40.0", features = ["remote"], optional = true }
 libc = "0.2"
-lru = "0.18.5"
-memchr = "2"
 # ~keep `extended` exposes `mi_option_set`, used by `alloc_tag` to retag the heap off `VM_MEMORY_IOACCELERATOR`.
 libmimalloc-sys = { version = "0.1", features = ["extended"] }
+lru = "0.18.5"
+memchr = "2"
 mimalloc = "0.1"
 notify = "8"
 notify-debouncer-full = "0.7"
@@ -184,16 +203,16 @@ streaming-iterator = "0.1"
 tempfile = { version = "3", optional = true }
 thiserror = "2"
 tokio = { version = "1", features = [
-  "rt-multi-thread",
-  "macros",
-  "signal",
-  "sync",
-  "io-util",
-  "io-std",
-  "time",
-  "net",
-  "fs",
-  "process",
+    "rt-multi-thread",
+    "macros",
+    "signal",
+    "sync",
+    "io-util",
+    "io-std",
+    "time",
+    "net",
+    "fs",
+    "process",
 ] }
 tokio-util = { version = "0.7", features = ["codec"] }
 toml = "1.1"
