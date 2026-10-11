@@ -45,8 +45,8 @@ const SEED_TMP_DIR: &str = ".seed-tmp";
 /// inference) to populate the new workspace's empty lance store. The seed cannot copy lance rows, and
 /// the scanner's unchanged fast path never consults lance.
 const SEED_POLICY_SENTINEL: &str = "seed:rebuild-lance";
-/// Non-macOS fallback copies real bytes when reflink is unavailable; refuse past this size.
-#[cfg(not(target_os = "macos"))]
+/// Non-macOS unix fallback copies real bytes when reflink is unavailable; refuse past this size.
+#[cfg(all(unix, not(target_os = "macos")))]
 const MAX_PLAIN_COPY_BYTES: u64 = 2 * 1_024 * 1_024 * 1_024;
 
 fn seed_disabled() -> bool {
