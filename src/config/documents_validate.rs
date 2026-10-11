@@ -9,7 +9,17 @@ const MIN_MAX_CHARACTERS: usize = 64;
 /// Smallest accepted splitter cutover; mirrors the schema minimum of the `*_chunk_max_bytes` knobs.
 const MIN_CHUNK_CUTOVER_BYTES: u64 = 1024;
 
+/// Largest accepted `max_abandoned_extractions`; mirrors the schema maximum.
+pub const MAX_ABANDONED_EXTRACTIONS: usize = 64;
+
 impl DocumentsConfig {
+    /// The document-phase budget actually enforced: `phase_budget_secs`, but never below
+    /// `extraction_timeout_secs`, so a raised per-file timeout is not silently cut short by the default
+    /// phase budget (a single document may legitimately use its whole per-file budget).
+    pub fn effective_phase_budget_secs(&self) -> u64 {
+        self.phase_budget_secs.max(self.extraction_timeout_secs)
+    }
+
     /// Returns a human-readable error naming the offending values on violation.
     pub fn validate(&self) -> Result<(), String> {
         if self.max_characters < MIN_MAX_CHARACTERS {
@@ -37,6 +47,15 @@ impl DocumentsConfig {
         }
         if self.extraction_timeout_secs == 0 {
             return Err("[documents] extraction_timeout_secs must be at least 1".to_string());
+        }
+        if self.phase_budget_secs == 0 {
+            return Err("[documents] phase_budget_secs must be at least 1".to_string());
+        }
+        if !(1..=MAX_ABANDONED_EXTRACTIONS).contains(&self.max_abandoned_extractions) {
+            return Err(format!(
+                "[documents] max_abandoned_extractions ({}) must be between 1 and {MAX_ABANDONED_EXTRACTIONS}",
+                self.max_abandoned_extractions
+            ));
         }
         let confidence = self.language.min_confidence;
         if !(0.0..=1.0).contains(&confidence) {
@@ -120,6 +139,35 @@ mod tests {
             ..Default::default()
         };
         assert!(d.validate().unwrap_err().contains("extraction_timeout_secs"));
+    }
+
+    #[test]
+    fn rejects_zero_phase_budget_and_out_of_range_abandoned_cap() {
+        let d = DocumentsConfig {
+            phase_budget_secs: 0,
+            ..Default::default()
+        };
+        assert!(d.validate().unwrap_err().contains("phase_budget_secs"));
+        for cap in [0, MAX_ABANDONED_EXTRACTIONS + 1] {
+            let d = DocumentsConfig {
+                max_abandoned_extractions: cap,
+                ..Default::default()
+            };
+            assert!(d.validate().unwrap_err().contains("max_abandoned_extractions"), "{cap}");
+        }
+        assert!(DocumentsConfig::default().validate().is_ok());
+    }
+
+    #[test]
+    fn the_phase_budget_is_never_below_the_per_file_timeout() {
+        let d = DocumentsConfig {
+            extraction_timeout_secs: 3600,
+            phase_budget_secs: 1800,
+            ..Default::default()
+        };
+        assert!(d.validate().is_ok(), "an existing large timeout must stay valid");
+        assert_eq!(d.effective_phase_budget_secs(), 3600);
+        assert_eq!(DocumentsConfig::default().effective_phase_budget_secs(), 1800);
     }
 
     #[test]

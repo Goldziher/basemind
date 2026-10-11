@@ -889,8 +889,18 @@ max_file_bytes = 52428800
 markdown_chunk_max_bytes = 262144
 plain_text_chunk_max_bytes = 131072
 # Wall-clock budget (seconds) for one document's extraction + chunking. A document that overruns is
-# abandoned, skipped, and counted as `doc_timeouts` (and retried on the next scan).
-extraction_timeout_secs = 600
+# abandoned, skipped, and counted as `doc_timeouts`. It is remembered by content hash and not retried
+# while the file and these limits (this value, the two cutovers above, max_pages) are unchanged; editing
+# the file or changing a limit retries it.
+extraction_timeout_secs = 120
+# Wall-clock budget (seconds) for the whole document phase of one scan, started at the first document
+# that needs a real extraction (never below extraction_timeout_secs). Once spent, the remaining
+# documents are deferred (counted as `docs_deferred`, not failed) and picked up by the next scan.
+phase_budget_secs = 1800
+# A timed-out extraction cannot be cancelled and keeps a core busy until it finishes. At this many
+# still-running abandoned extractions (1 to 64), further documents are deferred instead of spawning
+# another thread. A soft bound; the live count shows as `abandoned_extractions` in the scan summary.
+max_abandoned_extractions = 4
 # Extra extensions to skip on top of the built-in archive/binary floor (case-insensitive; ".pdf" and
 # "pdf" are the same).
 extension_denylist = []

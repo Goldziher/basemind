@@ -286,6 +286,11 @@ pub(crate) fn drive_scan(
     // later on the same thread. A `Cell` passes it across without either closure having to ~keep
     // borrow the governor, which only one of them may. ~keep
     let workers = Cell::new(pool_threads);
+    #[cfg(feature = "documents")]
+    drive
+        .filters
+        .doc_phase
+        .begin(std::time::Duration::from_secs(drive.filters.doc_phase_budget_secs));
     let mut ctx = DriveCtx {
         store,
         stats,
@@ -337,6 +342,17 @@ pub(crate) fn drive_scan(
         |ctx: &mut DriveCtx<'_>, produced| apply_outcomes(ctx, produced),
     );
 
+    #[cfg(feature = "documents")]
+    {
+        ctx.stats.abandoned_extractions = crate::extract::doc_guard::abandoned_extractions();
+        if ctx.stats.abandoned_extractions > 0 {
+            tracing::warn!(
+                abandoned_live = ctx.stats.abandoned_extractions,
+                abandoned_cap = drive.config.documents.max_abandoned_extractions,
+                "timed-out document extraction threads are still running"
+            );
+        }
+    }
     ctx.out
 }
 
@@ -390,12 +406,17 @@ fn apply_outcomes(ctx: &mut DriveCtx<'_>, outcomes: Vec<FileResult>) {
                 if *degraded {
                     ctx.stats.docs_degraded += 1;
                 }
+                ctx.store.remove_doc_tombstone(&o.path);
             }
             #[cfg(feature = "documents")]
             FileStatus::DocTimedOut => {
                 ctx.stats.extract_failed += 1;
                 ctx.stats.doc_timeouts += 1;
             }
+            #[cfg(feature = "documents")]
+            FileStatus::DocTombstoned => ctx.stats.docs_tombstoned += 1,
+            #[cfg(feature = "documents")]
+            FileStatus::DocDeferred => ctx.stats.docs_deferred += 1,
         }
         if matches!(o.status, FileStatus::Updated { .. } | FileStatus::Unchanged) {
             ctx.out.seen.insert(o.path.clone());
@@ -403,11 +424,20 @@ fn apply_outcomes(ctx: &mut DriveCtx<'_>, outcomes: Vec<FileResult>) {
         // A `DocIndexed` status is set by exactly the `process_doc` arm that attaches a doc batch, ~keep
         // so the status is a faithful stand-in for a `doc_batch` this loop is about to take. ~keep
         #[cfg(feature = "documents")]
-        if matches!(o.status, FileStatus::DocIndexed { .. } | FileStatus::DocUnchanged) {
+        // A deferred document keeps whatever entry it already has: running out of budget is not a ~keep
+        // verdict on the file, so the stale purge must not drop its rows until the next scan retries. ~keep
+        if matches!(
+            o.status,
+            FileStatus::DocIndexed { .. } | FileStatus::DocUnchanged | FileStatus::DocDeferred
+        ) {
             ctx.out.doc_seen.insert(o.path.clone());
         }
         if let Some(entry) = o.upsert.take() {
             ctx.store.upsert(&o.path, entry);
+        }
+        #[cfg(feature = "documents")]
+        if let Some(tombstone) = o.doc_tombstone.take() {
+            ctx.store.upsert_doc_tombstone(&o.path, tombstone);
         }
         #[cfg(feature = "documents")]
         if let Some(entry) = o.doc_upsert.take() {

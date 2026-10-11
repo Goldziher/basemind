@@ -217,6 +217,17 @@ pub(crate) struct Filters {
     pub(crate) code_digest: String,
     #[cfg_attr(not(feature = "documents"), allow(dead_code))]
     pub(crate) doc_digest: String,
+    /// [`crate::config::rules::doc_guard_digest`]: the limits a document's timeout tombstone is
+    /// bound to.
+    #[cfg_attr(not(feature = "documents"), allow(dead_code))]
+    pub(crate) doc_guard_digest: String,
+    /// The current scan's document-phase budget (`[documents] phase_budget_secs`), re-armed by every
+    /// drive. Shared with extraction through [`crate::extract::doc::DocConfig::phase`].
+    #[cfg(feature = "documents")]
+    pub(crate) doc_phase: std::sync::Arc<crate::extract::doc_guard::DocPhase>,
+    /// [`crate::config::DocumentsConfig::effective_phase_budget_secs`], to re-arm [`Self::doc_phase`].
+    #[cfg_attr(not(feature = "documents"), allow(dead_code))]
+    pub(crate) doc_phase_budget_secs: u64,
     /// Pre-built `"{root}/"` prefix strings for each skipped submodule root — avoids a `format!`
     /// allocation per candidate file in the `allows` hot path. Empty when there are no submodules
     /// or `config.scan.skip_submodules` is off. `Arc` so [`Filters::dir_pruner`] is a refcount bump.
@@ -276,6 +287,8 @@ impl Filters {
                     .map(|s| format!("{}/", s.replace('\\', "/").trim_end_matches('/')))
             })
             .collect();
+        let doc_digest = crate::config::rules::doc_digest(&config.documents, &config.resources, &config.llm);
+        let doc_guard_digest = crate::config::rules::doc_guard_digest(&config.documents, &doc_digest);
         Ok(Self {
             include,
             exclude,
@@ -283,7 +296,11 @@ impl Filters {
             max_file_bytes: config.scan.max_file_bytes,
             doc_max_file_bytes: config.documents.max_file_bytes,
             code_digest: crate::config::rules::code_digest(&config.code_search),
-            doc_digest: crate::config::rules::doc_digest(&config.documents, &config.resources, &config.llm),
+            doc_digest,
+            doc_guard_digest,
+            #[cfg(feature = "documents")]
+            doc_phase: std::sync::Arc::default(),
+            doc_phase_budget_secs: config.documents.effective_phase_budget_secs(),
             submodule_prefixes,
             eager_l2: config.scan.eager_l2,
             lang: LangRules::from_config(&config.languages).map_err(ScanError::BadLanguage)?,

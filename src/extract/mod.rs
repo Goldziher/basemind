@@ -103,6 +103,11 @@ pub enum ExtractError {
     #[cfg(feature = "documents")]
     #[error("document extraction exceeded its {0:?} budget and was abandoned")]
     DocTimeout(std::time::Duration),
+    /// Document extraction was not started: the document-phase budget is spent or too many timed-out
+    /// extraction threads are still running. Not a verdict on the file; it is retried on the next scan.
+    #[cfg(feature = "documents")]
+    #[error("document extraction deferred: {0}")]
+    DocDeferred(String),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

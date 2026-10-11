@@ -163,8 +163,20 @@ pub struct ScanStats {
     /// because the file exceeded `[documents] markdown_chunk_max_bytes` / `plain_text_chunk_max_bytes`.
     pub docs_degraded: usize,
     /// Documents abandoned because extraction overran `[documents] extraction_timeout_secs` (also
-    /// counted in `extract_failed`). They are retried on the next scan.
+    /// counted in `extract_failed`). Each is tombstoned, so it is retried only once the file or the
+    /// extraction limits change.
     pub doc_timeouts: usize,
+    /// Documents skipped without extraction because they already timed out, unchanged, under the same
+    /// limits (see [`crate::store_doc_tombstone`]). Not failures: the earlier timeout was already
+    /// counted in `doc_timeouts`.
+    pub docs_tombstoned: usize,
+    /// Documents not extracted this scan because the document-phase budget (`[documents]
+    /// phase_budget_secs`) was spent or the abandoned-thread cap (`max_abandoned_extractions`) was
+    /// reached. Not failures: the next scan picks them up.
+    pub docs_deferred: usize,
+    /// Timed-out extraction threads still running in this process when the scan ended (a gauge, not a
+    /// per-scan count).
+    pub abandoned_extractions: usize,
     /// Subset of `updated` re-extracted only because the entry's blob predated
     /// [`crate::extract::EXTRACT_EPOCH`] (an extractor fix that changes the output of unchanged
     /// files, e.g. shorter symbol signatures). Zero once an index has caught up.
@@ -202,6 +214,10 @@ pub struct FileResult {
     /// next scan can skip unchanged docs and the blob GC keeps the `.doc.msgpack` cache alive.
     #[cfg(feature = "documents")]
     pub(crate) doc_upsert: Option<crate::store::DocEntry>,
+    /// Internal: buffered timeout tombstone for a document that overran its extraction budget; the
+    /// apply loop drains it into `index.doc_tombstones`.
+    #[cfg(feature = "documents")]
+    pub(crate) doc_tombstone: Option<crate::store_doc_tombstone::DocTombstone>,
     /// Internal: buffered code-chunk batch when this source file went through the code-search
     /// branch. Drained by the single-threaded `flush_code_batches` pass into LanceDB.
     #[cfg(feature = "code-search")]
@@ -220,6 +236,8 @@ impl FileResult {
             doc_batch: None,
             #[cfg(feature = "documents")]
             doc_upsert: None,
+            #[cfg(feature = "documents")]
+            doc_tombstone: None,
             #[cfg(feature = "code-search")]
             code_batch: None,
         }
@@ -279,6 +297,14 @@ pub enum FileStatus {
     /// and was abandoned.
     #[cfg(feature = "documents")]
     DocTimedOut,
+    /// The document already timed out, unchanged, under the same extraction limits: skipped without
+    /// a retry (counted as `docs_tombstoned`). Editing the file or changing the limits retries it.
+    #[cfg(feature = "documents")]
+    DocTombstoned,
+    /// The document was not extracted because the document-phase budget is spent or the abandoned-thread
+    /// cap is reached (counted as `docs_deferred`). Not a failure: the next scan picks it up.
+    #[cfg(feature = "documents")]
+    DocDeferred,
 }
 
 /// Aggregate outcome of one scan. Per-file outcomes are delivered to the caller's
@@ -474,6 +500,14 @@ pub fn scan_with_observer(
         .map(|k| k.to_str_lossy().into_owned())
         .collect();
 
+    // A tombstone outlives the failed extraction on purpose, but not the file: drop the ones whose path
+    // is no longer a candidate of this full pass.
+    #[cfg(feature = "documents")]
+    if !store.index.doc_tombstones.is_empty() {
+        let live: ahash::AHashSet<&str> = candidates.iter().map(String::as_str).collect();
+        store.retain_doc_tombstones(|rel| live.contains(rel.to_str_lossy().as_ref()));
+    }
+
     // A path in both "stale code entry" and "seen as document" (or the reverse) changed tier. Counted
     // here, where both sets are still alive, so the report can say a migration happened.
     #[cfg(feature = "documents")]
@@ -667,7 +701,7 @@ pub fn scan_paths_with_observer(
                 continue;
             }
             #[cfg(feature = "documents")]
-            if store.lookup_doc(&rel).is_some() {
+            if store.lookup_doc(&rel).is_some() || store.has_doc_tombstone(&rel) {
                 doc_removed.push(rel);
             }
             continue;
@@ -679,7 +713,7 @@ pub fn scan_paths_with_observer(
                 removed.push(rel.clone());
             }
             #[cfg(feature = "documents")]
-            if store.lookup_doc(&rel).is_some() {
+            if store.lookup_doc(&rel).is_some() || store.has_doc_tombstone(&rel) {
                 doc_removed.push(rel);
             }
             continue;

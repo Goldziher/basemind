@@ -57,6 +57,7 @@ pub mod store;
 pub mod store_blob;
 mod store_blob_codec;
 pub mod store_cache_admin;
+pub mod store_doc_tombstone;
 pub mod store_gc;
 pub mod store_gc_budget;
 pub(crate) mod store_gc_live;
