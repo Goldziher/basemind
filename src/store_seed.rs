@@ -282,7 +282,8 @@ fn copy_tree(src: &Path, dst: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-#[cfg(test)]
+// Seeding is a no-op on Windows (`clone_dir` refuses), and these fixtures drive `git worktree add`.
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use crate::config::ConfigV1;

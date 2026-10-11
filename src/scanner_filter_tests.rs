@@ -227,6 +227,8 @@ fn extra_root_files_match_globs_relative_to_the_root() {
     );
 }
 
+// Keys are built by joining a canonical base with `/`; Windows canonical paths carry a `\\?\` prefix.
+#[cfg(unix)]
 #[test]
 fn nested_extra_roots_scope_a_key_to_the_longest_matching_root() {
     let tmp = tempfile::tempdir().expect("tempdir");
