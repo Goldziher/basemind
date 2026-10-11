@@ -2,7 +2,7 @@
 [package]
 include = ["/Cargo.toml", "/Cargo.lock", "/src/**", "/README.md", "/LICENSE-MIT", "/LICENSE-APACHE"]
 name = "basemind-lsp-positions"
-version = "0.3.4"
+version = "0.3.5"
 description = "LSP-compatible character positions (maintained basemind fork, tree-sitter 0.27 port)"
 homepage = "https://github.com/Goldziher/basemind"
 repository = "https://github.com/Goldziher/basemind"
