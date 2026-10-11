@@ -34,8 +34,8 @@ requires_python = ">=3.9"
 [[mcp_servers]]
 name = "ai-rulez"
 description = "Manage AI governance config via MCP."
-command = "npx"
-args = ["-y", "ai-rulez@latest", "mcp"]
+command = "pnpm"
+args = ["dlx", "ai-rulez@5.0.1", "mcp"]
 
 [[marketplaces]]
 name = "basemind"
@@ -50,4 +50,11 @@ enabled = true
 
 # Pinned by `ai-rulez migrate v5`: the 4.x default. Remove this line to take the v5 default.
 [header]
+text = """AI-RULEZ :: GENERATED FILE — DO NOT EDIT
+Source: .ai-rulez/config.toml
+Edit .ai-rulez/ content and regenerate with pnpm dlx ai-rulez@5.0.1 generate.
+Use MCP server: pnpm dlx ai-rulez@5.0.1 mcp"""
 hashes = "full"
+
+[mcp]
+self_server_command = ["pnpm", "dlx", "ai-rulez@5.0.1", "mcp"]

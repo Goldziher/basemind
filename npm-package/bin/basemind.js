@@ -38,7 +38,7 @@ if (!ensureBinaryExists()) {
     `basemind: native binary not found at ${binaryPath}.\n` +
       `The postinstall step that downloads the binary from GitHub releases may have failed.\n` +
       `You can try:\n` +
-      `  1. Reinstall: npm install -g basemind\n` +
+      `  1. Reinstall: pnpm add -g basemind\n` +
       `  2. Use cargo: cargo install basemind`,
   );
   process.exit(1);

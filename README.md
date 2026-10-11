@@ -298,7 +298,7 @@ The MCP and CLI paths need `basemind` available on your system. (The plugin does
 | Channel | Command | Includes |
 |---|---|---|
 | Homebrew | `brew install Goldziher/tap/basemind` | everything |
-| npm | `npm install -g basemind` | everything |
+| npm | `pnpm add -g basemind` | everything |
 | pip | `pip install basemind` | everything |
 | cargo | `cargo install basemind --locked` | code + git only (the CLI; `basemind serve` needs `--features comms`) |
 | cargo (full) | `cargo install basemind --features full --locked` | everything |

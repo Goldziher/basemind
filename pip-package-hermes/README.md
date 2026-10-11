@@ -16,7 +16,7 @@ that separately (see below). The plugin reaches basemind by shelling out to `bas
    | Channel | Command |
    |---|---|
    | Homebrew | `brew install Goldziher/tap/basemind` |
-   | npm | `npm install -g basemind` |
+   | npm | `pnpm add -g basemind` |
    | cargo | `cargo install basemind --features full --locked` |
    | GitHub releases | [download a binary](https://github.com/Goldziher/basemind/releases) |
 

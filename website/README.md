@@ -7,10 +7,10 @@ The [basemind.ai](https://basemind.ai) documentation site — built with
 ## Develop
 
 ```bash
-npm install
-npm run dev      # local dev server at http://localhost:4321
-npm run build    # static build into ./dist
-npm run preview  # serve the built site
+pnpm install
+pnpm run dev      # local dev server at http://localhost:4321
+pnpm run build    # static build into ./dist
+pnpm run preview  # serve the built site
 ```
 
 ## Layout

@@ -39,7 +39,7 @@ tasks:
         package_dir="$(mktemp -d)"
         trap 'rm -rf "$package_dir"' EXIT
         bash scripts/stage-agent-package.sh "$package_dir"
-        npm pack "$package_dir" --pack-destination "$package_dir"
+        pnpm --dir "$package_dir" pack --pack-destination "$package_dir"
 
   test:verbose:
     desc: Run tests with verbose output

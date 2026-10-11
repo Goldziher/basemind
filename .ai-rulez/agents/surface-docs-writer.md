@@ -25,8 +25,8 @@ is wasted work; it is overwritten on the next regen.
 
 - Edit `.ai-rulez/rules/*.md`, `.ai-rulez/context/*.md`, `.ai-rulez/agents/*.md`,
   `.ai-rulez/skills/*/SKILL.md`.
-- Regen runs as `npx -y ai-rulez@latest generate`. Installed or locally built ai-rulez chokes on the
-  hermes runtime — always the npx form. Report the command; do not run it unless asked.
+- Regen runs as `pnpm dlx ai-rulez@latest generate`. Installed or locally built ai-rulez chokes on the
+  hermes runtime — always the pnpm dlx form. Report the command; do not run it unless asked.
 - The `.codex-plugin/` / `.cursor-plugin/` / `opencode-plugin/` **command** mirrors are **not**
   ai-rulez outputs. They are hand-synced copies of `commands/*.md` and drift silently.
 

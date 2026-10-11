@@ -14,7 +14,7 @@ Full documentation: **[basemind.ai](https://basemind.ai)**
 ## Install
 
 ```bash
-npm install -g basemind
+pnpm add -g basemind
 ```
 
 The installer downloads the appropriate pre-compiled Rust binary for your platform (macOS,

@@ -15,7 +15,7 @@ Add to your `opencode.json` (global or project-level):
 Restart OpenCode. You also need the `basemind` binary on your `PATH`:
 
 ```bash
-npm install -g basemind        # or: pip install basemind / cargo install basemind
+pnpm add -g basemind        # or: pip install basemind / cargo install basemind
 ```
 
 Then scan your repo once before starting OpenCode:
@@ -44,7 +44,7 @@ JavaScript and terminal adapters below.
 
 `scripts/sync-plugin-skills.sh` mirrors the canonical `.pi/extensions/basemind.ts`
 and product skills into this package. `task package:plugin` stages the combined
-package from canonical sources and runs a real npm pack without changing the
+package from canonical sources and runs a real pnpm pack without changing the
 checkout. The existing `publish_opencode` job checks the ten skills, native Pi
 extension, and both OpenCode adapters before publishing the packed archive.
 The existing package name, version bump, and npm trusted publisher are shared;

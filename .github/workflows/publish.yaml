@@ -45,6 +45,10 @@ jobs:
           fetch-depth: 0
           ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || '' }}
 
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.11.2
+
       - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
@@ -210,12 +214,12 @@ jobs:
           fi
 
           npm_exists=false
-          if npm view "basemind@${version}" version >/dev/null 2>&1; then
+          if pnpm view "basemind@${version}" version >/dev/null 2>&1; then
             npm_exists=true
           fi
 
           opencode_exists=false
-          if npm view "basemind-opencode@${version}" version >/dev/null 2>&1; then
+          if pnpm view "basemind-opencode@${version}" version >/dev/null 2>&1; then
             opencode_exists=true
           fi
 
@@ -855,14 +859,15 @@ jobs:
           fetch-depth: 0
           ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || '' }}
 
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.11.2
+
       - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
           node-version: "20"
           registry-url: "https://registry.npmjs.org"
-
-      - name: Update npm
-        run: npm install -g npm@11
 
       - name: Publish to npm
         env:
@@ -877,7 +882,7 @@ jobs:
             npm_tag="latest"
           fi
 
-          npm publish --provenance --access public --tag "$npm_tag"
+          pnpm publish --no-git-checks --provenance --access public --tag "$npm_tag"
 
   publish_opencode:
     name: Publish npm (basemind-opencode, OpenCode and Pi)
@@ -891,24 +896,25 @@ jobs:
           fetch-depth: 0
           ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || '' }}
 
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.11.2
+
       - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
           node-version: "22"
           registry-url: "https://registry.npmjs.org"
 
-      - name: Update npm
-        run: npm install -g npm@11
-
       - name: Stage and verify the combined agent package
         run: |
           set -euo pipefail
           package_dir="$(mktemp -d)"
           bash scripts/stage-agent-package.sh "$package_dir"
-          npm pack "$package_dir" --json --pack-destination "$RUNNER_TEMP" > "$RUNNER_TEMP/pi-pack.json"
+          pnpm --dir "$package_dir" pack --json --pack-destination "$RUNNER_TEMP" > "$RUNNER_TEMP/pi-pack.json"
           node - "$RUNNER_TEMP/pi-pack.json" <<'JS'
           const fs = require('node:fs');
-          const files = JSON.parse(fs.readFileSync(process.argv[2]))[0].files.map((file) => file.path);
+          const files = JSON.parse(fs.readFileSync(process.argv[2])).files.map((file) => file.path);
           const skills = files.filter((file) => /^skills\/[^/]+\/SKILL\.md$/.test(file));
           if (skills.length !== 10 || !files.includes('.pi/extensions/basemind.ts') || !files.includes('basemind.js') || !files.includes('tui.js')) {
             throw new Error(`Incomplete agent package: ${skills.length} skills`);
@@ -928,8 +934,8 @@ jobs:
             npm_tag="latest"
           fi
 
-          archive="$(jq -r '.[0].filename' "$RUNNER_TEMP/pi-pack.json")"
-          npm publish "$RUNNER_TEMP/$archive" --provenance --access public --tag "$npm_tag"
+          archive="$(jq -r '.filename' "$RUNNER_TEMP/pi-pack.json")"
+          pnpm publish --no-git-checks "$RUNNER_TEMP/$archive" --provenance --access public --tag "$npm_tag"
 
   publish_pypi:
     name: Publish PyPI
