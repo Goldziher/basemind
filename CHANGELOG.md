@@ -10,6 +10,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.29.1] - 2026-10-11
+
+Patch release: 0.29.0 shipped everywhere except crates.io, which rejected it. No index or blob format
+change.
+
+### Fixed
+
+- **`basemind` 0.29.x can be published to crates.io.** The vendored forks `basemind-lsp-positions`,
+  `basemind-tree-sitter-graph` and `basemind-tree-sitter-stack-graphs` had moved to tree-sitter 0.27
+  without a version bump, so crates.io still served their 0.26 builds and `basemind` could not resolve a
+  single `tree-sitter`. They are now 0.3.5, 0.12.1 and 0.10.1.
+- Windows build: an unused constant and unused test imports failed the `-D warnings` build; unix-only
+  test fixtures no longer compile on Windows.
+
 ## [0.29.0] - 2026-10-09
 
 0.29.0 reshapes the CLI (one home for each command, a documented exit-code contract, honest output and
