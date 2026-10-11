@@ -6,7 +6,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use basemind::config::{ConfigV1, LanguageConfig};
-use basemind::scanner::{EmbedMode, ScanSource, scan, scan_paths};
+use basemind::scanner::{EmbedMode, scan_paths};
+#[cfg(unix)]
+use basemind::scanner::{ScanSource, scan};
 use basemind::store::{Store, VIEW_WORKING};
 use tempfile::TempDir;
 

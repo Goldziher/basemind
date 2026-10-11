@@ -1921,6 +1921,7 @@ addressed and rebuilds losslessly).
 Wide hot-path allocation + algorithmic sweep across the scanner, extraction, git, and MCP query
 paths. All changes are internal — no behavior, response-shape, or on-disk-format change, and the
 determinism assertions are unchanged.
+
 - **`call_graph`** (`bfs_callees`) precomputes a name→sites map once instead of re-scanning every
   indexed symbol for each discovered callee — O(max_nodes × symbols) → O(symbols + max_nodes).
 - **`architecture_map`**: `callee_counts` no longer allocates a `String` on every one of up to 4M
@@ -2247,6 +2248,7 @@ it the same way they do over source. All of this is on by default — `.md` is s
 file, headings ship via a `src/queries/markdown.scm` override, and the reference graph is harvested
 by a fence-aware byte-scan in `extract/l2.rs` (the tree-sitter block grammar models none of these
 inline constructs).
+
 - **Headings → outline.** ATX (`#`…`######`) and setext headings become `Heading` symbols, so
   `outline` and `search_symbols` (optionally `kind: "heading"`) navigate a note's structure.
 - **Wikilinks → backlinks.** `[[Note]]`, `[[Note#Heading|alias]]`, and `![[Embed]]` become
