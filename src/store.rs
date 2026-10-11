@@ -184,6 +184,12 @@ pub struct Index {
     /// `#[serde(default)]` keeps older `index.msgpack` files readable (additive, no schema bump).
     #[serde(default)]
     pub embed_policy: String,
+    /// Relative path → [`crate::store_doc_tombstone::DocTombstone`] for documents whose extraction
+    /// timed out, so an unchanged file is not re-extracted (and does not strand another abandoned
+    /// thread) on every scan. `#[serde(default)]` keeps older `index.msgpack` files readable
+    /// (additive, no schema bump).
+    #[serde(default)]
+    pub doc_tombstones: AHashMap<RelPath, crate::store_doc_tombstone::DocTombstone>,
 }
 
 impl Index {
@@ -193,6 +199,7 @@ impl Index {
             files: AHashMap::new(),
             doc_files: AHashMap::new(),
             embed_policy: String::new(),
+            doc_tombstones: AHashMap::new(),
         }
     }
 }
@@ -824,6 +831,7 @@ mod tests {
         let index: Index = rmp_serde::from_slice(&bytes).expect("legacy index decodes");
         assert!(index.doc_files.is_empty());
         assert_eq!(index.embed_policy, "");
+        assert!(index.doc_tombstones.is_empty());
 
         let legacy = serde_json::json!({
             "schema_ver": SCHEMA_VER,

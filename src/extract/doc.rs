@@ -12,7 +12,7 @@
 
 use std::borrow::Cow;
 use std::path::Path;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 use serde::{Deserialize, Serialize};
 use xberg::LanguageDetectionConfig;
@@ -21,7 +21,7 @@ use xberg::core::config::{ConcurrencyConfig, ExtractionConfig};
 use xberg::extractors::security::SecurityLimits;
 use xberg::{ExtractInput, extract};
 
-use super::doc_guard::{self, ChunkCutovers, DeadlineError};
+use super::doc_guard::{self, ChunkCutovers, DeadlineError, DocPhase};
 use super::{ExtractError, SCHEMA_VER};
 use crate::config::{
     DocLanguageConfig, DocumentModelProfile, KeywordAlgorithm, KeywordsConfig, LlmConfig, NerBackend, NerConfig,
@@ -186,6 +186,12 @@ pub struct DocChunk {
 pub struct DocConfig {
     pub max_pages: usize,
     pub extraction_timeout_secs: u64,
+    /// Cap on timed-out extraction threads still running (`[documents] max_abandoned_extractions`).
+    /// At the cap, further extractions are deferred instead of spawning another thread.
+    pub max_abandoned_extractions: usize,
+    /// Whole-scan document-phase budget, shared by every document of one scan. `None` (direct callers,
+    /// tests) means unbounded.
+    pub phase: Option<Arc<DocPhase>>,
     /// Size cutovers above which text-like files skip xberg's quadratic markdown splitter.
     pub chunk_cutovers: ChunkCutovers,
     /// Chunk-count cap (`[documents] max_chunks_per_document`). Beyond it no vector rows are written, so
@@ -228,7 +234,9 @@ impl Default for DocConfig {
     fn default() -> Self {
         Self {
             max_pages: 500,
-            extraction_timeout_secs: 600,
+            extraction_timeout_secs: 120,
+            max_abandoned_extractions: 4,
+            phase: None,
             chunk_cutovers: ChunkCutovers {
                 markdown_bytes: 256 * 1024,
                 plain_text_bytes: 128 * 1024,
@@ -489,21 +497,51 @@ pub fn extract_doc(path: &Path, mime_type: Option<&str>, config: &DocConfig) -> 
     }
     let mut input = ExtractInput::from_uri(path.to_string_lossy().into_owned());
     input.mime_type = mime_type.map(str::to_string);
+    if let Some(phase) = &config.phase {
+        phase.admit().map_err(|spent| {
+            tracing::warn!(
+                path = %path.display(),
+                elapsed_secs = spent.elapsed.as_secs(),
+                budget_secs = spent.budget.as_secs(),
+                "document-phase budget spent ([documents] phase_budget_secs); deferring the document to the next scan"
+            );
+            ExtractError::DocDeferred(format!(
+                "the {}s document-phase budget ([documents] phase_budget_secs) is spent",
+                spent.budget.as_secs()
+            ))
+        })?;
+    }
     let runtime = extraction_runtime()?;
     let budget = std::time::Duration::from_secs(config.extraction_timeout_secs);
-    let outcome = doc_guard::run_with_deadline(budget, move || runtime.block_on(extract(input, &krz_config))).map_err(
-        |error| match error {
-            DeadlineError::Elapsed => {
-                tracing::warn!(
-                    path = %path.display(),
-                    budget_secs = budget.as_secs(),
-                    "document extraction exceeded [documents] extraction_timeout_secs; abandoning it"
-                );
-                ExtractError::DocTimeout(budget)
-            }
-            DeadlineError::Failed(message) => ExtractError::Document(message),
-        },
-    )?;
+    let ledger = doc_guard::AbandonedThreads::global();
+    let outcome = doc_guard::run_with_deadline(ledger, config.max_abandoned_extractions, budget, move || {
+        runtime.block_on(extract(input, &krz_config))
+    })
+    .map_err(|error| match error {
+        DeadlineError::Elapsed => {
+            tracing::warn!(
+                path = %path.display(),
+                budget_secs = budget.as_secs(),
+                abandoned_live = ledger.live(),
+                abandoned_cap = config.max_abandoned_extractions,
+                "document extraction exceeded [documents] extraction_timeout_secs; abandoning it"
+            );
+            ExtractError::DocTimeout(budget)
+        }
+        DeadlineError::AtCapacity { live, cap } => {
+            tracing::warn!(
+                path = %path.display(),
+                abandoned_live = live,
+                abandoned_cap = cap,
+                "deferring document: abandoned extraction threads are at [documents] max_abandoned_extractions"
+            );
+            ExtractError::DocDeferred(format!(
+                "{live} timed-out extraction threads are still running (cap {cap}, \
+                 [documents] max_abandoned_extractions)"
+            ))
+        }
+        DeadlineError::Failed(message) => ExtractError::Document(message),
+    })?;
     let mut extraction = outcome.map_err(|e| ExtractError::Document(e.to_string()))?;
     let result = extraction.results.pop().ok_or_else(|| {
         let message = extraction

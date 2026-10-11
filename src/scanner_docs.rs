@@ -23,7 +23,7 @@
 #![cfg(feature = "documents")]
 
 use std::path::Path;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 use ahash::AHashSet;
 use anyhow::Context as _;
@@ -116,6 +116,8 @@ pub(crate) fn doc_config_from(
     DocConfig {
         max_pages: cfg.max_pages,
         extraction_timeout_secs: cfg.extraction_timeout_secs,
+        max_abandoned_extractions: cfg.max_abandoned_extractions,
+        phase: None,
         max_chunks_per_document: cfg.max_chunks_per_document,
         chunk_cutovers: ChunkCutovers {
             markdown_bytes: cfg.markdown_chunk_max_bytes,
@@ -312,7 +314,8 @@ pub(crate) fn extract_and_persist_doc(
         return Ok(Some(pending_from_doc(&cached, rel, hash_hex, scope, cfg, embed, true)));
     }
 
-    let doc_config = doc_config_from(cfg, llm, resources, embed);
+    let mut doc_config = doc_config_from(cfg, llm, resources, embed);
+    doc_config.phase = Some(Arc::clone(&filters.doc_phase));
     let mut doc: FileMapDoc =
         extract_doc(abs, Some(mime_type), &doc_config).with_context(|| format!("extract document {rel}"))?;
     doc.config_digest.clone_from(&filters.doc_digest);
@@ -462,6 +465,7 @@ pub(crate) fn delete_stale_documents(store: &mut Store, config: &crate::config::
     }
     for path in stale {
         store.remove_doc(path);
+        store.remove_doc_tombstone(path);
     }
     let Some(lance) = open_existing_doc_lance(store, config, "doc stale purge") else {
         return;

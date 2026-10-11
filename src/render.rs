@@ -139,6 +139,15 @@ pub fn render_summary(w: &mut AutoStream<std::io::Stdout>, stats: &ScanStats, ve
             timeouts = pair("doc_timeouts", stats.doc_timeouts, style_fail),
         );
     }
+    if stats.docs_tombstoned > 0 || stats.docs_deferred > 0 || stats.abandoned_extractions > 0 {
+        let _ = writeln!(
+            w,
+            "{tombstoned}  {deferred}  {abandoned} (see [documents] phase_budget_secs, max_abandoned_extractions)",
+            tombstoned = pair("docs_tombstoned", stats.docs_tombstoned, style_warn),
+            deferred = pair("docs_deferred", stats.docs_deferred, style_warn),
+            abandoned = pair("abandoned_extractions", stats.abandoned_extractions, style_warn),
+        );
+    }
     if stats.tier_migrated > 0 || stats.refreshed_extraction > 0 {
         let _ = writeln!(
             w,
@@ -424,6 +433,27 @@ fn row_for(res: &FileResult, verbosity: Verbosity) -> Option<Row<'_>> {
             label: "fail",
             style: Style::new().fg_color(Some(Color::Ansi(AnsiColor::Red))),
             detail: "(document extraction timed out; see [documents] extraction_timeout_secs)".to_string(),
+        }),
+        #[cfg(feature = "documents")]
+        FileStatus::DocTombstoned => {
+            if v == Verbosity::Verbose {
+                Some(Row {
+                    symbol: '·',
+                    label: "skip",
+                    style: Style::new().dimmed(),
+                    detail: "(timed out before, unchanged; edit the file or raise [documents] extraction_timeout_secs to retry)".to_string(),
+                })
+            } else {
+                None
+            }
+        }
+        #[cfg(feature = "documents")]
+        FileStatus::DocDeferred => Some(Row {
+            symbol: '·',
+            label: "defer",
+            style: Style::new().fg_color(Some(Color::Ansi(AnsiColor::Yellow))),
+            detail: "(document deferred to the next scan: phase budget spent or too many stuck extractions)"
+                .to_string(),
         }),
         FileStatus::ExtractFailed { msg } => Some(Row {
             symbol: '✗',

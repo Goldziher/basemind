@@ -150,6 +150,23 @@ pub fn doc_digest(cfg: &DocumentsConfig, resources: &ResourcesConfig, llm: &LlmC
     )
 }
 
+/// Fingerprint of the limits a document's extraction ran under, for its timeout tombstone (see
+/// [`crate::store_doc_tombstone`]). A tombstone is honoured only while this is unchanged, so raising
+/// `extraction_timeout_secs`, moving a chunker cutover or `max_pages`, or changing any setting that
+/// shapes extraction (`doc_digest`, passed in as already computed) retries the document.
+pub fn doc_guard_digest(cfg: &DocumentsConfig, doc_digest: &str) -> String {
+    digest_of(
+        "doc-guard/1",
+        &(
+            doc_digest,
+            cfg.extraction_timeout_secs,
+            cfg.markdown_chunk_max_bytes,
+            cfg.plain_text_chunk_max_bytes,
+            cfg.max_pages,
+        ),
+    )
+}
+
 /// Fingerprint of everything that decides which derived rows (vectors, keyword postings) should
 /// exist for a path. When it differs from the value stored in the index, the next full scan
 /// re-flushes eligible files and purges the rows of files that are no longer eligible.
@@ -345,6 +362,42 @@ mod tests {
             digest,
             "embed knobs are not part of the chunk digest"
         );
+    }
+
+    #[test]
+    fn doc_guard_digest_tracks_the_limits_a_timeout_depends_on() {
+        let base = DocumentsConfig::default();
+        let digest = |cfg: &DocumentsConfig| doc_guard_digest(cfg, "d");
+        let same = digest(&base);
+        assert_eq!(digest(&base.clone()), same);
+        for changed in [
+            DocumentsConfig {
+                extraction_timeout_secs: base.extraction_timeout_secs + 1,
+                ..base.clone()
+            },
+            DocumentsConfig {
+                markdown_chunk_max_bytes: base.markdown_chunk_max_bytes + 1,
+                ..base.clone()
+            },
+            DocumentsConfig {
+                plain_text_chunk_max_bytes: base.plain_text_chunk_max_bytes + 1,
+                ..base.clone()
+            },
+            DocumentsConfig {
+                max_pages: base.max_pages + 1,
+                ..base.clone()
+            },
+        ] {
+            assert_ne!(digest(&changed), same);
+        }
+        assert_ne!(doc_guard_digest(&base, "other-doc-digest"), same);
+        // Scan-level budgets do not decide whether one document times out.
+        let budgets = DocumentsConfig {
+            phase_budget_secs: base.phase_budget_secs + 1,
+            max_abandoned_extractions: base.max_abandoned_extractions + 1,
+            ..base.clone()
+        };
+        assert_eq!(digest(&budgets), same);
     }
 
     #[test]

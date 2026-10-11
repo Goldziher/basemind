@@ -49,6 +49,10 @@ const DEFAULT_MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
 const DEFAULT_MAX_DOC_BYTES: u64 = 512 * 1024 * 1024;
 const DEFAULT_MAX_DOC_PAGES: usize = 5_000;
 const DEFAULT_MAX_EXTRACTION_SECS: u64 = 1_800;
+/// Daemon ceiling for `[documents] phase_budget_secs` and `max_abandoned_extractions`: a repo's
+/// `basemind.toml` can tighten them but not stretch the document phase or the stuck-thread pile.
+const DAEMON_MAX_PHASE_SECS: u64 = 7_200;
+const DAEMON_MAX_ABANDONED_EXTRACTIONS: usize = 16;
 const DEFAULT_MAX_CHUNKS_PER_DOC: usize = 20_000;
 const DEFAULT_MAX_CRAWL_PAGES: u32 = 500;
 const DEFAULT_MAX_CRAWL_DEPTH: u32 = 8;
@@ -135,6 +139,8 @@ pub fn clamp_daemon_config(config: &mut Config) {
     docs.extraction_timeout_secs = docs
         .extraction_timeout_secs
         .min(cap_u64(MAX_EXTRACTION_SECS_ENV, DEFAULT_MAX_EXTRACTION_SECS));
+    docs.phase_budget_secs = docs.phase_budget_secs.min(DAEMON_MAX_PHASE_SECS);
+    docs.max_abandoned_extractions = docs.max_abandoned_extractions.min(DAEMON_MAX_ABANDONED_EXTRACTIONS);
     docs.max_chunks_per_document = docs
         .max_chunks_per_document
         .min(cap(MAX_CHUNKS_PER_DOC_ENV, DEFAULT_MAX_CHUNKS_PER_DOC));
@@ -306,7 +312,7 @@ mod tests {
             dir.path(),
             "[scan]\nmax_file_bytes = 9223372036854775807\n\
              [documents]\nmax_file_bytes = 9223372036854775807\nmax_pages = 4000000000\n\
-             extraction_timeout_secs = 999999\nmax_chunks_per_document = 4000000000\nextract_archives = true\n\
+             extraction_timeout_secs = 999999\nphase_budget_secs = 999999\nmax_abandoned_extractions = 64\nmax_chunks_per_document = 4000000000\nextract_archives = true\n\
              [crawl]\nmax_pages = 4000000000\nmax_depth = 4000000000\nmax_body_size = 9223372036854775807\n\
              [watch]\ndebounce_ms = 0\n",
         );
@@ -315,6 +321,11 @@ mod tests {
         assert_eq!(cfg.documents.max_file_bytes, DEFAULT_MAX_DOC_BYTES);
         assert_eq!(cfg.documents.max_pages, DEFAULT_MAX_DOC_PAGES);
         assert_eq!(cfg.documents.extraction_timeout_secs, DEFAULT_MAX_EXTRACTION_SECS);
+        assert_eq!(cfg.documents.phase_budget_secs, DAEMON_MAX_PHASE_SECS);
+        assert_eq!(
+            cfg.documents.max_abandoned_extractions,
+            DAEMON_MAX_ABANDONED_EXTRACTIONS
+        );
         assert_eq!(cfg.documents.max_chunks_per_document, DEFAULT_MAX_CHUNKS_PER_DOC);
         assert!(!cfg.documents.extract_archives);
         assert_eq!(cfg.crawl.max_pages, DEFAULT_MAX_CRAWL_PAGES);
