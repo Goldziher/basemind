@@ -7,6 +7,13 @@ description: >-
   is already touching the code you're about to change.
 ---
 
+<!--
+AI-RULEZ :: GENERATED FILE — DO NOT EDIT
+Content-Hash: blake3:7a0a443f940cf2e0cfaa3c25415fa855c9fa0a4ed0296ca46ebe577fcd28f57e
+Source-Hash: blake3:378e61c2bd27ae140e75d818f27005fac54d22d0ad24de4163a71e8572a15c72
+Schema-Version: v1
+-->
+
 # basemind-comms — agent coordination over the broker
 
 You may be one of several agents working this repo. Basemind establishes your session presence

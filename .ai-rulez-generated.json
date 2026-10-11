@@ -1,6 +1,6 @@
 {
   "schema_version": "v1",
-  "source_hash": "blake3:a803a9b121436e5172016907a69209dbec84693c1f1be1382286972ff70e670d",
+  "source_hash": "blake3:378e61c2bd27ae140e75d818f27005fac54d22d0ad24de4163a71e8572a15c72",
   "outputs": {
     ".hermes/package/pyproject.toml": {
       "content_hash": "blake3:6b56aec1926eecbaf6b0e902b01fe481e8a65c48d7d8359484771f8fba20d3c8"
@@ -117,6 +117,42 @@
       "content_hash": "blake3:b1a315a27d1da6871e25a29a2cbec7ae4923c9ac1d2cf8fb09e6c394799f7b0a"
     },
     ".hermes/plugins/basemind/skills/multi-agent-room/SKILL.md": {
+      "content_hash": "blake3:09b9d7a7cee923f0dd2ec9893d6648d26eab4b6701de928c7b1cd55898d39fd1"
+    },
+    "mcp.json": {
+      "content_hash": "blake3:610ab7b643cbd651ca1b0943d6955ec38077cd5137d2805893d32216422b1f3a"
+    },
+    "plugin.json": {
+      "content_hash": "blake3:500c86e7064d0e40826df674529d93d46632805f9f7585e2ccd5ccfa3dc08dcf"
+    },
+    "skills/basemind-cli/SKILL.md": {
+      "content_hash": "blake3:325149864e918c6a5b7c04a32d273d5841040cf6d52ecd3ab35042ee9604298d"
+    },
+    "skills/basemind-code-search/SKILL.md": {
+      "content_hash": "blake3:6c68be577a5c277c1c22a8af2e788cef967085cad4b716eadea94da0b30fbb79"
+    },
+    "skills/basemind-comms/SKILL.md": {
+      "content_hash": "blake3:7a0a443f940cf2e0cfaa3c25415fa855c9fa0a4ed0296ca46ebe577fcd28f57e"
+    },
+    "skills/basemind-doctor/SKILL.md": {
+      "content_hash": "blake3:165531a86d93374a7e423244dd3dd324e5066c39ff7d03edb7e9cf2f482769bd"
+    },
+    "skills/basemind-documents/SKILL.md": {
+      "content_hash": "blake3:0502f17289c5e74c29ad8b882f90c407fa162f245e45297cbd7a1c414beddbad"
+    },
+    "skills/basemind-git-history/SKILL.md": {
+      "content_hash": "blake3:dec34df09c0d20f0d7bd11bc7942cbad869638ce5cedb40d74a09d9f86d4d89c"
+    },
+    "skills/basemind-scan/SKILL.md": {
+      "content_hash": "blake3:6a2da891a9f4c927e817d6507b8118afe9d9140a9473177ead3e43fae3ae468f"
+    },
+    "skills/basemind-stats/SKILL.md": {
+      "content_hash": "blake3:4802a612980221e429ab0d17a26e2a80962f696fa863bbfddff268b28b0a4583"
+    },
+    "skills/basemind/SKILL.md": {
+      "content_hash": "blake3:b1a315a27d1da6871e25a29a2cbec7ae4923c9ac1d2cf8fb09e6c394799f7b0a"
+    },
+    "skills/multi-agent-room/SKILL.md": {
       "content_hash": "blake3:09b9d7a7cee923f0dd2ec9893d6648d26eab4b6701de928c7b1cd55898d39fd1"
     }
   }

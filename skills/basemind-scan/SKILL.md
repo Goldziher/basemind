@@ -7,6 +7,13 @@ description: >-
   basemind binary directly.
 ---
 
+<!--
+AI-RULEZ :: GENERATED FILE — DO NOT EDIT
+Content-Hash: blake3:6a2da891a9f4c927e817d6507b8118afe9d9140a9473177ead3e43fae3ae468f
+Source-Hash: blake3:378e61c2bd27ae140e75d818f27005fac54d22d0ad24de4163a71e8572a15c72
+Schema-Version: v1
+-->
+
 # basemind-scan — build or refresh the index (no MCP server required)
 
 basemind answers code-map questions from an index in a machine-global cache (Linux

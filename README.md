@@ -166,6 +166,15 @@ Kimi doesn't support the comms auto-notifications, but the chat tools still work
 </details>
 
 <details>
+<summary><strong>Agent Plugins (agent-plugins.org)</strong></summary>
+
+The repository root is a conformant [Agent Plugins](https://agent-plugins.org) 1.0.0 package: `plugin.json`,
+`mcp.json` and `skills/`. Any client that loads that format picks basemind up from the repo. The MCP entry
+runs `basemind serve`, so [install the program](#install-the-program) first so `basemind` is on `PATH`.
+
+</details>
+
+<details>
 <summary><strong>Hermes</strong></summary>
 
 Hermes exposes MCP servers through config, so basemind's tools are wired there. Two steps — the

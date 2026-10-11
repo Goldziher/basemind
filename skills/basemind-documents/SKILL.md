@@ -8,6 +8,13 @@ description: >-
   "what does the documentation say about X".
 ---
 
+<!--
+AI-RULEZ :: GENERATED FILE — DO NOT EDIT
+Content-Hash: blake3:0502f17289c5e74c29ad8b882f90c407fa162f245e45297cbd7a1c414beddbad
+Source-Hash: blake3:378e61c2bd27ae140e75d818f27005fac54d22d0ad24de4163a71e8572a15c72
+Schema-Version: v1
+-->
+
 # basemind-documents — document RAG and web ingestion
 
 basemind extracts 90+ file formats (PDF, Office, HTML, email, images via OCR) into a LanceDB vector

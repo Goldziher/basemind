@@ -7,6 +7,13 @@ description: >-
   "what's the shape of this file", or whenever you're about to grep or open files to learn structure.
 ---
 
+<!--
+AI-RULEZ :: GENERATED FILE — DO NOT EDIT
+Content-Hash: blake3:6c68be577a5c277c1c22a8af2e788cef967085cad4b716eadea94da0b30fbb79
+Source-Hash: blake3:378e61c2bd27ae140e75d818f27005fac54d22d0ad24de4163a71e8572a15c72
+Schema-Version: v1
+-->
+
 # basemind-code-search — navigate code without reading it
 
 basemind pre-indexes the repo into a tree-sitter code map across 300+ languages. The map holds

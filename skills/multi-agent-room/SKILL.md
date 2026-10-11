@@ -6,6 +6,13 @@ description: >-
   cross-check findings by posting to a thread the peer is a member of.
 ---
 
+<!--
+AI-RULEZ :: GENERATED FILE — DO NOT EDIT
+Content-Hash: blake3:09b9d7a7cee923f0dd2ec9893d6648d26eab4b6701de928c7b1cd55898d39fd1
+Source-Hash: blake3:378e61c2bd27ae140e75d818f27005fac54d22d0ad24de4163a71e8572a15c72
+Schema-Version: v1
+-->
+
 # Multi-agent thread orchestration
 
 Run a team of NAMED subagents that coordinate in shared THREADS, all driven by one

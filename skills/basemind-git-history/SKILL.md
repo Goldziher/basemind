@@ -7,6 +7,13 @@ description: >-
   this", "when did this symbol change", "what's the diff between these revs", or "where's the churn".
 ---
 
+<!--
+AI-RULEZ :: GENERATED FILE — DO NOT EDIT
+Content-Hash: blake3:dec34df09c0d20f0d7bd11bc7942cbad869638ce5cedb40d74a09d9f86d4d89c
+Source-Hash: blake3:378e61c2bd27ae140e75d818f27005fac54d22d0ad24de4163a71e8572a15c72
+Schema-Version: v1
+-->
+
 # basemind-git-history — git intelligence over the index
 
 basemind indexes git history and resolves blame and diffs at **symbol** resolution, backed by a
