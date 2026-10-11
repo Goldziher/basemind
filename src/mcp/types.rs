@@ -804,6 +804,12 @@ pub(super) struct RescanResponse {
     /// refreshed, but landed in no reported bucket, so `scanned` exceeded the sum of the counts and
     /// `updated: 0` read as "rescan ignored my document" when the content had in fact been updated.
     pub docs_indexed: usize,
+    /// Documents chunked by the linear fallback instead of xberg's markdown splitter because they
+    /// exceeded `[documents] markdown_chunk_max_bytes` / `plain_text_chunk_max_bytes`.
+    pub docs_degraded: usize,
+    /// Documents abandoned because extraction overran `[documents] extraction_timeout_secs`; retried
+    /// on the next scan.
+    pub doc_timeouts: usize,
     pub removed: usize,
     pub skipped_unchanged: usize,
     pub skipped_no_lang: usize,

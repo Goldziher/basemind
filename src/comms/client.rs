@@ -37,6 +37,12 @@ pub struct RescanReport {
     pub updated: usize,
     /// Documents re-extracted and re-embedded. Separate from `updated`, which is code-map only.
     pub docs_indexed: usize,
+    /// Documents chunked by the linear fallback because they exceeded the `[documents]` chunk cutovers.
+    /// `0` from a daemon that predates the field.
+    pub docs_degraded: usize,
+    /// Documents abandoned because extraction overran `[documents] extraction_timeout_secs`. `0` from a
+    /// daemon that predates the field.
+    pub doc_timeouts: usize,
     /// Files pruned because they no longer exist.
     pub removed: usize,
     /// Wall-clock scan time in milliseconds.
