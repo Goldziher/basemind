@@ -33,7 +33,7 @@ Basemind is a single Rust crate that builds a CLI binary (`basemind`) and expose
   - `source.rs` — `ConfigSource` + `ProvenanceMap` ledger.
 - `mcp/` — MCP server: nine domain tools (`code`, `graph`, `git`, `memory`, `web`, `agents`, `workspace`, `shell`, `admin`), each one `#[tool]` dispatching on a required `mode`.
   - `mod.rs` — server bootstrap.
-  - `mode.rs` — `define_mode!`: the mode enums, wire spellings, `telemetry_key()`, and `domain_modes()` (what `tests/cli_parity.rs` walks).
+  - `mode.rs` — `define_mode!`: the mode enums, wire spellings, `telemetry_key()`, and `domain_modes()` (what `tests/cli_parity/` walks).
   - `tools.rs` (`code`) + `tools_admin.rs` / `tools_comms.rs` (`agents`) / `tools_git.rs` / `tools_graph.rs` / `tools_memory.rs` / `tools_registry.rs` (`workspace`) / `tools_shells.rs` (`shell`) / `tools_web.rs` — one `#[tool]` shim per domain (thin wrapper; 1000-line cap each). Filenames predate the CLI/tool rename for `agents`/`workspace`/`shell`.
   - `helpers.rs` + `helpers_<area>.rs` (`helpers_calls.rs` / `helpers_code.rs` / `helpers_code_search.rs` / `helpers_documents.rs` / `helpers_graph.rs` / `helpers_grep.rs` / `helpers_impls.rs` / `helpers_web.rs`, and more) — the `run_<mode>` bodies each shim dispatches to.
   - `memory.rs` — `search_documents` + `memory_*` bodies behind the `memory` tool's modes, over LanceDB.

@@ -43,7 +43,7 @@ grow the surface unilaterally.
    the mode does not accept with `mode::reject_unsupported`, and name the offending pair on the ones
    it requires — `mode="blame" requires `path``. Apply `scan_cap = limit * 8` on any index scan.
 4. **`src/cli/<domain>.rs`** — add the matching clap **subcommand** (`basemind git blame …`), never a
-   `--mode` flag. Every mode has a CLI command; `tests/cli_parity.rs` enforces the bijection.
+   `--mode` flag. Every mode has a CLI command; `tests/cli_parity/` enforces the bijection.
 5. **`tests/mcp_smoke.rs`** — one end-to-end call against the synthetic fixture, asserting a
    structural field, plus the negative case (mode omitted → error, required parameter missing →
    named error).

@@ -2,7 +2,7 @@
 //!
 //! Real clap subcommands rather than a `--mode` flag, so each operation keeps its own `--help` and
 //! its own argument validation; they map one-to-one onto the MCP `graph` tool's [`GraphMode`]
-//! values, which is what `tests/cli_parity.rs` asserts.
+//! values, which is what `tests/cli_parity/` asserts.
 //!
 //! Each handler leaves every field its mode does not use `None`: the helper rejects a field
 //! belonging to another mode, so populating them blindly would fail the call.

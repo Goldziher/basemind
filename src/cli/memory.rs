@@ -2,7 +2,7 @@
 //!
 //! Real clap subcommands rather than a `--mode` flag, so each operation keeps its own `--help` and
 //! its own argument validation; they map one-to-one onto the MCP `memory` tool's [`MemoryMode`]
-//! values, which is what `tests/cli_parity.rs` asserts.
+//! values, which is what `tests/cli_parity/` asserts.
 //!
 //! The MCP tool is registered in every build and gates per mode, so these handlers always compile
 //! and dispatch identically — a mode whose feature is missing surfaces the tool's own

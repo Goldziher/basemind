@@ -740,7 +740,7 @@ impl BasemindServer {
     }
 
     /// Names of every tool this server advertises via `tools/list` (the full router, ignoring the
-    /// `BASEMIND_MCP_LEAN` wrapper mode). Exposed for the `tests/cli_parity.rs` guard, which asserts
+    /// `BASEMIND_MCP_LEAN` wrapper mode). Exposed for the `tests/cli_parity/` guard, which asserts
     /// each advertised tool has a CLI counterpart. The set follows the compiled feature flags.
     pub fn tool_names(&self) -> Vec<String> {
         self.tool_router
@@ -751,7 +751,7 @@ impl BasemindServer {
     }
 
     /// Every advertised tool paired with its JSON input schema (the `inputSchema` of `tools/list`).
-    /// Exposed for the `tests/cli_parity.rs` parameter-parity layer.
+    /// Exposed for the `tests/cli_parity/` parameter-parity layer.
     pub fn tool_input_schemas(&self) -> Vec<(String, serde_json::Value)> {
         self.tool_router
             .list_all()

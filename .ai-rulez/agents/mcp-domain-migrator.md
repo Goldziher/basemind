@@ -40,7 +40,7 @@ Your assignment names one domain. Migrate that one and no other.
   when its tool is feature-gated off, so a feature build can never change the spelling of a mode.
   It also holds `reject_unsupported`, the shared validator for parameters a mode does not accept,
   and `domain_modes()` — add your domain there, gated exactly like its router merge, because
-  `tests/cli_parity.rs` walks it. `WebMode` is the worked example. Read the module docs; they carry
+  `tests/cli_parity/` walks it. `WebMode` is the worked example. Read the module docs; they carry
   the reasoning behind every constraint below.
 - `src/mcp/types_memory.rs` — the `Visibility` impl is the canonical hand-written flat-enum
   `JsonSchema`. Copy its shape exactly.
@@ -91,7 +91,7 @@ a line to it).
 
 ## Shared files are off-limits
 
-Do not edit `tests/cli_parity.rs`, `tests/mcp_smoke.rs`, `README.md`, `src/mcp/server_handler.rs`,
+Do not edit `tests/cli_parity/`, `tests/mcp_smoke.rs`, `README.md`, `src/mcp/server_handler.rs`,
 `src/mcp/savings.rs`, `src/cli/render.rs`, or the router assembly in `src/mcp/mod.rs`. Concurrent
 migrators collide on every one of them.
 

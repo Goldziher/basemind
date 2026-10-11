@@ -14,7 +14,7 @@ x-ai-rulez:
 
 The surface is **nine domain tools**, each one `#[tool]` dispatching on a required,
 non-defaulted `mode` — never a distinct tool per verb. The same nine names are the CLI groups
-(`basemind <domain> <mode>`), enforced as a strict bijection by `tests/cli_parity.rs`. Read
+(`basemind <domain> <mode>`), enforced as a strict bijection by `tests/cli_parity/`. Read
 `src/mcp/mode.rs` for the authoritative wire spellings before writing about any mode; never infer
 one from prose.
 

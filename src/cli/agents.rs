@@ -2,7 +2,7 @@
 //!
 //! Real clap subcommands rather than a `--mode` flag, so each operation keeps its own `--help` and
 //! its own argument validation; they map one-to-one onto the MCP `agents` tool's
-//! [`AgentsMode`](crate::mcp::mode::AgentsMode) values, which is what `tests/cli_parity.rs` asserts.
+//! [`AgentsMode`](crate::mcp::mode::AgentsMode) values, which is what `tests/cli_parity/` asserts.
 //!
 //! Unlike the code-map / memory CLI groups — which build a one-shot
 //! [`BasemindServer`](crate::mcp::BasemindServer) and call the identical `#[tool]` an MCP client

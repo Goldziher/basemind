@@ -2,7 +2,7 @@
 //!
 //! Real clap subcommands rather than a `--mode` flag, so each operation keeps its own `--help` and
 //! its own argument validation; they map one-to-one onto the MCP `workspace` tool's
-//! [`WorkspaceMode`](crate::mcp::mode::WorkspaceMode) values, which is what `tests/cli_parity.rs`
+//! [`WorkspaceMode`](crate::mcp::mode::WorkspaceMode) values, which is what `tests/cli_parity/`
 //! asserts.
 //!
 //! The registry lives in the always-on comms broker daemon (its sole writer). Like the

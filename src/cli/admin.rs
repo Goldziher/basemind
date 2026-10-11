@@ -301,7 +301,7 @@ mod tests {
 
     /// The CLI half of the parity contract, checked from this side too: every `admin` mode the MCP
     /// tool advertises must resolve to a clap subcommand of the same (kebab-cased) name.
-    /// `tests/cli_parity.rs` proves the same thing end-to-end, but only for a build that ships the
+    /// `tests/cli_parity/` proves the same thing end-to-end, but only for a build that ships the
     /// binary — this one fails fast, in the file that owns the enum.
     #[test]
     fn should_expose_one_subcommand_per_advertised_admin_mode() {

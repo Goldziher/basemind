@@ -2,7 +2,7 @@
 //!
 //! Real clap subcommands rather than a `--mode` flag, so each operation keeps its own `--help` and
 //! its own argument validation; they map one-to-one onto the MCP `git` tool's [`GitMode`] values,
-//! which is what `tests/cli_parity.rs` asserts.
+//! which is what `tests/cli_parity/` asserts.
 
 use std::io::Write;
 

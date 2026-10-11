@@ -2,7 +2,7 @@
 //!
 //! Real clap subcommands rather than a `--mode` flag, so each operation keeps its own `--help` and
 //! its own argument validation; they map one-to-one onto the MCP `web` tool's [`WebMode`] values,
-//! which is what `tests/cli_parity.rs` asserts.
+//! which is what `tests/cli_parity/` asserts.
 //!
 //! The MCP `web` tool only exists when the crate is built with `--features crawl`. The clap enum is
 //! defined unconditionally so the subcommands always parse; dispatch returns a clear "built without

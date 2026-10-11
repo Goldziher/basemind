@@ -2,7 +2,7 @@
 //!
 //! Real clap subcommands rather than a `--mode` flag, so each operation keeps its own `--help` and
 //! its own argument validation; they map one-to-one onto the MCP `shell` tool's [`ShellMode`]
-//! values, which is what `tests/cli_parity.rs` asserts.
+//! values, which is what `tests/cli_parity/` asserts.
 //!
 //! Sessions are backed by the embedded rmux daemon (an external process basemind re-execs itself
 //! as), so a session spawned from one CLI invocation survives the process exit and is addressable

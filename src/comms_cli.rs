@@ -467,7 +467,7 @@ fn now_unix() -> i64 {
 /// `--clear-fatal`: acknowledge both kinds of corpse the last run left behind.
 ///
 /// They answer one question — "what killed the previous run?" — so one flag retires both, and no
-/// new CLI surface is added (the CLI↔MCP bijection in `tests/cli_parity.rs` is keyed on commands,
+/// new CLI surface is added (the CLI↔MCP bijection in `tests/cli_parity/` is keyed on commands,
 /// not flags, and stays untouched). Only records whose pid is dead are removed, so a scan running
 /// right now keeps its claim.
 #[cfg(all(feature = "comms", any(unix, windows)))]

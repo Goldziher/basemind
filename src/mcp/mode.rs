@@ -353,7 +353,7 @@ pub fn reject_unsupported(domain: &str, mode: &str, present: &[(&str, bool)]) ->
 /// Every domain this build advertises, paired with the modes it accepts.
 ///
 /// Feature-gated exactly like the router's sub-router merges, so the list can never name a domain
-/// the server does not serve. `tests/cli_parity.rs` walks it to prove the MCP and CLI surfaces stay
+/// the server does not serve. `tests/cli_parity/` walks it to prove the MCP and CLI surfaces stay
 /// a strict bijection at `(domain, mode)` granularity — consolidation moved the operations from
 /// tool names into modes, so parity has to be checked there or it silently stops covering them.
 pub fn domain_modes() -> Vec<(&'static str, &'static [&'static str])> {
