@@ -10,20 +10,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
-
-- **A large text document could stall a scan for tens of minutes.** xberg's markdown splitter re-collects
-  and re-sorts every remaining element for each chunk it emits, so chunking time grows with the square of
-  the document (measured: 0.9 s at 256 KB, 3.3 s at 512 KB, 11.6 s at 1 MB, 40 s at 2 MB of log text, and 17 s at 256 KB of
-  densely marked-up markdown, in a debug build). 0.29.0 routes csv, json, yaml, xml, txt and similar files to the document tier, so
-  multi-megabyte data files reached it. Text-like documents over the new `[documents]
-  markdown_chunk_max_bytes` (default 256 KiB) / `plain_text_chunk_max_bytes` (default 128 KiB) cutovers
-  are now chunked by a linear fixed-size chunker; smaller documents chunk exactly as before. Degraded
-  documents are logged and counted as `docs_degraded` in the scan summary.
-- **`[documents] extraction_timeout_secs` is now enforced.** It was passed to xberg but could not
-  interrupt CPU-bound work. Extraction now runs under a watchdog: an overrunning document is abandoned,
-  logged, skipped, retried on the next scan, and counted as `doc_timeouts` (also in `failed`).
-
 ## [0.29.0] - 2026-10-09
 
 0.29.0 reshapes the CLI (one home for each command, a documented exit-code contract, honest output and
@@ -161,7 +147,9 @@ for `code grep`, MCP resources, and a more robust comms protocol (v4). Read **Br
 - Comms daemon runtime has 8 workers (was 4) and liveness probes run off the async workers.
 - The production `rmcp` dependency drops its default features. Dependencies upgraded: `lancedb` 0.37 to
   0.40 (with its `remote` feature; `lance` 10 to 13), `gix` 0.89, `oxc_*` 0.153, `crawlberg` 1.10,
-  `xberg` 1.3.6, `tree-sitter-language-pack` 1.21, plus lockfile refreshes.
+  `xberg` 1.3.8 and `tree-sitter-language-pack` 1.21.3 (both now chunk in linear time, so the
+  quadratic stalls behind the Fixed entries below are fixed at the source; the cutovers stay as a
+  backstop), `zstd` 0.14.2, plus lockfile refreshes. `arrow-*` stays on 58 to match `lancedb` 0.40.
 - Eval generators follow the new symbol scope; `gen_find.py` takes `--indexed FILE`.
 
 ### Fixed
@@ -245,6 +233,17 @@ for `code grep`, MCP resources, and a more robust comms protocol (v4). Read **Br
   large, with a warning naming the estimate and the limit) rather than extracted: a 7 MB-of-XML
   `.docx` measured 12 GB with CoreML, and a 30,000 x 30,000 pixel image header is priced from its
   dimensions, not its byte size.
+- **A large text document could stall a scan for tens of minutes.** xberg's markdown splitter (before 1.3.8) re-collects
+  and re-sorts every remaining element for each chunk it emits, so chunking time grows with the square of
+  the document (measured: 0.9 s at 256 KB, 3.3 s at 512 KB, 11.6 s at 1 MB, 40 s at 2 MB of log text, and 17 s at 256 KB of
+  densely marked-up markdown, in a debug build). 0.29.0 routes csv, json, yaml, xml, txt and similar files to the document tier, so
+  multi-megabyte data files reached it. Text-like documents over the new `[documents]
+  markdown_chunk_max_bytes` (default 256 KiB) / `plain_text_chunk_max_bytes` (default 128 KiB) cutovers
+  are now chunked by a linear fixed-size chunker; smaller documents chunk exactly as before. Degraded
+  documents are logged and counted as `docs_degraded` in the scan summary.
+- **`[documents] extraction_timeout_secs` is now enforced.** It was passed to xberg but could not
+  interrupt CPU-bound work. Extraction now runs under a watchdog: an overrunning document is abandoned,
+  logged, skipped, retried on the next scan, and counted as `doc_timeouts` (also in `failed`).
 
 ## [0.28.0] - 2026-10-04
 
