@@ -144,3 +144,57 @@ fn sequenced_import_star() {
     check_partial_paths_in_file(&graph, "a.py", SEQUENCED_IMPORT_STAR_A_PATHS);
     check_partial_paths_in_file(&graph, "b.py", SEQUENCED_IMPORT_STAR_B_PATHS);
 }
+
+/// A cancellation flag that only counts how often the stitching loop polls it.
+struct CountingFlag(std::cell::Cell<usize>);
+
+impl stack_graphs::CancellationFlag for CountingFlag {
+    fn check(&self, _at: &'static str) -> Result<(), stack_graphs::CancellationError> {
+        self.0.set(self.0.get() + 1);
+        Ok(())
+    }
+}
+
+fn minimal_paths_in_file(
+    graph: &StackGraph,
+    file: &str,
+    config: StitcherConfig,
+    flag: &CountingFlag,
+) -> BTreeSet<String> {
+    let file = graph.get_file(file).expect("Missing file");
+    let mut partials = PartialPaths::new();
+    let mut results = BTreeSet::new();
+    ForwardPartialPathStitcher::find_minimal_partial_path_set_in_file(
+        graph,
+        &mut partials,
+        file,
+        config,
+        flag,
+        |graph, partials, path| {
+            results.insert(path.display(graph, partials).to_string());
+        },
+    )
+    .expect("should never be cancelled");
+    results
+}
+
+#[test]
+fn bounded_phases_find_the_same_paths_but_poll_cancellation_more_often() {
+    let graph = test_graphs::class_field_through_function_parameter::new();
+    let unbounded_flag = CountingFlag(std::cell::Cell::new(0));
+    let bounded_flag = CountingFlag(std::cell::Cell::new(0));
+    let unbounded = minimal_paths_in_file(&graph, "main.py", StitcherConfig::default(), &unbounded_flag);
+    let bounded = minimal_paths_in_file(
+        &graph,
+        "main.py",
+        StitcherConfig::default().with_max_work_per_phase(1),
+        &bounded_flag,
+    );
+    assert_eq!(unbounded, bounded, "bounding the phase must not change the paths found");
+    assert!(
+        bounded_flag.0.get() > unbounded_flag.0.get(),
+        "a one-unit phase must hand control back more often ({} vs {})",
+        bounded_flag.0.get(),
+        unbounded_flag.0.get()
+    );
+}
