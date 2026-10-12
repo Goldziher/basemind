@@ -10,6 +10,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Linear-chunker cutovers raised, measured on a release build with xberg 1.3.8.**
+  `[documents] markdown_chunk_max_bytes` goes 256 KiB to 1 MiB and `plain_text_chunk_max_bytes` 128 KiB to
+  4 MiB. The splitter is linear for ordinary text now; only a single markdown block dense with inline
+  markup stays quadratic, and the linear fallback still bounds it. Documents already routed through the
+  linear chunker keep their index entry until the file changes.
+
 ### Added
 
 - **Document-guard counters on every scan surface** ([#72](https://github.com/Goldziher/basemind/issues/72)).
