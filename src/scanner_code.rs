@@ -498,7 +498,11 @@ pub(crate) fn flush_code_batches(
         match lance.replace_code_chunks_many(items) {
             Ok(()) => *inserted += files,
             Err(error) => {
-                tracing::warn!(files, ?error, "lance replace_code_chunks_many failed; code search may be incomplete");
+                tracing::warn!(
+                    files,
+                    ?error,
+                    "lance replace_code_chunks_many failed; code search may be incomplete"
+                );
             }
         }
     };

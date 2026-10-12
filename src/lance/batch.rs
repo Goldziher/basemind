@@ -86,10 +86,7 @@ fn replace_predicate<R>(key_col: &str, items: &[(String, String, Vec<R>)]) -> St
                 .map(|p| format!("'{}'", escape_sql_literal(p)))
                 .collect::<Vec<_>>()
                 .join(", ");
-            format!(
-                "(scope = '{}' AND {key_col} IN ({list}))",
-                escape_sql_literal(scope)
-            )
+            format!("(scope = '{}' AND {key_col} IN ({list}))", escape_sql_literal(scope))
         })
         .collect::<Vec<_>>()
         .join(" OR ")
@@ -99,7 +96,9 @@ impl LanceStore {
     /// Replace the rows of every `(scope, path, rows)` item with ONE delete and ONE append (two
     /// commits total, however many documents). An item with no rows just deletes its path.
     pub fn replace_documents_many(&self, items: Vec<(String, String, Vec<DocumentRow>)>) -> Result<()> {
-        self.replace_many(DOCUMENTS_TABLE, "path", items, |dim, rows| build_documents_batch(dim, rows))
+        self.replace_many(DOCUMENTS_TABLE, "path", items, |dim, rows| {
+            build_documents_batch(dim, rows)
+        })
     }
 
     /// [`Self::replace_documents_many`] for the `doc_links` table (key column `doc_path`).
@@ -138,7 +137,12 @@ impl LanceStore {
                 .with_context(|| format!("open {table_name} table"))?;
             // Skip the delete (a scan plus a commit) when the table holds nothing to replace; this
             // is every batch of a first scan.
-            if table.count_rows(None).await.with_context(|| format!("count {table_name} rows"))? > 0 {
+            if table
+                .count_rows(None)
+                .await
+                .with_context(|| format!("count {table_name} rows"))?
+                > 0
+            {
                 table
                     .delete(&replace_predicate(key_col, &items))
                     .await

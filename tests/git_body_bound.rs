@@ -95,7 +95,12 @@ async fn indexed_search(service: &Session, extra: Value) -> (Value, usize) {
             .extend(extra.as_object().expect("object").clone());
         let (value, size) = call(service, args).await;
         let indexed = !value.get("partial").and_then(Value::as_bool).unwrap_or(false);
-        if indexed && value.get("commits").and_then(Value::as_array).is_some_and(|c| !c.is_empty()) {
+        if indexed
+            && value
+                .get("commits")
+                .and_then(Value::as_array)
+                .is_some_and(|c| !c.is_empty())
+        {
             return (value, size);
         }
         assert!(std::time::Instant::now() < deadline, "index never answered: {value}");
@@ -122,10 +127,17 @@ async fn search_caps_each_body_and_marks_the_cut() {
     for hit in hits {
         let body = hit["body"].as_str().expect("body");
         assert!(body.starts_with(TOKEN), "{body}");
-        assert!(body.contains("mode=\"show\""), "marker must name the way to the full body: {body}");
+        assert!(
+            body.contains("mode=\"show\""),
+            "marker must name the way to the full body: {body}"
+        );
         assert_eq!(hit["body_truncated"], json!(true));
         assert!(hit["body_bytes"].as_u64().expect("body_bytes") > BIG_BODY_BYTES as u64 - 100);
-        assert!(body.chars().count() < 1_300, "default cap is about 1000 chars: {}", body.len());
+        assert!(
+            body.chars().count() < 1_300,
+            "default cap is about 1000 chars: {}",
+            body.len()
+        );
     }
 
     let (value, _) = indexed_search(&service, json!({ "body_chars": 20, "max_tokens": 1_000_000 })).await;
@@ -183,7 +195,11 @@ async fn show_returns_the_whole_message_and_files() {
     let commit = &shown["commit"];
     assert_eq!(commit["sha"], json!(sha));
     let body = commit["body"].as_str().expect("body");
-    assert!(body.len() >= BIG_BODY_BYTES - 100, "show must not truncate: {} bytes", body.len());
+    assert!(
+        body.len() >= BIG_BODY_BYTES - 100,
+        "show must not truncate: {} bytes",
+        body.len()
+    );
     assert!(commit.get("body_truncated").is_none());
     assert!(size >= BIG_BODY_BYTES - 100);
     assert_eq!(shown["files"][0]["path"], json!("a.rs"));
@@ -214,7 +230,10 @@ async fn commit_list_modes_honour_max_tokens() {
     // Without a budget pressure nothing is dropped and `budgeted` is absent.
     let (value, _) = call(&service, json!({ "mode": "recent" })).await;
     assert_eq!(commits(&value).len(), COMMITS);
-    assert!(value.get("budgeted").is_none() && value.get("next_cursor").is_none(), "{value}");
+    assert!(
+        value.get("budgeted").is_none() && value.get("next_cursor").is_none(),
+        "{value}"
+    );
 
     let _ = service.cancel().await;
 }

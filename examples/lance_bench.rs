@@ -46,7 +46,12 @@ fn dir_size(p: &Path) -> u64 {
 
 fn main() -> anyhow::Result<()> {
     let a: Vec<String> = std::env::args().collect();
-    let (mode, docs, chunks, dir) = (a[1].as_str(), a[2].parse::<usize>()?, a[3].parse::<usize>()?, PathBuf::from(&a[4]));
+    let (mode, docs, chunks, dir) = (
+        a[1].as_str(),
+        a[2].parse::<usize>()?,
+        a[3].parse::<usize>()?,
+        PathBuf::from(&a[4]),
+    );
     let store = LanceStore::open(&dir, DIM, "bench")?;
     let t = Instant::now();
     if mode == "per-doc" {
@@ -72,7 +77,11 @@ fn main() -> anyhow::Result<()> {
     if mode == "incremental" {
         let t = Instant::now();
         for i in 0..300 {
-            store.replace_documents_many(vec![("bench".into(), format!("docs/d{:06}.md", i % docs), rows(i % docs, chunks, 1))])?;
+            store.replace_documents_many(vec![(
+                "bench".into(),
+                format!("docs/d{:06}.md", i % docs),
+                rows(i % docs, chunks, 1),
+            )])?;
         }
         inc_s = t.elapsed().as_secs_f64();
     }

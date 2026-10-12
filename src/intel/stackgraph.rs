@@ -317,7 +317,12 @@ fn resolve_intra(engine: &LangEngine, lang: LangId, src: &str) -> Result<Vec<Res
             db.add_partial_path(g, ps, path.clone());
         },
     )
-    .map_err(|_| format!("find_minimal_partial_path_set_in_file cancelled ({})", deadline.summary()))?;
+    .map_err(|_| {
+        format!(
+            "find_minimal_partial_path_set_in_file cancelled ({})",
+            deadline.summary()
+        )
+    })?;
 
     let references: Vec<Handle<Node>> = graph.iter_nodes().filter(|h| graph[*h].is_reference()).collect();
 

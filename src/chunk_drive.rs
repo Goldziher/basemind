@@ -73,6 +73,7 @@ impl ChunkCut {
 ///
 /// `process` is the parallel interior (rayon inside); `absorb` is serial and is the only place a
 /// chunk's results are visible. See the module docs for why the split is load-bearing.
+#[cfg(test)]
 pub(crate) fn drive_chunks<T, R>(
     items: &[T],
     cut: ChunkCut,

@@ -493,7 +493,11 @@ pub(crate) fn delete_stale_documents(store: &mut Store, config: &crate::config::
         // Drop the removed docs' document→code links too (ADR-0008), or graph_export/neighbors would
         // keep surfacing edges from docs that no longer exist.
         if let Err(error) = lance.delete_doc_links_for_paths(doc_scope, paths) {
-            tracing::warn!(paths = paths.len(), ?error, "doc links stale purge failed; doc↔code edges may be stale");
+            tracing::warn!(
+                paths = paths.len(),
+                ?error,
+                "doc links stale purge failed; doc↔code edges may be stale"
+            );
         }
     }
 }
@@ -637,7 +641,11 @@ pub(crate) fn flush_document_batches(store: &mut Store, batches: Vec<PendingDocB
         match lance.replace_documents_many(items) {
             Ok(()) => *inserted += docs,
             Err(error) => {
-                tracing::warn!(docs, ?error, "lance replace_documents_many failed; document search may be incomplete");
+                tracing::warn!(
+                    docs,
+                    ?error,
+                    "lance replace_documents_many failed; document search may be incomplete"
+                );
             }
         }
     };
