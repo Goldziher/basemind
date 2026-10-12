@@ -12,6 +12,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Document scans no longer accumulate tens of thousands of LanceDB versions** ([#76](https://github.com/Goldziher/basemind/issues/76)).
+  The `documents`, `doc_links` and `code_chunks` tables took one delete and one append commit per file, so a
+  14,664-document scan produced ~28k versions per table and spent about two hours in commit latency. A scan now
+  writes one delete plus one append per batch (256 files or 4,096 rows), skips the delete on an empty table,
+  purges stale documents with bulk `IN (...)` deletes, and ends with a compaction and a prune of versions older
+  than 60 seconds. The incremental and watch paths prune versions older than five minutes every 32 commits and
+  compact every 128, so the table directories stay bounded. Existing bloated indexes shrink on their next scan.
+
 - **`git` responses are bounded when commit messages are huge** ([#74](https://github.com/Goldziher/basemind/issues/74)).
   `git` mode `search` returned every hit's commit body whole; squash-merge bodies reach 285 KB, so one
   `limit` 100 call cost 2.6 MB. Each hit's body is now cut at `body_chars` (default 1000, `0` omits it)
