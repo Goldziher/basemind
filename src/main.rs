@@ -715,6 +715,13 @@ fn cmd_rescan(root: &std::path::Path, args: &RescanArgs, verbosity: Verbosity, n
             "rescan via daemon: {} scanned, {} updated, {} docs indexed, {} removed ({} ms)",
             report.scanned, report.updated, report.docs_indexed, report.removed, report.elapsed_ms
         );
+        if report.docs_degraded > 0 || report.doc_timeouts > 0 {
+            let _ = writeln!(
+                out,
+                "docs_degraded {}  doc_timeouts {} (see [documents] markdown_chunk_max_bytes)",
+                report.docs_degraded, report.doc_timeouts
+            );
+        }
         return Ok(());
     }
     let cancel = basemind::cli::interrupt::install();

@@ -341,7 +341,7 @@ basemind detect-waste [--log <FILE>]
 | Command | Purpose |
 |---|---|
 | `scan [--staged \| --rev <REV>] [--no-git-history --rebuild-git-history]` | Full index of the project. `--staged` indexes the git index instead of the working tree; `--rev` indexes a revision into a separate `rev-<sha7>` view. The `--documents-*` and `--llm-*` flags override the matching `[documents]` / `[llm]` keys for this run (each also has a `BASEMIND_DOCUMENTS_*` / `BASEMIND_LLM_*` env var). Ctrl-C stops the scan cleanly. |
-| `rescan [PATH...] [--full --no-git-history --rebuild-git-history]` | Update one or more paths incrementally, or the whole tree with `--full`. When the daemon is running the rescan is forwarded to it (the daemon is the sole index writer); otherwise it runs in-process under the workspace writer lock. Ctrl-C stops it cleanly. |
+| `rescan [PATH...] [--full --no-git-history --rebuild-git-history]` | Update one or more paths incrementally, or the whole tree with `--full`. When the daemon is running the rescan is forwarded to it (the daemon is the sole index writer); otherwise it runs in-process under the workspace writer lock. Ctrl-C stops it cleanly. The summary (also when forwarded to the daemon) reports `docs_degraded` and `doc_timeouts` when non-zero. |
 | `watch` | Long-running watcher; keeps the code map current as files change (no server). |
 | `serve` | Ensure the daemon is up and relay this process's stdio to it as the MCP server. The daemon keeps the index fresh. |
 | `status` | Index health for this workspace: file counts, languages, scan age. |
