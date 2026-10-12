@@ -874,7 +874,10 @@ file proves the process never ran its destructors; the record's `phase` says how
 `root` names what it was scanning. `basemind comms doctor` lists every such record whose pid is dead
 (filesystem-only, no RPC, so it stays usable on a wedged machine) and `--clear-fatal` acknowledges
 them alongside the fatal-store record. Alongside it, a periodic `rss_mb` / `ceiling_mb` line makes
-the growth curve that led to the kill reconstructable from the log.
+the growth curve that led to the kill reconstructable from the log. The sampler reads the footprint
+every 200 ms and each line also carries `window_peak_mb` (the maximum since the previous line) and
+`process_peak_rss_mb`; a gibibyte jump above anything already logged writes a `spike=true` line at once,
+so a transient shorter than the 5 s line interval is still visible.
 
 ### Thread model
 
