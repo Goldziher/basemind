@@ -10,6 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.29.2] - 2026-10-12
+
 ### Added
 
 - **Agent Plugins distribution** ([#69](https://github.com/Goldziher/basemind/issues/69)). The repository
