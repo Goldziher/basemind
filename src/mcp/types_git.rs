@@ -57,6 +57,18 @@ pub struct GitParams {
     /// Resume token from the previous `next_cursor`.
     #[serde(default)]
     pub cursor: Option<Cursor>,
+    /// `recent`/`touching`/`by_path`/`search`: token budget for the returned commit list (default
+    /// 20000). Commits past the budget are dropped, `budgeted: true` is set and `next_cursor`
+    /// resumes at the first dropped commit. At least one commit is always returned.
+    #[serde(default, alias = "token_budget", alias = "budget")]
+    pub max_tokens: Option<u32>,
+    /// `search` only: cap each hit's commit body at this many characters (default 1000, 0 omits
+    /// the body). A cut body ends in a marker and sets `body_truncated`; `show` returns it whole.
+    #[serde(default)]
+    pub body_chars: Option<u32>,
+    /// `show` only: commit to show, a full or abbreviated sha or any revision (required).
+    #[serde(default, alias = "commit", alias = "revision")]
+    pub sha: Option<String>,
     /// `recent` only. Include each commit's per-file change list. Default true.
     #[serde(default)]
     pub include_files: Option<bool>,
@@ -102,6 +114,9 @@ impl GitParams {
             kind: None,
             limit: None,
             cursor: None,
+            max_tokens: None,
+            body_chars: None,
+            sha: None,
             include_files: None,
             top_k: None,
             window: None,
@@ -135,6 +150,13 @@ pub struct SearchGitHistoryParams {
     /// the caller must restart.
     #[serde(default)]
     pub cursor: Option<Cursor>,
+    /// Token budget for the returned hits. Default 20000; overflow is dropped, `budgeted: true`
+    /// is set and `next_cursor` resumes at the first dropped hit.
+    #[serde(default, alias = "token_budget", alias = "budget")]
+    pub max_tokens: Option<u32>,
+    /// Cap on each hit's commit body, in characters. Default 1000; 0 omits the body.
+    #[serde(default)]
+    pub body_chars: Option<u32>,
 }
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
@@ -153,6 +175,10 @@ pub struct RecentChangesParams {
     /// `cursor_invalidated: true` and the caller must restart.
     #[serde(default)]
     pub cursor: Option<Cursor>,
+    /// Token budget for the returned commits. Default 20000; overflow is dropped, `budgeted: true`
+    /// is set and `next_cursor` resumes at the first dropped commit.
+    #[serde(default, alias = "token_budget", alias = "budget")]
+    pub max_tokens: Option<u32>,
 }
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
@@ -167,6 +193,10 @@ pub struct CommitsTouchingParams {
     /// `cursor_invalidated: true` and the caller must restart.
     #[serde(default)]
     pub cursor: Option<Cursor>,
+    /// Token budget for the returned commits. Default 20000; overflow is dropped, `budgeted: true`
+    /// is set and `next_cursor` resumes at the first dropped commit.
+    #[serde(default, alias = "token_budget", alias = "budget")]
+    pub max_tokens: Option<u32>,
 }
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
@@ -213,6 +243,10 @@ pub struct FindCommitsByPathParams {
     /// `cursor_invalidated: true` and the caller must restart.
     #[serde(default)]
     pub cursor: Option<Cursor>,
+    /// Token budget for the returned commits. Default 20000; overflow is dropped, `budgeted: true`
+    /// is set and `next_cursor` resumes at the first dropped commit.
+    #[serde(default, alias = "token_budget", alias = "budget")]
+    pub max_tokens: Option<u32>,
 }
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
@@ -303,6 +337,22 @@ pub(in crate::mcp) struct GitCommitHit {
     /// Full message body, present only for indexed hits with a non-empty body.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub body: String,
+    /// True when `body` was cut at `body_chars`; it then ends in a marker naming `git` mode `show`.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub body_truncated: bool,
+    /// Full body length in bytes, present only when `body_truncated`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub body_bytes: Option<usize>,
+}
+
+/// Response of `git` mode `show`: one commit with its whole message and changed-file list.
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub(in crate::mcp) struct GitShowResponse {
+    pub commit: GitCommitHit,
+    pub files: Vec<CommitFileView>,
+    /// Server-side handler latency in microseconds. See [`crate::mcp::helpers::timing`].
+    #[serde(default)]
+    pub elapsed_us: u64,
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
@@ -313,6 +363,10 @@ pub(in crate::mcp) struct SearchGitHistoryResponse {
     /// full indexed search.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub partial: bool,
+    /// True when `max_tokens` (or the default budget) dropped trailing commits; `next_cursor`
+    /// resumes at the first dropped one.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub budgeted: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<Cursor>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
@@ -353,6 +407,10 @@ pub(in crate::mcp) struct RecentChangesResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub truncated_reason: Option<&'static str>,
     /// Opaque cursor to pass back on the next call when more results are available.
+    /// True when `max_tokens` (or the default budget) dropped trailing commits; `next_cursor`
+    /// resumes at the first dropped one.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub budgeted: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<Cursor>,
     /// True when the caller passed a `cursor` minted against a different HEAD sha (HEAD
@@ -377,6 +435,10 @@ pub(in crate::mcp) struct CommitsTouchingResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub truncated_reason: Option<&'static str>,
     /// Opaque cursor to pass back on the next call when more results are available.
+    /// True when `max_tokens` (or the default budget) dropped trailing commits; `next_cursor`
+    /// resumes at the first dropped one.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub budgeted: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<Cursor>,
     /// True when the caller passed a `cursor` minted against a different HEAD sha (HEAD
@@ -484,6 +546,10 @@ pub(in crate::mcp) struct FindCommitsByPathResponse {
     pub window_inspected: u32,
     pub commits: Vec<CommitView>,
     /// Opaque cursor to pass back on the next call when more matches are available.
+    /// True when `max_tokens` (or the default budget) dropped trailing commits; `next_cursor`
+    /// resumes at the first dropped one.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub budgeted: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<Cursor>,
     /// True when the caller passed a `cursor` minted against a different HEAD sha (HEAD
