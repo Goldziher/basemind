@@ -182,6 +182,9 @@ pub(super) struct LastGcResponse {
     pub hot_workspaces_evicted: usize,
     /// Workspaces skipped because they were locked.
     pub locked_workspaces_skipped: usize,
+    /// Workspaces kept although the cache is over budget: locked, most recently used, or built
+    /// within the grace window.
+    pub protected_workspaces: Vec<crate::store_gc_protect::ProtectedWorkspace>,
 }
 
 impl From<crate::store_gc_budget::GcState> for LastGcResponse {
@@ -203,6 +206,7 @@ impl From<crate::store_gc_budget::GcState> for LastGcResponse {
             cache_bytes_after: s.cache_bytes_after,
             hot_workspaces_evicted: s.hot_workspaces_evicted,
             locked_workspaces_skipped: s.locked_workspaces_skipped,
+            protected_workspaces: s.protected_workspaces,
         }
     }
 }

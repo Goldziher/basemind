@@ -20,8 +20,11 @@ use std::time::{Duration, SystemTime};
 
 use serde::{Deserialize, Serialize};
 
-use crate::store::{CACHE_DIR, WORKSPACE_MARKER_FILE, WORKSPACES_DIR, acquire_lock, cache_root, global_blobs_dir};
+use crate::store::{
+    CACHE_DIR, WORKSPACE_MARKER_FILE, WORKSPACES_DIR, acquire_lock, cache_root, global_blobs_dir, read_workspace_marker,
+};
 use crate::store_gc::{GcError, GcReport, dir_size, gc_global_blobs_in, read_dir};
+use crate::store_gc_protect::{ProtectedWorkspace, ProtectionReason, cache_grace};
 
 /// Environment variable holding the cache byte budget in MiB. Unset ⇒
 /// [`DEFAULT_CACHE_BUDGET_MIB`]; `0` ⇒ unlimited (budget enforcement disabled).
@@ -111,6 +114,11 @@ pub struct GcState {
     /// Workspaces budget enforcement skipped because they were locked.
     #[serde(default)]
     pub locked_workspaces_skipped: usize,
+    /// Workspaces the budget pass refused to evict (locked, most recently used, or inside the
+    /// post-build grace window) while the cache was over budget. Non-empty with
+    /// [`GcStatus::OverBudget`] means the budget is knowingly exceeded to keep a live index.
+    #[serde(default)]
+    pub protected_workspaces: Vec<ProtectedWorkspace>,
 }
 
 /// Result of one budget-enforcement pass.
@@ -132,11 +140,16 @@ pub struct EvictReport {
     pub hot_evicted: usize,
     /// Workspaces skipped because another process held their lock.
     pub locked_skipped: usize,
+    /// Workspaces left alone because they are locked, most recently used, or freshly built. Only
+    /// workspaces the pass actually reached while over budget are listed.
+    pub protected: Vec<ProtectedWorkspace>,
 }
 
 struct EvictionCandidate {
     activity: SystemTime,
     hot: bool,
+    has_views: bool,
+    protected: Option<ProtectionReason>,
     dir: PathBuf,
 }
 
@@ -206,6 +219,7 @@ pub(crate) fn persist_gc_state_at(path: &Path, report: &GcReport) {
         cache_bytes_after: report.cache_bytes_after,
         hot_workspaces_evicted: report.hot_workspaces_evicted,
         locked_workspaces_skipped: report.locked_workspaces_skipped,
+        protected_workspaces: report.protected_workspaces.clone(),
     };
     write_gc_state(path, &state);
 }
@@ -230,10 +244,12 @@ fn persist_gc_error_at(path: &Path, error: &GcError) {
 fn over_budget_detail(report: &GcReport) -> String {
     let budget = report.cache_budget_bytes.unwrap_or(0);
     let after = report.cache_bytes_after.unwrap_or(budget);
+    let protected: u64 = report.protected_workspaces.iter().map(|ws| ws.bytes).sum();
     format!(
-        "cache remains {} bytes over budget after enforcement; {} workspace(s) were locked; retrying next cycle",
+        "cache remains {} bytes over budget after enforcement; {} workspace(s) holding {protected} bytes were \
+         protected (locked, most recently used, or built within the grace window) and kept; retrying next cycle",
         after.saturating_sub(budget),
-        report.locked_workspaces_skipped
+        report.protected_workspaces.len().max(report.locked_workspaces_skipped),
     )
 }
 
@@ -287,6 +303,7 @@ pub fn enforce_cache_budget(budget_bytes: u64) -> Result<EvictReport, GcError> {
         &global_blobs_dir(),
         budget_bytes,
         BUDGET_EVICTION_HOT_FLOOR,
+        cache_grace(),
     )
 }
 
@@ -297,6 +314,7 @@ pub(crate) fn enforce_cache_budget_in(
     blobs_dir: &Path,
     budget_bytes: u64,
     hot_floor: Duration,
+    grace: Duration,
 ) -> Result<EvictReport, GcError> {
     let total = cache_footprint(workspaces_dir, blobs_dir)?;
     let mut report = EvictReport {
@@ -308,13 +326,20 @@ pub(crate) fn enforce_cache_budget_in(
         return Ok(report);
     }
 
-    for candidate in eviction_candidates(workspaces_dir, hot_floor)? {
+    for candidate in eviction_candidates(workspaces_dir, hot_floor, grace)? {
         if report.total_bytes_after <= budget_bytes {
             break;
+        }
+        if let Some(reason) = candidate.protected {
+            report.protected.push(protected_entry(&candidate.dir, reason));
+            continue;
         }
         let bytes_before_candidate = report.total_bytes_after;
         let Some(size) = evict_workspace(&candidate.dir)? else {
             report.locked_skipped += 1;
+            report
+                .protected
+                .push(protected_entry(&candidate.dir, ProtectionReason::Locked));
             continue;
         };
         let reclaimed = gc_global_blobs_in(workspaces_dir, blobs_dir, BUDGET_ORPHAN_GRACE)?;
@@ -336,10 +361,36 @@ pub(crate) fn enforce_cache_budget_in(
             "evicted workspace cache to enforce the size budget"
         );
     }
+    if report.total_bytes_after > budget_bytes && !report.protected.is_empty() {
+        tracing::warn!(
+            total_bytes = report.total_bytes_after,
+            budget_bytes,
+            protected = report.protected.len(),
+            protected_bytes = report.protected.iter().map(|ws| ws.bytes).sum::<u64>(),
+            "cache exceeds its size budget but the remaining workspaces are in use (locked, most recently \
+             used, or built within the grace window); keeping them. Raise BASEMIND_CACHE_BUDGET_MB to silence this"
+        );
+    }
     Ok(report)
 }
 
-fn eviction_candidates(workspaces_dir: &Path, hot_floor: Duration) -> Result<Vec<EvictionCandidate>, GcError> {
+fn protected_entry(dir: &Path, reason: ProtectionReason) -> ProtectedWorkspace {
+    ProtectedWorkspace {
+        key: dir
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default(),
+        root: read_workspace_marker(dir).map(|marker| marker.root.display().to_string()),
+        bytes: dir_size(dir).unwrap_or(0),
+        reason,
+    }
+}
+
+fn eviction_candidates(
+    workspaces_dir: &Path,
+    hot_floor: Duration,
+    grace: Duration,
+) -> Result<Vec<EvictionCandidate>, GcError> {
     let mut candidates = Vec::new();
     let now = SystemTime::now();
     if !workspaces_dir.exists() {
@@ -354,13 +405,29 @@ fn eviction_candidates(workspaces_dir: &Path, hot_floor: Duration) -> Result<Vec
         if !dir.is_dir() {
             continue;
         }
-        let activity = workspace_last_activity(&dir);
+        let (activity, has_views) = workspace_last_activity(&dir);
         let idle = now.duration_since(activity).unwrap_or(Duration::ZERO);
+        // A workspace with no view left holds nothing worth protecting.
+        let protected = (has_views && idle < grace).then_some(ProtectionReason::RecentlyBuilt);
         candidates.push(EvictionCandidate {
             activity,
             hot: idle < hot_floor,
+            has_views,
+            protected,
             dir,
         });
+    }
+    // The most recently used workspace across every worktree of every repo is always protected,
+    // however old it is and whatever the grace window says.
+    if let Some(mru) = candidates
+        .iter()
+        .filter(|candidate| candidate.has_views)
+        .max_by_key(|candidate| candidate.activity)
+        .map(|candidate| candidate.dir.clone())
+    {
+        for candidate in candidates.iter_mut().filter(|candidate| candidate.dir == mru) {
+            candidate.protected = Some(ProtectionReason::MostRecentlyUsed);
+        }
     }
     candidates.sort_by_key(|candidate| (candidate.hot, candidate.activity));
     Ok(candidates)
@@ -415,32 +482,38 @@ fn cache_footprint(workspaces_dir: &Path, blobs_dir: &Path) -> Result<u64, GcErr
     Ok(dir_size_or_zero(workspaces_dir)? + dir_size_or_zero(blobs_dir)?)
 }
 
-/// Newest mtime among the files a scan always rewrites (`workspace.json`, each view's
-/// `index.msgpack`). The dir's own mtime is only the fallback when none of those exist — the dir
-/// inode is touched by lock-file churn (including GC's own probes), so using it as a floor would
-/// make every workspace look perpetually hot. A dir with neither reads as epoch ⇒ maximally cold
-/// (an unreadable cache dir is the best eviction candidate, and evicting a cache is always safe).
-fn workspace_last_activity(workspace_dir: &Path) -> SystemTime {
+/// Newest mtime among the files a scan always rewrites (`workspace.json`, `status.json`, each view's
+/// `index.msgpack`), plus whether any view index exists. The dir's own mtime is only the fallback
+/// when none of those exist — the dir inode is touched by lock-file churn (including GC's own
+/// probes), so using it as a floor would make every workspace look perpetually hot. A dir with
+/// neither reads as epoch ⇒ maximally cold (an unreadable cache dir is the best eviction candidate,
+/// and evicting a cache is always safe).
+fn workspace_last_activity(workspace_dir: &Path) -> (SystemTime, bool) {
     let mut newest: Option<SystemTime> = None;
-    let mut consider = |path: &Path| {
-        if let Ok(modified) = std::fs::metadata(path).and_then(|m| m.modified())
-            && newest.is_none_or(|current| modified > current)
-        {
+    let mut consider = |path: &Path| -> bool {
+        let Ok(modified) = std::fs::metadata(path).and_then(|m| m.modified()) else {
+            return false;
+        };
+        if newest.is_none_or(|current| modified > current) {
             newest = Some(modified);
         }
+        true
     };
     consider(&workspace_dir.join(WORKSPACE_MARKER_FILE));
+    consider(&workspace_dir.join(crate::store::STATUS_SIDECAR_FILE));
+    let mut has_views = false;
     let views = workspace_dir.join(crate::store::VIEWS_DIR);
     if let Ok(entries) = std::fs::read_dir(&views) {
         for entry in entries.flatten() {
-            consider(&entry.path().join(crate::store::INDEX_FILE));
+            has_views |= consider(&entry.path().join(crate::store::INDEX_FILE));
         }
     }
-    newest.unwrap_or_else(|| {
+    let activity = newest.unwrap_or_else(|| {
         std::fs::metadata(workspace_dir)
             .and_then(|m| m.modified())
             .unwrap_or(SystemTime::UNIX_EPOCH)
-    })
+    });
+    (activity, has_views)
 }
 
 /// [`dir_size`] that treats a missing directory as empty (the budget check runs against dirs
@@ -457,7 +530,7 @@ mod tests {
 
     /// Seed `<workspaces>/<key>/` with a marker + a working view whose index references `stem`,
     /// then force every activity-bearing file's mtime to `age` ago.
-    fn seed_workspace_aged(workspaces_dir: &Path, key: &str, stem: &str, age: Duration) -> PathBuf {
+    pub(super) fn seed_workspace_aged(workspaces_dir: &Path, key: &str, stem: &str, age: Duration) -> PathBuf {
         let workspace_dir = workspaces_dir.join(key);
         let working = workspace_dir.join(VIEWS_DIR).join("working");
         fs::create_dir_all(&working).expect("mk workspace view");
@@ -499,8 +572,8 @@ mod tests {
         fs::create_dir_all(&blobs).expect("mk blobs");
         let ws = seed_workspace_aged(&workspaces, "key-a", &"a".repeat(64), Duration::from_secs(9999));
 
-        let report =
-            enforce_cache_budget_in(&workspaces, &blobs, u64::MAX, Duration::ZERO).expect("enforce under budget");
+        let report = enforce_cache_budget_in(&workspaces, &blobs, u64::MAX, Duration::ZERO, Duration::ZERO)
+            .expect("enforce under budget");
 
         assert_eq!(report.evicted, 0, "under budget must evict nothing");
         assert_eq!(report.bytes_freed, 0);
@@ -529,8 +602,14 @@ mod tests {
         // between filesystems, so do not predict the exact bytes a removed view will free.
         let budget = total - 1;
 
-        let report =
-            enforce_cache_budget_in(&workspaces, &blobs, budget, Duration::from_secs(24 * 3600)).expect("enforce");
+        let report = enforce_cache_budget_in(
+            &workspaces,
+            &blobs,
+            budget,
+            Duration::from_secs(24 * 3600),
+            Duration::ZERO,
+        )
+        .expect("enforce");
 
         assert_eq!(report.evicted, 1, "one eviction suffices to reach the budget");
         assert_eq!(report.hot_evicted, 0, "the cold candidate is preferred");
@@ -548,15 +627,24 @@ mod tests {
         let blobs = tmp.path().join("blobs");
         fs::create_dir_all(&workspaces).expect("mk workspaces");
         fs::create_dir_all(&blobs).expect("mk blobs");
-        let empty_footprint = cache_footprint(&workspaces, &blobs).expect("measure empty cache roots");
+        let empty_footprint = 0;
 
-        let hot = seed_workspace_aged(&workspaces, "key-hot", &"a".repeat(64), Duration::ZERO);
+        let hot = seed_workspace_aged(&workspaces, "key-hot", &"a".repeat(64), Duration::from_secs(60));
+        // A strictly newer workspace holds the most-recently-used protection.
+        let _newest = seed_workspace_aged(&workspaces, "key-newest", &"b".repeat(64), Duration::ZERO);
 
-        let report = enforce_cache_budget_in(&workspaces, &blobs, empty_footprint, Duration::from_secs(24 * 3600))
-            .expect("enforce with hot floor");
+        let report = enforce_cache_budget_in(
+            &workspaces,
+            &blobs,
+            empty_footprint,
+            Duration::from_secs(24 * 3600),
+            Duration::ZERO,
+        )
+        .expect("enforce with hot floor");
 
         assert_eq!(report.evicted, 1, "the hot floor is a preference, not a budget veto");
         assert_eq!(report.hot_evicted, 1);
+        assert_eq!(report.protected.len(), 1, "the newest workspace is kept and reported");
         assert!(
             report.total_bytes_after < report.total_bytes_before,
             "rebuildable bytes are reclaimed even when durable metadata prevents full convergence"
@@ -572,12 +660,14 @@ mod tests {
         let blobs = tmp.path().join("blobs");
         fs::create_dir_all(&blobs).expect("mk blobs");
         let workspace = seed_workspace_aged(&workspaces, "key-cold", &"a".repeat(64), Duration::from_secs(9999));
+        let _newest = seed_workspace_aged(&workspaces, "key-newest", &"b".repeat(64), Duration::from_secs(60));
         fs::write(workspace.join(crate::comms::identity::AGENT_ID_FILE), b"session-stable").expect("agent id");
         let memory = workspace.join(LANCE_WORKSPACE_DIR).join("memory.lance");
         fs::create_dir_all(&memory).expect("memory table");
         fs::write(memory.join("data.bin"), b"durable-memory").expect("memory data");
 
-        let report = enforce_cache_budget_in(&workspaces, &blobs, 1, Duration::ZERO).expect("evict cache payload");
+        let report = enforce_cache_budget_in(&workspaces, &blobs, 1, Duration::ZERO, Duration::ZERO)
+            .expect("evict cache payload");
 
         assert_eq!(report.evicted, 1);
         assert_eq!(
@@ -611,7 +701,8 @@ mod tests {
         let reclaimable = dir_size(&cold.join(VIEWS_DIR)).unwrap() + fs::metadata(&cold_blob).unwrap().len();
         let budget = total - reclaimable + 1;
 
-        let report = enforce_cache_budget_in(&workspaces, &blobs, budget, Duration::ZERO).expect("enforce");
+        let report =
+            enforce_cache_budget_in(&workspaces, &blobs, budget, Duration::ZERO, Duration::ZERO).expect("enforce");
 
         assert_eq!(
             report.evicted, 1,
@@ -640,12 +731,13 @@ mod tests {
         fs::create_dir_all(&blobs).expect("mk blobs");
 
         let locked = seed_workspace_aged(&workspaces, "key-locked", &"a".repeat(64), Duration::from_secs(9999));
+        let _newest = seed_workspace_aged(&workspaces, "key-newest", &"b".repeat(64), Duration::from_secs(60));
         let _held = acquire_lock(&locked).expect("hold the workspace lock");
 
-        let report = enforce_cache_budget_in(&workspaces, &blobs, 1, Duration::ZERO).expect("enforce");
+        let report = enforce_cache_budget_in(&workspaces, &blobs, 1, Duration::ZERO, Duration::ZERO).expect("enforce");
 
-        assert_eq!(report.evicted, 0, "a locked workspace is never evicted");
         assert_eq!(report.locked_skipped, 1);
+        assert!(report.protected.iter().any(|ws| ws.reason == ProtectionReason::Locked));
         assert!(report.total_bytes_after > 1, "the report exposes non-convergence");
         assert!(locked.exists());
     }
@@ -798,3 +890,7 @@ mod tests {
         unsafe { std::env::remove_var(VAR) };
     }
 }
+
+#[cfg(test)]
+#[path = "store_gc_protect_tests.rs"]
+mod protect_tests;

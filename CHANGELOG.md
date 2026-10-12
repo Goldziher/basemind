@@ -10,6 +10,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Cache budget no longer evicts the workspace you just built** ([#75](https://github.com/Goldziher/basemind/issues/75)).
+  A 28 GB workspace over the 20 GiB `BASEMIND_CACHE_BUDGET_MB` default was evicted about ten minutes after
+  its scan, because the 24 h "hot" floor only reordered candidates. Budget eviction now skips a workspace
+  that is locked by a live writer, the most recently used one across all worktrees, or built within a grace
+  window (`BASEMIND_CACHE_GRACE_MINUTES`, default 360, `0` disables the window). The cache is left over
+  budget, a warning is logged, `cache_stats.last_gc` reports `over_budget` with the new
+  `protected_workspaces` list, and `basemind doctor` gains a `cache` row that warns about it. Raise
+  `BASEMIND_CACHE_BUDGET_MB` to clear the warning.
+
 ### Changed
 
 - **Linear-chunker cutovers raised, measured on a release build with xberg 1.3.8.**
