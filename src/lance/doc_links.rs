@@ -48,6 +48,7 @@ impl LanceStore {
                 .delete(&predicate)
                 .await
                 .with_context(|| format!("delete existing doc_links for {scope}/{doc_path}"))?;
+            self.after_commit(&table, schema::DOC_LINKS_TABLE).await;
             if rows.is_empty() {
                 return Ok(());
             }
@@ -57,6 +58,7 @@ impl LanceStore {
                 .execute()
                 .await
                 .with_context(|| format!("insert {} doc_links rows", rows.len()))?;
+            self.after_commit(&table, schema::DOC_LINKS_TABLE).await;
             anyhow::Ok(())
         })
     }
@@ -87,7 +89,7 @@ impl LanceStore {
     }
 }
 
-fn build_doc_links_batch(rows: &[DocLinkRow]) -> Result<RecordBatch> {
+pub(super) fn build_doc_links_batch(rows: &[DocLinkRow]) -> Result<RecordBatch> {
     let mut scope = StringBuilder::new();
     let mut doc_path = StringBuilder::new();
     let mut chunk_idx = UInt32Builder::new();
