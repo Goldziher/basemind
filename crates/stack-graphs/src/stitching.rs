@@ -1221,6 +1221,9 @@ pub struct StitcherConfig {
     detect_similar_paths: bool,
     /// Collect statistics about path stitching.
     collect_stats: bool,
+    /// Upper bound on the extension work one stitching phase may perform before it yields back to
+    /// the caller's loop (and so to its cancellation check). `usize::MAX` means unbounded.
+    max_work_per_phase: usize,
 }
 
 impl StitcherConfig {
@@ -1241,12 +1244,27 @@ impl StitcherConfig {
         self.collect_stats = collect_stats;
         self
     }
+
+    pub fn max_work_per_phase(&self) -> usize {
+        self.max_work_per_phase
+    }
+
+    /// Bounds the work of one phase. A phase otherwise extends every path of the previous phase,
+    /// and the `find_*` drivers poll their cancellation flag only *between* phases, so on a graph
+    /// whose frontier multiplies each level a single phase can allocate without limit before the
+    /// flag is ever consulted. With a bound, unfinished work stays queued for the next phase, so
+    /// the set of paths found is unchanged; only the polling becomes frequent.
+    pub fn with_max_work_per_phase(mut self, max_work_per_phase: usize) -> Self {
+        self.max_work_per_phase = max_work_per_phase.max(1);
+        self
+    }
 }
 
 impl StitcherConfig {
     fn apply<H>(&self, stitcher: &mut ForwardPartialPathStitcher<H>) {
         stitcher.set_similar_path_detection(self.detect_similar_paths);
         stitcher.set_collect_stats(self.collect_stats);
+        stitcher.set_max_work_per_phase(self.max_work_per_phase);
     }
 }
 
@@ -1255,6 +1273,7 @@ impl Default for StitcherConfig {
         Self {
             detect_similar_paths: true,
             collect_stats: false,
+            max_work_per_phase: usize::MAX,
         }
     }
 }
