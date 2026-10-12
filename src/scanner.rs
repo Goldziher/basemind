@@ -594,6 +594,7 @@ pub fn scan_with_observer(
         store.flush()?;
     }
     run_optional_lane(LANE_BM25_STATS, || finalize_bm25_stats_if_any(store, config));
+    run_optional_lane(crate::scanner_lanes::LANE_LANCE_MAINTENANCE, || maintain_lance_if_open(store));
     Ok(report)
 }
 
@@ -840,6 +841,7 @@ pub fn scan_paths_with_observer(
         store.flush()?;
     }
     run_optional_lane(LANE_BM25_STATS, || finalize_bm25_stats_if_any(store, config));
+    run_optional_lane(crate::scanner_lanes::LANE_LANCE_MAINTENANCE, || maintain_lance_if_open(store));
     Ok(report)
 }
 
@@ -879,6 +881,19 @@ fn derive_scope(root: &Path, source: &ScanSource<'_>) -> String {
             Err(_) => format!("path:{}", root.display()),
         },
     }
+}
+
+/// Compact fragments and prune old table versions of the LanceDB store once this scan's writes are
+/// done (#76). No-op when the scan never opened the store or wrote nothing.
+fn maintain_lance_if_open(store: &Store) {
+    #[cfg(any(feature = "documents", feature = "code-search"))]
+    if let Some(lance) = store.lance.as_ref()
+        && let Err(error) = lance.maintain(crate::lance::SCAN_RETENTION)
+    {
+        tracing::warn!(?error, "lance post-scan maintenance failed; old table versions kept");
+    }
+    #[cfg(not(any(feature = "documents", feature = "code-search")))]
+    let _ = store;
 }
 
 /// Push the buffered document batches into LanceDB. No-op without the `documents` feature.

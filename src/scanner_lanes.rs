@@ -34,6 +34,8 @@ pub const LANE_CODE_REMOVALS: &str = "code_removals";
 pub const LANE_DOC_REMOVALS: &str = "doc_removals";
 /// Purge of vector / keyword rows for files no longer eligible after an embed-policy change.
 pub const LANE_EMBED_POLICY: &str = "embed_policy";
+/// Post-scan LanceDB compaction + old-version pruning.
+pub const LANE_LANCE_MAINTENANCE: &str = "lance_maintenance";
 /// Corpus-global BM25 statistics recompute.
 pub const LANE_BM25_STATS: &str = "bm25_stats";
 
