@@ -238,8 +238,8 @@ impl Default for DocConfig {
             max_abandoned_extractions: 4,
             phase: None,
             chunk_cutovers: ChunkCutovers {
-                markdown_bytes: 256 * 1024,
-                plain_text_bytes: 128 * 1024,
+                markdown_bytes: 1024 * 1024,
+                plain_text_bytes: 4 * 1024 * 1024,
             },
             max_chunks_per_document: 2000,
             max_characters: 1000,

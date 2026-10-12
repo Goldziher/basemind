@@ -212,10 +212,10 @@ impl DocumentsConfig {
         4
     }
     fn default_markdown_chunk_max_bytes() -> u64 {
-        256 * 1024
+        1024 * 1024
     }
     fn default_plain_text_chunk_max_bytes() -> u64 {
-        128 * 1024
+        4 * 1024 * 1024
     }
 }
 

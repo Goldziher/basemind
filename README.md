@@ -886,8 +886,8 @@ max_file_bytes = 52428800
 # 1024) are chunked by a linear fixed-size chunker instead and counted as `docs_degraded` in the scan summary.
 # PDFs / Office files are never affected. text/plain (.txt, .log) has no markup to exploit, so its
 # cutover is lower.
-markdown_chunk_max_bytes = 262144
-plain_text_chunk_max_bytes = 131072
+markdown_chunk_max_bytes = 1048576
+plain_text_chunk_max_bytes = 4194304
 # Wall-clock budget (seconds) for one document's extraction + chunking. A document that overruns is
 # abandoned, skipped, and counted as `doc_timeouts`. It is remembered by content hash and not retried
 # while the file and these limits (this value, the two cutovers above, max_pages) are unchanged; editing
