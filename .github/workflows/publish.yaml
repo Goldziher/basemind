@@ -935,7 +935,9 @@ jobs:
           fi
 
           archive="$(jq -r '.filename' "$RUNNER_TEMP/pi-pack.json")"
-          pnpm publish --no-git-checks "$RUNNER_TEMP/$archive" --provenance --access public --tag "$npm_tag"
+          # pnpm 12 reports an absolute path; older versions a bare file name.
+          [[ "$archive" == /* ]] || archive="$RUNNER_TEMP/$archive"
+          pnpm publish --no-git-checks "$archive" --provenance --access public --tag "$npm_tag"
 
   publish_pypi:
     name: Publish PyPI
