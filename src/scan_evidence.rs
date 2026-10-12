@@ -489,12 +489,21 @@ mod tests {
         const GIB: u64 = 1 << 30;
         let mut window = PeakWindow::default();
         assert!(!window.observe(GIB / 2), "a small first reading is not a spike");
-        assert!(window.observe(2 * GIB), "a jump of a step over nothing written is a spike");
+        assert!(
+            window.observe(2 * GIB),
+            "a jump of a step over nothing written is a spike"
+        );
         assert_eq!(window.written(), 2 * GIB, "the line carries the window maximum");
 
         assert!(!window.observe(GIB), "falling back is not a spike");
-        assert!(!window.observe(2 * GIB + GIB / 2), "less than a step above the written high");
-        assert!(window.observe(3 * GIB), "a further step over the written high is a spike");
+        assert!(
+            !window.observe(2 * GIB + GIB / 2),
+            "less than a step above the written high"
+        );
+        assert!(
+            window.observe(3 * GIB),
+            "a further step over the written high is a spike"
+        );
         assert_eq!(window.written(), 3 * GIB);
         assert_eq!(window.written(), 0, "a fresh window starts empty");
     }

@@ -603,7 +603,9 @@ pub fn scan_with_observer(
         store.flush()?;
     }
     run_optional_lane(LANE_BM25_STATS, || finalize_bm25_stats_if_any(store, config));
-    run_optional_lane(crate::scanner_lanes::LANE_LANCE_MAINTENANCE, || maintain_lance_if_open(store));
+    run_optional_lane(crate::scanner_lanes::LANE_LANCE_MAINTENANCE, || {
+        maintain_lance_if_open(store)
+    });
     Ok(report)
 }
 
@@ -857,7 +859,9 @@ pub fn scan_paths_with_observer(
         store.flush()?;
     }
     run_optional_lane(LANE_BM25_STATS, || finalize_bm25_stats_if_any(store, config));
-    run_optional_lane(crate::scanner_lanes::LANE_LANCE_MAINTENANCE, || maintain_lance_if_open(store));
+    run_optional_lane(crate::scanner_lanes::LANE_LANCE_MAINTENANCE, || {
+        maintain_lance_if_open(store)
+    });
     Ok(report)
 }
 

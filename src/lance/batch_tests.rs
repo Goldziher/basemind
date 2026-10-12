@@ -65,7 +65,13 @@ fn replace_documents_many_commits_once_per_batch_and_replaces_rows() {
     let store = LanceStore::open(dir.path(), 4, "test").unwrap();
     let base = versions(&store, DOCUMENTS_TABLE);
     let items = (0..50)
-        .map(|i| ("s".to_string(), format!("d{i}.md"), doc_rows("s", &format!("d{i}.md"), 3, "v1")))
+        .map(|i| {
+            (
+                "s".to_string(),
+                format!("d{i}.md"),
+                doc_rows("s", &format!("d{i}.md"), 3, "v1"),
+            )
+        })
         .collect();
     store.replace_documents_many(items).unwrap();
     // First batch on an empty table: append only (the delete is skipped).
@@ -74,7 +80,13 @@ fn replace_documents_many_commits_once_per_batch_and_replaces_rows() {
 
     // Rewrite 10 docs with 1 chunk each, and drop one doc (no rows): one delete + one append.
     let mut items: Vec<_> = (0..10)
-        .map(|i| ("s".to_string(), format!("d{i}.md"), doc_rows("s", &format!("d{i}.md"), 1, "v2")))
+        .map(|i| {
+            (
+                "s".to_string(),
+                format!("d{i}.md"),
+                doc_rows("s", &format!("d{i}.md"), 1, "v2"),
+            )
+        })
         .collect();
     items.push(("s".to_string(), "d49.md".to_string(), Vec::new()));
     store.replace_documents_many(items).unwrap();
@@ -92,7 +104,11 @@ fn maintain_prunes_old_versions_and_keeps_rows() {
     let store = LanceStore::open(dir.path(), 4, "test").unwrap();
     for i in 0..12 {
         store
-            .replace_documents_many(vec![("s".into(), format!("d{i}.md"), doc_rows("s", &format!("d{i}.md"), 2, "v"))])
+            .replace_documents_many(vec![(
+                "s".into(),
+                format!("d{i}.md"),
+                doc_rows("s", &format!("d{i}.md"), 2, "v"),
+            )])
             .unwrap();
     }
     assert!(versions(&store, DOCUMENTS_TABLE) >= 12);
@@ -108,7 +124,11 @@ fn incremental_writes_keep_versions_bounded() {
     let store = LanceStore::open(dir.path(), 4, "test").unwrap();
     for i in 0..(AUTO_PRUNE_EVERY as usize * 3) {
         store
-            .replace_documents_many(vec![("s".into(), "d.md".into(), doc_rows("s", "d.md", 1, &format!("g{i}")))])
+            .replace_documents_many(vec![(
+                "s".into(),
+                "d.md".into(),
+                doc_rows("s", "d.md", 1, &format!("g{i}")),
+            )])
             .unwrap();
     }
     assert_eq!(count(&store, DOCUMENTS_TABLE, "path = 'd.md'"), 1);
@@ -154,7 +174,9 @@ fn bench_per_document_vs_batched() {
             store.maintain(Duration::ZERO).unwrap();
         } else {
             for d in 0..DOCS {
-                store.replace_document("s", &format!("d{d:05}.md"), all_rows(d)).unwrap();
+                store
+                    .replace_document("s", &format!("d{d:05}.md"), all_rows(d))
+                    .unwrap();
             }
         }
         println!(

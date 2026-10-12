@@ -18,8 +18,8 @@ use super::helpers_git_show::{budget_commits, commit_to_hit, resolve_body_chars,
 use super::mode::{GitMode, reject_unsupported};
 use super::types::{
     CommitView, CommitsTouchingParams, CommitsTouchingResponse, FindCommitsByPathParams, FindCommitsByPathResponse,
-    HotFileEntry, HotFilesParams, HotFilesResponse, RecentChangesParams, RecentChangesResponse,
-    SearchGitHistoryParams, SearchGitHistoryResponse, WorkingTreeStatusView,
+    HotFileEntry, HotFilesParams, HotFilesResponse, RecentChangesParams, RecentChangesResponse, SearchGitHistoryParams,
+    SearchGitHistoryResponse, WorkingTreeStatusView,
 };
 use super::types_git::GitParams;
 use crate::git::CommitInfo;
