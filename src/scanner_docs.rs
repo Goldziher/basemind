@@ -627,7 +627,7 @@ pub(crate) fn flush_document_batches(store: &mut Store, batches: Vec<PendingDocB
     // One delete+append commit pair per BATCH_MAX_DOCS documents instead of per document (#76);
     // rows are still built one document at a time, so peak RAM is one batch's rows.
     let mut pending: PendingBatch<DocumentRow> = PendingBatch::default();
-    let mut flush = |pending: &mut PendingBatch<DocumentRow>, inserted: &mut usize| {
+    let flush = |pending: &mut PendingBatch<DocumentRow>, inserted: &mut usize| {
         let items = pending.take();
         let docs = items.len();
         match lance.replace_documents_many(items) {
