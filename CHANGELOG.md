@@ -10,6 +10,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Text documents rejected by xberg are indexed as plain text instead of failing** ([#78](https://github.com/Goldziher/basemind/issues/78)).
+  A monorepo scan lost 489 documents to extractor verdicts on readable text: Helm `templates/*.yaml`
+  (Go templates, `Failed to parse YAML`), CSVs past the table-cell limit and SVG/YAML files with an
+  oversized entity. When xberg fails with a parse or security-limit error on a text-like format, the file
+  is re-read as `text/plain` through the linear chunker under the same extraction budget. These count as
+  `docs_degraded` and, separately, as the new `docs_text_fallback` (scan summary, `rescan`, daemon
+  `Rescanned` reply and MCP `rescan`; additive, defaults to 0). Binary formats, corrupt PDFs, IO errors and
+  timeouts stay failures.
+
 ### Changed
 
 - **Linear-chunker cutovers raised, measured on a release build with xberg 1.3.8.**
