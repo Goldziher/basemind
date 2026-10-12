@@ -162,6 +162,11 @@ pub struct ScanStats {
     /// Subset of `docs_indexed` chunked by the linear fallback instead of xberg's markdown splitter
     /// because the file exceeded `[documents] markdown_chunk_max_bytes` / `plain_text_chunk_max_bytes`.
     pub docs_degraded: usize,
+    /// Subset of `docs_degraded` (and of `docs_indexed`): xberg's structured extractor failed with a
+    /// parse or security-limit error on a text-like file (a Helm template named `.yaml`, a CSV over the
+    /// table-cell limit, an SVG with an oversized entity) and the file was re-read as `text/plain`
+    /// through the linear chunker. Distinct from `doc_timeouts` and `extract_failed`.
+    pub docs_text_fallback: usize,
     /// Documents abandoned because extraction overran `[documents] extraction_timeout_secs` (also
     /// counted in `extract_failed`). Each is tombstoned, so it is retried only once the file or the
     /// extraction limits change.
@@ -292,6 +297,9 @@ pub enum FileStatus {
         reused: bool,
         /// True when the linear fallback chunker produced the chunks (drives `docs_degraded`).
         degraded: bool,
+        /// True when structured extraction failed and the file was re-read as `text/plain` (drives
+        /// `docs_text_fallback`; implies `degraded`).
+        text_fallback: bool,
     },
     /// Subset of ExtractFailed: document extraction overran `[documents] extraction_timeout_secs`
     /// and was abandoned.

@@ -42,6 +42,7 @@ impl Broker {
                 updated: stats.updated,
                 docs_indexed: stats.docs_indexed,
                 docs_degraded: stats.docs_degraded,
+                docs_text_fallback: stats.docs_text_fallback,
                 doc_timeouts: stats.doc_timeouts,
                 removed: stats.removed,
                 elapsed_ms: started.elapsed().as_millis() as u64,

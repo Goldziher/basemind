@@ -722,6 +722,13 @@ fn cmd_rescan(root: &std::path::Path, args: &RescanArgs, verbosity: Verbosity, n
                 report.docs_degraded, report.doc_timeouts
             );
         }
+        if report.docs_text_fallback > 0 {
+            let _ = writeln!(
+                out,
+                "docs_text_fallback {} (of docs_degraded: read as plain text after a structured-extraction failure)",
+                report.docs_text_fallback
+            );
+        }
         return Ok(());
     }
     let cancel = basemind::cli::interrupt::install();

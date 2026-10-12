@@ -525,6 +525,10 @@ pub enum CommsResponse {
         /// with `#[serde(default)]`, like `docs_indexed`: an older peer omits it and it decodes as 0.
         #[serde(default)]
         docs_degraded: usize,
+        /// Subset of `docs_degraded` re-read as `text/plain` after a structured-extraction failure.
+        /// Additive with `#[serde(default)]` like its siblings.
+        #[serde(default)]
+        docs_text_fallback: usize,
         /// Documents abandoned because extraction overran `[documents] extraction_timeout_secs`.
         /// Additive with `#[serde(default)]`; an older peer omits it and it decodes as 0.
         #[serde(default)]
@@ -723,6 +727,7 @@ mod tests {
             CommsResponse::Rescanned {
                 docs_indexed: 1,
                 docs_degraded: 0,
+                docs_text_fallback: 0,
                 doc_timeouts: 0,
                 ..
             }
@@ -732,6 +737,7 @@ mod tests {
             updated: 2,
             docs_indexed: 1,
             docs_degraded: 4,
+            docs_text_fallback: 2,
             doc_timeouts: 5,
             removed: 0,
             elapsed_ms: 7,
