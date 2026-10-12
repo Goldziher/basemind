@@ -155,9 +155,28 @@ const STACKGRAPH_BUDGET: std::time::Duration = std::time::Duration::from_secs(3)
 /// process from ~2 GB to >11 GB on a large monorepo. Legitimate files stay orders of magnitude below.
 const MAX_PARTIAL_PATHS: usize = 50_000;
 
-/// Cap on stitcher/builder steps per file. A 5 s wall-clock budget alone let four parallel workers
-/// each reach several GB (measured: 2 GB -> 13 GB in one 5 s sample) on files of only 3-12 KB.
+/// Cap on graph-builder steps (one per executed `.tsg` statement / evaluated value) per file. A 5 s
+/// wall-clock budget alone let four parallel workers each reach several GB on files of only 3-12 KB.
 const MAX_STEPS: usize = 600_000;
+
+/// Upper bound on the extension work (candidate paths appended) one stitching phase performs before
+/// it yields to the cancellation check. This is the bound that actually limits memory. The vendored
+/// stitcher polls its cancellation flag once per *phase*, and a phase used to extend every path of
+/// the previous one without limit, so on a file whose path frontier multiplies each level one phase
+/// could allocate gigabytes between two polls: [`MAX_STEPS`] and [`MAX_PARTIAL_PATHS`] were only ever
+/// compared at those boundaries and never got the chance to trip. Unfinished work stays queued for
+/// the next phase, so the paths found are unchanged. Small enough that one phase is ~100 KB of
+/// transient state, large enough that the poll cost is noise.
+const STITCH_PHASE_WORK: usize = 256;
+
+/// Stitching phases one file may run (both passes together) before resolution is abandoned. With
+/// [`STITCH_PHASE_WORK`] this caps the extension work per file at about one million candidate
+/// paths, which bounds the per-file arenas to the hundreds of MB rather than the unbounded growth
+/// seen before. A file that hits it degrades to the tree-sitter `locals` fallback.
+const MAX_STITCH_PHASES: usize = 4_096;
+
+/// The `at` label the vendored stitcher passes to its cancellation flag once per phase.
+const STITCH_PHASE_CHECK: &str = "finding complete partial paths";
 
 /// Stack-graph builds that may run at once. Large legitimate files (100-200 KB of Python) each hold
 /// ~1-2 GB while stitching, so every scan worker resolving in parallel put the process at 9-13 GB;
@@ -202,8 +221,10 @@ struct Deadline {
     start: std::time::Instant,
     /// Partial paths produced so far across the stitcher passes; see [`MAX_PARTIAL_PATHS`].
     paths: std::sync::atomic::AtomicUsize,
-    /// Cancellation checks so far — one per stitcher/builder step, the closest proxy for allocation.
+    /// Graph-builder cancellation checks so far — one per executed statement.
     steps: std::sync::atomic::AtomicUsize,
+    /// Stitching phases started so far; see [`MAX_STITCH_PHASES`].
+    phases: std::sync::atomic::AtomicUsize,
 }
 
 impl Deadline {
@@ -213,6 +234,7 @@ impl Deadline {
             start: std::time::Instant::now(),
             paths: std::sync::atomic::AtomicUsize::new(0),
             steps: std::sync::atomic::AtomicUsize::new(0),
+            phases: std::sync::atomic::AtomicUsize::new(0),
         }
     }
     /// Count one produced path; the stitchers keep every path in an arena, so this is the memory
@@ -220,17 +242,34 @@ impl Deadline {
     fn note_path(&self) {
         self.paths.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
-    fn expired(&self) -> bool {
-        let steps = self.steps.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        steps > MAX_STEPS
-            || self.paths.load(std::sync::atomic::Ordering::Relaxed) > MAX_PARTIAL_PATHS
-            || self.start.elapsed() > self.limit
+    /// True once a budget is spent. `stitching` selects which counter this poll advances: the
+    /// vendored stitcher polls once per phase, the graph builder once per statement.
+    fn expired(&self, stitching: bool) -> bool {
+        use std::sync::atomic::Ordering::Relaxed;
+        let over_count = if stitching {
+            self.phases.fetch_add(1, Relaxed) > MAX_STITCH_PHASES
+        } else {
+            self.steps.fetch_add(1, Relaxed) > MAX_STEPS
+        };
+        over_count || self.paths.load(Relaxed) > MAX_PARTIAL_PATHS || self.start.elapsed() > self.limit
+    }
+
+    /// Counters for the debug log, so a file that tripped a budget can be told from one that did not.
+    fn summary(&self) -> String {
+        use std::sync::atomic::Ordering::Relaxed;
+        format!(
+            "steps={} phases={} paths={} elapsed_ms={}",
+            self.steps.load(Relaxed),
+            self.phases.load(Relaxed),
+            self.paths.load(Relaxed),
+            self.start.elapsed().as_millis()
+        )
     }
 }
 
 impl stack_graphs::CancellationFlag for Deadline {
     fn check(&self, at: &'static str) -> Result<(), stack_graphs::CancellationError> {
-        if self.expired() {
+        if self.expired(at == STITCH_PHASE_CHECK) {
             return Err(stack_graphs::CancellationError(at));
         }
         Ok(())
@@ -239,11 +278,17 @@ impl stack_graphs::CancellationFlag for Deadline {
 
 impl tree_sitter_stack_graphs::CancellationFlag for Deadline {
     fn check(&self, at: &'static str) -> Result<(), tree_sitter_stack_graphs::CancellationError> {
-        if self.expired() {
+        if self.expired(false) {
             return Err(tree_sitter_stack_graphs::CancellationError(at));
         }
         Ok(())
     }
+}
+
+/// The stitcher configuration for both passes: default behaviour, with each phase's work bounded
+/// by [`STITCH_PHASE_WORK`] so the [`Deadline`] is polled often enough to enforce its budgets.
+fn stitcher_config() -> StitcherConfig {
+    StitcherConfig::default().with_max_work_per_phase(STITCH_PHASE_WORK)
 }
 
 /// Build the stack graph for `src` and stitch reference→definition partial paths, keeping only
@@ -265,14 +310,14 @@ fn resolve_intra(engine: &LangEngine, lang: LangId, src: &str) -> Result<Vec<Res
         &graph,
         &mut partials,
         file,
-        StitcherConfig::default(),
+        stitcher_config(),
         &deadline,
         |g, ps, path| {
             deadline.note_path();
             db.add_partial_path(g, ps, path.clone());
         },
     )
-    .map_err(|_| "find_minimal_partial_path_set_in_file cancelled".to_string())?;
+    .map_err(|_| format!("find_minimal_partial_path_set_in_file cancelled ({})", deadline.summary()))?;
 
     let references: Vec<Handle<Node>> = graph.iter_nodes().filter(|h| graph[*h].is_reference()).collect();
 
@@ -281,7 +326,7 @@ fn resolve_intra(engine: &LangEngine, lang: LangId, src: &str) -> Result<Vec<Res
     ForwardPartialPathStitcher::find_all_complete_partial_paths(
         &mut DatabaseCandidates::new(&graph, &mut partials, &mut db),
         references,
-        StitcherConfig::default(),
+        stitcher_config(),
         &deadline,
         |g, _ps, path| {
             deadline.note_path();
@@ -306,13 +351,12 @@ fn resolve_intra(engine: &LangEngine, lang: LangId, src: &str) -> Result<Vec<Res
             }
         },
     )
-    .map_err(|_| "find_all_complete_partial_paths cancelled".to_string())?;
+    .map_err(|_| format!("find_all_complete_partial_paths cancelled ({})", deadline.summary()))?;
 
     tracing::debug!(
         lang,
         bytes = src.len(),
-        steps = deadline.steps.load(std::sync::atomic::Ordering::Relaxed),
-        paths = deadline.paths.load(std::sync::atomic::Ordering::Relaxed),
+        budget = %deadline.summary(),
         "stackgraph: resolved"
     );
     Ok(edges)
@@ -717,6 +761,75 @@ mod tests {
                 edge.def_start, local_greet_def,
                 "`Foo.greet()` must not conflate with the local `greet` method"
             );
+        }
+    }
+
+    #[test]
+    fn stitch_polls_are_counted_apart_from_builder_steps() {
+        let deadline = Deadline::start(std::time::Duration::from_secs(3600));
+        for _ in 0..MAX_STITCH_PHASES {
+            assert!(
+                stack_graphs::CancellationFlag::check(&deadline, STITCH_PHASE_CHECK).is_ok(),
+                "phases within the budget must not cancel"
+            );
+        }
+        assert_eq!(
+            deadline.steps.load(std::sync::atomic::Ordering::Relaxed),
+            0,
+            "stitcher polls must not spend the graph-builder step budget"
+        );
+        assert!(
+            tree_sitter_stack_graphs::CancellationFlag::check(&deadline, "executing statement").is_ok(),
+            "the builder budget is untouched by stitching"
+        );
+        let mut cancelled = false;
+        for _ in 0..8 {
+            cancelled |= stack_graphs::CancellationFlag::check(&deadline, STITCH_PHASE_CHECK).is_err();
+        }
+        assert!(cancelled, "polling past MAX_STITCH_PHASES must cancel");
+    }
+
+    #[test]
+    fn stitcher_phases_are_work_bounded() {
+        assert_eq!(stitcher_config().max_work_per_phase(), STITCH_PHASE_WORK);
+        assert!(
+            STITCH_PHASE_WORK.saturating_mul(MAX_STITCH_PHASES) < 4_000_000,
+            "the per-file extension budget is the memory bound; keep it in the low millions"
+        );
+    }
+
+    /// Enough references that the stitcher needs many bounded phases: the edges must still all be
+    /// found, because bounding a phase defers work and never drops it.
+    #[test]
+    fn many_references_still_resolve_across_bounded_phases() {
+        if skip_if_no_grammar("python") {
+            return;
+        }
+        let mut src = String::new();
+        for i in 0..120 {
+            src.push_str(&format!("def f{i}(a):\n    return a\n\n"));
+        }
+        src.push_str("def main():\n");
+        for i in 0..120 {
+            src.push_str(&format!("    v{i} = f{i}({i})\n"));
+        }
+        let Some(refs) = resolve_stackgraph("python", src.as_bytes()) else {
+            eprintln!("skip: python stack-graph engine unavailable");
+            return;
+        };
+        if refs.intra.is_empty() {
+            eprintln!("skip: no intra edges in this env");
+            return;
+        }
+        for i in 0..120 {
+            let def = src.find(&format!("def f{i}(")).unwrap() as u32 + "def ".len() as u32;
+            let call = src.find(&format!("= f{i}(")).unwrap() as u32 + "= ".len() as u32;
+            let edge = refs
+                .intra
+                .iter()
+                .find(|e| e.use_start == call)
+                .unwrap_or_else(|| panic!("the call to f{i} must resolve"));
+            assert_eq!(edge.def_start, def, "f{i} must resolve to its own definition");
         }
     }
 }

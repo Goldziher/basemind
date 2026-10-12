@@ -571,8 +571,9 @@ pub fn scan_with_observer(
         advance(&mut breadcrumb, PHASE_RESOLVE, None);
         let precise = config.code_intel.precise_resolution;
         run_optional_lane(LANE_RESOLVE, || {
-            scanner_pool(config.resources.scan_threads)
-                .install(|| crate::intel::resolve_pass::resolve_pass(root, store, precise));
+            scanner_pool(config.resources.scan_threads).install(|| {
+                crate::intel::resolve_pass::resolve_pass(root, store, precise, config.resources.max_footprint_mb)
+            });
         });
     }
 
@@ -820,8 +821,15 @@ pub fn scan_paths_with_observer(
 
     let precise = config.code_intel.precise_resolution;
     run_optional_lane(LANE_RESOLVE, || {
-        scanner_pool(config.resources.scan_threads)
-            .install(|| crate::intel::resolve_pass::resolve_pass_incremental(root, store, &rels, precise));
+        scanner_pool(config.resources.scan_threads).install(|| {
+            crate::intel::resolve_pass::resolve_pass_incremental(
+                root,
+                store,
+                &rels,
+                precise,
+                config.resources.max_footprint_mb,
+            )
+        });
     });
 
     run_optional_lane(LANE_DOC_BATCHES, || {

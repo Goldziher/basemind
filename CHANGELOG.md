@@ -27,6 +27,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   budget, a warning is logged, `cache_stats.last_gc` reports `over_budget` with the new
   `protected_workspaces` list, and `basemind doctor` gains a `cache` row that warns about it. Raise
   `BASEMIND_CACHE_BUDGET_MB` to clear the warning.
+- **Code-only scans no longer peak above 12 GB in the resolve phase** ([#77](https://github.com/Goldziher/basemind/issues/77)).
+  The vendored stack-graphs stitcher polled its cancellation flag once per phase, and a phase extended
+  every path of the previous one without limit, so the per-file step and path budgets were only compared
+  between phases and a pathological Python or Java file could allocate gigabytes before they were ever
+  consulted. A phase now performs at most 256 path extensions before the budgets are checked (unfinished
+  work stays queued, so the paths found are unchanged), the stitcher has its own budget of 4,096 phases,
+  and the resolve pass waits at the `max_footprint_mb` gate between chunks as the extraction phase does.
+  A file that exhausts a budget still falls back to tree-sitter locals binding. `RUST_LOG=basemind=debug`
+  logs each file's `steps`/`phases`/`paths` counters.
+- **Short memory spikes are now visible in the scan log** ([#77](https://github.com/Goldziher/basemind/issues/77)).
+  The footprint is sampled every 200 ms instead of once per 5 s line; each `memory` line adds
+  `window_peak_mb` and `process_peak_rss_mb`, and a gibibyte jump over anything already logged writes a
+  `spike=true` line immediately.
 
 ### Changed
 
