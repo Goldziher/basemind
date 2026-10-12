@@ -95,6 +95,11 @@ pub struct FileMapDoc {
     /// splitter (large text-like files; see [`super::doc_guard`]). Tail field, absent in older blobs.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub linear_chunked: bool,
+    /// True when xberg's structured extractor rejected the file (parse error or security limit) and
+    /// it was re-read as `text/plain` instead; implies `linear_chunked`. Tail field, absent in older
+    /// blobs.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub text_fallback: bool,
 }
 
 /// Stable mirror of xberg's per-language confidence metadata.
@@ -479,42 +484,20 @@ fn extraction_runtime() -> Result<&'static tokio::runtime::Runtime, ExtractError
     .map_err(|message| ExtractError::Document(message.clone()))
 }
 
-/// Run xberg against `path` and translate the result into a `FileMapDoc`.
-///
-/// `mime_type` may be supplied by the caller (e.g. from `lang::detect`); when
-/// `None`, xberg sniffs the file content.
-pub fn extract_doc(path: &Path, mime_type: Option<&str>, config: &DocConfig) -> Result<FileMapDoc, ExtractError> {
-    let mut krz_config = config.to_xberg();
-    let file_len = std::fs::metadata(path).map_or(0, |m| m.len());
-    let linear = doc_guard::prefers_linear_chunking(mime_type.unwrap_or(""), file_len, config.chunk_cutovers);
-    if linear {
-        tracing::info!(
-            path = %path.display(),
-            bytes = file_len,
-            "large text document: using linear chunking instead of the markdown splitter"
-        );
-        krz_config.chunking = None;
-    }
+/// One guarded xberg call. It runs on its own thread under the wall-clock budget, so the text/plain
+/// retry in [`extract_doc`] is bounded exactly like the first attempt.
+fn run_guarded(
+    path: &Path,
+    mime_type: Option<&str>,
+    krz_config: ExtractionConfig,
+    config: &DocConfig,
+) -> Result<xberg::Result<xberg::ExtractionResult>, ExtractError> {
     let mut input = ExtractInput::from_uri(path.to_string_lossy().into_owned());
     input.mime_type = mime_type.map(str::to_string);
-    if let Some(phase) = &config.phase {
-        phase.admit().map_err(|spent| {
-            tracing::warn!(
-                path = %path.display(),
-                elapsed_secs = spent.elapsed.as_secs(),
-                budget_secs = spent.budget.as_secs(),
-                "document-phase budget spent ([documents] phase_budget_secs); deferring the document to the next scan"
-            );
-            ExtractError::DocDeferred(format!(
-                "the {}s document-phase budget ([documents] phase_budget_secs) is spent",
-                spent.budget.as_secs()
-            ))
-        })?;
-    }
     let runtime = extraction_runtime()?;
     let budget = std::time::Duration::from_secs(config.extraction_timeout_secs);
     let ledger = doc_guard::AbandonedThreads::global();
-    let outcome = doc_guard::run_with_deadline(ledger, config.max_abandoned_extractions, budget, move || {
+    doc_guard::run_with_deadline(ledger, config.max_abandoned_extractions, budget, move || {
         runtime.block_on(extract(input, &krz_config))
     })
     .map_err(|error| match error {
@@ -541,7 +524,64 @@ pub fn extract_doc(path: &Path, mime_type: Option<&str>, config: &DocConfig) -> 
             ))
         }
         DeadlineError::Failed(message) => ExtractError::Document(message),
-    })?;
+    })
+}
+
+/// Run xberg against `path` and translate the result into a `FileMapDoc`.
+///
+/// `mime_type` may be supplied by the caller (e.g. from `lang::detect`); when
+/// `None`, xberg sniffs the file content.
+pub fn extract_doc(path: &Path, mime_type: Option<&str>, config: &DocConfig) -> Result<FileMapDoc, ExtractError> {
+    let mut krz_config = config.to_xberg();
+    let file_len = std::fs::metadata(path).map_or(0, |m| m.len());
+    let linear = doc_guard::prefers_linear_chunking(mime_type.unwrap_or(""), file_len, config.chunk_cutovers);
+    if linear {
+        tracing::info!(
+            path = %path.display(),
+            bytes = file_len,
+            "large text document: using linear chunking instead of the markdown splitter"
+        );
+        krz_config.chunking = None;
+    }
+    if let Some(phase) = &config.phase {
+        phase.admit().map_err(|spent| {
+            tracing::warn!(
+                path = %path.display(),
+                elapsed_secs = spent.elapsed.as_secs(),
+                budget_secs = spent.budget.as_secs(),
+                "document-phase budget spent ([documents] phase_budget_secs); deferring the document to the next scan"
+            );
+            ExtractError::DocDeferred(format!(
+                "the {}s document-phase budget ([documents] phase_budget_secs) is spent",
+                spent.budget.as_secs()
+            ))
+        })?;
+    }
+    let mut outcome = run_guarded(path, mime_type, krz_config.clone(), config)?;
+    let mut text_fallback = false;
+    if let Err(error) = &outcome
+        && super::doc_fallback::should_retry_as_text(mime_type, error)
+    {
+        tracing::warn!(
+            path = %path.display(),
+            mime = mime_type.unwrap_or(""),
+            error = %error,
+            "structured document extraction failed; retrying as text/plain with linear chunking"
+        );
+        krz_config.chunking = None;
+        match run_guarded(path, Some("text/plain"), krz_config, config)? {
+            Ok(result) => {
+                outcome = Ok(result);
+                text_fallback = true;
+            }
+            Err(retry_error) => tracing::warn!(
+                path = %path.display(),
+                error = %retry_error,
+                "text/plain retry also failed; reporting the original error"
+            ),
+        }
+    }
+    let linear = linear || text_fallback;
     let mut extraction = outcome.map_err(|e| ExtractError::Document(e.to_string()))?;
     let result = extraction.results.pop().ok_or_else(|| {
         let message = extraction
@@ -675,6 +715,7 @@ pub fn extract_doc(path: &Path, mime_type: Option<&str>, config: &DocConfig) -> 
         summary,
         language_confidences,
         linear_chunked: linear,
+        text_fallback,
     })
 }
 

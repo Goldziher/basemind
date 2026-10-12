@@ -557,6 +557,7 @@ fn process_doc(
                 embedding_dim: batch.embedding_dim,
                 reused: batch.reused,
                 degraded: batch.degraded,
+                text_fallback: batch.text_fallback,
             };
             let doc_entry = crate::store::DocEntry {
                 hash_hex: hash_hex.to_string(),

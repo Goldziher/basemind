@@ -139,6 +139,13 @@ pub fn render_summary(w: &mut AutoStream<std::io::Stdout>, stats: &ScanStats, ve
             timeouts = pair("doc_timeouts", stats.doc_timeouts, style_fail),
         );
     }
+    if stats.docs_text_fallback > 0 {
+        let _ = writeln!(
+            w,
+            "{fallback} (of docs_degraded: structured extraction failed, so the file was read as plain text)",
+            fallback = pair("docs_text_fallback", stats.docs_text_fallback, style_warn),
+        );
+    }
     if stats.docs_tombstoned > 0 || stats.docs_deferred > 0 || stats.abandoned_extractions > 0 {
         let _ = writeln!(
             w,
@@ -467,12 +474,15 @@ fn row_for(res: &FileResult, verbosity: Verbosity) -> Option<Row<'_>> {
             embedding_dim,
             reused,
             degraded,
+            text_fallback,
         } => {
             if v == Verbosity::Quiet {
                 None
             } else {
                 let cached = if *reused { ", cached" } else { "" };
-                let cached = if *degraded {
+                let cached = if *text_fallback {
+                    format!("{cached}, read as plain text after a parse failure")
+                } else if *degraded {
                     format!("{cached}, linear chunking")
                 } else {
                     cached.to_string()

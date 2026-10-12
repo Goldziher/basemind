@@ -85,6 +85,9 @@ pub(crate) struct PendingDocBatch {
     /// True when the document was chunked by the linear fallback instead of xberg's markdown splitter
     /// (large text-like file). Drives the `docs_degraded` scan counter.
     pub degraded: bool,
+    /// True when structured extraction failed and the file was re-read as `text/plain` (implies
+    /// `degraded`). Drives the `docs_text_fallback` scan counter.
+    pub text_fallback: bool,
 }
 
 /// Look the configured embedding preset up in xberg's preset table and
@@ -424,6 +427,7 @@ fn pending_from_doc(
         embed_attempted: embed && !reused,
         reused,
         degraded: doc.linear_chunked,
+        text_fallback: doc.text_fallback,
     }
 }
 
