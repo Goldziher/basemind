@@ -888,6 +888,8 @@ max_file_bytes = 52428800
 # 1024) are chunked by a linear fixed-size chunker instead and counted as `docs_degraded` in the scan summary.
 # PDFs / Office files are never affected. text/plain (.txt, .log) has no markup to exploit, so its
 # cutover is lower.
+# A text-like file that xberg rejects (Helm template named .yaml, huge CSV, SVG with a huge entity) is also read as
+# text/plain through this chunker and counted as `docs_text_fallback`.
 markdown_chunk_max_bytes = 1048576
 plain_text_chunk_max_bytes = 4194304
 # Wall-clock budget (seconds) for one document's extraction + chunking. A document that overruns is

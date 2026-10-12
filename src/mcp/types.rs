@@ -807,6 +807,9 @@ pub(super) struct RescanResponse {
     /// Documents chunked by the linear fallback instead of xberg's markdown splitter because they
     /// exceeded `[documents] markdown_chunk_max_bytes` / `plain_text_chunk_max_bytes`.
     pub docs_degraded: usize,
+    /// Subset of `docs_degraded`: structured extraction failed (parse error or security limit, e.g. a
+    /// Helm template as YAML or a CSV past the cell limit) and the file was re-read as `text/plain`.
+    pub docs_text_fallback: usize,
     /// Documents abandoned because extraction overran `[documents] extraction_timeout_secs`; retried
     /// on the next scan.
     pub doc_timeouts: usize,

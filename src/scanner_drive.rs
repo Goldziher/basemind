@@ -398,13 +398,21 @@ fn apply_outcomes(ctx: &mut DriveCtx<'_>, outcomes: Vec<FileResult>) {
                 ctx.stats.parse_timeouts += 1;
             }
             #[cfg(feature = "documents")]
-            FileStatus::DocIndexed { reused, degraded, .. } => {
+            FileStatus::DocIndexed {
+                reused,
+                degraded,
+                text_fallback,
+                ..
+            } => {
                 ctx.stats.docs_indexed += 1;
                 if *reused {
                     ctx.stats.reused_doc_extraction += 1;
                 }
                 if *degraded {
                     ctx.stats.docs_degraded += 1;
+                }
+                if *text_fallback {
+                    ctx.stats.docs_text_fallback += 1;
                 }
                 ctx.store.remove_doc_tombstone(&o.path);
             }
