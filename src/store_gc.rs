@@ -150,6 +150,10 @@ pub struct GcReport {
     /// Workspaces skipped by budget enforcement because they were locked.
     #[serde(default)]
     pub locked_workspaces_skipped: usize,
+    /// Workspaces budget enforcement refused to evict (locked, most recently used, or inside the
+    /// post-build grace window) while the cache stayed over budget.
+    #[serde(default)]
+    pub protected_workspaces: Vec<crate::store_gc_protect::ProtectedWorkspace>,
 }
 
 /// Enumerate every view's `index.msgpack` and union the hex content hashes it references.
@@ -382,6 +386,7 @@ pub fn reap_gc_and_enforce_budget() -> Result<GcReport, GcError> {
         report.cache_bytes_after = Some(evicted.total_bytes_after);
         report.hot_workspaces_evicted = evicted.hot_evicted;
         report.locked_workspaces_skipped = evicted.locked_skipped;
+        report.protected_workspaces = evicted.protected;
         if evicted.evicted > 0 {
             report.workspaces_evicted = evicted.evicted;
             report.evicted_bytes_freed = evicted.bytes_freed;
