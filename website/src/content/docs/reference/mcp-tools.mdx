@@ -74,7 +74,12 @@ index for microsecond latency.
 | `blame` | Who last changed each line of a file. | per-line |
 | `blame_symbol` | Who last changed one symbol, resolved to its line span. | per-symbol |
 | `symbol_history` | When a symbol's body actually changed, by structural hash. | commit walk |
-| `search` | Full-text search over commit messages and authors, at full branch depth. | branch depth |
+| `search` | Full-text search over commit messages and authors, at full branch depth. Each hit's body is cut at `body_chars` (default 1000). | branch depth |
+| `show` | One commit by `sha` or revision with its full, untruncated message and changed files. | — |
+
+The commit-list modes (`recent`, `touching`, `by_path`, `search`) hold their output to `max_tokens`
+(default 20000): overflow is dropped, `budgeted: true` is set and `next_cursor` resumes at the first
+dropped commit.
 
 See [Git Intelligence](/capabilities/git-intelligence/) for examples.
 
@@ -109,7 +114,7 @@ Refresh the index, inspect health and cache footprint, and shrink what an agent 
 |---|---|
 | `status` | Index health for this workspace: file counts, languages, scan age. |
 | `repo` | Repository identity: workdir, branch, HEAD sha. |
-| `rescan` | Re-index changed files, or the whole workspace when no paths are given. |
+| `rescan` | Re-index changed files, or the whole workspace when no paths are given. The result carries `docs_indexed` plus the document-guard counters `docs_degraded` (large text documents chunked by the linear fallback), `docs_text_fallback` (the subset re-read as plain text after xberg rejected a text-like file), and `doc_timeouts` (documents abandoned past `extraction_timeout_secs`). |
 | `cache_stats` | On-disk size, blob accounting (tier-aware orphan count, `last_gc`) and process RAM for the machine-global cache. |
 | `gc` | Report blobs no live view references — non-destructive, deletes nothing. To reclaim them, run `basemind cache gc`, which performs the cross-workspace reference-counted sweep. |
 | `cache_clear` | Delete one cache component (`component`). `blobs` needs `confirm`; `views` and `all` back the live index and are refused over MCP (use `basemind cache clear --yes`). |

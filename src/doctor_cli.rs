@@ -50,6 +50,7 @@ pub(crate) fn cmd_doctor(root: &Path, json_out: bool) -> Result<()> {
     checks.push(check_grammars());
     checks.push(check_hook(root));
     checks.push(check_daemon());
+    checks.push(check_cache_budget());
 
     let failed = checks.iter().any(|c| c.level == Level::Fail);
     if json_out {
@@ -138,6 +139,43 @@ fn check_hook(root: &Path) -> Check {
             "pre-commit hook not installed (optional: `basemind hook install`)",
         ),
         Err(_) => Check::new("hook", Level::Ok, "not a git repository"),
+    }
+}
+
+/// Surfaces a cache that is knowingly over budget because the budget pass refused to evict an
+/// in-use workspace (see `basemind::store_gc_protect`). Reads only the persisted `gc-state.json`.
+fn check_cache_budget() -> Check {
+    use basemind::store_gc::{GcStatus, read_gc_state};
+    match read_gc_state() {
+        Some(state) if state.status == GcStatus::OverBudget => {
+            let kept: Vec<String> = state
+                .protected_workspaces
+                .iter()
+                .map(|ws| {
+                    format!(
+                        "{} ({} bytes, {:?})",
+                        ws.root.as_deref().unwrap_or(&ws.key),
+                        ws.bytes,
+                        ws.reason
+                    )
+                })
+                .collect();
+            Check::new(
+                "cache",
+                Level::Warn,
+                format!(
+                    "over the {} byte budget; kept in-use workspaces: {}. Raise BASEMIND_CACHE_BUDGET_MB",
+                    state.cache_budget_bytes.unwrap_or(0),
+                    if kept.is_empty() {
+                        "none recorded".to_owned()
+                    } else {
+                        kept.join(", ")
+                    }
+                ),
+            )
+        }
+        Some(state) => Check::new("cache", Level::Ok, format!("last GC {:?}", state.status)),
+        None => Check::new("cache", Level::Ok, "no GC recorded yet"),
     }
 }
 

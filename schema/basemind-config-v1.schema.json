@@ -78,9 +78,11 @@
         "extension_denylist": [],
         "max_chunks_per_document": 2000,
         "max_pages": 500,
-        "extraction_timeout_secs": 600,
-        "markdown_chunk_max_bytes": 262144,
-        "plain_text_chunk_max_bytes": 131072,
+        "extraction_timeout_secs": 120,
+        "phase_budget_secs": 1800,
+        "max_abandoned_extractions": 4,
+        "markdown_chunk_max_bytes": 1048576,
+        "plain_text_chunk_max_bytes": 4194304,
         "max_characters": 1000,
         "overlap": 200,
         "embedding_preset": "balanced",
@@ -479,25 +481,40 @@
           "default": 500
         },
         "extraction_timeout_secs": {
-          "description": "Maximum wall-clock time one document's extraction (including chunking) may take. Enforced by a\nwatchdog: a document that overruns is abandoned, skipped and counted as `doc_timeouts` in the scan\nsummary, so one pathological file cannot stall a scan.",
+          "description": "Maximum wall-clock time one document's extraction (including chunking) may take. Enforced by a\nwatchdog: a document that overruns is abandoned, skipped and counted as `doc_timeouts` in the scan\nsummary, so one pathological file cannot stall a scan. A timed-out document is remembered by\ncontent hash and not retried while it is unchanged and the extraction limits are unchanged;\nediting the file or changing this value (or the chunk cutovers or `max_pages`) retries it.",
           "type": "integer",
           "format": "uint64",
           "minimum": 1,
-          "default": 600
+          "default": 120
+        },
+        "phase_budget_secs": {
+          "description": "Wall-clock budget for the whole document phase of one scan, started at the first document that\nneeds a real extraction. Once spent, the remaining documents are deferred (counted as\n`docs_deferred`, not failed) and picked up by the next scan, so several documents timing out\ntogether cost this budget rather than `extraction_timeout_secs` each. Documents already running\nfinish or hit their own timeout, so a scan can overshoot by up to one `extraction_timeout_secs`. Never\nless than `extraction_timeout_secs` in effect.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 1,
+          "default": 1800
+        },
+        "max_abandoned_extractions": {
+          "description": "Cap on timed-out extraction threads still running. A timed-out extraction cannot be cancelled\nand keeps a core busy until it finishes on its own; at the cap, further documents are deferred\n(counted as `docs_deferred`) instead of spawning another thread, and picked up by a later scan.\nA soft bound: extractions already in flight when it is reached may still time out.",
+          "type": "integer",
+          "format": "uint",
+          "minimum": 1,
+          "maximum": 64,
+          "default": 4
         },
         "markdown_chunk_max_bytes": {
           "description": "Largest text-like document (markdown, csv, json, yaml, xml, toml, ini, ...) in bytes still chunked\nwith xberg's structure-aware markdown splitter. The splitter re-scans every remaining element\nper chunk, so its cost grows with the square of the document: a multi-megabyte file can stall a\nscan worker for minutes. Larger files are chunked by a linear fixed-size chunker instead (counted\nas `docs_degraded` in the scan summary). Never applies to binary formats (PDF, Office, ...).",
           "type": "integer",
           "format": "uint64",
           "minimum": 1024,
-          "default": 262144
+          "default": 1048576
         },
         "plain_text_chunk_max_bytes": {
           "description": "Like `markdown_chunk_max_bytes` but for plain text (`text/plain`: `.txt`, `.log`, ...), which has no\nmarkdown structure for the splitter to exploit, so the cutover is lower.",
           "type": "integer",
           "format": "uint64",
           "minimum": 1024,
-          "default": 131072
+          "default": 4194304
         },
         "max_characters": {
           "description": "Maximum chunk size in characters.",

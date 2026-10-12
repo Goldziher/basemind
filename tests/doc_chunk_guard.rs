@@ -55,17 +55,17 @@ fn offline_doc_config() -> DocConfig {
 fn pathological_text_file_completes_quickly_via_linear_chunking() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("syslog.txt");
-    let body = pathological_log(3 * 1024 * 1024);
+    let body = pathological_log(5 * 1024 * 1024);
     fs::write(&path, &body).unwrap();
 
     let started = Instant::now();
     let doc = extract_doc(&path, Some("text/plain"), &offline_doc_config()).expect("extract");
     let elapsed = started.elapsed();
 
-    assert!(doc.linear_chunked, "a 3 MB text file must bypass the markdown splitter");
+    assert!(doc.linear_chunked, "a 5 MB text file must bypass the markdown splitter");
     assert!(
         elapsed < Duration::from_secs(20),
-        "took {elapsed:?}; the splitter alone needs ~100 s"
+        "took {elapsed:?}; the quadratic splitter needed ~100 s"
     );
     assert!(doc.chunks.len() > 1000);
     for chunk in &doc.chunks {
@@ -153,7 +153,7 @@ fn offline_scan_config() -> ConfigV1 {
 #[test]
 fn scan_with_a_pathological_file_completes_and_counts_it_as_degraded() {
     let dir = tempfile::tempdir().unwrap();
-    fs::write(dir.path().join("syslog.txt"), pathological_log(3 * 1024 * 1024)).unwrap();
+    fs::write(dir.path().join("syslog.txt"), pathological_log(5 * 1024 * 1024)).unwrap();
     fs::write(dir.path().join("guide.md"), markdown_doc()).unwrap();
 
     let started = Instant::now();

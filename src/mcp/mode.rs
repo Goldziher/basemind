@@ -242,6 +242,7 @@ define_mode! {
         BlameSymbol => "blame_symbol", "who last changed one symbol, resolved to its line span";
         SymbolHistory => "symbol_history", "when a symbol's body actually changed, by structural hash";
         Search => "search", "full-text search over commit messages and authors";
+        Show => "show", "one commit with its full, untruncated message and changed files";
     }
 }
 

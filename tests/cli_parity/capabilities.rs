@@ -132,6 +132,7 @@ pub fn table() -> Vec<Row> {
         pair("git", "blame_symbol", "git blame-symbol"),
         pair("git", "symbol_history", "git symbol-history"),
         pair("git", "search", "git search"),
+        pair("git", "show", "git show"),
         // ---- memory ----
         pair("memory", "put", "memory put"),
         pair("memory", "get", "memory get"),

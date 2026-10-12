@@ -10,6 +10,86 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`git` responses are bounded when commit messages are huge** ([#74](https://github.com/Goldziher/basemind/issues/74)).
+  `git` mode `search` returned every hit's commit body whole; squash-merge bodies reach 285 KB, so one
+  `limit` 100 call cost 2.6 MB. Each hit's body is now cut at `body_chars` (default 1000, `0` omits it)
+  with a marker, `body_truncated` and `body_bytes`, and the commit-list modes (`search`, `recent`,
+  `touching`, `by_path`) hold their output to `max_tokens` (default 20000), setting `budgeted` and
+  resuming through `next_cursor`. Both are available on `basemind git` as `--body-chars` and
+  `--max-tokens`.
+- **Cache budget no longer evicts the workspace you just built** ([#75](https://github.com/Goldziher/basemind/issues/75)).
+  A 28 GB workspace over the 20 GiB `BASEMIND_CACHE_BUDGET_MB` default was evicted about ten minutes after
+  its scan, because the 24 h "hot" floor only reordered candidates. Budget eviction now skips a workspace
+  that is locked by a live writer, the most recently used one across all worktrees, or built within a grace
+  window (`BASEMIND_CACHE_GRACE_MINUTES`, default 360, `0` disables the window). The cache is left over
+  budget, a warning is logged, `cache_stats.last_gc` reports `over_budget` with the new
+  `protected_workspaces` list, and `basemind doctor` gains a `cache` row that warns about it. Raise
+  `BASEMIND_CACHE_BUDGET_MB` to clear the warning.
+- **Code-only scans no longer peak above 12 GB in the resolve phase** ([#77](https://github.com/Goldziher/basemind/issues/77)).
+  The vendored stack-graphs stitcher polled its cancellation flag once per phase, and a phase extended
+  every path of the previous one without limit, so the per-file step and path budgets were only compared
+  between phases and a pathological Python or Java file could allocate gigabytes before they were ever
+  consulted. A phase now performs at most 256 path extensions before the budgets are checked (unfinished
+  work stays queued, so the paths found are unchanged), the stitcher has its own budget of 4,096 phases,
+  and the resolve pass waits at the `max_footprint_mb` gate between chunks as the extraction phase does.
+  A file that exhausts a budget still falls back to tree-sitter locals binding. `RUST_LOG=basemind=debug`
+  logs each file's `steps`/`phases`/`paths` counters.
+- **Short memory spikes are now visible in the scan log** ([#77](https://github.com/Goldziher/basemind/issues/77)).
+  The footprint is sampled every 200 ms instead of once per 5 s line; each `memory` line adds
+  `window_peak_mb` and `process_peak_rss_mb`, and a gibibyte jump over anything already logged writes a
+  `spike=true` line immediately.
+- **Text documents rejected by xberg are indexed as plain text instead of failing** ([#78](https://github.com/Goldziher/basemind/issues/78)).
+  A monorepo scan lost 489 documents to extractor verdicts on readable text: Helm `templates/*.yaml`
+  (Go templates, `Failed to parse YAML`), CSVs past the table-cell limit and SVG/YAML files with an
+  oversized entity. When xberg fails with a parse or security-limit error on a text-like format, the file
+  is re-read as `text/plain` through the linear chunker under the same extraction budget. These count as
+  `docs_degraded` and, separately, as the new `docs_text_fallback` (scan summary, `rescan`, daemon
+  `Rescanned` reply and MCP `rescan`; additive, defaults to 0). Binary formats, corrupt PDFs, IO errors and
+  timeouts stay failures.
+
+### Changed
+
+- **Linear-chunker cutovers raised, measured on a release build with xberg 1.3.8.**
+  `[documents] markdown_chunk_max_bytes` goes 256 KiB to 1 MiB and `plain_text_chunk_max_bytes` 128 KiB to
+  4 MiB. The splitter is linear for ordinary text now; only a single markdown block dense with inline
+  markup stays quadratic, and the linear fallback still bounds it. Documents already routed through the
+  linear chunker keep their index entry until the file changes.
+
+### Added
+
+- **`git` mode `show` / `basemind git show <sha>`** returns one commit with its full, untruncated message and
+  changed files, the way back to a body that `search` cut.
+- **Document-guard counters on every scan surface** ([#72](https://github.com/Goldziher/basemind/issues/72)).
+  `docs_degraded` and `doc_timeouts` now travel through the daemon `Rescanned` reply, the MCP `rescan`
+  result and `basemind rescan` when it is forwarded to the daemon, not just the in-process scan summary.
+  The fields are additive and default to 0, so mixed old and new daemon/client pairs keep working
+  (no `PROTO_VER` bump).
+- **Agent Plugins distribution** ([#69](https://github.com/Goldziher/basemind/issues/69)). The repository
+  root now carries a conformant [Agent Plugins](https://agent-plugins.org) 1.0.0 package (`plugin.json`,
+  `mcp.json`, `skills/`), generated by ai-rulez (`generate --plugin`) and checked by
+  `validate --strict`. Its MCP server runs `basemind serve` from `PATH`.
+
+### Changed
+
+- **Document extraction bounds** ([#72](https://github.com/Goldziher/basemind/issues/72)). The default
+  `[documents] extraction_timeout_secs` drops from 600 to 120, so a few documents timing out together no
+  longer cost ten minutes each, and a new `phase_budget_secs` (default 1800) bounds the whole document
+  phase of a scan. Once it is spent the remaining documents are deferred, not failed, and the next scan
+  picks them up (`docs_deferred` in the scan summary). Raise `extraction_timeout_secs` if your corpus has
+  legitimately slow documents (large scanned PDFs).
+- **Timed-out documents are no longer retried on every scan.** A document that overruns its budget is
+  recorded in the index by content hash together with the extraction limits (timeout, chunk cutovers,
+  `max_pages` and the extraction settings). While both are unchanged the file is skipped and counted as
+  `docs_tombstoned`; editing it, or changing a limit, retries it. Existing indexes stay readable (the
+  record is an additive field).
+- **Abandoned extraction threads are capped.** A timed-out extraction cannot be cancelled and keeps a
+  core busy until it finishes. `[documents] max_abandoned_extractions` (default 4) caps how many may still
+  run; at the cap further documents are deferred instead of spawning more. The live count is logged and
+  shown as `abandoned_extractions` in the scan summary. Running extraction in a killable subprocess was
+  evaluated and rejected, see ADR-0015.
+
 ## [0.29.2] - 2026-10-12
 
 ### Added

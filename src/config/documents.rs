@@ -56,10 +56,28 @@ pub struct DocumentsConfig {
     pub max_pages: usize,
     /// Maximum wall-clock time one document's extraction (including chunking) may take. Enforced by a
     /// watchdog: a document that overruns is abandoned, skipped and counted as `doc_timeouts` in the scan
-    /// summary, so one pathological file cannot stall a scan.
+    /// summary, so one pathological file cannot stall a scan. A timed-out document is remembered by
+    /// content hash and not retried while it is unchanged and the extraction limits are unchanged;
+    /// editing the file or changing this value (or the chunk cutovers or `max_pages`) retries it.
     #[serde(default = "DocumentsConfig::default_extraction_timeout_secs")]
     #[schemars(range(min = 1))]
     pub extraction_timeout_secs: u64,
+    /// Wall-clock budget for the whole document phase of one scan, started at the first document that
+    /// needs a real extraction. Once spent, the remaining documents are deferred (counted as
+    /// `docs_deferred`, not failed) and picked up by the next scan, so several documents timing out
+    /// together cost this budget rather than `extraction_timeout_secs` each. Documents already running
+    /// finish or hit their own timeout, so a scan can overshoot by up to one `extraction_timeout_secs`. Never
+    /// less than `extraction_timeout_secs` in effect.
+    #[serde(default = "DocumentsConfig::default_phase_budget_secs")]
+    #[schemars(range(min = 1))]
+    pub phase_budget_secs: u64,
+    /// Cap on timed-out extraction threads still running. A timed-out extraction cannot be cancelled
+    /// and keeps a core busy until it finishes on its own; at the cap, further documents are deferred
+    /// (counted as `docs_deferred`) instead of spawning another thread, and picked up by a later scan.
+    /// A soft bound: extractions already in flight when it is reached may still time out.
+    #[serde(default = "DocumentsConfig::default_max_abandoned_extractions")]
+    #[schemars(range(min = 1, max = 64))]
+    pub max_abandoned_extractions: usize,
     /// Largest text-like document (markdown, csv, json, yaml, xml, toml, ini, ...) in bytes still chunked
     /// with xberg's structure-aware markdown splitter. The splitter re-scans every remaining element
     /// per chunk, so its cost grows with the square of the document: a multi-megabyte file can stall a
@@ -185,13 +203,19 @@ impl DocumentsConfig {
         52_428_800
     }
     fn default_extraction_timeout_secs() -> u64 {
-        600
+        120
+    }
+    fn default_phase_budget_secs() -> u64 {
+        1_800
+    }
+    fn default_max_abandoned_extractions() -> usize {
+        4
     }
     fn default_markdown_chunk_max_bytes() -> u64 {
-        256 * 1024
+        1024 * 1024
     }
     fn default_plain_text_chunk_max_bytes() -> u64 {
-        128 * 1024
+        4 * 1024 * 1024
     }
 }
 
@@ -207,6 +231,8 @@ impl Default for DocumentsConfig {
             max_chunks_per_document: Self::default_max_chunks_per_document(),
             max_pages: Self::default_max_pages(),
             extraction_timeout_secs: Self::default_extraction_timeout_secs(),
+            phase_budget_secs: Self::default_phase_budget_secs(),
+            max_abandoned_extractions: Self::default_max_abandoned_extractions(),
             markdown_chunk_max_bytes: Self::default_markdown_chunk_max_bytes(),
             plain_text_chunk_max_bytes: Self::default_plain_text_chunk_max_bytes(),
             max_characters: Self::default_max_characters(),

@@ -40,6 +40,7 @@ mod helpers_files;
 mod helpers_fingerprint;
 mod helpers_git;
 mod helpers_git_file;
+mod helpers_git_show;
 #[cfg(feature = "memory")]
 mod helpers_governance;
 mod helpers_graph;

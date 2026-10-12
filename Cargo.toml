@@ -320,6 +320,14 @@ opt-level = 1
 [profile.release.package.zip]
 opt-level = 2
 
+[[example]]
+name = "doc_measure"
+required-features = ["documents"]
+
+[[example]]
+name = "lance_bench"
+required-features = ["documents"]
+
 [[bench]]
 name = "extract"
 harness = false

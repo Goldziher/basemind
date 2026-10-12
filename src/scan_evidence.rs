@@ -212,9 +212,21 @@ fn now_unix() -> u64 {
         .unwrap_or(0)
 }
 
-/// How often [`memory_log_loop`] samples. Short enough to catch the shape of a runaway (a scan can
+/// How often a memory line is written. Short enough to catch the shape of a runaway (a scan can
 /// go from healthy to killed inside a minute), long enough that the log stays readable over hours.
 pub const MEMORY_LOG_EVERY: Duration = Duration::from_secs(5);
+
+/// How often the sampler thread reads the footprint between lines. A line written every
+/// [`MEMORY_LOG_EVERY`] sees one instant in fifty; a transient (one pathological file's arenas,
+/// grown and freed inside a couple of seconds) peaked above 12 GB while the lines showed 5 GB. The
+/// reading is one cheap syscall, so sampling at this rate costs nothing measurable, and the
+/// window's maximum is reported on the next line (`window_peak_mb`).
+pub const MEMORY_SAMPLE_EVERY: Duration = Duration::from_millis(200);
+
+/// A reading this far above the highest footprint already written triggers an immediate extra
+/// line, so a spike is on the record even if the process is killed before the next scheduled one.
+/// Each such line raises the bar, so a climbing process writes a handful, not a flood.
+pub const MEMORY_SPIKE_STEP_BYTES: u64 = 1 << 30;
 
 /// Emit one memory line for the current process: what it is using, the ceiling it is using it
 /// against, how long it has been going, and which root it is attributed to.
@@ -225,8 +237,24 @@ pub fn log_memory_snapshot(root: &Path, elapsed: Duration) {
     let Some(reading) = crate::sysres::memory_reading() else {
         return;
     };
+    log_memory_reading(root, elapsed, &reading, reading.used_bytes, false);
+}
+
+/// Write one line for `reading`. `window_peak_bytes` is the highest footprint sampled since the
+/// previous line (never below `reading.used_bytes`); `spike` marks a line written between the
+/// scheduled ones because the footprint jumped.
+fn log_memory_reading(
+    root: &Path,
+    elapsed: Duration,
+    reading: &crate::sysres::MemoryReading,
+    window_peak_bytes: u64,
+    spike: bool,
+) {
     tracing::info!(
         rss_mb = reading.used_bytes / (1 << 20),
+        window_peak_mb = window_peak_bytes.max(reading.used_bytes) / (1 << 20),
+        process_peak_rss_mb = crate::sysres::sample().peak_bytes.map(|peak| peak / (1 << 20)),
+        spike,
         ceiling_mb = reading.limit_bytes.map(|limit| limit / (1 << 20)),
         ceiling_enforced = reading.limit_is_enforced,
         source = reading.source.as_str(),
@@ -236,7 +264,34 @@ pub fn log_memory_snapshot(root: &Path, elapsed: Duration) {
     );
 }
 
-/// Samples [`log_memory_snapshot`] every [`MEMORY_LOG_EVERY`] on its own thread until dropped.
+/// Tracks the sampler's window maximum and decides when a reading deserves a line of its own.
+#[derive(Debug, Default)]
+struct PeakWindow {
+    /// Highest footprint sampled since the last written line.
+    window_peak: u64,
+    /// Highest footprint any written line has carried so far.
+    written_high: u64,
+}
+
+impl PeakWindow {
+    /// Fold in one sample. Returns true when it is [`MEMORY_SPIKE_STEP_BYTES`] above everything
+    /// written so far and so should be written now.
+    fn observe(&mut self, used_bytes: u64) -> bool {
+        self.window_peak = self.window_peak.max(used_bytes);
+        used_bytes >= self.written_high.saturating_add(MEMORY_SPIKE_STEP_BYTES)
+    }
+
+    /// A line was written: report its window peak, start a new window, raise the spike bar.
+    fn written(&mut self) -> u64 {
+        let peak = self.window_peak;
+        self.written_high = self.written_high.max(peak);
+        self.window_peak = 0;
+        peak
+    }
+}
+
+/// Samples the footprint every [`MEMORY_SAMPLE_EVERY`] and writes a line every [`MEMORY_LOG_EVERY`]
+/// (or at once on a jump of [`MEMORY_SPIKE_STEP_BYTES`]) on its own thread until dropped.
 ///
 /// A plain thread rather than a tokio task because the thing worth watching is
 /// [`crate::scanner::scan`], which is synchronous by design — the scanner pipeline runs on rayon
@@ -262,6 +317,8 @@ impl MemoryLog {
             .name("basemind-memlog".to_string())
             .spawn(move || {
                 let started = std::time::Instant::now();
+                let mut window = PeakWindow::default();
+                let mut last_line = started;
                 let (lock, cvar) = &*worker_stop;
                 let mut guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
                 loop {
@@ -273,14 +330,21 @@ impl MemoryLog {
                         return;
                     }
                     let (next, _) = cvar
-                        .wait_timeout(guard, MEMORY_LOG_EVERY)
+                        .wait_timeout(guard, MEMORY_SAMPLE_EVERY)
                         .unwrap_or_else(PoisonError::into_inner);
                     guard = next;
                     if *guard {
                         return;
                     }
                     drop(guard);
-                    log_memory_snapshot(&root, started.elapsed());
+                    if let Some(reading) = crate::sysres::memory_reading() {
+                        let spike = window.observe(reading.used_bytes);
+                        if spike || last_line.elapsed() >= MEMORY_LOG_EVERY {
+                            let peak = window.written();
+                            log_memory_reading(&root, started.elapsed(), &reading, peak, spike);
+                            last_line = std::time::Instant::now();
+                        }
+                    }
                     guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
                 }
             })
@@ -416,6 +480,37 @@ mod tests {
     fn enumerating_a_missing_workspaces_dir_reports_nothing_rather_than_failing() {
         let dir = tempfile::tempdir().expect("tempdir");
         assert!(stale_inflight_scans_in(&dir.path().join("absent")).is_empty());
+    }
+
+    /// The 12 GB transient of issue #77 lived for under a scheduled interval: the window maximum
+    /// must survive until the next line, and only a jump past everything written triggers one early.
+    #[test]
+    fn the_peak_window_keeps_the_maximum_and_flags_only_new_highs() {
+        const GIB: u64 = 1 << 30;
+        let mut window = PeakWindow::default();
+        assert!(!window.observe(GIB / 2), "a small first reading is not a spike");
+        assert!(
+            window.observe(2 * GIB),
+            "a jump of a step over nothing written is a spike"
+        );
+        assert_eq!(window.written(), 2 * GIB, "the line carries the window maximum");
+
+        assert!(!window.observe(GIB), "falling back is not a spike");
+        assert!(
+            !window.observe(2 * GIB + GIB / 2),
+            "less than a step above the written high"
+        );
+        assert!(
+            window.observe(3 * GIB),
+            "a further step over the written high is a spike"
+        );
+        assert_eq!(window.written(), 3 * GIB);
+        assert_eq!(window.written(), 0, "a fresh window starts empty");
+    }
+
+    #[test]
+    fn sampling_is_finer_than_logging() {
+        assert!(MEMORY_SAMPLE_EVERY * 10 <= MEMORY_LOG_EVERY);
     }
 
     #[test]

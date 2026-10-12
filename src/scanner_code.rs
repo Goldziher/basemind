@@ -20,7 +20,7 @@ use crate::chunk::{ChunkOptions, CodeChunkBlob, chunk_file};
 use crate::config::{CodeSearchConfig, Config};
 use crate::embeddings::SharedEmbedder;
 use crate::extract::{FileMapL1, FileMapL2, SCHEMA_VER};
-use crate::lance::CodeRow;
+use crate::lance::{CodeRow, PendingBatch};
 use crate::scanner::EmbedMode;
 use crate::scanner_filter::Filters;
 use crate::search::bm25::{ChunkPosting, build_chunk_postings};
@@ -491,6 +491,21 @@ pub(crate) fn flush_code_batches(
     };
 
     let mut inserted = 0usize;
+    let mut pending: PendingBatch<CodeRow> = PendingBatch::default();
+    let write = |pending: &mut PendingBatch<CodeRow>, inserted: &mut usize| {
+        let items = pending.take();
+        let files = items.len();
+        match lance.replace_code_chunks_many(items) {
+            Ok(()) => *inserted += files,
+            Err(error) => {
+                tracing::warn!(
+                    files,
+                    ?error,
+                    "lance replace_code_chunks_many failed; code search may be incomplete"
+                );
+            }
+        }
+    };
     for batch in batches {
         if batch.embedding_dim == 0 {
             continue;
@@ -513,12 +528,13 @@ pub(crate) fn flush_code_batches(
             continue;
         }
         let rows = build_rows_owned(&batch.rel_path, scope, blob.chunks, blob.embeddings);
-        match lance.replace_code_chunks(scope, &batch.rel_path, rows) {
-            Ok(()) => inserted += 1,
-            Err(error) => {
-                tracing::warn!(rel = %batch.rel_path, ?error, "lance replace_code_chunks failed; code search may be incomplete");
-            }
+        pending.push(scope, &batch.rel_path, rows);
+        if pending.is_full() {
+            write(&mut pending, &mut inserted);
         }
+    }
+    if !pending.is_empty() {
+        write(&mut pending, &mut inserted);
     }
     inserted
 }

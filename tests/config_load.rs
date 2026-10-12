@@ -90,8 +90,8 @@ fn documents_chunk_cutovers_default_and_reject_values_below_the_minimum() {
     let cfg = config::load_with_overrides(dir.path(), None, None)
         .expect("defaults load")
         .config;
-    assert_eq!(cfg.documents.markdown_chunk_max_bytes, 256 * 1024);
-    assert_eq!(cfg.documents.plain_text_chunk_max_bytes, 128 * 1024);
+    assert_eq!(cfg.documents.markdown_chunk_max_bytes, 1024 * 1024);
+    assert_eq!(cfg.documents.plain_text_chunk_max_bytes, 4 * 1024 * 1024);
     for key in ["markdown_chunk_max_bytes", "plain_text_chunk_max_bytes"] {
         let dir = repo_with(&format!("[documents]\n{key} = 1023\n"));
         let err = config::load_with_overrides(dir.path(), None, None).expect_err("below minimum");

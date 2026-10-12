@@ -42,7 +42,9 @@ use std::path::Path;
 
 use rayon::prelude::*;
 
-use crate::chunk_drive::{ChunkCut, drive_chunks};
+use crate::backpressure::FootprintGate;
+use crate::chunk_drive::{ChunkCut, drive_chunks_governed};
+use crate::config::MaxFootprint;
 use crate::index::IndexDb;
 use crate::intel::model::FileResolvedRefs;
 use crate::intel::stage_budget::BudgetedWriter;
@@ -89,7 +91,7 @@ struct FileSnapshot {
 /// Wholesale resolve pass: (re)stage every indexed file's intra facts and (re)stitch every
 /// importer. Best-effort — any failure is logged and the scan still succeeds. No-op in a read-only
 /// (no writable index) session.
-pub(crate) fn resolve_pass(root: &Path, store: &Store, precise: bool) {
+pub(crate) fn resolve_pass(root: &Path, store: &Store, precise: bool, footprint: MaxFootprint) {
     let Some(index_db) = store.index_db.as_ref() else {
         return;
     };
@@ -108,19 +110,25 @@ pub(crate) fn resolve_pass(root: &Path, store: &Store, precise: bool) {
     #[cfg(any(feature = "code-intel-js", feature = "code-intel-stack"))]
     {
         let mut cross_file: ahash::AHashMap<String, crate::intel::xfile::FileFacts> = ahash::AHashMap::new();
-        resolve_in_chunks(root, store, index_db, &files, precise, |facts| {
+        resolve_in_chunks(root, store, index_db, &files, precise, footprint, |facts| {
             harvest_cross_file_facts(facts, &mut cross_file);
         });
         crate::intel::xfile::stitch_cross_file_edges(root, store, index_db, &cross_file);
     }
     #[cfg(not(any(feature = "code-intel-js", feature = "code-intel-stack")))]
-    resolve_in_chunks(root, store, index_db, &files, precise, drop);
+    resolve_in_chunks(root, store, index_db, &files, precise, footprint, drop);
 }
 
 /// Incremental resolve pass for the watcher: only `changed` files' intra facts are restaged, and
 /// only the affected importer set is re-stitched. `changed` is the set of repo-relative paths the
 /// watcher re-indexed this event (removed files are handled by the caller's remove-mirror).
-pub(crate) fn resolve_pass_incremental(root: &Path, store: &Store, changed: &[String], precise: bool) {
+pub(crate) fn resolve_pass_incremental(
+    root: &Path,
+    store: &Store,
+    changed: &[String],
+    precise: bool,
+    footprint: MaxFootprint,
+) {
     let Some(index_db) = store.index_db.as_ref() else {
         return;
     };
@@ -137,15 +145,15 @@ pub(crate) fn resolve_pass_incremental(root: &Path, store: &Store, changed: &[St
             })
         })
         .collect();
-    resolve_in_chunks(root, store, index_db, &changed_snapshot, precise, drop);
+    resolve_in_chunks(root, store, index_db, &changed_snapshot, precise, footprint, drop);
 
     #[cfg(any(feature = "code-intel-js", feature = "code-intel-stack"))]
-    xfile_incremental::restitch_affected(root, store, index_db, changed, precise);
+    xfile_incremental::restitch_affected(root, store, index_db, changed, precise, footprint);
 }
 
 /// Compute → stage → project, one bounded chunk at a time.
 ///
-/// This is the pass's whole memory story: [`drive_chunks`] owns each chunk's `FileResolvedRefs`,
+/// This is the pass's whole memory story: [`drive_chunks_governed`] owns each chunk's `FileResolvedRefs`,
 /// hands them to the serial staging step, offers them to `harvest` for projection, and drops them
 /// before the next chunk is computed. `harvest` receives them by value precisely so it cannot keep
 /// them — anything it wants to retain has to be copied into a structure of its own choosing, and
@@ -156,14 +164,25 @@ fn resolve_in_chunks(
     index_db: &IndexDb,
     files: &[FileSnapshot],
     precise: bool,
+    footprint: MaxFootprint,
     mut harvest: impl FnMut(Vec<(String, FileResolvedRefs)>),
 ) {
-    drive_chunks(
+    // The admission point the primary scan's drive loop has and this pass lacked: before each chunk
+    // is computed, park (bounded) while the process is over its footprint ceiling, so the previous
+    // chunk's arenas and the allocator's freed pages can settle. Advisory by design -- the gate
+    // admits after its max wait to guarantee progress -- so the hard bound on one file's memory
+    // remains the per-file budgets in `intel::stackgraph`.
+    let gate = FootprintGate::new(footprint);
+    drive_chunks_governed(
+        &mut (),
         files,
-        resolve_chunk_cut(),
-        |snapshot| snapshot.size_bytes,
-        |chunk| compute_facts(root, store, chunk, precise),
-        |facts| {
+        || {
+            gate.admit();
+            Some(resolve_chunk_cut())
+        },
+        |(), snapshot| snapshot.size_bytes,
+        |(), chunk| compute_facts(root, store, chunk, precise),
+        |(), facts| {
             stage_facts(index_db, &facts);
             harvest(facts);
         },
@@ -290,6 +309,7 @@ mod xfile_incremental {
     use rayon::prelude::*;
 
     use super::{FileSnapshot, resolve_in_chunks};
+    use crate::config::MaxFootprint;
     use crate::index::IndexDb;
     use crate::intel::resolver::SpecifierResolver;
     use crate::intel::xfile::{FileFacts, stitch_cross_file_edges};
@@ -351,7 +371,14 @@ mod xfile_incremental {
     /// Re-stitch only the importers whose cross-file resolution could have changed after `changed`
     /// was re-indexed: the changed resolver-capable files themselves plus every file that imports
     /// one.
-    pub(super) fn restitch_affected(root: &Path, store: &Store, index_db: &IndexDb, changed: &[String], precise: bool) {
+    pub(super) fn restitch_affected(
+        root: &Path,
+        store: &Store,
+        index_db: &IndexDb,
+        changed: &[String],
+        precise: bool,
+        footprint: MaxFootprint,
+    ) {
         let changed_set: AHashSet<&str> = changed
             .iter()
             .filter(|rel| store.lookup(rel.as_str()).is_some_and(|e| has_resolver(&e.language)))
@@ -424,7 +451,7 @@ mod xfile_incremental {
                 })
             })
             .collect();
-        resolve_in_chunks(root, store, index_db, &unchanged_affected, precise, drop);
+        resolve_in_chunks(root, store, index_db, &unchanged_affected, precise, footprint, drop);
 
         let mut stitch_facts: AHashMap<String, FileFacts> = AHashMap::with_capacity(affected.len());
         for key in &affected {
@@ -468,6 +495,7 @@ mod xfile_incremental {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::chunk_drive::drive_chunks;
 
     fn snapshot(rel: &str, size_bytes: u64) -> FileSnapshot {
         FileSnapshot {

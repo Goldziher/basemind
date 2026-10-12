@@ -31,6 +31,10 @@ pub enum GitCmd {
         /// Resume token: pass the previous page's `next_cursor`.
         #[arg(long)]
         cursor: Option<String>,
+        /// Token budget for the returned commits (default 20000); overflow sets `budgeted` and
+        /// `next_cursor` resumes at the first dropped commit.
+        #[arg(long)]
+        max_tokens: Option<u32>,
     },
     /// Full-text search over commit history (author / message / all) at full branch depth.
     /// This is the "what did <author> do" / "which commit mentions <X>" mode — it scans every
@@ -48,6 +52,14 @@ pub enum GitCmd {
         /// Resume token: pass the previous page's `next_cursor`.
         #[arg(long)]
         cursor: Option<String>,
+        /// Token budget for the returned commits (default 20000); overflow sets `budgeted` and
+        /// `next_cursor` resumes at the first dropped commit.
+        #[arg(long)]
+        max_tokens: Option<u32>,
+        /// Characters of each hit's commit body to keep (default 1000, 0 omits it). A cut body
+        /// ends in a marker; `basemind git show <sha>` prints it whole.
+        #[arg(long)]
+        body_chars: Option<u32>,
     },
     /// Commits that modified a given path.
     Touching {
@@ -57,6 +69,10 @@ pub enum GitCmd {
         /// Resume token: pass the previous page's `next_cursor`.
         #[arg(long)]
         cursor: Option<String>,
+        /// Token budget for the returned commits (default 20000); overflow sets `budgeted` and
+        /// `next_cursor` resumes at the first dropped commit.
+        #[arg(long)]
+        max_tokens: Option<u32>,
     },
     /// Path-filtered commit log (regex over changed paths).
     ByPath {
@@ -68,6 +84,15 @@ pub enum GitCmd {
         /// Resume token: pass the previous page's `next_cursor`.
         #[arg(long)]
         cursor: Option<String>,
+        /// Token budget for the returned commits (default 20000); overflow sets `budgeted` and
+        /// `next_cursor` resumes at the first dropped commit.
+        #[arg(long)]
+        max_tokens: Option<u32>,
+    },
+    /// One commit with its full, untruncated message and changed files.
+    Show {
+        /// Full or abbreviated sha, or any revision (`HEAD~3`, a branch).
+        sha: String,
     },
     /// Churn-ranked files in a recent commit window.
     Churn {
@@ -141,7 +166,9 @@ pub async fn run(server: &BasemindServer, cmd: GitCmd, opts: &Emit, out: &mut im
             limit,
             no_files,
             cursor,
+            max_tokens,
         } => GitParams {
+            max_tokens,
             limit,
             cursor: cursor.map(Cursor),
             include_files: no_files.then_some(false),
@@ -152,14 +179,24 @@ pub async fn run(server: &BasemindServer, cmd: GitCmd, opts: &Emit, out: &mut im
             field,
             limit,
             cursor,
+            max_tokens,
+            body_chars,
         } => GitParams {
+            max_tokens,
+            body_chars,
             pattern: Some(pattern),
             field: field.map(|f| f.as_str().to_string()),
             limit,
             cursor: cursor.map(Cursor),
             ..GitParams::new(GitMode::Search)
         },
-        GitCmd::Touching { path, limit, cursor } => GitParams {
+        GitCmd::Touching {
+            path,
+            limit,
+            cursor,
+            max_tokens,
+        } => GitParams {
+            max_tokens,
             path: Some(resolve_path(server, &path)),
             limit,
             cursor: cursor.map(Cursor),
@@ -170,12 +207,18 @@ pub async fn run(server: &BasemindServer, cmd: GitCmd, opts: &Emit, out: &mut im
             window,
             limit,
             cursor,
+            max_tokens,
         } => GitParams {
+            max_tokens,
             pattern: Some(pattern),
             window,
             limit,
             cursor: cursor.map(Cursor),
             ..GitParams::new(GitMode::ByPath)
+        },
+        GitCmd::Show { sha } => GitParams {
+            sha: Some(sha),
+            ..GitParams::new(GitMode::Show)
         },
         GitCmd::Churn { window, top_k } => GitParams {
             window,

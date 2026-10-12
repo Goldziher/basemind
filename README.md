@@ -46,7 +46,7 @@ about your code costs a small fraction of the tokens it takes to read the source
 |---|---|---|
 | **Code intelligence** | Read the code map instead of opening files: a file's structure (`outline`), find a definition by name (`symbols`), regex content search (`grep`), enumerate or fuzzy-find files (`files` · `find`, documents included), resolve a reference position to the definition it binds to (`definition` — **scope- and import-aware**, JS/TS via oxc, Python & Java via in-tree [stack-graphs](#how-it-works)), every call site of a name (`references`, name-only) or of one specific definition (`callers`), implementors of a trait / interface / base class (`implementations`), the reverse import lookup (`dependents`), one symbol's raw body (`expand`), and search by meaning over indexed chunks (`semantic` → `chunk`, needs `--features code-search`). Layered over [300+ languages](#how-it-works). | `code` (`outline` · `symbols` · `grep` · `files` · `find` · `definition` · `references` · `callers` · `implementations` · `dependents` · `expand` · `semantic` · `chunk`) |
 | **Code graph** | Walk the typed code-graph: who calls what and what a function reaches (`calls`), a symbol's n-hop blast radius (`neighbors`), the confidence-weighted shortest route between two symbols (`path`), a readable centrality-cut neighborhood (`subgraph`), the repo's de-facto modules (`communities`), and the whole-repo architecture ranked by PageRank + git churn with its dependency cycles (`map`). Render it as node-link JSON / DOT / Mermaid / GraphML / Cypher / offline interactive HTML / static SVG (`export`), **show it to a human** in their desktop viewer (`display`), or **open the interactive UI** at a live `http://…/ui` URL (`open`, which needs the daemon's opt-in HTTP front-end and otherwise falls back to a `file://` export) — both take `open: false` to return the path or URL without launching anything. Every edge carries provenance + confidence; every result is deterministic and bounded. | `graph` (`calls` · `neighbors` · `path` · `subgraph` · `communities` · `map` · `export` · `display` · `open`) |
-| **Git intelligence** | Ask what changed recently, who last touched a function or a line, where the churn is, when a symbol's body actually changed, how a file's structure differs across commits, and full-text search commit authors + messages at full branch depth. | `git` (`status` · `recent` · `touching` · `by_path` · `churn` · `diff` · `diff_outline` · `blame` · `blame_symbol` · `symbol_history` · `search`) |
+| **Git intelligence** | Ask what changed recently, who last touched a function or a line, where the churn is, when a symbol's body actually changed, how a file's structure differs across commits, and full-text search commit authors + messages at full branch depth. | `git` (`status` · `recent` · `touching` · `by_path` · `churn` · `diff` · `diff_outline` · `blame` · `blame_symbol` · `symbol_history` · `search` · `show`) |
 | **Memory & documents** | A per-repo memory agents write to and search by meaning — clones of the same repo share it, unrelated repos stay separate — plus semantic search over PDFs, Office files, HTML, email, and images (OCR included, no extra setup), and a review queue of notes mined from files that change together, which you approve before anything is kept. | `memory` (`put` · `get` · `list` · `search` · `delete` · `audit` · `documents` · `mine` · `proposals` · `accept` · `reject`) |
 | **Web crawl** | Fetch a page or follow links from a starting URL; results join the document search above. | `web` (`scrape` · `crawl` · `map`) |
 | **Agent comms** | Threads addressed by subject, path-glob, and members; scope discovery; inbox delivery; lifecycle status; and dry-run/apply retention cleanup. | `agents` (`register` · `list` · `thread_start` · `thread_list` · `join` · `leave` · `members` · `add_member` · `remove_member` · `archive` · `post` · `history` · `message` · `inbox` · `ack` · `wait` · `cleanup` · `status`) |
@@ -497,8 +497,10 @@ Memory is bounded by design:
   otherwise grow to the largest batch seen and never shrink. Intra-op threads are the auto
   embed-thread count (`max(2, logical CPUs / 4)`), or 2 in the daemon, which also drops its resident
   embedding models once the last concurrent embedding pass ends; the next pass reloads them.
-- Precise Python/Java resolution abandons a file past 600,000 steps, 50,000 partial paths or 3
-  seconds, and runs at most two stack-graph builds at once.
+- Precise Python/Java resolution abandons a file past 600,000 builder steps, 4,096 stitching phases
+  (about a million path extensions), 50,000 partial paths or 3 seconds, and runs at most two
+  stack-graph builds at once. The stitcher checks those budgets every 256 path extensions, not once
+  per phase, so a pathological file cannot grow between checks.
 - On macOS the allocator (mimalloc) heap is tagged as application memory (Mach VM tag 254), so
   `footprint`, `vmmap` and Activity Monitor no longer report it as `IOAccelerator` "GPU" memory.
 
@@ -886,11 +888,23 @@ max_file_bytes = 52428800
 # 1024) are chunked by a linear fixed-size chunker instead and counted as `docs_degraded` in the scan summary.
 # PDFs / Office files are never affected. text/plain (.txt, .log) has no markup to exploit, so its
 # cutover is lower.
-markdown_chunk_max_bytes = 262144
-plain_text_chunk_max_bytes = 131072
+# A text-like file that xberg rejects (Helm template named .yaml, huge CSV, SVG with a huge entity) is also read as
+# text/plain through this chunker and counted as `docs_text_fallback`.
+markdown_chunk_max_bytes = 1048576
+plain_text_chunk_max_bytes = 4194304
 # Wall-clock budget (seconds) for one document's extraction + chunking. A document that overruns is
-# abandoned, skipped, and counted as `doc_timeouts` (and retried on the next scan).
-extraction_timeout_secs = 600
+# abandoned, skipped, and counted as `doc_timeouts`. It is remembered by content hash and not retried
+# while the file and these limits (this value, the two cutovers above, max_pages) are unchanged; editing
+# the file or changing a limit retries it.
+extraction_timeout_secs = 120
+# Wall-clock budget (seconds) for the whole document phase of one scan, started at the first document
+# that needs a real extraction (never below extraction_timeout_secs). Once spent, the remaining
+# documents are deferred (counted as `docs_deferred`, not failed) and picked up by the next scan.
+phase_budget_secs = 1800
+# A timed-out extraction cannot be cancelled and keeps a core busy until it finishes. At this many
+# still-running abandoned extractions (1 to 64), further documents are deferred instead of spawning
+# another thread. A soft bound; the live count shows as `abandoned_extractions` in the scan summary.
+max_abandoned_extractions = 4
 # Extra extensions to skip on top of the built-in archive/binary floor (case-insensitive; ".pdf" and
 # "pdf" are the same).
 extension_denylist = []

@@ -84,10 +84,21 @@ answers; the next connection rebuilds it from the on-disk blobs.
 
 ## Stack-graph resolution caps
 
-Python and Java name binding runs on stack graphs. Each file is abandoned past 600,000 steps,
-50,000 partial paths or 3 seconds, and at most two builds run at once. A wall-clock budget alone
-let parallel workers stitching 100-200 KB files take a large-monorepo scan from about 2 GB to
-9-13 GB. An abandoned file degrades to tree-sitter locals binding.
+Python and Java name binding runs on stack graphs. Each file is abandoned past 600,000 builder
+steps, 4,096 stitching phases (about a million path extensions), 50,000 partial paths or 3 seconds,
+and at most two builds run at once. The stitcher checks those budgets every 256 path extensions.
+Before that it checked them once per phase, and one phase on a pathological file could allocate
+gigabytes between two checks: a code-only scan of an 88,000-file monorepo peaked above 12 GB in the
+resolve phase. An abandoned file degrades to tree-sitter locals binding.
+
+## Memory lines in the scan log
+
+A scan samples its footprint every 200 ms and writes a `memory` line every 5 seconds. Each line
+carries `rss_mb` (now), `window_peak_mb` (the highest sample since the previous line) and
+`process_peak_rss_mb` (the operating system's lifetime peak). A reading a gibibyte above everything
+logged so far writes a line at once (`spike=true`), so a short spike is on the record even if the
+process is killed before the next scheduled line. The resolve phase also waits at the
+`max_footprint_mb` gate between chunks, as the extraction phase does.
 
 ## Daemon ceilings
 
@@ -105,7 +116,8 @@ Machine-global daemon knobs read from the environment rather than from `basemind
 | Variable | Effect | Default |
 |---|---|---|
 | `BASEMIND_WARM_READ_STACKS` | Read stacks kept warm at once. Zero or unparseable falls back to the default. | 3 |
-| `BASEMIND_CACHE_BUDGET_MB` | Size budget for the whole cache in MiB. `0` disables enforcement. | 20480 (20 GiB) |
+| `BASEMIND_CACHE_BUDGET_MB` | Size budget for the whole cache in MiB. `0` disables enforcement. A workspace in use is never evicted to meet it: the cache stays over budget and `cache_stats.last_gc` and `basemind doctor` say so. | 20480 (20 GiB) |
+| `BASEMIND_CACHE_GRACE_MINUTES` | Budget eviction never touches a workspace built or rescanned this recently. The locked and most recently used workspaces are always kept, even over budget. `0` disables only the window. | 360 (6 h) |
 | `BASEMIND_INDEX_CACHE_BYTES` | Overrides the computed Fjall block cache size, in bytes. | computed |
 | `BASEMIND_MAX_DAEMONS` | Ceiling on concurrently live daemons before a spawn is refused. | 8 |
 | `BASEMIND_NO_AUTOSPAWN` | Stops any process from spawning the daemon, so a service manager can own it inside a cgroup `MemoryMax`. | unset |

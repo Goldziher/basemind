@@ -162,9 +162,26 @@ pub struct ScanStats {
     /// Subset of `docs_indexed` chunked by the linear fallback instead of xberg's markdown splitter
     /// because the file exceeded `[documents] markdown_chunk_max_bytes` / `plain_text_chunk_max_bytes`.
     pub docs_degraded: usize,
+    /// Subset of `docs_degraded` (and of `docs_indexed`): xberg's structured extractor failed with a
+    /// parse or security-limit error on a text-like file (a Helm template named `.yaml`, a CSV over the
+    /// table-cell limit, an SVG with an oversized entity) and the file was re-read as `text/plain`
+    /// through the linear chunker. Distinct from `doc_timeouts` and `extract_failed`.
+    pub docs_text_fallback: usize,
     /// Documents abandoned because extraction overran `[documents] extraction_timeout_secs` (also
-    /// counted in `extract_failed`). They are retried on the next scan.
+    /// counted in `extract_failed`). Each is tombstoned, so it is retried only once the file or the
+    /// extraction limits change.
     pub doc_timeouts: usize,
+    /// Documents skipped without extraction because they already timed out, unchanged, under the same
+    /// limits (see [`crate::store_doc_tombstone`]). Not failures: the earlier timeout was already
+    /// counted in `doc_timeouts`.
+    pub docs_tombstoned: usize,
+    /// Documents not extracted this scan because the document-phase budget (`[documents]
+    /// phase_budget_secs`) was spent or the abandoned-thread cap (`max_abandoned_extractions`) was
+    /// reached. Not failures: the next scan picks them up.
+    pub docs_deferred: usize,
+    /// Timed-out extraction threads still running in this process when the scan ended (a gauge, not a
+    /// per-scan count).
+    pub abandoned_extractions: usize,
     /// Subset of `updated` re-extracted only because the entry's blob predated
     /// [`crate::extract::EXTRACT_EPOCH`] (an extractor fix that changes the output of unchanged
     /// files, e.g. shorter symbol signatures). Zero once an index has caught up.
@@ -202,6 +219,10 @@ pub struct FileResult {
     /// next scan can skip unchanged docs and the blob GC keeps the `.doc.msgpack` cache alive.
     #[cfg(feature = "documents")]
     pub(crate) doc_upsert: Option<crate::store::DocEntry>,
+    /// Internal: buffered timeout tombstone for a document that overran its extraction budget; the
+    /// apply loop drains it into `index.doc_tombstones`.
+    #[cfg(feature = "documents")]
+    pub(crate) doc_tombstone: Option<crate::store_doc_tombstone::DocTombstone>,
     /// Internal: buffered code-chunk batch when this source file went through the code-search
     /// branch. Drained by the single-threaded `flush_code_batches` pass into LanceDB.
     #[cfg(feature = "code-search")]
@@ -220,6 +241,8 @@ impl FileResult {
             doc_batch: None,
             #[cfg(feature = "documents")]
             doc_upsert: None,
+            #[cfg(feature = "documents")]
+            doc_tombstone: None,
             #[cfg(feature = "code-search")]
             code_batch: None,
         }
@@ -274,11 +297,22 @@ pub enum FileStatus {
         reused: bool,
         /// True when the linear fallback chunker produced the chunks (drives `docs_degraded`).
         degraded: bool,
+        /// True when structured extraction failed and the file was re-read as `text/plain` (drives
+        /// `docs_text_fallback`; implies `degraded`).
+        text_fallback: bool,
     },
     /// Subset of ExtractFailed: document extraction overran `[documents] extraction_timeout_secs`
     /// and was abandoned.
     #[cfg(feature = "documents")]
     DocTimedOut,
+    /// The document already timed out, unchanged, under the same extraction limits: skipped without
+    /// a retry (counted as `docs_tombstoned`). Editing the file or changing the limits retries it.
+    #[cfg(feature = "documents")]
+    DocTombstoned,
+    /// The document was not extracted because the document-phase budget is spent or the abandoned-thread
+    /// cap is reached (counted as `docs_deferred`). Not a failure: the next scan picks it up.
+    #[cfg(feature = "documents")]
+    DocDeferred,
 }
 
 /// Aggregate outcome of one scan. Per-file outcomes are delivered to the caller's
@@ -474,6 +508,14 @@ pub fn scan_with_observer(
         .map(|k| k.to_str_lossy().into_owned())
         .collect();
 
+    // A tombstone outlives the failed extraction on purpose, but not the file: drop the ones whose path
+    // is no longer a candidate of this full pass.
+    #[cfg(feature = "documents")]
+    if !store.index.doc_tombstones.is_empty() {
+        let live: ahash::AHashSet<&str> = candidates.iter().map(String::as_str).collect();
+        store.retain_doc_tombstones(|rel| live.contains(rel.to_str_lossy().as_ref()));
+    }
+
     // A path in both "stale code entry" and "seen as document" (or the reverse) changed tier. Counted
     // here, where both sets are still alive, so the report can say a migration happened.
     #[cfg(feature = "documents")]
@@ -537,8 +579,9 @@ pub fn scan_with_observer(
         advance(&mut breadcrumb, PHASE_RESOLVE, None);
         let precise = config.code_intel.precise_resolution;
         run_optional_lane(LANE_RESOLVE, || {
-            scanner_pool(config.resources.scan_threads)
-                .install(|| crate::intel::resolve_pass::resolve_pass(root, store, precise));
+            scanner_pool(config.resources.scan_threads).install(|| {
+                crate::intel::resolve_pass::resolve_pass(root, store, precise, config.resources.max_footprint_mb)
+            });
         });
     }
 
@@ -560,6 +603,9 @@ pub fn scan_with_observer(
         store.flush()?;
     }
     run_optional_lane(LANE_BM25_STATS, || finalize_bm25_stats_if_any(store, config));
+    run_optional_lane(crate::scanner_lanes::LANE_LANCE_MAINTENANCE, || {
+        maintain_lance_if_open(store)
+    });
     Ok(report)
 }
 
@@ -667,7 +713,7 @@ pub fn scan_paths_with_observer(
                 continue;
             }
             #[cfg(feature = "documents")]
-            if store.lookup_doc(&rel).is_some() {
+            if store.lookup_doc(&rel).is_some() || store.has_doc_tombstone(&rel) {
                 doc_removed.push(rel);
             }
             continue;
@@ -679,7 +725,7 @@ pub fn scan_paths_with_observer(
                 removed.push(rel.clone());
             }
             #[cfg(feature = "documents")]
-            if store.lookup_doc(&rel).is_some() {
+            if store.lookup_doc(&rel).is_some() || store.has_doc_tombstone(&rel) {
                 doc_removed.push(rel);
             }
             continue;
@@ -785,8 +831,15 @@ pub fn scan_paths_with_observer(
 
     let precise = config.code_intel.precise_resolution;
     run_optional_lane(LANE_RESOLVE, || {
-        scanner_pool(config.resources.scan_threads)
-            .install(|| crate::intel::resolve_pass::resolve_pass_incremental(root, store, &rels, precise));
+        scanner_pool(config.resources.scan_threads).install(|| {
+            crate::intel::resolve_pass::resolve_pass_incremental(
+                root,
+                store,
+                &rels,
+                precise,
+                config.resources.max_footprint_mb,
+            )
+        });
     });
 
     run_optional_lane(LANE_DOC_BATCHES, || {
@@ -806,6 +859,9 @@ pub fn scan_paths_with_observer(
         store.flush()?;
     }
     run_optional_lane(LANE_BM25_STATS, || finalize_bm25_stats_if_any(store, config));
+    run_optional_lane(crate::scanner_lanes::LANE_LANCE_MAINTENANCE, || {
+        maintain_lance_if_open(store)
+    });
     Ok(report)
 }
 
@@ -845,6 +901,19 @@ fn derive_scope(root: &Path, source: &ScanSource<'_>) -> String {
             Err(_) => format!("path:{}", root.display()),
         },
     }
+}
+
+/// Compact fragments and prune old table versions of the LanceDB store once this scan's writes are
+/// done (#76). No-op when the scan never opened the store or wrote nothing.
+fn maintain_lance_if_open(store: &Store) {
+    #[cfg(any(feature = "documents", feature = "code-search"))]
+    if let Some(lance) = store.lance.as_ref()
+        && let Err(error) = lance.maintain(crate::lance::SCAN_RETENTION)
+    {
+        tracing::warn!(?error, "lance post-scan maintenance failed; old table versions kept");
+    }
+    #[cfg(not(any(feature = "documents", feature = "code-search")))]
+    let _ = store;
 }
 
 /// Push the buffered document batches into LanceDB. No-op without the `documents` feature.

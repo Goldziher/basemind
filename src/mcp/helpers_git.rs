@@ -14,11 +14,12 @@ use super::helpers::{
     LOG_LIMIT_DEFAULT, LOG_LIMIT_MAX, LOG_WALK_MAX, commit_to_view, elapsed_us, git_history_if_fresh, head_sha,
     head_snapshot_id, json_result, require_git_repo,
 };
+use super::helpers_git_show::{budget_commits, commit_to_hit, resolve_body_chars, run_show};
 use super::mode::{GitMode, reject_unsupported};
 use super::types::{
     CommitView, CommitsTouchingParams, CommitsTouchingResponse, FindCommitsByPathParams, FindCommitsByPathResponse,
-    GitCommitHit, HotFileEntry, HotFilesParams, HotFilesResponse, RecentChangesParams, RecentChangesResponse,
-    SearchGitHistoryParams, SearchGitHistoryResponse, WorkingTreeStatusView,
+    HotFileEntry, HotFilesParams, HotFilesResponse, RecentChangesParams, RecentChangesResponse, SearchGitHistoryParams,
+    SearchGitHistoryResponse, WorkingTreeStatusView,
 };
 use super::types_git::GitParams;
 use crate::git::CommitInfo;
@@ -58,6 +59,9 @@ pub(super) async fn run_git(state: &ServerState, params: GitParams) -> Result<Ca
         kind,
         limit,
         cursor,
+        max_tokens,
+        body_chars,
+        sha,
         include_files,
         top_k,
         window,
@@ -76,6 +80,9 @@ pub(super) async fn run_git(state: &ServerState, params: GitParams) -> Result<Ca
         ("kind", kind.is_some()),
         ("limit", limit.is_some()),
         ("cursor", cursor.is_some()),
+        ("max_tokens", max_tokens.is_some()),
+        ("body_chars", body_chars.is_some()),
+        ("sha", sha.is_some()),
         ("include_files", include_files.is_some()),
         ("top_k", top_k.is_some()),
         ("window", window.is_some()),
@@ -94,29 +101,31 @@ pub(super) async fn run_git(state: &ServerState, params: GitParams) -> Result<Ca
             run_status(state)
         }
         GitMode::Recent => {
-            reject(&["limit", "cursor", "include_files"])?;
+            reject(&["limit", "cursor", "include_files", "max_tokens"])?;
             run_recent(
                 state,
                 RecentChangesParams {
                     limit,
                     include_files: include_files.unwrap_or(true),
                     cursor,
+                    max_tokens,
                 },
             )
         }
         GitMode::Touching => {
-            reject(&["path", "limit", "cursor"])?;
+            reject(&["path", "limit", "cursor", "max_tokens"])?;
             run_touching(
                 state,
                 CommitsTouchingParams {
                     path: require_field(mode, "path", path)?,
                     limit,
                     cursor,
+                    max_tokens,
                 },
             )
         }
         GitMode::ByPath => {
-            reject(&["pattern", "window", "limit", "cursor"])?;
+            reject(&["pattern", "window", "limit", "cursor", "max_tokens"])?;
             run_by_path(
                 state,
                 FindCommitsByPathParams {
@@ -124,6 +133,7 @@ pub(super) async fn run_git(state: &ServerState, params: GitParams) -> Result<Ca
                     window,
                     limit,
                     cursor,
+                    max_tokens,
                 },
             )
         }
@@ -197,7 +207,7 @@ pub(super) async fn run_git(state: &ServerState, params: GitParams) -> Result<Ca
             )
         }
         GitMode::Search => {
-            reject(&["pattern", "field", "limit", "cursor"])?;
+            reject(&["pattern", "field", "limit", "cursor", "max_tokens", "body_chars"])?;
             run_search(
                 state,
                 SearchGitHistoryParams {
@@ -205,8 +215,14 @@ pub(super) async fn run_git(state: &ServerState, params: GitParams) -> Result<Ca
                     field,
                     limit,
                     cursor,
+                    max_tokens,
+                    body_chars,
                 },
             )
+        }
+        GitMode::Show => {
+            reject(&["sha"])?;
+            run_show(state, &require_field(mode, "sha", sha)?)
         }
     }
 }
@@ -267,6 +283,7 @@ fn run_recent(state: &ServerState, params: RecentChangesParams) -> Result<CallTo
                     truncated: false,
                     truncated_reason: None,
                     next_cursor: None,
+                    budgeted: false,
                     cursor_invalidated: true,
                     elapsed_us: elapsed_us(started),
                 });
@@ -294,11 +311,14 @@ fn run_recent(state: &ServerState, params: RecentChangesParams) -> Result<CallTo
         .cloned()
         .map(|c| commit_to_view(c, params.include_files))
         .collect();
-    let has_more = commits.len() > skip + page.len();
+    let page_len = page.len();
+    let (page, budgeted) = budget_commits(page, params.max_tokens);
+    let has_more = commits.len() > skip + page_len || budgeted;
     let next_cursor = has_more.then(|| super::cursor::Cursor::encode_in_memory((skip + page.len()) as u64, snapshot));
     let truncated = repo.is_shallow();
     json_result(&RecentChangesResponse {
         commits: page,
+        budgeted,
         truncated,
         truncated_reason: truncated.then_some("shallow_clone"),
         next_cursor,
@@ -325,6 +345,7 @@ fn run_touching(state: &ServerState, params: CommitsTouchingParams) -> Result<Ca
                     truncated: false,
                     truncated_reason: None,
                     next_cursor: None,
+                    budgeted: false,
                     cursor_invalidated: true,
                     elapsed_us: elapsed_us(started),
                 });
@@ -352,12 +373,15 @@ fn run_touching(state: &ServerState, params: CommitsTouchingParams) -> Result<Ca
         .cloned()
         .map(|c| commit_to_view(c, false))
         .collect();
-    let has_more = commits.len() > skip + page.len();
+    let page_len = page.len();
+    let (page, budgeted) = budget_commits(page, params.max_tokens);
+    let has_more = commits.len() > skip + page_len || budgeted;
     let next_cursor = has_more.then(|| super::cursor::Cursor::encode_in_memory((skip + page.len()) as u64, snapshot));
     let truncated = repo.is_shallow();
     json_result(&CommitsTouchingResponse {
         path: params.path,
         commits: page,
+        budgeted,
         truncated,
         truncated_reason: truncated.then_some("shallow_clone"),
         next_cursor,
@@ -388,6 +412,7 @@ fn run_by_path(state: &ServerState, params: FindCommitsByPathParams) -> Result<C
                     window_inspected: window,
                     commits: Vec::new(),
                     next_cursor: None,
+                    budgeted: false,
                     cursor_invalidated: true,
                     elapsed_us: elapsed_us(started),
                 });
@@ -426,11 +451,14 @@ fn run_by_path(state: &ServerState, params: FindCommitsByPathParams) -> Result<C
         seen += 1;
         hits.push(commit_to_view(c.clone(), true));
     }
+    let (hits, budgeted) = budget_commits(hits, params.max_tokens);
+    let has_more = has_more || budgeted;
     let next_cursor = has_more.then(|| super::cursor::Cursor::encode_in_memory((skip + hits.len()) as u64, snapshot));
     json_result(&FindCommitsByPathResponse {
         pattern: params.pattern,
         window_inspected: window,
         commits: hits,
+        budgeted,
         next_cursor,
         cursor_invalidated: false,
         elapsed_us: elapsed_us(started),
@@ -509,6 +537,7 @@ fn run_search(state: &ServerState, params: SearchGitHistoryParams) -> Result<Cal
                     commits: Vec::new(),
                     partial: false,
                     next_cursor: None,
+                    budgeted: false,
                     cursor_invalidated: true,
                     elapsed_us: elapsed_us(started),
                 });
@@ -543,26 +572,19 @@ fn run_search(state: &ServerState, params: SearchGitHistoryParams) -> Result<Cal
 
     let has_more = hits.len() > limit;
     hits.truncate(limit);
-    let next_cursor = has_more.then(|| super::cursor::Cursor::encode_in_memory((skip + hits.len()) as u64, snapshot));
 
-    let commits: Vec<GitCommitHit> = hits.into_iter().map(commit_to_hit).collect();
+    let body_chars = resolve_body_chars(params.body_chars);
+    let commits = hits.into_iter().map(|c| commit_to_hit(c, body_chars)).collect();
+    let (commits, budgeted) = budget_commits(commits, params.max_tokens);
+    let has_more = has_more || budgeted;
+    let kept = commits.len();
+    let next_cursor = has_more.then(|| super::cursor::Cursor::encode_in_memory((skip + kept) as u64, snapshot));
     json_result(&SearchGitHistoryResponse {
         commits,
+        budgeted,
         partial,
         next_cursor,
         cursor_invalidated: false,
         elapsed_us: elapsed_us(started),
     })
-}
-
-fn commit_to_hit(c: CommitInfo) -> GitCommitHit {
-    GitCommitHit {
-        sha: c.sha,
-        short_sha: c.short_sha,
-        summary: c.summary,
-        author: c.author,
-        author_email: c.author_email,
-        author_time_unix: c.author_time_unix,
-        body: c.body,
-    }
 }

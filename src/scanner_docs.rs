@@ -23,7 +23,7 @@
 #![cfg(feature = "documents")]
 
 use std::path::Path;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 use ahash::AHashSet;
 use anyhow::Context as _;
@@ -34,7 +34,7 @@ use crate::config::{DocumentsConfig, LlmConfig, ResourcesConfig};
 use crate::extract::doc::{DocConfig, FileMapDoc, extract_doc};
 use crate::extract::doc_guard::ChunkCutovers;
 use crate::hashing::{self, Hash};
-use crate::lance::DocumentRow;
+use crate::lance::{DocumentRow, PendingBatch};
 use crate::scanner::EmbedMode;
 use crate::scanner_filter::Filters;
 use crate::store::Store;
@@ -85,6 +85,9 @@ pub(crate) struct PendingDocBatch {
     /// True when the document was chunked by the linear fallback instead of xberg's markdown splitter
     /// (large text-like file). Drives the `docs_degraded` scan counter.
     pub degraded: bool,
+    /// True when structured extraction failed and the file was re-read as `text/plain` (implies
+    /// `degraded`). Drives the `docs_text_fallback` scan counter.
+    pub text_fallback: bool,
 }
 
 /// Look the configured embedding preset up in xberg's preset table and
@@ -116,6 +119,8 @@ pub(crate) fn doc_config_from(
     DocConfig {
         max_pages: cfg.max_pages,
         extraction_timeout_secs: cfg.extraction_timeout_secs,
+        max_abandoned_extractions: cfg.max_abandoned_extractions,
+        phase: None,
         max_chunks_per_document: cfg.max_chunks_per_document,
         chunk_cutovers: ChunkCutovers {
             markdown_bytes: cfg.markdown_chunk_max_bytes,
@@ -312,7 +317,8 @@ pub(crate) fn extract_and_persist_doc(
         return Ok(Some(pending_from_doc(&cached, rel, hash_hex, scope, cfg, embed, true)));
     }
 
-    let doc_config = doc_config_from(cfg, llm, resources, embed);
+    let mut doc_config = doc_config_from(cfg, llm, resources, embed);
+    doc_config.phase = Some(Arc::clone(&filters.doc_phase));
     let mut doc: FileMapDoc =
         extract_doc(abs, Some(mime_type), &doc_config).with_context(|| format!("extract document {rel}"))?;
     doc.config_digest.clone_from(&filters.doc_digest);
@@ -421,6 +427,7 @@ fn pending_from_doc(
         embed_attempted: embed && !reused,
         reused,
         degraded: doc.linear_chunked,
+        text_fallback: doc.text_fallback,
     }
 }
 
@@ -462,23 +469,35 @@ pub(crate) fn delete_stale_documents(store: &mut Store, config: &crate::config::
     }
     for path in stale {
         store.remove_doc(path);
+        store.remove_doc_tombstone(path);
     }
     let Some(lance) = open_existing_doc_lance(store, config, "doc stale purge") else {
         return;
     };
+    // Group by doc scope and delete in bulk: one commit per scope per 2000 paths, not two per path.
+    let mut by_scope: ahash::AHashMap<String, Vec<String>> = ahash::AHashMap::new();
     for path in stale {
-        let doc_scope = doc_scope_for(path, scope, config);
-        if let Err(error) = lance.replace_document(doc_scope.as_ref(), path, Vec::new()) {
+        by_scope
+            .entry(doc_scope_for(path, scope, config).into_owned())
+            .or_default()
+            .push(path.clone());
+    }
+    for (doc_scope, paths) in &by_scope {
+        if let Err(error) = lance.delete_documents_for_paths(doc_scope, paths) {
             tracing::warn!(
-                rel = %path,
+                paths = paths.len(),
                 ?error,
                 "doc stale purge failed; search_documents may return a removed path"
             );
         }
-        // Drop the removed doc's document→code links too (ADR-0008), or graph_export/neighbors would
-        // keep surfacing edges from a doc that no longer exists.
-        if let Err(error) = lance.replace_doc_links(doc_scope.as_ref(), path, Vec::new()) {
-            tracing::warn!(rel = %path, ?error, "doc links stale purge failed; doc↔code edges may be stale");
+        // Drop the removed docs' document→code links too (ADR-0008), or graph_export/neighbors would
+        // keep surfacing edges from docs that no longer exist.
+        if let Err(error) = lance.delete_doc_links_for_paths(doc_scope, paths) {
+            tracing::warn!(
+                paths = paths.len(),
+                ?error,
+                "doc links stale purge failed; doc↔code edges may be stale"
+            );
         }
     }
 }
@@ -613,6 +632,23 @@ pub(crate) fn flush_document_batches(store: &mut Store, batches: Vec<PendingDocB
         }
     };
 
+    // One delete+append commit pair per BATCH_MAX_DOCS documents instead of per document (#76);
+    // rows are still built one document at a time, so peak RAM is one batch's rows.
+    let mut pending: PendingBatch<DocumentRow> = PendingBatch::default();
+    let flush = |pending: &mut PendingBatch<DocumentRow>, inserted: &mut usize| {
+        let items = pending.take();
+        let docs = items.len();
+        match lance.replace_documents_many(items) {
+            Ok(()) => *inserted += docs,
+            Err(error) => {
+                tracing::warn!(
+                    docs,
+                    ?error,
+                    "lance replace_documents_many failed; document search may be incomplete"
+                );
+            }
+        }
+    };
     for batch in batches {
         if !batch.emit_rows {
             continue;
@@ -632,16 +668,13 @@ pub(crate) fn flush_document_batches(store: &mut Store, batches: Vec<PendingDocB
         if rows.is_empty() {
             continue;
         }
-        match lance.replace_document(&batch.doc_scope, &batch.rel_path, rows) {
-            Ok(()) => inserted += 1,
-            Err(error) => {
-                tracing::warn!(
-                    rel = %batch.rel_path,
-                    ?error,
-                    "lance replace_document failed; document search may be incomplete"
-                );
-            }
+        pending.push(&batch.doc_scope, &batch.rel_path, rows);
+        if pending.is_full() {
+            flush(&mut pending, &mut inserted);
         }
+    }
+    if !pending.is_empty() {
+        flush(&mut pending, &mut inserted);
     }
     inserted
 }

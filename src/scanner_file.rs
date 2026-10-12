@@ -452,6 +452,8 @@ fn process_file(
         doc_batch: None,
         #[cfg(feature = "documents")]
         doc_upsert: None,
+        #[cfg(feature = "documents")]
+        doc_tombstone: None,
         #[cfg(feature = "code-search")]
         code_batch,
     }
@@ -502,6 +504,16 @@ fn process_doc(
         return FileResult::bare(rel.to_string(), FileStatus::DocUnchanged);
     }
 
+    // Timed out before on this exact content under these exact limits: a retry would only burn another
+    // timeout (and strand another thread). Editing the file or changing a limit gets past this.
+    if store.doc_tombstoned(rel, hash_hex, &filters.doc_guard_digest) {
+        tracing::debug!(
+            path = rel,
+            "skipping document: it timed out before and nothing relevant changed"
+        );
+        return FileResult::bare(rel.to_string(), FileStatus::DocTombstoned);
+    }
+
     // A document whose own estimated working set exceeds the whole ceiling can never fit: waiting ~keep
     // frees nothing and admitting it anyway is how the ceiling stopped meaning anything (a 7 MB ~keep
     // docx measured 12 GB). Skip it with a logged reason; this is a verdict on the file, not a ~keep
@@ -545,6 +557,7 @@ fn process_doc(
                 embedding_dim: batch.embedding_dim,
                 reused: batch.reused,
                 degraded: batch.degraded,
+                text_fallback: batch.text_fallback,
             };
             let doc_entry = crate::store::DocEntry {
                 hash_hex: hash_hex.to_string(),
@@ -565,18 +578,30 @@ fn process_doc(
                 upsert: None,
                 doc_batch: Some(batch),
                 doc_upsert,
+                doc_tombstone: None,
                 #[cfg(feature = "code-search")]
                 code_batch: None,
             }
         }
         Ok(None) => FileResult::bare(rel.to_string(), FileStatus::SkippedNoLang),
         Err(error) => {
-            if matches!(
-                error.downcast_ref::<crate::extract::ExtractError>(),
-                Some(crate::extract::ExtractError::DocTimeout(_))
-            ) {
-                tracing::warn!(path = rel, "skipping document: {error:#}");
-                return FileResult::bare(rel.to_string(), FileStatus::DocTimedOut);
+            match error.downcast_ref::<crate::extract::ExtractError>() {
+                Some(crate::extract::ExtractError::DocTimeout(budget)) => {
+                    tracing::warn!(path = rel, "skipping document: {error:#}");
+                    return FileResult {
+                        doc_tombstone: Some(crate::store_doc_tombstone::DocTombstone {
+                            hash_hex: hash_hex.to_string(),
+                            guard_digest: filters.doc_guard_digest.clone(),
+                            timeout_secs: budget.as_secs(),
+                        }),
+                        ..FileResult::bare(rel.to_string(), FileStatus::DocTimedOut)
+                    };
+                }
+                Some(crate::extract::ExtractError::DocDeferred(_)) => {
+                    tracing::debug!(path = rel, "deferring document: {error:#}");
+                    return FileResult::bare(rel.to_string(), FileStatus::DocDeferred);
+                }
+                _ => {}
             }
             let msg = format!("document extract: {error:#}");
             if is_unsupported_format_error(&msg) {
