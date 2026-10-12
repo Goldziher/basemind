@@ -69,6 +69,8 @@ pub(super) async fn writer_rescan_and_refresh(
             scanned: stats.scanned,
             updated: stats.updated,
             docs_indexed: stats.docs_indexed,
+            docs_degraded: stats.docs_degraded,
+            doc_timeouts: stats.doc_timeouts,
             removed: stats.removed,
             elapsed_ms: 0,
         });

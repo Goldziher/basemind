@@ -521,6 +521,14 @@ pub enum CommsResponse {
         /// would have reported anyway.
         #[serde(default)]
         docs_indexed: usize,
+        /// Documents chunked by the linear fallback (over the `[documents]` chunk cutovers). Additive
+        /// with `#[serde(default)]`, like `docs_indexed`: an older peer omits it and it decodes as 0.
+        #[serde(default)]
+        docs_degraded: usize,
+        /// Documents abandoned because extraction overran `[documents] extraction_timeout_secs`.
+        /// Additive with `#[serde(default)]`; an older peer omits it and it decodes as 0.
+        #[serde(default)]
+        doc_timeouts: usize,
         /// Files pruned because they no longer exist.
         removed: usize,
         /// Wall-clock scan time in milliseconds.
@@ -699,6 +707,37 @@ mod tests {
         let bytes = rmp_serde::to_vec_named(&req).expect("encode");
         let back: CommsRequest = rmp_serde::from_slice(&bytes).expect("decode");
         assert_eq!(req, back);
+    }
+
+    #[test]
+    fn rescanned_without_doc_guard_counters_decodes_as_zero() {
+        // An older daemon omits `docs_degraded` / `doc_timeouts`; a newer client must read them as 0.
+        let old = serde_json::json!({
+            "result": "rescanned",
+            "data": {"scanned": 3, "updated": 2, "docs_indexed": 1, "removed": 0, "elapsed_ms": 7}
+        });
+        let bytes = rmp_serde::to_vec_named(&old).expect("encode");
+        let back: CommsResponse = rmp_serde::from_slice(&bytes).expect("decode");
+        assert!(matches!(
+            back,
+            CommsResponse::Rescanned {
+                docs_indexed: 1,
+                docs_degraded: 0,
+                doc_timeouts: 0,
+                ..
+            }
+        ));
+        let new = CommsResponse::Rescanned {
+            scanned: 3,
+            updated: 2,
+            docs_indexed: 1,
+            docs_degraded: 4,
+            doc_timeouts: 5,
+            removed: 0,
+            elapsed_ms: 7,
+        };
+        let bytes = rmp_serde::to_vec_named(&new).expect("encode");
+        assert_eq!(rmp_serde::from_slice::<CommsResponse>(&bytes).expect("decode"), new);
     }
 
     #[test]
