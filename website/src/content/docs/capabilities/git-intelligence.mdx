@@ -158,6 +158,27 @@ Full-text search over commit authors and messages across all branches.
 Search `"author"`, `"message"`, or `"all"` (default). Useful for "find commits mentioning
 the schema bump" or "what did Alice commit?"
 
+Squash-merge commits can carry message bodies of hundreds of kilobytes, so a hit's `body` is cut at
+`body_chars` characters (default 1000, `0` omits it). A cut body ends in a marker, sets
+`body_truncated: true` and reports the full size in `body_bytes`. The hit list as a whole is held to
+`max_tokens` (default 20000): overflow is dropped, the response carries `budgeted: true` and
+`next_cursor` resumes at the first dropped commit. `recent`, `touching` and `by_path` take the same
+`max_tokens`.
+
+### `git show`
+
+One commit with its whole message and changed files. Use it to read a body that `search` cut.
+
+```json
+{
+  "mode": "show",
+  "sha": "533fec1"
+}
+```
+
+`sha` is a full or abbreviated sha, or any revision (`HEAD~3`, a branch). The CLI form is
+`basemind git show <sha>`.
+
 ### `git status`
 
 What's staged and unstaged right now — the structured equivalent of `git status`.

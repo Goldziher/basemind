@@ -5785,7 +5785,7 @@ async fn memory_tool_validates_every_mode_before_running_it() {
 /// another mode is rejected rather than ignored, and a mode missing a required field names the
 /// exact `mode`/field pair.
 ///
-/// Consolidation moved eleven operations from tool names into `mode`. Coverage has to be asserted
+/// Consolidation moved twelve operations from tool names into `mode`. Coverage has to be asserted
 /// on the modes or it silently stops covering them — `tools/list` would still show one healthy
 /// `git` tool while any number of its modes were unreachable.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -5833,6 +5833,7 @@ async fn git_tool_validates_every_mode_before_running_it() {
         "blame_symbol",
         "symbol_history",
         "search",
+        "show",
     ] {
         assert!(
             schema.contains(&format!("\"{mode}\"")),

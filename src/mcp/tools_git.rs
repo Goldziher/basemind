@@ -17,7 +17,7 @@ use super::types_git::GitParams;
 
 #[rmcp::tool_router(vis = "pub(super)", router = "tool_router_git")]
 impl BasemindServer {
-    // No `output_schema`: the eleven modes return eleven different response shapes, and SEP-2106
+    // No `output_schema`: the twelve modes return twelve different response shapes, and SEP-2106
     // allows exactly one per tool. Declaring a union would mean nested structs, which schemars
     // emits as `$ref` into `$defs` — the construct that silently dropped the whole registry in
     // GH #50. The per-mode shapes are documented in the description instead. ~keep
@@ -36,7 +36,9 @@ impl BasemindServer {
         summary, and full body — so it finds matches arbitrarily far back, newest first. `field` \
         scopes it to `author`, `message`, or `all` (default; `summary`/`body` alias `message`); \
         served from the git-history index when fresh, otherwise a bounded live fallback flagged \
-        `partial` (author + summary only). `touching` answers 'when was this file changed' — the \
+        `partial` (author + summary only); each hit's body is cut at `body_chars` (default 1000, 0 omits it) \
+        and flagged `body_truncated`. `show` takes a `sha` (or any revision) and returns that one \
+        commit with its FULL message and changed files — use it to read a body `search` cut. `touching` answers 'when was this file changed' — the \
         commits that modified one `path`, newest first. `by_path` is a cheap pickaxe: commits in a \
         recent `window` (default 200, max 1000) whose changed-file list has a path matching the \
         regex `pattern`; it matches PATHS ONLY, never patch text. `churn` answers 'what changes \
@@ -56,7 +58,9 @@ impl BasemindServer {
         commits where the symbol's BODY fingerprint changed, or where it was introduced or \
         removed — file-level history filtered down to symbol identity via tree-sitter; `hash_mode` \
         picks `normalized` (default), `structural`, or `structural_loose`. Paths are \
-        repository-relative and forward-slash. Every paged mode returns `next_cursor`; cursors are \
+        repository-relative and forward-slash. The commit-list modes (`recent`, `touching`, `by_path`, `search`) hold their \
+        output to `max_tokens` (default 20000): overflow is dropped, `budgeted` is set and \
+        `next_cursor` resumes at the first dropped commit. Every paged mode returns `next_cursor`; cursors are \
         scoped to HEAD and a moved HEAD comes back as `cursor_invalidated`. A shallow clone sets \
         `truncated` / `truncated_reason`, so a missing commit is inconclusive rather than absent. \
         Requires a git repository. Parameters that belong to another mode are rejected, not \

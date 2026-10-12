@@ -74,7 +74,12 @@ index for microsecond latency.
 | `blame` | Who last changed each line of a file. | per-line |
 | `blame_symbol` | Who last changed one symbol, resolved to its line span. | per-symbol |
 | `symbol_history` | When a symbol's body actually changed, by structural hash. | commit walk |
-| `search` | Full-text search over commit messages and authors, at full branch depth. | branch depth |
+| `search` | Full-text search over commit messages and authors, at full branch depth. Each hit's body is cut at `body_chars` (default 1000). | branch depth |
+| `show` | One commit by `sha` or revision with its full, untruncated message and changed files. | — |
+
+The commit-list modes (`recent`, `touching`, `by_path`, `search`) hold their output to `max_tokens`
+(default 20000): overflow is dropped, `budgeted: true` is set and `next_cursor` resumes at the first
+dropped commit.
 
 See [Git Intelligence](/capabilities/git-intelligence/) for examples.
 

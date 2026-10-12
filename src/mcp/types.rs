@@ -890,8 +890,8 @@ pub use super::types_git::{
 };
 pub(super) use super::types_git::{
     BlameHunkView, BlameResponse, BlameSymbolResponse, CommitFileView, CommitView, CommitsTouchingResponse,
-    DiffFileResponse, DiffOutlineResponse, DiffSymbolView, FindCommitsByPathResponse, GitCommitHit, HotFileEntry,
-    HotFilesResponse, HunkView, RecentChangesResponse, SearchGitHistoryResponse, SymbolHistoryEntry,
+    DiffFileResponse, DiffOutlineResponse, DiffSymbolView, FindCommitsByPathResponse, GitCommitHit, GitShowResponse,
+    HotFileEntry, HotFilesResponse, HunkView, RecentChangesResponse, SearchGitHistoryResponse, SymbolHistoryEntry,
     SymbolHistoryResponse, WorkingTreeStatusView,
 };
 

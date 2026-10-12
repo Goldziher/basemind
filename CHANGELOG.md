@@ -10,6 +10,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`git` responses are bounded when commit messages are huge** ([#74](https://github.com/Goldziher/basemind/issues/74)).
+  `git` mode `search` returned every hit's commit body whole; squash-merge bodies reach 285 KB, so one
+  `limit` 100 call cost 2.6 MB. Each hit's body is now cut at `body_chars` (default 1000, `0` omits it)
+  with a marker, `body_truncated` and `body_bytes`, and the commit-list modes (`search`, `recent`,
+  `touching`, `by_path`) hold their output to `max_tokens` (default 20000), setting `budgeted` and
+  resuming through `next_cursor`. Both are available on `basemind git` as `--body-chars` and
+  `--max-tokens`.
+
 ### Changed
 
 - **Linear-chunker cutovers raised, measured on a release build with xberg 1.3.8.**
@@ -20,6 +30,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`git` mode `show` / `basemind git show <sha>`** returns one commit with its full, untruncated message and
+  changed files, the way back to a body that `search` cut.
 - **Document-guard counters on every scan surface** ([#72](https://github.com/Goldziher/basemind/issues/72)).
   `docs_degraded` and `doc_timeouts` now travel through the daemon `Rescanned` reply, the MCP `rescan`
   result and `basemind rescan` when it is forwarded to the daemon, not just the in-process scan summary.
