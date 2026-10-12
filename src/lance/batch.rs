@@ -14,7 +14,7 @@ use lancedb::Table;
 use lancedb::table::optimize::Duration as ChronoDuration;
 use lancedb::table::{CompactionOptions, OptimizeAction};
 
-use super::{DOCUMENTS_TABLE, DocumentRow, LanceStore, build_documents_batch, escape_sql_literal, schema};
+use super::{DOCUMENTS_TABLE, DocumentRow, LanceStore, build_documents_batch, escape_sql_literal};
 
 /// Documents folded into one delete+append commit pair.
 pub const BATCH_MAX_DOCS: usize = 256;
@@ -26,7 +26,11 @@ const AUTO_PRUNE_EVERY: u64 = 32;
 /// ...and also compact its fragments every this many commits.
 const AUTO_COMPACT_EVERY: u64 = 128;
 /// Versions younger than this survive an auto prune (in-flight readers pin a version).
+#[cfg(not(test))]
 const AUTO_RETENTION: Duration = Duration::from_secs(300);
+/// Tests prune everything not pinned, so the bound is observable without sleeping.
+#[cfg(test)]
+const AUTO_RETENTION: Duration = Duration::ZERO;
 /// Versions younger than this survive the post-scan [`LanceStore::maintain`] pass.
 pub const SCAN_RETENTION: Duration = Duration::from_secs(60);
 
@@ -101,7 +105,7 @@ impl LanceStore {
     /// [`Self::replace_documents_many`] for the `doc_links` table (key column `doc_path`).
     #[cfg(feature = "documents")]
     pub fn replace_doc_links_many(&self, items: Vec<(String, String, Vec<super::DocLinkRow>)>) -> Result<()> {
-        self.replace_many(schema::DOC_LINKS_TABLE, "doc_path", items, |_, rows| {
+        self.replace_many(super::schema::DOC_LINKS_TABLE, "doc_path", items, |_, rows| {
             super::doc_links::build_doc_links_batch(rows)
         })
     }
@@ -109,7 +113,7 @@ impl LanceStore {
     /// [`Self::replace_documents_many`] for the `code_chunks` table.
     #[cfg(feature = "code-search")]
     pub fn replace_code_chunks_many(&self, items: Vec<(String, String, Vec<super::CodeRow>)>) -> Result<()> {
-        self.replace_many(schema::CODE_CHUNKS_TABLE, "path", items, |dim, rows| {
+        self.replace_many(super::schema::CODE_CHUNKS_TABLE, "path", items, |dim, rows| {
             super::build_code_chunks_batch(dim, rows)
         })
     }
@@ -223,9 +227,11 @@ async fn optimize_table(table: &Table, compact: bool, retention: Duration) -> Re
             .await
             .context("compact")?;
     }
+    let older_than = ChronoDuration::try_seconds(i64::try_from(retention.as_secs()).unwrap_or(i64::MAX))
+        .unwrap_or_else(ChronoDuration::zero);
     table
         .optimize(OptimizeAction::Prune {
-            older_than: Some(ChronoDuration::try_seconds(i64::try_from(retention.as_secs()).unwrap_or(i64::MAX)).unwrap_or_else(ChronoDuration::zero)),
+            older_than: Some(older_than),
             delete_unverified: Some(false),
             error_if_tagged_old_versions: Some(false),
         })
@@ -233,3 +239,7 @@ async fn optimize_table(table: &Table, compact: bool, retention: Duration) -> Re
         .context("prune")?;
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "batch_tests.rs"]
+mod tests;
