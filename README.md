@@ -497,8 +497,10 @@ Memory is bounded by design:
   otherwise grow to the largest batch seen and never shrink. Intra-op threads are the auto
   embed-thread count (`max(2, logical CPUs / 4)`), or 2 in the daemon, which also drops its resident
   embedding models once the last concurrent embedding pass ends; the next pass reloads them.
-- Precise Python/Java resolution abandons a file past 600,000 steps, 50,000 partial paths or 3
-  seconds, and runs at most two stack-graph builds at once.
+- Precise Python/Java resolution abandons a file past 600,000 builder steps, 4,096 stitching phases
+  (about a million path extensions), 50,000 partial paths or 3 seconds, and runs at most two
+  stack-graph builds at once. The stitcher checks those budgets every 256 path extensions, not once
+  per phase, so a pathological file cannot grow between checks.
 - On macOS the allocator (mimalloc) heap is tagged as application memory (Mach VM tag 254), so
   `footprint`, `vmmap` and Activity Monitor no longer report it as `IOAccelerator` "GPU" memory.
 
