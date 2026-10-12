@@ -3,6 +3,8 @@ pub mod doc;
 #[cfg(feature = "documents")]
 pub mod doc_cost;
 #[cfg(feature = "documents")]
+pub mod doc_fallback;
+#[cfg(feature = "documents")]
 pub mod doc_guard;
 pub mod l1;
 pub mod l2;
