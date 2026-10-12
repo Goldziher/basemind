@@ -44,6 +44,8 @@ const SPAWN_POLL_INTERVAL: Duration = Duration::from_millis(50);
 /// How long to wait for a previous / incompatible daemon to release the socket after we ask it to
 /// stop, before giving up and surfacing a clear error.
 const TAKEOVER_DRAIN_TIMEOUT: Duration = Duration::from_secs(3);
+/// How long a predecessor that ignored `Stop` gets to exit on SIGTERM before it is killed.
+const TAKEOVER_TERM_GRACE: Duration = Duration::from_secs(5);
 
 /// Resolved per-user comms paths.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -444,6 +446,13 @@ async fn ensure_daemon_with_spawn_policy(paths: &CommsPaths, policy: SpawnPolicy
                 break;
             }
             tokio::time::sleep(SPAWN_POLL_INTERVAL).await;
+        }
+        // A predecessor that ignores `Stop` (busy store, held-open clients, a build that predates
+        // the drain) would otherwise wedge every new session until an operator kills it by hand.
+        // Escalate by pid: SIGTERM drains cleanly, SIGKILL is the last resort.
+        if off_worker(|| probe_alive(&paths.socket_path)) {
+            let pid = report.pid;
+            off_worker(|| force_terminate(pid, TAKEOVER_TERM_GRACE));
         }
         if off_worker(|| probe_alive(&paths.socket_path)) {
             return Err(SingletonError::StalePredecessor {
