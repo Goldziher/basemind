@@ -19,6 +19,9 @@ exclude = [
   # Generated AI-RULEZ bundles (three copies of the hermes plugin). Regenerated
   # on every `release-bump.sh`; linting them is a loop with the generator.
   ".hermes/**",
+  # Agent Plugins manifests written by `ai-rulez generate --plugin`.
+  "plugin.json",
+  "mcp.json",
   "dist/**",
   "node_modules/**",
   "target/**",
