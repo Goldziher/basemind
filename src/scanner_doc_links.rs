@@ -13,7 +13,7 @@ use memchr::memmem;
 
 use crate::config::Config;
 use crate::extract::doc::FileMapDoc;
-use crate::lance::DocLinkRow;
+use crate::lance::{DocLinkRow, PendingBatch};
 use crate::scanner_docs::{PendingDocBatch, preset_dim};
 use crate::store::Store;
 
@@ -146,6 +146,14 @@ pub(crate) fn flush_doc_links(store: &mut Store, config: &Config, batches: &[Pen
             return;
         }
     };
+    let mut pending: PendingBatch<DocLinkRow> = PendingBatch::default();
+    let write = |pending: &mut PendingBatch<DocLinkRow>| {
+        let items = pending.take();
+        let docs = items.len();
+        if let Err(error) = lance.replace_doc_links_many(items) {
+            tracing::warn!(docs, ?error, "doc links: replace failed; doc↔code edges may be stale");
+        }
+    };
     for batch in batches {
         let doc = match store.read_doc_by_hex(&batch.blob_hash) {
             Ok(Some(doc)) => doc,
@@ -155,10 +163,15 @@ pub(crate) fn flush_doc_links(store: &mut Store, config: &Config, batches: &[Pen
                 continue;
             }
         };
+        // An empty row set still goes in: it deletes the document's now-stale links.
         let rows = doc_links_for(&doc, &batch.rel_path, &batch.doc_scope);
-        if let Err(error) = lance.replace_doc_links(&batch.doc_scope, &batch.rel_path, rows) {
-            tracing::warn!(rel = %batch.rel_path, ?error, "doc links: replace failed; doc↔code edges may be stale");
+        pending.push(&batch.doc_scope, &batch.rel_path, rows);
+        if pending.is_full() {
+            write(&mut pending);
         }
+    }
+    if !pending.is_empty() {
+        write(&mut pending);
     }
 }
 

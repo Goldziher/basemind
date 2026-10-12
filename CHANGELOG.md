@@ -76,6 +76,14 @@ change.
 
 ### Fixed
 
+- **Document scans no longer accumulate tens of thousands of LanceDB versions** ([#76](https://github.com/Goldziher/basemind/issues/76)).
+  The `documents`, `doc_links` and `code_chunks` tables took one delete and one append commit per file, so a
+  14,664-document scan produced ~28k versions per table and spent about two hours in commit latency. A scan now
+  writes one delete plus one append per batch (256 files or 4,096 rows), skips the delete on an empty table,
+  purges stale documents with bulk `IN (...)` deletes, and ends with a compaction and a prune of versions older
+  than 60 seconds. The incremental and watch paths prune versions older than five minutes every 32 commits and
+  compact every 128, so the table directories stay bounded. Existing bloated indexes shrink on their next scan.
+
 - **`basemind` 0.29.x can be published to crates.io.** The vendored forks `basemind-lsp-positions`,
   `basemind-tree-sitter-graph` and `basemind-tree-sitter-stack-graphs` had moved to tree-sitter 0.27
   without a version bump, so crates.io still served their 0.26 builds and `basemind` could not resolve a

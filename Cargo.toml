@@ -324,6 +324,10 @@ opt-level = 2
 name = "doc_measure"
 required-features = ["documents"]
 
+[[example]]
+name = "lance_bench"
+required-features = ["documents"]
+
 [[bench]]
 name = "extract"
 harness = false
