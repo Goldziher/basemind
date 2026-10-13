@@ -43,7 +43,10 @@ fn build_repo() -> TempDir {
         std::fs::write(root.join("a.rs"), format!("pub fn alpha() -> u32 {{ {i} }}\n")).expect("write a.rs");
         git(root, &["add", "."]);
         let body = format!("{TOKEN} {}", "lorem ipsum dolor ".repeat(BIG_BODY_BYTES / 18));
-        git(root, &["commit", "-qm", &format!("squash {i}"), "-m", &body]);
+        // The body is far past MAX_ARG_STRLEN (128 KiB on Linux), so it goes through a file, not argv.
+        let message = root.join(".git").join("COMMIT_BODY");
+        std::fs::write(&message, format!("squash {i}\n\n{body}\n")).expect("write message");
+        git(root, &["commit", "-q", "-F", message.to_str().expect("utf8 path")]);
     }
     dir
 }
