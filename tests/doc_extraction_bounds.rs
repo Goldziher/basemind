@@ -120,6 +120,9 @@ fn a_timed_out_document_is_not_retried_until_the_file_or_the_limits_change() {
 
     // Putting the guard back (linear chunking) indexes it and clears the tombstone.
     let mut guarded = raised.clone();
+    // The earlier scans leave their quadratic splitters burning CPU in abandoned threads; a small runner
+    // can starve the linear chunker past 2 s, so this scan gets a budget that only a real hang would hit.
+    guarded.documents.extraction_timeout_secs = 60;
     guarded.documents.plain_text_chunk_max_bytes = ConfigV1::with_defaults().documents.plain_text_chunk_max_bytes;
     let fifth = scan_once(root, &guarded);
     assert_eq!(fifth.stats.doc_timeouts, 0);
