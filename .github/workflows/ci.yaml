@@ -130,6 +130,14 @@ jobs:
       - name: cargo test
         run: cargo test --workspace --features "${{ matrix.features }}" --quiet --no-fail-fast
 
+      # ~keep The debug test artifacts are dead weight once `cargo test` has passed, and with the
+      # ~keep `full` feature set they plus the release build overflow the macOS runner's disk.
+      - name: Reclaim debug artifacts (macOS full)
+        if: runner.os == 'macOS' && matrix.features == 'full'
+        run: |
+          rm -rf target/debug
+          df -h /
+
       - name: cargo build --release
         run: cargo build --release --quiet --bin basemind --features "${{ matrix.features }}"
 
