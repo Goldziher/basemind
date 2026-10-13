@@ -10,11 +10,7 @@
       "startup_timeout_sec": 120
     },
     "ai-rulez": {
-      "args": [
-        "dlx",
-        "ai-rulez@5.0.1",
-        "mcp"
-      ],
+      "args": ["dlx", "ai-rulez@5.0.1", "mcp"],
       "command": "pnpm",
       "type": "stdio"
     }
