@@ -6,13 +6,16 @@
 set -u
 here="$(cd "$(dirname "$0")/.." && pwd)"
 bin="${CARGO_TARGET_DIR:-$here/target}/release/examples/doc_measure"
-profile="$1"; kinds="$2"; sizes="$3"; limit="${4:-300}"
+profile="$1"
+kinds="$2"
+sizes="$3"
+limit="${4:-300}"
 work="${DOC_MEASURE_DIR:-/tmp/bm-doc-measure}"
 mkdir -p "$work"
 mime_for() {
   case "$1" in
-    log) echo text/plain ;; csv) echo text/csv ;; yaml) echo application/yaml ;;
-    json) echo application/json ;; xml) echo application/xml ;; *md) echo text/markdown ;;
+  log) echo text/plain ;; csv) echo text/csv ;; yaml) echo application/yaml ;;
+  json) echo application/json ;; xml) echo application/xml ;; *md) echo text/markdown ;;
   esac
 }
 for kind in $kinds; do
