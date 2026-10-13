@@ -142,7 +142,7 @@ async fn search_caps_each_body_and_marks_the_cut() {
 
     let (value, _) = indexed_search(&service, json!({ "body_chars": 20, "max_tokens": 1_000_000 })).await;
     let body = commits(&value)[0]["body"].as_str().expect("body");
-    assert!(body.starts_with(&TOKEN[..20]) && body.chars().count() < 220, "{body}");
+    assert!(body.starts_with(TOKEN) && body.chars().count() < 220, "{body}");
 
     let (value, _) = indexed_search(&service, json!({ "body_chars": 0, "max_tokens": 1_000_000 })).await;
     let hit = &commits(&value)[0];
