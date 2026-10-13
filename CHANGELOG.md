@@ -10,6 +10,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.29.3] - 2026-10-13
+
+### Changed
+
+- Dependencies: `xberg` 1.3.9, `tree-sitter-language-pack` 1.22.1, `oxc_*` 0.154, plus compatible lockfile updates. `ort` stays at 2.0.0-rc.13, `arrow` at 58 and `bincode` at 2.x.
+
 ### Fixed
 
 - **Document scans no longer accumulate tens of thousands of LanceDB versions** ([#76](https://github.com/Goldziher/basemind/issues/76)).
