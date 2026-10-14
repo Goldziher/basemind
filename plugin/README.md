@@ -98,6 +98,11 @@ Regenerate and verify through the repository plugin tasks before submitting chan
 generated runtime files directly. Publishing must verify the packed npm archive, Hermes wheel,
 and all-runtime archive before checking whether a version already exists.
 
+The manual artifact workflow packages the selected checkout only when its core and plugin
+versions match the requested existing release tag. Marketplace indexes pin that checkout's
+immutable commit; the archive attaches to the requested release. It does not create a product
+tag or publish registry packages.
+
 The new npm package requires its first manual bootstrap and a trusted-publisher configuration;
 Hermes publishing requires its PyPI trusted publisher. Configure those account settings before
 requesting a release. Existing version 0.29.3 registry packages do not contain these unreleased

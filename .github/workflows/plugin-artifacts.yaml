@@ -22,7 +22,6 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-          ref: ${{ inputs.tag }}
       - name: Install ai-rulez
         uses: xberg-io/actions/setup-ai-rulez@98adf87f1ed4c62a57ff56f9010d62faf42d4db6
         with:
@@ -38,7 +37,7 @@ jobs:
         uses: xberg-io/actions/package-ai-rulez-plugin@66e9a172c28ae7e57496fe92de1ab74f2a604194
         with:
           cursor-marketplace: "true"
-          tag: ${{ inputs.tag }}
+          tag: ${{ github.sha }}
           config-directory: .ai-rulez
           version-sync-script: scripts/sync_plugin_version.py
       - name: Archive verified runtime bundles and marketplace indexes
