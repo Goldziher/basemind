@@ -76,7 +76,7 @@ def _register_skills(ctx) -> None:
     if not callable(reg) or not _SKILLS_DIR.is_dir():
         return
     for skill_md in sorted(_SKILLS_DIR.glob("*/SKILL.md")):
-        _safe_call(reg, skill_md.parent.name, str(skill_md))
+        _safe_call(reg, skill_md.parent.name, skill_md)
 
 
 def _register_commands(ctx) -> None:

@@ -60,7 +60,8 @@ def test_register_wires_all_skills():
     assert "basemind" in names
     assert len(ctx.skills) >= 8
     for _, path in ctx.skills:
-        assert Path(path).is_file()
+        assert isinstance(path, Path), "Native Hermes calls path.exists() on registered skills"
+        assert path.is_file()
 
 
 def test_register_wires_expected_commands_with_body_handlers():

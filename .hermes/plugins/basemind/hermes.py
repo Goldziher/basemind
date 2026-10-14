@@ -1,6 +1,6 @@
 # AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-# Content-Hash: blake3:e95b092f0698f0a21146f9152c333f578c743fe5cfb8792f1e30afe08affb70e
-# Source-Hash: blake3:aa3fdcfda21e2102d900287f385f78de45def44813de651b4666209c45fafc67
+# Content-Hash: blake3:7499b2634a7e8ebe3cc23ac6a7d0aea98603b45a68d002f613b26dbf62b51c70
+# Source-Hash: blake3:7782c0b4b9e2603c82d23fa88f311855ad4e59d0bc6cdddd9dafcddcb3e323b3
 # Schema-Version: v1
 
 """Hermes Agent plugin registration for basemind.
@@ -81,7 +81,7 @@ def _register_skills(ctx) -> None:
     if not callable(reg) or not _SKILLS_DIR.is_dir():
         return
     for skill_md in sorted(_SKILLS_DIR.glob("*/SKILL.md")):
-        _safe_call(reg, skill_md.parent.name, str(skill_md))
+        _safe_call(reg, skill_md.parent.name, skill_md)
 
 
 def _register_commands(ctx) -> None:
