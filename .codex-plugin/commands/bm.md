@@ -1,8 +1,15 @@
 ---
-name: bm
 description: Ask basemind anything about the current codebase — outlines, refs, callers, git history, blame, diffs, docs, memory.
 argument-hint: <question about the codebase>
+name: bm
 ---
+
+<!--
+AI-RULEZ :: GENERATED FILE — DO NOT EDIT
+Content-Hash: blake3:2cd1fe898f11e04013f2b22d82853ad9bf27b45b3725bd55a7ac1e05e9aca741
+Source-Hash: blake3:db4c3979a26b54efd5467f96ce1fccaf62e7765db011aa2526d6e8ad411e694b
+Schema-Version: v1
+-->
 
 # bm — ask basemind anything about this codebase
 

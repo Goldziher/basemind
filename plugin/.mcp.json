@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "basemind": {
+      "command": "./scripts/mcp-launch.sh",
+      "args": [
+        "serve"
+      ]
+    }
+  }
+}

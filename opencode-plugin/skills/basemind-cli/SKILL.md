@@ -1,11 +1,18 @@
 ---
+description: Navigate codebases and manage caches via the basemind CLI — outlines, symbol search, reference/caller lookups, git history, blame, and diffs. For headless scripting, CI, or when driving the CLI more efficiently than interactive MCP calls. Shares the same index as the MCP server.
 name: basemind-cli
-description: >-
-  Navigate codebases and manage caches via the basemind CLI — outlines, symbol search,
-  reference/caller lookups, git history, blame, and diffs. For headless scripting, CI, or when
-  driving the CLI more efficiently than interactive MCP calls. Shares the same index as the
-  MCP server.
+license: MIT
+metadata:
+    author: Goldziher
+    repository: https://github.com/Goldziher/basemind
 ---
+
+<!--
+AI-RULEZ :: GENERATED FILE — DO NOT EDIT
+Content-Hash: blake3:60851b154d1509a944c7a100c1d5420f90cf45de94e7f7d65264fdf418e4a778
+Source-Hash: blake3:db4c3979a26b54efd5467f96ce1fccaf62e7765db011aa2526d6e8ad411e694b
+Schema-Version: v1
+-->
 
 # basemind CLI — the scriptable interface
 

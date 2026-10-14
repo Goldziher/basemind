@@ -1,12 +1,18 @@
 ---
+description: Navigate large or unfamiliar codebases via the basemind MCP server — outlines, symbol search, reference/caller lookups, commit history, blame, and diffs without reading source files. Reach for it whenever the user asks "where is X defined", "what calls Y", "what changed recently in Z", or whenever you're about to grep or open many files to find structural information.
 name: basemind
-description: >-
-  Navigate large or unfamiliar codebases via the basemind MCP server — outlines,
-  symbol search, reference/caller lookups, commit history, blame, and diffs without
-  reading source files. Reach for it whenever the user asks "where is X defined",
-  "what calls Y", "what changed recently in Z", or whenever you're about to grep
-  or open many files to find structural information.
+license: MIT
+metadata:
+    author: Goldziher
+    repository: https://github.com/Goldziher/basemind
 ---
+
+<!--
+AI-RULEZ :: GENERATED FILE — DO NOT EDIT
+Content-Hash: blake3:1d0134b284006b796d871fb0b16b101d8e59599ff14bc79a2a2cb74c4b40aa16
+Source-Hash: blake3:db4c3979a26b54efd5467f96ce1fccaf62e7765db011aa2526d6e8ad411e694b
+Schema-Version: v1
+-->
 
 # basemind — the indexed context layer
 

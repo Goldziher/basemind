@@ -1,8 +1,16 @@
 ---
-name: bm-init
 description: Onboard (or refresh) basemind in this repo — write basemind.toml and inject a "prefer basemind over grep/read/git" rules block into a rules file you choose (CLAUDE.local.md / AGENTS.local.md / CLAUDE.md / AGENTS.md / ai-rulez).
-argument-hint: [capabilities…]
+argument-hint:
+    - capabilities…
+name: bm-init
 ---
+
+<!--
+AI-RULEZ :: GENERATED FILE — DO NOT EDIT
+Content-Hash: blake3:bece6c29c798429b602052f14f1b50a48a435b0a3a58f3c1589e63f15c63767e
+Source-Hash: blake3:db4c3979a26b54efd5467f96ce1fccaf62e7765db011aa2526d6e8ad411e694b
+Schema-Version: v1
+-->
 
 # bm-init — onboard basemind into this repo
 

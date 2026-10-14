@@ -1,23 +1,16 @@
 ---
+description: Diagnose and recover basemind when it isn't working — MCP tools missing or erroring, "no index" / "no indexed files", empty results that shouldn't be empty, or the MCP server seems dead. Runs CLI checks (no MCP server required) and gives the client-specific way to reconnect the server.
 name: basemind-doctor
-description: >-
-  Diagnose and recover basemind when it isn't working — MCP tools missing or erroring, "no
-  index" / "no indexed files", empty results that shouldn't be empty, or the MCP server seems
-  dead. Runs CLI checks (no MCP server required) and gives the client-specific way to reconnect
-  the server.
+license: MIT
+metadata:
+    author: Goldziher
+    repository: https://github.com/Goldziher/basemind
 ---
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:277a3b1e1bbab43987543ee8939be82b909c2f18fd287481c93f4e17b9fa1a0d
-Source-Hash: blake3:7782c0b4b9e2603c82d23fa88f311855ad4e59d0bc6cdddd9dafcddcb3e323b3
-Schema-Version: v1
--->
-
-<!--
-AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:165531a86d93374a7e423244dd3dd324e5066c39ff7d03edb7e9cf2f482769bd
-Source-Hash: blake3:378e61c2bd27ae140e75d818f27005fac54d22d0ad24de4163a71e8572a15c72
+Content-Hash: blake3:40f19b5d630dc343bd1a0b0962644ab240fdfa3a6d6767a5c9b6ff3a756a2532
+Source-Hash: blake3:db4c3979a26b54efd5467f96ce1fccaf62e7765db011aa2526d6e8ad411e694b
 Schema-Version: v1
 -->
 

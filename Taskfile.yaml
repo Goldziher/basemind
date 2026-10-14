@@ -27,9 +27,31 @@ tasks:
   hermes:test:
     desc: Validate and build the generated Hermes plugin package
     cmds:
-      - uv run --with pytest python -m pytest pip-package-hermes/tests
-      - rm -rf /tmp/basemind-hermes-wheel
-      - uv build --wheel --out-dir /tmp/basemind-hermes-wheel .hermes/package
+      - uv run --no-project --with pytest --with mcp==1.28.1 python -m pytest pip-package-hermes/tests
+      - |
+        wheel_dir="$(mktemp -d)"
+        trap 'rm -rf "$wheel_dir"' EXIT
+        uv build --wheel --out-dir "$wheel_dir" plugin/.hermes/package
+
+  plugin:generate:
+    desc: Generate native plugins and all public compatibility exports
+    cmds:
+      - python3 scripts/sync_plugin_version.py
+      - bash scripts/sync-plugin-skills.sh
+
+  plugin:test:
+    desc: Exercise archive, public export, and actual CLI integration contracts
+    cmds:
+      - uv run --no-project --with pytest --with mcp==1.28.1 python -m pytest scripts/tests tests/test_legacy_plugin_exports.py pip-package-hermes/tests
+      - node tests/basemind_pi_cli_contract.mjs
+
+  plugin:verify:
+    desc: Verify native plugin and public export freshness
+    cmds:
+      - python3 scripts/sync_plugin_version.py --check
+      - ai-rulez verify --plugin
+      - python3 scripts/sync_public_skills.py --check
+      - python3 scripts/sync_legacy_plugin_exports.py --check
 
   package:plugin:
     aliases: [package:pi]

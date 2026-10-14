@@ -1,0 +1,13 @@
+[[marketplaces]]
+name = "basemind"
+source = "Goldziher/basemind"
+type = "github"
+
+[marketplace]
+name = "basemind"
+description = "Basemind code intelligence and context for coding agents."
+members = ["plugin"]
+
+[marketplace.owner]
+name = "Na'aman Hirschfeld"
+email = "nhirschfeld@gmail.com"

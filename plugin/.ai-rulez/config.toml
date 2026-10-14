@@ -1,0 +1,8 @@
+version = "5.0"
+name = "basemind"
+default_layers = ["plugins"]
+agents_md = false
+gitignore = true
+
+[lock]
+include_outputs = false

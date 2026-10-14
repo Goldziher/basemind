@@ -87,12 +87,12 @@ pi has no native MCP, so basemind's MCP tools are not exposed in this session. U
 the \`basemind\` CLI through pi's \`bash\` tool instead — it shares the same on-disk
 index and the same capabilities:
 
-- Outline a file: \`basemind query outline <path>\`
-- Find a symbol: \`basemind query symbol <name>\`
-- Find call sites: \`basemind query references <name>\`
-- Find callers: \`basemind query callers <path> <name>\`
-- Regex over content: \`basemind query grep <pattern>\`
-- Git history / blame: \`basemind git recent-changes\`, \`basemind git blame-file <path>\`
+- Outline a file: \`basemind code outline <path>\`
+- Find a symbol: \`basemind code symbols <name>\`
+- Find call sites: \`basemind code references <name>\`
+- Find callers: \`basemind code callers <path> <name>\`
+- Regex over content: \`basemind code grep <pattern>\`
+- Git history / blame: \`basemind git recent\`, \`basemind git blame <path>\`
 - Re-index after edits: \`basemind rescan [path]\`
 
 Run \`basemind scan\` once if the index is missing. Prefer these over re-reading or

@@ -1,26 +1,15 @@
 {
   "name": "basemind",
-  "description": "Full AI context layer over MCP — tree-sitter code-map, document RAG (PDF/Office/HTML/email + OCR + reranker), shared agent memory, on-demand web crawl, git history + blame + per-symbol diff. 300+ languages, 10+ coding-agent harnesses, content-addressed Fjall + LanceDB.",
+  "description": "Basemind code intelligence and context for coding agents.",
   "owner": {
     "name": "Na'aman Hirschfeld",
-    "email": "nhirschfeld@gmail.com",
-    "url": "https://github.com/Goldziher"
+    "email": "nhirschfeld@gmail.com"
   },
   "plugins": [
     {
       "name": "basemind",
       "description": "Full AI context layer over MCP — tree-sitter code-map, document RAG (PDF/Office/HTML/email + OCR + reranker), shared agent memory, on-demand web crawl, git history + blame + per-symbol diff. 300+ languages, 10+ coding-agent harnesses, content-addressed Fjall + LanceDB.",
-      "version": "0.29.3",
-      "source": "./",
-      "category": "developer-tools",
-      "license": "MIT",
-      "homepage": "https://github.com/Goldziher/basemind",
-      "keywords": ["mcp", "agent-context", "rag", "code-map", "tree-sitter"],
-      "tags": ["mcp", "code-intelligence", "rag", "tree-sitter", "git", "embeddings"],
-      "author": {
-        "name": "Na'aman Hirschfeld",
-        "email": "nhirschfeld@gmail.com"
-      }
+      "source": "./plugin"
     }
   ]
 }

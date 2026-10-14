@@ -1,12 +1,18 @@
 ---
+description: 'Show a quick dashboard of basemind activity in this session: how many code-map tool calls have run, the per-tool histogram, and the estimated tokens saved vs a hypothetical grep+Read baseline. Use when the user asks "what has basemind done?", "how much is basemind helping?", "show me basemind stats", or invokes `/bm-stats` directly.'
 name: basemind-stats
-description: >-
-  Show a quick dashboard of basemind activity in this session: how many code-map
-  tool calls have run, the per-tool histogram, and the estimated tokens saved vs
-  a hypothetical grep+Read baseline. Use when the user asks "what has basemind
-  done?", "how much is basemind helping?", "show me basemind stats", or invokes
-  `/bm-stats` directly.
+license: MIT
+metadata:
+    author: Goldziher
+    repository: https://github.com/Goldziher/basemind
 ---
+
+<!--
+AI-RULEZ :: GENERATED FILE — DO NOT EDIT
+Content-Hash: blake3:0342ba178d9ca8a7dd9c503ffba03b9fac721d9b17cf09ffa3f735c9fb77105e
+Source-Hash: blake3:db4c3979a26b54efd5467f96ce1fccaf62e7765db011aa2526d6e8ad411e694b
+Schema-Version: v1
+-->
 
 # basemind-stats — on-demand usage dashboard
 

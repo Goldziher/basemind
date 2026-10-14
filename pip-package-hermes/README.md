@@ -1,62 +1,20 @@
 # basemind-hermes-plugin
 
-The [Hermes Agent](https://github.com/NousResearch/hermes) plugin for
-[basemind](https://github.com/Goldziher/basemind). It adds what MCP config alone cannot: basemind's
-helper **skills**, **slash commands**, and agent-comms **notifications** (session-start context +
-per-turn inbox deltas).
+The Hermes plugin for [basemind](https://github.com/Goldziher/basemind) adds public skills, slash commands, agent notifications, and a local MCP bridge.
 
-This package is pure-Python and stdlib-only. It does **not** install the `basemind` binary — install
-that separately (see below). The plugin reaches basemind by shelling out to `basemind` on your
-`PATH`, and every hook is fail-open: with no binary or a down comms broker it degrades to a no-op.
+The authoritative package is generated at `plugin/.hermes/package` from
+`plugin/.ai-rulez/hermes/index.py`. This directory retains package tests and compatibility tooling.
+See the [plugin installation guide](../plugin/README.md#hermes) for installation from source.
 
-## Prerequisites
+Published PyPI version 0.29.3 predates the current skill-registration fix and MCP bridge. Install
+the generated local wheel until a newer version includes these changes. Use Python 3.11 or newer
+in Hermes's own environment, enable `basemind`, and restart Hermes. Install the basemind binary
+separately and keep it on `PATH`.
 
-1. **The `basemind` binary on your `PATH`** — via any channel:
-
-   | Channel | Command |
-   |---|---|
-   | Homebrew | `brew install Goldziher/tap/basemind` |
-   | npm | `pnpm add -g basemind` |
-   | cargo | `cargo install basemind --features full --locked` |
-   | GitHub releases | [download a binary](https://github.com/Goldziher/basemind/releases) |
-
-2. **The basemind MCP server wired into Hermes** — this is what gives Hermes the nine domain tools.
-   Add to
-   `~/.hermes/config.yaml`:
-
-   ```yaml
-   mcp_servers:
-     basemind:
-       command: basemind
-       args: [serve]
-   ```
-
-## Install the plugin
-
-Install into the **same Python environment Hermes runs in** (Hermes discovers plugins through the
-`hermes_agent.plugins` entry point):
-
-```bash
-pip install basemind-hermes-plugin
-```
-
-Then enable it (general plugins are opt-in):
-
-```bash
-hermes plugins enable basemind
-```
-
-Restart your Hermes session so it re-reads the config and loads the plugin.
-
-## What it registers
-
-- **Skills** — `basemind`, `basemind-code-search`, `basemind-git-history`, `basemind-documents`,
-  `basemind-comms`, `basemind-cli`, `basemind-doctor`, `basemind-scan`, `basemind-stats`,
-  `multi-agent-room`.
-- **Slash commands** — `bm`, `bm-init`, `bm-scan`, `bm-doctor`, `bm-stats`, `bm-statusline`.
-- **Hooks** — `on_session_start` (operating discipline + condensed comms inbox) and `pre_llm_call`
-  (per-turn agent-comms deltas). Best-effort; the MCP tools work regardless.
+The generated wheel depends on MCP and PyYAML. Registration itself uses only the standard library;
+the MCP SDK is imported when the bridge is called. Skills include `basemind-multi-agent-room`.
+The bridge returns JSON text; session and inbox notifications are best-effort.
 
 ## License
 
-MIT
+MIT.

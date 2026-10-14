@@ -1,0 +1,92 @@
+[plugin]
+name = "basemind"
+version = "0.29.3"
+display_name = "basemind"
+description = "Full AI context layer over MCP — tree-sitter code-map, document RAG (PDF/Office/HTML/email + OCR + reranker), shared agent memory, on-demand web crawl, git history + blame + per-symbol diff. 300+ languages, 10+ coding-agent harnesses, content-addressed Fjall + LanceDB."
+homepage = "https://github.com/Goldziher/basemind"
+repository = "https://github.com/Goldziher/basemind"
+license = "MIT"
+category = "developer-tools"
+keywords = ["mcp", "agent-context", "rag", "code-map", "tree-sitter"]
+tags = ["mcp", "code-intelligence", "rag", "tree-sitter", "git", "embeddings"]
+runtimes = ["claude", "cursor", "codex", "gemini", "kimi", "opencode", "factory", "hermes", "pi", "agent-plugins", "copilot"]
+spec = "1.0.0"
+include = ["assets/**", "hooks/**", "scripts/**"]
+
+[plugin.author]
+name = "Na'aman Hirschfeld"
+email = "nhirschfeld@gmail.com"
+url = "https://github.com/Goldziher"
+
+[[plugin.mcp]]
+name = "basemind"
+command = "${PLUGIN_ROOT}/scripts/mcp-launch.sh"
+args = ["serve"]
+
+[plugin.interface]
+display_name = "basemind"
+short_description = "Code-map MCP server for navigating large codebases"
+long_description = "basemind indexes a repository with tree-sitter and exposes a structured code map \u2014 outlines, references, callers, history, blame, diff \u2014 over MCP. Designed for AI agents to navigate unfamiliar code without reading every file."
+developer_name = "Na'aman Hirschfeld"
+category = "Developer Tools"
+capabilities = ["Interactive", "Read"]
+default_prompt = ["Outline this file.", "What calls `<symbol>` in this repo?", "Where is `<symbol>` defined?", "What changed in this file in the last 20 commits?"]
+website_url = "https://github.com/Goldziher/basemind"
+brand_color = "#F97316"
+
+[plugin.hermes]
+requires_python = ">=3.11"
+dependencies = ["mcp==1.28.1", "PyYAML==6.0.3"]
+
+
+[plugin.codex]
+manifest = "both"
+marketplace = true
+
+[plugin.cursor]
+marketplace = true
+
+[plugin.gemini]
+commands = true
+context_file_name = "assets/GEMINI.md"
+
+[plugin.kimi]
+session_start_skill = "basemind"
+
+[plugin.pi]
+package_json = "merge"
+package_name = "@goldziher/basemind-plugin"
+
+[[plugin.hooks]]
+event = "SessionStart"
+matcher = "startup|resume|clear|compact"
+[[plugin.hooks.hooks]]
+type = "command"
+command = "\"${PLUGIN_ROOT}/hooks/run-hook.cmd\" session-start"
+
+[[plugin.hooks]]
+event = "PreToolUse"
+matcher = "Grep|Glob"
+[[plugin.hooks.hooks]]
+type = "command"
+command = "\"${PLUGIN_ROOT}/hooks/run-hook.cmd\" pre-tool-guard"
+
+[[plugin.hooks]]
+event = "PostToolUse"
+matcher = "Bash"
+[[plugin.hooks.hooks]]
+type = "command"
+command = "\"${PLUGIN_ROOT}/hooks/run-hook.cmd\" compress-output"
+
+[[plugin.hooks]]
+event = "PostToolUse"
+matcher = "Read"
+[[plugin.hooks.hooks]]
+type = "command"
+command = "\"${PLUGIN_ROOT}/hooks/run-hook.cmd\" read-cache"
+
+[[plugin.hooks]]
+event = "UserPromptSubmit"
+[[plugin.hooks.hooks]]
+type = "command"
+command = "\"${PLUGIN_ROOT}/hooks/run-hook.cmd\" inbox-notify"

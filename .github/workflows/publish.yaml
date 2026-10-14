@@ -887,7 +887,7 @@ jobs:
   publish_opencode:
     name: Publish npm (basemind-opencode, OpenCode and Pi)
     needs: [meta, finalize_release]
-    if: always() && needs.meta.outputs.opencode_exists != 'true' && needs.finalize_release.result == 'success'
+    if: always() && needs.finalize_release.result == 'success'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -903,7 +903,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
-          node-version: "22"
+          node-version: "24"
           registry-url: "https://registry.npmjs.org"
 
       - name: Stage and verify the combined agent package
@@ -922,7 +922,15 @@ jobs:
           console.log(`Packed ${skills.length} skills, the Pi extension, and OpenCode adapters`);
           JS
 
+      - name: Verify exact legacy skill, extension and TUI archive bytes
+        run: |
+          set -euo pipefail
+          archive="$(jq -r '.filename' "$RUNNER_TEMP/pi-pack.json")"
+          [[ "$archive" == /* ]] || archive="$RUNNER_TEMP/$archive"
+          python3 scripts/verify_plugin_distribution.py legacy-npm "$archive"
+
       - name: Publish to npm
+        if: needs.meta.outputs.opencode_exists != 'true'
         env:
           NODE_AUTH_TOKEN: ""
         run: |
@@ -970,36 +978,200 @@ jobs:
           packages-dir: pip-package/dist
           skip-existing: true
 
-  publish_pypi_hermes:
-    name: Publish PyPI (basemind-hermes-plugin)
+  publish_plugin_npm:
+    name: Publish npm agent plugin (OpenCode and Pi)
     needs: [meta, finalize_release]
-    if: always() && needs.meta.outputs.pypi_hermes_exists != 'true' && needs.finalize_release.result == 'success'
+    if: needs.finalize_release.result == 'success'
     runs-on: ubuntu-latest
-    environment: pypi
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
-          fetch-depth: 0
           ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || '' }}
 
-      - name: Setup Python
-        uses: actions/setup-python@v6
+      - name: Install reviewed ai-rulez
+        uses: xberg-io/actions/setup-ai-rulez@98adf87f1ed4c62a57ff56f9010d62faf42d4db6
         with:
-          python-version: "3.11"
+          ai-rulez-version: "5.3.0"
+          source-revision: "12aa1103ddfb1baf1a439df5b479b0129bba27c1"
 
-      - name: Build Python package
+      - name: Verify generated product bundles and public skills
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install build
-          cd .hermes/package
-          python -m build
+          ai-rulez verify --plugin
+          python3 scripts/sync_public_skills.py --check
+          python3 scripts/sync_plugin_version.py --check
 
-      - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
+      - uses: pnpm/action-setup@v4
         with:
-          packages-dir: .hermes/package/dist
-          skip-existing: true
+          version: 12.11.2
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Verify packed Pi and OpenCode resources
+        run: |
+          set -euo pipefail
+          pnpm --dir plugin pack --json --pack-destination "$RUNNER_TEMP" > "$RUNNER_TEMP/plugin-pack.json"
+          node - "$RUNNER_TEMP/plugin-pack.json" <<'JS'
+          const fs = require('node:fs');
+          const files = JSON.parse(fs.readFileSync(process.argv[2])).files.map((file) => file.path);
+          const skills = files.filter((file) => /^\.pi\/skills\/[^/]+\/SKILL\.md$/.test(file));
+          const prompts = files.filter((file) => /^\.pi\/prompts\/[^/]+\.md$/.test(file));
+          if (skills.length !== 10 || prompts.length !== 6 || !files.includes('.opencode/plugins/basemind.js')) {
+            throw new Error(`Incomplete plugin: ${skills.length} skills, ${prompts.length} prompts`);
+          }
+          console.log(`Packed ${skills.length} Pi skills, ${prompts.length} prompts, and the OpenCode adapter`);
+          JS
+
+      - name: Verify exact packaged Pi and OpenCode resource bytes
+        run: |
+          archive="$(jq -r '.filename' "$RUNNER_TEMP/plugin-pack.json")"
+          python3 scripts/verify_plugin_distribution.py npm "$RUNNER_TEMP/$archive"
+
+      - name: Publish the agent package
+        run: |
+          set -euo pipefail
+          name="$(jq -r '.name' plugin/package.json)"
+          version="${{ needs.meta.outputs.version }}"
+          if ! pnpm view "$name" version >/dev/null 2>&1; then
+            echo "::error::$name needs a first manual publish and trusted publisher setup; see docs/INSTALL-PACKAGES.md."
+            exit 1
+          fi
+          if pnpm view "$name@$version" version >/dev/null 2>&1; then
+            echo "$name@$version already published; skipping"
+            exit 0
+          fi
+          case "$version" in
+            *-rc.* | *-beta* | *-alpha*) npm_tag=next ;;
+            *) npm_tag=latest ;;
+          esac
+          unset NODE_AUTH_TOKEN
+          archive="$(jq -r '.filename' "$RUNNER_TEMP/plugin-pack.json")"
+          for attempt in 1 2 3; do
+            if pnpm publish --no-git-checks "$RUNNER_TEMP/$archive" --provenance --access public --tag "$npm_tag"; then
+              break
+            fi
+            if pnpm view "$name@$version" version >/dev/null 2>&1; then
+              break
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              exit 1
+            fi
+            sleep 5
+          done
+
+  publish_plugin_artifacts:
+    name: Publish all agent runtime archives and marketplaces
+    needs: [meta, finalize_release]
+    if: needs.finalize_release.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.meta.outputs.tag }}
+          fetch-depth: 0
+      - name: Install ai-rulez
+        uses: xberg-io/actions/setup-ai-rulez@98adf87f1ed4c62a57ff56f9010d62faf42d4db6
+        with:
+          ai-rulez-version: "5.3.0"
+          source-revision: "12aa1103ddfb1baf1a439df5b479b0129bba27c1"
+      - name: Verify public skill exports
+        run: python3 scripts/sync_public_skills.py --check
+      - name: Package all supported plugin runtimes
+        uses: xberg-io/actions/package-ai-rulez-plugin@66e9a172c28ae7e57496fe92de1ab74f2a604194
+        with:
+          cursor-marketplace: "true"
+          tag: ${{ needs.meta.outputs.tag }}
+          config-directory: .ai-rulez
+          version-sync-script: scripts/sync_plugin_version.py
+      - name: Archive verified runtime bundles and marketplace indexes
+        shell: bash
+        env:
+          PLUGIN_TAG: ${{ needs.meta.outputs.tag }}
+          PLUGIN_PRODUCT: basemind
+        run: |
+          set -euo pipefail
+          test -n "$PLUGIN_TAG"
+          bundle="dist/${PLUGIN_PRODUCT}-plugins-${PLUGIN_TAG//\//-}.tar.gz"
+          tar --sort=name --mtime="@$(git show -s --format=%ct HEAD)" \
+            --owner=0 --group=0 --numeric-owner -cf - -C dist/plugin . | gzip -n > "$bundle"
+          (cd dist && sha256sum "$(basename "$bundle")") > "$bundle.sha256"
+      - name: Attach verified plugin archive and metadata
+        uses: xberg-io/actions/upload-release-assets@v1
+        with:
+          tag: ${{ needs.meta.outputs.tag }}
+          assets: |
+            dist/*-plugins-*.tar.gz
+            dist/*-plugins-*.tar.gz.sha256
+
+  publish_pypi_hermes:
+    name: Publish Hermes plugin to PyPI
+    needs: [meta, finalize_release]
+    if: needs.finalize_release.result == 'success'
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.meta.outputs.tag }}
+          fetch-depth: 0
+      - name: Install ai-rulez
+        uses: xberg-io/actions/setup-ai-rulez@98adf87f1ed4c62a57ff56f9010d62faf42d4db6
+        with:
+          ai-rulez-version: "5.3.0"
+          source-revision: "12aa1103ddfb1baf1a439df5b479b0129bba27c1"
+      - name: Verify plugin versions and generated resources before publishing
+        env:
+          VERSION: ${{ needs.meta.outputs.version }}
+        run: |
+          set -euo pipefail
+          python3 scripts/sync_plugin_version.py --expect "$VERSION"
+          python3 scripts/sync_public_skills.py --check
+          ai-rulez verify --plugin
+      - uses: astral-sh/setup-uv@v10.3.0
+        with:
+          python-version: "3.13"
+      - name: Read the verified Hermes package version
+        id: wheel-version
+        run: |
+          python3 - <<'PY'
+          import os
+          import tomllib
+          from pathlib import Path
+
+          project = tomllib.loads(Path('plugin/.hermes/package/pyproject.toml').read_text())['project']
+          if project['name'] != 'basemind-hermes-plugin' or not project['version']:
+              raise SystemExit('Missing or unexpected Hermes package identity')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f"version={project['version']}\n")
+          PY
+      - name: Build Hermes wheel
+        run: uv build --wheel --out-dir dist-hermes plugin/.hermes/package
+      - name: Validate Hermes distribution metadata
+        run: |
+          set -euo pipefail
+          wheels=(dist-hermes/*.whl)
+          test "${#wheels[@]}" -eq 1
+          test -f "${wheels[0]}"
+          uvx --from twine==7.0.0 --with packaging==26.3 twine check --strict "${wheels[0]}"
+      - name: Verify every packaged Hermes runtime resource
+        run: python3 scripts/verify_plugin_distribution.py wheel dist-hermes/*.whl
+      - name: Publish verified Hermes wheel
+        uses: xberg-io/actions/publish-pypi@v1
+        with:
+          expected-version: ${{ steps.wheel-version.outputs.version }}
+          packages-dir: dist-hermes
 
   publish_homebrew:
     name: Update Homebrew formula
@@ -1046,3 +1218,17 @@ jobs:
             git commit -m "basemind ${version}"
             git push
           fi
+
+  plugin_release_report:
+    name: Verify all plugin distribution jobs succeeded
+    needs: [publish_plugin_artifacts, publish_plugin_npm, publish_pypi_hermes, publish_opencode]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || '' }}
+      - name: Reject failed or skipped plugin distribution jobs
+        env:
+          RESULTS_JSON: ${{ toJSON(needs) }}
+        run: python3 scripts/verify_plugin_release_results.py

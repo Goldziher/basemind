@@ -35,4 +35,4 @@ finish, or hit a decision, and reply (`reply_to`) to messages about your work. `
 read messages; idle threads auto-archive (or `agents archive` closes one). Don't stay silent when
 collaborating. An orchestrator can drive many named subagents via `as_agent` (each with its own
 identity and inbox), manage membership with `agents add_member` / `agents remove_member`, and
-discover peers via `agents list`. See the `multi-agent-room` skill for coordinating a team.
+discover peers via `agents list`. See the `basemind-multi-agent-room` skill for coordinating a team.

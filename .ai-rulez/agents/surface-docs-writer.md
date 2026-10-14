@@ -25,8 +25,8 @@ is wasted work; it is overwritten on the next regen.
 
 - Edit `.ai-rulez/rules/*.md`, `.ai-rulez/context/*.md`, `.ai-rulez/agents/*.md`,
   `.ai-rulez/skills/*/SKILL.md`.
-- Regen runs as `pnpm dlx ai-rulez@latest generate`. Installed or locally built ai-rulez chokes on the
-  hermes runtime — always the pnpm dlx form. Report the command; do not run it unless asked.
+- Regenerate governance with the installed `ai-rulez generate`; public plugins use
+  `task plugin:generate` from the authoritative `plugin/.ai-rulez/` sources.
 - The `.codex-plugin/` / `.cursor-plugin/` / `opencode-plugin/` **command** mirrors are **not**
   ai-rulez outputs. They are hand-synced copies of `commands/*.md` and drift silently.
 
@@ -34,8 +34,8 @@ is wasted work; it is overwritten on the next regen.
 
 `skills/`, `.cursor-plugin/skills/`, `.codex-plugin/skills/`, `opencode-plugin/skills/` — plus the
 `.hermes/` mirrors. A change to one skill lands in all four, or three harnesses ship a stale surface.
-`skills/` additionally carries `multi-agent-room`, which the other three do not. Diff the trees after
-editing; never assume they were already identical.
+The ten public skills, including `basemind-multi-agent-room`, are authored under
+`plugin/.ai-rulez/skills/` and exported to all mirrors. Run the export checks after editing.
 
 ## Surfaces in scope
 

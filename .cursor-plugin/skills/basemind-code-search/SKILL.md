@@ -1,11 +1,18 @@
 ---
+description: Find where code is defined and used without reading files — symbol search, file outlines, references, callers, call graphs, implementations, dependents, and indexed regex over content. Reach for it whenever the user asks "where is X defined", "what calls Y", "what implements Z", "what's the shape of this file", or whenever you're about to grep or open files to learn structure.
 name: basemind-code-search
-description: >-
-  Find where code is defined and used without reading files — symbol search, file outlines,
-  references, callers, call graphs, implementations, dependents, and indexed regex over content.
-  Reach for it whenever the user asks "where is X defined", "what calls Y", "what implements Z",
-  "what's the shape of this file", or whenever you're about to grep or open files to learn structure.
+license: MIT
+metadata:
+    author: Goldziher
+    repository: https://github.com/Goldziher/basemind
 ---
+
+<!--
+AI-RULEZ :: GENERATED FILE — DO NOT EDIT
+Content-Hash: blake3:54ecde390d9bba8e3e305fb62c071c416b2e1da29bcbeda4aca0037759193d14
+Source-Hash: blake3:db4c3979a26b54efd5467f96ce1fccaf62e7765db011aa2526d6e8ad411e694b
+Schema-Version: v1
+-->
 
 # basemind-code-search — navigate code without reading it
 

@@ -8,6 +8,10 @@ trim_trailing_whitespace = true
 
 [discovery]
 exclude = [
+  "/.mcp.json",
+  "/opencode.json",
+  "/plugin/**",
+  "/skills/**",
   "**/*.lock",
   "**/*.svg",
   "**/Cargo.lock",
@@ -181,6 +185,10 @@ stages = ["pre-commit"]
 
 [hooks.builtin]
 lint = { exclude = [
+  "/.mcp.json",
+  "/opencode.json",
+  "/plugin/**",
+  "/skills/**",
   "**/*.lock",
   "**/Cargo.lock",
   "**/go.sum",
@@ -196,6 +204,10 @@ lint = { exclude = [
   "packages/go/include/*.h",
 ] }
 fmt = { exclude = [
+  "/.mcp.json",
+  "/opencode.json",
+  "/plugin/**",
+  "/skills/**",
   "**/*.lock",
   "**/Cargo.lock",
   "**/go.sum",
@@ -213,6 +225,10 @@ fmt = { exclude = [
 ] }
 commit = { stages = ["commit-msg"] }
 file_safety = { exclude = [
+  "/.mcp.json",
+  "/opencode.json",
+  "/plugin/**",
+  "/skills/**",
   "**/*.lock",
   "**/Cargo.lock",
   "**/go.sum",
@@ -239,9 +255,10 @@ enabled = true
 run = "bash tests/statusline_smoke.sh"
 
 [hooks.pre-commit.scripts.sync_plugin_skills]
-run = "bash scripts/sync-plugin-skills.sh"
+run = "python3 scripts/sync_legacy_plugin_exports.py --check"
+workspace = true
 [[hooks.sources]]
 id = "ai-rulez"
 git = "https://github.com/Goldziher/ai-rulez.git"
-revision = "v4.9.3"
+revision = "v5.3.0"
 hooks = ["ai-rulez-validate", "ai-rulez-plugin-verify"]

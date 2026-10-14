@@ -159,12 +159,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
-      # ~keep The tests import the GENERATED package under .hermes/package (conftest.py puts it first
+      # ~keep The tests import the GENERATED package under plugin/.hermes/package (conftest.py puts it first
       # ~keep on sys.path), so this also fails when the checked-in generated output is missing.
       - name: pytest
-        run: uv run --with pytest python -m pytest pip-package-hermes/tests
-      - name: build the wheel
-        run: uv build --wheel --out-dir /tmp/basemind-hermes-wheel .hermes/package
+        run: uv run --no-project --with pytest --with mcp==1.28.1 python -m pytest pip-package-hermes/tests
+      - name: Build and validate the wheel metadata
+        run: |
+          set -euo pipefail
+          wheel_dir="$(mktemp -d)"
+          trap 'rm -rf "$wheel_dir"' EXIT
+          uv build --wheel --out-dir "$wheel_dir" plugin/.hermes/package
+          wheels=("$wheel_dir"/*.whl)
+          test "${#wheels[@]}" -eq 1
+          test -f "${wheels[0]}"
+          uvx --from twine==7.0.0 --with packaging==26.3 twine check --strict "${wheels[0]}"
 
   memory-ceiling:
     name: scan under a 1 GiB cgroup (Linux)

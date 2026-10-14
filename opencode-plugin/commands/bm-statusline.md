@@ -1,7 +1,14 @@
 ---
-name: bm-statusline
 description: Enable the basemind status line in your Claude Code user settings (one-time setup).
+name: bm-statusline
 ---
+
+<!--
+AI-RULEZ :: GENERATED FILE — DO NOT EDIT
+Content-Hash: blake3:42f854544fb11421d5a299c650e29d3502b9f78141fae46017a712c0c6ebc9ed
+Source-Hash: blake3:db4c3979a26b54efd5467f96ce1fccaf62e7765db011aa2526d6e8ad411e694b
+Schema-Version: v1
+-->
 
 # bm-statusline — enable the basemind status line
 

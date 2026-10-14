@@ -1,23 +1,16 @@
 ---
+description: Find where code is defined and used without reading files — symbol search, file outlines, references, callers, call graphs, implementations, dependents, and indexed regex over content. Reach for it whenever the user asks "where is X defined", "what calls Y", "what implements Z", "what's the shape of this file", or whenever you're about to grep or open files to learn structure.
 name: basemind-code-search
-description: >-
-  Find where code is defined and used without reading files — symbol search, file outlines,
-  references, callers, call graphs, implementations, dependents, and indexed regex over content.
-  Reach for it whenever the user asks "where is X defined", "what calls Y", "what implements Z",
-  "what's the shape of this file", or whenever you're about to grep or open files to learn structure.
+license: MIT
+metadata:
+    author: Goldziher
+    repository: https://github.com/Goldziher/basemind
 ---
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:01ad77468c67b0f4e07938db26940d45cc2c322d35fe8cdd58648e27dc0a11ec
-Source-Hash: blake3:7782c0b4b9e2603c82d23fa88f311855ad4e59d0bc6cdddd9dafcddcb3e323b3
-Schema-Version: v1
--->
-
-<!--
-AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:6c68be577a5c277c1c22a8af2e788cef967085cad4b716eadea94da0b30fbb79
-Source-Hash: blake3:378e61c2bd27ae140e75d818f27005fac54d22d0ad24de4163a71e8572a15c72
+Content-Hash: blake3:54ecde390d9bba8e3e305fb62c071c416b2e1da29bcbeda4aca0037759193d14
+Source-Hash: blake3:db4c3979a26b54efd5467f96ce1fccaf62e7765db011aa2526d6e8ad411e694b
 Schema-Version: v1
 -->
 

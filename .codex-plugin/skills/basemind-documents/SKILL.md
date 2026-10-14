@@ -1,12 +1,18 @@
 ---
+description: Semantic + full-text search over documents and the web via basemind's RAG store — PDFs, Office, HTML, email, images (OCR), plus scraped/crawled web pages, with cross-encoder reranking, keyword and named-entity (NER) filters, and per-document summaries. Reach for it whenever the user asks to "search the docs / PDFs", "find where a topic is discussed", "pull this URL into context", or "what does the documentation say about X".
 name: basemind-documents
-description: >-
-  Semantic + full-text search over documents and the web via basemind's RAG store — PDFs, Office,
-  HTML, email, images (OCR), plus scraped/crawled web pages, with cross-encoder reranking, keyword
-  and named-entity (NER) filters, and per-document summaries. Reach for it whenever the user asks to
-  "search the docs / PDFs", "find where a topic is discussed", "pull this URL into context", or
-  "what does the documentation say about X".
+license: MIT
+metadata:
+    author: Goldziher
+    repository: https://github.com/Goldziher/basemind
 ---
+
+<!--
+AI-RULEZ :: GENERATED FILE — DO NOT EDIT
+Content-Hash: blake3:1dfd3778b400394491e3ba15b55eb80fbb5c17bb10f87a654802dbfed10e06f0
+Source-Hash: blake3:db4c3979a26b54efd5467f96ce1fccaf62e7765db011aa2526d6e8ad411e694b
+Schema-Version: v1
+-->
 
 # basemind-documents — document RAG and web ingestion
 

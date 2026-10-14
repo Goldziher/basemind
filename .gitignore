@@ -67,15 +67,26 @@ GEMINI.md
 # BEGIN ai-rulez (DO NOT EDIT - managed by ai-rulez)
 .ai-rulez/.generated-manifest.json
 .ai-rulez/.generated-manifest.local.json
-.ai-rulez/config.local.*
 .ai-rulez/local/
 .claude/agents/
 .claude/skills/
 .codex/agents/
-.codex/config.toml
+.factory/commands/
+.factory/droids/
+.factory/mcp.json
+.factory/skills/
+.github/prompts/check.prompt.md
+.github/prompts/harden.prompt.md
+.github/prompts/iterate.prompt.md
+.github/prompts/parallelize.prompt.md
+.github/prompts/scan.prompt.md
+.github/prompts/serve.prompt.md
+.kimi-code/agents/
+.kimi-code/mcp.json
 .pi/agents/
 .pi/mcp.json
 .pi/prompts/
+.vscode/mcp.json
 AGENTS.md
 CLAUDE.md
 # END ai-rulez

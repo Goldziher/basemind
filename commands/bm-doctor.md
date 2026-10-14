@@ -1,7 +1,14 @@
 ---
-name: bm-doctor
 description: Diagnose and recover basemind when it isn't working (MCP tools missing/erroring, "no index", dead server) — runs CLI checks and gives the client-specific way to reconnect the server.
+name: bm-doctor
 ---
+
+<!--
+AI-RULEZ :: GENERATED FILE — DO NOT EDIT
+Content-Hash: blake3:a66d63a7389405a18655cc9dc2510057beaf6ce89e7882486a5d1cb60293214c
+Source-Hash: blake3:db4c3979a26b54efd5467f96ce1fccaf62e7765db011aa2526d6e8ad411e694b
+Schema-Version: v1
+-->
 
 # bm-doctor — diagnose and recover basemind
 

@@ -1,11 +1,18 @@
 ---
+description: Explore git history without shelling out to git — recent commits, commits touching a path, per-line and per-symbol blame, structural diffs across revisions, churn ranking, and a symbol's history over time. Reach for it whenever the user asks "what changed recently", "who last touched this", "when did this symbol change", "what's the diff between these revs", or "where's the churn".
 name: basemind-git-history
-description: >-
-  Explore git history without shelling out to git — recent commits, commits touching a path,
-  per-line and per-symbol blame, structural diffs across revisions, churn ranking, and a symbol's
-  history over time. Reach for it whenever the user asks "what changed recently", "who last touched
-  this", "when did this symbol change", "what's the diff between these revs", or "where's the churn".
+license: MIT
+metadata:
+    author: Goldziher
+    repository: https://github.com/Goldziher/basemind
 ---
+
+<!--
+AI-RULEZ :: GENERATED FILE — DO NOT EDIT
+Content-Hash: blake3:a135da89c9a140974212c3d7338cd4f15bddce346228c8801727daee696d321b
+Source-Hash: blake3:db4c3979a26b54efd5467f96ce1fccaf62e7765db011aa2526d6e8ad411e694b
+Schema-Version: v1
+-->
 
 # basemind-git-history — git intelligence over the index
 

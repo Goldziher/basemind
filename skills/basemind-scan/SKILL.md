@@ -1,23 +1,16 @@
 ---
+description: Build or refresh the basemind index by running `basemind scan` via the CLI. Use this when basemind reports "no index" / "no indexed files", when the MCP server isn't available, or after large changes when the index is stale. Works without the MCP server — it shells the basemind binary directly.
 name: basemind-scan
-description: >-
-  Build or refresh the basemind index by running `basemind scan` via the CLI. Use this when
-  basemind reports "no index" / "no indexed files", when the MCP server isn't available, or
-  after large changes when the index is stale. Works without the MCP server — it shells the
-  basemind binary directly.
+license: MIT
+metadata:
+    author: Goldziher
+    repository: https://github.com/Goldziher/basemind
 ---
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:4c7261a3b285c75599ed9a9c6501523c65d98ebca512be2bac6696b80e51de45
-Source-Hash: blake3:7782c0b4b9e2603c82d23fa88f311855ad4e59d0bc6cdddd9dafcddcb3e323b3
-Schema-Version: v1
--->
-
-<!--
-AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:6a2da891a9f4c927e817d6507b8118afe9d9140a9473177ead3e43fae3ae468f
-Source-Hash: blake3:378e61c2bd27ae140e75d818f27005fac54d22d0ad24de4163a71e8572a15c72
+Content-Hash: blake3:5fa71d777caad5eb839c2d462844dab9daa8abce529baaf6d829564cf58819c4
+Source-Hash: blake3:db4c3979a26b54efd5467f96ce1fccaf62e7765db011aa2526d6e8ad411e694b
 Schema-Version: v1
 -->
 

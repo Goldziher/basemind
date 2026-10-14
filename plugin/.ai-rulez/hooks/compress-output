@@ -1,0 +1,117 @@
+#!/usr/bin/env bash
+# basemind PostToolUse output compressor.
+#
+# Fires after Bash tool calls (matcher "Bash" in hooks.json) and pipes the
+# command output through `basemind compress-output`, replacing the result the
+# agent sees with a compact summary. The compressor is fail-open and
+# credential-preserving: it returns the RAW input unchanged on any failure,
+# on detected credentials, or when it would save <10%.
+#
+# OPT-IN, default OFF — gated on BASEMIND_COMPRESS_OUTPUT, mirroring the
+# BASEMIND_GUARD convention used by the pre-tool-guard hook:
+#
+#   unset / off / 0   (default) — no-op passthrough; the original output stands.
+#   1 / on / true     — active; compress Bash output before the agent sees it.
+#
+# Safety: this wrapper NEVER errors out the tool call. On any missing
+# dependency, unreadable payload, or compressor failure it exits 0 with no
+# output, leaving the original tool result untouched (passthrough).
+#
+# Output protocol: a PostToolUse JSON result on stdout whose
+# hookSpecificOutput.updatedToolOutput replaces the tool result string. We only
+# emit a replacement when compression actually shrank the output; otherwise we
+# stay silent (exit 0) so the original output is preserved verbatim.
+set -euo pipefail
+
+# Gate: anything other than an explicit on-value is a fast no-op passthrough.
+MODE="${BASEMIND_COMPRESS_OUTPUT:-off}"
+case "${MODE}" in
+1 | on | On | ON | true | True | TRUE | yes | Yes | YES) ;;
+*) exit 0 ;;
+esac
+
+# Need jq to read the event payload + emit well-formed JSON; degrade to a
+# passthrough no-op if absent.
+command -v jq >/dev/null 2>&1 || exit 0
+
+input="$(cat 2>/dev/null || true)"
+[ -n "${input}" ] || exit 0
+
+tool="$(printf '%s' "${input}" | jq -r '.tool_name // empty' 2>/dev/null || true)"
+[ "${tool}" = "Bash" ] || exit 0
+
+# Pull stdout + stderr from the tool result. Field shape: tool_output.{stdout,
+# stderr}. Concatenate (stderr appended) so the compressor sees the full text;
+# an all-empty payload is nothing to compress.
+combined="$(printf '%s' "${input}" |
+  jq -r '(.tool_output.stdout // "") + (.tool_output.stderr // "")' 2>/dev/null || true)"
+[ -n "${combined}" ] || exit 0
+
+# Resolve the basemind binary the same way the launcher does: explicit override,
+# then the managed per-user version cache, then PATH. We avoid triggering a
+# network install here (PostToolUse is on the hot path) — if no local binary is
+# found, pass through untouched.
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PLUGIN_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+BINARY_NAME="basemind"
+case "$(uname -s)" in
+MINGW* | MSYS* | CYGWIN* | Windows_NT) BINARY_NAME="basemind.exe" ;;
+esac
+
+resolve_bin() {
+  if [ -n "${BASEMIND_BIN:-}" ] && [ -x "${BASEMIND_BIN}" ]; then
+    printf '%s' "${BASEMIND_BIN}"
+    return 0
+  fi
+  # Newest version dir under the managed cache. Glob + reverse-sort the version
+  # dirs (X.Y.Z) and take the first that holds an executable binary, so we
+  # prefer a present binary without parsing the manifest version here.
+  local cache_root="${XDG_CACHE_HOME:-${HOME}/.cache}/basemind/bin"
+  if [ -d "${cache_root}" ]; then
+    local d v cand=""
+    for d in $(printf '%s\n' "${cache_root}"/*/ 2>/dev/null | sort -r); do
+      v="${d%/}"
+      if [ -x "${v}/${BINARY_NAME}" ]; then
+        cand="${v}/${BINARY_NAME}"
+        break
+      fi
+    done
+    if [ -n "${cand}" ]; then
+      printf '%s' "${cand}"
+      return 0
+    fi
+  fi
+  # Pre-seeded plugin bin/, then PATH.
+  if [ -x "${PLUGIN_ROOT}/bin/${BINARY_NAME}" ]; then
+    printf '%s' "${PLUGIN_ROOT}/bin/${BINARY_NAME}"
+    return 0
+  fi
+  if command -v "${BINARY_NAME}" >/dev/null 2>&1; then
+    command -v "${BINARY_NAME}"
+    return 0
+  fi
+  return 1
+}
+
+BIN="$(resolve_bin || true)"
+[ -n "${BIN}" ] || exit 0
+
+# Run the compressor. It reads stdin, writes the (possibly compressed) text to
+# stdout, and a savings note to stderr. It is itself fail-open, but guard the
+# wrapper too: any non-zero exit or empty result ⇒ passthrough.
+compressed="$(printf '%s' "${combined}" | "${BIN}" compress-output 2>/dev/null || true)"
+[ -n "${compressed}" ] || exit 0
+
+# Only replace when compression actually shrank the output. The CLI returns the
+# RAW input unchanged when it can't save ≥10% / hits credentials / fails, so an
+# equal-or-larger result means "leave it alone" — stay silent (passthrough).
+if [ "${#compressed}" -ge "${#combined}" ]; then
+  exit 0
+fi
+
+# Emit the replacement. updatedToolOutput is a string the agent sees in place of
+# the original tool result. suppressOutput hides the hook's own chatter.
+jq -cn --arg out "${compressed}" \
+  '{suppressOutput:true,hookSpecificOutput:{hookEventName:"PostToolUse",updatedToolOutput:$out}}'
+exit 0

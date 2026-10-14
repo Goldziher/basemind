@@ -1,24 +1,16 @@
 ---
+description: Semantic + full-text search over documents and the web via basemind's RAG store — PDFs, Office, HTML, email, images (OCR), plus scraped/crawled web pages, with cross-encoder reranking, keyword and named-entity (NER) filters, and per-document summaries. Reach for it whenever the user asks to "search the docs / PDFs", "find where a topic is discussed", "pull this URL into context", or "what does the documentation say about X".
 name: basemind-documents
-description: >-
-  Semantic + full-text search over documents and the web via basemind's RAG store — PDFs, Office,
-  HTML, email, images (OCR), plus scraped/crawled web pages, with cross-encoder reranking, keyword
-  and named-entity (NER) filters, and per-document summaries. Reach for it whenever the user asks to
-  "search the docs / PDFs", "find where a topic is discussed", "pull this URL into context", or
-  "what does the documentation say about X".
+license: MIT
+metadata:
+    author: Goldziher
+    repository: https://github.com/Goldziher/basemind
 ---
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:bf9d9816603fd6f901ec7d1019b3576fd3b79979f7c7d8246a1ba8f129489b09
-Source-Hash: blake3:7782c0b4b9e2603c82d23fa88f311855ad4e59d0bc6cdddd9dafcddcb3e323b3
-Schema-Version: v1
--->
-
-<!--
-AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:0502f17289c5e74c29ad8b882f90c407fa162f245e45297cbd7a1c414beddbad
-Source-Hash: blake3:378e61c2bd27ae140e75d818f27005fac54d22d0ad24de4163a71e8572a15c72
+Content-Hash: blake3:1dfd3778b400394491e3ba15b55eb80fbb5c17bb10f87a654802dbfed10e06f0
+Source-Hash: blake3:db4c3979a26b54efd5467f96ce1fccaf62e7765db011aa2526d6e8ad411e694b
 Schema-Version: v1
 -->
 

@@ -1,0 +1,73 @@
+{
+  "name": "basemind",
+  "version": "0.29.3",
+  "description": "Full AI context layer over MCP — tree-sitter code-map, document RAG (PDF/Office/HTML/email + OCR + reranker), shared agent memory, on-demand web crawl, git history + blame + per-symbol diff. 300+ languages, 10+ coding-agent harnesses, content-addressed Fjall + LanceDB.",
+  "contextFileName": "assets/GEMINI.md",
+  "mcpServers": {
+    "basemind": {
+      "command": "${extensionPath}/scripts/mcp-launch.sh",
+      "args": [
+        "serve"
+      ]
+    }
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${extensionPath}/hooks/run-hook.cmd\" compress-output",
+            "async": false
+          }
+        ]
+      },
+      {
+        "matcher": "Read",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${extensionPath}/hooks/run-hook.cmd\" read-cache",
+            "async": false
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Grep|Glob",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${extensionPath}/hooks/run-hook.cmd\" pre-tool-guard",
+            "async": false
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${extensionPath}/hooks/run-hook.cmd\" session-start",
+            "async": false
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${extensionPath}/hooks/run-hook.cmd\" inbox-notify",
+            "async": false
+          }
+        ]
+      }
+    ]
+  }
+}

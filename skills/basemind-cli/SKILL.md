@@ -1,23 +1,16 @@
 ---
+description: Navigate codebases and manage caches via the basemind CLI — outlines, symbol search, reference/caller lookups, git history, blame, and diffs. For headless scripting, CI, or when driving the CLI more efficiently than interactive MCP calls. Shares the same index as the MCP server.
 name: basemind-cli
-description: >-
-  Navigate codebases and manage caches via the basemind CLI — outlines, symbol search,
-  reference/caller lookups, git history, blame, and diffs. For headless scripting, CI, or when
-  driving the CLI more efficiently than interactive MCP calls. Shares the same index as the
-  MCP server.
+license: MIT
+metadata:
+    author: Goldziher
+    repository: https://github.com/Goldziher/basemind
 ---
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:55da58448667842615ed2545e3f602651f310fec2650e3a72cd0bf543d2b12b6
-Source-Hash: blake3:7782c0b4b9e2603c82d23fa88f311855ad4e59d0bc6cdddd9dafcddcb3e323b3
-Schema-Version: v1
--->
-
-<!--
-AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:325149864e918c6a5b7c04a32d273d5841040cf6d52ecd3ab35042ee9604298d
-Source-Hash: blake3:378e61c2bd27ae140e75d818f27005fac54d22d0ad24de4163a71e8572a15c72
+Content-Hash: blake3:60851b154d1509a944c7a100c1d5420f90cf45de94e7f7d65264fdf418e4a778
+Source-Hash: blake3:db4c3979a26b54efd5467f96ce1fccaf62e7765db011aa2526d6e8ad411e694b
 Schema-Version: v1
 -->
 

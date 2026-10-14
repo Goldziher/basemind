@@ -1,24 +1,16 @@
 ---
+description: 'Show a quick dashboard of basemind activity in this session: how many code-map tool calls have run, the per-tool histogram, and the estimated tokens saved vs a hypothetical grep+Read baseline. Use when the user asks "what has basemind done?", "how much is basemind helping?", "show me basemind stats", or invokes `/bm-stats` directly.'
 name: basemind-stats
-description: >-
-  Show a quick dashboard of basemind activity in this session: how many code-map
-  tool calls have run, the per-tool histogram, and the estimated tokens saved vs
-  a hypothetical grep+Read baseline. Use when the user asks "what has basemind
-  done?", "how much is basemind helping?", "show me basemind stats", or invokes
-  `/bm-stats` directly.
+license: MIT
+metadata:
+    author: Goldziher
+    repository: https://github.com/Goldziher/basemind
 ---
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:f4d79106b20b99d2d9bad24a2ba0359fc9bbc6c40c60b86f3c54c003b7e10704
-Source-Hash: blake3:7782c0b4b9e2603c82d23fa88f311855ad4e59d0bc6cdddd9dafcddcb3e323b3
-Schema-Version: v1
--->
-
-<!--
-AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:4802a612980221e429ab0d17a26e2a80962f696fa863bbfddff268b28b0a4583
-Source-Hash: blake3:378e61c2bd27ae140e75d818f27005fac54d22d0ad24de4163a71e8572a15c72
+Content-Hash: blake3:0342ba178d9ca8a7dd9c503ffba03b9fac721d9b17cf09ffa3f735c9fb77105e
+Source-Hash: blake3:db4c3979a26b54efd5467f96ce1fccaf62e7765db011aa2526d6e8ad411e694b
 Schema-Version: v1
 -->
 

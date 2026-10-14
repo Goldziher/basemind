@@ -1,0 +1,103 @@
+# ai-rulez.lock: pins remote includes, installed skills and authored content. Commit this file.
+# Refresh it with `ai-rulez lock`; `ai-rulez generate --locked` fails when it is stale.
+
+version = 1
+ai_rulez_version = '5.3.0'
+scope = 'all'
+tree = 'sha256:79650ccd88f3617eaf3ce96dcac6fd42b92a81c8ac6904125b1dc79510d58fbf'
+
+[[item]]
+kind = 'command'
+id = 'bm'
+path = 'commands/bm.md'
+digest = 'sha256:4cd25f97c1c56b0f8e9296f44672b73031acd6dfbf6ae84cfe2dfd9f7a03173a'
+
+[[item]]
+kind = 'command'
+id = 'bm-doctor'
+path = 'commands/bm-doctor.md'
+digest = 'sha256:491ef4c27bd6e23fc41b7835ee84b810bfb66e2d70821b9a0212d5d5ad808514'
+
+[[item]]
+kind = 'command'
+id = 'bm-init'
+path = 'commands/bm-init.md'
+digest = 'sha256:78e97310f19183326930a3c0e31603d934a394bd7e4292b0056a8a89d6e2b694'
+
+[[item]]
+kind = 'command'
+id = 'bm-scan'
+path = 'commands/bm-scan.md'
+digest = 'sha256:46e3f87b7d4bddecb19fda9c24192ccfc502ba8efd870775ca6fa410699d745e'
+
+[[item]]
+kind = 'command'
+id = 'bm-stats'
+path = 'commands/bm-stats.md'
+digest = 'sha256:b3196ec2725d778717236bb7d45fafc22d715b9b6587c3fca88f5bc6aee433e4'
+
+[[item]]
+kind = 'command'
+id = 'bm-statusline'
+path = 'commands/bm-statusline.md'
+digest = 'sha256:edd551ba8eff4dbe320ebb59382ef0cdec02cfd5cb56e8d311a839008f89340e'
+
+[[item]]
+kind = 'skill'
+id = 'basemind'
+path = 'skills/basemind'
+digest = 'sha256:c51aa831073ceb21f84799416bccab1470921b036549747ad2f95a50daee292f'
+
+[[item]]
+kind = 'skill'
+id = 'basemind-cli'
+path = 'skills/basemind-cli'
+digest = 'sha256:59cf317ce9f47041e4cfc95a7ccc65512cf7401f05a67d0a8ad5984117bac217'
+
+[[item]]
+kind = 'skill'
+id = 'basemind-code-search'
+path = 'skills/basemind-code-search'
+digest = 'sha256:b22adaea490a9162b71e8255e646a0713c3bfe264d42a06763abf3d25162babd'
+
+[[item]]
+kind = 'skill'
+id = 'basemind-comms'
+path = 'skills/basemind-comms'
+digest = 'sha256:5abab2064c5317664b38da5d0fe4d48d5ce392248111dacc68112d40569d5545'
+
+[[item]]
+kind = 'skill'
+id = 'basemind-doctor'
+path = 'skills/basemind-doctor'
+digest = 'sha256:f38735dd951a2239d32a9249d7b235987fc940e306ac29989ed2bf66f89b18d8'
+
+[[item]]
+kind = 'skill'
+id = 'basemind-documents'
+path = 'skills/basemind-documents'
+digest = 'sha256:43a0e5a4f139420badc32ccb29d70c209a73078233c8f0428c06209363d24aae'
+
+[[item]]
+kind = 'skill'
+id = 'basemind-git-history'
+path = 'skills/basemind-git-history'
+digest = 'sha256:7fd1e35be5bff5bba67128c1b4c5da317cb0650b185aa15a62fa33bc71635ae2'
+
+[[item]]
+kind = 'skill'
+id = 'basemind-multi-agent-room'
+path = 'skills/basemind-multi-agent-room'
+digest = 'sha256:317244207c6d3aa8f73ac1be8ee47abafe753287669d4e68d797a27f934879ad'
+
+[[item]]
+kind = 'skill'
+id = 'basemind-scan'
+path = 'skills/basemind-scan'
+digest = 'sha256:bef4dfd3b750b189d9cb7c16f16b9dfd7ee915ff6693f5f5f70e3f534088c1d4'
+
+[[item]]
+kind = 'skill'
+id = 'basemind-stats'
+path = 'skills/basemind-stats'
+digest = 'sha256:e8bdf1c20ff621c8b7b97f392e344723f2d91bf1d4dd443a30e9606b63212980'

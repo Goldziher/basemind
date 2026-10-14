@@ -68,8 +68,10 @@ side by side.
 
 ### 1. As a plugin (recommended)
 
-The plugin sets up everything for you — the server, the helper skills, the agent-comms features, and
-the slash commands. Pick your coding tool.
+The curated plugin under `plugin/` contains ten public skills and six commands for eleven runtime
+profiles. See the [plugin installation guide](plugin/README.md) for local installation and release
+prerequisites. The repository root also retains the existing OpenCode terminal adapter and Pi
+extension; those integrations have separate package entry points.
 
 <details>
 <summary><strong>Claude Code</strong></summary>
@@ -84,8 +86,7 @@ In the session (not your shell), run in order:
 Restart, then run `/bm-statusline` once to turn on the live statusline (a one-time step — see
 [Statusline](#install-the-program)). **Turn on auto-update for the `basemind` marketplace**
 (Claude Code's plugin manager): the plugin then tracks each new release automatically, and the
-launcher resolves the latest *published* release, so you always get the current index format and
-tool set and startup stays reliable even during a release. Prefer to control timing? Update the
+launcher resolves the matching published release. Prefer to control timing? Update the
 marketplace regularly by hand instead.
 
 </details>
@@ -99,8 +100,7 @@ codex plugin add basemind@basemind
 ```
 
 In the app: open the **Plugins** sidebar and add basemind. The CLI and IDE share one config file.
-The plugin starts the latest published GitHub release from the project workspace; it never runs from
-the installed plugin cache or races a shared `npx` install.
+The generated plugin uses the matching published GitHub release, or a local `BASEMIND_BIN` override.
 
 </details>
 
@@ -116,7 +116,9 @@ Team Marketplaces → Import from Repo** and point it at `https://github.com/Gol
 <summary><strong>Gemini CLI</strong></summary>
 
 ```bash
-gemini extensions install https://github.com/Goldziher/basemind
+git clone https://github.com/Goldziher/basemind
+cd basemind
+gemini extensions install ./plugin --skip-settings
 ```
 
 Update later with `gemini extensions update basemind`.
@@ -168,39 +170,34 @@ Kimi doesn't support the comms auto-notifications, but the chat tools still work
 <details>
 <summary><strong>Agent Plugins (agent-plugins.org)</strong></summary>
 
-The repository root is a conformant [Agent Plugins](https://agent-plugins.org) 1.0.0 package: `plugin.json`,
-`mcp.json` and `skills/`. Any client that loads that format picks basemind up from the repo. The MCP entry
-runs `basemind serve`, so [install the program](#install-the-program) first so `basemind` is on `PATH`.
+Load the `plugin/` directory as an [Agent Plugins](https://agent-plugins.org) 1.0.0 package. It contains
+`plugin.json`, `mcp.json`, and ten public skills. Copilot shares this portable layout. The MCP
+launcher downloads the matching published basemind binary, or uses `BASEMIND_BIN` for a local build.
 
 </details>
 
 <details>
 <summary><strong>Hermes</strong></summary>
 
-Hermes exposes MCP servers through config, so basemind's tools are wired there. Two steps — the
-binary + MCP wiring gives you the tools; a small standalone plugin package adds the helper skills,
-slash commands, and comms notifications.
-
-First [install the program](#install-the-program) (Homebrew / npm / cargo / release — **not** pip),
-then add the server to `~/.hermes/config.yaml` (this is what gives you the nine domain tools):
-
-```yaml
-mcp_servers:
-  basemind:
-    command: basemind
-    args: [serve]
-```
-
-For the helper skills, slash commands, and agent-comms notifications, install the standalone plugin
-into the same Python environment Hermes runs in, then enable it (general plugins are opt-in):
+[Install the program](#install-the-program) first. Install the locally generated wheel into the
+same Python environment Hermes runs in, then enable the plugin:
 
 ```bash
-pip install basemind-hermes-plugin
+git clone https://github.com/Goldziher/basemind
+cd basemind
+uv build --wheel --out-dir dist/hermes plugin/.hermes/package
+python -m pip install --force-reinstall dist/hermes/basemind_hermes_plugin-0.29.3-py3-none-any.whl
 hermes plugins enable basemind
 ```
 
-The plugin is pure-Python and ships no binary — it shells out to the `basemind` you installed above.
-Comms auto-notifications are best-effort; the chat tools work regardless.
+Restart Hermes. The plugin registers ten skills, six slash commands, scoped comms notifications,
+and `basemind_call`, which bridges the local MCP server's nine domains and returns JSON text.
+The binary must be on `PATH`. Comms notifications are
+best-effort. You can also configure `mcp_servers.basemind` with `command: basemind` and
+`args: [serve]` for direct domain tools.
+
+PyPI version 0.29.3 predates the skill-registration fix and MCP bridge. Use the source wheel above
+until a newer release includes these changes; reinstalling that published version will not add them.
 
 </details>
 
@@ -232,12 +229,22 @@ Pi package-catalog discovery. Both installation paths carry the same extension a
 
 </details>
 
+**Public skills only.** Install the ten public skills independently:
+
+```sh
+npx skills add Goldziher/basemind
+```
+
+Discovery uses the root `skills/` mirror. Maintainer governance and private agents are not included.
+For the curated Pi package's ten skills and six prompts, run `pi install ./plugin` from this checkout;
+it carries no automatic context extension. The root Git package above retains the custom extension.
+
 **Local or development builds with the plugin.** The launcher runs the release that matches the
 plugin manifest. Set `BASEMIND_BIN=/path/to/basemind` to run your own build instead: it is honoured
 whatever version it reports (the launcher logs a notice when that differs from the manifest's), and it
 wins over `BASEMIND_FORCE_VERSION`. A build on a different release minor resets the cache on first open
 (wipe and rebuild). `BASEMIND_FORCE_VERSION=<x.y.z>` pins the launcher to one published release
-instead of the manifest's; the Codex launcher sets it to the latest published release.
+instead of the manifest's.
 
 ### 2. As an MCP server
 
@@ -277,9 +284,8 @@ from `which basemind`.
 - **OpenCode (without the plugin)** — `opencode.json` under key `mcp`, with `command` as an array
   `["basemind", "serve"]`.
 - **Hermes** — `mcp_servers.basemind` in `~/.hermes/config.yaml` (YAML: `command: basemind`,
-  `args: [serve]`). For helper skills + comms notifications, `pip install basemind-hermes-plugin`
-  (a standalone pure-Python plugin, no binary), then `hermes plugins enable basemind` — see the
-  Hermes plugin section above.
+  `args: [serve]`). For helper skills and notifications, install the source wheel and enable the
+  plugin as described in the [Hermes installation section](#1-as-a-plugin-recommended).
 - **Any other tool** — point it at the command `basemind` with the argument `serve`.
 
 </details>

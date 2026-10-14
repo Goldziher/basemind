@@ -1,23 +1,16 @@
 ---
+description: Explore git history without shelling out to git — recent commits, commits touching a path, per-line and per-symbol blame, structural diffs across revisions, churn ranking, and a symbol's history over time. Reach for it whenever the user asks "what changed recently", "who last touched this", "when did this symbol change", "what's the diff between these revs", or "where's the churn".
 name: basemind-git-history
-description: >-
-  Explore git history without shelling out to git — recent commits, commits touching a path,
-  per-line and per-symbol blame, structural diffs across revisions, churn ranking, and a symbol's
-  history over time. Reach for it whenever the user asks "what changed recently", "who last touched
-  this", "when did this symbol change", "what's the diff between these revs", or "where's the churn".
+license: MIT
+metadata:
+    author: Goldziher
+    repository: https://github.com/Goldziher/basemind
 ---
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:6eecbf621d7da1e72638c60cb76dcbe9d96c37f26e6518c2072f9834eb407518
-Source-Hash: blake3:7782c0b4b9e2603c82d23fa88f311855ad4e59d0bc6cdddd9dafcddcb3e323b3
-Schema-Version: v1
--->
-
-<!--
-AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:dec34df09c0d20f0d7bd11bc7942cbad869638ce5cedb40d74a09d9f86d4d89c
-Source-Hash: blake3:378e61c2bd27ae140e75d818f27005fac54d22d0ad24de4163a71e8572a15c72
+Content-Hash: blake3:a135da89c9a140974212c3d7338cd4f15bddce346228c8801727daee696d321b
+Source-Hash: blake3:db4c3979a26b54efd5467f96ce1fccaf62e7765db011aa2526d6e8ad411e694b
 Schema-Version: v1
 -->
 

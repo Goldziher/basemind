@@ -1,8 +1,16 @@
 ---
-name: bm-stats
 description: Show the basemind dashboard — resource footprint (disk + RAM) and activity (tool calls, per-tool histogram, estimated tokens saved). Works with or without the MCP server.
-argument-hint: [today|1h|24h|all]
+argument-hint:
+    - today|1h|24h|all
+name: bm-stats
 ---
+
+<!--
+AI-RULEZ :: GENERATED FILE — DO NOT EDIT
+Content-Hash: blake3:9170d332232c6e1164112568af98a74567cb8fbf6b12dd4a7f1d8382582b9f9c
+Source-Hash: blake3:db4c3979a26b54efd5467f96ce1fccaf62e7765db011aa2526d6e8ad411e694b
+Schema-Version: v1
+-->
 
 # bm-stats — basemind dashboard
 

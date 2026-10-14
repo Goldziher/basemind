@@ -57,7 +57,7 @@ fi
 
 echo "→ Hermes ai-rulez source → $VERSION"
 VERSION="$VERSION" perl -0pi -e \
-  's/(\[plugin\][^\[]*?\nversion\s*=\s*")[^"]+(")/$1$ENV{VERSION}$2/s' .ai-rulez/config.toml
+  's/(\[plugin\][^\[]*?\nversion\s*=\s*")[^"]+(")/$1$ENV{VERSION}$2/s' plugin/.ai-rulez/config.plugins.toml
 
 bump_json_version() {
   local file="$1"
@@ -82,7 +82,8 @@ command -v "$AI_RULEZ" >/dev/null 2>&1 || {
   echo "error: ai-rulez is required to regenerate the Hermes package" >&2
   exit 1
 }
-"$AI_RULEZ" generate --plugin
+python3 scripts/sync_plugin_version.py
+AI_RULEZ="$AI_RULEZ" bash scripts/sync-plugin-skills.sh
 
 if [[ "$CURRENT_RELEASE_MINOR" != "$RELEASE_MINOR" ]]; then
   echo "→ RELEASE_MINOR      $CURRENT_RELEASE_MINOR → $RELEASE_MINOR (minor bump — schema wipe on next scan)"
@@ -137,16 +138,16 @@ if [ -f pip-package/basemind/__init__.py ]; then
   fi
 fi
 
-if [ -f .hermes/package/pyproject.toml ]; then
-  hermes_pypi_version="$(awk '/^version = / {value=$3; gsub(/[\"\047]/, "", value); print value; exit}' .hermes/package/pyproject.toml)"
+if [ -f plugin/.hermes/package/pyproject.toml ]; then
+  hermes_pypi_version="$(awk '/^version = / {value=$3; gsub(/[\"\047]/, "", value); print value; exit}' plugin/.hermes/package/pyproject.toml)"
   if [ "$hermes_pypi_version" != "$PY_VERSION" ]; then
-    echo "✗ .hermes/package/pyproject.toml: expected $PY_VERSION, got $hermes_pypi_version"
+    echo "✗ plugin/.hermes/package/pyproject.toml: expected $PY_VERSION, got $hermes_pypi_version"
     validation_failed=1
   fi
 fi
 
-if [ -f .hermes/package/src/basemind_hermes_plugin/plugin.yaml ]; then
-  hermes_plugin_version="$(grep -E '^version: ' .hermes/package/src/basemind_hermes_plugin/plugin.yaml | head -1 | sed -E 's/^version: "?([^"]+)"?/\1/')"
+if [ -f plugin/.hermes/package/src/basemind_hermes_plugin/plugin.yaml ]; then
+  hermes_plugin_version="$(grep -E '^version: ' plugin/.hermes/package/src/basemind_hermes_plugin/plugin.yaml | head -1 | sed -E 's/^version: "?([^"]+)"?/\1/')"
   if [ "$hermes_plugin_version" != "$VERSION" ]; then
     echo "✗ Hermes plugin.yaml: expected $VERSION, got $hermes_plugin_version"
     validation_failed=1
@@ -173,22 +174,6 @@ if [ -f .claude-plugin/plugin.json ]; then
   claude_version="$(jq -r '.version' .claude-plugin/plugin.json 2>/dev/null || echo '')"
   if [ "$claude_version" != "$VERSION" ]; then
     echo "✗ .claude-plugin/plugin.json: expected $VERSION, got $claude_version"
-    validation_failed=1
-  fi
-fi
-
-if [ -f .claude-plugin/marketplace.json ]; then
-  marketplace_version="$(jq -r '.plugins[0].version' .claude-plugin/marketplace.json 2>/dev/null || echo '')"
-  if [ "$marketplace_version" != "$VERSION" ]; then
-    echo "✗ .claude-plugin/marketplace.json: expected $VERSION, got $marketplace_version"
-    validation_failed=1
-  fi
-fi
-
-if [ -f .agents/plugins/marketplace.json ]; then
-  codex_marketplace_version="$(jq -r '.plugins[0].version' .agents/plugins/marketplace.json 2>/dev/null || echo '')"
-  if [ "$codex_marketplace_version" != "$VERSION" ]; then
-    echo "✗ .agents/plugins/marketplace.json: expected $VERSION, got $codex_marketplace_version"
     validation_failed=1
   fi
 fi

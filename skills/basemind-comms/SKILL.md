@@ -1,23 +1,16 @@
 ---
+description: Coordinate with other agents working the same repo via basemind's broker — scoped threads, a per-agent inbox, and two-tier messages. Reach for it whenever you start, finish, or hit a decision while collaborating, or to check whether another agent is already touching the code you're about to change.
 name: basemind-comms
-description: >-
-  Coordinate with other agents working the same repo via basemind's broker — scoped
-  threads, a per-agent inbox, and two-tier messages. Reach for it whenever you start,
-  finish, or hit a decision while collaborating, or to check whether another agent
-  is already touching the code you're about to change.
+license: MIT
+metadata:
+    author: Goldziher
+    repository: https://github.com/Goldziher/basemind
 ---
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:d11ecab18536021127703c562d662e72a04d51eb570025a18b05bc2b4bfa713c
-Source-Hash: blake3:7782c0b4b9e2603c82d23fa88f311855ad4e59d0bc6cdddd9dafcddcb3e323b3
-Schema-Version: v1
--->
-
-<!--
-AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:7a0a443f940cf2e0cfaa3c25415fa855c9fa0a4ed0296ca46ebe577fcd28f57e
-Source-Hash: blake3:378e61c2bd27ae140e75d818f27005fac54d22d0ad24de4163a71e8572a15c72
+Content-Hash: blake3:eebd471b72dc23de1a1bbf279c246864cf8ab0575afc3a38f36979982a110b77
+Source-Hash: blake3:db4c3979a26b54efd5467f96ce1fccaf62e7765db011aa2526d6e8ad411e694b
 Schema-Version: v1
 -->
 

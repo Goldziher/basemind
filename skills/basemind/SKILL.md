@@ -1,24 +1,16 @@
 ---
+description: Navigate large or unfamiliar codebases via the basemind MCP server — outlines, symbol search, reference/caller lookups, commit history, blame, and diffs without reading source files. Reach for it whenever the user asks "where is X defined", "what calls Y", "what changed recently in Z", or whenever you're about to grep or open many files to find structural information.
 name: basemind
-description: >-
-  Navigate large or unfamiliar codebases via the basemind MCP server — outlines,
-  symbol search, reference/caller lookups, commit history, blame, and diffs without
-  reading source files. Reach for it whenever the user asks "where is X defined",
-  "what calls Y", "what changed recently in Z", or whenever you're about to grep
-  or open many files to find structural information.
+license: MIT
+metadata:
+    author: Goldziher
+    repository: https://github.com/Goldziher/basemind
 ---
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:2e98a1c8eb09bb7a2a23e32df6123b83fd82c3904f8be185d021059309f63f03
-Source-Hash: blake3:7782c0b4b9e2603c82d23fa88f311855ad4e59d0bc6cdddd9dafcddcb3e323b3
-Schema-Version: v1
--->
-
-<!--
-AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:b1a315a27d1da6871e25a29a2cbec7ae4923c9ac1d2cf8fb09e6c394799f7b0a
-Source-Hash: blake3:378e61c2bd27ae140e75d818f27005fac54d22d0ad24de4163a71e8572a15c72
+Content-Hash: blake3:1d0134b284006b796d871fb0b16b101d8e59599ff14bc79a2a2cb74c4b40aa16
+Source-Hash: blake3:db4c3979a26b54efd5467f96ce1fccaf62e7765db011aa2526d6e8ad411e694b
 Schema-Version: v1
 -->
 
