@@ -96,6 +96,10 @@ def _required_skill_paths(ctx) -> list[Path]:
             name = _front_matter_value(skill_md.read_text(encoding="utf-8"), "name")
             if name != directory.name:
                 raise ValueError(f"Skill directory {directory.name} does not match its declared name {name}")
+            if not name.isascii() or not all(character.isalnum() or character in "_-" for character in name):
+                raise ValueError(
+                    f"Invalid Hermes skill name {name!r}; use ASCII letters, digits, underscores or hyphens"
+                )
         except Exception as error:
             raise RuntimeError(f"Failed to validate required basemind skill {directory.name}: {error}") from error
         paths.append(skill_md)

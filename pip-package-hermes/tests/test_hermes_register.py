@@ -73,6 +73,28 @@ def test_should_propagate_required_skill_registration_error():
         hermes.register(RejectingSkillCtx())
 
 
+@pytest.mark.parametrize("name", ["invalid:skill", "invalid skill", "invalíd"])
+def test_should_reject_invalid_identity_before_registering_capabilities(tmp_path, monkeypatch, name):
+    class RegisteringToolCtx(RecordingCtx):
+        def __init__(self):
+            super().__init__()
+            self.tools = []
+
+        def register_tool(self, **kwargs):
+            self.tools.append(kwargs)
+
+    skills = tmp_path / "skills"
+    invalid = skills / name
+    invalid.mkdir(parents=True)
+    (invalid / "SKILL.md").write_text(f"---\nname: {name}\n---\nSkill body")
+    monkeypatch.setattr(hermes, "_SKILLS_DIR", skills)
+    ctx = RegisteringToolCtx()
+    with pytest.raises(RuntimeError, match="Invalid Hermes skill name"):
+        hermes.register(ctx)
+    assert ctx.skills == []
+    assert ctx.tools == []
+
+
 def test_should_propagate_required_mcp_registration_error():
     class RejectingToolCtx(RecordingCtx):
         def register_tool(self, **kwargs):

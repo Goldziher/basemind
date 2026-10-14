@@ -1,6 +1,6 @@
 {
   "schema_version": "v1",
-  "source_hash": "blake3:51573828db149be905ce06d240fc5fdc2c0d387859413e83e7535346e4b052ed",
+  "source_hash": "blake3:aeb6c47f94a5fa00bf489522f233a578634873e900f440c7160bc634f02abfee",
   "outputs": {
     ".claude-plugin/plugin.json": {
       "content_hash": "blake3:7ef6b33d6448a523b3ffd75ba6c9f4c5670814d864e8936d2f5589528023ba48",
@@ -159,7 +159,7 @@
       "mode": "0644"
     },
     ".hermes/package/src/basemind_hermes_plugin/hermes.py": {
-      "content_hash": "blake3:6ebc2503acce048708b57a9afaccd098511d0c3b23b43f5233f4fbf016acd605",
+      "content_hash": "blake3:53a63c3fb338364350ee0b8ed5771841e0371c328540acd6bcecd62794a2f128",
       "mode": "0644"
     },
     ".hermes/package/src/basemind_hermes_plugin/plugin.yaml": {
@@ -275,7 +275,7 @@
       "mode": "0644"
     },
     ".hermes/plugins/basemind/hermes.py": {
-      "content_hash": "blake3:6ebc2503acce048708b57a9afaccd098511d0c3b23b43f5233f4fbf016acd605",
+      "content_hash": "blake3:53a63c3fb338364350ee0b8ed5771841e0371c328540acd6bcecd62794a2f128",
       "mode": "0644"
     },
     ".hermes/plugins/basemind/plugin.yaml": {

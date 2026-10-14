@@ -1,6 +1,6 @@
 # AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-# Content-Hash: blake3:6ebc2503acce048708b57a9afaccd098511d0c3b23b43f5233f4fbf016acd605
-# Source-Hash: blake3:51573828db149be905ce06d240fc5fdc2c0d387859413e83e7535346e4b052ed
+# Content-Hash: blake3:53a63c3fb338364350ee0b8ed5771841e0371c328540acd6bcecd62794a2f128
+# Source-Hash: blake3:aeb6c47f94a5fa00bf489522f233a578634873e900f440c7160bc634f02abfee
 # Schema-Version: v1
 
 """Hermes Agent plugin registration for basemind.
@@ -101,6 +101,10 @@ def _required_skill_paths(ctx) -> list[Path]:
             name = _front_matter_value(skill_md.read_text(encoding="utf-8"), "name")
             if name != directory.name:
                 raise ValueError(f"Skill directory {directory.name} does not match its declared name {name}")
+            if not name.isascii() or not all(character.isalnum() or character in "_-" for character in name):
+                raise ValueError(
+                    f"Invalid Hermes skill name {name!r}; use ASCII letters, digits, underscores or hyphens"
+                )
         except Exception as error:
             raise RuntimeError(f"Failed to validate required basemind skill {directory.name}: {error}") from error
         paths.append(skill_md)

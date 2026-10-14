@@ -26,6 +26,8 @@ if os.environ["INVALID_SKILL"] == "true" or os.environ["MISSING_SKILL"] == "true
     assert expected_error in loaded.error, loaded.error
     assert manager.list_plugin_skills("basemind") == [], "Failed plugin must not advertise partial skills"
     assert registry.get_tool_names_for_toolset("basemind") == [], "Failed plugin must not advertise MCP tools"
+    if os.environ["INVALID_SKILL"] == "true":
+        assert "Invalid Hermes skill name" in loaded.error, loaded.error
     print(json.dumps({"enabled": loaded.enabled, "error": loaded.error}))
 else:
     assert loaded.enabled and loaded.error is None, loaded.error
@@ -47,6 +49,10 @@ class NativeHermesRegistrationTests(unittest.TestCase):
             shutil.copytree(ROOT / "plugin/.hermes/plugins/basemind", plugin)
             if invalid_skill:
                 (plugin / "skills/basemind").rename(plugin / "skills/invalid:skill")
+                skill = plugin / "skills/invalid:skill/SKILL.md"
+                body = skill.read_text()
+                self.assertEqual(body.count("\nname: basemind\n"), 1)
+                skill.write_text(body.replace("\nname: basemind\n", "\nname: invalid:skill\n"))
             if missing_skill:
                 (plugin / "skills/basemind-stats/SKILL.md").unlink()
             (home / "config.yaml").write_text("plugins:\n  enabled: [basemind]\n")
