@@ -2,6 +2,7 @@ version = "5.0"
 name = "basemind"
 description = "Code-map MCP server + scanner — pure-Rust, content-addressed, Fjall-backed inverted index."
 gitignore = true
+gitignore_exclude = ["opencode.json"]
 
 default_layers = ["plugins"]
 presets = ["claude", "cursor", "codex", "gemini", "kimi", "opencode", "factory", "hermes", "pi", "copilot"]

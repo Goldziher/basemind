@@ -93,3 +93,5 @@ CLAUDE.md
 
 .env
 /node_modules/
+
+/opencode.json
