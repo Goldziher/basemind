@@ -1032,7 +1032,8 @@ jobs:
       - name: Verify exact packaged Pi and OpenCode resource bytes
         run: |
           archive="$(jq -r '.filename' "$RUNNER_TEMP/plugin-pack.json")"
-          python3 scripts/verify_plugin_distribution.py npm "$RUNNER_TEMP/$archive"
+          [[ "$archive" == /* ]] || archive="$RUNNER_TEMP/$archive"
+          python3 scripts/verify_plugin_distribution.py npm "$archive"
 
       - name: Publish the agent package
         run: |
@@ -1053,8 +1054,9 @@ jobs:
           esac
           unset NODE_AUTH_TOKEN
           archive="$(jq -r '.filename' "$RUNNER_TEMP/plugin-pack.json")"
+          [[ "$archive" == /* ]] || archive="$RUNNER_TEMP/$archive"
           for attempt in 1 2 3; do
-            if pnpm publish --no-git-checks "$RUNNER_TEMP/$archive" --provenance --access public --tag "$npm_tag"; then
+            if pnpm publish --no-git-checks "$archive" --provenance --access public --tag "$npm_tag"; then
               break
             fi
             if pnpm view "$name@$version" version >/dev/null 2>&1; then

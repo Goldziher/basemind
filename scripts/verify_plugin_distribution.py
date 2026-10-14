@@ -59,7 +59,7 @@ def verify_npm(archive: Path) -> int:
     manifest = json.loads(files["package.json"])
     if manifest["name"] != package["name"] or manifest["version"] != package["version"]:
         raise ValueError("npm package name or version mismatch")
-    names = [".pi/skills", ".pi/prompts", ".opencode/plugins"]
+    names = [".pi/skills", ".pi/prompts", ".opencode", "assets", "scripts"]
     return verify_resources(files, directory, names)
 
 

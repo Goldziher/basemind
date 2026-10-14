@@ -4,6 +4,7 @@ import importlib.util
 import json
 import re
 import subprocess
+import tarfile
 import tempfile
 import unittest
 import zipfile
@@ -51,7 +52,7 @@ class RegistryArchiveTests(unittest.TestCase):
     def test_should_verify_all_real_registry_runtime_resources(self) -> None:
         """Both builders include their exact generated skill, prompt and adapter bytes."""
         self.assertEqual(self.helper.verify_wheel(self.wheel), 29)
-        self.assertEqual(self.helper.verify_npm(self.npm), 27)
+        self.assertEqual(self.helper.verify_npm(self.npm), 57)
 
     def test_should_reject_a_wheel_missing_a_public_skill(self) -> None:
         """A valid package identity cannot mask a dropped runtime resource."""
@@ -75,6 +76,16 @@ class RegistryArchiveTests(unittest.TestCase):
                 output.writestr(name, data)
         with self.assertRaisesRegex(ValueError, "package name or version mismatch"):
             self.helper.verify_wheel(target)
+
+    def test_should_reject_npm_missing_opencode_content_loader(self) -> None:
+        """The generated adapter cannot load without its imported content module."""
+        target = self.directory / "missing-loader.tgz"
+        with tarfile.open(self.npm) as source, tarfile.open(target, "w:gz") as output:
+            for member in source.getmembers():
+                if member.name != "package/.opencode/ai-rulez-content.js":
+                    output.addfile(member, source.extractfile(member) if member.isfile() else None)
+        with self.assertRaisesRegex(ValueError, "Missing bundled resource"):
+            self.helper.verify_npm(target)
 
 
 class PluginReleaseResultTests(unittest.TestCase):
