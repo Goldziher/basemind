@@ -9,9 +9,10 @@ Design constraints (all load-bearing):
 * **stdlib-only** — the same package is imported by the ``basemind`` CLI, so this module must
   not pull in Hermes or any third-party dependency at import time.
 * **import-cheap and side-effect-free** at module load.
-* **fail-open** — every registration and every hook is guarded; a missing ``basemind`` binary,
-  a down comms broker, or a Hermes build that lacks a given ``ctx`` method must degrade to a
-  no-op, never raise. A raising plugin would break both Hermes startup and the CLI.
+* **required registration is explicit** — supported skill and MCP registration errors reach
+  Hermes' plugin manager, which reports the failed plugin without breaking Hermes startup.
+  Missing optional context methods and notification failures remain best effort. The binary
+  is required only when a tool or notification invokes it, not while importing this module.
 
 Hermes calls :func:`register` with a ``PluginContext`` once, at load. The comms hooks close over
 that context so they can call ``ctx.inject_message(...)`` when they fire.
@@ -25,6 +26,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import warnings
 from builtins import BaseExceptionGroup, ExceptionGroup
 from datetime import timedelta
 from pathlib import Path
@@ -64,22 +66,49 @@ _COMMS_TOOLS = (
 def register(ctx) -> None:
     """Register basemind's skills, slash commands, and comms hooks with Hermes.
 
-    Each capability group is independently guarded so a failure in one (or a ``ctx`` that
-    lacks a given ``register_*`` method) never prevents the others from registering.
+    Required capabilities fail with context; optional notifications remain best effort.
     """
-    for step in (_register_skills, _register_commands, _register_hooks, _register_mcp_tools):
+    skill_paths = _required_skill_paths(ctx)
+    _register_mcp_tools(ctx)
+    _register_skills(ctx, skill_paths)
+    for step in (_register_commands, _register_hooks):
         try:
             step(ctx)
-        except Exception:  # pragma: no cover - defensive: never break plugin load
-            pass
+        except Exception as error:
+            warnings.warn(f"Optional basemind registration failed: {error}", RuntimeWarning, stacklevel=2)
 
 
-def _register_skills(ctx) -> None:
+def _required_skill_paths(ctx) -> list[Path]:
+    """Validate required resource paths before mutating the host's registries."""
+    if not callable(getattr(ctx, "register_skill", None)):
+        return []
+    if not _SKILLS_DIR.is_dir():
+        raise RuntimeError("Required basemind skills directory is missing")
+    directories = sorted(path for path in _SKILLS_DIR.iterdir() if path.is_dir())
+    if not directories:
+        raise RuntimeError("No required basemind skills were found")
+    paths = []
+    for directory in directories:
+        skill_md = directory / "SKILL.md"
+        try:
+            if not skill_md.is_file():
+                raise FileNotFoundError(f"SKILL.md is missing from {directory.name}")
+            name = _front_matter_value(skill_md.read_text(encoding="utf-8"), "name")
+            if name != directory.name:
+                raise ValueError(f"Skill directory {directory.name} does not match its declared name {name}")
+        except Exception as error:
+            raise RuntimeError(f"Failed to validate required basemind skill {directory.name}: {error}") from error
+        paths.append(skill_md)
+    return paths
+
+
+def _register_skills(ctx, paths: list[Path]) -> None:
     reg = getattr(ctx, "register_skill", None)
-    if not callable(reg) or not _SKILLS_DIR.is_dir():
-        return
-    for skill_md in sorted(_SKILLS_DIR.glob("*/SKILL.md")):
-        _safe_call(reg, skill_md.parent.name, skill_md)
+    for skill_md in paths:
+        try:
+            reg(skill_md.parent.name, skill_md)
+        except Exception as error:
+            raise RuntimeError(f"Failed to register basemind skill {skill_md.parent.name}: {error}") from error
 
 
 def _register_commands(ctx) -> None:
@@ -91,7 +120,7 @@ def _register_commands(ctx) -> None:
         if not body:
             continue
         name = cmd_md.stem
-        description = _front_matter_description(body) or f"basemind {name} command"
+        description = _front_matter_value(body, "description") or f"basemind {name} command"
         _safe_call(reg, name, _make_command_handler(body), description)
 
 
@@ -211,8 +240,8 @@ def _hwm_path(session_id: str) -> Path:
     return Path(tempfile.gettempdir()) / f"basemind-comms-hwm-{safe}"
 
 
-def _front_matter_description(body: str) -> str | None:
-    """Pull ``description:`` from a leading ``---`` YAML front-matter block, if present."""
+def _front_matter_value(body: str, key: str) -> str | None:
+    """Read a generated single-line scalar from a leading frontmatter block."""
     if not body.startswith("---"):
         return None
     end = body.find("\n---", 3)
@@ -220,17 +249,18 @@ def _front_matter_description(body: str) -> str | None:
         return None
     for line in body[3:end].splitlines():
         stripped = line.strip()
-        if stripped.startswith("description:"):
-            return stripped[len("description:") :].strip().strip("\"'") or None
+        if stripped.startswith(f"{key}:"):
+            return stripped[len(key) + 1 :].strip().strip("\"'") or None
     return None
 
 
 def _safe_call(fn, *args) -> bool:
-    """Call ``fn(*args)``; return True on success, False on any exception. Never raises."""
+    """Report optional registration failures while preserving compatibility fallbacks."""
     try:
         fn(*args)
         return True
-    except Exception:
+    except Exception as error:
+        warnings.warn(f"Optional basemind registration failed: {error}", RuntimeWarning, stacklevel=2)
         return False
 
 
@@ -313,6 +343,9 @@ async def handle_tool(arguments: dict[str, object], **kwargs: object) -> str:
 
 def _register_mcp_tools(ctx) -> None:
     """Register every bundled skill and one tool spanning the native MCP surface."""
+    reg = getattr(ctx, "register_tool", None)
+    if not callable(reg):
+        return
     name = PLUGIN_NAME.replace("-", "_") + "_call"
     description = f"Call a {PLUGIN_NAME} tool on the installed local MCP server. Select list_tools to inspect request schemas; use namespaced skills for workflows."
     schema = {
@@ -328,4 +361,7 @@ def _register_mcp_tools(ctx) -> None:
             "additionalProperties": False,
         },
     }
-    ctx.register_tool(name=name, toolset=PLUGIN_NAME, schema=schema, handler=handle_tool, is_async=True)
+    try:
+        reg(name=name, toolset=PLUGIN_NAME, schema=schema, handler=handle_tool, is_async=True)
+    except Exception as error:
+        raise RuntimeError(f"Failed to register basemind MCP tool {name}: {error}") from error

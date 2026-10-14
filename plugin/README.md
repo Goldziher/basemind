@@ -53,6 +53,11 @@ Published PyPI version 0.29.3 predates the current skill-registration fix and MC
 the source wheel until a newer release includes them. This wheel includes MCP and PyYAML
 dependencies, but no basemind binary.
 
+Missing or invalid required skill resources and required registration errors disable the plugin
+with a named Hermes error. Reinstall a complete wheel before restarting Hermes; optional
+notification failures remain best effort. Maintainers can run `task plugin:hermes:native:test`
+with `HERMES_PYTHON` pointing to the Hermes SDK interpreter.
+
 ### Pi and OpenCode packages
 
 The curated package supplies ten Pi skills and six prompts. It contains no Pi context extension.

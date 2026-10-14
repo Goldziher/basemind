@@ -45,6 +45,16 @@ tasks:
       - uv run --no-project --with pytest --with mcp==1.28.1 python -m pytest scripts/tests tests/test_legacy_plugin_exports.py pip-package-hermes/tests
       - node tests/basemind_pi_cli_contract.mjs
 
+  plugin:hermes:native:test:
+    desc: Verify required registration using the installed Hermes SDK
+    vars:
+      HERMES_PYTHON: '{{.HERMES_PYTHON | default "python3"}}'
+    preconditions:
+      - sh: '{{.HERMES_PYTHON}} -c "import hermes_cli.plugins"'
+        msg: Set HERMES_PYTHON to the Python interpreter containing the Hermes Agent SDK.
+    cmds:
+      - '{{.HERMES_PYTHON}} scripts/tests/native_hermes_registration.py'
+
   plugin:verify:
     desc: Verify native plugin and public export freshness
     cmds:

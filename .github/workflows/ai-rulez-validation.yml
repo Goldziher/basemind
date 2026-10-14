@@ -11,6 +11,9 @@ on:
       - ".claude-plugin/**"
       - ".codex/**"
       - "scripts/sync*"
+      - "scripts/tests/**"
+      - "pip-package-hermes/tests/**"
+      - "Taskfile.yaml"
       - "Cargo.toml"
       - "pyproject.toml"
       - "package.json"
@@ -26,6 +29,9 @@ on:
       - ".claude-plugin/**"
       - ".codex/**"
       - "scripts/sync*"
+      - "scripts/tests/**"
+      - "pip-package-hermes/tests/**"
+      - "Taskfile.yaml"
       - "Cargo.toml"
       - "pyproject.toml"
       - "package.json"
@@ -41,7 +47,7 @@ jobs:
       - uses: xberg-io/actions/setup-ai-rulez@98adf87f1ed4c62a57ff56f9010d62faf42d4db6
         with:
           ai-rulez-version: "5.3.0"
-          source-revision: "12aa1103ddfb1baf1a439df5b479b0129bba27c1"
+          source-revision: "bdabc8a6e9211de60ca1e4ad76225ac92fcf218f"
       - uses: xberg-io/actions/validate-ai-rulez@98adf87f1ed4c62a57ff56f9010d62faf42d4db6
         with:
           expected-config-count: "2"
@@ -58,3 +64,22 @@ jobs:
           mapfile -t wheels < <(find "$wheel_directory" -maxdepth 1 -type f -name '*.whl')
           test "${#wheels[@]}" -eq 1
           uvx --from twine==7.0.0 --with packaging==26.3 twine check --strict "${wheels[0]}"
+      - name: Verify required registration with the native Hermes SDK
+        shell: bash
+        env:
+          HERMES_SDK_REVISION: caf557be5b4c9ae75b3a7566d65d3df2c701c5df
+        run: |
+          set -euo pipefail
+          hermes_sdk="$(mktemp -d)"
+          test -n "$hermes_sdk"
+          git init "$hermes_sdk"
+          git -C "$hermes_sdk" remote add origin https://github.com/NousResearch/hermes-agent.git
+          git -C "$hermes_sdk" fetch --depth=1 origin "$HERMES_SDK_REVISION"
+          git -C "$hermes_sdk" checkout --detach FETCH_HEAD
+          test "$(git -C "$hermes_sdk" rev-parse HEAD)" = "$HERMES_SDK_REVISION"
+          PYTHONPATH="$hermes_sdk" uv run --no-project --with PyYAML==6.0.3 \
+            --with python-dotenv==1.2.2 --with mcp==1.28.1 python scripts/tests/native_hermes_registration.py
+      - name: Verify required skill and MCP error propagation
+        run: >-
+          uv run --no-project --with pytest --with mcp==1.28.1 python -m pytest
+          pip-package-hermes/tests/test_hermes_register.py

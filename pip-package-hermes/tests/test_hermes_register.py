@@ -4,7 +4,7 @@ These use a duck-typed fake ``ctx`` — no Hermes dependency — and assert the 
 
 * registers every bundled skill and slash command,
 * wires the two comms hooks,
-* is fully fail-open (runs with a ``ctx`` missing methods, and with no ``basemind`` binary),
+* propagates required registration errors and supports missing optional context methods,
 * ships its manifest + bundled assets where the wheel's package-data expects them.
 """
 
@@ -58,10 +58,30 @@ def test_register_wires_all_skills():
     hermes.register(ctx)
     names = {name for name, _ in ctx.skills}
     assert "basemind" in names
-    assert len(ctx.skills) >= 8
+    assert len(ctx.skills) == 10
     for _, path in ctx.skills:
         assert isinstance(path, Path), "Native Hermes calls path.exists() on registered skills"
         assert path.is_file()
+
+
+def test_should_propagate_required_skill_registration_error():
+    class RejectingSkillCtx(RecordingCtx):
+        def register_skill(self, name, path):
+            raise ValueError(f"Invalid skill name: {name}")
+
+    with pytest.raises(RuntimeError, match=r"basemind.*skill.*Invalid skill name"):
+        hermes.register(RejectingSkillCtx())
+
+
+def test_should_propagate_required_mcp_registration_error():
+    class RejectingToolCtx(RecordingCtx):
+        def register_tool(self, **kwargs):
+            raise ValueError("Cannot register basemind_call")
+
+    ctx = RejectingToolCtx()
+    with pytest.raises(RuntimeError, match=r"basemind.*MCP.*basemind_call"):
+        hermes.register(ctx)
+    assert ctx.skills == []
 
 
 def test_register_wires_expected_commands_with_body_handlers():
