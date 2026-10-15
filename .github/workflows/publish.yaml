@@ -6,9 +6,13 @@ on:
       - v[0-9]+.*
   workflow_dispatch:
     inputs:
+      plugins-only:
+        description: "Publish only missing plugin registry versions from main"
+        type: boolean
+        default: false
       tag:
         description: "Release tag to publish (e.g., v0.1.0)"
-        required: true
+        required: false
         type: string
 
 concurrency:
@@ -25,6 +29,7 @@ permissions:
 
 jobs:
   meta:
+    if: ${{ !inputs.plugins-only }}
     name: Resolve versions
     runs-on: ubuntu-latest
     outputs:
@@ -293,7 +298,8 @@ jobs:
   create_release:
     name: Create GitHub release
     needs: meta
-    if: needs.meta.outputs.release_assets_exist != 'true'
+    if: >-
+      ${{ !inputs.plugins-only && (needs.meta.outputs.release_assets_exist != 'true') }}
     runs-on: ubuntu-latest
     outputs:
       release_id: ${{ steps.release_info.outputs.release_id }}
@@ -378,7 +384,8 @@ jobs:
   build-binaries:
     name: Build binaries / ${{ matrix.triple }}
     needs: [meta, create_release]
-    if: needs.meta.outputs.release_assets_exist != 'true'
+    if: >-
+      ${{ !inputs.plugins-only && (needs.meta.outputs.release_assets_exist != 'true') }}
     strategy:
       fail-fast: false
       matrix:
@@ -506,7 +513,8 @@ jobs:
   build-linux-binaries:
     name: Build Linux binaries / ${{ matrix.triple }}
     needs: [meta, create_release]
-    if: needs.meta.outputs.release_assets_exist != 'true'
+    if: >-
+      ${{ !inputs.plugins-only && (needs.meta.outputs.release_assets_exist != 'true') }}
     runs-on: ${{ matrix.os }}
     container: ${{ matrix.image }}
     strategy:
@@ -670,6 +678,7 @@ jobs:
             "basemind-${{ matrix.triple }}.tar.gz" application/gzip
 
   checksums:
+    if: ${{ !inputs.plugins-only }}
     name: Generate and upload checksums
     needs: [meta, create_release, build-binaries, build-linux-binaries]
     runs-on: ubuntu-latest
@@ -740,7 +749,8 @@ jobs:
   finalize_release:
     name: Publish GitHub release
     needs: [meta, create_release, checksums]
-    if: always() && needs.meta.result == 'success'
+    if: >-
+      ${{ !inputs.plugins-only && (always() && needs.meta.result == 'success') }}
     runs-on: ubuntu-latest
     steps:
       # The promotion step runs `.github/scripts/release-asset.sh`; without a checkout the
@@ -802,8 +812,7 @@ jobs:
     # irreversible, so don't publish source unless the platform binaries built and the ~keep
     # release promoted — keeps the surfaces atomic across a partial failure. ~keep
     if: >-
-      always() && needs.meta.outputs.crates_publishable == 'true' &&
-      needs.meta.outputs.crates_exists != 'true' && needs.finalize_release.result == 'success'
+      ${{ !inputs.plugins-only && (always() && needs.meta.outputs.crates_publishable == 'true' && needs.meta.outputs.crates_exists != 'true' && needs.finalize_release.result == 'success') }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -850,7 +859,8 @@ jobs:
   publish_npm:
     name: Publish npm
     needs: [meta, finalize_release]
-    if: always() && needs.meta.outputs.npm_exists != 'true' && needs.finalize_release.result == 'success'
+    if: >-
+      ${{ !inputs.plugins-only && (always() && needs.meta.outputs.npm_exists != 'true' && needs.finalize_release.result == 'success') }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -887,7 +897,8 @@ jobs:
   publish_opencode:
     name: Publish npm (basemind-opencode, OpenCode and Pi)
     needs: [meta, finalize_release]
-    if: always() && needs.finalize_release.result == 'success'
+    if: >-
+      ${{ !inputs.plugins-only && (always() && needs.finalize_release.result == 'success') }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -950,7 +961,8 @@ jobs:
   publish_pypi:
     name: Publish PyPI
     needs: [meta, finalize_release]
-    if: always() && needs.meta.outputs.pypi_exists != 'true' && needs.finalize_release.result == 'success'
+    if: >-
+      ${{ !inputs.plugins-only && (always() && needs.meta.outputs.pypi_exists != 'true' && needs.finalize_release.result == 'success') }}
     runs-on: ubuntu-latest
     environment: pypi
     steps:
@@ -981,7 +993,8 @@ jobs:
   publish_plugin_npm:
     name: Publish npm agent plugin (OpenCode and Pi)
     needs: [meta, finalize_release]
-    if: needs.finalize_release.result == 'success'
+    if: >-
+      ${{ !inputs.plugins-only && (needs.finalize_release.result == 'success') }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -1071,7 +1084,8 @@ jobs:
   publish_plugin_artifacts:
     name: Publish all agent runtime archives and marketplaces
     needs: [meta, finalize_release]
-    if: needs.finalize_release.result == 'success'
+    if: >-
+      ${{ !inputs.plugins-only && (needs.finalize_release.result == 'success') }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -1117,7 +1131,8 @@ jobs:
   publish_pypi_hermes:
     name: Publish Hermes plugin to PyPI
     needs: [meta, finalize_release]
-    if: needs.finalize_release.result == 'success'
+    if: >-
+      ${{ !inputs.plugins-only && (needs.finalize_release.result == 'success') }}
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
@@ -1178,7 +1193,8 @@ jobs:
   publish_homebrew:
     name: Update Homebrew formula
     needs: [meta, create_release, finalize_release]
-    if: always() && needs.finalize_release.result == 'success' && !contains(needs.meta.outputs.version, '-rc') && !contains(needs.meta.outputs.version, '-beta') && !contains(needs.meta.outputs.version, '-alpha')
+    if: >-
+      ${{ !inputs.plugins-only && (always() && needs.finalize_release.result == 'success' && !contains(needs.meta.outputs.version, '-rc') && !contains(needs.meta.outputs.version, '-beta') && !contains(needs.meta.outputs.version, '-alpha')) }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -1224,7 +1240,8 @@ jobs:
   plugin_release_report:
     name: Verify all plugin distribution jobs succeeded
     needs: [publish_plugin_artifacts, publish_plugin_npm, publish_pypi_hermes, publish_opencode]
-    if: always()
+    if: >-
+      ${{ !inputs.plugins-only && (always()) }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -1234,3 +1251,130 @@ jobs:
         env:
           RESULTS_JSON: ${{ toJSON(needs) }}
         run: python3 scripts/verify_plugin_release_results.py
+
+  dispatch-plugin-npm:
+    name: Publish missing npm plugin version
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.plugins-only && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+      - name: Install reviewed ai-rulez
+        uses: xberg-io/actions/setup-ai-rulez@98adf87f1ed4c62a57ff56f9010d62faf42d4db6
+        with:
+          ai-rulez-version: "5.3.0"
+          source-revision: "bdabc8a6e9211de60ca1e4ad76225ac92fcf218f"
+      - name: Verify plugin versions and generated resources
+        uses: xberg-io/actions/verify-ai-rulez-plugin@98adf87f1ed4c62a57ff56f9010d62faf42d4db6
+        with:
+          version-sync-script: scripts/sync_plugin_version.py
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          registry-url: https://registry.npmjs.org
+      - uses: pnpm/action-setup@v6
+        with:
+          version: "12.11.2"
+          run_install: false
+      - name: Read and check the exact npm version
+        id: package
+        shell: bash
+        run: |
+          python3 - <<'PYTHON'
+          import json
+          import os
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+          from pathlib import Path
+
+          package = json.loads(Path('plugin/package.json').read_text())
+          name, version = package['name'], package['version']
+          if not name or not version:
+              raise SystemExit('Missing plugin package identity')
+          url = 'https://registry.npmjs.org/' + urllib.parse.quote(name, safe='')
+          url += '/' + urllib.parse.quote(version, safe='')
+          try:
+              with urllib.request.urlopen(url, timeout=30) as response:
+                  published = json.load(response)
+              if published['name'] != name or published['version'] != version:
+                  raise SystemExit('Registry returned an unexpected package identity')
+              exists = True
+          except urllib.error.HTTPError as error:
+              if error.code != 404:
+                  raise
+              exists = False
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f"version={version}\nexists={str(exists).lower()}\n")
+              output.write(f"tag={'next' if '-' in version else 'latest'}\n")
+          print(f"{name}@{version}: {'already published; skipping' if exists else 'not published'}")
+          PYTHON
+      - name: Verify the packed Pi and OpenCode resources
+        if: steps.package.outputs.exists != 'true'
+        shell: bash
+        run: |
+          npm pack ./plugin --json --ignore-scripts --pack-destination "$RUNNER_TEMP" > "$RUNNER_TEMP/plugin-pack.json"
+          archive="$(node -p "JSON.parse(require('node:fs').readFileSync(process.argv[1]))[0].filename" "$RUNNER_TEMP/plugin-pack.json")"
+          python3 scripts/verify_plugin_distribution.py npm "$RUNNER_TEMP/$archive"
+      - name: Publish missing npm version with trusted publishing
+        if: steps.package.outputs.exists != 'true'
+        uses: xberg-io/actions/publish-npm@v1
+        with:
+          package-dir: plugin
+          expected-version: ${{ steps.package.outputs.version }}
+          npm-tag: ${{ steps.package.outputs.tag }}
+          access: public
+          provenance: "true"
+
+  dispatch-plugin-hermes:
+    name: Publish missing Hermes plugin version
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.plugins-only && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+      - name: Install reviewed ai-rulez
+        uses: xberg-io/actions/setup-ai-rulez@98adf87f1ed4c62a57ff56f9010d62faf42d4db6
+        with:
+          ai-rulez-version: "5.3.0"
+          source-revision: "bdabc8a6e9211de60ca1e4ad76225ac92fcf218f"
+      - name: Verify plugin versions and generated resources
+        uses: xberg-io/actions/verify-ai-rulez-plugin@98adf87f1ed4c62a57ff56f9010d62faf42d4db6
+        with:
+          version-sync-script: scripts/sync_plugin_version.py
+      - uses: astral-sh/setup-uv@v10.3.0
+        with:
+          python-version: "3.13"
+      - name: Read the verified Hermes version
+        id: package
+        shell: bash
+        run: |
+          python3 - <<'PYTHON'
+          import os
+          import tomllib
+          from pathlib import Path
+
+          package = tomllib.loads(Path('plugin/.hermes/package/pyproject.toml').read_text())['project']
+          if not package['name'].endswith('-hermes-plugin') or not package['version']:
+              raise SystemExit('Missing or unexpected Hermes package identity')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f"version={package['version']}\n")
+          PYTHON
+      - name: Build verified Hermes wheel
+        run: uv build --wheel --out-dir dist-hermes plugin/.hermes/package
+      - name: Verify every packaged Hermes runtime resource
+        run: python3 scripts/verify_plugin_distribution.py wheel dist-hermes/*.whl
+      - name: Publish missing Hermes version with trusted publishing
+        uses: xberg-io/actions/publish-pypi@v1
+        with:
+          packages-dir: dist-hermes
+          expected-version: ${{ steps.package.outputs.version }}
