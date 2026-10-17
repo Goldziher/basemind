@@ -486,6 +486,16 @@ pub(super) struct StatusResponse {
     /// path — status then reflects the fully-committed index.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub rebuild_in_progress: bool,
+    /// `true` when the workspace's last full scan was cancelled or aborted before covering it (daemon
+    /// shutdown, idle reap, a full disk), so `file_count` and the queries reflect only the files
+    /// completed so far, not the repository. A full rescan clears it. Absent (false) otherwise.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub partial: bool,
+    /// One-line reason the index is degraded: a partial scan (with its reason and progress) or a
+    /// resolve pass that never completed, leaving resolved references and callers stale. Absent when
+    /// the last scan finished cleanly.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub degraded: Option<String>,
     /// `true` while this serve's boot-time initial scan (auto-scan of an empty index) is still
     /// running. A client seeing this should treat empty query results as "index not ready yet"
     /// and poll again, rather than "no matches". Absent (false) once the index is built.

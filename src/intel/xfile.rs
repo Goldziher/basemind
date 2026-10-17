@@ -106,14 +106,20 @@ fn resolve_export_transitively(
 /// Runs after the resolve pass's per-file upserts have committed, so each importer's previous-scan
 /// edges are already purged (see the idempotency note on `upsert_cross_file_edge`). Best-effort:
 /// never returns an error — resolver misses and commit failures are logged and swallowed so the
-/// scan still succeeds with the name-based fallback intact.
+/// scan still succeeds with the name-based fallback intact. Returns false when a commit failed, so
+/// the caller can decline to record the resolve pass as complete.
 ///
 /// Each importer's language (from the primary index) selects a [`SpecifierResolver`]; importers in
 /// a language with no compiled-in resolver are skipped. Resolvers are built once per language and
 /// cached for the duration of the stitch.
-pub fn stitch_cross_file_edges(root: &Path, store: &Store, index_db: &IndexDb, facts: &AHashMap<String, FileFacts>) {
+pub fn stitch_cross_file_edges(
+    root: &Path,
+    store: &Store,
+    index_db: &IndexDb,
+    facts: &AHashMap<String, FileFacts>,
+) -> bool {
     if facts.is_empty() {
-        return;
+        return true;
     }
     let export_maps: AHashMap<&str, AHashMap<&str, u32>> = facts
         .iter()
@@ -194,7 +200,8 @@ pub fn stitch_cross_file_edges(root: &Path, store: &Store, index_db: &IndexDb, f
     }
 
     if !batch.finish() {
-        return;
+        return false;
     }
     tracing::debug!(edges, "cross-file stitch: staged cross-file resolved edges");
+    true
 }

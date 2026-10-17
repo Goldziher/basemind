@@ -10,6 +10,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A full disk or poisoned index no longer leaves a scan reporting complete** ([#79](https://github.com/Goldziher/basemind/issues/79)).
+  Index commits that failed with `StorageFull` or `Poisoned` were logged as warnings while the scan ran on and
+  `status.json` read a full file count over half-written `refs_by_*` partitions. Both are now fatal: the scan
+  stops, returns an error and records itself as partial. A scan and its resolve pass first check free space
+  against 1.5x the current index size plus 512 MiB of headroom (`BASEMIND_MIN_FREE_MB` sets the headroom, `0`
+  keeps only the proportional part) and refuse when the volume is short. `status.json` gains a
+  `resolve_complete` marker that is set only after the resolve pass commits, and `admin status` (`degraded`)
+  and `basemind doctor` report a missing one. The comms daemon reopens a poisoned code-index handle after the
+  scan that hit it, and rescans a workspace whose last scan was degraded when it next opens.
+- **A cancelled scan's partial file count is flagged** ([#84](https://github.com/Goldziher/basemind/issues/84)).
+  A scan cancelled by daemon shutdown, idle reap or ownership loss flushed the files it had completed, and
+  `admin status` reported that count as the workspace's. `status.json` now records `partial`, the reason and
+  the progress (`progress_done` of `progress_total`); `admin status` surfaces `partial` and `degraded`, and
+  `basemind doctor` warns. The next full scan clears it.
+
 ## [0.29.3] - 2026-10-13
 
 ### Changed

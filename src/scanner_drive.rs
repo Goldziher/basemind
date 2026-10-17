@@ -291,6 +291,9 @@ pub(crate) fn drive_scan(
         .filters
         .doc_phase
         .begin(std::time::Duration::from_secs(drive.filters.doc_phase_budget_secs));
+    // A fatal index commit failure (disk full, poisoned handle) stops the drive like a cancel: every
+    // later commit would fail too. Held as a handle clone because `ctx` owns the `&mut Store`.
+    let index_db = store.index_db.clone();
     let mut ctx = DriveCtx {
         store,
         stats,
@@ -302,7 +305,7 @@ pub(crate) fn drive_scan(
         &mut ctx,
         candidates,
         || {
-            if drive.cancel.is_cancelled() {
+            if drive.cancel.is_cancelled() || index_db.as_ref().is_some_and(crate::index::IndexDb::has_fatal_fault) {
                 return None;
             }
             let plan = governor.admit();

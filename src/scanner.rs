@@ -19,13 +19,14 @@ use crate::scanner_docs::{PendingDocBatch, flush_document_batches};
 use crate::scanner_drive::{DriveOutcome, PendingCodeBatchOpt, PendingDocBatchOpt, ScanDrive, drive_scan};
 use crate::scanner_file::scanner_pool;
 use crate::scanner_filter::{Filters, IndexFilter};
+use crate::scanner_integrity::{abort_on_fault, ensure_space, finish_resolve, flush_code_map, preflight};
 #[cfg(feature = "documents")]
 use crate::scanner_lanes::LANE_DOC_REMOVALS;
 use crate::scanner_lanes::{
     LANE_BM25_STATS, LANE_CODE_BATCHES, LANE_CODE_REMOVALS, LANE_DOC_BATCHES, LANE_EMBED_POLICY, LANE_RESOLVE,
     run_optional_lane,
 };
-use crate::store::{FileEntry, Store, StoreError};
+use crate::store::{FileEntry, ScanHealth, Store, StoreError};
 
 /// The per-file pipeline (`process_file` and the read / classify / extract helpers around it) and
 /// the rayon pool it runs on live in their own module to keep this file under the module size cap.
@@ -115,6 +116,14 @@ pub enum ScanError {
         root: String,
         top_dirs: Vec<(String, usize)>,
     },
+    /// An index commit failed in a way no retry cures: the disk is full, or the index handle is
+    /// poisoned. Raised instead of finishing the pass, because every later commit fails the same
+    /// way and the result would be an index that reads complete over half-written partitions.
+    #[error("scan aborted: the index cannot be written ({0}). Free disk space and rescan.")]
+    IndexFault(String),
+    /// The volume lacks room for the index; see [`crate::disk_space`].
+    #[error("scan refused: {0}")]
+    InsufficientSpace(#[from] crate::disk_space::InsufficientSpace),
 }
 
 /// `node_modules (812431), .cache (194002)` — the contributor list in [`ScanError::TooManyCandidates`].
@@ -443,6 +452,7 @@ pub fn scan_with_observer(
     // is no exit path left to log from, so the growth curve has to have been written down as it
     // happened. The breadcrumb says a scan died here; this says how its memory got there. ~keep
     let _memory_log = crate::scan_evidence::MemoryLog::start(root);
+    preflight(store)?;
 
     let submodule_roots = submodule_roots_for_source(root, &source);
     let mut filters = Filters::build(config, submodule_roots)?;
@@ -467,6 +477,10 @@ pub fn scan_with_observer(
         cancel,
     };
     let driven = drive_scan(&drive, &candidates, store, &mut report.stats, observer);
+    let (seen_count, total_candidates) = (driven.seen.len(), candidates.len());
+    // Before the cancel check and the stale purge: a drive stopped by a fatal commit failure is a ~keep
+    // partial pass too, and must not be flushed or purged as if it were whole. ~keep
+    abort_on_fault(store, seen_count, total_candidates)?;
 
     // Cancelled mid-pass: commit what completed and return BEFORE the stale purge. The purge below ~keep
     // treats every indexed file absent from `driven.seen` as deleted — on a partial pass that would ~keep
@@ -476,7 +490,7 @@ pub fn scan_with_observer(
     // rows come from already-persisted blobs (no model inference), so this stays bounded. ~keep
     if cancel.is_cancelled() {
         report.cancelled = true;
-        flush_code_map(store)?;
+        flush_code_map(store, &ScanHealth::partial("cancelled", seen_count, total_candidates))?;
         run_optional_lane(LANE_DOC_BATCHES, || {
             flush_doc_batches_if_any(store, config, driven.doc_batches);
         });
@@ -558,7 +572,7 @@ pub fn scan_with_observer(
     }
 
     advance(&mut breadcrumb, PHASE_FLUSH, None);
-    flush_code_map(store)?;
+    flush_code_map(store, &ScanHealth::resolving())?;
 
     // A token tripped after the last per-file check still stops the pass here, once the code map ~keep
     // is durable but before the resolve pass (which can run for minutes on a large repo). The ~keep
@@ -577,12 +591,15 @@ pub fn scan_with_observer(
 
     if matches!(source, ScanSource::WorkingTree) {
         advance(&mut breadcrumb, PHASE_RESOLVE, None);
+        ensure_space(store)?;
         let precise = config.code_intel.precise_resolution;
+        let mut resolved = false;
         run_optional_lane(LANE_RESOLVE, || {
-            scanner_pool(config.resources.scan_threads).install(|| {
+            resolved = scanner_pool(config.resources.scan_threads).install(|| {
                 crate::intel::resolve_pass::resolve_pass(root, store, precise, config.resources.max_footprint_mb)
             });
         });
+        finish_resolve(store, resolved)?;
     }
 
     advance(&mut breadcrumb, PHASE_LANES, None);
@@ -616,26 +633,6 @@ fn advance(breadcrumb: &mut Option<ScanBreadcrumb>, phase: &'static str, candida
     if let Some(crumb) = breadcrumb.as_mut() {
         crumb.advance(phase, candidates);
     }
-}
-
-/// Persist the file map (`index.msgpack`) — the durability barrier that must run BEFORE the optional
-/// post-extraction lanes.
-///
-/// Blobs and the Fjall index are committed per file, but the file map is a single msgpack rewrite at
-/// the end. When it was written *after* the optional lanes, any lane that panicked (the
-/// `stack-graphs` stitcher) or hung until the operator killed the process (the embedding-model
-/// download on a blackholed IPv6 route) left the workspace with gigabytes of committed blobs beside
-/// an `index.msgpack` reporting `file_count: 0` — a silently empty code map that forced a full
-/// re-scan on every launch. Flushing here makes the code map durable the moment it is complete;
-/// every lane after this point is enrichment, and a lane that dies costs only its own tier.
-///
-/// A lane that mutates `store.index` must flush again after itself (only the doc-removal lane does).
-fn flush_code_map(store: &Store) -> Result<(), ScanError> {
-    store.flush()?;
-    // Refresh the cheap statusline sidecar the moment the code map is durable, so a shell
-    // statusline sees fresh counts without ever opening the Fjall index. Best-effort by design.
-    store.write_status_sidecar();
-    Ok(())
 }
 
 /// Incremental scan: process only the given absolute paths. Used by the watcher
@@ -812,7 +809,8 @@ pub fn scan_paths_with_observer(
         report.stats.removed += 1;
     }
 
-    flush_code_map(store)?;
+    store.flush()?;
+    store.write_status_sidecar();
 
     // Cancelled: the removals above already ran (path-existence-derived, safe on a partial pass) ~keep
     // and the code map is durable; skip the resolve pass and the removal lanes. The batch flushes ~keep

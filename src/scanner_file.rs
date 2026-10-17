@@ -23,6 +23,7 @@ use crate::config::Config;
 use crate::extract::{self, ExtractError, FileMapL1, FileMapL2};
 use crate::git::GitError;
 use crate::hashing;
+use crate::index::IndexDb;
 use crate::path::RelPath;
 use crate::scanner::{EmbedMode, FileResult, FileStatus, ScanCancel, ScanSource};
 #[cfg(feature = "documents")]
@@ -103,7 +104,8 @@ pub(crate) fn run_candidates(
                     // Cooperative cancellation, per-file granularity: one relaxed load before each ~keep
                     // candidate. A skipped file emits no FileResult, so the caller can tell a ~keep
                     // partial pass apart from a complete one (and must skip its stale purge). ~keep
-                    if cancel.is_cancelled() {
+                    // A fatal index commit failure stops the walk the same way: see `scan_drive`. ~keep
+                    if cancel.is_cancelled() || store.index_db.as_ref().is_some_and(IndexDb::has_fatal_fault) {
                         return batch;
                     }
                     let result = process_file(root, rel, filters, store, source, config, scope, &mut batch, embed);

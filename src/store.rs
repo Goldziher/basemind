@@ -22,10 +22,10 @@ pub use crate::store_layout::LANCE_DIR;
 pub use crate::store_layout::init_isolated_cache;
 pub use crate::store_layout::{
     BLOBS_DIR, CACHE_DIR, DATA_HOME_ENV, INDEX_FILE, LOCK_FILE, LOCK_META_FILE, STATUS_SIDECAR_FILE,
-    STATUS_SIDECAR_SCHEMA_VER, StatusSidecar, VIEW_STAGED, VIEW_WORKING, VIEWS_DIR, WORKSPACE_MARKER_FILE,
-    WORKSPACES_DIR, WorkspaceMarker, cache_root, count_fm_blobs, ensure_workspace_marker, global_blobs_dir,
-    read_status_sidecar, read_workspace_marker, status_sidecar_path, view_name_for_rev, workspace_cache_dir,
-    workspace_key, write_status_sidecar,
+    STATUS_SIDECAR_SCHEMA_VER, PartialScan, ScanHealth, StatusSidecar, VIEW_STAGED, VIEW_WORKING, VIEWS_DIR,
+    WORKSPACE_MARKER_FILE, WORKSPACES_DIR, WorkspaceMarker, cache_root, count_fm_blobs, ensure_workspace_marker,
+    global_blobs_dir, read_status_sidecar, read_workspace_marker, status_sidecar_path, update_status_health,
+    view_name_for_rev, workspace_cache_dir, workspace_key, write_status_sidecar,
 };
 
 /// Which basemind command is taking the exclusive store lock. Threaded from the caller
@@ -551,13 +551,41 @@ impl Store {
     /// A no-op for non-working views: the statusline only ever reflects the working view, and writing
     /// from a `staged`/`rev-*` scan would clobber it with the wrong counts. Best-effort — a failed
     /// write is swallowed by [`write_status_sidecar`], so it never affects a scan's success.
+    ///
+    /// Keeps the completeness fields the last full scan recorded: an incremental update refreshes
+    /// counts but must not mark a partial or unresolved index healthy.
     pub fn write_status_sidecar(&self) {
+        let health = read_status_sidecar(&self.basemind_dir).map_or_else(ScanHealth::complete, |s| s.health());
+        self.write_status_sidecar_with(&health);
+    }
+
+    /// [`Self::write_status_sidecar`] recording `health` — what a full scan states about itself.
+    pub fn write_status_sidecar_with(&self, health: &ScanHealth) {
         if self.view != VIEW_WORKING {
             return;
         }
         let file_count = self.index.files.len();
         let blob_count = count_fm_blobs(&self.blobs_dir);
-        write_status_sidecar(&self.basemind_dir, file_count, blob_count);
+        write_status_sidecar(&self.basemind_dir, file_count, blob_count, health);
+    }
+
+    /// Drop and reopen the Fjall index, replacing a poisoned handle with a fresh one. Our handle is
+    /// released first so the directory lock can be retaken; if a clone elsewhere still holds the old
+    /// database the reopen fails and `index_db` stays `None`, which the caller must treat as a dead
+    /// store.
+    pub fn reopen_index_db(&mut self) -> Result<(), IndexError> {
+        if self.index_db.take().is_some() {
+            self.index_db = Some(open_index_with_retry(&self.view_dir)?);
+        }
+        Ok(())
+    }
+
+    /// Record `health` while leaving the sidecar's counts as the last durable flush wrote them. For
+    /// an aborted scan, whose in-memory file map is ahead of the unflushed `index.msgpack`.
+    pub fn mark_status_health(&self, health: &ScanHealth) {
+        if self.view == VIEW_WORKING {
+            update_status_health(&self.basemind_dir, health);
+        }
     }
 }
 
