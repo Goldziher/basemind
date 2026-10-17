@@ -70,6 +70,13 @@ static OPEN_STORES: Mutex<Option<HashMap<PathBuf, Weak<MemoryDb>>>> = Mutex::new
 /// directory gets the same handle, so several worktrees of one repo group never fight over the
 /// Fjall lock.
 pub(crate) fn open_shared(dir: &Path) -> Result<Arc<MemoryDb>, IndexError> {
+    // Create the directory before canonicalising: a path that does not exist yet canonicalises to
+    // itself, and to its resolved form (`/var` → `/private/var` on macOS) once it does, which would
+    // register one store under two keys and make the second open hit the Fjall lock.
+    std::fs::create_dir_all(dir).map_err(|source| IndexError::Io {
+        path: dir.to_path_buf(),
+        source,
+    })?;
     let key = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
     let mut guard = OPEN_STORES.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let stores = guard.get_or_insert_with(HashMap::new);
