@@ -54,7 +54,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The document phase no longer burns its budget on low-value files** ([#83](https://github.com/Goldziher/basemind/issues/83)).
   The phase budget is checked before a document is announced as linearly chunked, and the per-file "deferred" warnings are
   replaced by one summary count at the end of the phase (per-file detail stays at debug level).
-=======
 ### Changed
 
 - **The auto memory ceiling is 25% of machine RAM, floored at 2048 MiB** ([#85](https://github.com/Goldziher/basemind/issues/85)).
@@ -74,7 +73,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Blob GC removes stray `*.tmp` files (staging files left by a dead writer) from the global `blobs/` directory
   once they are older than the six-hour grace window. Age is the only test, so a file still being written is kept.
->>>>>>> naaman.footprint-noise
+=======
+### Fixed
+
+- **Incremental rescans re-stitch cross-file references exactly, and only for the files they affect** ([#81](https://github.com/Goldziher/basemind/issues/81)).
+  The watcher's re-stitch read every resolver-language file's blob to find the importers of a changed file, and
+  followed only one hop, so a file behind a Python `__init__.py` re-export (or a deleted target, a new file
+  shadowing a resolved module, a `tsconfig.json` edit) left its importers with stale `refs_by_def` /
+  `refs_by_path` edges until the next full scan. The stitch now records every path the resolver consulted per
+  importer (two new keyspaces, `import_targets` and `importers_by_probe`), and a rescan re-stitches the changed
+  paths plus those importers: O(affected), equal to a full pass. An existing index runs one wholesale resolve
+  pass on its first rescan to build the probe rows; no wipe. The watcher now forwards `tsconfig*.json` and
+  `package.json` edits so a config change reaches the importers that read it.
+>>>>>>> naaman.restitch-probe
 
 ## [0.29.3] - 2026-10-13
 

@@ -22,6 +22,7 @@ pub mod grep_bloom;
 pub mod keys;
 pub mod keys_governance;
 pub(crate) mod memory_store;
+pub mod keys_probe;
 pub(crate) mod name_dict;
 pub mod writer;
 
@@ -54,6 +55,15 @@ pub const INDEX_SCHEMA_VER: u32 = crate::version::RELEASE_MINOR as u32 + INDEX_P
 
 const META_SCHEMA_VER: &[u8] = b"schema_ver";
 
+/// `meta` row stamping that `import_targets` / `importers_by_probe` describe EVERY importer, i.e. a
+/// wholesale resolve pass completed since they were created. An index that predates the two
+/// keyspaces (or a wholesale pass that never finished) lacks it, and the incremental pass then runs
+/// the wholesale one once instead of trusting an empty probe index.
+const META_IMPORT_PROBE_VER: &[u8] = b"import_probe_ver";
+
+/// Layout revision of the probe keyspaces; bump to force one wholesale resolve pass.
+const IMPORT_PROBE_VER: u8 = 1;
+
 /// `meta` rows carrying the corpus-global BM25 stats — recomputed at the end of each scan by
 /// [`IndexDb::recompute_bm25_stats`] and read at query time. `N` = number of indexed code chunks;
 /// `total_len` = sum of their token lengths (`avgdl = total_len / N`).
@@ -81,6 +91,8 @@ const KEYSPACE_MEMTABLE_BYTES: &[(&str, u64)] = &[
     ("implementations_by_path", MEMTABLE_COLD_BYTES),
     ("refs_by_def", MEMTABLE_WARM_BYTES),
     ("refs_by_path", MEMTABLE_WARM_BYTES),
+    ("import_targets", MEMTABLE_WARM_BYTES),
+    ("importers_by_probe", MEMTABLE_WARM_BYTES),
     ("code_bm25_postings", MEMTABLE_HOT_BYTES),
     ("code_bm25_by_path", MEMTABLE_WARM_BYTES),
     ("grep_bloom", MEMTABLE_COLD_BYTES),
@@ -245,6 +257,11 @@ fn index_cache_bytes(dir: &Path) -> u64 {
     scaled_bytes.clamp(INDEX_CACHE_FLOOR_BYTES, INDEX_CACHE_CEILING_BYTES)
 }
 
+/// `path` followed by each of its ancestor directories, innermost first.
+fn probe_candidates(path: &str) -> impl Iterator<Item = &str> {
+    std::iter::once(path).chain(path.rmatch_indices('/').map(move |(i, _)| &path[..i]))
+}
+
 #[derive(Debug, Error)]
 pub enum IndexError {
     #[error("fjall error: {0}")]
@@ -297,6 +314,13 @@ pub struct IndexDb {
     /// `refs_by_path`: companion keyed by the use file — O(prefix) delete on re-resolve and the
     /// forward lookup behind `goto_definition`. Written by the scanner's resolve pass (B3).
     pub(crate) refs_by_path: Keyspace,
+    /// `import_targets`: importer + import-binding offset -> the definition the stitch bound it to,
+    /// plus one reserved probe-manifest row per importer (see [`keys_probe`]).
+    pub(crate) import_targets: Keyspace,
+    /// `importers_by_probe`: probed path hash + importer. Every path the resolver consulted for an
+    /// importer's imports, so the incremental re-stitch finds exactly the importers a changed,
+    /// added or deleted path can affect.
+    pub(crate) importers_by_probe: Keyspace,
     /// `code_bm25_postings`: term → chunks (with inlined tf + doclen) for the code-search BM25
     /// keyword lane. Always created for DB stability; read + written only under the `code-search`
     /// feature (hence `dead_code`-allowed on a default build, mirroring `embeddings`).
@@ -466,6 +490,8 @@ impl IndexDb {
         let implementations_by_path = open_keyspace(&db, "implementations_by_path")?;
         let refs_by_def = open_keyspace(&db, "refs_by_def")?;
         let refs_by_path = open_keyspace(&db, "refs_by_path")?;
+        let import_targets = open_keyspace(&db, "import_targets")?;
+        let importers_by_probe = open_keyspace(&db, "importers_by_probe")?;
         let code_bm25_postings = open_keyspace(&db, "code_bm25_postings")?;
         let code_bm25_by_path = open_keyspace(&db, "code_bm25_by_path")?;
         let grep_bloom = open_keyspace(&db, "grep_bloom")?;
@@ -488,6 +514,8 @@ impl IndexDb {
                 &implementations_by_path,
                 &refs_by_def,
                 &refs_by_path,
+                &import_targets,
+                &importers_by_probe,
                 &code_bm25_postings,
                 &code_bm25_by_path,
                 &grep_bloom,
@@ -518,6 +546,8 @@ impl IndexDb {
             implementations_by_path,
             refs_by_def,
             refs_by_path,
+            import_targets,
+            importers_by_probe,
             code_bm25_postings,
             code_bm25_by_path,
             grep_bloom,
@@ -591,6 +621,88 @@ impl IndexDb {
             }
         }
         out
+    }
+
+    /// Whether the probe keyspaces cover every importer (a wholesale resolve pass completed since
+    /// they were created). When false, the incremental pass must run the wholesale one first.
+    pub fn import_probes_complete(&self) -> bool {
+        self.meta
+            .get(META_IMPORT_PROBE_VER)
+            .ok()
+            .flatten()
+            .is_some_and(|v| v.first() == Some(&IMPORT_PROBE_VER))
+    }
+
+    /// Mark the probe keyspaces complete (`true`) or in flux (`false`). The wholesale pass clears
+    /// the stamp before it rewrites any importer and sets it only after the stitch committed.
+    pub fn set_import_probes_complete(&self, complete: bool) -> Result<(), IndexError> {
+        if complete {
+            self.meta.insert(META_IMPORT_PROBE_VER, [IMPORT_PROBE_VER])?;
+        } else {
+            self.meta.remove(META_IMPORT_PROBE_VER)?;
+        }
+        Ok(())
+    }
+
+    /// Every importer whose resolution consulted `path` (repo-relative, forward-slashed) or one of
+    /// its ancestor directories: a prefix scan of `importers_by_probe` per candidate, O(importers).
+    ///
+    /// The ancestors matter because the resolver does not descend into a directory it found
+    /// missing. An importer that probed `util` and found nothing never probed `util/index.ts`, so
+    /// adding `util/index.ts` must reach it through the directory. (A directory that existed when
+    /// the importer resolved is never recorded, so a path under an existing directory costs only
+    /// empty scans.)
+    pub fn importers_probing(&self, path: &str) -> Vec<crate::path::RelPath> {
+        probe_candidates(path)
+            .flat_map(|candidate| {
+                let prefix = keys::importers_by_probe_prefix(&keys::probe_hash(candidate));
+                self.importers_by_probe
+                    .prefix(prefix)
+                    .filter_map(|guard| guard.into_inner().ok())
+                    .filter_map(|(k, _)| keys::parse_importer_by_probe(&k))
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    }
+
+    /// Whether any importer consulted `path` or an ancestor directory of it (see
+    /// [`Self::importers_probing`]). Cheap enough to gate a rescan on a non-indexed file
+    /// (`tsconfig.json`, `package.json`) the watcher saw change.
+    pub fn is_probed(&self, path: &str) -> bool {
+        probe_candidates(path).any(|candidate| {
+            let prefix = keys::importers_by_probe_prefix(&keys::probe_hash(candidate));
+            self.importers_by_probe.prefix(prefix).next().is_some()
+        })
+    }
+
+    /// Every row of the four resolution keyspaces (`refs_by_def`, `refs_by_path`, `import_targets`,
+    /// `importers_by_probe`) as `(keyspace, key, value)`, in keyspace then key order. Lets an
+    /// equivalence test compare an incremental rescan with a full one row for row.
+    #[doc(hidden)]
+    pub fn resolution_rows(&self) -> Result<Vec<(&'static str, Vec<u8>, Vec<u8>)>, IndexError> {
+        let mut rows = Vec::new();
+        for (name, keyspace) in [
+            ("refs_by_def", &self.refs_by_def),
+            ("refs_by_path", &self.refs_by_path),
+            ("import_targets", &self.import_targets),
+            ("importers_by_probe", &self.importers_by_probe),
+        ] {
+            for guard in keyspace.iter() {
+                let (k, v) = guard.into_inner()?;
+                rows.push((name, k.to_vec(), v.to_vec()));
+            }
+        }
+        Ok(rows)
+    }
+
+    /// The stitched `(local_start, def_path, def_start)` bindings of `importer`.
+    pub fn import_targets_of(&self, importer: &crate::path::RelPath) -> Vec<(u32, crate::path::RelPath, u32)> {
+        self.import_targets
+            .prefix(keys::import_targets_prefix(importer))
+            .filter_map(|guard| guard.into_inner().ok())
+            .filter_map(|(k, v)| keys::parse_import_target(&k, &v))
+            .map(|(_, local_start, def_path, def_start)| (local_start, def_path, def_start))
+            .collect()
     }
 
     /// The definition the use at `(use_path, use_start)` binds to — backs `goto_definition`.
@@ -752,6 +864,18 @@ mod tests {
         let db = IndexDb::open(dir.path()).unwrap();
         let row = db.code_bm25_postings.get(7usize.to_be_bytes()).unwrap().expect("row survives reopen");
         assert_eq!(&*row, vec![7u8; VALUE_LEN].as_slice());
+    }
+
+    #[test]
+    fn probe_candidates_walk_up_the_ancestor_directories() {
+        assert_eq!(
+            probe_candidates("a/b/c.ts").collect::<Vec<_>>(),
+            vec!["a/b/c.ts", "a/b", "a"]
+        );
+        assert_eq!(
+            probe_candidates("tsconfig.json").collect::<Vec<_>>(),
+            vec!["tsconfig.json"]
+        );
     }
 
     #[test]

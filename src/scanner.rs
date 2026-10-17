@@ -703,6 +703,8 @@ pub fn scan_paths_with_observer(
 
     let mut rels: Vec<String> = Vec::with_capacity(paths.len());
     let mut removed: Vec<String> = Vec::new();
+    // Touched paths that are not (or no longer) indexed: kept only if a resolver consulted them.
+    let mut other: Vec<String> = Vec::new();
     #[cfg(feature = "documents")]
     let mut doc_removed: Vec<String> = Vec::new();
     for abs in paths {
@@ -728,6 +730,7 @@ pub fn scan_paths_with_observer(
                 removed.push(rel);
                 continue;
             }
+            other.push(rel.clone());
             #[cfg(feature = "documents")]
             if store.lookup_doc(&rel).is_some() || store.has_doc_tombstone(&rel) {
                 doc_removed.push(rel);
@@ -737,6 +740,7 @@ pub fn scan_paths_with_observer(
         if !filter.is_indexable(abs) {
             // Exists but a full scan would no longer index it (newly excluded / gitignored, now a
             // symlink or non-regular file): an entry left from an earlier scan is stale.
+            other.push(rel.clone());
             if store.lookup(&rel).is_some() {
                 removed.push(rel.clone());
             }
@@ -755,7 +759,11 @@ pub fn scan_paths_with_observer(
     let nothing_removed = removed.is_empty() && doc_removed.is_empty();
     #[cfg(not(feature = "documents"))]
     let nothing_removed = removed.is_empty();
-    if rels.is_empty() && nothing_removed {
+    let other = store
+        .index_db
+        .as_ref()
+        .map_or_else(Vec::new, |db| crate::intel::resolve_pass::probed_only(db, other));
+    if rels.is_empty() && nothing_removed && other.is_empty() {
         return Ok(ScanReport::default());
     }
 
@@ -852,7 +860,11 @@ pub fn scan_paths_with_observer(
             crate::intel::resolve_pass::resolve_pass_incremental(
                 root,
                 store,
-                &rels,
+                &crate::intel::resolve_pass::PathDelta {
+                    changed: &rels,
+                    removed: &removed,
+                    other: &other,
+                },
                 precise,
                 config.resources.max_footprint_mb,
             )

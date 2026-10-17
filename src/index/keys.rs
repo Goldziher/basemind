@@ -23,6 +23,11 @@ pub use crate::index::keys_governance::{
     memory_by_key, memory_by_key_ns_prefix, memory_scope_prefix, parse_memory_by_key, parse_memory_key_only,
     parse_proposal_by_id, proposal_by_id, proposal_ns_prefix,
 };
+pub use crate::index::keys_probe::{
+    PROBE_HASH_LEN, PROBE_MANIFEST_START, ProbeHash, import_target, import_target_value, import_targets_prefix,
+    importer_by_probe, importers_by_probe_prefix, parse_import_target, parse_importer_by_probe, parse_probe_manifest,
+    probe_hash, probe_manifest_value,
+};
 
 /// `u16:name_len ‖ name`. Internal helper.
 ///

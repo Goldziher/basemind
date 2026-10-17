@@ -18,12 +18,18 @@
 //!
 //! A file's cross-file edges depend on OTHER files: if a dependency's export moves, the unchanged
 //! importer must be re-stitched to the new export site. The wholesale pass gets this for free by
-//! re-stitching everything. The incremental pass reconstructs the affected importer set explicitly:
-//! it loads every indexed JS/TS file's persisted import list (from the `.rref` blobs) and resolves
-//! each import specifier with the same [`oxc_resolver`] configuration `xfile` uses, so an importer
-//! whose resolved target is a changed file is pulled into the affected set. Those affected importers
-//! (changed OR unchanged) get their per-file slate cleared via `upsert_resolved_file` *before* the
-//! stitch, so the re-stitch replaces — never accumulates — their cross-file edges.
+//! re-stitching everything. The incremental pass must find the affected importers without reading
+//! the corpus, so the stitch persists, per importer, every path the resolver consulted
+//! (`importers_by_probe`: hit targets, re-export hop files, failed candidates, `tsconfig.json` /
+//! `package.json`). The affected set is then the changed, added and deleted paths themselves plus a
+//! prefix scan of that reverse map per path — exact (a re-export chain or a shadowing file is a
+//! probe like any other) and O(affected). Affected importers (changed OR unchanged) get their
+//! per-file slate cleared via `upsert_resolved_file` *before* the stitch, so the re-stitch
+//! replaces — never accumulates — their cross-file edges and probe rows.
+//!
+//! An index whose probe rows may be incomplete (created before the keyspaces existed, or a
+//! wholesale pass that never finished) lacks the `import_probe_ver` stamp; the incremental pass then
+//! runs the wholesale one once.
 //!
 //! ## Why the pass is chunked
 //!
@@ -113,47 +119,93 @@ pub(crate) fn resolve_pass(root: &Path, store: &Store, precise: bool, footprint:
 
     #[cfg(any(feature = "code-intel-js", feature = "code-intel-stack"))]
     {
+        // The probe rows are rewritten importer by importer; until the stitch commits they describe a
+        // mixture of old and new state, so the stamp that vouches for them is withdrawn first.
+        if let Err(error) = index_db.set_import_probes_complete(false) {
+            tracing::warn!(%error, "resolve pass: could not withdraw the import-probe stamp");
+        }
         let mut cross_file: ahash::AHashMap<String, crate::intel::xfile::FileFacts> = ahash::AHashMap::new();
         let staged = resolve_in_chunks(root, store, index_db, &files, precise, footprint, |facts| {
             harvest_cross_file_facts(facts, &mut cross_file);
         });
         let stitched = crate::intel::xfile::stitch_cross_file_edges(root, store, index_db, &cross_file);
+        if staged
+            && stitched
+            && let Err(error) = index_db.set_import_probes_complete(true)
+        {
+            tracing::warn!(%error, "resolve pass: could not stamp the import-probe index complete");
+        }
         return staged && stitched;
     }
     #[cfg(not(any(feature = "code-intel-js", feature = "code-intel-stack")))]
     return resolve_in_chunks(root, store, index_db, &files, precise, footprint, drop);
 }
 
-/// Incremental resolve pass for the watcher: only `changed` files' intra facts are restaged, and
-/// only the affected importer set is re-stitched. `changed` is the set of repo-relative paths the
-/// watcher re-indexed this event (removed files are handled by the caller's remove-mirror).
+/// What a watcher event touched. `changed` are the re-indexed files, `removed` the files that left
+/// the index, `other` paths that are not indexed (a `tsconfig.json`, a `package.json`) but that a
+/// resolver may have read or probed for. All are repo-relative.
+#[cfg_attr(not(any(feature = "code-intel-js", feature = "code-intel-stack")), allow(dead_code))]
+pub(crate) struct PathDelta<'a> {
+    pub changed: &'a [String],
+    pub removed: &'a [String],
+    pub other: &'a [String],
+}
+
+/// The paths of `candidates` that some importer's resolution consulted — the only non-indexed
+/// paths whose change can matter. A cheap point lookup per path.
+pub(crate) fn probed_only(index_db: &IndexDb, candidates: Vec<String>) -> Vec<String> {
+    candidates.into_iter().filter(|rel| index_db.is_probed(rel)).collect()
+}
+
+/// Incremental resolve pass for the watcher: only `delta.changed` files' intra facts are restaged,
+/// and only the affected importer set is re-stitched (see the module docs).
 pub(crate) fn resolve_pass_incremental(
     root: &Path,
     store: &Store,
-    changed: &[String],
+    delta: &PathDelta<'_>,
     precise: bool,
     footprint: MaxFootprint,
 ) {
     let Some(index_db) = store.index_db.as_ref() else {
         return;
     };
-
-    let changed_snapshot: Vec<FileSnapshot> = changed
-        .iter()
-        .filter_map(|rel| {
-            let entry = store.lookup(rel.as_str())?;
-            Some(FileSnapshot {
-                rel: rel.clone(),
-                hash_hex: entry.hash_hex.clone(),
-                language: entry.language.clone(),
-                size_bytes: entry.size_bytes,
-            })
-        })
-        .collect();
-    resolve_in_chunks(root, store, index_db, &changed_snapshot, precise, footprint, drop);
-
     #[cfg(any(feature = "code-intel-js", feature = "code-intel-stack"))]
-    xfile_incremental::restitch_affected(root, store, index_db, changed, precise, footprint);
+    if !index_db.import_probes_complete() {
+        tracing::info!("resolve pass: import-probe index not built yet — running the wholesale pass once");
+        resolve_pass(root, store, precise, footprint);
+        return;
+    }
+
+    let changed_snapshot = snapshot_of(store, delta.changed.iter());
+    #[cfg(any(feature = "code-intel-js", feature = "code-intel-stack"))]
+    {
+        let mut importers: ahash::AHashMap<String, crate::intel::xfile::FileFacts> = ahash::AHashMap::new();
+        resolve_in_chunks(root, store, index_db, &changed_snapshot, precise, footprint, |facts| {
+            harvest_cross_file_facts(facts, &mut importers);
+        });
+        let affected = xfile_incremental::affected_importers(index_db, store, delta);
+        let affected_snapshot = snapshot_of(store, affected.iter());
+        resolve_in_chunks(root, store, index_db, &affected_snapshot, precise, footprint, |facts| {
+            harvest_cross_file_facts(facts, &mut importers);
+        });
+        crate::intel::xfile::stitch_cross_file_edges(root, store, index_db, &importers);
+    }
+    #[cfg(not(any(feature = "code-intel-js", feature = "code-intel-stack")))]
+    resolve_in_chunks(root, store, index_db, &changed_snapshot, precise, footprint, drop);
+}
+
+/// Snapshots of the indexed files among `rels`.
+fn snapshot_of<'a>(store: &Store, rels: impl Iterator<Item = &'a String>) -> Vec<FileSnapshot> {
+    rels.filter_map(|rel| {
+        let entry = store.lookup(rel.as_str())?;
+        Some(FileSnapshot {
+            rel: rel.clone(),
+            hash_hex: entry.hash_hex.clone(),
+            language: entry.language.clone(),
+            size_bytes: entry.size_bytes,
+        })
+    })
+    .collect()
 }
 
 /// Compute → stage → project, one bounded chunk at a time.
@@ -310,199 +362,40 @@ fn harvest_cross_file_facts(
     }
 }
 
-/// Incremental cross-file re-stitch (feature `code-intel-js` or `code-intel-stack`).
-///
-/// Kept in a submodule so the affected-set machinery is self-contained. Resolution goes through the
-/// shared per-language [`crate::intel::resolver::SpecifierResolver`], so it covers every
-/// resolver-capable language (JS/TS, Python, Java) rather than only JS/TS.
+/// Affected-set computation for the incremental re-stitch (feature `code-intel-js` or
+/// `code-intel-stack`). Resolution itself goes through the shared per-language
+/// [`crate::intel::resolver::SpecifierResolver`] inside the stitch, so it covers every
+/// resolver-capable language (JS/TS, Python, Java).
 #[cfg(any(feature = "code-intel-js", feature = "code-intel-stack"))]
 mod xfile_incremental {
-    use std::path::Path;
+    use ahash::AHashSet;
 
-    use ahash::{AHashMap, AHashSet};
-    use rayon::prelude::*;
-
-    use super::{FileSnapshot, resolve_in_chunks};
-    use crate::config::MaxFootprint;
+    use super::PathDelta;
     use crate::index::IndexDb;
     use crate::intel::resolver::SpecifierResolver;
-    use crate::intel::xfile::{FileFacts, stitch_cross_file_edges};
     use crate::store::Store;
 
-    /// True if `language` has a compiled-in specifier resolver — i.e. its files can carry stitchable
-    /// import/export facts. Files in other languages never enter the affected set. This is asked once
-    /// per indexed file, so it must not construct a resolver (the JS one wraps an `oxc_resolver`).
-    fn has_resolver(language: &str) -> bool {
-        SpecifierResolver::supports(language)
-    }
-
-    /// A file's import/export facts plus the language that selects its resolver.
-    struct FileEntry {
-        language: String,
-        facts: FileFacts,
-    }
-
-    /// Resolvers keyed by language, built once and shared across every importer. Building the JS
-    /// variant constructs an `oxc_resolver` (and its tsconfig cache), so it must never happen
-    /// per-file — this map is the reuse point for both the parallel and the serial passes below.
-    type ResolverCache = AHashMap<String, Option<SpecifierResolver>>;
-
-    /// Build one resolver per distinct language present in `entries`.
-    fn build_resolvers(entries: &AHashMap<String, FileEntry>) -> ResolverCache {
-        let mut cache = ResolverCache::new();
-        for entry in entries.values() {
-            if !cache.contains_key(&entry.language) {
-                cache.insert(entry.language.clone(), SpecifierResolver::for_language(&entry.language));
-            }
-        }
-        cache
-    }
-
-    /// Resolve `importer`'s runtime imports (using the resolver for its language) to repo-relative
-    /// target keys, pushing each onto `out`. A language with no resolver contributes nothing.
-    fn resolve_targets(
-        root: &Path,
-        importer: &str,
-        entry: &FileEntry,
-        resolvers: &ResolverCache,
-        out: &mut Vec<String>,
-    ) {
-        let Some(Some(resolver)) = resolvers.get(&entry.language) else {
-            return;
-        };
-        for import in &entry.facts.imports {
-            if import.is_type {
-                continue;
-            }
-            if let Some(target) = resolver.resolve(root, importer, import)
-                && let Some(key) = target.as_str()
-            {
-                out.push(key.to_string());
-            }
-        }
-    }
-
-    /// Re-stitch only the importers whose cross-file resolution could have changed after `changed`
-    /// was re-indexed: the changed resolver-capable files themselves plus every file that imports
-    /// one.
-    pub(super) fn restitch_affected(
-        root: &Path,
-        store: &Store,
-        index_db: &IndexDb,
-        changed: &[String],
-        precise: bool,
-        footprint: MaxFootprint,
-    ) {
-        let changed_set: AHashSet<&str> = changed
-            .iter()
-            .filter(|rel| store.lookup(rel.as_str()).is_some_and(|e| has_resolver(&e.language)))
-            .map(String::as_str)
-            .collect();
-        if changed_set.is_empty() {
-            return;
-        }
-
-        let candidate_files: Vec<(String, String, String)> = store
-            .index
-            .files
-            .iter()
-            .filter(|(_, e)| has_resolver(&e.language))
-            .map(|(rel, e)| (rel.to_str_lossy().into_owned(), e.hash_hex.clone(), e.language.clone()))
-            .collect();
-        let entries: AHashMap<String, FileEntry> = candidate_files
-            .par_iter()
-            .filter_map(|(rel, hash, language)| {
-                let refs = store.read_resolved_by_hex(hash).ok()??;
-                if refs.imports.is_empty() && refs.exports.is_empty() {
-                    return None;
+    /// Indexed, resolver-capable importers that are NOT in `delta.changed` (those are re-stitched
+    /// anyway) but consulted a touched path: a changed, added or deleted file, or a non-indexed
+    /// config file. One prefix scan of `importers_by_probe` per touched path.
+    pub(super) fn affected_importers(index_db: &IndexDb, store: &Store, delta: &PathDelta<'_>) -> Vec<String> {
+        let changed: AHashSet<&str> = delta.changed.iter().map(String::as_str).collect();
+        let mut affected: AHashSet<String> = AHashSet::new();
+        for touched in delta.changed.iter().chain(delta.removed).chain(delta.other) {
+            for importer in index_db.importers_probing(touched) {
+                let Some(key) = importer.as_str() else {
+                    continue;
+                };
+                if !changed.contains(key)
+                    && store
+                        .lookup(key)
+                        .is_some_and(|entry| SpecifierResolver::supports(&entry.language))
+                {
+                    affected.insert(key.to_string());
                 }
-                let import_uses = super::import_bound_edges(&refs);
-                Some((
-                    rel.clone(),
-                    FileEntry {
-                        language: language.clone(),
-                        facts: FileFacts {
-                            imports: refs.imports,
-                            exports: refs.exports,
-                            import_uses,
-                        },
-                    },
-                ))
-            })
-            .collect::<Vec<_>>()
-            .into_iter()
-            .collect();
-
-        let resolvers = build_resolvers(&entries);
-        let importers_of_changed: Vec<String> = entries
-            .par_iter()
-            .filter_map(|(importer, entry)| {
-                if entry.facts.imports.is_empty() {
-                    return None;
-                }
-                let mut targets = Vec::new();
-                resolve_targets(root, importer, entry, &resolvers, &mut targets);
-                targets
-                    .iter()
-                    .any(|t| changed_set.contains(t.as_str()))
-                    .then(|| importer.clone())
-            })
-            .collect();
-
-        let mut affected: AHashSet<String> = changed_set.iter().map(|s| (*s).to_string()).collect();
-        affected.extend(importers_of_changed);
-
-        let unchanged_affected: Vec<FileSnapshot> = affected
-            .iter()
-            .filter(|k| !changed_set.contains(k.as_str()))
-            .filter_map(|k| {
-                let entry = store.lookup(k.as_str())?;
-                Some(FileSnapshot {
-                    rel: k.clone(),
-                    hash_hex: entry.hash_hex.clone(),
-                    language: entry.language.clone(),
-                    size_bytes: entry.size_bytes,
-                })
-            })
-            .collect();
-        resolve_in_chunks(root, store, index_db, &unchanged_affected, precise, footprint, drop);
-
-        let mut stitch_facts: AHashMap<String, FileFacts> = AHashMap::with_capacity(affected.len());
-        for key in &affected {
-            if let Some(entry) = entries.get(key) {
-                stitch_facts.insert(
-                    key.clone(),
-                    FileFacts {
-                        imports: entry.facts.imports.clone(),
-                        exports: entry.facts.exports.clone(),
-                        import_uses: entry.facts.import_uses.clone(),
-                    },
-                );
             }
         }
-        let mut provider_targets: Vec<String> = Vec::new();
-        for key in &affected {
-            if let Some(entry) = entries.get(key) {
-                resolve_targets(root, key, entry, &resolvers, &mut provider_targets);
-            }
-        }
-        for target in provider_targets {
-            if stitch_facts.contains_key(&target) {
-                continue;
-            }
-            if let Some(entry) = entries.get(&target) {
-                stitch_facts.insert(
-                    target,
-                    FileFacts {
-                        imports: Vec::new(),
-                        exports: entry.facts.exports.clone(),
-                        import_uses: Vec::new(),
-                    },
-                );
-            }
-        }
-
-        stitch_cross_file_edges(root, store, index_db, &stitch_facts);
+        affected.into_iter().collect()
     }
 }
 
