@@ -74,7 +74,6 @@
         "mime_allowlist": [],
         "include": [],
         "exclude": [
-          "*.svg",
           "pnpm-lock.yaml",
           "package-lock.json",
           "yarn.lock",
@@ -461,7 +460,6 @@
             "minLength": 1
           },
           "default": [
-            "*.svg",
             "pnpm-lock.yaml",
             "package-lock.json",
             "yarn.lock",
