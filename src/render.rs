@@ -475,6 +475,7 @@ fn row_for(res: &FileResult, verbosity: Verbosity) -> Option<Row<'_>> {
             reused,
             degraded,
             text_fallback,
+            elapsed_ms,
         } => {
             if v == Verbosity::Quiet {
                 None
@@ -491,10 +492,22 @@ fn row_for(res: &FileResult, verbosity: Verbosity) -> Option<Row<'_>> {
                     symbol: '✓',
                     label: "doc",
                     style: Style::new().fg_color(Some(Color::Ansi(AnsiColor::BrightBlue))),
-                    detail: format!("({chunk_count} chunks, dim={embedding_dim}{cached})"),
+                    detail: format!(
+                        "({chunk_count} chunks, dim={embedding_dim}{cached}, {})",
+                        format_elapsed(*elapsed_ms)
+                    ),
                 })
             }
         }
+    }
+}
+
+/// Compact per-document duration: `850ms` under a second, `1.2s` under a minute, `3m05s` beyond.
+fn format_elapsed(ms: u64) -> String {
+    match ms {
+        0..1000 => format!("{ms}ms"),
+        1000..60_000 => format!("{:.1}s", ms as f64 / 1000.0),
+        _ => format!("{}m{:02}s", ms / 60_000, ms / 1000 % 60),
     }
 }
 
@@ -517,7 +530,16 @@ const _: usize = COL_PATH;
 
 #[cfg(test)]
 mod tests {
-    use super::sanitize_path;
+    use super::{format_elapsed, sanitize_path};
+
+    #[test]
+    fn format_elapsed_scales_from_millis_to_minutes() {
+        assert_eq!(format_elapsed(0), "0ms");
+        assert_eq!(format_elapsed(850), "850ms");
+        assert_eq!(format_elapsed(1_200), "1.2s");
+        assert_eq!(format_elapsed(59_000), "59.0s");
+        assert_eq!(format_elapsed(185_000), "3m05s");
+    }
 
     #[test]
     fn sanitize_path_flattens_newlines_to_spaces() {

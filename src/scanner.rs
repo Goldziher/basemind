@@ -300,6 +300,8 @@ pub enum FileStatus {
         /// True when structured extraction failed and the file was re-read as `text/plain` (drives
         /// `docs_text_fallback`; implies `degraded`).
         text_fallback: bool,
+        /// Wall-clock milliseconds this document spent in extraction, chunking and persisting.
+        elapsed_ms: u64,
     },
     /// Subset of ExtractFailed: document extraction overran `[documents] extraction_timeout_secs`
     /// and was abandoned.

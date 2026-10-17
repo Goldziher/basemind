@@ -538,6 +538,7 @@ fn process_doc(
     let admission = gate.admit_exclusive();
     tracing::debug!(path = rel, estimated_mb = estimated / (1024 * 1024), admitted = ?admission.outcome(), "extracting document");
 
+    let doc_started = std::time::Instant::now();
     match extract_and_persist_doc(
         store,
         rel,
@@ -558,6 +559,7 @@ fn process_doc(
                 reused: batch.reused,
                 degraded: batch.degraded,
                 text_fallback: batch.text_fallback,
+                elapsed_ms: u64::try_from(doc_started.elapsed().as_millis()).unwrap_or(u64::MAX),
             };
             let doc_entry = crate::store::DocEntry {
                 hash_hex: hash_hex.to_string(),

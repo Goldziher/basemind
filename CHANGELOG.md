@@ -10,6 +10,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **`[documents] exclude` now defaults to svg, lockfiles and test data** ([#83](https://github.com/Goldziher/basemind/issues/83)).
+  The default drops `*.svg`, `pnpm-lock.yaml`, `package-lock.json`, `yarn.lock`, `Cargo.lock`, `poetry.lock`, `*.lock`,
+  `**/test_data/**`, `**/testdata/**`, `**/fixtures/**` and `**/__snapshots__/**`. Setting the key replaces the list;
+  `exclude = []` restores the old behaviour.
+- Structured data (json, yaml, xml, svg, csv/tsv) is always chunked by the linear chunker instead of xberg's quadratic
+  markdown splitter, whatever its size. Markdown and prose keep the splitter under the `*_chunk_max_bytes` cutovers.
+- The `✓ doc` progress line shows how long each document took.
+
+### Fixed
+
+- **The document phase no longer burns its budget on low-value files** ([#83](https://github.com/Goldziher/basemind/issues/83)).
+  The phase budget is checked before a document is announced as linearly chunked, and the per-file "deferred" warnings are
+  replaced by one summary count at the end of the phase (per-file detail stays at debug level).
+
 ## [0.29.3] - 2026-10-13
 
 ### Changed
