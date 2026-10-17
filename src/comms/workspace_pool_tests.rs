@@ -917,7 +917,10 @@ fn a_workspace_opened_over_a_wiped_index_is_marked_and_rebuilt_by_the_next_resca
         "an empty index over a populated file map must be queued for a full rebuild"
     );
     let status = store::read_status_sidecar(&entry.store.lock().expect("store").basemind_dir).expect("sidecar");
-    assert!(status.is_degraded(), "admin status must read degraded while the rebuild is owed");
+    assert!(
+        status.is_degraded(),
+        "admin status must read degraded while the rebuild is owed"
+    );
 
     // An incremental request still runs full while the rebuild is pending.
     let alpha = vec![PathBuf::from("alpha.rs")];

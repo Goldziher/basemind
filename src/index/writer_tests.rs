@@ -16,7 +16,10 @@ fn open_reports_a_wipe_only_when_the_stamped_schema_version_differs() {
     assert!(!fresh.wiped_on_open(), "a first open wipes nothing");
     fresh
         .meta
-        .insert(META_SCHEMA_VER, (INDEX_SCHEMA_VER + 1).to_be_bytes())
+        .insert(
+            crate::index::META_SCHEMA_VER,
+            (crate::index::INDEX_SCHEMA_VER + 1).to_be_bytes(),
+        )
         .expect("stamp a foreign schema version");
     drop(fresh);
 
