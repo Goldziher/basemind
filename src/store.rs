@@ -21,11 +21,7 @@ pub use crate::store_layout::LANCE_DIR;
 #[cfg(any(feature = "test-support", test))]
 pub use crate::store_layout::init_isolated_cache;
 pub use crate::store_layout::{
-    BLOBS_DIR, CACHE_DIR, DATA_HOME_ENV, INDEX_FILE, LOCK_FILE, LOCK_META_FILE, STATUS_SIDECAR_FILE,
-    STATUS_SIDECAR_SCHEMA_VER, PartialScan, ScanHealth, StatusSidecar, VIEW_STAGED, VIEW_WORKING, VIEWS_DIR,
-    WORKSPACE_MARKER_FILE, WORKSPACES_DIR, WorkspaceMarker, cache_root, count_fm_blobs, ensure_workspace_marker,
-    global_blobs_dir, read_status_sidecar, read_workspace_marker, status_sidecar_path, update_status_health,
-    view_name_for_rev, workspace_cache_dir, workspace_key, write_status_sidecar,
+        BLOBS_DIR, CACHE_DIR, DATA_HOME_ENV, INDEX_FILE, LOCK_FILE, LOCK_META_FILE, MEMORY_STORE_DIR, REPOS_DIR, STATUS_SIDECAR_FILE, STATUS_SIDECAR_SCHEMA_VER, VIEWS_DIR, VIEW_STAGED, VIEW_WORKING, WORKSPACES_DIR, WORKSPACE_MARKER_FILE, cache_root, count_fm_blobs, ensure_workspace_marker, global_blobs_dir, memory_store_dir, PartialScan, read_status_sidecar, read_workspace_marker, repo_group_dir, repo_group_key, ScanHealth, status_sidecar_path, StatusSidecar, update_status_health, view_name_for_rev, workspace_cache_dir, workspace_key, WorkspaceMarker, write_status_sidecar,
 };
 
 /// Which basemind command is taking the exclusive store lock. Threaded from the caller
@@ -348,7 +344,7 @@ impl Store {
             }
             Err(e) => return Err(e),
         };
-        let index_db = Some(open_index_with_retry(&view_dir)?);
+        let index_db = Some(open_index_with_retry(root, &view_dir)?);
         Ok(Self {
             root: root.to_path_buf(),
             basemind_dir,
@@ -431,7 +427,7 @@ impl Store {
             Err(e) => return Err(e),
         };
         let index_db = if allow_index_db && schema_ok && view_dir.exists() && !writer_lock_is_held(&basemind_dir) {
-            match IndexDb::open(&view_dir) {
+            match IndexDb::open_with_memory(&view_dir, &memory_store_dir(root)) {
                 Ok(db) => Some(db),
                 Err(IndexError::Fjall(fjall::Error::Locked)) => None,
                 Err(error) => {
@@ -689,10 +685,11 @@ const INDEX_OPEN_BACKOFF: std::time::Duration = std::time::Duration::from_millis
 /// ONLY correct for a caller that already holds `.basemind/.lock`; such a caller is the sole
 /// rightful writer, so any `Locked` is transient and clears. Every other [`IndexError`] — and a
 /// lock that never clears within the budget — propagates.
-pub(crate) fn open_index_with_retry(view_dir: &Path) -> Result<IndexDb, IndexError> {
+pub(crate) fn open_index_with_retry(root: &Path, view_dir: &Path) -> Result<IndexDb, IndexError> {
+    let memory_dir = memory_store_dir(root);
     let mut attempt = 0;
     loop {
-        match IndexDb::open(view_dir) {
+        match IndexDb::open_with_memory(view_dir, &memory_dir) {
             Ok(db) => return Ok(db),
             Err(IndexError::Fjall(fjall::Error::Locked)) if attempt < INDEX_OPEN_RETRIES => {
                 attempt += 1;
