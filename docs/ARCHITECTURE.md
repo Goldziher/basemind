@@ -397,6 +397,12 @@ process per directory, so the daemon holds it and sessions reach it through the 
 | `code_bm25_by_path` | Per-file companion of `code_bm25_postings` — O(prefix) delete on re-index. |
 | `grep_bloom` | One trigram bloom filter per indexed file, keyed by path, with the `(size, mtime_ns)` it was built under; the `code grep` prefilter ([ADR-0012](adr/0012-grep-content-prefilter.md)). |
 | `embeddings` | Reserved for in-Fjall vector index; LanceDB owns the live vectors. |
+
+The user-authored keyspaces are NOT in the per-view database. They live in a per-repo-group Fjall
+database at `<cache>/cache/repos/<group>/memory.fjall/` (see [Split memory](#split-memory)):
+
+| Keyspace (in `memory.fjall`) | Purpose |
+|---|---|
 | `memory_by_key` | Agent memory (`memory` modes `put` / `get`); LanceDB owns the embeddings. |
 | `memory_archive`, `proposals` | Archived memory entries and mined co-change proposals (governance tier). |
 
@@ -903,6 +909,16 @@ Repo memory is namespaced by `(scope, visibility, owner)`: the `memory_by_key` F
 Group memory (`visibility=group`, default, `owner=""`) is shared across agents in a repo; individual
 memory (`visibility=individual`, `owner=agent_id`) is private to one agent. Schema is guarded by
 `MEMORY_SCHEMA_VER` (derives from `RELEASE_MINOR`); a mismatch wipes and rebuilds.
+
+The Fjall half (`memory_by_key`, `memory_archive`, `proposals`) is stored once per repo group, not per
+view: `<cache>/cache/repos/<group>/memory.fjall/`, where `<group>` is the blake3 of the canonical main
+worktree root (the parent of the git common dir), so every linked worktree of a clone shares it; a
+root outside git uses its own workspace key. The daemon stays the sole writer and holds one handle per
+group. No garbage collector lists `repos/`: budget eviction and the orphan reaper only touch
+`workspaces/<key>/`, so evicting a cold workspace never deletes memory. On open, rows an older build
+left in a view's own keyspaces are merged into the group store (last writer wins by `updated_at`, or
+`created_at` for proposals; ties keep the larger payload) and the view's keyspaces are dropped, before
+any schema-mismatch wipe. A seeded worktree view therefore carries no memory after its first open.
 
 ### Worktree registry
 
