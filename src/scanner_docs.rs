@@ -426,7 +426,11 @@ fn pending_from_doc(
         // (the reuse gate requires them), so `embedded` covers it and the flag is moot there. ~keep
         embed_attempted: embed && !reused,
         reused,
-        degraded: crate::extract::doc_guard::is_degraded_chunking(&doc.mime_type, doc.linear_chunked, doc.text_fallback),
+        degraded: crate::extract::doc_guard::is_degraded_chunking(
+            &doc.mime_type,
+            doc.linear_chunked,
+            doc.text_fallback,
+        ),
         text_fallback: doc.text_fallback,
     }
 }

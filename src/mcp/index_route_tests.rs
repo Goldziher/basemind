@@ -163,7 +163,7 @@ fn fixture() -> Fixture {
         broken: true,
     });
     Fixture {
-        local: IndexRoute::Local(idx),
+        local: IndexRoute::Local(Box::new(idx)),
         host: IndexRoute::Host {
             host: Arc::clone(&host) as Arc<dyn HostBackend>,
             root: root.clone(),
