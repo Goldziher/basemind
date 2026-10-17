@@ -432,7 +432,7 @@ impl Store {
             Err(e) => return Err(e),
         };
         let index_db = if allow_index_db && schema_ok && view_dir.exists() && !writer_lock_is_held(&basemind_dir) {
-            match IndexDb::open_with_memory(&view_dir, &memory_store_dir(root)) {
+            match IndexDb::open_tolerating_held_memory(&view_dir, &memory_store_dir(root)) {
                 Ok(db) => Some(db),
                 Err(IndexError::Fjall(fjall::Error::Locked)) => None,
                 Err(error) => {
@@ -790,6 +790,22 @@ mod tests {
             err.to_string().contains("rev-deadbee"),
             "error names the view, got: {err}"
         );
+    }
+
+    #[test]
+    fn read_only_open_keeps_the_code_index_when_another_process_holds_the_memory_store() {
+        init_isolated_cache();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        drop(Store::open(tmp.path(), VIEW_WORKING).expect("writer creates the view"));
+        // A raw handle stands in for the daemon: a separate process holding the group's lock.
+        let memory_dir = memory_store_dir(tmp.path());
+        std::fs::create_dir_all(&memory_dir).expect("memory dir");
+        let _daemon = fjall::Database::builder(&memory_dir).open().expect("hold memory store");
+
+        let store = Store::open_read_only(tmp.path(), VIEW_WORKING).expect("read-only open");
+
+        let db = store.index_db.as_ref().expect("code index survives a held memory store");
+        assert!(db.memory_detached(), "memory is reported unavailable, not silently empty");
     }
 
     #[test]

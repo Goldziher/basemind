@@ -82,6 +82,23 @@ pub(crate) fn open_shared(dir: &Path) -> Result<Arc<MemoryDb>, IndexError> {
     Ok(opened)
 }
 
+/// Directory under a view for the empty placeholder store of a detached handle.
+const DETACHED_DIR: &str = "memory-detached.fjall";
+
+/// A private, empty memory database for a view whose group store is held by another process. It is
+/// wiped on every open so nothing written to it can outlive the handle or be mistaken for real
+/// memory; callers gate memory operations on `IndexDb::memory_detached`.
+pub(crate) fn open_detached(view_dir: &Path) -> Result<Arc<MemoryDb>, IndexError> {
+    let dir = view_dir.join(DETACHED_DIR);
+    if dir.exists() {
+        std::fs::remove_dir_all(&dir).map_err(|source| IndexError::Io {
+            path: dir.clone(),
+            source,
+        })?;
+    }
+    open_shared(&dir)
+}
+
 /// The only fields the merge needs; both `MemoryRecord` and `ProposalRecord` are stored as named
 /// msgpack maps, so unknown fields are skipped and this decodes either.
 #[derive(Deserialize, Default)]
