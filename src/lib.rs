@@ -37,6 +37,7 @@ pub mod query;
 pub mod registry;
 pub mod render;
 pub mod scan_evidence;
+pub mod scan_phase_peaks;
 pub mod scanner;
 pub(crate) mod scanner_candidates;
 #[cfg(feature = "code-search")]
