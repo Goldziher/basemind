@@ -244,6 +244,46 @@ impl IndexWriter {
         Ok(())
     }
 
+    /// Record one importer's stitch outcome: each `(local_start, def_path, def_start)` binding into
+    /// `import_targets`, and `probes` (every path the resolver consulted for the importer) into
+    /// `importers_by_probe`, plus the manifest row [`Self::stage_import_probe_deletes_for`] later
+    /// uses to remove them. Like [`Self::upsert_cross_file_edge`] it stages no delete: the importer's
+    /// previous rows were purged by the `upsert_resolved_file` that preceded the stitch.
+    #[cfg(any(feature = "code-intel-js", feature = "code-intel-stack"))]
+    pub fn upsert_import_probes(
+        &mut self,
+        importer: &RelPath,
+        targets: &[(u32, RelPath, u32)],
+        probes: &[keys::ProbeHash],
+    ) {
+        let (db, batch, staged_bytes) = (&self.db, &mut self.batch, &mut self.staged_bytes);
+        for (local_start, def_path, def_start) in targets {
+            stage_insert(
+                batch,
+                staged_bytes,
+                &db.import_targets,
+                keys::import_target(importer, *local_start),
+                keys::import_target_value(def_path, *def_start),
+            );
+        }
+        for hash in probes {
+            stage_insert(
+                batch,
+                staged_bytes,
+                &db.importers_by_probe,
+                keys::importer_by_probe(hash, importer),
+                Vec::<u8>::new(),
+            );
+        }
+        stage_insert(
+            batch,
+            staged_bytes,
+            &db.import_targets,
+            keys::import_target(importer, keys::PROBE_MANIFEST_START),
+            keys::probe_manifest_value(probes),
+        );
+    }
+
     /// Flush this batch to disk atomically. Consumes the writer.
     ///
     /// `WriteBatch::commit` journals every staged item, then applies it to the memtables and runs
@@ -337,6 +377,7 @@ impl IndexWriter {
     /// Stage deletes for every resolved edge whose use is in `use_rel`. Scans `refs_by_path`
     /// under the file prefix, reconstructs each companion `refs_by_def` key, and removes both.
     fn stage_resolved_deletes_for(&mut self, use_rel: &RelPath) -> Result<(), IndexError> {
+        self.stage_import_probe_deletes_for(use_rel)?;
         let (db, batch, staged_bytes) = (&self.db, &mut self.batch, &mut self.staged_bytes);
         let prefix = keys::refs_by_path_prefix(use_rel);
         let mut found: Vec<(Vec<u8>, RelPath, u32, u32)> = Vec::new();
@@ -354,6 +395,25 @@ impl IndexWriter {
                 &db.refs_by_def,
                 keys::ref_by_def(&def_path, def_start, use_rel, use_start),
             );
+        }
+        Ok(())
+    }
+
+    /// Stage deletes for the `import_targets` rows of `importer` and the `importers_by_probe` rows
+    /// its manifest names. An importer whose edges are re-resolved is always re-stitched afterwards
+    /// (and so re-probed), and a removed importer must leave no rows behind.
+    fn stage_import_probe_deletes_for(&mut self, importer: &RelPath) -> Result<(), IndexError> {
+        let (db, batch, staged_bytes) = (&self.db, &mut self.batch, &mut self.staged_bytes);
+        let manifest_key = keys::import_target(importer, keys::PROBE_MANIFEST_START);
+        for guard in db.import_targets.prefix(keys::import_targets_prefix(importer)) {
+            let (k, v) = guard.into_inner()?;
+            if k.as_ref() == manifest_key.as_slice() {
+                for hash in keys::parse_probe_manifest(&v) {
+                    let probe_key = keys::importer_by_probe(&hash, importer);
+                    stage_remove(batch, staged_bytes, &db.importers_by_probe, probe_key);
+                }
+            }
+            stage_remove(batch, staged_bytes, &db.import_targets, (*k).to_vec());
         }
         Ok(())
     }
