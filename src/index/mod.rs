@@ -27,7 +27,8 @@ pub mod writer;
 
 use std::path::{Path, PathBuf};
 
-use fjall::{Database, Keyspace, KeyspaceCreateOptions};
+use fjall::config::CompressionPolicy;
+use fjall::{CompressionType, Database, Keyspace, KeyspaceCreateOptions};
 use thiserror::Error;
 
 /// The index-layout revision, added to `RELEASE_MINOR` to form [`INDEX_SCHEMA_VER`]. Bump this
@@ -40,8 +41,9 @@ use thiserror::Error;
 /// `+5` the per-keyspace [`KEYSPACE_MEMTABLE_BYTES`] sizing — fjall persists `max_memtable_size`
 /// into its meta keyspace at *create* time and recovers it on reopen, ignoring the create options
 /// for a keyspace that already exists, so an index built by an earlier build would keep the 64 MiB
-/// default forever unless the schema mismatch forces it to be recreated.
-const INDEX_PARTITION_REVISION: u32 = 5;
+/// default forever unless the schema mismatch forces it to be recreated; `+6` the LZ4-at-every-level
+/// block compression ([`index_keyspace_options`]), persisted at create time for the same reason.
+const INDEX_PARTITION_REVISION: u32 = 6;
 
 /// Bumped whenever the on-disk key layout changes — the sum of `RELEASE_MINOR` and the
 /// [`INDEX_PARTITION_REVISION`] offset, monotonic across both. When `RELEASE_MINOR` next bumps,
@@ -136,7 +138,20 @@ const fn memtable_ceiling_bytes() -> u64 {
 /// never pick the new sizes up.
 fn open_keyspace(db: &Database, name: &str) -> Result<Keyspace, IndexError> {
     let bytes = memtable_bytes_for(name);
-    Ok(db.keyspace(name, move || KeyspaceCreateOptions::default().max_memtable_size(bytes))?)
+    Ok(db.keyspace(name, move || index_keyspace_options(bytes))?)
+}
+
+/// Create options shared by every index keyspace: the tiered memtable size plus LZ4 on data and
+/// index blocks at *every* level. fjall's default policy is `[None, None, Lz4]`, which leaves L0 and
+/// L1 — where most of a freshly bulk-built index sits — uncompressed. Blocks record their own
+/// compression in the table metadata, so tables written under the old policy still read; the policy
+/// itself is persisted at keyspace creation, which is why this ships with an
+/// [`INDEX_PARTITION_REVISION`] bump.
+fn index_keyspace_options(memtable_bytes: u64) -> KeyspaceCreateOptions {
+    KeyspaceCreateOptions::default()
+        .max_memtable_size(memtable_bytes)
+        .data_block_compression_policy(CompressionPolicy::all(CompressionType::Lz4))
+        .index_block_compression_policy(CompressionPolicy::all(CompressionType::Lz4))
 }
 
 fn memtable_bytes_for(name: &str) -> u64 {
@@ -328,8 +343,21 @@ const FJALL_WORKER_THREADS: usize = 2;
 /// workspace open; a 2.5 GiB single journal was observed on a scanned worktree.
 const FJALL_MAX_JOURNAL_BYTES: u64 = 64 * 1_024 * 1_024;
 
+/// Journal ceiling for a database opened empty, i.e. about to take a cold bulk build. At the 64 MiB
+/// steady-state cap a cold scan of a large repo logged hundreds of `Rotating ... to reduce journal
+/// size` events, each flushing a small table and queueing extra compaction. fjall fixes the cap per
+/// `Database` at build time, so it cannot be lowered mid-run; the next normal open uses
+/// [`FJALL_MAX_JOURNAL_BYTES`] again, and the flush-on-open below keeps a large leftover journal
+/// from being replayed twice.
+const FJALL_BULK_JOURNAL_BYTES: u64 = JOURNAL_FLUSH_ON_OPEN_BYTES;
+
 /// Journal size past which `open` flushes every keyspace, so the next open does not replay it again.
 const JOURNAL_FLUSH_ON_OPEN_BYTES: u64 = 256 * 1_024 * 1_024;
+
+/// True when `dir` has no entries, i.e. fjall is about to create the database from scratch.
+fn is_empty_dir(dir: &Path) -> bool {
+    std::fs::read_dir(dir).is_ok_and(|mut entries| entries.next().is_none())
+}
 
 /// Total bytes of fjall journal files under `view_dir`'s index database, WITHOUT opening it (opening
 /// replays every journal into memtables, which is the cost being measured). Zero when absent.
@@ -393,10 +421,15 @@ impl IndexDb {
             source,
         })?;
         let cache_bytes = index_cache_bytes(&dir);
+        let journal_bytes = if is_empty_dir(&dir) {
+            FJALL_BULK_JOURNAL_BYTES
+        } else {
+            FJALL_MAX_JOURNAL_BYTES
+        };
         let mut db = Database::builder(&dir)
             .cache_size(cache_bytes)
             .worker_threads(FJALL_WORKER_THREADS)
-            .max_journaling_size(FJALL_MAX_JOURNAL_BYTES)
+            .max_journaling_size(journal_bytes)
             .open()?;
         let memory = memory_store::open_shared(memory_dir)?;
         memory_store::migrate_legacy(&db, &memory)?;
@@ -419,7 +452,7 @@ impl IndexDb {
             db = Database::builder(&dir)
                 .cache_size(cache_bytes)
                 .worker_threads(FJALL_WORKER_THREADS)
-                .max_journaling_size(FJALL_MAX_JOURNAL_BYTES)
+                .max_journaling_size(FJALL_BULK_JOURNAL_BYTES)
                 .open()?;
             meta = open_keyspace(&db, "meta")?;
         }
@@ -691,6 +724,34 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
         keyspace.disk_space() > 0
+    }
+
+    /// fjall has no getter for the compression policy, so observe it on disk: highly compressible
+    /// rows flushed to L0 (which the default policy leaves raw) must occupy far less than their
+    /// raw size, and must still read back after a reopen.
+    #[test]
+    fn index_keyspaces_compress_level_zero_and_round_trip() {
+        const ROWS: usize = 512;
+        const VALUE_LEN: usize = 4_096;
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let db = IndexDb::open(dir.path()).unwrap();
+            for ks in [&db.code_bm25_postings, &db.refs_by_def, &db.proposals] {
+                for i in 0..ROWS {
+                    ks.insert(i.to_be_bytes(), vec![7u8; VALUE_LEN]).unwrap();
+                }
+                ks.rotate_memtable_and_wait().unwrap();
+                let raw = (ROWS * VALUE_LEN) as u64;
+                assert!(
+                    ks.disk_space() < raw / 4,
+                    "L0 table of {raw} raw bytes occupies {} on disk; LZ4 is not applied",
+                    ks.disk_space()
+                );
+            }
+        }
+        let db = IndexDb::open(dir.path()).unwrap();
+        let row = db.code_bm25_postings.get(7usize.to_be_bytes()).unwrap().expect("row survives reopen");
+        assert_eq!(&*row, vec![7u8; VALUE_LEN].as_slice());
     }
 
     #[test]

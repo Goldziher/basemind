@@ -31,6 +31,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   store at `cache/repos/<group>/memory.fjall`, shared by every worktree of a clone (non-git roots use their own
   workspace key) and never listed by GC. On open, rows left in a view are merged into it, last writer wins by
   timestamp, and removed from the view. Worktree seeding no longer forks memory.
+### Changed
+
+- **Smaller code and git-history indexes** ([#82](https://github.com/Goldziher/basemind/issues/82)).
+  Every index keyspace now uses LZ4 for data and index blocks at all levels; fjall's default left L0 and L1,
+  where a fresh bulk build mostly lives, uncompressed. A database opened empty also gets a 256 MiB journal cap
+  (instead of 64 MiB) so a cold scan rotates far fewer small tables. The index and git-history schema versions
+  bump, so existing indexes rebuild once on next open.
 
 ## [0.29.3] - 2026-10-13
 
