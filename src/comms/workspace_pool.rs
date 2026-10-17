@@ -414,6 +414,7 @@ impl WorkspacePool {
         }
         if !incremental && !report.cancelled {
             entry.rebuild_pending.store(false, std::sync::atomic::Ordering::Release);
+            store.index_rebuild_needed = false;
             let generation = entry.full_scan_gen.fetch_add(1, std::sync::atomic::Ordering::AcqRel) + 1;
             *entry.last_full.lock().unwrap_or_else(PoisonError::into_inner) = Some((generation, mode, report.stats));
         }

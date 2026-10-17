@@ -190,7 +190,6 @@ impl DocumentsConfig {
     }
     fn default_exclude() -> Vec<String> {
         [
-            "*.svg",
             "pnpm-lock.yaml",
             "package-lock.json",
             "yarn.lock",
