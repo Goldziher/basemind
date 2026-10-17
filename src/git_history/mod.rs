@@ -55,7 +55,8 @@ pub mod remote;
 
 use std::path::{Path, PathBuf};
 
-use fjall::{Database, Keyspace, KeyspaceCreateOptions, OwnedWriteBatch};
+use fjall::config::CompressionPolicy;
+use fjall::{CompressionType, Database, Keyspace, KeyspaceCreateOptions, OwnedWriteBatch};
 use thiserror::Error;
 
 use crate::path::RelPath;
@@ -69,7 +70,17 @@ use crate::path::RelPath;
 /// prior `+4` bump switched the posting-list byte format from ascending (full-scan tail) to
 /// **newest-first** delta-varints (O(n) head decode). The format is part of this still-unreleased
 /// feature, so the bump only forces in-flight dev indexes to rebuild.
-pub const GIT_HISTORY_SCHEMA: u32 = crate::version::RELEASE_MINOR as u32 + 5;
+///
+/// `+6` switched every keyspace to LZ4 at all levels (fjall's default leaves L0/L1 raw and persists the
+/// policy at keyspace creation, so existing stores must be recreated to pick it up).
+pub const GIT_HISTORY_SCHEMA: u32 = crate::version::RELEASE_MINOR as u32 + 6;
+
+/// LZ4 on data and index blocks at every level; see [`crate::index`]'s `index_keyspace_options`.
+fn keyspace_options() -> KeyspaceCreateOptions {
+    KeyspaceCreateOptions::default()
+        .data_block_compression_policy(CompressionPolicy::all(CompressionType::Lz4))
+        .index_block_compression_policy(CompressionPolicy::all(CompressionType::Lz4))
+}
 
 /// On-disk directory name of the git-history index under `.basemind/`. `pub(crate)` so the cache
 /// accounting in [`crate::store_gc::cache_stats`] can size it (it is a sibling of `views/`).
@@ -314,7 +325,7 @@ impl GitHistoryIndex {
             source,
         })?;
         let mut db = Database::builder(dir).worker_threads(1).open()?;
-        let mut meta = db.keyspace("gh_meta", KeyspaceCreateOptions::default)?;
+        let mut meta = db.keyspace("gh_meta", keyspace_options)?;
         let on_disk_ver = meta.get(keys::META_SCHEMA_VER)?.and_then(|b| keys::parse_u32(&b));
         if matches!(on_disk_ver, Some(ver) if ver != GIT_HISTORY_SCHEMA) {
             drop(meta);
@@ -328,15 +339,15 @@ impl GitHistoryIndex {
                 source,
             })?;
             db = Database::builder(dir).worker_threads(1).open()?;
-            meta = db.keyspace("gh_meta", KeyspaceCreateOptions::default)?;
+            meta = db.keyspace("gh_meta", keyspace_options)?;
         }
-        let commit_by_ord = db.keyspace("gh_commit_by_ord", KeyspaceCreateOptions::default)?;
-        let ord_by_sha = db.keyspace("gh_ord_by_sha", KeyspaceCreateOptions::default)?;
-        let path_id_by_path = db.keyspace("gh_path_id_by_path", KeyspaceCreateOptions::default)?;
-        let path_by_id = db.keyspace("gh_path_by_id", KeyspaceCreateOptions::default)?;
-        let path_to_ords = db.keyspace("gh_path_to_ords", KeyspaceCreateOptions::default)?;
-        let commit_text_by_ord = db.keyspace("gh_commit_text_by_ord", KeyspaceCreateOptions::default)?;
-        let term_to_ords = db.keyspace("gh_term_to_ords", KeyspaceCreateOptions::default)?;
+        let commit_by_ord = db.keyspace("gh_commit_by_ord", keyspace_options)?;
+        let ord_by_sha = db.keyspace("gh_ord_by_sha", keyspace_options)?;
+        let path_id_by_path = db.keyspace("gh_path_id_by_path", keyspace_options)?;
+        let path_by_id = db.keyspace("gh_path_by_id", keyspace_options)?;
+        let path_to_ords = db.keyspace("gh_path_to_ords", keyspace_options)?;
+        let commit_text_by_ord = db.keyspace("gh_commit_text_by_ord", keyspace_options)?;
+        let term_to_ords = db.keyspace("gh_term_to_ords", keyspace_options)?;
         meta.insert(keys::META_SCHEMA_VER, GIT_HISTORY_SCHEMA.to_be_bytes())?;
         Ok(Self {
             backend: Backend::Local(LocalDb {
