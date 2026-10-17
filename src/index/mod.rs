@@ -364,6 +364,9 @@ pub struct IndexDb {
     /// reads and writes must go through the process that owns the store (the daemon). See
     /// [`IndexDb::open_tolerating_held_memory`].
     memory_detached: bool,
+    /// True when this open found an index written under another [`INDEX_SCHEMA_VER`] and discarded
+    /// it, so the database is empty while the file map that fed it may still be populated.
+    wiped_on_open: bool,
 }
 
 /// Flush/compaction threads per index database. fjall defaults to `min(cores, 4)` per `Database`, and
@@ -463,6 +466,12 @@ impl IndexDb {
         self.memory_detached
     }
 
+    /// True when this open discarded an index written under another schema revision; the caller
+    /// must rebuild it from a full scan.
+    pub fn wiped_on_open(&self) -> bool {
+        self.wiped_on_open
+    }
+
     fn open_inner(view_dir: &Path, memory_dir: &Path, tolerate_held_memory: bool) -> Result<Self, IndexError> {
         let dir = view_dir.join(INDEX_DIR);
         std::fs::create_dir_all(&dir).map_err(|source| IndexError::Io {
@@ -499,7 +508,8 @@ impl IndexDb {
             .get(META_SCHEMA_VER)?
             .and_then(|bytes| <[u8; 4]>::try_from(&bytes[..]).ok())
             .map(u32::from_be_bytes);
-        if matches!(on_disk_ver, Some(ver) if ver != INDEX_SCHEMA_VER) {
+        let wiped_on_open = matches!(on_disk_ver, Some(ver) if ver != INDEX_SCHEMA_VER);
+        if wiped_on_open {
             drop(meta);
             drop(db);
             std::fs::remove_dir_all(&dir).map_err(|source| IndexError::Io {
@@ -595,6 +605,7 @@ impl IndexDb {
             fault: std::sync::Arc::default(),
             _memory: memory,
             memory_detached,
+            wiped_on_open,
         })
     }
 
