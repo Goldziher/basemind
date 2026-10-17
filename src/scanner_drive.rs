@@ -294,6 +294,9 @@ pub(crate) fn drive_scan(
     // A fatal index commit failure (disk full, poisoned handle) stops the drive like a cancel: every
     // later commit would fail too. Held as a handle clone because `ctx` owns the `&mut Store`.
     let index_db = store.index_db.clone();
+    // `stats` may already carry counts from earlier work; the summary reports only this drive's. ~keep
+    #[cfg(feature = "documents")]
+    let deferred_before = stats.docs_deferred;
     let mut ctx = DriveCtx {
         store,
         stats,
@@ -355,7 +358,8 @@ pub(crate) fn drive_scan(
                 "timed-out document extraction threads are still running"
             );
         }
-        if let Some(summary) = deferral_summary(ctx.stats.docs_deferred, drive.filters.doc_phase_budget_secs) {
+        let deferred = ctx.stats.docs_deferred.saturating_sub(deferred_before);
+        if let Some(summary) = deferral_summary(deferred, drive.filters.doc_phase_budget_secs) {
             tracing::warn!("{summary}");
         }
     }
@@ -493,6 +497,8 @@ mod tests {
     #[test]
     fn deferral_summary_reports_one_count_or_nothing() {
         assert_eq!(deferral_summary(0, 1800), None);
+        // A drive that began with a non-zero counter reports only its own deferrals.
+        assert_eq!(deferral_summary(5usize.saturating_sub(5), 1800), None);
         let line = deferral_summary(30_562, 1800).expect("deferrals produce a summary");
         assert!(line.starts_with("30562 documents deferred"), "{line}");
         assert!(line.contains("1800s"), "{line}");

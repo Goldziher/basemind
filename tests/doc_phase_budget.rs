@@ -48,6 +48,10 @@ fn json_yaml_and_svg_under_the_cutover_use_the_linear_chunker() {
             doc.linear_chunked,
             "{name} is structured data and must be chunked linearly"
         );
+        assert!(
+            !doc.text_fallback,
+            "{name} must be chunked linearly by type, not via the text/plain fallback"
+        );
     }
 }
 
@@ -81,12 +85,18 @@ impl Write for Captured {
 #[test]
 fn a_spent_phase_budget_defers_before_any_chunking_is_announced() {
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("cfg.json");
-    fs::write(&path, r#"{"name": "demo"}"#).unwrap();
-    let config = DocConfig {
+    let path = dir.path().join("big.md");
+    fs::write(&path, "# Title\n\nSome prose that is longer than the tiny cutover below.\n").unwrap();
+    // Above the markdown cutover, so a non-deferred run would announce linear chunking.
+    let mut config = DocConfig {
         phase: Some(Arc::new(DocPhase::with_budget(Duration::ZERO))),
         ..offline_doc_config()
     };
+    config.chunk_cutovers.markdown_bytes = 1;
+    assert!(
+        basemind::extract::doc_guard::prefers_linear_chunking("text/markdown", 60, config.chunk_cutovers),
+        "the fixture must be eligible for linear chunking, or the log assertion is vacuous"
+    );
 
     let captured = Captured::default();
     let sink = captured.clone();
@@ -96,7 +106,7 @@ fn a_spent_phase_budget_defers_before_any_chunking_is_announced() {
         .with_writer(move || sink.clone())
         .finish();
     let error = tracing::subscriber::with_default(subscriber, || {
-        extract_doc(&path, Some("application/json"), &config).expect_err("budget is spent")
+        extract_doc(&path, Some("text/markdown"), &config).expect_err("budget is spent")
     });
 
     assert!(matches!(error, ExtractError::DocDeferred(_)), "got {error:?}");

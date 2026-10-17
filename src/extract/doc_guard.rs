@@ -42,11 +42,17 @@ fn is_text_like(mime: &str) -> bool {
 /// True for machine-written structured data (json, yaml, xml and svg, csv/tsv). Markdown headings give
 /// the splitter nothing to work with here, yet it still pays its quadratic cost per element, so these
 /// types use the linear chunker at any size.
-fn is_structured_data(mime: &str) -> bool {
+pub fn is_structured_data(mime: &str) -> bool {
     let mime = mime.split(';').next().unwrap_or("").trim().to_ascii_lowercase();
     ["json", "yaml", "xml", "svg", "csv", "tab-separated"]
         .iter()
         .any(|marker| mime.contains(marker))
+}
+
+/// Whether linear chunking of a document counts as degraded: size-triggered linear chunking and the
+/// text/plain fallback do; structured data is linear by design, so it does not.
+pub fn is_degraded_chunking(mime: &str, linear_chunked: bool, text_fallback: bool) -> bool {
+    text_fallback || (linear_chunked && !is_structured_data(mime))
 }
 
 /// Whether a document of `file_len` bytes and type `mime` must bypass xberg's markdown splitter:
@@ -353,6 +359,16 @@ mod tests {
         assert!(prefers_linear_chunking("application/x-yaml", 1001, CUTOVERS));
         assert!(!prefers_linear_chunking("application/pdf", u64::MAX, CUTOVERS));
         assert!(!prefers_linear_chunking("", u64::MAX, CUTOVERS));
+    }
+
+    #[test]
+    fn structured_data_is_not_degraded_but_size_and_fallback_are() {
+        assert!(!is_degraded_chunking("application/json", true, false));
+        assert!(!is_degraded_chunking("image/svg+xml", true, false));
+        assert!(is_degraded_chunking("text/markdown", true, false));
+        assert!(is_degraded_chunking("text/plain", true, false));
+        assert!(is_degraded_chunking("text/plain", true, true));
+        assert!(!is_degraded_chunking("text/markdown", false, false));
     }
 
     #[test]
