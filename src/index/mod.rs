@@ -20,6 +20,7 @@
 pub mod grep_bloom;
 pub mod keys;
 pub mod keys_governance;
+pub(crate) mod memory_store;
 pub(crate) mod name_dict;
 pub mod writer;
 
@@ -295,7 +296,8 @@ pub struct IndexDb {
     pub(crate) grep_bloom: Keyspace,
     #[allow(dead_code)]
     pub(crate) embeddings: Keyspace,
-    /// `memory_by_key`: scope + key → msgpack `MemoryRecord`.
+    /// `memory_by_key`: scope + key → msgpack `MemoryRecord`. Lives in the per-repo-group
+    /// [`memory_store`], not in this view's database.
     /// Always created for DB stability; used by `memory` feature tools.
     #[allow(dead_code)]
     pub(crate) memory_by_key: Keyspace,
@@ -308,6 +310,9 @@ pub struct IndexDb {
     /// W11 propose-don't-commit skill-mining surface. Always created for DB stability.
     #[allow(dead_code)]
     pub(crate) proposals: Keyspace,
+    /// Keeps the shared group memory database open for as long as any `IndexDb` clone uses its
+    /// keyspaces above.
+    _memory: std::sync::Arc<memory_store::MemoryDb>,
 }
 
 /// Flush/compaction threads per index database. fjall defaults to `min(cores, 4)` per `Database`, and
@@ -365,7 +370,19 @@ impl IndexDb {
     /// Open (or create) the index DB under `view_dir`. On schema-version mismatch the
     /// existing `index.fjall/` directory is dropped and a fresh one is created — the
     /// caller is responsible for repopulating it via `IndexWriter`.
+    ///
+    /// The user-memory keyspaces live in a sibling `memory.fjall` under `view_dir`. Production opens
+    /// go through [`IndexDb::open_with_memory`] with the per-repo-group store instead.
     pub fn open(view_dir: &Path) -> Result<Self, IndexError> {
+        Self::open_with_memory(view_dir, &view_dir.join(crate::store_layout::MEMORY_STORE_DIR))
+    }
+
+    /// [`IndexDb::open`] with the memory keyspaces (`memory_by_key`, `memory_archive`, `proposals`)
+    /// backed by the shared Fjall database at `memory_dir` — one per repo group, so they survive
+    /// eviction of any view and are shared by every worktree of the clone. Rows an older build left
+    /// in this view are merged into that store (last writer wins by timestamp) and removed from the
+    /// view before any schema-mismatch wipe can destroy them.
+    pub fn open_with_memory(view_dir: &Path, memory_dir: &Path) -> Result<Self, IndexError> {
         let dir = view_dir.join(INDEX_DIR);
         std::fs::create_dir_all(&dir).map_err(|source| IndexError::Io {
             path: dir.clone(),
@@ -377,6 +394,8 @@ impl IndexDb {
             .worker_threads(FJALL_WORKER_THREADS)
             .max_journaling_size(FJALL_MAX_JOURNAL_BYTES)
             .open()?;
+        let memory = memory_store::open_shared(memory_dir)?;
+        memory_store::migrate_legacy(&db, &memory)?;
         let mut meta = open_keyspace(&db, "meta")?;
         let on_disk_ver = meta
             .get(META_SCHEMA_VER)?
@@ -414,9 +433,9 @@ impl IndexDb {
         let code_bm25_by_path = open_keyspace(&db, "code_bm25_by_path")?;
         let grep_bloom = open_keyspace(&db, "grep_bloom")?;
         let embeddings = open_keyspace(&db, "embeddings")?;
-        let memory_by_key = open_keyspace(&db, "memory_by_key")?;
-        let memory_archive = open_keyspace(&db, "memory_archive")?;
-        let proposals = open_keyspace(&db, "proposals")?;
+        let memory_by_key = memory.memory_by_key.clone();
+        let memory_archive = memory.memory_archive.clone();
+        let proposals = memory.proposals.clone();
 
         meta.insert(META_SCHEMA_VER, INDEX_SCHEMA_VER.to_be_bytes())?;
 
@@ -436,9 +455,6 @@ impl IndexDb {
                 &code_bm25_by_path,
                 &grep_bloom,
                 &embeddings,
-                &memory_by_key,
-                &memory_archive,
-                &proposals,
                 &meta,
             ] {
                 // Best-effort: the flush only spares the NEXT open a replay. On a full or read-only disk
@@ -472,6 +488,7 @@ impl IndexDb {
             memory_by_key,
             memory_archive,
             proposals,
+            _memory: memory,
         })
     }
 
@@ -647,6 +664,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let db = IndexDb::open(dir.path()).unwrap();
         let mut opened: Vec<String> = db.db.list_keyspace_names().iter().map(ToString::to_string).collect();
+        opened.extend(db._memory.keyspace_names());
         opened.sort();
         let mut sized: Vec<String> = KEYSPACE_MEMTABLE_BYTES
             .iter()

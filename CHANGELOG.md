@@ -10,6 +10,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Cache budget eviction no longer deletes user memory and proposals** ([#80](https://github.com/Goldziher/basemind/issues/80)).
+  `memory_by_key`, `memory_archive` and `proposals` moved out of each view's `index.fjall` into a per-repo-group
+  store at `cache/repos/<group>/memory.fjall`, shared by every worktree of a clone (non-git roots use their own
+  workspace key) and never listed by GC. On open, rows left in a view are merged into it, last writer wins by
+  timestamp, and removed from the view. Worktree seeding no longer forks memory.
+
 ## [0.29.3] - 2026-10-13
 
 ### Changed

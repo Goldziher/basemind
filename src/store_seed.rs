@@ -14,6 +14,8 @@
 //! sibling's scope, so copying would leak foreign rows; the seeded index records a sentinel embed
 //! policy so the first `Inline` full scan re-flushes every eligible file into a fresh lance store),
 //! `workspace.json` (keyed to the new root by `ensure_workspace_marker`), `status.json`, `.lock`.
+//! User memory is not in the view at all: it lives in the per-repo-group `memory.fjall`, and rows a
+//! pre-group sibling still carries are merged there (and dropped from the clone) on the first open.
 //!
 //! Consistency: the clone is taken only while the sibling's exclusive workspace lock is held by US. A
 //! directory copy of a live fjall database is not a snapshot, and `index.msgpack` and `index.fjall`

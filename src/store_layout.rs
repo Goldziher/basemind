@@ -105,6 +105,38 @@ pub fn workspace_cache_dir(root: &Path) -> PathBuf {
         .join(workspace_key(root))
 }
 
+/// Sub-directory of the cache holding per-repo-group state shared by every worktree of one clone,
+/// keyed by [`repo_group_key`]. Today that is the user-authored memory store; nothing under it is
+/// rebuildable, so no garbage collector may list it.
+pub const REPOS_DIR: &str = "repos";
+/// Fjall database under a repo-group dir holding `memory_by_key`, `memory_archive` and `proposals`.
+pub const MEMORY_STORE_DIR: &str = "memory.fjall";
+
+/// Group key for the worktree at `root`: the blake3 of the canonical main worktree root (the parent
+/// of the shared git common dir), so every linked worktree of one clone maps to the same group. A
+/// root outside any git repository (or in a bare one) falls back to its own [`workspace_key`].
+pub fn repo_group_key(root: &Path) -> String {
+    match crate::git::Repo::discover(root) {
+        Ok(repo) => {
+            let main = repo.main_worktree_root();
+            let canonical = main.canonicalize().unwrap_or(main);
+            hashing::hex(&hashing::hash_bytes(canonical.as_os_str().as_encoded_bytes()))
+        }
+        Err(_) => workspace_key(root),
+    }
+}
+
+/// Per-repo-group directory for `root`: `cache_root()/cache/repos/<repo_group_key>/`.
+pub fn repo_group_dir(root: &Path) -> PathBuf {
+    cache_root().join(CACHE_DIR).join(REPOS_DIR).join(repo_group_key(root))
+}
+
+/// The group's user-memory Fjall database: `<repo_group_dir>/memory.fjall`. Outlives every
+/// workspace in the group, so budget eviction and the orphan reaper never touch it.
+pub fn memory_store_dir(root: &Path) -> PathBuf {
+    repo_group_dir(root).join(MEMORY_STORE_DIR)
+}
+
 /// The GLOBAL content-addressed blob store: `cache_root()/cache/blobs/`. Shared across every
 /// workspace on the machine, so byte-identical files are extracted + embedded exactly once.
 pub fn global_blobs_dir() -> PathBuf {
