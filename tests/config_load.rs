@@ -5,7 +5,7 @@
 use std::fs;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
-use basemind::config::{self, ApiKey, DocumentsCliOverrides};
+use basemind::config::{self, ApiKey, DocumentsCliOverrides, DocumentsConfig};
 use tempfile::TempDir;
 
 static ENV_LOCK: Mutex<()> = Mutex::new(());
@@ -183,6 +183,7 @@ embed = false
         .config;
     assert!(cfg.scan.floor_allow.is_empty());
     assert!(cfg.languages.is_empty());
-    assert!(cfg.documents.include.is_empty() && cfg.documents.exclude.is_empty());
+    assert!(cfg.documents.include.is_empty());
+    assert_eq!(cfg.documents.exclude, DocumentsConfig::default().exclude);
     assert!(cfg.code_search.embed_include.is_empty());
 }

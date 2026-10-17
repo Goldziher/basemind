@@ -73,7 +73,19 @@
         "enabled": true,
         "mime_allowlist": [],
         "include": [],
-        "exclude": [],
+        "exclude": [
+          "*.svg",
+          "pnpm-lock.yaml",
+          "package-lock.json",
+          "yarn.lock",
+          "Cargo.lock",
+          "poetry.lock",
+          "*.lock",
+          "**/test_data/**",
+          "**/testdata/**",
+          "**/fixtures/**",
+          "**/__snapshots__/**"
+        ],
         "max_file_bytes": 52428800,
         "extension_denylist": [],
         "max_chunks_per_document": 2000,
@@ -442,13 +454,25 @@
           "default": []
         },
         "exclude": {
-          "description": "Deny-list of globs applied to document indexing itself (not just embedding): matching files\nare not extracted, chunked or searchable as documents. Same syntax as `include`.",
+          "description": "Deny-list of globs applied to document indexing itself (not just embedding): matching files\nare not extracted, chunked or searchable as documents. Same syntax as `include`. The default\ndrops low-value bulk: `*.svg`, lockfiles (`pnpm-lock.yaml`, `package-lock.json`, `yarn.lock`,\n`Cargo.lock`, `poetry.lock`, `*.lock`) and test-data directories (`test_data`, `testdata`,\n`fixtures`, `__snapshots__`). Setting the key replaces the default list; `exclude = []`\nindexes all of them, and a custom list must repeat any default entry it still wants.",
           "type": "array",
           "items": {
             "type": "string",
             "minLength": 1
           },
-          "default": []
+          "default": [
+            "*.svg",
+            "pnpm-lock.yaml",
+            "package-lock.json",
+            "yarn.lock",
+            "Cargo.lock",
+            "poetry.lock",
+            "*.lock",
+            "**/test_data/**",
+            "**/testdata/**",
+            "**/fixtures/**",
+            "**/__snapshots__/**"
+          ]
         },
         "max_file_bytes": {
           "description": "Per-document size cap in bytes, independent of `[scan] max_file_bytes` (which only bounds\nsource files). Default 50 MiB, so PDFs and Office files above the 2 MiB scan cap are still\nextracted. Larger files are skipped and counted in the scan summary as too large.",
