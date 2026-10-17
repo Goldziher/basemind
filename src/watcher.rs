@@ -433,7 +433,8 @@ fn is_relevant(kind: &EventKind) -> bool {
 /// path that means include/exclude globs AND the nested-`.gitignore` hierarchy; for a deleted path
 /// (gone from disk, so gitignore can't be evaluated) keep anything the glob layer allows so a
 /// previously-indexed file is still forwarded for pruning. Out-of-root and empty/ancestor rels
-/// (the FSEvents coalescing case) are dropped.
+/// (the FSEvents coalescing case) are dropped. Resolver config files (`tsconfig*.json`,
+/// `package.json`) are kept even when not indexed, since an importer's resolution may depend on them.
 fn keep_event_path(filter: &crate::scanner_filter::IndexFilter, root: &Path, p: &Path) -> bool {
     let Ok(rel) = p.strip_prefix(root) else {
         return false;
@@ -453,10 +454,18 @@ fn keep_event_path(filter: &crate::scanner_filter::IndexFilter, root: &Path, p: 
         return false;
     }
     if p.exists() {
-        filter.is_indexable(p)
+        filter.is_indexable(p) || (is_resolver_config(rel) && filter.allows_glob(rel))
     } else {
         filter.allows_glob(rel)
     }
+}
+
+/// Module-resolution config a resolver reads without indexing it. Editing one can change what every
+/// importer below it resolves to, so the event is forwarded and the scan decides (against the probe
+/// index) whether anything depends on it.
+fn is_resolver_config(rel: &str) -> bool {
+    let name = rel.rsplit('/').next().unwrap_or(rel);
+    name == "package.json" || name == "jsconfig.json" || (name.starts_with("tsconfig") && name.ends_with(".json"))
 }
 
 #[cfg(test)]
