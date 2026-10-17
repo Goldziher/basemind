@@ -804,8 +804,14 @@ mod tests {
 
         let store = Store::open_read_only(tmp.path(), VIEW_WORKING).expect("read-only open");
 
-        let db = store.index_db.as_ref().expect("code index survives a held memory store");
-        assert!(db.memory_detached(), "memory is reported unavailable, not silently empty");
+        let db = store
+            .index_db
+            .as_ref()
+            .expect("code index survives a held memory store");
+        assert!(
+            db.memory_detached(),
+            "memory is reported unavailable, not silently empty"
+        );
     }
 
     #[test]

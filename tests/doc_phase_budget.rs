@@ -86,7 +86,11 @@ impl Write for Captured {
 fn a_spent_phase_budget_defers_before_any_chunking_is_announced() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("big.md");
-    fs::write(&path, "# Title\n\nSome prose that is longer than the tiny cutover below.\n").unwrap();
+    fs::write(
+        &path,
+        "# Title\n\nSome prose that is longer than the tiny cutover below.\n",
+    )
+    .unwrap();
     // Above the markdown cutover, so a non-deferred run would announce linear chunking.
     let mut config = DocConfig {
         phase: Some(Arc::new(DocPhase::with_budget(Duration::ZERO))),
