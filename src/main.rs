@@ -589,7 +589,7 @@ fn scan_streaming(
     cancel: &basemind::scanner::ScanCancel,
 ) -> std::result::Result<basemind::scanner::ScanReport, basemind::scanner::ScanError> {
     let mut observer = render::ScanLineObserver::new(no_color, verbosity);
-    basemind::scanner::scan_with_observer(
+    let report = basemind::scanner::scan_with_observer(
         root,
         store,
         config,
@@ -597,7 +597,9 @@ fn scan_streaming(
         basemind::scanner::EmbedMode::Inline,
         cancel,
         &mut observer,
-    )
+    );
+    observer.finish();
+    report
 }
 
 /// Turn an interrupted scan into the exit-`130` error after printing what did land. The scan stops
@@ -642,6 +644,7 @@ fn cmd_scan(root: &std::path::Path, args: &ScanArgs, verbosity: Verbosity, no_co
             return interrupted(&mut out, &report, verbosity, "scan --staged");
         }
         render::render_summary(&mut out, &report.stats, verbosity);
+        render::render_phase_peaks(&mut out, &report.phase_peaks, verbosity);
         return Ok(());
     }
     if let Some(rev_spec) = &args.rev {
@@ -668,6 +671,7 @@ fn cmd_scan(root: &std::path::Path, args: &ScanArgs, verbosity: Verbosity, no_co
             return interrupted(&mut out, &report, verbosity, "scan --rev");
         }
         render::render_summary(&mut out, &report.stats, verbosity);
+        render::render_phase_peaks(&mut out, &report.phase_peaks, verbosity);
         return Ok(());
     }
 
@@ -689,6 +693,7 @@ fn cmd_scan(root: &std::path::Path, args: &ScanArgs, verbosity: Verbosity, no_co
         return interrupted(&mut out, &report, verbosity, "scan");
     }
     render::render_summary(&mut out, &report.stats, verbosity);
+    render::render_phase_peaks(&mut out, &report.phase_peaks, verbosity);
     reclaim_after_scan(&mut out, &report.stats, std::mem::take(&mut store.reset_stale_schema));
     sync_git_history_after_scan(root, !args.no_git_history, args.rebuild_git_history, &mut out);
     Ok(())
@@ -752,7 +757,7 @@ fn cmd_rescan(root: &std::path::Path, args: &RescanArgs, verbosity: Verbosity, n
         .context("rescan (full)")?
     } else {
         let mut observer = render::ScanLineObserver::new(no_color, verbosity);
-        basemind::scanner::scan_paths_with_observer(
+        let report = basemind::scanner::scan_paths_with_observer(
             root,
             &mut store,
             &config,
@@ -760,13 +765,15 @@ fn cmd_rescan(root: &std::path::Path, args: &RescanArgs, verbosity: Verbosity, n
             basemind::scanner::EmbedMode::Inline,
             &cancel,
             &mut observer,
-        )
-        .context("rescan (paths)")?
+        );
+        observer.finish();
+        report.context("rescan (paths)")?
     };
     if report.cancelled {
         return interrupted(&mut out, &report, verbosity, "rescan");
     }
     render::render_summary(&mut out, &report.stats, verbosity);
+    render::render_phase_peaks(&mut out, &report.phase_peaks, verbosity);
     reclaim_after_scan(&mut out, &report.stats, std::mem::take(&mut store.reset_stale_schema));
     sync_git_history_after_scan(root, !args.no_git_history, args.rebuild_git_history, &mut out);
     Ok(())

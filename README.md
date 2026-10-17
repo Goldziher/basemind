@@ -949,8 +949,8 @@ max_chunks_per_file = 2000
 
 [resources]
 # Memory ceiling for this process, in MiB. A positive integer is an explicit ceiling; 0 or "auto"
-# (the default) derives one — 75% of an enforced cgroup limit, or 50% of machine RAM, floored at
-# 512 MiB; "off" disables it. ADVISORY: workers park while over the ceiling and are admitted anyway
+# (the default) derives one — 75% of an enforced cgroup limit, or 25% of machine RAM, floored at
+# 2048 MiB; "off" disables it. ADVISORY: workers park while over the ceiling and are admitted anyway
 # after five seconds, so it shapes peak memory rather than enforcing a hard limit (document
 # extraction is stricter: over the ceiling one document runs at a time). To actually cap the
 # daemon's memory, run it from your own resource-controlled unit — see
