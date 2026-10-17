@@ -279,8 +279,12 @@ impl<'a> WorkerIndexBatch<'a> {
     fn commit(&mut self) {
         if let Some(writer) = self.writer.take() {
             self.ledger.record_commit();
-            if writer.commit().is_err() {
-                tracing::warn!("index batch commit failed; reference search may be incomplete");
+            if let Err(error) = writer.commit() {
+                if self.index.is_some_and(|index| index.fatal_fault().is_some()) {
+                    tracing::error!(%error, "index commit failed fatally (disk full or poisoned handle); the scan will abort");
+                } else {
+                    tracing::warn!("index batch commit failed; reference search may be incomplete");
+                }
             }
         }
         self.release_reported();

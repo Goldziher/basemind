@@ -89,11 +89,15 @@ struct FileSnapshot {
 }
 
 /// Wholesale resolve pass: (re)stage every indexed file's intra facts and (re)stitch every
-/// importer. Best-effort — any failure is logged and the scan still succeeds. No-op in a read-only
-/// (no writable index) session.
-pub(crate) fn resolve_pass(root: &Path, store: &Store, precise: bool, footprint: MaxFootprint) {
+/// importer. Best-effort — a resolver failure is logged and skipped. No-op in a read-only (no
+/// writable index) session.
+///
+/// Returns whether every index commit succeeded: only then may the caller record the pass as
+/// complete. A fatal commit failure (disk full, poisoned handle) also latches on `index_db`, which
+/// the scan polls to abort.
+pub(crate) fn resolve_pass(root: &Path, store: &Store, precise: bool, footprint: MaxFootprint) -> bool {
     let Some(index_db) = store.index_db.as_ref() else {
-        return;
+        return true;
     };
     let files: Vec<FileSnapshot> = store
         .index
@@ -110,13 +114,14 @@ pub(crate) fn resolve_pass(root: &Path, store: &Store, precise: bool, footprint:
     #[cfg(any(feature = "code-intel-js", feature = "code-intel-stack"))]
     {
         let mut cross_file: ahash::AHashMap<String, crate::intel::xfile::FileFacts> = ahash::AHashMap::new();
-        resolve_in_chunks(root, store, index_db, &files, precise, footprint, |facts| {
+        let staged = resolve_in_chunks(root, store, index_db, &files, precise, footprint, |facts| {
             harvest_cross_file_facts(facts, &mut cross_file);
         });
-        crate::intel::xfile::stitch_cross_file_edges(root, store, index_db, &cross_file);
+        let stitched = crate::intel::xfile::stitch_cross_file_edges(root, store, index_db, &cross_file);
+        return staged && stitched;
     }
     #[cfg(not(any(feature = "code-intel-js", feature = "code-intel-stack")))]
-    resolve_in_chunks(root, store, index_db, &files, precise, footprint, drop);
+    return resolve_in_chunks(root, store, index_db, &files, precise, footprint, drop);
 }
 
 /// Incremental resolve pass for the watcher: only `changed` files' intra facts are restaged, and
@@ -166,27 +171,34 @@ fn resolve_in_chunks(
     precise: bool,
     footprint: MaxFootprint,
     mut harvest: impl FnMut(Vec<(String, FileResolvedRefs)>),
-) {
+) -> bool {
     // The admission point the primary scan's drive loop has and this pass lacked: before each chunk
     // is computed, park (bounded) while the process is over its footprint ceiling, so the previous
     // chunk's arenas and the allocator's freed pages can settle. Advisory by design -- the gate
     // admits after its max wait to guarantee progress -- so the hard bound on one file's memory
     // remains the per-file budgets in `intel::stackgraph`.
     let gate = FootprintGate::new(footprint);
+    let mut all_committed = true;
     drive_chunks_governed(
         &mut (),
         files,
         || {
+            // A fatal commit failure (disk full, poisoned handle) dooms every later chunk's commit;
+            // stop computing facts that can only be thrown away.
+            if index_db.fatal_fault().is_some() {
+                return None;
+            }
             gate.admit();
             Some(resolve_chunk_cut())
         },
         |(), snapshot| snapshot.size_bytes,
         |(), chunk| compute_facts(root, store, chunk, precise),
         |(), facts| {
-            stage_facts(index_db, &facts);
+            all_committed &= stage_facts(index_db, &facts);
             harvest(facts);
         },
     );
+    all_committed && index_db.fatal_fault().is_none()
 }
 
 /// Parallel-compute the resolution facts for `files`, respecting the blob cache. Returns the
@@ -234,7 +246,9 @@ fn compute_facts(root: &Path, store: &Store, files: &[FileSnapshot], precise: bo
 /// `INDEX_COMMIT_BATCH` files or the byte bounds [`BudgetedWriter`] enforces. Fjall staging is the
 /// shared bottleneck, so it stays single-threaded (the parallel win is the compute phase above). A
 /// file with empty facts still gets `remove_resolved_file` so a prior scan's edges are cleared.
-fn stage_facts(index_db: &IndexDb, facts: &[(String, FileResolvedRefs)]) {
+///
+/// Returns false when any commit failed, so the pass can refuse to be recorded as complete.
+fn stage_facts(index_db: &IndexDb, facts: &[(String, FileResolvedRefs)]) -> bool {
     let mut batch = BudgetedWriter::new(index_db, INDEX_COMMIT_BATCH, "resolve pass");
     for (rel_str, refs) in facts {
         let rel = RelPath::from(rel_str.as_str());
@@ -248,7 +262,7 @@ fn stage_facts(index_db: &IndexDb, facts: &[(String, FileResolvedRefs)]) {
         }
         batch.item_staged();
     }
-    batch.finish();
+    batch.finish()
 }
 
 /// This file's intra edges whose definition is one of its own import bindings — the in-file use

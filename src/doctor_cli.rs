@@ -112,7 +112,14 @@ fn check_index(root: &Path) -> Check {
         }
         basemind::store::WriterProbe::Held { holder: None } => "a writer holds the lock".to_string(),
     };
-    Check::new("index", Level::Ok, format!("{}; {writer}", index.display()))
+    match basemind::store::read_status_sidecar(&cache).and_then(|status| status.degraded_summary()) {
+        Some(summary) => Check::new(
+            "index",
+            Level::Warn,
+            format!("degraded: {summary}; run `basemind scan`; {writer}"),
+        ),
+        None => Check::new("index", Level::Ok, format!("{}; {writer}", index.display())),
+    }
 }
 
 fn check_grammars() -> Check {

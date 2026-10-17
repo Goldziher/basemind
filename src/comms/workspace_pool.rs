@@ -393,12 +393,16 @@ impl WorkspacePool {
         // the last concurrent full Inline pass ends. Incremental passes keep it warm for searches.
         #[cfg(feature = "intelligence")]
         let _embed_pass = (matches!(mode, EmbedMode::Inline) && !incremental).then(crate::embeddings::begin_embed_pass);
-        let report = if incremental {
+        let scanned = if incremental {
             let paths = paths.as_deref().unwrap_or_default();
-            scanner::scan_paths_with_cancel(&entry.root, &mut store, &config, paths, mode, cancel)?
+            scanner::scan_paths_with_cancel(&entry.root, &mut store, &config, paths, mode, cancel)
         } else {
-            scanner::scan_with_cancel(&entry.root, &mut store, &config, ScanSource::WorkingTree, mode, cancel)?
+            scanner::scan_with_cancel(&entry.root, &mut store, &config, ScanSource::WorkingTree, mode, cancel)
         };
+        // Before the scan's error propagates: a poisoned handle fails every later commit for the life
+        // of the daemon, so it has to be replaced whether or not this pass got to report it.
+        self.recover_poisoned_index(&entry, &mut store);
+        let report = scanned?;
         if report.stats.displaced_artifacts() || std::mem::take(&mut store.reset_stale_schema) {
             self.cleanup_signal.notify_one();
         }
@@ -407,6 +411,22 @@ impl WorkspacePool {
             *entry.last_full.lock().unwrap_or_else(PoisonError::into_inner) = Some((generation, mode, report.stats));
         }
         Ok((report.stats, report.cancelled))
+    }
+
+    /// Replace a poisoned code-index handle (a failed flush or commit; see
+    /// [`IndexDb::is_poisoned`](crate::index::IndexDb::is_poisoned)) by reopening the database,
+    /// which replays the journal into a fresh handle. When the reopen fails the entry is evicted so
+    /// the next request opens the workspace from scratch instead of serving a dead handle. Either
+    /// way the status sidecar already reads partial, so the next open schedules a full scan.
+    fn recover_poisoned_index(&self, entry: &WorkspaceEntry, store: &mut Store) {
+        if !store.index_db.as_ref().is_some_and(crate::index::IndexDb::is_poisoned) {
+            return;
+        }
+        tracing::warn!(root = %entry.root.display(), "index handle poisoned; reopening");
+        if let Err(error) = store.reopen_index_db() {
+            tracing::error!(root = %entry.root.display(), %error, "index reopen failed; evicting the workspace");
+            self.lock_map().remove(&entry.key);
+        }
     }
 
     /// Run `f` against a workspace's open read-write [`Store`] (immutable borrow), opening it into

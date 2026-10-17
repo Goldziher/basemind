@@ -252,8 +252,11 @@ impl IndexWriter {
     /// by bytes rather than by file count samples that signal an order of magnitude more often on
     /// entry-dense files, and bounds the journal write burst to the same budget.
     pub fn commit(self) -> Result<(), IndexError> {
-        self.batch.commit()?;
-        Ok(())
+        let result = self.batch.commit().map_err(IndexError::from);
+        if let Err(error) = &result {
+            self.db.record_commit_error(error);
+        }
+        result
     }
 
     fn stage_deletes_for(&mut self, rel: &RelPath) -> Result<(), IndexError> {

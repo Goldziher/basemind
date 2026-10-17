@@ -37,6 +37,9 @@ pub(crate) struct BudgetedWriter<'a> {
     /// Bytes already reported to `ledger`; released in full on commit and on drop so the ledger
     /// never drifts from the true in-flight total.
     reported_bytes: u64,
+    /// Sticky: set by any failed commit so [`Self::finish`] reports the whole batch's outcome, not
+    /// just the trailing commit's.
+    failed: bool,
     max_items: usize,
     byte_budget: u64,
     ledger: &'static StagedByteLedger,
@@ -62,6 +65,7 @@ impl<'a> BudgetedWriter<'a> {
             writer: None,
             staged: 0,
             reported_bytes: 0,
+            failed: false,
             max_items,
             byte_budget,
             ledger,
@@ -96,12 +100,21 @@ impl<'a> BudgetedWriter<'a> {
         if let Some(writer) = self.writer.take()
             && let Err(error) = writer.commit()
         {
-            tracing::warn!(
-                %error,
-                phase = self.phase,
-                "index commit failed — resolved navigation may be stale"
-            );
+            if self.index_db.fatal_fault().is_some() {
+                tracing::error!(
+                    %error,
+                    phase = self.phase,
+                    "index commit failed fatally (disk full or poisoned handle); the scan will abort"
+                );
+            } else {
+                tracing::warn!(
+                    %error,
+                    phase = self.phase,
+                    "index commit failed — resolved navigation may be stale"
+                );
+            }
             ok = false;
+            self.failed = true;
         }
         self.release_reported();
         self.staged = 0;
@@ -113,10 +126,11 @@ impl<'a> BudgetedWriter<'a> {
         self.reported_bytes = 0;
     }
 
-    /// Commit the trailing partial batch. Returns false when that commit failed, so a caller can
-    /// skip its own success log.
+    /// Commit the trailing partial batch. Returns false when that commit *or any earlier one* failed,
+    /// so a caller can skip its own success log and refuse to record the pass as complete.
     pub(crate) fn finish(mut self) -> bool {
-        self.commit()
+        self.commit();
+        !self.failed
     }
 }
 

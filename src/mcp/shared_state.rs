@@ -171,8 +171,15 @@ fn graph_memo_budget_bytes(resources: &crate::config::ResourcesConfig) -> u64 {
     super::l1_cache::budget_bytes_from(resources) / 2
 }
 
-/// Boot decisions derived purely from the opened store + [`ServerOptions`]: whether an empty-index
-/// initial scan is needed, and whether the in-RAM cache preload is deferred to the background.
+/// Whether the workspace's `status.json` records a partial or unresolved last scan. A missing or
+/// unreadable sidecar is not degraded: the empty-index checks above own the never-scanned case.
+fn last_scan_degraded(store: &Store) -> bool {
+    crate::store::read_status_sidecar(&store.basemind_dir).is_some_and(|status| status.is_degraded())
+}
+
+/// Boot decisions derived purely from the opened store + [`ServerOptions`]: whether an initial scan
+/// is needed (an empty index, or one whose last full scan was cancelled / aborted before covering the
+/// workspace or finishing its resolve pass: issues #79, #84), and whether the in-RAM cache preload is deferred to the background.
 ///
 /// Factored out so [`SharedReadStack::new`] (which sets the `cache_warming` atomic + eager/deferred
 /// cache) and `BasemindServer::new_with_options` (which spawns the matching background tasks) agree
@@ -186,7 +193,7 @@ pub(crate) fn boot_plan(store: &Store, options: &ServerOptions) -> (bool, bool) 
         .unwrap_or(false);
     let needs_initial_scan = (options.daemon_writer || !options.read_only)
         && view_is_working
-        && (store.index.files.is_empty() || fjall_index_empty);
+        && (store.index.files.is_empty() || fjall_index_empty || last_scan_degraded(store));
     let defer_warm = options.background && !needs_initial_scan;
     (needs_initial_scan, defer_warm)
 }
@@ -299,5 +306,27 @@ impl SharedReadStack {
         opts: &super::codegraph::BuildOpts,
     ) -> Result<Arc<super::codegraph::CodeGraph>, rmcp::ErrorData> {
         super::codegraph::build_memoized(&self.graph_memo, idx, cache, opts)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::store::{ScanHealth, VIEW_WORKING, write_status_sidecar};
+
+    #[test]
+    fn a_partial_or_unresolved_last_scan_is_degraded_and_a_clean_one_is_not() {
+        crate::store::init_isolated_cache();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = Store::open(dir.path(), VIEW_WORKING).expect("open store");
+        assert!(!last_scan_degraded(&store), "a workspace with no sidecar is not degraded");
+        for (health, degraded) in [
+            (ScanHealth::complete(), false),
+            (ScanHealth::resolving(), true),
+            (ScanHealth::partial("cancelled", 1, 9), true),
+        ] {
+            write_status_sidecar(&store.basemind_dir, 1, 1, &health);
+            assert_eq!(last_scan_degraded(&store), degraded, "{health:?}");
+        }
     }
 }

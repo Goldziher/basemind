@@ -17,6 +17,7 @@
 //! msgpack blobs. This is fast (no parsing — just decode each L1, push to secondary
 //! indexes) and keeps the on-disk format free to evolve.
 
+pub mod fault;
 pub mod grep_bloom;
 pub mod keys;
 pub mod keys_governance;
@@ -56,7 +57,7 @@ const META_SCHEMA_VER: &[u8] = b"schema_ver";
 const META_BM25_DOC_COUNT: &[u8] = b"code_bm25_n";
 const META_BM25_TOTAL_LEN: &[u8] = b"code_bm25_total_len";
 
-const INDEX_DIR: &str = "index.fjall";
+pub(crate) const INDEX_DIR: &str = "index.fjall";
 
 /// Per-keyspace memtable sizes, in bytes. Three tiers, assigned by how much one scan writes to the
 /// keyspace: [`MEMTABLE_HOT_BYTES`] for the BM25 posting list (the densest writer by far — one
@@ -308,6 +309,9 @@ pub struct IndexDb {
     /// W11 propose-don't-commit skill-mining surface. Always created for DB stability.
     #[allow(dead_code)]
     pub(crate) proposals: Keyspace,
+    /// First fatal commit error (disk full, poisoned handle) seen through any clone of this handle;
+    /// shared so the writers record it where it happens and the scan polls one place.
+    pub(crate) fault: std::sync::Arc<fault::IndexFault>,
 }
 
 /// Flush/compaction threads per index database. fjall defaults to `min(cores, 4)` per `Database`, and
@@ -472,7 +476,37 @@ impl IndexDb {
             memory_by_key,
             memory_archive,
             proposals,
+            fault: std::sync::Arc::default(),
         })
+    }
+
+    /// The first fatal commit failure (`StorageFull`, `Poisoned`) any writer on this handle hit, or
+    /// `None` while it is healthy. A scan that sees `Some` must abort: every later commit fails too.
+    pub fn fatal_fault(&self) -> Option<String> {
+        self.fault.reason()
+    }
+
+    /// Allocation-free form of `fatal_fault().is_some()` for per-file polling.
+    pub fn has_fatal_fault(&self) -> bool {
+        self.fault.is_tripped()
+    }
+
+    /// Whether the handle is poisoned, which only dropping and reopening the database clears. A
+    /// full disk is fatal to a scan but leaves the handle usable once space is freed.
+    pub fn is_poisoned(&self) -> bool {
+        self.fault.is_poisoned()
+    }
+
+    /// Drop a latched failure that freeing disk space cures, so a long-lived handle (the daemon's)
+    /// is not refused forever after one full-disk scan. A poisoned handle stays poisoned.
+    pub fn clear_recoverable_fault(&self) {
+        self.fault.clear_recoverable();
+    }
+
+    /// Latch `error` if it is fatal. Called by [`writer::IndexWriter::commit`]; public so a commit
+    /// path that bypasses the writer can report through the same latch.
+    pub fn record_commit_error(&self, error: &IndexError) {
+        self.fault.record(error);
     }
 
     /// Open a new batched writer scoped to this DB. Multiple writers can coexist — Fjall
