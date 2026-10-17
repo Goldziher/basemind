@@ -279,7 +279,9 @@ async fn run_status(state: &ServerState) -> Result<CallToolResult, McpError> {
         note,
         rebuild_in_progress: false,
         partial: last_scan.as_ref().is_some_and(|status| status.partial),
-        degraded: last_scan.as_ref().and_then(crate::store::StatusSidecar::degraded_summary),
+        degraded: last_scan
+            .as_ref()
+            .and_then(crate::store::StatusSidecar::degraded_summary),
         indexing,
         index_build_ms,
         warming,

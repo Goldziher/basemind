@@ -25,8 +25,16 @@ fn offline_doc_config() -> DocConfig {
 fn json_yaml_and_svg_under_the_cutover_use_the_linear_chunker() {
     let dir = tempfile::tempdir().unwrap();
     for (name, mime, body) in [
-        ("cfg.json", "application/json", r#"{"name": "demo", "items": [1, 2, 3]}"#),
-        ("cfg.yaml", "application/x-yaml", "name: demo\nitems:\n  - alpha\n  - beta\n"),
+        (
+            "cfg.json",
+            "application/json",
+            r#"{"name": "demo", "items": [1, 2, 3]}"#,
+        ),
+        (
+            "cfg.yaml",
+            "application/x-yaml",
+            "name: demo\nitems:\n  - alpha\n  - beta\n",
+        ),
         (
             "logo.svg",
             "image/svg+xml",
@@ -36,7 +44,10 @@ fn json_yaml_and_svg_under_the_cutover_use_the_linear_chunker() {
         let path = dir.path().join(name);
         fs::write(&path, body).unwrap();
         let doc = extract_doc(&path, Some(mime), &offline_doc_config()).expect("extract");
-        assert!(doc.linear_chunked, "{name} is structured data and must be chunked linearly");
+        assert!(
+            doc.linear_chunked,
+            "{name} is structured data and must be chunked linearly"
+        );
     }
 }
 
@@ -44,7 +55,11 @@ fn json_yaml_and_svg_under_the_cutover_use_the_linear_chunker() {
 fn markdown_under_the_cutover_keeps_the_markdown_splitter() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("guide.md");
-    fs::write(&path, "# Title\n\nSome prose about the project.\n\n## Part\n\nMore prose.\n").unwrap();
+    fs::write(
+        &path,
+        "# Title\n\nSome prose about the project.\n\n## Part\n\nMore prose.\n",
+    )
+    .unwrap();
     let doc = extract_doc(&path, Some("text/markdown"), &offline_doc_config()).expect("extract");
     assert!(!doc.linear_chunked);
 }

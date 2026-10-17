@@ -480,6 +480,12 @@ fn user_document_excludes_replace_the_defaults_so_they_can_reinclude() {
 
     config.documents.exclude = vec!["*.svg".to_string()];
     let filters = Filters::build(&config, Vec::new()).expect("build filters");
-    assert!(!filters.doc_allowed("icon.svg"), "a custom list can repeat a default entry");
-    assert!(filters.doc_allowed("pnpm-lock.yaml"), "unlisted defaults are replaced, not merged");
+    assert!(
+        !filters.doc_allowed("icon.svg"),
+        "a custom list can repeat a default entry"
+    );
+    assert!(
+        filters.doc_allowed("pnpm-lock.yaml"),
+        "unlisted defaults are replaced, not merged"
+    );
 }

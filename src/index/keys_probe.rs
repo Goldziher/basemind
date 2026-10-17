@@ -81,9 +81,7 @@ pub fn probe_manifest_value(hashes: &[ProbeHash]) -> Vec<u8> {
 
 /// Decode a manifest value back into its hashes (a trailing partial hash is ignored).
 pub fn parse_probe_manifest(value: &[u8]) -> impl Iterator<Item = ProbeHash> + '_ {
-    value
-        .chunks_exact(PROBE_HASH_LEN)
-        .filter_map(|chunk| ProbeHash::try_from(chunk).ok())
+    value.as_chunks::<PROBE_HASH_LEN>().0.iter().copied()
 }
 
 /// `importers_by_probe` key: `probe_hash:8 ‖ importer`.

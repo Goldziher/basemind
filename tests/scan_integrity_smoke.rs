@@ -12,7 +12,9 @@ use std::sync::Once;
 use basemind::config::ConfigV1;
 use basemind::index::IndexDb;
 use basemind::index::IndexError;
-use basemind::scanner::{EmbedMode, FileResult, ScanCancel, ScanError, ScanObserver, ScanSource, scan, scan_with_cancel, scan_with_observer};
+use basemind::scanner::{
+    EmbedMode, FileResult, ScanCancel, ScanError, ScanObserver, ScanSource, scan, scan_with_cancel, scan_with_observer,
+};
 use basemind::store::{Store, VIEW_WORKING, read_status_sidecar};
 use tempfile::TempDir;
 
@@ -77,8 +79,14 @@ fn a_clean_scan_records_a_complete_resolved_index() {
     let dir = TempDir::new().unwrap();
     seed_repo(dir.path());
     let mut store = Store::open(dir.path(), VIEW_WORKING).expect("open store");
-    scan(dir.path(), &mut store, &ConfigV1::with_defaults(), ScanSource::WorkingTree, EmbedMode::Deferred)
-        .expect("scan");
+    scan(
+        dir.path(),
+        &mut store,
+        &ConfigV1::with_defaults(),
+        ScanSource::WorkingTree,
+        EmbedMode::Deferred,
+    )
+    .expect("scan");
     let status = read_status_sidecar(&store.basemind_dir).expect("sidecar");
     assert!(!status.is_degraded(), "a finished scan is healthy: {status:?}");
     assert!(status.resolve_complete);
@@ -103,10 +111,19 @@ fn a_full_disk_mid_scan_aborts_and_the_status_reads_not_complete() {
     );
 
     // A full disk is cured by freeing space: the next scan on the same handle clears the latch.
-    scan(dir.path(), &mut store, &ConfigV1::with_defaults(), ScanSource::WorkingTree, EmbedMode::Deferred)
-        .expect("rescan after space is freed");
+    scan(
+        dir.path(),
+        &mut store,
+        &ConfigV1::with_defaults(),
+        ScanSource::WorkingTree,
+        EmbedMode::Deferred,
+    )
+    .expect("rescan after space is freed");
     let status = read_status_sidecar(&store.basemind_dir).expect("sidecar");
-    assert!(!status.is_degraded(), "a completed rescan clears the degradation: {status:?}");
+    assert!(
+        !status.is_degraded(),
+        "a completed rescan clears the degradation: {status:?}"
+    );
 }
 
 #[test]
@@ -120,13 +137,28 @@ fn a_poisoned_handle_keeps_refusing_scans_until_it_is_reopened() {
     assert!(matches!(outcome, Err(ScanError::IndexFault(_))), "got {outcome:?}");
     assert!(store.index_db.as_ref().expect("index").is_poisoned());
 
-    let again = scan(dir.path(), &mut store, &ConfigV1::with_defaults(), ScanSource::WorkingTree, EmbedMode::Deferred);
-    assert!(matches!(again, Err(ScanError::IndexFault(_))), "poison is not cleared by retrying: {again:?}");
+    let again = scan(
+        dir.path(),
+        &mut store,
+        &ConfigV1::with_defaults(),
+        ScanSource::WorkingTree,
+        EmbedMode::Deferred,
+    );
+    assert!(
+        matches!(again, Err(ScanError::IndexFault(_))),
+        "poison is not cleared by retrying: {again:?}"
+    );
 
     store.reopen_index_db().expect("reopen");
     assert!(!store.index_db.as_ref().expect("index").is_poisoned());
-    scan(dir.path(), &mut store, &ConfigV1::with_defaults(), ScanSource::WorkingTree, EmbedMode::Deferred)
-        .expect("a reopened handle scans again");
+    scan(
+        dir.path(),
+        &mut store,
+        &ConfigV1::with_defaults(),
+        ScanSource::WorkingTree,
+        EmbedMode::Deferred,
+    )
+    .expect("a reopened handle scans again");
     assert!(!read_status_sidecar(&store.basemind_dir).expect("sidecar").is_degraded());
 }
 
@@ -140,8 +172,15 @@ fn a_cancelled_scan_is_recorded_as_partial_until_a_full_scan_completes() {
 
     let cancel = ScanCancel::new();
     cancel.cancel();
-    let report = scan_with_cancel(dir.path(), &mut store, &cfg, ScanSource::WorkingTree, EmbedMode::Deferred, &cancel)
-        .expect("a cancelled scan still returns a report");
+    let report = scan_with_cancel(
+        dir.path(),
+        &mut store,
+        &cfg,
+        ScanSource::WorkingTree,
+        EmbedMode::Deferred,
+        &cancel,
+    )
+    .expect("a cancelled scan still returns a report");
     assert!(report.cancelled);
 
     let status = read_status_sidecar(&store.basemind_dir).expect("sidecar");
@@ -150,7 +189,14 @@ fn a_cancelled_scan_is_recorded_as_partial_until_a_full_scan_completes() {
     assert!(status.progress_total.is_some() && status.progress_done.is_some());
     assert!(status.degraded_summary().expect("summary").contains("partial scan"));
 
-    scan(dir.path(), &mut store, &cfg, ScanSource::WorkingTree, EmbedMode::Deferred).expect("full scan");
+    scan(
+        dir.path(),
+        &mut store,
+        &cfg,
+        ScanSource::WorkingTree,
+        EmbedMode::Deferred,
+    )
+    .expect("full scan");
     let status = read_status_sidecar(&store.basemind_dir).expect("sidecar");
     assert!(!status.partial && !status.is_degraded(), "{status:?}");
 }

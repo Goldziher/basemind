@@ -29,7 +29,13 @@ fn a_scan_is_refused_when_the_volume_is_below_the_headroom() {
     unsafe { std::env::set_var(basemind::disk_space::MIN_FREE_ENV, "999999999999") };
 
     let mut store = Store::open(root, VIEW_WORKING).expect("open store");
-    let outcome = scan(root, &mut store, &ConfigV1::with_defaults(), ScanSource::WorkingTree, EmbedMode::Deferred);
+    let outcome = scan(
+        root,
+        &mut store,
+        &ConfigV1::with_defaults(),
+        ScanSource::WorkingTree,
+        EmbedMode::Deferred,
+    );
 
     match outcome {
         Err(ScanError::InsufficientSpace(refusal)) => {

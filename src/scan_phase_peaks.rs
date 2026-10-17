@@ -100,7 +100,10 @@ mod tests {
         let snap = peaks.snapshot();
         let of = |phase: &str| snap.iter().find(|p| p.phase == phase).map(|p| p.peak_bytes);
         assert_eq!(of("extract"), Some(u64::MAX), "extract keeps its own maximum");
-        assert!(of("resolve") < Some(u64::MAX), "extract readings do not leak into resolve");
+        assert!(
+            of("resolve") < Some(u64::MAX),
+            "extract readings do not leak into resolve"
+        );
     }
 
     #[test]

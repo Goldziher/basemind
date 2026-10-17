@@ -69,7 +69,11 @@ fn two_views_of_one_group_share_one_memory_store() {
 
     first.memory_by_key.insert(b"k".to_vec(), row("from-a", 5)).unwrap();
 
-    let seen = second.memory_by_key.get(b"k").unwrap().expect("visible from the other view");
+    let seen = second
+        .memory_by_key
+        .get(b"k")
+        .unwrap()
+        .expect("visible from the other view");
     assert_eq!(value_of(&seen), "from-a");
 }
 
@@ -94,9 +98,18 @@ fn migration_merges_conflicting_rows_by_timestamp() {
     let memory_dir = tmp.path().join("repos/g/memory.fjall");
     {
         let store = open_shared(&memory_dir).unwrap();
-        store.memory_by_key.insert(b"both-store-newer".to_vec(), row("store", 20)).unwrap();
-        store.memory_by_key.insert(b"both-view-newer".to_vec(), row("store", 10)).unwrap();
-        store.memory_by_key.insert(b"store-only".to_vec(), row("store", 1)).unwrap();
+        store
+            .memory_by_key
+            .insert(b"both-store-newer".to_vec(), row("store", 20))
+            .unwrap();
+        store
+            .memory_by_key
+            .insert(b"both-view-newer".to_vec(), row("store", 10))
+            .unwrap();
+        store
+            .memory_by_key
+            .insert(b"store-only".to_vec(), row("store", 1))
+            .unwrap();
     }
     let view_a = tmp.path().join("a");
     let view_b = tmp.path().join("b");
@@ -123,7 +136,10 @@ fn migration_merges_conflicting_rows_by_timestamp() {
     assert_eq!(value_of(&b.proposals.get(b"p").unwrap().unwrap()), "proposal");
     drop((a, b));
 
-    assert!(!legacy_keyspace_exists(&view_a, "memory_by_key"), "view copy is cleared");
+    assert!(
+        !legacy_keyspace_exists(&view_a, "memory_by_key"),
+        "view copy is cleared"
+    );
     assert!(!legacy_keyspace_exists(&view_b, "proposals"), "view copy is cleared");
 }
 
