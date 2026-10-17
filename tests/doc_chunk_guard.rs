@@ -173,6 +173,19 @@ fn scan_with_a_pathological_file_completes_and_counts_it_as_degraded() {
 }
 
 #[test]
+fn structured_data_is_linear_but_not_counted_as_degraded() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join("cfg.json"), r#"{"name": "demo", "items": [1, 2, 3]}"#).unwrap();
+    fs::write(dir.path().join("cfg.yaml"), "name: demo\nitems:\n  - alpha\n").unwrap();
+
+    let report = scan_once(dir.path(), &offline_scan_config());
+
+    assert_eq!(report.stats.docs_indexed, 2);
+    assert_eq!(report.stats.docs_degraded, 0, "structured-by-type is not degraded");
+    assert_eq!(report.stats.docs_text_fallback, 0);
+}
+
+#[test]
 fn scan_counts_a_timed_out_document_and_still_indexes_the_rest() {
     let dir = tempfile::tempdir().unwrap();
     fs::write(dir.path().join("syslog.txt"), pathological_log(2 * 1024 * 1024)).unwrap();
