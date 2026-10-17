@@ -43,6 +43,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **An index wiped by a schema revision bump now rebuilds instead of answering empty.** After the partition
+  revision bump the fjall index was recreated empty while `index.msgpack` survived, and a daemon-held workspace
+  scheduled no rescan, so `references` / `callers` / `implementations` returned zero results silently. Opening
+  such a workspace (wiped or empty index over a populated file map) now drops the file map so the scan
+  re-extracts every file, the daemon queues a full scan and marks `status.json` degraded, and reads and
+  `admin status` carry an `index_rebuilding` notice until it completes.
 - **A full disk or poisoned index no longer leaves a scan reporting complete** ([#79](https://github.com/Goldziher/basemind/issues/79)).
   Index commits that failed with `StorageFull` or `Poisoned` were logged as warnings while the scan ran on and
   `status.json` read a full file count over half-written `refs_by_*` partitions. Both are now fatal: the scan

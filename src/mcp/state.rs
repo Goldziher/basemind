@@ -232,20 +232,31 @@ impl ServerState {
             .await;
     }
 
+    /// The `index_rebuilding` notice while the workspace's `status.json` records a partial scan or an
+    /// uncommitted resolve pass. The daemon marks it when it opens a workspace whose fjall index was
+    /// wiped or is empty over a populated file map, and a session that does not hold the index
+    /// (`daemon_writer`, daemon-hosted) cannot see that any other way.
+    fn index_rebuilding_notice(&self) -> Option<types::LifecycleNotice> {
+        let status = crate::store::read_status_sidecar(&crate::store::workspace_cache_dir(&self.shared.root));
+        types::LifecycleNotice::for_scan_status(status.as_ref())
+    }
+
     /// A [`LifecycleNotice`](types::LifecycleNotice) to attach to a tool response, or `None` when
     /// [`Ready`](Lifecycle::Ready). Lets every read tool label a possibly-incomplete result with the
     /// server state + an actionable message, so an agent knows to retry rather than concluding "empty".
     pub(crate) fn lifecycle_notice(&self) -> Option<types::LifecycleNotice> {
-        types::LifecycleNotice::for_state(self.lifecycle()).or_else(|| {
-            // A read-only session whose projected call/impl indexes were capped answers reference
-            // queries from a truncated set. Reported through the same channel as the warming/
-            // rescanning states so a caller never reads an incomplete result as "no matches".
-            self.shared
-                .cache
-                .load()
-                .projections_capped()
-                .then(types::LifecycleNotice::projections_capped)
-        })
+        types::LifecycleNotice::for_state(self.lifecycle())
+            .or_else(|| self.index_rebuilding_notice())
+            .or_else(|| {
+                // A read-only session whose projected call/impl indexes were capped answers reference
+                // queries from a truncated set. Reported through the same channel as the warming/
+                // rescanning states so a caller never reads an incomplete result as "no matches".
+                self.shared
+                    .cache
+                    .load()
+                    .projections_capped()
+                    .then(types::LifecycleNotice::projections_capped)
+            })
     }
 }
 

@@ -171,6 +171,10 @@ struct WorkspaceEntry {
     /// redundant. This is what stops N sessions' back-to-back full rescans (issue #44) from
     /// re-walking a monorepo N times.
     full_scan_gen: std::sync::atomic::AtomicU64,
+    /// Set at open when the fjall index was wiped or is empty over a populated file map; every
+    /// rescan runs full until one completes, which clears it. Without it the daemon would keep
+    /// serving empty reference reads for a workspace nobody asked to rescan.
+    rebuild_pending: std::sync::atomic::AtomicBool,
     /// The most recent completed full scan: (generation, embed mode, stats). Served to coalesced
     /// requests instead of re-scanning; an `Inline` result satisfies a `Deferred` request but not
     /// vice versa.
@@ -374,6 +378,8 @@ impl WorkspacePool {
 
         let mode = if embed { EmbedMode::Inline } else { EmbedMode::Deferred };
         let config = entry.config();
+        let rebuild_pending = entry.rebuild_pending.load(std::sync::atomic::Ordering::Acquire);
+        let full = full || rebuild_pending;
         let incremental = matches!(paths, Some(ref p) if !full && !p.is_empty());
         let gen_before = entry.full_scan_gen.load(std::sync::atomic::Ordering::Acquire);
         let mut store = entry.store.lock().unwrap_or_else(PoisonError::into_inner);
@@ -407,6 +413,7 @@ impl WorkspacePool {
             self.cleanup_signal.notify_one();
         }
         if !incremental && !report.cancelled {
+            entry.rebuild_pending.store(false, std::sync::atomic::Ordering::Release);
             let generation = entry.full_scan_gen.fetch_add(1, std::sync::atomic::Ordering::AcqRel) + 1;
             *entry.last_full.lock().unwrap_or_else(PoisonError::into_inner) = Some((generation, mode, report.stats));
         }
@@ -682,14 +689,33 @@ impl WorkspacePool {
         }
         let pool = std::sync::Arc::clone(self);
         let root = root.to_path_buf();
-        tokio::task::spawn_blocking(move || pool.get_or_open(&root))
+        let entry = tokio::task::spawn_blocking(move || pool.get_or_open(&root))
             .await
             .map_err(|join| {
                 WorkspacePoolError::Store(store::StoreError::Io {
                     path: PathBuf::new(),
                     source: std::io::Error::other(format!("workspace open task failed: {join}")),
                 })
-            })?
+            })??;
+        self.spawn_pending_rebuild(&entry);
+        Ok(entry)
+    }
+
+    /// Start the full scan a freshly opened workspace owes when its index was wiped or is empty over
+    /// a populated file map. Detached: the open must not wait on a whole-tree scan. The entry's
+    /// `rebuild_pending` flag makes a racing client rescan run full too, and the scan coalesces.
+    #[cfg(all(feature = "comms", any(unix, windows)))]
+    fn spawn_pending_rebuild(self: &std::sync::Arc<Self>, entry: &WorkspaceEntry) {
+        if !entry.rebuild_pending.load(std::sync::atomic::Ordering::Acquire) {
+            return;
+        }
+        let pool = std::sync::Arc::clone(self);
+        let root = entry.root.clone();
+        tokio::task::spawn_blocking(move || {
+            if let Err(error) = pool.rescan(&root, None, true, false, &pool.scan_cancel) {
+                tracing::warn!(root = %root.display(), %error, "index rebuild scan failed");
+            }
+        });
     }
 
     /// Fetch the entry for `root`, opening it read-write and inserting it (evicting LRU past the
@@ -732,6 +758,11 @@ impl WorkspacePool {
             }
         };
         let store = Store::open_with_holder(&resolved, VIEW_WORKING, LockHolder::Rescan)?;
+        let rebuild_pending = store.index_rebuild_needed;
+        if rebuild_pending {
+            tracing::warn!(root = %resolved.display(), "index is empty over a populated file map; scheduling a full rebuild");
+            store.mark_status_health(&crate::store::ScanHealth::partial("index rebuilding", 0, 0));
+        }
         let config_stamp = config::daemon::ConfigStamp::of(&resolved);
         let config = config::daemon::load_daemon(&resolved)?;
         let entry = std::sync::Arc::new(WorkspaceEntry {
@@ -742,6 +773,7 @@ impl WorkspacePool {
             key: key.clone(),
             last_used: Mutex::new(Instant::now()),
             full_scan_gen: std::sync::atomic::AtomicU64::new(0),
+            rebuild_pending: std::sync::atomic::AtomicBool::new(rebuild_pending),
             last_full: Mutex::new(None),
             #[cfg(all(feature = "comms", any(unix, windows)))]
             serve_state: tokio::sync::Mutex::new(None),

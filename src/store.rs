@@ -295,6 +295,12 @@ pub struct Store {
     /// bump): every blob that index referenced is now unreferenced, so the first scan of the
     /// rebuilt view should be followed by a blob sweep (see `Store::displaced_blobs_pending`).
     pub reset_stale_schema: bool,
+    /// True when the fjall index was empty or just wiped (a partition-revision bump) while the file
+    /// map was populated: symbol / call / reference reads would answer empty until a full scan
+    /// rebuilds it. Set at open, which also drops the in-memory file map so that scan re-extracts
+    /// every file (blobs are reused by hash) instead of skipping them as unchanged over an empty
+    /// index. Only a writer opening the index can know it.
+    pub index_rebuild_needed: bool,
     _lock: Option<File>,
 }
 
@@ -333,7 +339,7 @@ impl Store {
         ensure_dir(&view_dir)?;
         ensure_workspace_marker(&basemind_dir, root);
         let mut reset_stale_schema = false;
-        let index = match read_index(&view_dir) {
+        let mut index = match read_index(&view_dir) {
             Ok(Some(idx)) => idx,
             Ok(None) => Index::empty(),
             Err(StoreError::SchemaMismatch { found, expected }) => {
@@ -349,7 +355,13 @@ impl Store {
             }
             Err(e) => return Err(e),
         };
-        let index_db = Some(open_index_with_retry(root, &view_dir)?);
+        let index_db = open_index_with_retry(root, &view_dir)?;
+        let index_rebuild_needed =
+            !index.files.is_empty() && (index_db.wiped_on_open() || index_db.symbols_index_is_empty());
+        if index_rebuild_needed {
+            index.files.clear();
+        }
+        let index_db = Some(index_db);
         Ok(Self {
             root: root.to_path_buf(),
             basemind_dir,
@@ -362,6 +374,7 @@ impl Store {
             #[cfg(feature = "intelligence")]
             lance: None,
             reset_stale_schema,
+            index_rebuild_needed,
             _lock: Some(lock),
         })
     }
@@ -455,6 +468,7 @@ impl Store {
             #[cfg(feature = "intelligence")]
             lance: None,
             reset_stale_schema: false,
+            index_rebuild_needed: false,
             _lock: None,
         })
     }

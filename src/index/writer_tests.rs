@@ -8,6 +8,27 @@ fn fresh_db() -> (TempDir, IndexDb) {
     (dir, db)
 }
 
+#[test]
+fn open_reports_a_wipe_only_when_the_stamped_schema_version_differs() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let memory = dir.path().join("memory.fjall");
+    let fresh = IndexDb::open_with_memory(dir.path(), &memory).expect("fresh open");
+    assert!(!fresh.wiped_on_open(), "a first open wipes nothing");
+    fresh
+        .meta
+        .insert(META_SCHEMA_VER, (INDEX_SCHEMA_VER + 1).to_be_bytes())
+        .expect("stamp a foreign schema version");
+    drop(fresh);
+
+    let wiped = IndexDb::open_with_memory(dir.path(), &memory).expect("reopen");
+    assert!(wiped.wiped_on_open(), "a mismatched revision wipes the index");
+    assert!(wiped.symbols_index_is_empty());
+    drop(wiped);
+
+    let again = IndexDb::open_with_memory(dir.path(), &memory).expect("third open");
+    assert!(!again.wiped_on_open(), "the rewritten stamp matches, so no second wipe");
+}
+
 fn synthetic_l1(syms: &[(&str, SymbolKind, u32)]) -> FileMapL1 {
     FileMapL1 {
         schema_ver: crate::extract::SCHEMA_VER,
