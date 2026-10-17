@@ -603,6 +603,7 @@ fn row_for(res: &FileResult, verbosity: Verbosity) -> Option<Row<'_>> {
 }
 
 /// Compact per-document duration: `850ms` under a second, `1.2s` under a minute, `3m05s` beyond.
+#[cfg(any(feature = "documents", test))]
 fn format_elapsed(ms: u64) -> String {
     match ms {
         0..1000 => format!("{ms}ms"),

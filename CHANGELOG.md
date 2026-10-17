@@ -23,6 +23,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `exclude = []` restores the old behaviour.
 - Structured data (json, yaml, xml, svg, csv/tsv) is always chunked by the linear chunker instead of xberg's quadratic
   markdown splitter, whatever its size. Markdown and prose keep the splitter under the `*_chunk_max_bytes` cutovers.
+- `docs_degraded` counts only size-triggered linear chunking and the text/plain fallback; structured data, which is
+  linear by design, no longer inflates it.
+- A read-only reader whose repo group's memory store is held by another process (the daemon) keeps its code index
+  instead of dropping to blob-only reads; memory operations on that handle are refused and go through the daemon.
 - The `✓ doc` progress line shows how long each document took.
 - **The auto memory ceiling is 25% of machine RAM, floored at 2048 MiB** ([#85](https://github.com/Goldziher/basemind/issues/85)).
   `max_footprint_mb = "auto"` budgeted 50% of RAM, which is 48 GB on a 96 GB workstation and never engaged on a

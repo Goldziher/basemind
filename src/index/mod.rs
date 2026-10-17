@@ -359,6 +359,11 @@ pub struct IndexDb {
     /// Keeps the shared group memory database open for as long as any `IndexDb` clone uses its
     /// keyspaces above.
     _memory: std::sync::Arc<memory_store::MemoryDb>,
+    /// True when the group memory store was held by another process at open and the three memory
+    /// keyspaces above are an empty private placeholder: the code index is fully usable, but memory
+    /// reads and writes must go through the process that owns the store (the daemon). See
+    /// [`IndexDb::open_tolerating_held_memory`].
+    memory_detached: bool,
 }
 
 /// Flush/compaction threads per index database. fjall defaults to `min(cores, 4)` per `Database`, and
@@ -442,6 +447,23 @@ impl IndexDb {
     /// in this view are merged into that store (last writer wins by timestamp) and removed from the
     /// view before any schema-mismatch wipe can destroy them.
     pub fn open_with_memory(view_dir: &Path, memory_dir: &Path) -> Result<Self, IndexError> {
+        Self::open_inner(view_dir, memory_dir, false)
+    }
+
+    /// [`IndexDb::open_with_memory`] for read-only consumers: when another process holds the group
+    /// memory store, the view index still opens and [`IndexDb::memory_detached`] reports `true`
+    /// instead of the whole open failing with `Locked`. Only a lock on the view itself fails.
+    pub fn open_tolerating_held_memory(view_dir: &Path, memory_dir: &Path) -> Result<Self, IndexError> {
+        Self::open_inner(view_dir, memory_dir, true)
+    }
+
+    /// Whether the memory keyspaces are an empty placeholder because another process owns the group
+    /// store. Memory operations on a detached handle must be refused or forwarded, never served.
+    pub fn memory_detached(&self) -> bool {
+        self.memory_detached
+    }
+
+    fn open_inner(view_dir: &Path, memory_dir: &Path, tolerate_held_memory: bool) -> Result<Self, IndexError> {
         let dir = view_dir.join(INDEX_DIR);
         std::fs::create_dir_all(&dir).map_err(|source| IndexError::Io {
             path: dir.clone(),
@@ -458,8 +480,20 @@ impl IndexDb {
             .worker_threads(FJALL_WORKER_THREADS)
             .max_journaling_size(journal_bytes)
             .open()?;
-        let memory = memory_store::open_shared(memory_dir)?;
-        memory_store::migrate_legacy(&db, &memory)?;
+        let (memory, memory_detached) = match memory_store::open_shared(memory_dir) {
+            Ok(memory) => (memory, false),
+            Err(IndexError::Fjall(fjall::Error::Locked)) if tolerate_held_memory => {
+                tracing::debug!(
+                    memory_dir = %memory_dir.display(),
+                    "group memory store is held by another process; memory is unavailable locally"
+                );
+                (memory_store::open_detached(view_dir)?, true)
+            }
+            Err(error) => return Err(error),
+        };
+        if !memory_detached {
+            memory_store::migrate_legacy(&db, &memory)?;
+        }
         let mut meta = open_keyspace(&db, "meta")?;
         let on_disk_ver = meta
             .get(META_SCHEMA_VER)?
@@ -560,6 +594,7 @@ impl IndexDb {
             proposals,
             fault: std::sync::Arc::default(),
             _memory: memory,
+            memory_detached,
         })
     }
 

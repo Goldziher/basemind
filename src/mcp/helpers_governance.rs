@@ -45,6 +45,7 @@ pub(super) fn write_live(
     key: &str,
     record: &MemoryRecord,
 ) -> Result<(), McpError> {
+    super::memory_ops::require_memory(idx)?;
     let raw_key = crate::index::keys::memory_by_key(scope, vis_byte, owner, key);
     let bytes = rmp_serde::to_vec_named(record)
         .map_err(|e| McpError::internal_error(format!("serialize memory record: {e}"), None))?;
@@ -550,6 +551,9 @@ pub(super) async fn audit_scope_on_rescan(state: &Arc<ServerState>) {
 /// scope-prefix scan guarantees every key belongs to `scope`, so foreign-scope records are never
 /// touched. Fail-open: any per-record error is warn-logged and the loop continues.
 pub(super) fn audit_scope_persist(idx: &crate::index::IndexDb, ctx: &AuditCtx<'_>, scope: &str, limit: usize) {
+    if idx.memory_detached() {
+        return;
+    }
     let scope_prefix = crate::index::keys::memory_scope_prefix(scope);
     let scan_cap = limit.saturating_mul(8).max(1_000);
     let mut evaluated = 0usize;

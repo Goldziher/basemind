@@ -45,6 +45,7 @@ pub(crate) fn list_core(
     scan_cap: usize,
     cursor: Option<&[u8]>,
 ) -> Result<ListResult, MemoryOpError> {
+    super::memory_ops::require_memory(idx)?;
     use std::ops::Bound;
 
     use super::cursor::prefix_upper_bound;
@@ -102,6 +103,7 @@ pub(crate) fn list_core(
 /// Reject core for `proposal_reject`: remove the skill proposal and write a tombstone under
 /// `PROPOSAL_KIND_TOMBSTONE` so re-mining will not resurface the same candidate.
 pub(crate) fn reject_core(idx: &IndexDb, scope: &str, id: &str) -> Result<(), MemoryOpError> {
+    super::memory_ops::require_memory(idx)?;
     let proposal_key = proposal_by_id(scope, PROPOSAL_KIND_SKILL, id);
     let tombstone_key = proposal_by_id(scope, PROPOSAL_KIND_TOMBSTONE, id);
     idx.proposals
@@ -117,6 +119,7 @@ pub(crate) fn reject_core(idx: &IndexDb, scope: &str, id: &str) -> Result<(), Me
 /// number actually written. The tombstone check + insert live here — not inline in the mining loop —
 /// so the local serve path and the daemon path filter tombstones over one consistent fjall view.
 pub(crate) fn apply_mine_core(idx: &IndexDb, scope: &str, candidates: &[ProposalItem]) -> Result<u32, MemoryOpError> {
+    super::memory_ops::require_memory(idx)?;
     let mut mined: u32 = 0;
     for (id, record) in candidates {
         let tombstone_key = proposal_by_id(scope, PROPOSAL_KIND_TOMBSTONE, id);
@@ -140,6 +143,7 @@ pub(crate) fn apply_mine_core(idx: &IndexDb, scope: &str, candidates: &[Proposal
 
 /// Read core for `proposal_accept`'s first step: fetch + decode the skill proposal by id, or `None`.
 pub(crate) fn get_core(idx: &IndexDb, scope: &str, id: &str) -> Result<Option<ProposalRecord>, MemoryOpError> {
+    super::memory_ops::require_memory(idx)?;
     let raw_key = proposal_by_id(scope, PROPOSAL_KIND_SKILL, id);
     let bytes = idx
         .proposals
@@ -158,6 +162,7 @@ pub(crate) fn promote_core(
     record: &MemoryRecord,
     proposal_id: &str,
 ) -> Result<(), MemoryOpError> {
+    super::memory_ops::require_memory(idx)?;
     let mem_key = crate::index::keys::memory_by_key(scope, crate::index::keys::MEMORY_VIS_GROUP, "", memory_key);
     let bytes = rmp_serde::to_vec_named(record).map_err(MemoryOpError::Serialize)?;
     idx.memory_by_key
@@ -197,6 +202,7 @@ pub(crate) fn audit_scan_core(
     scope: &str,
     args: &AuditScanArgs<'_>,
 ) -> Result<Vec<(String, Vec<u8>)>, MemoryOpError> {
+    super::memory_ops::require_memory(idx)?;
     use crate::index::keys::{memory_by_key, memory_by_key_ns_prefix, parse_memory_key_only};
 
     let keyspace = if args.from_archive {
@@ -243,6 +249,7 @@ pub(crate) fn audit_persist_core(
     scope: &str,
     mutations: &[crate::comms::proposals_proto::AuditMutation],
 ) -> Result<(), MemoryOpError> {
+    super::memory_ops::require_memory(idx)?;
     use crate::index::keys::memory_by_key;
 
     for mutation in mutations {
