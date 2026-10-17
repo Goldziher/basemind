@@ -118,7 +118,7 @@ pub(crate) fn resolve_pass(root: &Path, store: &Store, precise: bool, footprint:
         .collect();
 
     #[cfg(any(feature = "code-intel-js", feature = "code-intel-stack"))]
-    {
+    let committed = {
         // The probe rows are rewritten importer by importer; until the stitch commits they describe a
         // mixture of old and new state, so the stamp that vouches for them is withdrawn first.
         if let Err(error) = index_db.set_import_probes_complete(false) {
@@ -135,10 +135,11 @@ pub(crate) fn resolve_pass(root: &Path, store: &Store, precise: bool, footprint:
         {
             tracing::warn!(%error, "resolve pass: could not stamp the import-probe index complete");
         }
-        return staged && stitched;
-    }
+        staged && stitched
+    };
     #[cfg(not(any(feature = "code-intel-js", feature = "code-intel-stack")))]
-    return resolve_in_chunks(root, store, index_db, &files, precise, footprint, drop);
+    let committed = resolve_in_chunks(root, store, index_db, &files, precise, footprint, drop);
+    committed
 }
 
 /// What a watcher event touched. `changed` are the re-indexed files, `removed` the files that left

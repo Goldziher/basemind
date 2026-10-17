@@ -628,9 +628,8 @@ mod status_sidecar_tests {
     #[test]
     fn a_pre_marker_sidecar_reads_as_complete() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let legacy = format!(
-            r#"{{"schema_ver":{STATUS_SIDECAR_SCHEMA_VER},"file_count":3,"blob_count":3,"scanned_unix":9}}"#
-        );
+        let legacy =
+            format!(r#"{{"schema_ver":{STATUS_SIDECAR_SCHEMA_VER},"file_count":3,"blob_count":3,"scanned_unix":9}}"#);
         std::fs::write(status_sidecar_path(dir.path()), legacy).expect("write");
         let sidecar = read_status_sidecar(dir.path()).expect("legacy sidecar still parses");
         assert!(!sidecar.is_degraded());

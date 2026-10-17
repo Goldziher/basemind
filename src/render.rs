@@ -91,19 +91,17 @@ impl WarnTally {
         let reset = Reset.render();
         let dim = Style::new().dimmed().render();
         for line in self.summary_lines() {
-            let _ = writeln!(w, "{style}⚠ warn {reset} {line} {dim}(partial maps; -v lists each file){reset}");
+            let _ = writeln!(
+                w,
+                "{style}⚠ warn {reset} {line} {dim}(partial maps; -v lists each file){reset}"
+            );
         }
         self.by_grammar.clear();
     }
 }
 
 /// Print one file's line, or fold a parse-error warning into `tally` unless `-v` asked for every line.
-fn render_or_tally(
-    w: &mut AutoStream<std::io::Stdout>,
-    tally: &mut WarnTally,
-    res: &FileResult,
-    verbosity: Verbosity,
-) {
+fn render_or_tally(w: &mut AutoStream<std::io::Stdout>, tally: &mut WarnTally, res: &FileResult, verbosity: Verbosity) {
     if verbosity == Verbosity::Default && tally.absorb(res) {
         return;
     }

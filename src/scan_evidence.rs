@@ -380,8 +380,7 @@ mod tests {
     #[test]
     fn the_memory_log_stops_when_dropped_instead_of_sleeping_out_its_interval() {
         let started = std::time::Instant::now();
-        let log =
-            MemoryLog::start(Path::new("/repo/under/test"), Default::default()).expect("sampler thread spawns");
+        let log = MemoryLog::start(Path::new("/repo/under/test"), Default::default()).expect("sampler thread spawns");
         drop(log);
         let elapsed = started.elapsed();
         assert!(

@@ -21,8 +21,8 @@ pub mod fault;
 pub mod grep_bloom;
 pub mod keys;
 pub mod keys_governance;
-pub(crate) mod memory_store;
 pub mod keys_probe;
+pub(crate) mod memory_store;
 pub(crate) mod name_dict;
 pub mod writer;
 
@@ -277,6 +277,9 @@ pub enum IndexError {
     #[error("msgpack decode error: {0}")]
     Decode(#[from] rmp_serde::decode::Error),
 }
+
+/// One `(keyspace, key, value)` row, as returned by [`IndexDb::resolution_rows`].
+pub type ResolutionRow = (&'static str, Vec<u8>, Vec<u8>);
 
 /// Handle to every keyspace we read or write. Cloned cheaply (each `Keyspace` is `Arc`'d
 /// internally by Fjall), so callers can pass it around freely.
@@ -679,7 +682,7 @@ impl IndexDb {
     /// `importers_by_probe`) as `(keyspace, key, value)`, in keyspace then key order. Lets an
     /// equivalence test compare an incremental rescan with a full one row for row.
     #[doc(hidden)]
-    pub fn resolution_rows(&self) -> Result<Vec<(&'static str, Vec<u8>, Vec<u8>)>, IndexError> {
+    pub fn resolution_rows(&self) -> Result<Vec<ResolutionRow>, IndexError> {
         let mut rows = Vec::new();
         for (name, keyspace) in [
             ("refs_by_def", &self.refs_by_def),
@@ -862,7 +865,11 @@ mod tests {
             }
         }
         let db = IndexDb::open(dir.path()).unwrap();
-        let row = db.code_bm25_postings.get(7usize.to_be_bytes()).unwrap().expect("row survives reopen");
+        let row = db
+            .code_bm25_postings
+            .get(7usize.to_be_bytes())
+            .unwrap()
+            .expect("row survives reopen");
         assert_eq!(&*row, vec![7u8; VALUE_LEN].as_slice());
     }
 

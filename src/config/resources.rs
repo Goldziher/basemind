@@ -484,9 +484,15 @@ mod tests {
         // 256 MiB cgroup: three quarters is 192 MiB, which the floor lifts to 2 GiB.
         assert_eq!(MaxFootprint::auto_ceiling_bytes(Some(256 * MB), true), Some(2048 * MB));
         // 8 GiB of machine RAM: a quarter is exactly the floor.
-        assert_eq!(MaxFootprint::auto_ceiling_bytes(Some(8192 * MB), false), Some(2048 * MB));
+        assert_eq!(
+            MaxFootprint::auto_ceiling_bytes(Some(8192 * MB), false),
+            Some(2048 * MB)
+        );
         // 4 GiB of machine RAM: a quarter is 1 GiB, lifted to the floor.
-        assert_eq!(MaxFootprint::auto_ceiling_bytes(Some(4096 * MB), false), Some(2048 * MB));
+        assert_eq!(
+            MaxFootprint::auto_ceiling_bytes(Some(4096 * MB), false),
+            Some(2048 * MB)
+        );
     }
 
     #[test]

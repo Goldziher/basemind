@@ -228,7 +228,11 @@ mod tests {
         let workspaces = tmp.path().join("workspaces");
         let root = make_root(tmp.path(), "gone");
         seed_workspace(&workspaces, "key-gone", Some(&root), &["d".repeat(64).as_str()]);
-        let memory = tmp.path().join("repos").join("group").join(crate::store::MEMORY_STORE_DIR);
+        let memory = tmp
+            .path()
+            .join("repos")
+            .join("group")
+            .join(crate::store::MEMORY_STORE_DIR);
         fs::create_dir_all(&memory).expect("mk memory store");
         fs::write(memory.join("data"), b"memory").expect("write memory");
         fs::remove_dir_all(&root).expect("delete the repo");
@@ -236,7 +240,11 @@ mod tests {
         let report = reap_orphaned_workspaces_in(&workspaces).expect("reap");
 
         assert_eq!(report.reaped, 1, "the orphaned workspace is reaped");
-        assert_eq!(fs::read(memory.join("data")).unwrap(), b"memory", "group memory is never reaped");
+        assert_eq!(
+            fs::read(memory.join("data")).unwrap(),
+            b"memory",
+            "group memory is never reaped"
+        );
     }
 
     #[test]

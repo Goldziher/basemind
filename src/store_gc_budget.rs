@@ -660,14 +660,22 @@ mod tests {
         let workspaces = tmp.path().join("workspaces");
         let blobs = tmp.path().join("blobs");
         fs::create_dir_all(&blobs).expect("mk blobs");
-        let memory_dir = tmp.path().join("repos").join("group").join(crate::store::MEMORY_STORE_DIR);
+        let memory_dir = tmp
+            .path()
+            .join("repos")
+            .join("group")
+            .join(crate::store::MEMORY_STORE_DIR);
         let cold = seed_workspace_aged(&workspaces, "key-cold", &"a".repeat(64), Duration::from_secs(9999));
         let _newest = seed_workspace_aged(&workspaces, "key-newest", &"b".repeat(64), Duration::from_secs(60));
         {
             let db = crate::index::IndexDb::open_with_memory(&cold.join(VIEWS_DIR).join("working"), &memory_dir)
                 .expect("open index");
-            db.memory_by_key.insert(b"k".to_vec(), b"v".to_vec()).expect("write memory");
-            db.proposals.insert(b"p".to_vec(), b"w".to_vec()).expect("write proposal");
+            db.memory_by_key
+                .insert(b"k".to_vec(), b"v".to_vec())
+                .expect("write memory");
+            db.proposals
+                .insert(b"p".to_vec(), b"w".to_vec())
+                .expect("write proposal");
         }
 
         let report = enforce_cache_budget_in(&workspaces, &blobs, 1, Duration::ZERO, Duration::ZERO)

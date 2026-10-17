@@ -319,7 +319,10 @@ mod tests {
         crate::store::init_isolated_cache();
         let dir = tempfile::tempdir().expect("tempdir");
         let store = Store::open(dir.path(), VIEW_WORKING).expect("open store");
-        assert!(!last_scan_degraded(&store), "a workspace with no sidecar is not degraded");
+        assert!(
+            !last_scan_degraded(&store),
+            "a workspace with no sidecar is not degraded"
+        );
         for (health, degraded) in [
             (ScanHealth::complete(), false),
             (ScanHealth::resolving(), true),

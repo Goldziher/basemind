@@ -21,7 +21,12 @@ pub use crate::store_layout::LANCE_DIR;
 #[cfg(any(feature = "test-support", test))]
 pub use crate::store_layout::init_isolated_cache;
 pub use crate::store_layout::{
-        BLOBS_DIR, CACHE_DIR, DATA_HOME_ENV, INDEX_FILE, LOCK_FILE, LOCK_META_FILE, MEMORY_STORE_DIR, REPOS_DIR, STATUS_SIDECAR_FILE, STATUS_SIDECAR_SCHEMA_VER, VIEWS_DIR, VIEW_STAGED, VIEW_WORKING, WORKSPACES_DIR, WORKSPACE_MARKER_FILE, cache_root, count_fm_blobs, ensure_workspace_marker, global_blobs_dir, memory_store_dir, PartialScan, read_status_sidecar, read_workspace_marker, repo_group_dir, repo_group_key, ScanHealth, status_sidecar_path, StatusSidecar, update_status_health, view_name_for_rev, workspace_cache_dir, workspace_key, WorkspaceMarker, write_status_sidecar,
+    BLOBS_DIR, CACHE_DIR, DATA_HOME_ENV, INDEX_FILE, LOCK_FILE, LOCK_META_FILE, MEMORY_STORE_DIR, PartialScan,
+    REPOS_DIR, STATUS_SIDECAR_FILE, STATUS_SIDECAR_SCHEMA_VER, ScanHealth, StatusSidecar, VIEW_STAGED, VIEW_WORKING,
+    VIEWS_DIR, WORKSPACE_MARKER_FILE, WORKSPACES_DIR, WorkspaceMarker, cache_root, count_fm_blobs,
+    ensure_workspace_marker, global_blobs_dir, memory_store_dir, read_status_sidecar, read_workspace_marker,
+    repo_group_dir, repo_group_key, status_sidecar_path, update_status_health, view_name_for_rev, workspace_cache_dir,
+    workspace_key, write_status_sidecar,
 };
 
 /// Which basemind command is taking the exclusive store lock. Threaded from the caller
@@ -571,7 +576,7 @@ impl Store {
     /// store.
     pub fn reopen_index_db(&mut self) -> Result<(), IndexError> {
         if self.index_db.take().is_some() {
-            self.index_db = Some(open_index_with_retry(&self.view_dir)?);
+            self.index_db = Some(open_index_with_retry(&self.root, &self.view_dir)?);
         }
         Ok(())
     }
