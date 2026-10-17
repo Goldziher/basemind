@@ -10,6 +10,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Incremental rescans re-stitch cross-file references exactly, and only for the files they affect** ([#81](https://github.com/Goldziher/basemind/issues/81)).
+  The watcher's re-stitch read every resolver-language file's blob to find the importers of a changed file, and
+  followed only one hop, so a file behind a Python `__init__.py` re-export (or a deleted target, a new file
+  shadowing a resolved module, a `tsconfig.json` edit) left its importers with stale `refs_by_def` /
+  `refs_by_path` edges until the next full scan. The stitch now records every path the resolver consulted per
+  importer (two new keyspaces, `import_targets` and `importers_by_probe`), and a rescan re-stitches the changed
+  paths plus those importers: O(affected), equal to a full pass. An existing index runs one wholesale resolve
+  pass on its first rescan to build the probe rows; no wipe. The watcher now forwards `tsconfig*.json` and
+  `package.json` edits so a config change reaches the importers that read it.
+
 ## [0.29.3] - 2026-10-13
 
 ### Changed

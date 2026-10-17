@@ -342,10 +342,22 @@ oxc/stack-graphs engines are skipped and every language falls back to `locals`.
   (package `__init__.py`, TS barrels) up to 8 hops. The result is written straight to
   `refs_by_def` / `refs_by_path`; nothing cross-file is cached in the per-file blob, so an
   unchanged file whose *dependency* moved still gets re-stitched correctly.
+- **Probe index.** The stitch also records what each importer depended on. `import_targets` keeps
+  the stitch result per import binding, and `importers_by_probe` maps every path the resolver
+  consulted to the importers that consulted it: hit targets, every re-export hop file, failed
+  candidates (the `util.ts` tried before `util.js`, a missing `pkg/__init__.py`) and the
+  `tsconfig.json` / `package.json` files it read. JS/TS probes are captured by wrapping oxc's
+  `FileSystem` (the resolver's cache is cleared per importer so every probe reaches the recorder);
+  Python and Java record each candidate path their path arithmetic tests.
 - `intel::resolve_pass` has two entry points sharing this compute/stage machinery: `resolve_pass`
-  (wholesale, after a full `scan`) and `resolve_pass_incremental` (the watcher path — restages
-  only the changed files' intra facts and re-stitches only the affected importer set: the
-  changed files plus every file that imports one).
+  (wholesale, after a full `scan`) and `resolve_pass_incremental` (the watcher path). The
+  incremental pass restages the changed files' intra facts, then re-stitches the *changed paths
+  plus a prefix scan of `importers_by_probe`* for each changed, added or deleted path (and each of
+  its ancestor directories, since the resolver does not descend into a directory it found
+  missing). That set is exact, including re-export chains and shadowing files, and O(affected):
+  no blob outside it is read. An index without the `import_probe_ver` stamp in `meta` (created
+  before the probe keyspaces, or a wholesale pass that did not finish) runs the wholesale pass
+  once instead.
 
 ### The honest contract: name scan is the floor, resolution only annotates
 
@@ -393,6 +405,8 @@ process per directory, so the daemon holds it and sessions reach it through the 
 | `implementations_by_path` | Per-file implementation lookups. |
 | `refs_by_def` | Scope/import-resolved reference edges keyed by defining site — backs the `resolved` annotation on `code` mode `callers` and the cross-file hop in mode `definition`. |
 | `refs_by_path` | `refs_by_def` companion keyed by the USE file — O(prefix) delete on re-resolve. |
+| `import_targets` | Stitch result per import binding (importer + binding offset → definition), plus one reserved probe-manifest row per importer; O(prefix) delete on re-stitch. |
+| `importers_by_probe` | Probed path hash → importers whose resolution consulted it; the affected-importer lookup of the incremental re-stitch. |
 | `code_bm25_postings` | Code-search BM25 keyword postings (feature `code-search`). |
 | `code_bm25_by_path` | Per-file companion of `code_bm25_postings` — O(prefix) delete on re-index. |
 | `grep_bloom` | One trigram bloom filter per indexed file, keyed by path, with the `(size, mtime_ns)` it was built under; the `code grep` prefilter ([ADR-0012](adr/0012-grep-content-prefilter.md)). |
@@ -410,6 +424,9 @@ calls_by_callee     u16:len(callee) ‖ callee ‖ u16:len(rel) ‖ rel ‖ star
 imports_by_module   u16:len(module) ‖ module ‖ u16:len(rel) ‖ rel ‖ start_byte:u32_be
 refs_by_def         u16:len(def_path) ‖ def_path ‖ def_start:u32_be ‖ u16:len(use_path) ‖ use_path ‖ use_start:u32_be
 refs_by_path        u16:len(use_path) ‖ use_path ‖ use_start:u32_be ‖ u16:len(def_path) ‖ def_path ‖ def_start:u32_be
+import_targets      u16:len(importer) ‖ importer ‖ local_start:u32_be  →  u16:len(def_path) ‖ def_path ‖ def_start:u32_be
+                    (local_start = u32::MAX is the manifest row: the importer's probe hashes, 8 bytes each)
+importers_by_probe  blake3(probed_path)[..8] ‖ importer  →  (empty)
 grep_bloom          rel (the path bytes)  →  version:u8 ‖ size:u64 ‖ mtime_ns:i64 ‖ bloom bits
 ```
 
@@ -466,7 +483,9 @@ Two on-disk schemas track `RELEASE_MINOR` from `src/version.rs`, plus a finer-gr
 
 - `INDEX_SCHEMA_VER` in `src/index/mod.rs` — Fjall partition / key encoding: `RELEASE_MINOR` plus
   `INDEX_PARTITION_REVISION`, bumped when the keyspace layout changes between releases. A wholly new
-  keyspace whose absence reads as "nothing known" (such as `grep_bloom`) needs no bump.
+  keyspace whose absence reads as "nothing known" (such as `grep_bloom`) needs no bump. The probe
+  keyspaces are the variant that is not harmless empty, so they carry a `meta` stamp
+  (`import_probe_ver`) instead: absent means "run the wholesale resolve pass once", with no wipe.
 - `SCHEMA_VER` in `src/extract/mod.rs` — msgpack blob format
 - `EXTRACT_EPOCH` in `src/extract/mod.rs` — extraction *output* revision; see below.
 
