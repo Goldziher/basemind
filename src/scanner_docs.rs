@@ -83,7 +83,7 @@ pub(crate) struct PendingDocBatch {
     /// observable proof that churn (renames, rewrites) does not re-run extraction or embedding.
     pub reused: bool,
     /// True when the document was chunked by the linear fallback instead of xberg's markdown splitter
-    /// (large text-like file). Drives the `docs_degraded` scan counter.
+    /// (large text-like file; structured data is linear by design and does not count). Drives the `docs_degraded` scan counter.
     pub degraded: bool,
     /// True when structured extraction failed and the file was re-read as `text/plain` (implies
     /// `degraded`). Drives the `docs_text_fallback` scan counter.
@@ -426,7 +426,11 @@ fn pending_from_doc(
         // (the reuse gate requires them), so `embedded` covers it and the flag is moot there. ~keep
         embed_attempted: embed && !reused,
         reused,
-        degraded: doc.linear_chunked,
+        degraded: crate::extract::doc_guard::is_degraded_chunking(
+            &doc.mime_type,
+            doc.linear_chunked,
+            doc.text_fallback,
+        ),
         text_fallback: doc.text_fallback,
     }
 }

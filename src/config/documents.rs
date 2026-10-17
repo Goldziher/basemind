@@ -26,8 +26,12 @@ pub struct DocumentsConfig {
     #[schemars(inner(length(min = 1)))]
     pub include: Vec<String>,
     /// Deny-list of globs applied to document indexing itself (not just embedding): matching files
-    /// are not extracted, chunked or searchable as documents. Same syntax as `include`.
-    #[serde(default)]
+    /// are not extracted, chunked or searchable as documents. Same syntax as `include`. The default
+    /// drops low-value bulk: `*.svg`, lockfiles (`pnpm-lock.yaml`, `package-lock.json`, `yarn.lock`,
+    /// `Cargo.lock`, `poetry.lock`, `*.lock`) and test-data directories (`test_data`, `testdata`,
+    /// `fixtures`, `__snapshots__`). Setting the key replaces the default list; `exclude = []`
+    /// indexes all of them, and a custom list must repeat any default entry it still wants.
+    #[serde(default = "DocumentsConfig::default_exclude")]
     #[schemars(inner(length(min = 1)))]
     pub exclude: Vec<String>,
     /// Per-document size cap in bytes, independent of `[scan] max_file_bytes` (which only bounds
@@ -184,6 +188,22 @@ impl DocumentsConfig {
     fn default_embed() -> bool {
         true
     }
+    fn default_exclude() -> Vec<String> {
+        [
+            "pnpm-lock.yaml",
+            "package-lock.json",
+            "yarn.lock",
+            "Cargo.lock",
+            "poetry.lock",
+            "*.lock",
+            "**/test_data/**",
+            "**/testdata/**",
+            "**/fixtures/**",
+            "**/__snapshots__/**",
+        ]
+        .map(String::from)
+        .to_vec()
+    }
     fn default_extract_archives() -> bool {
         false
     }
@@ -225,7 +245,7 @@ impl Default for DocumentsConfig {
             enabled: Self::default_enabled(),
             mime_allowlist: Vec::new(),
             include: Vec::new(),
-            exclude: Vec::new(),
+            exclude: Self::default_exclude(),
             max_file_bytes: Self::default_max_file_bytes(),
             extension_denylist: Vec::new(),
             max_chunks_per_document: Self::default_max_chunks_per_document(),

@@ -228,6 +228,8 @@ async fn run_status(state: &ServerState) -> Result<CallToolResult, McpError> {
                         .to_string(),
                 ),
                 rebuild_in_progress: true,
+                partial: false,
+                degraded: None,
                 indexing,
                 index_build_ms,
                 warming,
@@ -270,11 +272,16 @@ async fn run_status(state: &ServerState) -> Result<CallToolResult, McpError> {
     let file_count = store.index.files.len();
     let blob_count = count_fm_blobs();
     let note = blob_divergence_note(file_count, blob_count);
+    let last_scan = crate::store::read_status_sidecar(&store.basemind_dir);
     json_result(&StatusResponse {
         file_count,
         blob_count,
         note,
         rebuild_in_progress: false,
+        partial: last_scan.as_ref().is_some_and(|status| status.partial),
+        degraded: last_scan
+            .as_ref()
+            .and_then(crate::store::StatusSidecar::degraded_summary),
         indexing,
         index_build_ms,
         warming,

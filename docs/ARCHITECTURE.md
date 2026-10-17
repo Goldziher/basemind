@@ -342,10 +342,22 @@ oxc/stack-graphs engines are skipped and every language falls back to `locals`.
   (package `__init__.py`, TS barrels) up to 8 hops. The result is written straight to
   `refs_by_def` / `refs_by_path`; nothing cross-file is cached in the per-file blob, so an
   unchanged file whose *dependency* moved still gets re-stitched correctly.
+- **Probe index.** The stitch also records what each importer depended on. `import_targets` keeps
+  the stitch result per import binding, and `importers_by_probe` maps every path the resolver
+  consulted to the importers that consulted it: hit targets, every re-export hop file, failed
+  candidates (the `util.ts` tried before `util.js`, a missing `pkg/__init__.py`) and the
+  `tsconfig.json` / `package.json` files it read. JS/TS probes are captured by wrapping oxc's
+  `FileSystem` (the resolver's cache is cleared per importer so every probe reaches the recorder);
+  Python and Java record each candidate path their path arithmetic tests.
 - `intel::resolve_pass` has two entry points sharing this compute/stage machinery: `resolve_pass`
-  (wholesale, after a full `scan`) and `resolve_pass_incremental` (the watcher path — restages
-  only the changed files' intra facts and re-stitches only the affected importer set: the
-  changed files plus every file that imports one).
+  (wholesale, after a full `scan`) and `resolve_pass_incremental` (the watcher path). The
+  incremental pass restages the changed files' intra facts, then re-stitches the *changed paths
+  plus a prefix scan of `importers_by_probe`* for each changed, added or deleted path (and each of
+  its ancestor directories, since the resolver does not descend into a directory it found
+  missing). That set is exact, including re-export chains and shadowing files, and O(affected):
+  no blob outside it is read. An index without the `import_probe_ver` stamp in `meta` (created
+  before the probe keyspaces, or a wholesale pass that did not finish) runs the wholesale pass
+  once instead.
 
 ### The honest contract: name scan is the floor, resolution only annotates
 
@@ -393,10 +405,18 @@ process per directory, so the daemon holds it and sessions reach it through the 
 | `implementations_by_path` | Per-file implementation lookups. |
 | `refs_by_def` | Scope/import-resolved reference edges keyed by defining site — backs the `resolved` annotation on `code` mode `callers` and the cross-file hop in mode `definition`. |
 | `refs_by_path` | `refs_by_def` companion keyed by the USE file — O(prefix) delete on re-resolve. |
+| `import_targets` | Stitch result per import binding (importer + binding offset → definition), plus one reserved probe-manifest row per importer; O(prefix) delete on re-stitch. |
+| `importers_by_probe` | Probed path hash → importers whose resolution consulted it; the affected-importer lookup of the incremental re-stitch. |
 | `code_bm25_postings` | Code-search BM25 keyword postings (feature `code-search`). |
 | `code_bm25_by_path` | Per-file companion of `code_bm25_postings` — O(prefix) delete on re-index. |
 | `grep_bloom` | One trigram bloom filter per indexed file, keyed by path, with the `(size, mtime_ns)` it was built under; the `code grep` prefilter ([ADR-0012](adr/0012-grep-content-prefilter.md)). |
 | `embeddings` | Reserved for in-Fjall vector index; LanceDB owns the live vectors. |
+
+The user-authored keyspaces are NOT in the per-view database. They live in a per-repo-group Fjall
+database at `<cache>/cache/repos/<group>/memory.fjall/` (see [Split memory](#split-memory)):
+
+| Keyspace (in `memory.fjall`) | Purpose |
+|---|---|
 | `memory_by_key` | Agent memory (`memory` modes `put` / `get`); LanceDB owns the embeddings. |
 | `memory_archive`, `proposals` | Archived memory entries and mined co-change proposals (governance tier). |
 
@@ -410,6 +430,9 @@ calls_by_callee     u16:len(callee) ‖ callee ‖ u16:len(rel) ‖ rel ‖ star
 imports_by_module   u16:len(module) ‖ module ‖ u16:len(rel) ‖ rel ‖ start_byte:u32_be
 refs_by_def         u16:len(def_path) ‖ def_path ‖ def_start:u32_be ‖ u16:len(use_path) ‖ use_path ‖ use_start:u32_be
 refs_by_path        u16:len(use_path) ‖ use_path ‖ use_start:u32_be ‖ u16:len(def_path) ‖ def_path ‖ def_start:u32_be
+import_targets      u16:len(importer) ‖ importer ‖ local_start:u32_be  →  u16:len(def_path) ‖ def_path ‖ def_start:u32_be
+                    (local_start = u32::MAX is the manifest row: the importer's probe hashes, 8 bytes each)
+importers_by_probe  blake3(probed_path)[..8] ‖ importer  →  (empty)
 grep_bloom          rel (the path bytes)  →  version:u8 ‖ size:u64 ‖ mtime_ns:i64 ‖ bloom bits
 ```
 
@@ -466,7 +489,9 @@ Two on-disk schemas track `RELEASE_MINOR` from `src/version.rs`, plus a finer-gr
 
 - `INDEX_SCHEMA_VER` in `src/index/mod.rs` — Fjall partition / key encoding: `RELEASE_MINOR` plus
   `INDEX_PARTITION_REVISION`, bumped when the keyspace layout changes between releases. A wholly new
-  keyspace whose absence reads as "nothing known" (such as `grep_bloom`) needs no bump.
+  keyspace whose absence reads as "nothing known" (such as `grep_bloom`) needs no bump. The probe
+  keyspaces are the variant that is not harmless empty, so they carry a `meta` stamp
+  (`import_probe_ver`) instead: absent means "run the wholesale resolve pass once", with no wipe.
 - `SCHEMA_VER` in `src/extract/mod.rs` — msgpack blob format
 - `EXTRACT_EPOCH` in `src/extract/mod.rs` — extraction *output* revision; see below.
 
@@ -605,7 +630,7 @@ basemind's footprint on a constrained machine:
 | `max_concurrent_documents` | `0` (unbounded) | Cap on concurrent document extraction, enforced by a counting semaphore (`src/backpressure.rs`). Document extraction then passes `FootprintGate::admit_exclusive`: over `max_footprint_mb` only one document runs at a time, and a document whose header-derived estimate (`src/extract/doc_cost.rs`) exceeds the whole ceiling is skipped as too large. Distinct from `max_footprint_mb`, which reacts to memory already allocated: an extraction's spike lands faster than the 50 ms sampler sees it, so this bounds how many spikes may overlap before the first one starts. |
 | `document_models` | `full` | Model families document extraction runs: `full` \| `code_only` (embeddings only, no keywords/NER/summarization/OCR) \| `none` (metadata + keyword search only). |
 | `onnx_provider` | `cpu` | ONNX execution provider for embeddings, reranker, layout and NER: `cpu` \| `auto` \| `coreml` \| `cuda` \| `tensorrt`. `auto` on macOS means CoreML, which compiles per input shape and measured 7.6 GB for one tiny document vs 0.8 GB on CPU. |
-| `max_footprint_mb` | `0` (auto) | Ceiling on process memory footprint. A positive integer is an explicit mebibyte ceiling; `0` or `"auto"` derives one from the environment; `"off"` disables the gate. |
+| `max_footprint_mb` | `0` (auto) | Ceiling on process memory footprint. A positive integer is an explicit mebibyte ceiling; `0` or `"auto"` derives one from the environment (75% of an enforced cgroup limit, else 25% of machine RAM, floored at 2048 MiB); `"off"` disables the gate. |
 | `max_map_cache_mb` | `256` | Byte budget for the MCP read stack's decoded-outline cache (`src/mcp/l1_cache.rs`), per workspace. `0` = unbounded. A miss costs one blob read and never changes an answer. The code-graph memo is charged at half this value, and a read-only session's projected call / implementation indexes are charged against it too. |
 
 In the shared daemon these values are ceilings, not settings: `src/config/daemon.rs` applies
@@ -903,6 +928,16 @@ Repo memory is namespaced by `(scope, visibility, owner)`: the `memory_by_key` F
 Group memory (`visibility=group`, default, `owner=""`) is shared across agents in a repo; individual
 memory (`visibility=individual`, `owner=agent_id`) is private to one agent. Schema is guarded by
 `MEMORY_SCHEMA_VER` (derives from `RELEASE_MINOR`); a mismatch wipes and rebuilds.
+
+The Fjall half (`memory_by_key`, `memory_archive`, `proposals`) is stored once per repo group, not per
+view: `<cache>/cache/repos/<group>/memory.fjall/`, where `<group>` is the blake3 of the canonical main
+worktree root (the parent of the git common dir), so every linked worktree of a clone shares it; a
+root outside git uses its own workspace key. The daemon stays the sole writer and holds one handle per
+group. No garbage collector lists `repos/`: budget eviction and the orphan reaper only touch
+`workspaces/<key>/`, so evicting a cold workspace never deletes memory. On open, rows an older build
+left in a view's own keyspaces are merged into the group store (last writer wins by `updated_at`, or
+`created_at` for proposals; ties keep the larger payload) and the view's keyspaces are dropped, before
+any schema-mismatch wipe. A seeded worktree view therefore carries no memory after its first open.
 
 ### Worktree registry
 

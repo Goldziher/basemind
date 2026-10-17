@@ -93,6 +93,9 @@ fn render_repo_statusline(root: &std::path::Path) -> String {
         fmt_count(calls),
         fmt_count(saved),
     ));
+    if status.is_degraded() {
+        out.push_str(&format!("  {SEP}│{RESET}  {BOLD}{MAGENTA}degraded{RESET}"));
+    }
     out
 }
 

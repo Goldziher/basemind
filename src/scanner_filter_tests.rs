@@ -444,3 +444,51 @@ fn the_dir_pruner_stops_the_walk_descending_into_a_non_gitignored_node_modules()
         "real source is still walked: {pruned:?}"
     );
 }
+
+#[test]
+fn default_document_excludes_drop_lockfiles_and_test_data() {
+    let config = crate::config::default_for_root(Path::new("."));
+    let filters = Filters::build(&config, Vec::new()).expect("build filters");
+    for dropped in [
+        "pnpm-lock.yaml",
+        "web/package-lock.json",
+        "yarn.lock",
+        "Cargo.lock",
+        "tools/poetry.lock",
+        "Gemfile.lock",
+        "svc/test_data/get_devices_valid.yaml",
+        "svc/testdata/a.json",
+        "pkg/fixtures/b.json",
+        "ui/__snapshots__/c.snap",
+    ] {
+        assert!(!filters.doc_allowed(dropped), "{dropped} is excluded by default");
+    }
+    for kept in [
+        "README.md",
+        "docs/guide.md",
+        "config/settings.yaml",
+        "data/report.csv",
+        "icon.svg",
+    ] {
+        assert!(filters.doc_allowed(kept), "{kept} stays indexable");
+    }
+}
+
+#[test]
+fn user_document_excludes_replace_the_defaults_so_they_can_reinclude() {
+    let mut config = crate::config::default_for_root(Path::new("."));
+    config.documents.exclude = Vec::new();
+    let filters = Filters::build(&config, Vec::new()).expect("build filters");
+    assert!(filters.doc_allowed("svc/test_data/a.yaml"));
+
+    config.documents.exclude = vec!["*.svg".to_string()];
+    let filters = Filters::build(&config, Vec::new()).expect("build filters");
+    assert!(
+        !filters.doc_allowed("icon.svg"),
+        "a custom list can repeat a default entry"
+    );
+    assert!(
+        filters.doc_allowed("pnpm-lock.yaml"),
+        "unlisted defaults are replaced, not merged"
+    );
+}

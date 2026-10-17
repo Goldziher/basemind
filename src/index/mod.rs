@@ -17,15 +17,19 @@
 //! msgpack blobs. This is fast (no parsing — just decode each L1, push to secondary
 //! indexes) and keeps the on-disk format free to evolve.
 
+pub mod fault;
 pub mod grep_bloom;
 pub mod keys;
 pub mod keys_governance;
+pub mod keys_probe;
+pub(crate) mod memory_store;
 pub(crate) mod name_dict;
 pub mod writer;
 
 use std::path::{Path, PathBuf};
 
-use fjall::{Database, Keyspace, KeyspaceCreateOptions};
+use fjall::config::CompressionPolicy;
+use fjall::{CompressionType, Database, Keyspace, KeyspaceCreateOptions};
 use thiserror::Error;
 
 /// The index-layout revision, added to `RELEASE_MINOR` to form [`INDEX_SCHEMA_VER`]. Bump this
@@ -38,8 +42,9 @@ use thiserror::Error;
 /// `+5` the per-keyspace [`KEYSPACE_MEMTABLE_BYTES`] sizing — fjall persists `max_memtable_size`
 /// into its meta keyspace at *create* time and recovers it on reopen, ignoring the create options
 /// for a keyspace that already exists, so an index built by an earlier build would keep the 64 MiB
-/// default forever unless the schema mismatch forces it to be recreated.
-const INDEX_PARTITION_REVISION: u32 = 5;
+/// default forever unless the schema mismatch forces it to be recreated; `+6` the LZ4-at-every-level
+/// block compression ([`index_keyspace_options`]), persisted at create time for the same reason.
+const INDEX_PARTITION_REVISION: u32 = 6;
 
 /// Bumped whenever the on-disk key layout changes — the sum of `RELEASE_MINOR` and the
 /// [`INDEX_PARTITION_REVISION`] offset, monotonic across both. When `RELEASE_MINOR` next bumps,
@@ -50,13 +55,22 @@ pub const INDEX_SCHEMA_VER: u32 = crate::version::RELEASE_MINOR as u32 + INDEX_P
 
 const META_SCHEMA_VER: &[u8] = b"schema_ver";
 
+/// `meta` row stamping that `import_targets` / `importers_by_probe` describe EVERY importer, i.e. a
+/// wholesale resolve pass completed since they were created. An index that predates the two
+/// keyspaces (or a wholesale pass that never finished) lacks it, and the incremental pass then runs
+/// the wholesale one once instead of trusting an empty probe index.
+const META_IMPORT_PROBE_VER: &[u8] = b"import_probe_ver";
+
+/// Layout revision of the probe keyspaces; bump to force one wholesale resolve pass.
+const IMPORT_PROBE_VER: u8 = 1;
+
 /// `meta` rows carrying the corpus-global BM25 stats — recomputed at the end of each scan by
 /// [`IndexDb::recompute_bm25_stats`] and read at query time. `N` = number of indexed code chunks;
 /// `total_len` = sum of their token lengths (`avgdl = total_len / N`).
 const META_BM25_DOC_COUNT: &[u8] = b"code_bm25_n";
 const META_BM25_TOTAL_LEN: &[u8] = b"code_bm25_total_len";
 
-const INDEX_DIR: &str = "index.fjall";
+pub(crate) const INDEX_DIR: &str = "index.fjall";
 
 /// Per-keyspace memtable sizes, in bytes. Three tiers, assigned by how much one scan writes to the
 /// keyspace: [`MEMTABLE_HOT_BYTES`] for the BM25 posting list (the densest writer by far — one
@@ -77,6 +91,8 @@ const KEYSPACE_MEMTABLE_BYTES: &[(&str, u64)] = &[
     ("implementations_by_path", MEMTABLE_COLD_BYTES),
     ("refs_by_def", MEMTABLE_WARM_BYTES),
     ("refs_by_path", MEMTABLE_WARM_BYTES),
+    ("import_targets", MEMTABLE_WARM_BYTES),
+    ("importers_by_probe", MEMTABLE_WARM_BYTES),
     ("code_bm25_postings", MEMTABLE_HOT_BYTES),
     ("code_bm25_by_path", MEMTABLE_WARM_BYTES),
     ("grep_bloom", MEMTABLE_COLD_BYTES),
@@ -134,7 +150,20 @@ const fn memtable_ceiling_bytes() -> u64 {
 /// never pick the new sizes up.
 fn open_keyspace(db: &Database, name: &str) -> Result<Keyspace, IndexError> {
     let bytes = memtable_bytes_for(name);
-    Ok(db.keyspace(name, move || KeyspaceCreateOptions::default().max_memtable_size(bytes))?)
+    Ok(db.keyspace(name, move || index_keyspace_options(bytes))?)
+}
+
+/// Create options shared by every index keyspace: the tiered memtable size plus LZ4 on data and
+/// index blocks at *every* level. fjall's default policy is `[None, None, Lz4]`, which leaves L0 and
+/// L1 — where most of a freshly bulk-built index sits — uncompressed. Blocks record their own
+/// compression in the table metadata, so tables written under the old policy still read; the policy
+/// itself is persisted at keyspace creation, which is why this ships with an
+/// [`INDEX_PARTITION_REVISION`] bump.
+fn index_keyspace_options(memtable_bytes: u64) -> KeyspaceCreateOptions {
+    KeyspaceCreateOptions::default()
+        .max_memtable_size(memtable_bytes)
+        .data_block_compression_policy(CompressionPolicy::all(CompressionType::Lz4))
+        .index_block_compression_policy(CompressionPolicy::all(CompressionType::Lz4))
 }
 
 fn memtable_bytes_for(name: &str) -> u64 {
@@ -228,6 +257,11 @@ fn index_cache_bytes(dir: &Path) -> u64 {
     scaled_bytes.clamp(INDEX_CACHE_FLOOR_BYTES, INDEX_CACHE_CEILING_BYTES)
 }
 
+/// `path` followed by each of its ancestor directories, innermost first.
+fn probe_candidates(path: &str) -> impl Iterator<Item = &str> {
+    std::iter::once(path).chain(path.rmatch_indices('/').map(move |(i, _)| &path[..i]))
+}
+
 #[derive(Debug, Error)]
 pub enum IndexError {
     #[error("fjall error: {0}")]
@@ -243,6 +277,9 @@ pub enum IndexError {
     #[error("msgpack decode error: {0}")]
     Decode(#[from] rmp_serde::decode::Error),
 }
+
+/// One `(keyspace, key, value)` row, as returned by [`IndexDb::resolution_rows`].
+pub type ResolutionRow = (&'static str, Vec<u8>, Vec<u8>);
 
 /// Handle to every keyspace we read or write. Cloned cheaply (each `Keyspace` is `Arc`'d
 /// internally by Fjall), so callers can pass it around freely.
@@ -280,6 +317,13 @@ pub struct IndexDb {
     /// `refs_by_path`: companion keyed by the use file — O(prefix) delete on re-resolve and the
     /// forward lookup behind `goto_definition`. Written by the scanner's resolve pass (B3).
     pub(crate) refs_by_path: Keyspace,
+    /// `import_targets`: importer + import-binding offset -> the definition the stitch bound it to,
+    /// plus one reserved probe-manifest row per importer (see [`keys_probe`]).
+    pub(crate) import_targets: Keyspace,
+    /// `importers_by_probe`: probed path hash + importer. Every path the resolver consulted for an
+    /// importer's imports, so the incremental re-stitch finds exactly the importers a changed,
+    /// added or deleted path can affect.
+    pub(crate) importers_by_probe: Keyspace,
     /// `code_bm25_postings`: term → chunks (with inlined tf + doclen) for the code-search BM25
     /// keyword lane. Always created for DB stability; read + written only under the `code-search`
     /// feature (hence `dead_code`-allowed on a default build, mirroring `embeddings`).
@@ -295,7 +339,8 @@ pub struct IndexDb {
     pub(crate) grep_bloom: Keyspace,
     #[allow(dead_code)]
     pub(crate) embeddings: Keyspace,
-    /// `memory_by_key`: scope + key → msgpack `MemoryRecord`.
+    /// `memory_by_key`: scope + key → msgpack `MemoryRecord`. Lives in the per-repo-group
+    /// [`memory_store`], not in this view's database.
     /// Always created for DB stability; used by `memory` feature tools.
     #[allow(dead_code)]
     pub(crate) memory_by_key: Keyspace,
@@ -308,6 +353,20 @@ pub struct IndexDb {
     /// W11 propose-don't-commit skill-mining surface. Always created for DB stability.
     #[allow(dead_code)]
     pub(crate) proposals: Keyspace,
+    /// First fatal commit error (disk full, poisoned handle) seen through any clone of this handle;
+    /// shared so the writers record it where it happens and the scan polls one place.
+    pub(crate) fault: std::sync::Arc<fault::IndexFault>,
+    /// Keeps the shared group memory database open for as long as any `IndexDb` clone uses its
+    /// keyspaces above.
+    _memory: std::sync::Arc<memory_store::MemoryDb>,
+    /// True when the group memory store was held by another process at open and the three memory
+    /// keyspaces above are an empty private placeholder: the code index is fully usable, but memory
+    /// reads and writes must go through the process that owns the store (the daemon). See
+    /// [`IndexDb::open_tolerating_held_memory`].
+    memory_detached: bool,
+    /// True when this open found an index written under another [`INDEX_SCHEMA_VER`] and discarded
+    /// it, so the database is empty while the file map that fed it may still be populated.
+    wiped_on_open: bool,
 }
 
 /// Flush/compaction threads per index database. fjall defaults to `min(cores, 4)` per `Database`, and
@@ -319,8 +378,21 @@ const FJALL_WORKER_THREADS: usize = 2;
 /// workspace open; a 2.5 GiB single journal was observed on a scanned worktree.
 const FJALL_MAX_JOURNAL_BYTES: u64 = 64 * 1_024 * 1_024;
 
+/// Journal ceiling for a database opened empty, i.e. about to take a cold bulk build. At the 64 MiB
+/// steady-state cap a cold scan of a large repo logged hundreds of `Rotating ... to reduce journal
+/// size` events, each flushing a small table and queueing extra compaction. fjall fixes the cap per
+/// `Database` at build time, so it cannot be lowered mid-run; the next normal open uses
+/// [`FJALL_MAX_JOURNAL_BYTES`] again, and the flush-on-open below keeps a large leftover journal
+/// from being replayed twice.
+const FJALL_BULK_JOURNAL_BYTES: u64 = JOURNAL_FLUSH_ON_OPEN_BYTES;
+
 /// Journal size past which `open` flushes every keyspace, so the next open does not replay it again.
 const JOURNAL_FLUSH_ON_OPEN_BYTES: u64 = 256 * 1_024 * 1_024;
+
+/// True when `dir` has no entries, i.e. fjall is about to create the database from scratch.
+fn is_empty_dir(dir: &Path) -> bool {
+    std::fs::read_dir(dir).is_ok_and(|mut entries| entries.next().is_none())
+}
 
 /// Total bytes of fjall journal files under `view_dir`'s index database, WITHOUT opening it (opening
 /// replays every journal into memtables, which is the cost being measured). Zero when absent.
@@ -365,24 +437,79 @@ impl IndexDb {
     /// Open (or create) the index DB under `view_dir`. On schema-version mismatch the
     /// existing `index.fjall/` directory is dropped and a fresh one is created — the
     /// caller is responsible for repopulating it via `IndexWriter`.
+    ///
+    /// The user-memory keyspaces live in a sibling `memory.fjall` under `view_dir`. Production opens
+    /// go through [`IndexDb::open_with_memory`] with the per-repo-group store instead.
     pub fn open(view_dir: &Path) -> Result<Self, IndexError> {
+        Self::open_with_memory(view_dir, &view_dir.join(crate::store_layout::MEMORY_STORE_DIR))
+    }
+
+    /// [`IndexDb::open`] with the memory keyspaces (`memory_by_key`, `memory_archive`, `proposals`)
+    /// backed by the shared Fjall database at `memory_dir` — one per repo group, so they survive
+    /// eviction of any view and are shared by every worktree of the clone. Rows an older build left
+    /// in this view are merged into that store (last writer wins by timestamp) and removed from the
+    /// view before any schema-mismatch wipe can destroy them.
+    pub fn open_with_memory(view_dir: &Path, memory_dir: &Path) -> Result<Self, IndexError> {
+        Self::open_inner(view_dir, memory_dir, false)
+    }
+
+    /// [`IndexDb::open_with_memory`] for read-only consumers: when another process holds the group
+    /// memory store, the view index still opens and [`IndexDb::memory_detached`] reports `true`
+    /// instead of the whole open failing with `Locked`. Only a lock on the view itself fails.
+    pub fn open_tolerating_held_memory(view_dir: &Path, memory_dir: &Path) -> Result<Self, IndexError> {
+        Self::open_inner(view_dir, memory_dir, true)
+    }
+
+    /// Whether the memory keyspaces are an empty placeholder because another process owns the group
+    /// store. Memory operations on a detached handle must be refused or forwarded, never served.
+    pub fn memory_detached(&self) -> bool {
+        self.memory_detached
+    }
+
+    /// True when this open discarded an index written under another schema revision; the caller
+    /// must rebuild it from a full scan.
+    pub fn wiped_on_open(&self) -> bool {
+        self.wiped_on_open
+    }
+
+    fn open_inner(view_dir: &Path, memory_dir: &Path, tolerate_held_memory: bool) -> Result<Self, IndexError> {
         let dir = view_dir.join(INDEX_DIR);
         std::fs::create_dir_all(&dir).map_err(|source| IndexError::Io {
             path: dir.clone(),
             source,
         })?;
         let cache_bytes = index_cache_bytes(&dir);
+        let journal_bytes = if is_empty_dir(&dir) {
+            FJALL_BULK_JOURNAL_BYTES
+        } else {
+            FJALL_MAX_JOURNAL_BYTES
+        };
         let mut db = Database::builder(&dir)
             .cache_size(cache_bytes)
             .worker_threads(FJALL_WORKER_THREADS)
-            .max_journaling_size(FJALL_MAX_JOURNAL_BYTES)
+            .max_journaling_size(journal_bytes)
             .open()?;
+        let (memory, memory_detached) = match memory_store::open_shared(memory_dir) {
+            Ok(memory) => (memory, false),
+            Err(IndexError::Fjall(fjall::Error::Locked)) if tolerate_held_memory => {
+                tracing::debug!(
+                    memory_dir = %memory_dir.display(),
+                    "group memory store is held by another process; memory is unavailable locally"
+                );
+                (memory_store::open_detached(view_dir)?, true)
+            }
+            Err(error) => return Err(error),
+        };
+        if !memory_detached {
+            memory_store::migrate_legacy(&db, &memory)?;
+        }
         let mut meta = open_keyspace(&db, "meta")?;
         let on_disk_ver = meta
             .get(META_SCHEMA_VER)?
             .and_then(|bytes| <[u8; 4]>::try_from(&bytes[..]).ok())
             .map(u32::from_be_bytes);
-        if matches!(on_disk_ver, Some(ver) if ver != INDEX_SCHEMA_VER) {
+        let wiped_on_open = matches!(on_disk_ver, Some(ver) if ver != INDEX_SCHEMA_VER);
+        if wiped_on_open {
             drop(meta);
             drop(db);
             std::fs::remove_dir_all(&dir).map_err(|source| IndexError::Io {
@@ -396,7 +523,7 @@ impl IndexDb {
             db = Database::builder(&dir)
                 .cache_size(cache_bytes)
                 .worker_threads(FJALL_WORKER_THREADS)
-                .max_journaling_size(FJALL_MAX_JOURNAL_BYTES)
+                .max_journaling_size(FJALL_BULK_JOURNAL_BYTES)
                 .open()?;
             meta = open_keyspace(&db, "meta")?;
         }
@@ -410,13 +537,15 @@ impl IndexDb {
         let implementations_by_path = open_keyspace(&db, "implementations_by_path")?;
         let refs_by_def = open_keyspace(&db, "refs_by_def")?;
         let refs_by_path = open_keyspace(&db, "refs_by_path")?;
+        let import_targets = open_keyspace(&db, "import_targets")?;
+        let importers_by_probe = open_keyspace(&db, "importers_by_probe")?;
         let code_bm25_postings = open_keyspace(&db, "code_bm25_postings")?;
         let code_bm25_by_path = open_keyspace(&db, "code_bm25_by_path")?;
         let grep_bloom = open_keyspace(&db, "grep_bloom")?;
         let embeddings = open_keyspace(&db, "embeddings")?;
-        let memory_by_key = open_keyspace(&db, "memory_by_key")?;
-        let memory_archive = open_keyspace(&db, "memory_archive")?;
-        let proposals = open_keyspace(&db, "proposals")?;
+        let memory_by_key = memory.memory_by_key.clone();
+        let memory_archive = memory.memory_archive.clone();
+        let proposals = memory.proposals.clone();
 
         meta.insert(META_SCHEMA_VER, INDEX_SCHEMA_VER.to_be_bytes())?;
 
@@ -432,13 +561,12 @@ impl IndexDb {
                 &implementations_by_path,
                 &refs_by_def,
                 &refs_by_path,
+                &import_targets,
+                &importers_by_probe,
                 &code_bm25_postings,
                 &code_bm25_by_path,
                 &grep_bloom,
                 &embeddings,
-                &memory_by_key,
-                &memory_archive,
-                &proposals,
                 &meta,
             ] {
                 // Best-effort: the flush only spares the NEXT open a replay. On a full or read-only disk
@@ -465,6 +593,8 @@ impl IndexDb {
             implementations_by_path,
             refs_by_def,
             refs_by_path,
+            import_targets,
+            importers_by_probe,
             code_bm25_postings,
             code_bm25_by_path,
             grep_bloom,
@@ -472,7 +602,40 @@ impl IndexDb {
             memory_by_key,
             memory_archive,
             proposals,
+            fault: std::sync::Arc::default(),
+            _memory: memory,
+            memory_detached,
+            wiped_on_open,
         })
+    }
+
+    /// The first fatal commit failure (`StorageFull`, `Poisoned`) any writer on this handle hit, or
+    /// `None` while it is healthy. A scan that sees `Some` must abort: every later commit fails too.
+    pub fn fatal_fault(&self) -> Option<String> {
+        self.fault.reason()
+    }
+
+    /// Allocation-free form of `fatal_fault().is_some()` for per-file polling.
+    pub fn has_fatal_fault(&self) -> bool {
+        self.fault.is_tripped()
+    }
+
+    /// Whether the handle is poisoned, which only dropping and reopening the database clears. A
+    /// full disk is fatal to a scan but leaves the handle usable once space is freed.
+    pub fn is_poisoned(&self) -> bool {
+        self.fault.is_poisoned()
+    }
+
+    /// Drop a latched failure that freeing disk space cures, so a long-lived handle (the daemon's)
+    /// is not refused forever after one full-disk scan. A poisoned handle stays poisoned.
+    pub fn clear_recoverable_fault(&self) {
+        self.fault.clear_recoverable();
+    }
+
+    /// Latch `error` if it is fatal. Called by [`writer::IndexWriter::commit`]; public so a commit
+    /// path that bypasses the writer can report through the same latch.
+    pub fn record_commit_error(&self, error: &IndexError) {
+        self.fault.record(error);
     }
 
     /// Open a new batched writer scoped to this DB. Multiple writers can coexist — Fjall
@@ -507,6 +670,88 @@ impl IndexDb {
             }
         }
         out
+    }
+
+    /// Whether the probe keyspaces cover every importer (a wholesale resolve pass completed since
+    /// they were created). When false, the incremental pass must run the wholesale one first.
+    pub fn import_probes_complete(&self) -> bool {
+        self.meta
+            .get(META_IMPORT_PROBE_VER)
+            .ok()
+            .flatten()
+            .is_some_and(|v| v.first() == Some(&IMPORT_PROBE_VER))
+    }
+
+    /// Mark the probe keyspaces complete (`true`) or in flux (`false`). The wholesale pass clears
+    /// the stamp before it rewrites any importer and sets it only after the stitch committed.
+    pub fn set_import_probes_complete(&self, complete: bool) -> Result<(), IndexError> {
+        if complete {
+            self.meta.insert(META_IMPORT_PROBE_VER, [IMPORT_PROBE_VER])?;
+        } else {
+            self.meta.remove(META_IMPORT_PROBE_VER)?;
+        }
+        Ok(())
+    }
+
+    /// Every importer whose resolution consulted `path` (repo-relative, forward-slashed) or one of
+    /// its ancestor directories: a prefix scan of `importers_by_probe` per candidate, O(importers).
+    ///
+    /// The ancestors matter because the resolver does not descend into a directory it found
+    /// missing. An importer that probed `util` and found nothing never probed `util/index.ts`, so
+    /// adding `util/index.ts` must reach it through the directory. (A directory that existed when
+    /// the importer resolved is never recorded, so a path under an existing directory costs only
+    /// empty scans.)
+    pub fn importers_probing(&self, path: &str) -> Vec<crate::path::RelPath> {
+        probe_candidates(path)
+            .flat_map(|candidate| {
+                let prefix = keys::importers_by_probe_prefix(&keys::probe_hash(candidate));
+                self.importers_by_probe
+                    .prefix(prefix)
+                    .filter_map(|guard| guard.into_inner().ok())
+                    .filter_map(|(k, _)| keys::parse_importer_by_probe(&k))
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    }
+
+    /// Whether any importer consulted `path` or an ancestor directory of it (see
+    /// [`Self::importers_probing`]). Cheap enough to gate a rescan on a non-indexed file
+    /// (`tsconfig.json`, `package.json`) the watcher saw change.
+    pub fn is_probed(&self, path: &str) -> bool {
+        probe_candidates(path).any(|candidate| {
+            let prefix = keys::importers_by_probe_prefix(&keys::probe_hash(candidate));
+            self.importers_by_probe.prefix(prefix).next().is_some()
+        })
+    }
+
+    /// Every row of the four resolution keyspaces (`refs_by_def`, `refs_by_path`, `import_targets`,
+    /// `importers_by_probe`) as `(keyspace, key, value)`, in keyspace then key order. Lets an
+    /// equivalence test compare an incremental rescan with a full one row for row.
+    #[doc(hidden)]
+    pub fn resolution_rows(&self) -> Result<Vec<ResolutionRow>, IndexError> {
+        let mut rows = Vec::new();
+        for (name, keyspace) in [
+            ("refs_by_def", &self.refs_by_def),
+            ("refs_by_path", &self.refs_by_path),
+            ("import_targets", &self.import_targets),
+            ("importers_by_probe", &self.importers_by_probe),
+        ] {
+            for guard in keyspace.iter() {
+                let (k, v) = guard.into_inner()?;
+                rows.push((name, k.to_vec(), v.to_vec()));
+            }
+        }
+        Ok(rows)
+    }
+
+    /// The stitched `(local_start, def_path, def_start)` bindings of `importer`.
+    pub fn import_targets_of(&self, importer: &crate::path::RelPath) -> Vec<(u32, crate::path::RelPath, u32)> {
+        self.import_targets
+            .prefix(keys::import_targets_prefix(importer))
+            .filter_map(|guard| guard.into_inner().ok())
+            .filter_map(|(k, v)| keys::parse_import_target(&k, &v))
+            .map(|(_, local_start, def_path, def_start)| (local_start, def_path, def_start))
+            .collect()
     }
 
     /// The definition the use at `(use_path, use_start)` binds to — backs `goto_definition`.
@@ -642,11 +887,56 @@ mod tests {
         keyspace.disk_space() > 0
     }
 
+    /// fjall has no getter for the compression policy, so observe it on disk: highly compressible
+    /// rows flushed to L0 (which the default policy leaves raw) must occupy far less than their
+    /// raw size, and must still read back after a reopen.
+    #[test]
+    fn index_keyspaces_compress_level_zero_and_round_trip() {
+        const ROWS: usize = 512;
+        const VALUE_LEN: usize = 4_096;
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let db = IndexDb::open(dir.path()).unwrap();
+            for ks in [&db.code_bm25_postings, &db.refs_by_def, &db.proposals] {
+                for i in 0..ROWS {
+                    ks.insert(i.to_be_bytes(), vec![7u8; VALUE_LEN]).unwrap();
+                }
+                ks.rotate_memtable_and_wait().unwrap();
+                let raw = (ROWS * VALUE_LEN) as u64;
+                assert!(
+                    ks.disk_space() < raw / 4,
+                    "L0 table of {raw} raw bytes occupies {} on disk; LZ4 is not applied",
+                    ks.disk_space()
+                );
+            }
+        }
+        let db = IndexDb::open(dir.path()).unwrap();
+        let row = db
+            .code_bm25_postings
+            .get(7usize.to_be_bytes())
+            .unwrap()
+            .expect("row survives reopen");
+        assert_eq!(&*row, vec![7u8; VALUE_LEN].as_slice());
+    }
+
+    #[test]
+    fn probe_candidates_walk_up_the_ancestor_directories() {
+        assert_eq!(
+            probe_candidates("a/b/c.ts").collect::<Vec<_>>(),
+            vec!["a/b/c.ts", "a/b", "a"]
+        );
+        assert_eq!(
+            probe_candidates("tsconfig.json").collect::<Vec<_>>(),
+            vec!["tsconfig.json"]
+        );
+    }
+
     #[test]
     fn keyspace_memtable_table_covers_every_partition() {
         let dir = tempfile::tempdir().unwrap();
         let db = IndexDb::open(dir.path()).unwrap();
         let mut opened: Vec<String> = db.db.list_keyspace_names().iter().map(ToString::to_string).collect();
+        opened.extend(db._memory.keyspace_names());
         opened.sort();
         let mut sized: Vec<String> = KEYSPACE_MEMTABLE_BYTES
             .iter()

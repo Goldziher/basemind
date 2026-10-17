@@ -884,13 +884,20 @@ embedding_preset = "balanced"
 # toml, xml, csv, ini, ...) are NOT in the code map; they are documents and are gated here. Default
 # (empty include) is everything that passes [scan]; exclude applies to document indexing itself and
 # beats include (same glob syntax as [scan]).
+# The default `exclude` drops low-value bulk: lockfiles and test-data directories (add `"*.svg"` for icon-heavy repos). Setting the key
+# REPLACES that list (it is not merged): `exclude = []` indexes all of them, and a custom list must
+# repeat any default entry you still want.
 include = []
-exclude = []
+exclude = [
+  "pnpm-lock.yaml", "package-lock.json", "yarn.lock", "Cargo.lock", "poetry.lock", "*.lock",
+  "**/test_data/**", "**/testdata/**", "**/fixtures/**", "**/__snapshots__/**",
+]
 # Per-document size cap in bytes, independent of [scan] max_file_bytes (which caps source files), so
 # large PDFs / Office files are still extracted. Files over it are skipped and counted as too large
 # in the scan summary.
 max_file_bytes = 52428800
-# Backstop against pathological chunking cost: text-like documents over these sizes (bytes, minimum
+# Backstop against pathological chunking cost: structured data (json, yaml, xml, svg, csv) is always
+# chunked linearly, and other text-like documents over these sizes (bytes, minimum
 # 1024) are chunked by a linear fixed-size chunker instead and counted as `docs_degraded` in the scan summary.
 # PDFs / Office files are never affected. text/plain (.txt, .log) has no markup to exploit, so its
 # cutover is lower.
@@ -942,8 +949,8 @@ max_chunks_per_file = 2000
 
 [resources]
 # Memory ceiling for this process, in MiB. A positive integer is an explicit ceiling; 0 or "auto"
-# (the default) derives one — 75% of an enforced cgroup limit, or 50% of machine RAM, floored at
-# 512 MiB; "off" disables it. ADVISORY: workers park while over the ceiling and are admitted anyway
+# (the default) derives one — 75% of an enforced cgroup limit, or 25% of machine RAM, floored at
+# 2048 MiB; "off" disables it. ADVISORY: workers park while over the ceiling and are admitted anyway
 # after five seconds, so it shapes peak memory rather than enforcing a hard limit (document
 # extraction is stricter: over the ceiling one document runs at a time). To actually cap the
 # daemon's memory, run it from your own resource-controlled unit — see

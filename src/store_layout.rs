@@ -105,6 +105,38 @@ pub fn workspace_cache_dir(root: &Path) -> PathBuf {
         .join(workspace_key(root))
 }
 
+/// Sub-directory of the cache holding per-repo-group state shared by every worktree of one clone,
+/// keyed by [`repo_group_key`]. Today that is the user-authored memory store; nothing under it is
+/// rebuildable, so no garbage collector may list it.
+pub const REPOS_DIR: &str = "repos";
+/// Fjall database under a repo-group dir holding `memory_by_key`, `memory_archive` and `proposals`.
+pub const MEMORY_STORE_DIR: &str = "memory.fjall";
+
+/// Group key for the worktree at `root`: the blake3 of the canonical main worktree root (the parent
+/// of the shared git common dir), so every linked worktree of one clone maps to the same group. A
+/// root outside any git repository (or in a bare one) falls back to its own [`workspace_key`].
+pub fn repo_group_key(root: &Path) -> String {
+    match crate::git::Repo::discover(root) {
+        Ok(repo) => {
+            let main = repo.main_worktree_root();
+            let canonical = main.canonicalize().unwrap_or(main);
+            hashing::hex(&hashing::hash_bytes(canonical.as_os_str().as_encoded_bytes()))
+        }
+        Err(_) => workspace_key(root),
+    }
+}
+
+/// Per-repo-group directory for `root`: `cache_root()/cache/repos/<repo_group_key>/`.
+pub fn repo_group_dir(root: &Path) -> PathBuf {
+    cache_root().join(CACHE_DIR).join(REPOS_DIR).join(repo_group_key(root))
+}
+
+/// The group's user-memory Fjall database: `<repo_group_dir>/memory.fjall`. Outlives every
+/// workspace in the group, so budget eviction and the orphan reaper never touch it.
+pub fn memory_store_dir(root: &Path) -> PathBuf {
+    repo_group_dir(root).join(MEMORY_STORE_DIR)
+}
+
 /// The GLOBAL content-addressed blob store: `cache_root()/cache/blobs/`. Shared across every
 /// workspace on the machine, so byte-identical files are extracted + embedded exactly once.
 pub fn global_blobs_dir() -> PathBuf {
@@ -175,6 +207,112 @@ pub struct StatusSidecar {
     pub blob_count: usize,
     /// Unix-epoch seconds when the sidecar was written (i.e. when the scan that produced it finished).
     pub scanned_unix: i64,
+    /// False from the moment the code map is flushed until the resolve pass has committed every
+    /// edge. A scan that dies or aborts in between leaves it false, which readers report as
+    /// degraded. Absent in a pre-marker sidecar, which reads as complete.
+    #[serde(default = "default_true")]
+    pub resolve_complete: bool,
+    /// True when the last full scan was cancelled or aborted before covering the workspace, so the
+    /// file map holds only the files completed so far. Absent reads as false.
+    #[serde(default)]
+    pub partial: bool,
+    /// Why the scan stopped short; set together with [`Self::partial`].
+    #[serde(default)]
+    pub partial_reason: Option<String>,
+    /// Files the partial scan had completed.
+    #[serde(default)]
+    pub progress_done: Option<usize>,
+    /// Candidate files the partial scan had enumerated.
+    #[serde(default)]
+    pub progress_total: Option<usize>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// Why a full scan stopped before covering the workspace, and how far it got.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PartialScan {
+    pub reason: String,
+    pub done: usize,
+    pub total: usize,
+}
+
+/// The completeness half of the sidecar: what a reader needs to tell a finished index from a
+/// degraded one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScanHealth {
+    pub resolve_complete: bool,
+    pub partial: Option<PartialScan>,
+}
+
+impl ScanHealth {
+    /// A finished scan whose resolve pass committed (or has nothing to resolve).
+    pub fn complete() -> Self {
+        Self {
+            resolve_complete: true,
+            partial: None,
+        }
+    }
+
+    /// The code map is flushed but the resolve pass has not finished yet.
+    pub fn resolving() -> Self {
+        Self {
+            resolve_complete: false,
+            partial: None,
+        }
+    }
+
+    /// The scan stopped short: the resolve pass did not run either.
+    pub fn partial(reason: impl Into<String>, done: usize, total: usize) -> Self {
+        Self {
+            resolve_complete: false,
+            partial: Some(PartialScan {
+                reason: reason.into(),
+                done,
+                total,
+            }),
+        }
+    }
+}
+
+impl Default for ScanHealth {
+    fn default() -> Self {
+        Self::complete()
+    }
+}
+
+impl StatusSidecar {
+    /// The health recorded in this sidecar.
+    pub fn health(&self) -> ScanHealth {
+        ScanHealth {
+            resolve_complete: self.resolve_complete,
+            partial: self.partial.then(|| PartialScan {
+                reason: self.partial_reason.clone().unwrap_or_default(),
+                done: self.progress_done.unwrap_or(0),
+                total: self.progress_total.unwrap_or(0),
+            }),
+        }
+    }
+
+    /// Whether the index is anything less than a finished scan with a committed resolve pass.
+    pub fn is_degraded(&self) -> bool {
+        self.partial || !self.resolve_complete
+    }
+
+    /// One-line operator description of the degradation, or `None` for a healthy index.
+    pub fn degraded_summary(&self) -> Option<String> {
+        if self.partial {
+            let reason = self.partial_reason.as_deref().unwrap_or("unknown");
+            let (done, total) = (self.progress_done.unwrap_or(0), self.progress_total.unwrap_or(0));
+            return Some(format!(
+                "partial scan ({reason}; {done}/{total} files); a full rescan is needed"
+            ));
+        }
+        (!self.resolve_complete)
+            .then(|| "resolve pass incomplete; resolved references and callers may be stale".to_string())
+    }
 }
 
 /// Path of the `status.json` sidecar inside a workspace cache dir.
@@ -198,7 +336,7 @@ pub fn count_fm_blobs(blobs_dir: &Path) -> usize {
 /// Best-effort atomic write of the `status.json` sidecar into `basemind_dir`. `scanned_unix` is set
 /// to now. Errors are swallowed deliberately, mirroring [`ensure_workspace_marker`] — a failed
 /// sidecar write must never fail a scan, and a stale/absent sidecar only degrades the statusline.
-pub fn write_status_sidecar(basemind_dir: &Path, file_count: usize, blob_count: usize) {
+pub fn write_status_sidecar(basemind_dir: &Path, file_count: usize, blob_count: usize, health: &ScanHealth) {
     let scanned_unix = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
@@ -208,6 +346,11 @@ pub fn write_status_sidecar(basemind_dir: &Path, file_count: usize, blob_count: 
         file_count,
         blob_count,
         scanned_unix,
+        resolve_complete: health.resolve_complete,
+        partial: health.partial.is_some(),
+        partial_reason: health.partial.as_ref().map(|p| p.reason.clone()),
+        progress_done: health.partial.as_ref().map(|p| p.done),
+        progress_total: health.partial.as_ref().map(|p| p.total),
     };
     let Ok(bytes) = serde_json::to_vec(&sidecar) else {
         return;
@@ -221,6 +364,14 @@ pub fn read_status_sidecar(basemind_dir: &Path) -> Option<StatusSidecar> {
     let bytes = std::fs::read(status_sidecar_path(basemind_dir)).ok()?;
     let sidecar: StatusSidecar = serde_json::from_slice(&bytes).ok()?;
     (sidecar.schema_ver == STATUS_SIDECAR_SCHEMA_VER).then_some(sidecar)
+}
+
+/// Replace only the health fields of the sidecar, keeping its counts and timestamp. With no usable
+/// sidecar there is nothing to keep, so a zero-count one is written: the point is that a reader sees
+/// the degradation. Best-effort, like [`write_status_sidecar`].
+pub fn update_status_health(basemind_dir: &Path, health: &ScanHealth) {
+    let (file_count, blob_count) = read_status_sidecar(basemind_dir).map_or((0, 0), |s| (s.file_count, s.blob_count));
+    write_status_sidecar(basemind_dir, file_count, blob_count, health);
 }
 
 /// Redirect [`cache_root`] at a per-process temp dir for the whole test binary.
@@ -462,7 +613,7 @@ mod status_sidecar_tests {
     #[test]
     fn write_then_read_round_trips_counts() {
         let dir = tempfile::tempdir().expect("tempdir");
-        write_status_sidecar(dir.path(), 42, 7);
+        write_status_sidecar(dir.path(), 42, 7, &ScanHealth::complete());
         let sidecar = read_status_sidecar(dir.path()).expect("sidecar present after write");
         assert_eq!(sidecar.schema_ver, STATUS_SIDECAR_SCHEMA_VER);
         assert_eq!(sidecar.file_count, 42);
@@ -472,6 +623,42 @@ mod status_sidecar_tests {
             "scanned_unix should be a real epoch, got {}",
             sidecar.scanned_unix
         );
+    }
+
+    #[test]
+    fn a_pre_marker_sidecar_reads_as_complete() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let legacy =
+            format!(r#"{{"schema_ver":{STATUS_SIDECAR_SCHEMA_VER},"file_count":3,"blob_count":3,"scanned_unix":9}}"#);
+        std::fs::write(status_sidecar_path(dir.path()), legacy).expect("write");
+        let sidecar = read_status_sidecar(dir.path()).expect("legacy sidecar still parses");
+        assert!(!sidecar.is_degraded());
+        assert_eq!(sidecar.degraded_summary(), None);
+    }
+
+    #[test]
+    fn health_round_trips_and_summarizes() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_status_sidecar(dir.path(), 5, 5, &ScanHealth::partial("cancelled", 2, 5));
+        let sidecar = read_status_sidecar(dir.path()).expect("sidecar");
+        assert!(sidecar.is_degraded());
+        assert_eq!(sidecar.health(), ScanHealth::partial("cancelled", 2, 5));
+        let summary = sidecar.degraded_summary().expect("summary");
+        assert!(summary.contains("cancelled") && summary.contains("2/5"), "{summary}");
+
+        write_status_sidecar(dir.path(), 5, 5, &ScanHealth::resolving());
+        let sidecar = read_status_sidecar(dir.path()).expect("sidecar");
+        assert!(sidecar.is_degraded() && !sidecar.partial);
+    }
+
+    #[test]
+    fn update_health_keeps_counts() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_status_sidecar(dir.path(), 42, 7, &ScanHealth::complete());
+        update_status_health(dir.path(), &ScanHealth::partial("disk full", 1, 9));
+        let sidecar = read_status_sidecar(dir.path()).expect("sidecar");
+        assert_eq!((sidecar.file_count, sidecar.blob_count), (42, 7));
+        assert!(sidecar.partial);
     }
 
     #[test]
@@ -488,6 +675,11 @@ mod status_sidecar_tests {
             file_count: 1,
             blob_count: 1,
             scanned_unix: 1,
+            resolve_complete: true,
+            partial: false,
+            partial_reason: None,
+            progress_done: None,
+            progress_total: None,
         })
         .expect("serialize");
         std::fs::write(status_sidecar_path(dir.path()), bytes).expect("write");

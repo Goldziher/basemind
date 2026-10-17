@@ -10,6 +10,79 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Smaller code and git-history indexes** ([#82](https://github.com/Goldziher/basemind/issues/82)).
+  Every index keyspace now uses LZ4 for data and index blocks at all levels; fjall's default left L0 and L1,
+  where a fresh bulk build mostly lives, uncompressed. A database opened empty also gets a 256 MiB journal cap
+  (instead of 64 MiB) so a cold scan rotates far fewer small tables. The index and git-history schema versions
+  bump, so existing indexes rebuild once on next open.
+- **`[documents] exclude` now defaults to lockfiles and test data** ([#83](https://github.com/Goldziher/basemind/issues/83)).
+  The default drops `pnpm-lock.yaml`, `package-lock.json`, `yarn.lock`, `Cargo.lock`, `poetry.lock`, `*.lock`,
+  `**/test_data/**`, `**/testdata/**`, `**/fixtures/**` and `**/__snapshots__/**`. Setting the key replaces the list;
+  `exclude = []` restores the old behaviour.
+- Structured data (json, yaml, xml, svg, csv/tsv) is always chunked by the linear chunker instead of xberg's quadratic
+  markdown splitter, whatever its size. Markdown and prose keep the splitter under the `*_chunk_max_bytes` cutovers.
+- `docs_degraded` counts only size-triggered linear chunking and the text/plain fallback; structured data, which is
+  linear by design, no longer inflates it.
+- A read-only reader whose repo group's memory store is held by another process (the daemon) keeps its code index
+  instead of dropping to blob-only reads; memory operations on that handle are refused and go through the daemon.
+- The `✓ doc` progress line shows how long each document took.
+- **The auto memory ceiling is 25% of machine RAM, floored at 2048 MiB** ([#85](https://github.com/Goldziher/basemind/issues/85)).
+  `max_footprint_mb = "auto"` budgeted 50% of RAM, which is 48 GB on a 96 GB workstation and never engaged on a
+  scan that peaked at 6-8 GB. An enforced cgroup limit still gets 75%, now with the same 2048 MiB floor (was 512).
+  Set `max_footprint_mb` explicitly to restore a different budget. The `memory` log line's
+  `ceiling_enforced` reports whether the OS enforces the limit (a cgroup), not whether the gate runs; the gate
+  parks document extraction and embedding workers over the ceiling whenever it is non-zero.
+- `basemind scan` and `rescan` print one `peak memory` line with the peak footprint of each scan phase
+  (`candidates`, `extract`, `purge`, `flush`, `resolve`, `lanes`), and `ScanReport` carries them as `phase_peaks`.
+  Memtable flush concurrency is already bounded by the fixed fjall worker-thread count.
+- **Parse-error warnings collapse to one line per grammar** ([#86](https://github.com/Goldziher/basemind/issues/86)).
+  A scan of a tree with many `scss` or `sql` files no longer prints one `warn ... (N parse errors, partial map)`
+  line per file; it prints `<grammar>: N files, M parse errors` once at the end. `-v` keeps the per-file lines.
+
+### Fixed
+
+- **An index wiped by a schema revision bump now rebuilds instead of answering empty.** After the partition
+  revision bump the fjall index was recreated empty while `index.msgpack` survived, and a daemon-held workspace
+  scheduled no rescan, so `references` / `callers` / `implementations` returned zero results silently. Opening
+  such a workspace (wiped or empty index over a populated file map) now drops the file map so the scan
+  re-extracts every file, the daemon queues a full scan and marks `status.json` degraded, and reads and
+  `admin status` carry an `index_rebuilding` notice until it completes.
+- **A full disk or poisoned index no longer leaves a scan reporting complete** ([#79](https://github.com/Goldziher/basemind/issues/79)).
+  Index commits that failed with `StorageFull` or `Poisoned` were logged as warnings while the scan ran on and
+  `status.json` read a full file count over half-written `refs_by_*` partitions. Both are now fatal: the scan
+  stops, returns an error and records itself as partial. A scan and its resolve pass first check free space
+  against 1.5x the current index size plus 512 MiB of headroom (`BASEMIND_MIN_FREE_MB` sets the headroom, `0`
+  keeps only the proportional part) and refuse when the volume is short. `status.json` gains a
+  `resolve_complete` marker that is set only after the resolve pass commits, and `admin status` (`degraded`)
+  and `basemind doctor` report a missing one. The comms daemon reopens a poisoned code-index handle after the
+  scan that hit it, and rescans a workspace whose last scan was degraded when it next opens.
+- **A cancelled scan's partial file count is flagged** ([#84](https://github.com/Goldziher/basemind/issues/84)).
+  A scan cancelled by daemon shutdown, idle reap or ownership loss flushed the files it had completed, and
+  `admin status` reported that count as the workspace's. `status.json` now records `partial`, the reason and
+  the progress (`progress_done` of `progress_total`); `admin status` surfaces `partial` and `degraded`, and
+  `basemind doctor` warns. The next full scan clears it.
+- **Cache budget eviction no longer deletes user memory and proposals** ([#80](https://github.com/Goldziher/basemind/issues/80)).
+  `memory_by_key`, `memory_archive` and `proposals` moved out of each view's `index.fjall` into a per-repo-group
+  store at `cache/repos/<group>/memory.fjall`, shared by every worktree of a clone (non-git roots use their own
+  workspace key) and never listed by GC. On open, rows left in a view are merged into it, last writer wins by
+  timestamp, and removed from the view. Worktree seeding no longer forks memory.
+- **The document phase no longer burns its budget on low-value files** ([#83](https://github.com/Goldziher/basemind/issues/83)).
+  The phase budget is checked before a document is announced as linearly chunked, and the per-file "deferred" warnings are
+  replaced by one summary count at the end of the phase (per-file detail stays at debug level).
+- Blob GC removes stray `*.tmp` files (staging files left by a dead writer) from the global `blobs/` directory
+  once they are older than the six-hour grace window. Age is the only test, so a file still being written is kept.
+- **Incremental rescans re-stitch cross-file references exactly, and only for the files they affect** ([#81](https://github.com/Goldziher/basemind/issues/81)).
+  The watcher's re-stitch read every resolver-language file's blob to find the importers of a changed file, and
+  followed only one hop, so a file behind a Python `__init__.py` re-export (or a deleted target, a new file
+  shadowing a resolved module, a `tsconfig.json` edit) left its importers with stale `refs_by_def` /
+  `refs_by_path` edges until the next full scan. The stitch now records every path the resolver consulted per
+  importer (two new keyspaces, `import_targets` and `importers_by_probe`), and a rescan re-stitches the changed
+  paths plus those importers: O(affected), equal to a full pass. An existing index runs one wholesale resolve
+  pass on its first rescan to build the probe rows; no wipe. The watcher now forwards `tsconfig*.json` and
+  `package.json` edits so a config change reaches the importers that read it.
+
 ## [0.29.3] - 2026-10-13
 
 ### Changed

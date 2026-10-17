@@ -447,8 +447,9 @@ fn evict_workspace(dir: &Path) -> Result<Option<u64>, GcError> {
     Ok(Some(before.saturating_sub(after)))
 }
 
-/// Derived state that can be rebuilt from source. Stable identity, the workspace marker, and the
-/// `memory.lance` table are intentionally absent: budget enforcement must never rotate an agent's
+/// Derived state that can be rebuilt from source. Stable identity, the workspace marker, the
+/// `memory.lance` table, and the per-repo-group `repos/<group>/memory.fjall` (a sibling of
+/// `workspaces/`, so never under `workspace`) are intentionally absent: budget enforcement must never rotate an agent's
 /// identity or delete user-authored memory.
 fn rebuildable_workspace_paths(workspace: &Path) -> [PathBuf; 8] {
     let lance = workspace.join(LANCE_WORKSPACE_DIR);
@@ -651,6 +652,41 @@ mod tests {
         );
         assert!(hot.exists(), "the workspace metadata shell preserves stable identity");
         assert!(!hot.join(VIEWS_DIR).exists(), "only rebuildable view state is evicted");
+    }
+
+    #[test]
+    fn budget_eviction_keeps_group_memory_readable() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let workspaces = tmp.path().join("workspaces");
+        let blobs = tmp.path().join("blobs");
+        fs::create_dir_all(&blobs).expect("mk blobs");
+        let memory_dir = tmp
+            .path()
+            .join("repos")
+            .join("group")
+            .join(crate::store::MEMORY_STORE_DIR);
+        let cold = seed_workspace_aged(&workspaces, "key-cold", &"a".repeat(64), Duration::from_secs(9999));
+        let _newest = seed_workspace_aged(&workspaces, "key-newest", &"b".repeat(64), Duration::from_secs(60));
+        {
+            let db = crate::index::IndexDb::open_with_memory(&cold.join(VIEWS_DIR).join("working"), &memory_dir)
+                .expect("open index");
+            db.memory_by_key
+                .insert(b"k".to_vec(), b"v".to_vec())
+                .expect("write memory");
+            db.proposals
+                .insert(b"p".to_vec(), b"w".to_vec())
+                .expect("write proposal");
+        }
+
+        let report = enforce_cache_budget_in(&workspaces, &blobs, 1, Duration::ZERO, Duration::ZERO)
+            .expect("evict cache payload");
+
+        assert_eq!(report.evicted, 1);
+        assert!(!cold.join(VIEWS_DIR).exists(), "the cold workspace's views are evicted");
+        let db = crate::index::IndexDb::open_with_memory(&cold.join(VIEWS_DIR).join("working"), &memory_dir)
+            .expect("reopen after eviction");
+        assert_eq!(db.memory_by_key.get(b"k").unwrap().as_deref(), Some(&b"v"[..]));
+        assert_eq!(db.proposals.get(b"p").unwrap().as_deref(), Some(&b"w"[..]));
     }
 
     #[test]

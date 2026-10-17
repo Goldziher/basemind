@@ -36,7 +36,7 @@ use {
 /// How a session reaches the fjall index its reference reads need.
 pub(super) enum IndexRoute {
     /// This session's own open index.
-    Local(IndexDb),
+    Local(Box<IndexDb>),
     /// The daemon's workspace pool, in-process (daemon-hosted connection).
     #[cfg(all(feature = "comms", any(unix, windows)))]
     Host {
@@ -57,7 +57,7 @@ impl IndexRoute {
     /// Decide the route for this session. Never fails: an unreachable daemon is the `InRam` route.
     pub(super) async fn resolve(state: &super::ServerState) -> Self {
         if let Some(idx) = state.shared.store.read().await.index_db.clone() {
-            return Self::Local(idx);
+            return Self::Local(Box::new(idx));
         }
         #[cfg(all(feature = "comms", any(unix, windows)))]
         {

@@ -55,6 +55,10 @@ pub(crate) enum MemoryOpError {
     #[cfg(all(feature = "comms", any(unix, windows)))]
     #[error("memory_by_key index not available")]
     IndexUnavailable,
+    /// The group memory store is owned by another process (the daemon), so this handle holds no
+    /// memory; the operation must go through that process.
+    #[error("memory store is held by another process; use the basemind daemon for memory operations")]
+    MemoryDetached,
     /// A fjall get / insert / remove failed.
     #[error("fjall {op}: {source}")]
     Fjall {
@@ -71,6 +75,16 @@ pub(crate) enum MemoryOpError {
 impl From<MemoryOpError> for rmcp::ErrorData {
     fn from(error: MemoryOpError) -> Self {
         rmcp::ErrorData::internal_error(error.to_string(), None)
+    }
+}
+
+/// Refuse memory access on a handle whose group store is owned by another process, instead of
+/// serving the empty placeholder.
+pub(crate) fn require_memory(idx: &IndexDb) -> Result<(), MemoryOpError> {
+    if idx.memory_detached() {
+        Err(MemoryOpError::MemoryDetached)
+    } else {
+        Ok(())
     }
 }
 
@@ -138,6 +152,7 @@ pub(crate) fn put_core(
     value: &str,
     tags: &[String],
 ) -> Result<(i64, i64), MemoryOpError> {
+    require_memory(idx)?;
     let now = now_micros();
     let existing = read_record(idx, scope, vis_byte, owner, key)?;
     let created_at = existing.map(|r| r.created_at).unwrap_or(now);
@@ -163,6 +178,7 @@ pub(crate) fn get_core(
     owner: &str,
     key: &str,
 ) -> Result<Option<WireMemoryEntry>, MemoryOpError> {
+    require_memory(idx)?;
     Ok(read_record(idx, scope, vis_byte, owner, key)?.map(|r| WireMemoryEntry {
         key: key.to_string(),
         value: r.value,
@@ -180,6 +196,7 @@ pub(crate) fn delete_core(
     owner: &str,
     key: &str,
 ) -> Result<bool, MemoryOpError> {
+    require_memory(idx)?;
     remove_record(idx, scope, vis_byte, owner, key)
 }
 
@@ -234,6 +251,7 @@ pub(crate) struct ListResult {
 /// truncating each surfaced value, and computing pagination. `query.cursor` is the raw last-seen key
 /// bytes from a previous page; `next_cursor` is the raw last-emitted key bytes for the next page.
 pub(crate) fn list_core(idx: &IndexDb, scope: &str, query: &ListQuery<'_>) -> Result<ListResult, MemoryOpError> {
+    require_memory(idx)?;
     use std::ops::Bound;
 
     use super::cursor::prefix_upper_bound;

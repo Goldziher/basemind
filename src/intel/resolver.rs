@@ -26,6 +26,43 @@ use crate::intel::model::ImportEdge;
 #[cfg(any(feature = "code-intel-js", feature = "code-intel-stack"))]
 use crate::path::RelPath;
 
+/// Every repo-relative path a resolver consulted while resolving one importer's imports: hit
+/// targets, failed probe candidates, and the config files (`tsconfig.json`, `package.json`) it read.
+///
+/// This is the dependency set the incremental re-stitch is exact over: the importer's result can
+/// only change when one of these paths is added, deleted or modified. Directories need no entry — a
+/// directory appearing or vanishing is always a file in it appearing or vanishing, and the resolver
+/// decides through the files it probes.
+#[cfg(any(feature = "code-intel-js", feature = "code-intel-stack"))]
+#[derive(Default)]
+pub(crate) struct ProbeSet(ahash::AHashSet<String>);
+
+#[cfg(any(feature = "code-intel-js", feature = "code-intel-stack"))]
+impl ProbeSet {
+    pub(crate) fn insert_rel(&mut self, rel: &RelPath) {
+        if let Some(path) = rel.as_str().filter(|p| !p.is_empty()) {
+            self.0.insert(path.to_string());
+        }
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// The probes as sorted, distinct hashes — the rows `importers_by_probe` stores.
+    pub(crate) fn hashes(&self) -> Vec<crate::index::keys::ProbeHash> {
+        let mut hashes: Vec<_> = self.0.iter().map(|p| crate::index::keys::probe_hash(p)).collect();
+        hashes.sort_unstable();
+        hashes.dedup();
+        hashes
+    }
+
+    #[cfg(test)]
+    pub(crate) fn contains(&self, rel: &str) -> bool {
+        self.0.contains(rel)
+    }
+}
+
 /// A per-language resolver for import module specifiers. Pick the variant with [`for_language`];
 /// then call [`resolve`](SpecifierResolver::resolve) to map an [`ImportEdge`] to its target file.
 ///
@@ -81,20 +118,40 @@ impl SpecifierResolver {
         }
     }
 
+    /// Start resolving a new importer. The JS resolver drops its file-system cache here so that
+    /// every path it consults for this importer reaches the probe recorder again instead of being
+    /// served from a cache entry an earlier importer filled; the path-arithmetic resolvers have no
+    /// cache. Call once per importer, before its first [`resolve`](Self::resolve).
+    pub(crate) fn begin_importer(&self) {
+        match self {
+            #[cfg(feature = "code-intel-js")]
+            Self::Js(resolver) => resolver.begin_importer(),
+            #[cfg(feature = "code-intel-stack")]
+            Self::Python(_) | Self::Java(_) => {}
+        }
+    }
+
     /// Resolve `import`'s module specifier, relative to `importer_rel` (a repo-relative forward-
     /// slashed path), to the repo-relative target file under `root`. Returns `None` on any miss —
     /// unresolvable specifier, target outside the repo, or a path the resolver declines to guess.
+    /// Every path consulted, on a hit or a miss, is added to `probes`.
     ///
     /// The caller still validates the target is an indexed file and performs the name→export join;
     /// this method only answers "which file does this specifier point at".
-    pub(crate) fn resolve(&self, root: &Path, importer_rel: &str, import: &ImportEdge) -> Option<RelPath> {
+    pub(crate) fn resolve(
+        &self,
+        root: &Path,
+        importer_rel: &str,
+        import: &ImportEdge,
+        probes: &mut ProbeSet,
+    ) -> Option<RelPath> {
         match self {
             #[cfg(feature = "code-intel-js")]
-            Self::Js(resolver) => resolver.resolve(root, importer_rel, import),
+            Self::Js(resolver) => resolver.resolve(root, importer_rel, import, probes),
             #[cfg(feature = "code-intel-stack")]
-            Self::Python(resolver) => resolver.resolve(root, importer_rel, import),
+            Self::Python(resolver) => resolver.resolve(root, importer_rel, import, probes),
             #[cfg(feature = "code-intel-stack")]
-            Self::Java(resolver) => resolver.resolve(root, importer_rel, import),
+            Self::Java(resolver) => resolver.resolve(root, importer_rel, import, probes),
         }
     }
 
@@ -130,6 +187,15 @@ fn to_repo_relative(root: &Path, target_abs: &Path) -> Option<RelPath> {
     Some(RelPath::from(normalized.as_str()))
 }
 
+/// Record `candidate` as consulted and return its repo-relative path when it is a regular file.
+/// Used by the path-arithmetic resolvers, whose every probe is an `is_file` on a computed candidate.
+#[cfg(feature = "code-intel-stack")]
+fn probe_file(root: &Path, candidate: &Path, probes: &mut ProbeSet) -> Option<RelPath> {
+    let rel = to_repo_relative(root, candidate)?;
+    probes.insert_rel(&rel);
+    candidate.is_file().then_some(rel)
+}
+
 #[cfg(feature = "code-intel-js")]
 pub(crate) mod js {
     //! JS/TS specifier resolution via `oxc_resolver` — the single source of truth for the oxc
@@ -155,13 +221,99 @@ pub(crate) mod js {
     //! and to the same file. A specifier still only resolves when the target exists on disk, so an
     //! alias pointing at nothing stays unresolved — a miss, never a guessed target.
 
-    use std::path::Path;
+    use std::io;
+    use std::path::{Path, PathBuf};
+    use std::sync::{Arc, Mutex, OnceLock};
 
-    use oxc_resolver::{ResolveOptions, Resolver, TsconfigDiscovery};
+    use oxc_resolver::{
+        FileMetadata, FileSystem, FileSystemOs, ResolveError, ResolveOptions, ResolverGeneric, TsconfigDiscovery,
+    };
 
-    use super::to_repo_relative;
+    use super::{ProbeSet, to_repo_relative};
     use crate::intel::model::ImportEdge;
     use crate::path::RelPath;
+
+    /// Paths the file system was asked about, in call order. Shared between the resolver's
+    /// [`RecordingFs`] and the [`JsResolver`] that drains it.
+    #[derive(Clone, Default)]
+    struct ProbeLog(Arc<Mutex<Vec<PathBuf>>>);
+
+    impl ProbeLog {
+        fn note(&self, path: &Path) {
+            if let Ok(mut log) = self.0.lock() {
+                log.push(path.to_path_buf());
+            }
+        }
+
+        fn drain(&self) -> Vec<PathBuf> {
+            self.0
+                .lock()
+                .map(|mut log| std::mem::take(&mut *log))
+                .unwrap_or_default()
+        }
+    }
+
+    /// oxc's real file system, with every consulted path recorded. oxc reaches the disk only through
+    /// this trait (`metadata` for existence probes, `read*` for `package.json` / `tsconfig.json`),
+    /// so the log is the complete input set of a resolution. A successful directory `metadata` is
+    /// not logged: directories carry no state beyond the files in them, and those are logged.
+    struct RecordingFs {
+        inner: FileSystemOs,
+        log: ProbeLog,
+    }
+
+    impl RecordingFs {
+        fn with_log(log: ProbeLog) -> Self {
+            Self {
+                inner: <FileSystemOs as FileSystem>::new(),
+                log,
+            }
+        }
+
+        fn note_unless_dir(&self, path: &Path, result: &io::Result<FileMetadata>) {
+            if !result.as_ref().is_ok_and(|meta| meta.is_dir()) {
+                self.log.note(path);
+            }
+        }
+    }
+
+    impl FileSystem for RecordingFs {
+        fn new() -> Self {
+            Self::with_log(ProbeLog::default())
+        }
+
+        fn read(&self, path: &Path) -> io::Result<Vec<u8>> {
+            self.log.note(path);
+            FileSystem::read(&self.inner, path)
+        }
+
+        fn read_to_string(&self, path: &Path) -> io::Result<String> {
+            self.log.note(path);
+            FileSystem::read_to_string(&self.inner, path)
+        }
+
+        fn metadata(&self, path: &Path) -> io::Result<FileMetadata> {
+            let result = FileSystem::metadata(&self.inner, path);
+            self.note_unless_dir(path, &result);
+            result
+        }
+
+        fn symlink_metadata(&self, path: &Path) -> io::Result<FileMetadata> {
+            let result = FileSystem::symlink_metadata(&self.inner, path);
+            self.note_unless_dir(path, &result);
+            result
+        }
+
+        fn read_link(&self, path: &Path) -> Result<PathBuf, ResolveError> {
+            self.log.note(path);
+            FileSystem::read_link(&self.inner, path)
+        }
+
+        fn canonicalize(&self, path: &Path) -> io::Result<PathBuf> {
+            self.log.note(path);
+            FileSystem::canonicalize(&self.inner, path)
+        }
+    }
 
     /// JS/TS module-resolution extensions, TS-first so a bare `./util` specifier binds to `util.ts`
     /// before `util.js` (matching `tsc`'s module-resolution precedence).
@@ -171,7 +323,11 @@ pub(crate) mod js {
     /// JS/TS importers — construction is expensive (it seeds oxc's file-system cache), and that cache
     /// is also what makes the per-file tsconfig discovery cheap, so never build one per file.
     pub(crate) struct JsResolver {
-        inner: Resolver,
+        inner: ResolverGeneric<RecordingFs>,
+        log: ProbeLog,
+        /// The canonical form of the repo root, computed on first use: oxc canonicalises some
+        /// paths (a tsconfig's `extends` chain), and on a symlinked root those come back under it.
+        canonical_root: OnceLock<Option<PathBuf>>,
     }
 
     impl JsResolver {
@@ -181,24 +337,40 @@ pub(crate) mod js {
         /// tsconfig `baseUrl` / `paths` are discovered per importing file (see the module docs).
         pub(crate) fn new() -> Self {
             let ext_alias = |from: &str, to: &[&str]| (from.to_string(), to.iter().map(|s| (*s).to_string()).collect());
-            let inner = Resolver::new(ResolveOptions {
-                extensions: RESOLVE_EXTENSIONS.iter().map(|e| (*e).to_string()).collect(),
-                extension_alias: vec![
-                    ext_alias(".js", &[".ts", ".tsx", ".js", ".jsx"]),
-                    ext_alias(".mjs", &[".mts", ".mjs"]),
-                    ext_alias(".cjs", &[".cts", ".cjs"]),
-                ],
-                condition_names: vec![
-                    "node".to_string(),
-                    "import".to_string(),
-                    "require".to_string(),
-                    "default".to_string(),
-                ],
-                symlinks: false,
-                tsconfig: Some(TsconfigDiscovery::Auto),
-                ..ResolveOptions::default()
-            });
-            Self { inner }
+            let log = ProbeLog::default();
+            let inner = ResolverGeneric::new_with_file_system(
+                RecordingFs::with_log(log.clone()),
+                ResolveOptions {
+                    extensions: RESOLVE_EXTENSIONS.iter().map(|e| (*e).to_string()).collect(),
+                    extension_alias: vec![
+                        ext_alias(".js", &[".ts", ".tsx", ".js", ".jsx"]),
+                        ext_alias(".mjs", &[".mts", ".mjs"]),
+                        ext_alias(".cjs", &[".cts", ".cjs"]),
+                    ],
+                    condition_names: vec![
+                        "node".to_string(),
+                        "import".to_string(),
+                        "require".to_string(),
+                        "default".to_string(),
+                    ],
+                    symlinks: false,
+                    tsconfig: Some(TsconfigDiscovery::Auto),
+                    ..ResolveOptions::default()
+                },
+            );
+            Self {
+                inner,
+                log,
+                canonical_root: OnceLock::new(),
+            }
+        }
+
+        /// Forget everything oxc has cached and everything recorded so far. oxc memoises every stat
+        /// and parsed config, so without this a second importer would hit the cache for the paths
+        /// the first one consulted and its probes would never reach the log.
+        pub(crate) fn begin_importer(&self) {
+            self.inner.clear_cache();
+            drop(self.log.drain());
         }
 
         /// Resolve `import`'s specifier for the importing file `importer_rel` to a repo-relative
@@ -207,10 +379,36 @@ pub(crate) mod js {
         /// Resolves against the **file** (not its directory): `TsconfigDiscovery::Auto` only applies
         /// to `resolve_file`, and it is what lets an aliased specifier find the tsconfig that governs
         /// this importer.
-        pub(crate) fn resolve(&self, root: &Path, importer_rel: &str, import: &ImportEdge) -> Option<RelPath> {
+        pub(crate) fn resolve(
+            &self,
+            root: &Path,
+            importer_rel: &str,
+            import: &ImportEdge,
+            probes: &mut ProbeSet,
+        ) -> Option<RelPath> {
             let importer_abs = root.join(importer_rel);
-            let resolution = self.inner.resolve_file(&importer_abs, &import.specifier).ok()?;
-            to_repo_relative(root, &resolution.full_path())
+            let resolved = self.inner.resolve_file(&importer_abs, &import.specifier);
+            self.drain_into(root, probes);
+            to_repo_relative(root, &resolved.ok()?.full_path())
+        }
+
+        /// Move the recorded paths that lie under the repo into `probes`. Paths above the root
+        /// (the ancestors oxc walks looking for a `package.json`) are not repo state and are dropped.
+        fn drain_into(&self, root: &Path, probes: &mut ProbeSet) {
+            let canonical = self
+                .canonical_root
+                .get_or_init(|| std::fs::canonicalize(root).ok())
+                .as_deref();
+            for abs in self.log.drain() {
+                let rel = abs
+                    .strip_prefix(root)
+                    .ok()
+                    .or_else(|| canonical.and_then(|c| abs.strip_prefix(c).ok()))
+                    .and_then(Path::to_str);
+                if let Some(rel) = rel {
+                    probes.insert_rel(&RelPath::from(rel.replace('\\', "/").as_str()));
+                }
+            }
         }
     }
 }
@@ -234,7 +432,7 @@ pub(crate) mod python {
 
     use std::path::{Path, PathBuf};
 
-    use super::to_repo_relative;
+    use super::{ProbeSet, probe_file};
     use crate::intel::model::ImportEdge;
     use crate::path::RelPath;
 
@@ -246,28 +444,31 @@ pub(crate) mod python {
 
     impl PythonResolver {
         /// Resolve `import`'s dotted-or-relative specifier to a repo-relative `.py` file.
-        pub(crate) fn resolve(&self, root: &Path, importer_rel: &str, import: &ImportEdge) -> Option<RelPath> {
+        pub(crate) fn resolve(
+            &self,
+            root: &Path,
+            importer_rel: &str,
+            import: &ImportEdge,
+            probes: &mut ProbeSet,
+        ) -> Option<RelPath> {
             let specifier = import.specifier.as_str();
             let dots = specifier.chars().take_while(|&c| c == '.').count();
             if dots > 0 {
-                self.resolve_relative(root, importer_rel, specifier, dots)
+                self.resolve_relative(root, importer_rel, specifier, dots, probes)
             } else {
-                self.resolve_absolute(root, specifier)
+                self.resolve_absolute(root, specifier, probes)
             }
         }
 
         /// Absolute dotted import: try each package root, mapping `foo.bar` → `foo/bar`.
-        fn resolve_absolute(&self, root: &Path, specifier: &str) -> Option<RelPath> {
+        fn resolve_absolute(&self, root: &Path, specifier: &str, probes: &mut ProbeSet) -> Option<RelPath> {
             let rel_parts = dotted_to_parts(specifier)?;
             for pkg_root in PACKAGE_ROOTS {
                 let mut base = root.to_path_buf();
                 if !pkg_root.is_empty() {
                     base.push(pkg_root);
-                    if !base.is_dir() {
-                        continue;
-                    }
                 }
-                if let Some(hit) = module_file(root, &base, &rel_parts) {
+                if let Some(hit) = module_file(root, &base, &rel_parts, probes) {
                     return Some(hit);
                 }
             }
@@ -276,7 +477,14 @@ pub(crate) mod python {
 
         /// Relative import: climb `dots` package levels from the importer's directory, then descend
         /// through the dotted tail after the dots.
-        fn resolve_relative(&self, root: &Path, importer_rel: &str, specifier: &str, dots: usize) -> Option<RelPath> {
+        fn resolve_relative(
+            &self,
+            root: &Path,
+            importer_rel: &str,
+            specifier: &str,
+            dots: usize,
+            probes: &mut ProbeSet,
+        ) -> Option<RelPath> {
             let importer_abs = root.join(importer_rel);
             let mut base = importer_abs.parent()?.to_path_buf();
             for _ in 1..dots {
@@ -291,7 +499,7 @@ pub(crate) mod python {
             } else {
                 dotted_to_parts(tail)?
             };
-            module_file(root, &base, &parts)
+            module_file(root, &base, &parts, probes)
         }
     }
 
@@ -308,27 +516,25 @@ pub(crate) mod python {
     /// Given a package `base` directory and the module `parts` under it, return the repo-relative
     /// path of `<base>/<parts...>.py` or `<base>/<parts...>/__init__.py`, whichever exists. Empty
     /// `parts` (a bare `from . import x`) resolves to the package's own `__init__.py`.
-    fn module_file(root: &Path, base: &Path, parts: &[&str]) -> Option<RelPath> {
+    ///
+    /// Both candidates are recorded in `probes` before either is tested, so a module that appears
+    /// later (`pkg/mod.py` shadowing `pkg/mod/__init__.py`, or the first `__init__.py` of a package)
+    /// is found by the importers that missed it. A missing directory needs no separate probe: the
+    /// files under it do not exist either.
+    fn module_file(root: &Path, base: &Path, parts: &[&str], probes: &mut ProbeSet) -> Option<RelPath> {
         let mut dir = base.to_path_buf();
         if parts.is_empty() {
-            let init = dir.join("__init__.py");
-            return init.is_file().then(|| to_repo_relative(root, &init)).flatten();
+            return probe_file(root, &dir.join("__init__.py"), probes);
         }
         for part in &parts[..parts.len() - 1] {
             dir.push(part);
         }
         let last = parts[parts.len() - 1];
         let module: PathBuf = dir.join(format!("{last}.py"));
-        if module.is_file()
-            && let Some(hit) = to_repo_relative(root, &module)
-        {
+        if let Some(hit) = probe_file(root, &module, probes) {
             return Some(hit);
         }
-        let package_init = dir.join(last).join("__init__.py");
-        if package_init.is_file() {
-            return to_repo_relative(root, &package_init);
-        }
-        None
+        probe_file(root, &dir.join(last).join("__init__.py"), probes)
     }
 }
 
@@ -348,7 +554,7 @@ pub(crate) mod java {
 
     use std::path::Path;
 
-    use super::to_repo_relative;
+    use super::{ProbeSet, probe_file};
     use crate::intel::model::ImportEdge;
     use crate::path::RelPath;
 
@@ -361,7 +567,13 @@ pub(crate) mod java {
     impl JavaResolver {
         /// Resolve `import`'s fully-qualified name (`com.example.Foo`) to `<root>/com/example/Foo.java`
         /// under some source root. `None` for wildcard imports or when no matching file exists.
-        pub(crate) fn resolve(&self, root: &Path, _importer_rel: &str, import: &ImportEdge) -> Option<RelPath> {
+        pub(crate) fn resolve(
+            &self,
+            root: &Path,
+            _importer_rel: &str,
+            import: &ImportEdge,
+            probes: &mut ProbeSet,
+        ) -> Option<RelPath> {
             let fqn = import.specifier.as_str();
             let parts: Vec<&str> = fqn.split('.').collect();
             if parts.len() < 2 || parts.iter().any(|p| p.is_empty() || *p == "*") {
@@ -370,18 +582,10 @@ pub(crate) mod java {
             let rel_java = format!("{}.java", parts.join("/"));
             for source_root in SOURCE_ROOTS {
                 let mut base = root.to_path_buf();
-                if !source_root.is_empty() {
-                    for segment in source_root.split('/') {
-                        base.push(segment);
-                    }
-                    if !base.is_dir() {
-                        continue;
-                    }
+                for segment in source_root.split('/').filter(|segment| !segment.is_empty()) {
+                    base.push(segment);
                 }
-                let candidate = base.join(&rel_java);
-                if candidate.is_file()
-                    && let Some(hit) = to_repo_relative(root, &candidate)
-                {
+                if let Some(hit) = probe_file(root, &base.join(&rel_java), probes) {
                     return Some(hit);
                 }
             }
@@ -409,6 +613,16 @@ mod stack_tests {
         }
     }
 
+    /// Resolve without caring which paths were probed.
+    fn resolve_unprobed(
+        resolver: &SpecifierResolver,
+        root: &Path,
+        importer_rel: &str,
+        import: &ImportEdge,
+    ) -> Option<RelPath> {
+        resolver.resolve(root, importer_rel, import, &mut ProbeSet::default())
+    }
+
     fn write(dir: &Path, rel: &str, body: &str) {
         let abs = dir.join(rel);
         fs::create_dir_all(abs.parent().unwrap()).unwrap();
@@ -422,7 +636,7 @@ mod stack_tests {
         write(root, "foo/bar.py", "x = 1\n");
         write(root, "foo/__init__.py", "");
         let resolver = SpecifierResolver::for_language("python").expect("python resolver");
-        let got = resolver.resolve(root, "app/main.py", &import("foo.bar", Some("x")));
+        let got = resolve_unprobed(&resolver, root, "app/main.py", &import("foo.bar", Some("x")));
         assert_eq!(
             got.and_then(|r| r.as_str().map(str::to_string)),
             Some("foo/bar.py".to_string())
@@ -435,7 +649,7 @@ mod stack_tests {
         let root = tmp.path();
         write(root, "pkg/__init__.py", "y = 2\n");
         let resolver = SpecifierResolver::for_language("python").unwrap();
-        let got = resolver.resolve(root, "app/main.py", &import("pkg", Some("y")));
+        let got = resolve_unprobed(&resolver, root, "app/main.py", &import("pkg", Some("y")));
         assert_eq!(
             got.and_then(|r| r.as_str().map(str::to_string)),
             Some("pkg/__init__.py".to_string())
@@ -448,7 +662,7 @@ mod stack_tests {
         let root = tmp.path();
         write(root, "src/mypkg/util.py", "z = 3\n");
         let resolver = SpecifierResolver::for_language("python").unwrap();
-        let got = resolver.resolve(root, "src/mypkg/main.py", &import("mypkg.util", Some("z")));
+        let got = resolve_unprobed(&resolver, root, "src/mypkg/main.py", &import("mypkg.util", Some("z")));
         assert_eq!(
             got.and_then(|r| r.as_str().map(str::to_string)),
             Some("src/mypkg/util.py".to_string())
@@ -462,7 +676,7 @@ mod stack_tests {
         write(root, "pkg/sibling.py", "a = 1\n");
         write(root, "pkg/main.py", "");
         let resolver = SpecifierResolver::for_language("python").unwrap();
-        let got = resolver.resolve(root, "pkg/main.py", &import(".sibling", Some("a")));
+        let got = resolve_unprobed(&resolver, root, "pkg/main.py", &import(".sibling", Some("a")));
         assert_eq!(
             got.and_then(|r| r.as_str().map(str::to_string)),
             Some("pkg/sibling.py".to_string())
@@ -476,7 +690,7 @@ mod stack_tests {
         write(root, "pkg/__init__.py", "b = 1\n");
         write(root, "pkg/main.py", "");
         let resolver = SpecifierResolver::for_language("python").unwrap();
-        let got = resolver.resolve(root, "pkg/main.py", &import(".", Some("b")));
+        let got = resolve_unprobed(&resolver, root, "pkg/main.py", &import(".", Some("b")));
         assert_eq!(
             got.and_then(|r| r.as_str().map(str::to_string)),
             Some("pkg/__init__.py".to_string())
@@ -490,7 +704,7 @@ mod stack_tests {
         write(root, "pkg/other.py", "c = 1\n");
         write(root, "pkg/sub/main.py", "");
         let resolver = SpecifierResolver::for_language("python").unwrap();
-        let got = resolver.resolve(root, "pkg/sub/main.py", &import("..other", Some("c")));
+        let got = resolve_unprobed(&resolver, root, "pkg/sub/main.py", &import("..other", Some("c")));
         assert_eq!(
             got.and_then(|r| r.as_str().map(str::to_string)),
             Some("pkg/other.py".to_string())
@@ -503,7 +717,7 @@ mod stack_tests {
         let root = tmp.path();
         write(root, "main.py", "");
         let resolver = SpecifierResolver::for_language("python").unwrap();
-        let got = resolver.resolve(root, "main.py", &import("..x", Some("x")));
+        let got = resolve_unprobed(&resolver, root, "main.py", &import("..x", Some("x")));
         assert_eq!(got, None);
     }
 
@@ -512,7 +726,7 @@ mod stack_tests {
         let tmp = TempDir::new().unwrap();
         let root = tmp.path();
         let resolver = SpecifierResolver::for_language("python").unwrap();
-        let got = resolver.resolve(root, "main.py", &import("nope.gone", Some("x")));
+        let got = resolve_unprobed(&resolver, root, "main.py", &import("nope.gone", Some("x")));
         assert_eq!(got, None);
     }
 
@@ -526,7 +740,8 @@ mod stack_tests {
             "package com.example;\nclass Foo {}\n",
         );
         let resolver = SpecifierResolver::for_language("java").expect("java resolver");
-        let got = resolver.resolve(
+        let got = resolve_unprobed(
+            &resolver,
             root,
             "src/main/java/com/example/Bar.java",
             &import("com.example.Foo", None),
@@ -543,7 +758,12 @@ mod stack_tests {
         let root = tmp.path();
         write(root, "com/example/Baz.java", "package com.example;\nclass Baz {}\n");
         let resolver = SpecifierResolver::for_language("java").unwrap();
-        let got = resolver.resolve(root, "com/example/Main.java", &import("com.example.Baz", None));
+        let got = resolve_unprobed(
+            &resolver,
+            root,
+            "com/example/Main.java",
+            &import("com.example.Baz", None),
+        );
         assert_eq!(
             got.and_then(|r| r.as_str().map(str::to_string)),
             Some("com/example/Baz.java".to_string())
@@ -556,7 +776,8 @@ mod stack_tests {
         let root = tmp.path();
         write(root, "src/main/java/com/example/Foo.java", "class Foo {}\n");
         let resolver = SpecifierResolver::for_language("java").unwrap();
-        let got = resolver.resolve(
+        let got = resolve_unprobed(
+            &resolver,
             root,
             "src/main/java/com/example/Bar.java",
             &import("com.example.*", None),
@@ -569,8 +790,57 @@ mod stack_tests {
         let tmp = TempDir::new().unwrap();
         let root = tmp.path();
         let resolver = SpecifierResolver::for_language("java").unwrap();
-        let got = resolver.resolve(root, "Main.java", &import("com.example.Gone", None));
+        let got = resolve_unprobed(&resolver, root, "Main.java", &import("com.example.Gone", None));
         assert_eq!(got, None);
+    }
+
+    fn probes_of(resolver: &SpecifierResolver, root: &Path, importer: &str, import: &ImportEdge) -> ProbeSet {
+        let mut probes = ProbeSet::default();
+        resolver.resolve(root, importer, import, &mut probes);
+        probes
+    }
+
+    #[test]
+    fn python_miss_records_every_candidate_it_tried() {
+        let tmp = TempDir::new().unwrap();
+        let resolver = SpecifierResolver::for_language("python").unwrap();
+        let probes = probes_of(&resolver, tmp.path(), "main.py", &import("nope.gone", Some("x")));
+        for candidate in [
+            "src/nope/gone.py",
+            "src/nope/gone/__init__.py",
+            "nope/gone.py",
+            "nope/gone/__init__.py",
+        ] {
+            assert!(probes.contains(candidate), "{candidate} must be a recorded probe");
+        }
+    }
+
+    /// The module file beats the package, so the package hit alone is not the dependency: the
+    /// importer must also be found by the `pkg/mod.py` that would shadow it.
+    #[test]
+    fn python_package_hit_also_records_the_shadowing_module_candidate() {
+        let tmp = TempDir::new().unwrap();
+        write(tmp.path(), "pkg/mod/__init__.py", "x = 1\n");
+        let resolver = SpecifierResolver::for_language("python").unwrap();
+        let import = import("pkg.mod", Some("x"));
+        let probes = probes_of(&resolver, tmp.path(), "main.py", &import);
+        assert!(probes.contains("pkg/mod.py"));
+        assert!(probes.contains("pkg/mod/__init__.py"));
+    }
+
+    #[test]
+    fn java_miss_records_a_candidate_per_source_root() {
+        let tmp = TempDir::new().unwrap();
+        let resolver = SpecifierResolver::for_language("java").unwrap();
+        let probes = probes_of(&resolver, tmp.path(), "Main.java", &import("com.example.Gone", None));
+        for candidate in [
+            "src/main/java/com/example/Gone.java",
+            "src/test/java/com/example/Gone.java",
+            "src/com/example/Gone.java",
+            "com/example/Gone.java",
+        ] {
+            assert!(probes.contains(candidate), "{candidate} must be a recorded probe");
+        }
     }
 
     #[test]
@@ -590,6 +860,123 @@ mod stack_tests {
             SpecifierResolver::for_language("java").unwrap().default_export_name(),
             None,
             "Java has no default-export convention"
+        );
+    }
+}
+
+#[cfg(all(test, feature = "code-intel-js"))]
+mod js_tests {
+    use std::fs;
+
+    use tempfile::TempDir;
+
+    use super::*;
+
+    fn import(specifier: &str) -> ImportEdge {
+        ImportEdge {
+            local: "x".to_string(),
+            specifier: specifier.to_string(),
+            imported: Some("x".to_string()),
+            is_type: false,
+            local_start: 0,
+        }
+    }
+
+    fn write(dir: &Path, rel: &str, body: &str) {
+        let abs = dir.join(rel);
+        fs::create_dir_all(abs.parent().unwrap()).unwrap();
+        fs::write(abs, body).unwrap();
+    }
+
+    fn resolve(
+        resolver: &SpecifierResolver,
+        root: &Path,
+        importer: &str,
+        specifier: &str,
+    ) -> (Option<RelPath>, ProbeSet) {
+        let mut probes = ProbeSet::default();
+        let hit = resolver.resolve(root, importer, &import(specifier), &mut probes);
+        (hit, probes)
+    }
+
+    /// A TS-first resolver that found `util.js` must still depend on the `util.ts` it tried first:
+    /// adding that file shadows the hit.
+    #[test]
+    fn hit_and_the_higher_precedence_misses_are_recorded() {
+        let tmp = TempDir::new().unwrap();
+        write(tmp.path(), "util.js", "export const x = 1;\n");
+        write(tmp.path(), "app.ts", "");
+        let resolver = SpecifierResolver::for_language("typescript").unwrap();
+        resolver.begin_importer();
+        let (hit, probes) = resolve(&resolver, tmp.path(), "app.ts", "./util");
+        assert_eq!(
+            hit.and_then(|r| r.as_str().map(str::to_string)),
+            Some("util.js".to_string())
+        );
+        assert!(probes.contains("util.ts"), "the shadowing candidate must be recorded");
+        assert!(probes.contains("util.js"), "the hit must be recorded");
+    }
+
+    /// A tsconfig is state the result depends on: its path must be recorded so an edit re-stitches.
+    #[test]
+    fn the_tsconfig_that_governed_the_resolution_is_recorded() {
+        let tmp = TempDir::new().unwrap();
+        write(
+            tmp.path(),
+            "tsconfig.json",
+            r#"{"compilerOptions":{"baseUrl":".","paths":{"@lib/*":["lib/*"]}}}"#,
+        );
+        write(tmp.path(), "lib/thing.ts", "export const x = 1;\n");
+        write(tmp.path(), "src/app.ts", "");
+        let resolver = SpecifierResolver::for_language("typescript").unwrap();
+        resolver.begin_importer();
+        let (hit, probes) = resolve(&resolver, tmp.path(), "src/app.ts", "@lib/thing");
+        assert_eq!(
+            hit.and_then(|r| r.as_str().map(str::to_string)),
+            Some("lib/thing.ts".to_string())
+        );
+        assert!(probes.contains("tsconfig.json"));
+        assert!(probes.contains("lib/thing.ts"));
+    }
+
+    /// oxc memoises every stat. Without `begin_importer` a second importer's probes would silently
+    /// shrink to what the first one left uncached; with it they are complete again.
+    #[test]
+    fn begin_importer_makes_a_second_importers_probes_complete() {
+        let tmp = TempDir::new().unwrap();
+        write(tmp.path(), "util.ts", "export const x = 1;\n");
+        write(tmp.path(), "a.ts", "");
+        write(tmp.path(), "b.ts", "");
+        let resolver = SpecifierResolver::for_language("typescript").unwrap();
+
+        resolver.begin_importer();
+        let (_, first) = resolve(&resolver, tmp.path(), "a.ts", "./util");
+        let (_, cached) = resolve(&resolver, tmp.path(), "b.ts", "./util");
+        assert!(first.contains("util.ts"));
+        assert!(
+            !cached.contains("util.ts"),
+            "the cache must hide the probe, or this test proves nothing"
+        );
+
+        resolver.begin_importer();
+        let (_, second) = resolve(&resolver, tmp.path(), "b.ts", "./util");
+        assert!(second.contains("util.ts"));
+    }
+
+    /// A specifier that resolves to nothing is the case probes exist for: the candidates it failed
+    /// on are the only way a later-added file can find this importer.
+    #[test]
+    fn an_unresolved_specifier_still_records_what_it_tried() {
+        let tmp = TempDir::new().unwrap();
+        write(tmp.path(), "app.ts", "");
+        let resolver = SpecifierResolver::for_language("typescript").unwrap();
+        resolver.begin_importer();
+        let (hit, probes) = resolve(&resolver, tmp.path(), "app.ts", "./missing");
+        assert_eq!(hit, None);
+        assert!(probes.contains("missing.ts"));
+        assert!(
+            probes.contains("missing"),
+            "a directory candidate must be recorded for later creation"
         );
     }
 }

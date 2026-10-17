@@ -291,6 +291,12 @@ pub(crate) fn drive_scan(
         .filters
         .doc_phase
         .begin(std::time::Duration::from_secs(drive.filters.doc_phase_budget_secs));
+    // A fatal index commit failure (disk full, poisoned handle) stops the drive like a cancel: every
+    // later commit would fail too. Held as a handle clone because `ctx` owns the `&mut Store`.
+    let index_db = store.index_db.clone();
+    // `stats` may already carry counts from earlier work; the summary reports only this drive's. ~keep
+    #[cfg(feature = "documents")]
+    let deferred_before = stats.docs_deferred;
     let mut ctx = DriveCtx {
         store,
         stats,
@@ -302,7 +308,7 @@ pub(crate) fn drive_scan(
         &mut ctx,
         candidates,
         || {
-            if drive.cancel.is_cancelled() {
+            if drive.cancel.is_cancelled() || index_db.as_ref().is_some_and(crate::index::IndexDb::has_fatal_fault) {
                 return None;
             }
             let plan = governor.admit();
@@ -352,8 +358,24 @@ pub(crate) fn drive_scan(
                 "timed-out document extraction threads are still running"
             );
         }
+        let deferred = ctx.stats.docs_deferred.saturating_sub(deferred_before);
+        if let Some(summary) = deferral_summary(deferred, drive.filters.doc_phase_budget_secs) {
+            tracing::warn!("{summary}");
+        }
     }
     ctx.out
+}
+
+/// The single end-of-phase line that replaces a warning per deferred document; `None` when nothing
+/// was deferred. Per-file detail stays at debug level.
+#[cfg(feature = "documents")]
+fn deferral_summary(deferred: usize, phase_budget_secs: u64) -> Option<String> {
+    (deferred > 0).then(|| {
+        format!(
+            "{deferred} documents deferred to the next scan (document-phase budget {phase_budget_secs}s \
+             or abandoned-extraction cap reached; see [documents] phase_budget_secs, max_abandoned_extractions)"
+        )
+    })
 }
 
 /// Drain one chunk's parallel-map results into the single-threaded store, the stats, and the
@@ -470,6 +492,17 @@ mod tests {
     use super::*;
 
     const MB: u64 = 1024 * 1024;
+
+    #[cfg(feature = "documents")]
+    #[test]
+    fn deferral_summary_reports_one_count_or_nothing() {
+        assert_eq!(deferral_summary(0, 1800), None);
+        // A drive that began with a non-zero counter reports only its own deferrals.
+        assert_eq!(deferral_summary(5usize.saturating_sub(5), 1800), None);
+        let line = deferral_summary(30_562, 1800).expect("deferrals produce a summary");
+        assert!(line.starts_with("30562 documents deferred"), "{line}");
+        assert!(line.contains("1800s"), "{line}");
+    }
 
     /// A governor whose gate is always over the ceiling, with a wait short enough to test.
     fn always_over(base_items: usize, base_workers: usize) -> DriveGovernor<fn() -> Option<u64>> {

@@ -17,17 +17,25 @@
 //! 4. Emit a cross-file edge — **def** = `(target, export.name_start)`, **use** =
 //!    `(importer, import.local_start)` — into `refs_by_def` + `refs_by_path`.
 //!
+//! Besides the edges, each importer's stitch records what it depended on: the `import_targets` row
+//! per resolved import binding, and in `importers_by_probe` every path the resolver consulted (hit
+//! targets, re-export hop files, failed candidates, `tsconfig.json` / `package.json`). That reverse
+//! map is what lets the incremental pass re-stitch exactly the importers a changed path can affect.
+//!
 //! Best-effort: any resolver miss or unindexed target is logged at debug and skipped; a commit
 //! failure warns but never aborts the scan. Idempotency across re-scans is documented on
 //! [`crate::index::writer::IndexWriter::upsert_cross_file_edge`].
 
+use std::cell::RefCell;
+use std::ops::Deref;
 use std::path::Path;
+use std::rc::Rc;
 
 use ahash::AHashMap;
 
 use crate::index::IndexDb;
 use crate::intel::model::{ExportEdge, ImportEdge, ResolvedEdge};
-use crate::intel::resolver::SpecifierResolver;
+use crate::intel::resolver::{ProbeSet, SpecifierResolver};
 use crate::intel::stage_budget::BudgetedWriter;
 use crate::store::Store;
 
@@ -56,6 +64,87 @@ const COMMIT_BATCH: usize = 256;
 /// covering every practical re-export (django's `from django.db.models import QuerySet`, etc.).
 const MAX_REEXPORT_HOPS: usize = 8;
 
+/// Where the stitch finds a file's import/export facts: the importers handed in (`resident`), and
+/// otherwise the file's persisted `.rref` blob, read at most once. The blob path is what keeps the
+/// incremental pass O(affected): a re-export hop file that is not itself being re-stitched is loaded
+/// on demand instead of the whole corpus being loaded up front.
+struct FactsCatalog<'a> {
+    store: &'a Store,
+    resident: &'a AHashMap<String, FileFacts>,
+    loaded: RefCell<AHashMap<String, Option<Rc<FileFacts>>>>,
+    export_maps: RefCell<AHashMap<String, Rc<AHashMap<String, u32>>>>,
+}
+
+/// A borrowed-or-shared view of one file's [`FileFacts`].
+enum Facts<'a> {
+    Resident(&'a FileFacts),
+    Loaded(Rc<FileFacts>),
+}
+
+impl Deref for Facts<'_> {
+    type Target = FileFacts;
+
+    fn deref(&self) -> &FileFacts {
+        match self {
+            Self::Resident(facts) => facts,
+            Self::Loaded(facts) => facts,
+        }
+    }
+}
+
+impl<'a> FactsCatalog<'a> {
+    fn new(store: &'a Store, resident: &'a AHashMap<String, FileFacts>) -> Self {
+        Self {
+            store,
+            resident,
+            loaded: RefCell::default(),
+            export_maps: RefCell::default(),
+        }
+    }
+
+    /// `key`'s facts, or `None` when it neither imports nor exports anything (or is unindexed).
+    fn facts(&self, key: &str) -> Option<Facts<'a>> {
+        if let Some(facts) = self.resident.get(key) {
+            return Some(Facts::Resident(facts));
+        }
+        self.loaded
+            .borrow_mut()
+            .entry(key.to_string())
+            .or_insert_with(|| self.load(key).map(Rc::new))
+            .clone()
+            .map(Facts::Loaded)
+    }
+
+    fn load(&self, key: &str) -> Option<FileFacts> {
+        let entry = self.store.lookup(key)?;
+        let refs = self.store.read_resolved_by_hex(&entry.hash_hex).ok()??;
+        if refs.imports.is_empty() && refs.exports.is_empty() {
+            return None;
+        }
+        Some(FileFacts {
+            imports: refs.imports,
+            exports: refs.exports,
+            import_uses: Vec::new(),
+        })
+    }
+
+    /// The `name_start` of `key`'s export called `name`.
+    fn export_start(&self, key: &str, name: &str) -> Option<u32> {
+        let cached = self.export_maps.borrow().get(key).cloned();
+        let map = match cached {
+            Some(map) => map,
+            None => {
+                let facts = self.facts(key)?;
+                let map: Rc<AHashMap<String, u32>> =
+                    Rc::new(facts.exports.iter().map(|e| (e.name.clone(), e.name_start)).collect());
+                self.export_maps.borrow_mut().insert(key.to_string(), Rc::clone(&map));
+                map
+            }
+        };
+        map.get(name).copied()
+    }
+}
+
 /// Resolve `wanted` to its ultimate exported definition starting from `target_rel`, transparently
 /// following re-export chains: a file that does not directly export `wanted` but IMPORTS it (a
 /// package `__init__.py` re-export, a TS barrel) forwards to that import's target, and so on.
@@ -65,14 +154,16 @@ const MAX_REEXPORT_HOPS: usize = 8;
 ///
 /// Re-exports stay within one language (a Python import resolves to a Python file), so the importer's
 /// `resolver` is valid for every hop; each hop resolves relative to the current file in the chain.
+/// Every path a hop consults lands in the importer's `probes`: a change to any file in the chain
+/// must re-stitch the importer at the head of it.
 fn resolve_export_transitively(
     root: &Path,
     store: &Store,
-    facts: &AHashMap<String, FileFacts>,
-    export_maps: &AHashMap<&str, AHashMap<&str, u32>>,
+    catalog: &FactsCatalog<'_>,
     resolver: &SpecifierResolver,
     target_rel: crate::path::RelPath,
     wanted: &str,
+    probes: &mut ProbeSet,
 ) -> Option<(crate::path::RelPath, u32)> {
     let mut current_rel = target_rel;
     let mut wanted = wanted.to_string();
@@ -82,18 +173,15 @@ fn resolve_export_transitively(
         if !visited.insert((current_key.clone(), wanted.clone())) {
             return None;
         }
-        if let Some(&name_start) = export_maps
-            .get(current_key.as_str())
-            .and_then(|m| m.get(wanted.as_str()))
-        {
+        if let Some(name_start) = catalog.export_start(&current_key, &wanted) {
             return Some((current_rel, name_start));
         }
+        let facts = catalog.facts(&current_key)?;
         let reexport = facts
-            .get(&current_key)?
             .imports
             .iter()
             .find(|import| !import.is_type && import.local == wanted)?;
-        let next_rel = resolver.resolve(root, &current_key, reexport)?;
+        let next_rel = resolver.resolve(root, &current_key, reexport, probes)?;
         store.lookup(&next_rel)?;
         wanted = reexport.imported.clone().unwrap_or(wanted);
         current_rel = next_rel;
@@ -101,35 +189,39 @@ fn resolve_export_transitively(
     None
 }
 
-/// Stitch cross-file resolved edges for every importer in `facts` into the index.
+/// Stitch cross-file resolved edges for every importer in `importers` into the index, and record
+/// each importer's `import_targets` and `importers_by_probe` rows. Returns whether every batch
+/// committed.
 ///
 /// Runs after the resolve pass's per-file upserts have committed, so each importer's previous-scan
-/// edges are already purged (see the idempotency note on `upsert_cross_file_edge`). Best-effort:
-/// never returns an error — resolver misses and commit failures are logged and swallowed so the
-/// scan still succeeds with the name-based fallback intact.
+/// edges and probe rows are already purged (see the idempotency note on `upsert_cross_file_edge`).
+/// Best-effort: resolver misses and commit failures are logged and swallowed so the scan still
+/// succeeds with the name-based fallback intact. Returns false when a commit failed, so the caller
+/// can decline to record the resolve pass as complete.
 ///
-/// Each importer's language (from the primary index) selects a [`SpecifierResolver`]; importers in
-/// a language with no compiled-in resolver are skipped. Resolvers are built once per language and
-/// cached for the duration of the stitch.
-pub fn stitch_cross_file_edges(root: &Path, store: &Store, index_db: &IndexDb, facts: &AHashMap<String, FileFacts>) {
-    if facts.is_empty() {
-        return;
+/// `importers` holds the facts of the files being (re)stitched; a file reached only as a re-export
+/// hop is loaded from its blob on demand. Each importer's language (from the primary index)
+/// selects a [`SpecifierResolver`]; importers in a language with no compiled-in resolver are
+/// skipped. Resolvers are built once per language and cached for the duration of the stitch.
+pub fn stitch_cross_file_edges(
+    root: &Path,
+    store: &Store,
+    index_db: &IndexDb,
+    importers: &AHashMap<String, FileFacts>,
+) -> bool {
+    if importers.is_empty() {
+        return true;
     }
-    let export_maps: AHashMap<&str, AHashMap<&str, u32>> = facts
-        .iter()
-        .filter(|(_, f)| !f.exports.is_empty())
-        .map(|(key, f)| {
-            let by_name: AHashMap<&str, u32> = f.exports.iter().map(|e| (e.name.as_str(), e.name_start)).collect();
-            (key.as_str(), by_name)
-        })
-        .collect();
-
+    let catalog = FactsCatalog::new(store, importers);
     let mut resolvers: AHashMap<String, Option<SpecifierResolver>> = AHashMap::new();
     let mut batch = BudgetedWriter::new(index_db, COMMIT_BATCH, "cross-file stitch");
     let mut edges = 0usize;
 
-    for (importer_key, importer_facts) in facts {
-        if importer_facts.imports.is_empty() {
+    let mut importer_keys: Vec<&String> = importers.keys().collect();
+    importer_keys.sort_unstable();
+    for importer_key in importer_keys {
+        let importer_facts = &importers[importer_key];
+        if importer_facts.imports.iter().all(|import| import.is_type) {
             continue;
         }
         let Some(language) = store.lookup(importer_key.as_str()).map(|e| e.language.clone()) else {
@@ -141,13 +233,16 @@ pub fn stitch_cross_file_edges(root: &Path, store: &Store, index_db: &IndexDb, f
         let Some(resolver) = resolver.as_ref() else {
             continue;
         };
+        resolver.begin_importer();
         let importer_rel = crate::path::RelPath::from(importer_key.as_str());
+        let mut probes = ProbeSet::default();
+        let mut targets: Vec<(u32, crate::path::RelPath, u32)> = Vec::new();
 
         for import in &importer_facts.imports {
             if import.is_type {
                 continue;
             }
-            let Some(target_rel) = resolver.resolve(root, importer_key, import) else {
+            let Some(target_rel) = resolver.resolve(root, importer_key, import, &mut probes) else {
                 tracing::debug!(
                     importer = %importer_rel,
                     specifier = %import.specifier,
@@ -163,10 +258,11 @@ pub fn stitch_cross_file_edges(root: &Path, store: &Store, index_db: &IndexDb, f
                 continue;
             };
             let Some((def_rel, name_start)) =
-                resolve_export_transitively(root, store, facts, &export_maps, resolver, target_rel, wanted)
+                resolve_export_transitively(root, store, &catalog, resolver, target_rel, wanted, &mut probes)
             else {
                 continue;
             };
+            targets.push((import.local_start, def_rel.clone(), name_start));
             let mut use_starts: Vec<u32> = vec![import.local_start];
             for edge in &importer_facts.import_uses {
                 if edge.def_start == import.local_start && !use_starts.contains(&edge.use_start) {
@@ -191,10 +287,18 @@ pub fn stitch_cross_file_edges(root: &Path, store: &Store, index_db: &IndexDb, f
                 }
             }
         }
+
+        if !probes.is_empty() || !targets.is_empty() {
+            batch
+                .writer()
+                .upsert_import_probes(&importer_rel, &targets, &probes.hashes());
+            batch.item_staged();
+        }
     }
 
-    if !batch.finish() {
-        return;
+    let committed = batch.finish();
+    if committed {
+        tracing::debug!(edges, "cross-file stitch: staged cross-file resolved edges");
     }
-    tracing::debug!(edges, "cross-file stitch: staged cross-file resolved edges");
+    committed
 }

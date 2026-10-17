@@ -8,6 +8,30 @@ fn fresh_db() -> (TempDir, IndexDb) {
     (dir, db)
 }
 
+#[test]
+fn open_reports_a_wipe_only_when_the_stamped_schema_version_differs() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let memory = dir.path().join("memory.fjall");
+    let fresh = IndexDb::open_with_memory(dir.path(), &memory).expect("fresh open");
+    assert!(!fresh.wiped_on_open(), "a first open wipes nothing");
+    fresh
+        .meta
+        .insert(
+            crate::index::META_SCHEMA_VER,
+            (crate::index::INDEX_SCHEMA_VER + 1).to_be_bytes(),
+        )
+        .expect("stamp a foreign schema version");
+    drop(fresh);
+
+    let wiped = IndexDb::open_with_memory(dir.path(), &memory).expect("reopen");
+    assert!(wiped.wiped_on_open(), "a mismatched revision wipes the index");
+    assert!(wiped.symbols_index_is_empty());
+    drop(wiped);
+
+    let again = IndexDb::open_with_memory(dir.path(), &memory).expect("third open");
+    assert!(!again.wiped_on_open(), "the rewritten stamp matches, so no second wipe");
+}
+
 fn synthetic_l1(syms: &[(&str, SymbolKind, u32)]) -> FileMapL1 {
     FileMapL1 {
         schema_ver: crate::extract::SCHEMA_VER,
@@ -468,4 +492,67 @@ fn bm25_dual_partition_consistency() {
     w.commit().unwrap();
     assert!(db.code_bm25_postings.iter().next().is_none());
     assert!(db.code_bm25_by_path.iter().next().is_none());
+}
+
+/// The probe rows are written per importer, found by the probed path or by one of its ancestor
+/// directories, and removed together with the importer's resolved edges (the call a re-resolve or a
+/// removal makes) -- with no row left in either keyspace and none touched for a sibling importer.
+#[cfg(any(feature = "code-intel-js", feature = "code-intel-stack"))]
+#[test]
+fn import_probe_rows_roundtrip_and_leave_with_the_importer() {
+    let (_d, db) = fresh_db();
+    let app = RelPath::from("src/app.ts");
+    let other = RelPath::from("src/other.ts");
+    let (impl_ts, util_ts) = (RelPath::from("src/impl.ts"), RelPath::from("src/util.ts"));
+    let probes_app = [keys::probe_hash("src/impl.ts"), keys::probe_hash("src/util")];
+    let probes_other = [keys::probe_hash("src/impl.ts")];
+
+    let mut w = db.writer();
+    w.upsert_import_probes(&app, &[(7, impl_ts.clone(), 40), (31, util_ts, 2)], &probes_app);
+    w.upsert_import_probes(&other, &[(3, impl_ts.clone(), 40)], &probes_other);
+    w.commit().unwrap();
+
+    let mut targets = db.import_targets_of(&app);
+    targets.sort();
+    assert_eq!(
+        targets.len(),
+        2,
+        "the manifest row must not read as a binding: {targets:?}"
+    );
+    assert_eq!(targets[0], (7, impl_ts, 40));
+
+    let mut probing = db.importers_probing("src/impl.ts");
+    probing.sort();
+    assert_eq!(probing, vec![app.clone(), other.clone()]);
+    assert_eq!(
+        db.importers_probing("src/util/index.ts"),
+        vec![app.clone()],
+        "adding a file under a directory the importer saw missing must reach it through the directory"
+    );
+    assert!(db.is_probed("src/util/index.ts"));
+    assert!(!db.is_probed("docs/readme.md"));
+
+    let mut w = db.writer();
+    w.remove_resolved_file(&app).unwrap();
+    w.commit().unwrap();
+
+    assert!(db.import_targets_of(&app).is_empty());
+    assert_eq!(db.importers_probing("src/impl.ts"), vec![other.clone()]);
+    assert!(!db.is_probed("src/util"));
+    assert_eq!(
+        db.import_targets_of(&other).len(),
+        1,
+        "a sibling importer's rows must survive"
+    );
+    assert_eq!(db.importers_by_probe.iter().count(), 1);
+}
+
+#[test]
+fn import_probes_are_incomplete_until_stamped() {
+    let (_d, db) = fresh_db();
+    assert!(!db.import_probes_complete(), "a fresh index has no probe rows to trust");
+    db.set_import_probes_complete(true).unwrap();
+    assert!(db.import_probes_complete());
+    db.set_import_probes_complete(false).unwrap();
+    assert!(!db.import_probes_complete());
 }

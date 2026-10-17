@@ -171,6 +171,10 @@ struct WorkspaceEntry {
     /// redundant. This is what stops N sessions' back-to-back full rescans (issue #44) from
     /// re-walking a monorepo N times.
     full_scan_gen: std::sync::atomic::AtomicU64,
+    /// Set at open when the fjall index was wiped or is empty over a populated file map; every
+    /// rescan runs full until one completes, which clears it. Without it the daemon would keep
+    /// serving empty reference reads for a workspace nobody asked to rescan.
+    rebuild_pending: std::sync::atomic::AtomicBool,
     /// The most recent completed full scan: (generation, embed mode, stats). Served to coalesced
     /// requests instead of re-scanning; an `Inline` result satisfies a `Deferred` request but not
     /// vice versa.
@@ -374,6 +378,8 @@ impl WorkspacePool {
 
         let mode = if embed { EmbedMode::Inline } else { EmbedMode::Deferred };
         let config = entry.config();
+        let rebuild_pending = entry.rebuild_pending.load(std::sync::atomic::Ordering::Acquire);
+        let full = full || rebuild_pending;
         let incremental = matches!(paths, Some(ref p) if !full && !p.is_empty());
         let gen_before = entry.full_scan_gen.load(std::sync::atomic::Ordering::Acquire);
         let mut store = entry.store.lock().unwrap_or_else(PoisonError::into_inner);
@@ -393,20 +399,42 @@ impl WorkspacePool {
         // the last concurrent full Inline pass ends. Incremental passes keep it warm for searches.
         #[cfg(feature = "intelligence")]
         let _embed_pass = (matches!(mode, EmbedMode::Inline) && !incremental).then(crate::embeddings::begin_embed_pass);
-        let report = if incremental {
+        let scanned = if incremental {
             let paths = paths.as_deref().unwrap_or_default();
-            scanner::scan_paths_with_cancel(&entry.root, &mut store, &config, paths, mode, cancel)?
+            scanner::scan_paths_with_cancel(&entry.root, &mut store, &config, paths, mode, cancel)
         } else {
-            scanner::scan_with_cancel(&entry.root, &mut store, &config, ScanSource::WorkingTree, mode, cancel)?
+            scanner::scan_with_cancel(&entry.root, &mut store, &config, ScanSource::WorkingTree, mode, cancel)
         };
+        // Before the scan's error propagates: a poisoned handle fails every later commit for the life
+        // of the daemon, so it has to be replaced whether or not this pass got to report it.
+        self.recover_poisoned_index(&entry, &mut store);
+        let report = scanned?;
         if report.stats.displaced_artifacts() || std::mem::take(&mut store.reset_stale_schema) {
             self.cleanup_signal.notify_one();
         }
         if !incremental && !report.cancelled {
+            entry.rebuild_pending.store(false, std::sync::atomic::Ordering::Release);
+            store.index_rebuild_needed = false;
             let generation = entry.full_scan_gen.fetch_add(1, std::sync::atomic::Ordering::AcqRel) + 1;
             *entry.last_full.lock().unwrap_or_else(PoisonError::into_inner) = Some((generation, mode, report.stats));
         }
         Ok((report.stats, report.cancelled))
+    }
+
+    /// Replace a poisoned code-index handle (a failed flush or commit; see
+    /// [`IndexDb::is_poisoned`](crate::index::IndexDb::is_poisoned)) by reopening the database,
+    /// which replays the journal into a fresh handle. When the reopen fails the entry is evicted so
+    /// the next request opens the workspace from scratch instead of serving a dead handle. Either
+    /// way the status sidecar already reads partial, so the next open schedules a full scan.
+    fn recover_poisoned_index(&self, entry: &WorkspaceEntry, store: &mut Store) {
+        if !store.index_db.as_ref().is_some_and(crate::index::IndexDb::is_poisoned) {
+            return;
+        }
+        tracing::warn!(root = %entry.root.display(), "index handle poisoned; reopening");
+        if let Err(error) = store.reopen_index_db() {
+            tracing::error!(root = %entry.root.display(), %error, "index reopen failed; evicting the workspace");
+            self.lock_map().remove(&entry.key);
+        }
     }
 
     /// Run `f` against a workspace's open read-write [`Store`] (immutable borrow), opening it into
@@ -662,14 +690,33 @@ impl WorkspacePool {
         }
         let pool = std::sync::Arc::clone(self);
         let root = root.to_path_buf();
-        tokio::task::spawn_blocking(move || pool.get_or_open(&root))
+        let entry = tokio::task::spawn_blocking(move || pool.get_or_open(&root))
             .await
             .map_err(|join| {
                 WorkspacePoolError::Store(store::StoreError::Io {
                     path: PathBuf::new(),
                     source: std::io::Error::other(format!("workspace open task failed: {join}")),
                 })
-            })?
+            })??;
+        self.spawn_pending_rebuild(&entry);
+        Ok(entry)
+    }
+
+    /// Start the full scan a freshly opened workspace owes when its index was wiped or is empty over
+    /// a populated file map. Detached: the open must not wait on a whole-tree scan. The entry's
+    /// `rebuild_pending` flag makes a racing client rescan run full too, and the scan coalesces.
+    #[cfg(all(feature = "comms", any(unix, windows)))]
+    fn spawn_pending_rebuild(self: &std::sync::Arc<Self>, entry: &WorkspaceEntry) {
+        if !entry.rebuild_pending.load(std::sync::atomic::Ordering::Acquire) {
+            return;
+        }
+        let pool = std::sync::Arc::clone(self);
+        let root = entry.root.clone();
+        tokio::task::spawn_blocking(move || {
+            if let Err(error) = pool.rescan(&root, None, true, false, &pool.scan_cancel) {
+                tracing::warn!(root = %root.display(), %error, "index rebuild scan failed");
+            }
+        });
     }
 
     /// Fetch the entry for `root`, opening it read-write and inserting it (evicting LRU past the
@@ -712,6 +759,11 @@ impl WorkspacePool {
             }
         };
         let store = Store::open_with_holder(&resolved, VIEW_WORKING, LockHolder::Rescan)?;
+        let rebuild_pending = store.index_rebuild_needed;
+        if rebuild_pending {
+            tracing::warn!(root = %resolved.display(), "index is empty over a populated file map; scheduling a full rebuild");
+            store.mark_status_health(&crate::store::ScanHealth::partial("index rebuilding", 0, 0));
+        }
         let config_stamp = config::daemon::ConfigStamp::of(&resolved);
         let config = config::daemon::load_daemon(&resolved)?;
         let entry = std::sync::Arc::new(WorkspaceEntry {
@@ -722,6 +774,7 @@ impl WorkspacePool {
             key: key.clone(),
             last_used: Mutex::new(Instant::now()),
             full_scan_gen: std::sync::atomic::AtomicU64::new(0),
+            rebuild_pending: std::sync::atomic::AtomicBool::new(rebuild_pending),
             last_full: Mutex::new(None),
             #[cfg(all(feature = "comms", any(unix, windows)))]
             serve_state: tokio::sync::Mutex::new(None),

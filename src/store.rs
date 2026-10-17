@@ -21,10 +21,11 @@ pub use crate::store_layout::LANCE_DIR;
 #[cfg(any(feature = "test-support", test))]
 pub use crate::store_layout::init_isolated_cache;
 pub use crate::store_layout::{
-    BLOBS_DIR, CACHE_DIR, DATA_HOME_ENV, INDEX_FILE, LOCK_FILE, LOCK_META_FILE, STATUS_SIDECAR_FILE,
-    STATUS_SIDECAR_SCHEMA_VER, StatusSidecar, VIEW_STAGED, VIEW_WORKING, VIEWS_DIR, WORKSPACE_MARKER_FILE,
-    WORKSPACES_DIR, WorkspaceMarker, cache_root, count_fm_blobs, ensure_workspace_marker, global_blobs_dir,
-    read_status_sidecar, read_workspace_marker, status_sidecar_path, view_name_for_rev, workspace_cache_dir,
+    BLOBS_DIR, CACHE_DIR, DATA_HOME_ENV, INDEX_FILE, LOCK_FILE, LOCK_META_FILE, MEMORY_STORE_DIR, PartialScan,
+    REPOS_DIR, STATUS_SIDECAR_FILE, STATUS_SIDECAR_SCHEMA_VER, ScanHealth, StatusSidecar, VIEW_STAGED, VIEW_WORKING,
+    VIEWS_DIR, WORKSPACE_MARKER_FILE, WORKSPACES_DIR, WorkspaceMarker, cache_root, count_fm_blobs,
+    ensure_workspace_marker, global_blobs_dir, memory_store_dir, read_status_sidecar, read_workspace_marker,
+    repo_group_dir, repo_group_key, status_sidecar_path, update_status_health, view_name_for_rev, workspace_cache_dir,
     workspace_key, write_status_sidecar,
 };
 
@@ -294,6 +295,12 @@ pub struct Store {
     /// bump): every blob that index referenced is now unreferenced, so the first scan of the
     /// rebuilt view should be followed by a blob sweep (see `Store::displaced_blobs_pending`).
     pub reset_stale_schema: bool,
+    /// True when the fjall index was empty or just wiped (a partition-revision bump) while the file
+    /// map was populated: symbol / call / reference reads would answer empty until a full scan
+    /// rebuilds it. Set at open, which also drops the in-memory file map so that scan re-extracts
+    /// every file (blobs are reused by hash) instead of skipping them as unchanged over an empty
+    /// index. Only a writer opening the index can know it.
+    pub index_rebuild_needed: bool,
     _lock: Option<File>,
 }
 
@@ -332,7 +339,7 @@ impl Store {
         ensure_dir(&view_dir)?;
         ensure_workspace_marker(&basemind_dir, root);
         let mut reset_stale_schema = false;
-        let index = match read_index(&view_dir) {
+        let mut index = match read_index(&view_dir) {
             Ok(Some(idx)) => idx,
             Ok(None) => Index::empty(),
             Err(StoreError::SchemaMismatch { found, expected }) => {
@@ -348,7 +355,13 @@ impl Store {
             }
             Err(e) => return Err(e),
         };
-        let index_db = Some(open_index_with_retry(&view_dir)?);
+        let index_db = open_index_with_retry(root, &view_dir)?;
+        let index_rebuild_needed =
+            !index.files.is_empty() && (index_db.wiped_on_open() || index_db.symbols_index_is_empty());
+        if index_rebuild_needed {
+            index.files.clear();
+        }
+        let index_db = Some(index_db);
         Ok(Self {
             root: root.to_path_buf(),
             basemind_dir,
@@ -361,6 +374,7 @@ impl Store {
             #[cfg(feature = "intelligence")]
             lance: None,
             reset_stale_schema,
+            index_rebuild_needed,
             _lock: Some(lock),
         })
     }
@@ -431,7 +445,7 @@ impl Store {
             Err(e) => return Err(e),
         };
         let index_db = if allow_index_db && schema_ok && view_dir.exists() && !writer_lock_is_held(&basemind_dir) {
-            match IndexDb::open(&view_dir) {
+            match IndexDb::open_tolerating_held_memory(&view_dir, &memory_store_dir(root)) {
                 Ok(db) => Some(db),
                 Err(IndexError::Fjall(fjall::Error::Locked)) => None,
                 Err(error) => {
@@ -454,6 +468,7 @@ impl Store {
             #[cfg(feature = "intelligence")]
             lance: None,
             reset_stale_schema: false,
+            index_rebuild_needed: false,
             _lock: None,
         })
     }
@@ -551,13 +566,41 @@ impl Store {
     /// A no-op for non-working views: the statusline only ever reflects the working view, and writing
     /// from a `staged`/`rev-*` scan would clobber it with the wrong counts. Best-effort — a failed
     /// write is swallowed by [`write_status_sidecar`], so it never affects a scan's success.
+    ///
+    /// Keeps the completeness fields the last full scan recorded: an incremental update refreshes
+    /// counts but must not mark a partial or unresolved index healthy.
     pub fn write_status_sidecar(&self) {
+        let health = read_status_sidecar(&self.basemind_dir).map_or_else(ScanHealth::complete, |s| s.health());
+        self.write_status_sidecar_with(&health);
+    }
+
+    /// [`Self::write_status_sidecar`] recording `health` — what a full scan states about itself.
+    pub fn write_status_sidecar_with(&self, health: &ScanHealth) {
         if self.view != VIEW_WORKING {
             return;
         }
         let file_count = self.index.files.len();
         let blob_count = count_fm_blobs(&self.blobs_dir);
-        write_status_sidecar(&self.basemind_dir, file_count, blob_count);
+        write_status_sidecar(&self.basemind_dir, file_count, blob_count, health);
+    }
+
+    /// Drop and reopen the Fjall index, replacing a poisoned handle with a fresh one. Our handle is
+    /// released first so the directory lock can be retaken; if a clone elsewhere still holds the old
+    /// database the reopen fails and `index_db` stays `None`, which the caller must treat as a dead
+    /// store.
+    pub fn reopen_index_db(&mut self) -> Result<(), IndexError> {
+        if self.index_db.take().is_some() {
+            self.index_db = Some(open_index_with_retry(&self.root, &self.view_dir)?);
+        }
+        Ok(())
+    }
+
+    /// Record `health` while leaving the sidecar's counts as the last durable flush wrote them. For
+    /// an aborted scan, whose in-memory file map is ahead of the unflushed `index.msgpack`.
+    pub fn mark_status_health(&self, health: &ScanHealth) {
+        if self.view == VIEW_WORKING {
+            update_status_health(&self.basemind_dir, health);
+        }
     }
 }
 
@@ -661,10 +704,11 @@ const INDEX_OPEN_BACKOFF: std::time::Duration = std::time::Duration::from_millis
 /// ONLY correct for a caller that already holds `.basemind/.lock`; such a caller is the sole
 /// rightful writer, so any `Locked` is transient and clears. Every other [`IndexError`] — and a
 /// lock that never clears within the budget — propagates.
-pub(crate) fn open_index_with_retry(view_dir: &Path) -> Result<IndexDb, IndexError> {
+pub(crate) fn open_index_with_retry(root: &Path, view_dir: &Path) -> Result<IndexDb, IndexError> {
+    let memory_dir = memory_store_dir(root);
     let mut attempt = 0;
     loop {
-        match IndexDb::open(view_dir) {
+        match IndexDb::open_with_memory(view_dir, &memory_dir) {
             Ok(db) => return Ok(db),
             Err(IndexError::Fjall(fjall::Error::Locked)) if attempt < INDEX_OPEN_RETRIES => {
                 attempt += 1;
@@ -759,6 +803,28 @@ mod tests {
         assert!(
             err.to_string().contains("rev-deadbee"),
             "error names the view, got: {err}"
+        );
+    }
+
+    #[test]
+    fn read_only_open_keeps_the_code_index_when_another_process_holds_the_memory_store() {
+        init_isolated_cache();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        drop(Store::open(tmp.path(), VIEW_WORKING).expect("writer creates the view"));
+        // A raw handle stands in for the daemon: a separate process holding the group's lock.
+        let memory_dir = memory_store_dir(tmp.path());
+        std::fs::create_dir_all(&memory_dir).expect("memory dir");
+        let _daemon = fjall::Database::builder(&memory_dir).open().expect("hold memory store");
+
+        let store = Store::open_read_only(tmp.path(), VIEW_WORKING).expect("read-only open");
+
+        let db = store
+            .index_db
+            .as_ref()
+            .expect("code index survives a held memory store");
+        assert!(
+            db.memory_detached(),
+            "memory is reported unavailable, not silently empty"
         );
     }
 

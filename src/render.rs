@@ -6,12 +6,15 @@
 //!
 //! Auto-disables ANSI on non-TTY stdout and when `NO_COLOR` is set.
 
+use std::collections::BTreeMap;
 use std::io::Write;
+use std::path::Path;
 
 use anstream::AutoStream;
 use anstyle::{AnsiColor, Color, Reset, Style};
 
 use crate::lang::BootstrapSummary;
+use crate::scan_phase_peaks::PhasePeak;
 use crate::scanner::{FileResult, FileStatus, ScanObserver, ScanStats};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,22 +46,89 @@ pub fn stdout(force_off: bool) -> AutoStream<std::io::Stdout> {
 
 const COL_PATH: usize = 8;
 
-/// Print the per-file lines of an already-collected result set (no summary). Used by the watcher,
-/// which renders a batch after the fact.
-pub fn render_files(w: &mut AutoStream<std::io::Stdout>, results: &[FileResult], verbosity: Verbosity) {
-    for r in results {
-        render_file(w, r, verbosity);
+/// Per-grammar tally of files that parsed with errors, so a grammar with gaps produces one summary
+/// line instead of one `warn` line per file.
+#[derive(Debug, Default)]
+pub struct WarnTally {
+    by_grammar: BTreeMap<&'static str, (usize, u64)>,
+}
+
+impl WarnTally {
+    /// Fold in `res` when it is a partial-map warning. Returns true when it was absorbed.
+    pub fn absorb(&mut self, res: &FileResult) -> bool {
+        let FileStatus::Updated {
+            had_errors: true,
+            error_count,
+            ..
+        } = &res.status
+        else {
+            return false;
+        };
+        let grammar = crate::lang::detect(Path::new(&res.path)).unwrap_or("unknown");
+        let entry = self.by_grammar.entry(grammar).or_default();
+        entry.0 += 1;
+        entry.1 += u64::from(*error_count);
+        true
     }
+
+    /// One line per grammar: `<grammar>: N files, M parse errors`.
+    pub fn summary_lines(&self) -> Vec<String> {
+        self.by_grammar
+            .iter()
+            .map(|(grammar, (files, errors))| {
+                format!(
+                    "{grammar}: {files} file{fs}, {errors} parse error{es}",
+                    fs = if *files == 1 { "" } else { "s" },
+                    es = if *errors == 1 { "" } else { "s" },
+                )
+            })
+            .collect()
+    }
+
+    /// Print the summary lines (a no-op when nothing was absorbed) and reset the tally.
+    pub fn flush(&mut self, w: &mut AutoStream<std::io::Stdout>) {
+        let style = Style::new().fg_color(Some(Color::Ansi(AnsiColor::Yellow))).render();
+        let reset = Reset.render();
+        let dim = Style::new().dimmed().render();
+        for line in self.summary_lines() {
+            let _ = writeln!(
+                w,
+                "{style}⚠ warn {reset} {line} {dim}(partial maps; -v lists each file){reset}"
+            );
+        }
+        self.by_grammar.clear();
+    }
+}
+
+/// Print one file's line, or fold a parse-error warning into `tally` unless `-v` asked for every line.
+fn render_or_tally(w: &mut AutoStream<std::io::Stdout>, tally: &mut WarnTally, res: &FileResult, verbosity: Verbosity) {
+    if verbosity == Verbosity::Default && tally.absorb(res) {
+        return;
+    }
+    render_file(w, res, verbosity);
+}
+
+/// Print the per-file lines of an already-collected result set (no summary). Used by the watcher,
+/// which renders a batch after the fact. Parse-error warnings collapse into one line per grammar
+/// unless `-v`.
+pub fn render_files(w: &mut AutoStream<std::io::Stdout>, results: &[FileResult], verbosity: Verbosity) {
+    let mut tally = WarnTally::default();
+    for r in results {
+        render_or_tally(w, &mut tally, r, verbosity);
+    }
+    tally.flush(w);
 }
 
 /// A [`ScanObserver`] that prints each file's line the moment the scan absorbs it.
 ///
 /// This is why the CLI no longer needs `ScanReport.results`: it owns its own stdout stream, so it
 /// never has to be handed a `Vec` of every file in the repo just to print one line per file. The
-/// summary is still rendered by the caller from `report.stats` once the scan returns.
+/// summary is still rendered by the caller from `report.stats` once the scan returns. Parse-error
+/// warnings are tallied per grammar and printed by [`finish`](Self::finish) unless `-v`.
 pub struct ScanLineObserver {
     out: AutoStream<std::io::Stdout>,
     verbosity: Verbosity,
+    tally: WarnTally,
 }
 
 impl ScanLineObserver {
@@ -67,13 +137,19 @@ impl ScanLineObserver {
         Self {
             out: stdout(force_off),
             verbosity,
+            tally: WarnTally::default(),
         }
+    }
+
+    /// Print the per-grammar warning summary. Call once the scan has returned.
+    pub fn finish(&mut self) {
+        self.tally.flush(&mut self.out);
     }
 }
 
 impl ScanObserver for ScanLineObserver {
     fn on_file(&mut self, result: FileResult) {
-        render_file(&mut self.out, &result, self.verbosity);
+        render_or_tally(&mut self.out, &mut self.tally, &result, self.verbosity);
     }
 }
 
@@ -170,6 +246,30 @@ pub fn render_summary(w: &mut AutoStream<std::io::Stdout>, stats: &ScanStats, ve
             "{too_large} (over [scan] max_file_bytes, or [documents] max_file_bytes for documents)"
         );
     }
+}
+
+/// Peak footprint per scan phase, one dimmed line (`peak memory  extract 512.0MB  resolve 5.5GB`).
+/// Silent under `--quiet` and when the scan recorded none.
+pub fn render_phase_peaks(w: &mut AutoStream<std::io::Stdout>, peaks: &[PhasePeak], verbosity: Verbosity) {
+    let Some(line) = phase_peaks_line(peaks) else {
+        return;
+    };
+    if verbosity == Verbosity::Quiet {
+        return;
+    }
+    let dim = Style::new().dimmed().render();
+    let _ = writeln!(w, "{dim}{line}{reset}", reset = Reset.render());
+}
+
+fn phase_peaks_line(peaks: &[PhasePeak]) -> Option<String> {
+    if peaks.is_empty() {
+        return None;
+    }
+    let cells: Vec<String> = peaks
+        .iter()
+        .map(|p| format!("{} {}", p.phase, human_bytes(p.peak_bytes)))
+        .collect();
+    Some(format!("peak memory  {}", cells.join("  ")))
 }
 
 /// Print what the post-scan blob cleanup reclaimed. Silent when nothing was orphaned.
@@ -475,6 +575,7 @@ fn row_for(res: &FileResult, verbosity: Verbosity) -> Option<Row<'_>> {
             reused,
             degraded,
             text_fallback,
+            elapsed_ms,
         } => {
             if v == Verbosity::Quiet {
                 None
@@ -491,10 +592,23 @@ fn row_for(res: &FileResult, verbosity: Verbosity) -> Option<Row<'_>> {
                     symbol: '✓',
                     label: "doc",
                     style: Style::new().fg_color(Some(Color::Ansi(AnsiColor::BrightBlue))),
-                    detail: format!("({chunk_count} chunks, dim={embedding_dim}{cached})"),
+                    detail: format!(
+                        "({chunk_count} chunks, dim={embedding_dim}{cached}, {})",
+                        format_elapsed(*elapsed_ms)
+                    ),
                 })
             }
         }
+    }
+}
+
+/// Compact per-document duration: `850ms` under a second, `1.2s` under a minute, `3m05s` beyond.
+#[cfg(any(feature = "documents", test))]
+fn format_elapsed(ms: u64) -> String {
+    match ms {
+        0..1000 => format!("{ms}ms"),
+        1000..60_000 => format!("{:.1}s", ms as f64 / 1000.0),
+        _ => format!("{}m{:02}s", ms / 60_000, ms / 1000 % 60),
     }
 }
 
@@ -517,7 +631,80 @@ const _: usize = COL_PATH;
 
 #[cfg(test)]
 mod tests {
-    use super::sanitize_path;
+    use super::{WarnTally, format_elapsed, phase_peaks_line, sanitize_path};
+    use crate::scan_phase_peaks::PhasePeak;
+    use crate::scanner::{FileResult, FileStatus};
+
+    fn result(path: &str, status: FileStatus) -> FileResult {
+        FileResult::bare(path.to_string(), status)
+    }
+
+    fn warned(path: &str, error_count: u32) -> FileResult {
+        result(
+            path,
+            FileStatus::Updated {
+                had_errors: true,
+                error_count,
+                reused: false,
+            },
+        )
+    }
+
+    #[test]
+    fn warn_tally_aggregates_files_and_errors_per_grammar() {
+        let mut tally = WarnTally::default();
+        assert!(tally.absorb(&warned("a/one.scss", 3)));
+        assert!(tally.absorb(&warned("a/two.scss", 2)));
+        assert!(tally.absorb(&warned("db/x.sql", 1)));
+        assert_eq!(
+            tally.summary_lines(),
+            vec!["scss: 2 files, 5 parse errors", "sql: 1 file, 1 parse error"]
+        );
+    }
+
+    #[test]
+    fn phase_peaks_line_lists_each_phase_and_is_absent_when_empty() {
+        assert_eq!(phase_peaks_line(&[]), None);
+        let peaks = [
+            PhasePeak {
+                phase: "extract",
+                peak_bytes: 512 * 1024 * 1024,
+            },
+            PhasePeak {
+                phase: "resolve",
+                peak_bytes: 3 * 1024 * 1024 * 1024,
+            },
+        ];
+        assert_eq!(
+            phase_peaks_line(&peaks).as_deref(),
+            Some("peak memory  extract 512.0MB  resolve 3.0GB")
+        );
+    }
+
+    #[test]
+    fn warn_tally_ignores_clean_and_unchanged_files() {
+        let mut tally = WarnTally::default();
+        let clean = result(
+            "a.rs",
+            FileStatus::Updated {
+                had_errors: false,
+                error_count: 0,
+                reused: false,
+            },
+        );
+        assert!(!tally.absorb(&clean));
+        assert!(!tally.absorb(&result("b.rs", FileStatus::Unchanged)));
+        assert!(tally.summary_lines().is_empty());
+    }
+
+    #[test]
+    fn format_elapsed_scales_from_millis_to_minutes() {
+        assert_eq!(format_elapsed(0), "0ms");
+        assert_eq!(format_elapsed(850), "850ms");
+        assert_eq!(format_elapsed(1_200), "1.2s");
+        assert_eq!(format_elapsed(59_000), "59.0s");
+        assert_eq!(format_elapsed(185_000), "3m05s");
+    }
 
     #[test]
     fn sanitize_path_flattens_newlines_to_spaces() {

@@ -15,17 +15,24 @@ use crate::scanner_candidates::walk_candidates;
 #[cfg(feature = "code-search")]
 use crate::scanner_code::PendingCodeBatch;
 #[cfg(feature = "documents")]
-use crate::scanner_docs::{PendingDocBatch, flush_document_batches};
-use crate::scanner_drive::{DriveOutcome, PendingCodeBatchOpt, PendingDocBatchOpt, ScanDrive, drive_scan};
+use crate::scanner_docs::PendingDocBatch;
+use crate::scanner_drive::{DriveOutcome, ScanDrive, drive_scan};
 use crate::scanner_file::scanner_pool;
 use crate::scanner_filter::{Filters, IndexFilter};
+#[cfg(feature = "documents")]
+use crate::scanner_flush::flush_doc_removals_if_any;
+use crate::scanner_flush::{
+    finalize_bm25_stats_if_any, flush_code_batches_if_any, flush_code_removals_if_any, flush_doc_batches_if_any,
+    maintain_lance_if_open,
+};
+use crate::scanner_integrity::{abort_on_fault, ensure_space, finish_resolve, flush_code_map, preflight};
 #[cfg(feature = "documents")]
 use crate::scanner_lanes::LANE_DOC_REMOVALS;
 use crate::scanner_lanes::{
     LANE_BM25_STATS, LANE_CODE_BATCHES, LANE_CODE_REMOVALS, LANE_DOC_BATCHES, LANE_EMBED_POLICY, LANE_RESOLVE,
     run_optional_lane,
 };
-use crate::store::{FileEntry, Store, StoreError};
+use crate::store::{FileEntry, ScanHealth, Store, StoreError};
 
 /// The per-file pipeline (`process_file` and the read / classify / extract helpers around it) and
 /// the rayon pool it runs on live in their own module to keep this file under the module size cap.
@@ -115,6 +122,14 @@ pub enum ScanError {
         root: String,
         top_dirs: Vec<(String, usize)>,
     },
+    /// An index commit failed in a way no retry cures: the disk is full, or the index handle is
+    /// poisoned. Raised instead of finishing the pass, because every later commit fails the same
+    /// way and the result would be an index that reads complete over half-written partitions.
+    #[error("scan aborted: the index cannot be written ({0}). Free disk space and rescan.")]
+    IndexFault(String),
+    /// The volume lacks room for the index; see [`crate::disk_space`].
+    #[error("scan refused: {0}")]
+    InsufficientSpace(#[from] crate::disk_space::InsufficientSpace),
 }
 
 /// `node_modules (812431), .cache (194002)` — the contributor list in [`ScanError::TooManyCandidates`].
@@ -300,6 +315,8 @@ pub enum FileStatus {
         /// True when structured extraction failed and the file was re-read as `text/plain` (drives
         /// `docs_text_fallback`; implies `degraded`).
         text_fallback: bool,
+        /// Wall-clock milliseconds this document spent in extraction, chunking and persisting.
+        elapsed_ms: u64,
     },
     /// Subset of ExtractFailed: document extraction overran `[documents] extraction_timeout_secs`
     /// and was abandoned.
@@ -325,6 +342,10 @@ pub struct ScanReport {
     /// else — remaining candidates, the stale purge, the resolve/doc lanes — was skipped, so the
     /// caller must not treat the report as a complete pass.
     pub cancelled: bool,
+    /// Peak memory footprint per scan phase (`candidates`, `extract`, `purge`, `flush`, `resolve`,
+    /// `lanes` — the document and LanceDB flushes run in `lanes`), in the order the phases ran.
+    /// Process-local: not part of any wire protocol.
+    pub phase_peaks: Vec<crate::scan_phase_peaks::PhasePeak>,
 }
 
 /// Cooperative cancellation token for a scan.
@@ -442,7 +463,9 @@ pub fn scan_with_observer(
     // Paired with the breadcrumb, and for the same reason: when the kernel kills the process there
     // is no exit path left to log from, so the growth curve has to have been written down as it
     // happened. The breadcrumb says a scan died here; this says how its memory got there. ~keep
-    let _memory_log = crate::scan_evidence::MemoryLog::start(root);
+    let phase_peaks = crate::scan_phase_peaks::PhasePeaks::default();
+    let _memory_log = crate::scan_evidence::MemoryLog::start(root, phase_peaks.clone());
+    preflight(store)?;
 
     let submodule_roots = submodule_roots_for_source(root, &source);
     let mut filters = Filters::build(config, submodule_roots)?;
@@ -450,10 +473,10 @@ pub fn scan_with_observer(
         .then(|| crate::scanner_policy::detect(store, config))
         .filter(|p| matches!(embed, EmbedMode::Inline) && p.changed);
     filters.reflush_embeds = policy.as_ref().is_some_and(|p| p.reflush);
-    advance(&mut breadcrumb, PHASE_CANDIDATES, None);
+    advance(&mut breadcrumb, &phase_peaks, PHASE_CANDIDATES, None);
     let candidates = candidates_for_source(root, config, &filters, &source, cancel)?;
     debug!(count = candidates.len(), kind = source.label(), "scan candidates");
-    advance(&mut breadcrumb, PHASE_EXTRACT, Some(candidates.len()));
+    advance(&mut breadcrumb, &phase_peaks, PHASE_EXTRACT, Some(candidates.len()));
 
     let scope = derive_scope(root, &source);
     let mut report = ScanReport::default();
@@ -467,6 +490,10 @@ pub fn scan_with_observer(
         cancel,
     };
     let driven = drive_scan(&drive, &candidates, store, &mut report.stats, observer);
+    let (seen_count, total_candidates) = (driven.seen.len(), candidates.len());
+    // Before the cancel check and the stale purge: a drive stopped by a fatal commit failure is a ~keep
+    // partial pass too, and must not be flushed or purged as if it were whole. ~keep
+    abort_on_fault(store, seen_count, total_candidates)?;
 
     // Cancelled mid-pass: commit what completed and return BEFORE the stale purge. The purge below ~keep
     // treats every indexed file absent from `driven.seen` as deleted — on a partial pass that would ~keep
@@ -476,17 +503,19 @@ pub fn scan_with_observer(
     // rows come from already-persisted blobs (no model inference), so this stays bounded. ~keep
     if cancel.is_cancelled() {
         report.cancelled = true;
-        flush_code_map(store)?;
+        flush_code_map(store, &ScanHealth::partial("cancelled", seen_count, total_candidates))?;
         run_optional_lane(LANE_DOC_BATCHES, || {
             flush_doc_batches_if_any(store, config, driven.doc_batches);
         });
         run_optional_lane(LANE_CODE_BATCHES, || {
             flush_code_batches_if_any(store, config, &scope, driven.code_batches);
         });
+        phase_peaks.sample_now();
+        report.phase_peaks = phase_peaks.snapshot();
         return Ok(report);
     }
 
-    advance(&mut breadcrumb, PHASE_PURGE, None);
+    advance(&mut breadcrumb, &phase_peaks, PHASE_PURGE, None);
 
     // Derived AFTER the drive rather than before it: the entries the drive upserted are all in ~keep
     // `seen`, so they are excluded either way, and reading the file map here keeps the whole ~keep
@@ -557,8 +586,8 @@ pub fn scan_with_observer(
         }
     }
 
-    advance(&mut breadcrumb, PHASE_FLUSH, None);
-    flush_code_map(store)?;
+    advance(&mut breadcrumb, &phase_peaks, PHASE_FLUSH, None);
+    flush_code_map(store, &ScanHealth::resolving())?;
 
     // A token tripped after the last per-file check still stops the pass here, once the code map ~keep
     // is durable but before the resolve pass (which can run for minutes on a large repo). The ~keep
@@ -572,20 +601,25 @@ pub fn scan_with_observer(
         run_optional_lane(LANE_CODE_BATCHES, || {
             flush_code_batches_if_any(store, config, &scope, code_batches);
         });
+        phase_peaks.sample_now();
+        report.phase_peaks = phase_peaks.snapshot();
         return Ok(report);
     }
 
     if matches!(source, ScanSource::WorkingTree) {
-        advance(&mut breadcrumb, PHASE_RESOLVE, None);
+        advance(&mut breadcrumb, &phase_peaks, PHASE_RESOLVE, None);
+        ensure_space(store)?;
         let precise = config.code_intel.precise_resolution;
+        let mut resolved = false;
         run_optional_lane(LANE_RESOLVE, || {
-            scanner_pool(config.resources.scan_threads).install(|| {
+            resolved = scanner_pool(config.resources.scan_threads).install(|| {
                 crate::intel::resolve_pass::resolve_pass(root, store, precise, config.resources.max_footprint_mb)
             });
         });
+        finish_resolve(store, resolved)?;
     }
 
-    advance(&mut breadcrumb, PHASE_LANES, None);
+    advance(&mut breadcrumb, &phase_peaks, PHASE_LANES, None);
     run_optional_lane(LANE_DOC_BATCHES, || {
         flush_doc_batches_if_any(store, config, doc_batches);
     });
@@ -606,36 +640,24 @@ pub fn scan_with_observer(
     run_optional_lane(crate::scanner_lanes::LANE_LANCE_MAINTENANCE, || {
         maintain_lance_if_open(store)
     });
+    phase_peaks.sample_now();
+    report.phase_peaks = phase_peaks.snapshot();
     Ok(report)
 }
 
-/// Move the pass's breadcrumb to `phase`, if one could be written at all. Folding the `Option` in
+/// Move the pass's breadcrumb (and the per-phase memory tally) to `phase`, if one could be written at all. Folding the `Option` in
 /// here keeps every phase boundary a single line and keeps "no breadcrumb" from being a condition
 /// the scan branches on: evidence is never a precondition for the work.
-fn advance(breadcrumb: &mut Option<ScanBreadcrumb>, phase: &'static str, candidates: Option<usize>) {
+fn advance(
+    breadcrumb: &mut Option<ScanBreadcrumb>,
+    peaks: &crate::scan_phase_peaks::PhasePeaks,
+    phase: &'static str,
+    candidates: Option<usize>,
+) {
+    peaks.enter(phase);
     if let Some(crumb) = breadcrumb.as_mut() {
         crumb.advance(phase, candidates);
     }
-}
-
-/// Persist the file map (`index.msgpack`) — the durability barrier that must run BEFORE the optional
-/// post-extraction lanes.
-///
-/// Blobs and the Fjall index are committed per file, but the file map is a single msgpack rewrite at
-/// the end. When it was written *after* the optional lanes, any lane that panicked (the
-/// `stack-graphs` stitcher) or hung until the operator killed the process (the embedding-model
-/// download on a blackholed IPv6 route) left the workspace with gigabytes of committed blobs beside
-/// an `index.msgpack` reporting `file_count: 0` — a silently empty code map that forced a full
-/// re-scan on every launch. Flushing here makes the code map durable the moment it is complete;
-/// every lane after this point is enrichment, and a lane that dies costs only its own tier.
-///
-/// A lane that mutates `store.index` must flush again after itself (only the doc-removal lane does).
-fn flush_code_map(store: &Store) -> Result<(), ScanError> {
-    store.flush()?;
-    // Refresh the cheap statusline sidecar the moment the code map is durable, so a shell
-    // statusline sees fresh counts without ever opening the Fjall index. Best-effort by design.
-    store.write_status_sidecar();
-    Ok(())
 }
 
 /// Incremental scan: process only the given absolute paths. Used by the watcher
@@ -687,6 +709,8 @@ pub fn scan_paths_with_observer(
 
     let mut rels: Vec<String> = Vec::with_capacity(paths.len());
     let mut removed: Vec<String> = Vec::new();
+    // Touched paths that are not (or no longer) indexed: kept only if a resolver consulted them.
+    let mut other: Vec<String> = Vec::new();
     #[cfg(feature = "documents")]
     let mut doc_removed: Vec<String> = Vec::new();
     for abs in paths {
@@ -712,6 +736,7 @@ pub fn scan_paths_with_observer(
                 removed.push(rel);
                 continue;
             }
+            other.push(rel.clone());
             #[cfg(feature = "documents")]
             if store.lookup_doc(&rel).is_some() || store.has_doc_tombstone(&rel) {
                 doc_removed.push(rel);
@@ -721,6 +746,7 @@ pub fn scan_paths_with_observer(
         if !filter.is_indexable(abs) {
             // Exists but a full scan would no longer index it (newly excluded / gitignored, now a
             // symlink or non-regular file): an entry left from an earlier scan is stale.
+            other.push(rel.clone());
             if store.lookup(&rel).is_some() {
                 removed.push(rel.clone());
             }
@@ -739,7 +765,11 @@ pub fn scan_paths_with_observer(
     let nothing_removed = removed.is_empty() && doc_removed.is_empty();
     #[cfg(not(feature = "documents"))]
     let nothing_removed = removed.is_empty();
-    if rels.is_empty() && nothing_removed {
+    let other = store
+        .index_db
+        .as_ref()
+        .map_or_else(Vec::new, |db| crate::intel::resolve_pass::probed_only(db, other));
+    if rels.is_empty() && nothing_removed && other.is_empty() {
         return Ok(ScanReport::default());
     }
 
@@ -812,7 +842,8 @@ pub fn scan_paths_with_observer(
         report.stats.removed += 1;
     }
 
-    flush_code_map(store)?;
+    store.flush()?;
+    store.write_status_sidecar();
 
     // Cancelled: the removals above already ran (path-existence-derived, safe on a partial pass) ~keep
     // and the code map is durable; skip the resolve pass and the removal lanes. The batch flushes ~keep
@@ -835,7 +866,11 @@ pub fn scan_paths_with_observer(
             crate::intel::resolve_pass::resolve_pass_incremental(
                 root,
                 store,
-                &rels,
+                &crate::intel::resolve_pass::PathDelta {
+                    changed: &rels,
+                    removed: &removed,
+                    other: &other,
+                },
                 precise,
                 config.resources.max_footprint_mb,
             )
@@ -902,78 +937,3 @@ fn derive_scope(root: &Path, source: &ScanSource<'_>) -> String {
         },
     }
 }
-
-/// Compact fragments and prune old table versions of the LanceDB store once this scan's writes are
-/// done (#76). No-op when the scan never opened the store or wrote nothing.
-fn maintain_lance_if_open(store: &Store) {
-    #[cfg(any(feature = "documents", feature = "code-search"))]
-    if let Some(lance) = store.lance.as_ref()
-        && let Err(error) = lance.maintain(crate::lance::SCAN_RETENTION)
-    {
-        tracing::warn!(?error, "lance post-scan maintenance failed; old table versions kept");
-    }
-    #[cfg(not(any(feature = "documents", feature = "code-search")))]
-    let _ = store;
-}
-
-/// Push the buffered document batches into LanceDB. No-op without the `documents` feature.
-#[cfg(feature = "documents")]
-fn flush_doc_batches_if_any(store: &mut Store, config: &Config, batches: Vec<PendingDocBatchOpt>) {
-    if batches.is_empty() {
-        return;
-    }
-    // Persist doc↔code links (ADR-0008) before the vector rows: `flush_document_batches` consumes
-    // `batches`, and links are independent of embeddings (they persist even when embed is off).
-    crate::scanner_doc_links::flush_doc_links(store, config, &batches);
-    let _ = flush_document_batches(store, batches, &config.documents.embedding_preset);
-}
-
-#[cfg(not(feature = "documents"))]
-fn flush_doc_batches_if_any(_store: &mut Store, _config: &Config, _batches: Vec<PendingDocBatchOpt>) {}
-
-/// Purge `documents` LanceDB rows + `doc_files` entries for docs removed since the last scan. Called
-/// after the batch flush so it reuses an already-open LanceStore. Only referenced under `documents`.
-#[cfg(feature = "documents")]
-fn flush_doc_removals_if_any(store: &mut Store, config: &Config, scope: &str, stale: &[String]) {
-    crate::scanner_docs::delete_stale_documents(store, config, scope, stale);
-}
-
-/// Push the buffered code-chunk batches into LanceDB. No-op without the `code-search` feature.
-#[cfg(feature = "code-search")]
-fn flush_code_batches_if_any(store: &mut Store, config: &Config, scope: &str, batches: Vec<PendingCodeBatchOpt>) {
-    if batches.is_empty() {
-        return;
-    }
-    let _ = crate::scanner_code::flush_code_batches(store, scope, batches, &config.documents.embedding_preset);
-}
-
-#[cfg(not(feature = "code-search"))]
-fn flush_code_batches_if_any(_store: &mut Store, _config: &Config, _scope: &str, _batches: Vec<PendingCodeBatchOpt>) {}
-
-/// Purge `code_chunks` rows for files removed since the last scan. No-op without `code-search`.
-/// Called after the batch flush so it reuses an already-open LanceStore.
-#[cfg(feature = "code-search")]
-fn flush_code_removals_if_any(store: &mut Store, config: &Config, scope: &str, stale: &[String]) {
-    crate::scanner_code::delete_stale_code_chunks(store, config, scope, stale);
-}
-
-#[cfg(not(feature = "code-search"))]
-fn flush_code_removals_if_any(_store: &mut Store, _config: &Config, _scope: &str, _stale: &[String]) {}
-
-/// Recompute the corpus-global BM25 stats once the per-file postings have all committed, so the
-/// keyword lane's `N` / `avgdl` reflect this scan. Single-threaded; no-op without `code-search` or
-/// when chunking is disabled. No-op on a `None` (read-only) index.
-#[cfg(feature = "code-search")]
-fn finalize_bm25_stats_if_any(store: &Store, config: &Config) {
-    if !crate::scanner_code::should_chunk(config) {
-        return;
-    }
-    if let Some(db) = store.index_db.as_ref()
-        && let Err(error) = db.recompute_bm25_stats()
-    {
-        tracing::warn!(?error, "recompute bm25 stats failed; keyword search may be stale");
-    }
-}
-
-#[cfg(not(feature = "code-search"))]
-fn finalize_bm25_stats_if_any(_store: &Store, _config: &Config) {}

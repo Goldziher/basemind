@@ -17,7 +17,7 @@ use crate::path::RelPath;
 /// [`Ready`]: super::Lifecycle::Ready
 #[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub(crate) struct LifecycleNotice {
-    /// Machine-readable state tag: `"warming_up"`, `"building_index"`, or `"rescanning"`.
+    /// Machine-readable state tag: `"warming_up"`, `"building_index"`, `"rescanning"`, or `"index_rebuilding"`.
     pub state: &'static str,
     /// Human/agent-readable explanation of what the server is doing and what it means for this result.
     pub message: &'static str,
@@ -67,6 +67,27 @@ impl LifecycleNotice {
                       implementation results are truncated. Start the daemon or raise the budget \
                       for complete results.",
             retry: false,
+        }
+    }
+
+    /// [`index_rebuilding`](Self::index_rebuilding) when `status` records a degraded scan, else `None`
+    /// (healthy, or no sidecar yet: the never-scanned case belongs to the building-index lifecycle).
+    pub(crate) fn for_scan_status(status: Option<&crate::store::StatusSidecar>) -> Option<Self> {
+        status
+            .is_some_and(crate::store::StatusSidecar::is_degraded)
+            .then(Self::index_rebuilding)
+    }
+
+    /// The notice for a workspace whose last scan is partial or whose resolve pass has not
+    /// committed, notably an index wiped by a schema revision bump and rebuilding. Reference-shaped
+    /// reads (`references` / `callers` / `implementations`) answer empty or short until it finishes.
+    pub(crate) fn index_rebuilding() -> Self {
+        Self {
+            state: "index_rebuilding",
+            message: "index rebuilding — results incomplete. A full scan is rebuilding the symbol / \
+                      reference index; an empty `references` / `callers` / `implementations` answer \
+                      does not mean there are none. Poll `status` until `degraded` clears, then retry.",
+            retry: true,
         }
     }
 }
@@ -486,6 +507,16 @@ pub(super) struct StatusResponse {
     /// path — status then reflects the fully-committed index.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub rebuild_in_progress: bool,
+    /// `true` when the workspace's last full scan was cancelled or aborted before covering it (daemon
+    /// shutdown, idle reap, a full disk), so `file_count` and the queries reflect only the files
+    /// completed so far, not the repository. A full rescan clears it. Absent (false) otherwise.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub partial: bool,
+    /// One-line reason the index is degraded: a partial scan (with its reason and progress) or a
+    /// resolve pass that never completed, leaving resolved references and callers stale. Absent when
+    /// the last scan finished cleanly.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub degraded: Option<String>,
     /// `true` while this serve's boot-time initial scan (auto-scan of an empty index) is still
     /// running. A client seeing this should treat empty query results as "index not ready yet"
     /// and poll again, rather than "no matches". Absent (false) once the index is built.

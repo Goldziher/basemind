@@ -176,19 +176,20 @@ const AUTO_ENFORCED_NUMERATOR: u64 = 3;
 const AUTO_ENFORCED_DENOMINATOR: u64 = 4;
 
 /// Fraction of a merely *advisory* limit — the machine's total RAM — that
-/// auto-mode budgets. Half, not three quarters: that memory is shared with the
-/// editor, the language servers and everything else the developer is running,
-/// none of which basemind can see.
-const AUTO_ADVISORY_DENOMINATOR: u64 = 2;
+/// auto-mode budgets. A quarter: that memory is shared with the editor, the
+/// language servers and everything else the developer is running, none of which
+/// basemind can see, and half of a 96 GiB workstation (48 GiB) never engaged
+/// the gate on a scan that peaked at 6-8 GiB.
+const AUTO_ADVISORY_DENOMINATOR: u64 = 4;
 
 /// Floor for an auto-derived ceiling. A 256 MiB container would otherwise
-/// compute a 192 MiB budget, which the ONNX runtime and a single large
+/// compute a 192 MiB budget, and a 4 GiB machine a 1 GiB one, which the ONNX runtime and a single large
 /// tree-sitter parse can exceed on their own, turning the gate into a permanent
 /// stall that never admits and never finishes. The floor deliberately allows
 /// the ceiling to sit *above* a very small cgroup limit: in that regime the
 /// process is going to be killed whatever it does, and a scan that runs and
 /// dies is more diagnosable than one that hangs.
-const AUTO_FLOOR_BYTES: u64 = 512 * BYTES_PER_MB;
+const AUTO_FLOOR_BYTES: u64 = 2048 * BYTES_PER_MB;
 
 /// The literal spellings `max_footprint_mb` accepts besides a number.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -461,27 +462,37 @@ mod tests {
 
     #[test]
     fn auto_ceiling_takes_three_quarters_of_an_enforced_cgroup_limit() {
-        // The reporter's environment: a 2 GiB `MemoryMax`.
-        assert_eq!(MaxFootprint::auto_ceiling_bytes(Some(2048 * MB), true), Some(1536 * MB));
+        assert_eq!(MaxFootprint::auto_ceiling_bytes(Some(4096 * MB), true), Some(3072 * MB));
         assert_eq!(MaxFootprint::auto_ceiling_bytes(Some(8192 * MB), true), Some(6144 * MB));
     }
 
     #[test]
-    fn auto_ceiling_takes_half_of_a_machine_wide_limit() {
+    fn auto_ceiling_takes_a_quarter_of_injected_machine_ram() {
         assert_eq!(
-            MaxFootprint::auto_ceiling_bytes(Some(16 * 1024 * MB), false),
+            MaxFootprint::auto_ceiling_bytes(Some(32 * 1024 * MB), false),
             Some(8 * 1024 * MB)
+        );
+        // The reporting machine: 96 GiB of RAM no longer resolves to a 48 GiB ceiling.
+        assert_eq!(
+            MaxFootprint::auto_ceiling_bytes(Some(96 * 1024 * MB), false),
+            Some(24 * 1024 * MB)
         );
     }
 
     #[test]
     fn auto_ceiling_floor_applies_to_a_small_container() {
-        // 256 MiB cgroup: three quarters is 192 MiB, which the floor lifts to 512 MiB.
-        assert_eq!(MaxFootprint::auto_ceiling_bytes(Some(256 * MB), true), Some(512 * MB));
-        // 1 GiB of machine RAM: half is 512 MiB, exactly the floor.
-        assert_eq!(MaxFootprint::auto_ceiling_bytes(Some(1024 * MB), false), Some(512 * MB));
-        // 800 MiB of machine RAM: half is 400 MiB, lifted to the floor.
-        assert_eq!(MaxFootprint::auto_ceiling_bytes(Some(800 * MB), false), Some(512 * MB));
+        // 256 MiB cgroup: three quarters is 192 MiB, which the floor lifts to 2 GiB.
+        assert_eq!(MaxFootprint::auto_ceiling_bytes(Some(256 * MB), true), Some(2048 * MB));
+        // 8 GiB of machine RAM: a quarter is exactly the floor.
+        assert_eq!(
+            MaxFootprint::auto_ceiling_bytes(Some(8192 * MB), false),
+            Some(2048 * MB)
+        );
+        // 4 GiB of machine RAM: a quarter is 1 GiB, lifted to the floor.
+        assert_eq!(
+            MaxFootprint::auto_ceiling_bytes(Some(4096 * MB), false),
+            Some(2048 * MB)
+        );
     }
 
     #[test]
@@ -493,7 +504,7 @@ mod tests {
     #[test]
     fn auto_ceiling_never_overflows_on_a_sentinel_sized_limit() {
         let ceiling = MaxFootprint::auto_ceiling_bytes(Some(u64::MAX), true).expect("a ceiling");
-        assert!((512 * MB..u64::MAX).contains(&ceiling));
+        assert!((2048 * MB..u64::MAX).contains(&ceiling));
     }
 
     #[test]
@@ -511,8 +522,8 @@ mod tests {
         let resolved = MaxFootprint::default().resolve_mb();
         if cfg!(any(target_os = "linux", target_os = "macos", windows)) {
             assert!(
-                resolved >= 512,
-                "auto must clear the 512 MiB floor on a supported platform, got {resolved}"
+                resolved >= 2048,
+                "auto must clear the 2 GiB floor on a supported platform, got {resolved}"
             );
         } else {
             assert_eq!(resolved, 0, "an unsupported platform reports no ceiling");

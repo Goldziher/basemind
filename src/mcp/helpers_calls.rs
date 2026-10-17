@@ -519,7 +519,9 @@ mod tests {
 
     /// The route a writer session takes: its own open fjall index.
     fn local_route(store: &Store) -> super::IndexRoute {
-        super::IndexRoute::Local(store.index_db.clone().expect("a writer store opens the fjall index"))
+        super::IndexRoute::Local(Box::new(
+            store.index_db.clone().expect("a writer store opens the fjall index"),
+        ))
     }
 
     /// Scan `root` and return the store plus its map cache.

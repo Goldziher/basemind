@@ -812,6 +812,24 @@ mod map_cache_tests {
         assert!(!rescanning.retry, "rescan results are usable, no retry required");
     }
 
+    /// A degraded `status.json` (the daemon's mark on a workspace whose index it is rebuilding) puts
+    /// the "index rebuilding" notice on reads; a clean sidecar or none at all does not.
+    #[test]
+    fn degraded_scan_status_yields_the_index_rebuilding_notice() {
+        use crate::store::{ScanHealth, StatusSidecar};
+        let dir = tempfile::tempdir().expect("tempdir");
+        crate::store::write_status_sidecar(dir.path(), 5, 5, &ScanHealth::partial("index rebuilding", 0, 0));
+        let degraded = crate::store::read_status_sidecar(dir.path());
+        let notice = types::LifecycleNotice::for_scan_status(degraded.as_ref()).expect("degraded notice");
+        assert_eq!(notice.state, "index_rebuilding");
+        assert!(notice.retry && notice.message.contains("index rebuilding"));
+
+        crate::store::write_status_sidecar(dir.path(), 5, 5, &ScanHealth::complete());
+        let clean: Option<StatusSidecar> = crate::store::read_status_sidecar(dir.path());
+        assert!(types::LifecycleNotice::for_scan_status(clean.as_ref()).is_none());
+        assert!(types::LifecycleNotice::for_scan_status(None).is_none());
+    }
+
     /// A read-only session whose reference projections were truncated by the outline budget reports
     /// it through the same channel — and does NOT ask for a retry, because rerunning the query
     /// cannot widen a budget.

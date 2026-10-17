@@ -512,7 +512,7 @@ fn run_guarded(
             ExtractError::DocTimeout(budget)
         }
         DeadlineError::AtCapacity { live, cap } => {
-            tracing::warn!(
+            tracing::debug!(
                 path = %path.display(),
                 abandoned_live = live,
                 abandoned_cap = cap,
@@ -527,6 +527,23 @@ fn run_guarded(
     })
 }
 
+/// Admit one more document to the scan's document phase, or defer it. A deferral is logged at debug
+/// only: the scan reports one summary count at the end of the phase instead of a line per file.
+fn admit_to_phase(path: &Path, phase: &DocPhase) -> Result<(), ExtractError> {
+    phase.admit().map_err(|spent| {
+        tracing::debug!(
+            path = %path.display(),
+            elapsed_secs = spent.elapsed.as_secs(),
+            budget_secs = spent.budget.as_secs(),
+            "document-phase budget spent ([documents] phase_budget_secs); deferring the document to the next scan"
+        );
+        ExtractError::DocDeferred(format!(
+            "the {}s document-phase budget ([documents] phase_budget_secs) is spent",
+            spent.budget.as_secs()
+        ))
+    })
+}
+
 /// Run xberg against `path` and translate the result into a `FileMapDoc`.
 ///
 /// `mime_type` may be supplied by the caller (e.g. from `lang::detect`); when
@@ -534,28 +551,18 @@ fn run_guarded(
 pub fn extract_doc(path: &Path, mime_type: Option<&str>, config: &DocConfig) -> Result<FileMapDoc, ExtractError> {
     let mut krz_config = config.to_xberg();
     let file_len = std::fs::metadata(path).map_or(0, |m| m.len());
+    if let Some(phase) = &config.phase {
+        admit_to_phase(path, phase)?;
+    }
     let linear = doc_guard::prefers_linear_chunking(mime_type.unwrap_or(""), file_len, config.chunk_cutovers);
     if linear {
-        tracing::info!(
+        tracing::debug!(
             path = %path.display(),
             bytes = file_len,
-            "large text document: using linear chunking instead of the markdown splitter"
+            mime = mime_type.unwrap_or(""),
+            "using linear chunking instead of the markdown splitter"
         );
         krz_config.chunking = None;
-    }
-    if let Some(phase) = &config.phase {
-        phase.admit().map_err(|spent| {
-            tracing::warn!(
-                path = %path.display(),
-                elapsed_secs = spent.elapsed.as_secs(),
-                budget_secs = spent.budget.as_secs(),
-                "document-phase budget spent ([documents] phase_budget_secs); deferring the document to the next scan"
-            );
-            ExtractError::DocDeferred(format!(
-                "the {}s document-phase budget ([documents] phase_budget_secs) is spent",
-                spent.budget.as_secs()
-            ))
-        })?;
     }
     let mut outcome = run_guarded(path, mime_type, krz_config.clone(), config)?;
     let mut text_fallback = false;

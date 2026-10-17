@@ -23,6 +23,7 @@ use crate::config::Config;
 use crate::extract::{self, ExtractError, FileMapL1, FileMapL2};
 use crate::git::GitError;
 use crate::hashing;
+use crate::index::IndexDb;
 use crate::path::RelPath;
 use crate::scanner::{EmbedMode, FileResult, FileStatus, ScanCancel, ScanSource};
 #[cfg(feature = "documents")]
@@ -103,7 +104,8 @@ pub(crate) fn run_candidates(
                     // Cooperative cancellation, per-file granularity: one relaxed load before each ~keep
                     // candidate. A skipped file emits no FileResult, so the caller can tell a ~keep
                     // partial pass apart from a complete one (and must skip its stale purge). ~keep
-                    if cancel.is_cancelled() {
+                    // A fatal index commit failure stops the walk the same way: see `scan_drive`. ~keep
+                    if cancel.is_cancelled() || store.index_db.as_ref().is_some_and(IndexDb::has_fatal_fault) {
                         return batch;
                     }
                     let result = process_file(root, rel, filters, store, source, config, scope, &mut batch, embed);
@@ -538,6 +540,7 @@ fn process_doc(
     let admission = gate.admit_exclusive();
     tracing::debug!(path = rel, estimated_mb = estimated / (1024 * 1024), admitted = ?admission.outcome(), "extracting document");
 
+    let doc_started = std::time::Instant::now();
     match extract_and_persist_doc(
         store,
         rel,
@@ -558,6 +561,7 @@ fn process_doc(
                 reused: batch.reused,
                 degraded: batch.degraded,
                 text_fallback: batch.text_fallback,
+                elapsed_ms: u64::try_from(doc_started.elapsed().as_millis()).unwrap_or(u64::MAX),
             };
             let doc_entry = crate::store::DocEntry {
                 hash_hex: hash_hex.to_string(),
