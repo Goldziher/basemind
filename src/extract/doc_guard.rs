@@ -5,8 +5,9 @@
 //! multi-megabyte csv, log or yaml file therefore pins a scan worker for minutes to hours, and because
 //! the cost is CPU inside a synchronous call nothing inside xberg can interrupt it. Two defences:
 //!
-//! 1. [`prefers_linear_chunking`] routes large text-like files to [`linear_chunk_spans`], an O(n)
-//!    fixed-size chunker, before the splitter ever runs.
+//! 1. [`prefers_linear_chunking`] routes structured data (json, yaml, xml, svg, csv) and large
+//!    text-like files to [`linear_chunk_spans`], an O(n) fixed-size chunker, before the splitter ever
+//!    runs.
 //! 2. [`run_with_deadline`] runs the whole extraction on its own thread and gives up on it after the
 //!    wall-clock budget, so even an unforeseen stall costs one budget, not the scan. Abandoned threads
 //!    are counted and capped ([`AbandonedThreads`]), so stalls cannot accumulate into a pile of
@@ -38,10 +39,24 @@ fn is_text_like(mime: &str) -> bool {
             .any(|marker| mime.contains(marker))
 }
 
-/// Whether a document of `file_len` bytes and type `mime` must bypass xberg's markdown splitter.
+/// True for machine-written structured data (json, yaml, xml and svg, csv/tsv). Markdown headings give
+/// the splitter nothing to work with here, yet it still pays its quadratic cost per element, so these
+/// types use the linear chunker at any size.
+fn is_structured_data(mime: &str) -> bool {
+    let mime = mime.split(';').next().unwrap_or("").trim().to_ascii_lowercase();
+    ["json", "yaml", "xml", "svg", "csv", "tab-separated"]
+        .iter()
+        .any(|marker| mime.contains(marker))
+}
+
+/// Whether a document of `file_len` bytes and type `mime` must bypass xberg's markdown splitter:
+/// structured data always, other text-like files once they pass their size cutover.
 pub fn prefers_linear_chunking(mime: &str, file_len: u64, cutovers: ChunkCutovers) -> bool {
     if !is_text_like(mime) {
         return false;
+    }
+    if is_structured_data(mime) {
+        return true;
     }
     let plain = mime
         .split(';')
@@ -328,6 +343,7 @@ mod tests {
         assert!(prefers_linear_chunking("text/plain", 101, CUTOVERS));
         assert!(!prefers_linear_chunking("text/plain", 100, CUTOVERS));
         assert!(!prefers_linear_chunking("text/markdown", 1000, CUTOVERS));
+        assert!(prefers_linear_chunking("text/markdown", 1001, CUTOVERS));
         assert!(prefers_linear_chunking("text/csv", 1001, CUTOVERS));
         assert!(prefers_linear_chunking(
             "application/json; charset=utf-8",
@@ -337,6 +353,30 @@ mod tests {
         assert!(prefers_linear_chunking("application/x-yaml", 1001, CUTOVERS));
         assert!(!prefers_linear_chunking("application/pdf", u64::MAX, CUTOVERS));
         assert!(!prefers_linear_chunking("", u64::MAX, CUTOVERS));
+    }
+
+    #[test]
+    fn structured_data_is_linear_regardless_of_size() {
+        for mime in [
+            "application/json",
+            "application/json; charset=utf-8",
+            "application/x-yaml",
+            "text/yaml",
+            "application/xml",
+            "text/xml",
+            "image/svg+xml",
+            "text/csv",
+            "text/tab-separated-values",
+        ] {
+            assert!(prefers_linear_chunking(mime, 10, CUTOVERS), "{mime} under the cutover");
+        }
+    }
+
+    #[test]
+    fn markdown_and_prose_keep_the_splitter_under_the_cutover() {
+        assert!(!prefers_linear_chunking("text/markdown", 10, CUTOVERS));
+        assert!(!prefers_linear_chunking("text/plain", 10, CUTOVERS));
+        assert!(!prefers_linear_chunking("text/html", 10, CUTOVERS));
     }
 
     fn assert_valid(text: &str, spans: &[(usize, usize)], max_chars: usize) {
