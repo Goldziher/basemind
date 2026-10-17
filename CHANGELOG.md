@@ -10,6 +10,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **The auto memory ceiling is 25% of machine RAM, floored at 2048 MiB** ([#85](https://github.com/Goldziher/basemind/issues/85)).
+  `max_footprint_mb = "auto"` budgeted 50% of RAM, which is 48 GB on a 96 GB workstation and never engaged on a
+  scan that peaked at 6-8 GB. An enforced cgroup limit still gets 75%, now with the same 2048 MiB floor (was 512).
+  Set `max_footprint_mb` explicitly to restore a different budget. The `memory` log line's
+  `ceiling_enforced` reports whether the OS enforces the limit (a cgroup), not whether the gate runs; the gate
+  parks document extraction and embedding workers over the ceiling whenever it is non-zero.
+- `basemind scan` and `rescan` print one `peak memory` line with the peak footprint of each scan phase
+  (`candidates`, `extract`, `purge`, `flush`, `resolve`, `lanes`), and `ScanReport` carries them as `phase_peaks`.
+  Memtable flush concurrency is already bounded by the fixed fjall worker-thread count.
+- **Parse-error warnings collapse to one line per grammar** ([#86](https://github.com/Goldziher/basemind/issues/86)).
+  A scan of a tree with many `scss` or `sql` files no longer prints one `warn ... (N parse errors, partial map)`
+  line per file; it prints `<grammar>: N files, M parse errors` once at the end. `-v` keeps the per-file lines.
+
+### Fixed
+
+- Blob GC removes stray `*.tmp` files (staging files left by a dead writer) from the global `blobs/` directory
+  once they are older than the six-hour grace window. Age is the only test, so a file still being written is kept.
+
 ## [0.29.3] - 2026-10-13
 
 ### Changed

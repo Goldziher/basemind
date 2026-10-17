@@ -309,7 +309,7 @@ pub struct MemoryLog {
 impl MemoryLog {
     /// Start sampling for `root`. Returns `None` if the thread cannot be spawned — evidence
     /// gathering must never be the reason a scan fails to run.
-    pub fn start(root: &Path) -> Option<Self> {
+    pub fn start(root: &Path, peaks: crate::scan_phase_peaks::PhasePeaks) -> Option<Self> {
         let stop = Arc::new((Mutex::new(false), Condvar::new()));
         let worker_stop = Arc::clone(&stop);
         let root = root.to_path_buf();
@@ -338,6 +338,7 @@ impl MemoryLog {
                     }
                     drop(guard);
                     if let Some(reading) = crate::sysres::memory_reading() {
+                        peaks.observe(reading.used_bytes);
                         let spike = window.observe(reading.used_bytes);
                         if spike || last_line.elapsed() >= MEMORY_LOG_EVERY {
                             let peak = window.written();
@@ -379,7 +380,8 @@ mod tests {
     #[test]
     fn the_memory_log_stops_when_dropped_instead_of_sleeping_out_its_interval() {
         let started = std::time::Instant::now();
-        let log = MemoryLog::start(Path::new("/repo/under/test")).expect("sampler thread spawns");
+        let log =
+            MemoryLog::start(Path::new("/repo/under/test"), Default::default()).expect("sampler thread spawns");
         drop(log);
         let elapsed = started.elapsed();
         assert!(

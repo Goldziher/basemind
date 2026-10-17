@@ -52,6 +52,10 @@ const LEGACY_BLOB_SUFFIXES: [&str; 2] = [".l1.msgpack", ".l2.msgpack"];
 /// encounter; the grace costs only delayed reclamation.
 const BLOB_GC_GRACE: Duration = Duration::from_secs(6 * 60 * 60);
 
+/// Suffix of the temp files blob writers stage before an atomic rename
+/// (`<stem>.rref.msgpack.<pid>.ThreadId(N).tmp`). A writer that died leaves its file behind.
+const TMP_SUFFIX: &str = ".tmp";
+
 /// Env override for [`BLOB_GC_GRACE`], in whole seconds (`0` reclaims every unreferenced blob at
 /// once). Meant for operators clearing a known-dead cache and for the upgrade regression tests; the
 /// default protects entry-less blobs that a concurrent scan is about to reference.
@@ -244,6 +248,11 @@ fn gc_blobs_in(blobs_dir: &Path, referenced: &LiveBlobs, grace: Duration) -> Res
         let Some(file_name) = path.file_name().and_then(|n| n.to_str()) else {
             continue;
         };
+        if file_name.ends_with(TMP_SUFFIX) {
+            report.scanned += 1;
+            sweep_stray_tmp(&path, now, grace, &mut report)?;
+            continue;
+        }
         let is_legacy = LEGACY_BLOB_SUFFIXES.iter().any(|suffix| file_name.ends_with(suffix));
         let Some(_) = blob_stem(file_name) else {
             report.scanned += 1;
@@ -283,6 +292,31 @@ fn gc_blobs_in(blobs_dir: &Path, referenced: &LiveBlobs, grace: Duration) -> Res
         report.bytes_freed += size;
     }
     Ok(report)
+}
+
+/// Remove `path`, a stray `*.tmp`, when it is older than the grace window.
+///
+/// Age is the only test: a tmp file is never "referenced", and one a live writer is still filling
+/// has a fresh mtime. The window is never shorter than [`BLOB_GC_GRACE`] even when the caller
+/// passes a zero grace (the budget sweep does), because a zero window would reap an in-flight write.
+fn sweep_stray_tmp(path: &Path, now: SystemTime, grace: Duration, report: &mut GcReport) -> Result<(), GcError> {
+    let io = |source| GcError::Io {
+        path: path.to_path_buf(),
+        source,
+    };
+    let meta = std::fs::metadata(path).map_err(io)?;
+    let age = meta
+        .modified()
+        .ok()
+        .and_then(|modified| now.duration_since(modified).ok())
+        .unwrap_or(Duration::ZERO);
+    if age < grace.max(BLOB_GC_GRACE) {
+        return Ok(());
+    }
+    std::fs::remove_file(path).map_err(io)?;
+    report.removed += 1;
+    report.bytes_freed += meta.len();
+    Ok(())
 }
 
 /// Union the referenced blob stems across EVERY workspace index under the machine-global cache.
@@ -654,6 +688,28 @@ mod tests {
 
         let report = gc_blobs_in(&fx.blobs_dir, &referenced, Duration::ZERO).expect("gc without grace");
         assert_eq!(report.removed, 1, "orphan reaped once outside the grace window");
+    }
+
+    #[test]
+    fn gc_sweeps_stray_tmp_files_older_than_the_grace_window_and_keeps_fresh_ones() {
+        let fx = build_fixture();
+        let referenced = collect_referenced_hashes(&fx.basemind_dir).expect("collect");
+        let old = fx.blobs_dir.join("abc.rref.msgpack.1234.ThreadId(2).tmp");
+        let fresh = fx.blobs_dir.join("def.rref.msgpack.5678.ThreadId(3).tmp");
+        std::fs::write(&old, b"stale").expect("write old tmp");
+        std::fs::write(&fresh, b"in flight").expect("write fresh tmp");
+        let long_ago = SystemTime::now() - BLOB_GC_GRACE - Duration::from_secs(60);
+        std::fs::File::options()
+            .write(true)
+            .open(&old)
+            .and_then(|f| f.set_modified(long_ago))
+            .expect("age the old tmp");
+
+        // Even a zero grace must not reap the fresh, possibly in-flight, tmp file.
+        let report = gc_blobs_in(&fx.blobs_dir, &referenced, Duration::ZERO).expect("gc");
+        assert!(!old.exists(), "stale tmp swept");
+        assert!(fresh.exists(), "fresh tmp kept");
+        assert_eq!(report.removed, 2, "the orphan blob and the stale tmp");
     }
 
     #[test]

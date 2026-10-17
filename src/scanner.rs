@@ -325,6 +325,10 @@ pub struct ScanReport {
     /// else — remaining candidates, the stale purge, the resolve/doc lanes — was skipped, so the
     /// caller must not treat the report as a complete pass.
     pub cancelled: bool,
+    /// Peak memory footprint per scan phase (`candidates`, `extract`, `purge`, `flush`, `resolve`,
+    /// `lanes` — the document and LanceDB flushes run in `lanes`), in the order the phases ran.
+    /// Process-local: not part of any wire protocol.
+    pub phase_peaks: Vec<crate::scan_phase_peaks::PhasePeak>,
 }
 
 /// Cooperative cancellation token for a scan.
@@ -442,7 +446,8 @@ pub fn scan_with_observer(
     // Paired with the breadcrumb, and for the same reason: when the kernel kills the process there
     // is no exit path left to log from, so the growth curve has to have been written down as it
     // happened. The breadcrumb says a scan died here; this says how its memory got there. ~keep
-    let _memory_log = crate::scan_evidence::MemoryLog::start(root);
+    let phase_peaks = crate::scan_phase_peaks::PhasePeaks::default();
+    let _memory_log = crate::scan_evidence::MemoryLog::start(root, phase_peaks.clone());
 
     let submodule_roots = submodule_roots_for_source(root, &source);
     let mut filters = Filters::build(config, submodule_roots)?;
@@ -450,10 +455,10 @@ pub fn scan_with_observer(
         .then(|| crate::scanner_policy::detect(store, config))
         .filter(|p| matches!(embed, EmbedMode::Inline) && p.changed);
     filters.reflush_embeds = policy.as_ref().is_some_and(|p| p.reflush);
-    advance(&mut breadcrumb, PHASE_CANDIDATES, None);
+    advance(&mut breadcrumb, &phase_peaks, PHASE_CANDIDATES, None);
     let candidates = candidates_for_source(root, config, &filters, &source, cancel)?;
     debug!(count = candidates.len(), kind = source.label(), "scan candidates");
-    advance(&mut breadcrumb, PHASE_EXTRACT, Some(candidates.len()));
+    advance(&mut breadcrumb, &phase_peaks, PHASE_EXTRACT, Some(candidates.len()));
 
     let scope = derive_scope(root, &source);
     let mut report = ScanReport::default();
@@ -483,10 +488,12 @@ pub fn scan_with_observer(
         run_optional_lane(LANE_CODE_BATCHES, || {
             flush_code_batches_if_any(store, config, &scope, driven.code_batches);
         });
+        phase_peaks.sample_now();
+        report.phase_peaks = phase_peaks.snapshot();
         return Ok(report);
     }
 
-    advance(&mut breadcrumb, PHASE_PURGE, None);
+    advance(&mut breadcrumb, &phase_peaks, PHASE_PURGE, None);
 
     // Derived AFTER the drive rather than before it: the entries the drive upserted are all in ~keep
     // `seen`, so they are excluded either way, and reading the file map here keeps the whole ~keep
@@ -557,7 +564,7 @@ pub fn scan_with_observer(
         }
     }
 
-    advance(&mut breadcrumb, PHASE_FLUSH, None);
+    advance(&mut breadcrumb, &phase_peaks, PHASE_FLUSH, None);
     flush_code_map(store)?;
 
     // A token tripped after the last per-file check still stops the pass here, once the code map ~keep
@@ -572,11 +579,13 @@ pub fn scan_with_observer(
         run_optional_lane(LANE_CODE_BATCHES, || {
             flush_code_batches_if_any(store, config, &scope, code_batches);
         });
+        phase_peaks.sample_now();
+        report.phase_peaks = phase_peaks.snapshot();
         return Ok(report);
     }
 
     if matches!(source, ScanSource::WorkingTree) {
-        advance(&mut breadcrumb, PHASE_RESOLVE, None);
+        advance(&mut breadcrumb, &phase_peaks, PHASE_RESOLVE, None);
         let precise = config.code_intel.precise_resolution;
         run_optional_lane(LANE_RESOLVE, || {
             scanner_pool(config.resources.scan_threads).install(|| {
@@ -585,7 +594,7 @@ pub fn scan_with_observer(
         });
     }
 
-    advance(&mut breadcrumb, PHASE_LANES, None);
+    advance(&mut breadcrumb, &phase_peaks, PHASE_LANES, None);
     run_optional_lane(LANE_DOC_BATCHES, || {
         flush_doc_batches_if_any(store, config, doc_batches);
     });
@@ -606,13 +615,21 @@ pub fn scan_with_observer(
     run_optional_lane(crate::scanner_lanes::LANE_LANCE_MAINTENANCE, || {
         maintain_lance_if_open(store)
     });
+    phase_peaks.sample_now();
+    report.phase_peaks = phase_peaks.snapshot();
     Ok(report)
 }
 
-/// Move the pass's breadcrumb to `phase`, if one could be written at all. Folding the `Option` in
+/// Move the pass's breadcrumb (and the per-phase memory tally) to `phase`, if one could be written at all. Folding the `Option` in
 /// here keeps every phase boundary a single line and keeps "no breadcrumb" from being a condition
 /// the scan branches on: evidence is never a precondition for the work.
-fn advance(breadcrumb: &mut Option<ScanBreadcrumb>, phase: &'static str, candidates: Option<usize>) {
+fn advance(
+    breadcrumb: &mut Option<ScanBreadcrumb>,
+    peaks: &crate::scan_phase_peaks::PhasePeaks,
+    phase: &'static str,
+    candidates: Option<usize>,
+) {
+    peaks.enter(phase);
     if let Some(crumb) = breadcrumb.as_mut() {
         crumb.advance(phase, candidates);
     }
