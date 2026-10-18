@@ -151,7 +151,7 @@ bytes = { version = "1", optional = true }
 clap = { version = "4", features = ["derive", "env"] }
 clap_complete = "4"
 clap_mangen = "0.3"
-crawlberg = { version = "1.10.3", default-features = false, features = ["native-runtime"], optional = true }
+crawlberg = { version = "1.11.1", default-features = false, features = ["native-runtime"], optional = true }
 directories = "6"
 fjall = "3.1.12"
 form_urlencoded = { version = "1", optional = true }
@@ -169,7 +169,7 @@ http-body-util = { version = "0.1", optional = true }
 hyper = { version = "1", features = ["server", "http1", "http2"], optional = true }
 hyper-util = { version = "0.1", features = ["server-auto", "tokio"], optional = true }
 ignore = "0.4"
-jsonschema = "0.58"
+jsonschema = "0.59"
 # ~keep `remote` is enabled only because lancedb 0.38-0.40 do not compile without it: `error.rs`
 # ~keep gates `Error::Http` behind `#[cfg(feature = "remote")]` while `job.rs` uses it unconditionally.
 # ~keep It pulls tonic/arrow-flight/reqwest in but nothing is invoked; drop it once upstream fixes the gate.
@@ -231,8 +231,8 @@ tree-sitter-graph = { package = "basemind-tree-sitter-graph", version = "0.12.1"
 tree-sitter-language-pack = "1.22.1"
 tree-sitter-stack-graphs = { package = "basemind-tree-sitter-stack-graphs", version = "0.10.1", path = "crates/tree-sitter-stack-graphs", optional = true }
 url = { version = "2", features = ["serde"], optional = true }
-xberg = { version = "1.3.9", default-features = false, features = ["tokio-runtime", "simd-utf8"], optional = true }
-zstd = "0.14.2"
+xberg = { version = "1.3.10", default-features = false, features = ["tokio-runtime", "simd-utf8"], optional = true }
+zstd = "0.14.3"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 mach2 = "0.7"
