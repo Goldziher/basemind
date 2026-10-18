@@ -10,8 +10,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.30.0] - 2026-10-18
+
+This minor bumps the persisted blob, index and git-history schema versions, so `.basemind/` is wiped and
+rebuilt on the next scan.
+
 ### Changed
 
+- Dependencies: `xberg` 1.3.10, `crawlberg` 1.11.1, `zstd` 0.14.3, `jsonschema` 0.59, plus compatible
+  lockfile updates. `arrow` stays at 58 (lancedb 0.40 requires `^58`, and a second arrow major forks the
+  schema/array types), `bincode` at 2.x (3.0.0 is a placeholder release).
 - **Smaller code and git-history indexes** ([#82](https://github.com/Goldziher/basemind/issues/82)).
   Every index keyspace now uses LZ4 for data and index blocks at all levels; fjall's default left L0 and L1,
   where a fresh bulk build mostly lives, uncompressed. A database opened empty also gets a 256 MiB journal cap
