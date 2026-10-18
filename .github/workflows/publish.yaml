@@ -123,11 +123,13 @@ jobs:
             fi
           fi
 
-          # Check generated Hermes PyPI package.
-          if [ -f .hermes/package/pyproject.toml ]; then
-            hermes_pypi_version="$(awk '/^version = / {value=$3; gsub(/[\"\047]/, "", value); print value; exit}' .hermes/package/pyproject.toml)"
+          # Check the generated Hermes PyPI package. The committed package lives at
+          # plugin/.hermes/package (the build input every other workflow uses); the guard used to
+          # name .hermes/package, which never exists at this point, so it silently never ran.
+          if [ -f plugin/.hermes/package/pyproject.toml ]; then
+            hermes_pypi_version="$(awk '/^version = / {value=$3; gsub(/[\"\047]/, "", value); print value; exit}' plugin/.hermes/package/pyproject.toml)"
             if [ "$hermes_pypi_version" != "$target_python_version" ]; then
-              echo "::error::.hermes/package/pyproject.toml version mismatch: expected $target_python_version, got $hermes_pypi_version"
+              echo "::error::plugin/.hermes/package/pyproject.toml version mismatch: expected $target_python_version, got $hermes_pypi_version"
               exit 1
             fi
           fi
@@ -159,10 +161,13 @@ jobs:
             fi
           fi
 
-          # Check .claude-plugin/marketplace.json
+          # Check .claude-plugin/marketplace.json. ai-rulez owns this index and emits a minimal
+          # entry for a `[marketplace] members` bundle — the version lives in the member's own
+          # manifest, which .claude-plugin/plugin.json (checked above) carries. The key is
+          # therefore legitimately absent; enforce it only when an entry declares one.
           if [ -f .claude-plugin/marketplace.json ]; then
-            marketplace_version="$(jq -r '.plugins[0].version' .claude-plugin/marketplace.json)"
-            if [ "$marketplace_version" != "$target_version" ]; then
+            marketplace_version="$(jq -r '.plugins[0].version // empty' .claude-plugin/marketplace.json)"
+            if [ -n "$marketplace_version" ] && [ "$marketplace_version" != "$target_version" ]; then
               echo "::error::.claude-plugin/marketplace.json version mismatch: expected $target_version, got $marketplace_version"
               exit 1
             fi
