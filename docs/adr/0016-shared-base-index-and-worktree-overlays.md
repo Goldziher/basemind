@@ -1,9 +1,9 @@
 # ADR-0016: Shared base index with per-worktree overlays
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-10-18
 - **Deciders:** Na'aman Hirschfeld
-- **Related:** ADR-0012, issue #87
+- **Related:** ADR-0012, issue #87, [implementation plan](../layered-index-design.md)
 
 ## Context
 

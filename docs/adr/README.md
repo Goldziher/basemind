@@ -57,4 +57,4 @@ them.
 | [0013](0013-comms-robustness-idempotency-replay.md) | Comms robustness: correlated requests, bounded waits, idempotent posts, relay replay | Accepted |
 | [0014](0014-cli-mcp-parity-guard.md) | Executable CLI/MCP parity guard | Accepted |
 | [0015](0015-bounded-document-extraction.md) | Bound document extraction with a thread cap, tombstones and a phase budget | Proposed |
-| [0016](0016-shared-base-index-and-worktree-overlays.md) | Shared base index with per-worktree overlays | Proposed |
+| [0016](0016-shared-base-index-and-worktree-overlays.md) | Shared base index with per-worktree overlays | Accepted |
