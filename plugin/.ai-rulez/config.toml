@@ -6,3 +6,16 @@ gitignore = true
 
 [lock]
 include_outputs = false
+
+# One authored skill is mirrored across `skills/`, `plugin/.ai-rulez/skills/` and every committed
+# runtime bundle, so an identical description across the copies is expected and the collapse is
+# intended — keep both findings visible without failing `validate --strict`. AR801 fires on the
+# shipped `default-commands` builtin, whose frontmatter is not ours to edit. AR602 flags the
+# repository's development `.mcp.json` and the shipped plugin both registering "basemind" over
+# different launchers (node for a local checkout, ${PLUGIN_ROOT} once installed); a harness reads
+# one of them, so the collision is intended.
+[lint.severity]
+AR701 = "info"
+AR703 = "info"
+AR801 = "info"
+AR602 = "info"

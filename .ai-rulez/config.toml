@@ -24,5 +24,15 @@ project_doc_max_bytes = 65536
 [lint.load_budgets]
 "codex-agents-chain" = 65536
 
+# AR701 compares descriptions across every generated runtime bundle, where one authored skill
+# legitimately appears once per harness carrying the same description; demote it so it stays
+# visible in the report without failing `validate --strict`. AR602 flags the repository's
+# development `.mcp.json` and the shipped plugin both registering "basemind" over different
+# launchers (node for a local checkout, ${PLUGIN_ROOT} once installed) — a harness reads one of
+# them, so the collision is intended.
+[lint.severity]
+AR701 = "info"
+AR602 = "info"
+
 [lock]
 include_outputs = false
