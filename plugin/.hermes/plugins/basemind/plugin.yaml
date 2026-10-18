@@ -4,5 +4,5 @@ description: "Full AI context layer over MCP — tree-sitter code-map, document 
 author: "Na'aman Hirschfeld"
 kind: "standalone"
 python_dependencies:
-  - "mcp==1.28.1"
+  - "mcp==1.30.0"
   - "PyYAML==6.0.3"
