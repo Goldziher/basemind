@@ -5,7 +5,6 @@
 
 use std::path::Path;
 
-use basemind::index::grep_bloom::row_stamp;
 use basemind::path::RelPath;
 use basemind::store::{Store, VIEW_WORKING};
 
@@ -33,9 +32,26 @@ fn scan(root: &Path) -> Store {
     })
 }
 
-fn stamp(store: &Store, rel: &str) -> Option<(u64, i64)> {
-    let row = store.index_db.as_ref()?.grep_bloom_row(&RelPath::from(rel))?;
-    row_stamp(&row)
+fn hash_of(root: &Path, rel: &str) -> String {
+    basemind::hashing::hex(&basemind::hashing::hash_bytes(
+        &std::fs::read(root.join(rel)).expect("read"),
+    ))
+}
+
+fn has_row(store: &Store, hash_hex: &str) -> bool {
+    store
+        .index_db
+        .as_ref()
+        .is_some_and(|idx| idx.grep_bloom_row(hash_hex).is_some())
+}
+
+fn row_count(store: &Store) -> usize {
+    store.index_db.as_ref().map_or(0, |idx| idx.grep_bloom_row_count())
+}
+
+fn indexed_stamp(store: &Store, rel: &str) -> (u64, i64) {
+    let entry = store.lookup(RelPath::from(rel)).expect("indexed file");
+    (entry.size_bytes, entry.mtime)
 }
 
 fn live_stamp(root: &Path, rel: &str) -> (u64, i64) {
@@ -44,37 +60,80 @@ fn live_stamp(root: &Path, rel: &str) -> (u64, i64) {
 }
 
 #[test]
-fn scan_writes_refreshes_and_removes_bloom_rows() {
+fn scan_writes_refreshes_and_sweeps_bloom_rows() {
     basemind::store::init_isolated_cache();
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
     std::fs::write(root.join("a.rs"), "pub fn alpha_function_name() -> u32 { 1 }\n").unwrap();
     std::fs::write(root.join("b.rs"), "pub fn beta_function_name() -> u32 { 2 }\n").unwrap();
+    let (a_old, b_old) = (hash_of(root, "a.rs"), hash_of(root, "b.rs"));
 
     let store = scan(root);
-    assert_eq!(
-        stamp(&store, "a.rs"),
-        Some(live_stamp(root, "a.rs")),
-        "scan stamps the row"
+    assert!(
+        has_row(&store, &a_old) && has_row(&store, &b_old),
+        "scan writes a row per content"
     );
-    assert_eq!(stamp(&store, "b.rs"), Some(live_stamp(root, "b.rs")));
+    assert_eq!(row_count(&store), 2);
     drop(store);
 
-    // Edit: the row follows the new bytes.
     std::fs::write(root.join("a.rs"), "pub fn alpha_function_name() -> u32 { 100_000 }\n").unwrap();
+    let a_new = hash_of(root, "a.rs");
     let store = scan(root);
-    assert_eq!(
-        stamp(&store, "a.rs"),
-        Some(live_stamp(root, "a.rs")),
-        "edit refreshes the row"
-    );
+    assert!(has_row(&store, &a_new), "edit writes the new content's row");
+    assert!(!has_row(&store, &a_old), "the superseded content's row is swept");
     drop(store);
 
-    // Delete: the row goes with the file.
     std::fs::remove_file(root.join("b.rs")).unwrap();
     let store = scan(root);
-    assert_eq!(stamp(&store, "b.rs"), None, "a removed file leaves no row");
-    assert!(stamp(&store, "a.rs").is_some());
+    assert!(!has_row(&store, &b_old), "a removed file's row is swept");
+    assert!(has_row(&store, &a_new));
+    assert_eq!(row_count(&store), 1);
+}
+
+#[test]
+fn identical_files_share_one_row_which_outlives_either_path() {
+    basemind::store::init_isolated_cache();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    let text = "pub fn shared_function_name() -> u32 { 1 }\n";
+    std::fs::write(root.join("a.rs"), text).unwrap();
+    std::fs::write(root.join("b.rs"), text).unwrap();
+    let hash = hash_of(root, "a.rs");
+
+    let store = scan(root);
+    assert_eq!(row_count(&store), 1, "two paths, one content, one row");
+    drop(store);
+
+    std::fs::remove_file(root.join("b.rs")).unwrap();
+    let store = scan(root);
+    assert!(has_row(&store, &hash), "a.rs still references the content");
+    drop(store);
+
+    std::fs::remove_file(root.join("a.rs")).unwrap();
+    let store = scan(root);
+    assert_eq!(row_count(&store), 0, "no file references the content any more");
+}
+
+#[test]
+fn a_touched_file_keeps_its_indexed_stamp_current() {
+    basemind::store::init_isolated_cache();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    std::fs::write(root.join("a.rs"), "pub fn alpha_function_name() -> u32 { 1 }\n").unwrap();
+    let store = scan(root);
+    assert_eq!(indexed_stamp(&store, "a.rs"), live_stamp(root, "a.rs"));
+    drop(store);
+
+    let file = std::fs::OpenOptions::new().write(true).open(root.join("a.rs")).unwrap();
+    file.set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(60))
+        .unwrap();
+    drop(file);
+    let store = scan(root);
+    assert_eq!(
+        indexed_stamp(&store, "a.rs"),
+        live_stamp(root, "a.rs"),
+        "same content, moved stamp: the entry follows so grep keeps trusting the row"
+    );
 }
 
 #[test]
@@ -83,19 +142,14 @@ fn rescan_backfills_a_row_an_older_index_lacks() {
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
     std::fs::write(root.join("a.rs"), "pub fn alpha_function_name() -> u32 { 1 }\n").unwrap();
+    let hash = hash_of(root, "a.rs");
     let store = scan(root);
-    // Simulate an index built before the keyspace existed: the file is indexed, its bloom is gone.
     let idx = store.index_db.clone().expect("index");
-    idx.drop_grep_bloom_row_for_test(&RelPath::from("a.rs"));
-    assert_eq!(stamp(&store, "a.rs"), None);
+    idx.drop_grep_bloom_row_for_test(&hash);
+    assert!(!has_row(&store, &hash));
     drop(idx);
     drop(store);
 
-    // Nothing changed on disk, so the scan classes the file Unchanged -- and must still backfill.
     let store = scan(root);
-    assert_eq!(
-        stamp(&store, "a.rs"),
-        Some(live_stamp(root, "a.rs")),
-        "rescan backfills the row"
-    );
+    assert!(has_row(&store, &hash), "rescan backfills the row");
 }

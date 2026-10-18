@@ -18,6 +18,7 @@ use super::types_impls::FindImplementationsParams;
 use super::{HostBackend, MapCache};
 use crate::comms::index_read_proto::{IndexReadQuery, IndexReadResult};
 use crate::config::ConfigV1;
+use crate::index::grep_bloom::GrepEntry;
 use crate::path::RelPath;
 use crate::scanner::{EmbedMode, ScanSource, scan};
 use crate::store::{Store, VIEW_WORKING};
@@ -502,11 +503,27 @@ fn corpus_paths() -> Vec<RelPath> {
     paths
 }
 
+fn corpus_entries(fx: &Fixture) -> Vec<GrepEntry> {
+    let store = fx.store.store.lock().expect("store");
+    corpus_paths()
+        .into_iter()
+        .map(|rel| {
+            let entry = store.lookup(&rel).expect("indexed corpus file");
+            GrepEntry {
+                rel,
+                hash_hex: entry.hash_hex.clone(),
+                size_bytes: entry.size_bytes,
+                mtime_ns: entry.mtime,
+            }
+        })
+        .collect()
+}
+
 #[test]
 fn grep_bloom_verdicts_are_identical_on_the_local_and_forwarded_routes() {
     let fx = fixture();
     let paths = corpus_paths();
-    let refs: Vec<&RelPath> = paths.iter().collect();
+    let entries = corpus_entries(&fx);
     for pattern in [
         "driver_7\\(",
         "shared_helper_3",
@@ -514,8 +531,8 @@ fn grep_bloom_verdicts_are_identical_on_the_local_and_forwarded_routes() {
         "Child\\(Tr1\\)",
         "zzz_not_in_corpus",
     ] {
-        let local = block_on(fx.local.grep_skip(&fx.root, pattern, &refs)).expect("local verdicts");
-        let host = block_on(fx.host.grep_skip(&fx.root, pattern, &refs)).expect("forwarded verdicts");
+        let local = block_on(fx.local.grep_skip(&fx.root, pattern, &entries)).expect("local verdicts");
+        let host = block_on(fx.host.grep_skip(&fx.root, pattern, &entries)).expect("forwarded verdicts");
         assert_eq!(local, host, "{pattern}: routes must agree");
         assert_eq!(local.len(), paths.len());
         let re = regex::Regex::new(pattern).expect("regex");
@@ -533,25 +550,29 @@ fn grep_bloom_verdicts_are_identical_on_the_local_and_forwarded_routes() {
 #[test]
 fn a_pattern_without_a_required_literal_or_a_failed_forward_means_no_prefilter() {
     let fx = fixture();
-    let paths = corpus_paths();
-    let refs: Vec<&RelPath> = paths.iter().collect();
-    assert!(block_on(fx.local.grep_skip(&fx.root, r"\w+", &refs)).is_none());
-    assert!(block_on(fx.host.grep_skip(&fx.root, ".*", &refs)).is_none());
-    assert!(block_on(fx.broken_host.grep_skip(&fx.root, "driver_7", &refs)).is_none());
+    let entries = corpus_entries(&fx);
+    assert!(block_on(fx.local.grep_skip(&fx.root, r"\w+", &entries)).is_none());
+    assert!(block_on(fx.host.grep_skip(&fx.root, ".*", &entries)).is_none());
+    assert!(block_on(fx.broken_host.grep_skip(&fx.root, "driver_7", &entries)).is_none());
 }
 
 #[test]
 fn an_oversized_grep_bloom_batch_is_refused() {
     let fx = fixture();
-    let paths: Vec<RelPath> = (0..=crate::comms::index_read_proto::MAX_GREP_BLOOM_PATHS)
-        .map(|i| RelPath::from(format!("pkg0/m{i}.rs").as_bytes()))
+    let entries: Vec<GrepEntry> = (0..=crate::comms::index_read_proto::MAX_GREP_BLOOM_PATHS)
+        .map(|i| GrepEntry {
+            rel: RelPath::from(format!("pkg0/m{i}.rs").as_bytes()),
+            hash_hex: String::new(),
+            size_bytes: 0,
+            mtime_ns: 0,
+        })
         .collect();
     let store = fx.store.store.lock().expect("store");
     let error = super::index_read::index_read_against(
         &store,
         &IndexReadQuery::GrepBloom {
             pattern: "driver".into(),
-            paths,
+            entries,
         },
     )
     .expect_err("an unbounded wire batch must be rejected");

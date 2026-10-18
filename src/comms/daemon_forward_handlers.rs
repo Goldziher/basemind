@@ -220,12 +220,12 @@ pub(crate) fn index_read_via_pool(
             .ok_or_else(|| "the daemon holds this workspace without a fjall index".to_string())?;
         return crate::mcp::index_read::call_scan(&idx, name, *limit, cursor.as_deref());
     }
-    if let IndexReadQuery::GrepBloom { pattern, paths } = query {
+    if let IndexReadQuery::GrepBloom { pattern, entries } = query {
         let (idx, store_root) = pool
             .with_workspace(root, |store| (store.index_db.clone(), store.root.clone()))
             .map_err(|error| error.to_string())?;
         let idx = idx.ok_or_else(|| "the daemon holds this workspace without a fjall index".to_string())?;
-        return crate::mcp::index_read::grep_skip(&idx, &store_root, pattern, paths);
+        return crate::mcp::index_read::grep_skip(&idx, &store_root, pattern, entries);
     }
     pool.with_workspace(root, |store| crate::mcp::index_read::index_read_against(store, query))
         .map_err(|error| error.to_string())?

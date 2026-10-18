@@ -141,18 +141,22 @@ impl IndexWriter {
 
     /// Drop every index entry for `rel`. Used when a file is removed from the scan set.
     pub fn remove_file(&mut self, rel: &RelPath) -> Result<(), IndexError> {
-        self.stage_deletes_for(rel)?;
-        let (db, batch, staged_bytes) = (&self.db, &mut self.batch, &mut self.staged_bytes);
-        stage_remove(batch, staged_bytes, &db.grep_bloom, rel.as_bytes().to_vec());
-        Ok(())
+        self.stage_deletes_for(rel)
     }
 
-    /// Replace `rel`'s grep bloom row with `row` (built by [`super::grep_bloom::build_row`] from the
-    /// bytes the scanner already holds). Keyed by path alone, so the insert overwrites the previous
-    /// row and no delete is staged. Counted against the staged-byte budget like every other entry.
-    pub fn upsert_grep_bloom(&mut self, rel: &RelPath, row: Vec<u8>) {
+    /// Store the grep bloom `row` (built by [`super::grep_bloom::build_row`] from the bytes the
+    /// scanner already holds) under the content hash `hash_hex`. Keyed by content alone, so the insert
+    /// overwrites an identical row and no delete is staged; the row outlives any one path and is
+    /// dropped by [`IndexDb::sweep_grep_bloom`]. Counted against the staged-byte budget like every
+    /// other entry.
+    pub fn upsert_grep_bloom(&mut self, hash_hex: &str, row: Vec<u8>) {
         let (db, batch, staged_bytes) = (&self.db, &mut self.batch, &mut self.staged_bytes);
-        stage_insert(batch, staged_bytes, &db.grep_bloom, rel.as_bytes().to_vec(), row);
+        stage_insert(batch, staged_bytes, &db.grep_bloom, hash_hex.as_bytes().to_vec(), row);
+    }
+
+    pub(super) fn remove_grep_bloom(&mut self, key: &[u8]) {
+        let (db, batch, staged_bytes) = (&self.db, &mut self.batch, &mut self.staged_bytes);
+        stage_remove(batch, staged_bytes, &db.grep_bloom, key.to_vec());
     }
 
     /// Replace the resolved-reference edges whose *use* is in `use_rel` with those derived from

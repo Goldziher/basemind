@@ -573,6 +573,7 @@ pub fn scan_with_observer(
         observer.on_file(FileResult::bare(k.clone(), FileStatus::Removed));
         report.stats.removed += 1;
     }
+    sweep_grep_bloom_rows(store);
 
     if let Some(change) = &policy {
         // Recorded only when the purge ran to completion (a panic leaves `applied` false too), so a
@@ -643,6 +644,23 @@ pub fn scan_with_observer(
     phase_peaks.sample_now();
     report.phase_peaks = phase_peaks.snapshot();
     Ok(report)
+}
+
+/// Drop the grep bloom rows of every content no indexed file references any more. Rows are shared by
+/// content, so a removed or edited file leaves its old row behind until this full-pass sweep.
+fn sweep_grep_bloom_rows(store: &Store) {
+    let Some(idx) = store.index_db.as_ref() else {
+        return;
+    };
+    let live: ahash::AHashSet<&str> = store
+        .index
+        .files
+        .values()
+        .map(|entry| entry.hash_hex.as_str())
+        .collect();
+    if let Err(error) = idx.sweep_grep_bloom(&live) {
+        tracing::warn!(%error, "grep bloom sweep failed; unreferenced rows stay until the next full scan");
+    }
 }
 
 /// Move the pass's breadcrumb (and the per-phase memory tally) to `phase`, if one could be written at all. Folding the `Option` in

@@ -367,6 +367,7 @@ impl MapCache {
                 hash_hex: hash_hex.as_str().into(),
                 language: map.language.as_str().into(),
                 size_bytes: map.size_bytes,
+                mtime_ns: 0,
             };
             l1.seed(&hash_hex, Arc::new(map));
             metas.push((path, meta));

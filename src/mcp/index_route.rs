@@ -24,6 +24,7 @@ use super::MapCache;
 use super::helpers_calls_scan::{CallRef, CallScanPage, calls_in_file_fjall, scan_calls_by_name, scan_calls_in_ram};
 use super::helpers_impls::{ImplScanPage, scan_impls_in_ram, scan_impls_session};
 use crate::index::IndexDb;
+use crate::index::grep_bloom::GrepEntry;
 use crate::path::RelPath;
 
 #[cfg(all(feature = "comms", any(unix, windows)))]
@@ -112,28 +113,28 @@ impl IndexRoute {
         }
     }
 
-    /// Which of `paths` provably cannot match the grep `pattern` (`true` = skip), per the per-file
+    /// Which of `entries` provably cannot match the grep `pattern` (`true` = skip), per the per-file
     /// trigram blooms. `None` means "no prefilter available" (no reachable index, a forward that
     /// failed, an unusable reply): the caller then sweeps every file, which is always correct.
     pub(super) async fn grep_skip(
         &self,
         root: &std::path::Path,
         pattern: &str,
-        paths: &[&RelPath],
+        entries: &[GrepEntry],
     ) -> Option<Vec<bool>> {
         if let Self::Local(idx) = self {
             let needle = crate::index::grep_bloom::Needle::compile(pattern)?;
-            return Some(blocking(|| idx.grep_skip_verdicts(root, paths, &needle)));
+            return Some(blocking(|| idx.grep_skip_verdicts(root, entries, &needle)));
         }
         #[cfg(all(feature = "comms", any(unix, windows)))]
         {
             // Compiled here too so a pattern with no usable literal costs no round trip.
             crate::index::grep_bloom::Needle::compile(pattern)?;
-            let mut skip = Vec::with_capacity(paths.len());
-            for chunk in paths.chunks(crate::comms::index_read_proto::MAX_GREP_BLOOM_PATHS) {
+            let mut skip = Vec::with_capacity(entries.len());
+            for chunk in entries.chunks(crate::comms::index_read_proto::MAX_GREP_BLOOM_PATHS) {
                 let query = IndexReadQuery::GrepBloom {
                     pattern: pattern.to_owned(),
-                    paths: chunk.iter().map(|&path| path.clone()).collect(),
+                    entries: chunk.to_vec(),
                 };
                 match self.forward(query).await {
                     Some(Ok(IndexReadResult::GrepSkip(part))) if part.len() == chunk.len() => skip.extend(part),

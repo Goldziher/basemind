@@ -16,6 +16,7 @@ use super::ServerState;
 use super::cursor::Cursor;
 use super::helpers::{SEARCH_LIMIT_DEFAULT, SEARCH_LIMIT_MAX};
 use super::types::{GrepHit, GrepTruncation, WorkspaceGrepParams, WorkspaceGrepResponse};
+use crate::index::grep_bloom::GrepEntry;
 use crate::path::RelPath;
 
 /// Upper bound on the file content one `workspace_grep` call may read, summed from the sizes the
@@ -97,12 +98,21 @@ pub(super) async fn run_workspace_grep(
 
     let root = state.shared.root.as_path();
     let paths: Vec<&RelPath> = scanned.iter().map(|(path, _)| *path).collect();
+    let entries: Vec<GrepEntry> = scanned
+        .iter()
+        .map(|(path, meta)| GrepEntry {
+            rel: (*path).clone(),
+            hash_hex: meta.hash_hex.to_string(),
+            size_bytes: meta.size_bytes,
+            mtime_ns: meta.mtime_ns,
+        })
+        .collect();
     // Files the per-file trigram blooms prove cannot match are never opened. They keep their slot in
     // `paths` (counted as zero), so window order, `file_idx` and every cursor are those of the full sweep.
     let skip = if bloom_prefilter_enabled() {
         super::index_route::IndexRoute::resolve(state)
             .await
-            .grep_skip(root, &params.pattern, &paths)
+            .grep_skip(root, &params.pattern, &entries)
             .await
     } else {
         None
@@ -680,18 +690,33 @@ mod tests {
 
     // ---- trigram-bloom prefilter equivalence -------------------------------------------------
 
-    /// Index the current bytes and stat of every readable file, as a scan would.
-    fn scan_blooms(db: &crate::index::IndexDb, dir: &Path, paths: &[RelPath]) {
+    /// Index the current bytes and stat of every readable file, as a scan would, returning one entry per
+    /// path (an unreadable file gets an entry no row answers to).
+    fn scan_blooms(db: &crate::index::IndexDb, dir: &Path, paths: &[RelPath]) -> Vec<GrepEntry> {
         let mut writer = db.writer();
+        let mut entries = Vec::new();
         for rel in paths {
             let abs = dir.join(rel.to_path_buf());
             let (Ok(bytes), Ok(meta)) = (std::fs::read(&abs), std::fs::metadata(&abs)) else {
+                entries.push(GrepEntry {
+                    rel: rel.clone(),
+                    hash_hex: "unreadable".to_owned(),
+                    size_bytes: 0,
+                    mtime_ns: 0,
+                });
                 continue;
             };
-            let row = crate::index::grep_bloom::build_row(&bytes, meta.len(), crate::scanner_file::mtime_nanos(&meta));
-            writer.upsert_grep_bloom(rel, row);
+            let hash_hex = crate::hashing::hex(&crate::hashing::hash_bytes(&bytes));
+            writer.upsert_grep_bloom(&hash_hex, crate::index::grep_bloom::build_row(&bytes));
+            entries.push(GrepEntry {
+                rel: rel.clone(),
+                hash_hex,
+                size_bytes: meta.len(),
+                mtime_ns: crate::scanner_file::mtime_nanos(&meta),
+            });
         }
         writer.commit().expect("commit blooms");
+        entries
     }
 
     fn set_mtime_ahead(path: &Path, secs: u64) {
@@ -715,7 +740,7 @@ mod tests {
         std::fs::write(dir.path().join("d2/unique.txt"), "alpha unique_token_qq beta\n").expect("write");
         paths.push(RelPath::from("d2/unique.txt"));
 
-        scan_blooms(&db, dir.path(), &paths);
+        let mut entries = scan_blooms(&db, dir.path(), &paths);
 
         // After the scan: an edit that adds a token (size changes), a same-size edit with a bumped
         // mtime, a deletion, and a file the scan never saw.
@@ -732,6 +757,12 @@ mod tests {
         std::fs::remove_file(dir.path().join("d1/f1.txt")).expect("delete");
         std::fs::write(dir.path().join("d0/new.txt"), "brand new unique_token_qq needle\n").expect("new");
         paths.push(RelPath::from("d0/new.txt"));
+        entries.push(GrepEntry {
+            rel: RelPath::from("d0/new.txt"),
+            hash_hex: "never-indexed".to_owned(),
+            size_bytes: 0,
+            mtime_ns: 0,
+        });
 
         let refs: Vec<&RelPath> = paths.iter().collect();
         let patterns = [
@@ -764,7 +795,7 @@ mod tests {
             let re = Regex::new(pattern).expect("regex");
             let literal = (regex::escape(pattern) == pattern).then(|| Finder::new(pattern.as_bytes()).into_owned());
             let skip = crate::index::grep_bloom::Needle::compile(pattern)
-                .map(|needle| db.grep_skip_verdicts(dir.path(), &refs, &needle));
+                .map(|needle| db.grep_skip_verdicts(dir.path(), &entries, &needle));
             skipped_somewhere |= skip.as_ref().is_some_and(|s| s.iter().any(|&x| x));
             for skip_hits in [0u32, 2] {
                 let filtered = count_all(dir.path(), &refs, skip.as_deref(), &re, literal.as_ref(), skip_hits);
@@ -792,7 +823,7 @@ mod tests {
 
         // The stale and new files must stay candidates for the token they now hold.
         let needle = crate::index::grep_bloom::Needle::compile("unique_token_qq").expect("needle");
-        let skip = db.grep_skip_verdicts(dir.path(), &refs, &needle);
+        let skip = db.grep_skip_verdicts(dir.path(), &entries, &needle);
         for (rel, skipped) in paths.iter().zip(&skip) {
             if ["d3/f3.txt", "d4/f4.txt", "d0/new.txt", "d2/unique.txt"].contains(&rel.to_string().as_str()) {
                 assert!(!skipped, "{rel} holds the token and must not be skipped");
@@ -811,30 +842,40 @@ mod tests {
         let db = crate::index::IndexDb::open(idx_dir.path()).expect("index");
         std::fs::write(dir.path().join("a.txt"), "nothing relevant here\n").expect("write");
         let rel = RelPath::from("a.txt");
+        let meta = std::fs::metadata(dir.path().join("a.txt")).expect("stat");
+        let entry = GrepEntry {
+            rel: rel.clone(),
+            hash_hex: crate::hashing::hex(&crate::hashing::hash_bytes(b"nothing relevant here\n")),
+            size_bytes: meta.len(),
+            mtime_ns: crate::scanner_file::mtime_nanos(&meta),
+        };
         let needle = crate::index::grep_bloom::Needle::compile("absent_literal").expect("needle");
         assert_eq!(
-            db.grep_skip_verdicts(dir.path(), &[&rel], &needle),
+            db.grep_skip_verdicts(dir.path(), std::slice::from_ref(&entry), &needle),
             vec![false],
             "no row"
         );
         let mut writer = db.writer();
-        writer.upsert_grep_bloom(&rel, vec![99; 40]);
+        writer.upsert_grep_bloom(&entry.hash_hex, vec![99; 40]);
         writer.commit().expect("commit");
         assert_eq!(
-            db.grep_skip_verdicts(dir.path(), &[&rel], &needle),
+            db.grep_skip_verdicts(dir.path(), std::slice::from_ref(&entry), &needle),
             vec![false],
             "foreign row"
         );
         scan_blooms(&db, dir.path(), std::slice::from_ref(&rel));
         assert_eq!(
-            db.grep_skip_verdicts(dir.path(), &[&rel], &needle),
+            db.grep_skip_verdicts(dir.path(), std::slice::from_ref(&entry), &needle),
             vec![true],
             "current row"
         );
         let mut writer = db.writer();
         writer.remove_file(&rel).expect("remove");
         writer.commit().expect("commit");
-        assert!(db.grep_bloom_row(&rel).is_none(), "removing the file removes its row");
+        assert!(
+            db.grep_bloom_row(&entry.hash_hex).is_some(),
+            "the row is shared by content, so removing one path keeps it"
+        );
     }
 
     #[test]

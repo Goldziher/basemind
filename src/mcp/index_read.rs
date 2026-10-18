@@ -33,7 +33,7 @@ pub(crate) fn index_read_against(store: &Store, query: &IndexReadQuery) -> Resul
     match query {
         IndexReadQuery::CallScan { name, limit, cursor } => call_scan(idx, name, *limit, cursor.as_deref()),
         IndexReadQuery::CallsInFiles { paths } => calls_in_files(idx, paths),
-        IndexReadQuery::GrepBloom { pattern, paths } => grep_skip(idx, &store.root, pattern, paths),
+        IndexReadQuery::GrepBloom { pattern, entries } => grep_skip(idx, &store.root, pattern, entries),
         IndexReadQuery::ImplScan {
             trait_name,
             language,
@@ -79,21 +79,22 @@ pub(crate) fn grep_skip(
     idx: &IndexDb,
     root: &std::path::Path,
     pattern: &str,
-    paths: &[crate::path::RelPath],
+    entries: &[crate::index::grep_bloom::GrepEntry],
 ) -> Result<IndexReadResult, String> {
     use crate::comms::index_read_proto::MAX_GREP_BLOOM_PATHS;
-    if paths.len() > MAX_GREP_BLOOM_PATHS {
+    if entries.len() > MAX_GREP_BLOOM_PATHS {
         return Err(format!(
             "grep bloom names {} files; at most {MAX_GREP_BLOOM_PATHS} per request",
-            paths.len()
+            entries.len()
         ));
     }
     // No usable literal: nothing can be skipped, and saying so is the answer, not an error.
     let Some(needle) = crate::index::grep_bloom::Needle::compile(pattern) else {
-        return Ok(IndexReadResult::GrepSkip(vec![false; paths.len()]));
+        return Ok(IndexReadResult::GrepSkip(vec![false; entries.len()]));
     };
-    let refs: Vec<&crate::path::RelPath> = paths.iter().collect();
-    Ok(IndexReadResult::GrepSkip(idx.grep_skip_verdicts(root, &refs, &needle)))
+    Ok(IndexReadResult::GrepSkip(
+        idx.grep_skip_verdicts(root, entries, &needle),
+    ))
 }
 
 fn calls_in_files(idx: &IndexDb, paths: &[crate::path::RelPath]) -> Result<IndexReadResult, String> {

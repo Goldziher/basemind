@@ -50,8 +50,9 @@ pub enum IndexReadQuery {
     GrepBloom {
         /// The grep regex source.
         pattern: String,
-        /// Files to test, at most [`MAX_GREP_BLOOM_PATHS`].
-        paths: Vec<RelPath>,
+        /// Files to test with the hash and stamp they were indexed under, at most
+        /// [`MAX_GREP_BLOOM_PATHS`].
+        entries: Vec<crate::index::grep_bloom::GrepEntry>,
     },
     /// The `implementations_by_trait` scan behind `implementations`.
     ImplScan {
