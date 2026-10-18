@@ -262,7 +262,7 @@ fn process_file(
         {
             // Bytes were not read, so a missing grep bloom (an index that predates it) is backfilled
             // here rather than leaving the file a permanent grep candidate.
-            index_batch.backfill_grep_bloom(root, &RelPath::from(rel), meta.len(), mtime);
+            index_batch.backfill_grep_bloom(root, &RelPath::from(rel), &existing.hash_hex);
             return FileResult::bare(rel.to_string(), FileStatus::Unchanged);
         }
     }
@@ -310,12 +310,20 @@ fn process_file(
         && sidecars_present
         && embed_state_satisfied(store, config, filters, rel, hash_hex_str, embed)
     {
-        // Content is unchanged but the stamp moved (touch, checkout): re-stamp the bloom from the
-        // bytes already in hand so grep keeps trusting it.
+        // Content is unchanged but the stamp moved (touch, checkout): refresh the entry's stamp, which
+        // grep holds the live file to, and make sure the content's bloom row exists.
+        let mut result = FileResult::bare(rel.to_string(), FileStatus::Unchanged);
         if matches!(source, ScanSource::WorkingTree) {
-            index_batch.restamp_grep_bloom(&RelPath::from(rel), &bytes, size_bytes, mtime);
+            index_batch.restamp_grep_bloom(hash_hex_str, &bytes);
+            if (existing.size_bytes, existing.mtime) != (size_bytes, mtime) {
+                result.upsert = Some(FileEntry {
+                    size_bytes,
+                    mtime,
+                    ..existing.clone()
+                });
+            }
         }
-        return FileResult::bare(rel.to_string(), FileStatus::Unchanged);
+        return result;
     }
 
     let want_l2 = filters.eager_l2 && store.index_db.is_some();
@@ -398,7 +406,7 @@ fn process_file(
     }
     // Grep reads the working tree, so only a working-tree scan describes what it will sweep.
     if matches!(source, ScanSource::WorkingTree) {
-        index_batch.stage_grep_bloom(&rel_path, &bytes, size_bytes, mtime);
+        index_batch.stage_grep_bloom(hash_hex_str, &bytes);
     }
 
     #[cfg(feature = "code-search")]

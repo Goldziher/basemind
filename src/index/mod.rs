@@ -43,8 +43,9 @@ use thiserror::Error;
 /// into its meta keyspace at *create* time and recovers it on reopen, ignoring the create options
 /// for a keyspace that already exists, so an index built by an earlier build would keep the 64 MiB
 /// default forever unless the schema mismatch forces it to be recreated; `+6` the LZ4-at-every-level
-/// block compression ([`index_keyspace_options`]), persisted at create time for the same reason.
-const INDEX_PARTITION_REVISION: u32 = 6;
+/// block compression ([`index_keyspace_options`]), persisted at create time for the same reason;
+/// `+7` the `grep_bloom` re-key from path to content hash, whose old rows would read as foreign hashes.
+const INDEX_PARTITION_REVISION: u32 = 7;
 
 /// Bumped whenever the on-disk key layout changes — the sum of `RELEASE_MINOR` and the
 /// [`INDEX_PARTITION_REVISION`] offset, monotonic across both. When `RELEASE_MINOR` next bumps,
@@ -332,9 +333,9 @@ pub struct IndexDb {
     /// `code_bm25_by_path`: forward companion keyed by file → its chunks' `(chunk_id, doclen,
     /// terms)`, so a re-scan deletes the previous postings in O(prefix). Always created.
     pub(crate) code_bm25_by_path: Keyspace,
-    /// `grep_bloom`: file path -> per-file trigram bloom filter + the `(size, mtime_ns)` stamp it was
-    /// built under (see [`grep_bloom`]). A candidate PREFILTER for `code grep` only; a missing or
-    /// stale row means "candidate", which is why this partition was added without a schema bump and
+    /// `grep_bloom`: hex content hash -> trigram bloom filter of that content (see [`grep_bloom`]),
+    /// shared by every path holding the bytes. A candidate PREFILTER for `code grep` only; a missing
+    /// row means "candidate", which is why this partition was added without a schema bump and
     /// backfills on rescan.
     pub(crate) grep_bloom: Keyspace,
     #[allow(dead_code)]

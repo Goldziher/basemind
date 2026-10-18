@@ -56,6 +56,9 @@ pub(crate) struct FileMeta {
     pub(crate) hash_hex: Box<str>,
     pub(crate) language: Box<str>,
     pub(crate) size_bytes: u64,
+    /// File mtime in nanoseconds as indexed (0 = unknown); with `size_bytes` the stamp grep holds the
+    /// live file to before trusting the content's bloom.
+    pub(crate) mtime_ns: i64,
 }
 
 /// Sorted view of every indexed file that has a readable L1 blob.
@@ -154,6 +157,7 @@ impl From<&crate::store::FileEntry> for FileMeta {
             hash_hex: entry.hash_hex.as_str().into(),
             language: entry.language.as_str().into(),
             size_bytes: entry.size_bytes,
+            mtime_ns: entry.mtime,
         }
     }
 }
@@ -164,6 +168,7 @@ impl Clone for FileMeta {
             hash_hex: self.hash_hex.clone(),
             language: self.language.clone(),
             size_bytes: self.size_bytes,
+            mtime_ns: self.mtime_ns,
         }
     }
 }

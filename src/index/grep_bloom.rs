@@ -1,10 +1,11 @@
 //! Per-file trigram bloom filters: the candidate PREFILTER behind `code grep` (ADR-0012).
 //!
-//! Each indexed file gets one row in the `grep_bloom` keyspace (key = repo-relative path) holding a
-//! small bloom filter over the file's byte trigrams plus the `(size, mtime_ns)` stamp the bloom was
-//! built under. A query extracts the literals every match MUST contain, turns them into trigram
-//! hashes and tests each row; a file the bloom rejects, whose stamp still matches the live file,
-//! cannot contain a match and is never opened. A bloom can only say "definitely absent", so it
+//! Each distinct file content gets one row in the `grep_bloom` keyspace (key = hex content hash, so
+//! two paths with identical bytes share a row) holding a small bloom filter over the content's byte
+//! trigrams. A query extracts the literals every match MUST contain, turns them into trigram hashes
+//! and tests each row; a file whose indexed hash selects a rejecting bloom, and whose live
+//! `(size, mtime_ns)` still equals the stamp it was indexed under, cannot contain a match and is
+//! never opened. A bloom can only say "definitely absent", so it
 //! decides which files to READ, never what a match is: the real regex still runs on every survivor.
 //!
 //! Everything here errs towards "candidate": a missing, older-version or malformed row, a changed
@@ -22,8 +23,8 @@ use crate::path::RelPath;
 /// Row layout revision (first byte). A row with any other value is treated as absent, so a future
 /// layout change needs no index wipe: old rows read as candidates until the file is next scanned.
 const ROW_VERSION: u8 = 1;
-/// `version(1) | size(8) | mtime_ns(8)`, then the bit array.
-const HEADER_BYTES: usize = 17;
+/// `version(1)`, then the bit array.
+const HEADER_BYTES: usize = 1;
 /// Bloom bytes per source byte is `1 / BYTES_DIVISOR` (ADR-0012 sizing: 1/8 keeps the candidate set
 /// within ~2x of the exact trigram answer on the armis corpus at 12.8% of corpus bytes; 1/16 was
 /// up to ~8x worse on selective needles).
@@ -59,15 +60,12 @@ fn trigram(w: &[u8]) -> u32 {
     (u32::from(w[0]) << 16) | (u32::from(w[1]) << 8) | u32::from(w[2])
 }
 
-/// Build the stored row for a file whose bytes the caller already holds, stamped with the
-/// `(size, mtime_ns)` it was read under.
-pub fn build_row(bytes: &[u8], size: u64, mtime_ns: i64) -> Vec<u8> {
+/// Build the stored row for content the caller already holds.
+pub fn build_row(bytes: &[u8]) -> Vec<u8> {
     let bloom_bytes = (bytes.len() / BYTES_DIVISOR).clamp(MIN_BLOOM_BYTES, MAX_BLOOM_BYTES);
     let nbits = (bloom_bytes * 8) as u64;
     let mut row = vec![0u8; HEADER_BYTES + bloom_bytes];
     row[0] = ROW_VERSION;
-    row[1..9].copy_from_slice(&size.to_le_bytes());
-    row[9..17].copy_from_slice(&mtime_ns.to_le_bytes());
     let bits = &mut row[HEADER_BYTES..];
     for w in bytes.windows(3) {
         let mixed = mix(trigram(w));
@@ -79,30 +77,22 @@ pub fn build_row(bytes: &[u8], size: u64, mtime_ns: i64) -> Vec<u8> {
     row
 }
 
-/// A decoded row: the stamp it was built under and its bit array.
-struct Row<'a> {
-    size: u64,
-    mtime_ns: i64,
-    bits: &'a [u8],
-}
-
-fn parse_row(row: &[u8]) -> Option<Row<'_>> {
-    if row.len() <= HEADER_BYTES || row[0] != ROW_VERSION {
-        return None;
-    }
-    Some(Row {
-        size: u64::from_le_bytes(row[1..9].try_into().ok()?),
-        mtime_ns: i64::from_le_bytes(row[9..17].try_into().ok()?),
-        bits: &row[HEADER_BYTES..],
-    })
-}
-
-/// The `(size, mtime_ns)` stamp a stored row was built under, or `None` for an absent / foreign row.
-pub fn row_stamp(row: &[u8]) -> Option<(u64, i64)> {
-    parse_row(row).map(|r| (r.size, r.mtime_ns))
+fn parse_row(row: &[u8]) -> Option<&[u8]> {
+    (row.len() > HEADER_BYTES && row[0] == ROW_VERSION).then(|| &row[HEADER_BYTES..])
 }
 
 pub use crate::scanner_file::mtime_nanos;
+
+/// One file a grep may test: its path, the content hash it was indexed under, and the
+/// `(size, mtime_ns)` stamp of that indexing. The stamp is what the live file is held to, so a file
+/// edited since the scan is never skipped on the strength of its old content's bloom.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct GrepEntry {
+    pub rel: RelPath,
+    pub hash_hex: String,
+    pub size_bytes: u64,
+    pub mtime_ns: i64,
+}
 
 /// What a regex requires of a file, as trigram hashes: every group must pass, and a group passes when
 /// ANY of its alternatives has ALL its trigrams in the bloom.
@@ -166,45 +156,67 @@ impl Needle {
 }
 
 impl IndexDb {
-    /// Fetch the stored bloom row for `rel`, if any.
-    pub fn grep_bloom_row(&self, rel: &RelPath) -> Option<fjall::Slice> {
-        self.grep_bloom.get(rel.as_bytes()).ok().flatten()
+    /// Fetch the stored bloom row for the content `hash_hex`, if any.
+    pub fn grep_bloom_row(&self, hash_hex: &str) -> Option<fjall::Slice> {
+        self.grep_bloom.get(hash_hex.as_bytes()).ok().flatten()
     }
 
-    /// Delete `rel`'s row without touching the rest of its index entries: how a test models an index
-    /// built before the keyspace existed.
+    /// Delete the row for `hash_hex`: how a test models an index built before the keyspace existed.
     #[doc(hidden)]
-    pub fn drop_grep_bloom_row_for_test(&self, rel: &RelPath) {
-        self.grep_bloom.remove(rel.as_bytes()).expect("remove bloom row");
+    pub fn drop_grep_bloom_row_for_test(&self, hash_hex: &str) {
+        self.grep_bloom.remove(hash_hex.as_bytes()).expect("remove bloom row");
     }
 
-    /// True when `rel` has an intact row stamped `(size, mtime_ns)`: nothing to (re)build.
-    pub fn grep_bloom_current(&self, rel: &RelPath, size: u64, mtime_ns: i64) -> bool {
-        self.grep_bloom_row(rel)
-            .and_then(|row| row_stamp(&row))
-            .is_some_and(|stamp| stamp == (size, mtime_ns))
+    /// Number of stored rows, one per distinct content.
+    #[doc(hidden)]
+    pub fn grep_bloom_row_count(&self) -> usize {
+        self.grep_bloom.iter().count()
     }
 
-    /// For each of `paths`, whether the file can be SKIPPED by a grep for `needle`: it has an intact
-    /// row, the row rejects the needle, and the live file still has the stamp the row was built
-    /// under. Rows are fetched and dropped one at a time, in parallel; nothing is held between files.
-    pub fn grep_skip_verdicts(&self, root: &Path, paths: &[&RelPath], needle: &Needle) -> Vec<bool> {
-        paths
+    /// True when `hash_hex` has an intact row: nothing to (re)build.
+    pub fn grep_bloom_current(&self, hash_hex: &str) -> bool {
+        self.grep_bloom_row(hash_hex)
+            .is_some_and(|row| parse_row(&row).is_some())
+    }
+
+    /// Delete every row whose hash is not in `live`, returning how many were dropped. Rows are shared
+    /// by every path holding the content, so only a hash no indexed file references may go.
+    pub fn sweep_grep_bloom(&self, live: &ahash::AHashSet<&str>) -> Result<usize, super::IndexError> {
+        let mut writer = self.writer();
+        let mut dropped = 0;
+        for guard in self.grep_bloom.iter() {
+            let (key, _) = guard.into_inner()?;
+            if std::str::from_utf8(&key).is_ok_and(|hash| live.contains(hash)) {
+                continue;
+            }
+            writer.remove_grep_bloom(&key);
+            dropped += 1;
+        }
+        writer.commit()?;
+        Ok(dropped)
+    }
+
+    /// For each of `entries`, whether the file can be SKIPPED by a grep for `needle`: its content has
+    /// an intact row, the row rejects the needle, and the live file still has the stamp the entry was
+    /// indexed under. Rows are fetched and dropped one at a time, in parallel; nothing is held
+    /// between files.
+    pub fn grep_skip_verdicts(&self, root: &Path, entries: &[GrepEntry], needle: &Needle) -> Vec<bool> {
+        entries
             .par_iter()
-            .map(|rel| {
-                let Some(row) = self.grep_bloom_row(rel) else {
+            .map(|entry| {
+                let Some(row) = self.grep_bloom_row(&entry.hash_hex) else {
                     return false;
                 };
-                let Some(row) = parse_row(&row) else {
+                let Some(bits) = parse_row(&row) else {
                     return false;
                 };
-                if needle.passes(row.bits) {
+                if needle.passes(bits) {
                     return false;
                 }
-                // The bloom describes the file as scanned; the sweep reads it as it is now. Only a
-                // file still carrying the scan-time stamp may be trusted to lack the literal.
-                std::fs::metadata(root.join(rel.to_path_buf()))
-                    .is_ok_and(|m| m.len() == row.size && mtime_nanos(&m) == row.mtime_ns)
+                // The bloom describes the content as indexed; the sweep reads the file as it is now.
+                // Only a file still carrying its indexed stamp may be trusted to lack the literal.
+                std::fs::metadata(root.join(entry.rel.to_path_buf()))
+                    .is_ok_and(|m| m.len() == entry.size_bytes && mtime_nanos(&m) == entry.mtime_ns)
             })
             .collect()
     }
@@ -215,13 +227,13 @@ mod tests {
     use super::*;
 
     fn row_for(text: &str) -> Vec<u8> {
-        build_row(text.as_bytes(), text.len() as u64, 7)
+        build_row(text.as_bytes())
     }
 
     fn rejects(pattern: &str, text: &str) -> bool {
         let needle = Needle::compile(pattern).expect("usable needle");
         let row = row_for(text);
-        !needle.passes(parse_row(&row).expect("row").bits)
+        !needle.passes(parse_row(&row).expect("row"))
     }
 
     #[test]
@@ -249,14 +261,14 @@ mod tests {
     fn case_insensitive_literals_match_every_casing() {
         let needle = Needle::compile("(?i)needle").expect("expanded to case variants");
         for text in ["xx NEEDLE xx", "xx needle xx", "xx NeEdLe xx"] {
-            assert!(needle.passes(parse_row(&row_for(text)).unwrap().bits), "{text}");
+            assert!(needle.passes(parse_row(&row_for(text)).unwrap()), "{text}");
         }
     }
 
     #[test]
     fn unicode_literals_are_matched_on_their_utf8_bytes() {
         let needle = Needle::compile("caf\u{e9}s").expect("literal");
-        assert!(needle.passes(parse_row(&row_for("two caf\u{e9}s here")).unwrap().bits));
+        assert!(needle.passes(parse_row(&row_for("two caf\u{e9}s here")).unwrap()));
     }
 
     #[test]
@@ -270,17 +282,115 @@ mod tests {
     }
 
     #[test]
-    fn the_stamp_round_trips() {
-        let row = build_row(b"abcdef", 6, -12);
-        assert_eq!(row_stamp(&row), Some((6, -12)));
+    fn row_size_tracks_the_file_within_its_bounds() {
+        assert_eq!(build_row(b"abc").len(), HEADER_BYTES + MIN_BLOOM_BYTES);
+        let big = vec![b'x'; 8 * 1024];
+        assert_eq!(build_row(&big).len(), HEADER_BYTES + 1024);
+        let huge = vec![b'x'; 4 * 1024 * 1024];
+        assert_eq!(build_row(&huge).len(), HEADER_BYTES + MAX_BLOOM_BYTES);
+    }
+
+    fn open_db() -> (tempfile::TempDir, IndexDb) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = IndexDb::open(dir.path()).expect("index");
+        (dir, db)
+    }
+
+    fn put(db: &IndexDb, hash_hex: &str, text: &str) {
+        let mut writer = db.writer();
+        writer.upsert_grep_bloom(hash_hex, row_for(text));
+        writer.commit().expect("commit");
     }
 
     #[test]
-    fn row_size_tracks_the_file_within_its_bounds() {
-        assert_eq!(build_row(b"abc", 3, 0).len(), HEADER_BYTES + MIN_BLOOM_BYTES);
-        let big = vec![b'x'; 8 * 1024];
-        assert_eq!(build_row(&big, 8192, 0).len(), HEADER_BYTES + 1024);
-        let huge = vec![b'x'; 4 * 1024 * 1024];
-        assert_eq!(build_row(&huge, 0, 0).len(), HEADER_BYTES + MAX_BLOOM_BYTES);
+    fn a_row_round_trips_under_its_content_hash() {
+        let (_dir, db) = open_db();
+        put(&db, "aa11", "fn alpha() {}");
+        assert_eq!(
+            db.grep_bloom_row("aa11").as_deref(),
+            Some(row_for("fn alpha() {}").as_slice())
+        );
+        assert!(db.grep_bloom_current("aa11"));
+        assert!(!db.grep_bloom_current("bb22"));
+    }
+
+    #[test]
+    fn a_hash_that_prefixes_another_reads_only_its_own_row() {
+        let (_dir, db) = open_db();
+        put(&db, "ab", "short key");
+        put(&db, "abc", "longer key");
+        assert_eq!(
+            db.grep_bloom_row("ab").as_deref(),
+            Some(row_for("short key").as_slice())
+        );
+        assert_eq!(
+            db.grep_bloom_row("abc").as_deref(),
+            Some(row_for("longer key").as_slice())
+        );
+        assert!(db.grep_bloom_row("a").is_none());
+    }
+
+    #[test]
+    fn the_sweep_drops_only_hashes_no_live_file_references() {
+        let (_dir, db) = open_db();
+        for hash in ["h1", "h2", "h3"] {
+            put(&db, hash, hash);
+        }
+        let live: ahash::AHashSet<&str> = ["h1", "h3"].into_iter().collect();
+        assert_eq!(db.sweep_grep_bloom(&live).expect("sweep"), 1);
+        assert!(db.grep_bloom_current("h1") && db.grep_bloom_current("h3"));
+        assert!(!db.grep_bloom_current("h2"));
+        assert_eq!(
+            db.sweep_grep_bloom(&live).expect("sweep"),
+            0,
+            "a second sweep is a no-op"
+        );
+    }
+
+    #[test]
+    fn two_paths_with_the_same_content_share_one_row_and_both_skip() {
+        let (_dir, db) = open_db();
+        let root = tempfile::tempdir().expect("root");
+        let text = "fn unrelated() { println!(\"hello\"); }\n";
+        let mut entries = Vec::new();
+        for name in ["a.rs", "b.rs"] {
+            std::fs::write(root.path().join(name), text).expect("write");
+            let meta = std::fs::metadata(root.path().join(name)).expect("stat");
+            entries.push(GrepEntry {
+                rel: RelPath::from(name),
+                hash_hex: "same".to_owned(),
+                size_bytes: meta.len(),
+                mtime_ns: mtime_nanos(&meta),
+            });
+        }
+        put(&db, "same", text);
+        put(&db, "same", text);
+        assert_eq!(db.grep_bloom_row_count(), 1);
+        let needle = Needle::compile("zzz_absent_literal").expect("needle");
+        assert_eq!(db.grep_skip_verdicts(root.path(), &entries, &needle), vec![true, true]);
+    }
+
+    #[test]
+    fn a_live_file_that_moved_off_its_indexed_stamp_is_a_candidate() {
+        let (_dir, db) = open_db();
+        let root = tempfile::tempdir().expect("root");
+        std::fs::write(root.path().join("a.rs"), "fn unrelated() {}\n").expect("write");
+        let meta = std::fs::metadata(root.path().join("a.rs")).expect("stat");
+        put(&db, "h", "fn unrelated() {}\n");
+        let needle = Needle::compile("zzz_absent_literal").expect("needle");
+        let entry = |size_bytes| GrepEntry {
+            rel: RelPath::from("a.rs"),
+            hash_hex: "h".to_owned(),
+            size_bytes,
+            mtime_ns: mtime_nanos(&meta),
+        };
+        assert_eq!(
+            db.grep_skip_verdicts(root.path(), &[entry(meta.len())], &needle),
+            vec![true]
+        );
+        assert_eq!(
+            db.grep_skip_verdicts(root.path(), &[entry(meta.len() + 1)], &needle),
+            vec![false]
+        );
     }
 }
