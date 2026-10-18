@@ -2,9 +2,15 @@
 # Refresh it with `ai-rulez lock`; `ai-rulez generate --locked` fails when it is stale.
 
 version = 1
-ai_rulez_version = '5.3.0'
+ai_rulez_version = '5.5.2'
 scope = 'all'
-tree = 'sha256:fa5449d377d9791b6f637014819cbe39f8d5c2262c434a9d8bdd29495382a86e'
+tree = 'sha256:1ecc2b018c7e0165eca24a8f22c97998f67c61ad1306c4d4cb92b7a2555f5996'
+
+[[served]]
+name = 'adr-workflow'
+source = 'builtin://universal/documentation/skills/adr-workflow/SKILL.md'
+commit = ''
+digest = 'sha256:0dc3e4f50c78aaf602ce3c21cab5b10ebce560106449e7aa153c861880a4f2a1'
 
 [[served]]
 name = 'check'
@@ -16,7 +22,13 @@ digest = 'sha256:b4fa5cc277a4c45628f0d565dc86c6532b32a40a9c8177ada8808bc0e2baeea
 name = 'code-quality-standards'
 source = 'builtin://universal/code-quality/skills/code-quality-standards/SKILL.md'
 commit = ''
-digest = 'sha256:0126cc7c038b3e343ee56866949865dd799bde0de4884ba0bdfeb28655fa8134'
+digest = 'sha256:8e01021ac23e15b01cac75b4ee9c1971a4c57a7d949d390fb4e0b6943f91afe2'
+
+[[served]]
+name = 'config-placement'
+source = 'builtin://universal/ai-governance/skills/config-placement/SKILL.md'
+commit = ''
+digest = 'sha256:dd198e7e6c233cc4509b95b165f10054849cf77c394d54d1f59045857d88191a'
 
 [[served]]
 name = 'dependency-awareness'
@@ -115,6 +127,12 @@ commit = ''
 digest = 'sha256:c25a161c9c3df4660b0c5290faf6bab9c0f4e17651ba7e1828921183a9808b03'
 
 [[served]]
+name = 'skill-authoring'
+source = 'builtin://universal/ai-governance/skills/skill-authoring/SKILL.md'
+commit = ''
+digest = 'sha256:7ab2b543dc6608f204c957fedfc55ae902d22fda9dc8a52252330ff9b1406ff1'
+
+[[served]]
 name = 'task-runner'
 source = 'builtin://universal/token-efficiency/skills/task-runner/SKILL.md'
 commit = ''
@@ -124,13 +142,13 @@ digest = 'sha256:9f3cadda648798b049869c463d7a69f6f7b5953bcad2a43ea02e645d1ec3e19
 name = 'tdd-workflow'
 source = 'builtin://universal/testing/skills/tdd-workflow/SKILL.md'
 commit = ''
-digest = 'sha256:90ddeb170606792596979de6444904f88b5fbcdc52ea2462109401865d17f6ec'
+digest = 'sha256:a07f0dd7b07b37533acbd76b571f831a9854935b817d5e5de1e94865052176c9'
 
 [[served]]
 name = 'testing-conventions'
 source = 'builtin://universal/testing/skills/testing-conventions/SKILL.md'
 commit = ''
-digest = 'sha256:562385aa3c563ffbf327d6776932b43175052b00ec4418695ed6c50c335f1686'
+digest = 'sha256:c8ee10cb9a2e70b51ca43dd1abec57d4cc448f9b3dd19a3d446f992336406b40'
 
 [[item]]
 kind = 'agent'

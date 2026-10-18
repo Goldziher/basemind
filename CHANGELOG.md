@@ -20,6 +20,10 @@ rebuilt on the next scan.
 - Dependencies: `xberg` 1.3.10, `crawlberg` 1.11.1, `zstd` 0.14.3, `jsonschema` 0.59, plus compatible
   lockfile updates. `arrow` stays at 58 (lancedb 0.40 requires `^58`, and a second arrow major forks the
   schema/array types), `bincode` at 2.x (3.0.0 is a placeholder release).
+- The pinned `ai-rulez` moves from 5.3.0 to **5.5.2** (the lock files and the validation workflow), which
+  adds the `adr-workflow`, `config-placement` and `skill-authoring` skills and the
+  `customer-data-boundary`, `adr-immutability` and `generated-files` rules. The Hermes plugin's source
+  config pins `mcp==1.30.0`.
 - **Smaller code and git-history indexes** ([#82](https://github.com/Goldziher/basemind/issues/82)).
   Every index keyspace now uses LZ4 for data and index blocks at all levels; fjall's default left L0 and L1,
   where a fresh bulk build mostly lives, uncompressed. A database opened empty also gets a 256 MiB journal cap
