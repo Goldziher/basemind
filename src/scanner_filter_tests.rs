@@ -446,10 +446,12 @@ fn the_dir_pruner_stops_the_walk_descending_into_a_non_gitignored_node_modules()
 }
 
 #[test]
-fn default_document_excludes_drop_lockfiles_and_test_data() {
+fn default_document_excludes_drop_vectors_lockfiles_and_test_data() {
     let config = crate::config::default_for_root(Path::new("."));
     let filters = Filters::build(&config, Vec::new()).expect("build filters");
     for dropped in [
+        "public/assets/svg/logo.svg",
+        "icon.svg",
         "pnpm-lock.yaml",
         "web/package-lock.json",
         "yarn.lock",
@@ -463,13 +465,7 @@ fn default_document_excludes_drop_lockfiles_and_test_data() {
     ] {
         assert!(!filters.doc_allowed(dropped), "{dropped} is excluded by default");
     }
-    for kept in [
-        "README.md",
-        "docs/guide.md",
-        "config/settings.yaml",
-        "data/report.csv",
-        "icon.svg",
-    ] {
+    for kept in ["README.md", "docs/guide.md", "config/settings.yaml", "data/report.csv"] {
         assert!(filters.doc_allowed(kept), "{kept} stays indexable");
     }
 }

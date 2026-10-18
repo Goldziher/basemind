@@ -884,12 +884,13 @@ embedding_preset = "balanced"
 # toml, xml, csv, ini, ...) are NOT in the code map; they are documents and are gated here. Default
 # (empty include) is everything that passes [scan]; exclude applies to document indexing itself and
 # beats include (same glob syntax as [scan]).
-# The default `exclude` drops low-value bulk: lockfiles and test-data directories (add `"*.svg"` for icon-heavy repos). Setting the key
-# REPLACES that list (it is not merged): `exclude = []` indexes all of them, and a custom list must
-# repeat any default entry you still want.
+# The default `exclude` drops low-value bulk: SVG icon/vector assets, lockfiles and test-data
+# directories (removing an entry re-indexes it). Setting the key REPLACES that list (it is not
+# merged): `exclude = []` indexes all of them, and a custom list must repeat any default entry you
+# still want.
 include = []
 exclude = [
-  "pnpm-lock.yaml", "package-lock.json", "yarn.lock", "Cargo.lock", "poetry.lock", "*.lock",
+  "*.svg", "pnpm-lock.yaml", "package-lock.json", "yarn.lock", "Cargo.lock", "poetry.lock", "*.lock",
   "**/test_data/**", "**/testdata/**", "**/fixtures/**", "**/__snapshots__/**",
 ]
 # Per-document size cap in bytes, independent of [scan] max_file_bytes (which caps source files), so

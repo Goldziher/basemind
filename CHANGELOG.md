@@ -17,10 +17,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   where a fresh bulk build mostly lives, uncompressed. A database opened empty also gets a 256 MiB journal cap
   (instead of 64 MiB) so a cold scan rotates far fewer small tables. The index and git-history schema versions
   bump, so existing indexes rebuild once on next open.
-- **`[documents] exclude` now defaults to lockfiles and test data** ([#83](https://github.com/Goldziher/basemind/issues/83)).
-  The default drops `pnpm-lock.yaml`, `package-lock.json`, `yarn.lock`, `Cargo.lock`, `poetry.lock`, `*.lock`,
-  `**/test_data/**`, `**/testdata/**`, `**/fixtures/**` and `**/__snapshots__/**`. Setting the key replaces the list;
-  `exclude = []` restores the old behaviour.
+- **`[documents] exclude` now defaults to SVG assets, lockfiles and test data** ([#83](https://github.com/Goldziher/basemind/issues/83)).
+  The default drops `*.svg`, `pnpm-lock.yaml`, `package-lock.json`, `yarn.lock`, `Cargo.lock`, `poetry.lock`, `*.lock`,
+  `**/test_data/**`, `**/testdata/**`, `**/fixtures/**` and `**/__snapshots__/**`. SVG markup is not prose — the linear
+  chunker turned icon/vector files into meaningless vector rows, so they no longer reach the document tier. Setting the key
+  replaces the list; `exclude = []` restores the old behaviour.
 - Structured data (json, yaml, xml, svg, csv/tsv) is always chunked by the linear chunker instead of xberg's quadratic
   markdown splitter, whatever its size. Markdown and prose keep the splitter under the `*_chunk_max_bytes` cutovers.
 - `docs_degraded` counts only size-triggered linear chunking and the text/plain fallback; structured data, which is
