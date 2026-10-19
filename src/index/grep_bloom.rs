@@ -5,8 +5,8 @@
 //! trigrams. A query extracts the literals every match MUST contain, turns them into trigram hashes
 //! and tests each row; a file whose indexed hash selects a rejecting bloom, and whose live
 //! `(size, mtime_ns)` still equals the stamp it was indexed under, cannot contain a match and is
-//! never opened. A bloom can only say "definitely absent", so it
-//! decides which files to READ, never what a match is: the real regex still runs on every survivor.
+//! never opened. A bloom can only say "definitely absent", so it decides which files to READ,
+//! never what a match is: the real regex still runs on every survivor.
 //!
 //! Everything here errs towards "candidate": a missing, older-version or malformed row, a changed
 //! stamp, a pattern with no usable literal, an unreadable file. Only an intact row that was built
@@ -39,6 +39,11 @@ const MAX_BLOOM_BYTES: usize = 256 * 1024;
 const HASHES: u64 = 2;
 /// A literal shorter than this has no trigram to test.
 const MIN_LITERAL_BYTES: usize = 3;
+
+/// `meta` row recording the [`ROW_VERSION`] the keyspace was last version-swept under. Present and
+/// equal means every row is current, so a sweep need not read values; set only after a sweep that
+/// read them all succeeded.
+const META_ROW_SWEPT_VER: &[u8] = b"grep_bloom_swept_ver";
 
 #[inline]
 fn mix(trigram: u32) -> u64 {
@@ -164,12 +169,14 @@ impl IndexDb {
 
     /// Delete the row for `hash_hex`: how a test models an index built before the keyspace existed.
     #[doc(hidden)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn drop_grep_bloom_row_for_test(&self, hash_hex: &str) {
         self.grep_bloom.remove(hash_hex.as_bytes()).expect("remove bloom row");
     }
 
     /// Number of stored rows, one per distinct content.
     #[doc(hidden)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn grep_bloom_row_count(&self) -> usize {
         self.grep_bloom.iter().count()
     }
@@ -180,23 +187,52 @@ impl IndexDb {
             .is_some_and(|row| parse_row(&row).is_some())
     }
 
-    /// Delete every row whose hash is not in `live` or whose layout is not [`ROW_VERSION`], returning
-    /// how many were dropped. Rows are shared by every path holding the content, so only a hash no
-    /// indexed file references may go. Path-keyed rows from before the content-hash re-key are never
-    /// in `live`, and older-version rows are unreadable, so both leave here.
+    /// Delete every row whose hash is not in `live`, returning how many were dropped. Rows are shared
+    /// by every path holding the content, so only a hash no indexed file references may go. Path-keyed
+    /// rows from before the content-hash re-key are never in `live`, so they leave here too.
+    ///
+    /// Row values are read only until the keyspace has been swept once under the current
+    /// [`ROW_VERSION`] (recorded in `meta`): that pass also drops rows whose layout is older, which
+    /// are unreadable. Afterwards every row is current, so the sweep is key-only and a large index
+    /// is not read back in full on each scan.
     pub fn sweep_grep_bloom(&self, live: &ahash::AHashSet<&str>) -> Result<usize, super::IndexError> {
+        let versioned = self
+            .meta
+            .get(META_ROW_SWEPT_VER)?
+            .is_some_and(|v| v.first() == Some(&ROW_VERSION));
         let mut writer = self.writer();
         let mut dropped = 0;
         for guard in self.grep_bloom.iter() {
-            let (key, row) = guard.into_inner()?;
-            if parse_row(&row).is_some() && std::str::from_utf8(&key).is_ok_and(|hash| live.contains(hash)) {
+            let (key, current) = if versioned {
+                (guard.key()?, true)
+            } else {
+                let (key, row) = guard.into_inner()?;
+                (key, parse_row(&row).is_some())
+            };
+            if current && std::str::from_utf8(&key).is_ok_and(|hash| live.contains(hash)) {
                 continue;
             }
             writer.remove_grep_bloom(&key);
             dropped += 1;
         }
         writer.commit()?;
+        if !versioned {
+            self.meta.insert(META_ROW_SWEPT_VER, [ROW_VERSION])?;
+        }
         Ok(dropped)
+    }
+
+    /// Delete the rows of `hashes`, none of which any indexed file references now. The incremental
+    /// counterpart of [`Self::sweep_grep_bloom`]: cost is the number of hashes, not the keyspace.
+    pub fn remove_grep_bloom_rows<'a>(
+        &self,
+        hashes: impl IntoIterator<Item = &'a str>,
+    ) -> Result<(), super::IndexError> {
+        let mut writer = self.writer();
+        for hash in hashes {
+            writer.remove_grep_bloom(hash.as_bytes());
+        }
+        writer.commit()
     }
 
     /// For each of `entries`, whether the file can be SKIPPED by a grep for `needle`: its content has
@@ -228,182 +264,17 @@ pub(crate) fn skip_verdicts(
                 return false;
             }
             // The bloom describes the content as indexed; the sweep reads the file as it is now.
-            // Only a file still carrying its indexed stamp may be trusted to lack the literal.
-            std::fs::metadata(root.join(entry.rel.to_path_buf()))
-                .is_ok_and(|m| m.len() == entry.size_bytes && mtime_nanos(&m) == entry.mtime_ns)
+            // Only a file still carrying its indexed stamp may be trusted to lack the literal. A
+            // stamp of 0 is "unknown" (a git source, or an mtime too close to the clock when it was
+            // taken, see `scanner_file::settled_mtime`), and an unavailable live mtime also reads 0,
+            // so it must never count as a match.
+            entry.mtime_ns != 0
+                && std::fs::metadata(root.join(entry.rel.to_path_buf()))
+                    .is_ok_and(|m| m.len() == entry.size_bytes && mtime_nanos(&m) == entry.mtime_ns)
         })
         .collect()
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn row_for(text: &str) -> Vec<u8> {
-        build_row(text.as_bytes())
-    }
-
-    fn rejects(pattern: &str, text: &str) -> bool {
-        let needle = Needle::compile(pattern).expect("usable needle");
-        let row = row_for(text);
-        !needle.passes(parse_row(&row).expect("row"))
-    }
-
-    #[test]
-    fn a_present_literal_is_never_rejected() {
-        let text = "fn main() { let post_processing = 1; }\n".repeat(50);
-        assert!(!rejects("post_processing", &text));
-        assert!(!rejects(r"post_processing\s*=", &text));
-        assert!(!rejects("(?i)POST_PROCESSING", &text));
-        assert!(!rejects("zzz_absent|post_processing", &text));
-    }
-
-    #[test]
-    fn an_absent_literal_is_rejected() {
-        assert!(rejects("eq9fsw", "fn main() { println!(\"hello\"); }"));
-    }
-
-    #[test]
-    fn patterns_without_a_required_trigram_sweep_everything() {
-        for pattern in [".*", r"\w+", "ab", "a|bcd", "(?i)k", "^", r"\d{3}"] {
-            assert!(Needle::compile(pattern).is_none(), "{pattern} must not be prefiltered");
-        }
-    }
-
-    #[test]
-    fn case_insensitive_literals_match_every_casing() {
-        let needle = Needle::compile("(?i)needle").expect("expanded to case variants");
-        for text in ["xx NEEDLE xx", "xx needle xx", "xx NeEdLe xx"] {
-            assert!(needle.passes(parse_row(&row_for(text)).unwrap()), "{text}");
-        }
-    }
-
-    #[test]
-    fn unicode_literals_are_matched_on_their_utf8_bytes() {
-        let needle = Needle::compile("caf\u{e9}s").expect("literal");
-        assert!(needle.passes(parse_row(&row_for("two caf\u{e9}s here")).unwrap()));
-    }
-
-    #[test]
-    fn foreign_or_short_rows_do_not_parse() {
-        let mut row = row_for("hello world");
-        assert!(parse_row(&row).is_some());
-        row[0] = ROW_VERSION + 1;
-        assert!(parse_row(&row).is_none());
-        assert!(parse_row(&[ROW_VERSION; HEADER_BYTES]).is_none());
-        assert!(parse_row(&[]).is_none());
-    }
-
-    #[test]
-    fn row_size_tracks_the_file_within_its_bounds() {
-        assert_eq!(build_row(b"abc").len(), HEADER_BYTES + MIN_BLOOM_BYTES);
-        let big = vec![b'x'; 8 * 1024];
-        assert_eq!(build_row(&big).len(), HEADER_BYTES + 1024);
-        let huge = vec![b'x'; 4 * 1024 * 1024];
-        assert_eq!(build_row(&huge).len(), HEADER_BYTES + MAX_BLOOM_BYTES);
-    }
-
-    fn open_db() -> (tempfile::TempDir, IndexDb) {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let db = IndexDb::open(dir.path()).expect("index");
-        (dir, db)
-    }
-
-    fn put(db: &IndexDb, hash_hex: &str, text: &str) {
-        let mut writer = db.writer();
-        writer.upsert_grep_bloom(hash_hex, row_for(text));
-        writer.commit().expect("commit");
-    }
-
-    #[test]
-    fn a_row_round_trips_under_its_content_hash() {
-        let (_dir, db) = open_db();
-        put(&db, "aa11", "fn alpha() {}");
-        assert_eq!(
-            db.grep_bloom_row("aa11").as_deref(),
-            Some(row_for("fn alpha() {}").as_slice())
-        );
-        assert!(db.grep_bloom_current("aa11"));
-        assert!(!db.grep_bloom_current("bb22"));
-    }
-
-    #[test]
-    fn a_hash_that_prefixes_another_reads_only_its_own_row() {
-        let (_dir, db) = open_db();
-        put(&db, "ab", "short key");
-        put(&db, "abc", "longer key");
-        assert_eq!(
-            db.grep_bloom_row("ab").as_deref(),
-            Some(row_for("short key").as_slice())
-        );
-        assert_eq!(
-            db.grep_bloom_row("abc").as_deref(),
-            Some(row_for("longer key").as_slice())
-        );
-        assert!(db.grep_bloom_row("a").is_none());
-    }
-
-    #[test]
-    fn the_sweep_drops_only_hashes_no_live_file_references() {
-        let (_dir, db) = open_db();
-        for hash in ["h1", "h2", "h3"] {
-            put(&db, hash, hash);
-        }
-        let live: ahash::AHashSet<&str> = ["h1", "h3"].into_iter().collect();
-        assert_eq!(db.sweep_grep_bloom(&live).expect("sweep"), 1);
-        assert!(db.grep_bloom_current("h1") && db.grep_bloom_current("h3"));
-        assert!(!db.grep_bloom_current("h2"));
-        assert_eq!(
-            db.sweep_grep_bloom(&live).expect("sweep"),
-            0,
-            "a second sweep is a no-op"
-        );
-    }
-
-    #[test]
-    fn two_paths_with_the_same_content_share_one_row_and_both_skip() {
-        let (_dir, db) = open_db();
-        let root = tempfile::tempdir().expect("root");
-        let text = "fn unrelated() { println!(\"hello\"); }\n";
-        let mut entries = Vec::new();
-        for name in ["a.rs", "b.rs"] {
-            std::fs::write(root.path().join(name), text).expect("write");
-            let meta = std::fs::metadata(root.path().join(name)).expect("stat");
-            entries.push(GrepEntry {
-                rel: RelPath::from(name),
-                hash_hex: "same".to_owned(),
-                size_bytes: meta.len(),
-                mtime_ns: mtime_nanos(&meta),
-            });
-        }
-        put(&db, "same", text);
-        put(&db, "same", text);
-        assert_eq!(db.grep_bloom_row_count(), 1);
-        let needle = Needle::compile("zzz_absent_literal").expect("needle");
-        assert_eq!(db.grep_skip_verdicts(root.path(), &entries, &needle), vec![true, true]);
-    }
-
-    #[test]
-    fn a_live_file_that_moved_off_its_indexed_stamp_is_a_candidate() {
-        let (_dir, db) = open_db();
-        let root = tempfile::tempdir().expect("root");
-        std::fs::write(root.path().join("a.rs"), "fn unrelated() {}\n").expect("write");
-        let meta = std::fs::metadata(root.path().join("a.rs")).expect("stat");
-        put(&db, "h", "fn unrelated() {}\n");
-        let needle = Needle::compile("zzz_absent_literal").expect("needle");
-        let entry = |size_bytes| GrepEntry {
-            rel: RelPath::from("a.rs"),
-            hash_hex: "h".to_owned(),
-            size_bytes,
-            mtime_ns: mtime_nanos(&meta),
-        };
-        assert_eq!(
-            db.grep_skip_verdicts(root.path(), &[entry(meta.len())], &needle),
-            vec![true]
-        );
-        assert_eq!(
-            db.grep_skip_verdicts(root.path(), &[entry(meta.len() + 1)], &needle),
-            vec![false]
-        );
-    }
-}
+#[path = "grep_bloom_tests.rs"]
+mod tests;

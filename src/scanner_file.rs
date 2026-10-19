@@ -298,6 +298,13 @@ fn process_file(
         return FileResult::bare(rel.to_string(), FileStatus::SkippedNonUtf8);
     }
 
+    // A stamp taken too close to the clock cannot vouch for the bytes just read (see `settled_mtime`).
+    let mtime = if matches!(source, ScanSource::WorkingTree) {
+        settled_mtime(mtime, now_nanos())
+    } else {
+        mtime
+    };
+
     let hash = hashing::hash_bytes(&bytes);
     let hex_buf = hashing::hex_buf(&hash);
     let hash_hex_str = hashing::hex_str(&hex_buf);
@@ -647,6 +654,31 @@ pub fn mtime_nanos(metadata: &std::fs::Metadata) -> i64 {
         .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
         .map(|d| i64::try_from(d.as_nanos()).unwrap_or(i64::MAX))
         .unwrap_or(0)
+}
+
+/// How close to the clock a file's mtime may be before the filesystem's timestamp granularity can
+/// no longer tell a later edit from the content just read.
+const RACY_WINDOW_NANOS: u64 = 2_000_000_000;
+
+/// The wall clock as nanoseconds since the Unix epoch, saturating like [`mtime_nanos`].
+fn now_nanos() -> i64 {
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .ok()
+        .map_or(0, |d| i64::try_from(d.as_nanos()).unwrap_or(i64::MAX))
+}
+
+/// The mtime to record for bytes read when the clock said `now_ns`: `mtime_ns` itself when it is far
+/// enough from `now_ns`, else 0. An edit landing in the same timestamp tick as the read could keep
+/// both size and mtime, so the grep bloom guard (which holds a live file to its indexed
+/// `(size, mtime)`) must not trust such a stamp; 0 is the "unknown" stamp it never trusts. The next
+/// scan re-reads the file, finds the same hash and restamps it once it has settled.
+pub(crate) fn settled_mtime(mtime_ns: i64, now_ns: i64) -> i64 {
+    if mtime_ns.abs_diff(now_ns) < RACY_WINDOW_NANOS {
+        0
+    } else {
+        mtime_ns
+    }
 }
 
 fn read_working_tree(

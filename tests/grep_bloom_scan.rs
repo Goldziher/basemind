@@ -4,32 +4,71 @@
 //! asserts what grep is allowed to trust.
 
 use std::path::Path;
+use std::time::{Duration, SystemTime};
 
 use basemind::path::RelPath;
+use basemind::scanner::{EmbedMode, ScanCancel, ScanSource};
 use basemind::store::{Store, VIEW_WORKING};
 
-fn scan(root: &Path) -> Store {
+fn config(root: &Path) -> basemind::config::Config {
     let mut cfg = basemind::config::default_for_root(root);
     cfg.documents.embed = false;
     cfg.code_search.embed = false;
+    cfg
+}
+
+/// Run `work` on a fresh thread, as the scanner's own callers do.
+fn off_main<T: Send>(work: impl FnOnce() -> T + Send) -> T {
     let _ = basemind::lang::ensure_grammars().expect("grammar bootstrap");
-    std::thread::scope(|scope| {
-        scope
-            .spawn(|| {
-                let mut store = Store::open(root, VIEW_WORKING).expect("open store");
-                basemind::scanner::scan(
-                    root,
-                    &mut store,
-                    &cfg,
-                    basemind::scanner::ScanSource::WorkingTree,
-                    basemind::scanner::EmbedMode::Inline,
-                )
-                .expect("scan");
-                store
-            })
-            .join()
-            .expect("scan thread")
+    std::thread::scope(|scope| scope.spawn(work).join().expect("scan thread"))
+}
+
+fn scan_cancellable(root: &Path, cancel: &ScanCancel) -> Store {
+    let cfg = config(root);
+    off_main(|| {
+        let mut store = Store::open(root, VIEW_WORKING).expect("open store");
+        basemind::scanner::scan_with_cancel(
+            root,
+            &mut store,
+            &cfg,
+            ScanSource::WorkingTree,
+            EmbedMode::Inline,
+            cancel,
+        )
+        .expect("scan");
+        store
     })
+}
+
+fn scan(root: &Path) -> Store {
+    scan_cancellable(root, &ScanCancel::new())
+}
+
+/// The watcher's path: rescan only `rels` into the open `store`.
+fn scan_paths(root: &Path, store: &mut Store, rels: &[&str]) {
+    let cfg = config(root);
+    let paths: Vec<_> = rels.iter().map(|rel| root.join(rel)).collect();
+    off_main(|| basemind::scanner::scan_paths(root, store, &cfg, &paths, EmbedMode::Inline).expect("scan_paths"));
+}
+
+/// Move a file's mtime an hour back, past the window in which its stamp is too fresh to trust.
+fn age(root: &Path, rel: &str) {
+    let file = std::fs::OpenOptions::new().write(true).open(root.join(rel)).unwrap();
+    file.set_modified(SystemTime::now() - Duration::from_secs(3600))
+        .unwrap();
+}
+
+fn write_aged(root: &Path, rel: &str, text: &str) {
+    std::fs::write(root.join(rel), text).unwrap();
+    age(root, rel);
+}
+
+fn orphan_row(store: &Store, key: &str) {
+    put_raw(
+        store,
+        key,
+        basemind::index::grep_bloom::build_row(b"nothing indexed holds this"),
+    );
 }
 
 fn hash_of(root: &Path, rel: &str) -> String {
@@ -119,7 +158,7 @@ fn a_touched_file_keeps_its_indexed_stamp_current() {
     basemind::store::init_isolated_cache();
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
-    std::fs::write(root.join("a.rs"), "pub fn alpha_function_name() -> u32 { 1 }\n").unwrap();
+    write_aged(root, "a.rs", "pub fn alpha_function_name() -> u32 { 1 }\n");
     let store = scan(root);
     assert_eq!(indexed_stamp(&store, "a.rs"), live_stamp(root, "a.rs"));
     drop(store);
@@ -207,7 +246,7 @@ fn v1_rows_are_absent_on_read_so_grep_scans_every_file() {
     basemind::store::init_isolated_cache();
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
-    std::fs::write(root.join("a.rs"), "pub fn alpha_function_name() -> u32 { 1 }\n").unwrap();
+    write_aged(root, "a.rs", "pub fn alpha_function_name() -> u32 { 1 }\n");
     let hash = hash_of(root, "a.rs");
     let store = scan(root);
     let entry = grep_entry(&store, root, "a.rs");
@@ -236,7 +275,7 @@ fn the_next_incremental_scan_sweeps_v1_rows_and_rebuilds_content_keyed_ones() {
     basemind::store::init_isolated_cache();
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
-    std::fs::write(root.join("a.rs"), "pub fn alpha_function_name() -> u32 { 1 }\n").unwrap();
+    write_aged(root, "a.rs", "pub fn alpha_function_name() -> u32 { 1 }\n");
     let hash = hash_of(root, "a.rs");
     let store = scan(root);
     downgrade_to_v1(&store, "a.rs", &hash);
@@ -254,10 +293,142 @@ fn the_next_incremental_scan_sweeps_v1_rows_and_rebuilds_content_keyed_ones() {
 }
 
 #[test]
-fn migrating_grep_bloom_rows_does_not_change_the_index_schema_version() {
-    assert_eq!(
-        basemind::index::INDEX_SCHEMA_VER,
-        basemind::version::RELEASE_MINOR as u32 + 6,
-        "pre-A2 value: a schema bump would force every user to re-index"
+fn migrating_grep_bloom_rows_does_not_wipe_the_index() {
+    basemind::store::init_isolated_cache();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    write_aged(root, "a.rs", "pub fn alpha_function_name() -> u32 { 1 }\n");
+    let hash = hash_of(root, "a.rs");
+    let store = scan(root);
+    downgrade_to_v1(&store, "a.rs", &hash);
+    drop(store);
+
+    let store = scan(root);
+    assert!(!store.reset_stale_schema && !store.index_rebuild_needed);
+    assert!(
+        !store.index_db.as_ref().expect("index").wiped_on_open(),
+        "rows migrate by row version, so no user re-indexes for them"
     );
+    assert!(store.lookup(RelPath::from("a.rs")).is_some());
+}
+
+#[test]
+fn a_cancelled_scan_does_not_sweep() {
+    basemind::store::init_isolated_cache();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    write_aged(root, "a.rs", "pub fn alpha_function_name() -> u32 { 1 }\n");
+    let store = scan(root);
+    orphan_row(&store, "orphan");
+    drop(store);
+
+    let cancel = ScanCancel::new();
+    cancel.cancel();
+    let store = scan_cancellable(root, &cancel);
+    assert!(
+        has_row(&store, "orphan"),
+        "a partial pass cannot tell dead rows from unvisited ones"
+    );
+    drop(store);
+
+    let store = scan(root);
+    assert!(!has_row(&store, "orphan"), "the next complete pass sweeps it");
+}
+
+#[test]
+fn scan_paths_deletes_the_superseded_row_on_edit_and_on_delete() {
+    basemind::store::init_isolated_cache();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    write_aged(root, "a.rs", "pub fn alpha_function_name() -> u32 { 1 }\n");
+    write_aged(root, "b.rs", "pub fn beta_function_name() -> u32 { 2 }\n");
+    let (a_old, b_old) = (hash_of(root, "a.rs"), hash_of(root, "b.rs"));
+    let mut store = scan(root);
+
+    std::fs::write(root.join("a.rs"), "pub fn alpha_function_name() -> u32 { 100_000 }\n").unwrap();
+    let a_new = hash_of(root, "a.rs");
+    scan_paths(root, &mut store, &["a.rs"]);
+    assert!(
+        has_row(&store, &a_new) && !has_row(&store, &a_old),
+        "an edit moves the row"
+    );
+    assert!(has_row(&store, &b_old), "an untouched file keeps its row");
+
+    std::fs::remove_file(root.join("b.rs")).unwrap();
+    scan_paths(root, &mut store, &["b.rs"]);
+    assert!(!has_row(&store, &b_old), "a deleted file's row goes");
+    assert_eq!(row_count(&store), 1, "no growth across incremental edits");
+}
+
+#[test]
+fn scan_paths_keeps_a_row_while_another_path_still_holds_the_content() {
+    basemind::store::init_isolated_cache();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    let shared = "pub fn shared_function_name() -> u32 { 1 }\n";
+    write_aged(root, "a.rs", shared);
+    write_aged(root, "b.rs", shared);
+    let hash = hash_of(root, "a.rs");
+    let mut store = scan(root);
+
+    std::fs::write(root.join("a.rs"), "pub fn changed_function_name() -> u32 { 2 }\n").unwrap();
+    scan_paths(root, &mut store, &["a.rs"]);
+    assert!(has_row(&store, &hash), "b.rs still holds the old content");
+
+    std::fs::remove_file(root.join("b.rs")).unwrap();
+    scan_paths(root, &mut store, &["b.rs"]);
+    assert!(!has_row(&store, &hash), "the last holder is gone");
+}
+
+#[test]
+fn scan_paths_keeps_a_row_a_path_in_the_same_batch_moved_onto() {
+    basemind::store::init_isolated_cache();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    write_aged(root, "a.rs", "pub fn alpha_function_name() -> u32 { 1 }\n");
+    write_aged(root, "b.rs", "pub fn beta_function_name() -> u32 { 2 }\n");
+    let (a_old, b_old) = (hash_of(root, "a.rs"), hash_of(root, "b.rs"));
+    let mut store = scan(root);
+
+    std::fs::write(root.join("a.rs"), "pub fn beta_function_name() -> u32 { 2 }\n").unwrap();
+    std::fs::write(root.join("b.rs"), "pub fn gamma_function_name() -> u32 { 3 }\n").unwrap();
+    scan_paths(root, &mut store, &["a.rs", "b.rs"]);
+    assert!(has_row(&store, &b_old), "a.rs now holds b.rs's old content");
+    assert!(!has_row(&store, &a_old));
+    assert_eq!(row_count(&store), 2);
+}
+
+#[test]
+fn a_freshly_written_file_is_never_skipped_until_a_later_scan_restamps_it() {
+    basemind::store::init_isolated_cache();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    write_aged(root, "warm.rs", "pub fn warm_up_function() -> u32 { 0 }\n");
+    let mut store = scan(root);
+    let absent = basemind::index::grep_bloom::Needle::compile("zzz_absent_literal").expect("needle");
+    let verdict = |store: &Store| {
+        let entry = grep_entry(store, root, "a.rs");
+        let idx = store.index_db.clone().expect("index");
+        idx.grep_skip_verdicts(root, &[entry], &absent)[0]
+    };
+
+    // The first scan paid for the grammar bootstrap; an incremental pass on the open store is
+    // quick, so the new file's mtime is well inside the window when it is read.
+    std::fs::write(root.join("a.rs"), "pub fn alpha_function_name() -> u32 { 1 }\n").unwrap();
+    scan_paths(root, &mut store, &["a.rs"]);
+    assert_eq!(
+        indexed_stamp(&store, "a.rs").1,
+        0,
+        "a stamp this close to the clock is not recorded"
+    );
+    assert!(!verdict(&store), "an untrusted stamp keeps the file a candidate");
+
+    age(root, "a.rs");
+    scan_paths(root, &mut store, &["a.rs"]);
+    assert_eq!(
+        indexed_stamp(&store, "a.rs"),
+        live_stamp(root, "a.rs"),
+        "restamped once settled"
+    );
+    assert!(verdict(&store), "a settled stamp is trusted again");
 }

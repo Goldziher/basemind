@@ -12,6 +12,7 @@ use crate::index::{IndexDb, IndexError};
 #[cfg(feature = "intelligence")]
 use crate::lance::LanceStore;
 use crate::path::RelPath;
+use crate::store_hash_refs::HashRefs;
 
 /// Cache layout: where the global cache root is, how a worktree root maps to a workspace cache
 /// dir, and the `workspace.json` marker recording that mapping. Lives in its own module (like
@@ -283,6 +284,10 @@ pub struct Store {
     pub view_dir: PathBuf,
     pub view: String,
     pub index: Index,
+    /// Which content hashes `index.files` holds, kept in step by [`Store::upsert`] / [`Store::remove`]
+    /// so "does any file still hold this content" is a lookup, not a pass over the manifest. Mutate
+    /// `index.files` through those two methods only.
+    hash_refs: HashRefs,
     /// Fjall-backed inverted index over symbols / calls / imports. Lives under
     /// `view_dir/index.fjall/`. Reads + writes from any caller go through `IndexDb`,
     /// which is cheap to clone (internally Arc'd). `None` in read-only mode when the
@@ -376,6 +381,7 @@ impl Store {
             blobs_shared,
             view_dir,
             view: view.to_string(),
+            hash_refs: HashRefs::of(&index.files),
             index,
             index_db,
             #[cfg(feature = "intelligence")]
@@ -470,6 +476,7 @@ impl Store {
             blobs_shared,
             view_dir,
             view: view.to_string(),
+            hash_refs: HashRefs::of(&index.files),
             index,
             index_db,
             #[cfg(feature = "intelligence")]
@@ -507,11 +514,21 @@ impl Store {
     }
 
     pub fn upsert(&mut self, rel: impl Into<RelPath>, entry: FileEntry) {
-        self.index.files.insert(rel.into(), entry);
+        self.hash_refs.acquire(&entry.hash_hex);
+        if let Some(prior) = self.index.files.insert(rel.into(), entry) {
+            self.hash_refs.release(&prior.hash_hex);
+        }
     }
 
     pub fn remove(&mut self, rel: impl AsRef<[u8]>) {
-        self.index.files.remove(bstr::BStr::new(rel.as_ref()));
+        if let Some(prior) = self.index.files.remove(bstr::BStr::new(rel.as_ref())) {
+            self.hash_refs.release(&prior.hash_hex);
+        }
+    }
+
+    /// True when some indexed file holds the content `hash_hex`.
+    pub fn hash_is_held(&self, hash_hex: &str) -> bool {
+        self.hash_refs.is_held(hash_hex)
     }
 
     /// Look a file up by its repository-relative path. Accepts any byte source —

@@ -67,6 +67,7 @@ pub mod store_gc_budget;
 pub(crate) mod store_gc_live;
 pub mod store_gc_protect;
 pub mod store_gc_workspace;
+mod store_hash_refs;
 pub mod store_layout;
 mod store_lock;
 mod store_seed;
