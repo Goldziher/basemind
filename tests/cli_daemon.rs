@@ -217,11 +217,14 @@ fn live_daemon_serves_rescan_memory_and_blocks_destructive_commands() {
     assert_eq!(code(&rescan), 0, "{}", text(&rescan));
     assert!(text(&rescan).contains("via daemon"), "{}", text(&rescan));
 
-    let put = env.run(&["memory", "put", "k1", "forwarded value"]);
-    assert_eq!(code(&put), 0, "memory put must forward, not fail: {}", text(&put));
-    let get = env.run(&["memory", "get", "k1"]);
-    assert_eq!(code(&get), 0, "{}", text(&get));
-    assert!(text(&get).contains("forwarded value"), "{}", text(&get));
+    // `memory` mode exists only in a binary built with the `memory` feature.
+    if cfg!(feature = "memory") {
+        let put = env.run(&["memory", "put", "k1", "forwarded value"]);
+        assert_eq!(code(&put), 0, "memory put must forward, not fail: {}", text(&put));
+        let get = env.run(&["memory", "get", "k1"]);
+        assert_eq!(code(&get), 0, "{}", text(&get));
+        assert!(text(&get).contains("forwarded value"), "{}", text(&get));
+    }
 
     let callers = env.run(&["--json", "code", "callers", "a.rs", "alpha"]);
     assert_eq!(code(&callers), 0, "{}", text(&callers));
