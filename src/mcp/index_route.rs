@@ -23,8 +23,8 @@ use rmcp::ErrorData as McpError;
 use super::MapCache;
 use super::helpers_calls_scan::{CallRef, CallScanPage, calls_in_file_fjall, scan_calls_by_name, scan_calls_in_ram};
 use super::helpers_impls::{ImplScanPage, scan_impls_in_ram, scan_impls_session};
-use crate::index::IndexDb;
 use crate::index::grep_bloom::GrepEntry;
+use crate::index::view::{IndexView, StandaloneView};
 use crate::path::RelPath;
 
 #[cfg(all(feature = "comms", any(unix, windows)))]
@@ -37,7 +37,7 @@ use {
 /// How a session reaches the fjall index its reference reads need.
 pub(super) enum IndexRoute {
     /// This session's own open index.
-    Local(Box<IndexDb>),
+    Local(Box<dyn IndexView>),
     /// The daemon's workspace pool, in-process (daemon-hosted connection).
     #[cfg(all(feature = "comms", any(unix, windows)))]
     Host {
@@ -58,7 +58,7 @@ impl IndexRoute {
     /// Decide the route for this session. Never fails: an unreachable daemon is the `InRam` route.
     pub(super) async fn resolve(state: &super::ServerState) -> Self {
         if let Some(idx) = state.shared.store.read().await.index_db.clone() {
-            return Self::Local(Box::new(idx));
+            return Self::Local(Box::new(StandaloneView(idx)));
         }
         #[cfg(all(feature = "comms", any(unix, windows)))]
         {
@@ -164,7 +164,7 @@ impl IndexRoute {
         cursor_after: Option<&[u8]>,
     ) -> Result<CallScanPage, McpError> {
         if let Self::Local(idx) = self {
-            return scan_calls_by_name(idx, name, limit, cursor_after);
+            return scan_calls_by_name(&**idx, name, limit, cursor_after);
         }
         #[cfg(all(feature = "comms", any(unix, windows)))]
         match self
@@ -194,7 +194,7 @@ impl IndexRoute {
         paths: &[RelPath],
     ) -> Result<Vec<Vec<CallRef>>, McpError> {
         if let Self::Local(idx) = self {
-            return paths.iter().map(|path| calls_in_file_fjall(idx, path)).collect();
+            return paths.iter().map(|path| calls_in_file_fjall(&**idx, path)).collect();
         }
         #[cfg(all(feature = "comms", any(unix, windows)))]
         match self
@@ -229,7 +229,7 @@ impl IndexRoute {
         cursor_after: Option<&[u8]>,
     ) -> Result<ImplScanPage, McpError> {
         if let Self::Local(idx) = self {
-            return scan_impls_session(idx, cache, trait_name, language, limit, cursor_after);
+            return scan_impls_session(&**idx, cache, trait_name, language, limit, cursor_after);
         }
         #[cfg(all(feature = "comms", any(unix, windows)))]
         match self

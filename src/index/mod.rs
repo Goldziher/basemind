@@ -24,6 +24,9 @@ pub mod keys_governance;
 pub mod keys_probe;
 pub(crate) mod memory_store;
 pub(crate) mod name_dict;
+pub mod view;
+#[cfg(test)]
+mod view_tests;
 pub mod writer;
 
 use std::path::{Path, PathBuf};
@@ -289,55 +292,55 @@ pub struct IndexDb {
     pub(crate) db: Database,
     /// Carries the `schema_ver` row read + stamped in [`IndexDb::open`]; also read and written
     /// by the BM25 corpus-stats recompute.
-    pub(crate) meta: Keyspace,
-    pub(crate) symbols_by_path: Keyspace,
+    pub(in crate::index) meta: Keyspace,
+    pub(in crate::index) symbols_by_path: Keyspace,
     /// Reserved fast-path partition: written on every upsert so that future name-based
     /// symbol search can skip the in-RAM linear scan. Not yet read by any MCP query path;
     /// kept to avoid a schema migration when the read path lands.
-    pub(crate) symbols_by_name: Keyspace,
-    pub(crate) calls_by_path: Keyspace,
-    pub(crate) calls_by_callee: Keyspace,
+    pub(in crate::index) symbols_by_name: Keyspace,
+    pub(in crate::index) calls_by_path: Keyspace,
+    pub(in crate::index) calls_by_callee: Keyspace,
     /// Distinct callee names of `calls_by_callee`; lets the substring name scan range-scan only the
     /// matching names instead of walking the partition.
-    pub(crate) callee_names: std::sync::Arc<name_dict::NameDict>,
+    pub(in crate::index) callee_names: std::sync::Arc<name_dict::NameDict>,
     /// Reserved fast-path partition: written on every upsert so that future
     /// `dependents`-by-module queries can use a prefix scan instead of iterating the
     /// full import set. Not yet read by any MCP query path; kept to avoid a schema
     /// migration when the read path lands.
-    pub(crate) imports_by_module: Keyspace,
-    pub(crate) imports_by_path: Keyspace,
+    pub(in crate::index) imports_by_module: Keyspace,
+    pub(in crate::index) imports_by_path: Keyspace,
     /// `implementations_by_trait`: prefix scans on trait name — backs `find_implementations`.
-    pub(crate) implementations_by_trait: Keyspace,
+    pub(in crate::index) implementations_by_trait: Keyspace,
     /// Distinct trait names of `implementations_by_trait`, as [`Self::callee_names`] is for callees.
-    pub(crate) trait_names: std::sync::Arc<name_dict::NameDict>,
+    pub(in crate::index) trait_names: std::sync::Arc<name_dict::NameDict>,
     /// `implementations_by_path`: companion to keep the per-file delete on upsert O(prefix).
-    pub(crate) implementations_by_path: Keyspace,
+    pub(in crate::index) implementations_by_path: Keyspace,
     /// `refs_by_def`: scope/import-resolved reference edges keyed by defining site — backs the
     /// resolved `find_references` / `find_callers`. Written by the scanner's resolve pass (B3).
-    pub(crate) refs_by_def: Keyspace,
+    pub(in crate::index) refs_by_def: Keyspace,
     /// `refs_by_path`: companion keyed by the use file — O(prefix) delete on re-resolve and the
     /// forward lookup behind `goto_definition`. Written by the scanner's resolve pass (B3).
-    pub(crate) refs_by_path: Keyspace,
+    pub(in crate::index) refs_by_path: Keyspace,
     /// `import_targets`: importer + import-binding offset -> the definition the stitch bound it to,
     /// plus one reserved probe-manifest row per importer (see [`keys_probe`]).
-    pub(crate) import_targets: Keyspace,
+    pub(in crate::index) import_targets: Keyspace,
     /// `importers_by_probe`: probed path hash + importer. Every path the resolver consulted for an
     /// importer's imports, so the incremental re-stitch finds exactly the importers a changed,
     /// added or deleted path can affect.
-    pub(crate) importers_by_probe: Keyspace,
+    pub(in crate::index) importers_by_probe: Keyspace,
     /// `code_bm25_postings`: term → chunks (with inlined tf + doclen) for the code-search BM25
     /// keyword lane. Always created for DB stability; read + written only under the `code-search`
     /// feature (hence `dead_code`-allowed on a default build, mirroring `embeddings`).
     #[allow(dead_code)]
-    pub(crate) code_bm25_postings: Keyspace,
+    pub(in crate::index) code_bm25_postings: Keyspace,
     /// `code_bm25_by_path`: forward companion keyed by file → its chunks' `(chunk_id, doclen,
     /// terms)`, so a re-scan deletes the previous postings in O(prefix). Always created.
-    pub(crate) code_bm25_by_path: Keyspace,
+    pub(in crate::index) code_bm25_by_path: Keyspace,
     /// `grep_bloom`: hex content hash -> trigram bloom filter of that content (see [`grep_bloom`]),
     /// shared by every path holding the bytes. A candidate PREFILTER for `code grep` only; a missing
     /// row means "candidate", which is why this partition was added without a schema bump and
     /// backfills on rescan.
-    pub(crate) grep_bloom: Keyspace,
+    pub(in crate::index) grep_bloom: Keyspace,
     #[allow(dead_code)]
     pub(crate) embeddings: Keyspace,
     /// `memory_by_key`: scope + key → msgpack `MemoryRecord`. Lives in the per-repo-group

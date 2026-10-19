@@ -193,7 +193,10 @@ mod tests {
             "the item-count bound must not be what committed here"
         );
         assert!(
-            db.refs_by_def.iter().next().is_some(),
+            db.keyspace_for_test(crate::index::view::Part::RefsByDef)
+                .iter()
+                .next()
+                .is_some(),
             "the byte budget must have forced a commit already"
         );
         assert!(batch.finish());
@@ -264,7 +267,7 @@ mod tests {
         }
 
         let dump = |db: &IndexDb| -> Vec<Vec<u8>> {
-            db.refs_by_def
+            db.keyspace_for_test(crate::index::view::Part::RefsByDef)
                 .iter()
                 .map(|guard| (*guard.into_inner().expect("read entry").0).to_vec())
                 .collect()

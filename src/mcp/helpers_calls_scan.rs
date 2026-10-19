@@ -11,6 +11,7 @@ use rmcp::ErrorData as McpError;
 use super::cursor::Cursor;
 use super::helpers_calls::resolve_call_line_col;
 use super::types::ReferenceHit;
+use crate::index::view::Part;
 
 pub(crate) struct CallScanPage {
     pub total: u32,
@@ -71,7 +72,7 @@ pub(super) fn budget_call_page(page: CallScanPage, max_tokens: Option<u32>) -> B
 /// the cursor (exclusive). The cursor returned in [`CallScanPage::next_cursor`] is the
 /// last key emitted on this page — pass it back on the next call to advance.
 pub(crate) fn scan_calls_by_name(
-    idx: &crate::index::IndexDb,
+    idx: &dyn crate::index::view::IndexView,
     name: &str,
     limit: usize,
     cursor_after: Option<&[u8]>,
@@ -90,12 +91,8 @@ pub(crate) fn scan_calls_by_name(
     let scan_cap = limit.saturating_mul(8).max(2_000);
     let mut has_more = false;
     let mut matched: usize = 0;
-    for guard in
-        crate::index::name_dict::name_ordered_keys(&idx.calls_by_callee, &idx.callee_names, name, cursor_after, lower)
-    {
-        let (k, _) = guard
-            .into_inner()
-            .map_err(|e| McpError::internal_error(format!("index iter: {e}"), None))?;
+    for guard in idx.callee_keys_matching(name, cursor_after, lower) {
+        let (k, _) = guard.map_err(|e| McpError::internal_error(format!("index iter: {e}"), None))?;
         let Some((callee, rel, start)) = crate::index::keys::parse_call_by_callee(&k) else {
             continue;
         };
@@ -142,7 +139,7 @@ pub(crate) fn scan_calls_by_name(
 /// reader behind the writer session's per-file lookups and the daemon's forwarded
 /// `CallsInFiles`, so the two cannot drift.
 pub(crate) fn calls_in_file_fjall(
-    idx: &crate::index::IndexDb,
+    idx: &dyn crate::index::view::IndexView,
     path: &crate::path::RelPath,
 ) -> Result<Vec<CallRef>, McpError> {
     let prefix = crate::index::keys::calls_by_path_prefix(path);
@@ -151,10 +148,8 @@ pub(crate) fn calls_in_file_fjall(
         None => Bound::Unbounded,
     };
     let mut out = Vec::new();
-    for guard in idx.calls_by_path.range::<Vec<u8>, _>((Bound::Included(prefix), upper)) {
-        let (_, v) = guard
-            .into_inner()
-            .map_err(|e| McpError::internal_error(format!("index iter: {e}"), None))?;
+    for guard in idx.range(Part::CallsByPath, Bound::Included(prefix), upper) {
+        let (_, v) = guard.map_err(|e| McpError::internal_error(format!("index iter: {e}"), None))?;
         let call: crate::extract::Call = match rmp_serde::from_slice(&v) {
             Ok(c) => c,
             Err(_) => continue,

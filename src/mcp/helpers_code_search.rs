@@ -231,13 +231,13 @@ async fn fjall_lanes(
 ) -> Result<LaneOutcome, McpError> {
     {
         let store = state.shared.store.read().await;
-        if let Some(db) = store.index_db.as_ref() {
-            let keyword = bm25_search(db, query, limit)
+        if let Some(db) = store.index_view() {
+            let keyword = bm25_search(&db, query, limit)
                 .into_iter()
                 .map(|hit| (hit.chunk_id, hit.score))
                 .collect();
             let exact = if want_exact {
-                exact_lane_chunk_ids(&store, db, query, limit)
+                exact_lane_chunk_ids(&store, &db, query, limit)
             } else {
                 Vec::new()
             };

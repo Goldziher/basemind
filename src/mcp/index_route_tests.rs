@@ -19,6 +19,7 @@ use super::{HostBackend, MapCache};
 use crate::comms::index_read_proto::{IndexReadQuery, IndexReadResult};
 use crate::config::ConfigV1;
 use crate::index::grep_bloom::GrepEntry;
+use crate::index::view::StandaloneView;
 use crate::path::RelPath;
 use crate::scanner::{EmbedMode, ScanSource, scan};
 use crate::store::{Store, VIEW_WORKING};
@@ -164,7 +165,7 @@ fn fixture() -> Fixture {
         broken: true,
     });
     Fixture {
-        local: IndexRoute::Local(Box::new(idx)),
+        local: IndexRoute::Local(Box::new(StandaloneView(idx))),
         host: IndexRoute::Host {
             host: Arc::clone(&host) as Arc<dyn HostBackend>,
             root: root.clone(),

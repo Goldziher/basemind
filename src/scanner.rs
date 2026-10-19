@@ -783,10 +783,9 @@ pub fn scan_paths_with_observer(
     let nothing_removed = removed.is_empty() && doc_removed.is_empty();
     #[cfg(not(feature = "documents"))]
     let nothing_removed = removed.is_empty();
-    let other = store
-        .index_db
-        .as_ref()
-        .map_or_else(Vec::new, |db| crate::intel::resolve_pass::probed_only(db, other));
+    let other = store.index_db.as_ref().map_or_else(Vec::new, |db| {
+        crate::intel::resolve_pass::probed_only(&db.view(), other)
+    });
     if rels.is_empty() && nothing_removed && other.is_empty() {
         return Ok(ScanReport::default());
     }

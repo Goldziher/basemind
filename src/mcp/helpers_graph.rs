@@ -148,12 +148,12 @@ pub(super) async fn run_graph(state: &super::ServerState, params: GraphParams) -
     let started = std::time::Instant::now();
     state.await_cache_ready().await;
     let store = state.shared.store.read().await;
-    let idx = store.index_db.as_ref().cloned();
+    let view = store.index_db.as_ref().cloned().map(crate::index::view::StandaloneView);
     let basemind_dir = store.basemind_dir.clone();
     drop(store);
     let cache = state.shared.cache.load_full();
     let shared = &state.shared;
-    let idx = idx.as_ref();
+    let idx = crate::index::view::as_dyn(&view);
     if idx.is_none() {
         // The graph walks read every file's call sites, so a session with no Fjall index serves them
         // from the in-RAM projection. Build it now so the notice below reflects whether its byte
@@ -420,7 +420,7 @@ pub(super) fn is_function_like(kind: SymbolKind) -> bool {
 /// Entry point — builds the shared calls graph, projects it, and runs the BFS.
 pub(super) fn run_call_graph(
     shared: &SharedReadStack,
-    idx: Option<&crate::index::IndexDb>,
+    idx: Option<&dyn crate::index::view::IndexView>,
     params: CallGraphParams,
     cache: &MapCache,
     notice: Option<super::types::LifecycleNotice>,

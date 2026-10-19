@@ -1206,7 +1206,7 @@ fn deferred_embed_mode_indexes_symbols_and_keyword_lane_but_writes_no_vectors() 
     assert_eq!(hits.len(), 1, "deferred scan must still index symbols");
 
     let db = store.index_db.as_ref().expect("index db present");
-    let keyword = basemind::search::bm25::bm25_search(db, "parse", 10);
+    let keyword = basemind::search::bm25::bm25_search(&db.view(), "parse", 10);
     assert!(!keyword.is_empty(), "deferred scan must populate the BM25 keyword lane");
 
     assert!(

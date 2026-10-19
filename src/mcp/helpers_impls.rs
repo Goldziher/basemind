@@ -87,7 +87,7 @@ pub(super) async fn run_find_implementations(
 /// answers them from its in-RAM map while the daemon answers them from its store, and both must
 /// run this exact loop.
 pub(crate) fn scan_impls_fjall(
-    idx: &crate::index::IndexDb,
+    idx: &dyn crate::index::view::IndexView,
     trait_name: &str,
     language: Option<&str>,
     limit: usize,
@@ -108,16 +108,8 @@ pub(crate) fn scan_impls_fjall(
     let mut has_more = false;
     let mut matched: usize = 0;
 
-    for guard in crate::index::name_dict::name_ordered_keys(
-        &idx.implementations_by_trait,
-        &idx.trait_names,
-        trait_name,
-        cursor_after,
-        lower,
-    ) {
-        let (k, _) = guard
-            .into_inner()
-            .map_err(|e| McpError::internal_error(format!("impl index iter: {e}"), None))?;
+    for guard in idx.trait_keys_matching(trait_name, cursor_after, lower) {
+        let (k, _) = guard.map_err(|e| McpError::internal_error(format!("impl index iter: {e}"), None))?;
 
         let Some((trait_name, impl_type, rel, start_byte)) = crate::index::keys::parse_impl_by_trait(&k) else {
             continue;
@@ -167,7 +159,7 @@ pub(crate) fn scan_impls_fjall(
 /// [`scan_impls_fjall`] with the session's environment: language from the in-RAM file view and
 /// `(row, col)` from the cached L1 outline.
 pub(crate) fn scan_impls_session(
-    idx: &crate::index::IndexDb,
+    idx: &dyn crate::index::view::IndexView,
     cache: &super::MapCache,
     trait_name: &str,
     language: Option<&str>,

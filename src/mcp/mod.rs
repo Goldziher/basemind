@@ -69,6 +69,8 @@ pub(crate) mod index_read;
 mod index_route;
 #[cfg(test)]
 mod index_route_tests;
+#[cfg(test)]
+mod index_view_tests;
 mod kneedle;
 mod l1_cache;
 mod lean;
