@@ -43,7 +43,9 @@ fn write_corpus(root: &Path) {
             h = k % 5,
             o = k % 7,
         );
-        std::fs::write(dir.join(format!("m{k}.rs")), source).expect("rust file");
+        let file = dir.join(format!("m{k}.rs"));
+        std::fs::write(&file, source).expect("rust file");
+        age(&file);
     }
     std::fs::create_dir_all(root.join("py")).expect("py dir");
     std::fs::write(
@@ -51,6 +53,16 @@ fn write_corpus(root: &Path) {
         b"class Base:\n    pass\n\n\nclass Child(Tr1):\n    def go(self):\n        get_arg()\n",
     )
     .expect("python file");
+    age(&root.join("py/a.py"));
+}
+
+/// Move a file's mtime an hour back: a stamp too close to the clock is not trusted for skipping.
+fn age(path: &Path) {
+    std::fs::File::options()
+        .write(true)
+        .open(path)
+        .and_then(|f| f.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(3600)))
+        .expect("age file");
 }
 
 /// Stands in for the daemon's workspace pool: answers `host_index_read` from a writer store, after
@@ -59,6 +71,8 @@ struct StoreHost {
     store: Mutex<Store>,
     /// When set, every read fails, as a daemon that is restarting would.
     broken: bool,
+    /// When set, every read is answered with this instead, as a daemon on another build might.
+    forced_reply: Option<IndexReadResult>,
 }
 
 impl HostBackend for StoreHost {
@@ -75,6 +89,9 @@ impl HostBackend for StoreHost {
     fn host_index_read(&self, _root: &Path, query: IndexReadQuery) -> Result<IndexReadResult, String> {
         if self.broken {
             return Err("daemon unavailable".into());
+        }
+        if let Some(reply) = &self.forced_reply {
+            return Ok(reply.clone());
         }
         let query: IndexReadQuery = round_trip(&query);
         let store = self.store.lock().expect("store lock");
@@ -158,11 +175,13 @@ fn fixture() -> Fixture {
     let host: Arc<StoreHost> = Arc::new(StoreHost {
         store: Mutex::new(store),
         broken: false,
+        forced_reply: None,
     });
     // A second store handle is not needed for the broken host: it never reads.
     let broken: Arc<dyn HostBackend> = Arc::new(StoreHost {
         store: Mutex::new(Store::open_read_only_no_index(&root, VIEW_WORKING).expect("store")),
         broken: true,
+        forced_reply: None,
     });
     Fixture {
         local: IndexRoute::Local(Box::new(StandaloneView(idx))),
@@ -555,6 +574,42 @@ fn a_pattern_without_a_required_literal_or_a_failed_forward_means_no_prefilter()
     assert!(block_on(fx.local.grep_skip(&fx.root, r"\w+", &entries)).is_none());
     assert!(block_on(fx.host.grep_skip(&fx.root, ".*", &entries)).is_none());
     assert!(block_on(fx.broken_host.grep_skip(&fx.root, "driver_7", &entries)).is_none());
+}
+
+/// A route whose daemon answers every read with `reply`.
+fn host_replying(fx: &Fixture, reply: IndexReadResult) -> IndexRoute {
+    let host: Arc<dyn HostBackend> = Arc::new(StoreHost {
+        store: Mutex::new(Store::open_read_only_no_index(&fx.root, VIEW_WORKING).expect("store")),
+        broken: false,
+        forced_reply: Some(reply),
+    });
+    IndexRoute::Host {
+        host,
+        root: fx.root.clone(),
+    }
+}
+
+#[test]
+fn a_mismatched_grep_bloom_reply_degrades_to_a_full_sweep() {
+    let fx = fixture();
+    let entries = corpus_entries(&fx);
+    let replies = [
+        ("wrong length", IndexReadResult::GrepSkip(vec![true; entries.len() - 1])),
+        ("wrong variant", IndexReadResult::CallsInFiles(Vec::new())),
+    ];
+    for (what, reply) in replies {
+        let route = host_replying(&fx, reply);
+        assert!(
+            block_on(route.grep_skip(&fx.root, "driver_7", &entries)).is_none(),
+            "{what}: no verdicts, so every file is searched"
+        );
+    }
+    let agreeing = host_replying(&fx, IndexReadResult::GrepSkip(vec![false; entries.len()]));
+    assert_eq!(
+        block_on(agreeing.grep_skip(&fx.root, "driver_7", &entries)),
+        Some(vec![false; entries.len()]),
+        "a well-formed reply is still used"
+    );
 }
 
 #[test]

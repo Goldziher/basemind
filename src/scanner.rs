@@ -573,7 +573,10 @@ pub fn scan_with_observer(
         observer.on_file(FileResult::bare(k.clone(), FileStatus::Removed));
         report.stats.removed += 1;
     }
-    sweep_grep_bloom_rows(store);
+    // Only a working-tree pass writes bloom rows; a rev or staged pass would sweep them all away.
+    if matches!(source, ScanSource::WorkingTree) {
+        sweep_grep_bloom_rows(store);
+    }
 
     if let Some(change) = &policy {
         // Recorded only when the purge ran to completion (a panic leaves `applied` false too), so a
@@ -647,7 +650,8 @@ pub fn scan_with_observer(
 }
 
 /// Drop the grep bloom rows of every content no indexed file references any more. Rows are shared by
-/// content, so a removed or edited file leaves its old row behind until this full-pass sweep.
+/// content, so a removed or edited file leaves its old row behind until this full-pass sweep (or, for
+/// a watcher batch, [`drop_unheld_grep_bloom_rows`]).
 fn sweep_grep_bloom_rows(store: &Store) {
     let Some(idx) = store.index_db.as_ref() else {
         return;
@@ -660,6 +664,27 @@ fn sweep_grep_bloom_rows(store: &Store) {
         .collect();
     if let Err(error) = idx.sweep_grep_bloom(&live) {
         tracing::warn!(%error, "grep bloom sweep failed; unreferenced rows stay until the next full scan");
+    }
+}
+
+/// Drop the grep bloom rows of `hashes` that no indexed file holds any more. `hashes` are the
+/// contents the pass's changed or removed paths held before it ran, so the cost follows the batch,
+/// not the index; a hash another path still holds (or one the pass just wrote for a new path) stays.
+/// Runs after the pass has applied its entries and committed its rows, so it sees the final manifest.
+fn drop_unheld_grep_bloom_rows(store: &Store, hashes: &[String]) {
+    let Some(idx) = store.index_db.as_ref() else {
+        return;
+    };
+    let unheld: ahash::AHashSet<&str> = hashes
+        .iter()
+        .map(String::as_str)
+        .filter(|hash| !store.hash_is_held(hash))
+        .collect();
+    if unheld.is_empty() {
+        return;
+    }
+    if let Err(error) = idx.remove_grep_bloom_rows(unheld) {
+        tracing::warn!(%error, "grep bloom row removal failed; unreferenced rows stay until the next full scan");
     }
 }
 
@@ -792,6 +817,13 @@ pub fn scan_paths_with_observer(
 
     let scope = derive_scope(root, &source);
     let mut report = ScanReport::default();
+    // The contents these paths hold now: once the pass has replaced or dropped them, a content no
+    // other path holds leaves its grep bloom row too (a long-lived watcher never runs the full sweep).
+    let mut retired: Vec<String> = rels
+        .iter()
+        .chain(&removed)
+        .filter_map(|rel| store.lookup(rel).map(|entry| entry.hash_hex.clone()))
+        .collect();
     let drive = ScanDrive {
         root,
         filters: filter.filters(),
@@ -840,6 +872,7 @@ pub fn scan_paths_with_observer(
     }
 
     for rel in &removed {
+        retired.extend(store.lookup(rel).map(|entry| entry.hash_hex.clone()));
         store.remove(rel);
         if let Some(idx) = store.index_db.as_ref() {
             let mut w = idx.writer();
@@ -858,6 +891,8 @@ pub fn scan_paths_with_observer(
         observer.on_file(FileResult::bare(rel.clone(), FileStatus::Removed));
         report.stats.removed += 1;
     }
+
+    drop_unheld_grep_bloom_rows(store, &retired);
 
     store.flush()?;
     store.write_status_sidecar();

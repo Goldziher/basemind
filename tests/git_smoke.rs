@@ -377,3 +377,59 @@ fn list_worktrees_reports_main_and_linked_with_branches() {
     assert_eq!(d.branch, None, "detached HEAD has no branch");
     assert_eq!(d.head_sha.as_deref(), Some(head.as_str()));
 }
+
+/// Only a working-tree pass writes grep bloom rows, so the full-pass sweep (which deletes every row no
+/// manifest entry names) must not run on a git source: it would erase rows it cannot know are wanted.
+#[test]
+fn staged_and_rev_scans_do_not_sweep_grep_bloom_rows() {
+    let (dir, cfg) = init_repo();
+    let root = dir.path();
+    fs::write(root.join("a.rs"), b"pub fn clean_one() {}\n").unwrap();
+    run(root, &["add", "a.rs"]);
+    run(root, &["commit", "-qm", "init"]);
+    let repo = Repo::discover(root).unwrap();
+    let head_sha = repo.resolve_rev("HEAD").unwrap();
+    let rev_view = format!("rev-{}", &head_sha[..7]);
+
+    let plant = |store: &Store| {
+        let mut writer = store.index_db.as_ref().expect("index").writer();
+        writer.upsert_grep_bloom("orphan", basemind::index::grep_bloom::build_row(b"held by no file"));
+        writer.commit().expect("commit");
+    };
+    let planted = |store: &Store| {
+        store
+            .index_db
+            .as_ref()
+            .expect("index")
+            .grep_bloom_row("orphan")
+            .is_some()
+    };
+
+    let mut staged = Store::open(root, VIEW_STAGED).unwrap();
+    plant(&staged);
+    scan(
+        root,
+        &mut staged,
+        &cfg,
+        ScanSource::Staged(&repo),
+        basemind::scanner::EmbedMode::Inline,
+    )
+    .unwrap();
+    assert!(planted(&staged), "a staged scan must not sweep");
+    drop(staged);
+
+    let mut rev = Store::open(root, &rev_view).unwrap();
+    plant(&rev);
+    scan(
+        root,
+        &mut rev,
+        &cfg,
+        ScanSource::Rev {
+            repo: &repo,
+            sha: head_sha,
+        },
+        basemind::scanner::EmbedMode::Inline,
+    )
+    .unwrap();
+    assert!(planted(&rev), "a rev scan must not sweep");
+}
