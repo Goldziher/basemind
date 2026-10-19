@@ -6,6 +6,7 @@
 use std::time::Duration;
 
 use super::*;
+use crate::index::view::IndexView;
 
 /// History host for the fixtures, which care about the read stack and not about git history.
 ///
@@ -932,7 +933,7 @@ fn a_workspace_opened_over_a_wiped_index_is_marked_and_rebuilt_by_the_next_resca
     assert!(!entry.rebuild_pending.load(std::sync::atomic::Ordering::Acquire));
     let repopulated = pool
         .with_workspace(ws.path(), |s| {
-            !s.index_db.as_ref().expect("index").symbols_index_is_empty() && !s.index_rebuild_needed
+            !s.index_db.as_ref().expect("index").view().symbols_index_is_empty() && !s.index_rebuild_needed
         })
         .expect("workspace");
     assert!(repopulated, "the fjall index holds symbols again");

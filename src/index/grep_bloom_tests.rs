@@ -81,7 +81,7 @@ fn a_row_round_trips_under_its_content_hash() {
     let (_dir, db) = open_db();
     put(&db, "aa11", "fn alpha() {}");
     assert_eq!(
-        db.grep_bloom_row("aa11").as_deref(),
+        db.view().grep_bloom_row("aa11").as_deref(),
         Some(row_for("fn alpha() {}").as_slice())
     );
     assert!(db.grep_bloom_current("aa11"));
@@ -94,14 +94,14 @@ fn a_hash_that_prefixes_another_reads_only_its_own_row() {
     put(&db, "ab", "short key");
     put(&db, "abc", "longer key");
     assert_eq!(
-        db.grep_bloom_row("ab").as_deref(),
+        db.view().grep_bloom_row("ab").as_deref(),
         Some(row_for("short key").as_slice())
     );
     assert_eq!(
-        db.grep_bloom_row("abc").as_deref(),
+        db.view().grep_bloom_row("abc").as_deref(),
         Some(row_for("longer key").as_slice())
     );
-    assert!(db.grep_bloom_row("a").is_none());
+    assert!(db.view().grep_bloom_row("a").is_none());
 }
 
 #[test]
@@ -141,7 +141,10 @@ fn two_paths_with_the_same_content_share_one_row_and_both_skip() {
     put(&db, "same", text);
     assert_eq!(db.grep_bloom_row_count(), 1);
     let needle = Needle::compile("zzz_absent_literal").expect("needle");
-    assert_eq!(db.grep_skip_verdicts(root.path(), &entries, &needle), vec![true, true]);
+    assert_eq!(
+        db.view().grep_skip_verdicts(root.path(), &entries, &needle),
+        vec![true, true]
+    );
 }
 
 #[test]
@@ -159,11 +162,12 @@ fn a_live_file_that_moved_off_its_indexed_stamp_is_a_candidate() {
         mtime_ns: mtime_nanos(&meta),
     };
     assert_eq!(
-        db.grep_skip_verdicts(root.path(), &[entry(meta.len())], &needle),
+        db.view().grep_skip_verdicts(root.path(), &[entry(meta.len())], &needle),
         vec![true]
     );
     assert_eq!(
-        db.grep_skip_verdicts(root.path(), &[entry(meta.len() + 1)], &needle),
+        db.view()
+            .grep_skip_verdicts(root.path(), &[entry(meta.len() + 1)], &needle),
         vec![false]
     );
 }
@@ -189,7 +193,7 @@ fn the_first_sweep_drops_older_layout_rows_and_records_it_in_meta() {
         1,
         "a live hash with an unreadable row goes"
     );
-    assert!(db.grep_bloom_current("h1") && db.grep_bloom_row("h2").is_none());
+    assert!(db.grep_bloom_current("h1") && db.view().grep_bloom_row("h2").is_none());
     assert_eq!(
         db.meta.get(META_ROW_SWEPT_VER).expect("meta").as_deref(),
         Some([ROW_VERSION].as_slice())
@@ -207,11 +211,11 @@ fn later_sweeps_read_keys_only_and_still_remove_dead_keys() {
     put(&db, "dead", "no file holds this");
     assert_eq!(db.sweep_grep_bloom(&live).expect("steady sweep"), 1);
     assert!(
-        db.grep_bloom_row("dead").is_none(),
+        db.view().grep_bloom_row("dead").is_none(),
         "a dead key is removed without reading it"
     );
     assert!(
-        db.grep_bloom_row("h2").is_some(),
+        db.view().grep_bloom_row("h2").is_some(),
         "the value of a live key is not decoded after the version sweep ran"
     );
 }
@@ -240,12 +244,12 @@ fn remove_grep_bloom_rows_drops_only_the_named_hashes() {
     db.remove_grep_bloom_rows(["h1", "h3", "never-indexed"])
         .expect("remove");
     assert!(db.grep_bloom_current("h2"));
-    assert!(db.grep_bloom_row("h1").is_none() && db.grep_bloom_row("h3").is_none());
+    assert!(db.view().grep_bloom_row("h1").is_none() && db.view().grep_bloom_row("h3").is_none());
 }
 
 fn skip_for(db: &IndexDb, root: &Path, entry: GrepEntry) -> bool {
     let needle = Needle::compile("zzz_absent_literal").expect("needle");
-    db.grep_skip_verdicts(root, &[entry], &needle)[0]
+    db.view().grep_skip_verdicts(root, &[entry], &needle)[0]
 }
 
 #[test]

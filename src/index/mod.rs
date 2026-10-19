@@ -648,44 +648,6 @@ impl IndexDb {
         writer::IndexWriter::new(self.clone())
     }
 
-    /// True when the secondary index holds no per-file symbol entries. Cheap — peeks at
-    /// the first key of `symbols_by_path` rather than counting.
-    ///
-    /// Used by the MCP startup auto-scan to detect a present-but-empty Fjall index (e.g. a
-    /// `views/<view>/index.fjall/` that was wiped or removed out-of-band while the msgpack
-    /// `index.msgpack` survived). In that state the in-RAM map cache looks populated but the
-    /// Fjall-backed tools (`find_references` / `search_symbols`) would silently return nothing,
-    /// so a rescan is warranted even though the RAM cache is non-empty.
-    pub fn symbols_index_is_empty(&self) -> bool {
-        self.symbols_by_path.iter().next().is_none()
-    }
-
-    /// Resolved references to the definition at `(def_path, def_start)` — the scope/import-resolved
-    /// backing for `find_references`. Returns each binding `(use_path, use_start)`; empty when the
-    /// definition has no resolved uses (or resolution never ran for its file).
-    pub fn references_to(&self, def_path: &crate::path::RelPath, def_start: u32) -> Vec<(crate::path::RelPath, u32)> {
-        let prefix = keys::refs_by_def_prefix(def_path, def_start);
-        let mut out = Vec::new();
-        for guard in self.refs_by_def.prefix(prefix) {
-            if let Ok((k, _)) = guard.into_inner()
-                && let Some((_def_path, _def_start, use_path, use_start)) = keys::parse_ref_by_def(&k)
-            {
-                out.push((use_path, use_start));
-            }
-        }
-        out
-    }
-
-    /// Whether the probe keyspaces cover every importer (a wholesale resolve pass completed since
-    /// they were created). When false, the incremental pass must run the wholesale one first.
-    pub fn import_probes_complete(&self) -> bool {
-        self.meta
-            .get(META_IMPORT_PROBE_VER)
-            .ok()
-            .flatten()
-            .is_some_and(|v| v.first() == Some(&IMPORT_PROBE_VER))
-    }
-
     /// Mark the probe keyspaces complete (`true`) or in flux (`false`). The wholesale pass clears
     /// the stamp before it rewrites any importer and sets it only after the stitch committed.
     pub fn set_import_probes_complete(&self, complete: bool) -> Result<(), IndexError> {
@@ -695,37 +657,6 @@ impl IndexDb {
             self.meta.remove(META_IMPORT_PROBE_VER)?;
         }
         Ok(())
-    }
-
-    /// Every importer whose resolution consulted `path` (repo-relative, forward-slashed) or one of
-    /// its ancestor directories: a prefix scan of `importers_by_probe` per candidate, O(importers).
-    ///
-    /// The ancestors matter because the resolver does not descend into a directory it found
-    /// missing. An importer that probed `util` and found nothing never probed `util/index.ts`, so
-    /// adding `util/index.ts` must reach it through the directory. (A directory that existed when
-    /// the importer resolved is never recorded, so a path under an existing directory costs only
-    /// empty scans.)
-    pub fn importers_probing(&self, path: &str) -> Vec<crate::path::RelPath> {
-        probe_candidates(path)
-            .flat_map(|candidate| {
-                let prefix = keys::importers_by_probe_prefix(&keys::probe_hash(candidate));
-                self.importers_by_probe
-                    .prefix(prefix)
-                    .filter_map(|guard| guard.into_inner().ok())
-                    .filter_map(|(k, _)| keys::parse_importer_by_probe(&k))
-                    .collect::<Vec<_>>()
-            })
-            .collect()
-    }
-
-    /// Whether any importer consulted `path` or an ancestor directory of it (see
-    /// [`Self::importers_probing`]). Cheap enough to gate a rescan on a non-indexed file
-    /// (`tsconfig.json`, `package.json`) the watcher saw change.
-    pub fn is_probed(&self, path: &str) -> bool {
-        probe_candidates(path).any(|candidate| {
-            let prefix = keys::importers_by_probe_prefix(&keys::probe_hash(candidate));
-            self.importers_by_probe.prefix(prefix).next().is_some()
-        })
     }
 
     /// Every row of the four resolution keyspaces (`refs_by_def`, `refs_by_path`, `import_targets`,
@@ -746,91 +677,6 @@ impl IndexDb {
             }
         }
         Ok(rows)
-    }
-
-    /// The stitched `(local_start, def_path, def_start)` bindings of `importer`.
-    pub fn import_targets_of(&self, importer: &crate::path::RelPath) -> Vec<(u32, crate::path::RelPath, u32)> {
-        self.import_targets
-            .prefix(keys::import_targets_prefix(importer))
-            .filter_map(|guard| guard.into_inner().ok())
-            .filter_map(|(k, v)| keys::parse_import_target(&k, &v))
-            .map(|(_, local_start, def_path, def_start)| (local_start, def_path, def_start))
-            .collect()
-    }
-
-    /// The definition the use at `(use_path, use_start)` binds to — backs `goto_definition`.
-    /// Cross-file definitions take precedence over the local import binding that an imported use
-    /// also resolves through. `None` when the position isn't a resolved reference.
-    pub fn definition_of(
-        &self,
-        use_path: &crate::path::RelPath,
-        use_start: u32,
-    ) -> Option<(crate::path::RelPath, u32)> {
-        let prefix = keys::refs_by_use_prefix(use_path, use_start);
-        let mut local = None;
-        for guard in self.refs_by_path.prefix(prefix) {
-            if let Ok((k, _)) = guard.into_inner()
-                && let Some((_use_path, _use_start, def_path, def_start)) = keys::parse_ref_by_path(&k)
-            {
-                if def_path != *use_path {
-                    return Some((def_path, def_start));
-                }
-                local = Some((def_path, def_start));
-            }
-        }
-        local
-    }
-
-    /// Symbols whose name starts with `name`, from the `symbols_by_name` keyspace — an index-backed
-    /// prefix scan (length-prefixed keys isolate `Foo` from `Foobar`). Returns `(name, kind, path,
-    /// start_byte)` for each match, capped at `cap` entries. Backs the code-search **exact lane**:
-    /// an identifier-shaped query resolves to the symbols that define it, which then map to their
-    /// owning chunks. The returned `name` lets the caller rank exact-name matches ahead of longer
-    /// prefix matches. `start_byte` is the L1 `Symbol.start_byte` (node start), which falls inside
-    /// the symbol's owning chunk span.
-    pub fn symbols_by_name_lookup(
-        &self,
-        name: &str,
-        cap: usize,
-    ) -> Vec<(String, crate::extract::SymbolKind, crate::path::RelPath, u32)> {
-        let prefix = keys::symbols_by_name_prefix(name);
-        let mut out = Vec::new();
-        for guard in self.symbols_by_name.prefix(prefix) {
-            if out.len() >= cap {
-                break;
-            }
-            if let Ok((k, _)) = guard.into_inner()
-                && let Some((matched, kind, rel, start_byte)) = keys::parse_symbol_by_name(&k)
-            {
-                out.push((matched, kind, rel, start_byte));
-            }
-        }
-        out
-    }
-
-    /// Corpus-global BM25 stats for the code-search keyword lane: `(N, total_len)` where `N` is the
-    /// number of indexed chunks and `total_len` the sum of their token lengths (so `avgdl =
-    /// total_len / N`). Read from the `meta` keyspace at query time. `None` (or `N == 0`) means the
-    /// BM25 index is empty — no chunks were indexed, or [`recompute_bm25_stats`] never ran.
-    ///
-    /// [`recompute_bm25_stats`]: Self::recompute_bm25_stats
-    pub fn bm25_stats(&self) -> Option<(u64, u64)> {
-        let n = self
-            .meta
-            .get(META_BM25_DOC_COUNT)
-            .ok()
-            .flatten()
-            .and_then(|b| <[u8; 8]>::try_from(&b[..]).ok())
-            .map(u64::from_be_bytes)?;
-        let total_len = self
-            .meta
-            .get(META_BM25_TOTAL_LEN)
-            .ok()
-            .flatten()
-            .and_then(|b| <[u8; 8]>::try_from(&b[..]).ok())
-            .map(u64::from_be_bytes)
-            .unwrap_or(0);
-        Some((n, total_len))
     }
 
     /// Recompute the corpus-global BM25 stats by sweeping the `code_bm25_by_path` forward keyspace

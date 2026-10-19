@@ -1,5 +1,6 @@
 use super::*;
 use crate::extract::{Call, FileMapL2, Import, SymbolKind};
+use crate::index::view::IndexView;
 use tempfile::TempDir;
 
 fn fresh_db() -> (TempDir, IndexDb) {
@@ -25,7 +26,7 @@ fn open_reports_a_wipe_only_when_the_stamped_schema_version_differs() {
 
     let wiped = IndexDb::open_with_memory(dir.path(), &memory).expect("reopen");
     assert!(wiped.wiped_on_open(), "a mismatched revision wipes the index");
-    assert!(wiped.symbols_index_is_empty());
+    assert!(wiped.view().symbols_index_is_empty());
     drop(wiped);
 
     let again = IndexDb::open_with_memory(dir.path(), &memory).expect("third open");
@@ -485,7 +486,7 @@ fn bm25_dual_partition_consistency() {
     assert_eq!(db.code_bm25_by_path.iter().count(), 1);
 
     db.recompute_bm25_stats().unwrap();
-    assert_eq!(db.bm25_stats(), Some((1, 1)));
+    assert_eq!(db.view().bm25_stats(), Some((1, 1)));
 
     let mut w = db.writer();
     w.remove_bm25_file(&rel).unwrap();
@@ -550,9 +551,12 @@ fn import_probe_rows_roundtrip_and_leave_with_the_importer() {
 #[test]
 fn import_probes_are_incomplete_until_stamped() {
     let (_d, db) = fresh_db();
-    assert!(!db.import_probes_complete(), "a fresh index has no probe rows to trust");
+    assert!(
+        !db.view().import_probes_complete(),
+        "a fresh index has no probe rows to trust"
+    );
     db.set_import_probes_complete(true).unwrap();
-    assert!(db.import_probes_complete());
+    assert!(db.view().import_probes_complete());
     db.set_import_probes_complete(false).unwrap();
-    assert!(!db.import_probes_complete());
+    assert!(!db.view().import_probes_complete());
 }

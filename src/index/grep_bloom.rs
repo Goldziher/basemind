@@ -18,6 +18,7 @@ use rayon::prelude::*;
 use regex_syntax::hir::literal::{ExtractKind, Extractor};
 
 use super::IndexDb;
+use super::view::{IndexBytes, IndexView};
 use crate::path::RelPath;
 
 /// Row layout revision (first byte). A row with any other value is treated as absent, so a layout
@@ -162,11 +163,6 @@ impl Needle {
 }
 
 impl IndexDb {
-    /// Fetch the stored bloom row for the content `hash_hex`, if any.
-    pub fn grep_bloom_row(&self, hash_hex: &str) -> Option<fjall::Slice> {
-        self.grep_bloom.get(hash_hex.as_bytes()).ok().flatten()
-    }
-
     /// Delete the row for `hash_hex`: how a test models an index built before the keyspace existed.
     #[doc(hidden)]
     #[cfg(any(test, feature = "test-support"))]
@@ -183,7 +179,8 @@ impl IndexDb {
 
     /// True when `hash_hex` has an intact row: nothing to (re)build.
     pub fn grep_bloom_current(&self, hash_hex: &str) -> bool {
-        self.grep_bloom_row(hash_hex)
+        self.view()
+            .grep_bloom_row(hash_hex)
             .is_some_and(|row| parse_row(&row).is_some())
     }
 
@@ -234,19 +231,11 @@ impl IndexDb {
         }
         writer.commit()
     }
-
-    /// For each of `entries`, whether the file can be SKIPPED by a grep for `needle`: its content has
-    /// an intact row, the row rejects the needle, and the live file still has the stamp the entry was
-    /// indexed under. Rows are fetched and dropped one at a time, in parallel; nothing is held
-    /// between files.
-    pub fn grep_skip_verdicts(&self, root: &Path, entries: &[GrepEntry], needle: &Needle) -> Vec<bool> {
-        skip_verdicts(|hash| self.grep_bloom_row(hash), root, entries, needle)
-    }
 }
 
-/// [`IndexDb::grep_skip_verdicts`] over any row source, so a layered view shares the verdict logic.
-pub(crate) fn skip_verdicts(
-    row_of: impl Fn(&str) -> Option<fjall::Slice> + Sync,
+/// The verdict logic behind [`IndexView::grep_skip_verdicts`], over any row source.
+pub(super) fn skip_verdicts(
+    row_of: impl Fn(&str) -> Option<IndexBytes> + Sync,
     root: &Path,
     entries: &[GrepEntry],
     needle: &Needle,

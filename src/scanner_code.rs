@@ -543,6 +543,7 @@ pub(crate) fn flush_code_batches(
 mod tests {
     use super::*;
     use crate::chunk::CodeChunk;
+    use crate::index::view::IndexView;
 
     fn chunk(chunk_id: &str, searchable_text: &str) -> CodeChunk {
         CodeChunk {
@@ -790,7 +791,7 @@ mod tests {
             .unwrap();
         writer.commit().unwrap();
         db.recompute_bm25_stats().unwrap();
-        assert_eq!(db.bm25_stats().map(|(n, _)| n), Some(1));
+        assert_eq!(db.view().bm25_stats().map(|(n, _)| n), Some(1));
         store.upsert(
             "src/a.rs",
             crate::store::FileEntry {
@@ -808,7 +809,7 @@ mod tests {
         purge_unembedded_code(&mut store, &config, &filters, "repo:s");
         let db = store.index_db.as_ref().unwrap();
         assert_eq!(
-            db.bm25_stats().map(|(n, _)| n).unwrap_or(0),
+            db.view().bm25_stats().map(|(n, _)| n).unwrap_or(0),
             0,
             "keyword postings are gone"
         );
