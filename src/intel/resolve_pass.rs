@@ -52,6 +52,7 @@ use crate::backpressure::FootprintGate;
 use crate::chunk_drive::{ChunkCut, drive_chunks_governed};
 use crate::config::MaxFootprint;
 use crate::index::IndexDb;
+use crate::index::view::IndexView;
 use crate::intel::model::FileResolvedRefs;
 use crate::intel::stage_budget::BudgetedWriter;
 use crate::lang;
@@ -154,8 +155,8 @@ pub(crate) struct PathDelta<'a> {
 
 /// The paths of `candidates` that some importer's resolution consulted — the only non-indexed
 /// paths whose change can matter. A cheap point lookup per path.
-pub(crate) fn probed_only(index_db: &IndexDb, candidates: Vec<String>) -> Vec<String> {
-    candidates.into_iter().filter(|rel| index_db.is_probed(rel)).collect()
+pub(crate) fn probed_only(view: &dyn IndexView, candidates: Vec<String>) -> Vec<String> {
+    candidates.into_iter().filter(|rel| view.is_probed(rel)).collect()
 }
 
 /// Incremental resolve pass for the watcher: only `delta.changed` files' intra facts are restaged,
@@ -171,7 +172,7 @@ pub(crate) fn resolve_pass_incremental(
         return;
     };
     #[cfg(any(feature = "code-intel-js", feature = "code-intel-stack"))]
-    if !index_db.import_probes_complete() {
+    if !index_db.view().import_probes_complete() {
         tracing::info!("resolve pass: import-probe index not built yet — running the wholesale pass once");
         resolve_pass(root, store, precise, footprint);
         return;
@@ -184,7 +185,7 @@ pub(crate) fn resolve_pass_incremental(
         resolve_in_chunks(root, store, index_db, &changed_snapshot, precise, footprint, |facts| {
             harvest_cross_file_facts(facts, &mut importers);
         });
-        let affected = xfile_incremental::affected_importers(index_db, store, delta);
+        let affected = xfile_incremental::affected_importers(&index_db.view(), store, delta);
         let affected_snapshot = snapshot_of(store, affected.iter());
         resolve_in_chunks(root, store, index_db, &affected_snapshot, precise, footprint, |facts| {
             harvest_cross_file_facts(facts, &mut importers);
@@ -372,18 +373,18 @@ mod xfile_incremental {
     use ahash::AHashSet;
 
     use super::PathDelta;
-    use crate::index::IndexDb;
+    use crate::index::view::IndexView;
     use crate::intel::resolver::SpecifierResolver;
     use crate::store::Store;
 
     /// Indexed, resolver-capable importers that are NOT in `delta.changed` (those are re-stitched
     /// anyway) but consulted a touched path: a changed, added or deleted file, or a non-indexed
     /// config file. One prefix scan of `importers_by_probe` per touched path.
-    pub(super) fn affected_importers(index_db: &IndexDb, store: &Store, delta: &PathDelta<'_>) -> Vec<String> {
+    pub(super) fn affected_importers(view: &dyn IndexView, store: &Store, delta: &PathDelta<'_>) -> Vec<String> {
         let changed: AHashSet<&str> = delta.changed.iter().map(String::as_str).collect();
         let mut affected: AHashSet<String> = AHashSet::new();
         for touched in delta.changed.iter().chain(delta.removed).chain(delta.other) {
-            for importer in index_db.importers_probing(touched) {
+            for importer in view.importers_probing(touched) {
                 let Some(key) = importer.as_str() else {
                     continue;
                 };

@@ -18,6 +18,7 @@ use lru::LruCache;
 use tokio::sync::{Notify, RwLock};
 
 use super::{MapCache, OUTLINE_CACHE_CAP, OutlineCache, ServerOptions, telemetry};
+use crate::index::view::IndexView;
 use crate::store::Store;
 
 /// Heavy, workspace-level read state shared across every connection to one `(root, view)`.
@@ -187,9 +188,8 @@ fn last_scan_degraded(store: &Store) -> bool {
 pub(crate) fn boot_plan(store: &Store, options: &ServerOptions) -> (bool, bool) {
     let view_is_working = store.view == crate::store::VIEW_WORKING;
     let fjall_index_empty = store
-        .index_db
-        .as_ref()
-        .map(|db| db.symbols_index_is_empty())
+        .index_view()
+        .map(|view| view.symbols_index_is_empty())
         .unwrap_or(false);
     let needs_initial_scan = (options.daemon_writer || !options.read_only)
         && view_is_working
@@ -301,7 +301,7 @@ impl SharedReadStack {
     /// fingerprint, so it invalidates itself the moment the caller's `cache` differs.
     pub(crate) fn graph(
         &self,
-        idx: Option<&crate::index::IndexDb>,
+        idx: Option<&dyn crate::index::view::IndexView>,
         cache: &MapCache,
         opts: &super::codegraph::BuildOpts,
     ) -> Result<Arc<super::codegraph::CodeGraph>, rmcp::ErrorData> {

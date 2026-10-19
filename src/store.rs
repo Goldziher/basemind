@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::extract::SCHEMA_VER;
+use crate::index::view::IndexView;
 use crate::index::{IndexDb, IndexError};
 #[cfg(feature = "intelligence")]
 use crate::lance::LanceStore;
@@ -305,6 +306,12 @@ pub struct Store {
 }
 
 impl Store {
+    /// A read view over the fjall index, or `None` when this session holds none. Every index read
+    /// goes through it (see [`crate::index::view`]).
+    pub fn index_view(&self) -> Option<crate::index::view::StandaloneView<&IndexDb>> {
+        self.index_db.as_ref().map(IndexDb::view)
+    }
+
     /// Open the store for a specific view. View names are flat strings: `"working"`,
     /// `"staged"`, `"rev-<sha7>"`. Each view has its own `index.msgpack` under
     /// `.basemind/views/<view>/`; blobs are shared in `.basemind/blobs/`.
@@ -357,7 +364,7 @@ impl Store {
         };
         let index_db = open_index_with_retry(root, &view_dir)?;
         let index_rebuild_needed =
-            !index.files.is_empty() && (index_db.wiped_on_open() || index_db.symbols_index_is_empty());
+            !index.files.is_empty() && (index_db.wiped_on_open() || index_db.view().symbols_index_is_empty());
         if index_rebuild_needed {
             index.files.clear();
         }

@@ -31,7 +31,7 @@ use super::helpers_graph::is_function_like;
 use super::helpers_graphview::{DEFAULT_MAX_EXPORT_EDGES, MAX_MAX_EDGES};
 use super::kneedle::knee_cutoff;
 use super::types_archmap::{ArchEdge, ArchNode, ArchitectureMapParams, ArchitectureMapResponse, CycleCluster};
-use crate::index::IndexDb;
+use crate::index::view::IndexView;
 use crate::path::RelPath;
 
 const PAGERANK_ITERS: usize = 20;
@@ -192,7 +192,7 @@ impl RepoGraph {
     /// Build the graph from the L1 cache + call sites. `idx = Some` prefix-scans the
     /// Fjall `calls_by_path` keyspace per file; `idx = None` reads the in-RAM call index
     /// (read-only session). Bounded by `edge_scan_cap` total call sites.
-    pub(crate) fn build(idx: Option<&IndexDb>, cache: &MapCache, edge_scan_cap: usize) -> Result<Self, McpError> {
+    pub(crate) fn build(idx: Option<&dyn IndexView>, cache: &MapCache, edge_scan_cap: usize) -> Result<Self, McpError> {
         let files: Vec<RelPath> = cache.paths().cloned().collect();
         let mut id_of: AHashMap<RelPath, u32> = AHashMap::with_capacity(files.len());
         for (i, p) in files.iter().enumerate() {
@@ -274,7 +274,7 @@ impl RepoGraph {
 /// when the overlay is disabled or there's no git repo.
 pub(crate) fn run_architecture_map(
     shared: &super::shared_state::SharedReadStack,
-    idx: Option<&IndexDb>,
+    idx: Option<&dyn IndexView>,
     cache: &MapCache,
     churn: Option<&AHashMap<RelPath, u32>>,
     params: ArchitectureMapParams,
@@ -539,7 +539,7 @@ fn build_group_nodes(
 fn run_tier_grouped(
     shared: &super::shared_state::SharedReadStack,
     rg: &RepoGraph,
-    idx: Option<&IndexDb>,
+    idx: Option<&dyn IndexView>,
     cache: &MapCache,
     churn: Option<&AHashMap<RelPath, u32>>,
     focus: Option<&RelPath>,
@@ -638,7 +638,7 @@ fn build_cycles(
 /// path builds no codegraph and pays nothing extra.
 fn grouped_lane_edges(
     shared: &super::shared_state::SharedReadStack,
-    idx: Option<&IndexDb>,
+    idx: Option<&dyn IndexView>,
     cache: &MapCache,
     rg: &RepoGraph,
     group_of: &[Option<u32>],
@@ -819,7 +819,7 @@ fn collect_symbol_candidates(
 /// distinct-callee fan-out. Isolated because it is the only `?`-fallible (call-index) step here.
 fn build_symbol_call_edges(
     survivors: &[SymCand],
-    idx: Option<&IndexDb>,
+    idx: Option<&dyn IndexView>,
     cache: &MapCache,
 ) -> Result<SymbolCallEdges, McpError> {
     let mut by_file: AHashMap<RelPath, Vec<u32>> = AHashMap::new();
@@ -916,7 +916,7 @@ fn finalize_symbol_edges(edge_map: &AHashMap<(u32, u32), u32>, kept: usize, max_
 fn run_tier_symbol(
     rg: &RepoGraph,
     cache: &MapCache,
-    idx: Option<&IndexDb>,
+    idx: Option<&dyn IndexView>,
     churn: Option<&AHashMap<RelPath, u32>>,
     focus: Option<&RelPath>,
     params: &ArchitectureMapParams,

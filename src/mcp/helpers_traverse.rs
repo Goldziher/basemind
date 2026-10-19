@@ -20,7 +20,7 @@ use super::types_traverse::{
     GraphEdge, GraphNode, NeighborsParams, NeighborsResponse, PathParams, PathResponse, SubgraphParams,
     SubgraphResponse,
 };
-use crate::index::IndexDb;
+use crate::index::view::IndexView;
 use crate::path::RelPath;
 
 const DEFAULT_DEPTH: u32 = 2;
@@ -234,7 +234,7 @@ fn kind_to_str_rationale(kind: crate::extract::RationaleKind) -> &'static str {
 /// adjacency plus whether the underlying call scan was truncated.
 fn build_adjacency(
     shared: &SharedReadStack,
-    idx: Option<&IndexDb>,
+    idx: Option<&dyn IndexView>,
     cache: &MapCache,
     kinds: EdgeKindSet,
 ) -> Result<(Adjacency, bool), McpError> {
@@ -289,7 +289,7 @@ fn remap_edges(edges: &[WalkEdge], index_of: &AHashMap<u32, u32>) -> Vec<GraphEd
 /// `neighbors` — N-hop expansion around a symbol.
 pub(super) fn run_neighbors(
     shared: &SharedReadStack,
-    idx: Option<&IndexDb>,
+    idx: Option<&dyn IndexView>,
     cache: &MapCache,
     params: NeighborsParams,
     notice: Option<LifecycleNotice>,
@@ -347,7 +347,7 @@ pub(super) fn run_neighbors(
 /// `path` — confidence-weighted shortest route between two symbols.
 pub(super) fn run_path(
     shared: &SharedReadStack,
-    idx: Option<&IndexDb>,
+    idx: Option<&dyn IndexView>,
     cache: &MapCache,
     params: PathParams,
     notice: Option<LifecycleNotice>,
@@ -397,7 +397,7 @@ pub(super) fn run_path(
 /// `subgraph` — the neighborhood around a symbol, cut to the central head.
 pub(super) fn run_subgraph(
     shared: &SharedReadStack,
-    idx: Option<&IndexDb>,
+    idx: Option<&dyn IndexView>,
     cache: &MapCache,
     params: SubgraphParams,
     notice: Option<LifecycleNotice>,

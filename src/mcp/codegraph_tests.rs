@@ -2,6 +2,7 @@
 //! under the 1000-line module cap). Included via `#[path]` from `codegraph.rs`.
 
 use super::*;
+use crate::index::view::as_dyn;
 use crate::store::Store;
 use tempfile::TempDir;
 
@@ -59,7 +60,7 @@ fn provenance_fixture() -> (TempDir, Store, MapCache) {
 
 fn built(store: &Store, cache: &MapCache, kinds: EdgeKindSet) -> CodeGraph {
     build(
-        store.index_db.as_ref(),
+        as_dyn(&store.index_view()),
         cache,
         &BuildOpts {
             kinds,
@@ -431,7 +432,7 @@ fn focus_scopes_the_build_to_files_under_the_path_prefix() {
         ..EdgeKindSet::none()
     };
     let g = build(
-        store.index_db.as_ref(),
+        as_dyn(&store.index_view()),
         &cache,
         &BuildOpts {
             kinds,
@@ -675,7 +676,8 @@ fn opts(kinds: EdgeKindSet) -> BuildOpts {
 #[test]
 fn memo_serves_the_same_build_for_one_snapshot() {
     let (_dir, store, cache) = provenance_fixture();
-    let idx = store.index_db.as_ref();
+    let view = store.index_view();
+    let idx = as_dyn(&view);
     let memo = Mutex::new(new_graph_memo(0));
 
     let first = build_memoized(&memo, idx, &cache, &opts(EdgeKindSet::all())).expect("first build");
@@ -701,7 +703,8 @@ fn memo_serves_the_same_build_for_one_snapshot() {
 #[test]
 fn graph_memo_evicts_to_its_byte_budget() {
     let (_dir, store, cache) = provenance_fixture();
-    let idx = store.index_db.as_ref();
+    let view = store.index_view();
+    let idx = as_dyn(&view);
 
     let sized = Mutex::new(new_graph_memo(0));
     let one = build_memoized(&sized, idx, &cache, &opts(EdgeKindSet::all())).expect("build");
@@ -732,7 +735,8 @@ fn graph_memo_evicts_to_its_byte_budget() {
 #[test]
 fn memo_keys_on_lanes_and_index_mode() {
     let (_dir, store, cache) = provenance_fixture();
-    let idx = store.index_db.as_ref();
+    let view = store.index_view();
+    let idx = as_dyn(&view);
     let memo = Mutex::new(new_graph_memo(0));
 
     let calls_only = EdgeKindSet {
@@ -776,12 +780,29 @@ fn memo_isolates_snapshots_by_fingerprint() {
     );
     let memo = Mutex::new(new_graph_memo(0));
 
-    let ga = build_memoized(&memo, store_a.index_db.as_ref(), &cache_a, &opts(EdgeKindSet::all())).expect("a");
-    let gb = build_memoized(&memo, store_b.index_db.as_ref(), &cache_b, &opts(EdgeKindSet::all())).expect("b");
+    let ga = build_memoized(
+        &memo,
+        as_dyn(&store_a.index_view()),
+        &cache_a,
+        &opts(EdgeKindSet::all()),
+    )
+    .expect("a");
+    let gb = build_memoized(
+        &memo,
+        as_dyn(&store_b.index_view()),
+        &cache_b,
+        &opts(EdgeKindSet::all()),
+    )
+    .expect("b");
     assert!(!Arc::ptr_eq(&ga, &gb), "distinct fingerprints are distinct entries");
 
-    let ga_again =
-        build_memoized(&memo, store_a.index_db.as_ref(), &cache_a, &opts(EdgeKindSet::all())).expect("a again");
+    let ga_again = build_memoized(
+        &memo,
+        as_dyn(&store_a.index_view()),
+        &cache_a,
+        &opts(EdgeKindSet::all()),
+    )
+    .expect("a again");
     assert!(
         Arc::ptr_eq(&ga, &ga_again),
         "snapshot A still hits its own entry after B was inserted"

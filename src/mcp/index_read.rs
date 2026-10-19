@@ -19,7 +19,7 @@ use super::types_impls::ImplementationHit;
 use crate::comms::index_read_proto::{
     IndexReadQuery, IndexReadResult, MAX_CALLS_IN_FILES, WireCall, WireCallHit, WireCallScan, WireImplHit, WireImplScan,
 };
-use crate::index::IndexDb;
+use crate::index::view::IndexView;
 use crate::store::Store;
 
 /// Why a forwarded scan could not run: the workspace the daemon holds has no fjall index, so the
@@ -29,7 +29,8 @@ const NO_INDEX: &str = "the daemon holds this workspace without a fjall index, s
 
 /// Run a forwarded scan against an open workspace store.
 pub(crate) fn index_read_against(store: &Store, query: &IndexReadQuery) -> Result<IndexReadResult, String> {
-    let idx = store.index_db.as_ref().ok_or_else(|| NO_INDEX.to_string())?;
+    let view = store.index_view().ok_or_else(|| NO_INDEX.to_string())?;
+    let idx: &dyn IndexView = &view;
     match query {
         IndexReadQuery::CallScan { name, limit, cursor } => call_scan(idx, name, *limit, cursor.as_deref()),
         IndexReadQuery::CallsInFiles { paths } => calls_in_files(idx, paths),
@@ -64,7 +65,7 @@ pub(crate) fn index_read_against(store: &Store, query: &IndexReadQuery) -> Resul
 /// handle instead of the workspace store lock: this scan walks the whole `calls_by_callee`
 /// partition and would otherwise block a rescan for its duration.
 pub(crate) fn call_scan(
-    idx: &IndexDb,
+    idx: &dyn IndexView,
     name: &str,
     limit: u32,
     cursor: Option<&[u8]>,
@@ -76,7 +77,7 @@ pub(crate) fn call_scan(
 /// The `GrepBloom` arm on its own, so the daemon can run it holding only a cloned [`IndexDb`] handle
 /// and the workspace root instead of the store lock: it fetches a row and `stat`s a file per path.
 pub(crate) fn grep_skip(
-    idx: &IndexDb,
+    idx: &dyn IndexView,
     root: &std::path::Path,
     pattern: &str,
     entries: &[crate::index::grep_bloom::GrepEntry],
@@ -97,7 +98,7 @@ pub(crate) fn grep_skip(
     ))
 }
 
-fn calls_in_files(idx: &IndexDb, paths: &[crate::path::RelPath]) -> Result<IndexReadResult, String> {
+fn calls_in_files(idx: &dyn IndexView, paths: &[crate::path::RelPath]) -> Result<IndexReadResult, String> {
     if paths.len() > MAX_CALLS_IN_FILES {
         return Err(format!(
             "calls_in_files names {} files; at most {MAX_CALLS_IN_FILES} per request",

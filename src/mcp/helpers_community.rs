@@ -20,7 +20,7 @@ use super::traverse::Adjacency;
 use super::types::LifecycleNotice;
 use super::types_community::{CommunitiesParams, CommunitiesResponse, Community};
 use super::types_traverse::GraphNode;
-use crate::index::IndexDb;
+use crate::index::view::IndexView;
 
 /// Sweep bound for both detection algorithms; they converge well inside this on real graphs.
 const COMMUNITY_MAX_ITERS: u32 = 50;
@@ -62,7 +62,7 @@ pub(super) fn label_for(adj: &Adjacency, cache: &MapCache, ranked: &[u32]) -> St
 /// `communities` — cluster the code-graph into de-facto modules with deterministic labels.
 pub(super) fn run_communities(
     shared: &SharedReadStack,
-    idx: Option<&IndexDb>,
+    idx: Option<&dyn IndexView>,
     cache: &MapCache,
     params: CommunitiesParams,
     notice: Option<LifecycleNotice>,

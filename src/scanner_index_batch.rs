@@ -372,16 +372,16 @@ mod tests {
     /// compared byte for byte.
     fn dump_all(db: &IndexDb) -> Vec<Vec<(Vec<u8>, Vec<u8>)>> {
         vec![
-            dump(&db.symbols_by_path),
-            dump(&db.symbols_by_name),
-            dump(&db.calls_by_path),
-            dump(&db.calls_by_callee),
-            dump(&db.imports_by_module),
-            dump(&db.imports_by_path),
-            dump(&db.implementations_by_trait),
-            dump(&db.implementations_by_path),
-            dump(&db.code_bm25_postings),
-            dump(&db.code_bm25_by_path),
+            dump(db.keyspace_for_test(crate::index::view::Part::SymbolsByPath)),
+            dump(db.keyspace_for_test(crate::index::view::Part::SymbolsByName)),
+            dump(db.keyspace_for_test(crate::index::view::Part::CallsByPath)),
+            dump(db.keyspace_for_test(crate::index::view::Part::CallsByCallee)),
+            dump(db.keyspace_for_test(crate::index::view::Part::ImportsByModule)),
+            dump(db.keyspace_for_test(crate::index::view::Part::ImportsByPath)),
+            dump(db.keyspace_for_test(crate::index::view::Part::ImplementationsByTrait)),
+            dump(db.keyspace_for_test(crate::index::view::Part::ImplementationsByPath)),
+            dump(db.keyspace_for_test(crate::index::view::Part::CodeBm25Postings)),
+            dump(db.keyspace_for_test(crate::index::view::Part::CodeBm25ByPath)),
         ]
     }
 
@@ -403,7 +403,10 @@ mod tests {
             "the file-count bound must not be what committed here"
         );
         assert!(
-            db.symbols_by_path.iter().next().is_some(),
+            db.keyspace_for_test(crate::index::view::Part::SymbolsByPath)
+                .iter()
+                .next()
+                .is_some(),
             "the byte budget must have forced a commit already"
         );
         drop(batch);
@@ -426,13 +429,19 @@ mod tests {
             assert!(batch.stage(&RelPath::from(format!("src/f{i}.rs")), &l1, None));
         }
         assert!(
-            db.symbols_by_path.iter().next().is_none(),
+            db.keyspace_for_test(crate::index::view::Part::SymbolsByPath)
+                .iter()
+                .next()
+                .is_none(),
             "nothing may commit before the file counter reaches the bound"
         );
 
         assert!(batch.stage(&RelPath::from("src/last.rs"), &l1, None));
         assert!(
-            db.symbols_by_path.iter().next().is_some(),
+            db.keyspace_for_test(crate::index::view::Part::SymbolsByPath)
+                .iter()
+                .next()
+                .is_some(),
             "the {INDEX_COMMIT_BATCH}th file must force the commit"
         );
         assert_eq!(batch.staged, 0, "the file counter resets at its own commit");
@@ -463,13 +472,22 @@ mod tests {
 
         let mut batch = WorkerIndexBatch::with_budget(Some(&db), INDEX_COMMIT_BATCH_BYTES, &SCAN_STAGED_BYTES);
         let mut files = 0usize;
-        while db.symbols_by_path.iter().next().is_none() && files < INDEX_COMMIT_BATCH {
+        while db
+            .keyspace_for_test(crate::index::view::Part::SymbolsByPath)
+            .iter()
+            .next()
+            .is_none()
+            && files < INDEX_COMMIT_BATCH
+        {
             assert!(batch.stage(&RelPath::from(format!("src/f{files}.rs")), &l1, None));
             files += 1;
         }
 
         assert!(
-            db.symbols_by_path.iter().next().is_some(),
+            db.keyspace_for_test(crate::index::view::Part::SymbolsByPath)
+                .iter()
+                .next()
+                .is_some(),
             "staging {INDEX_COMMIT_BATCH} bulky files must have committed something"
         );
         assert!(
@@ -512,7 +530,11 @@ mod tests {
         let mut under_budget = WorkerIndexBatch::with_budget(Some(&control), 8 * 1024 * 1024, &LEDGER);
         under_budget.stage_bm25(&RelPath::from("src/small.rs"), &postings(1, 4));
         assert!(
-            control.code_bm25_postings.iter().next().is_none(),
+            control
+                .keyspace_for_test(crate::index::view::Part::CodeBm25Postings)
+                .iter()
+                .next()
+                .is_none(),
             "staging well under the byte budget must leave the batch uncommitted"
         );
         drop(under_budget);
@@ -523,7 +545,10 @@ mod tests {
 
         assert_eq!(batch.staged, 0, "bm25 staging must not bump the file counter");
         assert!(
-            db.code_bm25_postings.iter().next().is_some(),
+            db.keyspace_for_test(crate::index::view::Part::CodeBm25Postings)
+                .iter()
+                .next()
+                .is_some(),
             "bm25 staging alone must be able to force a commit"
         );
         drop(batch);
@@ -559,7 +584,10 @@ mod tests {
             "the file-count bound must not be what committed here"
         );
         assert!(
-            db.symbols_by_path.iter().next().is_some(),
+            db.keyspace_for_test(crate::index::view::Part::SymbolsByPath)
+                .iter()
+                .next()
+                .is_some(),
             "the ceiling commit must have reached disk"
         );
         worker.finish();

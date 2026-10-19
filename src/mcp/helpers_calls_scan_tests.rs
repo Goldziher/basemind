@@ -143,7 +143,7 @@ fn write_file(db: &IndexDb, rng: &mut Rng, vocab: &[String], i: usize) {
 type CallPage = (u32, bool, Vec<Vec<u8>>, Vec<(String, u32, u32)>, bool);
 
 fn call_page(db: &IndexDb, needle: &str, limit: usize, cursor: Option<&[u8]>) -> CallPage {
-    let page = scan_calls_by_name(db, needle, limit, cursor).unwrap();
+    let page = scan_calls_by_name(&db.view(), needle, limit, cursor).unwrap();
     let hits = page.hits.iter().map(|h| (h.callee.clone(), h.line, h.column)).collect();
     (
         page.total,
@@ -158,7 +158,7 @@ type ImplPage = (usize, bool, Vec<Vec<u8>>, bool);
 
 fn impl_page(db: &IndexDb, needle: &str, language: Option<&str>, limit: usize, cursor: Option<&[u8]>) -> ImplPage {
     let page = scan_impls_fjall(
-        db,
+        &db.view(),
         needle,
         language,
         limit,
@@ -198,9 +198,9 @@ fn assert_equivalent(db: &IndexDb, label: &str) {
         for limit in [2usize, 50, 400] {
             let (mut want_cursor, mut got_cursor): (Option<Vec<u8>>, Option<Vec<u8>>) = (None, None);
             for step in 0..10 {
-                db.callee_names.set_disabled(true);
+                db.callee_dict().set_disabled(true);
                 let want = call_page(db, needle, limit, want_cursor.as_deref());
-                db.callee_names.set_disabled(false);
+                db.callee_dict().set_disabled(false);
                 let got = call_page(db, needle, limit, got_cursor.as_deref());
                 assert_eq!(want, got, "{label}: calls needle={needle:?} limit={limit} step={step}");
                 if !want.4 {
@@ -215,9 +215,9 @@ fn assert_equivalent(db: &IndexDb, label: &str) {
             for limit in [2usize, 100] {
                 let mut cursor: Option<Vec<u8>> = None;
                 for step in 0..10 {
-                    db.trait_names.set_disabled(true);
+                    db.trait_dict().set_disabled(true);
                     let want = impl_page(db, needle, language, limit, cursor.as_deref());
-                    db.trait_names.set_disabled(false);
+                    db.trait_dict().set_disabled(false);
                     let got = impl_page(db, needle, language, limit, cursor.as_deref());
                     assert_eq!(
                         want, got,
@@ -235,10 +235,12 @@ fn assert_equivalent(db: &IndexDb, label: &str) {
 
 fn build_dicts(db: &IndexDb) {
     // Without this the small test vocabulary routes most needles to the walk and proves nothing.
-    db.callee_names.always_use_dictionary();
-    db.trait_names.always_use_dictionary();
-    db.callee_names.build_blocking(&db.calls_by_callee);
-    db.trait_names.build_blocking(&db.implementations_by_trait);
+    db.callee_dict().always_use_dictionary();
+    db.trait_dict().always_use_dictionary();
+    db.callee_dict()
+        .build_blocking(db.keyspace_for_test(crate::index::view::Part::CallsByCallee));
+    db.trait_dict()
+        .build_blocking(db.keyspace_for_test(crate::index::view::Part::ImplementationsByTrait));
 }
 
 #[test]
@@ -252,13 +254,13 @@ fn dictionary_scans_match_the_full_walk() {
     }
     build_dicts(&db);
     assert!(
-        db.callee_names.len() > 100,
+        db.callee_dict().len() > 100,
         "dictionary should hold the distinct callees"
     );
     assert_equivalent(&db, "after build");
 
     // The corpus must exercise the cap, or the partial-total path is untested.
-    let capped = scan_calls_by_name(&db, "run", 1, None).unwrap();
+    let capped = scan_calls_by_name(&db.view(), "run", 1, None).unwrap();
     assert!(capped.total_is_partial, "hot name must hit scan_cap");
 
     // Rescan: rewrite some files (names change, old keys are removed), drop others, add new files
@@ -281,8 +283,10 @@ fn dictionary_scans_match_the_full_walk() {
     assert_equivalent(&db, "after new names");
 
     // A fold merges the new names into the snapshot without changing any answer.
-    db.callee_names.build_blocking(&db.calls_by_callee);
-    db.trait_names.build_blocking(&db.implementations_by_trait);
+    db.callee_dict()
+        .build_blocking(db.keyspace_for_test(crate::index::view::Part::CallsByCallee));
+    db.trait_dict()
+        .build_blocking(db.keyspace_for_test(crate::index::view::Part::ImplementationsByTrait));
     assert_equivalent(&db, "after rebuild");
 }
 
@@ -298,7 +302,7 @@ fn names_recorded_before_the_build_completes_are_not_lost() {
     // Written while no snapshot exists (as during a background build): recorded, not yet folded.
     write_file(&db, &mut rng, &["late_arrival".to_string()], 99);
     build_dicts(&db);
-    let page = scan_calls_by_name(&db, "late_arrival", 10, None).unwrap();
+    let page = scan_calls_by_name(&db.view(), "late_arrival", 10, None).unwrap();
     assert!(page.total > 0);
     assert_equivalent(&db, "late arrival");
 }
@@ -312,9 +316,9 @@ fn unbuilt_dictionary_still_answers_via_the_walk() {
     for i in 0..30 {
         write_file(&db, &mut rng, &vocab, i);
     }
-    db.callee_names.set_disabled(true);
+    db.callee_dict().set_disabled(true);
     let want = call_page(&db, "run", 20, None);
-    db.callee_names.set_disabled(false);
+    db.callee_dict().set_disabled(false);
     // First query: kicks off the background build and is served by the walk.
     let first = call_page(&db, "run", 20, None);
     assert_eq!(want, first);
@@ -333,19 +337,21 @@ fn time_name_scans() {
     };
     let db = IndexDb::open(std::path::Path::new(&view)).unwrap();
     let t = Instant::now();
-    db.callee_names.build_blocking(&db.calls_by_callee);
+    db.callee_dict()
+        .build_blocking(db.keyspace_for_test(crate::index::view::Part::CallsByCallee));
     eprintln!(
         "callee dictionary: {} names, {} KiB resident, built in {:?}",
-        db.callee_names.len(),
-        db.callee_names.snapshot_bytes() / 1024,
+        db.callee_dict().len(),
+        db.callee_dict().snapshot_bytes() / 1024,
         t.elapsed()
     );
     let t = Instant::now();
-    db.trait_names.build_blocking(&db.implementations_by_trait);
+    db.trait_dict()
+        .build_blocking(db.keyspace_for_test(crate::index::view::Part::ImplementationsByTrait));
     eprintln!(
         "trait dictionary: {} names, {} KiB resident, built in {:?}",
-        db.trait_names.len(),
-        db.trait_names.snapshot_bytes() / 1024,
+        db.trait_dict().len(),
+        db.trait_dict().snapshot_bytes() / 1024,
         t.elapsed()
     );
     let needles = [
@@ -364,11 +370,11 @@ fn time_name_scans() {
         let mut dict = Vec::new();
         let mut first = None;
         for round in 0..5 {
-            db.callee_names.set_disabled(true);
+            db.callee_dict().set_disabled(true);
             let t = Instant::now();
             let want = call_page(&db, needle, 50, None);
             walk.push(t.elapsed());
-            db.callee_names.set_disabled(false);
+            db.callee_dict().set_disabled(false);
             let t = Instant::now();
             let got = call_page(&db, needle, 50, None);
             dict.push(t.elapsed());

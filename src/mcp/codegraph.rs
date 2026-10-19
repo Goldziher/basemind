@@ -27,7 +27,7 @@ use rmcp::ErrorData as McpError;
 use super::MapCache;
 use super::helpers_calls::for_each_call_in_file;
 use super::helpers_graph::is_function_like;
-use crate::index::IndexDb;
+use crate::index::view::IndexView;
 use crate::path::RelPath;
 
 /// The kind of relationship an edge represents.
@@ -409,7 +409,7 @@ pub(crate) fn new_graph_memo(budget_bytes: u64) -> GraphMemo {
 /// deterministic graph). A poisoned lock is recovered — a lost memo entry only costs one rebuild.
 pub(crate) fn build_memoized(
     memo: &Mutex<GraphMemo>,
-    idx: Option<&IndexDb>,
+    idx: Option<&dyn IndexView>,
     cache: &MapCache,
     opts: &BuildOpts,
 ) -> Result<Arc<CodeGraph>, McpError> {
@@ -566,7 +566,7 @@ fn resolve_named_edge(
 /// `scan_cap`. Folding the lanes into one pass would change which files the cap cuts, so the passes
 /// stay separate and the outline cache absorbs the repeat reads. The build is memoized
 /// ([`build_memoized`]), so a repo pays this at most once per snapshot per lane set.
-pub(crate) fn build(idx: Option<&IndexDb>, cache: &MapCache, opts: &BuildOpts) -> Result<CodeGraph, McpError> {
+pub(crate) fn build(idx: Option<&dyn IndexView>, cache: &MapCache, opts: &BuildOpts) -> Result<CodeGraph, McpError> {
     let kinds = opts.kinds;
     // Compared byte-wise, not as `&str`: for UTF-8 paths a byte prefix and a `str` prefix are the
     // same test, and matching on bytes additionally keeps non-UTF-8 indexed paths in scope instead

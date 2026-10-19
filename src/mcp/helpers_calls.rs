@@ -14,7 +14,7 @@ pub(crate) use super::helpers_calls_scan::InRamCallIndex;
 use super::helpers_calls_scan::{CallRef, CallScanPage, budget_call_page, calls_in_file_fjall};
 use super::index_route::IndexRoute;
 use super::types::ReferenceHit;
-use crate::index::IndexDb;
+use crate::index::view::{IndexView, Part};
 use crate::path::RelPath;
 
 /// How `find_callers` fetches the cross-file resolved uses of a definition. The precise
@@ -108,7 +108,7 @@ impl RefsSource<'_> {
 /// rather than one daemon round trip per file; `references` / `callers` / `implementations` are the
 /// point queries that forward instead.
 pub(super) fn for_each_call_in_file<F: FnMut(&str, u32) -> bool>(
-    idx: Option<&IndexDb>,
+    idx: Option<&dyn IndexView>,
     cache: &MapCache,
     path: &RelPath,
     mut f: F,
@@ -133,12 +133,12 @@ pub(super) fn for_each_call_in_file<F: FnMut(&str, u32) -> bool>(
 /// `(line, column)` as 1-based / 0-based respectively. Falls back to `(0, 0)` when the
 /// row/col fields aren't populated (older L2 blobs predating the field's introduction).
 pub(super) fn resolve_call_line_col(
-    idx: &crate::index::IndexDb,
+    idx: &dyn crate::index::view::IndexView,
     rel: &crate::path::RelPath,
     start_byte: u32,
 ) -> (u32, u32) {
     let key = crate::index::keys::call_by_path(rel, start_byte);
-    let value = match idx.calls_by_path.get(key) {
+    let value = match idx.get(Part::CallsByPath, &key) {
         Ok(Some(v)) => v,
         _ => return (0, 0),
     };
@@ -519,9 +519,9 @@ mod tests {
 
     /// The route a writer session takes: its own open fjall index.
     fn local_route(store: &Store) -> super::IndexRoute {
-        super::IndexRoute::Local(Box::new(
+        super::IndexRoute::Local(Box::new(crate::index::view::StandaloneView(
             store.index_db.clone().expect("a writer store opens the fjall index"),
-        ))
+        )))
     }
 
     /// Scan `root` and return the store plus its map cache.

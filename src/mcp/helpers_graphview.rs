@@ -24,7 +24,7 @@ use super::types::LifecycleNotice;
 use super::types_graphview::{
     DisplayParams, DisplayResponse, GraphExportParams, GraphExportResponse, UiParams, UiResponse,
 };
-use crate::index::IndexDb;
+use crate::index::view::IndexView;
 use crate::path::RelPath;
 
 /// Sweep bound for community detection when tagging nodes; converges well inside this on real graphs.
@@ -83,7 +83,7 @@ fn select_nodes(partition: &community::Partition, n: usize, max_nodes: usize) ->
 #[allow(clippy::too_many_arguments)]
 pub(super) fn build_graph_view(
     shared: &SharedReadStack,
-    idx: Option<&IndexDb>,
+    idx: Option<&dyn IndexView>,
     cache: &MapCache,
     kinds: EdgeKindSet,
     min_conf: f32,
@@ -262,7 +262,7 @@ fn prune_exports(dir: &std::path::Path, budget: u64) {
 /// `graph_export` — render the code-graph into a chosen text format.
 pub(super) fn run_graph_export(
     shared: &SharedReadStack,
-    idx: Option<&IndexDb>,
+    idx: Option<&dyn IndexView>,
     cache: &MapCache,
     basemind_dir: &std::path::Path,
     params: GraphExportParams,
@@ -440,7 +440,7 @@ fn spawn_opener(program: &str, args: &[&std::ffi::OsStr]) -> OpenOutcome {
 /// runtime. The render/build portion stays synchronous inline, matching `run_graph_export`.
 pub(super) async fn run_display(
     shared: &SharedReadStack,
-    idx: Option<&IndexDb>,
+    idx: Option<&dyn IndexView>,
     cache: &MapCache,
     basemind_dir: &std::path::Path,
     params: DisplayParams,
@@ -546,7 +546,7 @@ pub(super) struct UiParts {
 #[allow(clippy::too_many_arguments)]
 pub(super) fn render_ui_parts(
     shared: &SharedReadStack,
-    idx: Option<&IndexDb>,
+    idx: Option<&dyn IndexView>,
     cache: &MapCache,
     format: &str,
     edges: &str,
@@ -611,7 +611,7 @@ const UI_NOT_SERVED_DETAIL: &str = "no basemind daemon is serving the interactiv
 /// is the launch — the launch outcome is not reported.
 pub(super) async fn run_ui(
     shared: &SharedReadStack,
-    idx: Option<&IndexDb>,
+    idx: Option<&dyn IndexView>,
     cache: &MapCache,
     basemind_dir: &std::path::Path,
     params: UiParams,

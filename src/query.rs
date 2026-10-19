@@ -1,6 +1,7 @@
 use thiserror::Error;
 
 use crate::extract::{FileMapL1, FileMapL2, Symbol, SymbolKind};
+use crate::index::view::IndexView;
 use crate::path::RelPath;
 use crate::store::{Store, StoreError};
 
@@ -129,7 +130,7 @@ pub fn dependents_of(store: &Store, module: &str) -> Result<Vec<RelPath>, QueryE
 /// and are therefore unavailable in the fallback (same caveat as `goto_definition`'s cross-file
 /// hop).
 pub fn resolved_references(store: &Store, def_path: &RelPath, def_start: u32) -> Vec<(RelPath, u32)> {
-    match store.index_db.as_ref() {
+    match store.index_view() {
         Some(index) => index.references_to(def_path, def_start),
         None => resolved_references_from_blob(store, def_path, def_start),
     }
@@ -162,7 +163,7 @@ fn resolved_references_from_blob(store: &Store, def_path: &RelPath, def_start: u
 /// Fjall `refs_by_path` partition when the index is open, else the file's `.rref` blob (intra-file
 /// bindings only; cross-file targets need the index open).
 pub fn definition_of(store: &Store, use_path: &RelPath, use_start: u32) -> Option<(RelPath, u32)> {
-    match store.index_db.as_ref() {
+    match store.index_view() {
         Some(index) => index.definition_of(use_path, use_start),
         None => definition_of_from_blob(store, use_path, use_start),
     }

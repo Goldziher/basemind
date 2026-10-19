@@ -11,7 +11,7 @@
 use ahash::{AHashMap, AHashSet};
 
 use crate::chunk::{CodeChunk, CodeChunkBlob};
-use crate::index::IndexDb;
+use crate::index::view::IndexView;
 use crate::path::RelPath;
 use crate::store::Store;
 
@@ -50,7 +50,7 @@ pub fn owning_chunk_id(chunks: &[CodeChunk], byte_offset: u32) -> Option<&str> {
 /// ranked exact-name matches ahead of longer prefix matches (`parseConfig` before `parseConfigFile`).
 /// Returns an empty vec for non-identifier queries or when nothing resolves. `cap` bounds the symbol
 /// scan. Reads chunk sidecars — blocking I/O, so call off the async reactor.
-pub fn exact_lane_chunk_ids(store: &Store, db: &IndexDb, query: &str, cap: usize) -> Vec<String> {
+pub fn exact_lane_chunk_ids(store: &Store, db: &dyn IndexView, query: &str, cap: usize) -> Vec<String> {
     if !is_identifier_query(query) {
         return Vec::new();
     }

@@ -218,14 +218,14 @@ pub(crate) fn index_read_via_pool(
             .with_workspace(root, |store| store.index_db.clone())
             .map_err(|error| error.to_string())?
             .ok_or_else(|| "the daemon holds this workspace without a fjall index".to_string())?;
-        return crate::mcp::index_read::call_scan(&idx, name, *limit, cursor.as_deref());
+        return crate::mcp::index_read::call_scan(&idx.view(), name, *limit, cursor.as_deref());
     }
     if let IndexReadQuery::GrepBloom { pattern, entries } = query {
         let (idx, store_root) = pool
             .with_workspace(root, |store| (store.index_db.clone(), store.root.clone()))
             .map_err(|error| error.to_string())?;
         let idx = idx.ok_or_else(|| "the daemon holds this workspace without a fjall index".to_string())?;
-        return crate::mcp::index_read::grep_skip(&idx, &store_root, pattern, entries);
+        return crate::mcp::index_read::grep_skip(&idx.view(), &store_root, pattern, entries);
     }
     pool.with_workspace(root, |store| crate::mcp::index_read::index_read_against(store, query))
         .map_err(|error| error.to_string())?
@@ -270,19 +270,19 @@ pub(crate) fn code_search_lanes_against(
     use crate::comms::code_search_proto::CodeSearchLaneResult;
 
     let limit = (query.limit as usize).min(MAX_FORWARDED_LANE_LIMIT);
-    let Some(db) = store.index_db.as_ref() else {
+    let Some(db) = store.index_view() else {
         return Err(
             "the daemon holds this workspace without a fjall index, so neither the keyword nor the \
              exact lane can be read"
                 .to_string(),
         );
     };
-    let keyword = crate::search::bm25::bm25_search(db, &query.query, limit)
+    let keyword = crate::search::bm25::bm25_search(&db, &query.query, limit)
         .into_iter()
         .map(|hit| (hit.chunk_id, hit.score))
         .collect();
     let exact = if query.want_exact {
-        crate::search::exact::exact_lane_chunk_ids(store, db, &query.query, limit)
+        crate::search::exact::exact_lane_chunk_ids(store, &db, &query.query, limit)
     } else {
         Vec::new()
     };

@@ -19,7 +19,8 @@ use std::cmp::Ordering;
 use ahash::{AHashMap, AHashSet};
 
 use crate::chunk::CodeChunk;
-use crate::index::{IndexDb, keys};
+use crate::index::keys;
+use crate::index::view::{IndexView, Part};
 
 /// Upper bound on a single token's byte length. Tokens longer than this (minified blobs, base64
 /// spilled into a comment) are dropped — they are never real query terms and would bloat the index.
@@ -134,7 +135,7 @@ pub fn bm25_term_score(tf: u32, doclen: u32, avgdl: f32, idf: f32) -> f32 {
 /// Score `query` against the BM25 keyword index in `db` and return the top `limit` chunk hits,
 /// highest score first (ties broken by `chunk_id` for a stable order). Returns empty when the index
 /// is empty, the query has no tokens, or no chunk matches.
-pub fn bm25_search(db: &IndexDb, query: &str, limit: usize) -> Vec<Bm25Hit> {
+pub fn bm25_search(db: &dyn IndexView, query: &str, limit: usize) -> Vec<Bm25Hit> {
     let terms = tokenize_query(query);
     if terms.is_empty() || limit == 0 {
         return Vec::new();
@@ -150,8 +151,8 @@ pub fn bm25_search(db: &IndexDb, query: &str, limit: usize) -> Vec<Bm25Hit> {
     let mut scores: AHashMap<String, f32> = AHashMap::new();
     for term in &terms {
         let mut postings: Vec<(String, u32, u32)> = Vec::new();
-        for guard in db.code_bm25_postings.prefix(keys::code_bm25_postings_prefix(term)) {
-            let (k, v) = match guard.into_inner() {
+        for guard in db.prefix(Part::CodeBm25Postings, &keys::code_bm25_postings_prefix(term)) {
+            let (k, v) = match guard {
                 Ok(kv) => kv,
                 Err(error) => {
                     tracing::warn!(%term, ?error, "bm25: posting read failed; skipping entry");

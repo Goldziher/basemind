@@ -201,25 +201,35 @@ impl IndexDb {
     /// indexed under. Rows are fetched and dropped one at a time, in parallel; nothing is held
     /// between files.
     pub fn grep_skip_verdicts(&self, root: &Path, entries: &[GrepEntry], needle: &Needle) -> Vec<bool> {
-        entries
-            .par_iter()
-            .map(|entry| {
-                let Some(row) = self.grep_bloom_row(&entry.hash_hex) else {
-                    return false;
-                };
-                let Some(bits) = parse_row(&row) else {
-                    return false;
-                };
-                if needle.passes(bits) {
-                    return false;
-                }
-                // The bloom describes the content as indexed; the sweep reads the file as it is now.
-                // Only a file still carrying its indexed stamp may be trusted to lack the literal.
-                std::fs::metadata(root.join(entry.rel.to_path_buf()))
-                    .is_ok_and(|m| m.len() == entry.size_bytes && mtime_nanos(&m) == entry.mtime_ns)
-            })
-            .collect()
+        skip_verdicts(|hash| self.grep_bloom_row(hash), root, entries, needle)
     }
+}
+
+/// [`IndexDb::grep_skip_verdicts`] over any row source, so a layered view shares the verdict logic.
+pub(crate) fn skip_verdicts(
+    row_of: impl Fn(&str) -> Option<fjall::Slice> + Sync,
+    root: &Path,
+    entries: &[GrepEntry],
+    needle: &Needle,
+) -> Vec<bool> {
+    entries
+        .par_iter()
+        .map(|entry| {
+            let Some(row) = row_of(&entry.hash_hex) else {
+                return false;
+            };
+            let Some(bits) = parse_row(&row) else {
+                return false;
+            };
+            if needle.passes(bits) {
+                return false;
+            }
+            // The bloom describes the content as indexed; the sweep reads the file as it is now.
+            // Only a file still carrying its indexed stamp may be trusted to lack the literal.
+            std::fs::metadata(root.join(entry.rel.to_path_buf()))
+                .is_ok_and(|m| m.len() == entry.size_bytes && mtime_nanos(&m) == entry.mtime_ns)
+        })
+        .collect()
 }
 
 #[cfg(test)]
