@@ -6,21 +6,75 @@
 //!
 //! The trait has two layers. The generic layer (`get` / `prefix` / `range` / `iter`, addressed by
 //! [`Part`]) is what a merging implementation has to provide; the named accessors are the lookups the
-//! read path performs, each delegating 1:1 to the matching [`IndexDb`] method in [`StandaloneView`].
+//! read path performs, written once as default methods over that layer so a layered view inherits them
+//! (ADR-0016 A5 "Merge contract"). No fjall type appears in a signature: values come back as
+//! [`IndexBytes`], which a later mapped base can serve without a copy.
 
 use std::borrow::Borrow;
-use std::ops::Bound;
+use std::ops::{Bound, Deref};
 use std::path::Path;
 
-use fjall::{Keyspace, Slice};
+use fjall::Keyspace;
 
 use super::grep_bloom::{GrepEntry, Needle};
-use super::{IndexDb, IndexError, name_dict};
+use super::{
+    IMPORT_PROBE_VER, IndexDb, IndexError, META_BM25_DOC_COUNT, META_BM25_TOTAL_LEN, META_IMPORT_PROBE_VER, keys,
+    name_dict, probe_candidates,
+};
 use crate::extract::SymbolKind;
 use crate::path::RelPath;
 
+/// Bytes read from the index: a key or a value.
+///
+/// A refcounted handle, not a copy: today it wraps the fjall block slice the read already produced, and
+/// a mapped immutable base will add a variant borrowing the mapping, so a merging view hands either
+/// out per row without allocating. The enum is private so no backend type is nameable from a signature.
+#[derive(Clone)]
+pub struct IndexBytes(Repr);
+
+#[derive(Clone)]
+enum Repr {
+    Fjall(fjall::Slice),
+}
+
+impl IndexBytes {
+    fn from_fjall(slice: fjall::Slice) -> Self {
+        Self(Repr::Fjall(slice))
+    }
+}
+
+impl Deref for IndexBytes {
+    type Target = [u8];
+
+    fn deref(&self) -> &[u8] {
+        match &self.0 {
+            Repr::Fjall(slice) => slice,
+        }
+    }
+}
+
+impl AsRef<[u8]> for IndexBytes {
+    fn as_ref(&self) -> &[u8] {
+        self
+    }
+}
+
+impl PartialEq for IndexBytes {
+    fn eq(&self, other: &Self) -> bool {
+        **self == **other
+    }
+}
+
+impl Eq for IndexBytes {}
+
+impl std::fmt::Debug for IndexBytes {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        (**self).fmt(f)
+    }
+}
+
 /// One `(key, value)` row, or the error that interrupted the walk.
-pub type KvResult = Result<(Slice, Slice), IndexError>;
+pub type KvResult = Result<(IndexBytes, IndexBytes), IndexError>;
 
 /// Boxed row iterator. One virtual call per row; the boxing itself happens once per scan.
 pub type KvIter<'a> = Box<dyn Iterator<Item = KvResult> + 'a>;
@@ -48,8 +102,10 @@ pub enum Part {
 }
 
 impl Part {
-    /// Every layered keyspace, in declaration order.
-    pub const ALL: [Part; 16] = [
+    /// Every layered keyspace, in declaration order. Checked against [`KEYSPACE_MEMTABLE_BYTES`] in
+    /// `view_tests`, so a keyspace added to either list alone fails there.
+    #[cfg(test)]
+    pub(super) const ALL: [Part; 16] = [
         Part::Meta,
         Part::SymbolsByPath,
         Part::SymbolsByName,
@@ -69,7 +125,8 @@ impl Part {
     ];
 
     /// The keyspace's on-disk name.
-    pub const fn name(self) -> &'static str {
+    #[cfg(test)]
+    pub(super) const fn name(self) -> &'static str {
         match self {
             Part::Meta => "meta",
             Part::SymbolsByPath => "symbols_by_path",
@@ -136,24 +193,25 @@ impl IndexDb {
 }
 
 /// `Some(&dyn IndexView)` for an optional concrete view, for the call sites that take an optional one.
-pub fn as_dyn<V: IndexView>(view: &Option<V>) -> Option<&dyn IndexView> {
+pub(crate) fn as_dyn<V: IndexView>(view: &Option<V>) -> Option<&dyn IndexView> {
     view.as_ref().map(|v| v as &dyn IndexView)
 }
 
-pub(crate) fn kv(guard: fjall::Guard) -> KvResult {
-    guard.into_inner().map_err(IndexError::from)
+pub(super) fn kv(guard: fjall::Guard) -> KvResult {
+    let (key, value) = guard.into_inner().map_err(IndexError::from)?;
+    Ok((IndexBytes::from_fjall(key), IndexBytes::from_fjall(value)))
 }
 
 /// Read access to the index. See the module docs.
 pub trait IndexView: Send + Sync {
     /// Point lookup of `key` in `part`.
-    fn get(&self, part: Part, key: &[u8]) -> Result<Option<Slice>, IndexError>;
+    fn get(&self, part: Part, key: &[u8]) -> Result<Option<IndexBytes>, IndexError>;
 
     /// Every row of `part` whose key starts with `prefix`, in key order.
     fn prefix<'a>(&'a self, part: Part, prefix: &[u8]) -> KvIter<'a>;
 
     /// Rows of `part` between the bounds, in key order.
-    fn range<'a>(&'a self, part: Part, lower: Bound<Vec<u8>>, upper: Bound<Vec<u8>>) -> KvIter<'a>;
+    fn range<'a>(&'a self, part: Part, lower: Bound<&[u8]>, upper: Bound<&[u8]>) -> KvIter<'a>;
 
     /// Every row of `part`, in key order.
     fn iter<'a>(&'a self, part: Part) -> KvIter<'a>;
@@ -175,39 +233,143 @@ pub trait IndexView: Send + Sync {
         lower: Bound<Vec<u8>>,
     ) -> KvIter<'a>;
 
-    /// True when the index holds no per-file symbol entries.
-    fn symbols_index_is_empty(&self) -> bool;
+    /// True when the index holds no per-file symbol entries. Cheap: peeks at the first key of
+    /// `symbols_by_path` rather than counting.
+    ///
+    /// Used by the MCP startup auto-scan to detect a present-but-empty index (e.g. a
+    /// `views/<view>/index.fjall/` wiped out-of-band while the msgpack `index.msgpack` survived). The
+    /// in-RAM map cache then looks populated while the index-backed tools would silently return
+    /// nothing, so a rescan is warranted.
+    fn symbols_index_is_empty(&self) -> bool {
+        self.iter(Part::SymbolsByPath).next().is_none()
+    }
 
-    /// Resolved uses of the definition at `(def_path, def_start)`.
-    fn references_to(&self, def_path: &RelPath, def_start: u32) -> Vec<(RelPath, u32)>;
+    /// Resolved uses of the definition at `(def_path, def_start)`: the scope/import-resolved backing
+    /// for `find_references`, each as `(use_path, use_start)`. Empty when the definition has no
+    /// resolved uses (or resolution never ran for its file).
+    fn references_to(&self, def_path: &RelPath, def_start: u32) -> Vec<(RelPath, u32)> {
+        let prefix = keys::refs_by_def_prefix(def_path, def_start);
+        self.prefix(Part::RefsByDef, &prefix)
+            .filter_map(|row| row.ok())
+            .filter_map(|(k, _)| keys::parse_ref_by_def(&k))
+            .map(|(_, _, use_path, use_start)| (use_path, use_start))
+            .collect()
+    }
 
-    /// The definition the use at `(use_path, use_start)` resolves to.
-    fn definition_of(&self, use_path: &RelPath, use_start: u32) -> Option<(RelPath, u32)>;
+    /// The definition the use at `(use_path, use_start)` resolves to; backs `goto_definition`.
+    /// Cross-file definitions take precedence over the local import binding that an imported use also
+    /// resolves through. `None` when the position isn't a resolved reference.
+    fn definition_of(&self, use_path: &RelPath, use_start: u32) -> Option<(RelPath, u32)> {
+        let prefix = keys::refs_by_use_prefix(use_path, use_start);
+        let mut local = None;
+        for row in self.prefix(Part::RefsByPath, &prefix) {
+            if let Ok((k, _)) = row
+                && let Some((_use_path, _use_start, def_path, def_start)) = keys::parse_ref_by_path(&k)
+            {
+                if def_path != *use_path {
+                    return Some((def_path, def_start));
+                }
+                local = Some((def_path, def_start));
+            }
+        }
+        local
+    }
 
-    /// The bindings of `importer`: `(local_start, def_path, def_start)`.
-    fn import_targets_of(&self, importer: &RelPath) -> Vec<(u32, RelPath, u32)>;
+    /// The stitched bindings of `importer`: `(local_start, def_path, def_start)`.
+    fn import_targets_of(&self, importer: &RelPath) -> Vec<(u32, RelPath, u32)> {
+        self.prefix(Part::ImportTargets, &keys::import_targets_prefix(importer))
+            .filter_map(|row| row.ok())
+            .filter_map(|(k, v)| keys::parse_import_target(&k, &v))
+            .map(|(_, local_start, def_path, def_start)| (local_start, def_path, def_start))
+            .collect()
+    }
 
-    /// Importers that probed a path `path` could satisfy.
-    fn importers_probing(&self, path: &str) -> Vec<RelPath>;
+    /// Every importer whose resolution consulted `path` (repo-relative, forward-slashed) or one of its
+    /// ancestor directories: a prefix scan of `importers_by_probe` per candidate, O(importers).
+    ///
+    /// The ancestors matter because the resolver does not descend into a directory it found missing.
+    /// An importer that probed `util` and found nothing never probed `util/index.ts`, so adding
+    /// `util/index.ts` must reach it through the directory. (A directory that existed when the
+    /// importer resolved is never recorded, so a path under an existing directory costs only empty
+    /// scans.)
+    fn importers_probing(&self, path: &str) -> Vec<RelPath> {
+        probe_candidates(path)
+            .flat_map(|candidate| {
+                let prefix = keys::importers_by_probe_prefix(&keys::probe_hash(candidate));
+                self.prefix(Part::ImportersByProbe, &prefix)
+                    .filter_map(|row| row.ok())
+                    .filter_map(|(k, _)| keys::parse_importer_by_probe(&k))
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    }
 
-    /// Whether any importer probed a path `path` could satisfy.
-    fn is_probed(&self, path: &str) -> bool;
+    /// Whether any importer consulted `path` or an ancestor directory of it (see
+    /// [`Self::importers_probing`]). Cheap enough to gate a rescan on a non-indexed file
+    /// (`tsconfig.json`, `package.json`) the watcher saw change.
+    fn is_probed(&self, path: &str) -> bool {
+        probe_candidates(path).any(|candidate| {
+            let prefix = keys::importers_by_probe_prefix(&keys::probe_hash(candidate));
+            self.prefix(Part::ImportersByProbe, &prefix).next().is_some()
+        })
+    }
 
-    /// Whether the probe keyspaces cover every importer.
-    fn import_probes_complete(&self) -> bool;
+    /// Whether the probe keyspaces cover every importer (a wholesale resolve pass completed since they
+    /// were created). When false, the incremental pass must run the wholesale one first.
+    fn import_probes_complete(&self) -> bool {
+        self.get(Part::Meta, META_IMPORT_PROBE_VER)
+            .ok()
+            .flatten()
+            .is_some_and(|v| v.first() == Some(&IMPORT_PROBE_VER))
+    }
 
-    /// Up to `cap` symbols named `name` (prefix match), as `(name, kind, path, start_byte)`.
-    fn symbols_by_name_lookup(&self, name: &str, cap: usize) -> Vec<(String, SymbolKind, RelPath, u32)>;
+    /// Symbols whose name starts with `name` (length-prefixed keys isolate `Foo` from `Foobar`), as
+    /// `(name, kind, path, start_byte)`, capped at `cap`. Backs the code-search exact lane: an
+    /// identifier-shaped query resolves to the symbols that define it, which then map to their owning
+    /// chunks. The returned `name` lets the caller rank exact-name matches ahead of longer prefix
+    /// matches. `start_byte` is the L1 `Symbol.start_byte` (node start), which falls inside the
+    /// symbol's owning chunk span.
+    fn symbols_by_name_lookup(&self, name: &str, cap: usize) -> Vec<(String, SymbolKind, RelPath, u32)> {
+        let prefix = keys::symbols_by_name_prefix(name);
+        let mut out = Vec::new();
+        for row in self.prefix(Part::SymbolsByName, &prefix) {
+            if out.len() >= cap {
+                break;
+            }
+            if let Ok((k, _)) = row
+                && let Some(symbol) = keys::parse_symbol_by_name(&k)
+            {
+                out.push(symbol);
+            }
+        }
+        out
+    }
 
-    /// BM25 corpus statistics `(doc_count, total_len)`; `None` before the first scan.
-    fn bm25_stats(&self) -> Option<(u64, u64)>;
+    /// Corpus-global BM25 stats for the code-search keyword lane: `(N, total_len)` where `N` is the
+    /// number of indexed chunks and `total_len` the sum of their token lengths (so `avgdl = total_len
+    /// / N`). `None` (or `N == 0`) means the BM25 index is empty: no chunks were indexed, or
+    /// [`IndexDb::recompute_bm25_stats`] never ran.
+    fn bm25_stats(&self) -> Option<(u64, u64)> {
+        let stat = |key: &[u8]| {
+            self.get(Part::Meta, key)
+                .ok()
+                .flatten()
+                .and_then(|b| <[u8; 8]>::try_from(&b[..]).ok())
+                .map(u64::from_be_bytes)
+        };
+        let n = stat(META_BM25_DOC_COUNT)?;
+        Some((n, stat(META_BM25_TOTAL_LEN).unwrap_or(0)))
+    }
 
     /// The stored trigram bloom row for the content `hash_hex`.
-    fn grep_bloom_row(&self, hash_hex: &str) -> Option<Slice> {
+    fn grep_bloom_row(&self, hash_hex: &str) -> Option<IndexBytes> {
         self.get(Part::GrepBloom, hash_hex.as_bytes()).ok().flatten()
     }
 
-    /// For each of `entries`, whether a grep for `needle` can skip the file.
+    /// For each of `entries`, whether the file can be SKIPPED by a grep for `needle`: its content has
+    /// an intact row, the row rejects the needle, and the live file still has the stamp the entry was
+    /// indexed under. Rows are fetched and dropped one at a time, in parallel; nothing is held between
+    /// files.
     fn grep_skip_verdicts(&self, root: &Path, entries: &[GrepEntry], needle: &Needle) -> Vec<bool> {
         super::grep_bloom::skip_verdicts(|hash| self.grep_bloom_row(hash), root, entries, needle)
     }
@@ -215,7 +377,7 @@ pub trait IndexView: Send + Sync {
 
 /// The unlayered view: one [`IndexDb`], read as is. `T` is `&IndexDb` to borrow it or `IndexDb` to
 /// own a handle (clones share the same keyspaces).
-pub struct StandaloneView<T = IndexDb>(pub T);
+pub struct StandaloneView<T = IndexDb>(pub(crate) T);
 
 impl<T: Borrow<IndexDb>> StandaloneView<T> {
     fn db(&self) -> &IndexDb {
@@ -224,16 +386,16 @@ impl<T: Borrow<IndexDb>> StandaloneView<T> {
 }
 
 impl<T: Borrow<IndexDb> + Send + Sync> IndexView for StandaloneView<T> {
-    fn get(&self, part: Part, key: &[u8]) -> Result<Option<Slice>, IndexError> {
-        Ok(self.db().keyspace(part).get(key)?)
+    fn get(&self, part: Part, key: &[u8]) -> Result<Option<IndexBytes>, IndexError> {
+        Ok(self.db().keyspace(part).get(key)?.map(IndexBytes::from_fjall))
     }
 
     fn prefix<'a>(&'a self, part: Part, prefix: &[u8]) -> KvIter<'a> {
         Box::new(self.db().keyspace(part).prefix(prefix).map(kv))
     }
 
-    fn range<'a>(&'a self, part: Part, lower: Bound<Vec<u8>>, upper: Bound<Vec<u8>>) -> KvIter<'a> {
-        Box::new(self.db().keyspace(part).range::<Vec<u8>, _>((lower, upper)).map(kv))
+    fn range<'a>(&'a self, part: Part, lower: Bound<&[u8]>, upper: Bound<&[u8]>) -> KvIter<'a> {
+        Box::new(self.db().keyspace(part).range::<&[u8], _>((lower, upper)).map(kv))
     }
 
     fn iter<'a>(&'a self, part: Part) -> KvIter<'a> {
@@ -265,42 +427,6 @@ impl<T: Borrow<IndexDb> + Send + Sync> IndexView for StandaloneView<T> {
             lower,
         )
     }
-
-    fn symbols_index_is_empty(&self) -> bool {
-        self.db().symbols_index_is_empty()
-    }
-
-    fn references_to(&self, def_path: &RelPath, def_start: u32) -> Vec<(RelPath, u32)> {
-        self.db().references_to(def_path, def_start)
-    }
-
-    fn definition_of(&self, use_path: &RelPath, use_start: u32) -> Option<(RelPath, u32)> {
-        self.db().definition_of(use_path, use_start)
-    }
-
-    fn import_targets_of(&self, importer: &RelPath) -> Vec<(u32, RelPath, u32)> {
-        self.db().import_targets_of(importer)
-    }
-
-    fn importers_probing(&self, path: &str) -> Vec<RelPath> {
-        self.db().importers_probing(path)
-    }
-
-    fn is_probed(&self, path: &str) -> bool {
-        self.db().is_probed(path)
-    }
-
-    fn import_probes_complete(&self) -> bool {
-        self.db().import_probes_complete()
-    }
-
-    fn symbols_by_name_lookup(&self, name: &str, cap: usize) -> Vec<(String, SymbolKind, RelPath, u32)> {
-        self.db().symbols_by_name_lookup(name, cap)
-    }
-
-    fn bm25_stats(&self) -> Option<(u64, u64)> {
-        self.db().bm25_stats()
-    }
 }
 
 #[cfg(test)]
@@ -322,10 +448,6 @@ mod recording {
         fn record(&self, op: &str, part: Option<Part>) {
             let entry = part.map_or_else(|| op.to_owned(), |p| format!("{op}:{}", p.name()));
             self.0.lock().expect("read log").push(entry);
-        }
-
-        pub(crate) fn saw(&self, entry: &str) -> bool {
-            self.0.lock().expect("read log").iter().any(|e| e == entry)
         }
 
         pub(crate) fn entries(&self) -> Vec<String> {
@@ -357,7 +479,7 @@ mod recording {
     }
 
     impl IndexView for RecordingView {
-        fn get(&self, part: Part, key: &[u8]) -> Result<Option<Slice>, IndexError> {
+        fn get(&self, part: Part, key: &[u8]) -> Result<Option<IndexBytes>, IndexError> {
             self.log.record("get", Some(part));
             self.inner.get(part, key)
         }
@@ -367,7 +489,7 @@ mod recording {
             self.inner.prefix(part, prefix)
         }
 
-        fn range<'a>(&'a self, part: Part, lower: Bound<Vec<u8>>, upper: Bound<Vec<u8>>) -> KvIter<'a> {
+        fn range<'a>(&'a self, part: Part, lower: Bound<&[u8]>, upper: Bound<&[u8]>) -> KvIter<'a> {
             self.log.record("range", Some(part));
             self.inner.range(part, lower, upper)
         }
@@ -395,51 +517,6 @@ mod recording {
         ) -> KvIter<'a> {
             self.log.record("trait_keys_matching", None);
             self.inner.trait_keys_matching(needle, cursor_after, lower)
-        }
-
-        fn symbols_index_is_empty(&self) -> bool {
-            self.log.record("symbols_index_is_empty", None);
-            self.inner.symbols_index_is_empty()
-        }
-
-        fn references_to(&self, def_path: &RelPath, def_start: u32) -> Vec<(RelPath, u32)> {
-            self.log.record("references_to", None);
-            self.inner.references_to(def_path, def_start)
-        }
-
-        fn definition_of(&self, use_path: &RelPath, use_start: u32) -> Option<(RelPath, u32)> {
-            self.log.record("definition_of", None);
-            self.inner.definition_of(use_path, use_start)
-        }
-
-        fn import_targets_of(&self, importer: &RelPath) -> Vec<(u32, RelPath, u32)> {
-            self.log.record("import_targets_of", None);
-            self.inner.import_targets_of(importer)
-        }
-
-        fn importers_probing(&self, path: &str) -> Vec<RelPath> {
-            self.log.record("importers_probing", None);
-            self.inner.importers_probing(path)
-        }
-
-        fn is_probed(&self, path: &str) -> bool {
-            self.log.record("is_probed", None);
-            self.inner.is_probed(path)
-        }
-
-        fn import_probes_complete(&self) -> bool {
-            self.log.record("import_probes_complete", None);
-            self.inner.import_probes_complete()
-        }
-
-        fn symbols_by_name_lookup(&self, name: &str, cap: usize) -> Vec<(String, SymbolKind, RelPath, u32)> {
-            self.log.record("symbols_by_name_lookup", None);
-            self.inner.symbols_by_name_lookup(name, cap)
-        }
-
-        fn bm25_stats(&self) -> Option<(u64, u64)> {
-            self.log.record("bm25_stats", None);
-            self.inner.bm25_stats()
         }
     }
 }

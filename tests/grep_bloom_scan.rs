@@ -6,6 +6,7 @@
 use std::path::Path;
 use std::time::{Duration, SystemTime};
 
+use basemind::index::view::IndexView;
 use basemind::path::RelPath;
 use basemind::scanner::{EmbedMode, ScanCancel, ScanSource};
 use basemind::store::{Store, VIEW_WORKING};
@@ -81,7 +82,7 @@ fn has_row(store: &Store, hash_hex: &str) -> bool {
     store
         .index_db
         .as_ref()
-        .is_some_and(|idx| idx.grep_bloom_row(hash_hex).is_some())
+        .is_some_and(|idx| idx.view().grep_bloom_row(hash_hex).is_some())
 }
 
 fn row_count(store: &Store) -> usize {
@@ -213,7 +214,7 @@ fn raw_row(store: &Store, key: &str) -> Option<Vec<u8>> {
     store
         .index_db
         .as_ref()
-        .and_then(|idx| idx.grep_bloom_row(key))
+        .and_then(|idx| idx.view().grep_bloom_row(key))
         .map(|row| row.to_vec())
 }
 
@@ -254,7 +255,10 @@ fn v1_rows_are_absent_on_read_so_grep_scans_every_file() {
     let absent = basemind::index::grep_bloom::Needle::compile("zzz_absent_literal").expect("needle");
     let present = basemind::index::grep_bloom::Needle::compile("alpha_function_name").expect("needle");
     let idx = store.index_db.clone().expect("index");
-    let verdicts = |needle| idx.grep_skip_verdicts(root, std::slice::from_ref(&entry), needle);
+    let verdicts = |needle| {
+        idx.view()
+            .grep_skip_verdicts(root, std::slice::from_ref(&entry), needle)
+    };
     assert_eq!(
         verdicts(&absent),
         vec![true],
@@ -289,7 +293,7 @@ fn the_next_incremental_scan_sweeps_v1_rows_and_rebuilds_content_keyed_ones() {
     let entry = grep_entry(&store, root, "a.rs");
     let absent = basemind::index::grep_bloom::Needle::compile("zzz_absent_literal").expect("needle");
     let idx = store.index_db.clone().expect("index");
-    assert_eq!(idx.grep_skip_verdicts(root, &[entry], &absent), vec![true]);
+    assert_eq!(idx.view().grep_skip_verdicts(root, &[entry], &absent), vec![true]);
 }
 
 #[test]
@@ -409,7 +413,7 @@ fn a_freshly_written_file_is_never_skipped_until_a_later_scan_restamps_it() {
     let verdict = |store: &Store| {
         let entry = grep_entry(store, root, "a.rs");
         let idx = store.index_db.clone().expect("index");
-        idx.grep_skip_verdicts(root, &[entry], &absent)[0]
+        idx.view().grep_skip_verdicts(root, &[entry], &absent)[0]
     };
 
     // The first scan paid for the grammar bootstrap; an incremental pass on the open store is

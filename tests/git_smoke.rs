@@ -12,6 +12,7 @@ use std::process::Command;
 
 use basemind::config::ConfigV1;
 use basemind::git::Repo;
+use basemind::index::view::IndexView;
 use basemind::scanner::{ScanSource, scan};
 use basemind::store::{Store, VIEW_STAGED, VIEW_WORKING};
 use tempfile::TempDir;
@@ -401,6 +402,7 @@ fn staged_and_rev_scans_do_not_sweep_grep_bloom_rows() {
             .index_db
             .as_ref()
             .expect("index")
+            .view()
             .grep_bloom_row("orphan")
             .is_some()
     };

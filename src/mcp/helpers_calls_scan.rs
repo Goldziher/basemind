@@ -143,12 +143,10 @@ pub(crate) fn calls_in_file_fjall(
     path: &crate::path::RelPath,
 ) -> Result<Vec<CallRef>, McpError> {
     let prefix = crate::index::keys::calls_by_path_prefix(path);
-    let upper: Bound<Vec<u8>> = match super::cursor::prefix_upper_bound(&prefix) {
-        Some(b) => Bound::Excluded(b),
-        None => Bound::Unbounded,
-    };
+    let upper = super::cursor::prefix_upper_bound(&prefix);
+    let upper = upper.as_deref().map_or(Bound::Unbounded, Bound::Excluded);
     let mut out = Vec::new();
-    for guard in idx.range(Part::CallsByPath, Bound::Included(prefix), upper) {
+    for guard in idx.range(Part::CallsByPath, Bound::Included(&prefix), upper) {
         let (_, v) = guard.map_err(|e| McpError::internal_error(format!("index iter: {e}"), None))?;
         let call: crate::extract::Call = match rmp_serde::from_slice(&v) {
             Ok(c) => c,

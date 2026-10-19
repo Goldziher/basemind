@@ -429,6 +429,7 @@ fn extract_line(source: &str, line_starts: &[usize], line_idx: usize) -> String 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::index::view::IndexView;
 
     #[test]
     fn packs_and_unpacks_a_file_and_hit_ordinal() {
@@ -795,7 +796,7 @@ mod tests {
             let re = Regex::new(pattern).expect("regex");
             let literal = (regex::escape(pattern) == pattern).then(|| Finder::new(pattern.as_bytes()).into_owned());
             let skip = crate::index::grep_bloom::Needle::compile(pattern)
-                .map(|needle| db.grep_skip_verdicts(dir.path(), &entries, &needle));
+                .map(|needle| db.view().grep_skip_verdicts(dir.path(), &entries, &needle));
             skipped_somewhere |= skip.as_ref().is_some_and(|s| s.iter().any(|&x| x));
             for skip_hits in [0u32, 2] {
                 let filtered = count_all(dir.path(), &refs, skip.as_deref(), &re, literal.as_ref(), skip_hits);
@@ -823,7 +824,7 @@ mod tests {
 
         // The stale and new files must stay candidates for the token they now hold.
         let needle = crate::index::grep_bloom::Needle::compile("unique_token_qq").expect("needle");
-        let skip = db.grep_skip_verdicts(dir.path(), &entries, &needle);
+        let skip = db.view().grep_skip_verdicts(dir.path(), &entries, &needle);
         for (rel, skipped) in paths.iter().zip(&skip) {
             if ["d3/f3.txt", "d4/f4.txt", "d0/new.txt", "d2/unique.txt"].contains(&rel.to_string().as_str()) {
                 assert!(!skipped, "{rel} holds the token and must not be skipped");
@@ -851,7 +852,8 @@ mod tests {
         };
         let needle = crate::index::grep_bloom::Needle::compile("absent_literal").expect("needle");
         assert_eq!(
-            db.grep_skip_verdicts(dir.path(), std::slice::from_ref(&entry), &needle),
+            db.view()
+                .grep_skip_verdicts(dir.path(), std::slice::from_ref(&entry), &needle),
             vec![false],
             "no row"
         );
@@ -859,13 +861,15 @@ mod tests {
         writer.upsert_grep_bloom(&entry.hash_hex, vec![99; 40]);
         writer.commit().expect("commit");
         assert_eq!(
-            db.grep_skip_verdicts(dir.path(), std::slice::from_ref(&entry), &needle),
+            db.view()
+                .grep_skip_verdicts(dir.path(), std::slice::from_ref(&entry), &needle),
             vec![false],
             "foreign row"
         );
         scan_blooms(&db, dir.path(), std::slice::from_ref(&rel));
         assert_eq!(
-            db.grep_skip_verdicts(dir.path(), std::slice::from_ref(&entry), &needle),
+            db.view()
+                .grep_skip_verdicts(dir.path(), std::slice::from_ref(&entry), &needle),
             vec![true],
             "current row"
         );
@@ -873,7 +877,7 @@ mod tests {
         writer.remove_file(&rel).expect("remove");
         writer.commit().expect("commit");
         assert!(
-            db.grep_bloom_row(&entry.hash_hex).is_some(),
+            db.view().grep_bloom_row(&entry.hash_hex).is_some(),
             "the row is shared by content, so removing one path keeps it"
         );
     }

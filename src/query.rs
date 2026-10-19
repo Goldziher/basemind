@@ -184,6 +184,7 @@ fn definition_of_from_blob(store: &Store, use_path: &RelPath, use_start: u32) ->
 mod tests {
     use super::*;
     use crate::config::ConfigV1;
+    use crate::index::view::IndexView;
     use crate::scanner::{ScanSource, scan};
     use crate::store::{Store, VIEW_WORKING};
 
@@ -228,6 +229,7 @@ mod tests {
             .index_db
             .as_ref()
             .expect("index open")
+            .view()
             .references_to(&path, def_start);
         assert!(!via_blob.is_empty(), "blob fallback must find the intra uses");
         assert_eq!(
