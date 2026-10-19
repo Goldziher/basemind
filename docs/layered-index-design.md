@@ -1,6 +1,6 @@
 # Layered index: design and implementation plan
 
-- **Status:** Design accepted, not implemented
+- **Status:** A2 and A3 implemented; A4–A8 not started
 - **Date:** 2026-10-18
 - **Decision record:** [ADR-0016](adr/0016-shared-base-index-and-worktree-overlays.md)
 - **Tracking issue:** #87
@@ -10,6 +10,15 @@ This document is the executable plan behind ADR-0016. The ADR records *what* was
 this file records *how* — the on-disk layout, the data model, the exact read-merge rules per keyspace,
 the write path, the correctness gate, and the file-by-file phase breakdown. Symbol names and paths are
 as of 0.30.0.
+
+> **Superseded in part.** The ADR-0016 *Specification* section is authoritative wherever it and this
+> file disagree. It corrects this plan against the code and records the owner decisions taken since:
+> A2 migrates by `ROW_VERSION` 2 with **no** `INDEX_PARTITION_REVISION` bump; `IndexView` returns
+> boxed iterators over a backend-neutral `IndexBytes`, not visitors over `Vec<u8>`; the base is read
+> through a pluggable `BaseReader` (Fjall or an immutable sorted-run format, chosen by a prototype
+> before A4); the base is built by scanning an exported tree as a working tree (a `Rev` scan has no
+> resolve pass); and `code_chunks` is keyed `(scope, path)`, so A7 must re-key it too. The sections
+> below that these touch carry a pointer to the ADR.
 
 ## 1. Problem
 
@@ -189,6 +198,9 @@ it holds. This keeps `upsert_file`'s read-before-write and per-file commit seman
 
 ## 8. `IndexView` trait (A3)
 
+> Implemented differently; see ADR-0016 §A3 and `src/index/view.rs`. The sketch below is the
+> original proposal, kept for the rationale.
+
 The read path today takes a concrete `&IndexDb` (or a cloned handle) and calls Fjall directly. A3
 introduces a trait so the layered implementation can slot in with **no behaviour change**:
 
@@ -251,7 +263,7 @@ Each phase is its own commit, lands behind `[index] layered = false`, and keeps 
   the live-file guard uses the **indexed** stamp from `FileEntry` instead of the row's own.
 - `src/index/writer.rs`: `upsert_grep_bloom(hash, row)`; `remove_file` stops deleting the now-shared row.
 - `src/index/mod.rs`: `sweep_grep_bloom(&live_hashes)` (drop rows no live file references), run in the
-  full-scan purge; bump `INDEX_PARTITION_REVISION` 6 → 7.
+  full-scan purge. Migration is by `ROW_VERSION` 2 with no partition-revision bump (ADR-0016 §A2).
 - `src/scanner_index_batch.rs`: stage by hash; `restamp_grep_bloom` / `backfill_grep_bloom` key on hash.
 - `src/mcp/l1_cache.rs`: add `mtime_ns` to `FileMeta`.
 - `src/mcp/helpers_grep.rs`, `src/mcp/index_route.rs`, `src/mcp/index_read.rs`,
@@ -268,7 +280,8 @@ Each phase is its own commit, lands behind `[index] layered = false`, and keeps 
 
 - `src/store_layout.rs`: `repos/<group>/base/gen-<n>/` and `repos/<group>/overlays/<ws_key>/` path
   helpers + `base.json` / `overlay.json` sidecars.
-- Base builder: `ScanSource::Rev` over `origin/HEAD` into `gen-0/`, published read-only.
+- Base builder: an exported tree of `origin/HEAD` scanned as a working tree into `gen-0/`, published
+  read-only, in the storage format the A4 prototype selects (ADR-0016 §A4).
 - Migration: a workspace whose only index is the legacy standalone becomes base + overlay on first
   layered open; `store_seed.rs` stays for now.
 
@@ -288,7 +301,7 @@ Each phase is its own commit, lands behind `[index] layered = false`, and keeps 
 ### A7 — shared Lance tables
 
 - `documents` / `doc_links` re-keyed to `(scope, content_hash)`; queries over-fetch and filter by live
-  hashes. `code_chunks` is already content-addressed.
+  hashes. `code_chunks` is keyed `(scope, path)` and needs the same re-key (ADR-0016 §A7).
 - Documented deviation: top-k overlap with a per-worktree table stays ≥0.95.
 
 ### A8 — layered by default
