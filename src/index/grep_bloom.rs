@@ -20,9 +20,10 @@ use regex_syntax::hir::literal::{ExtractKind, Extractor};
 use super::IndexDb;
 use crate::path::RelPath;
 
-/// Row layout revision (first byte). A row with any other value is treated as absent, so a future
-/// layout change needs no index wipe: old rows read as candidates until the file is next scanned.
-const ROW_VERSION: u8 = 1;
+/// Row layout revision (first byte). A row with any other value is treated as absent, so a layout
+/// change needs no index wipe: old rows read as candidates until a scan sweeps and rebuilds them.
+/// 1 was the path-keyed row carrying a `(size, mtime_ns)` stamp; 2 is the content-hash-keyed row.
+const ROW_VERSION: u8 = 2;
 /// `version(1)`, then the bit array.
 const HEADER_BYTES: usize = 1;
 /// Bloom bytes per source byte is `1 / BYTES_DIVISOR` (ADR-0012 sizing: 1/8 keeps the candidate set
@@ -179,14 +180,16 @@ impl IndexDb {
             .is_some_and(|row| parse_row(&row).is_some())
     }
 
-    /// Delete every row whose hash is not in `live`, returning how many were dropped. Rows are shared
-    /// by every path holding the content, so only a hash no indexed file references may go.
+    /// Delete every row whose hash is not in `live` or whose layout is not [`ROW_VERSION`], returning
+    /// how many were dropped. Rows are shared by every path holding the content, so only a hash no
+    /// indexed file references may go. Path-keyed rows from before the content-hash re-key are never
+    /// in `live`, and older-version rows are unreadable, so both leave here.
     pub fn sweep_grep_bloom(&self, live: &ahash::AHashSet<&str>) -> Result<usize, super::IndexError> {
         let mut writer = self.writer();
         let mut dropped = 0;
         for guard in self.grep_bloom.iter() {
-            let (key, _) = guard.into_inner()?;
-            if std::str::from_utf8(&key).is_ok_and(|hash| live.contains(hash)) {
+            let (key, row) = guard.into_inner()?;
+            if parse_row(&row).is_some() && std::str::from_utf8(&key).is_ok_and(|hash| live.contains(hash)) {
                 continue;
             }
             writer.remove_grep_bloom(&key);

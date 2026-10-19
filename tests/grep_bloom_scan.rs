@@ -153,3 +153,111 @@ fn rescan_backfills_a_row_an_older_index_lacks() {
     let store = scan(root);
     assert!(has_row(&store, &hash), "rescan backfills the row");
 }
+
+/// A row exactly as the path-keyed layout (`ROW_VERSION` 1) wrote it:
+/// `version(1) | size(8) | mtime_ns(8)`, then an all-zero bit array. All-zero bits reject every
+/// needle, so a reader that trusted this row would wrongly skip the file.
+fn v1_row() -> Vec<u8> {
+    let mut row = vec![0u8; 17 + 64];
+    row[0] = 1;
+    row
+}
+
+fn put_raw(store: &Store, key: &str, row: Vec<u8>) {
+    let idx = store.index_db.as_ref().expect("index");
+    let mut writer = idx.writer();
+    writer.upsert_grep_bloom(key, row);
+    writer.commit().expect("commit");
+}
+
+fn raw_row(store: &Store, key: &str) -> Option<Vec<u8>> {
+    store
+        .index_db
+        .as_ref()
+        .and_then(|idx| idx.grep_bloom_row(key))
+        .map(|row| row.to_vec())
+}
+
+fn grep_entry(store: &Store, root: &Path, rel: &str) -> basemind::index::grep_bloom::GrepEntry {
+    let entry = store.lookup(RelPath::from(rel)).expect("indexed file");
+    basemind::index::grep_bloom::GrepEntry {
+        rel: RelPath::from(rel),
+        hash_hex: hash_of(root, rel),
+        size_bytes: entry.size_bytes,
+        mtime_ns: entry.mtime,
+    }
+}
+
+/// Replace the current row set with what an index built before the content-hash re-key holds: a
+/// version-1 row under the path, and (as an A2 build wrote) a version-1 row under the hash.
+fn downgrade_to_v1(store: &Store, rel: &str, hash: &str) {
+    store
+        .index_db
+        .as_ref()
+        .expect("index")
+        .drop_grep_bloom_row_for_test(hash);
+    put_raw(store, rel, v1_row());
+    put_raw(store, hash, v1_row());
+    assert_eq!(raw_row(store, rel).expect("path row")[0], 1, "fixture writes a v1 row");
+    assert_eq!(raw_row(store, hash).expect("hash row")[0], 1, "fixture writes a v1 row");
+}
+
+#[test]
+fn v1_rows_are_absent_on_read_so_grep_scans_every_file() {
+    basemind::store::init_isolated_cache();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    std::fs::write(root.join("a.rs"), "pub fn alpha_function_name() -> u32 { 1 }\n").unwrap();
+    let hash = hash_of(root, "a.rs");
+    let store = scan(root);
+    let entry = grep_entry(&store, root, "a.rs");
+
+    let absent = basemind::index::grep_bloom::Needle::compile("zzz_absent_literal").expect("needle");
+    let present = basemind::index::grep_bloom::Needle::compile("alpha_function_name").expect("needle");
+    let idx = store.index_db.clone().expect("index");
+    let verdicts = |needle| idx.grep_skip_verdicts(root, std::slice::from_ref(&entry), needle);
+    assert_eq!(
+        verdicts(&absent),
+        vec![true],
+        "a current row skips a file lacking the literal"
+    );
+
+    downgrade_to_v1(&store, "a.rs", &hash);
+    assert_eq!(
+        verdicts(&absent),
+        vec![false],
+        "a v1 row (which rejects everything) must not skip"
+    );
+    assert_eq!(verdicts(&present), vec![false]);
+}
+
+#[test]
+fn the_next_incremental_scan_sweeps_v1_rows_and_rebuilds_content_keyed_ones() {
+    basemind::store::init_isolated_cache();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    std::fs::write(root.join("a.rs"), "pub fn alpha_function_name() -> u32 { 1 }\n").unwrap();
+    let hash = hash_of(root, "a.rs");
+    let store = scan(root);
+    downgrade_to_v1(&store, "a.rs", &hash);
+    drop(store);
+
+    let store = scan(root);
+    assert!(raw_row(&store, "a.rs").is_none(), "the path-keyed row is swept");
+    let rebuilt = raw_row(&store, &hash).expect("rebuilt under the content hash");
+    assert_eq!(rebuilt[0], 2, "the v1 row under the hash was replaced by a v2 row");
+    assert_eq!(row_count(&store), 1);
+    let entry = grep_entry(&store, root, "a.rs");
+    let absent = basemind::index::grep_bloom::Needle::compile("zzz_absent_literal").expect("needle");
+    let idx = store.index_db.clone().expect("index");
+    assert_eq!(idx.grep_skip_verdicts(root, &[entry], &absent), vec![true]);
+}
+
+#[test]
+fn migrating_grep_bloom_rows_does_not_change_the_index_schema_version() {
+    assert_eq!(
+        basemind::index::INDEX_SCHEMA_VER,
+        basemind::version::RELEASE_MINOR as u32 + 6,
+        "pre-A2 value: a schema bump would force every user to re-index"
+    );
+}
