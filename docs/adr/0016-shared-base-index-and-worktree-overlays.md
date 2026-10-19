@@ -24,9 +24,12 @@ and a per-worktree **overlay**:
   tree, so it never contains uncommitted edits. The tree is exported to a scratch directory and scanned
   like a working tree, because the rev scan alone does not run the resolve pass. Generations advance by
   a CoW clone plus `git diff-tree C_n..C_n+1` applied through the incremental writer when files have
-  drifted by 2% or more, or daily; at most three are live, each published once and never written again,
-  so the daemon keeps one handle and one block cache per group (fjall admits one process per directory,
-  so other processes reach the base through the daemon).
+  drifted by 2% or more, or daily; at most three are live, each published once and never logically
+  rewritten (a Fjall generation still replays its journal and compacts when opened, see *Lifecycle*).
+  The base is read through a `BaseReader`, so its storage is pluggable (*Base storage*). With a Fjall
+  base the daemon keeps one handle and one block cache per group (fjall admits one process per
+  directory, so other processes reach the base through the daemon); an immutable mmapped base can be
+  opened by every process.
 - **Overlay** — `delta.msgpack` records each path as added, modified or deleted relative to the base
   manifest by content hash; `overlay.fjall` holds rows only for changed paths and re-stitched importers.
   Shadow sets `S_path` (delta paths), `S_refs` (`S_path` plus re-stitched importers) and `D_hash` (base
@@ -48,17 +51,17 @@ and a per-worktree **overlay**:
 
 ## Specification
 
-Everything below is normative for A2–A8. Paths and symbols are as of 0.30.0 (`bd1f0a5b`). Where the code
-contradicts the text of issue #87 or the summary above, the code wins and the correction is listed first.
+Everything below is normative for A2–A8. Paths and symbols are as of 0.30.0 (`bd1f0a5b`), plus A2 (`efe41b76`)
+and A3 (`26be3d56`) on this branch. Where the code contradicts the text of issue #87 or the summary above, the code wins and the correction is listed first.
 
 ### Corrections to the issue text
 
 | Claim in #87 | What the code does | Consequence |
 |---|---|---|
 | "Rev scan builds the base" (`ScanSource::Rev`) | `scan_with_cancel` runs the resolve pass only for `ScanSource::WorkingTree` (`scanner.rs`, `if matches!(source, ScanSource::WorkingTree)`), and the resolver reads the filesystem (`intel/resolve_pass.rs` `std::fs::read`, `intel/resolver.rs` `root.join`, `canonicalize`). A rev scan therefore writes no `refs_by_*`, `import_targets` or `importers_by_probe` rows, and the rev branch of `process_file` writes no grep bloom either. | The base builder exports the committed tree to a private scratch directory and runs a normal working-tree scan on it (A4). A virtual git-tree filesystem for the resolver was rejected: it duplicates the resolver's I/O surface for a transient 1-3 GB export. |
-| "Published read-only so the daemon keeps one handle" | Fjall's directory lock is exclusive even for a read-only open (`Store::open_read_only_no_index`, `mcp/index_route.rs` module doc). Read-only is a logical property, not something the OS enforces on a shared fjall. | One process per machine can hold a given base generation. The daemon is that holder; every other process reaches the base through `IndexRoute::Host` / `Daemon` or degrades to `InRam`, exactly as a second `serve` does today (A4). |
+| "Published read-only so the daemon keeps one handle" | Fjall's directory lock is exclusive even for a read-only open (`Store::open_read_only_no_index`, `mcp/index_route.rs` module doc). Read-only is a logical property, not something the OS enforces on a shared fjall. | For a Fjall base, one process per machine can hold a given generation. The daemon is that holder; every other process reaches the base through `IndexRoute::Host` / `Daemon` or degrades to `InRam`, exactly as a second `serve` does today (A4). Conditional on the base-storage prototype: an mmapped sorted-run base has no such lock (*Base storage*). |
 | "`code_chunks` is already content-addressed" | `chunk_id` is `<hash_hex>:<ordinal>` (`chunk.rs`) and the sidecar blobs are content-addressed, but the Lance rows are keyed `(scope, path)` (`lance/mod.rs` `replace_code_chunks`, `delete_code_chunks`) and `scope` is the normalised `origin` URL (`git/remote.rs` `scope_key`), identical for every worktree of a clone. | Sharing a Lance table needs a new key for all three tables, not just `documents`/`doc_links` (A7). |
-| A3 "shipped" (progress comment) | Only the ADR shipped. `src/index/view.rs` does not exist; `IndexDb` keyspaces are `pub(crate)` and read directly (`mcp/helpers_calls_scan.rs` `calls_by_path`, `mcp/helpers_calls.rs`, `search/bm25.rs` `code_bm25_postings`, `intel/stage_budget.rs`). | A3 is still a code phase and a prerequisite of A5. |
+| A3 "shipped" (progress comment) | When the ADR was written only the ADR had shipped: `src/index/view.rs` did not exist and `IndexDb` keyspaces were read directly. A2 landed in `efe41b76` and A3 in `26be3d56`. | A3 is a prerequisite of A5 and is done, but `view.rs` still returns `fjall::Slice` and its named accessors are required methods (A3 follow-up below). |
 | `repo_group_key` hashes "the git common dir" | It hashes the canonical main worktree root, the parent of the common dir (`store_layout.rs` `repo_group_key`, `git/mod.rs` `main_worktree_root`). Equivalent for a normal clone; a bare clone or a moved main checkout re-keys the group. | Keep the function; record the resolved common dir in `group.json` so a re-key is diagnosable (A4). |
 | BM25 `meta` is exact as "base + overlay - shadowed" | True, but `upsert_bm25_file` / `remove_bm25_file` delete every posting of the path's `chunk_id`s (`index/writer.rs` `stage_bm25_deletes_for`), and `chunk_id` embeds the content hash. Two paths with identical bytes share their postings, so removing or editing one of them deletes the postings the other still needs. | Pre-existing defect in the standalone index, not specific to layering, and it breaks the A5 equivalence gate on the "duplicate content" scenario. A5.0 fixes it first (below). |
 | `main_root_of` / `repo_group_key` cover a workspace | A workspace rooted at a *subdirectory* of a repository also gets a group key (`Repo::discover` walks up), but a base built from the whole tree would not match a subdirectory scan. | Layering applies only when the canonical root equals the git workdir (the `store_seed::main_root_of` predicate); otherwise the workspace stays standalone (A4). |
@@ -78,13 +81,16 @@ contradicts the text of issue #87 or the summary above, the code wins and the co
 The plan in #87 stands; this fixes the details the plan left open.
 
 - **Key and row.** Key = the 64-character lowercase hex blake3 (`hashing::hex`), so two paths with identical
-  bytes share one row. Row = `version(1) | bits`; `ROW_VERSION` stays 1 because the partition-revision bump
-  (below) removes every old row. `build_row(bytes)`; `GrepEntry { rel, hash_hex, size_bytes, mtime_ns }`
+  bytes share one row. Row = `version(1) | bits`; `ROW_VERSION` goes 1 to 2, so every old row (path-keyed,
+  17-byte header) parses as absent and reads as a candidate. `build_row(bytes)`; `GrepEntry { rel, hash_hex, size_bytes, mtime_ns }`
   (`index/grep_bloom.rs`, serde, because it crosses the daemon wire).
 - **Live-file guard.** `grep_skip_verdicts(root, &[GrepEntry], needle)` skips a file only if the row for
   `entry.hash_hex` rejects the needle *and* `stat(root/rel)` equals the **indexed** `(size_bytes, mtime_ns)` of
   the entry, taken from `FileEntry` (`store.rs`) through `FileMeta` (`mcp/l1_cache.rs`, gains `mtime_ns`). A file
-  whose indexed mtime is 0 (git sources) never equals a live stat and stays a candidate.
+  whose indexed mtime is 0 (git sources) never equals a live stat and stays a candidate: `mtime_ns == 0` is never skipped.
+  A file whose mtime is within 2 s of the scan's stat time is untrusted for skipping (the same-tick edit hole: an edit
+  inside the filesystem's timestamp granularity can leave `(size, mtime)` unchanged), so it stays a candidate until a
+  later scan restamps it.
 - **Stamp refresh (not in the plan).** The stamp used to live in the row and `restamp_grep_bloom` refreshed it
   when a file was touched with unchanged content. The stamp now lives in the `FileEntry`, and
   `process_file` returned `Unchanged` without upserting one, so a touched file would have stayed a permanent
@@ -96,17 +102,22 @@ The plan in #87 stands; this fixes the details the plan left open.
 - **Sweep.** `IndexDb::sweep_grep_bloom(&live)` deletes every row whose hash is not in `live`. `scanner::scan_with_cancel`
   calls it right after the stale-entry purge with `live` = hashes of `store.index.files`, so a pass that was
   cancelled or aborted (which returns before the purge) never sweeps. Edited and deleted contents leave their
-  row behind until that sweep, which is the only deletion path.
-- **Schema.** `INDEX_PARTITION_REVISION` 6 to 7 (`index/mod.rs`). Cost: every user re-indexes once (a 17-33 min
-  scan on armis) because the bump wipes the whole fjall. A cheaper option exists (ROW_VERSION 2, no bump, the
-  sweep deletes the path-keyed rows) and has precedent in the keyspace's own doc comment (added "without a
-  schema bump"); the bump is kept because the plan asks for it and it removes any mixed-format window.
+  row behind until that sweep, which is the only deletion path for a full scan. The sweep is key-only (it never decodes a
+  row) and runs only for `WorkingTree` scans, because a rev scan writes no bloom rows and would sweep them all. The
+  watcher-driven `scan_paths` also deletes a content row when its hash leaves the manifest (no other path holds it), so
+  incremental edits do not wait for the next full pass.
+- **Schema.** `INDEX_PARTITION_REVISION` stays 6 and `INDEX_SCHEMA_VER` is unchanged, so no user re-indexes. Old
+  rows are migrated by `ROW_VERSION` alone: a row of another version is absent on read (the file is a candidate and
+  is scanned), a one-time version sweep, guarded by a `meta` marker so it runs once per index, deletes path-keyed and
+  other-version rows, and an incremental scan rebuilds the content-keyed rows (backfill reads each unchanged file once).
 - **Wire.** `IndexReadQuery::GrepBloom { pattern, entries }` (`comms/index_read_proto.rs`). A client and daemon of
   different builds fail to decode, and `IndexRoute::grep_skip` already degrades that to "sweep every file".
 - **Layered note.** Rows are content-addressed and never shadowed: a layered read does `overlay.get(h)` then
   `base.get(h)`; a stale base row for a dead hash is harmless because nothing asks for it.
 
 ### A3: `IndexView` (standalone only)
+
+Shipped in `26be3d56`; the follow-ups below are required before A4 and are being applied on this branch.
 
 - `src/index/view.rs`: `enum Part` naming the 16 layered keyspaces (below), and
   `trait IndexView: Send + Sync { get(Part, &[u8]); prefix(Part, &[u8]); range(Part, Bound, Bound); iter(Part); }`
@@ -118,6 +129,18 @@ The plan in #87 stands; this fixes the details the plan left open.
   `query.rs`, `mcp/helpers_calls*.rs`, `mcp/helpers_impls.rs`, `search/{bm25,exact}.rs` and the resolve pass
   (`intel/resolve_pass.rs`, which reads `import_targets`, `importers_by_probe`, `refs_*`) take `&dyn IndexView`.
   Writes keep going through `IndexWriter` on the concrete `IndexDb`.
+- **Backend-neutral values (follow-up, required by A3 and A4).** `KvResult`, `get` and `grep_bloom_row` in
+  `src/index/view.rs` return `fjall::Slice`, and `kv` takes a `fjall::Guard`. A follow-up commit on this branch replaces
+  them with a backend-neutral value type (cheap to clone, derefs to `[u8]`), so that no `fjall` type appears in the
+  trait and a sorted-run `BaseReader` can implement it without copying into Fjall types. Only `StandaloneView` and the
+  Fjall base reader convert at their edge.
+- **Named accessors are default methods (follow-up).** Today `references_to`, `definition_of`, `import_targets_of`,
+  `importers_probing`, `is_probed`, `import_probes_complete`, `symbols_by_name_lookup`, `bm25_stats` and
+  `symbols_index_is_empty` are required methods that `StandaloneView` forwards to `IndexDb`. They become default methods
+  written over the generic `get` / `prefix` / `range` layer (the `Meta` scalars through `get(Part::Meta, ..)`), so a
+  layered view inherits them and cannot drift from the standalone decoding. `StandaloneView` may override a default only
+  for speed and the equivalence gate proves the override equal. `callee_keys_matching` / `trait_keys_matching` stay
+  required: a layered view must merge them (A5, *NameDict*).
 - The existing suite is the gate. Perf discipline applies: the dyn call is per iterator, not per row, but a
   p95 regression above 3% on `references` / `callers` (benches in `benches/`) switches `IndexView` to an enum
   with the two variants instead of a trait object.
@@ -127,10 +150,37 @@ The plan in #87 stands; this fixes the details the plan left open.
 **Config.** New `[index]` table in `config/v1.rs` (`IndexConfig`, `deny_unknown_fields`, in `ConfigV1` after
 `cache`): `layered: bool`, default `false` until A8. Regenerate `schema/` with the existing
 `config_schema` test. The env var `BASEMIND_INDEX_LAYERED=0|1` overrides the file (rollback lever, same pattern as
-`BASEMIND_NO_SEED`). The mode is resolved once per `Store::open`; the daemon applies a changed value when it next
+`BASEMIND_NO_SEED`). `max_group_bytes: u64` caps a group's `base/` plus `overlays/` (*Disk budget*). The mode is resolved once per `Store::open`; the daemon applies a changed value when it next
 opens the workspace. Layered applies to a workspace only when all hold: `layered` is true, the canonical root is the
 git workdir, `Repo::discover` succeeds, a base commit resolves, and no embedding lane is enabled until A7 has
-shipped (`documents.embed`, `code_search.embed`: their Lance rows are still keyed by worktree).
+shipped (`documents.embed`, `code_search.embed`: their Lance rows are still keyed by worktree). `documents.embed`
+defaults to `true` (`config/documents.rs` `default_embed`), `code_search.embed` to `false`, so out of the box layering
+is off until A7 and A4–A6 apply only to users who set `documents.embed = false`. The armis measurement for A4–A6 must
+run with embeds off, and A8 (layered by default) depends on A7.
+
+**Base storage (pluggable; prototype-first).** The base is read through a `BaseReader` behind `IndexView`; the overlay
+and every mutable store stay Fjall. `base.json` carries `storage = "fjall" | "sorted-run"` and a reader is chosen per
+generation from it. Owner decision: the base is prototype-first. An immutable mmapped sorted-run base, exported from
+a finished Fjall generation, is built and benchmarked before A4 is implemented, and A4 must not be locked to a Fjall
+base. Everything below that is Fjall-specific is marked *(Fjall option)* and is conditional on the prototype outcome:
+the `index.fjall/` layout, `IndexDb::open_code_only`, the quiesce and `RwLock<Arc<IndexDb>>` in *Advance*, the
+generation clone, the daemon-only access rationale, and open question 1 and the matching Consequences text about one
+process per base. A mmapped base can be opened by every process, which would mostly dissolve open question 1.
+
+*A4-prototype gate.* Export one armis base generation to a sorted-run file set and measure, against the Fjall
+generation, on the same machine, cold and warm:
+
+| Measure | Acceptance (to be fixed by the owner from the first run) |
+|---|---|
+| base size on disk | no larger than the Fjall generation |
+| build time (export from Fjall, and cold build) | recorded; export under 10 min |
+| `references` / `callers` p95 through the `BaseReader` | within the 3% / 10% budgets of A3 and the measurement plan |
+| open cost (time to first answer, RSS) | below Fjall open incl. journal replay |
+| multi-process open | N processes open one generation concurrently, no lock, each reads correctly |
+
+If sorted-run meets the gate it becomes the default storage and the *(Fjall option)* items are dropped from the
+spec; otherwise Fjall stays and the text applies as written. The `IndexView` and merge contract below are written
+against `BaseReader` and hold for both.
 
 **Layout.**
 
@@ -140,7 +190,7 @@ cache/repos/<group>/
   group.json                          {format, main_root, common_dir, created_unix}
   base.lock                           flock; serialises build / advance / retire / GC for the group
   base/
-    gen-<n>/{index.fjall/, index.msgpack, base.json}      published, never rewritten
+    gen-<n>/{index.fjall/ | index.run/, index.msgpack, base.json}   published (index.fjall/ is the Fjall option)
     .tmp-<pid>-<nanos>/               builder staging (incl. checkout/); swept after 1 h when unlocked
     .retired-<n>/                     renamed out of selection, deleted once fjall can be locked
     last-failure.json                 {error, unix}; a failed build is not retried for 10 min
@@ -185,8 +235,14 @@ the main worktree (`Repo::main_worktree_root`). basemind never fetches.
 3. Run `scanner::scan` with `ScanSource::WorkingTree` rooted at the checkout, `EmbedMode` off, into a private
    `Store` whose view dir is `.tmp-*/`; this runs the wholesale resolve pass and sets `import_probe_ver`.
 4. Normalise mtimes, rewrite `index.msgpack` atomically, flush every keyspace (the `rotate_memtable_and_wait`
-   loop in `IndexDb::open_inner`), close fjall, write `base.json` (tmp + rename inside `.tmp-*`), fsync the directory.
-5. `rename(.tmp-*, gen-<n>)` (atomic, same filesystem), then update `CURRENT` (tmp + rename, an advisory hint only).
+   loop in `IndexDb::open_inner`) and close fjall *(Fjall option)*. Closing makes the SSTs and the journal durable; the
+   builder then fsyncs every file under `.tmp-*`, so nothing published depends on page-cache state.
+5. Write `base.json` last: write `base.json.tmp`, fsync it, rename it to `base.json`, fsync `.tmp-*`.
+6. `rename(.tmp-*, gen-<n>)` (atomic, same filesystem), then fsync the parent `base/` directory so the rename is
+   durable, then update `CURRENT` (tmp + rename, an advisory hint only). Every fsync is `F_FULLFSYNC` on macOS
+   (plain `fsync` does not flush the drive cache there; `src/store.rs` uses `sync_all` only, so this is new).
+   A crash before the rename leaves a `.tmp-*`; after it, a complete generation. A generation without a parseable
+   `base.json` is never ready.
 
 Readers never trust `CURRENT`; they list `base/gen-*` and read `base.json`. Blobs written by an aborted build stay
 valid (content-addressed), so a restart re-runs mostly fjall writes. A disk-full or poisoned fjall (`IndexDb::is_poisoned`,
@@ -208,43 +264,93 @@ not a rescan, and the first base costs one CoW clone instead of 17-33 min.
 
 **Advance (new generation from an old one).** Under `base.lock`, for the newest ready generation `k` and target `m`:
 
-1. Quiesce `k`: if this process is the daemon it takes the write side of the group's `RwLock<Arc<IndexDb>>`,
-   drains, and drops its handle; otherwise it tries to open `k`'s fjall and aborts the advance on `Locked`. A live
-   fjall is never copied (the rule in the `store_seed.rs` module doc).
-2. Clone `gen-k` to `.tmp-*` and reopen the daemon handle immediately.
+1. *(Fjall option)* Quiesce `k`: if this process is the daemon it takes the write side of the group's
+   `RwLock<Arc<IndexDb>>`, drains, and drops its handle; otherwise it tries to open `k`'s fjall and aborts the advance
+   on `Locked`. A live fjall is never copied (the rule in the `store_seed.rs` module doc). Readers of the group stall
+   while the write side is held. The stall is bounded by a budget, `[index] advance_stall_ms` (default 10000), covering
+   the drain of in-flight queries, the CoW clone (O(files)) and the reopen of `k` (open cost, which includes
+   journal replay and the `rotate_memtable_and_wait` flush in `open_inner`, see *Lifecycle*). Exceeding it aborts the
+   advance, reopens `k`, and retries after a backoff; readers are never stalled past the budget. A sorted-run base needs
+   no quiesce: its files are immutable, so the clone is a hardlink or CoW copy and no reader is touched.
+2. Clone `gen-k` to `.tmp-*` and, for Fjall, reopen the daemon handle immediately.
 3. `Repo::diff_trees(C_k, C_m)` (new, gix tree diff; a rename is a delete plus an add) filtered through `Filters`.
 4. Export only the added/modified blobs plus the unchanged files the resolve pass probes (A1's `probed_only`
    expansion) to `.tmp-*/checkout/`, apply with `scan_paths_with_observer` through the normal writer, run the
    incremental resolve pass, then steps 4-5 of the cold build.
 If the filesystem has no CoW and free space is below twice the generation size, the advance is skipped and retried
-later.
+later (*Disk budget*).
+
+**Lifecycle (what "published" means).** A published generation is never rewritten by basemind's logic, but a Fjall
+generation is not read-only on disk: opening it replays the journal and compacts, and `IndexDb::open_inner` calls
+`rotate_memtable_and_wait` on every keyspace (`src/index/mod.rs`; best-effort, a failure only logs). So every open of a
+Fjall generation can write, a CoW clone of it un-shares as compaction rewrites pages, and *Advance* must quiesce the
+daemon handle before cloning. The builder's flush loop leaves the journal empty, which bounds replay at the next open
+to nothing for a freshly published generation. A sorted-run generation has none of this and is read-only in fact.
 
 **Selection.** An overlay pins `base_generation`. On open without a usable pin (first open, pin retired,
 incompatible) choose among compatible ready generations the one with the smallest candidate count (`|K|` below,
 computed once per generation, at most three git status calls), ties to the newest. A pin is kept while its
 generation exists and is compatible.
 
-**Opening the base.** `IndexDb::open_code_only(gen_dir)`: like `open_tolerating_held_memory` with the memory
+**Opening the base.** *(Fjall option)* `IndexDb::open_code_only(gen_dir)`: like `open_tolerating_held_memory` with the memory
 store always detached, because the base must not take the group's exclusive `memory.fjall` lock. The daemon's
-`workspace_pool.rs` keeps one `Arc<BaseHandle>` per `(group, generation)`; every pooled workspace of the group shares
+`src/comms/workspace_pool.rs` keeps one `Arc<BaseHandle>` per `(group, generation)`; every pooled workspace of the group shares
 it and its block cache. A non-daemon process uses `open_index_with_retry`'s budget and then treats `Locked` like a
 lost lock today: it routes through `IndexRoute::Daemon` if a daemon answers, else `InRam`. Open question 1.
 
-**Migration of a workspace (standalone to layered), one-way, under the workspace `.lock`.**
+**Migration of a workspace (standalone to layered), one-way, under the workspace `.lock`.** One workspace at a time per
+machine (a machine-wide try-lock; the others stay standalone and retry on their next open).
 
-1. Resolve or build a base (above). 2. Compute the overlay (A5, "Building the overlay") from the live tree.
-2. Verify: for 200 random paths plus every path of `S_path`, compare the merged rows of each layered keyspace with
-   the standalone index (`IndexView` makes this one function); any difference aborts and keeps the standalone view.
-3. Write `overlay.json` with `state = "ready"`, set `index_mode = "layered"` and `repo_group` in `workspace.json`,
-   rename `views/working` to `views/working.migrated`, remove it on the next successful open (so a crash between the
-   two leaves a restorable index). `store_seed::seed_working_view` is skipped for layered-eligible workspaces.
+1. Check the free-space precondition (*Disk budget*); resolve or build a base (above).
+2. Compute the overlay (A5, "Building the overlay") from the live tree.
+3. Verify: for 200 random paths plus every path of `S_path`, compare the merged rows of each layered keyspace with
+   the standalone index (`IndexView` makes this one function); any difference aborts, removes the overlay, and keeps
+   the standalone view. Verify cannot see a defect the standalone index and its clone share, which is why the BM25
+   layout stamp below is checked first.
+4. Write `overlay.json` with `state = "ready"`, set `index_mode = "layered"` and `repo_group` in `workspace.json`,
+   rename `views/working` to `views/working.migrated`, and delete it right after verify and the commit above succeed
+   (a crash between the rename and the delete leaves a restorable index; the next open finishes the delete). The
+   transient cost is the old index kept until then, about +2.9 GB for the one workspace being migrated.
+   `store_seed::seed_working_view` is skipped for layered-eligible workspaces.
+
+**Damaged-index inheritance.** `vet_clone` (`store_seed.rs`) checks only `msgpack` and the Fjall `schema_ver`, so a
+standalone index that already lost postings for duplicate content (the defect A5.0 fixes) would be cloned into the
+base and verify would compare against the same defect. `meta` therefore gains a `bm25_layout` stamp (written by A5.0's
+fixed writer). `vet_clone` requires the stamp to equal the current layout; a missing or older stamp rejects the
+clone as a base source, and a standalone index with an old stamp does a one-time postings re-derive from the
+content-addressed chunk blobs on its next scan (the `by_path` rows hold the term list without frequencies, so they
+cannot rebuild the postings). Only then is it eligible as a clone source.
+
+**Disk budget.** A group holds up to 3 live generations, about 2.7 GB each, and compaction un-shares the CoW clones,
+so the realistic footprint is the sum, not one generation plus deltas. `[index] max_group_bytes` (default 12 GiB, to be
+measured) caps `base/` plus `overlays/`. Build, advance and migrate each check, under `base.lock`, that free space on
+the volume is at least the generation size plus the cap on the transient (export plus clone) and that the group stays
+under the cap, else they are skipped, a `last-failure.json`-style marker is written, and `doctor` says why. When disk is
+tight the newest generation replaces the oldest instead of the group keeping 3 (the oldest goes through the *Liveness*
+rules, so a pinned one is never deleted from under a reader).
 
 ### A5: overlay write path and the read merge
 
-**A5.0 (prerequisite, standalone fix).** BM25 postings are refcounted by content hash. `upsert_bm25_file` and
-`remove_bm25_file` take a `still_referenced: &dyn Fn(&str /*hash*/) -> bool`, supplied from
-`Store.index.files` hash counts, and skip the posting delete when another indexed path holds the hash. A regression
-test (two paths, identical content, remove one, the other's postings survive) is red on `main` today.
+**A5.0 (prerequisite, standalone fix).** Postings are shared by content hash, so a path-driven delete must not
+remove them while another path holds the hash. A refcount handed to `upsert_bm25_file` / `remove_bm25_file` from
+`Store.index.files` is rejected: refcounts computed while parallel `WorkerIndexBatch` staging runs race the serial apply
+pass (a count taken before a sibling path's batch lands is stale). Instead the writer's per-path delete of
+`code_bm25_postings` is dropped (the `code_bm25_by_path` forward rows of the path are still deleted) and a
+**hash-liveness sweep** next to `sweep_grep_bloom_rows` (`scanner.rs`) removes, after the stale-entry purge of a
+`WorkingTree` scan, every posting whose `chunk_id` hash is not in the hash set of `store.index.files`. This is
+symmetric with A2: both sweeps run from the post-pass state, are key-only for postings (the hash is parsed from the
+key, `keys::parse_code_bm25_posting_chunk_id`) and tolerate leftovers until the next full pass. The watcher's
+`scan_paths` deletes the postings of a hash that left the manifest, using the post-pass hash set. The same sweep is the
+layered `D_hash` rule applied to a standalone index.
+
+`N` semantics, pinned: `N` and `total_len` come from `code_bm25_by_path`, which has one row per `(path, chunk_id)`, so
+`N` counts path-chunks (two paths with identical content count twice). `df(term)` counts `code_bm25_postings` rows,
+which are keyed by `chunk_id`, so it counts unique chunks (once per distinct content). The asymmetry is intended: it is
+what a standalone index computes today and what the layered formula (below) reproduces. The equivalence test asserts it
+explicitly with a duplicate-content scenario (`N` twice, `df` once) in both modes.
+
+Red tests on `main` today: two paths, identical content, remove one, the other's postings survive. `meta` gets a
+`bm25_layout` stamp written by this fix; see *Damaged-index inheritance* (A4).
 
 **`delta.msgpack` (format 1, MessagePack named, `rmp_serde`, same atomic tmp + rename as `Store::flush`).**
 
@@ -301,13 +407,50 @@ writer as today (the daemon when running). The base is read-only to everyone but
 write lock only to commit the batch and swap the `Arc<Shadow>`, so a reader never sees a path in both layers or in
 neither. Fjall iterators are snapshots, so the lock is not held while iterating.
 
-**Merge rule per partition (every keyspace opened by `IndexDb::open_inner`).** Merged order is plain byte order of the
-raw key (both layers use the same encoders in `index/keys*.rs`); keys never collide across layers because a base row
-is dropped exactly when the overlay may hold a row for the same shadow unit.
+**Merge contract.** Merged order is plain byte order of the raw key (both layers use the same encoders in
+`index/keys*.rs`); keys never collide across layers because a base row is dropped exactly when the overlay may hold a
+row for the same shadow unit. Tombstones, snapshots and scalars are specified here once.
+
+- **Tombstones are masks, not rows.** Overlay `get` internally distinguishes *tombstone* (the key's shadow unit is
+  masked, so the answer is the overlay's, and absence there is final) from *absent* (not masked, so fall through to the
+  base). The mask is the shadow set of the table below; at an equal key the overlay shadows the base in `prefix` /
+  `range` / `iter`. No tombstone rows are stored.
+- **Inverted keyspaces use a per-path mask.** `calls_by_callee`, `symbols_by_name`, `refs_by_def`,
+  `implementations_by_trait`, `imports_by_module` and `importers_by_probe` hold the path inside the key, not as a
+  prefix, so a delete cannot be a range delete. Rejected: per-key tombstones derived by walking the `*_by_path`
+  forward keyspaces (it costs a base walk per deleted path and writes a row per key). Chosen: the shadowed-path set the
+  ADR already defines (`S_path`, and `S_refs` for the ref and probe keyspaces; a `Deleted` path is in `S_path` with no
+  overlay rows). Each base row of such a keyspace is dropped when the path parsed from its key by the keyspace's
+  `Part` parser (`keys::parse_symbol_by_name`, `parse_call_by_callee`, `parse_ref_by_def` use-path,
+  `parse_impl_by_trait`, `parse_import_by_module`, `parse_importer_by_probe`) is in the mask. Forward `*_by_path`
+  keyspaces use the cheaper prefix check.
+- **NameDict.** `callee_keys_matching` and `trait_keys_matching` return a key-ordered (`len`, then bytes), deduplicated
+  union of the base and overlay dictionaries, one per layer (the dictionary is a superset filter, `name_dict.rs`, so a name that survives only in a
+  shadowed base row yields a harmless empty scan). The merged iterator dedups equal names across layers and honours
+  `cursor_after` and `lower` on the merged order.
+- **Snapshot / pin handle.** A query takes one `ViewSnapshot { Arc<Shadow>, base reader pin, overlay iterator
+  snapshot }` and every `get` / `prefix` / `range` of that query goes through it, so the two layers and the mask are
+  read at one consistent point even if the writer commits or a rebase swaps the overlay mid-query. The pin keeps the
+  generation (and its overlay directory) alive until the snapshot drops (A6, *Liveness*).
+- **Meta scalars.** `code_bm25_n`, `code_bm25_total_len` and the import-probe completeness flag are precomputed
+  scalars, so they need a decision rather than a row merge. BM25: effective value = base scalar + overlay delta, where
+  the delta is `N_overlay - |base by_path rows of S_path|` (and the same for `total_len`) with the shadowed term computed
+  from the base `code_bm25_by_path` rows of `S_path` at open and on each `S_path` change. This is the same formula as
+  the BM25 text under *Totals, caps and cursors*; the overlay's own `code_bm25_n` / `code_bm25_total_len` hold
+  `N_overlay` / `total_len_overlay` (its own rows only), not corpus totals. `recompute_bm25_stats` on an overlay
+  therefore sweeps only overlay rows. `import_probes_complete`: base value (a generation is published only complete)
+  AND the overlay's own flag (cleared while the overlay's resolve pass is incomplete).
+- **Visited-row budget.** `scan_cap` caps hits, not rows examined (`mcp/helpers_calls_scan.rs`). A filtered scan whose
+  mask drops many base rows (a widely edited name) can examine far more rows than it yields, so the merged iterator
+  carries a visited-row budget (default `scan_cap * 64`); when it is hit the scan stops, returns what it has and sets the
+  existing partial flag (`total_is_partial`). The equivalence gate runs with the budget unbounded and a separate test
+  proves the partial flag.
+
+**Merge rule per partition (every keyspace opened by `IndexDb::open_inner`).**
 
 | Keyspace | Key (shadow unit) | Overlay holds | Base row dropped when | Notes |
 |---|---|---|---|---|
-| `meta` | string keys | `delta_seq`, overlay-only `code_bm25_n`, `code_bm25_total_len` | never merged as rows | `schema_ver`: both must equal `INDEX_SCHEMA_VER`. `import_probe_ver`: effective value is the base's (a generation is published only with probes complete); the overlay never writes it. BM25 stats below. |
+| `meta` | string keys | `delta_seq`, overlay-only `code_bm25_n`, `code_bm25_total_len` | never merged as rows | `schema_ver`: both must equal `INDEX_SCHEMA_VER`. `import_probe_ver`: base AND overlay flag (merge contract). `bm25_layout`: both must equal the current layout. BM25 stats: base plus overlay delta (merge contract). |
 | `symbols_by_path` | `rel` + start | rows of `Added`/`Modified` | `rel in S_path` | |
 | `symbols_by_name` | name + kind + `rel` + start | same | `rel in S_path` | read by `symbols_by_name_lookup`; ordered by name then kind then `rel`, so the merge interleaves layers inside one name |
 | `calls_by_path` | `rel` + start | same | `rel in S_path` | |
@@ -333,13 +476,21 @@ of the last hit as an exclusive lower bound: it is valid on both layers because 
 Cursors cross a rebase or generation change only if the merged sequence is identical, which is not guaranteed; a
 cursor older than the last overlay commit is served best-effort (the existing behaviour when a standalone index is
 rescanned between pages). BM25: `bm25_stats()` returns `N = N_base - |base by_path rows of S_path| + N_overlay` and
-`total_len` likewise, with the subtraction computed from the shadowed base rows at open and on each `S_path` change;
-`df(term)` is the count of merged postings rows.
+`total_len` likewise (the formula of the *Meta scalars* decision, with the subtraction computed from the shadowed base
+rows at open and on each `S_path` change); `df(term)` is the count of merged postings rows, so `N` is per path-chunk
+and `df` per unique chunk (A5.0).
+
+**Manifest memory.** The effective manifest does not clone the base `FileEntry`s per worktree (65k entries times the
+worktree count). The base manifest is shared as one `Arc<Index>` per `(group, generation)`, and each worktree holds a
+delta map (`delta.entries` plus the derived sets); `lookup` consults the delta first and then the shared base. Code
+that needs an owned `Store.index.files` map materialises it on demand, not at open.
 
 **Gate.** `tests/layered_equivalence.rs`: a proptest over three worktrees of one group with random edit scripts
 (modify, add, delete, rename, duplicate content, barrel re-export, `tsconfig` paths change, Python package
 `__init__`), each compared against a freshly built standalone index of the same tree for every `Part`, every named
-accessor, every MCP mode that reads the index, with totals, `has_more` and cursor round trips. Behind
+accessor, every MCP mode that reads the index, with totals, `has_more` and cursor round trips. The `callee_names` / `trait_names` dictionaries are exempt from
+byte-equality (each layer's dictionary may hold stale names, and a layered one is a union); the gate compares the
+query results they serve instead. Behind
 `[index] layered = false` until green on 1000 cases.
 
 ### A6: generations, rebase, promotion, GC
@@ -363,8 +514,16 @@ or `changed_bytes > 25%` of the base manifest's total `size_bytes`.
 
 **Liveness.** A generation is live iff it is the newest ready compatible one or an overlay in the group pins it. At
 most three are live; when publishing a fourth, the overlays pinned to the oldest live generation are invalidated (their
-overlay dir is deleted, they rebuild on next open). There is no eager rebase of idle worktrees. A non-live generation
-is renamed to `.retired-<n>` and removed when its fjall lock can be taken. An incompatible or half-published
+overlay dir is deleted, they rebuild on next open), except an overlay pinned by an active workspace handle or open in
+the daemon: that one is never deleted from under a reader. It is rebased onto a newer generation first (the swap of
+*Rebase and promotion*, so the old overlay serves reads until the new one is ready), or, if the rebase cannot run, the
+oldest generation and its overlay stay live past the limit until the handle drops (the pin is released when the last
+`ViewSnapshot` and handle for it are gone), and the next maintenance pass retires them. Readers meanwhile keep reading
+the pinned generation and overlay unchanged and see the answers of that older tree; `doctor` reports the overstay.
+Under disk pressure (*Disk budget*) the overstay is bounded by `max_group_bytes`; past it the workspace is promoted
+or its overlay is dropped and the open handle is reopened. There is no eager rebase of idle worktrees. A non-live generation
+is renamed to `.retired-<n>` and removed when its fjall lock can be taken *(Fjall option; a sorted-run generation is
+removed once no snapshot pins it)*. An incompatible or half-published
 generation (no `base.json`) is non-live. An overlay is live iff `workspaces/<wt_key>/workspace.json` names an existing
 root; orphans go with `reap_orphaned_workspaces_in`, which must also remove `repos/<group>/overlays/<wt_key>`
 (group read from the marker), and an overlay older than its workspace's `index_mode` flip is removed.
@@ -413,7 +572,7 @@ root; orphans go with `reap_orphaned_workspaces_in`, which must also remove `rep
 
 ### A8: layered by default
 
-Preconditions: A5 gate green on 1000 cases, A6 GC merged, A7 shipped, measurement targets met. Then: default
+Preconditions: A5 gate green on 1000 cases, A6 GC merged, A7 shipped (A8 depends on A7, because A4 disables layering whenever an embedding lane is on and `documents.embed` defaults to `true`), measurement targets met. Then: default
 `[index] layered = true`; delete `store_seed.rs`, `BASEMIND_NO_SEED`, `seed_working_view` and its callers in
 `Store::open_with_holder`, and the lance-staleness sentinel `seed:rebuild-lance`; migration (A4) runs for every
 standalone workspace on its next writer open.
@@ -426,9 +585,47 @@ the extra `workspace.json` fields are ignored, so an older binary simply cold-sc
 cost is one rescan and the stranded disk, reclaimable with `basemind cache clear`. No format here changes
 `INDEX_SCHEMA_VER` or `extract::SCHEMA_VER`, so a downgrade never wipes a base.
 
+### Observability
+
+- `doctor`, `status.json` and the stats surface expose `index_mode` (`standalone` | `layered`) and, when layered was
+  not chosen, the reason: `embed_on`, `subdirectory_root`, `no_base_commit`, `config_off`, `base_building`,
+  `disk_budget`, `incompatible_base`.
+- For a layered workspace: the pinned generation and its `base.json` summary, overlay size and `changed_files` /
+  `changed_bytes`, rebase and promote counts, base-build state (idle, building by whom, last failure), generations
+  overstaying the limit, and merge-read latency (p50 / p95 of the merged iterators per `Part`).
+- `tracing` events on every state transition: base build start / publish / abort, advance start / quiesce / abort,
+  generation retire, overlay commit / discard, rebase, promote, migration start / verify-fail / commit.
+
+### Acceptance criteria
+
+Each phase is done when its line holds; the fault-injection list below is the shared gate for A4 and A6.
+
+- **A2.** The grep-bloom, version-sweep and watcher-delete tests pass; the 20-pattern skip ratio does not worsen.
+- **A3.** The existing suite passes through `IndexView`; no `fjall` type appears in the trait; the named accessors are
+  default methods; `references` / `callers` p95 within the A3 budget.
+- **A4.** Prototype gate evaluated and storage chosen; a cold build, a racing second builder, a bootstrap-by-clone and a
+  migration each produce a generation / overlay whose merged rows equal a standalone index (A5 verify function);
+  publish is crash-safe at every step; disk preconditions skip rather than fail; all with embeds off.
+- **A5.** A5.0 fix and BM25 `N` / `df` equivalence pass; the equivalence gate is green on 1000 cases; overlay under 50 MB
+  for a 50-file diff; visited-row budget proven.
+- **A6.** Advance, rebase and promote are exercised end to end; no overlay or generation pinned by a live handle is
+  deleted; GC leaves exactly the live set and protects in-flight `.tmp-*`; `max_group_bytes` is honoured; the
+  fault-injection list passes.
+- **A7 / A8.** Per their sections and the measurement plan.
+
+Fault injection (each is a test that kills or fails the step and asserts the post-state and a clean re-run):
+
+- publish crash at each step: before `base.json.tmp`, after its fsync, after its rename, after `rename(.tmp-*, gen-n)`,
+  after the `base/` fsync, after `CURRENT`;
+- racing builders (two processes, one winner, loser takes over after a winner crash);
+- GC of `.tmp-*` and `.retired-*` (grace honoured, a locked or pinned one kept);
+- quiesce and advance (stall budget exceeded, `Locked`, crash mid-clone);
+- migration abort (crash between each step, restore from `views/working.migrated`) and migration-verify failure
+  (injected row difference keeps the standalone view and removes the overlay).
+
 ### Measurement plan
 
-On armis (89k files, 65k indexed), 1 worktree then 5, standalone vs layered, same machine, cold cache and warm:
+On armis (89k files, 65k indexed), 1 worktree then 5, standalone vs layered, same machine, cold cache and warm, with embeds off (`documents.embed = false`) until A7 ships, because A4 does not layer otherwise:
 
 - `du -sh` of the base generation and of each overlay (target overlay < 50 MB with a typical 50-file diff);
   `du` of `grep_bloom` before and after A2 (expect a drop proportional to duplicate content);
@@ -442,12 +639,15 @@ On armis (89k files, 65k indexed), 1 worktree then 5, standalone vs layered, sam
 
 ### Open questions for the owner
 
-1. **Base access without a daemon.** Fjall admits one process, so with `layered` on every CLI invocation in a group
+1. **Base access without a daemon** *(Fjall option; mostly dissolved if the A4 prototype adopts a mmapped sorted-run
+   base, which every process can open)*. Fjall admits one process, so with `layered` on every CLI invocation in a group
    contends for the base. The proposal above degrades like a lost lock today (`Daemon` route, else `InRam`). The
-   alternative is to make the daemon mandatory for layered workspaces (auto-spawn through `singleton_spawn.rs`, and
+   alternative is to make the daemon mandatory for layered workspaces (auto-spawn through `src/comms/singleton_spawn.rs`, and
    fall back to standalone if it cannot start). Which is acceptable for the A8 default?
-2. **A2 partition-revision bump.** The bump forces one full re-index for every user. The no-bump variant (ROW_VERSION 2 plus the
-   sweep) avoids it. The ADR keeps the bump because #87 prescribes it; say if the cheaper variant is preferred.
+2. **A2 migration.** Decided: `ROW_VERSION` 2 plus the sweep, no partition-revision bump.
+3. **Daemon-less layered mode.** Decided: it degrades like a lost lock today (`Daemon` route, else `InRam`).
+4. **Base storage.** Decided: prototype-first. A sorted-run base is built and benchmarked before A4 (*Base storage*);
+   Fjall stays for overlays and mutable stores; A4 is not locked to a Fjall base.
 
 ## Consequences
 
@@ -456,9 +656,11 @@ The read path grows a merge layer that must preserve order, totals and cursors f
 correctness gate (a proptest over three worktrees with random edits, comparing every mode's results and
 cursors to a standalone full index) exists to catch a merge that does not. `store_seed.rs` is removed once
 layered mode is the default. Phases A0 (per-repo memory store) and A1 (probe index and O(affected)
-re-stitch) shipped in 0.30.0; A2–A8 remain, specified below.
+re-stitch) shipped in 0.30.0; A2 (`efe41b76`) and A3 (`26be3d56`) shipped on this branch; A4–A8 remain, specified
+below. Until A7, layering reaches only users with embeds off (`documents.embed` defaults to `true`).
 
-Costs accepted by this design: a layered workspace depends on the daemon for concurrent base access; the
+Costs accepted by this design: with a Fjall base, a layered workspace depends on the daemon for concurrent base access
+(a mmapped sorted-run base would remove that, pending the A4 prototype); the
 first base of a group costs one cold build (or one CoW clone when a standalone index exists); migration is
 one-way per workspace (rollback re-materialises a standalone index); the document and embedding tiers stay
 per worktree until A7; and the overlay is treated as a disposable cache, so any doubt about its consistency
@@ -477,5 +679,6 @@ costs a rebuild proportional to the diff rather than a repair.
   and its lock; invalidating the overlay and rebuilding it at next open is simpler and costs O(diff).
 - **Repairing a suspect overlay in place.** Rejected: the overlay is a cache of the diff; wiping and
   rebuilding it is cheaper to reason about than reconciling `delta.msgpack` against fjall.
-- **Opening the base from every process.** Not possible: fjall's directory lock is exclusive, which is why
-  the daemon holds it (open question 1 covers the no-daemon case).
+- **Opening a Fjall base from every process.** Not possible: fjall's directory lock is exclusive, which is why
+  the daemon holds it for a Fjall base (open question 1 covers the no-daemon case). An immutable mmapped base is the
+  alternative under prototype (*Base storage*).
