@@ -295,7 +295,7 @@ Each phase is its own commit, lands behind `[index] layered = false`, and keeps 
 
 ### A6 — generations, rebase, promotion, GC
 
-- Generation advance (CoW clone + `diff-tree`), publication-by-rename, three-generation retention,
+- Generation advance (CoW clone + `diff-tree`), publication-by-rename, two-generation retention (three when `max_group_bytes` allows; ADR-0016 *Disk budget*),
   overlay GC wired into `store_gc`, orphan reap.
 
 ### A7 — shared Lance tables
