@@ -150,7 +150,7 @@ Shipped in `26be3d56`; the follow-ups below are required before A4 and are being
 **Config.** New `[index]` table in `config/v1.rs` (`IndexConfig`, `deny_unknown_fields`, in `ConfigV1` after
 `cache`): `layered: bool`, default `false` until A8. Regenerate `schema/` with the existing
 `config_schema` test. The env var `BASEMIND_INDEX_LAYERED=0|1` overrides the file (rollback lever, same pattern as
-`BASEMIND_NO_SEED`). `max_group_bytes: u64` caps a group's `base/` plus `overlays/` (*Disk budget*). The mode is resolved once per `Store::open`; the daemon applies a changed value when it next
+`BASEMIND_NO_SEED`). `max_group_bytes: Option<u64>` caps a group's `base/` plus `overlays/` (*Disk budget*); unset means *auto*. The mode is resolved once per `Store::open`; the daemon applies a changed value when it next
 opens the workspace. Layered applies to a workspace only when all hold: `layered` is true, the canonical root is the
 git workdir, `Repo::discover` succeeds, a base commit resolves, and no embedding lane is enabled until A7 has
 shipped (`documents.embed`, `code_search.embed`: their Lance rows are still keyed by worktree). `documents.embed`
@@ -267,10 +267,13 @@ not a rescan, and the first base costs one CoW clone instead of 17-33 min.
 1. *(Fjall option)* Quiesce `k`: if this process is the daemon it takes the write side of the group's
    `RwLock<Arc<IndexDb>>`, drains, and drops its handle; otherwise it tries to open `k`'s fjall and aborts the advance
    on `Locked`. A live fjall is never copied (the rule in the `store_seed.rs` module doc). Readers of the group stall
-   while the write side is held. The stall is bounded by a budget, `[index] advance_stall_ms` (default 10000), covering
+   while the write side is held. The stall is bounded by a budget, `[index] advance_stall_ms` (default 2000), covering
    the drain of in-flight queries, the CoW clone (O(files)) and the reopen of `k` (open cost, which includes
    journal replay and the `rotate_memtable_and_wait` flush in `open_inner`, see *Lifecycle*). Exceeding it aborts the
-   advance, reopens `k`, and retries after a backoff; readers are never stalled past the budget. A sorted-run base needs
+   advance, reopens `k`, and retries after a backoff; readers are never stalled past the budget. The default is sized
+   from the reference monorepo: a CoW clone of its 1.7 GB, 102-file index takes 0.36 s on APFS, so 2 s covers drain, clone and reopen
+   with headroom while staying under an interactive tool-call timeout; an advance is background work, so an abort
+   costs only a retry. A sorted-run base needs
    no quiesce: its files are immutable, so the clone is a hardlink or CoW copy and no reader is touched.
 2. Clone `gen-k` to `.tmp-*` and, for Fjall, reopen the daemon handle immediately.
 3. `Repo::diff_trees(C_k, C_m)` (new, gix tree diff; a rename is a delete plus an add) filtered through `Filters`.
@@ -321,12 +324,16 @@ clone as a base source, and a standalone index with an old stamp does a one-time
 content-addressed chunk blobs on its next scan (the `by_path` rows hold the term list without frequencies, so they
 cannot rebuild the postings). Only then is it eligible as a clone source.
 
-**Disk budget.** A group holds up to 3 live generations, about 2.7 GB each, and compaction un-shares the CoW clones,
-so the realistic footprint is the sum, not one generation plus deltas. `[index] max_group_bytes` (default 12 GiB, to be
-measured) caps `base/` plus `overlays/`. Build, advance and migrate each check, under `base.lock`, that free space on
+**Disk budget.** A group holds up to 3 live generations (1.7 GB each on the reference monorepo today), and compaction un-shares the CoW clones,
+so the realistic footprint is the sum, not one generation plus deltas. `[index] max_group_bytes` caps `base/` plus
+`overlays/`. Its default, *auto*, is 4x the newest ready generation's size: two live generations, the transient export
+plus clone of a build, and the overlays (each holds changed paths only). A fixed byte default would be wrong at both
+ends: too small for a repo whose single generation exceeds it, and far above need for a small repo. On the reference monorepo (1.7 GB
+generation) auto is about 7 GB, against 33 x 1.7 GB of standalone indexes today. Retention is therefore 2 generations
+by default (newest plus the one pinned overlays are rebasing off), 3 only when the cap allows. Build, advance and migrate each check, under `base.lock`, that free space on
 the volume is at least the generation size plus the cap on the transient (export plus clone) and that the group stays
 under the cap, else they are skipped, a `last-failure.json`-style marker is written, and `doctor` says why. When disk is
-tight the newest generation replaces the oldest instead of the group keeping 3 (the oldest goes through the *Liveness*
+tight the newest generation replaces the oldest instead of the group keeping 2 (the oldest goes through the *Liveness*
 rules, so a pinned one is never deleted from under a reader).
 
 ### A5: overlay write path and the read merge
@@ -442,7 +449,8 @@ row for the same shadow unit. Tombstones, snapshots and scalars are specified he
   AND the overlay's own flag (cleared while the overlay's resolve pass is incomplete).
 - **Visited-row budget.** `scan_cap` caps hits, not rows examined (`mcp/helpers_calls_scan.rs`). A filtered scan whose
   mask drops many base rows (a widely edited name) can examine far more rows than it yields, so the merged iterator
-  carries a visited-row budget (default `scan_cap * 64`); when it is hit the scan stops, returns what it has and sets the
+  carries a visited-row budget (default `scan_cap * 64`, at least 128k rows given the `scan_cap` floor of 2000, about
+  0.1 s of fjall prefix iteration, so a heavily shadowed name degrades to partial rather than stalling); when it is hit the scan stops, returns what it has and sets the
   existing partial flag (`total_is_partial`). The equivalence gate runs with the budget unbounded and a separate test
   proves the partial flag.
 
