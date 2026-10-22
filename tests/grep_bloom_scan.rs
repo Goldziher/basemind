@@ -4,7 +4,7 @@
 //! asserts what grep is allowed to trust.
 
 use std::path::Path;
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use basemind::index::view::IndexView;
 use basemind::path::RelPath;
@@ -416,10 +416,19 @@ fn a_freshly_written_file_is_never_skipped_until_a_later_scan_restamps_it() {
         idx.view().grep_skip_verdicts(root, &[entry], &absent)[0]
     };
 
-    // The first scan paid for the grammar bootstrap; an incremental pass on the open store is
-    // quick, so the new file's mtime is well inside the window when it is read.
-    std::fs::write(root.join("a.rs"), "pub fn alpha_function_name() -> u32 { 1 }\n").unwrap();
-    scan_paths(root, &mut store, &["a.rs"]);
+    // The stamp is only provably untrusted when the pass reads the file inside the racy window
+    // (`scanner_file::RACY_WINDOW_NANOS`) after the write; a loaded runner can outlast it, so retry
+    // until one pass finishes in time.
+    const RACY_WINDOW: Duration = Duration::from_secs(2);
+    for attempt in 1.. {
+        let started = Instant::now();
+        std::fs::write(root.join("a.rs"), "pub fn alpha_function_name() -> u32 { 1 }\n").unwrap();
+        scan_paths(root, &mut store, &["a.rs"]);
+        if started.elapsed() < RACY_WINDOW {
+            break;
+        }
+        assert!(attempt < 5, "no incremental pass finished inside {RACY_WINDOW:?}");
+    }
     assert_eq!(
         indexed_stamp(&store, "a.rs").1,
         0,
