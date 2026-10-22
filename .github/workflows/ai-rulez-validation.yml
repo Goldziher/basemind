@@ -53,7 +53,7 @@ jobs:
           expected-config-count: "2"
           additional-config-directories: "plugin/.ai-rulez"
           verify-plugin: "true"
-      - uses: astral-sh/setup-uv@v10.3.0
+      - uses: astral-sh/setup-uv@v10.3.1
       - name: Build and strictly validate the Hermes wheel
         shell: bash
         run: |
