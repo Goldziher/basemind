@@ -328,9 +328,7 @@ pub struct IndexDb {
     /// added or deleted path can affect.
     pub(in crate::index) importers_by_probe: Keyspace,
     /// `code_bm25_postings`: term → chunks (with inlined tf + doclen) for the code-search BM25
-    /// keyword lane. Always created for DB stability; read + written only under the `code-search`
-    /// feature (hence `dead_code`-allowed on a default build, mirroring `embeddings`).
-    #[allow(dead_code)]
+    /// keyword lane. Always created for DB stability; written only under the `code-search` feature.
     pub(in crate::index) code_bm25_postings: Keyspace,
     /// `code_bm25_by_path`: forward companion keyed by file → its chunks' `(chunk_id, doclen,
     /// terms)`, so a re-scan deletes the previous postings in O(prefix). Always created.
