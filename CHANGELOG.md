@@ -10,6 +10,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Dependencies: `rmcp` 3.6, `oxc_*` 0.155, `lru` 0.19, `arc-swap` 1.9.3, plus compatible lockfile updates. `arrow`
+  stays at 58 (lancedb 0.40 is the latest and requires `^58`), `bincode` at 2.x (3.0.0 is a placeholder release),
+  `rustix` at 1.1.4 (rmux-client). The OpenCode plugin depends on `@opencode/plugin` ^2.1.2; the Python wrapper
+  requires `certifi>=2026.10.19` (distrusted emSign roots). The Hermes plugin stays on `mcp` 1.30.0, the latest
+  1.x: Hermes Agent pins `mcp==1.26.0` and 2.x renames `McpError`.
+- CI actions move to their current majors (`checkout` v7, `setup-node` / `setup-python` / `upload-artifact` v7,
+  `upload-pages-artifact` / `deploy-pages` v5, `pnpm/action-setup` v6, `setup-uv` v10.3.1).
+
 ## [0.31.0] - 2026-10-22
 
 This minor bumps the persisted blob, index and git-history schema versions, so `.basemind/` is wiped and

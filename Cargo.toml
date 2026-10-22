@@ -139,7 +139,7 @@ ahash = "0.8"
 anstream = "1.0"
 anstyle = "1"
 anyhow = "1"
-arc-swap = "1.9.2"
+arc-swap = "1.9.3"
 # ~keep Arrow major 58 matches LanceDB 0.40 so public schema and array types share one identity.
 # Bumping past 58 forks arrow into two versions and breaks Scannable/Schema type identity. ~keep
 arrow-array = { version = "58", optional = true }
@@ -177,22 +177,22 @@ lancedb = { version = "0.40.0", features = ["remote"], optional = true }
 libc = "0.2"
 # ~keep `extended` exposes `mi_option_set`, used by `alloc_tag` to retag the heap off `VM_MEMORY_IOACCELERATOR`.
 libmimalloc-sys = { version = "0.1", features = ["extended"] }
-lru = "0.18.5"
+lru = "0.19.0"
 memchr = "2"
 mimalloc = "0.1"
 notify = "8"
 notify-debouncer-full = "0.7"
 nucleo-matcher = "0.3.1"
-oxc_allocator = { version = "0.154.0", optional = true }
-oxc_parser = { version = "0.154.0", optional = true }
+oxc_allocator = { version = "0.155.0", optional = true }
+oxc_parser = { version = "0.155.0", optional = true }
 oxc_resolver = { version = "11.24.3", optional = true }
-oxc_semantic = { version = "0.154.0", optional = true }
-oxc_span = { version = "0.154.0", optional = true }
-oxc_syntax = { version = "0.154.0", optional = true }
+oxc_semantic = { version = "0.155.0", optional = true }
+oxc_span = { version = "0.155.0", optional = true }
+oxc_syntax = { version = "0.155.0", optional = true }
 rayon = "1"
 regex = "1.13.1"
 regex-syntax = "0.8"
-rmcp = { version = "3.5", default-features = false, features = ["server", "macros", "schemars", "transport-async-rw"] }
+rmcp = { version = "3.6", default-features = false, features = ["server", "macros", "schemars", "transport-async-rw"] }
 rmp-serde = "1"
 rmux-client = { version = "0.10", default-features = false, optional = true }
 rmux-sdk = { version = "0.10", default-features = false, optional = true }
@@ -242,7 +242,7 @@ basemind = { path = ".", features = ["test-support"] }
 criterion = { version = "0.8", features = ["html_reports"] }
 insta = "1"
 proptest = "1"
-rmcp = { version = "3.5", features = ["client", "transport-async-rw", "transport-child-process"] }
+rmcp = { version = "3.6", features = ["client", "transport-async-rw", "transport-child-process"] }
 tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "test-util"] }
 wiremock = "0.6"
