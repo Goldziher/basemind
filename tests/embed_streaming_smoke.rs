@@ -62,6 +62,8 @@ fn embed_config() -> ConfigV1 {
     let mut cfg = ConfigV1::with_defaults();
     cfg.code_search.embed = true;
     cfg.documents.embed = true;
+    // `*.svg` is a default `[documents] exclude`; clearing the list opts the fixture back in.
+    cfg.documents.exclude = Vec::new();
     cfg
 }
 

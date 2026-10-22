@@ -62,6 +62,8 @@ fn fixture() -> (TempDir, ConfigV1) {
     let mut cfg = ConfigV1::with_defaults();
     cfg.documents.enabled = true;
     cfg.documents.embed = false;
+    // `*.svg` is a default `[documents] exclude`; clearing the list opts the fixture back in.
+    cfg.documents.exclude = Vec::new();
     (dir, cfg)
 }
 

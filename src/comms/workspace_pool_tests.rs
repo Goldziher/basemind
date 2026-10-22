@@ -254,6 +254,12 @@ fn embed_pass_indexes_a_document_the_deferred_pass_leaves_untracked() {
     let pool = WorkspacePool::new(DEFAULT_HOT_CAP);
     let dir = tempfile::tempdir().expect("tempdir");
     git_init(dir.path());
+    // `*.svg` is a default `[documents] exclude`; the pool reads basemind.toml, so clear it there.
+    std::fs::write(
+        dir.path().join("basemind.toml"),
+        "\"$schema\" = \"v1\"\n[documents]\nexclude = []\n",
+    )
+    .expect("write config");
     std::fs::write(
         dir.path().join("notes.svg"),
         br#"<svg xmlns="http://www.w3.org/2000/svg"><text>photosynthesis chloroplast glucose oxygen</text></svg>"#,

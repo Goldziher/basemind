@@ -40,6 +40,8 @@ fn a_document_that_cannot_fit_under_the_ceiling_is_skipped_not_extracted() {
     let dir = tempfile::tempdir().expect("tempdir");
     let mut cfg = offline_config();
     cfg.resources.max_footprint_mb = MaxFootprint::Mebibytes(512);
+    // `*.svg` is a default `[documents] exclude`; clearing the list opts the fixture back in.
+    cfg.documents.exclude = Vec::new();
     fs::write(dir.path().join("huge.png"), png_claiming_huge_dimensions()).unwrap();
     fs::write(
         dir.path().join("small.svg"),

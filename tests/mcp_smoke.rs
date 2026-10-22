@@ -5247,8 +5247,16 @@ async fn documents_lane_surfaces_doc_to_code_edges() {
 
     // Embedding-free doc scan: doc links are keyword / path-citation heuristics over chunk text and
     // do not depend on an ONNX embedding model being present in the test environment.
+    // `*.svg` is a default `[documents] exclude`; clearing the list opts the fixture back in, both
+    // for the scan below and for any scan the server runs itself, which reads basemind.toml.
+    std::fs::write(
+        root.join("basemind.toml"),
+        "\"$schema\" = \"v1\"\n[documents]\nexclude = []\n",
+    )
+    .unwrap();
     let mut cfg = basemind::config::default_for_root(root);
     cfg.documents.embed = false;
+    cfg.documents.exclude = Vec::new();
     basemind::lang::ensure_grammars().expect("grammar bootstrap");
     std::thread::scope(|scope| {
         scope.spawn(|| {
@@ -5310,8 +5318,16 @@ async fn documents_lane_survives_unscoped_rescan() {
           </svg>\n",
     )
     .unwrap();
+    // `*.svg` is a default `[documents] exclude`; clearing the list opts the fixture back in, both
+    // for the initial scan below and for the server's own `admin rescan`, which reads basemind.toml.
+    std::fs::write(
+        root.join("basemind.toml"),
+        "\"$schema\" = \"v1\"\n[documents]\nexclude = []\n",
+    )
+    .unwrap();
     let mut cfg = basemind::config::default_for_root(root);
     cfg.documents.embed = false;
+    cfg.documents.exclude = Vec::new();
     basemind::lang::ensure_grammars().expect("grammar bootstrap");
     std::thread::scope(|scope| {
         scope.spawn(|| {

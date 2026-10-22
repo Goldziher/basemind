@@ -1043,6 +1043,8 @@ fn markdown_headings_and_obsidian_references_are_indexed() {
 fn documents_are_cached_unchanged_and_pruned() {
     let (dir, mut cfg) = fresh_repo();
     cfg.documents.embed = false;
+    // `*.svg` is a default `[documents] exclude`; clearing the list opts the fixture back in.
+    cfg.documents.exclude = Vec::new();
     let root = dir.path();
     let svg = br#"<svg xmlns="http://www.w3.org/2000/svg"><text>the quick brown fox jumps</text></svg>"#;
 
@@ -1101,6 +1103,8 @@ fn documents_are_cached_unchanged_and_pruned() {
 fn identical_documents_share_the_content_addressed_cache() {
     let (dir, mut cfg) = fresh_repo();
     cfg.documents.embed = false;
+    // `*.svg` is a default `[documents] exclude`; clearing the list opts the fixture back in.
+    cfg.documents.exclude = Vec::new();
     let root = dir.path();
     let body = br#"<svg xmlns="http://www.w3.org/2000/svg"><text>identical dedup content</text></svg>"#;
 
