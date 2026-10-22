@@ -10,6 +10,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.31.0] - 2026-10-22
+
+This minor bumps the persisted blob, index and git-history schema versions, so `.basemind/` is wiped and
+rebuilt on the next scan.
+
+### Changed
+
+- **`grep_bloom` rows are keyed by content hash.** The `code grep` trigram prefilter (ADR-0012) stored one row
+  per path; it now stores one row per distinct file content, shared by every path holding the same bytes, and
+  the live `(size, mtime_ns)` stamp moves to the file map. Older path-keyed rows read as "candidate" (never a
+  false skip) and are dropped by the next full scan's sweep, which also backfills rows for unchanged files, so
+  the layout change needs no wipe of its own (`ROW_VERSION` 2).
+- Index reads go through a backend-neutral `IndexView` trait (`src/index/view.rs`) instead of calling the
+  Fjall keyspaces directly; the named reads (`references_to`, `definition_of`, `importers_probing`, ...) are
+  built on its generic prefix/range layer. No behaviour change; this is the read seam the layered index
+  (ADR-0016) overlays on.
+- **ADR-0016 specifies phases A2–A8 of the shared base index and worktree overlays**, with its defaults sized
+  from measurements on a large reference monorepo, and `docs/layered-index-design.md` points at the ADR where
+  the two diverge.
+- The pinned `ai-rulez` moves to **5.5.3** everywhere: the validation, publish and plugin-artifact workflows and
+  both lock files. Strict validation demotes the AR602/AR701/AR703/AR801 codes that fire on the intentionally
+  mirrored skill trees and launchers.
+
+### Fixed
+
+- **`grep_bloom` no longer grows without bound under the watcher.** An incremental scan drops the rows of
+  content no path holds any more (an edit, delete or rename), not only a full scan's sweep.
+- **A file written in the same clock tick as the scan can no longer be skipped by `code grep`.** A stamp taken
+  within 2 s of the clock is recorded as unknown, so the bloom is not trusted for that file until a later scan
+  sees it settled.
+- The release workflow's plugin jobs pinned ai-rulez 5.3.0 against 5.5.3 lock files, so `lock --check` failed
+  and v0.30.0's agent-runtime archives, marketplaces and npm agent plugins never published. The version guard
+  also required a `marketplace.json` version key that ai-rulez no longer emits, and the Hermes check read a
+  path that does not exist in the job, so it never ran.
+- The Hermes plugin's source config pins `mcp==1.30.0`, matching the generated package.
+- Security: `rustls-webpki` 0.103.16, `webpki-roots` / `webpki-root-certs` 1.0.10 (RUSTSEC-2026-0382,
+  RUSTSEC-2026-0383: distrusted emSign intermediates).
+- The document-tier tests use `*.svg` fixtures, which 0.30.0's default `[documents] exclude` drops; they now
+  clear the exclude list, so the full-feature test suite is green again.
+
 ## [0.30.0] - 2026-10-18
 
 This minor bumps the persisted blob, index and git-history schema versions, so `.basemind/` is wiped and
