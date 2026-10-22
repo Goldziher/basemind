@@ -24,8 +24,9 @@ and a per-worktree **overlay**:
   tree, so it never contains uncommitted edits. The tree is exported to a scratch directory and scanned
   like a working tree, because the rev scan alone does not run the resolve pass. Generations advance by
   a CoW clone plus `git diff-tree C_n..C_n+1` applied through the incremental writer when files have
-  drifted by 2% or more, or daily; at most three are live, each published once and never logically
-  rewritten (a Fjall generation still replays its journal and compacts when opened, see *Lifecycle*).
+  drifted by 2% or more, or daily; at most three are live (two by default; a third only when the disk cap allows),
+  each published once and never logically rewritten (a Fjall generation still replays its journal and compacts when
+  opened, see *Lifecycle*).
   The base is read through a `BaseReader`, so its storage is pluggable (*Base storage*). With a Fjall
   base the daemon keeps one handle and one block cache per group (fjall admits one process per
   directory, so other processes reach the base through the daemon); an immutable mmapped base can be
@@ -52,7 +53,7 @@ and a per-worktree **overlay**:
 ## Specification
 
 Everything below is normative for A2–A8. Paths and symbols are as of 0.30.0 (`bd1f0a5b`), plus A2 (`efe41b76`)
-and A3 (`26be3d56`) on this branch. Where the code contradicts the text of issue #87 or the summary above, the code wins and the correction is listed first.
+and A3 (`26be3d56`), both on main. Where the code contradicts the text of issue #87 or the summary above, the code wins and the correction is listed first.
 
 ### Corrections to the issue text
 
@@ -61,7 +62,7 @@ and A3 (`26be3d56`) on this branch. Where the code contradicts the text of issue
 | "Rev scan builds the base" (`ScanSource::Rev`) | `scan_with_cancel` runs the resolve pass only for `ScanSource::WorkingTree` (`scanner.rs`, `if matches!(source, ScanSource::WorkingTree)`), and the resolver reads the filesystem (`intel/resolve_pass.rs` `std::fs::read`, `intel/resolver.rs` `root.join`, `canonicalize`). A rev scan therefore writes no `refs_by_*`, `import_targets` or `importers_by_probe` rows, and the rev branch of `process_file` writes no grep bloom either. | The base builder exports the committed tree to a private scratch directory and runs a normal working-tree scan on it (A4). A virtual git-tree filesystem for the resolver was rejected: it duplicates the resolver's I/O surface for a transient 1-3 GB export. |
 | "Published read-only so the daemon keeps one handle" | Fjall's directory lock is exclusive even for a read-only open (`Store::open_read_only_no_index`, `mcp/index_route.rs` module doc). Read-only is a logical property, not something the OS enforces on a shared fjall. | For a Fjall base, one process per machine can hold a given generation. The daemon is that holder; every other process reaches the base through `IndexRoute::Host` / `Daemon` or degrades to `InRam`, exactly as a second `serve` does today (A4). Conditional on the base-storage prototype: an mmapped sorted-run base has no such lock (*Base storage*). |
 | "`code_chunks` is already content-addressed" | `chunk_id` is `<hash_hex>:<ordinal>` (`chunk.rs`) and the sidecar blobs are content-addressed, but the Lance rows are keyed `(scope, path)` (`lance/mod.rs` `replace_code_chunks`, `delete_code_chunks`) and `scope` is the normalised `origin` URL (`git/remote.rs` `scope_key`), identical for every worktree of a clone. | Sharing a Lance table needs a new key for all three tables, not just `documents`/`doc_links` (A7). |
-| A3 "shipped" (progress comment) | When the ADR was written only the ADR had shipped: `src/index/view.rs` did not exist and `IndexDb` keyspaces were read directly. A2 landed in `efe41b76` and A3 in `26be3d56`. | A3 is a prerequisite of A5 and is done, but `view.rs` still returns `fjall::Slice` and its named accessors are required methods (A3 follow-up below). |
+| A3 "shipped" (progress comment) | When the ADR was written only the ADR had shipped: `src/index/view.rs` did not exist and `IndexDb` keyspaces were read directly. A2 landed in `efe41b76` and A3 in `26be3d56`. | A3 is a prerequisite of A5 and is done, and the follow-up that made `view.rs` backend-neutral (`IndexBytes`) with default named accessors has shipped (A3 below). |
 | `repo_group_key` hashes "the git common dir" | It hashes the canonical main worktree root, the parent of the common dir (`store_layout.rs` `repo_group_key`, `git/mod.rs` `main_worktree_root`). Equivalent for a normal clone; a bare clone or a moved main checkout re-keys the group. | Keep the function; record the resolved common dir in `group.json` so a re-key is diagnosable (A4). |
 | BM25 `meta` is exact as "base + overlay - shadowed" | True, but `upsert_bm25_file` / `remove_bm25_file` delete every posting of the path's `chunk_id`s (`index/writer.rs` `stage_bm25_deletes_for`), and `chunk_id` embeds the content hash. Two paths with identical bytes share their postings, so removing or editing one of them deletes the postings the other still needs. | Pre-existing defect in the standalone index, not specific to layering, and it breaks the A5 equivalence gate on the "duplicate content" scenario. A5.0 fixes it first (below). |
 | `main_root_of` / `repo_group_key` cover a workspace | A workspace rooted at a *subdirectory* of a repository also gets a group key (`Repo::discover` walks up), but a base built from the whole tree would not match a subdirectory scan. | Layering applies only when the canonical root equals the git workdir (the `store_seed::main_root_of` predicate); otherwise the workspace stays standalone (A4). |
@@ -117,30 +118,30 @@ The plan in #87 stands; this fixes the details the plan left open.
 
 ### A3: `IndexView` (standalone only)
 
-Shipped in `26be3d56`; the follow-ups below are required before A4 and are being applied on this branch.
+Shipped in `26be3d56`; the follow-ups below (a prerequisite of A4) have shipped on main.
 
 - `src/index/view.rs`: `enum Part` naming the 16 layered keyspaces (below), and
   `trait IndexView: Send + Sync { get(Part, &[u8]); prefix(Part, &[u8]); range(Part, Bound, Bound); iter(Part); }`
-  returning `Box<dyn Iterator<Item = Result<(Slice, Slice), IndexError>> + '_>`, plus the named accessors that exist today
-  on `IndexDb`: `references_to`, `definition_of`, `import_targets_of`, `importers_probing`, `is_probed`,
-  `import_probes_complete`, `symbols_by_name_lookup`, `symbols_index_is_empty`, `bm25_stats`,
-  `grep_bloom_row`, `grep_skip_verdicts`, and the two `NameDict` handles (`callee_names`, `trait_names`).
+  returning boxed iterators of `KvResult`, plus the named accessors that exist on `IndexDb`: `references_to`,
+  `definition_of`, `import_targets_of`, `importers_probing`, `is_probed`, `import_probes_complete`,
+  `symbols_by_name_lookup`, `symbols_index_is_empty`, `bm25_stats`, `grep_bloom_row`, `grep_skip_verdicts`, and
+  `callee_keys_matching` / `trait_keys_matching`, which read the `NameDict` fields `callee_names` / `trait_names`
+  (`pub(in crate::index)` fields of `IndexDb`, not accessors).
 - `StandaloneView(&IndexDb)` delegates 1:1. `IndexRoute::Local` holds `Box<dyn IndexView>`; `index_read_against`,
   `query.rs`, `mcp/helpers_calls*.rs`, `mcp/helpers_impls.rs`, `search/{bm25,exact}.rs` and the resolve pass
   (`intel/resolve_pass.rs`, which reads `import_targets`, `importers_by_probe`, `refs_*`) take `&dyn IndexView`.
   Writes keep going through `IndexWriter` on the concrete `IndexDb`.
-- **Backend-neutral values (follow-up, required by A3 and A4).** `KvResult`, `get` and `grep_bloom_row` in
-  `src/index/view.rs` return `fjall::Slice`, and `kv` takes a `fjall::Guard`. A follow-up commit on this branch replaces
-  them with a backend-neutral value type (cheap to clone, derefs to `[u8]`), so that no `fjall` type appears in the
-  trait and a sorted-run `BaseReader` can implement it without copying into Fjall types. Only `StandaloneView` and the
-  Fjall base reader convert at their edge.
-- **Named accessors are default methods (follow-up).** Today `references_to`, `definition_of`, `import_targets_of`,
-  `importers_probing`, `is_probed`, `import_probes_complete`, `symbols_by_name_lookup`, `bm25_stats` and
-  `symbols_index_is_empty` are required methods that `StandaloneView` forwards to `IndexDb`. They become default methods
-  written over the generic `get` / `prefix` / `range` layer (the `Meta` scalars through `get(Part::Meta, ..)`), so a
-  layered view inherits them and cannot drift from the standalone decoding. `StandaloneView` may override a default only
-  for speed and the equivalence gate proves the override equal. `callee_keys_matching` / `trait_keys_matching` stay
-  required: a layered view must merge them (A5, *NameDict*).
+- **Backend-neutral values (shipped).** `KvResult` and `get` / `grep_bloom_row` in `src/index/view.rs` use the
+  backend-neutral `IndexBytes` (cheap to clone, derefs to `[u8]`), so no `fjall` type appears in the trait and a
+  sorted-run `BaseReader` can implement it without copying into Fjall types. Only `StandaloneView` and the Fjall base
+  reader convert at their edge.
+- **Named accessors are default methods (shipped).** `references_to`, `definition_of`, `import_targets_of`,
+  `importers_probing`, `is_probed`, `import_probes_complete`, `symbols_by_name_lookup`, `bm25_stats`,
+  `symbols_index_is_empty`, `grep_bloom_row` and `grep_skip_verdicts` are default methods written over the generic
+  `get` / `prefix` / `range` layer (the `Meta` scalars through `get(Part::Meta, ..)`), so a layered view inherits them
+  and cannot drift from the standalone decoding. `StandaloneView` may override a default only for speed and the
+  equivalence gate proves the override equal. `callee_keys_matching` / `trait_keys_matching` are the only required
+  methods: a layered view must merge them (A5, *NameDict*).
 - The existing suite is the gate. Perf discipline applies: the dyn call is per iterator, not per row, but a
   p95 regression above 3% on `references` / `callers` (benches in `benches/`) switches `IndexView` to an enum
   with the two variants instead of a trait object.
@@ -150,7 +151,8 @@ Shipped in `26be3d56`; the follow-ups below are required before A4 and are being
 **Config.** New `[index]` table in `config/v1.rs` (`IndexConfig`, `deny_unknown_fields`, in `ConfigV1` after
 `cache`): `layered: bool`, default `false` until A8. Regenerate `schema/` with the existing
 `config_schema` test. The env var `BASEMIND_INDEX_LAYERED=0|1` overrides the file (rollback lever, same pattern as
-`BASEMIND_NO_SEED`). `max_group_bytes: Option<u64>` caps a group's `base/` plus `overlays/` (*Disk budget*); unset means *auto*. The mode is resolved once per `Store::open`; the daemon applies a changed value when it next
+`BASEMIND_NO_SEED`). `max_group_bytes: Option<u64>` caps a group's `base/` plus `overlays/` (*Disk budget*); unset means *auto*.
+`advance_stall_ms: u64`, default 2000, bounds the reader stall during *Advance*. The mode is resolved once per `Store::open`; the daemon applies a changed value when it next
 opens the workspace. Layered applies to a workspace only when all hold: `layered` is true, the canonical root is the
 git workdir, `Repo::discover` succeeds, a base commit resolves, and no embedding lane is enabled until A7 has
 shipped (`documents.embed`, `code_search.embed`: their Lance rows are still keyed by worktree). `documents.embed`
@@ -450,8 +452,8 @@ row for the same shadow unit. Tombstones, snapshots and scalars are specified he
 - **Visited-row budget.** `scan_cap` caps hits, not rows examined (`mcp/helpers_calls_scan.rs`). A filtered scan whose
   mask drops many base rows (a widely edited name) can examine far more rows than it yields, so the merged iterator
   carries a visited-row budget (default `scan_cap * 64`, at least 128k rows given the `scan_cap` floor of 2000, about
-  0.1 s of fjall prefix iteration, so a heavily shadowed name degrades to partial rather than stalling); when it is hit the scan stops, returns what it has and sets the
-  existing partial flag (`total_is_partial`). The equivalence gate runs with the budget unbounded and a separate test
+  an estimated 0.1 s of fjall prefix iteration, not measured, so a heavily shadowed name degrades to partial rather
+  than stalling); when it is hit the scan stops, returns what it has and sets the existing partial flag (`total_is_partial`). The equivalence gate runs with the budget unbounded and a separate test
   proves the partial flag.
 
 **Merge rule per partition (every keyspace opened by `IndexDb::open_inner`).**
@@ -517,12 +519,12 @@ or `changed_bytes > 25%` of the base manifest's total `size_bytes`.
 - Otherwise, or if the rebased overlay still breaches 10% / 20%, **promote**: clone the pinned generation into
   `views/working` (`store_seed` machinery, daemon-quiesced as in *Advance*), apply the overlay's delta through
   `scan_paths` plus the incremental resolve pass, set `index_mode = "standalone"`, delete the overlay. A promoted
-  workspace is never re-layered automatically (no flapping); `BASEMIND_INDEX_LAYERED=1` plus `basemind cache reset
-  <workspace>` is the manual way back. Promotion that cannot quiesce the base is deferred and warned in `doctor`.
+  workspace is never re-layered automatically (no flapping); `BASEMIND_INDEX_LAYERED=1` plus `basemind cache clear`
+  is the manual way back. Promotion that cannot quiesce the base is deferred and warned in `doctor`.
 
 **Liveness.** A generation is live iff it is the newest ready compatible one or an overlay in the group pins it. At
-most three are live; when publishing a fourth, the overlays pinned to the oldest live generation are invalidated (their
-overlay dir is deleted, they rebuild on next open), except an overlay pinned by an active workspace handle or open in
+most three are live (two by default; a third only when the disk cap allows, see *Disk budget*); when publishing a
+fourth, the overlays pinned to the oldest live generation are invalidated (their overlay dir is deleted, they rebuild on next open), except an overlay pinned by an active workspace handle or open in
 the daemon: that one is never deleted from under a reader. It is rebased onto a newer generation first (the swap of
 *Rebase and promotion*, so the old overlay serves reads until the new one is ready), or, if the rebase cannot run, the
 oldest generation and its overlay stay live past the limit until the handle drops (the pin is released when the last
@@ -664,7 +666,7 @@ The read path grows a merge layer that must preserve order, totals and cursors f
 correctness gate (a proptest over three worktrees with random edits, comparing every mode's results and
 cursors to a standalone full index) exists to catch a merge that does not. `store_seed.rs` is removed once
 layered mode is the default. Phases A0 (per-repo memory store) and A1 (probe index and O(affected)
-re-stitch) shipped in 0.30.0; A2 (`efe41b76`) and A3 (`26be3d56`) shipped on this branch; A4–A8 remain, specified
+re-stitch) shipped in 0.30.0; A2 (`efe41b76`) and A3 (`26be3d56`) shipped on main; A4–A8 remain, specified
 below. Until A7, layering reaches only users with embeds off (`documents.embed` defaults to `true`).
 
 Costs accepted by this design: with a Fjall base, a layered workspace depends on the daemon for concurrent base access

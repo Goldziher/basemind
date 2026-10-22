@@ -55,7 +55,8 @@ What already exists and is reused:
   primary rows to derive the secondary keys, then stages all deletes + inserts in one atomic Fjall
   batch; `remove_file` mirrors it; `commit` runs per file.
 - **Rev scan** (`ScanSource::Rev` in `src/scanner.rs`): `Repo::list_paths_rev(sha)` enumerates a
-  revision's paths and `Repo::read_blob_at_rev_with_oid` reads its bytes — the base builder.
+  revision's paths and `Repo::read_blob_at_rev_with_oid` reads its bytes. It runs no resolve pass, so it is
+  not the base builder (ADR-0016, *Corrections to the issue text*).
 - **Probe index** (A1, `import_targets` / `importers_by_probe`): the O(affected) re-stitch of importers
   a changed path can affect. This is what makes the overlay's `S_refs` small.
 - **Blob-backed reads**: `code outline` / `expand`, the `graph` builders and `grep`'s candidate
@@ -74,7 +75,7 @@ cache/
     lance/                                # A7: shared documents / doc_links / code_chunks
     base/
       gen-<n>/
-        index.fjall/                      # immutable base index (published read-only)
+        index.fjall/                      # base index, never rewritten by basemind (not read-only on disk)
         index.msgpack                     # base manifest: RelPath -> hash_hex
         base.json                         # { generation, commit, built_unix, file_count, bytes }
     overlays/<ws_key>/
@@ -112,8 +113,8 @@ whose resolved edges the probe pass rewrote.
 - **`S_path`** = `added ∪ modified ∪ deleted` — the overlay owns every key whose path is in this set.
 - **`S_refs`** = `S_path ∪ reimported` — the overlay owns every resolved-edge key whose *use* path is in
   this set.
-- **`D_hash`** = `{ base_manifest[p] : p ∈ S_path ∩ base_manifest }` — base content hashes no longer live
-  in the worktree (drives the BM25 corpus-stat correction and `grep_bloom` sharing).
+- **`D_hash`** — base content hashes no longer live in the worktree. The exact definition (hashes still
+  held by an unshadowed base path or by an `Added` / `Modified` entry are excluded) is in ADR-0016, *A5*.
 
 ### 4.3 Merged file map
 
@@ -142,24 +143,9 @@ cursor are therefore identical — no cursor re-derivation is needed.
 
 ### 5.2 Per-keyspace rules
 
-| Keyspace | Merge |
-|---|---|
-| `symbols_by_path`, `calls_by_path`, `imports_by_path`, `implementations_by_path` | path in `S_path` → overlay only; else base only |
-| `symbols_by_name`, `calls_by_callee`, `imports_by_module`, `implementations_by_trait` | prefix-scan both; drop base rows whose key's `path` ∈ `S_path` |
-| `refs_by_def` | prefix-scan both; drop base rows whose `def_path` ∈ `S_path` **or** `use_path` ∈ `S_refs` |
-| `refs_by_path` | prefix-scan both; drop base rows whose `use_path` ∈ `S_refs` |
-| `import_targets` | overlay only for importers ∈ `S_refs`; else base |
-| `importers_by_probe` | drop base rows whose probed-path ∈ `S_path`; else base |
-| `code_bm25_postings` | drop base postings for chunk_ids of paths ∈ `S_path`, then overlay postings. Enumerate a shadowed path's base chunk_ids via `code_bm25_by_path_prefix(p)` — the existing forward companion, no extra index |
-| `code_bm25_by_path` | path in `S_path` → overlay only |
-| `meta` (BM25 corpus stats) | `n = base_n − Σ_{p ∈ S_path ∩ base} chunks(p) + overlay_n`; `total_len` likewise. Must be exact: it changes scores |
-| `callee_names`, `trait_names` (NameDict) | base ∪ overlay. Over-inclusion is safe (an extra empty range scan); under-inclusion is not |
-| `grep_bloom` | keyed by content hash and **shared**: one row per distinct content, so a base row is correct for any path whose hash matches. See A2 |
-| `embeddings` | reserved; no rows today |
-| `memory_by_key`, `memory_archive`, `proposals` | already per-group (`memory.fjall`), outside the view |
-
-`importers_by_probe` and `import_targets` are resolution bookkeeping; they must merge consistently with
-`refs_*` or the next incremental re-stitch will miss or duplicate edges.
+Superseded: the per-keyspace merge rules live in the ADR-0016 *Merge rule per partition* table (and the
+*Merge contract* above it), which corrects this plan's `refs_by_def`, `importers_by_probe` and
+`code_bm25_postings` rules and the `D_hash` definition. They are not duplicated here.
 
 ## 6. Write path
 
@@ -179,14 +165,16 @@ it holds. This keeps `upsert_file`'s read-before-write and per-file commit seman
 
 ## 7. Generations, rebase, promotion, GC
 
-- **Generation build**: from `origin/HEAD` (falling back to the main worktree HEAD) via `ScanSource::Rev`
-  into a fresh `base/gen-<n>/`. New generations advance by a CoW clone of the previous generation plus
+- **Generation build**: from `origin/HEAD` (falling back to the main worktree HEAD): the committed tree is
+  exported to a scratch directory and scanned as a working tree (a rev scan runs no resolve pass), into a
+  fresh `base/gen-<n>/`, `n = 1 + max` of existing numbers. New generations advance by a CoW clone of the previous generation plus
   `git diff-tree C_n..C_n+1` applied through the incremental writer.
 - **Cadence**: when the base has drifted by ≥2% of files, or daily.
-- **Publication**: a generation is written to `gen-<n>.tmp/`, fsynced, then renamed to `gen-<n>/` and
-  marked read-only, so the daemon keeps one handle and one block cache per group and readers never see a
-  half-built generation.
-- **Retention**: at most three generations; the oldest is dropped once no overlay references it.
+- **Publication**: a generation is staged in `.tmp-<pid>-<nanos>/`, fsynced, then renamed to `gen-<n>/`
+  with `base.json` written last, so readers never see a half-built generation. It is not read-only on disk
+  (a Fjall open replays the journal and compacts); the daemon keeps one handle and one block cache per group.
+- **Retention**: at most three generations live (two by default; a third only when the disk cap allows); the
+  oldest is dropped once no overlay references it.
 - **Rebase**: when an overlay's delta exceeds 15% of files or 25% of bytes, rebase it onto the newest
   generation (recompute the diff, drop the shadow sets that fall away).
 - **Promotion**: when the worktree is on the base commit and the delta is empty, or when rebasing would
@@ -280,8 +268,8 @@ Each phase is its own commit, lands behind `[index] layered = false`, and keeps 
 
 - `src/store_layout.rs`: `repos/<group>/base/gen-<n>/` and `repos/<group>/overlays/<ws_key>/` path
   helpers + `base.json` / `overlay.json` sidecars.
-- Base builder: an exported tree of `origin/HEAD` scanned as a working tree into `gen-0/`, published
-  read-only, in the storage format the A4 prototype selects (ADR-0016 §A4).
+- Base builder: an exported tree of `origin/HEAD` scanned as a working tree into `gen-<n>/` (`n = 1 + max` of existing
+  generations), published once and never rewritten, in the storage format the A4 prototype selects (ADR-0016 §A4).
 - Migration: a workspace whose only index is the legacy standalone becomes base + overlay on first
   layered open; `store_seed.rs` stays for now.
 
@@ -318,7 +306,7 @@ Each phase is its own commit, lands behind `[index] layered = false`, and keeps 
   `code_bm25_by_path` is the only forward map to a shadowed path's chunk_ids.
 - **Daemon vs index-less host.** The hosted stack's index-less store cannot see `refs_*` edges
   (`src/mcp/host.rs`); layered mode must behave identically in that mode, which the smoke suite covers.
-- **Concurrency.** The base is published read-only so one handle serves a group; the overlay is
+- **Concurrency.** The base is never rewritten, and with a Fjall base the daemon holds the one handle that serves a group; the overlay is
   single-writer per worktree, matching today's per-workspace `.lock`.
 - **Schema.** The overlay and base share `INDEX_SCHEMA_VER`; a bump wipes and rebuilds both from source,
   which is the same migration story as today.
