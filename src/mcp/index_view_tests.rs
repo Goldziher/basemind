@@ -124,7 +124,8 @@ fn probe_and_grep_prefilter_reads_go_through_the_view() {
     );
 
     log.clear();
-    assert!(!view.import_probes_complete());
+    // The value depends on whether the build runs the resolve pass (code-intel); only the read matters.
+    let _ = view.import_probes_complete();
     assert_eq!(log.entries(), ["get:meta"], "probe stamp");
 
     log.clear();
