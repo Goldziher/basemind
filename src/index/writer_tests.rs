@@ -429,7 +429,7 @@ fn definition_of_prefers_cross_file_target_over_import_binding() {
     writer.upsert_cross_file_edge(&target, 8, &importer, 100).unwrap();
     writer.commit().unwrap();
 
-    assert_eq!(db.definition_of(&importer, 100), Some((target, 8)));
+    assert_eq!(db.view().definition_of(&importer, 100), Some((target, 8)));
 }
 
 #[cfg(feature = "code-search")]
@@ -513,7 +513,7 @@ fn import_probe_rows_roundtrip_and_leave_with_the_importer() {
     w.upsert_import_probes(&other, &[(3, impl_ts.clone(), 40)], &probes_other);
     w.commit().unwrap();
 
-    let mut targets = db.import_targets_of(&app);
+    let mut targets = db.view().import_targets_of(&app);
     targets.sort();
     assert_eq!(
         targets.len(),
@@ -522,26 +522,26 @@ fn import_probe_rows_roundtrip_and_leave_with_the_importer() {
     );
     assert_eq!(targets[0], (7, impl_ts, 40));
 
-    let mut probing = db.importers_probing("src/impl.ts");
+    let mut probing = db.view().importers_probing("src/impl.ts");
     probing.sort();
     assert_eq!(probing, vec![app.clone(), other.clone()]);
     assert_eq!(
-        db.importers_probing("src/util/index.ts"),
+        db.view().importers_probing("src/util/index.ts"),
         vec![app.clone()],
         "adding a file under a directory the importer saw missing must reach it through the directory"
     );
-    assert!(db.is_probed("src/util/index.ts"));
-    assert!(!db.is_probed("docs/readme.md"));
+    assert!(db.view().is_probed("src/util/index.ts"));
+    assert!(!db.view().is_probed("docs/readme.md"));
 
     let mut w = db.writer();
     w.remove_resolved_file(&app).unwrap();
     w.commit().unwrap();
 
-    assert!(db.import_targets_of(&app).is_empty());
-    assert_eq!(db.importers_probing("src/impl.ts"), vec![other.clone()]);
-    assert!(!db.is_probed("src/util"));
+    assert!(db.view().import_targets_of(&app).is_empty());
+    assert_eq!(db.view().importers_probing("src/impl.ts"), vec![other.clone()]);
+    assert!(!db.view().is_probed("src/util"));
     assert_eq!(
-        db.import_targets_of(&other).len(),
+        db.view().import_targets_of(&other).len(),
         1,
         "a sibling importer's rows must survive"
     );

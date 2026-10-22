@@ -374,7 +374,7 @@ fn documents_lane_links_doc_chunks_to_code() {
 
     // The lane stays off unless selected: a calls-only build emits no Documents edges.
     let calls_only = build(
-        store.index_db.as_ref(),
+        as_dyn(&store.index_view()),
         &cache,
         &BuildOpts {
             kinds: EdgeKindSet {
