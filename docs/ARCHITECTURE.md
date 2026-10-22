@@ -696,23 +696,23 @@ imposes, which is what makes `auto` possible:
 
 | Platform | Usage | Limit |
 |---|---|---|
-| Linux, cgroup v2 | `memory.current` − `inactive_file` | `memory.max`, minimum over the hierarchy |
-| Linux, cgroup v1 | `memory.usage_in_bytes` − `total_inactive_file` | `memory.limit_in_bytes` (sentinel = none) |
-| Linux, neither | `/proc/self/statm` resident pages | `MemTotal` from `/proc/meminfo` |
-| Linux, cgroup with no limit | as above | falls back to `MemTotal`, marked *not enforced* |
+| Linux, cgroup v2 with an enforced limit | `memory.current` − `inactive_file` | `memory.max`, minimum over the hierarchy |
+| Linux, cgroup v1 with an enforced limit | `memory.usage_in_bytes` − `total_inactive_file` | `memory.limit_in_bytes` (sentinel = none) |
+| Linux, no enforced limit (no cgroup, no `memory.max`, or one above RAM) | `/proc/self/statm` resident pages | `MemTotal` from `/proc/meminfo`, marked *not enforced* |
 | macOS | mach `TASK_VM_INFO` `phys_footprint` | `hw.memsize` |
 | Windows | `K32GetProcessMemoryInfo` working set | `GlobalMemoryStatusEx` total physical |
 | anything else | unavailable — the gate is a no-op | unavailable |
 
 A reading reports whether its limit is *enforced* (a cgroup limit the kernel kills you for
-crossing) separately from where the usage figure came from, because a container with a cgroup but
-no `memory.max` — the default for a plain `docker run` — reads its usage from cgroup v2 and is
-nevertheless bounded only by the size of the machine. A cgroup limit larger than `MemTotal` is
-demoted the same way.
+crossing). Only an enforced limit is measured against the cgroup's working set. Without one — no
+`memory.max`, the default for a plain `docker run`, or a limit larger than `MemTotal` — the cgroup
+is often shared (a CI runner's service, a desktop session's scope), and its working set counts other
+processes and active page cache that throttling this process can never release, so the reading
+falls back to the process's own RSS against `MemTotal`.
 
 Readings are cached for 50 ms so an admit point called per file from every rayon worker does not
-turn a memory problem into a syscall storm. `auto` budgets **75%** of an enforced limit or **50%**
-of an advisory one, floored at 512 MiB so a small container cannot produce a ceiling the ONNX
+turn a memory problem into a syscall storm. `auto` budgets **75%** of an enforced limit or **25%**
+of an advisory one, floored at 2 GiB so a small container cannot produce a ceiling the ONNX
 runtime alone would sit above.
 
 **Not a memory bound, and not a bug:** `SCANNER_STACK_SIZE` (256 MiB, `src/scanner_file.rs`) is the

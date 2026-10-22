@@ -20,6 +20,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CI actions move to their current majors (`checkout` v7, `setup-node` / `setup-python` / `upload-artifact` v7,
   `upload-pages-artifact` / `deploy-pages` v5, `pnpm/action-setup` v6, `setup-uv` v10.3.1).
 
+### Fixed
+
+- Linux scans no longer crawl at about five seconds per file when the process runs in a cgroup with no
+  enforced memory limit: a CI runner's service or a desktop session's scope. The memory ceiling compared
+  that shared cgroup's working set, which includes other processes and active page cache, with a quarter of
+  RAM, so the drive governor waited out every admit and narrowed to one file per chunk. Without an
+  enforced limit the reading now uses the process's own RSS, as it already did with no cgroup. This is
+  also what made the Ubuntu CI test legs time out.
+
 ## [0.31.0] - 2026-10-22
 
 This minor bumps the persisted blob, index and git-history schema versions, so `.basemind/` is wiped and
