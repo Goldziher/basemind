@@ -1013,8 +1013,8 @@ jobs:
       - name: Install reviewed ai-rulez
         uses: xberg-io/actions/setup-ai-rulez@98adf87f1ed4c62a57ff56f9010d62faf42d4db6
         with:
-          ai-rulez-version: "5.3.0"
-          source-revision: "bdabc8a6e9211de60ca1e4ad76225ac92fcf218f"
+          ai-rulez-version: "5.5.3"
+          source-revision: "96cd9197b358eb7d5c4ff38e7b83b5f3530b8677"
 
       - name: Verify generated product bundles and public skills
         run: |
@@ -1102,8 +1102,8 @@ jobs:
       - name: Install ai-rulez
         uses: xberg-io/actions/setup-ai-rulez@98adf87f1ed4c62a57ff56f9010d62faf42d4db6
         with:
-          ai-rulez-version: "5.3.0"
-          source-revision: "bdabc8a6e9211de60ca1e4ad76225ac92fcf218f"
+          ai-rulez-version: "5.5.3"
+          source-revision: "96cd9197b358eb7d5c4ff38e7b83b5f3530b8677"
       - name: Verify public skill exports
         run: python3 scripts/sync_public_skills.py --check
       - name: Package all supported plugin runtimes
@@ -1151,8 +1151,8 @@ jobs:
       - name: Install ai-rulez
         uses: xberg-io/actions/setup-ai-rulez@98adf87f1ed4c62a57ff56f9010d62faf42d4db6
         with:
-          ai-rulez-version: "5.3.0"
-          source-revision: "bdabc8a6e9211de60ca1e4ad76225ac92fcf218f"
+          ai-rulez-version: "5.5.3"
+          source-revision: "96cd9197b358eb7d5c4ff38e7b83b5f3530b8677"
       - name: Verify plugin versions and generated resources before publishing
         env:
           VERSION: ${{ needs.meta.outputs.version }}
@@ -1271,8 +1271,8 @@ jobs:
       - name: Install reviewed ai-rulez
         uses: xberg-io/actions/setup-ai-rulez@98adf87f1ed4c62a57ff56f9010d62faf42d4db6
         with:
-          ai-rulez-version: "5.3.0"
-          source-revision: "bdabc8a6e9211de60ca1e4ad76225ac92fcf218f"
+          ai-rulez-version: "5.5.3"
+          source-revision: "96cd9197b358eb7d5c4ff38e7b83b5f3530b8677"
       - name: Verify plugin versions and generated resources
         uses: xberg-io/actions/verify-ai-rulez-plugin@98adf87f1ed4c62a57ff56f9010d62faf42d4db6
         with:
@@ -1350,8 +1350,8 @@ jobs:
       - name: Install reviewed ai-rulez
         uses: xberg-io/actions/setup-ai-rulez@98adf87f1ed4c62a57ff56f9010d62faf42d4db6
         with:
-          ai-rulez-version: "5.3.0"
-          source-revision: "bdabc8a6e9211de60ca1e4ad76225ac92fcf218f"
+          ai-rulez-version: "5.5.3"
+          source-revision: "96cd9197b358eb7d5c4ff38e7b83b5f3530b8677"
       - name: Verify plugin versions and generated resources
         uses: xberg-io/actions/verify-ai-rulez-plugin@98adf87f1ed4c62a57ff56f9010d62faf42d4db6
         with:

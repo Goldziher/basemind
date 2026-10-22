@@ -25,8 +25,8 @@ jobs:
       - name: Install ai-rulez
         uses: xberg-io/actions/setup-ai-rulez@98adf87f1ed4c62a57ff56f9010d62faf42d4db6
         with:
-          ai-rulez-version: "5.3.0"
-          source-revision: "bdabc8a6e9211de60ca1e4ad76225ac92fcf218f"
+          ai-rulez-version: "5.5.3"
+          source-revision: "96cd9197b358eb7d5c4ff38e7b83b5f3530b8677"
       - name: Verify the target release version matches the plugin
         env:
           PLUGIN_RELEASE_TAG: ${{ inputs.tag }}
