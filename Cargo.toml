@@ -151,7 +151,7 @@ bytes = { version = "1", optional = true }
 clap = { version = "4", features = ["derive", "env"] }
 clap_complete = "4"
 clap_mangen = "0.3"
-crawlberg = { version = "1.11.1", default-features = false, features = ["native-runtime"], optional = true }
+crawlberg = { version = "1.12.0", default-features = false, features = ["native-runtime"], optional = true }
 directories = "6"
 fjall = "3.1.12"
 form_urlencoded = { version = "1", optional = true }
@@ -160,7 +160,7 @@ futures = { version = "0.3", optional = true }
 # OS CSPRNG for the comms daemon's HTTP bearer token. Already in the graph via ahash, so this adds ~keep
 # no build cost; a hand-rolled seed mix would be rolling our own crypto for a credential. ~keep
 getrandom = { version = "0.4", features = ["std"], optional = true }
-gix = { version = "0.89.0", features = ["status", "blob-diff", "revision", "max-performance-safe"] }
+gix = { version = "0.90.0", features = ["status", "blob-diff", "revision", "max-performance"] }
 globset = "0.4"
 hex = "0.4"
 # Loopback-TCP hyper server hosting the streamable-HTTP MCP transport (comms daemon only). ~keep
@@ -169,7 +169,7 @@ http-body-util = { version = "0.1", optional = true }
 hyper = { version = "1", features = ["server", "http1", "http2"], optional = true }
 hyper-util = { version = "0.1", features = ["server-auto", "tokio"], optional = true }
 ignore = "0.4"
-jsonschema = "0.59"
+jsonschema = "0.60"
 # ~keep `remote` is enabled only because lancedb 0.38-0.40 do not compile without it: `error.rs`
 # ~keep gates `Error::Http` behind `#[cfg(feature = "remote")]` while `job.rs` uses it unconditionally.
 # ~keep It pulls tonic/arrow-flight/reqwest in but nothing is invoked; drop it once upstream fixes the gate.
@@ -192,7 +192,7 @@ oxc_syntax = { version = "0.155.0", optional = true }
 rayon = "1"
 regex = "1.13.1"
 regex-syntax = "0.8"
-rmcp = { version = "3.6", default-features = false, features = ["server", "macros", "schemars", "transport-async-rw"] }
+rmcp = { version = "3.7", default-features = false, features = ["server", "macros", "schemars", "transport-async-rw"] }
 rmp-serde = "1"
 rmux-client = { version = "0.10", default-features = false, optional = true }
 rmux-sdk = { version = "0.10", default-features = false, optional = true }
@@ -242,7 +242,7 @@ basemind = { path = ".", features = ["test-support"] }
 criterion = { version = "0.8", features = ["html_reports"] }
 insta = "1"
 proptest = "1"
-rmcp = { version = "3.6", features = ["client", "transport-async-rw", "transport-child-process"] }
+rmcp = { version = "3.7", features = ["client", "transport-async-rw", "transport-child-process"] }
 tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "test-util"] }
 wiremock = "0.6"
