@@ -98,6 +98,17 @@ jobs:
           sudo rm -rf /Library/Developer/CoreSimulator/Profiles/Runtimes/* || true
           df -h /
 
+      # ~keep The windows-2025 image leaves C: with ~500 MB free, below the scan's pre-flight space
+      # ~keep check, so every test that scans into a tempdir failed with InsufficientSpace. The
+      # ~keep checkout and target/ already live on D:; move TMP/TEMP there too.
+      - name: Move temp to the work drive (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          "TMP=$env:RUNNER_TEMP" >> $env:GITHUB_ENV
+          "TEMP=$env:RUNNER_TEMP" >> $env:GITHUB_ENV
+          Get-PSDrive -PSProvider FileSystem | Format-Table Name, Used, Free
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
