@@ -7,6 +7,8 @@ x-ai-rulez:
   id: mcp-domain-migrator
   metadata:
     model: opus
+    gemini_model: pro
+    opencode_model: anthropic/claude-opus-5-5
     name: mcp-domain-migrator
 ---
 

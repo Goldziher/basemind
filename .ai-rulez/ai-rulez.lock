@@ -2,9 +2,9 @@
 # Refresh it with `ai-rulez lock`; `ai-rulez generate --locked` fails when it is stale.
 
 version = 1
-ai_rulez_version = '5.5.3'
+ai_rulez_version = '5.6.2'
 scope = 'all'
-tree = 'sha256:1ecc2b018c7e0165eca24a8f22c97998f67c61ad1306c4d4cb92b7a2555f5996'
+tree = 'sha256:d99d8c2c47d8ff164ad3453b4807019c9e2ba08302aae7180cfa7bb280c264d5'
 
 [[served]]
 name = 'adr-workflow'
@@ -160,7 +160,7 @@ digest = 'sha256:ada4405aa2cd8071ff0dcd12117493229d428f843925952483050a980084ff5
 kind = 'agent'
 id = 'mcp-domain-migrator'
 path = 'agents/mcp-domain-migrator.md'
-digest = 'sha256:5892d60670090fedf7da867ecd3f381df8d3df3164b8705ed8f463424172214d'
+digest = 'sha256:16db10b0b05353f72ab6b64e2bc68adce1d34c0c684ff162de3ff781a5ce4a65'
 
 [[item]]
 kind = 'agent'

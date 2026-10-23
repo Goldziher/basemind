@@ -9,6 +9,12 @@ presets = ["claude", "cursor", "codex", "gemini", "kimi", "opencode", "factory",
 
 builtins = ["rust", "cicd", "documentation", "observability", "default-commands"]
 
+# Gemini CLI and OpenCode reject the Claude aliases (`sonnet`/`opus`) the agents declare, so give
+# those presets their own sonnet-tier default; agents that need the opus tier override per agent.
+[defaults.model_by_preset]
+gemini = "flash"
+opencode = "anthropic/claude-sonnet-5-5"
+
 [[mcp_servers]]
 name = "ai-rulez"
 description = "Manage AI governance config via MCP."
@@ -20,6 +26,10 @@ self_server_command = ["ai-rulez", "mcp"]
 
 [codex]
 project_doc_max_bytes = 65536
+
+# The generator honours per-preset `<preset>_model` agent frontmatter, but AR303 does not know it.
+[lint]
+allowed_keys = ["gemini_model", "opencode_model"]
 
 [lint.load_budgets]
 "codex-agents-chain" = 65536
