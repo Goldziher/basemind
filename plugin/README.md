@@ -108,7 +108,9 @@ versions match the requested existing release tag. Marketplace indexes pin that 
 immutable commit; the archive attaches to the requested release. It does not create a product
 tag or publish registry packages.
 
-The new npm package requires its first manual bootstrap and a trusted-publisher configuration;
+The new npm package requires its first manual bootstrap and a trusted-publisher configuration
+(`npm trust github @goldziher/basemind-plugin --repo Goldziher/basemind --file publish.yaml
+--allow-publish`; without it the OIDC token exchange returns 404 and the publish fails);
 Hermes publishing requires its PyPI trusted publisher. Configure those account settings before
 requesting a release. Existing version 0.29.3 registry packages do not contain these unreleased
 changes. See the [root README](../README.md).

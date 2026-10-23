@@ -1059,7 +1059,7 @@ jobs:
           name="$(jq -r '.name' plugin/package.json)"
           version="${{ needs.meta.outputs.version }}"
           if ! pnpm view "$name" version >/dev/null 2>&1; then
-            echo "::error::$name needs a first manual publish and trusted publisher setup; see docs/INSTALL-PACKAGES.md."
+            echo "::error::$name needs a first manual publish and trusted publisher setup; see plugin/README.md."
             exit 1
           fi
           if pnpm view "$name@$version" version >/dev/null 2>&1; then
