@@ -10,27 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed
-
-- Dependencies: `rmcp` 3.7, `gix` 0.90 (its `max-performance` is the old `max-performance-safe`), `jsonschema`
-  0.60, `crawlberg` 1.12, `oxc_*` 0.155, `lru` 0.19, `arc-swap` 1.9.3, plus compatible lockfile updates. `arrow`
-  stays at 58 (lancedb 0.40 is the latest and requires `^58`), `bincode` at 2.x (3.0.0 is a placeholder release),
-  `rustix` at 1.1.4 (rmux-client). The OpenCode plugin depends on `@opencode/plugin` ^2.1.2; the Python wrapper
-  requires `certifi>=2026.10.19` (distrusted emSign roots). The Hermes plugin stays on `mcp` 1.30.0, the latest
-  1.x: Hermes Agent pins `mcp==1.26.0` and 2.x renames `McpError`.
-- CI actions move to their current majors (`checkout` v7, `setup-node` / `setup-python` / `upload-artifact` v7,
-  `upload-pages-artifact` / `deploy-pages` v5, `pnpm/action-setup` v6, `setup-uv` v10.3.1).
-
-### Fixed
-
-- Linux scans no longer crawl at about five seconds per file when the process runs in a cgroup with no
-  enforced memory limit: a CI runner's service or a desktop session's scope. The memory ceiling compared
-  that shared cgroup's working set, which includes other processes and active page cache, with a quarter of
-  RAM, so the drive governor waited out every admit and narrowed to one file per chunk. Without an
-  enforced limit the reading now uses the process's own RSS, as it already did with no cgroup. This is
-  also what made the Ubuntu CI test legs time out.
-
-## [0.31.0] - 2026-10-22
+## [0.31.0] - 2026-10-23
 
 This minor bumps the persisted blob, index and git-history schema versions, so `.basemind/` is wiped and
 rebuilt on the next scan.
@@ -52,6 +32,14 @@ rebuilt on the next scan.
 - The pinned `ai-rulez` moves to **5.5.3** everywhere: the validation, publish and plugin-artifact workflows and
   both lock files. Strict validation demotes the AR602/AR701/AR703/AR801 codes that fire on the intentionally
   mirrored skill trees and launchers.
+- Dependencies: `rmcp` 3.7, `gix` 0.90 (its `max-performance` is the old `max-performance-safe`), `jsonschema`
+  0.60, `crawlberg` 1.12, `oxc_*` 0.155, `lru` 0.19, `arc-swap` 1.9.3, plus compatible lockfile updates. `arrow`
+  stays at 58 (lancedb 0.40 is the latest and requires `^58`), `bincode` at 2.x (3.0.0 is a placeholder release),
+  `rustix` at 1.1.4 (rmux-client). The OpenCode plugin depends on `@opencode/plugin` ^2.1.2; the Python wrapper
+  requires `certifi>=2026.10.19` (distrusted emSign roots). The Hermes plugin stays on `mcp` 1.30.0, the latest
+  1.x: Hermes Agent pins `mcp==1.26.0` and 2.x renames `McpError`.
+- CI actions move to their current majors (`checkout` v7, `setup-node` / `setup-python` / `upload-artifact` v7,
+  `upload-pages-artifact` / `deploy-pages` v5, `pnpm/action-setup` v6, `setup-uv` v10.3.1).
 
 ### Fixed
 
@@ -69,6 +57,18 @@ rebuilt on the next scan.
   RUSTSEC-2026-0383: distrusted emSign intermediates).
 - The document-tier tests use `*.svg` fixtures, which 0.30.0's default `[documents] exclude` drops; they now
   clear the exclude list, so the full-feature test suite is green again.
+- Linux scans no longer crawl at about five seconds per file when the process runs in a cgroup with no
+  enforced memory limit: a CI runner's service or a desktop session's scope. The memory ceiling compared
+  that shared cgroup's working set, which includes other processes and active page cache, with a quarter of
+  RAM, so the drive governor waited out every admit and narrowed to one file per chunk. Without an
+  enforced limit the reading now uses the process's own RSS, as it already did with no cgroup. This is
+  also what made the Ubuntu CI test legs time out.
+- The npm agent plugin (`@goldziher/basemind-plugin`) never had a trusted publisher, so its OIDC token
+  exchange returned 404 and the 0.30.0 and 0.31.0 release runs failed on it; the publisher is configured and
+  the workflow's bootstrap error now points at the setup steps in `plugin/README.md`.
+- Gemini CLI and OpenCode agents get real model ids (`flash` / `pro`, `anthropic/claude-sonnet-5-5` /
+  `anthropic/claude-opus-5-5`) instead of silently inheriting the session model, which they did because
+  neither harness accepts the Claude `sonnet` / `opus` aliases.
 
 ## [0.30.0] - 2026-10-18
 
