@@ -7,6 +7,10 @@ gitignore = true
 [lock]
 include_outputs = false
 
+# The generator honours per-preset `<preset>_model` agent frontmatter, but AR303 does not know it.
+[lint]
+allowed_keys = ["gemini_model", "opencode_model"]
+
 # One authored skill is mirrored across `skills/`, `plugin/.ai-rulez/skills/` and every committed
 # runtime bundle, so an identical description across the copies is expected and the collapse is
 # intended — keep both findings visible without failing `validate --strict`. AR801 fires on the
