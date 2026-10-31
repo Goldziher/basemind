@@ -41,7 +41,9 @@ EXCLUDES=(
 
   "/Cargo.toml"
   "/Cargo.lock"
-  "/Taskfile.yaml"
+  "/mise-tasks/"
+  "/mise.lock"
+  "/mise.toml"
   "/build.rs"
   "/deny.toml"
   "/docs/"
@@ -54,6 +56,7 @@ EXCLUDES=(
   "/target/"
   "/tests/"
   "/tmp/"
+  "/toolchains.toml"
 )
 
 IGNORED_DIR_EXCLUDES=()

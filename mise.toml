@@ -12,3 +12,83 @@ python = "3.13.18"
 uv = "0.13.6"
 node = "26.12.1"
 pnpm = "12.15.0"
+
+[tasks.setup]
+description = "Install all dependencies and initialize project. Idempotent."
+run = ["mise install", "cargo fetch", { task = "governance:hooks:install" }, "echo 'Setup complete'"]
+
+[tasks.build]
+description = "Build the basemind binary"
+run = "cargo build --release"
+
+[tasks.test]
+description = "Run all tests"
+run = ["cargo test --workspace --no-fail-fast", { task = "hermes:test" }]
+
+[tasks."test:verbose"]
+description = "Run tests with verbose output"
+run = "cargo test --workspace --no-fail-fast -- --nocapture"
+
+[tasks.check]
+description = "Run all checks (lint + test)"
+run = [{ task = "lint" }, { task = "test" }]
+
+[tasks.format]
+description = "Format code"
+run = "cargo fmt --all"
+
+[tasks.clean]
+description = "Clean build artifacts"
+run = "cargo clean"
+
+[tasks.update]
+description = "Update dependencies (compatible versions only — no Cargo.toml edits)"
+run = "cargo update"
+
+[tasks.upgrade]
+description = "Upgrade dependencies to latest, including incompatible bumps (rewrites Cargo.toml)"
+run = ["cargo upgrade --incompatible", "cargo update"]
+
+[tasks."plugin:generate"]
+description = "Generate native plugins and all public compatibility exports"
+run = ["python3 scripts/sync_plugin_version.py", "bash scripts/sync-plugin-skills.sh"]
+
+[tasks."plugin:test"]
+description = "Exercise archive, public export, and actual CLI integration contracts"
+run = [
+  "uv run --no-project --with pytest --with mcp==1.28.1 python -m pytest scripts/tests tests/test_legacy_plugin_exports.py pip-package-hermes/tests",
+  "node tests/basemind_pi_cli_contract.mjs",
+]
+
+[tasks."plugin:verify"]
+description = "Verify native plugin and public export freshness"
+tools = { node = "26.12.1" }
+run = [
+  "python3 scripts/sync_plugin_version.py --check",
+  "npx -y ai-rulez@latest verify --plugin",
+  "python3 scripts/sync_public_skills.py --check",
+  "python3 scripts/sync_legacy_plugin_exports.py --check",
+]
+
+[tasks.harden]
+description = "Run the real-OSS hardening harness against all canary repos"
+run = "./scripts/harden.sh"
+
+[tasks."demo:record"]
+description = "Record the CLI demo to an asciinema cast and render docs/media/demo.gif (needs asciinema + agg)"
+run = "./scripts/demo-record.sh"
+
+[tasks."release:sync-version"]
+description = "Sync version across every shipped surface (Cargo, npm wrappers, PyPI, plugin manifests)"
+usage = 'arg "<version>" help="Release version, e.g. 0.1.0"'
+run = [
+  './scripts/release-bump.sh "$usage_version"',
+  "cargo test --test config_schema --features full -- --ignored regenerate_schema",
+]
+
+[tasks."release:dry-run"]
+description = "Dry-run the real release packaging path for the host platform (build + package-release.sh + checksums + launcher smoke)"
+run = "./scripts/release-dry-run.sh"
+
+[task_config]
+includes = ["mise-tasks", "mise-tasks/shared.toml"]
