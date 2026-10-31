@@ -392,11 +392,15 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # ~keep MACOSX_DEPLOYMENT_TARGET holds the minimum macOS at 14.0 for the Rust and CMake-built
+          # ~keep code; without it, cmake targets the macos-26 runner's SDK.
           - triple: aarch64-apple-darwin
             os: macos-26
+            macos_deployment_target: "14.0"
           - triple: x86_64-apple-darwin
             os: macos-26-intel
             features: full,ort-dynamic
+            macos_deployment_target: "14.0"
           - triple: x86_64-pc-windows-msvc
             # Pinned to windows-2022 (VS2022 / MSVC 14.4x). `windows-latest` rolled to a VS18 /
             # MSVC 14.51 image that fails to compile xberg-libwpd's vendored C++
@@ -404,6 +408,8 @@ jobs:
             # release — compiles it. Revisit when the newer MSVC (or upstream libwpd) handles it.
             os: windows-2022
     runs-on: ${{ matrix.os }}
+    env:
+      MACOSX_DEPLOYMENT_TARGET: ${{ matrix.macos_deployment_target }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
