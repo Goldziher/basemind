@@ -4,7 +4,7 @@
 - **Date:** 2026-10-18
 - **Decision record:** [ADR-0016](adr/0016-shared-base-index-and-worktree-overlays.md)
 - **Tracking issue:** #87
-- **Target release:** 0.31.0 (phases A2–A8; A0/A1 shipped in 0.30.0)
+- **Target release:** A2–A3 shipped in 0.31.0; A4–A8 unscheduled
 
 This document is the executable plan behind ADR-0016. The ADR records *what* was decided and *why*;
 this file records *how* — the on-disk layout, the data model, the exact read-merge rules per keyspace,
