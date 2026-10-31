@@ -10,8 +10,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.31.1]
+
+A patch release with no schema change, so `.basemind/` is kept.
+
 ### Changed
 
+- **Tasks and tools run through mise.** `mise.toml` and `mise.lock` pin poly, Python, uv, Node and pnpm at
+  the xberg-io/toolchains v1.12.3 baseline, and every Taskfile task is now `mise run <task>` under the same
+  name; `release:sync-version` takes the version as an argument (`mise run release:sync-version X.Y.Z`).
+  CI installs tools with `setup-mise`, gains the `check-toolchain` gate, and builds the macOS release
+  binaries on macos-26 with `MACOSX_DEPLOYMENT_TARGET=14.0`.
+- **Plugin bundles are regenerated with ai-rulez 5.9.8.** Both `.ai-rulez/` trees are converted to OKF, and
+  the bundles change only in provenance headers and index lists; the plugin version moves with the crate so
+  cached installs pick them up. ai-rulez is no longer pinned in CI.
 - Dependencies: `lancedb` 0.41, `fjall` 3.1.13, `rmcp` 3.8, `crawlberg` 1.12.3, `oxc_*` 0.156, plus
   compatible lockfile updates. `liter-llm` is held at 2.3.0: `xberg` 1.3.10 (the latest) does not build
   against 2.4's `RerankRequest` / `EmbeddingRequest` / `LlmConfig` fields. `arrow` stays at 58 because
