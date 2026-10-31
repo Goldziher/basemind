@@ -11,11 +11,11 @@ These use a duck-typed fake ``ctx`` — no Hermes dependency — and assert the 
 from __future__ import annotations
 
 import importlib.util
+import tomllib
 from pathlib import Path
 
 import basemind_hermes_plugin
 import pytest
-import tomllib
 
 try:
     from basemind_hermes_plugin import hermes
