@@ -33,10 +33,6 @@ run = "cargo test --workspace --no-fail-fast -- --nocapture"
 description = "Run all checks (lint + test)"
 run = [{ task = "lint" }, { task = "test" }]
 
-[tasks.format]
-description = "Format code"
-run = "cargo fmt --all"
-
 [tasks.clean]
 description = "Clean build artifacts"
 run = "cargo clean"

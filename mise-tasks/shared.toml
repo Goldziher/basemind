@@ -21,12 +21,15 @@ tools = { node = "26.12.1" }
 run = "npx -y ai-rulez@latest generate --check --no-local --strict-config"
 
 # Task set: lint-format
-# Omitted by task_overrides: format
 # Repository-wide lint and format through poly.
 
 [lint]
 description = "Run all linters via poly"
 run = "poly lint ."
+
+[format]
+description = "Format all code via poly"
+run = "poly fmt --fix ."
 
 ["format:check"]
 description = "Check code formatting without modifications"

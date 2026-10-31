@@ -69,7 +69,9 @@
 .card {
   background: color-mix(in oklch, var(--sl-color-gray-6) 60%, transparent);
   border: 1px solid var(--sl-color-gray-5);
-  transition: border-color 0.2s ease, transform 0.2s ease;
+  transition:
+    border-color 0.2s ease,
+    transform 0.2s ease;
 }
 .card:hover {
   border-color: color-mix(in oklch, var(--bm-purple) 60%, var(--sl-color-gray-5));
