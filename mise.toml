@@ -1,0 +1,14 @@
+# Versions follow the xberg-io/toolchains baseline named in toolchains.toml. Rust has no
+# rust-toolchain.toml here and follows the stable channel. ~keep
+[settings]
+lockfile = true
+lockfile_platforms = ["linux-x64", "linux-arm64", "macos-arm64", "windows-x64"]
+# CI installs only the tools a job needs; `mise run` must not install the rest behind its back. ~keep
+task.run_auto_install = false
+
+[tools]
+"github:Goldziher/poly" = "0.31.2"
+python = "3.13.18"
+uv = "0.13.6"
+node = "26.12.1"
+pnpm = "12.15.0"
