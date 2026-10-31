@@ -7,19 +7,19 @@ small surface area and a sharp commit-quality bar.
 
 ```sh
 git clone https://github.com/Goldziher/basemind && cd basemind
-task setup     # cargo fetch + poly hook install (one-time)
-task check     # lint + test
+mise run setup     # mise install + cargo fetch + poly hook install (one-time)
+mise run check     # lint + test
 ```
 
 You'll need:
 
 - Rust 2024 edition (stable)
-- [`task`](https://taskfile.dev) — task runner
-- [`poly`](https://github.com/Goldziher/poly) — lint and git-hook runner (installed by `task setup`)
+- [`mise`](https://mise.jdx.dev) — toolchain and task runner; `mise install` provides poly, Node, pnpm, Python
+  and uv at the versions in `mise.toml`
 
 ## Pre-commit hooks
 
-Install the git hooks with `task setup` (or `poly hooks install` directly). On
+Install the git hooks with `mise run setup` (or `mise run governance:hooks:install` directly). On
 every commit, poly runs lint, format, and file-safety checks plus `cargo clippy`;
 the commit-msg hook validates the message. Run all hooks manually with
 `poly hooks run pre-commit --all-files`.
@@ -30,7 +30,7 @@ the commit-msg hook validates the message. Run all hooks manually with
 2. Branch from `main`. Keep branches short-lived; rebase if drift gets ugly.
 3. Write tests first when the change is observable from the public API or MCP
    surface. RED → GREEN → REFACTOR.
-4. Run `task check` before pushing — `poly` runs the same hooks locally that CI
+4. Run `mise run check` before pushing — `poly` runs the same hooks locally that CI
    runs.
 5. Open a PR. Conventional Commit prefix in the title:
    - `feat:` new functionality

@@ -26,7 +26,7 @@ is wasted work; it is overwritten on the next regen.
 - Edit `.ai-rulez/rules/*.md`, `.ai-rulez/context/*.md`, `.ai-rulez/agents/*.md`,
   `.ai-rulez/skills/*/SKILL.md`.
 - Regenerate governance with the installed `ai-rulez generate`; public plugins use
-  `task plugin:generate` from the authoritative `plugin/.ai-rulez/` sources.
+  `mise run plugin:generate` from the authoritative `plugin/.ai-rulez/` sources.
 - The `.codex-plugin/` / `.cursor-plugin/` / `opencode-plugin/` **command** mirrors are **not**
   ai-rulez outputs. They are hand-synced copies of `commands/*.md` and drift silently.
 

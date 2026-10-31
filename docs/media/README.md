@@ -15,7 +15,7 @@ domain surfaces.
 Re-record (needs `asciinema` + `agg` on PATH — macOS: `brew install asciinema agg`):
 
 ```bash
-task demo:record        # → scripts/demo-record.sh
+mise run demo:record    # → scripts/demo-record.sh
 ```
 
 The recorded command sequence lives in `scripts/demo.sh`; edit that to change

@@ -4,7 +4,7 @@
 version = 1
 ai_rulez_version = '5.9.8'
 scope = 'all'
-tree = 'sha256:b732bbf20e61fe6906b712a16cbb99e530aed4b9ddb9e8b1b75c61953a6802a6'
+tree = 'sha256:cdf571a4268c6f5914e68ef59b976afb691e8b2cbb730555367893de3d909afc'
 
 [[served]]
 name = 'adr-workflow'
@@ -184,7 +184,7 @@ digest = 'sha256:ce6b621eef9d66c75fef943199bb6f0371c1970883d6bb6948c7cdd36db32d6
 kind = 'agent'
 id = 'surface-docs-writer'
 path = 'agents/surface-docs-writer.md'
-digest = 'sha256:3b559c9ebc1676a81f94010b87c82021c9a34a5d5662d83c2e8822979fcae655'
+digest = 'sha256:8a37493eccac2db4ffa6285cb2d6f74ebb4410ad56c06ce17fb46c5bfe4db873'
 
 [[item]]
 kind = 'command'
@@ -286,7 +286,7 @@ digest = 'sha256:de5f1b738a9101ac064e363c8a60db9a35cf2b1e2275fd77e4fb94f609a9578
 kind = 'rule'
 id = 'release-versioning'
 path = 'rules/release-versioning.md'
-digest = 'sha256:f4aa22d315c56ca0bb1085eb3d9c71d56e084ff885667be62c4e684fefeff448'
+digest = 'sha256:96eca079872a6471bf1544074311004946435bfb055a3cb12aecc3d08457483f'
 
 [[item]]
 kind = 'rule'

@@ -43,7 +43,7 @@ JavaScript and terminal adapters below.
 ## Package maintenance
 
 `scripts/sync-plugin-skills.sh` mirrors the canonical `.pi/extensions/basemind.ts`
-and product skills into this package. `task package:plugin` stages the combined
+and product skills into this package. `mise run package:plugin` stages the combined
 package from canonical sources and runs a real pnpm pack without changing the
 checkout. The existing `publish_opencode` job checks the ten skills, native Pi
 extension, and both OpenCode adapters before publishing the packed archive.

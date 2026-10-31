@@ -55,7 +55,7 @@ dependencies, but no basemind binary.
 
 Missing or invalid required skill resources and required registration errors disable the plugin
 with a named Hermes error. Reinstall a complete wheel before restarting Hermes; optional
-notification failures remain best effort. Maintainers can run `task plugin:hermes:native:test`
+notification failures remain best effort. Maintainers can run `mise run plugin:hermes:native:test`
 with `HERMES_PYTHON` pointing to the Hermes SDK interpreter.
 
 ### Pi and OpenCode packages
