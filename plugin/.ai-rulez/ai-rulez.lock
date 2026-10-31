@@ -4,7 +4,7 @@
 version = 1
 ai_rulez_version = '5.9.8'
 scope = 'all'
-tree = 'sha256:79650ccd88f3617eaf3ce96dcac6fd42b92a81c8ac6904125b1dc79510d58fbf'
+tree = 'sha256:04721abc98e8c23579c5b50c51511a56342920c6f9e96c95f358a76ed306e1c0'
 
 [[item]]
 kind = 'command'
@@ -22,7 +22,7 @@ digest = 'sha256:491ef4c27bd6e23fc41b7835ee84b810bfb66e2d70821b9a0212d5d5ad80851
 kind = 'command'
 id = 'bm-init'
 path = 'commands/bm-init.md'
-digest = 'sha256:78e97310f19183326930a3c0e31603d934a394bd7e4292b0056a8a89d6e2b694'
+digest = 'sha256:ea54c36376abca0dedc5f4e5d45972b7e773352893c42f95c6dfad2ea7d219b8'
 
 [[item]]
 kind = 'command'

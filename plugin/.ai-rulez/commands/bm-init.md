@@ -79,12 +79,12 @@ capabilities (documents/RAG, agent-comms, semantic search). Safe to re-run: it's
 - The block is wrapped in an idempotent `<!-- BEGIN basemind … -->` … `<!-- END basemind -->`
   block that is replaced in place on re-run, never duplicated. Content outside the markers is
   never touched.
-- **`.gitignore` coverage**: whenever `init` is about to write one of the gitignored-by-convention
-  files (`CLAUDE.local.md`, `AGENTS.local.md`, `.claude/settings.local.json`, anything under
-  `.ai-rulez/local/`), it checks whether an existing `.gitignore` already covers that path. If not,
-  it prompts `add "<pattern>" to .gitignore? [Y/n]` interactively, or appends the pattern
-  automatically with `--yes`, so a personal `.local` file is never one accidental `git add -A` away
-  from being committed.
+- **`.gitignore` coverage**: whenever `init` is about to write one of the files that are
+  gitignored by convention (`CLAUDE.local.md`, `AGENTS.local.md`, `.claude/settings.local.json`,
+  anything under `.ai-rulez/local/`), it checks whether an existing `.gitignore` already covers
+  that path. If not, it prompts `add "<pattern>" to .gitignore? [Y/n]` interactively, or appends
+  the pattern automatically with `--yes`, so a personal `.local` file is never one accidental
+  `git add -A` away from being committed.
 - The settings-permissions step is opt-in and defaults to **skipped** non-interactively — pass
   `--settings-target local` (or `shared`) explicitly to enable it. The merge only ever
   adds/dedupes basemind's own entry inside `permissions.allow`; every other key in

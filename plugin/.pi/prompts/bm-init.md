@@ -6,8 +6,8 @@ description: Onboard (or refresh) basemind in this repo — write basemind.toml 
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:32da4580dfe026d2e1001d50c0cef7346956628c570a0793b7039c10b0455f93
-Source-Hash: blake3:32d3d3e48414ae96ccc8521d251d288fbae3b53f21ecc49bdd35bec0b79f0d33
+Content-Hash: blake3:23c4d4a63b521b5da720ff533588311bfd0eef7f215924793deb7e77d51ee388
+Source-Hash: blake3:6d581de95a98294c2f70c5a5f2883a0b08a1556563408cd381834ec220b85839
 Schema-Version: v1
 -->
 
@@ -79,12 +79,12 @@ capabilities (documents/RAG, agent-comms, semantic search). Safe to re-run: it's
 - The block is wrapped in an idempotent `<!-- BEGIN basemind … -->` … `<!-- END basemind -->`
   block that is replaced in place on re-run, never duplicated. Content outside the markers is
   never touched.
-- **`.gitignore` coverage**: whenever `init` is about to write one of the gitignored-by-convention
-  files (`CLAUDE.local.md`, `AGENTS.local.md`, `.claude/settings.local.json`, anything under
-  `.ai-rulez/local/`), it checks whether an existing `.gitignore` already covers that path. If not,
-  it prompts `add "<pattern>" to .gitignore? [Y/n]` interactively, or appends the pattern
-  automatically with `--yes`, so a personal `.local` file is never one accidental `git add -A` away
-  from being committed.
+- **`.gitignore` coverage**: whenever `init` is about to write one of the files that are
+  gitignored by convention (`CLAUDE.local.md`, `AGENTS.local.md`, `.claude/settings.local.json`,
+  anything under `.ai-rulez/local/`), it checks whether an existing `.gitignore` already covers
+  that path. If not, it prompts `add "<pattern>" to .gitignore? [Y/n]` interactively, or appends
+  the pattern automatically with `--yes`, so a personal `.local` file is never one accidental
+  `git add -A` away from being committed.
 - The settings-permissions step is opt-in and defaults to **skipped** non-interactively — pass
   `--settings-target local` (or `shared`) explicitly to enable it. The merge only ever
   adds/dedupes basemind's own entry inside `permissions.allow`; every other key in
