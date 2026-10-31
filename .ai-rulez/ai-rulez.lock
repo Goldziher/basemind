@@ -2,9 +2,9 @@
 # Refresh it with `ai-rulez lock`; `ai-rulez generate --locked` fails when it is stale.
 
 version = 1
-ai_rulez_version = '5.6.2'
+ai_rulez_version = '5.9.8'
 scope = 'all'
-tree = 'sha256:d99d8c2c47d8ff164ad3453b4807019c9e2ba08302aae7180cfa7bb280c264d5'
+tree = 'sha256:b732bbf20e61fe6906b712a16cbb99e530aed4b9ddb9e8b1b75c61953a6802a6'
 
 [[served]]
 name = 'adr-workflow'
@@ -22,25 +22,25 @@ digest = 'sha256:b4fa5cc277a4c45628f0d565dc86c6532b32a40a9c8177ada8808bc0e2baeea
 name = 'code-quality-standards'
 source = 'builtin://universal/code-quality/skills/code-quality-standards/SKILL.md'
 commit = ''
-digest = 'sha256:8e01021ac23e15b01cac75b4ee9c1971a4c57a7d949d390fb4e0b6943f91afe2'
+digest = 'sha256:fbb459dca3be6c91a4fe1944e844728c53e8856b517c5b122b8b2aeac566f666'
 
 [[served]]
 name = 'config-placement'
 source = 'builtin://universal/ai-governance/skills/config-placement/SKILL.md'
 commit = ''
-digest = 'sha256:dd198e7e6c233cc4509b95b165f10054849cf77c394d54d1f59045857d88191a'
+digest = 'sha256:31adedeec2e2f4e7e0cc802f32467ad38d6db4034df698dac1ee9b52b747fd00'
 
 [[served]]
 name = 'dependency-awareness'
 source = 'builtin://universal/security/skills/dependency-awareness/SKILL.md'
 commit = ''
-digest = 'sha256:e108ed344fe20948fcbda61b96266026bb9b2318df089964c088c0455294f8d3'
+digest = 'sha256:8f41215233c26441abed2b18f35575ce6b5614f91d9bef4885d550322542d4a5'
 
 [[served]]
 name = 'error-handling'
 source = 'builtin://universal/code-quality/skills/error-handling/SKILL.md'
 commit = ''
-digest = 'sha256:fddb5f980e8d98c91b459be578cdea7e0fc765d8219f66088892e936f0d1e349'
+digest = 'sha256:fbc7d452c7171e71341578b6c7a56fc2c87031c0ce15d35884bc3260e04ff68a'
 
 [[served]]
 name = 'harden'
@@ -58,7 +58,7 @@ digest = 'sha256:59300322794fbcd4f1e1f9a0152f3daf503b2f8561ed29551966379e1b774db
 name = 'incremental-approach'
 source = 'builtin://universal/token-efficiency/skills/incremental-approach/SKILL.md'
 commit = ''
-digest = 'sha256:ff56cbdc4813ee427a3b6f7d23f6b41b82b7c3cc8dc2b64ccd256a90e75e02f8'
+digest = 'sha256:b31111df0d7c3427e8ef3257fedeea76bc2430e4e132e7c986ab39d7c9b0d9c6'
 
 [[served]]
 name = 'index-keyspace-evolution'
@@ -88,13 +88,13 @@ digest = 'sha256:615c2f9a0d379a04355204a509989bfe8dab1a5d092f4eb8892c3fa0ced3921
 name = 'observability-standards'
 source = 'builtin://universal/observability/skills/observability-standards/SKILL.md'
 commit = ''
-digest = 'sha256:491ab78f0208cc25bb6ba7c076d8f6b0c1d8b303dc4d1cbb70e64289ee10e834'
+digest = 'sha256:c3d27e5a159a86b7cb97a9c504f6328bd583436bf2860906a95c00039b4c75dd'
 
 [[served]]
 name = 'owasp-quick-reference'
 source = 'builtin://universal/security/skills/owasp-quick-reference/SKILL.md'
 commit = ''
-digest = 'sha256:de4f3b595b88e88d7bff0c342b5253637d08d79b3baebe888bd465f133ff512c'
+digest = 'sha256:195755e5e5628857b680bb0b0453c909f258a0c36ce3f1b8e1d746c7ea54bffc'
 
 [[served]]
 name = 'parallelize'
@@ -112,7 +112,7 @@ digest = 'sha256:81a09ed557ce3e437f8dda541bf6bed8ed9b03ec55b660a86bef91416f5bd21
 name = 'rust-conventions'
 source = 'builtin://languages/rust/skills/rust-conventions/SKILL.md'
 commit = ''
-digest = 'sha256:0a7c23c09a7fc29a7237fc838ab1491504f51f8d90fc114b52c1d914bf52214d'
+digest = 'sha256:dabcff852805a54326738de59f6a5bd6aa77092aefbfc3f67586dd762a1fcdb0'
 
 [[served]]
 name = 'scan'
@@ -136,19 +136,19 @@ digest = 'sha256:7ab2b543dc6608f204c957fedfc55ae902d22fda9dc8a52252330ff9b1406ff
 name = 'task-runner'
 source = 'builtin://universal/token-efficiency/skills/task-runner/SKILL.md'
 commit = ''
-digest = 'sha256:9f3cadda648798b049869c463d7a69f6f7b5953bcad2a43ea02e645d1ec3e19b'
+digest = 'sha256:c57056e3a74a261b3a9d47638726c7d1f64c76b255838b6aaa3e635f3ffa8618'
 
 [[served]]
 name = 'tdd-workflow'
 source = 'builtin://universal/testing/skills/tdd-workflow/SKILL.md'
 commit = ''
-digest = 'sha256:a07f0dd7b07b37533acbd76b571f831a9854935b817d5e5de1e94865052176c9'
+digest = 'sha256:6086fe4a492fd695490fc26dc917bf8af08046a695a4eba5dc8dbbd1f71bd852'
 
 [[served]]
 name = 'testing-conventions'
 source = 'builtin://universal/testing/skills/testing-conventions/SKILL.md'
 commit = ''
-digest = 'sha256:c8ee10cb9a2e70b51ca43dd1abec57d4cc448f9b3dd19a3d446f992336406b40'
+digest = 'sha256:f406604437e2998fc756a0a5b6a08cd832b871c188f76ee5ecbfef33184e9652'
 
 [[item]]
 kind = 'agent'
