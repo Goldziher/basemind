@@ -140,7 +140,7 @@ anstream = "1.0"
 anstyle = "1"
 anyhow = "1"
 arc-swap = "1.9.3"
-# ~keep Arrow major 58 matches LanceDB 0.40 so public schema and array types share one identity.
+# ~keep Arrow major 58 matches LanceDB 0.41 so public schema and array types share one identity.
 # Bumping past 58 forks arrow into two versions and breaks Scannable/Schema type identity. ~keep
 arrow-array = { version = "58", optional = true }
 arrow-schema = { version = "58", optional = true }
@@ -151,9 +151,9 @@ bytes = { version = "1", optional = true }
 clap = { version = "4", features = ["derive", "env"] }
 clap_complete = "4"
 clap_mangen = "0.3"
-crawlberg = { version = "1.12.0", default-features = false, features = ["native-runtime"], optional = true }
+crawlberg = { version = "1.12.3", default-features = false, features = ["native-runtime"], optional = true }
 directories = "6"
-fjall = "3.1.12"
+fjall = "3.1.13"
 form_urlencoded = { version = "1", optional = true }
 fs2 = "0.4"
 futures = { version = "0.3", optional = true }
@@ -170,10 +170,10 @@ hyper = { version = "1", features = ["server", "http1", "http2"], optional = tru
 hyper-util = { version = "0.1", features = ["server-auto", "tokio"], optional = true }
 ignore = "0.4"
 jsonschema = "0.60"
-# ~keep `remote` is enabled only because lancedb 0.38-0.40 do not compile without it: `error.rs`
+# ~keep `remote` is enabled only because lancedb 0.38-0.41 do not compile without it: `error.rs`
 # ~keep gates `Error::Http` behind `#[cfg(feature = "remote")]` while `job.rs` uses it unconditionally.
 # ~keep It pulls tonic/arrow-flight/reqwest in but nothing is invoked; drop it once upstream fixes the gate.
-lancedb = { version = "0.40.0", features = ["remote"], optional = true }
+lancedb = { version = "0.41.0", features = ["remote"], optional = true }
 libc = "0.2"
 # ~keep `extended` exposes `mi_option_set`, used by `alloc_tag` to retag the heap off `VM_MEMORY_IOACCELERATOR`.
 libmimalloc-sys = { version = "0.1", features = ["extended"] }
@@ -183,16 +183,16 @@ mimalloc = "0.1"
 notify = "8"
 notify-debouncer-full = "0.7"
 nucleo-matcher = "0.3.1"
-oxc_allocator = { version = "0.155.0", optional = true }
-oxc_parser = { version = "0.155.0", optional = true }
+oxc_allocator = { version = "0.156.0", optional = true }
+oxc_parser = { version = "0.156.0", optional = true }
 oxc_resolver = { version = "11.24.3", optional = true }
-oxc_semantic = { version = "0.155.0", optional = true }
-oxc_span = { version = "0.155.0", optional = true }
-oxc_syntax = { version = "0.155.0", optional = true }
+oxc_semantic = { version = "0.156.0", optional = true }
+oxc_span = { version = "0.156.0", optional = true }
+oxc_syntax = { version = "0.156.0", optional = true }
 rayon = "1"
 regex = "1.13.1"
 regex-syntax = "0.8"
-rmcp = { version = "3.7", default-features = false, features = ["server", "macros", "schemars", "transport-async-rw"] }
+rmcp = { version = "3.8", default-features = false, features = ["server", "macros", "schemars", "transport-async-rw"] }
 rmp-serde = "1"
 rmux-client = { version = "0.10", default-features = false, optional = true }
 rmux-sdk = { version = "0.10", default-features = false, optional = true }
@@ -242,7 +242,7 @@ basemind = { path = ".", features = ["test-support"] }
 criterion = { version = "0.8", features = ["html_reports"] }
 insta = "1"
 proptest = "1"
-rmcp = { version = "3.7", features = ["client", "transport-async-rw", "transport-child-process"] }
+rmcp = { version = "3.8", features = ["client", "transport-async-rw", "transport-child-process"] }
 tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "test-util"] }
 wiremock = "0.6"

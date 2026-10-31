@@ -10,6 +10,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Dependencies: `lancedb` 0.41, `fjall` 3.1.13, `rmcp` 3.8, `crawlberg` 1.12.3, `oxc_*` 0.156, plus
+  compatible lockfile updates. `liter-llm` is held at 2.3.0: `xberg` 1.3.10 (the latest) does not build
+  against 2.4's `RerankRequest` / `EmbeddingRequest` / `LlmConfig` fields. `arrow` stays at 58 because
+  `lancedb` 0.41 still requires `^58` (arrow 60 forks the array types and breaks `Scannable`), and
+  `bincode` stays on 2.x because 3.0.0 is a `compile_error!` placeholder for the unmaintained crate.
+
 ## [0.31.0] - 2026-10-23
 
 This minor bumps the persisted blob, index and git-history schema versions, so `.basemind/` is wiped and
