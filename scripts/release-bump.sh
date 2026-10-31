@@ -15,6 +15,13 @@ fi
 
 PY_VERSION="${VERSION//-rc./rc}"
 
+# Checked before any file is rewritten, so a missing ai-rulez cannot leave a half-bumped tree. ~keep
+AI_RULEZ="${AI_RULEZ:-ai-rulez}"
+command -v "$AI_RULEZ" >/dev/null 2>&1 || {
+  echo "error: ai-rulez is required to regenerate the Hermes package" >&2
+  exit 1
+}
+
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 
@@ -77,11 +84,6 @@ bump_json_version kimi.plugin.json
 bump_json_version .claude-plugin/marketplace.json
 bump_json_version .agents/plugins/marketplace.json
 
-AI_RULEZ="${AI_RULEZ:-ai-rulez}"
-command -v "$AI_RULEZ" >/dev/null 2>&1 || {
-  echo "error: ai-rulez is required to regenerate the Hermes package" >&2
-  exit 1
-}
 python3 scripts/sync_plugin_version.py
 AI_RULEZ="$AI_RULEZ" bash scripts/sync-plugin-skills.sh
 
