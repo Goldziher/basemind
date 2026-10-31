@@ -13,7 +13,8 @@ on:
       - "scripts/sync*"
       - "scripts/tests/**"
       - "pip-package-hermes/tests/**"
-      - "Taskfile.yaml"
+      - "mise.toml"
+      - "mise-tasks/**"
       - "Cargo.toml"
       - "pyproject.toml"
       - "package.json"
@@ -31,7 +32,8 @@ on:
       - "scripts/sync*"
       - "scripts/tests/**"
       - "pip-package-hermes/tests/**"
-      - "Taskfile.yaml"
+      - "mise.toml"
+      - "mise-tasks/**"
       - "Cargo.toml"
       - "pyproject.toml"
       - "package.json"
@@ -45,15 +47,14 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: xberg-io/actions/setup-ai-rulez@98adf87f1ed4c62a57ff56f9010d62faf42d4db6
-        with:
-          ai-rulez-version: "5.5.3"
-          source-revision: "96cd9197b358eb7d5c4ff38e7b83b5f3530b8677"
       - uses: xberg-io/actions/validate-ai-rulez@98adf87f1ed4c62a57ff56f9010d62faf42d4db6
         with:
           expected-config-count: "2"
           additional-config-directories: "plugin/.ai-rulez"
           verify-plugin: "true"
-      - uses: astral-sh/setup-uv@v10.3.1
+      - uses: xberg-io/actions/setup-mise@v1
+        with:
+          install-args: python uv
       - name: Build and strictly validate the Hermes wheel
         shell: bash
         run: |

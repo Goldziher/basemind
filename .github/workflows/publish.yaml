@@ -50,14 +50,11 @@ jobs:
           fetch-depth: 0
           ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || '' }}
 
-      - uses: pnpm/action-setup@v6
+      - name: Setup Node.js and pnpm
+        uses: xberg-io/actions/setup-mise@v1
         with:
-          version: 12.11.2
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v7
-        with:
-          node-version: "20"
+          install-args: node pnpm
+          config-ref: ${{ github.sha }}
 
       - name: Extract version from tag
         id: version
@@ -396,9 +393,9 @@ jobs:
       matrix:
         include:
           - triple: aarch64-apple-darwin
-            os: macos-latest
+            os: macos-26
           - triple: x86_64-apple-darwin
-            os: macos-15-intel
+            os: macos-26-intel
             features: full,ort-dynamic
           - triple: x86_64-pc-windows-msvc
             # Pinned to windows-2022 (VS2022 / MSVC 14.4x). `windows-latest` rolled to a VS18 /
@@ -874,15 +871,11 @@ jobs:
           fetch-depth: 0
           ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || '' }}
 
-      - uses: pnpm/action-setup@v6
+      - name: Setup Node.js and pnpm
+        uses: xberg-io/actions/setup-mise@v1
         with:
-          version: 12.11.2
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v7
-        with:
-          node-version: "20"
-          registry-url: "https://registry.npmjs.org"
+          install-args: node pnpm
+          config-ref: ${{ github.sha }}
 
       - name: Publish to npm
         env:
@@ -912,15 +905,11 @@ jobs:
           fetch-depth: 0
           ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || '' }}
 
-      - uses: pnpm/action-setup@v6
+      - name: Setup Node.js and pnpm
+        uses: xberg-io/actions/setup-mise@v1
         with:
-          version: 12.11.2
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v7
-        with:
-          node-version: "24"
-          registry-url: "https://registry.npmjs.org"
+          install-args: node pnpm
+          config-ref: ${{ github.sha }}
 
       - name: Stage and verify the combined agent package
         run: |
@@ -978,9 +967,10 @@ jobs:
           ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || '' }}
 
       - name: Setup Python
-        uses: actions/setup-python@v7
+        uses: xberg-io/actions/setup-mise@v1
         with:
-          python-version: "3.8"
+          install-args: python
+          config-ref: ${{ github.sha }}
 
       - name: Build Python package
         run: |
@@ -1012,9 +1002,6 @@ jobs:
 
       - name: Install reviewed ai-rulez
         uses: xberg-io/actions/setup-ai-rulez@98adf87f1ed4c62a57ff56f9010d62faf42d4db6
-        with:
-          ai-rulez-version: "5.5.3"
-          source-revision: "96cd9197b358eb7d5c4ff38e7b83b5f3530b8677"
 
       - name: Verify generated product bundles and public skills
         run: |
@@ -1022,15 +1009,11 @@ jobs:
           python3 scripts/sync_public_skills.py --check
           python3 scripts/sync_plugin_version.py --check
 
-      - uses: pnpm/action-setup@v6
+      - name: Setup Node.js and pnpm
+        uses: xberg-io/actions/setup-mise@v1
         with:
-          version: 12.11.2
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v7
-        with:
-          node-version: "24"
-          registry-url: "https://registry.npmjs.org"
+          install-args: node pnpm
+          config-ref: ${{ github.sha }}
 
       - name: Verify packed Pi and OpenCode resources
         run: |
@@ -1101,9 +1084,6 @@ jobs:
           fetch-depth: 0
       - name: Install ai-rulez
         uses: xberg-io/actions/setup-ai-rulez@98adf87f1ed4c62a57ff56f9010d62faf42d4db6
-        with:
-          ai-rulez-version: "5.5.3"
-          source-revision: "96cd9197b358eb7d5c4ff38e7b83b5f3530b8677"
       - name: Verify public skill exports
         run: python3 scripts/sync_public_skills.py --check
       - name: Package all supported plugin runtimes
@@ -1150,9 +1130,6 @@ jobs:
           fetch-depth: 0
       - name: Install ai-rulez
         uses: xberg-io/actions/setup-ai-rulez@98adf87f1ed4c62a57ff56f9010d62faf42d4db6
-        with:
-          ai-rulez-version: "5.5.3"
-          source-revision: "96cd9197b358eb7d5c4ff38e7b83b5f3530b8677"
       - name: Verify plugin versions and generated resources before publishing
         env:
           VERSION: ${{ needs.meta.outputs.version }}
@@ -1161,9 +1138,10 @@ jobs:
           python3 scripts/sync_plugin_version.py --expect "$VERSION"
           python3 scripts/sync_public_skills.py --check
           ai-rulez verify --plugin
-      - uses: astral-sh/setup-uv@v10.3.1
+      - uses: xberg-io/actions/setup-mise@v1
         with:
-          python-version: "3.13"
+          install-args: python uv
+          config-ref: ${{ github.sha }}
       - name: Read the verified Hermes package version
         id: wheel-version
         run: |
@@ -1270,21 +1248,13 @@ jobs:
           ref: ${{ github.sha }}
       - name: Install reviewed ai-rulez
         uses: xberg-io/actions/setup-ai-rulez@98adf87f1ed4c62a57ff56f9010d62faf42d4db6
-        with:
-          ai-rulez-version: "5.5.3"
-          source-revision: "96cd9197b358eb7d5c4ff38e7b83b5f3530b8677"
       - name: Verify plugin versions and generated resources
         uses: xberg-io/actions/verify-ai-rulez-plugin@98adf87f1ed4c62a57ff56f9010d62faf42d4db6
         with:
           version-sync-script: scripts/sync_plugin_version.py
-      - uses: actions/setup-node@v7
+      - uses: xberg-io/actions/setup-mise@v1
         with:
-          node-version: "24"
-          registry-url: https://registry.npmjs.org
-      - uses: pnpm/action-setup@v6
-        with:
-          version: "12.11.2"
-          run_install: false
+          install-args: node pnpm
       - name: Read and check the exact npm version
         id: package
         shell: bash
@@ -1349,16 +1319,13 @@ jobs:
           ref: ${{ github.sha }}
       - name: Install reviewed ai-rulez
         uses: xberg-io/actions/setup-ai-rulez@98adf87f1ed4c62a57ff56f9010d62faf42d4db6
-        with:
-          ai-rulez-version: "5.5.3"
-          source-revision: "96cd9197b358eb7d5c4ff38e7b83b5f3530b8677"
       - name: Verify plugin versions and generated resources
         uses: xberg-io/actions/verify-ai-rulez-plugin@98adf87f1ed4c62a57ff56f9010d62faf42d4db6
         with:
           version-sync-script: scripts/sync_plugin_version.py
-      - uses: astral-sh/setup-uv@v10.3.1
+      - uses: xberg-io/actions/setup-mise@v1
         with:
-          python-version: "3.13"
+          install-args: python uv
       - name: Read the verified Hermes version
         id: package
         shell: bash
