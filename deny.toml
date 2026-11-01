@@ -22,6 +22,12 @@ ignore = [
   "RUSTSEC-2026-0367",
   "RUSTSEC-2026-0368",
   "RUSTSEC-2026-0369",
+  # zstd 0.13.3 / zstd-safe 7.3.0 stream-context reuse, Seekable length and legacy-frame flaws. Pulled in only by
+  # arrow-ipc 58 (via lancedb 0.41.0 -> arrow ^58), which pins zstd ^0.13; 0.13.3 and 7.3.0 are the last releases of
+  # those lines, and only arrow-ipc 60 moves to the patched zstd 0.14. Drop these once lancedb takes arrow 60.
+  "RUSTSEC-2026-0391",
+  "RUSTSEC-2026-0398",
+  "RUSTSEC-2026-0403",
 ]
 
 [licenses]
