@@ -15,11 +15,12 @@ runs:
         sudo apt-get update || true
 
         # Core build + image libraries
-        # ~keep aom-tools: on Ubuntu 26.04 the libaom-dev CMake targets reference /usr/bin/aomdec, which it does not ship.
+        # ~keep On Ubuntu 26.04 the libaom-dev CMake targets reference /usr/bin/aomdec (aom-tools) and link
+        # ~keep yuv and webm, none of which libaom-dev pulls in.
         sudo apt-get install -y \
           tesseract-ocr tesseract-ocr-eng \
           libssl-dev pkg-config build-essential cmake \
-          libmagic-dev libde265-dev libaom-dev aom-tools \
+          libmagic-dev libde265-dev libaom-dev aom-tools libyuv-dev libwebm-dev \
           libx265-dev libdav1d-dev libnuma-dev \
           protobuf-compiler patchelf
 
