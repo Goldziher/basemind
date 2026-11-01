@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.31.1]
+## [0.31.1] - 2026-11-01
 
 A patch release with no schema change, so `.basemind/` is kept.
 
