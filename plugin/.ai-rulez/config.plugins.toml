@@ -2,6 +2,9 @@
 name = "basemind"
 version = "0.31.1"
 display_name = "basemind"
+# ~keep overridden from the generator default (^2.0.26) so the bundled OpenCode
+# SDK tracks the current 2.x release.
+opencode_dependency = "^2.2.5"
 description = "Full AI context layer over MCP — tree-sitter code-map, document RAG (PDF/Office/HTML/email + OCR + reranker), shared agent memory, on-demand web crawl, git history + blame + per-symbol diff. 300+ languages, 10+ coding-agent harnesses, content-addressed Fjall + LanceDB."
 homepage = "https://github.com/Goldziher/basemind"
 repository = "https://github.com/Goldziher/basemind"

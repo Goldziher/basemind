@@ -39,7 +39,7 @@
     "./tui": "./tui.js"
   },
   "dependencies": {
-    "@opencode/plugin": "^2.1.2"
+    "@opencode/plugin": "^2.2.5"
   },
   "engines": {
     "node": ">=22"
