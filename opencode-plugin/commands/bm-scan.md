@@ -8,7 +8,7 @@ name: bm-scan
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
 Content-Hash: blake3:5990cfb7fe66a77307d51c87fd7497dd922f677d59ffd7cbea0841309ec6ffa4
-Source-Hash: blake3:89ef1e827933ec56ba8b33c7ad983bd0ec58162b5bcf69fe552a32665ce790d8
+Source-Hash: blake3:f752bb0e210dedbcda0bceda94db29d0c6d055e066f47a822747c191ab6eb4b0
 Schema-Version: v1
 -->
 

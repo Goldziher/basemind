@@ -1,6 +1,6 @@
 [plugin]
 name = "basemind"
-version = "0.31.1"
+version = "0.32.0"
 display_name = "basemind"
 # ~keep overridden from the generator default (^2.0.26) so the bundled OpenCode
 # SDK tracks the current 2.x release.

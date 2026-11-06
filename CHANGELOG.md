@@ -8,11 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 <!-- Keep a Changelog repeats Added/Changed/Fixed headings per version. -->
 <!-- markdownlint-disable MD024 -->
 
-## [Unreleased]
+## [0.32.0] - 2026-11-06
 
 ### Changed
 
 - Python 3.11 is now the minimum supported version; Python 3.10 reached end of life.
+- Dependency upgrades: `crawlberg` 1.12.4, `oxc_*` 0.157.0, `rmcp` 3.9, `toml` 1.2, `tree-sitter-language-pack` 1.24.0, website `astro` 7.4.5 / `@astrojs/starlight` 0.42.9, plugin wrapper `@opencode/plugin` 2.2.5, PyPI wrapper `certifi` floor 2026.10.23. `arrow` stays at 58 (the LanceDB 0.41 type identity), `bincode` at 2.0.1 (3.0.0 is a `compile_error!` placeholder), and transitive `liter-llm` is pinned at 2.3.0 because `xberg` 1.3.10 does not compile against the in-range 2.6.x.
 
 ## [0.31.1] - 2026-11-01
 
