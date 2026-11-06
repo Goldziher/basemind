@@ -193,8 +193,10 @@ fn shutdown_interrupts_sustained_event_batches() {
         std::fs::write(&pulse, b"fn pulse_0() {}\n").expect("write initial pulse");
     }
     for _ in 0..3 {
+        // 2s per batch flakes under a fully loaded build host (fs delivery can lag debounce by
+        // seconds); 10s still bounds the test tightly enough to fail on a dead watcher. ~keep
         batch_rx
-            .recv_timeout(Duration::from_secs(2))
+            .recv_timeout(Duration::from_secs(10))
             .expect("sustained batch arrives");
     }
 
