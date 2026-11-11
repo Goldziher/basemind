@@ -41,8 +41,8 @@ pub struct AgentsParams {
     /// `thread_start`: extra member agent ids (you are added automatically).
     #[serde(default)]
     pub members: Option<Vec<AgentId>>,
-    /// `message`: id of the front-matter row whose body to read.
-    #[serde(default, alias = "id")]
+    /// `message`: compact `message_ref` or legacy `id` of the front-matter row whose body to read.
+    #[serde(default, alias = "id", alias = "message_ref")]
     pub message_id: Option<String>,
     /// `ack`: message ids to acknowledge.
     #[serde(default)]
