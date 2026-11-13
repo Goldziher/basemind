@@ -24,6 +24,8 @@ pub mod keys_governance;
 pub mod keys_probe;
 pub(crate) mod memory_store;
 pub(crate) mod name_dict;
+#[cfg(test)]
+mod sorted_run_prototype;
 pub mod view;
 #[cfg(test)]
 mod view_tests;
