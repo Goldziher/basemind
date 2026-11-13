@@ -72,6 +72,8 @@ pub mod store_gc_workspace;
 mod store_hash_refs;
 pub mod store_layout;
 mod store_lock;
+#[cfg(test)]
+mod store_migration;
 mod store_seed;
 pub mod sysres;
 pub mod textcompress;
