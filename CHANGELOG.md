@@ -14,6 +14,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - The MCP `agents` message mode accepts the `message_ref` field returned by history and inbox.
 
+### Security
+
+- Use patched bundled SQLite and rustix via temporary, commit-pinned Xberg and RMUX backports.
+  While these pins are in place the release workflow publishes platform binaries and package
+  wrappers and skips crates.io. Registry dependencies can resume when the backports are published.
+
 ## [0.32.0] - 2026-11-06
 
 ### Changed
