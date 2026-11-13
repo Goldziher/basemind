@@ -178,7 +178,7 @@ fn compare_parts(view: &impl IndexView) -> usize {
         assert_eq!(run.rows, count);
         total += count;
         if matches!(part, Part::RefsByDef | Part::CallsByCallee) && count > 0 {
-            compare_lookup_latency(view, part, &run);
+            compare_prefix_latency(view, part, &run);
         }
         eprintln!(
             "{}: {} rows, {} bytes, export {:?}, map {:?}",
@@ -192,28 +192,62 @@ fn compare_parts(view: &impl IndexView) -> usize {
     total
 }
 
-fn compare_lookup_latency(view: &impl IndexView, part: Part, run: &SortedRun) {
+fn compare_prefix_latency(view: &impl IndexView, part: Part, run: &SortedRun) {
     const SAMPLE_COUNT: usize = 1_000;
     let mut fjall_times = Vec::new();
     let mut mmap_times = Vec::new();
     for index in (0..run.rows).step_by((run.rows / SAMPLE_COUNT).max(1)) {
         let (key, _) = run.row(index).unwrap();
+        let prefix = query_prefix(part, key);
         let started = Instant::now();
-        let fjall = black_box(view.get(part, key).unwrap()).unwrap();
+        let fjall_count = view.prefix(part, &prefix).fold(0, |count, row| {
+            black_box(row.unwrap());
+            count + 1
+        });
         fjall_times.push(started.elapsed());
         let started = Instant::now();
-        let (_, value) = black_box(run.row(run.lower_bound(key).unwrap()).unwrap());
+        let mmap_count = run_prefix_count(run, &prefix);
         mmap_times.push(started.elapsed());
-        assert_eq!(fjall.as_ref(), value);
+        assert!(fjall_count > 0);
+        assert_eq!(fjall_count, mmap_count);
     }
     fjall_times.sort_unstable();
     mmap_times.sort_unstable();
     let percentile = fjall_times.len() * 95 / 100;
     eprintln!(
-        "{}: {} point lookups, p95 Fjall {:?}, mmap {:?}",
+        "{}: {} prefix queries, p95 Fjall {:?}, mmap {:?}",
         part.name(),
         fjall_times.len(),
         fjall_times[percentile],
         mmap_times[percentile]
     );
+}
+
+fn query_prefix(part: Part, key: &[u8]) -> Vec<u8> {
+    use super::keys;
+    match part {
+        Part::RefsByDef => {
+            let (path, start, _, _) = keys::parse_ref_by_def(key).unwrap();
+            keys::refs_by_def_prefix(&path, start)
+        }
+        Part::CallsByCallee => {
+            let (name, _, _) = keys::parse_call_by_callee(key).unwrap();
+            keys::calls_by_callee_prefix(&name)
+        }
+        _ => unreachable!("only the references and callers keyspaces are sampled"),
+    }
+}
+
+fn run_prefix_count(run: &SortedRun, prefix: &[u8]) -> usize {
+    let start = run.lower_bound(prefix).unwrap();
+    let mut count = 0;
+    for index in start..run.rows {
+        let row = run.row(index).unwrap();
+        if !row.0.starts_with(prefix) {
+            break;
+        }
+        black_box(row);
+        count += 1;
+    }
+    count
 }
