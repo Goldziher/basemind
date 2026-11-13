@@ -681,6 +681,12 @@ fn cmd_scan(root: &std::path::Path, args: &ScanArgs, verbosity: Verbosity, no_co
     if let Some(notice) = writer_collision_notice(root) {
         return Err(basemind::cli::exit::CliExit::busy(notice));
     }
+    #[cfg(unix)]
+    if basemind::store::Store::rebuild_migrated_working_view(root, &config, &cancel)? {
+        eprintln!("Rebuilt the standalone working index.");
+        sync_git_history_after_scan(root, !args.no_git_history, args.rebuild_git_history, &mut out);
+        return Ok(());
+    }
     let shared_index = std::env::var_os("BASEMIND_INDEX_LAYERED").is_some_and(|value| value == "1");
     if shared_index
         && !args.verify_shared_base

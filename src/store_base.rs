@@ -999,7 +999,7 @@ impl Drop for Scratch {
     }
 }
 
-fn sync_tree(path: &Path) -> io::Result<()> {
+pub(crate) fn sync_tree(path: &Path) -> io::Result<()> {
     for entry in fs::read_dir(path)? {
         let entry = entry?;
         if entry.file_type()?.is_dir() {

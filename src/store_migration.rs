@@ -115,6 +115,40 @@ impl<'a> Migration<'a> {
         sync_directory(self.views)
     }
 
+    #[cfg(unix)]
+    pub(crate) fn rebuild(&self, build: impl FnOnce(&Path) -> Result<()>) -> Result<bool> {
+        let Some(journal) = self.read()? else {
+            return Ok(false);
+        };
+        if journal.phase != Phase::RebuildRequired {
+            return Ok(false);
+        }
+        ensure!(
+            !exists(&self.views.join(BACKUP))?,
+            "standalone migration backup must be restored before rebuilding"
+        );
+        let working = self.views.join(WORKING);
+        let proof = format!("working-rebuilt-{}", journal.generation);
+        if !exists(&working)? {
+            let stage = tempfile::Builder::new()
+                .prefix(".working-rebuild-")
+                .tempdir_in(self.views)?;
+            build(stage.path())?;
+            File::create(stage.path().join(&proof))?.sync_all()?;
+            crate::store_base::sync_tree(stage.path())?;
+            fs::rename(stage.path(), &working)?;
+        } else {
+            ensure!(
+                working.join(&proof).is_file(),
+                "working view lacks completed rebuild proof"
+            );
+        }
+        sync_directory(self.views)?;
+        fs::remove_file(self.views.join(JOURNAL))?;
+        sync_directory(self.views)?;
+        Ok(true)
+    }
+
     fn read(&self) -> Result<Option<Journal>> {
         let bytes = match fs::read(self.views.join(JOURNAL)) {
             Ok(bytes) => bytes,
@@ -277,6 +311,45 @@ mod tests {
         assert!(error.to_string().contains("complete standalone rebuild"), "{error}");
         assert!(!exists(&views.join(WORKING)).unwrap());
         assert!(exists(&views.join(JOURNAL)).unwrap());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn interrupted_rebuild_cannot_publish_partial_rows() {
+        let dir = fixture();
+        let migration = Migration::lock(dir.path()).unwrap();
+        migration.retire(8, || Ok(())).unwrap();
+        fs::remove_dir_all(dir.path().join(BACKUP)).unwrap();
+        migration
+            .write(&Journal {
+                format: 1,
+                generation: 8,
+                phase: Phase::RebuildRequired,
+            })
+            .unwrap();
+        assert!(
+            migration
+                .rebuild(|stage| {
+                    fs::write(stage.join("index.msgpack"), b"partial")?;
+                    anyhow::bail!("interrupted")
+                })
+                .is_err()
+        );
+        assert!(!exists(&dir.path().join(WORKING)).unwrap());
+        assert!(exists(&dir.path().join(JOURNAL)).unwrap());
+        assert!(
+            migration
+                .rebuild(|stage| {
+                    fs::write(stage.join("index.msgpack"), b"complete")?;
+                    Ok(())
+                })
+                .unwrap()
+        );
+        assert_eq!(
+            fs::read(dir.path().join(WORKING).join("index.msgpack")).unwrap(),
+            b"complete"
+        );
+        assert!(!exists(&dir.path().join(JOURNAL)).unwrap());
     }
 
     #[test]

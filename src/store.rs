@@ -340,6 +340,52 @@ impl Store {
         })
     }
 
+    /// Reconstruct a reclaimed working view under the normal writer lock.
+    #[cfg(unix)]
+    pub fn rebuild_migrated_working_view(
+        root: &Path,
+        config: &crate::config::Config,
+        cancel: &crate::scanner::ScanCancel,
+    ) -> anyhow::Result<bool> {
+        let workspace = workspace_cache_dir(root);
+        let views = workspace.join(VIEWS_DIR);
+        if !views.join("working.migration").try_exists()? {
+            return Ok(false);
+        }
+        let _writer = acquire_lock_as(&workspace, LockHolder::Scan)?;
+        let migration = crate::store_migration::Migration::lock(&views)?;
+        migration.rebuild(|stage| {
+            anyhow::ensure!(
+                !config.documents.enabled
+                    && !config.documents.embed
+                    && !config.code_search.enabled
+                    && !config.code_search.embed,
+                "standalone migration rebuild requires documents and code search disabled"
+            );
+            let mut store = Self::open_base_scratch(root, stage)?;
+            store.blobs_dir = global_blobs_dir();
+            ensure_dir(&store.blobs_dir)?;
+            store.blobs_shared = true;
+            let report = crate::scanner::scan_with_cancel(
+                root,
+                &mut store,
+                config,
+                crate::scanner::ScanSource::WorkingTree,
+                crate::scanner::EmbedMode::Deferred,
+                cancel,
+            )?;
+            anyhow::ensure!(
+                !report.cancelled
+                    && report.stats.read_failed == 0
+                    && report.stats.extract_failed == 0
+                    && store.index_db.as_ref().is_some_and(|db| !db.is_poisoned()),
+                "incomplete standalone migration rebuild"
+            );
+            store.flush()?;
+            Ok(())
+        })
+    }
+
     /// Retire the standalone working view after comparing it to a leased clean generation.
     #[cfg(unix)]
     pub fn retire_verified_working_view(&mut self, config: &crate::config::Config) -> anyhow::Result<bool> {
