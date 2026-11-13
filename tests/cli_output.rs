@@ -209,7 +209,7 @@ fn cold_dirty_scan_publishes_delta_without_standalone_fjall() {
             .unwrap()
             .is_some()
     );
-    std::fs::write(root.join("sample.rs"), "fn sample() { after(); }").unwrap();
+    std::fs::write(root.join("sample.rs"), "fn after_symbol() { after(); }").unwrap();
     let result = Command::new(bin())
         .env("BASEMIND_INDEX_LAYERED", "1")
         .args(["--root", root.to_str().unwrap(), "scan", "--no-git-history"])
@@ -221,4 +221,22 @@ fn cold_dirty_scan_publishes_delta_without_standalone_fjall() {
     let cache = basemind::store::workspace_cache_dir(root);
     assert!(!cache.join("views/working/index.fjall").exists());
     assert!(basemind::store_base::has_published_dirty_worktree(root, &config).unwrap());
+    for (args, expected) in [
+        (vec!["code", "files", "--path-contains", "sample.rs"], "sample.rs"),
+        (vec!["code", "symbols", "after_symbol"], "after_symbol"),
+    ] {
+        let query = Command::new(bin())
+            .env("BASEMIND_INDEX_LAYERED", "1")
+            .args(["--root", root.to_str().unwrap()])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(query.status.success(), "{}", String::from_utf8_lossy(&query.stderr));
+        assert!(
+            String::from_utf8_lossy(&query.stdout).contains(expected),
+            "{:?}",
+            query.stdout
+        );
+    }
+    assert!(!cache.join("views/working/index.fjall").exists());
 }
