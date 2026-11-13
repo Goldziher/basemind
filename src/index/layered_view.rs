@@ -486,7 +486,10 @@ fn merged_probes_restitch_an_unchanged_importer_to_a_changed_export() {
     let base_db = base.index_db.as_ref().unwrap();
     let overlay_db = overlay.index_db.as_ref().unwrap();
     let probe_view = LayeredView::new(base_db, overlay_db, delta.shadow(&counts, |path| base.lookup(path))).unwrap();
-    assert_eq!(probe_view.importers_probing("target.ts"), [importer.clone()]);
+    assert_eq!(
+        probe_view.importers_probing("target.ts"),
+        std::slice::from_ref(&importer)
+    );
     let config = Config::with_defaults();
     let changed = ["target.ts".to_string()];
     let (complete, restitched) = resolve_with_probe_view(
