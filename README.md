@@ -1198,6 +1198,10 @@ Every command takes `--as-agent <ID>` to act as a named sub-identity.
 | `ack [--message-id … \| --thread <t> --to-seq <n>]` | Clear read messages by advancing per-thread read cursors. |
 | `cleanup [--dry-run \| --apply] [retention overrides]` / `status` | Preview/apply retention / report lifecycle health. |
 
+In the MCP inbox and CLI JSON output, rows with the same `body_sha` and a nonzero `body_len` carry the same
+body. Fetch it once with `message` and reuse it across matching rows. Acknowledge each message reference
+after handling it so each thread's inbox cursor advances independently.
+
 **Comms daemon (`basemind comms`, `--features comms`)**
 
 | Command | Purpose |

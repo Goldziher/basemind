@@ -48,10 +48,10 @@ impl BasemindServer {
         optional markdown `body`, `tags`, and `reply_to` to reply to a specific message) and \
         returns its `message_id`. `history` reads one thread oldest-first and `inbox` reads what is \
         new across every thread you joined; BOTH return FRONT-MATTER ONLY (message_ref, legacy id, from, subject, \
-        ts, age_secs, tags, seq, body_len) — the body is never included, and mode `message` fetching \
+        ts, age_secs, tags, seq, body_len, body_sha) — the body is never included, and mode `message` fetching \
         one compact `message_ref` (preferred) or legacy `message_id` is the only path to a body, \
-        so scan the front-matter and fetch only the \
-        bodies you need. Both default to the last 24h (`since_hours`, `0` for all history) and \
+        reuse a fetched body for rows with the same `body_sha` (when `body_len` is nonzero). Each row \
+        keeps its own message reference for acknowledgement. Both default to the last 24h (`since_hours`, `0` for all history) and \
         paginate (`limit` default 100 max 1000, `cursor` from the previous `next_cursor`). In `history`, \
         pass `after_seq` instead of a cursor to resume after a known thread sequence. `wait` \
         long-polls up to `timeout_secs` (default 30, max 40; call again to keep waiting) and returns the moment a peer posts, \
