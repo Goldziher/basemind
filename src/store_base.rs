@@ -200,7 +200,7 @@ fn build_generation(base: &Path, repo: &Repo, config: &Config, mut metadata: Bas
         std::process::id(),
         SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
     ));
-    fs::create_dir(&staging)?;
+    create_private_dir(&staging)?;
     let scratch = Scratch(staging);
     let checkout = scratch.0.join("checkout");
     repo.export_tree(&metadata.commit, &checkout, config.scan.max_file_bytes)?;
@@ -246,6 +246,16 @@ fn build_generation(base: &Path, repo: &Repo, config: &Config, mut metadata: Bas
     fs::rename(&scratch.0, &published)?;
     sync_directory(base)?;
     Ok(published)
+}
+
+fn create_private_dir(path: &Path) -> io::Result<()> {
+    let mut builder = fs::DirBuilder::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder.create(path)
 }
 
 const fn requires_probes() -> bool {
