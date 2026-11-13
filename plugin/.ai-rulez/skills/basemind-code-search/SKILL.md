@@ -20,10 +20,11 @@ x-ai-rulez:
 # basemind-code-search — navigate code without reading it
 
 basemind pre-indexes the repo into a tree-sitter code map across 300+ languages. The map holds
-**code only**: markdown, JSON, YAML, TOML, XML, CSV, INI and `.env` files are documents, so no content mode below
-sees them (`outline` on one errors "file not indexed"; `files` and `find` still list them) — search them with `memory`
-mode `documents` (see `basemind-documents`) or just Read them. Structural
-questions — where a symbol lives, what calls it, what shape a file has — resolve from the index in
+**code only**. Jupyter notebooks (`.ipynb`), Markdown, JSON, YAML, TOML, XML, CSV, INI and `.env` files
+are documents. `files` and `find` can list them. Use `memory` mode `documents` for semantic queries
+(see `basemind-documents`) and a literal or regex file search for exact matches outside the code map.
+
+Structural questions — where a symbol lives, what calls it, what shape a file has — resolve from the index in
 milliseconds and return **paths, line numbers, and signatures, not file bodies**. That is a fraction
 of the tokens of reading source, so it is the default, not an optimization.
 
@@ -62,7 +63,7 @@ raw shell only when no tool covers the question.
 | "Which file is named like X?" | `code { mode: "find", query: "X" }` (fuzzy) | `basemind code find "X"` |
 | "Show one symbol's body" | `code { mode: "expand", path: F, name }` | `basemind code expand F name` |
 | "Find code by meaning?" | `code { mode: "semantic", query }`, then `code { mode: "chunk", path, chunk_id }` | `basemind code semantic "q"` |
-| "Regex over file contents?" | `code { mode: "grep", pattern: "…" }` | `basemind code grep "pattern" [--language --path-contains]` |
+| "Regex over indexed code contents?" | `code { mode: "grep", pattern: "…" }` | `basemind code grep "pattern" [--language --path-contains]` |
 | "What's indexed?" | `admin { mode: "status" }` | `basemind status` |
 | "Refresh the index after editing?" | `admin { mode: "rescan", paths: […] }` | `basemind rescan [path…]` |
 | "Fetch the next page?" | pass `next_cursor` from the prior response as `cursor` | — |
