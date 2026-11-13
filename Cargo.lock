@@ -174,7 +174,7 @@ version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "40c48f72fd53cd289104fc64099abca73db4166ad86ea0b4341abe65af83dadc"
 dependencies = [
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -185,7 +185,7 @@ checksum = "291e6a250ff86cd4a820112fb8898808a366d8f9f58ce16d1f538353ad55747d"
 dependencies = [
  "anstyle",
  "once_cell_polyfill",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -953,7 +953,6 @@ dependencies = [
  "rmux-client",
  "rmux-sdk",
  "rmux-server",
- "rustix",
  "schemars 1.2.3",
  "serde",
  "serde_json",
@@ -1795,7 +1794,7 @@ version = "3.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "faf9468729b8cbcea668e36183cb69d317348c2e08e994829fb56ebfdfbaac34"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3304,7 +3303,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3528,7 +3527,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e35d6e78f4cebb90e51d543db8fe41528851d6deeef6ef21ebd4bfdc1e784776"
 dependencies = [
  "libc",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4640,7 +4639,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7518b930f6aeb75e871d32ce873c2ae46e35cef19b5a0b039d4337f651d897cd"
 dependencies = [
  "bstr",
- "hashbrown 0.15.5",
+ "hashbrown 0.16.1",
 ]
 
 [[package]]
@@ -7332,9 +7331,9 @@ dependencies = [
 
 [[package]]
 name = "libsqlite3-sys"
-version = "0.38.2"
+version = "0.39.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f1d20bef17f513b9b3004532233187769cd072d790971f4e4da0e346eb6401e8"
+checksum = "14a5f01b87b92705d07b433c06f96cbc764637d81a0bffb5734ce17cf0f9a2b3"
 dependencies = [
  "cc",
  "pkg-config",
@@ -8180,7 +8179,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -9357,7 +9356,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6e4d69d0fa3e7f6f9cf6b53a0e83e4fc99ba3586f65ce166cff30bd13bb4ad2"
 dependencies = [
  "heck",
- "itertools 0.15.0",
+ "itertools 0.13.0",
  "log",
  "multimap",
  "petgraph",
@@ -9376,7 +9375,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ad9c5423459fa2f729b8d9235fab810aa29628b171467744fc86d21460ad70d"
 dependencies = [
  "anyhow",
- "itertools 0.15.0",
+ "itertools 0.13.0",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
@@ -9574,7 +9573,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -10210,8 +10209,7 @@ dependencies = [
 [[package]]
 name = "rmux-client"
 version = "0.10.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a1b5d2ed91385f2ae22380599fc6332c5bbfb444ba88fdb379cd213017d4c03f"
+source = "git+https://github.com/Goldziher/rmux.git?rev=156340a3030f14366aed2a18a2ea5bd22991e400#156340a3030f14366aed2a18a2ea5bd22991e400"
 dependencies = [
  "libc",
  "rmux-core",
@@ -10229,8 +10227,7 @@ dependencies = [
 [[package]]
 name = "rmux-core"
 version = "0.10.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "85219ce309af47c2e2812cf8b87274914303d5ea28fbf05340079cc68b89db50"
+source = "git+https://github.com/Goldziher/rmux.git?rev=156340a3030f14366aed2a18a2ea5bd22991e400#156340a3030f14366aed2a18a2ea5bd22991e400"
 dependencies = [
  "chrono",
  "compact_str 0.8.2",
@@ -10242,8 +10239,7 @@ dependencies = [
 [[package]]
 name = "rmux-ipc"
 version = "0.10.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "31f63795a405962308478f28ae2551d8e3f73ac8827c6f838f7b8083085ba2a6"
+source = "git+https://github.com/Goldziher/rmux.git?rev=156340a3030f14366aed2a18a2ea5bd22991e400#156340a3030f14366aed2a18a2ea5bd22991e400"
 dependencies = [
  "getrandom 0.3.4",
  "libc",
@@ -10258,8 +10254,7 @@ dependencies = [
 [[package]]
 name = "rmux-os"
 version = "0.10.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2d7017db3e6cfb59857df098ece53d22e31bdf8cd10c63dadb50ae1a140e1ce2"
+source = "git+https://github.com/Goldziher/rmux.git?rev=156340a3030f14366aed2a18a2ea5bd22991e400#156340a3030f14366aed2a18a2ea5bd22991e400"
 dependencies = [
  "libc",
  "rmux-types",
@@ -10270,8 +10265,7 @@ dependencies = [
 [[package]]
 name = "rmux-proto"
 version = "0.10.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bf07fafa60cc2b10f6630d400acb85b472dc1d981866c5396d21cc03f6176489"
+source = "git+https://github.com/Goldziher/rmux.git?rev=156340a3030f14366aed2a18a2ea5bd22991e400#156340a3030f14366aed2a18a2ea5bd22991e400"
 dependencies = [
  "bincode 1.3.3",
  "rmux-types",
@@ -10283,8 +10277,7 @@ dependencies = [
 [[package]]
 name = "rmux-pty"
 version = "0.10.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "181760f14a947932b57e1cfa317d6181b7930c43d8f8b2c6ef5363ccd15d4e3e"
+source = "git+https://github.com/Goldziher/rmux.git?rev=156340a3030f14366aed2a18a2ea5bd22991e400#156340a3030f14366aed2a18a2ea5bd22991e400"
 dependencies = [
  "getrandom 0.3.4",
  "libc",
@@ -10298,8 +10291,7 @@ dependencies = [
 [[package]]
 name = "rmux-sdk"
 version = "0.10.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e0684ac39de5e707a3dfe6e21ef14299e9540097ed27d5de33300ab8eca50df3"
+source = "git+https://github.com/Goldziher/rmux.git?rev=156340a3030f14366aed2a18a2ea5bd22991e400#156340a3030f14366aed2a18a2ea5bd22991e400"
 dependencies = [
  "libc",
  "rmux-ipc",
@@ -10316,8 +10308,7 @@ dependencies = [
 [[package]]
 name = "rmux-server"
 version = "0.10.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2802885d5aa5fb7ff927072103fcaecd458180065892879802df20420ca5204e"
+source = "git+https://github.com/Goldziher/rmux.git?rev=156340a3030f14366aed2a18a2ea5bd22991e400#156340a3030f14366aed2a18a2ea5bd22991e400"
 dependencies = [
  "async-recursion",
  "bincode 1.3.3",
@@ -10337,8 +10328,7 @@ dependencies = [
 [[package]]
 name = "rmux-types"
 version = "0.10.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3c591db0342827ab26e271262d3ecad75c72b6299e865ee45b2a15d9db85f3db"
+source = "git+https://github.com/Goldziher/rmux.git?rev=156340a3030f14366aed2a18a2ea5bd22991e400#156340a3030f14366aed2a18a2ea5bd22991e400"
 dependencies = [
  "serde",
 ]
@@ -10394,9 +10384,9 @@ dependencies = [
 
 [[package]]
 name = "rusqlite"
-version = "0.40.2"
+version = "0.41.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "23f2a97da3e3873c73cb2a2e71b35c40ff95e0b1eefa8d72d8499a6928c3b5b3"
+checksum = "da9bba6f3506135e120a6586df05be18b48d18896600646a4bec8f993d91a594"
 dependencies = [
  "bitflags 2.13.2",
  "fallible-iterator",
@@ -10439,15 +10429,15 @@ dependencies = [
 
 [[package]]
 name = "rustix"
-version = "1.1.4"
+version = "1.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b6fe4565b9518b83ef4f91bb47ce29620ca828bd32cb7e408f0062e9930ba190"
+checksum = "e5e76742e5294153d4dde1207dbec5bdd81eef6fabdc0d2118babadabfd858aa"
 dependencies = [
  "bitflags 2.13.2",
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -10506,7 +10496,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -11198,7 +11188,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3d1e2c7f27f8d4cb10542a02c49005dbd6e93095799d6f3be745fae9f8fedd4"
 dependencies = [
  "libc",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -11581,7 +11571,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -13043,7 +13033,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -13461,9 +13451,9 @@ dependencies = [
 
 [[package]]
 name = "xattr"
-version = "1.6.1"
+version = "1.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "32e45ad4206f6d2479085147f02bc2ef834ac85886624a23575ae137c8aa8156"
+checksum = "963d6fab92d5504b971dc8bd90ca743c2575e590bc8071ea5bc571598667ae08"
 dependencies = [
  "libc",
  "rustix",
@@ -13472,8 +13462,7 @@ dependencies = [
 [[package]]
 name = "xberg"
 version = "1.3.10"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f9859ca06d9ee171c65c91cfbb0a25287a45622e7628f1b45ba5353b473b6f0d"
+source = "git+https://github.com/xberg-io/xberg.git?rev=65605e417f905f89abd77e0d0791ba2a52fd0a04#65605e417f905f89abd77e0d0791ba2a52fd0a04"
 dependencies = [
  "ahash",
  "async-trait",
@@ -13586,8 +13575,7 @@ dependencies = [
 [[package]]
 name = "xberg-gliner"
 version = "1.3.10"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "880b9cc645b42a35e23de8867020a6045fef30411e52554c9d16b47a939e4767"
+source = "git+https://github.com/xberg-io/xberg.git?rev=65605e417f905f89abd77e0d0791ba2a52fd0a04#65605e417f905f89abd77e0d0791ba2a52fd0a04"
 dependencies = [
  "getrandom 0.2.17",
  "getrandom 0.3.4",
@@ -13602,8 +13590,7 @@ dependencies = [
 [[package]]
 name = "xberg-libheif"
 version = "1.3.10"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "10a890ffa8f3a9a0af791d14346a338821ac688e9e76d93ff95f1e94ccfd8bd9"
+source = "git+https://github.com/xberg-io/xberg.git?rev=65605e417f905f89abd77e0d0791ba2a52fd0a04#65605e417f905f89abd77e0d0791ba2a52fd0a04"
 dependencies = [
  "cfg-if",
  "enumn",
@@ -13615,8 +13602,7 @@ dependencies = [
 [[package]]
 name = "xberg-libwpd"
 version = "1.3.10"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3f2941e0e40be7f57a4d5dccc76c1b2707e661df39ef7f358b4bcd99ce957b27"
+source = "git+https://github.com/xberg-io/xberg.git?rev=65605e417f905f89abd77e0d0791ba2a52fd0a04#65605e417f905f89abd77e0d0791ba2a52fd0a04"
 dependencies = [
  "cc",
  "flate2",
@@ -13630,8 +13616,7 @@ dependencies = [
 [[package]]
 name = "xberg-native-pdf"
 version = "1.3.10"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c574e362d731d6c66c47275ec6b16e3acccef3c2fd465da973bcf424cd6fa1fc"
+source = "git+https://github.com/xberg-io/xberg.git?rev=65605e417f905f89abd77e0d0791ba2a52fd0a04#65605e417f905f89abd77e0d0791ba2a52fd0a04"
 dependencies = [
  "aes 0.9.4",
  "base64 0.23.1",
@@ -13677,8 +13662,7 @@ dependencies = [
 [[package]]
 name = "xberg-paddle-ocr"
 version = "1.3.10"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eafcec9d2d5e657a67ed3c287f86294c459fb522f0c6c03c7b7cd30778e05e90"
+source = "git+https://github.com/xberg-io/xberg.git?rev=65605e417f905f89abd77e0d0791ba2a52fd0a04#65605e417f905f89abd77e0d0791ba2a52fd0a04"
 dependencies = [
  "geo-clipper",
  "geo-types",
@@ -13694,8 +13678,7 @@ dependencies = [
 [[package]]
 name = "xberg-tesseract"
 version = "1.3.10"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "654411f9700b91dc3e4a3a416cb53f305c4a57177ad72cc234d71ca870f00390"
+source = "git+https://github.com/xberg-io/xberg.git?rev=65605e417f905f89abd77e0d0791ba2a52fd0a04#65605e417f905f89abd77e0d0791ba2a52fd0a04"
 dependencies = [
  "cc",
  "cmake",
