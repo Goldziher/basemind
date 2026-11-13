@@ -390,14 +390,10 @@ impl Repo {
         if has_attributes(&local.common_dir().join("info/attributes"))? {
             return Ok(true);
         }
-        let paths = self.list_paths_staged()?;
-        if paths
+        Ok(self
+            .list_paths_staged()?
             .iter()
-            .any(|path| path.rsplit('/').next() == Some(".gitattributes"))
-        {
-            return Ok(true);
-        }
-        Ok(false)
+            .any(|path| path.rsplit('/').next() == Some(".gitattributes")))
     }
 
     /// List forward-slash relative paths of every blob recorded in the staging index.
