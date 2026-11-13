@@ -222,7 +222,10 @@ pub fn scan_dirty_worktree(root: &Path, config: &Config) -> Result<bool> {
     let (_, commit) = resolve_commit(&repo)?;
     let group = repo_group_dir(root);
     let (_, ready) = find_generation(&group.join(BASE_DIR), &commit, &scan_digest(config)?)?;
-    if ready.is_none() && matches!(prepare(root, config)?, BaseBuild::Ready(_)) {
+    if ready.is_none()
+        && should_advance(&repo, &group.join(BASE_DIR), &commit, &scan_digest(config)?)?
+        && matches!(prepare(root, config)?, BaseBuild::Ready(_))
+    {
         return Ok(dirty_worktree(root, config, true, None, None)?.is_some());
     }
     Ok(false)
@@ -686,6 +689,42 @@ fn scan_digest(config: &Config) -> Result<String> {
     scan.extra_roots.clear();
     let policy = serde_json::to_vec(&(&scan, &config.languages, &config.code_intel, &config.code_search))?;
     Ok(blake3::hash(&policy).to_hex().to_string())
+}
+
+fn should_advance(repo: &Repo, base: &Path, target: &str, digest: &str) -> Result<bool> {
+    let mut latest = None::<BaseManifest>;
+    for entry in fs::read_dir(base)? {
+        let entry = entry?;
+        let Some(id) = entry
+            .file_name()
+            .to_str()
+            .and_then(|name| name.strip_prefix("gen-"))
+            .and_then(|id| id.parse().ok())
+        else {
+            continue;
+        };
+        let path = entry.path();
+        let Ok(bytes) = fs::read(path.join(MANIFEST)) else {
+            continue;
+        };
+        let Ok(manifest) = serde_json::from_slice::<BaseManifest>(&bytes) else {
+            continue;
+        };
+        if is_compatible(&path, id, &manifest.commit, digest)
+            && latest.as_ref().is_none_or(|prior| id > prior.generation)
+        {
+            latest = Some(manifest);
+        }
+    }
+    let Some(latest) = latest else {
+        return Ok(true);
+    };
+    let changed = repo.changed_tree_files(&latest.commit, target)?;
+    let age = SystemTime::now()
+        .duration_since(UNIX_EPOCH)?
+        .as_secs()
+        .saturating_sub(latest.built_unix);
+    Ok(changed > 0 && (changed.saturating_mul(50) >= latest.files || age >= 24 * 60 * 60))
 }
 
 fn find_generation(base: &Path, commit: &str, digest: &str) -> Result<(u64, Option<PathBuf>)> {

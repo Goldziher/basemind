@@ -537,6 +537,37 @@ impl Repo {
         Ok(out)
     }
 
+    pub(crate) fn changed_tree_files(&self, from: &str, to: &str) -> Result<usize, GitError> {
+        let local = self.local();
+        let read_error = |msg| GitError::Read {
+            what: format!("tree diff {from}..{to}"),
+            msg,
+        };
+        let tree = |rev: &str| {
+            local
+                .rev_parse_single(rev)
+                .map_err(|error| read_error(error.to_string()))?
+                .object()
+                .map_err(|error| read_error(error.to_string()))?
+                .peel_to_tree()
+                .map_err(|error| read_error(error.to_string()))
+        };
+        let from_tree = tree(from)?;
+        let to_tree = tree(to)?;
+        let mut count = 0usize;
+        from_tree
+            .changes()
+            .map_err(|error| read_error(error.to_string()))?
+            .for_each_to_obtain_tree(&to_tree, |change| {
+                if commit::classify_tree_change(&change).is_some() {
+                    count += 1;
+                }
+                Ok(gix::object::tree::diff::Action::Continue(()))
+            })
+            .map_err(|error| read_error(error.to_string()))?;
+        Ok(count)
+    }
+
     /// Recent commits across the repo, newest first.
     pub fn log_paths(&self, max_commits: usize, include_files: bool) -> Result<Vec<CommitInfo>, GitError> {
         let local = self.local();
@@ -952,6 +983,8 @@ mod status_against_tests {
         std::fs::write(root.join("new/untracked.rs"), "fn untracked() {}").unwrap();
 
         let repo = Repo::discover(root).unwrap();
+        assert_eq!(repo.changed_tree_files("HEAD", "HEAD").unwrap(), 0);
+        assert!(repo.changed_tree_files("HEAD~1", "HEAD").unwrap() > 0);
         let mut status = repo.status_against("HEAD~1").unwrap();
         status.staged_added.sort();
         assert_eq!(
