@@ -33,6 +33,7 @@ struct BaseManifest {
     index_schema_ver: u32,
     blob_schema_ver: u16,
     min_extract_epoch: u16,
+    scan_features: String,
     scan_digest: String,
     embed_policy: String,
     files: usize,
@@ -107,6 +108,7 @@ pub fn prepare(root: &Path, config: &Config) -> Result<BaseBuild> {
         index_schema_ver: INDEX_SCHEMA_VER,
         blob_schema_ver: crate::extract::SCHEMA_VER,
         min_extract_epoch: crate::extract::EXTRACT_EPOCH,
+        scan_features: scan_features(),
         scan_digest: digest,
         embed_policy: String::new(),
         files: 0,
@@ -125,6 +127,18 @@ fn resolve_commit(repo: &Repo) -> Result<(String, String)> {
             Repo::discover(&repo.main_worktree_root())?.resolve_rev("HEAD")?,
         )),
     }
+}
+
+fn scan_features() -> String {
+    [
+        ("code-search", cfg!(feature = "code-search")),
+        ("code-intel-js", cfg!(feature = "code-intel-js")),
+        ("code-intel-stack", cfg!(feature = "code-intel-stack")),
+    ]
+    .into_iter()
+    .filter_map(|(name, enabled)| enabled.then_some(name))
+    .collect::<Vec<_>>()
+    .join(",")
 }
 
 fn scan_digest(config: &Config) -> Result<String> {
@@ -174,6 +188,7 @@ fn is_compatible(path: &Path, generation: u64, commit: &str, digest: &str) -> bo
         && manifest.index_schema_ver == INDEX_SCHEMA_VER
         && manifest.blob_schema_ver == crate::extract::SCHEMA_VER
         && manifest.min_extract_epoch >= crate::extract::EXTRACT_EPOCH
+        && manifest.scan_features == scan_features()
         && (!requires_probes() || manifest.probes_complete)
         && path.join(INDEX_FILE).is_file()
         && path.join(INDEX_DIR).is_dir()
