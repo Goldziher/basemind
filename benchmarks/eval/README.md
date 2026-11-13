@@ -152,3 +152,21 @@ or environment setting alone is insufficient, because searches can fall back.
 The scorer requires at least 200 exactly paired queries per tier. It reports the mean set overlap
 out of ten and exits 1 when either tier falls below 0.95, or 2 when captures are incomplete or
 invalid. Keep corpus captures and query text in their approved storage.
+
+To capture and score directly, build a binary with `code-search,documents` support. Use a
+dedicated local cache directory and configure both embedding lanes on the approved checkout.
+Keep model, reranking, and scan settings fixed between routes. Prepare once and capture with:
+
+```sh
+BASEMIND_DATA_HOME="$cache" BASEMIND_COMMS_DIR="$cache/capture-comms" BASEMIND_INDEX_LAYERED=1 \
+  "$basemind" --root "$checkout" scan --no-git-history
+python3 benchmarks/eval/capture_layered_overlap.py \
+  "$basemind" "$checkout" "$cache" "$queries_json" "$new_capture_dir"
+```
+
+The query file is a JSON object with `code` and `documents` arrays, each containing at least
+200 distinct nonempty strings. The output directory must be new. Run without an active daemon
+for this cache and avoid modifying the checkout or cache during capture. Each subprocess handles
+one query and contributes exactly one matching semantic route diagnostic, so fallback or ambiguous
+evidence fails the capture. The runner compares the semantic code lane and configured document
+search results.
