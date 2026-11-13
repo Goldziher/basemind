@@ -479,19 +479,23 @@ fn bm25_dual_partition_consistency() {
     assert_eq!(db.view().bm25_stats(), Some((4, 8)));
     assert_eq!(db.code_bm25_postings.iter().count(), 3);
 
+    let candidates = db.bm25_posting_candidates(&["src/foo.rs".to_string()]).unwrap();
+    assert_eq!(candidates.len(), 3);
     let mut w = db.writer();
     w.remove_bm25_file(&rel).unwrap();
     w.commit().unwrap();
-    db.sweep_bm25_postings().unwrap();
+    db.retire_bm25_postings(candidates, |hash| hash == "h").unwrap();
     db.recompute_bm25_stats().unwrap();
     assert_eq!(db.view().bm25_stats(), Some((2, 4)));
     assert_eq!(db.code_bm25_postings.iter().count(), 3);
     assert_eq!(db.code_bm25_by_path.iter().count(), 2);
 
+    let candidates = db.bm25_posting_candidates(&["src/sibling.rs".to_string()]).unwrap();
+    assert_eq!(candidates.len(), 3);
     let mut w = db.writer();
     w.remove_bm25_file(&sibling).unwrap();
     w.commit().unwrap();
-    db.sweep_bm25_postings().unwrap();
+    db.retire_bm25_postings(candidates, |_| false).unwrap();
     assert!(db.code_bm25_postings.iter().next().is_none());
     assert!(db.code_bm25_by_path.iter().next().is_none());
 }
