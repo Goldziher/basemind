@@ -33,7 +33,7 @@ include = [
   "!/src/index/writer_tests.rs",
 ]
 name = "basemind"
-version = "0.32.0"
+version = "0.33.0"
 authors = ["Na'aman Hirschfeld <nhirschfeld@gmail.com>"]
 edition = "2024"
 description = "Full AI context layer over MCP — tree-sitter code-map, document RAG (PDF/Office/HTML/email + OCR + reranker), shared agent memory, on-demand web crawl, git history + blame + per-symbol diff. 300+ languages, 10+ coding-agent harnesses, content-addressed Fjall + LanceDB."
@@ -139,7 +139,7 @@ ahash = "0.8"
 anstream = "1.0"
 anstyle = "1"
 anyhow = "1"
-arc-swap = "1.9.3"
+arc-swap = "1.9.5"
 # ~keep Arrow major 58 matches LanceDB 0.41 so public schema and array types share one identity.
 # Bumping past 58 forks arrow into two versions and breaks Scannable/Schema type identity. ~keep
 arrow-array = { version = "58", optional = true }
@@ -151,7 +151,7 @@ bytes = { version = "1", optional = true }
 clap = { version = "4", features = ["derive", "env"] }
 clap_complete = "4"
 clap_mangen = "0.3"
-crawlberg = { version = "1.12.4", default-features = false, features = ["native-runtime"], optional = true }
+crawlberg = { version = "1.13.0", default-features = false, features = ["native-runtime"], optional = true }
 directories = "6"
 fjall = "3.1.13"
 form_urlencoded = { version = "1", optional = true }
@@ -169,7 +169,7 @@ http-body-util = { version = "0.1", optional = true }
 hyper = { version = "1", features = ["server", "http1", "http2"], optional = true }
 hyper-util = { version = "0.1", features = ["server-auto", "tokio"], optional = true }
 ignore = "0.4"
-jsonschema = "0.60"
+jsonschema = "0.61"
 # ~keep `remote` is enabled only because lancedb 0.38-0.41 do not compile without it: `error.rs`
 # ~keep gates `Error::Http` behind `#[cfg(feature = "remote")]` while `job.rs` uses it unconditionally.
 # ~keep It pulls tonic/arrow-flight/reqwest in but nothing is invoked; drop it once upstream fixes the gate.
@@ -183,16 +183,16 @@ mimalloc = "0.1"
 notify = "8"
 notify-debouncer-full = "0.7"
 nucleo-matcher = "0.3.1"
-oxc_allocator = { version = "0.157.0", optional = true }
-oxc_parser = { version = "0.157.0", optional = true }
+oxc_allocator = { version = "0.158.0", optional = true }
+oxc_parser = { version = "0.158.0", optional = true }
 oxc_resolver = { version = "11.24.3", optional = true }
-oxc_semantic = { version = "0.157.0", optional = true }
-oxc_span = { version = "0.157.0", optional = true }
-oxc_syntax = { version = "0.157.0", optional = true }
+oxc_semantic = { version = "0.158.0", optional = true }
+oxc_span = { version = "0.158.0", optional = true }
+oxc_syntax = { version = "0.158.0", optional = true }
 rayon = "1"
 regex = "1.13.1"
 regex-syntax = "0.8"
-rmcp = { version = "3.9", default-features = false, features = ["server", "macros", "schemars", "transport-async-rw"] }
+rmcp = { version = "3.10", default-features = false, features = ["server", "macros", "schemars", "transport-async-rw"] }
 rmp-serde = "1"
 rmux-client = { version = "0.10", default-features = false, optional = true }
 rmux-sdk = { version = "0.10", default-features = false, optional = true }
@@ -228,11 +228,11 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tree-sitter = "0.27"
 tree-sitter-graph = { package = "basemind-tree-sitter-graph", version = "0.12.1", path = "crates/tree-sitter-graph", optional = true }
-tree-sitter-language-pack = "1.24.0"
+tree-sitter-language-pack = "1.25.0"
 tree-sitter-stack-graphs = { package = "basemind-tree-sitter-stack-graphs", version = "0.10.1", path = "crates/tree-sitter-stack-graphs", optional = true }
 url = { version = "2", features = ["serde"], optional = true }
 xberg = { version = "1.3.10", default-features = false, features = ["tokio-runtime", "simd-utf8"], optional = true }
-zstd = "0.14.3"
+zstd = "0.14.4"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 mach2 = "0.7"
@@ -242,7 +242,7 @@ basemind = { path = ".", features = ["test-support"] }
 criterion = { version = "0.8", features = ["html_reports"] }
 insta = "1"
 proptest = "1"
-rmcp = { version = "3.9", features = ["client", "transport-async-rw", "transport-child-process"] }
+rmcp = { version = "3.10", features = ["client", "transport-async-rw", "transport-child-process"] }
 tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "test-util"] }
 wiremock = "0.6"
