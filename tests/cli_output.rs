@@ -250,4 +250,22 @@ fn cold_dirty_scan_publishes_delta_without_standalone_fjall() {
         );
     }
     assert!(!cache.join("views/working/index.fjall").exists());
+    for number in 0..33 {
+        std::fs::write(root.join(format!("overflow_{number}.rs")), "fn overflow() {}").unwrap();
+    }
+    let opted_in_scan = || {
+        Command::new(bin())
+            .env("BASEMIND_INDEX_LAYERED", "1")
+            .args(["--root", root.to_str().unwrap(), "scan", "--no-git-history"])
+            .output()
+            .unwrap()
+    };
+    assert!(opted_in_scan().status.success());
+    assert!(cache.join("layered-promoted").is_file());
+    for number in 0..33 {
+        std::fs::remove_file(root.join(format!("overflow_{number}.rs"))).unwrap();
+    }
+    assert!(opted_in_scan().status.success());
+    assert!(cache.join("layered-promoted").is_file());
+    assert!(!basemind::store_base::has_published_dirty_worktree(root, &config).unwrap());
 }

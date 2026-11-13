@@ -149,6 +149,49 @@ pub(crate) fn open_existing_worktree_base(root: &Path, config: &Config) -> Resul
     open_worktree_base(root, config, false)
 }
 
+fn promotion_marker(root: &Path) -> PathBuf {
+    crate::store::workspace_cache_dir(root).join("layered-promoted")
+}
+
+fn promoted(root: &Path) -> bool {
+    promotion_marker(root).try_exists().unwrap_or(true)
+}
+
+/// Persist standalone mode after a completed scan exceeds the overlay file or byte budget.
+pub fn record_promotion(root: &Path, config: &Config) -> Result<bool> {
+    if promoted(root) || !eligible(config) {
+        return Ok(false);
+    }
+    let directory = repo_group_dir(root).join(BASE_DIR);
+    if !directory.is_dir() {
+        return Ok(false);
+    }
+    let Some((path, base)) = latest_compatible(&directory, &scan_digest(config)?)? else {
+        return Ok(false);
+    };
+    let repo = Repo::discover(root)?;
+    let candidates = repo.status_against(&base.commit)?.overlay_candidates();
+    let index = crate::store::read_index(&path)?.context("missing promotion base index")?;
+    let changed_bytes = candidates.iter().fold(0u64, |total, candidate| {
+        let live = fs::symlink_metadata(root.join(candidate.to_path_buf()))
+            .ok()
+            .filter(|metadata| metadata.is_file())
+            .map_or(0, |metadata| metadata.len());
+        let prior = index.files.get(candidate).map_or(0, |entry| entry.size_bytes);
+        total.saturating_add(live.max(prior))
+    });
+    if candidates.len() <= 32 && changed_bytes <= MAX_OVERLAY_INPUT_BYTES {
+        return Ok(false);
+    }
+    let marker = promotion_marker(root);
+    let parent = marker.parent().context("missing promotion marker directory")?;
+    let temporary = tempfile::NamedTempFile::new_in(parent)?;
+    temporary.as_file().sync_all()?;
+    temporary.persist(&marker)?;
+    sync_directory(parent)?;
+    Ok(true)
+}
+
 fn eligible(config: &Config) -> bool {
     !(config.documents.enabled
         || config.documents.embed
@@ -161,7 +204,7 @@ fn eligible(config: &Config) -> bool {
 }
 
 fn open_worktree_base(root: &Path, config: &Config, build: bool) -> Result<Option<SortedRunView>> {
-    if !eligible(config) {
+    if promoted(root) || !eligible(config) {
         return Ok(None);
     }
     let repo = match Repo::discover(root) {
@@ -208,7 +251,7 @@ pub fn publish_dirty_worktree(root: &Path, config: &Config, reference: &dyn Inde
 
 /// Publish a candidate-only delta against a prepared base.
 pub fn scan_dirty_worktree(root: &Path, config: &Config) -> Result<bool> {
-    if !eligible(config) || requires_probes() {
+    if promoted(root) || !eligible(config) || requires_probes() {
         return Ok(false);
     }
     let layered = dirty_worktree(root, config, true, None, None)?;
@@ -277,7 +320,7 @@ fn dirty_worktree(
     use crate::index::layered_shadow::DeltaManifest;
     use crate::index::layered_view::LayeredView;
 
-    if !eligible(config) {
+    if promoted(root) || !eligible(config) {
         return Ok(None);
     }
     let repo = Repo::discover(root)?;
