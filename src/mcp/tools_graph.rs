@@ -113,12 +113,12 @@ impl BasemindServer {
     ) -> Result<(String, &'static str), McpError> {
         self.state.await_cache_ready().await;
         let store = self.state.shared.store.read().await;
-        let view = store.index_db.as_ref().cloned().map(crate::index::view::StandaloneView);
+        let view = store.read_index_view();
         drop(store);
         let cache = self.state.shared.cache.load_full();
         let parts = render_ui_parts(
             &self.state.shared,
-            crate::index::view::as_dyn(&view),
+            view.as_deref(),
             &cache,
             format,
             edges,

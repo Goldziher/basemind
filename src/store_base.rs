@@ -313,6 +313,11 @@ pub fn scan_dirty_worktree(root: &Path, config: &Config) -> Result<bool> {
     Ok(false)
 }
 
+/// Refresh a prepared working index without opening standalone storage.
+pub fn refresh_worktree(root: &Path, config: &Config) -> Result<bool> {
+    Ok(open_existing_worktree_base(root, config)?.is_some() || scan_dirty_worktree(root, config)?)
+}
+
 /// Check for a published delta matching the current worktree.
 pub fn has_published_dirty_worktree(root: &Path, config: &Config) -> Result<bool> {
     Ok(open_dirty_worktree(root, config)?.is_some())
@@ -325,7 +330,14 @@ pub(crate) fn open_dirty_worktree(root: &Path, config: &Config) -> Result<Option
 pub(crate) fn hydrate_cold_store(store: &mut Store, config: &Config) -> Result<()> {
     if store.view == crate::store::VIEW_WORKING && store.index.files.is_empty() && store.index_db.is_none() {
         let root = store.root.clone();
-        dirty_worktree(&root, config, false, false, None, Some(store))?;
+        if let Some(view) = open_existing_worktree_base(&root, config)? {
+            let directory = view.directory().parent().context("missing base generation directory")?;
+            let index = crate::store::read_index(directory)?.context("missing base manifest")?;
+            let blobs = directory.join(crate::store_layout::BLOBS_DIR);
+            store.install_layered_manifest(index, blobs.clone(), blobs, std::sync::Arc::new(view));
+        } else {
+            dirty_worktree(&root, config, false, false, None, Some(store))?;
+        }
     }
     Ok(())
 }
@@ -1313,6 +1325,19 @@ fn changing_a_typescript_config_restitches_its_unchanged_consumer() {
     let expected = reference.index_view().unwrap().references_to(&target, 13);
     assert!(expected.iter().any(|(path, _)| path.as_str() == Some("use.ts")));
     assert_eq!(view.references_to(&target, 13), expected);
+    let mut cold = Store::open_read_only_no_index(root, "working").unwrap();
+    cold.index.files.clear();
+    hydrate_cold_store(&mut cold, &config).unwrap();
+    assert!(cold.index_db.is_none());
+    assert_eq!(crate::query::resolved_references(&cold, &target, 13), expected);
+    let (use_path, use_offset) = expected
+        .iter()
+        .find(|(path, _)| path.as_str() == Some("use.ts"))
+        .unwrap();
+    assert_eq!(
+        crate::query::definition_of(&cold, use_path, *use_offset),
+        Some((target, 13))
+    );
 }
 
 #[cfg(all(test, feature = "code-intel-js"))]

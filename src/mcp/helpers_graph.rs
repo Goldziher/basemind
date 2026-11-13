@@ -148,12 +148,12 @@ pub(super) async fn run_graph(state: &super::ServerState, params: GraphParams) -
     let started = std::time::Instant::now();
     state.await_cache_ready().await;
     let store = state.shared.store.read().await;
-    let view = store.index_db.as_ref().cloned().map(crate::index::view::StandaloneView);
+    let view = store.read_index_view();
     let basemind_dir = store.basemind_dir.clone();
     drop(store);
     let cache = state.shared.cache.load_full();
     let shared = &state.shared;
-    let idx = crate::index::view::as_dyn(&view);
+    let idx = view.as_deref();
     if idx.is_none() {
         // The graph walks read every file's call sites, so a session with no Fjall index serves them
         // from the in-RAM projection. Build it now so the notice below reflects whether its byte

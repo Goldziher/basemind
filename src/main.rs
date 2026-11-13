@@ -784,6 +784,18 @@ fn cmd_rescan(root: &std::path::Path, args: &RescanArgs, verbosity: Verbosity, n
     if let Some(notice) = writer_collision_notice(root) {
         return Err(basemind::cli::exit::CliExit::busy(notice));
     }
+    let shared_index = std::env::var_os("BASEMIND_INDEX_LAYERED").is_some_and(|value| value == "1");
+    if shared_index && !cancel.is_cancelled() && basemind::store_base::refresh_worktree(root, &config).unwrap_or(false)
+    {
+        eprintln!("Shared worktree index ready.");
+        return Ok(());
+    }
+    let standalone_absent = !basemind::store::workspace_cache_dir(root)
+        .join(basemind::store::VIEWS_DIR)
+        .join(basemind::store::VIEW_WORKING)
+        .join(basemind::store::INDEX_FILE)
+        .is_file();
+    let full = full || standalone_absent;
     let mut store = open_store_for_write(root, basemind::store::VIEW_WORKING, "rescan", LockHolder::Rescan)?;
 
     let report = if full {
