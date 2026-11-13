@@ -222,6 +222,9 @@ pub enum AgentsCmd {
         /// Resume token from a previous page's `next_cursor`.
         #[arg(long)]
         cursor: Option<String>,
+        /// Return messages after this per-thread sequence number.
+        #[arg(long, conflicts_with = "cursor")]
+        after_seq: Option<u64>,
         /// Maximum messages to return (default 100, max 1000).
         #[arg(long)]
         limit: Option<u32>,
@@ -645,19 +648,18 @@ async fn dispatch(root: &Path, json: bool, cmd: AgentsCmd, out: &mut impl Write)
         AgentsCmd::History {
             thread,
             cursor,
+            after_seq,
             limit,
             since_hours,
             as_agent,
         } => {
             let mut client = connect_as(root, as_agent).await?;
             let thread_id = ThreadId::parse(thread).context("thread id")?;
+            let cursor = cursor
+                .map(Cursor)
+                .or_else(|| after_seq.map(|seq| Cursor::encode(thread_id.as_str(), seq)));
             let (messages, next_cursor) = client
-                .read_history(
-                    thread_id,
-                    cursor.map(Cursor),
-                    clamp_limit(limit),
-                    since_cutoff(since_hours),
-                )
+                .read_history(thread_id, cursor, clamp_limit(limit), since_cutoff(since_hours))
                 .await
                 .map_err(|e| anyhow::anyhow!("history: {e}"))?;
             render_front_matter(&messages, next_cursor.as_ref(), None, json, out)?;

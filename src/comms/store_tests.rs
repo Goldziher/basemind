@@ -86,6 +86,18 @@ fn history_paginates_by_seq() {
     let page2 = store.history(&thread, page1.last_seq, 2).expect("history");
     assert_eq!(page2.messages.len(), 2);
     assert_eq!(page2.messages[0].1.id, "m-2");
+
+    let tail = store.history(&thread, 4, 10).expect("history after sequence");
+    assert_eq!(tail.messages.len(), 1);
+    assert_eq!(tail.messages[0].0, 5);
+    assert!(!tail.more);
+    assert!(
+        store
+            .history(&thread, u64::MAX, 10)
+            .expect("max sequence")
+            .messages
+            .is_empty()
+    );
 }
 
 #[test]

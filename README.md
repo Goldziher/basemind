@@ -1190,10 +1190,10 @@ Every command takes `--as-agent <ID>` to act as a named sub-identity.
 |---|---|
 | `register [--name --description --version --skill]` / `list [--thread]` | Publish your identity card / list agents the broker knows. |
 | `thread-start [--subject --path --member]` / `thread-list [--subject-contains --include-archived]` | Start a thread (addressed by ≥2 of subject / path / members) / list threads discoverable to you. |
-| `join <thread>` / `leave <thread>` / `members <thread>` | Join, leave, or list the members of a thread. |
+| `join <thread>` / `leave <thread>` / `members <thread>` | Join a thread for future inbox messages, leave it, or list its members. |
 | `add-member <thread> <id>` / `remove-member <thread> <id>` / `archive <thread>` | Manage membership and archive a thread (creator only). |
 | `post <thread> <subject> [--body --reply-to --tag]` | Post a message to a thread. |
-| `history <thread> [--since-hours]` / `inbox [--mark-read]` / `wait [--thread --timeout-secs]` | A thread's history / your cross-thread inbox / block until a peer posts. |
+| `history <thread> [--since-hours --after-seq]` / `inbox [--mark-read]` / `wait [--thread --timeout-secs]` | A thread's history / your cross-thread inbox / block until a peer posts. |
 | `message <id>` | Read one message body in full — the only body path. |
 | `ack [--message-id … \| --thread <t> --to-seq <n>]` | Clear read messages by advancing per-thread read cursors. |
 | `cleanup [--dry-run \| --apply] [retention overrides]` / `status` | Preview/apply retention / report lifecycle health. |

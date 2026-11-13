@@ -43,7 +43,7 @@ impl BasemindServer {
         only the threads DISCOVERABLE to you — ones you are a member of, ones whose path glob \
         matches this server's cwd, or (with `subject_contains`) a subject filter; there is no \
         global listing, and archived threads are excluded unless `include_archived`. `join` a \
-        thread to route its messages into your inbox and `leave` to stop: membership is always \
+        thread to route new messages into your inbox and `leave` to stop: membership is always \
         explicit, there is NO auto-join. `post` sends a message (`thread` + `subject`, plus \
         optional markdown `body`, `tags`, and `reply_to` to reply to a specific message) and \
         returns its `message_id`. `history` reads one thread oldest-first and `inbox` reads what is \
@@ -52,7 +52,8 @@ impl BasemindServer {
         one compact `message_ref` (preferred) or legacy `message_id` is the only path to a body, \
         so scan the front-matter and fetch only the \
         bodies you need. Both default to the last 24h (`since_hours`, `0` for all history) and \
-        paginate (`limit` default 100 max 1000, `cursor` from the previous `next_cursor`). `wait` \
+        paginate (`limit` default 100 max 1000, `cursor` from the previous `next_cursor`). In `history`, \
+        pass `after_seq` instead of a cursor to resume after a known thread sequence. `wait` \
         long-polls up to `timeout_secs` (default 30, max 40; call again to keep waiting) and returns the moment a peer posts, \
         instead of you looping `inbox`; it never marks anything read. `ack` clears messages you \
         have handled by ADVANCING your own per-thread read cursors (`message_ids`, and/or `thread` \

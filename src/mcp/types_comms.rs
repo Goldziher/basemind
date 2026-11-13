@@ -81,6 +81,9 @@ pub struct AgentsParams {
     /// Resume token from the previous `next_cursor` (history, inbox, wait).
     #[serde(default)]
     pub cursor: Option<String>,
+    /// History only. Return messages after this per-thread sequence number. Mutually exclusive with cursor.
+    #[serde(default)]
+    pub after_seq: Option<u64>,
     /// Page size for history / inbox (default 100, max 1000).
     #[serde(default)]
     pub limit: Option<u32>,
@@ -445,6 +448,9 @@ pub struct ThreadHistoryParams {
     /// Resume token from a previous page's `next_cursor` (opaque string).
     #[serde(default)]
     pub cursor: Option<String>,
+    /// History only. Return messages after this per-thread sequence number. Mutually exclusive with cursor.
+    #[serde(default)]
+    pub after_seq: Option<u64>,
     /// Maximum messages to return (default 100, max 1000).
     #[serde(default)]
     pub limit: Option<u32>,

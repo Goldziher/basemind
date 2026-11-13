@@ -302,18 +302,10 @@ impl Broker {
             return Ok(need_hello());
         };
         self.store_write(move |store| {
-            let Some(mut record) = store.get_thread(&thread)? else {
+            let Some(record) = store.get_thread(&thread)? else {
                 return Ok(unknown_thread(&thread));
             };
-            store.add_member(&Membership {
-                agent_id: agent.clone(),
-                thread: thread.clone(),
-                created_at: now_micros(),
-            })?;
-            if !record.members.contains(&agent) {
-                record.members.push(agent);
-                store.put_thread(&record)?;
-            }
+            store.join_thread(record, agent)?;
             Ok(CommsResponse::Ok)
         })
         .await

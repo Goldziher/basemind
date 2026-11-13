@@ -273,6 +273,33 @@ impl CommsStore {
         Ok(())
     }
 
+    /// Join an existing thread at its current high-water mark without advancing an existing member.
+    pub fn join_thread(&self, mut thread: Thread, agent: AgentId) -> Result<(), CommsStoreError> {
+        if self.is_member(&thread.id, &agent)? {
+            return Ok(());
+        }
+        let key = keys::thread_agent(thread.id.as_str(), agent.as_str());
+        let cursor = keys::cursor_key(agent.as_str(), thread.id.as_str());
+        let seq = self.current_seq(&thread.id)?;
+        let membership = Membership {
+            agent_id: agent.clone(),
+            thread: thread.id.clone(),
+            created_at: now_micros(),
+        };
+        if !thread.members.contains(&agent) {
+            thread.members.push(agent);
+        }
+        let bytes = rmp_serde::to_vec_named(&membership)?;
+        let thread_bytes = rmp_serde::to_vec_named(&thread)?;
+        let mut batch = self.db.batch();
+        batch.insert(&self.thread_members, key.as_slice(), bytes.as_slice());
+        batch.insert(&self.thread_subs, key, bytes);
+        batch.insert(&self.cursors, cursor, seq.to_be_bytes());
+        batch.insert(&self.threads, keys::thread_key(thread.id.as_str()), thread_bytes);
+        batch.commit()?;
+        Ok(())
+    }
+
     /// Remove an agent from a thread's membership.
     pub fn remove_member(&self, thread: &ThreadId, agent: &AgentId) -> Result<(), CommsStoreError> {
         let key = keys::thread_agent(thread.as_str(), agent.as_str());
@@ -393,18 +420,18 @@ impl CommsStore {
         limit: usize,
         since_micros: Option<i64>,
     ) -> Result<HistoryPage, CommsStoreError> {
-        let prefix = keys::messages_by_thread_prefix(thread.as_str());
+        use std::ops::Bound::{Excluded, Included};
+
+        let start = keys::message_by_thread(thread.as_str(), after_seq);
+        let end = keys::message_by_thread(thread.as_str(), u64::MAX);
         let mut messages = Vec::new();
         let mut last_seq = after_seq;
         let mut more = false;
-        for guard in self.messages_by_thread.prefix(&prefix) {
+        for guard in self.messages_by_thread.range((Excluded(start), Included(end))) {
             let (k, v) = guard.into_inner()?;
             let Some((_, seq)) = keys::parse_message_by_thread(&k) else {
                 continue;
             };
-            if seq <= after_seq {
-                continue;
-            }
             let meta: MessageMeta = rmp_serde::from_slice(&v)?;
             if since_micros.is_some_and(|cutoff| meta.ts_micros < cutoff) {
                 last_seq = seq;

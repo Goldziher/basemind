@@ -516,7 +516,13 @@ async fn inbox_reflects_only_joined_threads() {
     join(&broker, &mut carol, &tx, &thread).await;
     post(&broker, &mut alice, &tx, &thread, "after-join").await;
     let carol_inbox = inbox(&broker, &mut carol, &tx).await;
-    assert!(carol_inbox.iter().any(|m| m.meta.subject == "after-join"));
+    assert_eq!(carol_inbox.len(), 1);
+    assert_eq!(carol_inbox[0].meta.subject, "after-join");
+
+    join(&broker, &mut carol, &tx, &thread).await;
+    let after_repeated_join = inbox(&broker, &mut carol, &tx).await;
+    assert_eq!(after_repeated_join.len(), 1);
+    assert_eq!(after_repeated_join[0].meta.subject, "after-join");
 }
 
 #[tokio::test]
