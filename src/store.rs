@@ -112,6 +112,8 @@ pub enum StoreError {
         /// sidecar is missing/corrupt — the message then falls back to a generic guess.
         holder: Option<LockMeta>,
     },
+    #[error("working view migration recovery failed: {0}")]
+    Migration(#[source] anyhow::Error),
     #[error("inverted index error: {0}")]
     Index(#[from] IndexError),
     #[error(
@@ -364,6 +366,8 @@ impl Store {
         // A fresh linked worktree clones its working view from a sibling checkout (COW, atomic
         // rename) BEFORE fjall opens, so the first scan skips content-identical files. ~keep
         if view == VIEW_WORKING {
+            crate::store_migration::Migration::recover_for_writer(&basemind_dir.join(VIEWS_DIR))
+                .map_err(StoreError::Migration)?;
             crate::store_seed::seed_working_view(root, &basemind_dir, &view_dir);
         }
         ensure_dir(&view_dir)?;

@@ -1,7 +1,9 @@
 //! Durable retirement of a verified standalone working view.
 
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Write};
+use std::io;
+#[cfg(test)]
+use std::io::Write;
 use std::path::Path;
 
 use anyhow::{Context, Result, ensure};
@@ -42,7 +44,15 @@ impl<'a> Migration<'a> {
         Ok(Self { views, _lock: lock })
     }
 
+    pub(crate) fn recover_for_writer(views: &Path) -> Result<()> {
+        if exists(&views.join(JOURNAL))? || exists(&views.join(BACKUP))? {
+            Self::lock(views)?.recover(|_| false)?;
+        }
+        Ok(())
+    }
+
     /// Verify the source and candidate before publishing an intent to retire the source.
+    #[cfg(test)]
     pub(crate) fn retire(&self, generation: u64, verify: impl FnOnce() -> Result<()>) -> Result<()> {
         ensure!(self.read()?.is_none(), "migration already recorded");
         let working = self.views.join(WORKING);
@@ -62,6 +72,7 @@ impl<'a> Migration<'a> {
     }
 
     /// Confirm the routed generation opened successfully before recording completion.
+    #[cfg(test)]
     pub(crate) fn commit(&self, generation: u64, verify_route: impl FnOnce() -> Result<()>) -> Result<()> {
         let mut journal = self.read()?.context("missing migration intent")?;
         ensure!(
@@ -110,6 +121,7 @@ impl<'a> Migration<'a> {
         Ok(Some(journal))
     }
 
+    #[cfg(test)]
     fn write(&self, journal: &Journal) -> Result<()> {
         let mut file = tempfile::NamedTempFile::new_in(self.views)?;
         file.write_all(&serde_json::to_vec(journal)?)?;
@@ -207,6 +219,29 @@ mod tests {
         assert!(dir.path().join(BACKUP).join("index.msgpack").is_file());
         migration.recover(|_| false).unwrap();
         assert_restored(dir.path());
+    }
+
+    #[test]
+    fn writer_open_restores_standalone_before_creating_working_view() {
+        use crate::store::{LockHolder, Store, VIEW_WORKING, init_isolated_cache, workspace_cache_dir};
+
+        init_isolated_cache();
+        let root = tempfile::tempdir().unwrap();
+        let store = Store::open_with_holder(root.path(), VIEW_WORKING, LockHolder::Scan).unwrap();
+        let views = workspace_cache_dir(root.path()).join("views");
+        let sentinel = views.join(WORKING).join("recovery-sentinel");
+        fs::write(&sentinel, b"standalone").unwrap();
+        drop(store);
+        {
+            let migration = Migration::lock(&views).unwrap();
+            migration.retire(7, || Ok(())).unwrap();
+        }
+        assert!(!sentinel.exists());
+        let reopened = Store::open_with_holder(root.path(), VIEW_WORKING, LockHolder::Scan).unwrap();
+        assert_eq!(fs::read(sentinel).unwrap(), b"standalone");
+        assert!(reopened.index_db.is_some());
+        assert!(!exists(&views.join(BACKUP)).unwrap());
+        assert!(!exists(&views.join(JOURNAL)).unwrap());
     }
 
     #[test]
