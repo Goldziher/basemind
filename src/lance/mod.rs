@@ -826,11 +826,19 @@ fn build_memory_batch(dim: u16, rows: &[MemoryRow]) -> Result<RecordBatch> {
 }
 
 fn decode_document_hits(batch: &RecordBatch, out: &mut Vec<DocumentHit>) -> Result<()> {
+    decode_document_hits_with_path_column(batch, "path", out)
+}
+
+fn decode_document_hits_with_path_column(
+    batch: &RecordBatch,
+    path_column: &str,
+    out: &mut Vec<DocumentHit>,
+) -> Result<()> {
     use arrow_array::{Float32Array, UInt32Array};
     let path = batch
-        .column_by_name("path")
+        .column_by_name(path_column)
         .and_then(|c| c.as_any().downcast_ref::<StringArray>())
-        .ok_or_else(|| anyhow!("`path` column missing"))?;
+        .ok_or_else(|| anyhow!("`{path_column}` column missing"))?;
     let mime = batch
         .column_by_name("mime_type")
         .and_then(|c| c.as_any().downcast_ref::<StringArray>())
