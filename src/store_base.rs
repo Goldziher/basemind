@@ -79,7 +79,9 @@ pub fn prepare(root: &Path, config: &Config) -> Result<BaseBuild> {
         .open(group.join(BASE_LOCK_FILE))
         .context("open base generation lock")?;
     if let Err(error) = fs2::FileExt::try_lock_exclusive(&lock) {
-        if error.kind() == io::ErrorKind::WouldBlock {
+        if error.kind() == io::ErrorKind::WouldBlock
+            || error.raw_os_error() == fs2::lock_contended_error().raw_os_error()
+        {
             return Ok(BaseBuild::Busy);
         }
         return Err(error).context("lock base generation directory");
