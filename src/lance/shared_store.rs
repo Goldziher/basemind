@@ -110,24 +110,26 @@ impl SharedStore {
     }
 
     /// Scope and MIME filters run before ranking. The manifest determines which paths are live.
-    pub fn search<'a>(
+    pub fn search_documents(
         &self,
-        lane: SharedLane,
         scope: &str,
         query: Vec<f32>,
         mime: Option<&str>,
-        paths: &LivePaths<'a>,
+        paths: &LivePaths<'_>,
         limit: usize,
-    ) -> Result<Vec<PathHit<'a, String>>> {
-        ensure!(
-            mime.is_none() || matches!(lane, SharedLane::Documents),
-            "MIME filter requires documents"
-        );
+    ) -> Result<Vec<super::DocumentHit>> {
         let mut filter = scope_filter(scope);
         if let Some(mime) = mime {
             filter.push_str(&format!(" AND mime_type = '{}'", super::escape_sql_literal(mime)));
         }
-        self.search_lane(lane, query, &filter, paths, limit, decode)
+        let hits = self.search_lane(SharedLane::Documents, query, &filter, paths, limit, decode_document)?;
+        Ok(hits
+            .into_iter()
+            .map(|hit| super::DocumentHit {
+                path: hit.path.into(),
+                ..hit.value
+            })
+            .collect())
     }
 
     #[cfg(feature = "code-search")]
@@ -276,22 +278,19 @@ fn validate_unique_keys(lane: SharedLane, batch: &RecordBatch) -> Result<()> {
     Ok(())
 }
 
-fn decode(batch: &RecordBatch, out: &mut Vec<ContentHit<String>>) -> Result<()> {
-    let hashes = column::<StringArray>(batch, "content_hash")?;
-    let ordinals = column::<UInt32Array>(batch, "chunk_idx")?;
-    let distances = column::<arrow_array::Float32Array>(batch, "_distance")?;
-    let text = column::<StringArray>(batch, "text")?;
-    for index in 0..batch.num_rows() {
-        out.push(ContentHit {
-            hash: hashes.value(index).into(),
-            chunk_idx: ordinals.value(index),
-            distance: distances.value(index),
-            value: text.value(index).into(),
-        });
-    }
+fn decode_document(batch: &RecordBatch, out: &mut Vec<ContentHit<super::DocumentHit>>) -> Result<()> {
+    let mut documents = Vec::new();
+    super::decode_document_hits_with_path_column(batch, "content_hash", &mut documents)?;
+    out.extend(documents.into_iter().map(|mut value| ContentHit {
+        hash: std::mem::take(&mut value.path),
+        chunk_idx: value.chunk_idx,
+        distance: value.distance,
+        value,
+    }));
     Ok(())
 }
 
+#[cfg(any(feature = "documents", feature = "code-search"))]
 fn column<'a, T: 'static>(batch: &'a RecordBatch, name: &str) -> Result<&'a T> {
     batch
         .column_by_name(name)
@@ -454,17 +453,19 @@ mod tests {
         let store = SharedStore::open(group.path(), "test-model", 2).unwrap();
         let live = LivePaths::from_iter([("live", "b.txt"), ("live", "a.txt")]);
         let hits = store
-            .search(lane, "scope", vec![0.0, 0.0], Some("text/plain"), &live, 3)
+            .search_documents("scope", vec![0.0, 0.0], Some("text/plain"), &live, 3)
             .unwrap();
         assert_eq!(
-            hits.iter()
-                .map(|hit| (hit.path, hit.value.as_str()))
-                .collect::<Vec<_>>(),
+            hits.iter().map(|hit| (hit.path, hit.text.as_str())).collect::<Vec<_>>(),
             [("a.txt", "original"), ("b.txt", "original")]
+        );
+        assert_eq!(
+            (hits[0].byte_start, hits[0].byte_end, hits[0].mime_type.as_str()),
+            (0, 1, "text/plain")
         );
         assert!(
             store
-                .search(lane, "scope", vec![0.0, 0.0], Some("text/html"), &live, 3)
+                .search_documents("scope", vec![0.0, 0.0], Some("text/html"), &live, 3)
                 .unwrap()
                 .is_empty()
         );
