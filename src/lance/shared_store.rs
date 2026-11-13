@@ -119,19 +119,49 @@ impl SharedStore {
         paths: &LivePaths<'a>,
         limit: usize,
     ) -> Result<Vec<PathHit<'a, String>>> {
+        ensure!(
+            mime.is_none() || matches!(lane, SharedLane::Documents),
+            "MIME filter requires documents"
+        );
+        let mut filter = scope_filter(scope);
+        if let Some(mime) = mime {
+            filter.push_str(&format!(" AND mime_type = '{}'", super::escape_sql_literal(mime)));
+        }
+        self.search_lane(lane, query, &filter, paths, limit, decode)
+    }
+
+    #[cfg(feature = "code-search")]
+    pub fn search_code_chunks(
+        &self,
+        scope: &str,
+        query: Vec<f32>,
+        paths: &LivePaths<'_>,
+        limit: usize,
+    ) -> Result<Vec<super::CodeChunkHit>> {
+        let hits = self.search_lane(SharedLane::Code, query, &scope_filter(scope), paths, limit, decode_code)?;
+        Ok(hits
+            .into_iter()
+            .map(|hit| super::CodeChunkHit {
+                path: hit.path.into(),
+                ..hit.value
+            })
+            .collect())
+    }
+
+    fn search_lane<'a, T: Clone>(
+        &self,
+        lane: SharedLane,
+        query: Vec<f32>,
+        filter: &str,
+        paths: &LivePaths<'a>,
+        limit: usize,
+        decode: impl Fn(&RecordBatch, &mut Vec<ContentHit<T>>) -> Result<()>,
+    ) -> Result<Vec<PathHit<'a, T>>> {
         ensure!(query.len() == usize::from(self.dim), "wrong query dimension");
         ensure!(
             lane.schema(self.dim).field_with_name("embedding").is_ok(),
             "lane has no vector column"
         );
-        ensure!(
-            mime.is_none() || matches!(lane, SharedLane::Documents),
-            "MIME filter requires documents"
-        );
-        let mut filter = format!("scope = '{}'", super::escape_sql_literal(scope));
-        if let Some(mime) = mime {
-            filter.push_str(&format!(" AND mime_type = '{}'", super::escape_sql_literal(mime)));
-        }
         let table = self
             .runtime
             .block_on(self.connection.open_table(lane.name()).execute())?;
@@ -139,7 +169,7 @@ impl SharedStore {
             self.runtime.block_on(async {
                 let mut stream = table
                     .vector_search(query.clone())?
-                    .only_if(filter.as_str())
+                    .only_if(filter)
                     .limit(count)
                     .execute()
                     .await?;
@@ -147,7 +177,7 @@ impl SharedStore {
                 while let Some(batch) = stream.try_next().await? {
                     decode(&batch, &mut hits)?;
                 }
-                Ok(hits)
+                anyhow::Ok(hits)
             })
         })
     }
@@ -157,7 +187,7 @@ impl SharedStore {
     pub fn doc_links(&self, scope: &str, paths: &LivePaths<'_>) -> Result<Vec<super::DocLinkRow>> {
         self.runtime.block_on(async {
             let table = self.connection.open_table(schema::DOC_LINKS_TABLE).execute().await?;
-            let predicate = format!("scope = '{}'", super::escape_sql_literal(scope));
+            let predicate = scope_filter(scope);
             let mut stream = table.query().only_if(predicate).execute().await?;
             let mut rows = Vec::new();
             while let Some(batch) = stream.try_next().await? {
@@ -174,6 +204,24 @@ impl SharedStore {
             Ok(rows)
         })
     }
+}
+
+fn scope_filter(scope: &str) -> String {
+    format!("scope = '{}'", super::escape_sql_literal(scope))
+}
+
+#[cfg(feature = "code-search")]
+fn decode_code(batch: &RecordBatch, out: &mut Vec<ContentHit<super::CodeChunkHit>>) -> Result<()> {
+    let mut pointers = Vec::new();
+    super::decode_code_chunk_hits_with_path_column(batch, "content_hash", &mut pointers)?;
+    let ordinals = column::<UInt32Array>(batch, "chunk_idx")?;
+    out.extend(pointers.into_iter().enumerate().map(|(index, mut value)| ContentHit {
+        hash: std::mem::take(&mut value.path),
+        chunk_idx: ordinals.value(index),
+        distance: value.distance,
+        value,
+    }));
+    Ok(())
 }
 
 #[cfg(feature = "documents")]
@@ -295,6 +343,64 @@ mod tests {
         )
         .unwrap();
         RecordBatch::try_new(schema::shared_documents_schema(2), batch.columns().to_vec()).unwrap()
+    }
+
+    #[cfg(feature = "code-search")]
+    #[test]
+    fn shared_code_preserves_pointer_fields_under_the_effective_path() {
+        use crate::lance::{CodeRow, build_code_chunks_batch};
+
+        let group = tempfile::tempdir().unwrap();
+        let store = SharedStore::open(group.path(), "test-model", 2).unwrap();
+        let entry = crate::store::FileEntry {
+            hash_hex: "blob".into(),
+            language: "rust".into(),
+            size_bytes: 10,
+            mtime: 0,
+            extract_epoch: 1,
+        };
+        let mut other_language = entry.clone();
+        other_language.language = "typescript".into();
+        let mut row = CodeRow {
+            scope: "project's scope".into(),
+            path: super::super::shared::code_content_key(&entry),
+            chunk_id: "blob:1".into(),
+            symbol: "run".into(),
+            kind: "function".into(),
+            lang: "rust".into(),
+            line_start: 10,
+            line_end: 12,
+            byte_start: 20,
+            byte_end: 48,
+            text: "fn run() {}".into(),
+            embedding: vec![1.0, 0.0],
+        };
+        let batch = build_code_chunks_batch(2, &[row.clone()]).unwrap();
+        let mut columns = batch.columns().to_vec();
+        columns.push(std::sync::Arc::new(UInt32Array::from(vec![1])));
+        let shared = RecordBatch::try_new(schema::shared_code_chunks_schema(2), columns).unwrap();
+        store.insert(SharedLane::Code, shared).unwrap();
+        row.scope = "unrelated".into();
+        row.embedding = vec![0.0, 0.0];
+        let batch = build_code_chunks_batch(2, &[row]).unwrap();
+        let mut columns = batch.columns().to_vec();
+        columns.push(std::sync::Arc::new(UInt32Array::from(vec![1])));
+        let shared = RecordBatch::try_new(schema::shared_code_chunks_schema(2), columns).unwrap();
+        store.insert(SharedLane::Code, shared).unwrap();
+
+        let live = LivePaths::from_code_entries([("renamed.rs", &entry), ("unrelated.ts", &other_language)]);
+        let hits = store
+            .search_code_chunks("project's scope", vec![0.0, 0.0], &live, 2)
+            .unwrap();
+        assert_eq!(hits.len(), 1);
+        let hit = &hits[0];
+        assert_eq!((&*hit.path, &*hit.chunk_id), ("renamed.rs", "blob:1"));
+        assert_eq!((&*hit.symbol, &*hit.kind, &*hit.lang), ("run", "function", "rust"));
+        assert_eq!(
+            (hit.line_start, hit.line_end, hit.byte_start, hit.byte_end),
+            (10, 12, 20, 48)
+        );
+        assert_eq!(hit.distance, 1.0);
     }
 
     #[cfg(feature = "documents")]
