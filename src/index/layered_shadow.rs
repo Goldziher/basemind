@@ -42,6 +42,10 @@ impl DeltaManifest {
         }
     }
 
+    pub(super) fn delete(&mut self, path: RelPath) {
+        self.entries.insert(path, DeltaEntry::Deleted);
+    }
+
     pub(super) fn shadow<'base>(
         &self,
         base_counts: &AHashMap<&str, usize>,
@@ -70,6 +74,10 @@ impl DeltaManifest {
 }
 
 impl Shadow<'_> {
+    pub(super) fn paths(&self) -> impl Iterator<Item = &RelPath> {
+        self.delta.entries.keys()
+    }
+
     pub(super) fn hides(&self, part: Part, key: &[u8]) -> bool {
         let path = match part {
             Part::Meta | Part::GrepBloom => return false,

@@ -27,6 +27,8 @@ mod helpers_admin;
 mod helpers_archmap;
 mod helpers_calls;
 mod helpers_calls_scan;
+#[cfg(test)]
+pub(crate) use helpers_calls_scan::scan_calls_by_name;
 mod helpers_code;
 #[cfg(feature = "code-search")]
 mod helpers_code_search;
