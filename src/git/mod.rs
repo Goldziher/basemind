@@ -5,6 +5,7 @@
 //! without rewriting half of the codebase.
 
 mod commit;
+mod export;
 mod remote;
 mod worktree;
 use commit::{build_commit_info, commit_files, commit_touches_path, compute_hunks, decode_path};
