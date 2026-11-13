@@ -17,6 +17,8 @@ mod doc_links;
 pub mod schema;
 #[doc(hidden)]
 pub mod shared;
+#[doc(hidden)]
+pub mod shared_store;
 
 pub use batch::{BATCH_MAX_DOCS, BATCH_MAX_ROWS, PendingBatch, SCAN_RETENTION};
 
