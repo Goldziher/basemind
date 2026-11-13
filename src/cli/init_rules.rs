@@ -82,40 +82,40 @@ impl Capability {
         Capability::ALL.into_iter().find(|c| c.slug() == slug)
     }
 
-    /// The routing-table row: `(prefer this basemind tool, instead of this shell fallback)`.
+    /// The routing-table row: `(Basemind tool, task)`.
     fn routing_row(self) -> (&'static str, &'static str) {
         match self {
             Capability::CodeSearchNavigation => (
                 "`code` modes `symbols` / `definition` / `references` / `callers` / `implementations` / `grep`, `graph` mode `calls`",
-                "`grep` / `rg` / opening files to find a symbol",
+                "Find definitions, references, callers, implementations, or exact text in indexed code",
             ),
             Capability::CodeMappingArchitecture => (
                 "`code` mode `outline` (code files only) / `graph` mode `map`",
-                "reading whole files to learn their shape",
+                "Inspect a file outline, call graph, or repository architecture",
             ),
             Capability::GitHistory => (
                 "`git` modes `recent` / `blame_symbol` / `touching` / `diff`",
-                "`git log` / `git blame` / `git diff`",
+                "Inspect history, blame, or diffs",
             ),
             Capability::FileFinding => (
                 "`code` mode `find` (fuzzy path search)",
-                "`find` / `fd` / `ls -R` to locate a file by name",
+                "Find files by name or path fragment",
             ),
             Capability::AgentComms => (
                 "`agents` (modes `post` / `inbox` / `thread_list`)",
-                "assuming you're the only agent in the repo",
+                "Discover threads, check the inbox, or coordinate with agents",
             ),
             Capability::WorktreeCoordination => (
                 "`workspace` (modes `workspaces` / `worktrees` / `claim`)",
-                "editing a worktree another session may already own",
+                "Inspect worktrees and check advisory claims before editing",
             ),
             Capability::DocumentsRag => (
                 "`memory` mode `documents` (PDFs, Office, markdown, config and data files; the code map holds code only) / `web` (modes `scrape` / `crawl` / `map`)",
-                "manually reading PDFs / docs / config files or ad-hoc fetching",
+                "Search indexed documents or inspect web pages",
             ),
             Capability::SemanticSearch => (
                 "`code` mode `semantic` (then `chunk`)",
-                "keyword-only guessing at where a concept lives",
+                "Find code by concept and retrieve the relevant chunk",
             ),
         }
     }
@@ -133,16 +133,10 @@ pub struct BlockSections {
 /// Render the managed rules block body (WITHOUT the BEGIN/END delimiters — the caller wraps it).
 ///
 /// `caps` must already be filtered to the user's selection; the rendered routing table and
-/// red-flag list include only rows for those capabilities.
+/// notebook guidance include only the selected capabilities.
 pub fn render_block_body(caps: &[Capability], sections: BlockSections) -> String {
     let mut out = String::new();
-    out.push_str("## basemind — prefer it over grep / read / git\n\n");
-    out.push_str(
-        "basemind is this repo's indexed context layer. Prefer it BEFORE grep, before reading \
-         files to find structure, and before naked `git` — it's the default, not a preference. \
-         basemind returns paths, lines, and signatures at a fraction of the tokens of reading \
-         source.\n\n",
-    );
+    out.push_str("## Basemind\n\n");
 
     if sections.usage_rules {
         render_usage_rules(&mut out, caps);
@@ -154,27 +148,31 @@ pub fn render_block_body(caps: &[Capability], sections: BlockSections) -> String
 }
 
 fn render_usage_rules(out: &mut String, caps: &[Capability]) {
-    out.push_str("### Routing\n\n");
-    out.push_str("| Reach for | Instead of |\n|---|---|\n");
+    out.push_str(
+        "**Use Basemind first for every capability listed below.** Make the Basemind MCP call \
+         before using a shell command, file read, or another search tool for the same question. \
+         Use the result to narrow any follow-up reads to the paths and lines you need.\n\n",
+    );
+    out.push_str("| First call | Task |\n|---|---|\n");
     for cap in &Capability::ALL {
         if caps.contains(cap) {
-            let (prefer, fallback) = cap.routing_row();
-            let _ = writeln!(out, "| {prefer} | {fallback} |");
+            let (tool, task) = cap.routing_row();
+            let _ = writeln!(out, "| {tool} | {task} |");
         }
     }
     out.push('\n');
 
-    out.push_str("### Red flags — stop and re-route\n\n");
-    if caps.contains(&Capability::CodeSearchNavigation) {
-        out.push_str("- About to `grep` / `rg`? → `code` mode `grep`.\n");
-        out.push_str("- About to open a file just to find a symbol? → `code` modes `outline` / `symbols`.\n");
-    } else if caps.contains(&Capability::CodeMappingArchitecture) {
-        out.push_str("- About to open a file just to learn its shape? → `code` mode `outline`.\n");
+    out.push_str(
+        "Use a fallback when the capability is unavailable, the index is stale, or the input is \
+         outside its coverage. An empty indexed result only describes the indexed scope. \
+         For an exhaustive search, verify uncovered paths with an exact file search.\n\n",
+    );
+    if caps.contains(&Capability::DocumentsRag) {
+        out.push_str(
+            "Use `memory` mode `documents` for semantic questions about notebooks and other \
+             indexed documents. For an exact literal in a notebook, search the file text directly.\n\n",
+        );
     }
-    if caps.contains(&Capability::GitHistory) {
-        out.push_str("- About to `git log` / `git blame`? → `git` modes `recent` / `blame_symbol`.\n");
-    }
-    out.push_str("- Already mapped a file with basemind? Don't re-read it.\n\n");
 }
 
 fn render_setup_notes(out: &mut String) {
@@ -227,11 +225,27 @@ mod tests {
         };
         let only_git = vec![Capability::GitHistory];
         let body = render_block_body(&only_git, sections);
+        assert!(body.contains("Use Basemind first for every capability listed below"));
         assert!(body.contains("`git` modes `recent`"), "git row present");
+        assert!(!body.contains("exact literal in a notebook"));
         assert!(
             !body.contains("`grep`, `graph`"),
             "code-search row absent when unselected"
         );
+    }
+
+    #[test]
+    fn document_rules_distinguish_semantic_and_exact_notebook_search() {
+        let body = render_block_body(
+            &[Capability::DocumentsRag],
+            BlockSections {
+                usage_rules: true,
+                setup_notes: false,
+            },
+        );
+        assert!(body.contains("An empty indexed result only describes the indexed scope"));
+        assert!(body.contains("semantic questions about notebooks"));
+        assert!(body.contains("For an exact literal in a notebook, search the file text directly"));
     }
 
     #[test]
@@ -244,6 +258,7 @@ mod tests {
             },
         );
         assert!(with.contains("Setup & maintenance"));
+        assert!(!with.contains("Use Basemind first"));
         let without = render_block_body(
             &all(),
             BlockSections {
