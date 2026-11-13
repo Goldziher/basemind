@@ -6045,3 +6045,78 @@ async fn graph_tool_validates_every_mode_before_running_it() {
 
     let _ = service.cancel().await;
 }
+
+#[cfg(feature = "code-search")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires a cached embedding model and BASEMIND_INDEX_LAYERED=1"]
+async fn layered_semantic_mcp_falls_back_after_standalone_mutation() {
+    use basemind::lance::LanceStore;
+
+    assert_eq!(std::env::var("BASEMIND_INDEX_LAYERED").as_deref(), Ok("1"));
+    basemind::store::init_isolated_cache();
+    let dir = tempfile::tempdir().unwrap();
+    let canonical = dir.path().canonicalize().unwrap();
+    let root = canonical.as_path();
+    std::fs::write(
+        root.join("basemind.toml"),
+        "\"$schema\" = \"v1\"\n[code_search]\nenabled = true\nembed = true\n[documents]\nenabled = false\nembed = false\n",
+    )
+    .unwrap();
+    git(root, &["init", "-q"]);
+    std::fs::write(
+        root.join("lib.rs"),
+        "/// Parse a configuration file into a typed configuration.\npub fn parse_configuration() -> usize { 42 }\n",
+    )
+    .unwrap();
+    git(root, &["add", "lib.rs"]);
+    git(root, &["-c", "commit.gpgsign=false", "commit", "-qm", "fixture"]);
+    let scan = Command::new(env!("CARGO_BIN_EXE_basemind"))
+        .current_dir(root)
+        .args(["scan", "--no-git-history"])
+        .output()
+        .unwrap();
+    assert!(scan.status.success(), "{}", String::from_utf8_lossy(&scan.stderr));
+
+    let trace_path = dir.path().join("route.log");
+    let trace_file = std::fs::File::create(&trace_path).unwrap();
+    tracing_subscriber::fmt()
+        .with_env_filter("basemind::lance::shared_snapshot=debug")
+        .with_ansi(false)
+        .with_writer(std::sync::Mutex::new(trace_file))
+        .try_init()
+        .unwrap();
+    let service = spawn_serve(root, None).await;
+    let request = || {
+        call_params(
+            "code",
+            json!({"mode":"semantic","query":"parse a configuration file","lane":"semantic"}),
+        )
+    };
+    let initial = decode_text(&service.call_tool(request()).await.unwrap());
+    assert!(
+        initial["hits"].as_array().is_some_and(|hits| !hits.is_empty()),
+        "{initial}\n{}\n{}",
+        String::from_utf8_lossy(&scan.stdout),
+        std::fs::read_to_string(&trace_path).unwrap()
+    );
+
+    let trace = || std::fs::read_to_string(&trace_path).unwrap();
+    let shared_hits = || trace().matches("using verified shared Lance snapshot").count();
+    assert_eq!(shared_hits(), 1, "{}", trace());
+
+    let scope = basemind::git::scope_key(&basemind::git::Repo::discover(root).unwrap());
+    let lance_dir = basemind::store::workspace_cache_dir(root).join(basemind::store::LANCE_DIR);
+    tokio::task::spawn_blocking(move || {
+        let metadata: Value = serde_json::from_slice(&std::fs::read(lance_dir.join("meta.json")).unwrap()).unwrap();
+        let dim = metadata["dim"].as_u64().unwrap().try_into().unwrap();
+        let lance = LanceStore::open(&lance_dir, dim, metadata["embedding_model"].as_str().unwrap()).unwrap();
+        let paths = ["lib.rs"].map(str::to_owned);
+        lance.delete_code_chunks_for_paths(&scope, &paths).unwrap();
+    })
+    .await
+    .unwrap();
+    let after = decode_text(&service.call_tool(request()).await.unwrap());
+    assert_eq!(after["hits"], json!([]), "{after}");
+    assert_eq!(shared_hits(), 1, "{}", trace());
+    service.cancel().await.unwrap();
+}

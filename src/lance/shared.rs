@@ -187,4 +187,34 @@ mod tests {
             [("a.rs", 3), ("z.rs", 3)]
         );
     }
+    #[test]
+    fn top_ten_overlap_depends_on_the_number_of_nearer_stale_rows() {
+        let live = (0..10).map(|i| format!("{i}.rs")).collect::<Vec<_>>();
+        let paths = LivePaths::from_iter(live.iter().map(|path| (path.as_str(), path.as_str())));
+        let overlap = |stale: usize| {
+            let hits = search_live(&paths, 10, |count| {
+                let rows = (0..stale)
+                    .map(|idx| ContentHit {
+                        hash: "stale".into(),
+                        chunk_idx: idx as u32,
+                        distance: 0.0,
+                        value: (),
+                    })
+                    .chain(live.iter().enumerate().map(|(idx, path)| ContentHit {
+                        hash: path.clone(),
+                        chunk_idx: 0,
+                        distance: (idx + 1) as f32,
+                        value: (),
+                    }))
+                    .take(count)
+                    .collect();
+                Ok::<_, ()>(rows)
+            })
+            .unwrap();
+            hits.len()
+        };
+        assert_eq!(overlap(100), 10);
+        assert_eq!(overlap(MAX_CANDIDATES - 5), 5);
+        assert_eq!(overlap(MAX_CANDIDATES), 0);
+    }
 }
