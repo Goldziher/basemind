@@ -1,9 +1,9 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 use std::path::Path;
 use std::sync::Arc;
 
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result};
 use arrow_array::{RecordBatch, StringArray, UInt32Array};
 use futures::TryStreamExt;
 use lancedb::query::{ExecutableQuery, QueryBase};
@@ -19,7 +19,7 @@ pub(crate) struct Snapshot {
     revision: u64,
     store_epoch: String,
     shared_epoch: String,
-    paths: BTreeMap<(String, u32), String>,
+    paths: BTreeSet<(String, u32, String)>,
 }
 
 impl Snapshot {
@@ -27,7 +27,7 @@ impl Snapshot {
         LivePaths::from_exact(
             self.paths
                 .iter()
-                .map(|((path, ordinal), key)| (key.as_str(), *ordinal, path.as_str())),
+                .map(|(path, ordinal, key)| (key.as_str(), *ordinal, path.as_str())),
         )
     }
 
@@ -61,7 +61,7 @@ pub(crate) fn publish(
         let stream = table.query().only_if(predicate).execute().await?;
         anyhow::Ok((revision, stream))
     })?;
-    let mut paths = BTreeMap::new();
+    let mut paths = BTreeSet::new();
     let mut seen = std::collections::BTreeSet::new();
     while let Some(batch) = runtime.block_on(stream.try_next())? {
         if let Some(batch) = project(&batch, lane, source.dim(), &key_for, &mut paths, &mut seen)? {
@@ -167,6 +167,15 @@ pub(crate) fn publish_scan(store: &crate::store::Store, config: &crate::config::
         })?;
         save(&snapshot, source, lane, scope)?;
     }
+    #[cfg(feature = "documents")]
+    if config.documents.enabled {
+        let lane = SharedLane::DocLinks;
+        let generation = generation(&store.index, config, lane)?;
+        let snapshot = publish(source, &shared, lane, scope, generation, |path| {
+            store.lookup_doc(path).map(|entry| entry.hash_hex.clone())
+        })?;
+        save(&snapshot, source, lane, scope)?;
+    }
     #[cfg(feature = "code-search")]
     if config.code_search.enabled && config.code_search.embed {
         let lane = SharedLane::Code;
@@ -208,7 +217,12 @@ pub(crate) fn read<T>(
         Ok(valid.then_some(hits))
     })();
     match result {
-        Ok(hits) => hits,
+        Ok(hits) => {
+            if hits.is_some() {
+                tracing::debug!(lane = lane.name(), "using verified shared Lance snapshot");
+            }
+            hits
+        }
         Err(error) => {
             tracing::debug!(%error, "using standalone Lance snapshot");
             None
@@ -221,18 +235,19 @@ fn project(
     lane: SharedLane,
     dim: u16,
     key_for: &impl Fn(&str) -> Option<String>,
-    paths: &mut BTreeMap<(String, u32), String>,
+    paths: &mut BTreeSet<(String, u32, String)>,
     seen: &mut std::collections::BTreeSet<(String, u32)>,
 ) -> Result<Option<RecordBatch>> {
-    let path = strings(batch, "path")?;
+    let path_column = if lane.name() == "doc_links" { "doc_path" } else { "path" };
+    let path = strings(batch, path_column)?;
     let ordinals = ordinals(batch, lane)?;
     let mut keys = Vec::with_capacity(batch.num_rows());
     let mut selected = Vec::with_capacity(batch.num_rows());
     for (index, ordinal) in ordinals.into_iter().enumerate() {
         let path = path.value(index);
         let content = key_for(path).with_context(|| format!("no manifest identity for {path}"))?;
-        let key = row_key(batch, index, &content)?;
-        paths.insert((path.into(), ordinal), key.clone());
+        let key = row_key(batch, index, &content, path_column)?;
+        paths.insert((path.into(), ordinal, key.clone()));
         if seen.insert((key.clone(), ordinal)) {
             keys.push(key);
             selected.push(u32::try_from(index)?);
@@ -243,7 +258,7 @@ fn project(
     }
     let selected = UInt32Array::from(selected);
     let mut columns = batch.columns().to_vec();
-    let path_index = batch.schema().index_of("path")?;
+    let path_index = batch.schema().index_of(path_column)?;
     columns[path_index] = Arc::new(StringArray::from(keys));
     for (index, column) in columns.iter_mut().enumerate() {
         if index != path_index {
@@ -263,10 +278,10 @@ fn project(
     Ok(Some(RecordBatch::try_new(lane.schema(dim), columns)?))
 }
 
-fn row_key(batch: &RecordBatch, index: usize, content: &str) -> Result<String> {
+fn row_key(batch: &RecordBatch, index: usize, content: &str, path_column: &str) -> Result<String> {
     let schema = batch.schema();
     let columns = (0..batch.num_columns())
-        .filter(|&column| schema.field(column).name() != "path")
+        .filter(|&column| schema.field(column).name() != path_column)
         .collect::<Vec<_>>();
     let row = batch.slice(index, 1).project(&columns)?;
     let mut buffer = Vec::new();
@@ -296,7 +311,7 @@ fn ordinals(batch: &RecordBatch, lane: SharedLane) -> Result<Vec<u32>> {
             .map(|id| code_ordinal(id.context("null chunk ID")?))
             .collect();
     }
-    ensure!(matches!(lane, SharedLane::Documents), "unsupported snapshot lane");
+
     let ordinals = batch
         .column_by_name("chunk_idx")
         .and_then(|column| column.as_any().downcast_ref::<UInt32Array>())
@@ -313,6 +328,35 @@ fn code_ordinal(id: &str) -> Result<u32> {
 mod tests {
     use super::*;
     use crate::lance::DocumentRow;
+
+    #[cfg(feature = "documents")]
+    #[test]
+    fn link_snapshot_preserves_mentions_and_falls_back_after_mutation() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = LanceStore::open(&directory.path().join("standalone"), 2, "model").unwrap();
+        let group = directory.path().join("shared");
+        let shared = SharedStore::open(&group, "model", 2).unwrap();
+        let lane = SharedLane::DocLinks;
+        let rows = ["Beta", "Alpha"].map(|mention| crate::lance::DocLinkRow {
+            scope: "repo".into(),
+            doc_path: "current.md".into(),
+            chunk_idx: 0,
+            mention_kind: "name".into(),
+            mention_value: mention.into(),
+        });
+        source.replace_doc_links("repo", "current.md", rows.to_vec()).unwrap();
+        let snapshot = publish(&source, &shared, lane, "repo", "gen-1".into(), |_| Some("body".into())).unwrap();
+        save(&snapshot, &source, lane, "repo").unwrap();
+        let query = |shared: &SharedStore, paths: &LivePaths<'_>| shared.doc_links("repo", paths);
+        let hits = read(&source, &group, lane, "repo", "gen-1", query).unwrap();
+        assert_eq!(
+            hits.iter().map(|hit| hit.mention_value.as_str()).collect::<Vec<_>>(),
+            ["Alpha", "Beta"]
+        );
+        source.replace_doc_links("repo", "current.md", Vec::new()).unwrap();
+        assert!(read(&source, &group, lane, "repo", "gen-1", query).is_none());
+        assert!(source.all_doc_links("repo").unwrap().is_empty());
+    }
 
     #[test]
     fn snapshot_matches_generation_and_standalone_revision() {

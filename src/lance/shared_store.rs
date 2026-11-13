@@ -247,13 +247,17 @@ fn project_links(
     let kinds = column::<StringArray>(batch, "mention_kind")?;
     let values = column::<StringArray>(batch, "mention_value")?;
     for index in 0..batch.num_rows() {
-        rows.extend(paths.paths_for(hashes.value(index)).map(|path| super::DocLinkRow {
-            scope: scope.into(),
-            doc_path: path.into(),
-            chunk_idx: ordinals.value(index),
-            mention_kind: kinds.value(index).into(),
-            mention_value: values.value(index).into(),
-        }));
+        rows.extend(
+            paths
+                .paths_for_chunk(hashes.value(index), ordinals.value(index))
+                .map(|path| super::DocLinkRow {
+                    scope: scope.into(),
+                    doc_path: path.into(),
+                    chunk_idx: ordinals.value(index),
+                    mention_kind: kinds.value(index).into(),
+                    mention_value: values.value(index).into(),
+                }),
+        );
     }
     Ok(())
 }

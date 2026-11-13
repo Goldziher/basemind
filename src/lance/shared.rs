@@ -41,7 +41,7 @@ impl<'a> LivePaths<'a> {
         paths
     }
 
-    fn paths_for_chunk<'b>(&'b self, hash: &'b str, ordinal: u32) -> impl Iterator<Item = &'a str> + 'b {
+    pub(super) fn paths_for_chunk<'b>(&'b self, hash: &'b str, ordinal: u32) -> impl Iterator<Item = &'a str> + 'b {
         self.exact
             .get(&(hash, ordinal))
             .into_iter()
