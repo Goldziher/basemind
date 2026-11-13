@@ -63,7 +63,10 @@ pub(crate) fn retire_unpinned(
         let lease = generation_lock(group, generation)?;
         match lease.try_lock_exclusive() {
             Ok(()) => {}
-            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+            Err(error)
+                if error.kind() == io::ErrorKind::WouldBlock
+                    || error.raw_os_error() == fs2::lock_contended_error().raw_os_error() =>
+            {
                 result.active.push(generation);
                 continue;
             }

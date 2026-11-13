@@ -278,6 +278,7 @@ pub struct Store {
     /// See [`global_blobs_dir`].
     pub blobs_dir: PathBuf,
     pub(crate) fallback_blobs_dir: Option<PathBuf>,
+    pub(crate) layered_read: Option<std::sync::Arc<dyn crate::index::view::IndexView>>,
     /// Always `true` since the blob store went global: a standalone Store references only ONE
     /// workspace's index, so it can never enumerate the full live blob set across all workspaces.
     /// Auto-GC (boot + background) is therefore disabled here — reference-counted GC that spans
@@ -314,6 +315,20 @@ pub struct Store {
 }
 
 impl Store {
+    pub(crate) fn install_layered_manifest(
+        &mut self,
+        index: Index,
+        blobs: PathBuf,
+        fallback: PathBuf,
+        view: std::sync::Arc<dyn crate::index::view::IndexView>,
+    ) {
+        self.hash_refs = HashRefs::of(&index.files);
+        self.index = index;
+        self.blobs_dir = blobs;
+        self.fallback_blobs_dir = Some(fallback);
+        self.layered_read = Some(view);
+    }
+
     /// A read view over the fjall index, or `None` when this session holds none. Every index read
     /// goes through it (see [`crate::index::view`]).
     pub fn index_view(&self) -> Option<crate::index::view::StandaloneView<&IndexDb>> {
@@ -383,6 +398,7 @@ impl Store {
             blobs_dir,
             blobs_shared,
             fallback_blobs_dir: None,
+            layered_read: None,
             view_dir,
             view: view.to_string(),
             hash_refs: HashRefs::of(&index.files),
@@ -479,6 +495,7 @@ impl Store {
             blobs_dir,
             blobs_shared,
             fallback_blobs_dir: None,
+            layered_read: None,
             view_dir,
             view: view.to_string(),
             hash_refs: HashRefs::of(&index.files),

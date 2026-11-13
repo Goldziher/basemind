@@ -14,6 +14,7 @@ impl Store {
             blobs_dir,
             blobs_shared: false,
             fallback_blobs_dir: None,
+            layered_read: None,
             view_dir,
             view: VIEW_WORKING.to_string(),
             hash_refs: HashRefs::of(&index.files),

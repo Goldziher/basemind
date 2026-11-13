@@ -83,7 +83,9 @@ pub fn prepare(root: &Path, config: &Config) -> Result<BaseBuild> {
         .open(group.join(BASE_LOCK_FILE))
         .context("open base generation lock")?;
     if let Err(error) = fs2::FileExt::try_lock_exclusive(&lock) {
-        if error.kind() == io::ErrorKind::WouldBlock {
+        if error.kind() == io::ErrorKind::WouldBlock
+            || error.raw_os_error() == fs2::lock_contended_error().raw_os_error()
+        {
             return Ok(BaseBuild::Busy);
         }
         return Err(error).context("lock base generation directory");
@@ -200,7 +202,7 @@ fn open_worktree_base(root: &Path, config: &Config, build: bool) -> Result<Optio
 }
 
 pub fn publish_dirty_worktree(root: &Path, config: &Config, reference: &dyn IndexView) -> Result<bool> {
-    Ok(dirty_worktree(root, config, true, Some(reference))?.is_some())
+    Ok(dirty_worktree(root, config, true, Some(reference), None)?.is_some())
 }
 
 /// Publish a candidate-only delta against a prepared base.
@@ -208,7 +210,7 @@ pub fn scan_dirty_worktree(root: &Path, config: &Config) -> Result<bool> {
     if !eligible(config) || requires_probes() {
         return Ok(false);
     }
-    Ok(dirty_worktree(root, config, true, None)?.is_some())
+    Ok(dirty_worktree(root, config, true, None, None)?.is_some())
 }
 
 /// Check for a published delta matching the current worktree.
@@ -217,7 +219,15 @@ pub fn has_published_dirty_worktree(root: &Path, config: &Config) -> Result<bool
 }
 
 pub(crate) fn open_dirty_worktree(root: &Path, config: &Config) -> Result<Option<Box<dyn IndexView>>> {
-    dirty_worktree(root, config, false, None)
+    dirty_worktree(root, config, false, None, None)
+}
+
+pub(crate) fn hydrate_cold_store(store: &mut Store, config: &Config) -> Result<()> {
+    if store.view == crate::store::VIEW_WORKING && store.index.files.is_empty() && store.index_db.is_none() {
+        let root = store.root.clone();
+        dirty_worktree(&root, config, false, None, Some(store))?;
+    }
+    Ok(())
 }
 
 fn dirty_worktree(
@@ -225,6 +235,7 @@ fn dirty_worktree(
     config: &Config,
     publish: bool,
     reference: Option<&dyn IndexView>,
+    hydrate: Option<&mut Store>,
 ) -> Result<Option<Box<dyn IndexView>>> {
     use crate::index::layered_shadow::DeltaManifest;
     use crate::index::layered_view::LayeredView;
@@ -345,6 +356,18 @@ fn dirty_worktree(
     let db = crate::index::IndexDb::open(&published)?;
     ensure!(!db.wiped_on_open(), "overlay schema mismatch");
     let view = LayeredView::from_view(Box::new(base), &db, shadow)?;
+    if let Some(store) = hydrate {
+        let mut effective = base_index;
+        delta.apply_to(&mut effective);
+        store.install_layered_manifest(
+            effective,
+            published.join(crate::store_layout::BLOBS_DIR),
+            path.join(crate::store_layout::BLOBS_DIR),
+            std::sync::Arc::new(view),
+        );
+        return Ok(None);
+    }
+
     Ok(Some(Box::new(view)))
 }
 

@@ -64,6 +64,19 @@ impl DeltaManifest {
         self.restitched.extend(paths.into_iter().map(RelPath::from));
     }
 
+    pub(crate) fn apply_to(&self, index: &mut crate::store::Index) {
+        for (path, entry) in &self.entries {
+            match entry {
+                DeltaEntry::Added(file) | DeltaEntry::Modified(file) => {
+                    index.files.insert(path.clone(), file.clone());
+                }
+                DeltaEntry::Deleted => {
+                    index.files.remove(path);
+                }
+            }
+        }
+    }
+
     pub(crate) fn shadow<'base>(
         &self,
         base_counts: &AHashMap<&str, usize>,
