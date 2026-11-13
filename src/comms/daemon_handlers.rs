@@ -579,7 +579,10 @@ impl Broker {
                 resolution => return Ok(reference_error(&message_id, resolution)),
             };
             if !store.is_member(&thread, &agent)? {
-                return Ok(not_member(&thread));
+                return Ok(CommsResponse::Error {
+                    code: "not_member".to_string(),
+                    message: format!("join thread {} to read message bodies", thread.as_str()),
+                });
             }
             let body = store.get_body(&canonical_id)?;
             Ok(CommsResponse::Body { body })

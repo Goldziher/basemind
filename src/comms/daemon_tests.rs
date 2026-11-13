@@ -190,7 +190,12 @@ async fn compact_message_reference_reports_malformed_missing_and_ambiguous() {
             &tx,
         )
         .await;
-    assert!(matches!(unauthorized, CommsResponse::Error { code, .. } if code == "not_member"));
+    assert!(matches!(
+        unauthorized,
+        CommsResponse::Error { code, message }
+            if code == "not_member"
+                && message == format!("join thread {} to read message bodies", thread.as_str())
+    ));
 
     let mut prefixes = std::collections::BTreeMap::new();
     let mut collision = None;
