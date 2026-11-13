@@ -149,7 +149,7 @@ impl Part {
 }
 
 impl IndexDb {
-    fn keyspace(&self, part: Part) -> &Keyspace {
+    pub(super) fn keyspace(&self, part: Part) -> &Keyspace {
         match part {
             Part::Meta => &self.meta,
             Part::SymbolsByPath => &self.symbols_by_path,

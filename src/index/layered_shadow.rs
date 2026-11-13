@@ -25,7 +25,7 @@ pub(super) struct DeltaManifest {
     restitched: AHashSet<RelPath>,
 }
 
-struct Shadow<'a> {
+pub(super) struct Shadow<'a> {
     delta: &'a DeltaManifest,
     dead_hashes: AHashSet<String>,
 }
@@ -42,7 +42,7 @@ impl DeltaManifest {
         }
     }
 
-    fn shadow<'base>(
+    pub(super) fn shadow<'base>(
         &self,
         base_counts: &AHashMap<&str, usize>,
         base_entry: impl Fn(&RelPath) -> Option<&'base FileEntry>,
@@ -70,7 +70,7 @@ impl DeltaManifest {
 }
 
 impl Shadow<'_> {
-    fn hides(&self, part: Part, key: &[u8]) -> bool {
+    pub(super) fn hides(&self, part: Part, key: &[u8]) -> bool {
         let path = match part {
             Part::Meta | Part::GrepBloom => return false,
             Part::CodeBm25Postings => {

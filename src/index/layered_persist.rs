@@ -1,4 +1,4 @@
-use std::fs;
+use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::Path;
 
@@ -36,6 +36,12 @@ fn commit(
     stage_rows: impl FnOnce(&mut IndexWriter) -> Result<()>,
 ) -> Result<()> {
     ensure!(delta.format == 1, "unsupported delta format");
+    let lock = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(path.join("overlay.lock"))?;
+    fs2::FileExt::try_lock_exclusive(&lock)?;
     let current = read(path, db, delta.base_generation, &delta.base_commit)?;
     let previous = current.as_ref().map_or(0, |delta| delta.seq);
     ensure!(delta.seq > previous, "overlay sequence must advance");
