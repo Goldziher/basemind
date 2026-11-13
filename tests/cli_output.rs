@@ -416,3 +416,53 @@ fn verified_retirement_restores_standalone_after_route_loss() {
     let response: serde_json::Value = serde_json::from_str(&stdout(&output)).unwrap();
     assert!(response["files"].to_string().contains("example.rs"), "{response}");
 }
+
+#[cfg(unix)]
+#[test]
+fn only_full_scan_can_reconstruct_a_reclaimed_working_view() {
+    basemind::store::init_isolated_cache();
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    git(root, &["init", "-q"]);
+    for name in ["first", "second"] {
+        std::fs::write(root.join(format!("{name}.rs")), format!("pub fn {name}() {{}}\n")).unwrap();
+    }
+    std::fs::write(
+        root.join("basemind.toml"),
+        "\"$schema\" = \"v1\"\n[documents]\nenabled = false\nembed = false\n[code_search]\nenabled = false\nembed = false\n",
+    )
+    .unwrap();
+    git(root, &["add", "."]);
+    git(root, &["-c", "commit.gpgsign=false", "commit", "-qm", "fixture"]);
+    let views = basemind::store::workspace_cache_dir(root).join("views");
+    std::fs::create_dir_all(&views).unwrap();
+    let journal = views.join("working.migration");
+    std::fs::write(&journal, br#"{"format":1,"generation":7,"phase":"RebuildRequired"}"#).unwrap();
+    let invoke = |args: &[&str]| {
+        Command::new(bin())
+            .env("BASEMIND_INDEX_LAYERED", "0")
+            .args(["--root", root.to_str().unwrap()])
+            .args(args)
+            .output()
+            .unwrap()
+    };
+
+    let partial = invoke(&["rescan", "first.rs"]);
+    let error = String::from_utf8_lossy(&partial.stderr);
+    assert!(!partial.status.success(), "{error}");
+    assert!(error.contains("complete standalone rebuild"), "{error}");
+    assert!(journal.is_file());
+    assert!(!views.join("working").exists());
+
+    let full = invoke(&["scan", "--no-git-history"]);
+    let message = String::from_utf8_lossy(&full.stderr);
+    assert!(full.status.success(), "{message}");
+    assert!(message.contains("Rebuilt the standalone working index"), "{message}");
+    assert!(!journal.exists());
+    assert!(views.join("working/index.msgpack").is_file());
+
+    let result = invoke(&["--json", "code", "files"]);
+    let value: serde_json::Value = serde_json::from_str(&stdout(&result)).unwrap();
+    let files = value["files"].to_string();
+    assert!(files.contains("first.rs") && files.contains("second.rs"), "{value}");
+}
