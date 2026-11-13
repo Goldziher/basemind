@@ -673,6 +673,19 @@ mod tests {
     use super::*;
 
     #[test]
+    fn message_mode_accepts_a_reference_under_its_front_matter_key() {
+        let reference = "m-0123456789abcdef";
+        for field in ["message_ref", "message_id", "id"] {
+            let params: AgentsParams = serde_json::from_value(serde_json::json!({
+                "mode": "message",
+                (field): reference,
+            }))
+            .expect("decode agents message arguments");
+            assert_eq!(params.message_id.as_deref(), Some(reference), "field {field}");
+        }
+    }
+
+    #[test]
     fn should_name_the_mode_and_field_when_a_required_sibling_is_missing() {
         let error = require_field(AgentsMode::Post, "subject", None::<String>).expect_err("a bodyless post fails");
         assert_eq!(error.message.to_string(), "`agents` mode=\"post\" requires `subject`");

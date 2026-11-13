@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 <!-- Keep a Changelog repeats Added/Changed/Fixed headings per version. -->
 <!-- markdownlint-disable MD024 -->
 
+## [Unreleased]
+
+### Fixed
+
+- The MCP `agents` message mode accepts the `message_ref` field returned by history and inbox.
+
 ## [0.32.0] - 2026-11-06
 
 ### Changed
