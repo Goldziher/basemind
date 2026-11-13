@@ -138,6 +138,7 @@ fn explicit_shared_base_verification_uses_standalone_for_dirty_worktrees() {
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path();
     git(root, &["init", "-q"]);
+    git(root, &["config", "core.autocrlf", "false"]);
     std::fs::write(root.join("example.rs"), "pub fn example() { called(); }\n").unwrap();
     std::fs::write(
         root.join("basemind.toml"),
