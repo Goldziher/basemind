@@ -16,11 +16,11 @@ enum DeltaEntry {
 }
 
 #[derive(Deserialize, Serialize)]
-struct DeltaManifest {
-    format: u16,
-    seq: u64,
-    base_generation: u64,
-    base_commit: String,
+pub(super) struct DeltaManifest {
+    pub(super) format: u16,
+    pub(super) seq: u64,
+    pub(super) base_generation: u64,
+    pub(super) base_commit: String,
     entries: BTreeMap<RelPath, DeltaEntry>,
     restitched: AHashSet<RelPath>,
 }
@@ -31,6 +31,17 @@ struct Shadow<'a> {
 }
 
 impl DeltaManifest {
+    pub(super) fn empty(base_generation: u64, base_commit: String, seq: u64) -> Self {
+        Self {
+            format: 1,
+            seq,
+            base_generation,
+            base_commit,
+            entries: BTreeMap::new(),
+            restitched: AHashSet::new(),
+        }
+    }
+
     fn shadow<'base>(
         &self,
         base_counts: &AHashMap<&str, usize>,
@@ -105,14 +116,7 @@ fn shadows_resolved_uses_and_retires_only_unheld_content() {
     };
     let base = file("same");
     let counts = AHashMap::from_iter([("same", 2)]);
-    let mut delta = DeltaManifest {
-        format: 1,
-        seq: 17,
-        base_generation: 3,
-        base_commit: "fixture".to_string(),
-        entries: BTreeMap::new(),
-        restitched: AHashSet::new(),
-    };
+    let mut delta = DeltaManifest::empty(3, "fixture".into(), 17);
     delta.entries.insert(first.clone(), DeltaEntry::Deleted);
     delta.restitched.insert(second.clone());
     let lookup = |path: &RelPath| (path == &first || path == &second).then_some(&base);

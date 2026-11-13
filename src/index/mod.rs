@@ -25,6 +25,8 @@ pub mod keys_probe;
 #[cfg(test)]
 mod layered_merge;
 #[cfg(test)]
+mod layered_persist;
+#[cfg(test)]
 mod layered_shadow;
 pub(crate) mod memory_store;
 pub(crate) mod name_dict;
