@@ -1,0 +1,37 @@
+name: Windows full package dry run
+
+on:
+  push:
+    branches: [codex/windows-package-dry-run]
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: windows-2022
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: stable
+          targets: x86_64-pc-windows-msvc
+
+      - uses: ./.github/actions/install-system-deps
+
+      - name: Build full release binary
+        shell: bash
+        run: cargo build --locked --release --features full --bin basemind --target x86_64-pc-windows-msvc
+
+      - name: Package release
+        shell: bash
+        run: bash scripts/package-release.sh x86_64-pc-windows-msvc
+
+      - name: Run packaged binary
+        shell: pwsh
+        run: |
+          Expand-Archive -Path basemind-x86_64-pc-windows-msvc.zip -DestinationPath packaged
+          & .\packaged\basemind.exe --version
+          if ($LASTEXITCODE -ne 0) { throw "Packaged basemind failed to run" }
