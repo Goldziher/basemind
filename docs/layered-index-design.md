@@ -1,6 +1,6 @@
 # Layered index: design and implementation plan
 
-- **Status:** A2 and A3 implemented; A4–A8 not started
+- **Status:** A2 and A3 implemented; A4 storage prototype evaluated on a proxy corpus; A4–A8 remain
 - **Date:** 2026-10-18
 - **Decision record:** [ADR-0016](adr/0016-shared-base-index-and-worktree-overlays.md)
 - **Tracking issue:** #87
@@ -19,6 +19,39 @@ as of 0.30.0.
 > before A4); the base is built by scanning an exported tree as a working tree (a `Rev` scan has no
 > resolve pass); and `code_chunks` is keyed `(scope, path)`, so A7 must re-key it too. The sections
 > below that these touch carry a pointer to the ADR.
+
+## A4 storage prototype
+
+The test-only exporter in `src/index/sorted_run_prototype.rs` writes one immutable
+memory-mapped sorted run per keyspace. On a disposable working-view scan, compare
+the export with its source using:
+
+```sh
+BASEMIND_PROTOTYPE_VIEW=/path/to/disposable/views/working \
+  cargo test --locked --lib compare_sorted_run_with_fjall -- --ignored --nocapture
+```
+
+Use a completed scan with embeddings disabled and close any other Fjall holder
+before running the comparison. Fjall can update its housekeeping files on open,
+so point the test at a disposable view. The comparison checks every exported key
+and value in all 16 partitions and samples reference and caller prefix queries.
+
+A local macOS arm64 run on the public xberg tree at `163b783673` scanned 11,065
+candidates, indexed 10,245 files and compared 1,980,652 rows. The runs totalled
+239,731,799 bytes, compared with 359,624 KiB allocated by the complete Fjall
+directory. Export took about 7.2 seconds. The observed Fjall open took 20.17
+seconds and the sum of the individual run mappings took about 1.4 milliseconds.
+The runs omit mutable database state and the measurement uses logical run bytes
+and allocated Fjall bytes.
+
+| Backend prefix query | Samples | Fjall p95 | Sorted run p95 |
+| --- | ---: | ---: | ---: |
+| Caller name | 1,001 | 64.05 ms | 5.55 ms |
+| Reference to definition | 1,009 | 88.88 µs | 10.54 µs |
+
+These are warm backend prefix timings. The ADR's reference-monorepo cold and
+warm runs, end-to-end MCP latency, RSS and concurrent-process validation remain
+before choosing the default base storage.
 
 ## 1. Problem
 
