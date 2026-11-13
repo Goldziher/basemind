@@ -685,7 +685,7 @@ fn cmd_scan(root: &std::path::Path, args: &ScanArgs, verbosity: Verbosity, no_co
     if shared_index
         && !args.verify_shared_base
         && (basemind::store_base::has_published_dirty_worktree(root, &config).unwrap_or(false)
-            || basemind::store_base::scan_dirty_worktree(root, &config).unwrap_or(false))
+            || basemind::store_base::refresh_local_worktree(root, &config, LockHolder::Scan).unwrap_or(false))
     {
         eprintln!("Shared worktree index ready.");
         sync_git_history_after_scan(root, !args.no_git_history, args.rebuild_git_history, &mut out);
@@ -794,18 +794,32 @@ fn cmd_rescan(root: &std::path::Path, args: &RescanArgs, verbosity: Verbosity, n
         return Err(basemind::cli::exit::CliExit::busy(notice));
     }
     let shared_index = std::env::var_os("BASEMIND_INDEX_LAYERED").is_some_and(|value| value == "1");
-    if shared_index && !cancel.is_cancelled() && basemind::store_base::refresh_worktree(root, &config).unwrap_or(false)
-    {
-        eprintln!("Shared worktree index ready.");
-        return Ok(());
+    if shared_index && !full && !cancel.is_cancelled() {
+        match basemind::store_base::refresh_local_worktree(root, &config, LockHolder::Rescan) {
+            Ok(true) if !cancel.is_cancelled() => {
+                eprintln!("Shared worktree index ready.");
+                sync_git_history_after_scan(root, !args.no_git_history, args.rebuild_git_history, &mut out);
+                return Ok(());
+            }
+            Err(error)
+                if error
+                    .downcast_ref::<basemind::store::StoreError>()
+                    .is_some_and(basemind::store::StoreError::is_lock_contention) =>
+            {
+                return Err(basemind::cli::exit::CliExit::busy(
+                    basemind::store::LOCK_CONTENTION_HELP,
+                ));
+            }
+            _ => {}
+        }
     }
     let standalone_absent = !basemind::store::workspace_cache_dir(root)
         .join(basemind::store::VIEWS_DIR)
         .join(basemind::store::VIEW_WORKING)
         .join(basemind::store::INDEX_FILE)
         .is_file();
-    let full = full || standalone_absent;
     let mut store = open_store_for_write(root, basemind::store::VIEW_WORKING, "rescan", LockHolder::Rescan)?;
+    let full = full || standalone_absent || store.index_rebuild_needed;
 
     let report = if full {
         scan_streaming(

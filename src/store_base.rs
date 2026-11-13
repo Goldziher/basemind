@@ -318,6 +318,17 @@ pub fn refresh_worktree(root: &Path, config: &Config) -> Result<bool> {
     Ok(open_existing_worktree_base(root, config)?.is_some() || scan_dirty_worktree(root, config)?)
 }
 
+/// Refresh the local working index under the same writer lock used by standalone scans.
+pub fn refresh_local_worktree(root: &Path, config: &Config, holder: crate::store::LockHolder) -> Result<bool> {
+    if !eligible(config) || promoted(root) || !repo_group_dir(root).join(BASE_DIR).is_dir() {
+        return Ok(false);
+    }
+    let workspace = crate::store::workspace_cache_dir(root);
+    fs::create_dir_all(&workspace)?;
+    let _lock = crate::store::acquire_lock_as(&workspace, holder)?;
+    refresh_worktree(root, config)
+}
+
 /// Check for a published delta matching the current worktree.
 pub fn has_published_dirty_worktree(root: &Path, config: &Config) -> Result<bool> {
     Ok(open_dirty_worktree(root, config)?.is_some())
