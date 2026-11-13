@@ -718,7 +718,23 @@ mod tests {
 
 #[cfg(all(test, feature = "code-intel-js"))]
 #[test]
-fn published_overlay_restitches_unchanged_typescript_importer() {
+fn published_overlay_restitches_unchanged_importers() {
+    verify_moved_export(
+        "ts",
+        "export function target() {}\n",
+        "import { target } from './target';\ntarget();\n",
+        "// moved\nexport function target() {}\n",
+    );
+    verify_moved_export(
+        "py",
+        "def target():\n    return 1\n",
+        "from target import target\ntarget()\n",
+        "# moved\ndef target():\n    return 1\n",
+    );
+}
+
+#[cfg(all(test, feature = "code-intel-js"))]
+fn verify_moved_export(extension: &str, original: &str, importer: &str, changed: &str) {
     crate::store::init_isolated_cache();
     let fixture = tempfile::tempdir().unwrap();
     let root = fixture.path();
@@ -737,9 +753,11 @@ fn published_overlay_restitches_unchanged_typescript_importer() {
         );
     };
     git(&["init", "-q"]);
-    fs::write(root.join("target.ts"), "export function target() {}\n").unwrap();
-    fs::write(root.join("use.ts"), "import { target } from './target';\ntarget();\n").unwrap();
-    git(&["add", "target.ts", "use.ts"]);
+    let target_name = format!("target.{extension}");
+    let importer_name = format!("use.{extension}");
+    fs::write(root.join(&target_name), original).unwrap();
+    fs::write(root.join(&importer_name), importer).unwrap();
+    git(&["add", &target_name, &importer_name]);
     git(&["-c", "commit.gpgsign=false", "commit", "-qm", "fixture"]);
     let mut config = Config::with_defaults();
     config.documents.enabled = false;
@@ -747,8 +765,7 @@ fn published_overlay_restitches_unchanged_typescript_importer() {
     config.code_search.enabled = false;
     config.code_search.embed = false;
     assert!(open_clean_worktree(root, &config).unwrap().is_some());
-    let changed = "// moved\nexport function target() {}\n";
-    fs::write(root.join("target.ts"), changed).unwrap();
+    fs::write(root.join(&target_name), changed).unwrap();
     let mut standalone = Store::open(root, "working").unwrap();
     scan(
         root,
@@ -761,7 +778,7 @@ fn published_overlay_restitches_unchanged_typescript_importer() {
     let reference = standalone.index_view().unwrap();
     assert!(publish_dirty_worktree(root, &config, &reference).unwrap());
     let view = open_dirty_worktree(root, &config).unwrap().unwrap();
-    let target = crate::path::RelPath::from("target.ts");
+    let target = crate::path::RelPath::from(target_name);
     let offset = u32::try_from(changed.find("target").unwrap()).unwrap();
     let expected = reference.references_to(&target, offset);
     assert!(!expected.is_empty());
