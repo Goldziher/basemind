@@ -2,4 +2,4 @@
 basemind: Code-map MCP server + scanner — content-addressed, Fjall-backed inverted index over tree-sitter outlines.
 """
 
-__version__ = "0.32.0"
+__version__ = "0.33.0"
