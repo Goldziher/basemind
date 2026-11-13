@@ -2,6 +2,8 @@
 //! into LanceDB, purge removed files' rows, maintain the tables and refresh the BM25 stats. Each has
 //! a no-op twin when its feature is compiled out.
 
+use std::path::Path;
+
 use crate::config::Config;
 #[cfg(feature = "documents")]
 use crate::scanner_docs::flush_document_batches;
