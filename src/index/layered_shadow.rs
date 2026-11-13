@@ -27,15 +27,15 @@ struct DeltaManifest {
 
 struct Shadow<'a> {
     delta: &'a DeltaManifest,
-    dead_hashes: AHashSet<&'a str>,
+    dead_hashes: AHashSet<String>,
 }
 
 impl DeltaManifest {
-    fn shadow<'a>(
-        &'a self,
+    fn shadow<'base>(
+        &self,
         base_counts: &AHashMap<&str, usize>,
-        base_entry: impl Fn(&RelPath) -> Option<&'a FileEntry>,
-    ) -> Shadow<'a> {
+        base_entry: impl Fn(&RelPath) -> Option<&'base FileEntry>,
+    ) -> Shadow<'_> {
         let mut shadowed_counts = AHashMap::<&str, usize>::new();
         let mut added_hashes = AHashSet::new();
         for (path, entry) in &self.entries {
@@ -49,7 +49,7 @@ impl DeltaManifest {
         let dead_hashes = shadowed_counts
             .into_iter()
             .filter(|(hash, count)| base_counts.get(hash) == Some(count) && !added_hashes.contains(hash))
-            .map(|(hash, _)| hash)
+            .map(|(hash, _)| hash.to_owned())
             .collect();
         Shadow {
             delta: self,
