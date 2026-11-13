@@ -1,4 +1,5 @@
 use std::fs::File;
+use std::hint::black_box;
 use std::io::{self, BufWriter, Write};
 use std::path::Path;
 use std::time::Instant;
@@ -176,6 +177,9 @@ fn compare_parts(view: &impl IndexView) -> usize {
         }
         assert_eq!(run.rows, count);
         total += count;
+        if matches!(part, Part::RefsByDef | Part::CallsByCallee) && count > 0 {
+            compare_lookup_latency(view, part, &run);
+        }
         eprintln!(
             "{}: {} rows, {} bytes, export {:?}, map {:?}",
             part.name(),
@@ -186,4 +190,30 @@ fn compare_parts(view: &impl IndexView) -> usize {
         );
     }
     total
+}
+
+fn compare_lookup_latency(view: &impl IndexView, part: Part, run: &SortedRun) {
+    const SAMPLE_COUNT: usize = 1_000;
+    let mut fjall_times = Vec::new();
+    let mut mmap_times = Vec::new();
+    for index in (0..run.rows).step_by((run.rows / SAMPLE_COUNT).max(1)) {
+        let (key, _) = run.row(index).unwrap();
+        let started = Instant::now();
+        let fjall = black_box(view.get(part, key).unwrap()).unwrap();
+        fjall_times.push(started.elapsed());
+        let started = Instant::now();
+        let (_, value) = black_box(run.row(run.lower_bound(key).unwrap()).unwrap());
+        mmap_times.push(started.elapsed());
+        assert_eq!(fjall.as_ref(), value);
+    }
+    fjall_times.sort_unstable();
+    mmap_times.sort_unstable();
+    let percentile = fjall_times.len() * 95 / 100;
+    eprintln!(
+        "{}: {} point lookups, p95 Fjall {:?}, mmap {:?}",
+        part.name(),
+        fjall_times.len(),
+        fjall_times[percentile],
+        mmap_times[percentile]
+    );
 }
