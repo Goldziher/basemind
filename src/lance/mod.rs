@@ -719,6 +719,15 @@ fn build_code_chunks_batch(dim: u16, rows: &[CodeRow]) -> Result<RecordBatch> {
 
 #[cfg(feature = "code-search")]
 fn decode_code_chunk_hits(batch: &RecordBatch, out: &mut Vec<CodeChunkHit>) -> Result<()> {
+    decode_code_chunk_hits_with_path_column(batch, "path", out)
+}
+
+#[cfg(feature = "code-search")]
+fn decode_code_chunk_hits_with_path_column(
+    batch: &RecordBatch,
+    path_column: &str,
+    out: &mut Vec<CodeChunkHit>,
+) -> Result<()> {
     use arrow_array::{Float32Array, UInt32Array};
     let str_col = |name: &str| -> Result<&StringArray> {
         batch
@@ -732,7 +741,7 @@ fn decode_code_chunk_hits(batch: &RecordBatch, out: &mut Vec<CodeChunkHit>) -> R
             .and_then(|c| c.as_any().downcast_ref::<UInt32Array>())
             .ok_or_else(|| anyhow!("`{name}` column missing"))
     };
-    let path = str_col("path")?;
+    let path = str_col(path_column)?;
     let chunk_id = str_col("chunk_id")?;
     let symbol = str_col("symbol")?;
     let kind = str_col("kind")?;

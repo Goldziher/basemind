@@ -1,5 +1,6 @@
 //! Layout and result projection for content-addressed Lance tables.
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
@@ -14,10 +15,23 @@ pub fn shared_directory(group: &Path, model: &str, dim: u16) -> PathBuf {
 /// All effective paths for each hash, for exactly one lane and workspace snapshot.
 #[derive(Default)]
 pub struct LivePaths<'a> {
-    by_hash: BTreeMap<&'a str, BTreeSet<&'a str>>,
+    by_hash: BTreeMap<Cow<'a, str>, BTreeSet<&'a str>>,
 }
 
 impl<'a> LivePaths<'a> {
+    #[cfg(feature = "code-search")]
+    pub fn from_code_entries(entries: impl IntoIterator<Item = (&'a str, &'a crate::store::FileEntry)>) -> Self {
+        let mut paths = Self::default();
+        for (path, entry) in entries {
+            paths
+                .by_hash
+                .entry(Cow::Owned(code_content_key(entry)))
+                .or_default()
+                .insert(path);
+        }
+        paths
+    }
+
     pub(super) fn paths_for(&self, hash: &str) -> impl Iterator<Item = &'a str> + '_ {
         self.by_hash
             .get(hash)
@@ -30,10 +44,20 @@ impl<'a> FromIterator<(&'a str, &'a str)> for LivePaths<'a> {
     fn from_iter<T: IntoIterator<Item = (&'a str, &'a str)>>(entries: T) -> Self {
         let mut paths = Self::default();
         for (hash, path) in entries {
-            paths.by_hash.entry(hash).or_default().insert(path);
+            paths.by_hash.entry(Cow::Borrowed(hash)).or_default().insert(path);
         }
         paths
     }
+}
+
+#[cfg(feature = "code-search")]
+pub fn code_content_key(entry: &crate::store::FileEntry) -> String {
+    let mut hash = blake3::Hasher::new();
+    hash.update(&entry.extract_epoch.to_le_bytes());
+    hash.update(&(entry.hash_hex.len() as u64).to_le_bytes());
+    hash.update(entry.hash_hex.as_bytes());
+    hash.update(entry.language.as_bytes());
+    hash.finalize().to_hex().to_string()
 }
 
 /// A ranked row from one scope of a shared table.
