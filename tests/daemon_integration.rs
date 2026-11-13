@@ -1446,7 +1446,10 @@ async fn daemon_hosts_cold_layered_files_and_symbols_without_standalone_fjall() 
         "\"$schema\" = \"v1\"\n[documents]\nenabled=false\nembed=false\n[code_search]\nenabled=false\nembed=false\n",
     )
     .unwrap();
-    git(&["add", "basemind.toml"]);
+    for index in 0..10 {
+        std::fs::write(root.join(format!("keep_{index}.rs")), format!("fn keep_{index}() {{}}")).unwrap();
+    }
+    git(&["add", "."]);
     git(&["-c", "commit.gpgsign=false", "commit", "-qm", "fixture config"]);
     let scan = |verify: bool| {
         let mut cmd = Command::new(BIN);

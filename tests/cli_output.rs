@@ -144,7 +144,10 @@ fn explicit_shared_base_verification_uses_standalone_for_dirty_worktrees() {
         "\"$schema\" = \"v1\"\n[documents]\nenabled = false\nembed = false\n[code_search]\nenabled = false\nembed = false\n",
     )
     .unwrap();
-    git(root, &["add", "example.rs", "basemind.toml"]);
+    for index in 0..10 {
+        std::fs::write(root.join(format!("keep_{index}.rs")), format!("fn keep_{index}() {{}}")).unwrap();
+    }
+    git(root, &["add", "."]);
     git(root, &["-c", "commit.gpgsign=false", "commit", "-qm", "fixture"]);
     let verify = || {
         Command::new(bin())
@@ -197,7 +200,10 @@ fn cold_dirty_scan_publishes_delta_without_standalone_fjall() {
         "\"$schema\" = \"v1\"\n[documents]\nenabled=false\nembed=false\n[code_search]\nenabled=false\nembed=false\n",
     )
     .unwrap();
-    git(root, &["add", "sample.rs", "basemind.toml"]);
+    for index in 0..10 {
+        std::fs::write(root.join(format!("keep_{index}.rs")), format!("fn keep_{index}() {{}}")).unwrap();
+    }
+    git(root, &["add", "."]);
     git(root, &["-c", "commit.gpgsign=false", "commit", "-qm", "fixture"]);
     let mut config = basemind::config::Config::with_defaults();
     config.documents.enabled = false;
@@ -250,7 +256,7 @@ fn cold_dirty_scan_publishes_delta_without_standalone_fjall() {
         );
     }
     assert!(!cache.join("views/working/index.fjall").exists());
-    for number in 0..33 {
+    for number in 0..2 {
         std::fs::write(root.join(format!("overflow_{number}.rs")), "fn overflow() {}").unwrap();
     }
     let opted_in_scan = || {
@@ -262,7 +268,7 @@ fn cold_dirty_scan_publishes_delta_without_standalone_fjall() {
     };
     assert!(opted_in_scan().status.success());
     assert!(cache.join("layered-promoted").is_file());
-    for number in 0..33 {
+    for number in 0..2 {
         std::fs::remove_file(root.join(format!("overflow_{number}.rs"))).unwrap();
     }
     assert!(opted_in_scan().status.success());

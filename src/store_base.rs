@@ -172,7 +172,13 @@ pub fn record_promotion(root: &Path, config: &Config) -> Result<bool> {
     let repo = Repo::discover(root)?;
     let candidates = repo.status_against(&base.commit)?.overlay_candidates();
     let index = crate::store::read_index(&path)?.context("missing promotion base index")?;
-    if !over_promotion_budget(root, &candidates, &index, &base) {
+    if !over_promotion_budget(
+        root,
+        &candidates,
+        &index,
+        &base,
+        has_older_overlay_pin(root, base.generation)?,
+    ) {
         return Ok(false);
     }
     let marker = promotion_marker(root);
@@ -184,11 +190,32 @@ pub fn record_promotion(root: &Path, config: &Config) -> Result<bool> {
     Ok(true)
 }
 
+fn has_older_overlay_pin(root: &Path, generation: u64) -> Result<bool> {
+    let pins = repo_group_dir(root).join("overlay-pins");
+    if !pins.is_dir() {
+        return Ok(false);
+    }
+    let prefix = format!("{}-", crate::store_layout::workspace_key(root));
+    for pin in fs::read_dir(pins)? {
+        if pin?
+            .file_name()
+            .to_str()
+            .and_then(|name| name.strip_prefix(&prefix))
+            .and_then(|id| id.parse::<u64>().ok())
+            .is_some_and(|id| id < generation)
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 fn over_promotion_budget(
     root: &Path,
     candidates: &std::collections::BTreeSet<crate::path::RelPath>,
     index: &crate::store::Index,
     base: &BaseManifest,
+    rebased: bool,
 ) -> bool {
     let changed_bytes = candidates.iter().fold(0u64, |total, candidate| {
         let live = fs::symlink_metadata(root.join(candidate.to_path_buf()))
@@ -198,8 +225,9 @@ fn over_promotion_budget(
         let prior = index.files.get(candidate).map_or(0, |entry| entry.size_bytes);
         total.saturating_add(live.max(prior))
     });
-    let over_file_share = (candidates.len() as u128) * 100 > (base.files as u128) * 15;
-    let over_byte_share = u128::from(changed_bytes) * 100 > u128::from(base.bytes) * 25;
+    let (files, bytes) = if rebased { (10, 20) } else { (15, 25) };
+    let over_file_share = (candidates.len() as u128) * 100 > (base.files as u128) * files;
+    let over_byte_share = u128::from(changed_bytes) * 100 > u128::from(base.bytes) * bytes;
     candidates.len() > 32 || changed_bytes > MAX_OVERLAY_INPUT_BYTES || over_file_share || over_byte_share
 }
 
@@ -257,7 +285,7 @@ fn open_worktree_base(root: &Path, config: &Config, build: bool) -> Result<Optio
 }
 
 pub fn publish_dirty_worktree(root: &Path, config: &Config, reference: &dyn IndexView) -> Result<bool> {
-    Ok(dirty_worktree(root, config, true, Some(reference), None)?.is_some())
+    Ok(dirty_worktree(root, config, true, false, Some(reference), None)?.is_some())
 }
 
 /// Publish a candidate-only delta against a prepared base.
@@ -265,7 +293,7 @@ pub fn scan_dirty_worktree(root: &Path, config: &Config) -> Result<bool> {
     if promoted(root) || !eligible(config) || requires_probes() {
         return Ok(false);
     }
-    let layered = dirty_worktree(root, config, true, None, None)?;
+    let layered = dirty_worktree(root, config, true, false, None, None)?;
     if layered.is_some() {
         return Ok(true);
     }
@@ -280,7 +308,7 @@ pub fn scan_dirty_worktree(root: &Path, config: &Config) -> Result<bool> {
         && should_advance(&repo, &group.join(BASE_DIR), &commit, &scan_digest(config)?)?
         && matches!(prepare(root, config)?, BaseBuild::Ready(_))
     {
-        return Ok(dirty_worktree(root, config, true, None, None)?.is_some());
+        return Ok(dirty_worktree(root, config, true, true, None, None)?.is_some());
     }
     Ok(false)
 }
@@ -291,13 +319,13 @@ pub fn has_published_dirty_worktree(root: &Path, config: &Config) -> Result<bool
 }
 
 pub(crate) fn open_dirty_worktree(root: &Path, config: &Config) -> Result<Option<Box<dyn IndexView>>> {
-    dirty_worktree(root, config, false, None, None)
+    dirty_worktree(root, config, false, false, None, None)
 }
 
 pub(crate) fn hydrate_cold_store(store: &mut Store, config: &Config) -> Result<()> {
     if store.view == crate::store::VIEW_WORKING && store.index.files.is_empty() && store.index_db.is_none() {
         let root = store.root.clone();
-        dirty_worktree(&root, config, false, None, Some(store))?;
+        dirty_worktree(&root, config, false, false, None, Some(store))?;
     }
     Ok(())
 }
@@ -325,6 +353,7 @@ fn dirty_worktree(
     root: &Path,
     config: &Config,
     publish: bool,
+    rebased: bool,
     reference: Option<&dyn IndexView>,
     hydrate: Option<&mut Store>,
 ) -> Result<Option<Box<dyn IndexView>>> {
@@ -379,6 +408,12 @@ fn dirty_worktree(
         .parse()?;
     let base = open(root, config, generation, &commit)?;
     let base_index = crate::store::read_index(&path)?.context("missing base manifest")?;
+    if publish && reference.is_none() {
+        let manifest: BaseManifest = serde_json::from_slice(&fs::read(path.join(MANIFEST))?)?;
+        if over_promotion_budget(root, &candidates, &base_index, &manifest, rebased) {
+            return Ok(None);
+        }
+    }
     let fingerprint = candidate_fingerprint(root, &candidates, config.scan.max_file_bytes)?;
     let overlays = crate::store::workspace_cache_dir(root).join("verified-overlays");
     let published = overlays.join(format!("{generation}-{fingerprint}"));
