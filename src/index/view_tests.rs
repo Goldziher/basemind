@@ -9,7 +9,7 @@ use crate::config::ConfigV1;
 use crate::scanner::{EmbedMode, ScanSource, scan};
 use crate::store::{Store, VIEW_WORKING};
 
-fn scanned_store(root: &std::path::Path) -> Store {
+pub(super) fn scanned_store(root: &std::path::Path) -> Store {
     for k in 0..6 {
         std::fs::write(
             root.join(format!("m{k}.rs")),

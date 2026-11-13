@@ -933,6 +933,7 @@ dependencies = [
  "lru 0.19.0",
  "mach2",
  "memchr",
+ "memmap2",
  "mimalloc",
  "notify",
  "notify-debouncer-full",
