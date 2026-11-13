@@ -13,7 +13,7 @@ use crate::git::Repo;
 use crate::index::view::IndexView;
 use crate::index::{INDEX_DIR, INDEX_SCHEMA_VER};
 use crate::scanner::{EmbedMode, ScanSource, scan};
-use crate::store::{INDEX_FILE, Store, repo_group_dir};
+use crate::store::{Store, repo_group_dir};
 
 const BASE_DIR: &str = "base";
 const BASE_LOCK_FILE: &str = "base.lock";
@@ -64,7 +64,7 @@ pub fn prepare(root: &Path, config: &Config) -> Result<BaseBuild> {
         Err(crate::git::GitError::NotARepo(_)) => return Ok(BaseBuild::Ineligible),
         Err(error) => return Err(error.into()),
     };
-    if !repo.origin_is_workdir() || config.documents.embed || config.code_search.embed || config.scan.follow_symlinks {
+    if !repo.origin_is_workdir() || config.scan.follow_symlinks {
         return Ok(BaseBuild::Ineligible);
     }
 
@@ -190,7 +190,10 @@ fn is_compatible(path: &Path, generation: u64, commit: &str, digest: &str) -> bo
         && manifest.min_extract_epoch >= crate::extract::EXTRACT_EPOCH
         && manifest.scan_features == scan_features()
         && (!requires_probes() || manifest.probes_complete)
-        && path.join(INDEX_FILE).is_file()
+        && crate::store::read_index(path)
+            .ok()
+            .flatten()
+            .is_some_and(|index| index.files.len() == manifest.files)
         && path.join(INDEX_DIR).is_dir()
 }
 
@@ -339,7 +342,8 @@ mod tests {
         fs::write(root.join("untracked.rs"), "pub fn untracked() {}").unwrap();
 
         let mut config = Config::with_defaults();
-        config.documents.embed = false;
+        config.documents.embed = true;
+        config.code_search.embed = true;
         let BaseBuild::Ready(first) = prepare(root, &config).unwrap() else {
             panic!("committed base was not published");
         };
@@ -351,6 +355,7 @@ mod tests {
         let expected = blake3::hash(b"pub fn original() {}");
         assert_eq!(entry.hash_hex, expected.to_hex().to_string());
         assert!(!first.join("checkout").exists());
+        assert!(!first.join("lance").exists());
 
         let BaseBuild::Ready(reused) = prepare(root, &config).unwrap() else {
             panic!("compatible generation was not reused");
@@ -367,7 +372,7 @@ mod tests {
         assert!(matches!(prepare(root, &config).unwrap(), BaseBuild::Busy));
         drop(lock);
 
-        fs::write(first.join(MANIFEST), b"invalid").unwrap();
+        fs::write(first.join(crate::store::INDEX_FILE), b"invalid").unwrap();
         let BaseBuild::Ready(second) = prepare(root, &config).unwrap() else {
             panic!("invalid generation was not replaced");
         };
