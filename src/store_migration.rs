@@ -17,6 +17,7 @@ const JOURNAL: &str = "working.migration";
 enum Phase {
     Pending,
     Committed,
+    RebuildRequired,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -93,6 +94,10 @@ impl<'a> Migration<'a> {
             ensure!(!exists(&backup)?, "migration backup exists without journal");
             return Ok(());
         };
+        ensure!(
+            journal.phase != Phase::RebuildRequired,
+            "working view requires a complete standalone rebuild"
+        );
         if journal.phase == Phase::Committed && can_route(journal.generation) {
             ensure!(backup.is_dir(), "standalone migration backup missing");
             return Ok(());
@@ -242,6 +247,36 @@ mod tests {
         assert!(reopened.index_db.is_some());
         assert!(!exists(&views.join(BACKUP)).unwrap());
         assert!(!exists(&views.join(JOURNAL)).unwrap());
+    }
+
+    #[test]
+    fn writer_open_refuses_to_create_partial_view_when_rebuild_is_required() {
+        use crate::store::{LockHolder, Store, StoreError, VIEW_WORKING, init_isolated_cache, workspace_cache_dir};
+
+        init_isolated_cache();
+        let root = tempfile::tempdir().unwrap();
+        drop(Store::open_with_holder(root.path(), VIEW_WORKING, LockHolder::Scan).unwrap());
+        let views = workspace_cache_dir(root.path()).join("views");
+        let migration = Migration::lock(&views).unwrap();
+        migration.retire(7, || Ok(())).unwrap();
+        migration.commit(7, || Ok(())).unwrap();
+        migration
+            .write(&Journal {
+                format: 1,
+                generation: 7,
+                phase: Phase::RebuildRequired,
+            })
+            .unwrap();
+        fs::remove_dir_all(views.join(BACKUP)).unwrap();
+        drop(migration);
+
+        let error = Store::open_with_holder(root.path(), VIEW_WORKING, LockHolder::Scan)
+            .err()
+            .unwrap();
+        assert!(matches!(&error, StoreError::Migration(_)));
+        assert!(error.to_string().contains("complete standalone rebuild"), "{error}");
+        assert!(!exists(&views.join(WORKING)).unwrap());
+        assert!(exists(&views.join(JOURNAL)).unwrap());
     }
 
     #[test]
