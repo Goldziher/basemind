@@ -28,7 +28,7 @@ impl<'a> Reader<'a> {
     }
 }
 
-struct LayeredView<'a> {
+pub(super) struct LayeredView<'a> {
     base: Reader<'a>,
     overlay: Reader<'a>,
     shadow: Shadow<'a>,
@@ -36,7 +36,11 @@ struct LayeredView<'a> {
 }
 
 impl LayeredView<'_> {
-    fn new<'a>(base: &'a IndexDb, overlay: &'a IndexDb, shadow: Shadow<'a>) -> anyhow::Result<LayeredView<'a>> {
+    pub(super) fn new<'a>(
+        base: &'a IndexDb,
+        overlay: &'a IndexDb,
+        shadow: Shadow<'a>,
+    ) -> anyhow::Result<LayeredView<'a>> {
         let base = Reader::new(base);
         let overlay = Reader::new(overlay);
         let bm25 = effective_bm25(&base, &overlay, &shadow)?;
