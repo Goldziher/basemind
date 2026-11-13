@@ -329,6 +329,15 @@ impl Store {
         self.layered_read = Some(view);
     }
 
+    /// Own the effective read snapshot so indexed queries can release the store lock.
+    pub(crate) fn read_index_view(&self) -> Option<std::sync::Arc<dyn crate::index::view::IndexView>> {
+        self.layered_read.clone().or_else(|| {
+            self.index_db
+                .as_ref()
+                .map(|db| std::sync::Arc::new(crate::index::view::StandaloneView(db.clone())) as _)
+        })
+    }
+
     /// A read view over the fjall index, or `None` when this session holds none. Every index read
     /// goes through it (see [`crate::index::view`]).
     pub fn index_view(&self) -> Option<crate::index::view::StandaloneView<&IndexDb>> {

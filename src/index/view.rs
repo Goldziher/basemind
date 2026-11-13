@@ -200,6 +200,7 @@ impl IndexDb {
 }
 
 /// `Some(&dyn IndexView)` for an optional concrete view, for the call sites that take an optional one.
+#[cfg(test)]
 pub(crate) fn as_dyn<V: IndexView>(view: &Option<V>) -> Option<&dyn IndexView> {
     view.as_ref().map(|v| v as &dyn IndexView)
 }

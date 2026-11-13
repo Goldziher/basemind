@@ -1313,6 +1313,19 @@ fn changing_a_typescript_config_restitches_its_unchanged_consumer() {
     let expected = reference.index_view().unwrap().references_to(&target, 13);
     assert!(expected.iter().any(|(path, _)| path.as_str() == Some("use.ts")));
     assert_eq!(view.references_to(&target, 13), expected);
+    let mut cold = Store::open_read_only_no_index(root, "working").unwrap();
+    cold.index.files.clear();
+    hydrate_cold_store(&mut cold, &config).unwrap();
+    assert!(cold.index_db.is_none());
+    assert_eq!(crate::query::resolved_references(&cold, &target, 13), expected);
+    let (use_path, use_offset) = expected
+        .iter()
+        .find(|(path, _)| path.as_str() == Some("use.ts"))
+        .unwrap();
+    assert_eq!(
+        crate::query::definition_of(&cold, use_path, *use_offset),
+        Some((target, 13))
+    );
 }
 
 #[cfg(all(test, feature = "code-intel-js"))]

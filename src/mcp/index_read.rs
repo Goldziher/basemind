@@ -29,8 +29,8 @@ const NO_INDEX: &str = "the daemon holds this workspace without a fjall index, s
 
 /// Run a forwarded scan against an open workspace store.
 pub(crate) fn index_read_against(store: &Store, query: &IndexReadQuery) -> Result<IndexReadResult, String> {
-    let view = store.index_view().ok_or_else(|| NO_INDEX.to_string())?;
-    let idx: &dyn IndexView = &view;
+    let view = store.read_index_view().ok_or_else(|| NO_INDEX.to_string())?;
+    let idx: &dyn IndexView = &*view;
     match query {
         IndexReadQuery::CallScan { name, limit, cursor } => call_scan(idx, name, *limit, cursor.as_deref()),
         IndexReadQuery::CallsInFiles { paths } => calls_in_files(idx, paths),
