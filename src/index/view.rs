@@ -38,7 +38,7 @@ enum Repr {
 }
 
 impl IndexBytes {
-    fn from_fjall(slice: fjall::Slice) -> Self {
+    pub(super) fn from_fjall(slice: fjall::Slice) -> Self {
         Self(Repr::Fjall(slice))
     }
 }

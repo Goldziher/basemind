@@ -22,6 +22,10 @@ pub mod grep_bloom;
 pub mod keys;
 pub mod keys_governance;
 pub mod keys_probe;
+#[cfg(test)]
+mod layered_merge;
+#[cfg(test)]
+mod layered_shadow;
 pub(crate) mod memory_store;
 pub(crate) mod name_dict;
 #[cfg(test)]
