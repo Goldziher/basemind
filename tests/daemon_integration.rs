@@ -39,10 +39,15 @@ struct Daemon {
 
 impl Daemon {
     fn start(comms_dir: &Path) -> Self {
+        Self::start_with_layering(comms_dir, false)
+    }
+
+    fn start_with_layering(comms_dir: &Path, layered: bool) -> Self {
         let socket = comms_socket_path(comms_dir);
         let child = Command::new(BIN)
             .args(["comms", "daemon"])
             .env("BASEMIND_COMMS_DIR", comms_dir)
+            .env("BASEMIND_INDEX_LAYERED", if layered { "1" } else { "0" })
             // Isolate the daemon's registry snapshot + index writes to the same tempdir so this ~keep
             // test never touches the real XDG cache, and a restart reloads the same state. ~keep
             .env("BASEMIND_DATA_HOME", comms_dir)
@@ -1413,4 +1418,76 @@ async fn daemon_backed_references_and_implementations_equal_the_writer_session()
     );
 
     daemon.stop();
+}
+
+#[cfg(not(any(feature = "code-intel-js", feature = "code-intel-stack")))]
+#[tokio::test]
+async fn daemon_hosts_cold_layered_files_and_symbols_without_standalone_fjall() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("repo");
+    let comms = tmp.path().join("comms");
+    init_git_repo(&root);
+    let git = |args: &[&str]| {
+        assert!(
+            Command::new("git")
+                .current_dir(&root)
+                .env("GIT_AUTHOR_NAME", "Test")
+                .env("GIT_AUTHOR_EMAIL", "test@example.test")
+                .env("GIT_COMMITTER_NAME", "Test")
+                .env("GIT_COMMITTER_EMAIL", "test@example.test")
+                .args(args)
+                .status()
+                .unwrap()
+                .success()
+        );
+    };
+    std::fs::write(
+        root.join("basemind.toml"),
+        "\"$schema\" = \"v1\"\n[documents]\nenabled=false\nembed=false\n[code_search]\nenabled=false\nembed=false\n",
+    )
+    .unwrap();
+    git(&["add", "basemind.toml"]);
+    git(&["-c", "commit.gpgsign=false", "commit", "-qm", "fixture config"]);
+    let scan = |verify: bool| {
+        let mut cmd = Command::new(BIN);
+        cmd.env("BASEMIND_DATA_HOME", &comms)
+            .env("BASEMIND_COMMS_DIR", &comms)
+            .env("BASEMIND_INDEX_LAYERED", if verify { "0" } else { "1" })
+            .args(["--root", root.to_str().unwrap(), "scan", "--no-git-history"]);
+        if verify {
+            cmd.arg("--verify-shared-base");
+        }
+        let out = cmd.output().unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    };
+    scan(true);
+    let cache = comms
+        .join("cache/workspaces")
+        .join(basemind::store_layout::workspace_key(&root));
+    let working = cache.join("views/working");
+    std::fs::remove_dir_all(&working).unwrap();
+    std::fs::write(root.join("cold.rs"), "pub fn cold_layered_symbol() {}\n").unwrap();
+    scan(false);
+    assert!(!working.join("index.fjall").exists());
+
+    let _daemon = Daemon::start_with_layering(&comms, true);
+    let addr = http_frontend::await_http_ready(&comms, Duration::from_secs(15))
+        .await
+        .unwrap();
+    let token = http_frontend::published_token(&comms).unwrap();
+    for (id, args, expected) in [
+        (1, json!({"mode":"find","query":"cold.rs"}), "cold.rs"),
+        (
+            2,
+            json!({"mode":"symbols","name":"cold_layered_symbol"}),
+            "cold_layered_symbol",
+        ),
+    ] {
+        let response = hosted_tool_call(&addr, &token, &root, "cold-layered", id, "code", args).await;
+        assert!(
+            response.get("error").is_none() && response.to_string().contains(expected),
+            "{response}"
+        );
+    }
+    assert!(!working.join("index.fjall").exists());
 }

@@ -19,18 +19,43 @@ impl Reader {
             snapshot: db.db.snapshot(),
         }
     }
+}
 
+impl IndexView for Reader {
     fn get(&self, part: Part, key: &[u8]) -> Result<Option<IndexBytes>, IndexError> {
         Ok(self
             .snapshot
             .get(self.db.keyspace(part), key)?
             .map(IndexBytes::from_fjall))
     }
+    fn prefix(&self, part: Part, prefix: &[u8]) -> KvIter<'_> {
+        Box::new(self.snapshot.prefix(self.db.keyspace(part), prefix).map(kv))
+    }
+    fn range(&self, part: Part, lower: Bound<&[u8]>, upper: Bound<&[u8]>) -> KvIter<'_> {
+        Box::new(
+            self.snapshot
+                .range::<&[u8], _>(self.db.keyspace(part), (lower, upper))
+                .map(kv),
+        )
+    }
+    fn iter(&self, part: Part) -> KvIter<'_> {
+        self.range(part, Bound::Unbounded, Bound::Unbounded)
+    }
+    fn callee_keys_matching(&self, _: &str, _: Option<&[u8]>, lower: Bound<Vec<u8>>) -> KvIter<'_> {
+        self.range(Part::CallsByCallee, lower.as_ref().map(Vec::as_slice), Bound::Unbounded)
+    }
+    fn trait_keys_matching(&self, _: &str, _: Option<&[u8]>, lower: Bound<Vec<u8>>) -> KvIter<'_> {
+        self.range(
+            Part::ImplementationsByTrait,
+            lower.as_ref().map(Vec::as_slice),
+            Bound::Unbounded,
+        )
+    }
 }
 
 pub(crate) struct LayeredView {
     base: Box<dyn IndexView>,
-    overlay: Reader,
+    overlay: Box<dyn IndexView>,
     shadow: Shadow,
     bm25: Option<(u64, u64)>,
 }
@@ -42,8 +67,15 @@ impl LayeredView {
     }
 
     pub(crate) fn from_view(base: Box<dyn IndexView>, overlay: &IndexDb, shadow: Shadow) -> anyhow::Result<Self> {
-        let overlay = Reader::new(overlay);
-        let bm25 = effective_bm25(&*base, &overlay, &shadow)?;
+        Self::from_views(base, Box::new(Reader::new(overlay)), shadow)
+    }
+
+    pub(crate) fn from_views(
+        base: Box<dyn IndexView>,
+        overlay: Box<dyn IndexView>,
+        shadow: Shadow,
+    ) -> anyhow::Result<Self> {
+        let bm25 = effective_bm25(&*base, &*overlay, &shadow)?;
         Ok(LayeredView {
             base,
             overlay,
@@ -58,12 +90,11 @@ impl LayeredView {
             Part::ImplementationsByTrait => self.base.trait_keys_matching(needle, cursor_after, lower.clone()),
             _ => unreachable!("name dictionaries only cover callees and traits"),
         };
-        let rows = self.overlay.snapshot.range::<&[u8], _>(
-            self.overlay.db.keyspace(part),
-            (lower.as_ref().map(Vec::as_slice), Bound::Unbounded),
-        );
+        let rows = self
+            .overlay
+            .range(part, lower.as_ref().map(Vec::as_slice), Bound::Unbounded);
         let finder = memchr::memmem::Finder::new(needle.as_bytes()).into_owned();
-        let overlay = rows.map(kv).filter(move |row| {
+        let overlay = rows.filter(move |row| {
             let Ok((key, _)) = row else {
                 return true;
             };
@@ -88,7 +119,11 @@ impl LayeredView {
     }
 }
 
-fn effective_bm25(base: &dyn IndexView, overlay: &Reader, shadow: &Shadow) -> anyhow::Result<Option<(u64, u64)>> {
+fn effective_bm25(
+    base: &dyn IndexView,
+    overlay: &dyn IndexView,
+    shadow: &Shadow,
+) -> anyhow::Result<Option<(u64, u64)>> {
     let base_stats = base.bm25_stats();
     let overlay_stats = overlay
         .get(Part::Meta, META_BM25_DOC_COUNT)?
@@ -150,8 +185,8 @@ impl IndexView for LayeredView {
             return Box::new(std::iter::empty());
         }
         let base = self.base.prefix(part, prefix);
-        let overlay = self.overlay.snapshot.prefix(self.overlay.db.keyspace(part), prefix);
-        merge(base, Box::new(overlay.map(kv)), move |key| self.shadow.hides(part, key))
+        let overlay = self.overlay.prefix(part, prefix);
+        merge(base, overlay, move |key| self.shadow.hides(part, key))
     }
 
     fn range<'a>(&'a self, part: Part, lower: Bound<&[u8]>, upper: Bound<&[u8]>) -> KvIter<'a> {
@@ -159,11 +194,8 @@ impl IndexView for LayeredView {
             return Box::new(std::iter::empty());
         }
         let base = self.base.range(part, lower, upper);
-        let overlay = self
-            .overlay
-            .snapshot
-            .range::<&[u8], _>(self.overlay.db.keyspace(part), (lower, upper));
-        merge(base, Box::new(overlay.map(kv)), move |key| self.shadow.hides(part, key))
+        let overlay = self.overlay.range(part, lower, upper);
+        merge(base, overlay, move |key| self.shadow.hides(part, key))
     }
 
     fn iter(&self, part: Part) -> KvIter<'_> {

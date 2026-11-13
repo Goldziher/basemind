@@ -191,7 +191,8 @@ pub(crate) fn boot_plan(store: &Store, options: &ServerOptions) -> (bool, bool) 
         .index_view()
         .map(|view| view.symbols_index_is_empty())
         .unwrap_or(false);
-    let needs_initial_scan = (options.daemon_writer || !options.read_only)
+    let needs_initial_scan = store.layered_read.is_none()
+        && (options.daemon_writer || !options.read_only)
         && view_is_working
         && (store.index.files.is_empty() || fjall_index_empty || last_scan_degraded(store));
     let defer_warm = options.background && !needs_initial_scan;

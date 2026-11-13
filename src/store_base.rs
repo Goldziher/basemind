@@ -334,8 +334,14 @@ fn dirty_worktree(
             let view = LayeredView::from_view(Box::new(verification_base), db, shadow)?;
             crate::index::verify_shared_base(&view, reference)?;
         }
+        let runs = scratch.path().join(RUNS);
+        fs::create_dir(&runs)?;
+        let db = overlay.index_db.as_ref().context("missing overlay database")?;
+        SortedRunView::export(&runs, &db.view())?;
         fs::write(scratch.path().join("delta.msgpack"), rmp_serde::to_vec_named(&delta)?)?;
         drop(overlay);
+        fs::remove_dir_all(scratch.path().join(INDEX_DIR))?;
+        fs::remove_dir_all(scratch.path().join(crate::store::MEMORY_STORE_DIR))?;
         sync_tree(scratch.path())?;
         let group = repo_group_dir(root);
         let gate = crate::store_base_retention::group_lock(&group)?;
@@ -353,9 +359,9 @@ fn dirty_worktree(
         "overlay identity mismatch"
     );
     let shadow = delta.shadow(&counts, |path| base_index.files.get(path));
-    let db = crate::index::IndexDb::open(&published)?;
-    ensure!(!db.wiped_on_open(), "overlay schema mismatch");
-    let view = LayeredView::from_view(Box::new(base), &db, shadow)?;
+    // SAFETY: published overlays are immutable and no cleanup removes these directories while open.
+    let overlay = unsafe { SortedRunView::open(&published.join(RUNS)) }?;
+    let view = LayeredView::from_views(Box::new(base), Box::new(overlay), shadow)?;
     if let Some(store) = hydrate {
         let mut effective = base_index;
         delta.apply_to(&mut effective);
@@ -443,15 +449,59 @@ fn durable_overlay_pins(group: &Path) -> io::Result<std::collections::BTreeSet<u
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Default::default()),
         Err(error) => return Err(error),
     };
-    entries
-        .map(|entry| {
-            let entry = entry?;
-            let bytes: [u8; 8] = fs::read(entry.path())?
-                .try_into()
-                .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid overlay pin"))?;
-            Ok(u64::from_be_bytes(bytes))
-        })
-        .collect()
+    let mut pinned = std::collections::BTreeSet::new();
+    for entry in entries {
+        let entry = entry?;
+        let name = entry.file_name();
+        let (workspace, id) = name
+            .to_str()
+            .and_then(|name| name.rsplit_once('-'))
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "invalid overlay pin name"))?;
+        let bytes: [u8; 8] = fs::read(entry.path())?
+            .try_into()
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid overlay pin"))?;
+        let generation = u64::from_be_bytes(bytes);
+        if id.parse::<u64>().ok() != Some(generation)
+            || workspace.len() != 64
+            || !workspace.bytes().all(|byte| byte.is_ascii_hexdigit())
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid overlay pin identity",
+            ));
+        }
+        let cache = group
+            .parent()
+            .and_then(Path::parent)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "invalid repo group path"))?;
+        let overlays = cache.join("workspaces").join(workspace).join("verified-overlays");
+        let mut exists = false;
+        match fs::read_dir(overlays) {
+            Ok(entries) => {
+                let prefix = format!("{generation}-");
+                for overlay in entries {
+                    let overlay = overlay?;
+                    if overlay
+                        .file_name()
+                        .to_str()
+                        .is_some_and(|name| name.starts_with(&prefix))
+                        && overlay.file_type()?.is_dir()
+                    {
+                        exists = true;
+                        break;
+                    }
+                }
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+        if exists {
+            pinned.insert(generation);
+        } else {
+            fs::remove_file(entry.path())?;
+        }
+    }
+    Ok(pinned)
 }
 
 /// Retire older published base generations while keeping the newest two and every durable pin.

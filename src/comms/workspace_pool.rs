@@ -383,6 +383,9 @@ impl WorkspacePool {
         let incremental = matches!(paths, Some(ref p) if !full && !p.is_empty());
         let gen_before = entry.full_scan_gen.load(std::sync::atomic::Ordering::Acquire);
         let mut store = entry.store.lock().unwrap_or_else(PoisonError::into_inner);
+        if store.layered_read.is_some() {
+            *store = Store::open_with_holder(&entry.root, VIEW_WORKING, LockHolder::Rescan)?;
+        }
         if !incremental {
             let last = entry.last_full.lock().unwrap_or_else(PoisonError::into_inner);
             if let Some((generation, last_mode, stats)) = *last
@@ -758,14 +761,24 @@ impl WorkspacePool {
                 });
             }
         };
-        let store = Store::open_with_holder(&resolved, VIEW_WORKING, LockHolder::Rescan)?;
+        let config_stamp = config::daemon::ConfigStamp::of(&resolved);
+        let config = config::daemon::load_daemon(&resolved)?;
+        let mut cold = None;
+        if std::env::var_os("BASEMIND_INDEX_LAYERED").is_some_and(|value| value == "1") {
+            let mut store = Store::open_read_only_no_index(&resolved, VIEW_WORKING)?;
+            if crate::store_base::hydrate_cold_store(&mut store, &config).is_ok() && store.layered_read.is_some() {
+                cold = Some(store);
+            }
+        }
+        let store = match cold {
+            Some(store) => store,
+            None => Store::open_with_holder(&resolved, VIEW_WORKING, LockHolder::Rescan)?,
+        };
         let rebuild_pending = store.index_rebuild_needed;
         if rebuild_pending {
             tracing::warn!(root = %resolved.display(), "index is empty over a populated file map; scheduling a full rebuild");
             store.mark_status_health(&crate::store::ScanHealth::partial("index rebuilding", 0, 0));
         }
-        let config_stamp = config::daemon::ConfigStamp::of(&resolved);
-        let config = config::daemon::load_daemon(&resolved)?;
         let entry = std::sync::Arc::new(WorkspaceEntry {
             store: Mutex::new(store),
             config: std::sync::RwLock::new(std::sync::Arc::new(config)),
