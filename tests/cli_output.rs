@@ -323,6 +323,13 @@ fn cold_dirty_scan_publishes_delta_without_standalone_fjall() {
     for ((args, _), expected) in requests.iter().zip(layered) {
         assert_eq!(api("0", args), expected, "request {args:?}");
     }
+    let full = Command::new(bin())
+        .env("BASEMIND_INDEX_LAYERED", "1")
+        .args(["--root", root.to_str().unwrap(), "rescan", "--full", "--no-git-history"])
+        .output()
+        .unwrap();
+    assert!(full.status.success(), "{}", String::from_utf8_lossy(&full.stderr));
+    assert!(!String::from_utf8_lossy(&full.stderr).contains("Shared worktree index ready"));
     for number in 0..2 {
         std::fs::write(root.join(format!("overflow_{number}.rs")), "fn overflow() {}").unwrap();
     }
