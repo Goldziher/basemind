@@ -58,6 +58,7 @@ pub(crate) fn retire_unpinned(
     gate.lock_exclusive()?;
     let pins = read_pins()?;
     let mut result = RetiredGenerations::default();
+    let mut pending = Vec::new();
     for generation in candidates.difference(&pins).copied() {
         let lease = generation_lock(group, generation)?;
         match lease.try_lock_exclusive() {
@@ -68,41 +69,58 @@ pub(crate) fn retire_unpinned(
             }
             Err(error) => return Err(error),
         }
-        if retire_one(group, generation)? {
-            result.removed.push(generation);
+        if let Some(path) = mark_retired(group, generation)? {
+            pending.push((generation, path, lease));
         }
+    }
+    drop(gate);
+    for (generation, path, _lease) in pending {
+        fs::remove_dir_all(path)?;
+        result.removed.push(generation);
     }
     Ok(result)
 }
 
-fn retire_one(group: &Path, generation: u64) -> io::Result<bool> {
+fn mark_retired(group: &Path, generation: u64) -> io::Result<Option<PathBuf>> {
     let path = generation_path(group, generation);
     let retired = group.join(BASE).join(format!(".retired-{generation}"));
-    let had_generation = match fs::symlink_metadata(&path) {
-        Ok(metadata) if metadata.file_type().is_dir() => true,
-        Ok(_) => {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "generation is not a directory",
-            ));
-        }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => false,
-        Err(error) => return Err(error),
-    };
-    let had_retired = remove_retired(&retired)?;
-    if had_generation {
+    if directory_exists(&path)? {
         fs::rename(path, &retired)?;
-        fs::remove_dir_all(retired)?;
+        Ok(Some(retired))
+    } else {
+        Ok(directory_exists(&retired)?.then_some(retired))
     }
-    Ok(had_generation || had_retired)
 }
 
-fn remove_retired(path: &Path) -> io::Result<bool> {
-    match fs::remove_dir_all(path) {
-        Ok(()) => Ok(true),
+fn directory_exists(path: &Path) -> io::Result<bool> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_dir() => Ok(true),
+        Ok(_) => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "generation is not a directory",
+        )),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
         Err(error) => Err(error),
     }
+}
+
+/// Builder must include this watermark in ID selection under the exclusive group lock.
+pub(crate) fn highest_leased_generation(group: &Path) -> io::Result<u64> {
+    let entries = match fs::read_dir(group.join(BASE).join(LEASES)) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(0),
+        Err(error) => return Err(error),
+    };
+    let mut highest = 0;
+    for entry in entries {
+        let entry = entry?;
+        if let Some(id) = entry.file_name().to_str().and_then(|name| name.strip_prefix("gen-"))
+            && let Ok(id) = id.parse::<u64>()
+        {
+            highest = highest.max(id);
+        }
+    }
+    Ok(highest)
 }
 
 pub(crate) fn group_lock(group: &Path) -> io::Result<File> {
@@ -156,6 +174,7 @@ mod tests {
             [2]
         );
         assert!(GenerationLease::open(group, 2).is_err());
+        assert_eq!(highest_leased_generation(group).unwrap(), 3);
     }
 
     #[test]
