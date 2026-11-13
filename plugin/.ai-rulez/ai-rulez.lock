@@ -2,9 +2,9 @@
 # Refresh it with `ai-rulez lock`; `ai-rulez generate --locked` fails when it is stale.
 
 version = 1
-ai_rulez_version = '5.9.8'
+ai_rulez_version = '5.12.1'
 scope = 'all'
-tree = 'sha256:04721abc98e8c23579c5b50c51511a56342920c6f9e96c95f358a76ed306e1c0'
+tree = 'sha256:47ffa43c6b31469c81ea7081222823220fb1160d8a2e4be0cd2e210a4b8a76c2'
 
 [[item]]
 kind = 'command'
@@ -58,7 +58,7 @@ digest = 'sha256:59cf317ce9f47041e4cfc95a7ccc65512cf7401f05a67d0a8ad5984117bac21
 kind = 'skill'
 id = 'basemind-code-search'
 path = 'skills/basemind-code-search'
-digest = 'sha256:b22adaea490a9162b71e8255e646a0713c3bfe264d42a06763abf3d25162babd'
+digest = 'sha256:569c3d175a8265db719e7b1a993a36bfab5fb00a22655338e30ba9f541066f04'
 
 [[item]]
 kind = 'skill'
@@ -76,7 +76,7 @@ digest = 'sha256:f38735dd951a2239d32a9249d7b235987fc940e306ac29989ed2bf66f89b18d
 kind = 'skill'
 id = 'basemind-documents'
 path = 'skills/basemind-documents'
-digest = 'sha256:43a0e5a4f139420badc32ccb29d70c209a73078233c8f0428c06209363d24aae'
+digest = 'sha256:90a61fe9c4f9d65643683cf3799438fe8d7f259fa7df9ed279840ca9a91c9623'
 
 [[item]]
 kind = 'skill'
