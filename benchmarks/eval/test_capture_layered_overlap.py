@@ -9,6 +9,9 @@ from capture_layered_overlap import capture
 FAKE = """
 import json, os, sys
 tier = 'code' if 'semantic' in sys.argv else 'documents'
+target = 'helpers_code_search' if tier == 'code' else 'memory'
+if f'basemind::mcp::{target}=debug' not in os.environ['RUST_LOG'].split(','):
+    raise SystemExit('route target is filtered')
 route = 'layered' if os.environ['BASEMIND_INDEX_LAYERED'] == '1' else 'standalone'
 fallback = sys.argv[-1] == 'fallback'
 if fallback:

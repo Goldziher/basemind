@@ -21,7 +21,7 @@ def capture(prefix: list[Path | str], cache: Path, tier: str, query: str, route:
         "BASEMIND_DATA_HOME": str(cache),
         "BASEMIND_COMMS_DIR": str(cache / "capture-comms"),
         "BASEMIND_INDEX_LAYERED": str(int(route == "layered")),
-        "RUST_LOG": "basemind::mcp::memory=debug",
+        "RUST_LOG": "basemind::mcp::memory=debug,basemind::mcp::helpers_code_search=debug",
         "NO_COLOR": "1",
     }
     command = ["code", "semantic", "--lane", "semantic"] if tier == "code" else ["memory", "documents"]
