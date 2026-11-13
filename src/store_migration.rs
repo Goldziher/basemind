@@ -11,6 +11,8 @@ use serde::{Deserialize, Serialize};
 
 const WORKING: &str = "working";
 const BACKUP: &str = "working.migrated";
+#[cfg(unix)]
+const RECLAIM: &str = ".working.reclaim";
 const JOURNAL: &str = "working.migration";
 
 #[derive(Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
@@ -116,6 +118,35 @@ impl<'a> Migration<'a> {
     }
 
     #[cfg(unix)]
+    pub(crate) fn reclaim(&self) -> Result<()> {
+        let mut journal = self.read()?.context("missing migration journal")?;
+        ensure!(
+            journal.phase == Phase::Committed,
+            "migration must be committed before reclamation"
+        );
+        ensure!(self.views.join(BACKUP).is_dir(), "standalone backup missing");
+        journal.phase = Phase::RebuildRequired;
+        self.write(&journal)?;
+        self.finish_reclamation()
+    }
+
+    #[cfg(unix)]
+    fn finish_reclamation(&self) -> Result<()> {
+        let backup = self.views.join(BACKUP);
+        let reclaim = self.views.join(RECLAIM);
+        if exists(&backup)? {
+            ensure!(!exists(&reclaim)?, "conflicting standalone reclamation paths");
+            fs::rename(backup, &reclaim)?;
+            sync_directory(self.views)?;
+        }
+        if exists(&reclaim)? {
+            fs::remove_dir_all(reclaim)?;
+            sync_directory(self.views)?;
+        }
+        Ok(())
+    }
+
+    #[cfg(unix)]
     pub(crate) fn rebuild(&self, build: impl FnOnce(&Path) -> Result<()>) -> Result<bool> {
         let Some(journal) = self.read()? else {
             return Ok(false);
@@ -123,10 +154,7 @@ impl<'a> Migration<'a> {
         if journal.phase != Phase::RebuildRequired {
             return Ok(false);
         }
-        ensure!(
-            !exists(&self.views.join(BACKUP))?,
-            "standalone migration backup must be restored before rebuilding"
-        );
+        self.finish_reclamation()?;
         let working = self.views.join(WORKING);
         let proof = format!("working-rebuilt-{}", journal.generation);
         if !exists(&working)? {

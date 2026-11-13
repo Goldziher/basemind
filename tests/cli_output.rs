@@ -435,9 +435,27 @@ fn only_full_scan_can_reconstruct_a_reclaimed_working_view() {
     git(root, &["add", "."]);
     git(root, &["-c", "commit.gpgsign=false", "commit", "-qm", "fixture"]);
     let views = basemind::store::workspace_cache_dir(root).join("views");
-    std::fs::create_dir_all(&views).unwrap();
+
     let journal = views.join("working.migration");
-    std::fs::write(&journal, br#"{"format":1,"generation":7,"phase":"RebuildRequired"}"#).unwrap();
+    let retired = Command::new(bin())
+        .env("BASEMIND_INDEX_LAYERED", "1")
+        .env("BASEMIND_INDEX_RECLAIM_BACKUP", "1")
+        .args([
+            "--root",
+            root.to_str().unwrap(),
+            "scan",
+            "--no-git-history",
+            "--verify-shared-base",
+        ])
+        .output()
+        .unwrap();
+    let message = String::from_utf8_lossy(&retired.stderr);
+    assert!(retired.status.success(), "{message}");
+    assert!(message.contains("standalone backup reclaimed"), "{message}");
+    assert!(!views.join("working.migrated").exists());
+    assert!(!views.join(".working.reclaim").exists());
+    let marker: serde_json::Value = serde_json::from_slice(&std::fs::read(&journal).unwrap()).unwrap();
+    assert_eq!(marker["phase"], "RebuildRequired");
     let invoke = |args: &[&str]| {
         Command::new(bin())
             .env("BASEMIND_INDEX_LAYERED", "0")

@@ -388,7 +388,11 @@ impl Store {
 
     /// Retire the standalone working view after comparing it to a leased clean generation.
     #[cfg(unix)]
-    pub fn retire_verified_working_view(&mut self, config: &crate::config::Config) -> anyhow::Result<bool> {
+    pub fn retire_verified_working_view(
+        &mut self,
+        config: &crate::config::Config,
+        reclaim: bool,
+    ) -> anyhow::Result<bool> {
         if self.view != VIEW_WORKING || self._lock.is_none() {
             return Ok(false);
         }
@@ -440,6 +444,9 @@ impl Store {
         if let Err(error) = result {
             migration.recover(|_| false)?;
             return Err(error);
+        }
+        if reclaim {
+            migration.reclaim()?;
         }
         Ok(true)
     }
