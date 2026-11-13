@@ -565,3 +565,31 @@ fn import_probes_are_incomplete_until_stamped() {
     db.set_import_probes_complete(false).unwrap();
     assert!(!db.view().import_probes_complete());
 }
+
+#[cfg(feature = "code-search")]
+#[test]
+fn full_scan_restores_missing_legacy_bm25_postings() {
+    use crate::scanner::{EmbedMode, ScanSource, scan};
+    use crate::store::{Store, VIEW_WORKING};
+
+    crate::store::init_isolated_cache();
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    std::fs::write(root.join("lib.rs"), "pub fn legacy_recovery() {}\n").unwrap();
+    let mut config = crate::config::default_for_root(root);
+    config.code_search.enabled = true;
+    config.code_search.embed = false;
+    config.documents.enabled = false;
+    let mut store = Store::open(root, VIEW_WORKING).unwrap();
+    scan(root, &mut store, &config, ScanSource::WorkingTree, EmbedMode::Inline).unwrap();
+
+    let db = store.index_db.as_ref().unwrap();
+    let (key, value) = db.code_bm25_postings.iter().next().unwrap().into_inner().unwrap();
+    db.code_bm25_postings.remove(&*key).unwrap();
+    assert!(db.code_bm25_postings.get(&key).unwrap().is_none());
+    store.index.embed_policy = "legacy-embed-policy".into();
+
+    scan(root, &mut store, &config, ScanSource::WorkingTree, EmbedMode::Inline).unwrap();
+    let db = store.index_db.as_ref().unwrap();
+    assert_eq!(db.code_bm25_postings.get(&key).unwrap(), Some(value));
+}
