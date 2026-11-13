@@ -352,6 +352,7 @@ fn dirty_worktree(
         let group = repo_group_dir(root);
         let gate = crate::store_base_retention::group_lock(&group)?;
         fs2::FileExt::lock_exclusive(&gate)?;
+        enforce_group_budget(&group, Some((&overlays, crate::store_layout::workspace_key(root))))?;
         write_overlay_pin(&group, root, generation)?;
         fs::rename(scratch.path(), &published)?;
         sync_directory(&overlays)?;
@@ -432,6 +433,53 @@ fn restitch_overlay(
     ensure!(complete, "overlay restitch incomplete");
     delta.add_restitched(affected);
     db.set_import_probes_complete(true)?;
+    Ok(())
+}
+
+fn enforce_group_budget(group: &Path, incoming_overlay: Option<(&Path, String)>) -> Result<()> {
+    let Some(value) = std::env::var_os("BASEMIND_INDEX_MAX_GROUP_BYTES") else {
+        return Ok(());
+    };
+    let limit: u64 = value
+        .to_str()
+        .context("group disk limit must be UTF-8")?
+        .parse()
+        .context("invalid group disk limit")?;
+    ensure!(limit > 0, "group disk limit must be positive");
+    let mut used = crate::store_cache_admin::dir_size(&group.join(BASE_DIR))?;
+    let pins = group.join("overlay-pins");
+    let mut counted = std::collections::BTreeSet::new();
+    if let Some((overlays, workspace)) = incoming_overlay {
+        used = used.saturating_add(crate::store_cache_admin::dir_size(overlays)?);
+        counted.insert(workspace);
+    }
+    if pins.is_dir() {
+        let cache = group
+            .parent()
+            .and_then(Path::parent)
+            .context("invalid group cache path")?;
+        for entry in fs::read_dir(pins)? {
+            let name = entry?.file_name();
+            let (workspace, _) = name
+                .to_str()
+                .and_then(|name| name.rsplit_once('-'))
+                .context("invalid overlay pin name")?;
+            ensure!(
+                workspace.len() == 64 && workspace.bytes().all(|byte| byte.is_ascii_hexdigit()),
+                "invalid overlay pin workspace"
+            );
+            if counted.insert(workspace.to_owned()) {
+                let overlays = cache
+                    .join(crate::store_layout::WORKSPACES_DIR)
+                    .join(workspace)
+                    .join("verified-overlays");
+                if overlays.is_dir() {
+                    used = used.saturating_add(crate::store_cache_admin::dir_size(&overlays)?);
+                }
+            }
+        }
+    }
+    ensure!(used <= limit, "shared index group exceeds disk limit");
     Ok(())
 }
 
@@ -710,6 +758,7 @@ fn build_generation(base: &Path, repo: &Repo, config: &Config, mut metadata: Bas
     sync_file(&manifest).with_context(|| format!("sync base manifest {}", manifest.display()))?;
     sync_directory(&scratch.0)?;
     let published = base.join(format!("gen-{}", metadata.generation));
+    enforce_group_budget(base.parent().context("missing base group")?, None)?;
     fs::rename(&scratch.0, &published)?;
     sync_directory(base)?;
     Ok(published)

@@ -210,6 +210,17 @@ fn cold_dirty_scan_publishes_delta_without_standalone_fjall() {
             .is_some()
     );
     std::fs::write(root.join("sample.rs"), "fn after_symbol() { after(); }").unwrap();
+    let refused = Command::new(bin())
+        .env("BASEMIND_INDEX_LAYERED", "1")
+        .env("BASEMIND_INDEX_MAX_GROUP_BYTES", "1")
+        .args(["--root", root.to_str().unwrap(), "scan", "--no-git-history"])
+        .output()
+        .unwrap();
+    assert!(refused.status.success(), "{}", String::from_utf8_lossy(&refused.stderr));
+    assert!(!String::from_utf8_lossy(&refused.stderr).contains("Shared worktree index ready"));
+    assert!(!basemind::store_base::has_published_dirty_worktree(root, &config).unwrap());
+    let working = basemind::store::workspace_cache_dir(root).join("views/working");
+    std::fs::remove_dir_all(working).unwrap();
     let result = Command::new(bin())
         .env("BASEMIND_INDEX_LAYERED", "1")
         .args(["--root", root.to_str().unwrap(), "scan", "--no-git-history"])
