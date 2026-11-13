@@ -172,6 +172,24 @@ pub fn record_promotion(root: &Path, config: &Config) -> Result<bool> {
     let repo = Repo::discover(root)?;
     let candidates = repo.status_against(&base.commit)?.overlay_candidates();
     let index = crate::store::read_index(&path)?.context("missing promotion base index")?;
+    if !over_promotion_budget(root, &candidates, &index, &base) {
+        return Ok(false);
+    }
+    let marker = promotion_marker(root);
+    let parent = marker.parent().context("missing promotion marker directory")?;
+    let temporary = tempfile::NamedTempFile::new_in(parent)?;
+    temporary.as_file().sync_all()?;
+    temporary.persist(&marker)?;
+    sync_directory(parent)?;
+    Ok(true)
+}
+
+fn over_promotion_budget(
+    root: &Path,
+    candidates: &std::collections::BTreeSet<crate::path::RelPath>,
+    index: &crate::store::Index,
+    base: &BaseManifest,
+) -> bool {
     let changed_bytes = candidates.iter().fold(0u64, |total, candidate| {
         let live = fs::symlink_metadata(root.join(candidate.to_path_buf()))
             .ok()
@@ -182,16 +200,7 @@ pub fn record_promotion(root: &Path, config: &Config) -> Result<bool> {
     });
     let over_file_share = (candidates.len() as u128) * 100 > (base.files as u128) * 15;
     let over_byte_share = u128::from(changed_bytes) * 100 > u128::from(base.bytes) * 25;
-    if candidates.len() <= 32 && changed_bytes <= MAX_OVERLAY_INPUT_BYTES && !over_file_share && !over_byte_share {
-        return Ok(false);
-    }
-    let marker = promotion_marker(root);
-    let parent = marker.parent().context("missing promotion marker directory")?;
-    let temporary = tempfile::NamedTempFile::new_in(parent)?;
-    temporary.as_file().sync_all()?;
-    temporary.persist(&marker)?;
-    sync_directory(parent)?;
-    Ok(true)
+    candidates.len() > 32 || changed_bytes > MAX_OVERLAY_INPUT_BYTES || over_file_share || over_byte_share
 }
 
 fn eligible(config: &Config) -> bool {
@@ -354,7 +363,7 @@ fn dirty_worktree(
         || candidates.iter().any(|path| {
             path.as_str().is_none_or(|path| {
                 path.split('/').any(|component| component.starts_with('.'))
-                    || ![".rs", ".ts", ".tsx", ".py"]
+                    || ![".rs", ".ts", ".tsx", ".py", "tsconfig.json"]
                         .iter()
                         .any(|extension| path.ends_with(extension))
             })
@@ -493,9 +502,12 @@ fn restitch_overlay(
     let base = open(root, config, generation, commit)?;
     let mut changed = Vec::new();
     let mut removed = Vec::new();
+    let mut other = Vec::new();
     for path in candidates {
         let name = path.as_str().context("non-UTF-8 overlay path")?.to_owned();
-        if overlay.lookup(path).is_some() {
+        if name.ends_with("tsconfig.json") {
+            other.push(name);
+        } else if overlay.lookup(path).is_some() {
             changed.push(name);
         } else {
             removed.push(name);
@@ -515,7 +527,7 @@ fn restitch_overlay(
         &PathDelta {
             changed: &changed,
             removed: &removed,
-            other: &[],
+            other: &other,
         },
         config.code_intel.precise_resolution,
         config.resources.max_footprint_mb,
@@ -1193,4 +1205,130 @@ fn reuses_a_base_when_new_commit_changes_less_than_two_percent() {
     .unwrap();
     assert_eq!(reference.index.files.len(), 51);
     crate::index::verify_shared_base(&*view, &reference.index_view().unwrap()).unwrap();
+}
+
+#[cfg(all(test, feature = "code-intel-js"))]
+#[test]
+fn changing_a_typescript_config_restitches_its_unchanged_consumer() {
+    crate::store::init_isolated_cache();
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let git = |args: &[&str]| {
+        assert!(
+            std::process::Command::new("git")
+                .current_dir(root)
+                .env("GIT_AUTHOR_NAME", "Test")
+                .env("GIT_AUTHOR_EMAIL", "test@example.test")
+                .env("GIT_COMMITTER_NAME", "Test")
+                .env("GIT_COMMITTER_EMAIL", "test@example.test")
+                .args(args)
+                .status()
+                .unwrap()
+                .success()
+        )
+    };
+    git(&["init", "-q"]);
+    for (path, text) in [
+        ("one/target.ts", "export const target = 1;\n"),
+        ("two/target.ts", "export const target = 2;\n"),
+        (
+            "use.ts",
+            "import { target } from '@lib/target';\nexport const v = target;\n",
+        ),
+        (
+            "tsconfig.json",
+            r#"{"compilerOptions":{"baseUrl":".","paths":{"@lib/*":["one/*"]}}}"#,
+        ),
+    ] {
+        let path = root.join(path);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, text).unwrap();
+    }
+    git(&["add", "."]);
+    git(&["-c", "commit.gpgsign=false", "commit", "-qm", "fixture"]);
+    let mut config = Config::with_defaults();
+    config.documents.enabled = false;
+    config.documents.embed = false;
+    config.code_search.enabled = false;
+    config.code_search.embed = false;
+    assert!(open_clean_worktree(root, &config).unwrap().is_some());
+    fs::write(
+        root.join("tsconfig.json"),
+        r#"{"compilerOptions":{"baseUrl":".","paths":{"@lib/*":["two/*"]}}}"#,
+    )
+    .unwrap();
+    let mut reference = Store::open(root, "working").unwrap();
+    scan(
+        root,
+        &mut reference,
+        &config,
+        ScanSource::WorkingTree,
+        EmbedMode::Deferred,
+    )
+    .unwrap();
+    assert!(publish_dirty_worktree(root, &config, &reference.index_view().unwrap()).unwrap());
+    let view = open_dirty_worktree(root, &config).unwrap().unwrap();
+    let target = crate::path::RelPath::from("two/target.ts");
+    let expected = reference.index_view().unwrap().references_to(&target, 13);
+    assert!(expected.iter().any(|(path, _)| path.as_str() == Some("use.ts")));
+    assert_eq!(view.references_to(&target, 13), expected);
+}
+
+#[cfg(all(test, feature = "code-intel-js"))]
+#[test]
+fn changing_a_typescript_barrel_restitches_its_unchanged_consumer() {
+    crate::store::init_isolated_cache();
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let git = |args: &[&str]| {
+        assert!(
+            std::process::Command::new("git")
+                .current_dir(root)
+                .env("GIT_AUTHOR_NAME", "Test")
+                .env("GIT_AUTHOR_EMAIL", "test@example.test")
+                .env("GIT_COMMITTER_NAME", "Test")
+                .env("GIT_COMMITTER_EMAIL", "test@example.test")
+                .args(args)
+                .status()
+                .unwrap()
+                .success()
+        )
+    };
+    git(&["init", "-q"]);
+    for (path, text) in [
+        ("one.ts", "export function target() {}\n"),
+        ("two.ts", "export function target() { return 2; }\n"),
+        ("barrel.ts", "import { target } from './one'; export { target };\n"),
+        ("use.ts", "import { target } from './barrel';\ntarget();\n"),
+    ] {
+        fs::write(root.join(path), text).unwrap();
+    }
+    git(&["add", "."]);
+    git(&["-c", "commit.gpgsign=false", "commit", "-qm", "fixture"]);
+    let mut config = Config::with_defaults();
+    config.documents.enabled = false;
+    config.documents.embed = false;
+    config.code_search.enabled = false;
+    config.code_search.embed = false;
+    assert!(open_clean_worktree(root, &config).unwrap().is_some());
+    fs::write(
+        root.join("barrel.ts"),
+        "import { target } from './two'; export { target };\n",
+    )
+    .unwrap();
+    let mut reference = Store::open(root, "working").unwrap();
+    scan(
+        root,
+        &mut reference,
+        &config,
+        ScanSource::WorkingTree,
+        EmbedMode::Deferred,
+    )
+    .unwrap();
+    assert!(publish_dirty_worktree(root, &config, &reference.index_view().unwrap()).unwrap());
+    let view = open_dirty_worktree(root, &config).unwrap().unwrap();
+    let target = crate::path::RelPath::from("two.ts");
+    let expected = reference.index_view().unwrap().references_to(&target, 16);
+    assert!(expected.iter().any(|(path, _)| path.as_str() == Some("use.ts")));
+    assert_eq!(view.references_to(&target, 16), expected);
 }
