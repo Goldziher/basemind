@@ -512,6 +512,27 @@ pub(super) async fn shared_lance_route(
     Some((crate::store::repo_group_dir(&store.root), generation))
 }
 
+#[cfg(any(feature = "documents", feature = "code-search"))]
+pub(super) fn observe_semantic_route<T>(
+    tier: &str,
+    requested_shared: bool,
+    shared: Option<T>,
+    fallback: impl FnOnce() -> anyhow::Result<T>,
+) -> anyhow::Result<T> {
+    if let Some(hits) = shared {
+        tracing::debug!(tier, route = "layered", degraded = false, "semantic search route");
+        return Ok(hits);
+    }
+    let hits = fallback()?;
+    tracing::debug!(
+        tier,
+        route = "standalone",
+        degraded = requested_shared,
+        "semantic search route"
+    );
+    Ok(hits)
+}
+
 #[cfg(feature = "documents")]
 pub(super) async fn run_search_documents(
     state: &ServerState,
@@ -537,28 +558,14 @@ pub(super) async fn run_search_documents(
     let routing = shared_lance_route(state, lane).await;
     let hits_raw = tokio::task::spawn_blocking(move || {
         let requested_shared = crate::lance::shared_snapshot::enabled();
-        if let Some((group, generation)) = routing
-            && let Some(hits) =
-                crate::lance::shared_snapshot::read(&lance, &group, lane, &scope, &generation, |shared, paths| {
-                    shared.search_documents(&scope, embedding.clone(), mime.as_deref(), paths, limit)
-                })
-        {
-            tracing::debug!(
-                tier = "documents",
-                route = "layered",
-                degraded = false,
-                "semantic search route"
-            );
-            return Ok(hits);
-        }
-        let hits = lance.search_documents(&scope, embedding, limit, mime.as_deref())?;
-        tracing::debug!(
-            tier = "documents",
-            route = "standalone",
-            degraded = requested_shared,
-            "semantic search route"
-        );
-        Ok::<_, anyhow::Error>(hits)
+        let shared = routing.and_then(|(group, generation)| {
+            crate::lance::shared_snapshot::read(&lance, &group, lane, &scope, &generation, |shared, paths| {
+                shared.search_documents(&scope, embedding.clone(), mime.as_deref(), paths, limit)
+            })
+        });
+        observe_semantic_route("documents", requested_shared, shared, || {
+            lance.search_documents(&scope, embedding, limit, mime.as_deref())
+        })
     })
     .await
     .map_err(|e| McpError::internal_error(format!("spawn_blocking: {e}"), None))?
@@ -774,5 +781,54 @@ mod scope_tests {
         assert_ne!(resolve_doc_scope(None, repo_scope), write_scope);
 
         assert_eq!(resolve_doc_scope(Some(&write_scope), repo_scope), write_scope);
+    }
+}
+
+#[cfg(all(test, any(feature = "documents", feature = "code-search")))]
+#[test]
+fn successful_semantic_routes_emit_observed_provenance() {
+    use std::io::{self, Write};
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Clone, Default)]
+    struct Capture(Arc<Mutex<Vec<u8>>>);
+
+    impl Write for Capture {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    let output = Capture::default();
+    let writer = output.clone();
+    let subscriber = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::DEBUG)
+        .with_ansi(false)
+        .without_time()
+        .with_writer(move || writer.clone())
+        .finish();
+    tracing::subscriber::with_default(subscriber, || {
+        assert_eq!(
+            observe_semantic_route("code", true, Some(7), || panic!("fallback ran")).unwrap(),
+            7
+        );
+        assert_eq!(observe_semantic_route("documents", true, None, || Ok(8)).unwrap(), 8);
+        assert_eq!(observe_semantic_route("code", false, None, || Ok(9)).unwrap(), 9);
+        assert!(observe_semantic_route::<u8>("documents", true, None, || anyhow::bail!("failed")).is_err());
+    });
+    let bytes = output.0.lock().unwrap();
+    let events = std::str::from_utf8(&bytes).unwrap().lines().collect::<Vec<_>>();
+    assert_eq!(events.len(), 3);
+    for (event, expected) in events.iter().zip([
+        "tier=\"code\" route=\"layered\" degraded=false",
+        "tier=\"documents\" route=\"standalone\" degraded=true",
+        "tier=\"code\" route=\"standalone\" degraded=false",
+    ]) {
+        assert!(event.contains(expected), "{event}");
     }
 }
