@@ -59,6 +59,7 @@ pub mod search;
 pub mod shells;
 pub mod store;
 pub mod store_base;
+mod store_base_retention;
 pub mod store_blob;
 mod store_blob_codec;
 pub mod store_cache_admin;

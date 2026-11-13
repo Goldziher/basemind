@@ -52,8 +52,13 @@ pub fn write_run(
     writer.get_ref().sync_all()
 }
 
+pub(super) struct Mapping {
+    pub(super) mmap: Mmap,
+    _lease: Option<Arc<crate::store_base_retention::GenerationLease>>,
+}
+
 pub struct SortedRun {
-    data: Arc<Mmap>,
+    data: Arc<Mapping>,
     table: usize,
     rows: usize,
 }
@@ -62,6 +67,13 @@ impl SortedRun {
     /// # Safety
     /// The caller must keep the file unchanged and untruncated for the mapping's lifetime.
     pub unsafe fn open(path: &Path) -> io::Result<Self> {
+        unsafe { Self::open_inner(path, None) }
+    }
+
+    unsafe fn open_inner(
+        path: &Path,
+        lease: Option<Arc<crate::store_base_retention::GenerationLease>>,
+    ) -> io::Result<Self> {
         let file = File::open(path)?;
         // SAFETY: The caller guarantees an immutable file for the lifetime of the mapping.
         let data = unsafe { Mmap::map(&file)? };
@@ -78,7 +90,10 @@ impl SortedRun {
         }
         let rows = offsets / OFFSET_BYTES - 1;
         Ok(Self {
-            data: Arc::new(data),
+            data: Arc::new(Mapping {
+                mmap: data,
+                _lease: lease,
+            }),
             table,
             rows,
         })
@@ -89,7 +104,7 @@ impl SortedRun {
     }
 
     pub fn mapped_bytes(&self) -> usize {
-        self.data.len()
+        self.data.mmap.len()
     }
 
     pub fn row(&self, index: usize) -> io::Result<(&[u8], &[u8])> {
@@ -97,12 +112,12 @@ impl SortedRun {
             return Err(invalid_run());
         }
         let slot = self.table + index * OFFSET_BYTES;
-        let start = read_offset(&self.data, slot).ok_or_else(invalid_run)?;
-        let end = read_offset(&self.data, slot + OFFSET_BYTES).ok_or_else(invalid_run)?;
+        let start = read_offset(&self.data.mmap, slot).ok_or_else(invalid_run)?;
+        let end = read_offset(&self.data.mmap, slot + OFFSET_BYTES).ok_or_else(invalid_run)?;
         if start < MAGIC.len() || end > self.table {
             return Err(invalid_run());
         }
-        let row = self.data.get(start..end).ok_or_else(invalid_run)?;
+        let row = self.data.mmap.get(start..end).ok_or_else(invalid_run)?;
         let length = row.get(..LENGTH_BYTES).ok_or_else(invalid_run)?;
         let key_len = u32::from_le_bytes(length.try_into().map_err(|_| invalid_run())?) as usize;
         row[LENGTH_BYTES..].split_at_checked(key_len).ok_or_else(invalid_run)
@@ -205,6 +220,22 @@ impl SortedRunView {
         })
     }
 
+    pub(crate) fn open_leased(
+        lease: Arc<crate::store_base_retention::GenerationLease>,
+        subdir: &str,
+    ) -> io::Result<Self> {
+        let directory = lease.path().join(subdir);
+        let runs = Part::ALL
+            .into_iter()
+            .map(|part| {
+                let path = directory.join(part.name());
+                // SAFETY: Published run files are immutable and GC cannot retire the generation while leased.
+                unsafe { SortedRun::open_inner(&path, Some(Arc::clone(&lease))) }.map(|run| (part, run))
+            })
+            .collect::<io::Result<_>>()?;
+        Ok(Self { directory, runs })
+    }
+
     fn error(&self, part: Part, source: io::Error) -> IndexError {
         IndexError::Io {
             path: self.directory.join(part.name()),
@@ -227,7 +258,7 @@ impl SortedRunView {
 
 impl SortedRun {
     fn bytes(&self, bytes: &[u8]) -> IndexBytes {
-        let start = bytes.as_ptr() as usize - self.data.as_ptr() as usize;
+        let start = bytes.as_ptr() as usize - self.data.mmap.as_ptr() as usize;
         IndexBytes::from_mapping(Arc::clone(&self.data), start..start + bytes.len())
     }
 }

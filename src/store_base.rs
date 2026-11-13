@@ -10,13 +10,16 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::Config;
 use crate::git::Repo;
+use crate::index::sorted_run::SortedRunView;
 use crate::index::view::IndexView;
 use crate::index::{INDEX_DIR, INDEX_SCHEMA_VER};
 use crate::scanner::{EmbedMode, ScanSource, scan};
 use crate::store::{Store, repo_group_dir};
+use crate::store_base_retention::{GenerationLease, highest_leased_generation};
 
 const BASE_DIR: &str = "base";
 const BASE_LOCK_FILE: &str = "base.lock";
+const RUNS: &str = "runs";
 const MANIFEST: &str = "base.json";
 const FORMAT: u32 = 1;
 
@@ -45,6 +48,7 @@ struct BaseManifest {
 #[serde(rename_all = "kebab-case")]
 enum Storage {
     Fjall,
+    SortedRun,
 }
 
 #[derive(Debug)]
@@ -94,11 +98,14 @@ pub fn prepare(root: &Path, config: &Config) -> Result<BaseBuild> {
     if crate::disk_space::ensure_free_space(&base).is_err() {
         return Ok(BaseBuild::Ineligible);
     }
-    let generation = highest.checked_add(1).context("base generation counter exhausted")?;
+    let generation = highest
+        .max(highest_leased_generation(&group)?)
+        .checked_add(1)
+        .context("base generation counter exhausted")?;
     let tree = repo.resolve_rev(&format!("{commit}^{{tree}}"))?;
     let metadata = BaseManifest {
         format: FORMAT,
-        storage: Storage::Fjall,
+        storage: Storage::SortedRun,
         generation,
         commit,
         tree,
@@ -116,6 +123,17 @@ pub fn prepare(root: &Path, config: &Config) -> Result<BaseBuild> {
         probes_complete: false,
     };
     build_generation(&base, &repo, config, metadata).map(BaseBuild::Ready)
+}
+
+/// Open a published base for the exact commit and scan policy supplied by its caller.
+pub fn open(root: &Path, config: &Config, generation: u64, commit: &str) -> Result<SortedRunView> {
+    let group = repo_group_dir(root);
+    let lease = std::sync::Arc::new(GenerationLease::open(&group, generation)?);
+    ensure!(
+        is_compatible(lease.path(), generation, commit, &scan_digest(config)?),
+        "incompatible base generation"
+    );
+    Ok(SortedRunView::open_leased(lease, RUNS)?)
 }
 
 fn resolve_commit(repo: &Repo) -> Result<(String, String)> {
@@ -181,7 +199,8 @@ fn is_compatible(path: &Path, generation: u64, commit: &str, digest: &str) -> bo
     else {
         return false;
     };
-    manifest.format == FORMAT
+    matches!(manifest.storage, Storage::SortedRun)
+        && manifest.format == FORMAT
         && manifest.generation == generation
         && manifest.commit == commit
         && manifest.scan_digest == digest
@@ -194,7 +213,7 @@ fn is_compatible(path: &Path, generation: u64, commit: &str, digest: &str) -> bo
             .ok()
             .flatten()
             .is_some_and(|index| index.files.len() == manifest.files)
-        && path.join(INDEX_DIR).is_dir()
+        && path.join(RUNS).is_dir()
 }
 
 fn build_generation(base: &Path, repo: &Repo, config: &Config, mut metadata: BaseManifest) -> Result<PathBuf> {
@@ -236,8 +255,12 @@ fn build_generation(base: &Path, repo: &Repo, config: &Config, mut metadata: Bas
         entry.mtime = 0;
         metadata.bytes = metadata.bytes.saturating_add(entry.size_bytes);
     }
+    let runs = scratch.0.join(RUNS);
+    fs::create_dir(&runs)?;
+    SortedRunView::export(&runs, &index.view())?;
     store.flush()?;
     drop(store);
+    fs::remove_dir_all(scratch.0.join(INDEX_DIR))?;
     fs::remove_dir_all(checkout)?;
     fs::remove_dir_all(scratch.0.join(crate::store::MEMORY_STORE_DIR))?;
     sync_tree(&scratch.0)?;

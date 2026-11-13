@@ -35,11 +35,14 @@ pub struct IndexBytes(Repr);
 #[derive(Clone)]
 enum Repr {
     Fjall(fjall::Slice),
-    Mapped(std::sync::Arc<memmap2::Mmap>, std::ops::Range<usize>),
+    Mapped(std::sync::Arc<super::sorted_run::Mapping>, std::ops::Range<usize>),
 }
 
 impl IndexBytes {
-    pub(super) fn from_mapping(mapping: std::sync::Arc<memmap2::Mmap>, bounds: std::ops::Range<usize>) -> Self {
+    pub(super) fn from_mapping(
+        mapping: std::sync::Arc<super::sorted_run::Mapping>,
+        bounds: std::ops::Range<usize>,
+    ) -> Self {
         Self(Repr::Mapped(mapping, bounds))
     }
 
@@ -54,7 +57,7 @@ impl Deref for IndexBytes {
     fn deref(&self) -> &[u8] {
         match &self.0 {
             Repr::Fjall(slice) => slice,
-            Repr::Mapped(mapping, bounds) => &mapping[bounds.clone()],
+            Repr::Mapped(mapping, bounds) => &mapping.mmap[bounds.clone()],
         }
     }
 }
