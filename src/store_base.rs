@@ -1,0 +1,995 @@
+//! Build a committed, code-only base generation without changing existing workspace reads.
+
+use std::fs::{self, OpenOptions};
+use std::io;
+use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use anyhow::{Context, Result, ensure};
+use serde::{Deserialize, Serialize};
+
+use crate::config::Config;
+use crate::git::Repo;
+use crate::index::sorted_run::SortedRunView;
+use crate::index::view::IndexView;
+use crate::index::{INDEX_DIR, INDEX_SCHEMA_VER};
+use crate::scanner::{EmbedMode, ScanSource, scan};
+use crate::store::{Store, repo_group_dir};
+use crate::store_base_retention::{GenerationLease, highest_leased_generation};
+
+#[path = "store_base_fs.rs"]
+mod filesystem;
+pub(crate) use filesystem::sync_tree;
+use filesystem::{Scratch, create_private_dir, sync_directory, sync_file};
+
+const BASE_DIR: &str = "base";
+const BASE_LOCK_FILE: &str = "base.lock";
+const MAX_OVERLAY_INPUT_BYTES: u64 = 50 * 1024 * 1024;
+const RUNS: &str = "runs";
+const MANIFEST: &str = "base.json";
+const FORMAT: u32 = 1;
+
+#[derive(Debug, Deserialize, Serialize)]
+struct BaseManifest {
+    format: u32,
+    storage: Storage,
+    generation: u64,
+    commit: String,
+    tree: String,
+    source_ref: String,
+    built_unix: u64,
+    basemind_version: String,
+    index_schema_ver: u32,
+    blob_schema_ver: u16,
+    min_extract_epoch: u16,
+    scan_features: String,
+    scan_digest: String,
+    embed_policy: String,
+    files: usize,
+    bytes: u64,
+    probes_complete: bool,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum Storage {
+    Fjall,
+    SortedRun,
+}
+
+#[derive(Debug)]
+pub enum BaseBuild {
+    Ready(PathBuf),
+    Busy,
+    Ineligible,
+}
+
+/// Build or reuse a committed base for the repository root and scan policy.
+///
+/// This is an explicit preparation step. It leaves the workspace view unchanged
+/// until overlay creation and equivalence verification are implemented.
+pub fn prepare(root: &Path, config: &Config) -> Result<BaseBuild> {
+    let repo = match Repo::discover(root) {
+        Ok(repo) => repo,
+        Err(crate::git::GitError::NotARepo(_)) => return Ok(BaseBuild::Ineligible),
+        Err(error) => return Err(error.into()),
+    };
+    if !repo.origin_is_workdir() || config.scan.follow_symlinks {
+        return Ok(BaseBuild::Ineligible);
+    }
+
+    let group = repo_group_dir(root);
+    let base = group.join(BASE_DIR);
+    fs::create_dir_all(&base).context("create base generation directory")?;
+    let lock = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(group.join(BASE_LOCK_FILE))
+        .context("open base generation lock")?;
+    if let Err(error) = fs2::FileExt::try_lock_exclusive(&lock) {
+        if error.kind() == io::ErrorKind::WouldBlock
+            || error.raw_os_error() == fs2::lock_contended_error().raw_os_error()
+        {
+            return Ok(BaseBuild::Busy);
+        }
+        return Err(error).context("lock base generation directory");
+    }
+
+    let (source_ref, commit) = resolve_commit(&repo)?;
+    let digest = scan_digest(config)?;
+    let (highest, ready) = find_generation(&base, &commit, &digest)?;
+    if let Some(path) = ready {
+        return Ok(BaseBuild::Ready(path));
+    }
+    if crate::disk_space::ensure_free_space(&base).is_err() {
+        return Ok(BaseBuild::Ineligible);
+    }
+    let generation = highest
+        .max(highest_leased_generation(&group)?)
+        .checked_add(1)
+        .context("base generation counter exhausted")?;
+    let tree = repo.resolve_rev(&format!("{commit}^{{tree}}"))?;
+    let metadata = BaseManifest {
+        format: FORMAT,
+        storage: Storage::SortedRun,
+        generation,
+        commit,
+        tree,
+        source_ref,
+        built_unix: SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs(),
+        basemind_version: env!("CARGO_PKG_VERSION").into(),
+        index_schema_ver: INDEX_SCHEMA_VER,
+        blob_schema_ver: crate::extract::SCHEMA_VER,
+        min_extract_epoch: crate::extract::EXTRACT_EPOCH,
+        scan_features: scan_features(),
+        scan_digest: digest,
+        embed_policy: String::new(),
+        files: 0,
+        bytes: 0,
+        probes_complete: false,
+    };
+    build_generation(&base, &repo, config, metadata).map(BaseBuild::Ready)
+}
+
+/// Open a published base for the exact commit and scan policy supplied by its caller.
+pub fn open(root: &Path, config: &Config, generation: u64, commit: &str) -> Result<SortedRunView> {
+    let group = repo_group_dir(root);
+    let lease = std::sync::Arc::new(GenerationLease::open(&group, generation)?);
+    ensure!(
+        is_compatible(lease.path(), generation, commit, &scan_digest(config)?),
+        "incompatible base generation"
+    );
+    Ok(SortedRunView::open_leased(lease, RUNS)?)
+}
+
+/// Open an opt-in committed index for a clean worktree. Callers can use their ordinary
+/// working index whenever the worktree or scan policy requires an overlay.
+pub fn open_clean_worktree(root: &Path, config: &Config) -> Result<Option<SortedRunView>> {
+    open_worktree_base(root, config, true)
+}
+
+pub(crate) fn open_existing_worktree_base(root: &Path, config: &Config) -> Result<Option<SortedRunView>> {
+    open_worktree_base(root, config, false)
+}
+
+fn promotion_marker(root: &Path) -> PathBuf {
+    crate::store::workspace_cache_dir(root).join("layered-promoted")
+}
+
+fn promoted(root: &Path) -> bool {
+    promotion_marker(root).try_exists().unwrap_or(true)
+}
+
+/// Persist standalone mode after a completed scan exceeds the overlay file or byte budget.
+pub fn record_promotion(root: &Path, config: &Config) -> Result<bool> {
+    if promoted(root) || !eligible(config) {
+        return Ok(false);
+    }
+    let directory = repo_group_dir(root).join(BASE_DIR);
+    if !directory.is_dir() {
+        return Ok(false);
+    }
+    let Some((path, base)) = latest_compatible(&directory, &scan_digest(config)?)? else {
+        return Ok(false);
+    };
+    let repo = Repo::discover(root)?;
+    let candidates = repo.status_against(&base.commit)?.overlay_candidates();
+    let index = crate::store::read_index(&path)?.context("missing promotion base index")?;
+    if !over_promotion_budget(
+        root,
+        &candidates,
+        &index,
+        &base,
+        has_older_overlay_pin(root, base.generation)?,
+    ) {
+        return Ok(false);
+    }
+    let marker = promotion_marker(root);
+    let parent = marker.parent().context("missing promotion marker directory")?;
+    let temporary = tempfile::NamedTempFile::new_in(parent)?;
+    temporary.as_file().sync_all()?;
+    temporary.persist(&marker)?;
+    sync_directory(parent)?;
+    Ok(true)
+}
+
+fn has_older_overlay_pin(root: &Path, generation: u64) -> Result<bool> {
+    let pins = repo_group_dir(root).join("overlay-pins");
+    if !pins.is_dir() {
+        return Ok(false);
+    }
+    let prefix = format!("{}-", crate::store_layout::workspace_key(root));
+    for pin in fs::read_dir(pins)? {
+        if pin?
+            .file_name()
+            .to_str()
+            .and_then(|name| name.strip_prefix(&prefix))
+            .and_then(|id| id.parse::<u64>().ok())
+            .is_some_and(|id| id < generation)
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn over_promotion_budget(
+    root: &Path,
+    candidates: &std::collections::BTreeSet<crate::path::RelPath>,
+    index: &crate::store::Index,
+    base: &BaseManifest,
+    rebased: bool,
+) -> bool {
+    let changed_bytes = candidates.iter().fold(0u64, |total, candidate| {
+        let live = fs::symlink_metadata(root.join(candidate.to_path_buf()))
+            .ok()
+            .filter(|metadata| metadata.is_file())
+            .map_or(0, |metadata| metadata.len());
+        let prior = index.files.get(candidate).map_or(0, |entry| entry.size_bytes);
+        total.saturating_add(live.max(prior))
+    });
+    let (files, bytes) = if rebased { (10, 20) } else { (15, 25) };
+    let over_file_share = (candidates.len() as u128) * 100 > (base.files as u128) * files;
+    let over_byte_share = u128::from(changed_bytes) * 100 > u128::from(base.bytes) * bytes;
+    candidates.len() > 32 || changed_bytes > MAX_OVERLAY_INPUT_BYTES || over_file_share || over_byte_share
+}
+
+fn eligible(config: &Config) -> bool {
+    !(config.documents.enabled
+        || config.documents.embed
+        || config.code_search.enabled
+        || config.code_search.embed
+        || config.scan.follow_symlinks
+        || !config.scan.extra_roots.is_empty()
+        || !config.scan.respect_gitignore
+        || !config.scan.skip_submodules)
+}
+
+fn open_worktree_base(root: &Path, config: &Config, build: bool) -> Result<Option<SortedRunView>> {
+    if promoted(root) || !eligible(config) {
+        return Ok(None);
+    }
+    let repo = match Repo::discover(root) {
+        Ok(repo) if repo.origin_is_workdir() => repo,
+        Ok(_) | Err(crate::git::GitError::NotARepo(_)) => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    if repo.checkout_transforms_possible()? {
+        return Ok(None);
+    }
+    let (_, commit) = resolve_commit(&repo)?;
+    if !repo.status_against(&commit)?.overlay_candidates().is_empty() {
+        return Ok(None);
+    }
+    let path = if build {
+        let BaseBuild::Ready(path) = prepare(root, config)? else {
+            return Ok(None);
+        };
+        path
+    } else {
+        let directory = repo_group_dir(root).join(BASE_DIR);
+        if !directory.is_dir() {
+            return Ok(None);
+        }
+        let (_, ready) = find_generation(&directory, &commit, &scan_digest(config)?)?;
+        let Some(path) = ready else {
+            return Ok(None);
+        };
+        path
+    };
+    let generation = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .and_then(|name| name.strip_prefix("gen-"))
+        .and_then(|id| id.parse().ok())
+        .context("invalid prepared generation name")?;
+    let view = open(root, config, generation, &commit)?;
+    if !repo.status_against(&commit)?.overlay_candidates().is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(view))
+}
+
+pub fn publish_dirty_worktree(root: &Path, config: &Config, reference: &dyn IndexView) -> Result<bool> {
+    Ok(dirty_worktree(root, config, true, false, Some(reference), None)?.is_some())
+}
+
+/// Publish a candidate-only delta against a prepared base.
+pub fn scan_dirty_worktree(root: &Path, config: &Config) -> Result<bool> {
+    if promoted(root) || !eligible(config) || requires_probes() {
+        return Ok(false);
+    }
+    let layered = dirty_worktree(root, config, true, false, None, None)?;
+    if layered.is_some() {
+        return Ok(true);
+    }
+    let repo = Repo::discover(root)?;
+    if !repo.origin_is_workdir() || !repo_group_dir(root).join(BASE_DIR).is_dir() {
+        return Ok(false);
+    }
+    let (_, commit) = resolve_commit(&repo)?;
+    let group = repo_group_dir(root);
+    let (_, ready) = find_generation(&group.join(BASE_DIR), &commit, &scan_digest(config)?)?;
+    if ready.is_none()
+        && should_advance(&repo, &group.join(BASE_DIR), &commit, &scan_digest(config)?)?
+        && matches!(prepare(root, config)?, BaseBuild::Ready(_))
+    {
+        return Ok(dirty_worktree(root, config, true, true, None, None)?.is_some());
+    }
+    Ok(false)
+}
+
+/// Refresh a prepared working index without opening standalone storage.
+pub fn refresh_worktree(root: &Path, config: &Config) -> Result<bool> {
+    Ok(open_existing_worktree_base(root, config)?.is_some() || scan_dirty_worktree(root, config)?)
+}
+
+/// Refresh the local working index under the same writer lock used by standalone scans.
+pub fn refresh_local_worktree(root: &Path, config: &Config, holder: crate::store::LockHolder) -> Result<bool> {
+    if !eligible(config) || promoted(root) || !repo_group_dir(root).join(BASE_DIR).is_dir() {
+        return Ok(false);
+    }
+    let workspace = crate::store::workspace_cache_dir(root);
+    fs::create_dir_all(&workspace)?;
+    let _lock = crate::store::acquire_lock_as(&workspace, holder)?;
+    refresh_worktree(root, config)
+}
+
+/// Check for a published delta matching the current worktree.
+pub fn has_published_dirty_worktree(root: &Path, config: &Config) -> Result<bool> {
+    Ok(open_dirty_worktree(root, config)?.is_some())
+}
+
+pub(crate) fn open_dirty_worktree(root: &Path, config: &Config) -> Result<Option<Box<dyn IndexView>>> {
+    dirty_worktree(root, config, false, false, None, None)
+}
+
+pub(crate) fn hydrate_cold_store(store: &mut Store, config: &Config) -> Result<()> {
+    if store.view == crate::store::VIEW_WORKING && store.index.files.is_empty() && store.index_db.is_none() {
+        let root = store.root.clone();
+        if let Some(view) = open_existing_worktree_base(&root, config)? {
+            let directory = view.directory().parent().context("missing base generation directory")?;
+            let index = crate::store::read_index(directory)?.context("missing base manifest")?;
+            let blobs = directory.join(crate::store_layout::BLOBS_DIR);
+            store.install_layered_manifest(index, blobs.clone(), blobs, std::sync::Arc::new(view));
+        } else {
+            dirty_worktree(&root, config, false, false, None, Some(store))?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(all(feature = "comms", any(unix, windows)))]
+pub(crate) fn layered_scan_stats(prior: &Store, next: &Store) -> crate::scanner::ScanStats {
+    let mut stats = crate::scanner::ScanStats::default();
+    for (path, file) in &next.index.files {
+        match prior.lookup(path) {
+            None => stats.updated += 1,
+            Some(old) if old.hash_hex != file.hash_hex => stats.updated += 1,
+            Some(_) => {}
+        }
+    }
+    stats.removed = prior
+        .index
+        .files
+        .keys()
+        .filter(|path| next.lookup(*path).is_none())
+        .count();
+    stats
+}
+
+fn dirty_worktree(
+    root: &Path,
+    config: &Config,
+    publish: bool,
+    rebased: bool,
+    reference: Option<&dyn IndexView>,
+    hydrate: Option<&mut Store>,
+) -> Result<Option<Box<dyn IndexView>>> {
+    use crate::index::layered_shadow::DeltaManifest;
+    use crate::index::layered_view::LayeredView;
+
+    if promoted(root) || !eligible(config) {
+        return Ok(None);
+    }
+    let repo = Repo::discover(root)?;
+    if !repo.origin_is_workdir() {
+        return Ok(None);
+    }
+    if repo.checkout_transforms_possible()? {
+        return Ok(None);
+    }
+    let (_, commit) = resolve_commit(&repo)?;
+    let directory = repo_group_dir(root).join(BASE_DIR);
+    if !directory.is_dir() {
+        return Ok(None);
+    }
+    let digest = scan_digest(config)?;
+    let (_, ready) = find_generation(&directory, &commit, &digest)?;
+    let (path, commit) = match ready {
+        Some(path) => (path, commit),
+        None => {
+            let Some((path, prior)) = latest_compatible(&directory, &digest)? else {
+                return Ok(None);
+            };
+            if generation_should_advance(&repo, &prior, &commit)? {
+                return Ok(None);
+            }
+            (path, prior.commit)
+        }
+    };
+    let candidates = repo.status_against(&commit)?.overlay_candidates();
+    if candidates.is_empty()
+        || candidates.len() > 32
+        || candidates.iter().any(|path| {
+            path.as_str().is_none_or(|path| {
+                path.split('/').any(|component| component.starts_with('.'))
+                    || ![".rs", ".ts", ".tsx", ".py", "tsconfig.json"]
+                        .iter()
+                        .any(|extension| path.ends_with(extension))
+            })
+        })
+    {
+        return Ok(None);
+    }
+    let generation: u64 = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .and_then(|name| name.strip_prefix("gen-"))
+        .context("invalid generation directory")?
+        .parse()?;
+    let base = open(root, config, generation, &commit)?;
+    let base_index = crate::store::read_index(&path)?.context("missing base manifest")?;
+    if publish && reference.is_none() {
+        let manifest: BaseManifest = serde_json::from_slice(&fs::read(path.join(MANIFEST))?)?;
+        if over_promotion_budget(
+            root,
+            &candidates,
+            &base_index,
+            &manifest,
+            rebased || has_older_overlay_pin(root, generation)?,
+        ) {
+            return Ok(None);
+        }
+    }
+    let fingerprint = candidate_fingerprint(root, &candidates, config.scan.max_file_bytes)?;
+    let overlays = crate::store::workspace_cache_dir(root).join("verified-overlays");
+    let published = overlays.join(format!("{generation}-{fingerprint}"));
+    let mut counts = ahash::AHashMap::new();
+    for entry in base_index.files.values() {
+        *counts.entry(entry.hash_hex.as_str()).or_default() += 1;
+    }
+    if publish && !published.is_dir() {
+        crate::disk_space::ensure_free_space(&overlays)?;
+        fs::create_dir_all(&overlays)?;
+        let scratch = tempfile::tempdir_in(&overlays)?;
+        let mut overlay = Store::open_base_scratch(root, scratch.path())?;
+        let paths = candidates
+            .iter()
+            .map(|path| root.join(path.to_path_buf()))
+            .collect::<Vec<_>>();
+        let report = crate::scanner::scan_paths(root, &mut overlay, config, &paths, EmbedMode::Deferred)?;
+        ensure!(
+            !report.cancelled && report.stats.read_failed == 0 && report.stats.extract_failed == 0,
+            "incomplete delta scan"
+        );
+        let mut delta = DeltaManifest::empty(generation, commit.clone(), 1);
+        for path in &candidates {
+            let prior = base_index.files.get(path);
+            if let Some(entry) = overlay.lookup(path) {
+                delta.upsert(path.clone(), entry.clone(), prior);
+            } else if prior.is_some() {
+                delta.delete(path.clone());
+            }
+        }
+        #[cfg(any(feature = "code-intel-js", feature = "code-intel-stack"))]
+        restitch_overlay(
+            root,
+            config,
+            &mut overlay,
+            &path,
+            generation,
+            &commit,
+            &base_index,
+            &candidates,
+            &mut delta,
+        )?;
+        ensure!(
+            repo.status_against(&commit)?.overlay_candidates() == candidates,
+            "worktree changed during delta scan"
+        );
+        ensure!(
+            candidate_fingerprint(root, &candidates, config.scan.max_file_bytes)? == fingerprint,
+            "candidate contents changed during delta scan"
+        );
+        if let Some(reference) = reference {
+            let shadow = delta.shadow(&counts, |path| base_index.files.get(path));
+            let db = overlay.index_db.as_ref().context("missing overlay database")?;
+            let verification_base = open(root, config, generation, &commit)?;
+            let view = LayeredView::from_view(Box::new(verification_base), db, shadow)?;
+            crate::index::verify_shared_base(&view, reference)?;
+        }
+        let runs = scratch.path().join(RUNS);
+        fs::create_dir(&runs)?;
+        let db = overlay.index_db.as_ref().context("missing overlay database")?;
+        SortedRunView::export(&runs, &db.view())?;
+        fs::write(scratch.path().join("delta.msgpack"), rmp_serde::to_vec_named(&delta)?)?;
+        drop(overlay);
+        fs::remove_dir_all(scratch.path().join(INDEX_DIR))?;
+        fs::remove_dir_all(scratch.path().join(crate::store::MEMORY_STORE_DIR))?;
+        sync_tree(scratch.path())?;
+        ensure!(
+            crate::disk_space::dir_bytes(scratch.path()) <= MAX_OVERLAY_INPUT_BYTES,
+            "overlay exceeds disk limit"
+        );
+        let group = repo_group_dir(root);
+        let gate = crate::store_base_retention::group_lock(&group)?;
+        fs2::FileExt::lock_exclusive(&gate)?;
+        enforce_group_budget(&group, Some((&overlays, crate::store_layout::workspace_key(root))))?;
+        write_overlay_pin(&group, root, generation)?;
+        fs::rename(scratch.path(), &published)?;
+        sync_directory(&overlays)?;
+    }
+    if !published.is_dir() {
+        return Ok(None);
+    }
+    let delta: DeltaManifest = rmp_serde::from_slice(&fs::read(published.join("delta.msgpack"))?)?;
+    ensure!(
+        delta.format == 1 && delta.base_generation == generation && delta.base_commit == commit && delta.seq == 1,
+        "overlay identity mismatch"
+    );
+    let shadow = delta.shadow(&counts, |path| base_index.files.get(path));
+    // SAFETY: published overlays are immutable and no cleanup removes these directories while open.
+    let overlay = unsafe { SortedRunView::open(&published.join(RUNS)) }?;
+    let view = LayeredView::from_views(Box::new(base), Box::new(overlay), shadow)?;
+    if let Some(store) = hydrate {
+        let mut effective = base_index;
+        delta.apply_to(&mut effective);
+        store.install_layered_manifest(
+            effective,
+            published.join(crate::store_layout::BLOBS_DIR),
+            path.join(crate::store_layout::BLOBS_DIR),
+            std::sync::Arc::new(view),
+        );
+        return Ok(None);
+    }
+
+    Ok(Some(Box::new(view)))
+}
+
+#[cfg(any(feature = "code-intel-js", feature = "code-intel-stack"))]
+#[allow(clippy::too_many_arguments)]
+fn restitch_overlay(
+    root: &Path,
+    config: &Config,
+    overlay: &mut Store,
+    base_path: &Path,
+    generation: u64,
+    commit: &str,
+    base_index: &crate::store::Index,
+    candidates: &std::collections::BTreeSet<crate::path::RelPath>,
+    delta: &mut crate::index::layered_shadow::DeltaManifest,
+) -> Result<()> {
+    use crate::intel::resolve_pass::{PathDelta, resolve_with_probe_view};
+
+    let base = open(root, config, generation, commit)?;
+    let mut changed = Vec::new();
+    let mut removed = Vec::new();
+    let mut other = Vec::new();
+    for path in candidates {
+        let name = path.as_str().context("non-UTF-8 overlay path")?.to_owned();
+        if name.ends_with("tsconfig.json") {
+            other.push(name);
+        } else if overlay.lookup(path).is_some() {
+            changed.push(name);
+        } else {
+            removed.push(name);
+        }
+    }
+    for (path, entry) in &base_index.files {
+        if candidates.contains(path) {
+            continue;
+        }
+        overlay.upsert(path.clone(), entry.clone());
+    }
+    overlay.fallback_blobs_dir = Some(base_path.join(crate::store_layout::BLOBS_DIR));
+    let db = overlay.index_db.as_ref().context("missing overlay database")?;
+    let (complete, affected) = resolve_with_probe_view(
+        root,
+        overlay,
+        &PathDelta {
+            changed: &changed,
+            removed: &removed,
+            other: &other,
+        },
+        config.code_intel.precise_resolution,
+        config.resources.max_footprint_mb,
+        &base,
+    );
+    ensure!(complete, "overlay restitch incomplete");
+    delta.add_restitched(affected);
+    db.set_import_probes_complete(true)?;
+    Ok(())
+}
+
+fn enforce_group_budget(group: &Path, incoming_overlay: Option<(&Path, String)>) -> Result<()> {
+    let Some(value) = std::env::var_os("BASEMIND_INDEX_MAX_GROUP_BYTES") else {
+        return Ok(());
+    };
+    let limit: u64 = value
+        .to_str()
+        .context("group disk limit must be UTF-8")?
+        .parse()
+        .context("invalid group disk limit")?;
+    ensure!(limit > 0, "group disk limit must be positive");
+    let mut used = crate::store_cache_admin::dir_size(&group.join(BASE_DIR))?;
+    let pins = group.join("overlay-pins");
+    let mut counted = std::collections::BTreeSet::new();
+    if let Some((overlays, workspace)) = incoming_overlay {
+        used = used.saturating_add(crate::store_cache_admin::dir_size(overlays)?);
+        counted.insert(workspace);
+    }
+    if pins.is_dir() {
+        let cache = group
+            .parent()
+            .and_then(Path::parent)
+            .context("invalid group cache path")?;
+        for entry in fs::read_dir(pins)? {
+            let name = entry?.file_name();
+            let (workspace, _) = name
+                .to_str()
+                .and_then(|name| name.rsplit_once('-'))
+                .context("invalid overlay pin name")?;
+            ensure!(
+                workspace.len() == 64 && workspace.bytes().all(|byte| byte.is_ascii_hexdigit()),
+                "invalid overlay pin workspace"
+            );
+            if counted.insert(workspace.to_owned()) {
+                let overlays = cache
+                    .join(crate::store_layout::WORKSPACES_DIR)
+                    .join(workspace)
+                    .join("verified-overlays");
+                if overlays.is_dir() {
+                    used = used.saturating_add(crate::store_cache_admin::dir_size(&overlays)?);
+                }
+            }
+        }
+    }
+    ensure!(used <= limit, "shared index group exceeds disk limit");
+    Ok(())
+}
+
+fn write_overlay_pin(group: &Path, root: &Path, generation: u64) -> Result<()> {
+    use std::io::Write;
+
+    let pins = group.join("overlay-pins");
+    fs::create_dir_all(&pins)?;
+    let name = format!("{}-{generation}", crate::store_layout::workspace_key(root));
+    let mut pin = tempfile::NamedTempFile::new_in(&pins)?;
+    pin.write_all(&generation.to_be_bytes())?;
+    pin.as_file().sync_all()?;
+    pin.persist(pins.join(name))?;
+    sync_directory(&pins)?;
+    Ok(())
+}
+
+fn durable_overlay_pins(group: &Path) -> io::Result<std::collections::BTreeSet<u64>> {
+    let entries = match fs::read_dir(group.join("overlay-pins")) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Default::default()),
+        Err(error) => return Err(error),
+    };
+    let mut pinned = std::collections::BTreeSet::new();
+    for entry in entries {
+        let entry = entry?;
+        let name = entry.file_name();
+        let (workspace, id) = name
+            .to_str()
+            .and_then(|name| name.rsplit_once('-'))
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "invalid overlay pin name"))?;
+        let bytes: [u8; 8] = fs::read(entry.path())?
+            .try_into()
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid overlay pin"))?;
+        let generation = u64::from_be_bytes(bytes);
+        if id.parse::<u64>().ok() != Some(generation)
+            || workspace.len() != 64
+            || !workspace.bytes().all(|byte| byte.is_ascii_hexdigit())
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid overlay pin identity",
+            ));
+        }
+        let cache = group
+            .parent()
+            .and_then(Path::parent)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "invalid repo group path"))?;
+        let overlays = cache.join("workspaces").join(workspace).join("verified-overlays");
+        let mut exists = false;
+        match fs::read_dir(overlays) {
+            Ok(entries) => {
+                let prefix = format!("{generation}-");
+                for overlay in entries {
+                    let overlay = overlay?;
+                    if overlay
+                        .file_name()
+                        .to_str()
+                        .is_some_and(|name| name.starts_with(&prefix))
+                        && overlay.file_type()?.is_dir()
+                    {
+                        exists = true;
+                        break;
+                    }
+                }
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+        if exists {
+            pinned.insert(generation);
+        } else {
+            fs::remove_file(entry.path())?;
+        }
+    }
+    Ok(pinned)
+}
+
+/// Retire older published base generations while keeping the newest two and every durable pin.
+pub fn retire_old_generations(root: &Path) -> Result<usize> {
+    let group = repo_group_dir(root);
+    let base = group.join(BASE_DIR);
+    if !base.is_dir() {
+        return Ok(0);
+    }
+    let mut ready = std::collections::BTreeSet::<u64>::new();
+    let mut retired = std::collections::BTreeSet::new();
+    for entry in fs::read_dir(&base)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if let Some(generation) = name.strip_prefix("gen-").and_then(|id| id.parse().ok()) {
+            ready.insert(generation);
+        } else if let Some(generation) = name.strip_prefix(".retired-").and_then(|id| id.parse().ok()) {
+            retired.insert(generation);
+        }
+    }
+    retired.extend(ready.iter().rev().skip(2).copied());
+    let result = crate::store_base_retention::retire_unpinned(&group, &retired, || durable_overlay_pins(&group))?;
+    Ok(result.removed.len())
+}
+
+fn candidate_fingerprint(
+    root: &Path,
+    candidates: &std::collections::BTreeSet<crate::path::RelPath>,
+    max_bytes: u64,
+) -> Result<String> {
+    use std::io::Read;
+    let mut digest = blake3::Hasher::new();
+    let mut total_bytes = 0u64;
+    for path in candidates {
+        let name: &[u8] = path.as_ref();
+        digest.update(&(name.len() as u64).to_le_bytes());
+        digest.update(name);
+        let path = root.join(path.to_path_buf());
+        let metadata = match fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                digest.update(&[0]);
+                continue;
+            }
+            Err(error) => return Err(error.into()),
+        };
+        ensure!(
+            metadata.is_file() && metadata.len() <= max_bytes,
+            "unsupported overlay candidate"
+        );
+        let mut bytes = Vec::new();
+        fs::File::open(path)?
+            .take(max_bytes.saturating_add(1))
+            .read_to_end(&mut bytes)?;
+        ensure!(bytes.len() as u64 <= max_bytes, "overlay candidate exceeds size limit");
+        total_bytes = total_bytes.saturating_add(bytes.len() as u64);
+        ensure!(
+            total_bytes <= MAX_OVERLAY_INPUT_BYTES,
+            "overlay candidates exceed total size limit"
+        );
+        digest.update(&[1]);
+        digest.update(blake3::hash(&bytes).as_bytes());
+    }
+    Ok(digest.finalize().to_hex().to_string())
+}
+
+fn resolve_commit(repo: &Repo) -> Result<(String, String)> {
+    const ORIGIN: &str = "refs/remotes/origin/HEAD";
+    match repo.resolve_rev(ORIGIN) {
+        Ok(commit) => Ok((ORIGIN.into(), commit)),
+        Err(_) => Ok((
+            "HEAD".into(),
+            Repo::discover(&repo.main_worktree_root())?.resolve_rev("HEAD")?,
+        )),
+    }
+}
+
+fn scan_features() -> String {
+    [
+        ("code-search", cfg!(feature = "code-search")),
+        ("code-intel-js", cfg!(feature = "code-intel-js")),
+        ("code-intel-stack", cfg!(feature = "code-intel-stack")),
+    ]
+    .into_iter()
+    .filter_map(|(name, enabled)| enabled.then_some(name))
+    .collect::<Vec<_>>()
+    .join(",")
+}
+
+fn scan_digest(config: &Config) -> Result<String> {
+    let mut scan = config.scan.clone();
+    scan.extra_roots.clear();
+    let policy = serde_json::to_vec(&(&scan, &config.languages, &config.code_intel, &config.code_search))?;
+    Ok(blake3::hash(&policy).to_hex().to_string())
+}
+
+fn latest_compatible(base: &Path, digest: &str) -> Result<Option<(PathBuf, BaseManifest)>> {
+    let mut latest = None::<(PathBuf, BaseManifest)>;
+    for entry in fs::read_dir(base)? {
+        let entry = entry?;
+        let Some(id) = entry
+            .file_name()
+            .to_str()
+            .and_then(|name| name.strip_prefix("gen-"))
+            .and_then(|id| id.parse().ok())
+        else {
+            continue;
+        };
+        let path = entry.path();
+        let Ok(bytes) = fs::read(path.join(MANIFEST)) else {
+            continue;
+        };
+        let Ok(manifest) = serde_json::from_slice::<BaseManifest>(&bytes) else {
+            continue;
+        };
+        if is_compatible(&path, id, &manifest.commit, digest)
+            && latest.as_ref().is_none_or(|(_, prior)| id > prior.generation)
+        {
+            latest = Some((path, manifest));
+        }
+    }
+    Ok(latest)
+}
+
+fn should_advance(repo: &Repo, base: &Path, target: &str, digest: &str) -> Result<bool> {
+    match latest_compatible(base, digest)? {
+        Some((_, prior)) => generation_should_advance(repo, &prior, target),
+        None => Ok(true),
+    }
+}
+
+fn generation_should_advance(repo: &Repo, latest: &BaseManifest, target: &str) -> Result<bool> {
+    let changed = repo.changed_tree_files(&latest.commit, target)?;
+    let age = SystemTime::now()
+        .duration_since(UNIX_EPOCH)?
+        .as_secs()
+        .saturating_sub(latest.built_unix);
+    Ok(changed > 0 && (changed.saturating_mul(50) >= latest.files || age >= 24 * 60 * 60))
+}
+
+fn find_generation(base: &Path, commit: &str, digest: &str) -> Result<(u64, Option<PathBuf>)> {
+    let mut highest = 0;
+    let mut ready = None;
+    for entry in fs::read_dir(base)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        let Some(number) = name.strip_prefix("gen-").or_else(|| name.strip_prefix(".retired-")) else {
+            continue;
+        };
+        let Ok(number) = number.parse::<u64>() else {
+            continue;
+        };
+        highest = highest.max(number);
+        let path = entry.path();
+        if name.starts_with("gen-")
+            && entry.file_type()?.is_dir()
+            && is_compatible(&path, number, commit, digest)
+            && ready.as_ref().is_none_or(|(current, _)| number > *current)
+        {
+            ready = Some((number, path));
+        }
+    }
+    Ok((highest, ready.map(|(_, path)| path)))
+}
+
+fn is_compatible(path: &Path, generation: u64, commit: &str, digest: &str) -> bool {
+    let Some(manifest): Option<BaseManifest> = fs::read(path.join(MANIFEST))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+    else {
+        return false;
+    };
+    matches!(manifest.storage, Storage::SortedRun)
+        && manifest.format == FORMAT
+        && manifest.generation == generation
+        && manifest.commit == commit
+        && manifest.scan_digest == digest
+        && manifest.index_schema_ver == INDEX_SCHEMA_VER
+        && manifest.blob_schema_ver == crate::extract::SCHEMA_VER
+        && manifest.min_extract_epoch >= crate::extract::EXTRACT_EPOCH
+        && manifest.scan_features == scan_features()
+        && (!requires_probes() || manifest.probes_complete)
+        && crate::store::read_index(path)
+            .ok()
+            .flatten()
+            .is_some_and(|index| index.files.len() == manifest.files)
+        && path.join(RUNS).is_dir()
+}
+
+fn build_generation(base: &Path, repo: &Repo, config: &Config, mut metadata: BaseManifest) -> Result<PathBuf> {
+    let staging = base.join(format!(
+        ".tmp-{}-{}",
+        std::process::id(),
+        SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
+    ));
+    create_private_dir(&staging)?;
+    let scratch = Scratch(staging);
+    let checkout = scratch.0.join("checkout");
+    repo.export_tree(&metadata.commit, &checkout, config.scan.max_file_bytes)?;
+    let mut base_config = config.clone();
+    base_config.scan.extra_roots.clear();
+    base_config.documents.enabled = false;
+    let mut store = Store::open_base_scratch(&checkout, &scratch.0)?;
+    let report = scan(
+        &checkout,
+        &mut store,
+        &base_config,
+        ScanSource::WorkingTree,
+        EmbedMode::Deferred,
+    )?;
+    ensure!(
+        !report.cancelled && report.stats.read_failed == 0 && report.stats.extract_failed == 0,
+        "base scan did not index all eligible files"
+    );
+    let status = crate::store::read_status_sidecar(&scratch.0).context("base scan has no status")?;
+    ensure!(!status.is_degraded(), "base scan is incomplete");
+    let index = store.index_db.as_ref().context("base scan has no index")?;
+    metadata.probes_complete = index.view().import_probes_complete();
+    ensure!(
+        !index.is_poisoned() && (!requires_probes() || metadata.probes_complete),
+        "base resolve pass is incomplete"
+    );
+    metadata.files = store.index.files.len();
+    metadata.embed_policy.clone_from(&store.index.embed_policy);
+    for entry in store.index.files.values_mut() {
+        entry.mtime = 0;
+        metadata.bytes = metadata.bytes.saturating_add(entry.size_bytes);
+    }
+    let runs = scratch.0.join(RUNS);
+    fs::create_dir(&runs)?;
+    SortedRunView::export(&runs, &index.view())?;
+    store.flush()?;
+    drop(store);
+    fs::remove_dir_all(scratch.0.join(INDEX_DIR))?;
+    fs::remove_dir_all(checkout)?;
+    fs::remove_dir_all(scratch.0.join(crate::store::MEMORY_STORE_DIR))?;
+    sync_tree(&scratch.0).context("sync staged base files")?;
+    let manifest = scratch.0.join(MANIFEST);
+    fs::write(&manifest, serde_json::to_vec(&metadata)?)?;
+    sync_file(&manifest).with_context(|| format!("sync base manifest {}", manifest.display()))?;
+    sync_directory(&scratch.0)?;
+    let published = base.join(format!("gen-{}", metadata.generation));
+    enforce_group_budget(base.parent().context("missing base group")?, None)?;
+    fs::rename(&scratch.0, &published)?;
+    sync_directory(base)?;
+    Ok(published)
+}
+
+const fn requires_probes() -> bool {
+    cfg!(any(feature = "code-intel-js", feature = "code-intel-stack"))
+}
+
+#[cfg(test)]
+#[path = "store_base_tests.rs"]
+mod base_tests;

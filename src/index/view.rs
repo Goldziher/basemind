@@ -35,10 +35,18 @@ pub struct IndexBytes(Repr);
 #[derive(Clone)]
 enum Repr {
     Fjall(fjall::Slice),
+    Mapped(std::sync::Arc<super::sorted_run::Mapping>, std::ops::Range<usize>),
 }
 
 impl IndexBytes {
-    fn from_fjall(slice: fjall::Slice) -> Self {
+    pub(super) fn from_mapping(
+        mapping: std::sync::Arc<super::sorted_run::Mapping>,
+        bounds: std::ops::Range<usize>,
+    ) -> Self {
+        Self(Repr::Mapped(mapping, bounds))
+    }
+
+    pub(super) fn from_fjall(slice: fjall::Slice) -> Self {
         Self(Repr::Fjall(slice))
     }
 }
@@ -49,6 +57,7 @@ impl Deref for IndexBytes {
     fn deref(&self) -> &[u8] {
         match &self.0 {
             Repr::Fjall(slice) => slice,
+            Repr::Mapped(mapping, bounds) => &mapping.mmap[bounds.clone()],
         }
     }
 }
@@ -104,7 +113,6 @@ pub enum Part {
 impl Part {
     /// Every layered keyspace, in declaration order. Checked against [`KEYSPACE_MEMTABLE_BYTES`] in
     /// `view_tests`, so a keyspace added to either list alone fails there.
-    #[cfg(test)]
     pub(super) const ALL: [Part; 16] = [
         Part::Meta,
         Part::SymbolsByPath,
@@ -125,7 +133,6 @@ impl Part {
     ];
 
     /// The keyspace's on-disk name.
-    #[cfg(test)]
     pub(super) const fn name(self) -> &'static str {
         match self {
             Part::Meta => "meta",
@@ -149,7 +156,7 @@ impl Part {
 }
 
 impl IndexDb {
-    fn keyspace(&self, part: Part) -> &Keyspace {
+    pub(super) fn keyspace(&self, part: Part) -> &Keyspace {
         match part {
             Part::Meta => &self.meta,
             Part::SymbolsByPath => &self.symbols_by_path,
@@ -193,6 +200,7 @@ impl IndexDb {
 }
 
 /// `Some(&dyn IndexView)` for an optional concrete view, for the call sites that take an optional one.
+#[cfg(test)]
 pub(crate) fn as_dyn<V: IndexView>(view: &Option<V>) -> Option<&dyn IndexView> {
     view.as_ref().map(|v| v as &dyn IndexView)
 }
@@ -426,6 +434,29 @@ impl<T: Borrow<IndexDb> + Send + Sync> IndexView for StandaloneView<T> {
             cursor_after,
             lower,
         )
+    }
+}
+
+pub(crate) struct SharedView(pub std::sync::Arc<dyn IndexView>);
+
+impl IndexView for SharedView {
+    fn get(&self, part: Part, key: &[u8]) -> Result<Option<IndexBytes>, IndexError> {
+        self.0.get(part, key)
+    }
+    fn prefix(&self, part: Part, prefix: &[u8]) -> KvIter<'_> {
+        self.0.prefix(part, prefix)
+    }
+    fn range(&self, part: Part, lower: Bound<&[u8]>, upper: Bound<&[u8]>) -> KvIter<'_> {
+        self.0.range(part, lower, upper)
+    }
+    fn iter(&self, part: Part) -> KvIter<'_> {
+        self.0.iter(part)
+    }
+    fn callee_keys_matching(&self, needle: &str, cursor: Option<&[u8]>, lower: Bound<Vec<u8>>) -> KvIter<'_> {
+        self.0.callee_keys_matching(needle, cursor, lower)
+    }
+    fn trait_keys_matching(&self, needle: &str, cursor: Option<&[u8]>, lower: Bound<Vec<u8>>) -> KvIter<'_> {
+        self.0.trait_keys_matching(needle, cursor, lower)
     }
 }
 

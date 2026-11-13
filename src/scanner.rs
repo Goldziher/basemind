@@ -22,8 +22,8 @@ use crate::scanner_filter::{Filters, IndexFilter};
 #[cfg(feature = "documents")]
 use crate::scanner_flush::flush_doc_removals_if_any;
 use crate::scanner_flush::{
-    finalize_bm25_stats_if_any, flush_code_batches_if_any, flush_code_removals_if_any, flush_doc_batches_if_any,
-    maintain_lance_if_open,
+    derive_scope, finalize_bm25_stats_if_any, flush_code_batches_if_any, flush_code_removals_if_any,
+    flush_doc_batches_if_any, maintain_lance_if_open,
 };
 use crate::scanner_integrity::{abort_on_fault, ensure_space, finish_resolve, flush_code_map, preflight};
 #[cfg(feature = "documents")]
@@ -640,10 +640,17 @@ pub fn scan_with_observer(
         });
         store.flush()?;
     }
-    run_optional_lane(LANE_BM25_STATS, || finalize_bm25_stats_if_any(store, config));
+    run_optional_lane(LANE_BM25_STATS, || finalize_bm25_stats_if_any(store, config, true));
     run_optional_lane(crate::scanner_lanes::LANE_LANCE_MAINTENANCE, || {
         maintain_lance_if_open(store)
     });
+    #[cfg(any(feature = "documents", feature = "code-search"))]
+    if matches!(source, ScanSource::WorkingTree)
+        && crate::lance::shared_snapshot::enabled()
+        && let Err(error) = crate::lance::shared_snapshot::publish_scan(store, config, &scope)
+    {
+        tracing::debug!(%error, "shared Lance snapshot publication failed");
+    }
     phase_peaks.sample_now();
     report.phase_peaks = phase_peaks.snapshot();
     Ok(report)
@@ -824,6 +831,8 @@ pub fn scan_paths_with_observer(
         .chain(&removed)
         .filter_map(|rel| store.lookup(rel).map(|entry| entry.hash_hex.clone()))
         .collect();
+    #[cfg(feature = "code-search")]
+    let bm25_candidates = crate::scanner_flush::bm25_posting_candidates(store, rels.iter().chain(&removed));
     let drive = ScanDrive {
         root,
         filters: filter.filters(),
@@ -893,6 +902,8 @@ pub fn scan_paths_with_observer(
     }
 
     drop_unheld_grep_bloom_rows(store, &retired);
+    #[cfg(feature = "code-search")]
+    crate::scanner_flush::retire_bm25_postings(store, bm25_candidates);
 
     store.flush()?;
     store.write_status_sidecar();
@@ -945,7 +956,7 @@ pub fn scan_paths_with_observer(
         });
         store.flush()?;
     }
-    run_optional_lane(LANE_BM25_STATS, || finalize_bm25_stats_if_any(store, config));
+    run_optional_lane(LANE_BM25_STATS, || finalize_bm25_stats_if_any(store, config, false));
     run_optional_lane(crate::scanner_lanes::LANE_LANCE_MAINTENANCE, || {
         maintain_lance_if_open(store)
     });
@@ -975,17 +986,4 @@ fn candidates_for_source(
     out.sort();
     out.dedup();
     Ok(out)
-}
-
-/// Compute the LanceDB scope key for this scan. Git sources reuse the existing remote-URL
-/// scope derivation; the working-tree path falls back to a workdir-rooted key when there's
-/// no git remote (or no git repo at all).
-fn derive_scope(root: &Path, source: &ScanSource<'_>) -> String {
-    match source {
-        ScanSource::Staged(repo) | ScanSource::Rev { repo, .. } => crate::git::scope_key(repo),
-        ScanSource::WorkingTree => match Repo::discover(root) {
-            Ok(repo) => crate::git::scope_key(&repo),
-            Err(_) => format!("path:{}", root.display()),
-        },
-    }
 }

@@ -5,6 +5,7 @@
 //! without rewriting half of the codebase.
 
 mod commit;
+mod export;
 mod remote;
 mod worktree;
 use commit::{build_commit_info, commit_files, commit_touches_path, compute_hunks, decode_path};
@@ -66,6 +67,18 @@ pub struct WorkingTreeStatus {
     pub staged_deleted: Vec<crate::path::RelPath>,
     pub modified: Vec<crate::path::RelPath>,
     pub untracked: Vec<crate::path::RelPath>,
+}
+
+impl WorkingTreeStatus {
+    pub(crate) fn overlay_candidates(self) -> std::collections::BTreeSet<crate::path::RelPath> {
+        self.staged_added
+            .into_iter()
+            .chain(self.staged_modified)
+            .chain(self.staged_deleted)
+            .chain(self.modified)
+            .chain(self.untracked)
+            .collect()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -355,6 +368,34 @@ impl Repo {
         Ok(id.to_string())
     }
 
+    pub(crate) fn checkout_transforms_possible(&self) -> Result<bool, GitError> {
+        let local = self.local();
+        let config = local.config_snapshot();
+        if config.string("core.autocrlf").is_some_and(|value| {
+            ![b"false".as_slice(), b"no", b"off", b"0", b"input"]
+                .iter()
+                .any(|allowed| value.as_slice().eq_ignore_ascii_case(allowed))
+        }) || config.string("core.attributesFile").is_some()
+        {
+            return Ok(true);
+        }
+        let has_attributes = |path: &std::path::Path| match std::fs::metadata(path) {
+            Ok(metadata) => Ok(metadata.len() > 0),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(GitError::Read {
+                what: path.display().to_string(),
+                msg: error.to_string(),
+            }),
+        };
+        if has_attributes(&local.common_dir().join("info/attributes"))? {
+            return Ok(true);
+        }
+        Ok(self
+            .list_paths_staged()?
+            .iter()
+            .any(|path| path.rsplit('/').next() == Some(".gitattributes")))
+    }
+
     /// List forward-slash relative paths of every blob recorded in the staging index.
     pub fn list_paths_staged(&self) -> Result<Vec<String>, GitError> {
         let local = self.local();
@@ -493,6 +534,66 @@ impl Repo {
             classify_status_item(&item, &mut out);
         }
         Ok(out)
+    }
+
+    /// Enumerate staged and live changes relative to a selected base tree.
+    pub(crate) fn status_against(&self, base: &str) -> Result<WorkingTreeStatus, GitError> {
+        use gix::status::{UntrackedFiles, tree_index::TrackRenames};
+
+        let local = self.local();
+        let read_error = |msg: String| GitError::Read {
+            what: format!("status against {base}"),
+            msg,
+        };
+        let tree = local
+            .rev_parse_single(format!("{base}^{{tree}}").as_str())
+            .map_err(|error| read_error(error.to_string()))?;
+        let platform = local
+            .status(gix::progress::Discard)
+            .map_err(|error| read_error(error.to_string()))?
+            .head_tree(tree.detach())
+            .untracked_files(UntrackedFiles::Files)
+            .tree_index_track_renames(TrackRenames::Disabled)
+            .index_worktree_rewrites(None);
+        let mut out = WorkingTreeStatus::default();
+        for item in platform
+            .into_iter(None)
+            .map_err(|error| read_error(error.to_string()))?
+        {
+            classify_status_item(&item.map_err(|error| read_error(error.to_string()))?, &mut out);
+        }
+        Ok(out)
+    }
+
+    pub(crate) fn changed_tree_files(&self, from: &str, to: &str) -> Result<usize, GitError> {
+        let local = self.local();
+        let read_error = |msg| GitError::Read {
+            what: format!("tree diff {from}..{to}"),
+            msg,
+        };
+        let tree = |rev: &str| {
+            local
+                .rev_parse_single(rev)
+                .map_err(|error| read_error(error.to_string()))?
+                .object()
+                .map_err(|error| read_error(error.to_string()))?
+                .peel_to_tree()
+                .map_err(|error| read_error(error.to_string()))
+        };
+        let from_tree = tree(from)?;
+        let to_tree = tree(to)?;
+        let mut count = 0usize;
+        from_tree
+            .changes()
+            .map_err(|error| read_error(error.to_string()))?
+            .for_each_to_obtain_tree(&to_tree, |change| {
+                if commit::classify_tree_change(&change).is_some() {
+                    count += 1;
+                }
+                Ok(gix::object::tree::diff::Action::Continue(()))
+            })
+            .map_err(|error| read_error(error.to_string()))?;
+        Ok(count)
     }
 
     /// Recent commits across the repo, newest first.
@@ -873,3 +974,6 @@ fn classify_tree_index(change: &gix::diff::index::Change, out: &mut WorkingTreeS
         }
     }
 }
+
+#[cfg(test)]
+mod status_against_tests;

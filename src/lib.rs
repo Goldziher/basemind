@@ -58,6 +58,8 @@ pub mod search;
 #[cfg(all(feature = "shells", any(unix, windows)))]
 pub mod shells;
 pub mod store;
+pub mod store_base;
+mod store_base_retention;
 pub mod store_blob;
 mod store_blob_codec;
 pub mod store_cache_admin;
@@ -70,6 +72,7 @@ pub mod store_gc_workspace;
 mod store_hash_refs;
 pub mod store_layout;
 mod store_lock;
+mod store_migration;
 mod store_seed;
 pub mod sysres;
 pub mod textcompress;

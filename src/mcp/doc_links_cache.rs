@@ -26,7 +26,12 @@ use crate::store::Store;
 /// build — when the lance dir is absent or a read errors: the `documents` graph lane then simply has
 /// no edges.
 #[cfg(feature = "documents")]
-fn load(basemind_dir: &Path, scope: &str, preset: &str) -> Vec<super::codegraph::DocLink> {
+fn load(
+    basemind_dir: &Path,
+    scope: &str,
+    preset: &str,
+    route: Option<(std::path::PathBuf, String)>,
+) -> Vec<super::codegraph::DocLink> {
     use super::codegraph::{DocLink, DocMention};
 
     let lance_dir = basemind_dir.join(crate::store::LANCE_DIR);
@@ -47,7 +52,13 @@ fn load(basemind_dir: &Path, scope: &str, preset: &str) -> Vec<super::codegraph:
             return Vec::new();
         }
     };
-    let rows = match lance.all_doc_links(scope) {
+    let lane = crate::lance::shared_store::SharedLane::DocLinks;
+    let shared = route.and_then(|(group, generation)| {
+        crate::lance::shared_snapshot::read(&lance, &group, lane, scope, &generation, |shared, paths| {
+            shared.doc_links(scope, paths)
+        })
+    });
+    let rows = match shared.map_or_else(|| lance.all_doc_links(scope), Ok) {
         Ok(rows) => rows,
         Err(error) => {
             tracing::warn!(?error, "doc links load: query failed; skipping");
@@ -67,6 +78,16 @@ fn load(basemind_dir: &Path, scope: &str, preset: &str) -> Vec<super::codegraph:
         .collect()
 }
 
+#[cfg(feature = "documents")]
+fn route(store: &Store, config: &Config) -> Option<(std::path::PathBuf, String)> {
+    if !crate::lance::shared_snapshot::enabled() {
+        return None;
+    }
+    let lane = crate::lance::shared_store::SharedLane::DocLinks;
+    let generation = crate::lance::shared_snapshot::generation(&store.index, config, lane).ok()?;
+    Some((crate::store::repo_group_dir(&store.root), generation))
+}
+
 /// Attach the persisted document→code links to a freshly built [`MapCache`] before it is published.
 ///
 /// MUST be called off the async reactor (see the module docs) — the `LanceStore`'s internal
@@ -75,7 +96,13 @@ fn load(basemind_dir: &Path, scope: &str, preset: &str) -> Vec<super::codegraph:
 /// warning-free without an `#[allow]`.
 #[cfg(feature = "documents")]
 pub(crate) fn attach(cache: &mut MapCache, store: &Store, config: &Config, scope: &str) {
-    cache.doc_links = load(&store.basemind_dir, scope, &config.documents.embedding_preset).into();
+    cache.doc_links = load(
+        &store.basemind_dir,
+        scope,
+        &config.documents.embedding_preset,
+        route(store, config),
+    )
+    .into();
 }
 
 #[cfg(not(feature = "documents"))]
@@ -90,7 +117,8 @@ pub(crate) async fn attach_async(cache: &mut MapCache, store: &Store, config: &C
     let basemind_dir = store.basemind_dir.clone();
     let scope = scope.to_string();
     let preset = config.documents.embedding_preset.clone();
-    cache.doc_links = tokio::task::spawn_blocking(move || load(&basemind_dir, &scope, &preset))
+    let route = route(store, config);
+    cache.doc_links = tokio::task::spawn_blocking(move || load(&basemind_dir, &scope, &preset, route))
         .await
         .unwrap_or_default()
         .into();

@@ -2,6 +2,8 @@
 //! into LanceDB, purge removed files' rows, maintain the tables and refresh the BM25 stats. Each has
 //! a no-op twin when its feature is compiled out.
 
+use std::path::Path;
+
 use crate::config::Config;
 #[cfg(feature = "documents")]
 use crate::scanner_docs::flush_document_batches;
@@ -76,20 +78,61 @@ pub(crate) fn flush_code_removals_if_any(store: &mut Store, config: &Config, sco
 #[cfg(not(feature = "code-search"))]
 pub(crate) fn flush_code_removals_if_any(_store: &mut Store, _config: &Config, _scope: &str, _stale: &[String]) {}
 
-/// Recompute the corpus-global BM25 stats once the per-file postings have all committed, so the
+/// Retire unreferenced postings and recompute BM25 stats after per-file commits, so the
 /// keyword lane's `N` / `avgdl` reflect this scan. Single-threaded; no-op without `code-search` or
 /// when chunking is disabled. No-op on a `None` (read-only) index.
 #[cfg(feature = "code-search")]
-pub(crate) fn finalize_bm25_stats_if_any(store: &Store, config: &Config) {
+pub(crate) fn finalize_bm25_stats_if_any(store: &Store, config: &Config, sweep: bool) {
     if !crate::scanner_code::should_chunk(config) {
         return;
     }
-    if let Some(db) = store.index_db.as_ref()
-        && let Err(error) = db.recompute_bm25_stats()
-    {
-        tracing::warn!(?error, "recompute bm25 stats failed; keyword search may be stale");
+    let Some(db) = store.index_db.as_ref() else {
+        return;
+    };
+    let result = if sweep { db.sweep_bm25_postings() } else { Ok(()) };
+    if let Err(error) = result.and_then(|()| db.recompute_bm25_stats()) {
+        tracing::warn!(?error, "finalize BM25 index failed; keyword search may be stale");
     }
 }
 
 #[cfg(not(feature = "code-search"))]
-pub(crate) fn finalize_bm25_stats_if_any(_store: &Store, _config: &Config) {}
+pub(crate) fn finalize_bm25_stats_if_any(_store: &Store, _config: &Config, _sweep: bool) {}
+
+#[cfg(feature = "code-search")]
+pub(crate) fn bm25_posting_candidates<'a>(
+    store: &Store,
+    paths: impl IntoIterator<Item = &'a String>,
+) -> ahash::AHashSet<Vec<u8>> {
+    let Some(db) = store.index_db.as_ref() else {
+        return ahash::AHashSet::new();
+    };
+    db.bm25_posting_candidates(paths).unwrap_or_else(|error| {
+        tracing::warn!(%error, "collect BM25 retirement candidates failed; retry on full scan");
+        ahash::AHashSet::new()
+    })
+}
+
+#[cfg(feature = "code-search")]
+pub(crate) fn retire_bm25_postings(store: &Store, candidates: ahash::AHashSet<Vec<u8>>) {
+    if !candidates.is_empty()
+        && let Some(db) = store.index_db.as_ref()
+        && let Err(error) = db.retire_bm25_postings(candidates, |hash| store.hash_is_held(hash))
+    {
+        tracing::warn!(%error, "retire BM25 postings failed; retry on full scan");
+    }
+}
+
+/// Compute the LanceDB scope key for this scan. Git sources reuse the existing remote-URL
+/// scope derivation; the working-tree path falls back to a workdir-rooted key when there's
+/// no git remote (or no git repo at all).
+pub(crate) fn derive_scope(root: &Path, source: &crate::scanner::ScanSource<'_>) -> String {
+    match source {
+        crate::scanner::ScanSource::Staged(repo) | crate::scanner::ScanSource::Rev { repo, .. } => {
+            crate::git::scope_key(repo)
+        }
+        crate::scanner::ScanSource::WorkingTree => match crate::git::Repo::discover(root) {
+            Ok(repo) => crate::git::scope_key(&repo),
+            Err(_) => format!("path:{}", root.display()),
+        },
+    }
+}

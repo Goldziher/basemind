@@ -57,6 +57,31 @@ pub(super) enum IndexRoute {
 impl IndexRoute {
     /// Decide the route for this session. Never fails: an unreachable daemon is the `InRam` route.
     pub(super) async fn resolve(state: &super::ServerState) -> Self {
+        Self::resolve_with_layering(
+            state,
+            std::env::var_os("BASEMIND_INDEX_LAYERED").is_some_and(|value| value == "1"),
+        )
+        .await
+    }
+
+    async fn resolve_with_layering(state: &super::ServerState, enabled: bool) -> Self {
+        if enabled && let Some(view) = state.shared.store.read().await.layered_read.clone() {
+            return Self::Local(Box::new(crate::index::view::SharedView(view)));
+        }
+        if enabled && state.shared.store.read().await.view == crate::store::VIEW_WORKING {
+            let root = state.shared.root.clone();
+            let config = std::sync::Arc::clone(&state.shared.config);
+            let view = tokio::task::spawn_blocking(move || -> anyhow::Result<Option<Box<dyn IndexView>>> {
+                if let Some(base) = crate::store_base::open_existing_worktree_base(&root, &config)? {
+                    return Ok(Some(Box::new(base)));
+                }
+                crate::store_base::open_dirty_worktree(&root, &config)
+            })
+            .await;
+            if let Ok(Ok(Some(view))) = view {
+                return Self::Local(view);
+            }
+        }
         if let Some(idx) = state.shared.store.read().await.index_db.clone() {
             return Self::Local(Box::new(StandaloneView(idx)));
         }
@@ -273,4 +298,110 @@ fn blocking<R>(work: impl FnOnce() -> R) -> R {
     } else {
         work()
     }
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn prepared_clean_base_answers_calls_and_dirty_worktree_uses_standalone() {
+    use crate::config::Config;
+    use crate::scanner::{EmbedMode, ScanSource, scan};
+    use crate::store::{Store, VIEW_WORKING};
+    use std::{fs, process::Command, sync::Arc};
+
+    crate::store::init_isolated_cache();
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    let git = |args: &[&str]| {
+        assert!(
+            Command::new("git")
+                .current_dir(root)
+                .env("GIT_AUTHOR_NAME", "Test")
+                .env("GIT_AUTHOR_EMAIL", "test@example.test")
+                .env("GIT_COMMITTER_NAME", "Test")
+                .env("GIT_COMMITTER_EMAIL", "test@example.test")
+                .args(args)
+                .status()
+                .unwrap()
+                .success()
+        );
+    };
+    git(&["init", "-q"]);
+    git(&["config", "core.autocrlf", "false"]);
+    let path = root.join("sample.rs");
+    fs::write(&path, "fn sample() { target(); }").unwrap();
+    git(&["add", "sample.rs"]);
+    git(&["-c", "commit.gpgsign=false", "commit", "-qm", "fixture"]);
+    let mut config = Config::with_defaults();
+    config.documents.enabled = false;
+    config.documents.embed = false;
+    config.code_search.enabled = false;
+    config.code_search.embed = false;
+    let mut store = Store::open(root, VIEW_WORKING).unwrap();
+    scan(root, &mut store, &config, ScanSource::WorkingTree, EmbedMode::Deferred).unwrap();
+    let standalone = store.index_db.clone().unwrap();
+    assert!(crate::store_base::open_clean_worktree(root, &config).unwrap().is_some());
+    let cache = MapCache::build(&store, 0);
+    let shared = super::SharedReadStack::new(
+        store,
+        root.to_path_buf(),
+        Arc::new(config),
+        None,
+        Arc::new(crate::git_cache::GitCache::open(root, 1, false).unwrap()),
+        None,
+        super::ServerOptions::default(),
+        #[cfg(all(feature = "comms", any(unix, windows)))]
+        None,
+    );
+    let state = super::ServerState::for_connection(Arc::new(shared), "test".into());
+    let expected = IndexRoute::resolve_with_layering(&state, false)
+        .await
+        .scan_calls(&cache, "target", 10, None)
+        .await
+        .unwrap();
+    assert_eq!(expected.total, 1);
+    let key = expected.hit_keys.first().unwrap();
+    let (_, rel, start) = crate::index::keys::parse_call_by_callee(key).unwrap();
+    let mut writer = standalone.writer();
+    writer.remove_file(&rel).unwrap();
+    writer.commit().unwrap();
+    let base = IndexRoute::resolve_with_layering(&state, true)
+        .await
+        .scan_calls(&cache, "target", 10, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        (base.total, base.hit_keys, base.hit_starts),
+        (1, expected.hit_keys, vec![start])
+    );
+    fs::write(path, "fn sample() { changed(); }").unwrap();
+    if !cfg!(any(feature = "code-intel-js", feature = "code-intel-stack")) {
+        let mut store = state.shared.store.write().await;
+        crate::scanner::scan_paths(
+            root,
+            &mut store,
+            &state.shared.config,
+            &[root.join("sample.rs")],
+            EmbedMode::Deferred,
+        )
+        .unwrap();
+        let reference = store.index_view().unwrap();
+        assert!(crate::store_base::publish_dirty_worktree(root, &state.shared.config, &reference).unwrap());
+        drop(store);
+        let mut writer = standalone.writer();
+        writer.remove_file(&rel).unwrap();
+        writer.commit().unwrap();
+        let dirty = IndexRoute::resolve_with_layering(&state, true)
+            .await
+            .scan_calls(&cache, "changed", 10, None)
+            .await
+            .unwrap();
+        assert_eq!(dirty.total, 1);
+    }
+    fs::write(root.join("policy.toml"), "").unwrap();
+    let fallback = IndexRoute::resolve_with_layering(&state, true)
+        .await
+        .scan_calls(&cache, "target", 10, None)
+        .await
+        .unwrap();
+    assert_eq!(fallback.total, 0);
 }

@@ -228,7 +228,7 @@ fn line_byte_offsets(buf: &[u8]) -> Vec<(u32, u32)> {
     out
 }
 
-fn classify_tree_change(
+pub(super) fn classify_tree_change(
     change: &gix::object::tree::diff::Change<'_, '_, '_>,
 ) -> Option<(crate::path::RelPath, ChangeKind)> {
     use gix::object::tree::diff::Change::*;
