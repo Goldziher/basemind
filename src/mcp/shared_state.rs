@@ -84,7 +84,7 @@ pub(crate) struct SharedReadStack {
     #[cfg(any(feature = "memory", feature = "documents", feature = "code-search"))]
     pub(crate) lance: tokio::sync::OnceCell<Arc<crate::lance::LanceStore>>,
     /// Shared embedding engine. Lazy-init on first embed call.
-    #[cfg(feature = "intelligence")]
+    #[cfg(any(feature = "memory", feature = "documents", feature = "code-search"))]
     pub(crate) embedder: tokio::sync::OnceCell<Arc<crate::embeddings::SharedEmbedder>>,
     /// Shared crawlberg engine. Initialised at server boot from the `[crawl]`
     /// config section; `None` if engine construction failed (the web_* tools
@@ -273,7 +273,7 @@ impl SharedReadStack {
             scope,
             #[cfg(any(feature = "memory", feature = "documents", feature = "code-search"))]
             lance: tokio::sync::OnceCell::new(),
-            #[cfg(feature = "intelligence")]
+            #[cfg(any(feature = "memory", feature = "documents", feature = "code-search"))]
             embedder: tokio::sync::OnceCell::new(),
             #[cfg(feature = "crawl")]
             crawl_engine,

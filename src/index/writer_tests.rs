@@ -471,26 +471,31 @@ fn bm25_dual_partition_consistency() {
     spawn_docs.sort();
     assert_eq!(spawn_docs, vec![("h:0".to_string(), 2, 3), ("h:1".to_string(), 1, 1)]);
 
+    let sibling = RelPath::from("src/sibling.rs");
     let mut w = db.writer();
-    w.upsert_bm25_file(
-        &rel,
-        &[ChunkPosting {
-            chunk_id: "h:0".to_string(),
-            doclen: 1,
-            terms: vec![("spawn".to_string(), 1)],
-        }],
-    )
-    .unwrap();
+    w.upsert_bm25_file(&sibling, &postings).unwrap();
     w.commit().unwrap();
-    assert_eq!(db.code_bm25_postings.iter().count(), 1);
-    assert_eq!(db.code_bm25_by_path.iter().count(), 1);
-
     db.recompute_bm25_stats().unwrap();
-    assert_eq!(db.view().bm25_stats(), Some((1, 1)));
+    assert_eq!(db.view().bm25_stats(), Some((4, 8)));
+    assert_eq!(db.code_bm25_postings.iter().count(), 3);
 
+    let candidates = db.bm25_posting_candidates(&["src/foo.rs".to_string()]).unwrap();
+    assert_eq!(candidates.len(), 3);
     let mut w = db.writer();
     w.remove_bm25_file(&rel).unwrap();
     w.commit().unwrap();
+    db.retire_bm25_postings(candidates, |hash| hash == "h").unwrap();
+    db.recompute_bm25_stats().unwrap();
+    assert_eq!(db.view().bm25_stats(), Some((2, 4)));
+    assert_eq!(db.code_bm25_postings.iter().count(), 3);
+    assert_eq!(db.code_bm25_by_path.iter().count(), 2);
+
+    let candidates = db.bm25_posting_candidates(&["src/sibling.rs".to_string()]).unwrap();
+    assert_eq!(candidates.len(), 3);
+    let mut w = db.writer();
+    w.remove_bm25_file(&sibling).unwrap();
+    w.commit().unwrap();
+    db.retire_bm25_postings(candidates, |_| false).unwrap();
     assert!(db.code_bm25_postings.iter().next().is_none());
     assert!(db.code_bm25_by_path.iter().next().is_none());
 }
@@ -559,4 +564,32 @@ fn import_probes_are_incomplete_until_stamped() {
     assert!(db.view().import_probes_complete());
     db.set_import_probes_complete(false).unwrap();
     assert!(!db.view().import_probes_complete());
+}
+
+#[cfg(feature = "code-search")]
+#[test]
+fn full_scan_restores_missing_legacy_bm25_postings() {
+    use crate::scanner::{EmbedMode, ScanSource, scan};
+    use crate::store::{Store, VIEW_WORKING};
+
+    crate::store::init_isolated_cache();
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    std::fs::write(root.join("lib.rs"), "pub fn legacy_recovery() {}\n").unwrap();
+    let mut config = crate::config::default_for_root(root);
+    config.code_search.enabled = true;
+    config.code_search.embed = false;
+    config.documents.enabled = false;
+    let mut store = Store::open(root, VIEW_WORKING).unwrap();
+    scan(root, &mut store, &config, ScanSource::WorkingTree, EmbedMode::Inline).unwrap();
+
+    let db = store.index_db.as_ref().unwrap();
+    let (key, value) = db.code_bm25_postings.iter().next().unwrap().into_inner().unwrap();
+    db.code_bm25_postings.remove(&*key).unwrap();
+    assert!(db.code_bm25_postings.get(&key).unwrap().is_none());
+    store.index.embed_policy = "legacy-embed-policy".into();
+
+    scan(root, &mut store, &config, ScanSource::WorkingTree, EmbedMode::Inline).unwrap();
+    let db = store.index_db.as_ref().unwrap();
+    assert_eq!(db.code_bm25_postings.get(&key).unwrap(), Some(value));
 }

@@ -19,7 +19,8 @@ use crate::store_base_retention::{GenerationLease, highest_leased_generation};
 
 #[path = "store_base_fs.rs"]
 mod filesystem;
-use filesystem::{Scratch, create_private_dir, sync_directory, sync_file, sync_tree};
+pub(crate) use filesystem::sync_tree;
+use filesystem::{Scratch, create_private_dir, sync_directory, sync_file};
 
 const BASE_DIR: &str = "base";
 const BASE_LOCK_FILE: &str = "base.lock";

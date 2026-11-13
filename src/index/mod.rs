@@ -83,6 +83,8 @@ const IMPORT_PROBE_VER: u8 = 1;
 const META_BM25_DOC_COUNT: &[u8] = b"code_bm25_n";
 const META_BM25_TOTAL_LEN: &[u8] = b"code_bm25_total_len";
 
+#[cfg(feature = "code-search")]
+const BM25_PRUNE_BATCH_BYTES: u64 = 1024 * 1024;
 pub(crate) const INDEX_DIR: &str = "index.fjall";
 
 /// Per-keyspace memtable sizes, in bytes. Three tiers, assigned by how much one scan writes to the
@@ -685,6 +687,71 @@ impl IndexDb {
             }
         }
         Ok(rows)
+    }
+
+    #[cfg(feature = "code-search")]
+    pub(crate) fn bm25_posting_candidates<'a>(
+        &self,
+        paths: impl IntoIterator<Item = &'a String>,
+    ) -> Result<ahash::AHashSet<Vec<u8>>, IndexError> {
+        let mut candidates = ahash::AHashSet::new();
+        for path in paths {
+            let rel = crate::path::RelPath::from(path.as_str());
+            for guard in self.code_bm25_by_path.prefix(keys::code_bm25_by_path_prefix(&rel)) {
+                let (key, value) = guard.into_inner()?;
+                if let (Some((_, chunk)), Some(terms)) = (keys::parse_code_bm25_by_path(&key), value.get(4..)) {
+                    for term in rmp_serde::from_slice::<Vec<String>>(terms)? {
+                        candidates.extend(keys::code_bm25_posting(&term, &chunk));
+                    }
+                }
+            }
+        }
+        Ok(candidates)
+    }
+
+    #[cfg(feature = "code-search")]
+    pub(crate) fn retire_bm25_postings(
+        &self,
+        candidates: ahash::AHashSet<Vec<u8>>,
+        is_held: impl Fn(&str) -> bool,
+    ) -> Result<(), IndexError> {
+        let mut writer = self.writer();
+        for key in candidates {
+            let hash = keys::parse_code_bm25_posting_chunk_id(&key)
+                .and_then(|chunk| chunk.rsplit_once(':'))
+                .map(|(hash, _)| hash);
+            if hash.is_some_and(|hash| !is_held(hash)) {
+                writer.remove_bm25_posting(&key);
+                if writer.staged_bytes() >= BM25_PRUNE_BATCH_BYTES {
+                    writer.commit()?;
+                    writer = self.writer();
+                }
+            }
+        }
+        writer.commit()
+    }
+
+    /// Retire postings whose chunk is no longer referenced by any path.
+    #[cfg(feature = "code-search")]
+    pub(crate) fn sweep_bm25_postings(&self) -> Result<(), IndexError> {
+        let mut live = ahash::AHashSet::new();
+        for guard in self.code_bm25_by_path.iter() {
+            if let Some((_path, chunk)) = keys::parse_code_bm25_by_path(&guard.key()?) {
+                live.insert(chunk);
+            }
+        }
+        let mut writer = self.writer();
+        for guard in self.code_bm25_postings.iter() {
+            let key = guard.key()?;
+            if !keys::parse_code_bm25_posting_chunk_id(&key).is_some_and(|chunk| live.contains(chunk)) {
+                writer.remove_bm25_posting(&key);
+                if writer.staged_bytes() >= BM25_PRUNE_BATCH_BYTES {
+                    writer.commit()?;
+                    writer = self.writer();
+                }
+            }
+        }
+        writer.commit()
     }
 
     /// Recompute the corpus-global BM25 stats by sweeping the `code_bm25_by_path` forward keyspace

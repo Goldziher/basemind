@@ -192,10 +192,7 @@ impl IndexWriter {
         self.stage_resolved_deletes_for(use_rel)
     }
 
-    /// Replace the BM25 keyword postings for `rel`'s chunks with those in `postings`. Reads the
-    /// file's existing forward entries first to derive the `code_bm25_postings` keys for deletion,
-    /// then stages the fresh postings in the same batch. Atomic. Mirrors the `calls_by_path` →
-    /// `calls_by_callee` dual-partition pattern for the code-search keyword lane.
+    /// Atomically replace the file's forward rows and upsert its content-addressed postings.
     #[cfg(feature = "code-search")]
     pub fn upsert_bm25_file(&mut self, rel: &RelPath, postings: &[ChunkPosting]) -> Result<(), IndexError> {
         self.stage_bm25_deletes_for(rel)?;
@@ -203,7 +200,7 @@ impl IndexWriter {
         Ok(())
     }
 
-    /// Drop every BM25 posting for `rel`'s chunks. Used when a source file leaves the scan set.
+    /// Drop the file's forward rows. Shared postings are retired after the scanner commits all paths.
     #[cfg(feature = "code-search")]
     pub fn remove_bm25_file(&mut self, rel: &RelPath) -> Result<(), IndexError> {
         self.stage_bm25_deletes_for(rel)
@@ -432,45 +429,23 @@ impl IndexWriter {
         Ok(())
     }
 
-    /// Stage deletes for every BM25 posting of `rel`'s chunks. Scans `code_bm25_by_path` under the
-    /// file prefix; each forward value carries `doclen:u32_be ‖ msgpack(Vec<String> terms)`, so the
-    /// companion `code_bm25_postings` keys are reconstructed from the decoded term list.
     #[cfg(feature = "code-search")]
     fn stage_bm25_deletes_for(&mut self, rel: &RelPath) -> Result<(), IndexError> {
         let (db, batch, staged_bytes) = (&self.db, &mut self.batch, &mut self.staged_bytes);
-        let prefix = keys::code_bm25_by_path_prefix(rel);
-        let mut found: Vec<(Vec<u8>, String, Vec<String>)> = Vec::new();
-        for guard in db.code_bm25_by_path.prefix(prefix) {
-            let (k, v) = guard.into_inner()?;
-            let Some((_rel, chunk_id)) = keys::parse_code_bm25_by_path(&k) else {
-                continue;
-            };
-            let terms: Vec<String> = if v.len() >= 4 {
-                match rmp_serde::from_slice::<Vec<String>>(&v[4..]) {
-                    Ok(terms) => terms,
-                    Err(e) => {
-                        tracing::warn!(
-                            path = %rel,
-                            error = %e,
-                            "index: failed to decode BM25 term list during delete staging — skipping entry"
-                        );
-                        Vec::new()
-                    }
-                }
-            } else {
-                Vec::new()
-            };
-            found.push(((*k).to_vec(), chunk_id, terms));
-        }
-        for (path_key, chunk_id, terms) in found {
-            stage_remove(batch, staged_bytes, &db.code_bm25_by_path, path_key);
-            for term in terms {
-                if let Some(posting_key) = keys::code_bm25_posting(&term, &chunk_id) {
-                    stage_remove(batch, staged_bytes, &db.code_bm25_postings, posting_key);
-                }
-            }
+        for guard in db.code_bm25_by_path.prefix(keys::code_bm25_by_path_prefix(rel)) {
+            stage_remove(batch, staged_bytes, &db.code_bm25_by_path, guard.key()?.to_vec());
         }
         Ok(())
+    }
+
+    #[cfg(feature = "code-search")]
+    pub(super) fn remove_bm25_posting(&mut self, key: &[u8]) {
+        stage_remove(
+            &mut self.batch,
+            &mut self.staged_bytes,
+            &self.db.code_bm25_postings,
+            key.to_vec(),
+        );
     }
 
     /// Stage inserts for `rel`'s BM25 postings: one `code_bm25_postings` entry per `(term, chunk)`

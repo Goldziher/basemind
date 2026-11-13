@@ -10,9 +10,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Startup instructions direct agents to Basemind first for capabilities enabled during initialization.
+
 ### Fixed
 
 - The MCP `agents` message mode accepts the `message_ref` field returned by history and inbox.
+- Index plugin resources so agents can discover their skills and instructions.
 
 ### Security
 

@@ -435,8 +435,9 @@ fn drop_keyword_postings(store: &Store, paths: &[String]) -> bool {
         tracing::warn!(?error, "commit keyword posting removal failed");
         return false;
     }
-    if let Err(error) = db.recompute_bm25_stats() {
-        tracing::warn!(?error, "recompute bm25 stats failed; keyword search may be stale");
+    if let Err(error) = db.sweep_bm25_postings().and_then(|()| db.recompute_bm25_stats()) {
+        tracing::warn!(?error, "finalize BM25 removal failed; keyword search may be stale");
+        return false;
     }
     true
 }

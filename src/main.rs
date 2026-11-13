@@ -683,6 +683,12 @@ fn cmd_scan(root: &std::path::Path, args: &ScanArgs, verbosity: Verbosity, no_co
     if let Some(notice) = writer_collision_notice(root) {
         return Err(basemind::cli::exit::CliExit::busy(notice));
     }
+    #[cfg(unix)]
+    if basemind::store::Store::rebuild_migrated_working_view(root, &config, &cancel)? {
+        eprintln!("Rebuilt the standalone working index.");
+        sync_git_history_after_scan(root, !args.no_git_history, args.rebuild_git_history, &mut out);
+        return Ok(());
+    }
     let shared_index = std::env::var_os("BASEMIND_INDEX_LAYERED").is_some_and(|value| value == "1");
     if shared_index
         && !args.verify_shared_base
@@ -739,6 +745,21 @@ fn cmd_scan(root: &std::path::Path, args: &ScanArgs, verbosity: Verbosity, no_co
         tracing::debug!(%error, "shared base retention failed");
     }
     reclaim_after_scan(&mut out, &report.stats, std::mem::take(&mut store.reset_stale_schema));
+    #[cfg(unix)]
+    let reclaim = std::env::var_os("BASEMIND_INDEX_RECLAIM_BACKUP").is_some_and(|value| value == "1");
+    #[cfg(unix)]
+    if shared_index
+        && args.verify_shared_base
+        && report.stats.read_failed == 0
+        && report.stats.extract_failed == 0
+        && store.retire_verified_working_view(&config, reclaim)?
+    {
+        if reclaim {
+            eprintln!("Verified shared generation activated; standalone backup reclaimed.");
+        } else {
+            eprintln!("Verified shared generation activated; standalone backup retained for rollback.");
+        }
+    }
     sync_git_history_after_scan(root, !args.no_git_history, args.rebuild_git_history, &mut out);
     Ok(())
 }

@@ -172,7 +172,8 @@ pub fn doc_guard_digest(cfg: &DocumentsConfig, doc_digest: &str) -> String {
 /// re-flushes eligible files and purges the rows of files that are no longer eligible.
 pub fn embed_policy_digest(cfg: &ConfigV1) -> String {
     digest_of(
-        "embed-policy/1",
+        // Rebuild keyword postings that older scans may have deleted for duplicate content.
+        "embed-policy/2",
         &(
             cfg.code_search.enabled,
             cfg.code_search.embed,

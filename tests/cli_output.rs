@@ -172,6 +172,27 @@ fn explicit_shared_base_verification_uses_standalone_for_dirty_worktrees() {
     assert!(dirty.status.success(), "{message}");
     assert!(message.contains("Using the standalone index"), "{message}");
     if !cfg!(any(feature = "code-intel-js", feature = "code-intel-stack")) {
+        #[cfg(unix)]
+        {
+            let output = Command::new(bin())
+                .env("BASEMIND_INDEX_LAYERED", "1")
+                .env("BASEMIND_INDEX_RECLAIM_BACKUP", "0")
+                .args([
+                    "--root",
+                    root.to_str().unwrap(),
+                    "scan",
+                    "--verify-shared-base",
+                    "--no-git-history",
+                ])
+                .output()
+                .unwrap();
+            let message = String::from_utf8_lossy(&output.stderr);
+            assert!(output.status.success(), "{message}");
+            assert!(message.contains("standalone backup retained"), "{message}");
+            let views = basemind::store::workspace_cache_dir(root).join("views");
+            assert!(views.join("working.migrated/index.msgpack").is_file());
+            assert!(!views.join("working").exists());
+        }
         let opted_in = || {
             Command::new(bin())
                 .env("BASEMIND_INDEX_LAYERED", "1")
@@ -355,4 +376,141 @@ fn cold_dirty_scan_publishes_delta_without_standalone_fjall() {
     assert!(opted_in_scan().status.success());
     assert!(cache.join("layered-promoted").is_file());
     assert!(!basemind::store_base::has_published_dirty_worktree(root, &config).unwrap());
+}
+
+#[cfg(unix)]
+#[test]
+fn verified_retirement_restores_standalone_after_route_loss() {
+    basemind::store::init_isolated_cache();
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    git(root, &["init", "-q"]);
+    git(root, &["config", "core.autocrlf", "false"]);
+    std::fs::write(root.join("example.rs"), "pub fn example() {}\n").unwrap();
+    std::fs::write(
+        root.join("basemind.toml"),
+        "\"$schema\" = \"v1\"\n[documents]\nenabled = false\nembed = false\n[code_search]\nenabled = false\nembed = false\n",
+    )
+    .unwrap();
+    git(root, &["add", "."]);
+    git(root, &["-c", "commit.gpgsign=false", "commit", "-qm", "fixture"]);
+    let scan = |mode, verify| {
+        let mut command = Command::new(bin());
+        command.env("BASEMIND_INDEX_LAYERED", mode).args([
+            "--root",
+            root.to_str().unwrap(),
+            "scan",
+            "--no-git-history",
+        ]);
+        if verify {
+            command.arg("--verify-shared-base");
+        }
+        let output = command.output().unwrap();
+        let message = String::from_utf8_lossy(&output.stderr).into_owned();
+        assert!(output.status.success(), "{message}");
+        message
+    };
+    scan("0", false);
+    let views = basemind::store::workspace_cache_dir(root).join("views");
+    let working = views.join("working");
+    let backup = views.join("working.migrated");
+    let marker = working.join("rollback-test-sentinel");
+    std::fs::write(&marker, b"standalone data").unwrap();
+
+    assert!(scan("1", true).contains("Verified shared generation activated"));
+    assert!(!working.exists());
+    assert_eq!(
+        std::fs::read(backup.join("rollback-test-sentinel")).unwrap(),
+        b"standalone data"
+    );
+
+    scan("0", false);
+    assert_eq!(std::fs::read(&marker).unwrap(), b"standalone data");
+    assert!(!backup.exists());
+
+    assert!(scan("1", true).contains("Verified shared generation activated"));
+    let base = basemind::store::repo_group_dir(root).join("base");
+    let manifests = std::fs::read_dir(&base)
+        .unwrap()
+        .map(|entry| entry.unwrap().path().join("base.json"))
+        .filter(|path| path.is_file())
+        .collect::<Vec<_>>();
+    assert_eq!(manifests.len(), 1);
+    std::fs::write(&manifests[0], b"corrupt").unwrap();
+    scan("1", false);
+    assert_eq!(std::fs::read(&marker).unwrap(), b"standalone data");
+    assert!(!backup.exists());
+
+    let output = run(root, &["--json", "code", "files"]);
+    let response: serde_json::Value = serde_json::from_str(&stdout(&output)).unwrap();
+    assert!(response["files"].to_string().contains("example.rs"), "{response}");
+}
+
+#[cfg(unix)]
+#[test]
+fn only_full_scan_can_reconstruct_a_reclaimed_working_view() {
+    basemind::store::init_isolated_cache();
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    git(root, &["init", "-q"]);
+    git(root, &["config", "core.autocrlf", "false"]);
+    for name in ["first", "second"] {
+        std::fs::write(root.join(format!("{name}.rs")), format!("pub fn {name}() {{}}\n")).unwrap();
+    }
+    std::fs::write(
+        root.join("basemind.toml"),
+        "\"$schema\" = \"v1\"\n[documents]\nenabled = false\nembed = false\n[code_search]\nenabled = false\nembed = false\n",
+    )
+    .unwrap();
+    git(root, &["add", "."]);
+    git(root, &["-c", "commit.gpgsign=false", "commit", "-qm", "fixture"]);
+    let views = basemind::store::workspace_cache_dir(root).join("views");
+
+    let journal = views.join("working.migration");
+    let retired = Command::new(bin())
+        .env("BASEMIND_INDEX_LAYERED", "1")
+        .env("BASEMIND_INDEX_RECLAIM_BACKUP", "1")
+        .args([
+            "--root",
+            root.to_str().unwrap(),
+            "scan",
+            "--no-git-history",
+            "--verify-shared-base",
+        ])
+        .output()
+        .unwrap();
+    let message = String::from_utf8_lossy(&retired.stderr);
+    assert!(retired.status.success(), "{message}");
+    assert!(message.contains("standalone backup reclaimed"), "{message}");
+    assert!(!views.join("working.migrated").exists());
+    assert!(!views.join(".working.reclaim").exists());
+    let marker: serde_json::Value = serde_json::from_slice(&std::fs::read(&journal).unwrap()).unwrap();
+    assert_eq!(marker["phase"], "RebuildRequired");
+    let invoke = |args: &[&str]| {
+        Command::new(bin())
+            .env("BASEMIND_INDEX_LAYERED", "0")
+            .args(["--root", root.to_str().unwrap()])
+            .args(args)
+            .output()
+            .unwrap()
+    };
+
+    let partial = invoke(&["rescan", "first.rs"]);
+    let error = String::from_utf8_lossy(&partial.stderr);
+    assert!(!partial.status.success(), "{error}");
+    assert!(error.contains("complete standalone rebuild"), "{error}");
+    assert!(journal.is_file());
+    assert!(!views.join("working").exists());
+
+    let full = invoke(&["scan", "--no-git-history"]);
+    let message = String::from_utf8_lossy(&full.stderr);
+    assert!(full.status.success(), "{message}");
+    assert!(message.contains("Rebuilt the standalone working index"), "{message}");
+    assert!(!journal.exists());
+    assert!(views.join("working/index.msgpack").is_file());
+
+    let result = invoke(&["--json", "code", "files"]);
+    let value: serde_json::Value = serde_json::from_str(&stdout(&result)).unwrap();
+    let files = value["files"].to_string();
+    assert!(files.contains("first.rs") && files.contains("second.rs"), "{value}");
 }

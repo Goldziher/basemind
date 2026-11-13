@@ -112,6 +112,8 @@ pub enum StoreError {
         /// sidecar is missing/corrupt — the message then falls back to a generic guess.
         holder: Option<LockMeta>,
     },
+    #[error("working view migration recovery failed: {0}")]
+    Migration(#[source] anyhow::Error),
     #[error("inverted index error: {0}")]
     Index(#[from] IndexError),
     #[error(
@@ -338,6 +340,139 @@ impl Store {
         })
     }
 
+    /// Reconstruct a reclaimed working view under the normal writer lock.
+    #[cfg(unix)]
+    pub fn rebuild_migrated_working_view(
+        root: &Path,
+        config: &crate::config::Config,
+        cancel: &crate::scanner::ScanCancel,
+    ) -> anyhow::Result<bool> {
+        let workspace = workspace_cache_dir(root);
+        let views = workspace.join(VIEWS_DIR);
+        if !views.join("working.migration").try_exists()? {
+            return Ok(false);
+        }
+        let _writer = acquire_lock_as(&workspace, LockHolder::Scan)?;
+        let migration = crate::store_migration::Migration::lock(&views)?;
+        migration.rebuild(|stage| {
+            anyhow::ensure!(
+                !config.documents.enabled
+                    && !config.documents.embed
+                    && !config.code_search.enabled
+                    && !config.code_search.embed,
+                "standalone migration rebuild requires documents and code search disabled"
+            );
+            let mut store = Self::open_base_scratch(root, stage)?;
+            store.blobs_dir = global_blobs_dir();
+            ensure_dir(&store.blobs_dir)?;
+            store.blobs_shared = true;
+            let report = crate::scanner::scan_with_cancel(
+                root,
+                &mut store,
+                config,
+                crate::scanner::ScanSource::WorkingTree,
+                crate::scanner::EmbedMode::Deferred,
+                cancel,
+            )?;
+            anyhow::ensure!(
+                !report.cancelled
+                    && report.stats.read_failed == 0
+                    && report.stats.extract_failed == 0
+                    && store.index_db.as_ref().is_some_and(|db| !db.is_poisoned()),
+                "incomplete standalone migration rebuild"
+            );
+            store.flush()?;
+            Ok(())
+        })
+    }
+
+    /// Retire the standalone working view after comparing it to a leased clean generation.
+    #[cfg(unix)]
+    pub fn retire_verified_working_view(
+        &mut self,
+        config: &crate::config::Config,
+        reclaim: bool,
+    ) -> anyhow::Result<bool> {
+        if self.view != VIEW_WORKING || self._lock.is_none() {
+            return Ok(false);
+        }
+        let root = self.root.clone();
+        let open_candidate = || -> anyhow::Result<_> {
+            let mut candidate = Self::open_read_only_no_index(&root, VIEW_WORKING)?;
+            candidate.index = Index::empty();
+            crate::store_base::hydrate_cold_store(&mut candidate, config)?;
+            Ok(candidate)
+        };
+        let candidate_store = open_candidate()?;
+        let Some(layered) = candidate_store.layered_read.as_ref() else {
+            return Ok(false);
+        };
+        let dirty = candidate_store.fallback_blobs_dir.as_ref() != Some(&candidate_store.blobs_dir);
+        if dirty && reclaim {
+            return Ok(false);
+        }
+        let Some(standalone) = self.index_view() else {
+            return Ok(false);
+        };
+        crate::index::verify_shared_base(layered.as_ref(), &standalone)?;
+        let directory = candidate_store
+            .fallback_blobs_dir
+            .as_ref()
+            .and_then(|path| path.parent())
+            .ok_or_else(|| anyhow::anyhow!("missing generation directory"))?;
+        let candidate = &candidate_store.index;
+        if self.index.files.len() != candidate.files.len()
+            || self.index.files.iter().any(|(path, entry)| {
+                candidate.files.get(path).is_none_or(|other| {
+                    other.hash_hex != entry.hash_hex
+                        || other.language != entry.language
+                        || other.extract_epoch != entry.extract_epoch
+                })
+            })
+            || !self.index.doc_files.is_empty()
+        {
+            return Ok(false);
+        }
+        let generation: u64 = directory
+            .file_name()
+            .and_then(|name| name.to_str())
+            .and_then(|name| name.strip_prefix("gen-"))
+            .ok_or_else(|| anyhow::anyhow!("invalid generation path"))?
+            .parse()?;
+        if dirty {
+            let pin = repo_group_dir(&root)
+                .join("overlay-pins")
+                .join(format!("{}-{generation}", crate::store_layout::workspace_key(&root)));
+            anyhow::ensure!(
+                std::fs::read(pin)? == generation.to_be_bytes(),
+                "invalid overlay generation pin"
+            );
+        }
+        let views = self.basemind_dir.join(VIEWS_DIR);
+        let migration = crate::store_migration::Migration::lock(&views)?;
+        drop(self.index_db.take());
+        let result = migration.retire(generation, || Ok(())).and_then(|()| {
+            migration.commit(generation, || {
+                let current = open_candidate()?;
+                anyhow::ensure!(
+                    current.layered_read.is_some()
+                        && current.blobs_dir == candidate_store.blobs_dir
+                        && current.fallback_blobs_dir == candidate_store.fallback_blobs_dir,
+                    "worktree no longer matches the verified generation and overlay"
+                );
+                Ok(())
+            })
+        });
+        if let Err(error) = result {
+            migration.recover(|_| false)?;
+            return Err(error);
+        }
+        if reclaim {
+            migration.reclaim()?;
+        }
+        Ok(true)
+    }
+
     /// A read view over the fjall index, or `None` when this session holds none. Every index read
     /// goes through it (see [`crate::index::view`]).
     pub fn index_view(&self) -> Option<crate::index::view::StandaloneView<&IndexDb>> {
@@ -373,6 +508,8 @@ impl Store {
         // A fresh linked worktree clones its working view from a sibling checkout (COW, atomic
         // rename) BEFORE fjall opens, so the first scan skips content-identical files. ~keep
         if view == VIEW_WORKING {
+            crate::store_migration::Migration::recover_for_writer(&basemind_dir.join(VIEWS_DIR))
+                .map_err(StoreError::Migration)?;
             crate::store_seed::seed_working_view(root, &basemind_dir, &view_dir);
         }
         ensure_dir(&view_dir)?;

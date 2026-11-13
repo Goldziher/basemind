@@ -640,10 +640,17 @@ pub fn scan_with_observer(
         });
         store.flush()?;
     }
-    run_optional_lane(LANE_BM25_STATS, || finalize_bm25_stats_if_any(store, config));
+    run_optional_lane(LANE_BM25_STATS, || finalize_bm25_stats_if_any(store, config, true));
     run_optional_lane(crate::scanner_lanes::LANE_LANCE_MAINTENANCE, || {
         maintain_lance_if_open(store)
     });
+    #[cfg(any(feature = "documents", feature = "code-search"))]
+    if matches!(source, ScanSource::WorkingTree)
+        && crate::lance::shared_snapshot::enabled()
+        && let Err(error) = crate::lance::shared_snapshot::publish_scan(store, config, &scope)
+    {
+        tracing::debug!(%error, "shared Lance snapshot publication failed");
+    }
     phase_peaks.sample_now();
     report.phase_peaks = phase_peaks.snapshot();
     Ok(report)
@@ -824,6 +831,8 @@ pub fn scan_paths_with_observer(
         .chain(&removed)
         .filter_map(|rel| store.lookup(rel).map(|entry| entry.hash_hex.clone()))
         .collect();
+    #[cfg(feature = "code-search")]
+    let bm25_candidates = crate::scanner_flush::bm25_posting_candidates(store, rels.iter().chain(&removed));
     let drive = ScanDrive {
         root,
         filters: filter.filters(),
@@ -893,6 +902,8 @@ pub fn scan_paths_with_observer(
     }
 
     drop_unheld_grep_bloom_rows(store, &retired);
+    #[cfg(feature = "code-search")]
+    crate::scanner_flush::retire_bm25_postings(store, bm25_candidates);
 
     store.flush()?;
     store.write_status_sidecar();
@@ -945,7 +956,7 @@ pub fn scan_paths_with_observer(
         });
         store.flush()?;
     }
-    run_optional_lane(LANE_BM25_STATS, || finalize_bm25_stats_if_any(store, config));
+    run_optional_lane(LANE_BM25_STATS, || finalize_bm25_stats_if_any(store, config, false));
     run_optional_lane(crate::scanner_lanes::LANE_LANCE_MAINTENANCE, || {
         maintain_lance_if_open(store)
     });

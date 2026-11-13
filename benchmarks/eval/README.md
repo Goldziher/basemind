@@ -139,3 +139,34 @@ across hash seeds, the cross-language guard). The harness itself is covered by `
 - `find` covers every path basemind indexes (code map plus document tier). Pass `--indexed FILE` to `gen_find.py` (one indexed path per line) so tasks are never drawn from files the scan config leaves out; use `--ext md,rst,...` for a documents-only batch.
 - `docs` and semantic lookups need the `documents` build; without it those tasks error.
 - Gold is derived by syntax and text, not by scope resolution, so it is exact for basemind's name-based tools and only an approximation of "the right answer" for an agent that wanted a specific binding.
+
+### Shared-index top-10 overlap
+
+Run `python3 benchmarks/eval/layered_overlap.py standalone.jsonl layered.jsonl` on paired
+capture files from the same corpus and query set. Each JSONL row must carry `tier` (`code` or
+`documents`), `query` (unique within its tier), `route` (`standalone` or `layered`),
+`degraded: false`, and `hits` (ten distinct, stable result identities, in retrieval order).
+The capture must derive route and degradation from observed execution evidence. A requested mode
+or environment setting alone is insufficient, because searches can fall back.
+
+The scorer requires at least 200 exactly paired queries per tier. It reports the mean set overlap
+out of ten and exits 1 when either tier falls below 0.95, or 2 when captures are incomplete or
+invalid. Keep corpus captures and query text in their approved storage.
+
+To capture and score directly, build a binary with `code-search,documents` support. Use a
+dedicated local cache directory and configure both embedding lanes on the approved checkout.
+Keep model, reranking, and scan settings fixed between routes. Prepare once and capture with:
+
+```sh
+BASEMIND_DATA_HOME="$cache" BASEMIND_COMMS_DIR="$cache/capture-comms" BASEMIND_INDEX_LAYERED=1 \
+  "$basemind" --root "$checkout" scan --no-git-history
+python3 benchmarks/eval/capture_layered_overlap.py \
+  "$basemind" "$checkout" "$cache" "$queries_json" "$new_capture_dir"
+```
+
+The query file is a JSON object with `code` and `documents` arrays, each containing at least
+200 distinct nonempty strings. The output directory must be new. Run without an active daemon
+for this cache and avoid modifying the checkout or cache during capture. Each subprocess handles
+one query and contributes exactly one matching semantic route diagnostic, so fallback or ambiguous
+evidence fails the capture. The runner compares the semantic code lane and configured document
+search results.

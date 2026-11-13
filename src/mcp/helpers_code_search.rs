@@ -338,10 +338,22 @@ async fn semantic_hits(state: &ServerState, query: &str, limit: usize) -> Result
     let embedding = embed_query(state, query).await?;
     let lance = lance_store(state).await?;
     let scope = state.shared.scope.clone();
-    let hits_raw = tokio::task::spawn_blocking(move || lance.search_code_chunks(&scope, embedding, limit))
-        .await
-        .map_err(|e| McpError::internal_error(format!("spawn_blocking: {e}"), None))?
-        .map_err(|e| McpError::internal_error(format!("search_code_chunks: {e}"), None))?;
+    let routing = super::memory::shared_lance_route(state, crate::lance::shared_store::SharedLane::Code).await;
+    let hits_raw = tokio::task::spawn_blocking(move || {
+        let lane = crate::lance::shared_store::SharedLane::Code;
+        let requested_shared = crate::lance::shared_snapshot::enabled();
+        let shared = routing.and_then(|(group, generation)| {
+            crate::lance::shared_snapshot::read(&lance, &group, lane, &scope, &generation, |shared, paths| {
+                shared.search_code_chunks(&scope, embedding.clone(), paths, limit)
+            })
+        });
+        super::memory::observe_semantic_route("code", requested_shared, shared, || {
+            lance.search_code_chunks(&scope, embedding, limit)
+        })
+    })
+    .await
+    .map_err(|e| McpError::internal_error(format!("spawn_blocking: {e}"), None))?
+    .map_err(|e| McpError::internal_error(format!("search_code_chunks: {e}"), None))?;
 
     Ok(hits_raw
         .into_iter()

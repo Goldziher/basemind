@@ -133,3 +133,62 @@ pub const MEMORY_TABLE: &str = "memory";
 pub const CODE_CHUNKS_TABLE: &str = "code_chunks";
 #[cfg(feature = "documents")]
 pub const DOC_LINKS_TABLE: &str = "doc_links";
+
+/// Schemas for the experimental shared directory. Existing workspace tables retain their schema.
+#[doc(hidden)]
+pub fn shared_documents_schema(dim: u16) -> SchemaRef {
+    content_keyed(&documents_schema(dim), "path", false)
+}
+
+#[cfg(feature = "code-search")]
+#[doc(hidden)]
+pub fn shared_code_chunks_schema(dim: u16) -> SchemaRef {
+    content_keyed(&code_chunks_schema(dim), "path", true)
+}
+
+#[cfg(feature = "documents")]
+#[doc(hidden)]
+pub fn shared_doc_links_schema() -> SchemaRef {
+    content_keyed(&doc_links_schema(), "doc_path", false)
+}
+
+fn content_keyed(source: &SchemaRef, path_column: &str, add_ordinal: bool) -> SchemaRef {
+    let fields = source
+        .fields()
+        .iter()
+        .map(|field| {
+            if field.name() == path_column {
+                Arc::new(Field::new("content_hash", DataType::Utf8, false))
+            } else {
+                Arc::clone(field)
+            }
+        })
+        .chain(add_ordinal.then(|| Arc::new(Field::new("chunk_idx", DataType::UInt32, false))))
+        .collect::<Vec<_>>();
+    Arc::new(Schema::new(fields))
+}
+
+#[cfg(test)]
+mod shared_tests {
+    use super::*;
+
+    #[test]
+    fn shared_documents_replace_paths_with_content_keys() {
+        let local = documents_schema(384);
+        let shared = shared_documents_schema(384);
+        assert!(local.field_with_name("path").is_ok());
+        assert!(shared.field_with_name("path").is_err());
+        assert_eq!(
+            shared.field_with_name("content_hash").unwrap().data_type(),
+            &DataType::Utf8
+        );
+        assert_eq!(
+            shared.field_with_name("chunk_idx").unwrap().data_type(),
+            &DataType::UInt32
+        );
+        assert_eq!(
+            local.field_with_name("embedding").unwrap(),
+            shared.field_with_name("embedding").unwrap()
+        );
+    }
+}
