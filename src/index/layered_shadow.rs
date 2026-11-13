@@ -59,6 +59,24 @@ impl DeltaManifest {
         self.entries.insert(path, DeltaEntry::Deleted);
     }
 
+    #[cfg(any(feature = "code-intel-js", feature = "code-intel-stack"))]
+    pub(crate) fn add_restitched(&mut self, paths: impl IntoIterator<Item = String>) {
+        self.restitched.extend(paths.into_iter().map(RelPath::from));
+    }
+
+    pub(crate) fn apply_to(&self, index: &mut crate::store::Index) {
+        for (path, entry) in &self.entries {
+            match entry {
+                DeltaEntry::Added(file) | DeltaEntry::Modified(file) => {
+                    index.files.insert(path.clone(), file.clone());
+                }
+                DeltaEntry::Deleted => {
+                    index.files.remove(path);
+                }
+            }
+        }
+    }
+
     pub(crate) fn shadow<'base>(
         &self,
         base_counts: &AHashMap<&str, usize>,

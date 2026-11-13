@@ -19,6 +19,7 @@ use crate::store_base_retention::{GenerationLease, highest_leased_generation};
 
 const BASE_DIR: &str = "base";
 const BASE_LOCK_FILE: &str = "base.lock";
+const MAX_OVERLAY_INPUT_BYTES: u64 = 50 * 1024 * 1024;
 const RUNS: &str = "runs";
 const MANIFEST: &str = "base.json";
 const FORMAT: u32 = 1;
@@ -83,7 +84,9 @@ pub fn prepare(root: &Path, config: &Config) -> Result<BaseBuild> {
         .open(group.join(BASE_LOCK_FILE))
         .context("open base generation lock")?;
     if let Err(error) = fs2::FileExt::try_lock_exclusive(&lock) {
-        if error.kind() == io::ErrorKind::WouldBlock {
+        if error.kind() == io::ErrorKind::WouldBlock
+            || error.raw_os_error() == fs2::lock_contended_error().raw_os_error()
+        {
             return Ok(BaseBuild::Busy);
         }
         return Err(error).context("lock base generation directory");
@@ -146,6 +149,88 @@ pub(crate) fn open_existing_worktree_base(root: &Path, config: &Config) -> Resul
     open_worktree_base(root, config, false)
 }
 
+fn promotion_marker(root: &Path) -> PathBuf {
+    crate::store::workspace_cache_dir(root).join("layered-promoted")
+}
+
+fn promoted(root: &Path) -> bool {
+    promotion_marker(root).try_exists().unwrap_or(true)
+}
+
+/// Persist standalone mode after a completed scan exceeds the overlay file or byte budget.
+pub fn record_promotion(root: &Path, config: &Config) -> Result<bool> {
+    if promoted(root) || !eligible(config) {
+        return Ok(false);
+    }
+    let directory = repo_group_dir(root).join(BASE_DIR);
+    if !directory.is_dir() {
+        return Ok(false);
+    }
+    let Some((path, base)) = latest_compatible(&directory, &scan_digest(config)?)? else {
+        return Ok(false);
+    };
+    let repo = Repo::discover(root)?;
+    let candidates = repo.status_against(&base.commit)?.overlay_candidates();
+    let index = crate::store::read_index(&path)?.context("missing promotion base index")?;
+    if !over_promotion_budget(
+        root,
+        &candidates,
+        &index,
+        &base,
+        has_older_overlay_pin(root, base.generation)?,
+    ) {
+        return Ok(false);
+    }
+    let marker = promotion_marker(root);
+    let parent = marker.parent().context("missing promotion marker directory")?;
+    let temporary = tempfile::NamedTempFile::new_in(parent)?;
+    temporary.as_file().sync_all()?;
+    temporary.persist(&marker)?;
+    sync_directory(parent)?;
+    Ok(true)
+}
+
+fn has_older_overlay_pin(root: &Path, generation: u64) -> Result<bool> {
+    let pins = repo_group_dir(root).join("overlay-pins");
+    if !pins.is_dir() {
+        return Ok(false);
+    }
+    let prefix = format!("{}-", crate::store_layout::workspace_key(root));
+    for pin in fs::read_dir(pins)? {
+        if pin?
+            .file_name()
+            .to_str()
+            .and_then(|name| name.strip_prefix(&prefix))
+            .and_then(|id| id.parse::<u64>().ok())
+            .is_some_and(|id| id < generation)
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn over_promotion_budget(
+    root: &Path,
+    candidates: &std::collections::BTreeSet<crate::path::RelPath>,
+    index: &crate::store::Index,
+    base: &BaseManifest,
+    rebased: bool,
+) -> bool {
+    let changed_bytes = candidates.iter().fold(0u64, |total, candidate| {
+        let live = fs::symlink_metadata(root.join(candidate.to_path_buf()))
+            .ok()
+            .filter(|metadata| metadata.is_file())
+            .map_or(0, |metadata| metadata.len());
+        let prior = index.files.get(candidate).map_or(0, |entry| entry.size_bytes);
+        total.saturating_add(live.max(prior))
+    });
+    let (files, bytes) = if rebased { (10, 20) } else { (15, 25) };
+    let over_file_share = (candidates.len() as u128) * 100 > (base.files as u128) * files;
+    let over_byte_share = u128::from(changed_bytes) * 100 > u128::from(base.bytes) * bytes;
+    candidates.len() > 32 || changed_bytes > MAX_OVERLAY_INPUT_BYTES || over_file_share || over_byte_share
+}
+
 fn eligible(config: &Config) -> bool {
     !(config.documents.enabled
         || config.documents.embed
@@ -158,7 +243,7 @@ fn eligible(config: &Config) -> bool {
 }
 
 fn open_worktree_base(root: &Path, config: &Config, build: bool) -> Result<Option<SortedRunView>> {
-    if !eligible(config) {
+    if promoted(root) || !eligible(config) {
         return Ok(None);
     }
     let repo = match Repo::discover(root) {
@@ -200,27 +285,82 @@ fn open_worktree_base(root: &Path, config: &Config, build: bool) -> Result<Optio
 }
 
 pub fn publish_dirty_worktree(root: &Path, config: &Config, reference: &dyn IndexView) -> Result<bool> {
-    Ok(dirty_worktree(root, config, Some(reference))?.is_some())
+    Ok(dirty_worktree(root, config, true, false, Some(reference), None)?.is_some())
 }
 
-/// Reuse an exact delta previously checked against a complete standalone scan.
-pub fn has_verified_dirty_worktree(root: &Path, config: &Config) -> Result<bool> {
+/// Publish a candidate-only delta against a prepared base.
+pub fn scan_dirty_worktree(root: &Path, config: &Config) -> Result<bool> {
+    if promoted(root) || !eligible(config) || requires_probes() {
+        return Ok(false);
+    }
+    let layered = dirty_worktree(root, config, true, false, None, None)?;
+    if layered.is_some() {
+        return Ok(true);
+    }
+    let repo = Repo::discover(root)?;
+    if !repo.origin_is_workdir() || !repo_group_dir(root).join(BASE_DIR).is_dir() {
+        return Ok(false);
+    }
+    let (_, commit) = resolve_commit(&repo)?;
+    let group = repo_group_dir(root);
+    let (_, ready) = find_generation(&group.join(BASE_DIR), &commit, &scan_digest(config)?)?;
+    if ready.is_none()
+        && should_advance(&repo, &group.join(BASE_DIR), &commit, &scan_digest(config)?)?
+        && matches!(prepare(root, config)?, BaseBuild::Ready(_))
+    {
+        return Ok(dirty_worktree(root, config, true, true, None, None)?.is_some());
+    }
+    Ok(false)
+}
+
+/// Check for a published delta matching the current worktree.
+pub fn has_published_dirty_worktree(root: &Path, config: &Config) -> Result<bool> {
     Ok(open_dirty_worktree(root, config)?.is_some())
 }
 
 pub(crate) fn open_dirty_worktree(root: &Path, config: &Config) -> Result<Option<Box<dyn IndexView>>> {
-    dirty_worktree(root, config, None)
+    dirty_worktree(root, config, false, false, None, None)
+}
+
+pub(crate) fn hydrate_cold_store(store: &mut Store, config: &Config) -> Result<()> {
+    if store.view == crate::store::VIEW_WORKING && store.index.files.is_empty() && store.index_db.is_none() {
+        let root = store.root.clone();
+        dirty_worktree(&root, config, false, false, None, Some(store))?;
+    }
+    Ok(())
+}
+
+#[cfg(all(feature = "comms", any(unix, windows)))]
+pub(crate) fn layered_scan_stats(prior: &Store, next: &Store) -> crate::scanner::ScanStats {
+    let mut stats = crate::scanner::ScanStats::default();
+    for (path, file) in &next.index.files {
+        match prior.lookup(path) {
+            None => stats.updated += 1,
+            Some(old) if old.hash_hex != file.hash_hex => stats.updated += 1,
+            Some(_) => {}
+        }
+    }
+    stats.removed = prior
+        .index
+        .files
+        .keys()
+        .filter(|path| next.lookup(*path).is_none())
+        .count();
+    stats
 }
 
 fn dirty_worktree(
     root: &Path,
     config: &Config,
+    publish: bool,
+    rebased: bool,
     reference: Option<&dyn IndexView>,
+    hydrate: Option<&mut Store>,
 ) -> Result<Option<Box<dyn IndexView>>> {
     use crate::index::layered_shadow::DeltaManifest;
     use crate::index::layered_view::LayeredView;
 
-    if !eligible(config) || requires_probes() {
+    if promoted(root) || !eligible(config) {
         return Ok(None);
     }
     let repo = Repo::discover(root)?;
@@ -228,25 +368,38 @@ fn dirty_worktree(
         return Ok(None);
     }
     let (_, commit) = resolve_commit(&repo)?;
+    let directory = repo_group_dir(root).join(BASE_DIR);
+    if !directory.is_dir() {
+        return Ok(None);
+    }
+    let digest = scan_digest(config)?;
+    let (_, ready) = find_generation(&directory, &commit, &digest)?;
+    let (path, commit) = match ready {
+        Some(path) => (path, commit),
+        None => {
+            let Some((path, prior)) = latest_compatible(&directory, &digest)? else {
+                return Ok(None);
+            };
+            if generation_should_advance(&repo, &prior, &commit)? {
+                return Ok(None);
+            }
+            (path, prior.commit)
+        }
+    };
     let candidates = repo.status_against(&commit)?.overlay_candidates();
     if candidates.is_empty()
         || candidates.len() > 32
         || candidates.iter().any(|path| {
             path.as_str().is_none_or(|path| {
-                path.split('/').any(|component| component.starts_with('.')) || !path.ends_with(".rs")
+                path.split('/').any(|component| component.starts_with('.'))
+                    || ![".rs", ".ts", ".tsx", ".py", "tsconfig.json"]
+                        .iter()
+                        .any(|extension| path.ends_with(extension))
             })
         })
     {
         return Ok(None);
     }
-    let directory = repo_group_dir(root).join(BASE_DIR);
-    if !directory.is_dir() {
-        return Ok(None);
-    }
-    let (_, ready) = find_generation(&directory, &commit, &scan_digest(config)?)?;
-    let Some(path) = ready else {
-        return Ok(None);
-    };
     let generation: u64 = path
         .file_name()
         .and_then(|name| name.to_str())
@@ -255,6 +408,18 @@ fn dirty_worktree(
         .parse()?;
     let base = open(root, config, generation, &commit)?;
     let base_index = crate::store::read_index(&path)?.context("missing base manifest")?;
+    if publish && reference.is_none() {
+        let manifest: BaseManifest = serde_json::from_slice(&fs::read(path.join(MANIFEST))?)?;
+        if over_promotion_budget(
+            root,
+            &candidates,
+            &base_index,
+            &manifest,
+            rebased || has_older_overlay_pin(root, generation)?,
+        ) {
+            return Ok(None);
+        }
+    }
     let fingerprint = candidate_fingerprint(root, &candidates, config.scan.max_file_bytes)?;
     let overlays = crate::store::workspace_cache_dir(root).join("verified-overlays");
     let published = overlays.join(format!("{generation}-{fingerprint}"));
@@ -262,7 +427,8 @@ fn dirty_worktree(
     for entry in base_index.files.values() {
         *counts.entry(entry.hash_hex.as_str()).or_default() += 1;
     }
-    if let Some(reference) = reference.filter(|_| !published.is_dir()) {
+    if publish && !published.is_dir() {
+        crate::disk_space::ensure_free_space(&overlays)?;
         fs::create_dir_all(&overlays)?;
         let scratch = tempfile::tempdir_in(&overlays)?;
         let mut overlay = Store::open_base_scratch(root, scratch.path())?;
@@ -284,6 +450,18 @@ fn dirty_worktree(
                 delta.delete(path.clone());
             }
         }
+        #[cfg(any(feature = "code-intel-js", feature = "code-intel-stack"))]
+        restitch_overlay(
+            root,
+            config,
+            &mut overlay,
+            &path,
+            generation,
+            &commit,
+            &base_index,
+            &candidates,
+            &mut delta,
+        )?;
         ensure!(
             repo.status_against(&commit)?.overlay_candidates() == candidates,
             "worktree changed during delta scan"
@@ -292,15 +470,31 @@ fn dirty_worktree(
             candidate_fingerprint(root, &candidates, config.scan.max_file_bytes)? == fingerprint,
             "candidate contents changed during delta scan"
         );
-        let shadow = delta.shadow(&counts, |path| base_index.files.get(path));
+        if let Some(reference) = reference {
+            let shadow = delta.shadow(&counts, |path| base_index.files.get(path));
+            let db = overlay.index_db.as_ref().context("missing overlay database")?;
+            let verification_base = open(root, config, generation, &commit)?;
+            let view = LayeredView::from_view(Box::new(verification_base), db, shadow)?;
+            crate::index::verify_shared_base(&view, reference)?;
+        }
+        let runs = scratch.path().join(RUNS);
+        fs::create_dir(&runs)?;
         let db = overlay.index_db.as_ref().context("missing overlay database")?;
-        let verification_base = open(root, config, generation, &commit)?;
-        let view = LayeredView::from_view(Box::new(verification_base), db, shadow)?;
-        crate::index::verify_shared_base(&view, reference)?;
-        drop(view);
+        SortedRunView::export(&runs, &db.view())?;
         fs::write(scratch.path().join("delta.msgpack"), rmp_serde::to_vec_named(&delta)?)?;
         drop(overlay);
+        fs::remove_dir_all(scratch.path().join(INDEX_DIR))?;
+        fs::remove_dir_all(scratch.path().join(crate::store::MEMORY_STORE_DIR))?;
         sync_tree(scratch.path())?;
+        ensure!(
+            crate::disk_space::dir_bytes(scratch.path()) <= MAX_OVERLAY_INPUT_BYTES,
+            "overlay exceeds disk limit"
+        );
+        let group = repo_group_dir(root);
+        let gate = crate::store_base_retention::group_lock(&group)?;
+        fs2::FileExt::lock_exclusive(&gate)?;
+        enforce_group_budget(&group, Some((&overlays, crate::store_layout::workspace_key(root))))?;
+        write_overlay_pin(&group, root, generation)?;
         fs::rename(scratch.path(), &published)?;
         sync_directory(&overlays)?;
     }
@@ -313,10 +507,225 @@ fn dirty_worktree(
         "overlay identity mismatch"
     );
     let shadow = delta.shadow(&counts, |path| base_index.files.get(path));
-    let db = crate::index::IndexDb::open(&published)?;
-    ensure!(!db.wiped_on_open(), "overlay schema mismatch");
-    let view = LayeredView::from_view(Box::new(base), &db, shadow)?;
+    // SAFETY: published overlays are immutable and no cleanup removes these directories while open.
+    let overlay = unsafe { SortedRunView::open(&published.join(RUNS)) }?;
+    let view = LayeredView::from_views(Box::new(base), Box::new(overlay), shadow)?;
+    if let Some(store) = hydrate {
+        let mut effective = base_index;
+        delta.apply_to(&mut effective);
+        store.install_layered_manifest(
+            effective,
+            published.join(crate::store_layout::BLOBS_DIR),
+            path.join(crate::store_layout::BLOBS_DIR),
+            std::sync::Arc::new(view),
+        );
+        return Ok(None);
+    }
+
     Ok(Some(Box::new(view)))
+}
+
+#[cfg(any(feature = "code-intel-js", feature = "code-intel-stack"))]
+#[allow(clippy::too_many_arguments)]
+fn restitch_overlay(
+    root: &Path,
+    config: &Config,
+    overlay: &mut Store,
+    base_path: &Path,
+    generation: u64,
+    commit: &str,
+    base_index: &crate::store::Index,
+    candidates: &std::collections::BTreeSet<crate::path::RelPath>,
+    delta: &mut crate::index::layered_shadow::DeltaManifest,
+) -> Result<()> {
+    use crate::intel::resolve_pass::{PathDelta, resolve_with_probe_view};
+
+    let base = open(root, config, generation, commit)?;
+    let mut changed = Vec::new();
+    let mut removed = Vec::new();
+    let mut other = Vec::new();
+    for path in candidates {
+        let name = path.as_str().context("non-UTF-8 overlay path")?.to_owned();
+        if name.ends_with("tsconfig.json") {
+            other.push(name);
+        } else if overlay.lookup(path).is_some() {
+            changed.push(name);
+        } else {
+            removed.push(name);
+        }
+    }
+    for (path, entry) in &base_index.files {
+        if candidates.contains(path) {
+            continue;
+        }
+        overlay.upsert(path.clone(), entry.clone());
+    }
+    overlay.fallback_blobs_dir = Some(base_path.join(crate::store_layout::BLOBS_DIR));
+    let db = overlay.index_db.as_ref().context("missing overlay database")?;
+    let (complete, affected) = resolve_with_probe_view(
+        root,
+        overlay,
+        &PathDelta {
+            changed: &changed,
+            removed: &removed,
+            other: &other,
+        },
+        config.code_intel.precise_resolution,
+        config.resources.max_footprint_mb,
+        &base,
+    );
+    ensure!(complete, "overlay restitch incomplete");
+    delta.add_restitched(affected);
+    db.set_import_probes_complete(true)?;
+    Ok(())
+}
+
+fn enforce_group_budget(group: &Path, incoming_overlay: Option<(&Path, String)>) -> Result<()> {
+    let Some(value) = std::env::var_os("BASEMIND_INDEX_MAX_GROUP_BYTES") else {
+        return Ok(());
+    };
+    let limit: u64 = value
+        .to_str()
+        .context("group disk limit must be UTF-8")?
+        .parse()
+        .context("invalid group disk limit")?;
+    ensure!(limit > 0, "group disk limit must be positive");
+    let mut used = crate::store_cache_admin::dir_size(&group.join(BASE_DIR))?;
+    let pins = group.join("overlay-pins");
+    let mut counted = std::collections::BTreeSet::new();
+    if let Some((overlays, workspace)) = incoming_overlay {
+        used = used.saturating_add(crate::store_cache_admin::dir_size(overlays)?);
+        counted.insert(workspace);
+    }
+    if pins.is_dir() {
+        let cache = group
+            .parent()
+            .and_then(Path::parent)
+            .context("invalid group cache path")?;
+        for entry in fs::read_dir(pins)? {
+            let name = entry?.file_name();
+            let (workspace, _) = name
+                .to_str()
+                .and_then(|name| name.rsplit_once('-'))
+                .context("invalid overlay pin name")?;
+            ensure!(
+                workspace.len() == 64 && workspace.bytes().all(|byte| byte.is_ascii_hexdigit()),
+                "invalid overlay pin workspace"
+            );
+            if counted.insert(workspace.to_owned()) {
+                let overlays = cache
+                    .join(crate::store_layout::WORKSPACES_DIR)
+                    .join(workspace)
+                    .join("verified-overlays");
+                if overlays.is_dir() {
+                    used = used.saturating_add(crate::store_cache_admin::dir_size(&overlays)?);
+                }
+            }
+        }
+    }
+    ensure!(used <= limit, "shared index group exceeds disk limit");
+    Ok(())
+}
+
+fn write_overlay_pin(group: &Path, root: &Path, generation: u64) -> Result<()> {
+    use std::io::Write;
+
+    let pins = group.join("overlay-pins");
+    fs::create_dir_all(&pins)?;
+    let name = format!("{}-{generation}", crate::store_layout::workspace_key(root));
+    let mut pin = tempfile::NamedTempFile::new_in(&pins)?;
+    pin.write_all(&generation.to_be_bytes())?;
+    pin.as_file().sync_all()?;
+    pin.persist(pins.join(name))?;
+    sync_directory(&pins)?;
+    Ok(())
+}
+
+fn durable_overlay_pins(group: &Path) -> io::Result<std::collections::BTreeSet<u64>> {
+    let entries = match fs::read_dir(group.join("overlay-pins")) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Default::default()),
+        Err(error) => return Err(error),
+    };
+    let mut pinned = std::collections::BTreeSet::new();
+    for entry in entries {
+        let entry = entry?;
+        let name = entry.file_name();
+        let (workspace, id) = name
+            .to_str()
+            .and_then(|name| name.rsplit_once('-'))
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "invalid overlay pin name"))?;
+        let bytes: [u8; 8] = fs::read(entry.path())?
+            .try_into()
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid overlay pin"))?;
+        let generation = u64::from_be_bytes(bytes);
+        if id.parse::<u64>().ok() != Some(generation)
+            || workspace.len() != 64
+            || !workspace.bytes().all(|byte| byte.is_ascii_hexdigit())
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid overlay pin identity",
+            ));
+        }
+        let cache = group
+            .parent()
+            .and_then(Path::parent)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "invalid repo group path"))?;
+        let overlays = cache.join("workspaces").join(workspace).join("verified-overlays");
+        let mut exists = false;
+        match fs::read_dir(overlays) {
+            Ok(entries) => {
+                let prefix = format!("{generation}-");
+                for overlay in entries {
+                    let overlay = overlay?;
+                    if overlay
+                        .file_name()
+                        .to_str()
+                        .is_some_and(|name| name.starts_with(&prefix))
+                        && overlay.file_type()?.is_dir()
+                    {
+                        exists = true;
+                        break;
+                    }
+                }
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+        if exists {
+            pinned.insert(generation);
+        } else {
+            fs::remove_file(entry.path())?;
+        }
+    }
+    Ok(pinned)
+}
+
+/// Retire older published base generations while keeping the newest two and every durable pin.
+pub fn retire_old_generations(root: &Path) -> Result<usize> {
+    let group = repo_group_dir(root);
+    let base = group.join(BASE_DIR);
+    if !base.is_dir() {
+        return Ok(0);
+    }
+    let mut ready = std::collections::BTreeSet::<u64>::new();
+    let mut retired = std::collections::BTreeSet::new();
+    for entry in fs::read_dir(&base)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if let Some(generation) = name.strip_prefix("gen-").and_then(|id| id.parse().ok()) {
+            ready.insert(generation);
+        } else if let Some(generation) = name.strip_prefix(".retired-").and_then(|id| id.parse().ok()) {
+            retired.insert(generation);
+        }
+    }
+    retired.extend(ready.iter().rev().skip(2).copied());
+    let result = crate::store_base_retention::retire_unpinned(&group, &retired, || durable_overlay_pins(&group))?;
+    Ok(result.removed.len())
 }
 
 fn candidate_fingerprint(
@@ -326,6 +735,7 @@ fn candidate_fingerprint(
 ) -> Result<String> {
     use std::io::Read;
     let mut digest = blake3::Hasher::new();
+    let mut total_bytes = 0u64;
     for path in candidates {
         let name: &[u8] = path.as_ref();
         digest.update(&(name.len() as u64).to_le_bytes());
@@ -348,6 +758,11 @@ fn candidate_fingerprint(
             .take(max_bytes.saturating_add(1))
             .read_to_end(&mut bytes)?;
         ensure!(bytes.len() as u64 <= max_bytes, "overlay candidate exceeds size limit");
+        total_bytes = total_bytes.saturating_add(bytes.len() as u64);
+        ensure!(
+            total_bytes <= MAX_OVERLAY_INPUT_BYTES,
+            "overlay candidates exceed total size limit"
+        );
         digest.update(&[1]);
         digest.update(blake3::hash(&bytes).as_bytes());
     }
@@ -382,6 +797,50 @@ fn scan_digest(config: &Config) -> Result<String> {
     scan.extra_roots.clear();
     let policy = serde_json::to_vec(&(&scan, &config.languages, &config.code_intel, &config.code_search))?;
     Ok(blake3::hash(&policy).to_hex().to_string())
+}
+
+fn latest_compatible(base: &Path, digest: &str) -> Result<Option<(PathBuf, BaseManifest)>> {
+    let mut latest = None::<(PathBuf, BaseManifest)>;
+    for entry in fs::read_dir(base)? {
+        let entry = entry?;
+        let Some(id) = entry
+            .file_name()
+            .to_str()
+            .and_then(|name| name.strip_prefix("gen-"))
+            .and_then(|id| id.parse().ok())
+        else {
+            continue;
+        };
+        let path = entry.path();
+        let Ok(bytes) = fs::read(path.join(MANIFEST)) else {
+            continue;
+        };
+        let Ok(manifest) = serde_json::from_slice::<BaseManifest>(&bytes) else {
+            continue;
+        };
+        if is_compatible(&path, id, &manifest.commit, digest)
+            && latest.as_ref().is_none_or(|(_, prior)| id > prior.generation)
+        {
+            latest = Some((path, manifest));
+        }
+    }
+    Ok(latest)
+}
+
+fn should_advance(repo: &Repo, base: &Path, target: &str, digest: &str) -> Result<bool> {
+    match latest_compatible(base, digest)? {
+        Some((_, prior)) => generation_should_advance(repo, &prior, target),
+        None => Ok(true),
+    }
+}
+
+fn generation_should_advance(repo: &Repo, latest: &BaseManifest, target: &str) -> Result<bool> {
+    let changed = repo.changed_tree_files(&latest.commit, target)?;
+    let age = SystemTime::now()
+        .duration_since(UNIX_EPOCH)?
+        .as_secs()
+        .saturating_sub(latest.built_unix);
+    Ok(changed > 0 && (changed.saturating_mul(50) >= latest.files || age >= 24 * 60 * 60))
 }
 
 fn find_generation(base: &Path, commit: &str, digest: &str) -> Result<(u64, Option<PathBuf>)> {
@@ -487,6 +946,7 @@ fn build_generation(base: &Path, repo: &Repo, config: &Config, mut metadata: Bas
     sync_file(&manifest).with_context(|| format!("sync base manifest {}", manifest.display()))?;
     sync_directory(&scratch.0)?;
     let published = base.join(format!("gen-{}", metadata.generation));
+    enforce_group_budget(base.parent().context("missing base group")?, None)?;
     fs::rename(&scratch.0, &published)?;
     sync_directory(base)?;
     Ok(published)
@@ -647,4 +1107,312 @@ mod tests {
         };
         assert_eq!(second.file_name().unwrap(), "gen-2");
     }
+}
+
+#[cfg(all(test, feature = "code-intel-js"))]
+#[test]
+fn published_overlay_restitches_unchanged_importers() {
+    verify_moved_export(
+        "ts",
+        "export function target() {}\n",
+        "import { target } from './target';\ntarget();\n",
+        "// moved\nexport function target() {}\n",
+    );
+    verify_moved_export(
+        "py",
+        "def target():\n    return 1\n",
+        "from target import target\ntarget()\n",
+        "# moved\ndef target():\n    return 1\n",
+    );
+}
+
+#[cfg(all(test, feature = "code-intel-js"))]
+fn verify_moved_export(extension: &str, original: &str, importer: &str, changed: &str) {
+    crate::store::init_isolated_cache();
+    let fixture = tempfile::tempdir().unwrap();
+    let root = fixture.path();
+    let git = |args: &[&str]| {
+        assert!(
+            std::process::Command::new("git")
+                .current_dir(root)
+                .env("GIT_AUTHOR_NAME", "Test")
+                .env("GIT_AUTHOR_EMAIL", "test@example.test")
+                .env("GIT_COMMITTER_NAME", "Test")
+                .env("GIT_COMMITTER_EMAIL", "test@example.test")
+                .args(args)
+                .status()
+                .unwrap()
+                .success()
+        );
+    };
+    git(&["init", "-q"]);
+    let target_name = format!("target.{extension}");
+    let importer_name = format!("use.{extension}");
+    fs::write(root.join(&target_name), original).unwrap();
+    fs::write(root.join(&importer_name), importer).unwrap();
+    git(&["add", &target_name, &importer_name]);
+    git(&["-c", "commit.gpgsign=false", "commit", "-qm", "fixture"]);
+    let mut config = Config::with_defaults();
+    config.documents.enabled = false;
+    config.documents.embed = false;
+    config.code_search.enabled = false;
+    config.code_search.embed = false;
+    assert!(open_clean_worktree(root, &config).unwrap().is_some());
+    fs::write(root.join(&target_name), changed).unwrap();
+    let mut standalone = Store::open(root, "working").unwrap();
+    scan(
+        root,
+        &mut standalone,
+        &config,
+        ScanSource::WorkingTree,
+        EmbedMode::Deferred,
+    )
+    .unwrap();
+    let reference = standalone.index_view().unwrap();
+    assert!(publish_dirty_worktree(root, &config, &reference).unwrap());
+    let view = open_dirty_worktree(root, &config).unwrap().unwrap();
+    let target = crate::path::RelPath::from(target_name);
+    let offset = u32::try_from(changed.find("target").unwrap()).unwrap();
+    let expected = reference.references_to(&target, offset);
+    assert!(!expected.is_empty());
+    assert_eq!(view.references_to(&target, offset), expected);
+    drop(view);
+    let group = repo_group_dir(root);
+    let base = group.join(BASE_DIR);
+    fs::create_dir(base.join("gen-2")).unwrap();
+    fs::create_dir(base.join("gen-3")).unwrap();
+    assert_eq!(retire_old_generations(root).unwrap(), 0);
+    assert!(base.join("gen-1").is_dir());
+    let pin = group
+        .join("overlay-pins")
+        .join(format!("{}-1", crate::store_layout::workspace_key(root)));
+    fs::remove_file(pin).unwrap();
+    assert_eq!(retire_old_generations(root).unwrap(), 1);
+    assert!(!base.join("gen-1").exists());
+}
+
+#[cfg(all(test, not(any(feature = "code-intel-js", feature = "code-intel-stack"))))]
+#[test]
+fn reuses_a_base_when_new_commit_changes_less_than_two_percent() {
+    crate::store::init_isolated_cache();
+    let fixture = tempfile::tempdir().unwrap();
+    let root = fixture.path();
+    let git = |args: &[&str]| {
+        assert!(
+            std::process::Command::new("git")
+                .current_dir(root)
+                .env("GIT_AUTHOR_NAME", "Test")
+                .env("GIT_AUTHOR_EMAIL", "test@example.test")
+                .env("GIT_COMMITTER_NAME", "Test")
+                .env("GIT_COMMITTER_EMAIL", "test@example.test")
+                .args(args)
+                .status()
+                .unwrap()
+                .success()
+        );
+    };
+    git(&["init", "-q"]);
+    for index in 0..51 {
+        fs::write(
+            root.join(format!("sample_{index}.rs")),
+            format!("fn sample_{index}() {{ old(); }}"),
+        )
+        .unwrap();
+    }
+    git(&["add", "."]);
+    git(&["-c", "commit.gpgsign=false", "commit", "-qm", "base"]);
+    let mut config = Config::with_defaults();
+    config.documents.enabled = false;
+    config.documents.embed = false;
+    config.code_search.enabled = false;
+    config.code_search.embed = false;
+    assert!(open_clean_worktree(root, &config).unwrap().is_some());
+    fs::write(root.join("sample_0.rs"), "fn sample_0() { new(); }").unwrap();
+    git(&["add", "sample_0.rs"]);
+    git(&["-c", "commit.gpgsign=false", "commit", "-qm", "one file"]);
+    assert!(scan_dirty_worktree(root, &config).unwrap());
+    let base = repo_group_dir(root).join(BASE_DIR);
+    assert!(base.join("gen-1").is_dir());
+    assert!(!base.join("gen-2").exists());
+    let view = open_dirty_worktree(root, &config).unwrap().unwrap();
+    let mut reference = Store::open(root, "working").unwrap();
+    scan(
+        root,
+        &mut reference,
+        &config,
+        ScanSource::WorkingTree,
+        EmbedMode::Deferred,
+    )
+    .unwrap();
+    assert_eq!(reference.index.files.len(), 51);
+    crate::index::verify_shared_base(&*view, &reference.index_view().unwrap()).unwrap();
+}
+
+#[cfg(all(test, feature = "code-intel-js"))]
+#[test]
+fn changing_a_typescript_config_restitches_its_unchanged_consumer() {
+    crate::store::init_isolated_cache();
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let git = |args: &[&str]| {
+        assert!(
+            std::process::Command::new("git")
+                .current_dir(root)
+                .env("GIT_AUTHOR_NAME", "Test")
+                .env("GIT_AUTHOR_EMAIL", "test@example.test")
+                .env("GIT_COMMITTER_NAME", "Test")
+                .env("GIT_COMMITTER_EMAIL", "test@example.test")
+                .args(args)
+                .status()
+                .unwrap()
+                .success()
+        )
+    };
+    git(&["init", "-q"]);
+    for (path, text) in [
+        ("one/target.ts", "export const target = 1;\n"),
+        ("two/target.ts", "export const target = 2;\n"),
+        (
+            "use.ts",
+            "import { target } from '@lib/target';\nexport const v = target;\n",
+        ),
+        (
+            "tsconfig.json",
+            r#"{"compilerOptions":{"baseUrl":".","paths":{"@lib/*":["one/*"]}}}"#,
+        ),
+    ] {
+        let path = root.join(path);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, text).unwrap();
+    }
+    git(&["add", "."]);
+    git(&["-c", "commit.gpgsign=false", "commit", "-qm", "fixture"]);
+    let mut config = Config::with_defaults();
+    config.documents.enabled = false;
+    config.documents.embed = false;
+    config.code_search.enabled = false;
+    config.code_search.embed = false;
+    assert!(open_clean_worktree(root, &config).unwrap().is_some());
+    fs::write(
+        root.join("tsconfig.json"),
+        r#"{"compilerOptions":{"baseUrl":".","paths":{"@lib/*":["two/*"]}}}"#,
+    )
+    .unwrap();
+    let mut reference = Store::open(root, "working").unwrap();
+    scan(
+        root,
+        &mut reference,
+        &config,
+        ScanSource::WorkingTree,
+        EmbedMode::Deferred,
+    )
+    .unwrap();
+    assert!(publish_dirty_worktree(root, &config, &reference.index_view().unwrap()).unwrap());
+    let view = open_dirty_worktree(root, &config).unwrap().unwrap();
+    let target = crate::path::RelPath::from("two/target.ts");
+    let expected = reference.index_view().unwrap().references_to(&target, 13);
+    assert!(expected.iter().any(|(path, _)| path.as_str() == Some("use.ts")));
+    assert_eq!(view.references_to(&target, 13), expected);
+}
+
+#[cfg(all(test, feature = "code-intel-js"))]
+#[test]
+fn changing_a_typescript_barrel_restitches_its_unchanged_consumer() {
+    crate::store::init_isolated_cache();
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let git = |args: &[&str]| {
+        assert!(
+            std::process::Command::new("git")
+                .current_dir(root)
+                .env("GIT_AUTHOR_NAME", "Test")
+                .env("GIT_AUTHOR_EMAIL", "test@example.test")
+                .env("GIT_COMMITTER_NAME", "Test")
+                .env("GIT_COMMITTER_EMAIL", "test@example.test")
+                .args(args)
+                .status()
+                .unwrap()
+                .success()
+        )
+    };
+    git(&["init", "-q"]);
+    for (path, text) in [
+        ("one.ts", "export function target() {}\n"),
+        ("two.ts", "export function target() { return 2; }\n"),
+        ("barrel.ts", "import { target } from './one'; export { target };\n"),
+        ("use.ts", "import { target } from './barrel';\ntarget();\n"),
+    ] {
+        fs::write(root.join(path), text).unwrap();
+    }
+    git(&["add", "."]);
+    git(&["-c", "commit.gpgsign=false", "commit", "-qm", "fixture"]);
+    let mut config = Config::with_defaults();
+    config.documents.enabled = false;
+    config.documents.embed = false;
+    config.code_search.enabled = false;
+    config.code_search.embed = false;
+    assert!(open_clean_worktree(root, &config).unwrap().is_some());
+    fs::write(
+        root.join("barrel.ts"),
+        "import { target } from './two'; export { target };\n",
+    )
+    .unwrap();
+    let mut reference = Store::open(root, "working").unwrap();
+    scan(
+        root,
+        &mut reference,
+        &config,
+        ScanSource::WorkingTree,
+        EmbedMode::Deferred,
+    )
+    .unwrap();
+    assert!(publish_dirty_worktree(root, &config, &reference.index_view().unwrap()).unwrap());
+    let view = open_dirty_worktree(root, &config).unwrap().unwrap();
+    let target = crate::path::RelPath::from("two.ts");
+    let expected = reference.index_view().unwrap().references_to(&target, 16);
+    assert!(expected.iter().any(|(path, _)| path.as_str() == Some("use.ts")));
+    assert_eq!(view.references_to(&target, 16), expected);
+}
+
+#[cfg(all(test, not(any(feature = "code-intel-js", feature = "code-intel-stack"))))]
+#[test]
+fn rebase_refuses_delta_between_initial_and_post_rebase_file_limits() {
+    crate::store::init_isolated_cache();
+    let fixture = tempfile::tempdir().unwrap();
+    let root = fixture.path();
+    let git = |args: &[&str]| {
+        assert!(
+            std::process::Command::new("git")
+                .current_dir(root)
+                .env("GIT_AUTHOR_NAME", "Test")
+                .env("GIT_AUTHOR_EMAIL", "test@example.test")
+                .env("GIT_COMMITTER_NAME", "Test")
+                .env("GIT_COMMITTER_EMAIL", "test@example.test")
+                .args(args)
+                .status()
+                .unwrap()
+                .success()
+        );
+    };
+    git(&["init", "-q"]);
+    for index in 0..8 {
+        fs::write(root.join(format!("keep_{index}.rs")), format!("fn keep_{index}() {{}}")).unwrap();
+    }
+    git(&["add", "."]);
+    git(&["-c", "commit.gpgsign=false", "commit", "-qm", "base"]);
+    let mut config = Config::with_defaults();
+    config.documents.enabled = false;
+    config.documents.embed = false;
+    config.code_search.enabled = false;
+    config.code_search.embed = false;
+    assert!(open_clean_worktree(root, &config).unwrap().is_some());
+    fs::write(root.join("keep_0.rs"), "fn overlay() {}").unwrap();
+    assert!(scan_dirty_worktree(root, &config).unwrap());
+    fs::write(root.join("keep_1.rs"), "fn new_commit() {}").unwrap();
+    git(&["add", "keep_1.rs"]);
+    git(&["-c", "commit.gpgsign=false", "commit", "-qm", "advance"]);
+    assert!(!scan_dirty_worktree(root, &config).unwrap());
+    assert!(repo_group_dir(root).join("base/gen-2").is_dir());
+    assert!(!scan_dirty_worktree(root, &config).unwrap());
+    assert!(open_dirty_worktree(root, &config).unwrap().is_none());
 }

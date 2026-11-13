@@ -523,14 +523,22 @@ impl Store {
     /// the frame — the trailing L2 bytes are read off disk but never decoded, so the common
     /// outline-only read path (`MapCache` build, `search_symbols`) pays no L2 decode cost.
     pub fn read_l1_by_hex(&self, hash_hex: &str) -> Result<Option<FileMapL1>, StoreError> {
-        read_l1_blob_in(&self.blobs_dir, hash_hex)
+        let primary = read_l1_blob_in(&self.blobs_dir, hash_hex)?;
+        match (&self.fallback_blobs_dir, primary) {
+            (Some(fallback), None) => read_l1_blob_in(fallback, hash_hex),
+            (_, primary) => Ok(primary),
+        }
     }
 
     /// Read the L2 calls from the combined-filemap blob. Returns `Ok(None)` both when the blob
     /// is absent and when it carries no L2 tier (the file was scanned with `eager_l2 = false`
     /// or L2 extraction failed) — callers escalate via `query::file_outline_l2`.
     pub fn read_l2_by_hex(&self, hash_hex: &str) -> Result<Option<FileMapL2>, StoreError> {
-        read_l2_blob_in(&self.blobs_dir, hash_hex)
+        let primary = read_l2_blob_in(&self.blobs_dir, hash_hex)?;
+        match (&self.fallback_blobs_dir, primary) {
+            (Some(fallback), None) => read_l2_blob_in(fallback, hash_hex),
+            (_, primary) => Ok(primary),
+        }
     }
 
     /// Write the combined-filemap blob for a file. Holds both tiers in one content-addressed blob,
@@ -628,9 +636,19 @@ impl Store {
         &self,
         hash_hex: &str,
     ) -> Result<Option<crate::intel::model::FileResolvedRefs>, StoreError> {
-        let path = self.blob_path_rref_hex(hash_hex);
-        let Some(bytes) = read_if_exists(&path)? else {
-            return Ok(None);
+        let mut path = self.blob_path_rref_hex(hash_hex);
+        let bytes = match read_if_exists(&path)? {
+            Some(bytes) => bytes,
+            None => {
+                let Some(fallback) = &self.fallback_blobs_dir else {
+                    return Ok(None);
+                };
+                path = fallback.join(format!("{hash_hex}.rref.msgpack"));
+                let Some(bytes) = read_if_exists(&path)? else {
+                    return Ok(None);
+                };
+                bytes
+            }
         };
         let decoded = decode_single_or_legacy(&path, &bytes, BlobKind::Single)?;
         let refs: crate::intel::model::FileResolvedRefs = rmp_serde::from_slice(&decoded)?;

@@ -436,6 +436,29 @@ impl<T: Borrow<IndexDb> + Send + Sync> IndexView for StandaloneView<T> {
     }
 }
 
+pub(crate) struct SharedView(pub std::sync::Arc<dyn IndexView>);
+
+impl IndexView for SharedView {
+    fn get(&self, part: Part, key: &[u8]) -> Result<Option<IndexBytes>, IndexError> {
+        self.0.get(part, key)
+    }
+    fn prefix(&self, part: Part, prefix: &[u8]) -> KvIter<'_> {
+        self.0.prefix(part, prefix)
+    }
+    fn range(&self, part: Part, lower: Bound<&[u8]>, upper: Bound<&[u8]>) -> KvIter<'_> {
+        self.0.range(part, lower, upper)
+    }
+    fn iter(&self, part: Part) -> KvIter<'_> {
+        self.0.iter(part)
+    }
+    fn callee_keys_matching(&self, needle: &str, cursor: Option<&[u8]>, lower: Bound<Vec<u8>>) -> KvIter<'_> {
+        self.0.callee_keys_matching(needle, cursor, lower)
+    }
+    fn trait_keys_matching(&self, needle: &str, cursor: Option<&[u8]>, lower: Bound<Vec<u8>>) -> KvIter<'_> {
+        self.0.trait_keys_matching(needle, cursor, lower)
+    }
+}
+
 #[cfg(test)]
 pub(crate) use recording::{ReadLog, RecordingView};
 

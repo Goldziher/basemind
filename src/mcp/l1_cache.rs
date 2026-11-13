@@ -85,10 +85,13 @@ impl FileIndexView {
             .files
             .par_iter()
             .filter_map(|(path, entry)| {
-                store
-                    .blob_path_fm_hex(&entry.hash_hex)
-                    .is_file()
-                    .then(|| (path.clone(), FileMeta::from(entry)))
+                let blob = store.blob_path_fm_hex(&entry.hash_hex);
+                let exists = blob.is_file()
+                    || store
+                        .fallback_blobs_dir
+                        .as_ref()
+                        .is_some_and(|fallback| blob.file_name().is_some_and(|name| fallback.join(name).is_file()));
+                exists.then(|| (path.clone(), FileMeta::from(entry)))
             })
             .collect();
         Self { files }
@@ -188,6 +191,8 @@ pub(crate) struct L1Cache {
     /// Global content-addressed blob directory. Reading a blob needs nothing but this path, which
     /// is why a miss can be served without ever taking the store lock.
     blobs_dir: PathBuf,
+    fallback: Option<PathBuf>,
+    _layered_lease: Option<std::sync::Arc<dyn crate::index::view::IndexView>>,
     /// Byte ceiling for decoded values; `0` means unbounded (the pre-split behaviour).
     budget_bytes: u64,
     inner: Mutex<Charged>,
@@ -200,6 +205,8 @@ impl L1Cache {
     pub(crate) fn new(blobs_dir: PathBuf, budget_bytes: u64) -> Self {
         Self {
             blobs_dir,
+            fallback: None,
+            _layered_lease: None,
             budget_bytes,
             inner: Mutex::new(Charged {
                 lru: LruCache::unbounded(),
@@ -215,6 +222,13 @@ impl L1Cache {
     }
 
     /// The global content-addressed blob directory this cache reads from.
+    pub(crate) fn from_store(store: &crate::store::Store, budget_bytes: u64) -> Self {
+        let mut cache = Self::new(store.blobs_dir.clone(), budget_bytes);
+        cache.fallback = store.fallback_blobs_dir.clone();
+        cache._layered_lease = store.layered_read.clone();
+        cache
+    }
+
     pub(crate) fn blobs_dir(&self) -> &std::path::Path {
         &self.blobs_dir
     }
@@ -284,9 +298,13 @@ impl L1Cache {
 
     fn read_blob(&self, hash_hex: &str) -> Option<FileMapL1> {
         self.misses.fetch_add(1, Ordering::Relaxed);
-        crate::store_blob::read_l1_blob_in(&self.blobs_dir, hash_hex)
-            .ok()
-            .flatten()
+        match crate::store_blob::read_l1_blob_in(&self.blobs_dir, hash_hex) {
+            Ok(None) => self
+                .fallback
+                .as_ref()
+                .and_then(|dir| crate::store_blob::read_l1_blob_in(dir, hash_hex).ok().flatten()),
+            result => result.ok().flatten(),
+        }
     }
 
     /// Insert `value` and evict least-recently-used entries until the charge fits the budget.

@@ -65,6 +65,9 @@ impl IndexRoute {
     }
 
     async fn resolve_with_layering(state: &super::ServerState, enabled: bool) -> Self {
+        if enabled && let Some(view) = state.shared.store.read().await.layered_read.clone() {
+            return Self::Local(Box::new(crate::index::view::SharedView(view)));
+        }
         if enabled && state.shared.store.read().await.view == crate::store::VIEW_WORKING {
             let root = state.shared.root.clone();
             let config = std::sync::Arc::clone(&state.shared.config);

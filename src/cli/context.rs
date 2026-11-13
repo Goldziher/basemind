@@ -57,7 +57,7 @@ pub fn build_server_for(
     intent: Intent,
 ) -> Result<BasemindServer> {
     let daemon = super::rescan::daemon_is_up();
-    let store = if daemon {
+    let mut store = if daemon {
         Store::open_read_only_no_index(root, view).context("open store (blobs only; the daemon holds the index)")?
     } else if intent == Intent::Rescan {
         Store::open_with_holder(root, view, LockHolder::Rescan).map_err(|err| {
@@ -72,6 +72,12 @@ pub fn build_server_for(
     };
     let basemind_dir = store.basemind_dir.clone();
     let cfg = Arc::new(load_config(root, documents)?);
+    if intent != Intent::Rescan
+        && std::env::var_os("BASEMIND_INDEX_LAYERED").is_some_and(|value| value == "1")
+        && let Err(error) = crate::store_base::hydrate_cold_store(&mut store, &cfg)
+    {
+        tracing::debug!(%error, "shared worktree manifest unavailable");
+    }
     let repo = Repo::discover(root).ok().map(Arc::new);
     let git_cache = Arc::new(GitCache::open(&basemind_dir, CLI_GIT_CACHE_MEM, false).context("open git cache")?);
     #[cfg(all(feature = "comms", any(unix, windows)))]

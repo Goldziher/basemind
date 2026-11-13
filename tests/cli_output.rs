@@ -144,7 +144,10 @@ fn explicit_shared_base_verification_uses_standalone_for_dirty_worktrees() {
         "\"$schema\" = \"v1\"\n[documents]\nenabled = false\nembed = false\n[code_search]\nenabled = false\nembed = false\n",
     )
     .unwrap();
-    git(root, &["add", "example.rs", "basemind.toml"]);
+    for index in 0..10 {
+        std::fs::write(root.join(format!("keep_{index}.rs")), format!("fn keep_{index}() {{}}")).unwrap();
+    }
+    git(root, &["add", "."]);
     git(root, &["-c", "commit.gpgsign=false", "commit", "-qm", "fixture"]);
     let verify = || {
         Command::new(bin())
@@ -180,9 +183,146 @@ fn explicit_shared_base_verification_uses_standalone_for_dirty_worktrees() {
         let second = opted_in();
         let message = String::from_utf8_lossy(&second.stderr);
         assert!(second.status.success(), "{message}");
+        assert!(message.contains("Shared worktree index ready"), "{message}");
+    }
+}
+
+#[cfg(not(any(feature = "code-intel-js", feature = "code-intel-stack")))]
+#[test]
+fn cold_dirty_scan_publishes_delta_without_standalone_fjall() {
+    basemind::store::init_isolated_cache();
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    git(root, &["init", "-q"]);
+    std::fs::write(root.join("sample.rs"), "fn sample() { before(); }").unwrap();
+    std::fs::write(
+        root.join("basemind.toml"),
+        "\"$schema\" = \"v1\"\n[documents]\nenabled=false\nembed=false\n[code_search]\nenabled=false\nembed=false\n",
+    )
+    .unwrap();
+    for index in 0..10 {
+        std::fs::write(root.join(format!("keep_{index}.rs")), format!("fn keep_{index}() {{}}")).unwrap();
+    }
+    git(root, &["add", "."]);
+    git(root, &["-c", "commit.gpgsign=false", "commit", "-qm", "fixture"]);
+    let mut config = basemind::config::Config::with_defaults();
+    config.documents.enabled = false;
+    config.documents.embed = false;
+    config.code_search.enabled = false;
+    config.code_search.embed = false;
+    assert!(
+        basemind::store_base::open_clean_worktree(root, &config)
+            .unwrap()
+            .is_some()
+    );
+    std::fs::write(root.join("sample.rs"), "fn after_symbol() { after(); }").unwrap();
+    let refused = Command::new(bin())
+        .env("BASEMIND_INDEX_LAYERED", "1")
+        .env("BASEMIND_INDEX_MAX_GROUP_BYTES", "1")
+        .args(["--root", root.to_str().unwrap(), "scan", "--no-git-history"])
+        .output()
+        .unwrap();
+    assert!(refused.status.success(), "{}", String::from_utf8_lossy(&refused.stderr));
+    assert!(!String::from_utf8_lossy(&refused.stderr).contains("Shared worktree index ready"));
+    assert!(!basemind::store_base::has_published_dirty_worktree(root, &config).unwrap());
+    let working = basemind::store::workspace_cache_dir(root).join("views/working");
+    std::fs::remove_dir_all(working).unwrap();
+    let result = Command::new(bin())
+        .env("BASEMIND_INDEX_LAYERED", "1")
+        .args(["--root", root.to_str().unwrap(), "scan", "--no-git-history"])
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    assert!(result.status.success(), "{stderr}");
+    assert!(stderr.contains("Shared worktree index ready"), "{stderr}");
+    let cache = basemind::store::workspace_cache_dir(root);
+    assert!(!cache.join("views/working/index.fjall").exists());
+    assert!(basemind::store_base::has_published_dirty_worktree(root, &config).unwrap());
+    for (args, expected) in [
+        (vec!["code", "files", "--path-contains", "sample.rs"], "sample.rs"),
+        (vec!["code", "symbols", "after_symbol"], "after_symbol"),
+    ] {
+        let query = Command::new(bin())
+            .env("BASEMIND_INDEX_LAYERED", "1")
+            .args(["--root", root.to_str().unwrap()])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(query.status.success(), "{}", String::from_utf8_lossy(&query.stderr));
         assert!(
-            message.contains("Reused the verified shared worktree index"),
-            "{message}"
+            String::from_utf8_lossy(&query.stdout).contains(expected),
+            "{:?}",
+            query.stdout
         );
     }
+    assert!(!cache.join("views/working/index.fjall").exists());
+    let api = |layered: &str, args: &[&str]| {
+        let query = Command::new(bin())
+            .env("BASEMIND_INDEX_LAYERED", layered)
+            .args(["--json", "--root", root.to_str().unwrap()])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(query.status.success(), "{}", String::from_utf8_lossy(&query.stderr));
+        let mut response: serde_json::Value = serde_json::from_slice(&query.stdout).unwrap();
+        let fields = response.as_object_mut().unwrap();
+        fields.remove("elapsed_us");
+        fields.remove("startup_us");
+        response
+    };
+    let requests: &[(&[&str], &str)] = &[
+        (
+            &[
+                "graph",
+                "calls",
+                "after_symbol",
+                "--direction",
+                "callees",
+                "--path",
+                "sample.rs",
+            ],
+            "after",
+        ),
+        (&["git", "status"], "sample.rs"),
+        (&["git", "recent", "--limit", "1"], "fixture"),
+    ];
+    let layered = requests
+        .iter()
+        .map(|(args, expected)| {
+            let result = api("1", args);
+            assert!(result.to_string().contains(expected), "{result}");
+            result
+        })
+        .collect::<Vec<_>>();
+    let reference = Command::new(bin())
+        .env("BASEMIND_INDEX_LAYERED", "0")
+        .args(["--root", root.to_str().unwrap(), "scan", "--no-git-history"])
+        .output()
+        .unwrap();
+    assert!(
+        reference.status.success(),
+        "{}",
+        String::from_utf8_lossy(&reference.stderr)
+    );
+    for ((args, _), expected) in requests.iter().zip(layered) {
+        assert_eq!(api("0", args), expected, "request {args:?}");
+    }
+    for number in 0..2 {
+        std::fs::write(root.join(format!("overflow_{number}.rs")), "fn overflow() {}").unwrap();
+    }
+    let opted_in_scan = || {
+        Command::new(bin())
+            .env("BASEMIND_INDEX_LAYERED", "1")
+            .args(["--root", root.to_str().unwrap(), "scan", "--no-git-history"])
+            .output()
+            .unwrap()
+    };
+    assert!(opted_in_scan().status.success());
+    assert!(cache.join("layered-promoted").is_file());
+    for number in 0..2 {
+        std::fs::remove_file(root.join(format!("overflow_{number}.rs"))).unwrap();
+    }
+    assert!(opted_in_scan().status.success());
+    assert!(cache.join("layered-promoted").is_file());
+    assert!(!basemind::store_base::has_published_dirty_worktree(root, &config).unwrap());
 }
