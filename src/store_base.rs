@@ -139,6 +139,14 @@ pub fn open(root: &Path, config: &Config, generation: u64, commit: &str) -> Resu
 /// Open an opt-in committed index for a clean worktree. Callers can use their ordinary
 /// working index whenever the worktree or scan policy requires an overlay.
 pub fn open_clean_worktree(root: &Path, config: &Config) -> Result<Option<SortedRunView>> {
+    open_worktree_base(root, config, true)
+}
+
+pub(crate) fn open_existing_worktree_base(root: &Path, config: &Config) -> Result<Option<SortedRunView>> {
+    open_worktree_base(root, config, false)
+}
+
+fn open_worktree_base(root: &Path, config: &Config, build: bool) -> Result<Option<SortedRunView>> {
     if config.documents.enabled
         || config.documents.embed
         || config.code_search.enabled
@@ -159,8 +167,21 @@ pub fn open_clean_worktree(root: &Path, config: &Config) -> Result<Option<Sorted
     if !repo.status_against(&commit)?.overlay_candidates().is_empty() {
         return Ok(None);
     }
-    let BaseBuild::Ready(path) = prepare(root, config)? else {
-        return Ok(None);
+    let path = if build {
+        let BaseBuild::Ready(path) = prepare(root, config)? else {
+            return Ok(None);
+        };
+        path
+    } else {
+        let directory = repo_group_dir(root).join(BASE_DIR);
+        if !directory.is_dir() {
+            return Ok(None);
+        }
+        let (_, ready) = find_generation(&directory, &commit, &scan_digest(config)?)?;
+        let Some(path) = ready else {
+            return Ok(None);
+        };
+        path
     };
     let generation = path
         .file_name()
