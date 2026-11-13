@@ -1,5 +1,6 @@
 //! Cross-process leases and conservative retention for immutable base generations.
 
+#[cfg(test)]
 use std::collections::BTreeSet;
 use std::fs::{self, File, OpenOptions};
 use std::io;
@@ -38,6 +39,7 @@ impl GenerationLease {
     }
 }
 
+#[cfg(test)]
 #[derive(Debug, Default, PartialEq, Eq)]
 pub(crate) struct RetiredGenerations {
     pub(crate) removed: Vec<u64>,
@@ -49,6 +51,7 @@ pub(crate) struct RetiredGenerations {
 /// The caller selects retired candidates, preserving the newest compatible generation.
 /// Read durable pins in the callback. Overlay pin creation and replacement must take the
 /// same exclusive group lock before publishing metadata. An error reading pins prevents GC.
+#[cfg(test)]
 pub(crate) fn retire_unpinned(
     group: &Path,
     candidates: &BTreeSet<u64>,
@@ -81,6 +84,7 @@ pub(crate) fn retire_unpinned(
     Ok(result)
 }
 
+#[cfg(test)]
 fn mark_retired(group: &Path, generation: u64) -> io::Result<Option<PathBuf>> {
     let path = generation_path(group, generation);
     let retired = group.join(BASE).join(format!(".retired-{generation}"));
@@ -92,6 +96,7 @@ fn mark_retired(group: &Path, generation: u64) -> io::Result<Option<PathBuf>> {
     }
 }
 
+#[cfg(test)]
 fn directory_exists(path: &Path) -> io::Result<bool> {
     match fs::symlink_metadata(path) {
         Ok(metadata) if metadata.file_type().is_dir() => Ok(true),

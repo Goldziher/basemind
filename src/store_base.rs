@@ -392,6 +392,18 @@ mod tests {
         };
         assert_eq!(reused, first);
 
+        let commit = Repo::discover(root).unwrap().resolve_rev("HEAD").unwrap();
+        assert!(open(root, &config, 1, "wrong").is_err());
+        let reader = open(root, &config, 1, &commit).unwrap();
+        let key = crate::index::keys::symbols_by_path_prefix(&crate::path::RelPath::from("example.rs"));
+        let (_, retained) = reader
+            .prefix(crate::index::view::Part::SymbolsByPath, &key)
+            .next()
+            .unwrap()
+            .unwrap();
+        assert!(!retained.is_empty());
+        drop(reader);
+        assert!(!first.join(INDEX_DIR).exists());
         let group = repo_group_dir(root);
         let lock = OpenOptions::new()
             .read(true)
@@ -402,7 +414,15 @@ mod tests {
         assert!(matches!(prepare(root, &config).unwrap(), BaseBuild::Busy));
         drop(lock);
 
-        fs::write(first.join(crate::store::INDEX_FILE), b"invalid").unwrap();
+        use crate::store_base_retention::retire_unpinned;
+        use std::collections::BTreeSet;
+        let generations = BTreeSet::from([1]);
+        let retired = retire_unpinned(&group, &generations, || Ok(BTreeSet::new())).unwrap();
+        assert_eq!(retired.active, [1]);
+        assert!(first.is_dir());
+        drop(retained);
+        let retired = retire_unpinned(&group, &generations, || Ok(BTreeSet::new())).unwrap();
+        assert_eq!(retired.removed, [1]);
         let BaseBuild::Ready(second) = prepare(root, &config).unwrap() else {
             panic!("invalid generation was not replaced");
         };
