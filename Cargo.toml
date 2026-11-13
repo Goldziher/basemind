@@ -231,6 +231,7 @@ xberg = { git = "https://github.com/xberg-io/xberg.git", rev = "65605e417f905f89
   "tokio-runtime",
   "simd-utf8",
 ], optional = true }
+memmap2 = "0.9"
 zstd = "0.14.4"
 
 [target.'cfg(target_os = "macos")'.dependencies]
@@ -240,7 +241,6 @@ mach2 = "0.7"
 basemind = { path = ".", features = ["test-support"] }
 criterion = { version = "0.8", features = ["html_reports"] }
 insta = "1"
-memmap2 = "0.9"
 proptest = "1"
 rmcp = { version = "3.10", features = ["client", "transport-async-rw", "transport-child-process"] }
 tempfile = "3"

@@ -34,6 +34,7 @@ mod layered_verify;
 mod layered_view;
 pub(crate) mod memory_store;
 pub(crate) mod name_dict;
+pub mod sorted_run;
 #[cfg(test)]
 mod sorted_run_prototype;
 pub mod view;

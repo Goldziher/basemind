@@ -35,9 +35,14 @@ pub struct IndexBytes(Repr);
 #[derive(Clone)]
 enum Repr {
     Fjall(fjall::Slice),
+    Mapped(std::sync::Arc<memmap2::Mmap>, std::ops::Range<usize>),
 }
 
 impl IndexBytes {
+    pub(super) fn from_mapping(mapping: std::sync::Arc<memmap2::Mmap>, bounds: std::ops::Range<usize>) -> Self {
+        Self(Repr::Mapped(mapping, bounds))
+    }
+
     pub(super) fn from_fjall(slice: fjall::Slice) -> Self {
         Self(Repr::Fjall(slice))
     }
@@ -49,6 +54,7 @@ impl Deref for IndexBytes {
     fn deref(&self) -> &[u8] {
         match &self.0 {
             Repr::Fjall(slice) => slice,
+            Repr::Mapped(mapping, bounds) => &mapping[bounds.clone()],
         }
     }
 }
@@ -104,7 +110,6 @@ pub enum Part {
 impl Part {
     /// Every layered keyspace, in declaration order. Checked against [`KEYSPACE_MEMTABLE_BYTES`] in
     /// `view_tests`, so a keyspace added to either list alone fails there.
-    #[cfg(test)]
     pub(super) const ALL: [Part; 16] = [
         Part::Meta,
         Part::SymbolsByPath,
@@ -125,7 +130,6 @@ impl Part {
     ];
 
     /// The keyspace's on-disk name.
-    #[cfg(test)]
     pub(super) const fn name(self) -> &'static str {
         match self {
             Part::Meta => "meta",
