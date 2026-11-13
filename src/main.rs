@@ -737,6 +737,15 @@ fn cmd_scan(root: &std::path::Path, args: &ScanArgs, verbosity: Verbosity, no_co
         tracing::debug!(%error, "shared base retention failed");
     }
     reclaim_after_scan(&mut out, &report.stats, std::mem::take(&mut store.reset_stale_schema));
+    #[cfg(unix)]
+    if shared_index
+        && args.verify_shared_base
+        && report.stats.read_failed == 0
+        && report.stats.extract_failed == 0
+        && store.retire_verified_working_view(&config)?
+    {
+        eprintln!("Verified shared generation activated; standalone backup retained for rollback.");
+    }
     sync_git_history_after_scan(root, !args.no_git_history, args.rebuild_git_history, &mut out);
     Ok(())
 }

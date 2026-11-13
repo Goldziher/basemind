@@ -2,7 +2,7 @@
 
 use std::fs::{self, File, OpenOptions};
 use std::io;
-#[cfg(test)]
+#[cfg(any(unix, test))]
 use std::io::Write;
 use std::path::Path;
 
@@ -52,7 +52,7 @@ impl<'a> Migration<'a> {
     }
 
     /// Verify the source and candidate before publishing an intent to retire the source.
-    #[cfg(test)]
+    #[cfg(any(unix, test))]
     pub(crate) fn retire(&self, generation: u64, verify: impl FnOnce() -> Result<()>) -> Result<()> {
         ensure!(self.read()?.is_none(), "migration already recorded");
         let working = self.views.join(WORKING);
@@ -72,7 +72,7 @@ impl<'a> Migration<'a> {
     }
 
     /// Confirm the routed generation opened successfully before recording completion.
-    #[cfg(test)]
+    #[cfg(any(unix, test))]
     pub(crate) fn commit(&self, generation: u64, verify_route: impl FnOnce() -> Result<()>) -> Result<()> {
         let mut journal = self.read()?.context("missing migration intent")?;
         ensure!(
@@ -121,7 +121,7 @@ impl<'a> Migration<'a> {
         Ok(Some(journal))
     }
 
-    #[cfg(test)]
+    #[cfg(any(unix, test))]
     fn write(&self, journal: &Journal) -> Result<()> {
         let mut file = tempfile::NamedTempFile::new_in(self.views)?;
         file.write_all(&serde_json::to_vec(journal)?)?;

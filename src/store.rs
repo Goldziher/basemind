@@ -340,6 +340,64 @@ impl Store {
         })
     }
 
+    /// Retire the standalone working view after comparing it to a leased clean generation.
+    #[cfg(unix)]
+    pub fn retire_verified_working_view(&mut self, config: &crate::config::Config) -> anyhow::Result<bool> {
+        if self.view != VIEW_WORKING || self._lock.is_none() || self.basemind_dir.join(LANCE_DIR).exists() {
+            return Ok(false);
+        }
+        let Some(base) = crate::store_base::open_clean_worktree(&self.root, config)? else {
+            return Ok(false);
+        };
+        let Some(standalone) = self.index_view() else {
+            return Ok(false);
+        };
+        crate::index::verify_shared_base(&base, &standalone)?;
+        let directory = base
+            .directory()
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("missing generation directory"))?;
+        let candidate = read_index(directory)?.ok_or_else(|| anyhow::anyhow!("missing generation manifest"))?;
+        if self.index.files.len() != candidate.files.len()
+            || self.index.files.iter().any(|(path, entry)| {
+                candidate.files.get(path).is_none_or(|other| {
+                    other.hash_hex != entry.hash_hex
+                        || other.language != entry.language
+                        || other.extract_epoch != entry.extract_epoch
+                })
+            })
+            || !self.index.doc_files.is_empty()
+        {
+            return Ok(false);
+        }
+        let generation: u64 = directory
+            .file_name()
+            .and_then(|name| name.to_str())
+            .and_then(|name| name.strip_prefix("gen-"))
+            .ok_or_else(|| anyhow::anyhow!("invalid generation path"))?
+            .parse()?;
+        let views = self.basemind_dir.join(VIEWS_DIR);
+        let migration = crate::store_migration::Migration::lock(&views)?;
+        drop(self.index_db.take());
+        let result = migration.retire(generation, || Ok(())).and_then(|()| {
+            migration.commit(generation, || {
+                let current = crate::store_base::open_existing_worktree_base(&self.root, config)?;
+                anyhow::ensure!(
+                    current
+                        .as_ref()
+                        .is_some_and(|view| view.directory() == base.directory()),
+                    "worktree no longer matches the verified generation"
+                );
+                Ok(())
+            })
+        });
+        if let Err(error) = result {
+            migration.recover(|_| false)?;
+            return Err(error);
+        }
+        Ok(true)
+    }
+
     /// A read view over the fjall index, or `None` when this session holds none. Every index read
     /// goes through it (see [`crate::index::view`]).
     pub fn index_view(&self) -> Option<crate::index::view::StandaloneView<&IndexDb>> {
