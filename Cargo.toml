@@ -234,7 +234,7 @@ tree-sitter-graph = { package = "basemind-tree-sitter-graph", version = "0.12.1"
 tree-sitter-language-pack = "1.25.0"
 tree-sitter-stack-graphs = { package = "basemind-tree-sitter-stack-graphs", version = "0.10.1", path = "crates/tree-sitter-stack-graphs", optional = true }
 url = { version = "2", features = ["serde"], optional = true }
-xberg = { git = "https://github.com/xberg-io/xberg.git", rev = "65605e417f905f89abd77e0d0791ba2a52fd0a04", version = "1.3.10", default-features = false, features = [
+xberg = { git = "https://github.com/xberg-io/xberg.git", rev = "7510f9d01d6535fa8f30b618be16c5d656c9d888", version = "1.4.0", default-features = false, features = [
   "tokio-runtime",
   "simd-utf8",
 ], optional = true }
