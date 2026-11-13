@@ -313,6 +313,11 @@ pub fn scan_dirty_worktree(root: &Path, config: &Config) -> Result<bool> {
     Ok(false)
 }
 
+/// Refresh a prepared working index without opening standalone storage.
+pub fn refresh_worktree(root: &Path, config: &Config) -> Result<bool> {
+    Ok(open_existing_worktree_base(root, config)?.is_some() || scan_dirty_worktree(root, config)?)
+}
+
 /// Check for a published delta matching the current worktree.
 pub fn has_published_dirty_worktree(root: &Path, config: &Config) -> Result<bool> {
     Ok(open_dirty_worktree(root, config)?.is_some())
@@ -325,7 +330,14 @@ pub(crate) fn open_dirty_worktree(root: &Path, config: &Config) -> Result<Option
 pub(crate) fn hydrate_cold_store(store: &mut Store, config: &Config) -> Result<()> {
     if store.view == crate::store::VIEW_WORKING && store.index.files.is_empty() && store.index_db.is_none() {
         let root = store.root.clone();
-        dirty_worktree(&root, config, false, false, None, Some(store))?;
+        if let Some(view) = open_existing_worktree_base(&root, config)? {
+            let directory = view.directory().parent().context("missing base generation directory")?;
+            let index = crate::store::read_index(directory)?.context("missing base manifest")?;
+            let blobs = directory.join(crate::store_layout::BLOBS_DIR);
+            store.install_layered_manifest(index, blobs.clone(), blobs, std::sync::Arc::new(view));
+        } else {
+            dirty_worktree(&root, config, false, false, None, Some(store))?;
+        }
     }
     Ok(())
 }

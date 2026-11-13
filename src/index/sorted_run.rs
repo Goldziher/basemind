@@ -236,6 +236,10 @@ impl SortedRunView {
         Ok(Self { directory, runs })
     }
 
+    pub(crate) fn directory(&self) -> &Path {
+        &self.directory
+    }
+
     fn error(&self, part: Part, source: io::Error) -> IndexError {
         IndexError::Io {
             path: self.directory.join(part.name()),
