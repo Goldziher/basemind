@@ -316,6 +316,10 @@ fn dirty_worktree(
         fs::write(scratch.path().join("delta.msgpack"), rmp_serde::to_vec_named(&delta)?)?;
         drop(overlay);
         sync_tree(scratch.path())?;
+        let group = repo_group_dir(root);
+        let gate = crate::store_base_retention::group_lock(&group)?;
+        fs2::FileExt::lock_exclusive(&gate)?;
+        write_overlay_pin(&group, root, generation)?;
         fs::rename(scratch.path(), &published)?;
         sync_directory(&overlays)?;
     }
@@ -384,6 +388,63 @@ fn restitch_overlay(
     delta.add_restitched(affected);
     db.set_import_probes_complete(true)?;
     Ok(())
+}
+
+fn write_overlay_pin(group: &Path, root: &Path, generation: u64) -> Result<()> {
+    use std::io::Write;
+
+    let pins = group.join("overlay-pins");
+    fs::create_dir_all(&pins)?;
+    let name = format!("{}-{generation}", crate::store_layout::workspace_key(root));
+    let mut pin = tempfile::NamedTempFile::new_in(&pins)?;
+    pin.write_all(&generation.to_be_bytes())?;
+    pin.as_file().sync_all()?;
+    pin.persist(pins.join(name))?;
+    sync_directory(&pins)?;
+    Ok(())
+}
+
+fn durable_overlay_pins(group: &Path) -> io::Result<std::collections::BTreeSet<u64>> {
+    let entries = match fs::read_dir(group.join("overlay-pins")) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Default::default()),
+        Err(error) => return Err(error),
+    };
+    entries
+        .map(|entry| {
+            let entry = entry?;
+            let bytes: [u8; 8] = fs::read(entry.path())?
+                .try_into()
+                .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid overlay pin"))?;
+            Ok(u64::from_be_bytes(bytes))
+        })
+        .collect()
+}
+
+/// Retire older published base generations while keeping the newest two and every durable pin.
+pub fn retire_old_generations(root: &Path) -> Result<usize> {
+    let group = repo_group_dir(root);
+    let base = group.join(BASE_DIR);
+    if !base.is_dir() {
+        return Ok(0);
+    }
+    let mut ready = std::collections::BTreeSet::<u64>::new();
+    let mut retired = std::collections::BTreeSet::new();
+    for entry in fs::read_dir(&base)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if let Some(generation) = name.strip_prefix("gen-").and_then(|id| id.parse().ok()) {
+            ready.insert(generation);
+        } else if let Some(generation) = name.strip_prefix(".retired-").and_then(|id| id.parse().ok()) {
+            retired.insert(generation);
+        }
+    }
+    retired.extend(ready.iter().rev().skip(2).copied());
+    let result = crate::store_base_retention::retire_unpinned(&group, &retired, || durable_overlay_pins(&group))?;
+    Ok(result.removed.len())
 }
 
 fn candidate_fingerprint(
@@ -783,4 +844,17 @@ fn verify_moved_export(extension: &str, original: &str, importer: &str, changed:
     let expected = reference.references_to(&target, offset);
     assert!(!expected.is_empty());
     assert_eq!(view.references_to(&target, offset), expected);
+    drop(view);
+    let group = repo_group_dir(root);
+    let base = group.join(BASE_DIR);
+    fs::create_dir(base.join("gen-2")).unwrap();
+    fs::create_dir(base.join("gen-3")).unwrap();
+    assert_eq!(retire_old_generations(root).unwrap(), 0);
+    assert!(base.join("gen-1").is_dir());
+    let pin = group
+        .join("overlay-pins")
+        .join(format!("{}-1", crate::store_layout::workspace_key(root)));
+    fs::remove_file(pin).unwrap();
+    assert_eq!(retire_old_generations(root).unwrap(), 1);
+    assert!(!base.join("gen-1").exists());
 }

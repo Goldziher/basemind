@@ -725,6 +725,9 @@ fn cmd_scan(root: &std::path::Path, args: &ScanArgs, verbosity: Verbosity, no_co
     {
         tracing::debug!(%error, "shared overlay publication failed");
     }
+    if shared_index && let Err(error) = basemind::store_base::retire_old_generations(root) {
+        tracing::debug!(%error, "shared base retention failed");
+    }
     reclaim_after_scan(&mut out, &report.stats, std::mem::take(&mut store.reset_stale_schema));
     sync_git_history_after_scan(root, !args.no_git_history, args.rebuild_git_history, &mut out);
     Ok(())
