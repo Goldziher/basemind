@@ -204,7 +204,8 @@ pub(crate) fn read<T>(
         }
         let shared = SharedStore::open(group, source.embedding_model(), source.dim())?;
         let hits = query(&shared, &snapshot.paths())?;
-        Ok(snapshot.matches(source, lane, generation)?.then_some(hits))
+        let valid = read_epoch(&directory)? == snapshot.shared_epoch && snapshot.matches(source, lane, generation)?;
+        Ok(valid.then_some(hits))
     })();
     match result {
         Ok(hits) => hits,
