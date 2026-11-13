@@ -1,6 +1,6 @@
 //! Build a committed, code-only base generation without changing existing workspace reads.
 
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, OpenOptions};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -308,7 +308,7 @@ fn sync_file(path: &Path) -> io::Result<()> {
 
 fn sync_directory(path: &Path) -> io::Result<()> {
     #[cfg(unix)]
-    return File::open(path)?.sync_all();
+    return fs::File::open(path)?.sync_all();
     #[cfg(not(unix))]
     {
         let _ = path;
