@@ -456,7 +456,9 @@ mod tests {
             .search_documents("scope", vec![0.0, 0.0], Some("text/plain"), &live, 3)
             .unwrap();
         assert_eq!(
-            hits.iter().map(|hit| (hit.path, hit.text.as_str())).collect::<Vec<_>>(),
+            hits.iter()
+                .map(|hit| (hit.path.as_str(), hit.text.as_str()))
+                .collect::<Vec<_>>(),
             [("a.txt", "original"), ("b.txt", "original")]
         );
         assert_eq!(
