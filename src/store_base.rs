@@ -220,7 +220,7 @@ fn dirty_worktree(
     use crate::index::layered_shadow::DeltaManifest;
     use crate::index::layered_view::LayeredView;
 
-    if !eligible(config) || requires_probes() {
+    if !eligible(config) {
         return Ok(None);
     }
     let repo = Repo::discover(root)?;
@@ -233,7 +233,10 @@ fn dirty_worktree(
         || candidates.len() > 32
         || candidates.iter().any(|path| {
             path.as_str().is_none_or(|path| {
-                path.split('/').any(|component| component.starts_with('.')) || !path.ends_with(".rs")
+                path.split('/').any(|component| component.starts_with('.'))
+                    || ![".rs", ".ts", ".tsx", ".py"]
+                        .iter()
+                        .any(|extension| path.ends_with(extension))
             })
         })
     {
@@ -284,6 +287,18 @@ fn dirty_worktree(
                 delta.delete(path.clone());
             }
         }
+        #[cfg(any(feature = "code-intel-js", feature = "code-intel-stack"))]
+        restitch_overlay(
+            root,
+            config,
+            &mut overlay,
+            &path,
+            generation,
+            &commit,
+            &base_index,
+            &candidates,
+            &mut delta,
+        )?;
         ensure!(
             repo.status_against(&commit)?.overlay_candidates() == candidates,
             "worktree changed during delta scan"
@@ -317,6 +332,58 @@ fn dirty_worktree(
     ensure!(!db.wiped_on_open(), "overlay schema mismatch");
     let view = LayeredView::from_view(Box::new(base), &db, shadow)?;
     Ok(Some(Box::new(view)))
+}
+
+#[cfg(any(feature = "code-intel-js", feature = "code-intel-stack"))]
+#[allow(clippy::too_many_arguments)]
+fn restitch_overlay(
+    root: &Path,
+    config: &Config,
+    overlay: &mut Store,
+    base_path: &Path,
+    generation: u64,
+    commit: &str,
+    base_index: &crate::store::Index,
+    candidates: &std::collections::BTreeSet<crate::path::RelPath>,
+    delta: &mut crate::index::layered_shadow::DeltaManifest,
+) -> Result<()> {
+    use crate::intel::resolve_pass::{PathDelta, resolve_with_probe_view};
+
+    let base = open(root, config, generation, commit)?;
+    let mut changed = Vec::new();
+    let mut removed = Vec::new();
+    for path in candidates {
+        let name = path.as_str().context("non-UTF-8 overlay path")?.to_owned();
+        if overlay.lookup(path).is_some() {
+            changed.push(name);
+        } else {
+            removed.push(name);
+        }
+    }
+    for (path, entry) in &base_index.files {
+        if candidates.contains(path) {
+            continue;
+        }
+        overlay.upsert(path.clone(), entry.clone());
+    }
+    overlay.fallback_blobs_dir = Some(base_path.join(crate::store_layout::BLOBS_DIR));
+    let db = overlay.index_db.as_ref().context("missing overlay database")?;
+    let (complete, affected) = resolve_with_probe_view(
+        root,
+        overlay,
+        &PathDelta {
+            changed: &changed,
+            removed: &removed,
+            other: &[],
+        },
+        config.code_intel.precise_resolution,
+        config.resources.max_footprint_mb,
+        &base,
+    );
+    ensure!(complete, "overlay restitch incomplete");
+    delta.add_restitched(affected);
+    db.set_import_probes_complete(true)?;
+    Ok(())
 }
 
 fn candidate_fingerprint(
@@ -647,4 +714,56 @@ mod tests {
         };
         assert_eq!(second.file_name().unwrap(), "gen-2");
     }
+}
+
+#[cfg(all(test, feature = "code-intel-js"))]
+#[test]
+fn published_overlay_restitches_unchanged_typescript_importer() {
+    crate::store::init_isolated_cache();
+    let fixture = tempfile::tempdir().unwrap();
+    let root = fixture.path();
+    let git = |args: &[&str]| {
+        assert!(
+            std::process::Command::new("git")
+                .current_dir(root)
+                .env("GIT_AUTHOR_NAME", "Test")
+                .env("GIT_AUTHOR_EMAIL", "test@example.test")
+                .env("GIT_COMMITTER_NAME", "Test")
+                .env("GIT_COMMITTER_EMAIL", "test@example.test")
+                .args(args)
+                .status()
+                .unwrap()
+                .success()
+        );
+    };
+    git(&["init", "-q"]);
+    fs::write(root.join("target.ts"), "export function target() {}\n").unwrap();
+    fs::write(root.join("use.ts"), "import { target } from './target';\ntarget();\n").unwrap();
+    git(&["add", "target.ts", "use.ts"]);
+    git(&["-c", "commit.gpgsign=false", "commit", "-qm", "fixture"]);
+    let mut config = Config::with_defaults();
+    config.documents.enabled = false;
+    config.documents.embed = false;
+    config.code_search.enabled = false;
+    config.code_search.embed = false;
+    assert!(open_clean_worktree(root, &config).unwrap().is_some());
+    let changed = "// moved\nexport function target() {}\n";
+    fs::write(root.join("target.ts"), changed).unwrap();
+    let mut standalone = Store::open(root, "working").unwrap();
+    scan(
+        root,
+        &mut standalone,
+        &config,
+        ScanSource::WorkingTree,
+        EmbedMode::Deferred,
+    )
+    .unwrap();
+    let reference = standalone.index_view().unwrap();
+    assert!(publish_dirty_worktree(root, &config, &reference).unwrap());
+    let view = open_dirty_worktree(root, &config).unwrap().unwrap();
+    let target = crate::path::RelPath::from("target.ts");
+    let offset = u32::try_from(changed.find("target").unwrap()).unwrap();
+    let expected = reference.references_to(&target, offset);
+    assert!(!expected.is_empty());
+    assert_eq!(view.references_to(&target, offset), expected);
 }

@@ -277,6 +277,7 @@ pub struct Store {
     /// exactly once. Per-workspace state (views, LanceDB, lock) lives under [`Store::basemind_dir`].
     /// See [`global_blobs_dir`].
     pub blobs_dir: PathBuf,
+    pub(crate) fallback_blobs_dir: Option<PathBuf>,
     /// Always `true` since the blob store went global: a standalone Store references only ONE
     /// workspace's index, so it can never enumerate the full live blob set across all workspaces.
     /// Auto-GC (boot + background) is therefore disabled here — reference-counted GC that spans
@@ -381,6 +382,7 @@ impl Store {
             basemind_dir,
             blobs_dir,
             blobs_shared,
+            fallback_blobs_dir: None,
             view_dir,
             view: view.to_string(),
             hash_refs: HashRefs::of(&index.files),
@@ -476,6 +478,7 @@ impl Store {
             basemind_dir,
             blobs_dir,
             blobs_shared,
+            fallback_blobs_dir: None,
             view_dir,
             view: view.to_string(),
             hash_refs: HashRefs::of(&index.files),
