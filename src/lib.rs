@@ -58,6 +58,7 @@ pub mod search;
 #[cfg(all(feature = "shells", any(unix, windows)))]
 pub mod shells;
 pub mod store;
+pub mod store_base;
 pub mod store_blob;
 mod store_blob_codec;
 pub mod store_cache_admin;

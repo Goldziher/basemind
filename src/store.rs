@@ -13,6 +13,8 @@ use crate::index::{IndexDb, IndexError};
 use crate::lance::LanceStore;
 use crate::path::RelPath;
 use crate::store_hash_refs::HashRefs;
+#[path = "store_base_open.rs"]
+mod base_open;
 
 /// Cache layout: where the global cache root is, how a worktree root maps to a workspace cache
 /// dir, and the `workspace.json` marker recording that mapping. Lives in its own module (like
