@@ -16,22 +16,23 @@ enum DeltaEntry {
 }
 
 #[derive(Deserialize, Serialize)]
-pub(super) struct DeltaManifest {
-    pub(super) format: u16,
-    pub(super) seq: u64,
-    pub(super) base_generation: u64,
-    pub(super) base_commit: String,
+pub(crate) struct DeltaManifest {
+    pub(crate) format: u16,
+    pub(crate) seq: u64,
+    pub(crate) base_generation: u64,
+    pub(crate) base_commit: String,
     entries: BTreeMap<RelPath, DeltaEntry>,
     restitched: AHashSet<RelPath>,
 }
 
-pub(super) struct Shadow<'a> {
-    delta: &'a DeltaManifest,
+pub(crate) struct Shadow {
+    paths: AHashSet<RelPath>,
+    restitched: AHashSet<RelPath>,
     dead_hashes: AHashSet<String>,
 }
 
 impl DeltaManifest {
-    pub(super) fn empty(base_generation: u64, base_commit: String, seq: u64) -> Self {
+    pub(crate) fn empty(base_generation: u64, base_commit: String, seq: u64) -> Self {
         Self {
             format: 1,
             seq,
@@ -42,7 +43,7 @@ impl DeltaManifest {
         }
     }
 
-    pub(super) fn upsert(&mut self, path: RelPath, file: FileEntry, base: Option<&FileEntry>) {
+    pub(crate) fn upsert(&mut self, path: RelPath, file: FileEntry, base: Option<&FileEntry>) {
         let entry = match base {
             Some(base) if base.hash_hex == file.hash_hex => {
                 self.entries.remove(&path);
@@ -54,15 +55,15 @@ impl DeltaManifest {
         self.entries.insert(path, entry);
     }
 
-    pub(super) fn delete(&mut self, path: RelPath) {
+    pub(crate) fn delete(&mut self, path: RelPath) {
         self.entries.insert(path, DeltaEntry::Deleted);
     }
 
-    pub(super) fn shadow<'base>(
+    pub(crate) fn shadow<'base>(
         &self,
         base_counts: &AHashMap<&str, usize>,
         base_entry: impl Fn(&RelPath) -> Option<&'base FileEntry>,
-    ) -> Shadow<'_> {
+    ) -> Shadow {
         let mut shadowed_counts = AHashMap::<&str, usize>::new();
         let mut added_hashes = AHashSet::new();
         for (path, entry) in &self.entries {
@@ -79,18 +80,19 @@ impl DeltaManifest {
             .map(|(hash, _)| hash.to_owned())
             .collect();
         Shadow {
-            delta: self,
+            paths: self.entries.keys().cloned().collect(),
+            restitched: self.restitched.clone(),
             dead_hashes,
         }
     }
 }
 
-impl Shadow<'_> {
-    pub(super) fn paths(&self) -> impl Iterator<Item = &RelPath> {
-        self.delta.entries.keys()
+impl Shadow {
+    pub(crate) fn paths(&self) -> impl Iterator<Item = &RelPath> {
+        self.paths.iter()
     }
 
-    pub(super) fn hides(&self, part: Part, key: &[u8]) -> bool {
+    pub(crate) fn hides(&self, part: Part, key: &[u8]) -> bool {
         let path = match part {
             Part::Meta | Part::GrepBloom => return false,
             Part::CodeBm25Postings => {
@@ -113,11 +115,11 @@ impl Shadow<'_> {
             | Part::CodeBm25ByPath => keys::read_len_prefixed_ref(key, &mut 0).map(RelPath::from),
         };
         path.is_some_and(|path| {
-            self.delta.entries.contains_key(&path)
+            self.paths.contains(&path)
                 || (matches!(
                     part,
                     Part::RefsByDef | Part::RefsByPath | Part::ImportTargets | Part::ImportersByProbe
-                ) && self.delta.restitched.contains(&path))
+                ) && self.restitched.contains(&path))
         })
     }
 }

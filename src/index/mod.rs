@@ -22,16 +22,13 @@ pub mod grep_bloom;
 pub mod keys;
 pub mod keys_governance;
 pub mod keys_probe;
-#[cfg(test)]
-mod layered_merge;
+pub(crate) mod layered_merge;
 #[cfg(test)]
 mod layered_persist;
-#[cfg(test)]
-mod layered_shadow;
+pub(crate) mod layered_shadow;
 mod layered_verify;
 pub use layered_verify::verify_rows as verify_shared_base;
-#[cfg(test)]
-mod layered_view;
+pub(crate) mod layered_view;
 pub(crate) mod memory_store;
 pub(crate) mod name_dict;
 pub mod sorted_run;

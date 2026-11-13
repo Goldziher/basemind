@@ -131,7 +131,7 @@ code-intel = ["code-intel-js", "code-intel-stack"]
 
 full = ["documents", "memory", "crawl", "comms", "shells", "code-intel", "code-search"]
 
-test-support = ["dep:tempfile"]
+test-support = []
 
 ort-dynamic = ["xberg?/ort-dynamic"]
 
@@ -204,7 +204,7 @@ serde_json = { version = "1", features = ["preserve_order"] }
 serde_toon_format = { version = "0.2", optional = true }
 stack-graphs = { package = "basemind-stack-graphs", version = "0.14.1", path = "crates/stack-graphs", optional = true }
 streaming-iterator = "0.1"
-tempfile = { version = "3", optional = true }
+tempfile = "3"
 thiserror = "2"
 tokio = { version = "1", features = [
   "rt-multi-thread",
@@ -243,7 +243,6 @@ criterion = { version = "0.8", features = ["html_reports"] }
 insta = "1"
 proptest = "1"
 rmcp = { version = "3.10", features = ["client", "transport-async-rw", "transport-child-process"] }
-tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "test-util"] }
 wiremock = "0.6"
 

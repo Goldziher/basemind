@@ -68,11 +68,15 @@ impl IndexRoute {
         if enabled && state.shared.store.read().await.view == crate::store::VIEW_WORKING {
             let root = state.shared.root.clone();
             let config = std::sync::Arc::clone(&state.shared.config);
-            let base =
-                tokio::task::spawn_blocking(move || crate::store_base::open_existing_worktree_base(&root, &config))
-                    .await;
-            if let Ok(Ok(Some(base))) = base {
-                return Self::Local(Box::new(base));
+            let view = tokio::task::spawn_blocking(move || -> anyhow::Result<Option<Box<dyn IndexView>>> {
+                if let Some(base) = crate::store_base::open_existing_worktree_base(&root, &config)? {
+                    return Ok(Some(Box::new(base)));
+                }
+                crate::store_base::open_dirty_worktree(&root, &config)
+            })
+            .await;
+            if let Ok(Ok(Some(view))) = view {
+                return Self::Local(view);
             }
         }
         if let Some(idx) = state.shared.store.read().await.index_db.clone() {
@@ -366,6 +370,30 @@ async fn prepared_clean_base_answers_calls_and_dirty_worktree_uses_standalone() 
         (1, expected.hit_keys, vec![start])
     );
     fs::write(path, "fn sample() { changed(); }").unwrap();
+    if !cfg!(any(feature = "code-intel-js", feature = "code-intel-stack")) {
+        let mut store = state.shared.store.write().await;
+        crate::scanner::scan_paths(
+            root,
+            &mut store,
+            &state.shared.config,
+            &[root.join("sample.rs")],
+            EmbedMode::Deferred,
+        )
+        .unwrap();
+        let reference = store.index_view().unwrap();
+        assert!(crate::store_base::publish_dirty_worktree(root, &state.shared.config, &reference).unwrap());
+        drop(store);
+        let mut writer = standalone.writer();
+        writer.remove_file(&rel).unwrap();
+        writer.commit().unwrap();
+        let dirty = IndexRoute::resolve_with_layering(&state, true)
+            .await
+            .scan_calls(&cache, "changed", 10, None)
+            .await
+            .unwrap();
+        assert_eq!(dirty.total, 1);
+    }
+    fs::write(root.join("policy.toml"), "").unwrap();
     let fallback = IndexRoute::resolve_with_layering(&state, true)
         .await
         .scan_calls(&cache, "target", 10, None)

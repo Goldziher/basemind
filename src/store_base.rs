@@ -146,16 +146,19 @@ pub(crate) fn open_existing_worktree_base(root: &Path, config: &Config) -> Resul
     open_worktree_base(root, config, false)
 }
 
-fn open_worktree_base(root: &Path, config: &Config, build: bool) -> Result<Option<SortedRunView>> {
-    if config.documents.enabled
+fn eligible(config: &Config) -> bool {
+    !(config.documents.enabled
         || config.documents.embed
         || config.code_search.enabled
         || config.code_search.embed
         || config.scan.follow_symlinks
         || !config.scan.extra_roots.is_empty()
         || !config.scan.respect_gitignore
-        || !config.scan.skip_submodules
-    {
+        || !config.scan.skip_submodules)
+}
+
+fn open_worktree_base(root: &Path, config: &Config, build: bool) -> Result<Option<SortedRunView>> {
+    if !eligible(config) {
         return Ok(None);
     }
     let repo = match Repo::discover(root) {
@@ -194,6 +197,156 @@ fn open_worktree_base(root: &Path, config: &Config, build: bool) -> Result<Optio
         return Ok(None);
     }
     Ok(Some(view))
+}
+
+pub fn publish_dirty_worktree(root: &Path, config: &Config, reference: &dyn IndexView) -> Result<bool> {
+    Ok(dirty_worktree(root, config, Some(reference))?.is_some())
+}
+
+pub(crate) fn open_dirty_worktree(root: &Path, config: &Config) -> Result<Option<Box<dyn IndexView>>> {
+    dirty_worktree(root, config, None)
+}
+
+fn dirty_worktree(
+    root: &Path,
+    config: &Config,
+    reference: Option<&dyn IndexView>,
+) -> Result<Option<Box<dyn IndexView>>> {
+    use crate::index::layered_shadow::DeltaManifest;
+    use crate::index::layered_view::LayeredView;
+
+    if !eligible(config) || requires_probes() {
+        return Ok(None);
+    }
+    let repo = Repo::discover(root)?;
+    if !repo.origin_is_workdir() {
+        return Ok(None);
+    }
+    let (_, commit) = resolve_commit(&repo)?;
+    let candidates = repo.status_against(&commit)?.overlay_candidates();
+    if candidates.is_empty()
+        || candidates.len() > 32
+        || candidates.iter().any(|path| {
+            path.as_str().is_none_or(|path| {
+                path.split('/').any(|component| component.starts_with('.')) || !path.ends_with(".rs")
+            })
+        })
+    {
+        return Ok(None);
+    }
+    let directory = repo_group_dir(root).join(BASE_DIR);
+    if !directory.is_dir() {
+        return Ok(None);
+    }
+    let (_, ready) = find_generation(&directory, &commit, &scan_digest(config)?)?;
+    let Some(path) = ready else {
+        return Ok(None);
+    };
+    let generation: u64 = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .and_then(|name| name.strip_prefix("gen-"))
+        .context("invalid generation directory")?
+        .parse()?;
+    let base = open(root, config, generation, &commit)?;
+    let base_index = crate::store::read_index(&path)?.context("missing base manifest")?;
+    let fingerprint = candidate_fingerprint(root, &candidates, config.scan.max_file_bytes)?;
+    let overlays = crate::store::workspace_cache_dir(root).join("verified-overlays");
+    let published = overlays.join(format!("{generation}-{fingerprint}"));
+    let mut counts = ahash::AHashMap::new();
+    for entry in base_index.files.values() {
+        *counts.entry(entry.hash_hex.as_str()).or_default() += 1;
+    }
+    if let Some(reference) = reference.filter(|_| !published.is_dir()) {
+        fs::create_dir_all(&overlays)?;
+        let scratch = tempfile::tempdir_in(&overlays)?;
+        let mut overlay = Store::open_base_scratch(root, scratch.path())?;
+        let paths = candidates
+            .iter()
+            .map(|path| root.join(path.to_path_buf()))
+            .collect::<Vec<_>>();
+        let report = crate::scanner::scan_paths(root, &mut overlay, config, &paths, EmbedMode::Deferred)?;
+        ensure!(
+            !report.cancelled && report.stats.read_failed == 0 && report.stats.extract_failed == 0,
+            "incomplete delta scan"
+        );
+        let mut delta = DeltaManifest::empty(generation, commit.clone(), 1);
+        for path in &candidates {
+            let prior = base_index.files.get(path);
+            if let Some(entry) = overlay.lookup(path) {
+                delta.upsert(path.clone(), entry.clone(), prior);
+            } else if prior.is_some() {
+                delta.delete(path.clone());
+            }
+        }
+        ensure!(
+            repo.status_against(&commit)?.overlay_candidates() == candidates,
+            "worktree changed during delta scan"
+        );
+        ensure!(
+            candidate_fingerprint(root, &candidates, config.scan.max_file_bytes)? == fingerprint,
+            "candidate contents changed during delta scan"
+        );
+        let shadow = delta.shadow(&counts, |path| base_index.files.get(path));
+        let db = overlay.index_db.as_ref().context("missing overlay database")?;
+        let verification_base = open(root, config, generation, &commit)?;
+        let view = LayeredView::from_view(Box::new(verification_base), db, shadow)?;
+        crate::index::verify_shared_base(&view, reference)?;
+        drop(view);
+        fs::write(scratch.path().join("delta.msgpack"), rmp_serde::to_vec_named(&delta)?)?;
+        drop(overlay);
+        sync_tree(scratch.path())?;
+        fs::rename(scratch.path(), &published)?;
+        sync_directory(&overlays)?;
+    }
+    if !published.is_dir() {
+        return Ok(None);
+    }
+    let delta: DeltaManifest = rmp_serde::from_slice(&fs::read(published.join("delta.msgpack"))?)?;
+    ensure!(
+        delta.format == 1 && delta.base_generation == generation && delta.base_commit == commit && delta.seq == 1,
+        "overlay identity mismatch"
+    );
+    let shadow = delta.shadow(&counts, |path| base_index.files.get(path));
+    let db = crate::index::IndexDb::open(&published)?;
+    ensure!(!db.wiped_on_open(), "overlay schema mismatch");
+    let view = LayeredView::from_view(Box::new(base), &db, shadow)?;
+    Ok(Some(Box::new(view)))
+}
+
+fn candidate_fingerprint(
+    root: &Path,
+    candidates: &std::collections::BTreeSet<crate::path::RelPath>,
+    max_bytes: u64,
+) -> Result<String> {
+    use std::io::Read;
+    let mut digest = blake3::Hasher::new();
+    for path in candidates {
+        let name: &[u8] = path.as_ref();
+        digest.update(&(name.len() as u64).to_le_bytes());
+        digest.update(name);
+        let path = root.join(path.to_path_buf());
+        let metadata = match fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                digest.update(&[0]);
+                continue;
+            }
+            Err(error) => return Err(error.into()),
+        };
+        ensure!(
+            metadata.is_file() && metadata.len() <= max_bytes,
+            "unsupported overlay candidate"
+        );
+        let mut bytes = Vec::new();
+        fs::File::open(path)?
+            .take(max_bytes.saturating_add(1))
+            .read_to_end(&mut bytes)?;
+        ensure!(bytes.len() as u64 <= max_bytes, "overlay candidate exceeds size limit");
+        digest.update(&[1]);
+        digest.update(blake3::hash(&bytes).as_bytes());
+    }
+    Ok(digest.finalize().to_hex().to_string())
 }
 
 fn resolve_commit(repo: &Repo) -> Result<(String, String)> {
