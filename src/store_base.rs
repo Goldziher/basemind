@@ -251,14 +251,16 @@ fn build_generation(base: &Path, repo: &Repo, config: &Config, mut metadata: Bas
     Ok(published)
 }
 
+#[cfg(unix)]
 fn create_private_dir(path: &Path) -> io::Result<()> {
-    let mut builder = fs::DirBuilder::new();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::DirBuilderExt;
-        builder.mode(0o700);
-    }
-    builder.create(path)
+    use std::os::unix::fs::DirBuilderExt;
+
+    fs::DirBuilder::new().mode(0o700).create(path)
+}
+
+#[cfg(not(unix))]
+fn create_private_dir(path: &Path) -> io::Result<()> {
+    fs::create_dir(path)
 }
 
 const fn requires_probes() -> bool {
