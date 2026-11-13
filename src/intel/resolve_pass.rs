@@ -178,22 +178,46 @@ pub(crate) fn resolve_pass_incremental(
         return;
     }
 
-    let changed_snapshot = snapshot_of(store, delta.changed.iter());
     #[cfg(any(feature = "code-intel-js", feature = "code-intel-stack"))]
-    {
-        let mut importers: ahash::AHashMap<String, crate::intel::xfile::FileFacts> = ahash::AHashMap::new();
-        resolve_in_chunks(root, store, index_db, &changed_snapshot, precise, footprint, |facts| {
-            harvest_cross_file_facts(facts, &mut importers);
-        });
-        let affected = xfile_incremental::affected_importers(&index_db.view(), store, delta);
-        let affected_snapshot = snapshot_of(store, affected.iter());
-        resolve_in_chunks(root, store, index_db, &affected_snapshot, precise, footprint, |facts| {
-            harvest_cross_file_facts(facts, &mut importers);
-        });
-        crate::intel::xfile::stitch_cross_file_edges(root, store, index_db, &importers);
-    }
+    resolve_with_probe_view(root, store, delta, precise, footprint, &index_db.view());
     #[cfg(not(any(feature = "code-intel-js", feature = "code-intel-stack")))]
-    resolve_in_chunks(root, store, index_db, &changed_snapshot, precise, footprint, drop);
+    resolve_in_chunks(
+        root,
+        store,
+        index_db,
+        &snapshot_of(store, delta.changed.iter()),
+        precise,
+        footprint,
+        drop,
+    );
+}
+
+#[cfg(any(feature = "code-intel-js", feature = "code-intel-stack"))]
+pub(crate) fn resolve_with_probe_view(
+    root: &Path,
+    store: &Store,
+    delta: &PathDelta<'_>,
+    precise: bool,
+    footprint: MaxFootprint,
+    probe_view: &dyn crate::index::view::IndexView,
+) -> (bool, Vec<String>) {
+    let Some(index_db) = store.index_db.as_ref() else {
+        return (false, Vec::new());
+    };
+    let mut importers: ahash::AHashMap<String, crate::intel::xfile::FileFacts> = ahash::AHashMap::new();
+    let changed = snapshot_of(store, delta.changed.iter());
+    let affected = xfile_incremental::affected_importers(probe_view, store, delta);
+    let affected_snapshot = snapshot_of(store, affected.iter());
+    let changed_complete = resolve_in_chunks(root, store, index_db, &changed, precise, footprint, |facts| {
+        harvest_cross_file_facts(facts, &mut importers);
+    });
+    let affected_complete = resolve_in_chunks(root, store, index_db, &affected_snapshot, precise, footprint, |facts| {
+        harvest_cross_file_facts(facts, &mut importers);
+    });
+    let complete = changed_complete
+        && affected_complete
+        && crate::intel::xfile::stitch_cross_file_edges(root, store, index_db, &importers);
+    (complete, affected)
 }
 
 /// Snapshots of the indexed files among `rels`.

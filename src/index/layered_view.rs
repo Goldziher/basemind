@@ -398,3 +398,88 @@ fn scanned_caller_pages_match_after_generated_worktree_edits() {
         })
         .unwrap();
 }
+
+#[cfg(any(feature = "code-intel-js", feature = "code-intel-stack"))]
+#[test]
+fn merged_probes_restitch_an_unchanged_importer_to_a_changed_export() {
+    use super::layered_shadow::DeltaManifest;
+    use crate::config::Config;
+    use crate::intel::resolve_pass::{PathDelta, resolve_with_probe_view};
+    use crate::path::RelPath;
+    use crate::scanner::{EmbedMode, ScanSource, scan};
+    use crate::store::Store;
+
+    fn scan_fixture(export: &str, importer: bool) -> (tempfile::TempDir, Store) {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        std::fs::write(root.join("target.ts"), export).unwrap();
+        if importer {
+            std::fs::write(root.join("use.ts"), "import { target } from './target';\ntarget();\n").unwrap();
+        }
+        let mut store = Store::open(root, "working").unwrap();
+        let mut config = Config::with_defaults();
+        config.documents.enabled = false;
+        let report = scan(root, &mut store, &config, ScanSource::WorkingTree, EmbedMode::Deferred).unwrap();
+        assert_eq!(report.stats.read_failed + report.stats.extract_failed, 0);
+        (directory, store)
+    }
+
+    crate::store::init_isolated_cache();
+    let (_base_root, base) = scan_fixture("export function target() {}\n", true);
+    let new_export = "// moved\nexport function target() {}\n";
+    let (working, mut overlay) = scan_fixture(new_export, false);
+    let importer = RelPath::from("use.ts");
+    let target = RelPath::from("target.ts");
+    std::fs::write(
+        working.path().join("use.ts"),
+        "import { target } from './target';\ntarget();\n",
+    )
+    .unwrap();
+    let (_reference_root, reference) = scan_fixture(new_export, true);
+    let unchanged = base.lookup(&importer).unwrap().clone();
+    let l1 = base.read_l1_by_hex(&unchanged.hash_hex).unwrap().unwrap();
+    let l2 = base.read_l2_by_hex(&unchanged.hash_hex).unwrap();
+    overlay
+        .write_filemap_hex(&unchanged.hash_hex, &l1, l2.as_ref())
+        .unwrap();
+    overlay.upsert(importer.clone(), unchanged);
+    let mut delta = DeltaManifest::empty(1, "fixture".into(), 1);
+    delta.upsert(
+        target.clone(),
+        overlay.lookup(&target).unwrap().clone(),
+        base.lookup(&target),
+    );
+    let counts = base
+        .index
+        .files
+        .values()
+        .map(|entry| (entry.hash_hex.as_str(), 1))
+        .collect();
+    let base_db = base.index_db.as_ref().unwrap();
+    let overlay_db = overlay.index_db.as_ref().unwrap();
+    let probe_view = LayeredView::new(base_db, overlay_db, delta.shadow(&counts, |path| base.lookup(path))).unwrap();
+    assert_eq!(probe_view.importers_probing("target.ts"), [importer.clone()]);
+    let config = Config::with_defaults();
+    let changed = ["target.ts".to_string()];
+    let (complete, restitched) = resolve_with_probe_view(
+        working.path(),
+        &overlay,
+        &PathDelta {
+            changed: &changed,
+            removed: &[],
+            other: &[],
+        },
+        config.code_intel.precise_resolution,
+        config.resources.max_footprint_mb,
+        &probe_view,
+    );
+    assert!(complete);
+    assert_eq!(restitched, ["use.ts"]);
+    let definition = u32::try_from(new_export.find("target").unwrap()).unwrap();
+    let expected = reference.index_view().unwrap().references_to(&target, definition);
+    assert!(!expected.is_empty());
+    assert_eq!(
+        overlay.index_view().unwrap().references_to(&target, definition),
+        expected
+    );
+}
