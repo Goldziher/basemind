@@ -285,6 +285,24 @@ fn dirty_worktree(
         return Ok(None);
     }
     let (_, commit) = resolve_commit(&repo)?;
+    let directory = repo_group_dir(root).join(BASE_DIR);
+    if !directory.is_dir() {
+        return Ok(None);
+    }
+    let digest = scan_digest(config)?;
+    let (_, ready) = find_generation(&directory, &commit, &digest)?;
+    let (path, commit) = match ready {
+        Some(path) => (path, commit),
+        None => {
+            let Some((path, prior)) = latest_compatible(&directory, &digest)? else {
+                return Ok(None);
+            };
+            if generation_should_advance(&repo, &prior, &commit)? {
+                return Ok(None);
+            }
+            (path, prior.commit)
+        }
+    };
     let candidates = repo.status_against(&commit)?.overlay_candidates();
     if candidates.is_empty()
         || candidates.len() > 32
@@ -299,14 +317,6 @@ fn dirty_worktree(
     {
         return Ok(None);
     }
-    let directory = repo_group_dir(root).join(BASE_DIR);
-    if !directory.is_dir() {
-        return Ok(None);
-    }
-    let (_, ready) = find_generation(&directory, &commit, &scan_digest(config)?)?;
-    let Some(path) = ready else {
-        return Ok(None);
-    };
     let generation: u64 = path
         .file_name()
         .and_then(|name| name.to_str())
@@ -691,8 +701,8 @@ fn scan_digest(config: &Config) -> Result<String> {
     Ok(blake3::hash(&policy).to_hex().to_string())
 }
 
-fn should_advance(repo: &Repo, base: &Path, target: &str, digest: &str) -> Result<bool> {
-    let mut latest = None::<BaseManifest>;
+fn latest_compatible(base: &Path, digest: &str) -> Result<Option<(PathBuf, BaseManifest)>> {
+    let mut latest = None::<(PathBuf, BaseManifest)>;
     for entry in fs::read_dir(base)? {
         let entry = entry?;
         let Some(id) = entry
@@ -711,14 +721,22 @@ fn should_advance(repo: &Repo, base: &Path, target: &str, digest: &str) -> Resul
             continue;
         };
         if is_compatible(&path, id, &manifest.commit, digest)
-            && latest.as_ref().is_none_or(|prior| id > prior.generation)
+            && latest.as_ref().is_none_or(|(_, prior)| id > prior.generation)
         {
-            latest = Some(manifest);
+            latest = Some((path, manifest));
         }
     }
-    let Some(latest) = latest else {
-        return Ok(true);
-    };
+    Ok(latest)
+}
+
+fn should_advance(repo: &Repo, base: &Path, target: &str, digest: &str) -> Result<bool> {
+    match latest_compatible(base, digest)? {
+        Some((_, prior)) => generation_should_advance(repo, &prior, target),
+        None => Ok(true),
+    }
+}
+
+fn generation_should_advance(repo: &Repo, latest: &BaseManifest, target: &str) -> Result<bool> {
     let changed = repo.changed_tree_files(&latest.commit, target)?;
     let age = SystemTime::now()
         .duration_since(UNIX_EPOCH)?
@@ -1073,4 +1091,61 @@ fn verify_moved_export(extension: &str, original: &str, importer: &str, changed:
     fs::remove_file(pin).unwrap();
     assert_eq!(retire_old_generations(root).unwrap(), 1);
     assert!(!base.join("gen-1").exists());
+}
+
+#[cfg(all(test, not(any(feature = "code-intel-js", feature = "code-intel-stack"))))]
+#[test]
+fn reuses_a_base_when_new_commit_changes_less_than_two_percent() {
+    crate::store::init_isolated_cache();
+    let fixture = tempfile::tempdir().unwrap();
+    let root = fixture.path();
+    let git = |args: &[&str]| {
+        assert!(
+            std::process::Command::new("git")
+                .current_dir(root)
+                .env("GIT_AUTHOR_NAME", "Test")
+                .env("GIT_AUTHOR_EMAIL", "test@example.test")
+                .env("GIT_COMMITTER_NAME", "Test")
+                .env("GIT_COMMITTER_EMAIL", "test@example.test")
+                .args(args)
+                .status()
+                .unwrap()
+                .success()
+        );
+    };
+    git(&["init", "-q"]);
+    for index in 0..51 {
+        fs::write(
+            root.join(format!("sample_{index}.rs")),
+            format!("fn sample_{index}() {{ old(); }}"),
+        )
+        .unwrap();
+    }
+    git(&["add", "."]);
+    git(&["-c", "commit.gpgsign=false", "commit", "-qm", "base"]);
+    let mut config = Config::with_defaults();
+    config.documents.enabled = false;
+    config.documents.embed = false;
+    config.code_search.enabled = false;
+    config.code_search.embed = false;
+    assert!(open_clean_worktree(root, &config).unwrap().is_some());
+    fs::write(root.join("sample_0.rs"), "fn sample_0() { new(); }").unwrap();
+    git(&["add", "sample_0.rs"]);
+    git(&["-c", "commit.gpgsign=false", "commit", "-qm", "one file"]);
+    assert!(scan_dirty_worktree(root, &config).unwrap());
+    let base = repo_group_dir(root).join(BASE_DIR);
+    assert!(base.join("gen-1").is_dir());
+    assert!(!base.join("gen-2").exists());
+    let view = open_dirty_worktree(root, &config).unwrap().unwrap();
+    let mut reference = Store::open(root, "working").unwrap();
+    scan(
+        root,
+        &mut reference,
+        &config,
+        ScanSource::WorkingTree,
+        EmbedMode::Deferred,
+    )
+    .unwrap();
+    assert_eq!(reference.index.files.len(), 51);
+    crate::index::verify_shared_base(&*view, &reference.index_view().unwrap()).unwrap();
 }
