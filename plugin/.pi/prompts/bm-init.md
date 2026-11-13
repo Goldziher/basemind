@@ -7,7 +7,7 @@ description: Onboard (or refresh) basemind in this repo — write basemind.toml 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
 Content-Hash: blake3:23c4d4a63b521b5da720ff533588311bfd0eef7f215924793deb7e77d51ee388
-Source-Hash: blake3:5a1443d9e04647b750b825256a617b0d04b1b3be7eb6b87f267a37994abefc81
+Source-Hash: blake3:525509e2b2dcb640a9b1f11111ecd211c9ab36f2d59877b0709f463e527ef940
 Schema-Version: v1
 -->
 

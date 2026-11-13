@@ -32,7 +32,10 @@ class SessionStartTests(unittest.TestCase):
         scripts.mkdir()
         self.executable(
             scripts / "mcp-launch.sh",
-            """printf '%s' '{"url":"http://127.0.0.1:32323/mcp?token=test"}'""",
+            """case "$1" in
+agents) printf '%s' "$INBOX_RESULT" ;;
+*) printf '%s' '{"url":"http://127.0.0.1:32323/mcp?token=test"}' ;;
+esac""",
         )
         self.executable(
             self.bin / "curl",
@@ -45,7 +48,7 @@ printf '%s' "$PROBE_RESULT" """,
         path.write_text(f"#!/bin/bash\n{body}\n")
         path.chmod(0o755)
 
-    def invoke(self, response: str) -> str:
+    def invoke(self, response: str, *, inbox: str = "") -> str:
         env = {
             **os.environ,
             "HOME": str(self.root),
@@ -53,6 +56,7 @@ printf '%s' "$PROBE_RESULT" """,
             "CLAUDE_PLUGIN_ROOT": str(self.root),
             "CLAUDE_PROJECT_DIR": "/some/project with space & ampersand",
             "PROBE_RESULT": response,
+            "INBOX_RESULT": inbox,
         }
         env.pop("CURSOR_PLUGIN_ROOT", None)
         env.pop("COPILOT_CLI", None)
@@ -87,6 +91,17 @@ printf '%s' "$PROBE_RESULT" """,
         for result in ("", "not JSON", '{"id":1,"error":{"code":-32603}}'):
             with self.subTest(result=result):
                 self.assertIn("availability could not be verified", self.invoke(result))
+
+    def test_malformed_inbox_leaves_startup_context_intact(self) -> None:
+        self.executable(self.bin / "timeout", 'shift; exec "$@"')
+        context = self.invoke('{"id":1,"result":{"tools":[]}}', inbox="not JSON")
+        self.assertIn("returned zero tools", context)
+        self.assertNotIn("No messages in your inbox", context)
+
+    def test_session_start_hook_runs_on_resume(self) -> None:
+        manifest = json.loads((ROOT / "plugin/hooks/hooks.json").read_text())
+        matchers = {source for entry in manifest["hooks"]["SessionStart"] for source in entry["matcher"].split("|")}
+        self.assertIn("resume", matchers)
 
 
 if __name__ == "__main__":

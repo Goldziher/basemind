@@ -1,6 +1,6 @@
 {
   "schema_version": "v1",
-  "source_hash": "blake3:5a1443d9e04647b750b825256a617b0d04b1b3be7eb6b87f267a37994abefc81",
+  "source_hash": "blake3:525509e2b2dcb640a9b1f11111ecd211c9ab36f2d59877b0709f463e527ef940",
   "outputs": {
     ".claude-plugin/plugin.json": {
       "content_hash": "blake3:f73e2bd2477ffa3a638be0489f38b674ce559c06a0590782f0a8f9e16bdc229c",
@@ -667,7 +667,7 @@
       "mode": "0755"
     },
     "hooks/session-start": {
-      "content_hash": "blake3:3081a85115be84d00ad6bad467cde4caef56cbe3c2e60bfdf4f28d10bd718596",
+      "content_hash": "blake3:1994276180a5e51f970538a26ebca04ff59c99d86d69e4fe75d8b7d246683aac",
       "mode": "0755"
     },
     "kimi.plugin.json": {

@@ -52,7 +52,7 @@ run = ["python3 scripts/sync_plugin_version.py", "bash scripts/sync-plugin-skill
 [tasks."plugin:test"]
 description = "Exercise archive, public export, and actual CLI integration contracts"
 run = [
-  "uv run --no-project --with pytest --with mcp==1.28.1 python -m pytest scripts/tests tests/test_legacy_plugin_exports.py pip-package-hermes/tests",
+  "uv run --no-project --with pytest --with mcp==1.28.1 python -m pytest scripts/tests tests/test_legacy_plugin_exports.py tests/test_session_start_hook.py pip-package-hermes/tests",
   "node tests/basemind_pi_cli_contract.mjs",
 ]
 
