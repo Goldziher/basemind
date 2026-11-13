@@ -684,9 +684,10 @@ fn cmd_scan(root: &std::path::Path, args: &ScanArgs, verbosity: Verbosity, no_co
     let shared_index = std::env::var_os("BASEMIND_INDEX_LAYERED").is_some_and(|value| value == "1");
     if shared_index
         && !args.verify_shared_base
-        && basemind::store_base::has_verified_dirty_worktree(root, &config).unwrap_or(false)
+        && (basemind::store_base::has_published_dirty_worktree(root, &config).unwrap_or(false)
+            || basemind::store_base::scan_dirty_worktree(root, &config).unwrap_or(false))
     {
-        eprintln!("Reused the verified shared worktree index.");
+        eprintln!("Shared worktree index ready.");
         sync_git_history_after_scan(root, !args.no_git_history, args.rebuild_git_history, &mut out);
         return Ok(());
     }

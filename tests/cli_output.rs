@@ -180,9 +180,45 @@ fn explicit_shared_base_verification_uses_standalone_for_dirty_worktrees() {
         let second = opted_in();
         let message = String::from_utf8_lossy(&second.stderr);
         assert!(second.status.success(), "{message}");
-        assert!(
-            message.contains("Reused the verified shared worktree index"),
-            "{message}"
-        );
+        assert!(message.contains("Shared worktree index ready"), "{message}");
     }
+}
+
+#[cfg(not(any(feature = "code-intel-js", feature = "code-intel-stack")))]
+#[test]
+fn cold_dirty_scan_publishes_delta_without_standalone_fjall() {
+    basemind::store::init_isolated_cache();
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    git(root, &["init", "-q"]);
+    std::fs::write(root.join("sample.rs"), "fn sample() { before(); }").unwrap();
+    std::fs::write(
+        root.join("basemind.toml"),
+        "\"$schema\" = \"v1\"\n[documents]\nenabled=false\nembed=false\n[code_search]\nenabled=false\nembed=false\n",
+    )
+    .unwrap();
+    git(root, &["add", "sample.rs", "basemind.toml"]);
+    git(root, &["-c", "commit.gpgsign=false", "commit", "-qm", "fixture"]);
+    let mut config = basemind::config::Config::with_defaults();
+    config.documents.enabled = false;
+    config.documents.embed = false;
+    config.code_search.enabled = false;
+    config.code_search.embed = false;
+    assert!(
+        basemind::store_base::open_clean_worktree(root, &config)
+            .unwrap()
+            .is_some()
+    );
+    std::fs::write(root.join("sample.rs"), "fn sample() { after(); }").unwrap();
+    let result = Command::new(bin())
+        .env("BASEMIND_INDEX_LAYERED", "1")
+        .args(["--root", root.to_str().unwrap(), "scan", "--no-git-history"])
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    assert!(result.status.success(), "{stderr}");
+    assert!(stderr.contains("Shared worktree index ready"), "{stderr}");
+    let cache = basemind::store::workspace_cache_dir(root);
+    assert!(!cache.join("views/working/index.fjall").exists());
+    assert!(basemind::store_base::has_published_dirty_worktree(root, &config).unwrap());
 }

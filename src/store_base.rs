@@ -200,21 +200,30 @@ fn open_worktree_base(root: &Path, config: &Config, build: bool) -> Result<Optio
 }
 
 pub fn publish_dirty_worktree(root: &Path, config: &Config, reference: &dyn IndexView) -> Result<bool> {
-    Ok(dirty_worktree(root, config, Some(reference))?.is_some())
+    Ok(dirty_worktree(root, config, true, Some(reference))?.is_some())
 }
 
-/// Reuse an exact delta previously checked against a complete standalone scan.
-pub fn has_verified_dirty_worktree(root: &Path, config: &Config) -> Result<bool> {
+/// Publish a candidate-only delta against a prepared base.
+pub fn scan_dirty_worktree(root: &Path, config: &Config) -> Result<bool> {
+    if !eligible(config) || requires_probes() {
+        return Ok(false);
+    }
+    Ok(dirty_worktree(root, config, true, None)?.is_some())
+}
+
+/// Check for a published delta matching the current worktree.
+pub fn has_published_dirty_worktree(root: &Path, config: &Config) -> Result<bool> {
     Ok(open_dirty_worktree(root, config)?.is_some())
 }
 
 pub(crate) fn open_dirty_worktree(root: &Path, config: &Config) -> Result<Option<Box<dyn IndexView>>> {
-    dirty_worktree(root, config, None)
+    dirty_worktree(root, config, false, None)
 }
 
 fn dirty_worktree(
     root: &Path,
     config: &Config,
+    publish: bool,
     reference: Option<&dyn IndexView>,
 ) -> Result<Option<Box<dyn IndexView>>> {
     use crate::index::layered_shadow::DeltaManifest;
@@ -265,7 +274,7 @@ fn dirty_worktree(
     for entry in base_index.files.values() {
         *counts.entry(entry.hash_hex.as_str()).or_default() += 1;
     }
-    if let Some(reference) = reference.filter(|_| !published.is_dir()) {
+    if publish && !published.is_dir() {
         fs::create_dir_all(&overlays)?;
         let scratch = tempfile::tempdir_in(&overlays)?;
         let mut overlay = Store::open_base_scratch(root, scratch.path())?;
@@ -307,12 +316,13 @@ fn dirty_worktree(
             candidate_fingerprint(root, &candidates, config.scan.max_file_bytes)? == fingerprint,
             "candidate contents changed during delta scan"
         );
-        let shadow = delta.shadow(&counts, |path| base_index.files.get(path));
-        let db = overlay.index_db.as_ref().context("missing overlay database")?;
-        let verification_base = open(root, config, generation, &commit)?;
-        let view = LayeredView::from_view(Box::new(verification_base), db, shadow)?;
-        crate::index::verify_shared_base(&view, reference)?;
-        drop(view);
+        if let Some(reference) = reference {
+            let shadow = delta.shadow(&counts, |path| base_index.files.get(path));
+            let db = overlay.index_db.as_ref().context("missing overlay database")?;
+            let verification_base = open(root, config, generation, &commit)?;
+            let view = LayeredView::from_view(Box::new(verification_base), db, shadow)?;
+            crate::index::verify_shared_base(&view, reference)?;
+        }
         fs::write(scratch.path().join("delta.msgpack"), rmp_serde::to_vec_named(&delta)?)?;
         drop(overlay);
         sync_tree(scratch.path())?;
