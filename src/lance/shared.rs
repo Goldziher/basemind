@@ -17,6 +17,15 @@ pub struct LivePaths<'a> {
     by_hash: BTreeMap<&'a str, BTreeSet<&'a str>>,
 }
 
+impl<'a> LivePaths<'a> {
+    pub(super) fn paths_for(&self, hash: &str) -> impl Iterator<Item = &'a str> + '_ {
+        self.by_hash
+            .get(hash)
+            .into_iter()
+            .flat_map(|paths| paths.iter().copied())
+    }
+}
+
 impl<'a> FromIterator<(&'a str, &'a str)> for LivePaths<'a> {
     fn from_iter<T: IntoIterator<Item = (&'a str, &'a str)>>(entries: T) -> Self {
         let mut paths = Self::default();
@@ -75,11 +84,8 @@ fn project<'a, T: Clone>(paths: &LivePaths<'a>, rows: &[ContentHit<T>]) -> Vec<P
     let mut hits = Vec::new();
     let mut seen = BTreeSet::new();
     for row in rows {
-        let Some(live) = paths.by_hash.get(row.hash.as_str()) else {
-            continue;
-        };
         if seen.insert((&row.hash, row.chunk_idx)) {
-            hits.extend(live.iter().map(|&path| PathHit {
+            hits.extend(paths.paths_for(&row.hash).map(|path| PathHit {
                 path,
                 chunk_idx: row.chunk_idx,
                 distance: row.distance,

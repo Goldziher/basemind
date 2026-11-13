@@ -151,6 +151,52 @@ impl SharedStore {
             })
         })
     }
+
+    /// Restore link rows for the effective document manifest and the selected scope.
+    #[cfg(feature = "documents")]
+    pub fn doc_links(&self, scope: &str, paths: &LivePaths<'_>) -> Result<Vec<super::DocLinkRow>> {
+        self.runtime.block_on(async {
+            let table = self.connection.open_table(schema::DOC_LINKS_TABLE).execute().await?;
+            let predicate = format!("scope = '{}'", super::escape_sql_literal(scope));
+            let mut stream = table.query().only_if(predicate).execute().await?;
+            let mut rows = Vec::new();
+            while let Some(batch) = stream.try_next().await? {
+                project_links(scope, paths, &batch, &mut rows)?;
+            }
+            rows.sort_by(|a, b| {
+                (&a.doc_path, a.chunk_idx, &a.mention_kind, &a.mention_value).cmp(&(
+                    &b.doc_path,
+                    b.chunk_idx,
+                    &b.mention_kind,
+                    &b.mention_value,
+                ))
+            });
+            Ok(rows)
+        })
+    }
+}
+
+#[cfg(feature = "documents")]
+fn project_links(
+    scope: &str,
+    paths: &LivePaths<'_>,
+    batch: &RecordBatch,
+    rows: &mut Vec<super::DocLinkRow>,
+) -> Result<()> {
+    let hashes = column::<StringArray>(batch, "content_hash")?;
+    let ordinals = column::<UInt32Array>(batch, "chunk_idx")?;
+    let kinds = column::<StringArray>(batch, "mention_kind")?;
+    let values = column::<StringArray>(batch, "mention_value")?;
+    for index in 0..batch.num_rows() {
+        rows.extend(paths.paths_for(hashes.value(index)).map(|path| super::DocLinkRow {
+            scope: scope.into(),
+            doc_path: path.into(),
+            chunk_idx: ordinals.value(index),
+            mention_kind: kinds.value(index).into(),
+            mention_value: values.value(index).into(),
+        }));
+    }
+    Ok(())
 }
 
 fn validate_unique_keys(lane: SharedLane, batch: &RecordBatch) -> Result<()> {
@@ -249,6 +295,35 @@ mod tests {
         )
         .unwrap();
         RecordBatch::try_new(schema::shared_documents_schema(2), batch.columns().to_vec()).unwrap()
+    }
+
+    #[cfg(feature = "documents")]
+    #[test]
+    fn shared_links_keep_distinct_mentions_and_project_renames() {
+        use crate::lance::{DocLinkRow, doc_links::build_doc_links_batch};
+
+        let group = tempfile::tempdir().unwrap();
+        let store = SharedStore::open(group.path(), "test-model", 2).unwrap();
+        let rows = ["Beta", "Alpha"].map(|value| DocLinkRow {
+            scope: "repo".into(),
+            doc_path: "live".into(),
+            chunk_idx: 1,
+            mention_kind: "name".into(),
+            mention_value: value.into(),
+        });
+        let batch = build_doc_links_batch(&rows).unwrap();
+        let shared = RecordBatch::try_new(schema::shared_doc_links_schema(), batch.columns().to_vec()).unwrap();
+        store.insert(SharedLane::DocLinks, shared.clone()).unwrap();
+        store.insert(SharedLane::DocLinks, shared).unwrap();
+        let paths = LivePaths::from_iter([("live", "renamed.md")]);
+        let links = store.doc_links("repo", &paths).unwrap();
+        assert_eq!(
+            links
+                .iter()
+                .map(|row| (row.doc_path.as_str(), row.mention_value.as_str()))
+                .collect::<Vec<_>>(),
+            [("renamed.md", "Alpha"), ("renamed.md", "Beta")]
+        );
     }
 
     #[test]
