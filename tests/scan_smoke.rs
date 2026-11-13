@@ -47,6 +47,45 @@ fn scan_extracts_rust_symbols() {
     assert_eq!(hits.len(), 1);
 }
 
+#[cfg(feature = "documents")]
+#[test]
+fn scan_preserves_notebook_code_cell_text_in_document_index() {
+    let (dir, mut cfg) = fresh_repo();
+    let root = dir.path();
+    cfg.documents.embed = false;
+    let path = "analysis.ipynb";
+    fs::write(
+        root.join(path),
+        r#"{
+            "cells": [{"cell_type": "code", "execution_count": null, "metadata": {},
+                       "outputs": [], "source": ["host = 'service-dev.example'"]}],
+            "metadata": {"language_info": {"name": "python"}},
+            "nbformat": 4, "nbformat_minor": 4
+        }"#,
+    )
+    .unwrap();
+
+    let mut store = Store::open(root, basemind::store::VIEW_WORKING).unwrap();
+    scan(
+        root,
+        &mut store,
+        &cfg,
+        basemind::scanner::ScanSource::WorkingTree,
+        basemind::scanner::EmbedMode::Inline,
+    )
+    .unwrap();
+
+    let entry = store.lookup_doc(path).expect("notebook indexed as a document");
+    let doc = store.read_doc_by_hex(&entry.hash_hex).unwrap().expect("notebook blob");
+    assert_eq!(doc.mime_type, "application/x-ipynb+json");
+    assert!(doc.content.contains("host = 'service-dev.example'"));
+    assert!(
+        doc.chunks
+            .iter()
+            .any(|chunk| chunk.text.contains("service-dev.example"))
+    );
+}
+
 #[test]
 fn scan_reuses_extraction_across_views_sharing_blobs() {
     let (dir, cfg) = fresh_repo();
