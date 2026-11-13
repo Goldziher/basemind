@@ -379,10 +379,10 @@ impl WorkspacePool {
         let mode = if embed { EmbedMode::Inline } else { EmbedMode::Deferred };
         let config = entry.config();
         let rebuild_pending = entry.rebuild_pending.load(std::sync::atomic::Ordering::Acquire);
-        let full = full || rebuild_pending;
+        let mut store = entry.store.lock().unwrap_or_else(PoisonError::into_inner);
+        let full = full || rebuild_pending || store.layered_read.is_some();
         let incremental = matches!(paths, Some(ref p) if !full && !p.is_empty());
         let gen_before = entry.full_scan_gen.load(std::sync::atomic::Ordering::Acquire);
-        let mut store = entry.store.lock().unwrap_or_else(PoisonError::into_inner);
         if store.layered_read.is_some() {
             *store = Store::open_with_holder(&entry.root, VIEW_WORKING, LockHolder::Rescan)?;
         }
