@@ -131,3 +131,40 @@ fn max_tokens_reaches_the_tool_and_flags_the_budget() {
         "a 1-token budget must trim and flag the list:\n{out}"
     );
 }
+
+#[test]
+fn explicit_shared_base_verification_uses_standalone_for_dirty_worktrees() {
+    basemind::store::init_isolated_cache();
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    git(root, &["init", "-q"]);
+    std::fs::write(root.join("example.rs"), "pub fn example() { called(); }\n").unwrap();
+    std::fs::write(
+        root.join("basemind.toml"),
+        "\"$schema\" = \"v1\"\n[documents]\nenabled = false\nembed = false\n[code_search]\nenabled = false\nembed = false\n",
+    )
+    .unwrap();
+    git(root, &["add", "example.rs", "basemind.toml"]);
+    git(root, &["-c", "commit.gpgsign=false", "commit", "-qm", "fixture"]);
+    let verify = || {
+        Command::new(bin())
+            .args([
+                "--root",
+                root.to_str().unwrap(),
+                "scan",
+                "--verify-shared-base",
+                "--no-git-history",
+            ])
+            .output()
+            .unwrap()
+    };
+    let clean = verify();
+    let message = String::from_utf8_lossy(&clean.stderr);
+    assert!(clean.status.success(), "{message}");
+    assert!(message.contains("Shared base matches"), "{message}");
+    std::fs::write(root.join("example.rs"), "pub fn changed() { called(); }\n").unwrap();
+    let dirty = verify();
+    let message = String::from_utf8_lossy(&dirty.stderr);
+    assert!(dirty.status.success(), "{message}");
+    assert!(message.contains("Using the standalone index"), "{message}");
+}

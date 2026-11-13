@@ -223,6 +223,9 @@ struct ScanArgs {
     /// working-tree view.
     #[arg(long, value_name = "REV")]
     rev: Option<String>,
+    /// Prepare and verify the experimental shared base against the working index.
+    #[arg(long, conflicts_with_all = ["staged", "rev"])]
+    verify_shared_base: bool,
     /// Skip building the git-history index after the scan (overrides config). The history tools
     /// then fall back to the live walk. Equivalent to `BASEMIND_GH_INDEX=0`.
     #[arg(long)]
@@ -694,6 +697,19 @@ fn cmd_scan(root: &std::path::Path, args: &ScanArgs, verbosity: Verbosity, no_co
     }
     render::render_summary(&mut out, &report.stats, verbosity);
     render::render_phase_peaks(&mut out, &report.phase_peaks, verbosity);
+    if args.verify_shared_base {
+        match basemind::store_base::open_clean_worktree(root, &config) {
+            Ok(Some(base)) => {
+                let standalone = store.index_view().context("working index missing after scan")?;
+                basemind::index::verify_shared_base(&base, &standalone)?;
+                eprintln!("Shared base matches the standalone working index.");
+            }
+            Ok(None) => {
+                eprintln!("Shared base unavailable for this worktree or scan policy. Using the standalone index.")
+            }
+            Err(error) => eprintln!("Shared base unavailable: {error:#}. Using the standalone index."),
+        }
+    }
     reclaim_after_scan(&mut out, &report.stats, std::mem::take(&mut store.reset_stale_schema));
     sync_git_history_after_scan(root, !args.no_git_history, args.rebuild_git_history, &mut out);
     Ok(())

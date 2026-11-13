@@ -69,7 +69,6 @@ pub struct WorkingTreeStatus {
     pub untracked: Vec<crate::path::RelPath>,
 }
 
-#[cfg(test)]
 impl WorkingTreeStatus {
     pub(crate) fn overlay_candidates(self) -> std::collections::BTreeSet<crate::path::RelPath> {
         self.staged_added
@@ -510,7 +509,6 @@ impl Repo {
     }
 
     /// Enumerate staged and live changes relative to a selected base tree.
-    #[cfg(test)]
     pub(crate) fn status_against(&self, base: &str) -> Result<WorkingTreeStatus, GitError> {
         use gix::status::{UntrackedFiles, tree_index::TrackRenames};
 

@@ -6,6 +6,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io;
 use std::path::{Path, PathBuf};
 
+#[cfg(test)]
 use fs2::FileExt as _;
 
 const BASE: &str = "base";

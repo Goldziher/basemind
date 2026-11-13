@@ -28,8 +28,8 @@ mod layered_merge;
 mod layered_persist;
 #[cfg(test)]
 mod layered_shadow;
-#[cfg(test)]
 mod layered_verify;
+pub use layered_verify::verify_rows as verify_shared_base;
 #[cfg(test)]
 mod layered_view;
 pub(crate) mod memory_store;

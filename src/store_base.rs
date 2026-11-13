@@ -136,6 +136,45 @@ pub fn open(root: &Path, config: &Config, generation: u64, commit: &str) -> Resu
     Ok(SortedRunView::open_leased(lease, RUNS)?)
 }
 
+/// Open an opt-in committed index for a clean worktree. Callers can use their ordinary
+/// working index whenever the worktree or scan policy requires an overlay.
+pub fn open_clean_worktree(root: &Path, config: &Config) -> Result<Option<SortedRunView>> {
+    if config.documents.enabled
+        || config.documents.embed
+        || config.code_search.enabled
+        || config.code_search.embed
+        || config.scan.follow_symlinks
+        || !config.scan.extra_roots.is_empty()
+        || !config.scan.respect_gitignore
+        || !config.scan.skip_submodules
+    {
+        return Ok(None);
+    }
+    let repo = match Repo::discover(root) {
+        Ok(repo) if repo.origin_is_workdir() => repo,
+        Ok(_) | Err(crate::git::GitError::NotARepo(_)) => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    let (_, commit) = resolve_commit(&repo)?;
+    if !repo.status_against(&commit)?.overlay_candidates().is_empty() {
+        return Ok(None);
+    }
+    let BaseBuild::Ready(path) = prepare(root, config)? else {
+        return Ok(None);
+    };
+    let generation = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .and_then(|name| name.strip_prefix("gen-"))
+        .and_then(|id| id.parse().ok())
+        .context("invalid prepared generation name")?;
+    let view = open(root, config, generation, &commit)?;
+    if !repo.status_against(&commit)?.overlay_candidates().is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(view))
+}
+
 fn resolve_commit(repo: &Repo) -> Result<(String, String)> {
     const ORIGIN: &str = "refs/remotes/origin/HEAD";
     match repo.resolve_rev(ORIGIN) {
@@ -414,6 +453,7 @@ mod tests {
         assert!(matches!(prepare(root, &config).unwrap(), BaseBuild::Busy));
         drop(lock);
 
+        assert!(open_clean_worktree(root, &config).unwrap().is_none());
         use crate::store_base_retention::retire_unpinned;
         use std::collections::BTreeSet;
         let generations = BTreeSet::from([1]);

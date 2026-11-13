@@ -3,7 +3,7 @@ use anyhow::{Result, ensure};
 use super::view::{IndexView, Part};
 
 /// Verify the persisted row contract before publishing an overlay for readers.
-pub(super) fn verify_rows(layered: &dyn IndexView, standalone: &dyn IndexView) -> Result<()> {
+pub fn verify_rows(layered: &dyn IndexView, standalone: &dyn IndexView) -> Result<()> {
     let mut visited = 0;
     for part in Part::ALL
         .into_iter()
