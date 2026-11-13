@@ -139,3 +139,16 @@ across hash seeds, the cross-language guard). The harness itself is covered by `
 - `find` covers every path basemind indexes (code map plus document tier). Pass `--indexed FILE` to `gen_find.py` (one indexed path per line) so tasks are never drawn from files the scan config leaves out; use `--ext md,rst,...` for a documents-only batch.
 - `docs` and semantic lookups need the `documents` build; without it those tasks error.
 - Gold is derived by syntax and text, not by scope resolution, so it is exact for basemind's name-based tools and only an approximation of "the right answer" for an agent that wanted a specific binding.
+
+### Shared-index top-10 overlap
+
+Run `python3 benchmarks/eval/layered_overlap.py standalone.jsonl layered.jsonl` on paired
+capture files from the same corpus and query set. Each JSONL row must carry `tier` (`code` or
+`documents`), `query` (unique within its tier), `route` (`standalone` or `layered`),
+`degraded: false`, and `hits` (ten distinct, stable result identities, in retrieval order).
+The capture must derive route and degradation from observed execution evidence. A requested mode
+or environment setting alone is insufficient, because searches can fall back.
+
+The scorer requires at least 200 exactly paired queries per tier. It reports the mean set overlap
+out of ten and exits 1 when either tier falls below 0.95, or 2 when captures are incomplete or
+invalid. Keep corpus captures and query text in their approved storage.

@@ -341,15 +341,29 @@ async fn semantic_hits(state: &ServerState, query: &str, limit: usize) -> Result
     let routing = super::memory::shared_lance_route(state, crate::lance::shared_store::SharedLane::Code).await;
     let hits_raw = tokio::task::spawn_blocking(move || {
         let lane = crate::lance::shared_store::SharedLane::Code;
+        let requested_shared = crate::lance::shared_snapshot::enabled();
         if let Some((group, generation)) = routing
             && let Some(hits) =
                 crate::lance::shared_snapshot::read(&lance, &group, lane, &scope, &generation, |shared, paths| {
                     shared.search_code_chunks(&scope, embedding.clone(), paths, limit)
                 })
         {
+            tracing::debug!(
+                tier = "code",
+                route = "layered",
+                degraded = false,
+                "semantic search route"
+            );
             return Ok(hits);
         }
-        lance.search_code_chunks(&scope, embedding, limit)
+        let hits = lance.search_code_chunks(&scope, embedding, limit)?;
+        tracing::debug!(
+            tier = "code",
+            route = "standalone",
+            degraded = requested_shared,
+            "semantic search route"
+        );
+        Ok::<_, anyhow::Error>(hits)
     })
     .await
     .map_err(|e| McpError::internal_error(format!("spawn_blocking: {e}"), None))?

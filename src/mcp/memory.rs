@@ -536,15 +536,29 @@ pub(super) async fn run_search_documents(
     let lane = crate::lance::shared_store::SharedLane::Documents;
     let routing = shared_lance_route(state, lane).await;
     let hits_raw = tokio::task::spawn_blocking(move || {
+        let requested_shared = crate::lance::shared_snapshot::enabled();
         if let Some((group, generation)) = routing
             && let Some(hits) =
                 crate::lance::shared_snapshot::read(&lance, &group, lane, &scope, &generation, |shared, paths| {
                     shared.search_documents(&scope, embedding.clone(), mime.as_deref(), paths, limit)
                 })
         {
+            tracing::debug!(
+                tier = "documents",
+                route = "layered",
+                degraded = false,
+                "semantic search route"
+            );
             return Ok(hits);
         }
-        lance.search_documents(&scope, embedding, limit, mime.as_deref())
+        let hits = lance.search_documents(&scope, embedding, limit, mime.as_deref())?;
+        tracing::debug!(
+            tier = "documents",
+            route = "standalone",
+            degraded = requested_shared,
+            "semantic search route"
+        );
+        Ok::<_, anyhow::Error>(hits)
     })
     .await
     .map_err(|e| McpError::internal_error(format!("spawn_blocking: {e}"), None))?
