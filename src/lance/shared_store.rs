@@ -190,7 +190,8 @@ impl SharedStore {
                 }
                 anyhow::Ok(hits)
             })
-        })
+        })?
+        .context("shared Lance candidate cap reached")
     }
 
     /// Restore link rows for the effective document manifest and the selected scope.

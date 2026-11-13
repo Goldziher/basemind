@@ -96,14 +96,14 @@ pub struct PathHit<'a, T> {
 /// Fetch increasing nearest-neighbor windows and project them onto one effective manifest.
 ///
 /// Fetch must apply scope, model and any request filters before ranking. The bounded
-/// shared-table query is approximate when the candidate cap excludes live rows.
+/// shared-table query is approximate when the candidate cap excludes live rows. A full final window requires fallback.
 pub fn search_live<'a, T: Clone, E>(
     paths: &LivePaths<'a>,
     limit: usize,
     mut fetch: impl FnMut(usize) -> Result<Vec<ContentHit<T>>, E>,
-) -> Result<Vec<PathHit<'a, T>>, E> {
+) -> Result<Option<Vec<PathHit<'a, T>>>, E> {
     if limit == 0 || (paths.by_hash.is_empty() && paths.exact.is_empty()) {
-        return Ok(Vec::new());
+        return Ok(Some(Vec::new()));
     }
     let mut count = limit
         .saturating_mul(3)
@@ -113,9 +113,12 @@ pub fn search_live<'a, T: Clone, E>(
         let rows = fetch(count)?;
         let full = rows.len() >= count;
         let mut hits = project(paths, &rows);
-        if hits.len() >= limit || !full || count == MAX_CANDIDATES {
+        if !full || (hits.len() >= limit && count < MAX_CANDIDATES) {
             hits.truncate(limit);
-            return Ok(hits);
+            return Ok(Some(hits));
+        }
+        if count == MAX_CANDIDATES {
+            return Ok(None);
         }
         count = (count * 2).min(MAX_CANDIDATES);
     }
@@ -181,6 +184,7 @@ mod tests {
             Ok::<_, ()>(rows)
         })
         .unwrap();
+        let hits = hits.unwrap();
         assert_eq!(requests, [66, 132]);
         assert_eq!(
             hits.iter().map(|hit| (hit.path, hit.chunk_idx)).collect::<Vec<_>>(),
@@ -188,7 +192,7 @@ mod tests {
         );
     }
     #[test]
-    fn top_ten_overlap_depends_on_the_number_of_nearer_stale_rows() {
+    fn full_candidate_cap_requires_fallback() {
         let live = (0..10).map(|i| format!("{i}.rs")).collect::<Vec<_>>();
         let paths = LivePaths::from_iter(live.iter().map(|path| (path.as_str(), path.as_str())));
         let overlap = |stale: usize| {
@@ -211,10 +215,10 @@ mod tests {
                 Ok::<_, ()>(rows)
             })
             .unwrap();
-            hits.len()
+            hits.map(|hits| hits.len())
         };
-        assert_eq!(overlap(100), 10);
-        assert_eq!(overlap(MAX_CANDIDATES - 5), 5);
-        assert_eq!(overlap(MAX_CANDIDATES), 0);
+        assert_eq!(overlap(100), Some(10));
+        assert_eq!(overlap(MAX_CANDIDATES - 5), None);
+        assert_eq!(overlap(MAX_CANDIDATES), None);
     }
 }
