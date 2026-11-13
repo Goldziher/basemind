@@ -282,13 +282,13 @@ fn scanned_caller_pages_match_after_generated_worktree_edits() {
     use super::layered_shadow::DeltaManifest;
     use crate::config::Config as ScanConfig;
     use crate::path::RelPath;
-    use crate::scanner::{EmbedMode, ScanSource, scan};
+    use crate::scanner::{EmbedMode, ScanSource, scan, scan_paths};
     use crate::store::Store;
     use ahash::AHashMap;
     use proptest::prelude::*;
     use proptest::test_runner::{Config, TestRunner};
 
-    fn fixture(files: &[(String, String)]) -> (tempfile::TempDir, Store) {
+    fn fixture(files: &[(String, String)], incremental: bool) -> (tempfile::TempDir, Store) {
         let directory = tempfile::tempdir().unwrap();
         for (name, text) in files {
             std::fs::write(directory.path().join(name), text).unwrap();
@@ -296,13 +296,13 @@ fn scanned_caller_pages_match_after_generated_worktree_edits() {
         let mut store = Store::open(directory.path(), "working").unwrap();
         let mut config = ScanConfig::with_defaults();
         config.documents.enabled = false;
-        let report = scan(
-            directory.path(),
-            &mut store,
-            &config,
-            ScanSource::WorkingTree,
-            EmbedMode::Deferred,
-        )
+        let root = directory.path();
+        let report = if incremental {
+            let candidates = files.iter().map(|(name, _)| root.join(name)).collect::<Vec<_>>();
+            scan_paths(root, &mut store, &config, &candidates, EmbedMode::Deferred)
+        } else {
+            scan(root, &mut store, &config, ScanSource::WorkingTree, EmbedMode::Deferred)
+        }
         .unwrap();
         assert_eq!(report.stats.read_failed + report.stats.extract_failed, 0);
         assert_eq!(store.index.files.len(), files.len());
@@ -338,7 +338,7 @@ fn scanned_caller_pages_match_after_generated_worktree_edits() {
         ("delete.rs".into(), "fn c() { target(); }".into()),
         ("rename.rs".into(), "fn d() { target(); }".into()),
     ];
-    let (_base_root, base) = fixture(&original);
+    let (_base_root, base) = fixture(&original, false);
     let counts = base.index.files.values().fold(AHashMap::new(), |mut counts, entry| {
         *counts.entry(entry.hash_hex.as_str()).or_default() += 1;
         counts
@@ -364,7 +364,7 @@ fn scanned_caller_pages_match_after_generated_worktree_edits() {
             if duplicate {
                 changed.push(("duplicate.rs".into(), original[0].1.clone()));
             }
-            let (_overlay_root, overlay) = fixture(&changed);
+            let (_overlay_root, overlay) = fixture(&changed, true);
             let mut working = changed;
             working.push(original[0].clone());
             if !delete {
@@ -373,7 +373,7 @@ fn scanned_caller_pages_match_after_generated_worktree_edits() {
             if !rename {
                 working.push(original[3].clone());
             }
-            let (_reference_root, reference) = fixture(&working);
+            let (_reference_root, reference) = fixture(&working, false);
             let mut delta = DeltaManifest::empty(1, "fixture".into(), 1);
             for (path, entry) in &overlay.index.files {
                 delta.upsert(path.clone(), entry.clone(), base.index.files.get(path));
