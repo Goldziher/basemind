@@ -382,7 +382,7 @@ impl WorkspacePool {
         let mut store = entry.store.lock().unwrap_or_else(PoisonError::into_inner);
         if store.layered_read.is_some()
             && !cancel.is_cancelled()
-            && crate::store_base::scan_dirty_worktree(&entry.root, &config).unwrap_or(false)
+            && crate::store_base::refresh_worktree(&entry.root, &config).unwrap_or(false)
         {
             let mut next = Store::open_read_only_no_index(&entry.root, VIEW_WORKING)?;
             if crate::store_base::hydrate_cold_store(&mut next, &config).is_ok() && next.layered_read.is_some() {

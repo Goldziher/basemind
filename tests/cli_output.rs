@@ -256,6 +256,22 @@ fn cold_dirty_scan_publishes_delta_without_standalone_fjall() {
         );
     }
     assert!(!cache.join("views/working/index.fjall").exists());
+    let rescan = || {
+        Command::new(bin())
+            .env("BASEMIND_INDEX_LAYERED", "1")
+            .args(["--root", root.to_str().unwrap(), "rescan", "sample.rs"])
+            .output()
+            .unwrap()
+    };
+    git(root, &["checkout", "--", "sample.rs"]);
+    let clean = rescan();
+    assert!(clean.status.success(), "{}", String::from_utf8_lossy(&clean.stderr));
+    assert!(String::from_utf8_lossy(&clean.stderr).contains("Shared worktree index ready"));
+    assert!(!cache.join("views/working/index.fjall").exists());
+    std::fs::write(root.join("sample.rs"), "fn after_symbol() { after(); }").unwrap();
+    let dirty = rescan();
+    assert!(dirty.status.success(), "{}", String::from_utf8_lossy(&dirty.stderr));
+    assert!(!cache.join("views/working/index.fjall").exists());
     let api = |layered: &str, args: &[&str]| {
         let query = Command::new(bin())
             .env("BASEMIND_INDEX_LAYERED", layered)
@@ -307,6 +323,13 @@ fn cold_dirty_scan_publishes_delta_without_standalone_fjall() {
     for ((args, _), expected) in requests.iter().zip(layered) {
         assert_eq!(api("0", args), expected, "request {args:?}");
     }
+    let full = Command::new(bin())
+        .env("BASEMIND_INDEX_LAYERED", "1")
+        .args(["--root", root.to_str().unwrap(), "rescan", "--full", "--no-git-history"])
+        .output()
+        .unwrap();
+    assert!(full.status.success(), "{}", String::from_utf8_lossy(&full.stderr));
+    assert!(!String::from_utf8_lossy(&full.stderr).contains("Shared worktree index ready"));
     for number in 0..2 {
         std::fs::write(root.join(format!("overflow_{number}.rs")), "fn overflow() {}").unwrap();
     }
