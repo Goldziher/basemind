@@ -326,6 +326,7 @@ async fn prepared_clean_base_answers_calls_and_dirty_worktree_uses_standalone() 
         );
     };
     git(&["init", "-q"]);
+    git(&["config", "core.autocrlf", "false"]);
     let path = root.join("sample.rs");
     fs::write(&path, "fn sample() { target(); }").unwrap();
     git(&["add", "sample.rs"]);

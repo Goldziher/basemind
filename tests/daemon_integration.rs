@@ -1441,6 +1441,7 @@ async fn daemon_hosts_cold_layered_files_and_symbols_without_standalone_fjall() 
                 .success()
         );
     };
+    git(&["config", "core.autocrlf", "false"]);
     std::fs::write(
         root.join("basemind.toml"),
         "\"$schema\" = \"v1\"\n[documents]\nenabled=false\nembed=false\n[code_search]\nenabled=false\nembed=false\n",

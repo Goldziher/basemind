@@ -26,6 +26,7 @@ mod tests {
         let root = repo.path();
         let file = root.join("example.rs");
         git(root, &["init", "-q"]);
+        git(root, &["config", "core.autocrlf", "false"]);
         fs::write(&file, "pub fn original() {}").unwrap();
         git(root, &["add", "."]);
         git(root, &["-c", "commit.gpgsign=false", "commit", "-qm", "fixture"]);
@@ -53,6 +54,23 @@ mod tests {
         };
         assert_eq!(reused, first);
 
+        fs::write(&file, "pub fn original() {}").unwrap();
+        fs::remove_file(root.join("untracked.rs")).unwrap();
+        let mut route_config = config.clone();
+        route_config.documents.enabled = false;
+        route_config.documents.embed = false;
+        route_config.code_search.enabled = false;
+        route_config.code_search.embed = false;
+        git(root, &["config", "core.autocrlf", "false"]);
+        assert!(open_clean_worktree(root, &route_config).unwrap().is_some());
+        git(root, &["config", "core.autocrlf", "true"]);
+        assert!(open_clean_worktree(root, &route_config).unwrap().is_none());
+        git(root, &["config", "core.autocrlf", "false"]);
+        fs::write(root.join(".gitattributes"), "*.rs filter=fixture\n").unwrap();
+        git(root, &["add", ".gitattributes"]);
+        assert!(open_clean_worktree(root, &route_config).unwrap().is_none());
+        git(root, &["rm", "--cached", ".gitattributes"]);
+        fs::remove_file(root.join(".gitattributes")).unwrap();
         let commit = Repo::discover(root).unwrap().resolve_rev("HEAD").unwrap();
         assert!(open(root, &config, 1, "wrong").is_err());
         let reader = open(root, &config, 1, &commit).unwrap();
@@ -88,7 +106,7 @@ mod tests {
         let BaseBuild::Ready(second) = prepare(root, &config).unwrap() else {
             panic!("invalid generation was not replaced");
         };
-        assert_eq!(second.file_name().unwrap(), "gen-2");
+        assert_eq!(second.file_name().unwrap(), "gen-3");
     }
 }
 
@@ -129,6 +147,7 @@ fn verify_moved_export(extension: &str, original: &str, importer: &str, changed:
         );
     };
     git(&["init", "-q"]);
+    git(&["config", "core.autocrlf", "false"]);
     let target_name = format!("target.{extension}");
     let importer_name = format!("use.{extension}");
     fs::write(root.join(&target_name), original).unwrap();
@@ -195,6 +214,7 @@ fn reuses_a_base_when_new_commit_changes_less_than_two_percent() {
         );
     };
     git(&["init", "-q"]);
+    git(&["config", "core.autocrlf", "false"]);
     for index in 0..51 {
         fs::write(
             root.join(format!("sample_{index}.rs")),
@@ -252,6 +272,7 @@ fn changing_a_typescript_config_restitches_its_unchanged_consumer() {
         )
     };
     git(&["init", "-q"]);
+    git(&["config", "core.autocrlf", "false"]);
     for (path, text) in [
         ("one/target.ts", "export const target = 1;\n"),
         ("two/target.ts", "export const target = 2;\n"),
@@ -332,6 +353,7 @@ fn changing_a_typescript_barrel_restitches_its_unchanged_consumer() {
         )
     };
     git(&["init", "-q"]);
+    git(&["config", "core.autocrlf", "false"]);
     for (path, text) in [
         ("one.ts", "export function target() {}\n"),
         ("two.ts", "export function target() { return 2; }\n"),
@@ -391,6 +413,7 @@ fn rebase_refuses_delta_between_initial_and_post_rebase_file_limits() {
         );
     };
     git(&["init", "-q"]);
+    git(&["config", "core.autocrlf", "false"]);
     for index in 0..8 {
         fs::write(root.join(format!("keep_{index}.rs")), format!("fn keep_{index}() {{}}")).unwrap();
     }

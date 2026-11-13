@@ -256,6 +256,9 @@ fn open_worktree_base(root: &Path, config: &Config, build: bool) -> Result<Optio
         Ok(_) | Err(crate::git::GitError::NotARepo(_)) => return Ok(None),
         Err(error) => return Err(error.into()),
     };
+    if repo.checkout_transforms_possible()? {
+        return Ok(None);
+    }
     let (_, commit) = resolve_commit(&repo)?;
     if !repo.status_against(&commit)?.overlay_candidates().is_empty() {
         return Ok(None);
@@ -393,6 +396,9 @@ fn dirty_worktree(
     }
     let repo = Repo::discover(root)?;
     if !repo.origin_is_workdir() {
+        return Ok(None);
+    }
+    if repo.checkout_transforms_possible()? {
         return Ok(None);
     }
     let (_, commit) = resolve_commit(&repo)?;
