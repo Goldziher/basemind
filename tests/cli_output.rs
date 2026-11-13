@@ -138,6 +138,7 @@ fn explicit_shared_base_verification_uses_standalone_for_dirty_worktrees() {
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path();
     git(root, &["init", "-q"]);
+    git(root, &["config", "core.autocrlf", "false"]);
     std::fs::write(root.join("example.rs"), "pub fn example() { called(); }\n").unwrap();
     std::fs::write(
         root.join("basemind.toml"),
@@ -194,6 +195,7 @@ fn cold_dirty_scan_publishes_delta_without_standalone_fjall() {
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path();
     git(root, &["init", "-q"]);
+    git(root, &["config", "core.autocrlf", "false"]);
     std::fs::write(root.join("sample.rs"), "fn sample() { before(); }").unwrap();
     std::fs::write(
         root.join("basemind.toml"),
@@ -266,7 +268,11 @@ fn cold_dirty_scan_publishes_delta_without_standalone_fjall() {
     git(root, &["checkout", "--", "sample.rs"]);
     let clean = rescan();
     assert!(clean.status.success(), "{}", String::from_utf8_lossy(&clean.stderr));
-    assert!(String::from_utf8_lossy(&clean.stderr).contains("Shared worktree index ready"));
+    assert!(
+        String::from_utf8_lossy(&clean.stderr).contains("Shared worktree index ready"),
+        "{}",
+        String::from_utf8_lossy(&clean.stderr)
+    );
     assert!(!cache.join("views/working/index.fjall").exists());
     std::fs::write(root.join("sample.rs"), "fn after_symbol() { after(); }").unwrap();
     let dirty = rescan();
