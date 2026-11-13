@@ -342,3 +342,70 @@ fn cold_dirty_scan_publishes_delta_without_standalone_fjall() {
     assert!(cache.join("layered-promoted").is_file());
     assert!(!basemind::store_base::has_published_dirty_worktree(root, &config).unwrap());
 }
+
+#[cfg(unix)]
+#[test]
+fn verified_retirement_restores_standalone_after_route_loss() {
+    basemind::store::init_isolated_cache();
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    git(root, &["init", "-q"]);
+    std::fs::write(root.join("example.rs"), "pub fn example() {}\n").unwrap();
+    std::fs::write(
+        root.join("basemind.toml"),
+        "\"$schema\" = \"v1\"\n[documents]\nenabled = false\nembed = false\n[code_search]\nenabled = false\nembed = false\n",
+    )
+    .unwrap();
+    git(root, &["add", "."]);
+    git(root, &["-c", "commit.gpgsign=false", "commit", "-qm", "fixture"]);
+    let scan = |mode, verify| {
+        let mut command = Command::new(bin());
+        command.env("BASEMIND_INDEX_LAYERED", mode).args([
+            "--root",
+            root.to_str().unwrap(),
+            "scan",
+            "--no-git-history",
+        ]);
+        if verify {
+            command.arg("--verify-shared-base");
+        }
+        let output = command.output().unwrap();
+        let message = String::from_utf8_lossy(&output.stderr).into_owned();
+        assert!(output.status.success(), "{message}");
+        message
+    };
+    scan("0", false);
+    let views = basemind::store::workspace_cache_dir(root).join("views");
+    let working = views.join("working");
+    let backup = views.join("working.migrated");
+    let marker = working.join("rollback-test-sentinel");
+    std::fs::write(&marker, b"standalone data").unwrap();
+
+    assert!(scan("1", true).contains("Verified shared generation activated"));
+    assert!(!working.exists());
+    assert_eq!(
+        std::fs::read(backup.join("rollback-test-sentinel")).unwrap(),
+        b"standalone data"
+    );
+
+    scan("0", false);
+    assert_eq!(std::fs::read(&marker).unwrap(), b"standalone data");
+    assert!(!backup.exists());
+
+    assert!(scan("1", true).contains("Verified shared generation activated"));
+    let base = basemind::store::repo_group_dir(root).join("base");
+    let manifests = std::fs::read_dir(&base)
+        .unwrap()
+        .map(|entry| entry.unwrap().path().join("base.json"))
+        .filter(|path| path.is_file())
+        .collect::<Vec<_>>();
+    assert_eq!(manifests.len(), 1);
+    std::fs::write(&manifests[0], b"corrupt").unwrap();
+    scan("1", false);
+    assert_eq!(std::fs::read(&marker).unwrap(), b"standalone data");
+    assert!(!backup.exists());
+
+    let output = run(root, &["--json", "code", "files"]);
+    let response: serde_json::Value = serde_json::from_str(&stdout(&output)).unwrap();
+    assert!(response["files"].to_string().contains("example.rs"), "{response}");
+}
