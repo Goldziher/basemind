@@ -19,6 +19,7 @@ use crate::store_base_retention::{GenerationLease, highest_leased_generation};
 
 const BASE_DIR: &str = "base";
 const BASE_LOCK_FILE: &str = "base.lock";
+const MAX_OVERLAY_INPUT_BYTES: u64 = 50 * 1024 * 1024;
 const RUNS: &str = "runs";
 const MANIFEST: &str = "base.json";
 const FORMAT: u32 = 1;
@@ -286,6 +287,7 @@ fn dirty_worktree(
         *counts.entry(entry.hash_hex.as_str()).or_default() += 1;
     }
     if publish && !published.is_dir() {
+        crate::disk_space::ensure_free_space(&overlays)?;
         fs::create_dir_all(&overlays)?;
         let scratch = tempfile::tempdir_in(&overlays)?;
         let mut overlay = Store::open_base_scratch(root, scratch.path())?;
@@ -343,6 +345,10 @@ fn dirty_worktree(
         fs::remove_dir_all(scratch.path().join(INDEX_DIR))?;
         fs::remove_dir_all(scratch.path().join(crate::store::MEMORY_STORE_DIR))?;
         sync_tree(scratch.path())?;
+        ensure!(
+            crate::disk_space::dir_bytes(scratch.path()) <= MAX_OVERLAY_INPUT_BYTES,
+            "overlay exceeds disk limit"
+        );
         let group = repo_group_dir(root);
         let gate = crate::store_base_retention::group_lock(&group)?;
         fs2::FileExt::lock_exclusive(&gate)?;
@@ -537,6 +543,7 @@ fn candidate_fingerprint(
 ) -> Result<String> {
     use std::io::Read;
     let mut digest = blake3::Hasher::new();
+    let mut total_bytes = 0u64;
     for path in candidates {
         let name: &[u8] = path.as_ref();
         digest.update(&(name.len() as u64).to_le_bytes());
@@ -559,6 +566,11 @@ fn candidate_fingerprint(
             .take(max_bytes.saturating_add(1))
             .read_to_end(&mut bytes)?;
         ensure!(bytes.len() as u64 <= max_bytes, "overlay candidate exceeds size limit");
+        total_bytes = total_bytes.saturating_add(bytes.len() as u64);
+        ensure!(
+            total_bytes <= MAX_OVERLAY_INPUT_BYTES,
+            "overlay candidates exceed total size limit"
+        );
         digest.update(&[1]);
         digest.update(blake3::hash(&bytes).as_bytes());
     }

@@ -1490,4 +1490,36 @@ async fn daemon_hosts_cold_layered_files_and_symbols_without_standalone_fjall() 
         );
     }
     assert!(!working.join("index.fjall").exists());
+    std::fs::write(root.join("cold.rs"), "pub fn refreshed_layered_symbol() {}\n").unwrap();
+    let refresh = hosted_tool_call(
+        &addr,
+        &token,
+        &root,
+        "cold-layered",
+        3,
+        "admin",
+        json!({"mode":"rescan","paths":["cold.rs"]}),
+    )
+    .await;
+    assert!(
+        refresh.get("error").is_none() && refresh["result"].is_object(),
+        "{refresh}"
+    );
+    for (id, name) in [(4, "refreshed_layered_symbol"), (5, "alpha")] {
+        let response = hosted_tool_call(
+            &addr,
+            &token,
+            &root,
+            "cold-layered",
+            id,
+            "code",
+            json!({"mode":"symbols","name":name}),
+        )
+        .await;
+        assert!(
+            response.get("error").is_none() && response.to_string().contains(name),
+            "{response}"
+        );
+    }
+    assert!(working.join("index.fjall").exists());
 }
