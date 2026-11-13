@@ -368,6 +368,34 @@ impl Repo {
         Ok(id.to_string())
     }
 
+    pub(crate) fn checkout_transforms_possible(&self) -> Result<bool, GitError> {
+        let local = self.local();
+        let config = local.config_snapshot();
+        if config.string("core.autocrlf").is_some_and(|value| {
+            ![b"false".as_slice(), b"no", b"off", b"0", b"input"]
+                .iter()
+                .any(|allowed| value.as_slice().eq_ignore_ascii_case(allowed))
+        }) || config.string("core.attributesFile").is_some()
+        {
+            return Ok(true);
+        }
+        let has_attributes = |path: &std::path::Path| match std::fs::metadata(path) {
+            Ok(metadata) => Ok(metadata.len() > 0),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(GitError::Read {
+                what: path.display().to_string(),
+                msg: error.to_string(),
+            }),
+        };
+        if has_attributes(&local.common_dir().join("info/attributes"))? {
+            return Ok(true);
+        }
+        Ok(self
+            .list_paths_staged()?
+            .iter()
+            .any(|path| path.rsplit('/').next() == Some(".gitattributes")))
+    }
+
     /// List forward-slash relative paths of every blob recorded in the staging index.
     pub fn list_paths_staged(&self) -> Result<Vec<String>, GitError> {
         let local = self.local();
