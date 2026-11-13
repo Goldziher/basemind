@@ -150,8 +150,10 @@ fn sorted_runs_match_a_scanned_index() {
 #[ignore = "requires a disposable, complete Fjall view from a reference scan"]
 fn compare_sorted_run_with_fjall() {
     let path = std::env::var_os("BASEMIND_PROTOTYPE_VIEW").expect("set BASEMIND_PROTOTYPE_VIEW");
+    let path = Path::new(&path);
+    assert!(path.join("index.fjall").is_dir(), "requires an existing Fjall index");
     let started = Instant::now();
-    let db = IndexDb::open(Path::new(&path)).unwrap();
+    let db = IndexDb::open(path).unwrap();
     eprintln!("Fjall open: {:?}", started.elapsed());
     assert!(compare_parts(&StandaloneView(&db)) > 0);
 }
