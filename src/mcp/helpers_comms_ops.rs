@@ -211,7 +211,19 @@ pub(super) async fn run_thread_history(
     params: ThreadHistoryParams,
 ) -> Result<CallToolResult, McpError> {
     let limit = clamp_limit(params.limit);
-    let cursor = params.cursor.map(crate::comms::cursor::Cursor);
+    use crate::comms::cursor::Cursor;
+
+    let cursor = match (params.cursor, params.after_seq) {
+        (Some(_), Some(_)) => {
+            return Err(McpError::invalid_params(
+                "history accepts either cursor or after_seq",
+                None,
+            ));
+        }
+        (Some(cursor), None) => Some(Cursor(cursor)),
+        (None, Some(seq)) => Some(Cursor::encode(params.thread.as_str(), seq)),
+        (None, None) => None,
+    };
     let since = since_cutoff(params.since_hours);
     let handle = resolve_comms_client(state, params.as_agent).await?;
     let mut client = handle.lock().await;

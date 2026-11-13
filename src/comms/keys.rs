@@ -42,8 +42,7 @@ fn read_len_prefixed<'buf>(buf: &'buf [u8], cursor: &mut usize) -> Option<&'buf 
 /// The big-endian `seq` suffix gives total order per thread: a prefix scan over
 /// [`messages_by_thread_prefix`] walks a thread's messages oldest-first.
 pub fn message_by_thread(thread: &str, seq: u64) -> Vec<u8> {
-    let mut out = Vec::with_capacity(2 + thread.len() + 8);
-    write_len_prefixed(&mut out, thread.as_bytes());
+    let mut out = messages_by_thread_prefix(thread);
     out.extend_from_slice(&seq.to_be_bytes());
     out
 }

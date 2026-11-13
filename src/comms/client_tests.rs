@@ -237,6 +237,7 @@ fn test_message_meta() -> crate::comms::model::MessageMeta {
         id: "m1".to_string(),
         thread: ThreadId::parse("t1".to_string()).expect("valid thread id"),
         from: AgentId::parse("agent-1".to_string()).expect("valid agent id"),
+        from_name: None,
         ts_micros: 0,
         subject: "s".to_string(),
         tags: Vec::new(),

@@ -45,6 +45,7 @@ fi
 workspace_root="$(pwd -P)"
 target_dir="${CARGO_TARGET_DIR:-${workspace_root}/target}"
 if [[ "${target_dir}" != /* ]]; then target_dir="${workspace_root}/${target_dir}"; fi
+export BASEMIND_DAEMON_BINARY="${BASEMIND_DAEMON_BINARY:-${target_dir}/release/basemind}"
 export RMUX_SDK_DAEMON_BINARY="${RMUX_SDK_DAEMON_BINARY:-${target_dir}/release/basemind}"
 
 failed=()

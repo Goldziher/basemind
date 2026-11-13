@@ -37,8 +37,10 @@ impl BasemindServer {
         symbol provenance, structural-hash drift — decaying importance and archiving records stale \
         for over 90 days; `dry_run` previews the verdicts (default 100, max 1000). `documents` is \
         semantic search over indexed documents — PDFs, Office files, HTML, email, OCR'd images, and \
-        also markdown, config and data files (JSON/YAML/TOML/XML/CSV), which the code map does not \
-        hold — read the matching chunks instead of opening the file; `mime_type` filters exactly, \
+        also Jupyter notebooks, markdown, config and data files (JSON/YAML/TOML/XML/CSV). Use \
+        `mime_type: \"application/x-ipynb+json\"` to restrict results to notebooks. Semantic search \
+        cannot prove an exact string or regex is absent; use a literal or regex file search for \
+        exact matches outside the code map. `mime_type` filters exactly, \
         `entity_category` / `keywords_contains` filter by NER category / keyword, and `scope` picks \
         the ingestion scope (pages ingested by the `web` tool live under `web:<host>`), \
         `max_tokens` budgets the hits and `format:\"toon\"` compacts them. `mine` derives \

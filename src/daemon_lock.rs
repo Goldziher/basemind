@@ -221,9 +221,8 @@ pub fn count_live_daemons_of(kind: DaemonKind) -> usize {
 /// `Drop`. Acquire it at the very top of the daemon entry point, before binding the socket.
 #[derive(Debug)]
 pub struct DaemonLock {
-    /// Held for the daemon's lifetime; the flock releases when this `File` drops (or the process
-    /// dies — the OS releases advisory locks on exit, so a crashed daemon never wedges the lock).
-    _lock: File,
+    /// Held for the daemon's lifetime and explicitly unlocked after deregistration.
+    lock: File,
     /// `<dir>/daemon.pid`, removed on drop.
     pid_path: PathBuf,
     /// `<data_home>/daemons/<kind>-<hash>.pid`, removed on drop.
@@ -316,7 +315,7 @@ impl DaemonLock {
         write_record(&machine_path, &record);
 
         Ok(DaemonLockOutcome::Acquired(DaemonLock {
-            _lock: file,
+            lock: file,
             pid_path,
             machine_path,
         }))
@@ -328,6 +327,8 @@ impl Drop for DaemonLock {
         // removing the pidfiles just keeps the registry tidy so a later count needs no liveness prune.
         let _ = std::fs::remove_file(&self.pid_path);
         let _ = std::fs::remove_file(&self.machine_path);
+        // A forked child may still hold a copy of the open file description until it execs. ~keep
+        let _ = FileExt::unlock(&self.lock);
     }
 }
 
@@ -479,20 +480,26 @@ mod tests {
             0,
             "dropping the lock deregisters the daemon"
         );
-        // flock belongs to the open file description, so a sibling test thread that forks (any
-        // `Command::spawn`) inherits it until its exec closes the CLOEXEC fd. That window is a few
-        // milliseconds, so the lock can read as held right after our drop; wait it out rather than
-        // asserting on a race the production code cannot and need not prevent. ~keep
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        loop {
-            match DaemonLock::acquire_at(DaemonKind::Comms, comms.path(), "9.9.9", machine.path())
-                .expect("re-acquire after drop")
-            {
-                DaemonLockOutcome::Acquired(_) => break,
-                other if std::time::Instant::now() >= deadline => panic!("the lock is free after drop, got {other:?}"),
-                _ => std::thread::sleep(std::time::Duration::from_millis(10)),
-            }
-        }
+        let reacquired =
+            DaemonLock::acquire_at(DaemonKind::Comms, comms.path(), "9.9.9", machine.path()).expect("re-acquire");
+        assert!(matches!(reacquired, DaemonLockOutcome::Acquired(_)));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn drop_unlocks_even_if_the_open_file_description_is_shared() {
+        let machine = tempfile::tempdir().expect("machine tempdir");
+        let comms = tempfile::tempdir().expect("comms tempdir");
+        let held = DaemonLock::acquire_at(DaemonKind::Comms, comms.path(), "9.9.9", machine.path()).expect("acquire");
+        let DaemonLockOutcome::Acquired(held) = held else {
+            panic!("must acquire a fresh lock");
+        };
+        let inherited = held.lock.try_clone().expect("duplicate the lock fd");
+        drop(held);
+        let reacquired =
+            DaemonLock::acquire_at(DaemonKind::Comms, comms.path(), "9.9.9", machine.path()).expect("re-acquire");
+        assert!(matches!(reacquired, DaemonLockOutcome::Acquired(_)));
+        drop(inherited);
     }
 
     /// A concurrent fork/exec carries a copy of a just-dropped lock's fd until it execs, so the lock

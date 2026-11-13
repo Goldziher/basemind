@@ -807,6 +807,7 @@ mod tests {
             id: id.to_string(),
             thread: ThreadId::parse("th-1").expect("thread"),
             from: AgentId::parse("agent-1").expect("agent"),
+            from_name: Some("Author".into()),
             ts_micros: 7,
             subject: "subj".to_string(),
             tags: vec!["t".to_string()],

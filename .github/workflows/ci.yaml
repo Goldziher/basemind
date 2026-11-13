@@ -146,7 +146,15 @@ jobs:
       # ~keep reports one target's failures and hides every straggler behind it. A cross-cutting
       # ~keep change leaves failures in several binaries at once, and discovering them one CI
       # ~keep round-trip at a time costs an afternoon per release.
+      - name: cargo test (macOS full)
+        if: runner.os == 'macOS' && matrix.features == 'full'
+        shell: bash
+        run: |
+          cargo test --workspace --features full --quiet --no-fail-fast 2>&1 |
+            python3 -u scripts/utf8-test-log.py
+
       - name: cargo test
+        if: runner.os != 'macOS' || matrix.features != 'full'
         run: cargo test --workspace --features "${{ matrix.features }}" --quiet --no-fail-fast
 
       # ~keep The debug test artifacts are dead weight once `cargo test` has passed, and with the

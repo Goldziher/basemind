@@ -302,18 +302,10 @@ impl Broker {
             return Ok(need_hello());
         };
         self.store_write(move |store| {
-            let Some(mut record) = store.get_thread(&thread)? else {
+            let Some(record) = store.get_thread(&thread)? else {
                 return Ok(unknown_thread(&thread));
             };
-            store.add_member(&Membership {
-                agent_id: agent.clone(),
-                thread: thread.clone(),
-                created_at: now_micros(),
-            })?;
-            if !record.members.contains(&agent) {
-                record.members.push(agent);
-                store.put_thread(&record)?;
-            }
+            store.join_thread(record, agent)?;
             Ok(CommsResponse::Ok)
         })
         .await
@@ -513,7 +505,9 @@ impl Broker {
                         None
                     };
                     let id = mint_message_id(&thread, &agent);
-                    let meta = store::build_meta(id, thread.clone(), agent, subject, tags, reply_to, &body);
+                    let from_name = store.get_agent(&agent)?.map(|record| record.card.name);
+                    let mut meta = store::build_meta(id, thread.clone(), agent, subject, tags, reply_to, &body);
+                    meta.from_name = from_name.filter(|name| !name.trim().is_empty());
                     let stored = match idempotency_key {
                         Some(key) => match store.post_keyed(&thread, meta, MessageBody(body), &key)? {
                             store::PostOutcome::Stored(_, stored) => stored,
@@ -579,7 +573,10 @@ impl Broker {
                 resolution => return Ok(reference_error(&message_id, resolution)),
             };
             if !store.is_member(&thread, &agent)? {
-                return Ok(not_member(&thread));
+                return Ok(CommsResponse::Error {
+                    code: "not_member".to_string(),
+                    message: format!("join thread {} to read message bodies", thread.as_str()),
+                });
             }
             let body = store.get_body(&canonical_id)?;
             Ok(CommsResponse::Body { body })
