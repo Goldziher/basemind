@@ -362,20 +362,25 @@ fn scanned_caller_pages_match_after_generated_worktree_edits() {
         *counts.entry(entry.hash_hex.as_str()).or_default() += 1;
         counts
     });
-    let cases = (2usize..5, 0u8..8);
+    let case_count = std::env::var("BASEMIND_LAYERED_CASES")
+        .map_or(12, |value| value.parse::<u32>().expect("integer layered case count"));
+    assert!(case_count > 0);
+    let executed = std::cell::Cell::new(0);
+    let cases = (2usize..5, 0u8..8, 0u8..3);
     let mut runner = TestRunner::new(Config {
-        cases: 12,
+        cases: case_count,
         failure_persistence: None,
         ..Config::default()
     });
     runner
-        .run(&cases, |(calls, flags)| {
+        .run(&cases, |(calls, flags, worktree)| {
+            executed.set(executed.get() + 1);
             let delete = flags & 1 != 0;
             let rename = flags & 2 != 0;
             let duplicate = flags & 4 != 0;
             let mut changed = vec![
                 ("edit.rs".into(), format!("fn b() {{ {} }}", "target(); ".repeat(calls))),
-                ("added.rs".into(), "fn e() { target(); }".into()),
+                ("added.rs".into(), format!("fn worktree_{worktree}() {{ target(); }}")),
             ];
             if rename {
                 changed.push(("renamed.rs".into(), original[3].1.clone()));
@@ -413,9 +418,13 @@ fn scanned_caller_pages_match_after_generated_worktree_edits() {
             let expected = pages(&reference.index_view().unwrap());
             prop_assert!(expected.len() >= 2);
             prop_assert_eq!(pages(&view), expected);
+            super::layered_verify::verify_rows(&view, &reference.index_view().unwrap())
+                .map_err(|error| TestCaseError::fail(error.to_string()))?;
             Ok(())
         })
         .unwrap();
+    assert_eq!(executed.get(), case_count);
+    eprintln!("verified {case_count} layered parity cases");
 }
 
 #[cfg(any(feature = "code-intel-js", feature = "code-intel-stack"))]
