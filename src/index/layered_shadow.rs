@@ -42,6 +42,18 @@ impl DeltaManifest {
         }
     }
 
+    pub(super) fn upsert(&mut self, path: RelPath, file: FileEntry, base: Option<&FileEntry>) {
+        let entry = match base {
+            Some(base) if base.hash_hex == file.hash_hex => {
+                self.entries.remove(&path);
+                return;
+            }
+            Some(_) => DeltaEntry::Modified(file),
+            None => DeltaEntry::Added(file),
+        };
+        self.entries.insert(path, entry);
+    }
+
     pub(super) fn delete(&mut self, path: RelPath) {
         self.entries.insert(path, DeltaEntry::Deleted);
     }

@@ -276,3 +276,125 @@ fn pinned_overlay_reads_match_standalone_and_ignore_later_writes() {
     assert_eq!(scan(&view, None), scan(&reference, None));
     assert_eq!(scan(&view, Some(&alpha)), scan(&reference, Some(&alpha)));
 }
+
+#[test]
+fn scanned_caller_pages_match_after_generated_worktree_edits() {
+    use super::layered_shadow::DeltaManifest;
+    use crate::config::Config as ScanConfig;
+    use crate::path::RelPath;
+    use crate::scanner::{EmbedMode, ScanSource, scan};
+    use crate::store::Store;
+    use ahash::AHashMap;
+    use proptest::prelude::*;
+    use proptest::test_runner::{Config, TestRunner};
+
+    fn fixture(files: &[(String, String)]) -> (tempfile::TempDir, Store) {
+        let directory = tempfile::tempdir().unwrap();
+        for (name, text) in files {
+            std::fs::write(directory.path().join(name), text).unwrap();
+        }
+        let mut store = Store::open(directory.path(), "working").unwrap();
+        let mut config = ScanConfig::with_defaults();
+        config.documents.enabled = false;
+        let report = scan(
+            directory.path(),
+            &mut store,
+            &config,
+            ScanSource::WorkingTree,
+            EmbedMode::Deferred,
+        )
+        .unwrap();
+        assert_eq!(report.stats.read_failed + report.stats.extract_failed, 0);
+        assert_eq!(store.index.files.len(), files.len());
+        (directory, store)
+    }
+
+    fn pages(view: &dyn IndexView) -> Vec<serde_json::Value> {
+        let mut output = Vec::new();
+        let mut after = None;
+        loop {
+            let page = crate::mcp::scan_calls_by_name(view, "target", 2, after.as_deref()).unwrap();
+            after = page.hit_keys.last().cloned();
+            let cursor = page.next_cursor.map(|cursor| cursor.0);
+            let done = cursor.is_none();
+            output.push(serde_json::json!({
+                "hits": page.hits,
+                "keys": page.hit_keys,
+                "total": page.total,
+                "partial": page.total_is_partial,
+                "cursor": cursor,
+            }));
+            if done {
+                return output;
+            }
+            assert!(output.len() < 10);
+        }
+    }
+
+    crate::store::init_isolated_cache();
+    let original = vec![
+        ("keep.rs".into(), "fn a() { target(); }".into()),
+        ("edit.rs".into(), "fn b() { target(); }".into()),
+        ("delete.rs".into(), "fn c() { target(); }".into()),
+        ("rename.rs".into(), "fn d() { target(); }".into()),
+    ];
+    let (_base_root, base) = fixture(&original);
+    let counts = base.index.files.values().fold(AHashMap::new(), |mut counts, entry| {
+        *counts.entry(entry.hash_hex.as_str()).or_default() += 1;
+        counts
+    });
+    let cases = (2usize..5, 0u8..8);
+    let mut runner = TestRunner::new(Config {
+        cases: 12,
+        failure_persistence: None,
+        ..Config::default()
+    });
+    runner
+        .run(&cases, |(calls, flags)| {
+            let delete = flags & 1 != 0;
+            let rename = flags & 2 != 0;
+            let duplicate = flags & 4 != 0;
+            let mut changed = vec![
+                ("edit.rs".into(), format!("fn b() {{ {} }}", "target(); ".repeat(calls))),
+                ("added.rs".into(), "fn e() { target(); }".into()),
+            ];
+            if rename {
+                changed.push(("renamed.rs".into(), original[3].1.clone()));
+            }
+            if duplicate {
+                changed.push(("duplicate.rs".into(), original[0].1.clone()));
+            }
+            let (_overlay_root, overlay) = fixture(&changed);
+            let mut working = changed;
+            working.push(original[0].clone());
+            if !delete {
+                working.push(original[2].clone());
+            }
+            if !rename {
+                working.push(original[3].clone());
+            }
+            let (_reference_root, reference) = fixture(&working);
+            let mut delta = DeltaManifest::empty(1, "fixture".into(), 1);
+            for (path, entry) in &overlay.index.files {
+                delta.upsert(path.clone(), entry.clone(), base.index.files.get(path));
+            }
+            if delete {
+                delta.delete(RelPath::from("delete.rs"));
+            }
+            if rename {
+                delta.delete(RelPath::from("rename.rs"));
+            }
+            let shadow = delta.shadow(&counts, |path| base.index.files.get(path));
+            let view = LayeredView::new(
+                base.index_db.as_ref().unwrap(),
+                overlay.index_db.as_ref().unwrap(),
+                shadow,
+            )
+            .unwrap();
+            let expected = pages(&reference.index_view().unwrap());
+            prop_assert!(expected.len() >= 2);
+            prop_assert_eq!(pages(&view), expected);
+            Ok(())
+        })
+        .unwrap();
+}
