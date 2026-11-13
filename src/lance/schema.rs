@@ -186,6 +186,9 @@ mod shared_tests {
             shared.field_with_name("chunk_idx").unwrap().data_type(),
             &DataType::UInt32
         );
-        assert_eq!(local.field_with_name("embedding"), shared.field_with_name("embedding"));
+        assert_eq!(
+            local.field_with_name("embedding").unwrap(),
+            shared.field_with_name("embedding").unwrap()
+        );
     }
 }
