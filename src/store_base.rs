@@ -410,7 +410,13 @@ fn dirty_worktree(
     let base_index = crate::store::read_index(&path)?.context("missing base manifest")?;
     if publish && reference.is_none() {
         let manifest: BaseManifest = serde_json::from_slice(&fs::read(path.join(MANIFEST))?)?;
-        if over_promotion_budget(root, &candidates, &base_index, &manifest, rebased) {
+        if over_promotion_budget(
+            root,
+            &candidates,
+            &base_index,
+            &manifest,
+            rebased || has_older_overlay_pin(root, generation)?,
+        ) {
             return Ok(None);
         }
     }
@@ -1366,4 +1372,47 @@ fn changing_a_typescript_barrel_restitches_its_unchanged_consumer() {
     let expected = reference.index_view().unwrap().references_to(&target, 16);
     assert!(expected.iter().any(|(path, _)| path.as_str() == Some("use.ts")));
     assert_eq!(view.references_to(&target, 16), expected);
+}
+
+#[cfg(all(test, not(any(feature = "code-intel-js", feature = "code-intel-stack"))))]
+#[test]
+fn rebase_refuses_delta_between_initial_and_post_rebase_file_limits() {
+    crate::store::init_isolated_cache();
+    let fixture = tempfile::tempdir().unwrap();
+    let root = fixture.path();
+    let git = |args: &[&str]| {
+        assert!(
+            std::process::Command::new("git")
+                .current_dir(root)
+                .env("GIT_AUTHOR_NAME", "Test")
+                .env("GIT_AUTHOR_EMAIL", "test@example.test")
+                .env("GIT_COMMITTER_NAME", "Test")
+                .env("GIT_COMMITTER_EMAIL", "test@example.test")
+                .args(args)
+                .status()
+                .unwrap()
+                .success()
+        );
+    };
+    git(&["init", "-q"]);
+    for index in 0..8 {
+        fs::write(root.join(format!("keep_{index}.rs")), format!("fn keep_{index}() {{}}")).unwrap();
+    }
+    git(&["add", "."]);
+    git(&["-c", "commit.gpgsign=false", "commit", "-qm", "base"]);
+    let mut config = Config::with_defaults();
+    config.documents.enabled = false;
+    config.documents.embed = false;
+    config.code_search.enabled = false;
+    config.code_search.embed = false;
+    assert!(open_clean_worktree(root, &config).unwrap().is_some());
+    fs::write(root.join("keep_0.rs"), "fn overlay() {}").unwrap();
+    assert!(scan_dirty_worktree(root, &config).unwrap());
+    fs::write(root.join("keep_1.rs"), "fn new_commit() {}").unwrap();
+    git(&["add", "keep_1.rs"]);
+    git(&["-c", "commit.gpgsign=false", "commit", "-qm", "advance"]);
+    assert!(!scan_dirty_worktree(root, &config).unwrap());
+    assert!(repo_group_dir(root).join("base/gen-2").is_dir());
+    assert!(!scan_dirty_worktree(root, &config).unwrap());
+    assert!(open_dirty_worktree(root, &config).unwrap().is_none());
 }
