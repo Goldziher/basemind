@@ -203,6 +203,11 @@ pub fn publish_dirty_worktree(root: &Path, config: &Config, reference: &dyn Inde
     Ok(dirty_worktree(root, config, Some(reference))?.is_some())
 }
 
+/// Reuse an exact delta previously checked against a complete standalone scan.
+pub fn has_verified_dirty_worktree(root: &Path, config: &Config) -> Result<bool> {
+    Ok(open_dirty_worktree(root, config)?.is_some())
+}
+
 pub(crate) fn open_dirty_worktree(root: &Path, config: &Config) -> Result<Option<Box<dyn IndexView>>> {
     dirty_worktree(root, config, None)
 }

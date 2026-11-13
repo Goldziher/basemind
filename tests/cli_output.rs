@@ -167,4 +167,22 @@ fn explicit_shared_base_verification_uses_standalone_for_dirty_worktrees() {
     let message = String::from_utf8_lossy(&dirty.stderr);
     assert!(dirty.status.success(), "{message}");
     assert!(message.contains("Using the standalone index"), "{message}");
+    if !cfg!(any(feature = "code-intel-js", feature = "code-intel-stack")) {
+        let opted_in = || {
+            Command::new(bin())
+                .env("BASEMIND_INDEX_LAYERED", "1")
+                .args(["--root", root.to_str().unwrap(), "scan", "--no-git-history"])
+                .output()
+                .unwrap()
+        };
+        let first = opted_in();
+        assert!(first.status.success(), "{:?}", first.stderr);
+        let second = opted_in();
+        let message = String::from_utf8_lossy(&second.stderr);
+        assert!(second.status.success(), "{message}");
+        assert!(
+            message.contains("Reused the verified shared worktree index"),
+            "{message}"
+        );
+    }
 }
