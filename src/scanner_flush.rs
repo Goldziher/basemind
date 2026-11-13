@@ -119,3 +119,18 @@ pub(crate) fn retire_bm25_postings(store: &Store, candidates: ahash::AHashSet<Ve
         tracing::warn!(%error, "retire BM25 postings failed; retry on full scan");
     }
 }
+
+/// Compute the LanceDB scope key for this scan. Git sources reuse the existing remote-URL
+/// scope derivation; the working-tree path falls back to a workdir-rooted key when there's
+/// no git remote (or no git repo at all).
+pub(crate) fn derive_scope(root: &Path, source: &crate::scanner::ScanSource<'_>) -> String {
+    match source {
+        crate::scanner::ScanSource::Staged(repo) | crate::scanner::ScanSource::Rev { repo, .. } => {
+            crate::git::scope_key(repo)
+        }
+        crate::scanner::ScanSource::WorkingTree => match crate::git::Repo::discover(root) {
+            Ok(repo) => crate::git::scope_key(&repo),
+            Err(_) => format!("path:{}", root.display()),
+        },
+    }
+}

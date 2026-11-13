@@ -22,8 +22,8 @@ use crate::scanner_filter::{Filters, IndexFilter};
 #[cfg(feature = "documents")]
 use crate::scanner_flush::flush_doc_removals_if_any;
 use crate::scanner_flush::{
-    finalize_bm25_stats_if_any, flush_code_batches_if_any, flush_code_removals_if_any, flush_doc_batches_if_any,
-    maintain_lance_if_open,
+    derive_scope, finalize_bm25_stats_if_any, flush_code_batches_if_any, flush_code_removals_if_any,
+    flush_doc_batches_if_any, maintain_lance_if_open,
 };
 use crate::scanner_integrity::{abort_on_fault, ensure_space, finish_resolve, flush_code_map, preflight};
 #[cfg(feature = "documents")]
@@ -986,17 +986,4 @@ fn candidates_for_source(
     out.sort();
     out.dedup();
     Ok(out)
-}
-
-/// Compute the LanceDB scope key for this scan. Git sources reuse the existing remote-URL
-/// scope derivation; the working-tree path falls back to a workdir-rooted key when there's
-/// no git remote (or no git repo at all).
-fn derive_scope(root: &Path, source: &ScanSource<'_>) -> String {
-    match source {
-        ScanSource::Staged(repo) | ScanSource::Rev { repo, .. } => crate::git::scope_key(repo),
-        ScanSource::WorkingTree => match Repo::discover(root) {
-            Ok(repo) => crate::git::scope_key(&repo),
-            Err(_) => format!("path:{}", root.display()),
-        },
-    }
 }
