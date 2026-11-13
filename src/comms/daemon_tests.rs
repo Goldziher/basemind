@@ -412,6 +412,40 @@ async fn thread_list_does_not_leak_non_matching_threads() {
 /// join → post → history round-trips, and the poster's own message is excluded from its inbox
 /// while a fellow member sees it.
 #[tokio::test]
+async fn history_and_inbox_show_registered_display_name_beside_sender_id() {
+    let (_d, broker) = temp_broker();
+    let (tx, _rx) = mpsc::channel(64);
+    let mut alice = hello(&broker, &tx, "session-alice").await;
+    let thread = start_thread(&broker, &mut alice, &tx, &["bob"]).await;
+    let mut bob = hello(&broker, &tx, "bob").await;
+    post(&broker, &mut alice, &tx, &thread, "before registration").await;
+    let registered = broker
+        .handle(
+            CommsRequest::Register {
+                card: crate::comms::model::AgentCard {
+                    name: "Project Alice".to_string(),
+                    ..Default::default()
+                },
+            },
+            &mut alice,
+            &tx,
+        )
+        .await;
+    assert!(matches!(registered, CommsResponse::Ok));
+    let posted = post(&broker, &mut alice, &tx, &thread, "after registration").await;
+    let CommsResponse::History { messages, .. } = broker.on_history(thread, None, None, None).await.expect("history")
+    else {
+        panic!("expected history");
+    };
+    assert_eq!(messages, inbox(&broker, &mut bob, &tx).await);
+    assert_eq!(messages.len(), 2);
+    assert_eq!(messages[0].meta.from_name, None);
+    assert_eq!(messages[1].meta.from.as_str(), "session-alice");
+    assert_eq!(messages[1].meta.from_name.as_deref(), Some("Project Alice"));
+    assert_eq!(messages[1].meta.id, posted);
+}
+
+#[tokio::test]
 async fn join_post_history_and_inbox_round_trip() {
     let (_d, broker) = temp_broker();
     let (tx, _rx) = mpsc::channel(64);

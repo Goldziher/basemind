@@ -606,6 +606,7 @@ pub fn build_meta(
         id,
         thread,
         from,
+        from_name: None,
         ts_micros: now_micros(),
         subject,
         tags,

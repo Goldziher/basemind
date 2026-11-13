@@ -505,7 +505,9 @@ impl Broker {
                         None
                     };
                     let id = mint_message_id(&thread, &agent);
-                    let meta = store::build_meta(id, thread.clone(), agent, subject, tags, reply_to, &body);
+                    let from_name = store.get_agent(&agent)?.map(|record| record.card.name);
+                    let mut meta = store::build_meta(id, thread.clone(), agent, subject, tags, reply_to, &body);
+                    meta.from_name = from_name.filter(|name| !name.trim().is_empty());
                     let stored = match idempotency_key {
                         Some(key) => match store.post_keyed(&thread, meta, MessageBody(body), &key)? {
                             store::PostOutcome::Stored(_, stored) => stored,

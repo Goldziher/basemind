@@ -98,6 +98,9 @@ pub struct MessageMeta {
     pub thread: ThreadId,
     /// Authoring agent.
     pub from: AgentId,
+    /// Registered display name at post time, when supplied.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_name: Option<String>,
     /// Post time in microseconds since the unix epoch.
     pub ts_micros: i64,
     /// Short human subject line.
@@ -270,6 +273,7 @@ mod tests {
             id: "m-1".to_string(),
             thread: thread_id("th-1"),
             from: agent_id("agent-1"),
+            from_name: None,
             ts_micros: 123,
             subject: "hello".to_string(),
             tags: vec!["t1".to_string()],

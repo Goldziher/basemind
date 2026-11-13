@@ -474,6 +474,9 @@ pub(crate) struct MessageFrontMatter {
     pub thread: String,
     /// Authoring agent.
     pub from: String,
+    /// Registered display name at post time, when supplied.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub from_name: Option<String>,
     /// Short human subject line.
     pub subject: String,
     /// Post time, microseconds since the unix epoch.
@@ -501,6 +504,7 @@ impl MessageFrontMatter {
             id: meta.id.clone(),
             thread: meta.thread.as_str().to_string(),
             from: meta.from.as_str().to_string(),
+            from_name: meta.from_name.clone(),
             subject: meta.subject.clone(),
             ts_micros: meta.ts_micros,
             age_secs: ((now_micros - meta.ts_micros) / 1_000_000).max(0),
