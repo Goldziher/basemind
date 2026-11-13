@@ -15,6 +15,8 @@ mod batch;
 #[cfg(feature = "documents")]
 mod doc_links;
 pub mod schema;
+#[doc(hidden)]
+pub mod shared;
 
 pub use batch::{BATCH_MAX_DOCS, BATCH_MAX_ROWS, PendingBatch, SCAN_RETENTION};
 
