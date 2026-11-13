@@ -319,7 +319,7 @@ impl MapCache {
     /// and charged against the same budget.
     pub(crate) fn build(store: &Store, budget_bytes: u64) -> Self {
         let files = l1_cache::FileIndexView::build(store);
-        let l1 = Arc::new(l1_cache::L1Cache::new(store.blobs_dir.clone(), budget_bytes));
+        let l1 = Arc::new(l1_cache::L1Cache::from_store(store, budget_bytes));
         Self {
             fingerprint: map_fingerprint::index_fingerprint(store),
             files,

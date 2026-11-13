@@ -380,6 +380,17 @@ impl WorkspacePool {
         let config = entry.config();
         let rebuild_pending = entry.rebuild_pending.load(std::sync::atomic::Ordering::Acquire);
         let mut store = entry.store.lock().unwrap_or_else(PoisonError::into_inner);
+        if store.layered_read.is_some()
+            && !cancel.is_cancelled()
+            && crate::store_base::scan_dirty_worktree(&entry.root, &config).unwrap_or(false)
+        {
+            let mut next = Store::open_read_only_no_index(&entry.root, VIEW_WORKING)?;
+            if crate::store_base::hydrate_cold_store(&mut next, &config).is_ok() && next.layered_read.is_some() {
+                let stats = crate::store_base::layered_scan_stats(&store, &next);
+                *store = next;
+                return Ok((stats, false));
+            }
+        }
         let full = full || rebuild_pending || store.layered_read.is_some();
         let incremental = matches!(paths, Some(ref p) if !full && !p.is_empty());
         let gen_before = entry.full_scan_gen.load(std::sync::atomic::Ordering::Acquire);

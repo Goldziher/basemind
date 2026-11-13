@@ -1477,6 +1477,7 @@ async fn daemon_hosts_cold_layered_files_and_symbols_without_standalone_fjall() 
     let token = http_frontend::published_token(&comms).unwrap();
     for (id, args, expected) in [
         (1, json!({"mode":"find","query":"cold.rs"}), "cold.rs"),
+        (6, json!({"mode":"symbols","name":"alpha"}), "alpha"),
         (
             2,
             json!({"mode":"symbols","name":"cold_layered_symbol"}),
@@ -1506,20 +1507,28 @@ async fn daemon_hosts_cold_layered_files_and_symbols_without_standalone_fjall() 
         "{refresh}"
     );
     for (id, name) in [(4, "refreshed_layered_symbol"), (5, "alpha")] {
-        let response = hosted_tool_call(
-            &addr,
-            &token,
-            &root,
-            "cold-layered",
-            id,
-            "code",
-            json!({"mode":"symbols","name":name}),
-        )
-        .await;
-        assert!(
-            response.get("error").is_none() && response.to_string().contains(name),
-            "{response}"
-        );
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let response = hosted_tool_call(
+                &addr,
+                &token,
+                &root,
+                "cold-layered",
+                id,
+                "code",
+                json!({"mode":"symbols","name":name}),
+            )
+            .await;
+            assert!(response.get("error").is_none(), "{response}");
+            if response["result"]["structuredContent"]["results"]
+                .to_string()
+                .contains(name)
+            {
+                break;
+            }
+            assert!(Instant::now() < deadline, "{response}");
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
     }
-    assert!(working.join("index.fjall").exists());
+    assert!(!working.join("index.fjall").exists());
 }

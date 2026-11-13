@@ -231,6 +231,25 @@ pub(crate) fn hydrate_cold_store(store: &mut Store, config: &Config) -> Result<(
     Ok(())
 }
 
+#[cfg(all(feature = "comms", any(unix, windows)))]
+pub(crate) fn layered_scan_stats(prior: &Store, next: &Store) -> crate::scanner::ScanStats {
+    let mut stats = crate::scanner::ScanStats::default();
+    for (path, file) in &next.index.files {
+        match prior.lookup(path) {
+            None => stats.updated += 1,
+            Some(old) if old.hash_hex != file.hash_hex => stats.updated += 1,
+            Some(_) => {}
+        }
+    }
+    stats.removed = prior
+        .index
+        .files
+        .keys()
+        .filter(|path| next.lookup(*path).is_none())
+        .count();
+    stats
+}
+
 fn dirty_worktree(
     root: &Path,
     config: &Config,
