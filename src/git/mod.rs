@@ -68,6 +68,19 @@ pub struct WorkingTreeStatus {
     pub untracked: Vec<crate::path::RelPath>,
 }
 
+#[cfg(test)]
+impl WorkingTreeStatus {
+    pub(crate) fn overlay_candidates(self) -> std::collections::BTreeSet<crate::path::RelPath> {
+        self.staged_added
+            .into_iter()
+            .chain(self.staged_modified)
+            .chain(self.staged_deleted)
+            .chain(self.modified)
+            .chain(self.untracked)
+            .collect()
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ChangeKind {
@@ -949,6 +962,10 @@ mod status_against_tests {
         assert_eq!(status.staged_deleted, [crate::path::RelPath::from("old.rs")]);
         assert_eq!(status.modified, [crate::path::RelPath::from("staged.rs")]);
         assert_eq!(status.untracked, [crate::path::RelPath::from("new/untracked.rs")]);
+        assert_eq!(
+            status.overlay_candidates().into_iter().collect::<Vec<_>>(),
+            ["new/untracked.rs", "old.rs", "renamed.rs", "staged.rs"].map(crate::path::RelPath::from),
+        );
         assert!(repo.status_against("missing-branch").is_err());
     }
 }

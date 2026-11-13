@@ -262,6 +262,13 @@ fn pinned_overlay_reads_match_standalone_and_ignore_later_writes() {
     assert_eq!(after, expected[1..]);
     assert_eq!(&*view.get(part, &bravo).unwrap().unwrap(), b"overlay");
     assert!(view.get(part, &charlie).unwrap().is_none());
+    reference.meta.insert(META_BM25_DOC_COUNT, 3u64.to_be_bytes()).unwrap();
+    reference.meta.insert(META_BM25_TOTAL_LEN, 23u64.to_be_bytes()).unwrap();
+    super::layered_verify::verify_rows(&view, &reference.view()).unwrap();
+    reference.calls_by_callee.insert(&charlie, b"unexpected").unwrap();
+    let mismatch = super::layered_verify::verify_rows(&view, &reference.view()).unwrap_err();
+    assert!(mismatch.to_string().contains("calls_by_callee"));
+    reference.calls_by_callee.remove(&charlie).unwrap();
     assert_eq!(view.bm25_stats(), Some((3, 23)));
     let scan = |view: &dyn IndexView, after: Option<&[u8]>| {
         let page = crate::mcp::scan_calls_by_name(view, "run", 1, after).unwrap();

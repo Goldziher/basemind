@@ -29,6 +29,8 @@ mod layered_persist;
 #[cfg(test)]
 mod layered_shadow;
 #[cfg(test)]
+mod layered_verify;
+#[cfg(test)]
 mod layered_view;
 pub(crate) mod memory_store;
 pub(crate) mod name_dict;
