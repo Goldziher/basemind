@@ -55,6 +55,9 @@ members = ["crates/lsp-positions", "crates/stack-graphs", "crates/tree-sitter-gr
 [workspace.lints.clippy]
 all = "warn"
 
+[lints]
+workspace = true
+
 [lib]
 name = "basemind"
 path = "src/lib.rs"

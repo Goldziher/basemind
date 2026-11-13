@@ -107,6 +107,18 @@ pub fn all() -> Vec<Exception> {
         ),
         alias("agents post", "tag", "tags", "repeatable CLI flag for the MCP list"),
         alias(
+            "agents ack",
+            "message_id",
+            "message_ids",
+            "repeatable CLI flag for the MCP reference list",
+        ),
+        alias(
+            "agents message",
+            "message_id",
+            "message_ref",
+            "CLI positional accepts a compact reference or legacy ID",
+        ),
+        alias(
             "agents register",
             "skill",
             "skills",
