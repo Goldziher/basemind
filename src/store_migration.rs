@@ -46,7 +46,7 @@ impl<'a> Migration<'a> {
 
     pub(crate) fn recover_for_writer(views: &Path) -> Result<()> {
         if exists(&views.join(JOURNAL))? || exists(&views.join(BACKUP))? {
-            Self::lock(views)?.recover(|_| false)?;
+            Migration::lock(views)?.recover(|_| false)?;
         }
         Ok(())
     }
