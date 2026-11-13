@@ -263,10 +263,10 @@ fn build_generation(base: &Path, repo: &Repo, config: &Config, mut metadata: Bas
     fs::remove_dir_all(scratch.0.join(INDEX_DIR))?;
     fs::remove_dir_all(checkout)?;
     fs::remove_dir_all(scratch.0.join(crate::store::MEMORY_STORE_DIR))?;
-    sync_tree(&scratch.0)?;
+    sync_tree(&scratch.0).context("sync staged base files")?;
     let manifest = scratch.0.join(MANIFEST);
     fs::write(&manifest, serde_json::to_vec(&metadata)?)?;
-    sync_file(&File::open(manifest)?)?;
+    sync_file(&manifest).with_context(|| format!("sync base manifest {}", manifest.display()))?;
     sync_directory(&scratch.0)?;
     let published = base.join(format!("gen-{}", metadata.generation));
     fs::rename(&scratch.0, &published)?;
@@ -304,13 +304,18 @@ fn sync_tree(path: &Path) -> io::Result<()> {
         if entry.file_type()?.is_dir() {
             sync_tree(&entry.path())?;
         } else {
-            sync_file(&File::open(entry.path())?)?;
+            sync_file(&entry.path())?;
         }
     }
     sync_directory(path)
 }
 
-fn sync_file(file: &File) -> io::Result<()> {
+fn sync_file(path: &Path) -> io::Result<()> {
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(windows)]
+    options.write(true);
+    let file = options.open(path)?;
     #[cfg(target_os = "macos")]
     {
         use std::os::fd::AsRawFd;
