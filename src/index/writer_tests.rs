@@ -471,26 +471,27 @@ fn bm25_dual_partition_consistency() {
     spawn_docs.sort();
     assert_eq!(spawn_docs, vec![("h:0".to_string(), 2, 3), ("h:1".to_string(), 1, 1)]);
 
+    let sibling = RelPath::from("src/sibling.rs");
     let mut w = db.writer();
-    w.upsert_bm25_file(
-        &rel,
-        &[ChunkPosting {
-            chunk_id: "h:0".to_string(),
-            doclen: 1,
-            terms: vec![("spawn".to_string(), 1)],
-        }],
-    )
-    .unwrap();
+    w.upsert_bm25_file(&sibling, &postings).unwrap();
     w.commit().unwrap();
-    assert_eq!(db.code_bm25_postings.iter().count(), 1);
-    assert_eq!(db.code_bm25_by_path.iter().count(), 1);
-
     db.recompute_bm25_stats().unwrap();
-    assert_eq!(db.view().bm25_stats(), Some((1, 1)));
+    assert_eq!(db.view().bm25_stats(), Some((4, 8)));
+    assert_eq!(db.code_bm25_postings.iter().count(), 3);
 
     let mut w = db.writer();
     w.remove_bm25_file(&rel).unwrap();
     w.commit().unwrap();
+    db.sweep_bm25_postings().unwrap();
+    db.recompute_bm25_stats().unwrap();
+    assert_eq!(db.view().bm25_stats(), Some((2, 4)));
+    assert_eq!(db.code_bm25_postings.iter().count(), 3);
+    assert_eq!(db.code_bm25_by_path.iter().count(), 2);
+
+    let mut w = db.writer();
+    w.remove_bm25_file(&sibling).unwrap();
+    w.commit().unwrap();
+    db.sweep_bm25_postings().unwrap();
     assert!(db.code_bm25_postings.iter().next().is_none());
     assert!(db.code_bm25_by_path.iter().next().is_none());
 }

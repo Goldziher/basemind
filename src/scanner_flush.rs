@@ -76,7 +76,7 @@ pub(crate) fn flush_code_removals_if_any(store: &mut Store, config: &Config, sco
 #[cfg(not(feature = "code-search"))]
 pub(crate) fn flush_code_removals_if_any(_store: &mut Store, _config: &Config, _scope: &str, _stale: &[String]) {}
 
-/// Recompute the corpus-global BM25 stats once the per-file postings have all committed, so the
+/// Retire unreferenced postings and recompute BM25 stats after per-file commits, so the
 /// keyword lane's `N` / `avgdl` reflect this scan. Single-threaded; no-op without `code-search` or
 /// when chunking is disabled. No-op on a `None` (read-only) index.
 #[cfg(feature = "code-search")]
@@ -85,9 +85,9 @@ pub(crate) fn finalize_bm25_stats_if_any(store: &Store, config: &Config) {
         return;
     }
     if let Some(db) = store.index_db.as_ref()
-        && let Err(error) = db.recompute_bm25_stats()
+        && let Err(error) = db.sweep_bm25_postings().and_then(|()| db.recompute_bm25_stats())
     {
-        tracing::warn!(?error, "recompute bm25 stats failed; keyword search may be stale");
+        tracing::warn!(?error, "finalize BM25 index failed; keyword search may be stale");
     }
 }
 

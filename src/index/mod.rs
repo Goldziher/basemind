@@ -679,6 +679,30 @@ impl IndexDb {
         Ok(rows)
     }
 
+    /// Retire postings whose chunk is no longer referenced by any path.
+    #[cfg(feature = "code-search")]
+    pub(crate) fn sweep_bm25_postings(&self) -> Result<(), IndexError> {
+        const PRUNE_BATCH_BYTES: u64 = 1024 * 1024;
+        let mut live = ahash::AHashSet::new();
+        for guard in self.code_bm25_by_path.iter() {
+            if let Some((_path, chunk)) = keys::parse_code_bm25_by_path(&guard.key()?) {
+                live.insert(chunk);
+            }
+        }
+        let mut writer = self.writer();
+        for guard in self.code_bm25_postings.iter() {
+            let key = guard.key()?;
+            if !keys::parse_code_bm25_posting_chunk_id(&key).is_some_and(|chunk| live.contains(chunk)) {
+                writer.remove_bm25_posting(&key);
+                if writer.staged_bytes() >= PRUNE_BATCH_BYTES {
+                    writer.commit()?;
+                    writer = self.writer();
+                }
+            }
+        }
+        writer.commit()
+    }
+
     /// Recompute the corpus-global BM25 stats by sweeping the `code_bm25_by_path` forward keyspace
     /// once (one entry per chunk; only its 4-byte `doclen` prefix is decoded — the term list is not
     /// touched) and stamping `(N, total_len)` into `meta`. Runs single-threaded in the scanner's
