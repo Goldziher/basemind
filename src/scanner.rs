@@ -644,6 +644,13 @@ pub fn scan_with_observer(
     run_optional_lane(crate::scanner_lanes::LANE_LANCE_MAINTENANCE, || {
         maintain_lance_if_open(store)
     });
+    #[cfg(any(feature = "documents", feature = "code-search"))]
+    if matches!(source, ScanSource::WorkingTree)
+        && crate::lance::shared_snapshot::enabled()
+        && let Err(error) = crate::lance::shared_snapshot::publish_scan(store, config, &scope)
+    {
+        tracing::debug!(%error, "shared Lance snapshot publication failed");
+    }
     phase_peaks.sample_now();
     report.phase_peaks = phase_peaks.snapshot();
     Ok(report)

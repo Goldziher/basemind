@@ -25,7 +25,7 @@ pub enum SharedLane {
 }
 
 impl SharedLane {
-    fn name(self) -> &'static str {
+    pub(super) fn name(self) -> &'static str {
         match self {
             Self::Documents => schema::DOCUMENTS_TABLE,
             #[cfg(feature = "code-search")]
@@ -43,7 +43,7 @@ impl SharedLane {
         }
     }
 
-    fn schema(self, dim: u16) -> arrow_schema::SchemaRef {
+    pub(super) fn schema(self, dim: u16) -> arrow_schema::SchemaRef {
         match self {
             Self::Documents => schema::shared_documents_schema(dim),
             #[cfg(feature = "code-search")]
@@ -58,6 +58,8 @@ pub struct SharedStore {
     connection: lancedb::Connection,
     runtime: tokio::runtime::Runtime,
     group: PathBuf,
+    #[cfg(any(feature = "documents", feature = "code-search"))]
+    directory: PathBuf,
     dim: u16,
 }
 
@@ -83,8 +85,15 @@ impl SharedStore {
             connection,
             runtime,
             group: group.to_path_buf(),
+            #[cfg(any(feature = "documents", feature = "code-search"))]
+            directory,
             dim,
         })
+    }
+
+    #[cfg(any(feature = "documents", feature = "code-search"))]
+    pub(super) fn directory(&self) -> &Path {
+        &self.directory
     }
 
     /// Insert an immutable batch atomically. A retry cannot replace existing rows.

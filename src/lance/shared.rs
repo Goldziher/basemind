@@ -16,6 +16,7 @@ pub fn shared_directory(group: &Path, model: &str, dim: u16) -> PathBuf {
 #[derive(Default)]
 pub struct LivePaths<'a> {
     by_hash: BTreeMap<Cow<'a, str>, BTreeSet<&'a str>>,
+    exact: BTreeMap<(&'a str, u32), BTreeSet<&'a str>>,
 }
 
 impl<'a> LivePaths<'a> {
@@ -30,6 +31,22 @@ impl<'a> LivePaths<'a> {
                 .insert(path);
         }
         paths
+    }
+
+    pub(super) fn from_exact(entries: impl IntoIterator<Item = (&'a str, u32, &'a str)>) -> Self {
+        let mut paths = Self::default();
+        for (key, ordinal, path) in entries {
+            paths.exact.entry((key, ordinal)).or_default().insert(path);
+        }
+        paths
+    }
+
+    fn paths_for_chunk<'b>(&'b self, hash: &'b str, ordinal: u32) -> impl Iterator<Item = &'a str> + 'b {
+        self.exact
+            .get(&(hash, ordinal))
+            .into_iter()
+            .flat_map(|paths| paths.iter().copied())
+            .chain(self.paths_for(hash))
     }
 
     pub(super) fn paths_for(&self, hash: &str) -> impl Iterator<Item = &'a str> + '_ {
@@ -85,7 +102,7 @@ pub fn search_live<'a, T: Clone, E>(
     limit: usize,
     mut fetch: impl FnMut(usize) -> Result<Vec<ContentHit<T>>, E>,
 ) -> Result<Vec<PathHit<'a, T>>, E> {
-    if limit == 0 || paths.by_hash.is_empty() {
+    if limit == 0 || (paths.by_hash.is_empty() && paths.exact.is_empty()) {
         return Ok(Vec::new());
     }
     let mut count = limit
@@ -109,7 +126,7 @@ fn project<'a, T: Clone>(paths: &LivePaths<'a>, rows: &[ContentHit<T>]) -> Vec<P
     let mut seen = BTreeSet::new();
     for row in rows {
         if seen.insert((&row.hash, row.chunk_idx)) {
-            hits.extend(paths.paths_for(&row.hash).map(|path| PathHit {
+            hits.extend(paths.paths_for_chunk(&row.hash, row.chunk_idx).map(|path| PathHit {
                 path,
                 chunk_idx: row.chunk_idx,
                 distance: row.distance,

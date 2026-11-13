@@ -17,6 +17,8 @@ mod doc_links;
 pub mod schema;
 #[doc(hidden)]
 pub mod shared;
+#[cfg(any(feature = "documents", feature = "code-search"))]
+pub(crate) mod shared_snapshot;
 #[doc(hidden)]
 pub mod shared_store;
 
