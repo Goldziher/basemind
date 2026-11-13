@@ -102,7 +102,8 @@ impl SharedStore {
             let table = self.connection.open_table(lane.name()).execute().await?;
             let mut merge = table.merge_insert(lane.keys());
             merge.when_not_matched_insert_all();
-            let rows = RecordBatchIterator::new([Ok(batch.clone())], batch.schema());
+            let schema = batch.schema();
+            let rows = RecordBatchIterator::new([Ok(batch)], schema);
             merge.execute(Box::new(rows)).await?;
             anyhow::Ok(())
         })
@@ -131,9 +132,11 @@ impl SharedStore {
         if let Some(mime) = mime {
             filter.push_str(&format!(" AND mime_type = '{}'", super::escape_sql_literal(mime)));
         }
+        let table = self
+            .runtime
+            .block_on(self.connection.open_table(lane.name()).execute())?;
         search_live(paths, limit, |count| {
             self.runtime.block_on(async {
-                let table = self.connection.open_table(lane.name()).execute().await?;
                 let mut stream = table
                     .vector_search(query.clone())?
                     .only_if(filter.as_str())
