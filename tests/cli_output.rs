@@ -261,11 +261,12 @@ fn cold_dirty_scan_publishes_delta_without_standalone_fjall() {
     let rescan = || {
         Command::new(bin())
             .env("BASEMIND_INDEX_LAYERED", "1")
+            .env("BASEMIND_COMMS_DIR", directory.path().join("comms"))
             .args(["--root", root.to_str().unwrap(), "rescan", "sample.rs"])
             .output()
             .unwrap()
     };
-    git(root, &["checkout", "--", "sample.rs"]);
+    std::fs::write(root.join("sample.rs"), "fn sample() { before(); }").unwrap();
     let clean = rescan();
     assert!(clean.status.success(), "{}", String::from_utf8_lossy(&clean.stderr));
     assert!(

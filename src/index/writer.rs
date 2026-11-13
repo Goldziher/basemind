@@ -491,7 +491,8 @@ impl IndexWriter {
                     );
                 }
             }
-            let term_names: Vec<&str> = posting.terms.iter().map(|(t, _)| t.as_str()).collect();
+            let mut term_names: Vec<&str> = posting.terms.iter().map(|(t, _)| t.as_str()).collect();
+            term_names.sort_unstable();
             let terms_bytes = rmp_serde::to_vec(&term_names)?;
             let mut value = Vec::with_capacity(4 + terms_bytes.len());
             value.extend_from_slice(&posting.doclen.to_be_bytes());

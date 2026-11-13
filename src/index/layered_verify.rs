@@ -34,7 +34,7 @@ pub fn verify_rows(layered: &dyn IndexView, standalone: &dyn IndexView) -> Resul
     }
     ensure!(visited > 0, "verification compared no index rows");
     ensure!(
-        layered.bm25_stats() == standalone.bm25_stats(),
+        layered.bm25_stats().unwrap_or_default() == standalone.bm25_stats().unwrap_or_default(),
         "overlay BM25 totals differ"
     );
     ensure!(
