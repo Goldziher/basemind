@@ -42,7 +42,7 @@ pub struct AgentsParams {
     #[serde(default)]
     pub members: Option<Vec<AgentId>>,
     /// `message`: compact `message_ref` or legacy `id` of the front-matter row whose body to read.
-    #[serde(default, alias = "id", alias = "message_ref")]
+    #[serde(default, rename = "message_ref", alias = "message_id", alias = "id")]
     pub message_id: Option<String>,
     /// `ack`: message ids to acknowledge.
     #[serde(default)]

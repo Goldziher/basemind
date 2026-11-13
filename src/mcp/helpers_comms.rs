@@ -385,7 +385,7 @@ pub(super) async fn run_agents(
         ("thread", thread.is_some()),
         ("member", member.is_some()),
         ("members", members.is_some()),
-        ("message_id", message_id.is_some()),
+        ("message_ref", message_id.is_some()),
         ("message_ids", message_ids.is_some()),
         ("to_seq", to_seq.is_some()),
         ("subject", subject.is_some()),
@@ -547,7 +547,7 @@ pub(super) async fn run_agents(
             run_message_get(
                 state,
                 MessageGetParams {
-                    message_id: require_field(mode, "message_id", message_id)?,
+                    message_id: require_field(mode, "message_ref", message_id)?,
                     as_agent,
                 },
             )
@@ -635,7 +635,7 @@ fn allowed_fields(mode: AgentsMode) -> &'static [&'static str] {
         AgentsMode::AddMember | AgentsMode::RemoveMember => &["thread", "member"],
         AgentsMode::Post => &["thread", "subject", "body", "tags", "reply_to", "idempotency_key"],
         AgentsMode::History => &["thread", "cursor", "limit", "since_hours"],
-        AgentsMode::Message => &["message_id"],
+        AgentsMode::Message => &["message_ref"],
         AgentsMode::Inbox => &["cursor", "limit", "mark_read", "since_hours"],
         AgentsMode::Ack => &["message_ids", "thread", "to_seq"],
         AgentsMode::Wait => &["thread", "timeout_secs", "since_hours", "cursor"],
@@ -683,6 +683,12 @@ mod tests {
             .expect("decode agents message arguments");
             assert_eq!(params.message_id.as_deref(), Some(reference), "field {field}");
         }
+    }
+
+    #[test]
+    fn agents_schema_advertises_the_compact_message_reference_field() {
+        let schema = serde_json::to_value(schemars::schema_for!(AgentsParams)).expect("serialize agents schema");
+        assert!(schema["properties"].get("message_ref").is_some());
     }
 
     #[test]
