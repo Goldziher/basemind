@@ -180,7 +180,9 @@ pub fn record_promotion(root: &Path, config: &Config) -> Result<bool> {
         let prior = index.files.get(candidate).map_or(0, |entry| entry.size_bytes);
         total.saturating_add(live.max(prior))
     });
-    if candidates.len() <= 32 && changed_bytes <= MAX_OVERLAY_INPUT_BYTES {
+    let over_file_share = (candidates.len() as u128) * 100 > (base.files as u128) * 15;
+    let over_byte_share = u128::from(changed_bytes) * 100 > u128::from(base.bytes) * 25;
+    if candidates.len() <= 32 && changed_bytes <= MAX_OVERLAY_INPUT_BYTES && !over_file_share && !over_byte_share {
         return Ok(false);
     }
     let marker = promotion_marker(root);

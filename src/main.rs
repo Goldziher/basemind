@@ -720,7 +720,11 @@ fn cmd_scan(root: &std::path::Path, args: &ScanArgs, verbosity: Verbosity, no_co
             Err(error) => eprintln!("Shared base unavailable: {error:#}. Using the standalone index."),
         }
     }
-    if shared_index && let Err(error) = basemind::store_base::record_promotion(root, &config) {
+    if shared_index
+        && report.stats.read_failed == 0
+        && report.stats.extract_failed == 0
+        && let Err(error) = basemind::store_base::record_promotion(root, &config)
+    {
         tracing::debug!(%error, "shared index promotion marker failed");
     }
     if shared_index

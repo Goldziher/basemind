@@ -391,7 +391,8 @@ impl WorkspacePool {
                 return Ok((stats, false));
             }
         }
-        let full = full || rebuild_pending || store.layered_read.is_some();
+        let from_layered = store.layered_read.is_some();
+        let full = full || rebuild_pending || from_layered;
         let incremental = matches!(paths, Some(ref p) if !full && !p.is_empty());
         let gen_before = entry.full_scan_gen.load(std::sync::atomic::Ordering::Acquire);
         if store.layered_read.is_some() {
@@ -423,6 +424,14 @@ impl WorkspacePool {
         // of the daemon, so it has to be replaced whether or not this pass got to report it.
         self.recover_poisoned_index(&entry, &mut store);
         let report = scanned?;
+        if from_layered
+            && !report.cancelled
+            && report.stats.read_failed == 0
+            && report.stats.extract_failed == 0
+            && let Err(error) = crate::store_base::record_promotion(&entry.root, &config)
+        {
+            tracing::debug!(%error, "shared index promotion marker failed");
+        }
         if report.stats.displaced_artifacts() || std::mem::take(&mut store.reset_stale_schema) {
             self.cleanup_signal.notify_one();
         }
