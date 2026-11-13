@@ -171,6 +171,27 @@ fn explicit_shared_base_verification_uses_standalone_for_dirty_worktrees() {
     assert!(dirty.status.success(), "{message}");
     assert!(message.contains("Using the standalone index"), "{message}");
     if !cfg!(any(feature = "code-intel-js", feature = "code-intel-stack")) {
+        #[cfg(unix)]
+        {
+            let output = Command::new(bin())
+                .env("BASEMIND_INDEX_LAYERED", "1")
+                .env("BASEMIND_INDEX_RECLAIM_BACKUP", "0")
+                .args([
+                    "--root",
+                    root.to_str().unwrap(),
+                    "scan",
+                    "--verify-shared-base",
+                    "--no-git-history",
+                ])
+                .output()
+                .unwrap();
+            let message = String::from_utf8_lossy(&output.stderr);
+            assert!(output.status.success(), "{message}");
+            assert!(message.contains("standalone backup retained"), "{message}");
+            let views = basemind::store::workspace_cache_dir(root).join("views");
+            assert!(views.join("working.migrated/index.msgpack").is_file());
+            assert!(!views.join("working").exists());
+        }
         let opted_in = || {
             Command::new(bin())
                 .env("BASEMIND_INDEX_LAYERED", "1")

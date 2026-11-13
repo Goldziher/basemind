@@ -396,18 +396,31 @@ impl Store {
         if self.view != VIEW_WORKING || self._lock.is_none() {
             return Ok(false);
         }
-        let Some(base) = crate::store_base::open_clean_worktree(&self.root, config)? else {
+        let root = self.root.clone();
+        let open_candidate = || -> anyhow::Result<_> {
+            let mut candidate = Self::open_read_only_no_index(&root, VIEW_WORKING)?;
+            candidate.index = Index::empty();
+            crate::store_base::hydrate_cold_store(&mut candidate, config)?;
+            Ok(candidate)
+        };
+        let candidate_store = open_candidate()?;
+        let Some(layered) = candidate_store.layered_read.as_ref() else {
             return Ok(false);
         };
+        let dirty = candidate_store.fallback_blobs_dir.as_ref() != Some(&candidate_store.blobs_dir);
+        if dirty && reclaim {
+            return Ok(false);
+        }
         let Some(standalone) = self.index_view() else {
             return Ok(false);
         };
-        crate::index::verify_shared_base(&base, &standalone)?;
-        let directory = base
-            .directory()
-            .parent()
+        crate::index::verify_shared_base(layered.as_ref(), &standalone)?;
+        let directory = candidate_store
+            .fallback_blobs_dir
+            .as_ref()
+            .and_then(|path| path.parent())
             .ok_or_else(|| anyhow::anyhow!("missing generation directory"))?;
-        let candidate = read_index(directory)?.ok_or_else(|| anyhow::anyhow!("missing generation manifest"))?;
+        let candidate = &candidate_store.index;
         if self.index.files.len() != candidate.files.len()
             || self.index.files.iter().any(|(path, entry)| {
                 candidate.files.get(path).is_none_or(|other| {
@@ -426,17 +439,26 @@ impl Store {
             .and_then(|name| name.strip_prefix("gen-"))
             .ok_or_else(|| anyhow::anyhow!("invalid generation path"))?
             .parse()?;
+        if dirty {
+            let pin = repo_group_dir(&root)
+                .join("overlay-pins")
+                .join(format!("{}-{generation}", crate::store_layout::workspace_key(&root)));
+            anyhow::ensure!(
+                std::fs::read(pin)? == generation.to_be_bytes(),
+                "invalid overlay generation pin"
+            );
+        }
         let views = self.basemind_dir.join(VIEWS_DIR);
         let migration = crate::store_migration::Migration::lock(&views)?;
         drop(self.index_db.take());
         let result = migration.retire(generation, || Ok(())).and_then(|()| {
             migration.commit(generation, || {
-                let current = crate::store_base::open_existing_worktree_base(&self.root, config)?;
+                let current = open_candidate()?;
                 anyhow::ensure!(
-                    current
-                        .as_ref()
-                        .is_some_and(|view| view.directory() == base.directory()),
-                    "worktree no longer matches the verified generation"
+                    current.layered_read.is_some()
+                        && current.blobs_dir == candidate_store.blobs_dir
+                        && current.fallback_blobs_dir == candidate_store.fallback_blobs_dir,
+                    "worktree no longer matches the verified generation and overlay"
                 );
                 Ok(())
             })
