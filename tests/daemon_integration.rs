@@ -1491,6 +1491,9 @@ async fn daemon_hosts_cold_layered_files_and_symbols_without_standalone_fjall() 
         );
     }
     assert!(!working.join("index.fjall").exists());
+    std::fs::write(root.join("committed.rs"), "pub fn promoted_base_symbol() {}\n").unwrap();
+    git(&["add", "committed.rs"]);
+    git(&["-c", "commit.gpgsign=false", "commit", "-qm", "advance base"]);
     std::fs::write(root.join("cold.rs"), "pub fn refreshed_layered_symbol() {}\n").unwrap();
     let refresh = hosted_tool_call(
         &addr,
@@ -1506,7 +1509,11 @@ async fn daemon_hosts_cold_layered_files_and_symbols_without_standalone_fjall() 
         refresh.get("error").is_none() && refresh["result"].is_object(),
         "{refresh}"
     );
-    for (id, name) in [(4, "refreshed_layered_symbol"), (5, "alpha")] {
+    for (id, name) in [
+        (4, "refreshed_layered_symbol"),
+        (5, "alpha"),
+        (7, "promoted_base_symbol"),
+    ] {
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
             let response = hosted_tool_call(

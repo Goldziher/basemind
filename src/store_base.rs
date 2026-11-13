@@ -211,7 +211,21 @@ pub fn scan_dirty_worktree(root: &Path, config: &Config) -> Result<bool> {
     if !eligible(config) || requires_probes() {
         return Ok(false);
     }
-    Ok(dirty_worktree(root, config, true, None, None)?.is_some())
+    let layered = dirty_worktree(root, config, true, None, None)?;
+    if layered.is_some() {
+        return Ok(true);
+    }
+    let repo = Repo::discover(root)?;
+    if !repo.origin_is_workdir() || !repo_group_dir(root).join(BASE_DIR).is_dir() {
+        return Ok(false);
+    }
+    let (_, commit) = resolve_commit(&repo)?;
+    let group = repo_group_dir(root);
+    let (_, ready) = find_generation(&group.join(BASE_DIR), &commit, &scan_digest(config)?)?;
+    if ready.is_none() && matches!(prepare(root, config)?, BaseBuild::Ready(_)) {
+        return Ok(dirty_worktree(root, config, true, None, None)?.is_some());
+    }
+    Ok(false)
 }
 
 /// Check for a published delta matching the current worktree.
