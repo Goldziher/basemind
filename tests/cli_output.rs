@@ -256,6 +256,57 @@ fn cold_dirty_scan_publishes_delta_without_standalone_fjall() {
         );
     }
     assert!(!cache.join("views/working/index.fjall").exists());
+    let api = |layered: &str, args: &[&str]| {
+        let query = Command::new(bin())
+            .env("BASEMIND_INDEX_LAYERED", layered)
+            .args(["--json", "--root", root.to_str().unwrap()])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(query.status.success(), "{}", String::from_utf8_lossy(&query.stderr));
+        let mut response: serde_json::Value = serde_json::from_slice(&query.stdout).unwrap();
+        let fields = response.as_object_mut().unwrap();
+        fields.remove("elapsed_us");
+        fields.remove("startup_us");
+        response
+    };
+    let requests: &[(&[&str], &str)] = &[
+        (
+            &[
+                "graph",
+                "calls",
+                "after_symbol",
+                "--direction",
+                "callees",
+                "--path",
+                "sample.rs",
+            ],
+            "after",
+        ),
+        (&["git", "status"], "sample.rs"),
+        (&["git", "recent", "--limit", "1"], "fixture"),
+    ];
+    let layered = requests
+        .iter()
+        .map(|(args, expected)| {
+            let result = api("1", args);
+            assert!(result.to_string().contains(expected), "{result}");
+            result
+        })
+        .collect::<Vec<_>>();
+    let reference = Command::new(bin())
+        .env("BASEMIND_INDEX_LAYERED", "0")
+        .args(["--root", root.to_str().unwrap(), "scan", "--no-git-history"])
+        .output()
+        .unwrap();
+    assert!(
+        reference.status.success(),
+        "{}",
+        String::from_utf8_lossy(&reference.stderr)
+    );
+    for ((args, _), expected) in requests.iter().zip(layered) {
+        assert_eq!(api("0", args), expected, "request {args:?}");
+    }
     for number in 0..2 {
         std::fs::write(root.join(format!("overflow_{number}.rs")), "fn overflow() {}").unwrap();
     }
