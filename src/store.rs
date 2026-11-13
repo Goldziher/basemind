@@ -343,7 +343,7 @@ impl Store {
     /// Retire the standalone working view after comparing it to a leased clean generation.
     #[cfg(unix)]
     pub fn retire_verified_working_view(&mut self, config: &crate::config::Config) -> anyhow::Result<bool> {
-        if self.view != VIEW_WORKING || self._lock.is_none() || self.basemind_dir.join(LANCE_DIR).exists() {
+        if self.view != VIEW_WORKING || self._lock.is_none() {
             return Ok(false);
         }
         let Some(base) = crate::store_base::open_clean_worktree(&self.root, config)? else {
