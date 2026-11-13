@@ -1,5 +1,5 @@
 ---
-description: Semantic + full-text search over documents and the web via basemind's RAG store — PDFs, Office, HTML, email, images (OCR), plus scraped/crawled web pages, with cross-encoder reranking, keyword and named-entity (NER) filters, and per-document summaries. Reach for it whenever the user asks to "search the docs / PDFs", "find where a topic is discussed", "pull this URL into context", or "what does the documentation say about X".
+description: Semantic search over documents and the web via basemind's RAG store — PDFs, Office, HTML, email, Jupyter notebooks, images (OCR), and web pages, with cross-encoder reranking, keyword and named-entity (NER) filters, and per-document summaries. Reach for it whenever the user asks to "search the docs / PDFs", "find where a topic is discussed", "pull this URL into context", or "what does the documentation say about X".
 name: basemind-documents
 license: MIT
 metadata:
@@ -9,8 +9,8 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:1dfd3778b400394491e3ba15b55eb80fbb5c17bb10f87a654802dbfed10e06f0
-Source-Hash: blake3:2e0c92c74ea2929318b7162e8dc727c9126caa1320b161166bb6ac2c953db3f6
+Content-Hash: blake3:fde1500b1b4d20dde4cdb8dfa01b63c2ddb8878a5995dfe2e066686f8c87b9f6
+Source-Hash: blake3:525509e2b2dcb640a9b1f11111ecd211c9ab36f2d59877b0709f463e527ef940
 Schema-Version: v1
 -->
 
@@ -18,8 +18,8 @@ Schema-Version: v1
 
 basemind extracts 90+ file formats (PDF, Office, HTML, email, images via OCR) into a LanceDB vector
 store and answers meaning-based queries with cross-encoder reranking. Web pages scraped or crawled
-into the same store are searchable the same way. This is the surface for "find the passage about X",
-not "grep for the string X".
+into the same store are searchable the same way. For exact matches in text files such as Jupyter
+notebooks, use a literal or regex file search. Semantic results cannot establish that a string is absent.
 
 **basemind first, open-the-file fallback.** Prefer `memory` mode `documents` over opening PDFs/Office/HTML
 by hand, and the web tools over ad-hoc fetching. For source code use `basemind-code-search` instead —
@@ -41,6 +41,7 @@ this skill is for prose and documents.
 | Question | MCP tool | CLI |
 |---|---|---|
 | "Semantic search over PDFs/Office/HTML docs?" | `memory { mode: "documents", query: "…" }` | `basemind memory documents "query"` |
+| "Search Jupyter notebooks by meaning?" | `memory { mode: "documents", query: "…", mime_type: "application/x-ipynb+json" }` | `basemind memory documents "…" --mime-type application/x-ipynb+json` |
 | "Narrow to docs mentioning an entity?" | `memory { mode: "documents", query: "…", entity_category: "…" }` | *(MCP only)* |
 | "Narrow to docs with a keyword?" | `memory { mode: "documents", query: "…", keywords_contains: "…" }` | *(MCP only)* |
 | "Filter by file type?" | `memory { mode: "documents", query: "…", mime_type: "application/pdf" }` | `basemind memory documents "…" --mime-type application/pdf` |

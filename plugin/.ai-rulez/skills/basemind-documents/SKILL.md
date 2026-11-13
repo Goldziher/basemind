@@ -1,8 +1,8 @@
 ---
 type: Playbook
 title: Basemind Documents
-description: Semantic + full-text search over documents and the web via basemind's
-  RAG store — PDFs, Office, HTML, email, images (OCR), plus scraped/crawled web pages,
+description: Semantic search over documents and the web via basemind's
+  RAG store — PDFs, Office, HTML, email, Jupyter notebooks, images (OCR), and web pages,
   with cross-encoder reranking, keyword and named-entity (NER) filters, and per-document
   summaries. Reach for it whenever the user asks to "search the docs / PDFs", "find
   where a topic is discussed", "pull this URL into context", or "what does the documentation
@@ -22,8 +22,8 @@ x-ai-rulez:
 
 basemind extracts 90+ file formats (PDF, Office, HTML, email, images via OCR) into a LanceDB vector
 store and answers meaning-based queries with cross-encoder reranking. Web pages scraped or crawled
-into the same store are searchable the same way. This is the surface for "find the passage about X",
-not "grep for the string X".
+into the same store are searchable the same way. For exact matches in text files such as Jupyter
+notebooks, use a literal or regex file search. Semantic results cannot establish that a string is absent.
 
 **basemind first, open-the-file fallback.** Prefer `memory` mode `documents` over opening PDFs/Office/HTML
 by hand, and the web tools over ad-hoc fetching. For source code use `basemind-code-search` instead —
@@ -45,6 +45,7 @@ this skill is for prose and documents.
 | Question | MCP tool | CLI |
 |---|---|---|
 | "Semantic search over PDFs/Office/HTML docs?" | `memory { mode: "documents", query: "…" }` | `basemind memory documents "query"` |
+| "Search Jupyter notebooks by meaning?" | `memory { mode: "documents", query: "…", mime_type: "application/x-ipynb+json" }` | `basemind memory documents "…" --mime-type application/x-ipynb+json` |
 | "Narrow to docs mentioning an entity?" | `memory { mode: "documents", query: "…", entity_category: "…" }` | *(MCP only)* |
 | "Narrow to docs with a keyword?" | `memory { mode: "documents", query: "…", keywords_contains: "…" }` | *(MCP only)* |
 | "Filter by file type?" | `memory { mode: "documents", query: "…", mime_type: "application/pdf" }` | `basemind memory documents "…" --mime-type application/pdf` |
