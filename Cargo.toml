@@ -227,7 +227,10 @@ tree-sitter-graph = { package = "basemind-tree-sitter-graph", version = "0.12.1"
 tree-sitter-language-pack = "1.25.0"
 tree-sitter-stack-graphs = { package = "basemind-tree-sitter-stack-graphs", version = "0.10.1", path = "crates/tree-sitter-stack-graphs", optional = true }
 url = { version = "2", features = ["serde"], optional = true }
-xberg = { git = "https://github.com/xberg-io/xberg.git", rev = "670b8efeb6a2a1e7ea391640772db0cab8cfce43", version = "1.3.10", default-features = false, features = ["tokio-runtime", "simd-utf8"], optional = true }
+xberg = { git = "https://github.com/xberg-io/xberg.git", rev = "670b8efeb6a2a1e7ea391640772db0cab8cfce43", version = "1.3.10", default-features = false, features = [
+  "tokio-runtime",
+  "simd-utf8",
+], optional = true }
 zstd = "0.14.4"
 
 [target.'cfg(target_os = "macos")'.dependencies]
