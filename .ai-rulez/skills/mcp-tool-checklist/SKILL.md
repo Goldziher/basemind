@@ -13,9 +13,9 @@ x-ai-rulez:
 
 Use this when extending basemind's MCP surface. Skipping a step leaves the tool half-wired.
 
-**The surface is eight domain tools, not one tool per verb.** Adding a capability means adding a
+**The surface is seven domain tools, not one tool per verb.** Adding a capability means adding a
 **mode** to an existing domain — `code`, `graph`, `git`, `memory`, `agents`, `workspace`,
-`shell`, `admin`. Adding another top-level tool is a surface change that needs its own ADR, not a
+`admin`. Adding another top-level tool is a surface change that needs its own ADR, not a
 checklist step: every extra name competes for the same keyword search in hosts that defer tools, and
 GH #50 showed one bad schema takes the whole registry down with it.
 

@@ -29,7 +29,6 @@ parallelizes.
 | `memory` | put, get, list, search, delete, audit, documents, mine, proposals, accept, reject | always (body-gated) |
 | `agents` | register, list, thread_start, thread_list, join, leave, members, add_member, remove_member, archive, post, history, message, inbox, ack, wait | `comms` |
 | `workspace` | workspaces, worktrees, branches, claim, release | `comms` |
-| `shell` | spawn, send, capture, kill, list, broadcast | `shells` |
 | `admin` | status, repo, rescan, cache_stats, gc, cache_clear, telemetry | always |
 
 Your assignment names one domain. Migrate that one and no other.

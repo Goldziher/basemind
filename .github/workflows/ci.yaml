@@ -77,7 +77,7 @@ jobs:
             timeout_minutes: 180
             debug: "1"
           - os: windows-latest
-            features: "comms shells"
+            features: "comms"
             timeout_minutes: 180
             debug: "1"
     steps:

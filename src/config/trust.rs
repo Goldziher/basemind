@@ -121,7 +121,6 @@ const INERT_FIELDS: &[&str] = &[
     "comms.retention_secs",
     "comms.max_rooms",
     "comms.workspace_root",
-    "shells.keep_on_exit",
     "documents.ocr.backend",
     "documents.ocr.languages",
     "documents.language.preferred_languages",
@@ -155,7 +154,7 @@ pub fn warn_inert_fields(config: &ConfigV1) {
 
 /// Removed-feature tables that `config` still carries with content.
 pub fn deprecated_sections_set(config: &ConfigV1) -> Vec<&'static str> {
-    [("crawl", &config.crawl)]
+    [("crawl", &config.crawl), ("shells", &config.shells)]
         .into_iter()
         .filter(|(_, section)| !section.is_empty())
         .map(|(name, _)| name)
@@ -264,6 +263,11 @@ mod tests {
         assert_eq!(
             deprecated_sections_set(&repo_config("[crawl]\nallow_private_network = true\n")),
             vec!["crawl"]
+        );
+        assert!(deprecated_sections_set(&repo_config("[shells]\n")).is_empty());
+        assert_eq!(
+            deprecated_sections_set(&repo_config("[shells]\nvisual = \"window\"\n")),
+            vec!["shells"]
         );
     }
 

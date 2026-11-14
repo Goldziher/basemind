@@ -16,9 +16,9 @@ basemind is this repo's indexed context layer. Prefer it BEFORE grep, before rea
 
 ### Routing
 
-Every capability lives behind one of eight domain tools, dispatched by a required `mode`: `code`,
-`graph`, `git`, `memory`, `admin`, `agents`, `workspace`, `shell`. The CLI mirrors the same
-eight groups (`basemind <domain> <mode>`).
+Every capability lives behind one of seven domain tools, dispatched by a required `mode`: `code`,
+`graph`, `git`, `memory`, `admin`, `agents`, `workspace`. The CLI mirrors the same
+seven groups (`basemind <domain> <mode>`).
 
 | Reach for | Instead of |
 |---|---|

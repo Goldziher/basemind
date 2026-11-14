@@ -26,6 +26,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   warning. `BASEMIND_ALLOW_PRIVATE_HOSTS` and `BASEMIND_DAEMON_MAX_CRAWL_PAGES` / `_DEPTH` / `_BODY_BYTES`
   have no effect. Pages already ingested stay in the document store under their `web:<host>` scope and are
   still searchable with `memory` mode `documents` and `scope: "web:<host>"`, but are never refreshed.
+- **Agent shells.** The `shell` MCP tool (`spawn`, `send`, `capture`, `kill`, `list`, `broadcast`), the
+  `basemind shell` CLI group and the `shells` cargo feature are gone, along with the `rmux` git dependencies;
+  `full` no longer includes `shells`, so `--features shells` now fails the build. A `[shells]` table in
+  `basemind.toml` is still accepted and ignored; one with keys in it logs a warning. `BASEMIND_SHELLS_SOCKET`
+  has no effect. Kill any shell sessions before upgrading: a shells daemon an older version left running is
+  still listed by `basemind comms doctor` for one more release, but this version cannot stop it.
 
 ### Fixed
 

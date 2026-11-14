@@ -1,7 +1,7 @@
 //! The `mode` vocabulary shared by every consolidated MCP tool and CLI group.
 //!
-//! basemind's surface is eight domains — `code`, `graph`, `git`, `memory`, `agents`, `workspace`,
-//! `shell`, `admin` — each a single MCP tool and a single CLI group. Which operation
+//! basemind's surface is seven domains — `code`, `graph`, `git`, `memory`, `agents`, `workspace`,
+//! `admin` — each a single MCP tool and a single CLI group. Which operation
 //! runs inside a domain is selected by a required `mode` enum rather than by a distinct tool name.
 //!
 //! # Why one tool per domain
@@ -249,20 +249,6 @@ define_mode! {
 }
 
 define_mode! {
-    /// Which headless-terminal operation the `shell` tool should run.
-    pub enum ShellMode {
-        domain: "shell",
-        summary: "Shell session operation to run.",
-        Spawn => "spawn", "start a background terminal session running a command";
-        Send => "send", "type into a live session";
-        Capture => "capture", "read back what a session has printed";
-        Kill => "kill", "terminate a session";
-        List => "list", "every session the shell daemon currently hosts";
-        Broadcast => "broadcast", "type the same input into several sessions at once";
-    }
-}
-
-define_mode! {
     /// Which multi-agent coordination operation the `agents` tool should run.
     pub enum AgentsMode {
         domain: "agents",
@@ -349,8 +335,6 @@ pub fn domain_modes() -> Vec<(&'static str, &'static [&'static str])> {
         (GitMode::DOMAIN, GitMode::ALL_MODES),
         (GraphMode::DOMAIN, GraphMode::ALL_MODES),
         (MemoryMode::DOMAIN, MemoryMode::ALL_MODES),
-        #[cfg(all(feature = "shells", any(unix, windows)))]
-        (ShellMode::DOMAIN, ShellMode::ALL_MODES),
         #[cfg(all(feature = "comms", any(unix, windows)))]
         (AgentsMode::DOMAIN, AgentsMode::ALL_MODES),
         #[cfg(all(feature = "comms", any(unix, windows)))]

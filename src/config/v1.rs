@@ -5,7 +5,6 @@ use super::code::CodeSearchConfig;
 use super::comms::CommsConfig;
 use super::documents::{DocumentsConfig, LlmConfig};
 use super::resources::ResourcesConfig;
-use super::shells::ShellsConfig;
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -45,10 +44,10 @@ pub struct ConfigV1 {
     /// `[crawl]` table (`basemind init` used to write one) keep loading.
     #[serde(default, skip_serializing_if = "DeprecatedSection::is_empty")]
     pub crawl: DeprecatedSection,
-    /// Visual / headless agent-shell presentation config. Consumed by the `shells` feature's
-    /// visual launcher; the schema is stable regardless of feature gating.
-    #[serde(default)]
-    pub shells: ShellsConfig,
+    /// Deprecated and ignored: agent shells were removed. Accepted so files that still carry a
+    /// `[shells]` table keep loading.
+    #[serde(default, skip_serializing_if = "DeprecatedSection::is_empty")]
+    pub shells: DeprecatedSection,
     /// Shared LLM configuration. Consumed by reranker-llm, ner-llm, summarization-llm,
     /// VLM OCR, and any future LLM-backed capability. Off by default — leaving
     /// `api_key` `Unset` short-circuits any LLM-backed feature.
@@ -442,7 +441,7 @@ impl ConfigV1 {
             memory: MemoryConfig::default(),
             comms: CommsConfig::default(),
             crawl: DeprecatedSection::default(),
-            shells: ShellsConfig::default(),
+            shells: DeprecatedSection::default(),
             llm: LlmConfig::default(),
         }
     }

@@ -40,7 +40,7 @@ fi
 # Tool names as the host registers them; ToolSearch needs these exact names. Claude Code namespaces
 # plugin MCP tools as mcp__plugin_<plugin>_<server>__<tool>.
 TOOL_PREFIX="mcp__plugin_basemind_basemind__"
-TOOL_NAMES="code git graph memory admin agents workspace shell"
+TOOL_NAMES="code git graph memory admin agents workspace"
 SELECT=""
 for t in ${TOOL_NAMES}; do
   SELECT="${SELECT:+${SELECT},}${TOOL_PREFIX}${t}"

@@ -94,14 +94,6 @@ pub fn all() -> Vec<Exception> {
         alias("code grep", "no_context", "include_context", INVERTED),
         alias("git recent", "no_files", "include_files", INVERTED),
         alias("memory put", "no_embed", "embed", INVERTED),
-        alias("shell send", "no_enter", "enter", INVERTED),
-        alias("shell broadcast", "no_enter", "enter", INVERTED),
-        alias(
-            "shell broadcast",
-            "session",
-            "session_ids",
-            "repeatable CLI flag for the MCP id list",
-        ),
         alias("agents post", "tag", "tags", "repeatable CLI flag for the MCP list"),
         alias(
             "agents ack",

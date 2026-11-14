@@ -553,8 +553,8 @@ fn cmd_comms_doctor(json: bool, probe: bool, clear_fatal: bool) -> Result<()> {
     let ceiling = daemon_lock::max_live_daemons();
     let now = now_unix();
 
-    // Probe only the comms family: `agent` and `shells` daemons are registered in the same registry
-    // but do not speak this protocol on a comms socket, so a Status RPC there would be meaningless.
+    // Probe only the comms family: a `shells` daemon left by an older release sits in the same registry
+    // but does not speak this protocol on a comms socket, so a Status RPC there would be meaningless.
     let verdicts: Vec<Option<singleton::DaemonProbe>> = daemons
         .iter()
         .map(|record| {

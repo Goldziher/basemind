@@ -16,7 +16,7 @@ use basemind::comms::store::CommsStore;
 /// Without the operator grant, `serve_http` returns without binding a socket, without publishing a
 /// portfile, and without failing — the daemon's UDS relay is unaffected. The fixed default port is
 /// the one that matters: before this gate, every daemon on the machine held `127.0.0.1:51786` open
-/// with the full tool surface (including `shell`) behind nothing but a `Host`-header check.
+/// with the full tool surface behind nothing but a `Host`-header check.
 #[tokio::test]
 async fn listener_does_not_bind_without_the_operator_grant() {
     basemind::store::init_isolated_cache();

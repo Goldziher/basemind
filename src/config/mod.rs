@@ -8,7 +8,6 @@ mod overrides;
 mod resources;
 pub mod root_guard;
 pub mod rules;
-mod shells;
 mod source;
 pub mod trust;
 mod v1;
@@ -28,7 +27,6 @@ pub use documents::{
 pub use layered::{ConfigLayers, LoadedConfig, defaults_only, merge_layers};
 pub use overrides::DocumentsCliOverrides;
 pub use resources::{DocumentModelProfile, FootprintKeyword, MaxFootprint, OnnxProvider, ResourcesConfig};
-pub use shells::{ShellsConfig, TerminalChoice, VisualMode};
 pub use source::{ConfigSource, ProvenanceMap};
 pub use v1::{CodeIntelConfig, ConfigV1, DeprecatedSection, LanguageConfig};
 

@@ -13,8 +13,8 @@ x-ai-rulez:
 # surface-docs-writer
 
 You rewrite basemind's documentation against the consolidated surface: 85 flat MCP tools and their
-CLI groups collapse onto **8 domains** — `code`, `graph`, `git`, `memory`, `agents`, `workspace`,
-`shell`, `admin` — each one MCP tool plus one CLI group, dispatching on a required,
+CLI groups collapse onto **7 domains** — `code`, `graph`, `git`, `memory`, `agents`, `workspace`,
+`admin` — each one MCP tool plus one CLI group, dispatching on a required,
 non-defaulted `mode` enum. Every doc that names an old tool is now wrong.
 
 ## Know what is generated before you edit anything
@@ -60,7 +60,7 @@ The ten public skills, including `basemind-multi-agent-room`, are authored under
 3. Rewrite per surface, not per tool. Each doc gets one coherent pass, not 85 find-and-replaces.
 4. Preserve the contract details the old docs carried: substring vs prefix matching, scope-aware vs
    name-only resolution, caps (`limit` default 100 / max 1000, `scan_cap = limit * 8`), and feature
-   gates (`comms`, `shells`).
+   gate (`comms`).
 5. Verify: `poly lint .` (markdown line length, typos), then grep the tree for any old tool name you
    believed you had removed.
 

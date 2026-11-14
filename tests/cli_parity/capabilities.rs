@@ -207,14 +207,5 @@ pub fn table() -> Vec<Row> {
             "prints the daemon's streamable-HTTP MCP URL for HTTP-native clients",
         ),
     ]);
-    #[cfg(all(feature = "shells", any(unix, windows)))]
-    rows.extend([
-        pair("shell", "spawn", "shell spawn"),
-        pair("shell", "send", "shell send"),
-        pair("shell", "capture", "shell capture"),
-        pair("shell", "kill", "shell kill"),
-        pair("shell", "list", "shell list"),
-        pair("shell", "broadcast", "shell broadcast"),
-    ]);
     rows
 }

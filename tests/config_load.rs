@@ -207,6 +207,24 @@ no_such_key = { nested = [1, 2] }
 }
 
 #[test]
+fn a_shells_table_written_for_an_older_version_still_loads_and_is_ignored() {
+    let _env = no_grants();
+    let cfg = assert_loads_everywhere(
+        r#"
+[shells]
+enabled = true
+visual = "window"
+terminal = "ghostty"
+keep_on_exit = true
+no_such_key = { nested = [1, 2] }
+"#,
+    );
+    assert!(!cfg.shells.is_empty());
+    assert!(cfg.crawl.is_empty());
+    assert_eq!(config::trust::deprecated_sections_set(&cfg), vec!["shells"]);
+}
+
+#[test]
 fn an_unknown_table_is_still_rejected() {
     let _env = no_grants();
     let dir = repo_with("[crawler]\nmax_pages = 64\n");

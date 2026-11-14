@@ -11,7 +11,7 @@ pub mod cli;
 pub mod comms;
 pub mod config;
 /// Single-owner daemon lock + pidfile + the machine-wide, kind-tagged live-daemon registry and
-/// ceiling, shared by every daemon family (the comms broker, shells).
+/// ceiling, shared by every daemon family.
 pub mod daemon_lock;
 pub mod disk_space;
 #[cfg(feature = "intelligence")]
@@ -55,8 +55,6 @@ pub(crate) mod scanner_integrity;
 pub mod scanner_lanes;
 pub(crate) mod scanner_policy;
 pub mod search;
-#[cfg(all(feature = "shells", any(unix, windows)))]
-pub mod shells;
 pub mod store;
 pub mod store_base;
 mod store_base_retention;

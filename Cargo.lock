@@ -927,9 +927,6 @@ dependencies = [
  "regex-syntax",
  "rmcp",
  "rmp-serde",
- "rmux-client",
- "rmux-sdk",
- "rmux-server",
  "schemars 1.2.3",
  "serde",
  "serde_json",
@@ -953,7 +950,7 @@ dependencies = [
 name = "basemind-lsp-positions"
 version = "0.3.5"
 dependencies = [
- "bincode 2.0.1",
+ "bincode",
  "memchr",
  "serde",
  "tree-sitter",
@@ -1048,15 +1045,6 @@ dependencies = [
  "num-bigint 0.4.8",
  "num-integer",
  "num-traits",
-]
-
-[[package]]
-name = "bincode"
-version = "1.3.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b1f45e9417d87227c7a56d22e471c6206462cba514c7590c09aff4cf6d1ddcad"
-dependencies = [
- "serde",
 ]
 
 [[package]]
@@ -1762,21 +1750,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "958c5d6ecf1f214b4c2bbbbf6ab9523a864bd136dcf71a7e8904799acfe1ad47"
 dependencies = [
  "unicode-segmentation",
- "unicode-width 0.2.3",
-]
-
-[[package]]
-name = "compact_str"
-version = "0.8.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7fd622ebbb56a5b2ccb651b32b911cdeb2a9b4b11776b2473bf26a26a286244e"
-dependencies = [
- "castaway",
- "cfg-if",
- "itoa",
- "rustversion",
- "ryu",
- "static_assertions",
+ "unicode-width",
 ]
 
 [[package]]
@@ -4073,7 +4047,7 @@ version = "0.2.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cfe4fbac503b8d1f88e6676011885f34b7174f46e59956bba534ba83abded4df"
 dependencies = [
- "unicode-width 0.2.3",
+ "unicode-width",
 ]
 
 [[package]]
@@ -4208,7 +4182,7 @@ dependencies = [
  "nonempty",
  "parking_lot 0.12.5",
  "regex",
- "signal-hook 0.4.6",
+ "signal-hook",
  "smallvec",
 ]
 
@@ -4969,7 +4943,7 @@ dependencies = [
  "gix-fs",
  "libc",
  "parking_lot 0.12.5",
- "signal-hook 0.4.6",
+ "signal-hook",
  "signal-hook-registry",
  "tempfile",
  "windows-sys 0.61.2",
@@ -8593,7 +8567,7 @@ dependencies = [
  "smallvec",
  "textwrap",
  "unicode-segmentation",
- "unicode-width 0.2.3",
+ "unicode-width",
 ]
 
 [[package]]
@@ -10112,133 +10086,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rmux-client"
-version = "0.10.0"
-source = "git+https://github.com/Goldziher/rmux.git?rev=156340a3030f14366aed2a18a2ea5bd22991e400#156340a3030f14366aed2a18a2ea5bd22991e400"
-dependencies = [
- "libc",
- "rmux-core",
- "rmux-ipc",
- "rmux-os",
- "rmux-proto",
- "rmux-sdk",
- "rustix",
- "signal-hook 0.3.18",
- "tokio",
- "tracing",
- "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "rmux-core"
-version = "0.10.0"
-source = "git+https://github.com/Goldziher/rmux.git?rev=156340a3030f14366aed2a18a2ea5bd22991e400#156340a3030f14366aed2a18a2ea5bd22991e400"
-dependencies = [
- "chrono",
- "compact_str 0.8.2",
- "regex",
- "rmux-proto",
- "unicode-width 0.1.14",
-]
-
-[[package]]
-name = "rmux-ipc"
-version = "0.10.0"
-source = "git+https://github.com/Goldziher/rmux.git?rev=156340a3030f14366aed2a18a2ea5bd22991e400#156340a3030f14366aed2a18a2ea5bd22991e400"
-dependencies = [
- "getrandom 0.3.4",
- "libc",
- "rmux-os",
- "rustix",
- "sha2 0.10.9",
- "tokio",
- "tracing",
- "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "rmux-os"
-version = "0.10.0"
-source = "git+https://github.com/Goldziher/rmux.git?rev=156340a3030f14366aed2a18a2ea5bd22991e400#156340a3030f14366aed2a18a2ea5bd22991e400"
-dependencies = [
- "libc",
- "rmux-types",
- "rustix",
- "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "rmux-proto"
-version = "0.10.0"
-source = "git+https://github.com/Goldziher/rmux.git?rev=156340a3030f14366aed2a18a2ea5bd22991e400#156340a3030f14366aed2a18a2ea5bd22991e400"
-dependencies = [
- "bincode 1.3.3",
- "rmux-types",
- "serde",
- "serde_json",
- "thiserror 2.0.21",
-]
-
-[[package]]
-name = "rmux-pty"
-version = "0.10.0"
-source = "git+https://github.com/Goldziher/rmux.git?rev=156340a3030f14366aed2a18a2ea5bd22991e400#156340a3030f14366aed2a18a2ea5bd22991e400"
-dependencies = [
- "getrandom 0.3.4",
- "libc",
- "rmux-os",
- "rmux-types",
- "rustix",
- "tracing",
- "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "rmux-sdk"
-version = "0.10.0"
-source = "git+https://github.com/Goldziher/rmux.git?rev=156340a3030f14366aed2a18a2ea5bd22991e400#156340a3030f14366aed2a18a2ea5bd22991e400"
-dependencies = [
- "libc",
- "rmux-ipc",
- "rmux-os",
- "rmux-proto",
- "rustix",
- "serde",
- "serde_json",
- "signal-hook 0.3.18",
- "tokio",
- "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "rmux-server"
-version = "0.10.0"
-source = "git+https://github.com/Goldziher/rmux.git?rev=156340a3030f14366aed2a18a2ea5bd22991e400#156340a3030f14366aed2a18a2ea5bd22991e400"
-dependencies = [
- "async-recursion",
- "bincode 1.3.3",
- "chrono",
- "glob",
- "regex",
- "rmux-core",
- "rmux-ipc",
- "rmux-os",
- "rmux-proto",
- "rmux-pty",
- "rustix",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "rmux-types"
-version = "0.10.0"
-source = "git+https://github.com/Goldziher/rmux.git?rev=156340a3030f14366aed2a18a2ea5bd22991e400#156340a3030f14366aed2a18a2ea5bd22991e400"
-dependencies = [
- "serde",
-]
-
-[[package]]
 name = "roaring"
 version = "0.11.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10847,16 +10694,6 @@ name = "shlex"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
-
-[[package]]
-name = "signal-hook"
-version = "0.3.18"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d881a16cf4426aa584979d30bd82cb33429027e42122b169753d6ef1085ed6e2"
-dependencies = [
- "libc",
- "signal-hook-registry",
-]
 
 [[package]]
 name = "signal-hook"
@@ -11499,7 +11336,7 @@ checksum = "6ecfad6c3abc80a577f2b91c1e412ee57e7a060d430b553c1b0c940974ebcd49"
 dependencies = [
  "icu_segmenter",
  "smawk",
- "unicode-width 0.2.3",
+ "unicode-width",
 ]
 
 [[package]]
@@ -12388,12 +12225,6 @@ name = "unicode-segmentation"
 version = "1.13.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c6f5d3c3b1bf09027a88a6bc961fc00497d651009560b5463668dc81b0fa87a8"
-
-[[package]]
-name = "unicode-width"
-version = "0.1.14"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7dd6e30e90baa6f72411720665d41d89b9a3d039dc45b8faea1ddd07f617f6af"
 
 [[package]]
 name = "unicode-width"
@@ -13466,7 +13297,7 @@ dependencies = [
  "typst-syntax",
  "unhwp",
  "unicode-normalization",
- "unicode-width 0.2.3",
+ "unicode-width",
  "ureq",
  "url",
  "urlencoding",

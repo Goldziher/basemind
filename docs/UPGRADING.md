@@ -40,6 +40,12 @@ The `web` tool and the `basemind web` commands (`scrape`, `crawl`, `map`) were r
 accepted and ignored. Pages already ingested stay searchable under their `web:<host>` scope
 (`memory documents --scope web:<host>`) and are no longer refreshed.
 
+The `shell` tool and the `basemind shell` commands (`spawn`, `send`, `capture`, `kill`, `list`,
+`broadcast`) were removed, with the `shells` cargo feature; they have no replacement. A `[shells]`
+table in `basemind.toml` is still accepted and ignored. Stop a shells daemon an older version left
+running before upgrading (`basemind shell kill` each session, or kill the process); this version
+still lists it in `basemind comms doctor` but cannot talk to it.
+
 Also check scripts for these behaviour changes:
 
 - Exit codes are `0` ok, `1` error, `2` usage, `3` writer lock held, `4` daemon unreachable, `130`

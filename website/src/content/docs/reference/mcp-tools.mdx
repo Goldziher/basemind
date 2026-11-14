@@ -1,13 +1,13 @@
 ---
 title: MCP Tools Reference
-description: Complete catalog of basemind's eight domain tools, one section per domain.
+description: Complete catalog of basemind's seven domain tools, one section per domain.
 ---
 
 import { Aside, Badge } from '@astrojs/starlight/components';
 
-basemind exposes **eight domain tools** over stdio MCP — `code`, `graph`, `git`, `memory`, `admin`,
-`agents`, `workspace`, `shell` — each dispatching on a required `mode` rather than one tool
-per operation. The CLI mirrors the same eight groups (`basemind <domain> <mode>`); `tests/cli_parity/` fails the build
+basemind exposes **seven domain tools** over stdio MCP — `code`, `graph`, `git`, `memory`, `admin`,
+`agents`, `workspace` — each dispatching on a required `mode` rather than one tool
+per operation. The CLI mirrors the same seven groups (`basemind <domain> <mode>`); `tests/cli_parity/` fails the build
 when an MCP mode has no CLI command or the two disagree on parameters or results. All paths are byte-precise repo-relative (`RelPath`). Lists are
 capped per mode (see [Metadata & pagination](#metadata--pagination)); index scans use
 `scan_cap = limit * 8` (at least 2000) to bound work on common names. Mode descriptions state matching semantics (substring, prefix, scope-aware) and what's
@@ -165,22 +165,6 @@ daemon-managed; claims are advisory (no locking) but help avoid collisions. Requ
 
 See CLI: `basemind workspace` (worktree/branch listing), `basemind statusline` (current status).
 
-## `shell` — agent shells
-
-Let agents spawn, type into, and read terminal sessions in the background. Requires
-`--features shells`.
-
-| Mode | Purpose |
-|---|---|
-| `spawn` | Start a background terminal session running a command (`--cwd`, `--env`, `--title`). Returns `session_id`. |
-| `send` | Type into a live session (`--no-enter` to suppress the trailing newline). |
-| `capture` | Read back what a session has printed (`--lines` to limit). |
-| `kill` | Terminate a session. |
-| `list` | Every session the shell daemon currently hosts, with liveness. |
-| `broadcast` | Type the same input into several sessions at once. |
-
-See [Agent Shells](/capabilities/agent-shells/) for examples.
-
 ## Tool titles and annotations
 
 Each tool carries a human-readable title and MCP annotation hints, so a client can show a readable
@@ -195,7 +179,6 @@ name and decide what to auto-approve. The hints describe the union of a tool's m
 | `admin` | Admin | no | yes | no | no |
 | `agents` | Agent comms | no | no | no | no |
 | `workspace` | Workspace registry | no | no | yes | no |
-| `shell` | Shell sessions | no | yes | no | yes |
 
 A dash means the hint is left unset. `graph` is open-world and not read-only because `display` and
 `open` launch a viewer or serve a page. The server no longer emits MCP logging notifications; use

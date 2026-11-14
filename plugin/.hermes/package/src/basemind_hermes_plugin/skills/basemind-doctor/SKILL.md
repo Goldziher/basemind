@@ -9,8 +9,8 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:2e8730de715748419973d3b9c3ee562e2e75d6cec8628688c78ffa8d28aaf454
-Source-Hash: blake3:e09c651f27bce33463989a697aa75fe5c51be77ecaba769384a73c6adde83aa0
+Content-Hash: blake3:e1cd65961202b51040e9d4c47fe278189fbde8cbd5ff3e4564ac340e763d4210
+Source-Hash: blake3:fbc7b4d75a7eb6eec0f28a10c0fe7172499c7b07b219d86838a7a4d3593da9ac
 Schema-Version: v1
 -->
 
@@ -79,21 +79,6 @@ basemind can't relaunch its own stdio server; trigger a reconnect in your client
 
 While disconnected, you are not blocked: use the `basemind-cli` skill (`basemind code …`,
 `basemind git …`) — it reads the same machine-global cache directly, no server required.
-
-## Agent shells (embedded rmux daemon)
-
-Only when the server was built with `--features shells`. Spawned shell sessions run under an
-**embedded rmux daemon** — basemind re-execs itself (`--__internal-daemon`) rather than shelling
-out to any external `rmux` binary, so there is nothing extra to install. The daemon binds a private
-per-user socket under the data dir (`<data_dir>/basemind/shells/rmux.sock`, `0o700`), overridable
-with `BASEMIND_SHELLS_SOCKET`. It is **separate** from the comms broker daemon.
-
-- `shell { mode: "list" }` enumerates sessions with liveness; a dead-but-listed session was killed
-  or exited — re-run after `shell { mode: "kill", session_id: "…" }` to confirm it's gone.
-- The daemon **self-terminates once it has no sessions left**, so an idle daemon disappearing is
-  expected, not a fault. `shell` mode `spawn` starts a fresh one.
-- Sessions are independent of `serve`: they outlive a single MCP call but are torn down by
-  `shell` mode `kill` (which also drops the comms lineage row) or when the daemon exits.
 
 ## When server logs help
 

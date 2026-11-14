@@ -57,7 +57,6 @@ All tunables live under a named section — there are no bare top-level options.
 | `[code_search]` | Semantic/keyword code search chunking + embedding (needs `--features code-search`). |
 | `[memory]` | Shared-memory scope and default visibility (needs `--features memory`). |
 | `[comms]` | Agent comms identity + retention (needs `--features comms`). |
-| `[shells]` | Agent-shell presentation (needs `--features shells`). |
 | `[llm]` | Shared LLM settings for reranking, NER, and summarization. |
 | `[languages.<grammar>]` | Per-grammar toggles and extension/file-name mappings. |
 
@@ -259,10 +258,11 @@ All three `[memory]` keys parse but currently have no effect (see [Reserved keys
 
 ### Removed sections
 
-`[crawl]` configured web crawling, which was removed. The table is still accepted so that a
-`basemind.toml` written for an older version keeps loading (`basemind init` used to write an empty
-one): its contents are not validated and nothing reads them. A `[crawl]` table with keys in it logs
-one warning per process; delete the table to silence it.
+`[crawl]` configured web crawling and `[shells]` configured agent shells; both features were
+removed. The tables are still accepted so that a `basemind.toml` written for an older version keeps
+loading (`basemind init` used to write an empty `[crawl]`): their contents are not validated and
+nothing reads them. A removed table with keys in it logs one warning per process; delete the table
+to silence it.
 
 ### `[comms]` Section
 
@@ -286,25 +286,6 @@ agent_id = "my-agent"
 
 Only `agent_id` is read. The other `[comms]` keys, including `enabled`, parse but currently have no
 effect (see [Reserved keys](#reserved-keys)).
-
-### `[shells]` Section
-
-Agent-shell presentation. Requires `--features shells`.
-
-```toml
-[shells]
-enabled = true
-visual = "headless"
-terminal = "auto"
-```
-
-| Key | Type | Default | Notes |
-|---|---|---|---|
-| `enabled` | bool | `true` | `false` keeps the `shell` tools wired but never spawns a session. |
-| `visual` | enum | `headless` | How a spawned session is surfaced: `headless` (not presented), `current` (a tab in the open terminal), `window` (a new terminal window) or `web`. |
-| `terminal` | enum | `auto` | Emulator the visual launcher drives: `auto` (detect from the environment), `iterm2`, `terminal_app`, `windows_terminal`, `gnome_terminal`, `konsole`, `wezterm`, `alacritty`, `kitty` or `xterm`. |
-| `default_cols` / `default_rows` | integer | `200` / `50` | Initial pseudo-terminal size (minimum 1). |
-| `keep_on_exit` | bool | `true` | Reserved (see [Reserved keys](#reserved-keys)). |
 
 ### `[llm]` Section
 
@@ -445,7 +426,7 @@ git directly.
 These parse but nothing reads them yet; setting one to a non-default value logs a warning:
 `[watch] live_l2`, `[cache] file_map_lru`, `[memory] enabled` / `scope_strategy` /
 `default_visibility`, `[comms] enabled` / `idle_timeout_secs` / `max_messages_per_room` /
-`retention_secs` / `max_rooms` / `workspace_root`, `[shells] keep_on_exit`, `[documents.ocr] backend` /
+`retention_secs` / `max_rooms` / `workspace_root`, `[documents.ocr] backend` /
 `languages`, and `[documents.language] preferred_languages`. (`[mcp] transport` is also unread, but
 `stdio` is its only value.)
 
@@ -509,14 +490,13 @@ ONNX Runtime). Opt into the rest:
 | `memory` | LanceDB-backed shared memory (`memory` tool). | yes |
 | `code-search` | Hybrid code search — vector + BM25 + exact-symbol lanes (`code` tool modes `semantic`, `chunk`). | yes |
 | `comms` | Agent-to-agent comms — threads, per-agent inbox, DMs (`agents` + `workspace` tools; Unix domain sockets + Windows named pipes). | yes |
-| `shells` | Headless agent shells (`shell` tool modes `spawn`, `send`, …). | yes |
 | `code-intel` | Scope- and import-resolved JS/TS `code` tool modes `references` / `definition` (oxc). | yes |
-| `full` | `documents` + `memory` + `comms` + `shells` + `code-intel` + `code-search`. | — |
+| `full` | `documents` + `memory` + `comms` + `code-intel` + `code-search`. | — |
 
 ### Installation Examples
 
 ```bash
-# Everything (documents, memory, code-search, comms, shells)
+# Everything (documents, memory, code-search, comms)
 cargo install basemind --features full --locked
 
 # Code + git only (smallest build)

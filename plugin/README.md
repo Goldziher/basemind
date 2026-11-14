@@ -83,8 +83,8 @@ Load the `basemind` skill in your agent and use `code` with an explicit `mode`, 
 
 ## API overview
 
-Eight domain tools dispatch through a required `mode`: `code`, `graph`, `git`, `memory`, `admin`,
-`agents`, `workspace`, and `shell`. Optional capabilities depend on the installed binary's
+Seven domain tools dispatch through a required `mode`: `code`, `graph`, `git`, `memory`, `admin`,
+`agents`, and `workspace`. Optional capabilities depend on the installed binary's
 features. See the [MCP reference](../README.md) for modes and error handling.
 
 Install only the public skills with `npx skills add Goldziher/basemind`. Root `skills/` mirrors the

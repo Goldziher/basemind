@@ -125,7 +125,7 @@ async fn connect(repo_root: &Path) -> ServiceHandle {
     ().serve(transport).await.expect("rmcp handshake with basemind serve")
 }
 
-/// Build a tool call, rejecting any name that is not one of the eight domain tools.
+/// Build a tool call, rejecting any name that is not one of the seven domain tools.
 ///
 /// Every call site here is wrapped in `if let Ok(out) = …`, so an unknown tool name does not fail
 /// the call — it skips the block, leaves the canary unset, and `unwrap_or(0)` then reports zero
@@ -134,23 +134,14 @@ async fn connect(repo_root: &Path) -> ServiceHandle {
 /// run blamed the engine for returning no `Future` implementations in tokio. Panicking on an
 /// unknown name turns that silent misattribution into an immediate, obvious failure. ~keep
 fn call_params(name: &'static str, args: &Value) -> CallToolRequestParams {
-    // Checked against the fixed eight, not `mode::domain_modes()`, because that list is cfg-gated:
-    // under a default-feature build `shell` / `agents` / `workspace` are absent, and the
+    // Checked against the fixed seven, not `mode::domain_modes()`, because that list is cfg-gated:
+    // under a default-feature build `agents` / `workspace` are absent, and the
     // harness calls them deliberately so it can record them as skipped. The invariant worth
     // asserting is that the name is a domain at all, not that this build serves it. ~keep
-    const DOMAINS: [&str; 8] = [
-        "code",
-        "graph",
-        "git",
-        "memory",
-        "admin",
-        "agents",
-        "workspace",
-        "shell",
-    ];
+    const DOMAINS: [&str; 7] = ["code", "graph", "git", "memory", "admin", "agents", "workspace"];
     assert!(
         DOMAINS.contains(&name),
-        "harden calls `{name}`, which is not one of the eight domain tools — a call site was missed \
+        "harden calls `{name}`, which is not one of the seven domain tools — a call site was missed \
          when the surface consolidated; an unknown tool would silently read back as a zero canary"
     );
     let mut params = CallToolRequestParams::new(name);
@@ -643,36 +634,6 @@ async fn drive_tools(svc: &ServiceHandle, sample: Option<&SampleFile>) -> Vec<To
 
     call(svc, &mut records, "admin", json!({ "mode": "cache_stats" })).await;
     call(svc, &mut records, "admin", json!({ "mode": "gc" })).await;
-
-    if let Some(spawned) = call(
-        svc,
-        &mut records,
-        "shell",
-        json!({ "mode": "spawn", "command": "echo basemind-harden-shell" }),
-    )
-    .await
-        && let Some(session_id) = spawned.get("session_id").and_then(Value::as_str)
-    {
-        assert!(
-            session_id.starts_with("bmsh-"),
-            "shell mode=spawn session_id should be a minted bmsh- id, got {session_id:?}"
-        );
-        call(
-            svc,
-            &mut records,
-            "shell",
-            json!({ "mode": "capture", "session_id": session_id }),
-        )
-        .await;
-        call(
-            svc,
-            &mut records,
-            "shell",
-            json!({ "mode": "kill", "session_id": session_id }),
-        )
-        .await;
-    }
-    call(svc, &mut records, "shell", json!({ "mode": "list" })).await;
 
     records
 }

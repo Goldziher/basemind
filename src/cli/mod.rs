@@ -34,8 +34,6 @@ pub mod memory;
 pub mod registry;
 pub mod render;
 pub mod rescan;
-#[cfg(all(feature = "shells", any(unix, windows)))]
-pub mod shell;
 
 use std::io::Write;
 use std::path::Path;
@@ -72,11 +70,6 @@ pub enum ToolCmd {
     Admin(admin::AdminCmd),
     /// Index health for this workspace: file counts, languages, scan age.
     Status,
-    /// Headless agent shell sessions: spawn / send / capture / kill / list / broadcast
-    /// (needs `--features shells`).
-    #[cfg(all(feature = "shells", any(unix, windows)))]
-    #[command(subcommand)]
-    Shell(shell::ShellCmd),
 }
 
 /// Resolve a user-supplied CLI path into the repo-relative `RelPath` key the index is keyed by
@@ -159,8 +152,6 @@ pub fn run(
             ToolCmd::Memory(m) => memory::run(&server, m, &opts, &mut out).await?,
             ToolCmd::Admin(a) => admin::run(&server, a, &opts, &mut out).await?,
             ToolCmd::Status => admin::run_status(&server, &opts, &mut out).await?,
-            #[cfg(all(feature = "shells", any(unix, windows)))]
-            ToolCmd::Shell(s) => shell::run(&server, s, &opts, &mut out).await?,
         }
         out.flush().context("flush stdout")?;
         Ok(())

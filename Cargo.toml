@@ -108,8 +108,6 @@ comms = [
   "rmcp/transport-streamable-http-server",
 ]
 
-shells = ["dep:rmux-sdk", "dep:rmux-server", "dep:rmux-client"]
-
 code-intel-js = [
   "dep:oxc_allocator",
   "dep:oxc_parser",
@@ -123,7 +121,7 @@ code-intel-stack = ["dep:stack-graphs", "dep:tree-sitter-graph", "dep:tree-sitte
 
 code-intel = ["code-intel-js", "code-intel-stack"]
 
-full = ["documents", "memory", "comms", "shells", "code-intel", "code-search"]
+full = ["documents", "memory", "comms", "code-intel", "code-search"]
 
 test-support = []
 
@@ -185,9 +183,6 @@ regex = "1.13.1"
 regex-syntax = "0.8"
 rmcp = { version = "3.10", default-features = false, features = ["server", "macros", "schemars", "transport-async-rw"] }
 rmp-serde = "1"
-rmux-client = { git = "https://github.com/Goldziher/rmux.git", rev = "156340a3030f14366aed2a18a2ea5bd22991e400", version = "0.10", default-features = false, optional = true }
-rmux-sdk = { git = "https://github.com/Goldziher/rmux.git", rev = "156340a3030f14366aed2a18a2ea5bd22991e400", version = "0.10", default-features = false, optional = true }
-rmux-server = { git = "https://github.com/Goldziher/rmux.git", rev = "156340a3030f14366aed2a18a2ea5bd22991e400", version = "0.10", default-features = false, optional = true }
 schemars = "1.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
@@ -292,7 +287,7 @@ opt-level = 3
 # ~keep config while tesseract still configures -DCMAKE_BUILD_TYPE=Release, its exported target
 # ~keep stops resolving, and the build script dies in check_leptonica_tiff_support with
 # ~keep "IMPORTED_LOCATION not set for imported target leptonica". Only the `full` Windows build
-# ~keep compiles tesseract, so CI's `comms shells` leg cannot catch this -- publish is where it lands.
+# ~keep compiles tesseract, so CI's `comms` leg cannot catch this -- publish is where it lands.
 [profile.release.package.xberg-tesseract]
 opt-level = 3
 

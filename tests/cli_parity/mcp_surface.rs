@@ -116,7 +116,7 @@ pub struct ModeParams {
 /// Tools whose handlers can reach the network, spawn processes, download models or need the comms
 /// broker. They are not probed (probing executes the handler whenever a field is accepted); their
 /// parameters are compared domain-wide instead.
-const UNPROBED_TOOLS: &[&str] = &["memory", "agents", "workspace", "shell"];
+const UNPROBED_TOOLS: &[&str] = &["memory", "agents", "workspace"];
 /// Individual modes that open a browser / run the embedding stack when their fields are accepted.
 const UNPROBED_MODES: &[(&str, &str)] = &[
     ("code", "semantic"),

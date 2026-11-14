@@ -1,6 +1,6 @@
 # AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-# Content-Hash: blake3:ae110af405642490d6d1a30d87787c2cf089e288234bc46de4acab5b882fc09f
-# Source-Hash: blake3:e09c651f27bce33463989a697aa75fe5c51be77ecaba769384a73c6adde83aa0
+# Content-Hash: blake3:20d2c7470e3627946458f0ff5db4df72221ddca4ae85ea752d3593622827b0cf
+# Source-Hash: blake3:fbc7b4d75a7eb6eec0f28a10c0fe7172499c7b07b219d86838a7a4d3593da9ac
 # Schema-Version: v1
 
 """Hermes Agent plugin registration for basemind.
@@ -42,8 +42,8 @@ _COMMANDS_DIR = _PKG_DIR / "commands"
 
 _DISCIPLINE = (
     "basemind is available over MCP in this session — a tree-sitter code map + git context. "
-    "Its surface is eight domain tools — code, graph, git, memory, admin, agents, workspace, "
-    "and shell — each dispatched by a required mode. "
+    "Its surface is seven domain tools — code, graph, git, memory, admin, agents, and workspace "
+    "— each dispatched by a required mode. "
     "Prefer it over grep/read for structural and historical questions: its tools return paths, "
     "line numbers, and signatures, not file bodies, so they cost a fraction of the tokens of "
     "reading source. Default workflow: use code mode outline before opening a file (then read only "
@@ -297,7 +297,7 @@ def _read_int(path: Path) -> int:
 PLUGIN_NAME = "basemind"
 CLI_COMMAND = "basemind"
 SERVER_ARGUMENTS = ["serve"]
-TOOL_NAMES = ["code", "graph", "git", "memory", "admin", "agents", "workspace", "shell"]
+TOOL_NAMES = ["code", "graph", "git", "memory", "admin", "agents", "workspace"]
 DISCOVERY_TOOL = "list_tools"
 REQUEST_TIMEOUT_SECONDS = 300
 

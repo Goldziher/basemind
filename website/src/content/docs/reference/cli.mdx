@@ -5,7 +5,7 @@ description: Complete command list for the basemind command-line interface.
 
 import { Aside } from '@astrojs/starlight/components';
 
-The CLI mirrors the MCP surface exactly: **eight domains**, each a real clap subcommand group
+The CLI mirrors the MCP surface exactly: **seven domains**, each a real clap subcommand group
 (`basemind <domain> <mode>`). `tests/cli_parity/` enforces it: every MCP mode maps to a CLI command
 with the same parameters and the same answer, and any command with no MCP counterpart is declared
 CLI-only with a reason. Some MCP modes live at the top level rather than under their domain
@@ -31,11 +31,10 @@ Commands that return lists share a set of paging and budget flags where their MC
 |---|---|
 | `code`, `graph`, `git`, `memory`, `admin` | always available |
 | `agents`, `workspace` | `--features comms` |
-| `shell` | `--features shells` |
 
 A default `cargo install basemind` build exposes 5 domains; `--features comms` adds `agents` +
-`workspace` (7); `--features full` adds `shell` too (8). Prebuilt downloads (Homebrew, npm,
-pip, GitHub releases) ship the full 8-domain build.
+`workspace` (7). Prebuilt downloads (Homebrew, npm, pip, GitHub releases) ship the full 7-domain
+build.
 
 ## `code` — code-map lookups
 
@@ -248,28 +247,6 @@ basemind workspace release <repo-id> <name> [--as-agent]
 | `claim <repo-id> <name> [--as-agent]` | Take ownership of a worktree so another session does not edit it. |
 | `release <repo-id> <name> [--as-agent]` | Give up a worktree claim this session holds. |
 
-## `shell` — headless agent terminal sessions
-
-Requires `--features shells`.
-
-```bash
-basemind shell spawn <command> [--cwd --env --title]
-basemind shell send <session-id> <text> [--no-enter]
-basemind shell capture <session-id> [--lines]
-basemind shell kill <session-id>
-basemind shell list
-basemind shell broadcast <text> --session <id>… [--no-enter]
-```
-
-| Command | Purpose |
-|---|---|
-| `spawn <command> [--cwd --env --title]` | Start a detached headless shell session; prints `session_id`. |
-| `send <session-id> <text> [--no-enter]` | Type into a session's stdin. `--no-enter` omits the trailing newline. |
-| `capture <session-id> [--lines]` | Read a session's visible screen; `--lines` returns only the last N non-blank lines. |
-| `kill <session-id>` | Terminate a session. |
-| `list` | List every session the shell daemon currently hosts. |
-| `broadcast <text> --session <id>… [--no-enter]` | Type the same input into several sessions at once. |
-
 ## `comms` — broker daemon lifecycle
 
 Requires `--features comms`. This is the ONLY surviving `basemind comms` surface — the messaging
@@ -357,6 +334,6 @@ the index directly and read-only.
 Global flags (`--root`, `--quiet`, `--verbose`, `--no-color`, `--json`, `--view`) apply across all
 subcommands, though `--json` only takes effect on the tool subcommands (`code`, `git`,
 `graph`, `memory`, `admin`, `status`, `cache`, `doctor`, and — with `--features comms` — `comms`, `agents`,
-`workspace`, `daemon`; and with `--features shells` — `shell`); `--view` also applies to `serve`. Ignored flags log a warning. Cursor-based pagination
+`workspace`, `daemon`); `--view` also applies to `serve`. Ignored flags log a warning. Cursor-based pagination
 (`--cursor`) is covered in the paging table above.
 </Aside>

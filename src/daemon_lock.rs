@@ -1,8 +1,8 @@
 //! Single-owner daemon lock, pidfile, and the machine-wide live-daemon registry + ceiling.
 //!
-//! Shared by every daemon family basemind spawns — the comms broker and the
-//! shells/rmux daemon (see [`DaemonKind`]) — so one lock discipline, one registry and one ceiling
-//! cover all of them. The registry itself is feature-independent; its consumers stay feature-gated.
+//! Shared by every daemon family basemind spawns (see [`DaemonKind`]), so one lock discipline, one
+//! registry and one ceiling cover all of them. The registry itself is feature-independent; its
+//! consumers stay feature-gated.
 //!
 //! Two safeguards against the process/memory leak class, layered on top of the per-daemon-dir
 //! guards a family may already have (for comms: the UDS bind and the store flock):
@@ -70,7 +70,9 @@ pub enum DaemonKind {
     // field at all — still deserializes instead of being pruned as corrupt. See `read_record`. ~keep
     #[default]
     Comms,
-    /// The shells / rmux daemon.
+    /// The agent-shells daemon of an older release. Never written by this version; kept readable
+    /// so such a daemon's registry record still parses and the daemon stays visible to
+    /// `comms doctor` instead of being reaped as corrupt while it runs. See `read_record`.
     Shells,
 }
 
@@ -444,6 +446,23 @@ mod tests {
             1,
             "the shells daemon is counted under its own kind"
         );
+    }
+
+    #[test]
+    fn a_record_an_older_release_wrote_for_a_shells_daemon_still_parses_and_is_kept() {
+        let machine = tempfile::tempdir().expect("machine tempdir");
+        let path = machine.path().join("shells-legacy.pid");
+        let record = format!(
+            r#"{{"pid":{},"kind":"shells","dir":"/tmp/x","version":"0.33.0","started_unix":1}}"#,
+            std::process::id()
+        );
+        std::fs::write(&path, record).expect("write legacy record");
+
+        let parsed = read_record(&path).expect("a shells record from an older release still parses");
+        assert_eq!(parsed.kind, DaemonKind::Shells);
+        assert_eq!(live_daemons_of_in(machine.path(), DaemonKind::Shells).len(), 1);
+        assert!(live_daemons_of_in(machine.path(), DaemonKind::Comms).is_empty());
+        assert!(path.exists(), "a live legacy daemon's record is not reaped as corrupt");
     }
 
     #[test]

@@ -55,8 +55,6 @@ mod helpers_memory;
 mod helpers_proposals;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 mod helpers_registry;
-#[cfg(all(feature = "shells", any(unix, windows)))]
-mod helpers_shells;
 mod helpers_telemetry;
 mod helpers_traverse;
 #[cfg(all(feature = "comms", any(unix, windows)))]
@@ -104,8 +102,6 @@ mod tools_graph;
 mod tools_memory;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 mod tools_registry;
-#[cfg(all(feature = "shells", any(unix, windows)))]
-mod tools_shells;
 pub(crate) mod toon;
 mod traverse;
 mod types;
@@ -124,8 +120,6 @@ mod types_impls;
 pub(crate) mod types_memory;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 pub(crate) mod types_registry;
-#[cfg(all(feature = "shells", any(unix, windows)))]
-mod types_shells;
 mod types_traverse;
 
 use std::path::PathBuf;
@@ -177,8 +171,6 @@ pub mod params {
     pub use super::mode::CodeMode;
     pub use super::mode::GitMode;
     pub use super::mode::GraphMode;
-    #[cfg(all(feature = "shells", any(unix, windows)))]
-    pub use super::mode::ShellMode;
     pub use super::types::{
         BlameFileParams, BlameSymbolParams, CommitsTouchingParams, DependentsParams, DiffFileParams, DiffOutlineParams,
         FindCallersParams, FindCommitsByPathParams, FindFilesParams, FindReferencesParams, GotoDefinitionParams,
@@ -197,8 +189,6 @@ pub mod params {
     pub use super::types_memory::{
         MemoryDeleteParams, MemoryGetParams, MemoryListParams, MemoryPutParams, MemorySearchParams, Visibility,
     };
-    #[cfg(all(feature = "shells", any(unix, windows)))]
-    pub use super::types_shells::{ShellEnv, ShellParams};
 }
 
 pub use params::Parameters;
@@ -467,10 +457,6 @@ impl BasemindServer {
         {
             router += Self::tool_router_comms();
             router += Self::tool_router_registry();
-        }
-        #[cfg(all(feature = "shells", any(unix, windows)))]
-        {
-            router += Self::tool_router_shells();
         }
         router
     }

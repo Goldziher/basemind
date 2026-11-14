@@ -155,21 +155,20 @@ src/
 │   │                         verdict, BASEMIND_ALLOW_ANY_ROOT, root-admission.json
 │   ├── documents.rs        — DocumentsConfig + sub-configs, ApiKey, SecretString
 │   ├── code.rs             — [code_search] config table
-│   ├── shells.rs           — [shells] config table
 │   ├── comms.rs            — [comms] config table (broker daemon + identity)
 │   ├── overrides.rs        — DocumentsCliOverrides — backs the clap flags
 │   ├── layered.rs          — merge_layers (Mcp > Cli > Env > File > Default)
 │   └── source.rs           — ConfigSource + ProvenanceMap ledger
-├── mcp/                    — MCP server: eight domain tools (code, graph, git, memory,
-│                             agents, workspace, shell, admin), each one #[tool] dispatching
+├── mcp/                    — MCP server: seven domain tools (code, graph, git, memory,
+│                             agents, workspace, admin), each one #[tool] dispatching
 │                             on a required `mode` — see "MCP surface" below
 │   ├── mod.rs, state.rs    — server bootstrap; shared ServerState
 │   ├── mode.rs             — define_mode!: the mode enums, wire spellings, telemetry_key(),
 │   │                         and domain_modes() (what tests/cli_parity/ walks)
 │   ├── tools.rs            — the `code` tool shim (#[tool], thin wrapper; 1000-line cap)
 │   ├── tools_<area>.rs     — one shim per remaining domain: admin, comms (→ `agents`),
-│   │                         git, graph, memory, registry (→ `workspace`), shells
-│   │                         (→ `shell`) — filenames predate the tool/CLI rename
+│   │                         git, graph, memory, registry (→ `workspace`) — filenames
+│   │                         predate the tool/CLI rename
 │   ├── term_index.rs       — resident term index (symbol names + import strings) behind the
 │   │                         `symbols` / `dependents` substring sweeps
 │   ├── index_route.rs      — where a references/callers/implementations read runs: local index,
@@ -182,7 +181,7 @@ src/
 │   │                         comms, community, documents, expand, files, fingerprint,
 │   │                         git, git_file, governance (feature memory), graph, graphview,
 │   │                         grep, impls, intel (definition mode body), memory, proposals
-│   │                         (feature memory), registry, shells, telemetry, traverse
+│   │                         (feature memory), registry, telemetry, traverse
 │   ├── memory.rs           — search_documents + memory_* bodies behind the `memory` domain
 │   ├── types.rs, types_<area>.rs — one flat <Domain>Params per domain (optional sibling
 │   │                         fields per mode) + response structs, mirroring the
@@ -214,13 +213,11 @@ src/
 ├── lance/                  — LanceDB schema + open/write helpers (feature intelligence)
 ├── search/                 — BM25 / exact / RRF keyword search over code chunks
 │                             (feature code-search)
-├── shells/                 — agent-spawned shell sessions (attach/daemon/launcher,
-│                             feature shells)
 ├── registry/                — daemon-side worktree/branch claim registry
-├── cli/                     — CLI subcommand groups, 1:1 with the eight MCP domains: admin,
+├── cli/                     — CLI subcommand groups, 1:1 with the seven MCP domains: admin,
 │                             agents (daemon-agent verbs), code, git, graph, memory (absorbs
 │                             the old governance mine/proposals/accept/reject/audit),
-│                             registry (the `workspace` group), shell;
+│                             registry (the `workspace` group);
 │                             comms_daemon.rs is `basemind comms` — daemon lifecycle only
 │                             (daemon/start/stop/status/doctor)
 │                             choices.rs holds the clap value enums, exit.rs the exit-code
@@ -531,8 +528,8 @@ relays a client's stdio to it, and HTTP-native clients dial the daemon's streama
 directly (opt-in via `BASEMIND_ALLOW_HTTP`, bearer token in `<comms_dir>/http.addr`). The live
 contract is `tests/mcp_smoke.rs`.
 
-The surface is **eight domain tools**, each dispatching on a required, non-defaulted `mode` — not
-one tool per verb (ADR-0011). The same eight names are the CLI groups, checked per
+The surface is **seven domain tools**, each dispatching on a required, non-defaulted `mode` — not
+one tool per verb (ADR-0011). The same seven names are the CLI groups, checked per
 `(domain, mode)` by `tests/cli_parity/` (see [ADR-0014](adr/0014-cli-mcp-parity-guard.md)). `src/mcp/mode.rs` (`define_mode!`) is the
 single source of the wire spellings, the CLI parity table, and the telemetry keys.
 
@@ -545,7 +542,6 @@ single source of the wire spellings, the CLI parity table, and the telemetry key
 | `admin` | status, repo, rescan, cache_stats, gc, cache_clear, telemetry | always |
 | `agents` | register, list, thread_start, thread_list, join, leave, members, add_member, remove_member, archive, post, history, message, inbox, ack, wait | `comms` |
 | `workspace` | workspaces, worktrees, branches, claim, release | `comms` |
-| `shell` | spawn, send, capture, kill, list, broadcast | `shells` |
 
 ¹ Advertised always, body-gated on the `memory` / `documents` features.
 
@@ -564,9 +560,9 @@ Conventions:
   `helpers_documents.rs`, `helpers_graph.rs`, `helpers_grep.rs`, `helpers_impls.rs`,
   `helpers_intel.rs`, and more — see [Source layout](#source-layout));
   `tools.rs` and the `tools_<area>.rs` siblings contain `#[tool]` shims only, one per domain.
-- No `output_schema` on any of the eight tools (each domain's modes return different response
+- No `output_schema` on any of the seven tools (each domain's modes return different response
   shapes; SEP-2106 allows one per tool). Annotations coarsen to the union of a domain's modes,
-  resolving toward the side effect (e.g. `shell` advertises `destructive_hint` because `kill` is
+  resolving toward the side effect (e.g. `admin` advertises `destructive_hint` because `cache_clear` is
   one of its modes, while `code` and `git` keep `read_only_hint: true` since none of their modes
   write). See [ADR-0011](adr/0011-mcp-tool-surface-redesign.md).
 

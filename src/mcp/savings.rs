@@ -326,8 +326,8 @@ mod tests {
     }
 
     /// The rewrite is keyed off the real mode vocabulary, so a name that merely *looks* like
-    /// `domain_mode` must not be coerced into a baseline it was never modelled for. `shell_exec` is
-    /// the live case: `shell` is a domain but `exec` is not one of its modes.
+    /// `domain_mode` must not be coerced into a baseline it was never modelled for. `code_nonsense`
+    /// is the live case: `code` is a domain but `nonsense` is not one of its modes.
     #[test]
     fn underscore_names_that_are_not_real_modes_stay_unclassified() {
         for tool in ["shell_exec", "code_nonsense", "not_a_real_tool", "room_broadcast"] {

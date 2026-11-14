@@ -38,7 +38,6 @@ first, shell/grep/git fallback.**
 - [Document search](https://basemind.ai/capabilities/document-search/): Semantic + full-text search over PDFs, Office, HTML, email, and images (OCR), with reranking, keyword and named-entity filters, and per-document summaries (`memory` mode `documents`).
 - [Shared memory](https://basemind.ai/concepts/memory/): Per-repo key/value + semantic memory that agents read and write, shared across clones of the same repo (one `memory` tool: modes `put`, `get`, `list`, `search`, `delete`, `audit`, plus `documents`, `mine`, `proposals`, `accept`, `reject`).
 - [Agent comms](https://basemind.ai/concepts/agent-comms/): Coordinate with other agents via explicit threads (per-repo, path-scoped, or subject-based), a per-agent inbox, and two-tier messages. Advisory worktree claims for collision detection (one `agents` tool: modes `register`, `list`, `thread_start`, `thread_list`, `join`, `leave`, `members`, `add_member`, `remove_member`, `archive`, `post` (with an optional `idempotency_key` for safe retries), `history`, `message`, `inbox`, `ack`, `wait`, `cleanup`, `status`; plus the `workspace` tool's `workspaces` / `worktrees` / `branches` / `claim` / `release` modes).
-- [Agent shells](https://basemind.ai/capabilities/agent-shells/): Spawn headless terminal sessions agents can drive — send stdin, capture the screen, list, kill, and broadcast (one `shell` tool: modes `spawn`, `send`, `capture`, `kill`, `list`, `broadcast`; requires `--features shells`).
 
 ## Skills
 
@@ -62,4 +61,4 @@ first, shell/grep/git fallback.**
 - [.ai-rulez](https://github.com/Goldziher/basemind/tree/main/.ai-rulez): Project rules and skills for agents working in the repo.
 - [Architecture](https://github.com/Goldziher/basemind/blob/main/docs/ARCHITECTURE.md): How the scanner, index, daemon and MCP surface fit together; [upgrading](https://github.com/Goldziher/basemind/blob/main/docs/UPGRADING.md) and the [ADRs](https://github.com/Goldziher/basemind/tree/main/docs/adr).
 - [Benchmarks](https://github.com/Goldziher/basemind/blob/main/benchmarks/README.md): `basemind admin eval`, the retrieval-quality and token-savings harness, with measured results.
-- [Cargo.toml](https://github.com/Goldziher/basemind/blob/main/Cargo.toml): Crate manifest and feature flags (`documents`, `memory`, `comms`, `shells`, `code-intel`, `code-search`, `full`).
+- [Cargo.toml](https://github.com/Goldziher/basemind/blob/main/Cargo.toml): Crate manifest and feature flags (`documents`, `memory`, `comms`, `code-intel`, `code-search`, `full`).

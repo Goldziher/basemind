@@ -86,15 +86,6 @@ pub(crate) struct SharedReadStack {
     /// Shared embedding engine. Lazy-init on first embed call.
     #[cfg(any(feature = "memory", feature = "documents", feature = "code-search"))]
     pub(crate) embedder: tokio::sync::OnceCell<Arc<crate::embeddings::SharedEmbedder>>,
-    /// Embedded rmux-backed headless shell runtime. Lazily connects to (or
-    /// starts) the embedded daemon on the first `shell_*` tool call; cheap to
-    /// hold otherwise (no daemon spawn until first use).
-    ///
-    // NOTE: shared per-workspace here (it is a handle to the singleton rmux daemon). Flag for later
-    // ~keep review: sharing one shell runtime across connections means shell sessions are not isolated
-    // ~keep per connection identity.
-    #[cfg(all(feature = "shells", any(unix, windows)))]
-    pub(crate) shell_runtime: crate::shells::ShellRuntime,
     /// True while the boot-time initial scan (auto-scan of an empty index) is running. Lets a
     /// client polling `status` distinguish "index still building" from "index empty / no matches"
     /// so the build cost is not silently folded into the first query's latency.
@@ -262,8 +253,6 @@ impl SharedReadStack {
             lance: tokio::sync::OnceCell::new(),
             #[cfg(any(feature = "memory", feature = "documents", feature = "code-search"))]
             embedder: tokio::sync::OnceCell::new(),
-            #[cfg(all(feature = "shells", any(unix, windows)))]
-            shell_runtime: crate::shells::ShellRuntime::new(),
             initial_scan_active: AtomicBool::new(false),
             initial_scan_ms: AtomicU64::new(0),
             cache_warming: AtomicBool::new(defer_warm),

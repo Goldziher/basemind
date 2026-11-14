@@ -43,7 +43,7 @@ struct Cli {
     no_color: bool,
 
     /// Emit machine-readable JSON instead of the human-readable rendering. Applies to the tool
-    /// subcommands (code / git / graph / memory / shell / admin / status / cache), the
+    /// subcommands (code / git / graph / memory / admin / status / cache), the
     /// coordination groups (agents / workspace / comms / daemon) and doctor. It is ignored, with a
     /// warning, on init / scan / rescan / watch / hook / lang / completions / man / statusline /
     /// serve.
@@ -85,11 +85,6 @@ enum Cmd {
     /// Shared agent memory + document search (needs `--features memory,documents`).
     #[command(subcommand)]
     Memory(basemind::cli::memory::MemoryCmd),
-    /// Headless agent shell sessions: spawn / send / capture / kill / list / broadcast
-    /// (needs `--features shells`).
-    #[cfg(all(feature = "shells", any(unix, windows)))]
-    #[command(subcommand)]
-    Shell(basemind::cli::shell::ShellCmd),
     /// Repository identity, telemetry, token counting and retrieval evaluation.
     #[command(subcommand)]
     Admin(basemind::cli::admin::AdminCmd),
@@ -287,10 +282,6 @@ fn main() -> std::process::ExitCode {
 fn run() -> Result<()> {
     basemind::alloc_tag::retag_heap_pages();
     let process_started = std::time::Instant::now();
-    #[cfg(all(feature = "shells", any(unix, windows)))]
-    if let Some(result) = basemind::shells::intercept_internal_reexec() {
-        return result;
-    }
     let cli = Cli::parse();
     let verbosity = Verbosity::from_flags(cli.quiet, cli.verbose);
 
@@ -358,8 +349,6 @@ fn run() -> Result<()> {
             dispatch(basemind::cli::ToolCmd::Graph(g))
         }
         Cmd::Memory(m) => dispatch(basemind::cli::ToolCmd::Memory(m)),
-        #[cfg(all(feature = "shells", any(unix, windows)))]
-        Cmd::Shell(s) => dispatch(basemind::cli::ToolCmd::Shell(s)),
         Cmd::Admin(a) => dispatch(basemind::cli::ToolCmd::Admin(a)),
         Cmd::Hook { action } => basemind::cli::hook::run(&root, action),
         Cmd::Doctor => doctor_cli::cmd_doctor(&root, json),
@@ -419,8 +408,6 @@ fn warn_ignored_global_flags(cmd: &Cmd, json: bool, view: &str) {
             cmd,
             Cmd::Comms { .. } | Cmd::Agents { .. } | Cmd::Workspace { .. } | Cmd::Daemon { .. }
         );
-    #[cfg(all(feature = "shells", any(unix, windows)))]
-    let consumes_json = consumes_json || matches!(cmd, Cmd::Shell(_));
     let consumes_view = consumes_json || matches!(cmd, Cmd::Serve);
 
     if json && !consumes_json {

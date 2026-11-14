@@ -406,13 +406,6 @@ fn marked_isolated_root(path: PathBuf) -> Option<PathBuf> {
 /// on first use); a test that spawns `serve` inherits this env, so its daemon binds an ISOLATED
 /// socket under the tempdir instead of touching the user's real machine daemon.
 ///
-/// The same treatment covers every other daemon family basemind can auto-spawn, because a daemon
-/// that survives the suite keeps an exclusive Fjall directory lock and blocks the next
-/// `basemind scan`:
-/// * **shells/rmux** resolves its endpoint from `directories::ProjectDirs`, i.e. the user's REAL
-///   data dir, unless `$BASEMIND_SHELLS_SOCKET` overrides it — so that override is pinned into the
-///   tempdir, which is the only thing keeping a test off the developer's live rmux daemon.
-///
 /// A cache created here is stamped with [`ISOLATION_MARKER`] and re-adopted by any child process,
 /// so the machine-wide daemon ceiling counts one registry across the whole tree.
 #[cfg(any(feature = "test-support", test))]
@@ -439,14 +432,12 @@ pub fn init_isolated_cache() {
             }
         };
         let comms_dir = root.join("comms");
-        let shells_endpoint = isolated_shells_endpoint(root);
         // SAFETY: set exactly once, inside `Once::call_once`, before any test thread reads
         unsafe {
             std::env::set_var(DATA_HOME_ENV, root);
-            // Literal keys, not the `comms::singleton::COMMS_DIR_ENV` / `shells::SHELLS_SOCKET_ENV`
-            // constants: both modules are feature-gated, this helper is not. ~keep
+            // A literal key, not the `comms::singleton::COMMS_DIR_ENV` constant: that module is
+            // feature-gated, this helper is not. ~keep
             std::env::set_var("BASEMIND_COMMS_DIR", comms_dir);
-            std::env::set_var("BASEMIND_SHELLS_SOCKET", shells_endpoint);
             // A test binary spawns its own isolated daemons (per the dirs above). Pin a fast idle
             // reap so they self-terminate within seconds of the suite going quiet instead of lingering
             // the shipped window — otherwise a parallel `cargo test` accumulates one daemon per binary,
@@ -465,24 +456,6 @@ pub fn init_isolated_cache() {
             }
         }
     });
-}
-
-/// Endpoint the embedded shells (rmux) daemon binds under an isolated cache: `<dir>/shells/rmux.sock`.
-/// The parent is created eagerly because the daemon binds the socket without creating it, and a bind
-/// failure would silently fall the runtime back to the user's real per-user socket.
-#[cfg(all(any(feature = "test-support", test), not(windows)))]
-fn isolated_shells_endpoint(dir: &Path) -> std::ffi::OsString {
-    let shells_dir = dir.join("shells");
-    let _ = std::fs::create_dir_all(&shells_dir);
-    shells_dir.join("rmux.sock").into_os_string()
-}
-
-/// Windows has no filesystem socket to place under the tempdir — rmux binds a named pipe, and
-/// `shells::daemon::validate_socket_path` accepts nothing but a `\\.\pipe\` name. Namespacing it by
-/// pid is what isolates one test binary from another and from the user's live daemon.
-#[cfg(all(any(feature = "test-support", test), windows))]
-fn isolated_shells_endpoint(_dir: &Path) -> std::ffi::OsString {
-    std::ffi::OsString::from(format!(r"\\.\pipe\basemind-shells-test-{}", std::process::id()))
 }
 
 #[cfg(test)]
@@ -530,32 +503,6 @@ mod daemon_isolation_tests {
         }
     }
 
-    #[cfg(not(windows))]
-    #[test]
-    fn shells_socket_override_points_at_a_bindable_path_in_the_temp_cache() {
-        init_isolated_cache();
-        let temp_root = PathBuf::from(std::env::var_os(DATA_HOME_ENV).expect("BASEMIND_DATA_HOME is set"));
-        let socket = PathBuf::from(std::env::var_os("BASEMIND_SHELLS_SOCKET").expect("BASEMIND_SHELLS_SOCKET is set"));
-
-        assert!(
-            socket.starts_with(&temp_root),
-            "shells/rmux daemon escaped isolation: {}",
-            socket.display()
-        );
-        assert!(
-            socket.parent().is_some_and(Path::is_dir),
-            "the socket parent must exist or the bind falls back to the real per-user socket"
-        );
-        // The platform `sockaddr_un` ceiling is ~104 bytes; a too-long tempdir path would make the
-        // bind fail and silently hand the test the developer's live daemon. ~keep
-        assert!(
-            socket.as_os_str().len() < 104,
-            "isolated socket path must stay bindable: {} ({} bytes)",
-            socket.display(),
-            socket.as_os_str().len()
-        );
-    }
-
     /// The isolated cache must carry its marker, or a child process cannot tell it apart from a
     /// developer's real `$BASEMIND_DATA_HOME` and will mint a fresh one — which is what detaches the
     /// daemon ceiling from the process tree it is supposed to bound.
@@ -586,22 +533,6 @@ mod daemon_isolation_tests {
         assert_eq!(
             resolved, None,
             "an unmarked data home is the developer's real cache and must not be adopted"
-        );
-    }
-
-    /// The env override only isolates if the real resolver accepts it — `ShellRuntime::new` runs the
-    /// value through `validate_socket_path` and silently falls back to the user's per-user socket on
-    /// rejection, which is exactly the leak this test exists to catch.
-    #[cfg(all(feature = "shells", any(unix, windows)))]
-    #[test]
-    fn shell_runtime_resolves_the_isolated_endpoint() {
-        init_isolated_cache();
-        let expected =
-            PathBuf::from(std::env::var_os("BASEMIND_SHELLS_SOCKET").expect("BASEMIND_SHELLS_SOCKET is set"));
-        assert_eq!(
-            crate::shells::ShellRuntime::new().socket_path(),
-            expected.as_path(),
-            "the shells runtime must bind the isolated endpoint, not the per-user default"
         );
     }
 }

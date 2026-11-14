@@ -12,8 +12,8 @@ x-ai-rulez:
 
 # mcp-tool-author
 
-basemind's MCP surface is **fixed at 8 domains** — `code`, `graph`, `git`, `memory`, `agents`, `workspace`,
-`shell`, `admin` — each one MCP tool plus one CLI group, dispatching on a required,
+basemind's MCP surface is **fixed at 7 domains** — `code`, `graph`, `git`, `memory`, `agents`, `workspace`,
+`admin` — each one MCP tool plus one CLI group, dispatching on a required,
 non-defaulted `mode` enum. Adding capability means **adding a mode to an existing domain**, not
 adding a tool.
 

@@ -49,7 +49,6 @@ about your code costs a small fraction of the tokens it takes to read the source
 | **Git intelligence** | Ask what changed recently, who last touched a function or a line, where the churn is, when a symbol's body actually changed, how a file's structure differs across commits, and full-text search commit authors + messages at full branch depth. | `git` (`status` · `recent` · `touching` · `by_path` · `churn` · `diff` · `diff_outline` · `blame` · `blame_symbol` · `symbol_history` · `search` · `show`) |
 | **Memory & documents** | A per-repo memory agents write to and search by meaning — clones of the same repo share it, unrelated repos stay separate — plus semantic search over PDFs, Office files, HTML, email, and images (OCR included, no extra setup), and a review queue of notes mined from files that change together, which you approve before anything is kept. | `memory` (`put` · `get` · `list` · `search` · `delete` · `audit` · `documents` · `mine` · `proposals` · `accept` · `reject`) |
 | **Agent comms** | Threads addressed by subject, path-glob, and members; scope discovery; inbox delivery; lifecycle status; and dry-run/apply retention cleanup. | `agents` (`register` · `list` · `thread_start` · `thread_list` · `join` · `leave` · `members` · `add_member` · `remove_member` · `archive` · `post` · `history` · `message` · `inbox` · `ack` · `wait` · `cleanup` · `status`) |
-| **Agent shells** | Run headless terminal sessions in the background, capture recent retained output after commands exit, and explicitly stop sessions when their work is done. Visual terminal attachment is opt-in through `[shells].visual`. | `shell` (`spawn` · `send` · `capture` · `kill` · `list` · `broadcast`) |
 | **Admin** | Refresh the index after edits, check index health and repo identity, see what's been queried and how many tokens were saved, and inspect or clean the on-disk cache. | `admin` (`status` · `repo` · `rescan` · `cache_stats` · `gc` · `cache_clear` · `telemetry`) |
 | **Machine registry** | Machine-wide repo/worktree/branch coordination, backed by the daemon's always-on registry. Advisory claims let agent sessions avoid colliding on the same worktree. | `workspace` (`workspaces` · `worktrees` · `branches` · `claim` · `release`) |
 
@@ -321,7 +320,7 @@ The MCP and CLI paths need `basemind` available on your system. (The plugin does
 <!-- markdownlint-enable MD013 -->
 
 The Homebrew / npm / pip / GitHub downloads include the full feature set — documents, OCR, search,
-shared memory, agent comms, and agent shells — so the first run downloads the models it
+shared memory, and agent comms — so the first run downloads the models it
 needs. The plain `cargo install` builds the code-map and git tools only: the one-shot CLI works, but
 `basemind serve` relays to the daemon and so needs the `comms` feature (`--features full` has it).
 
@@ -583,16 +582,6 @@ flowchart LR
   classDef accent fill:#2563eb,stroke:#1e40af,color:#fff
   class BR accent
 ```
-
-</details>
-
-<details>
-<summary><strong>Agent shells</strong></summary>
-
-Included in every prebuilt download (and in `cargo install --features shells` / `full`): agents can
-open terminal sessions in the background, type into them, and read what's on screen — no extra tools
-to install. Sessions can be fully headless, or opened in a real terminal tab or window so you can
-watch along. A spawned session and the agent that started it can message each other over comms.
 
 </details>
 
@@ -1027,12 +1016,13 @@ required). `admin status` reports `config_stamp` (`<bytes>B@<unix seconds>`) to 
 **Reserved keys.** These parse but nothing reads them yet, and setting one to a non-default value
 logs a warning: `[watch] live_l2`, `[cache] file_map_lru`, `[mcp] transport`, `[memory] enabled` /
 `scope_strategy` / `default_visibility`, `[comms] enabled` / `idle_timeout_secs` /
-`max_messages_per_room` / `retention_secs` / `max_rooms` / `workspace_root`, `[shells] keep_on_exit`,
+`max_messages_per_room` / `retention_secs` / `max_rooms` / `workspace_root`,
 `[documents.ocr] backend` / `languages`, and `[documents.language] preferred_languages`.
 
-**Removed sections.** `[crawl]` configured web crawling, which was removed. The table is still
-accepted so an older `basemind.toml` keeps loading (`basemind init` used to write an empty one); its
-contents are not validated or read, and a table with keys in it logs one warning.
+**Removed sections.** `[crawl]` configured web crawling and `[shells]` configured agent shells; both
+were removed. The tables are still accepted so an older `basemind.toml` keeps loading (`basemind
+init` used to write an empty `[crawl]`); their contents are not validated or read, and a table with
+keys in it logs one warning.
 
 **Config changes take effect on the next scan.** Cached chunks and documents carry a fingerprint of
 the settings that shape them (`[code_search]` `max_characters` / `overlap` / `max_chunks_per_file`;
@@ -1050,7 +1040,7 @@ files that became eligible from the cached blobs, without re-embedding.
 ## CLI reference
 
 <details>
-<summary><strong>Full command list</strong> — code · graph · git · memory · admin · cache · agents · workspace · shell</summary>
+<summary><strong>Full command list</strong> — code · graph · git · memory · admin · cache · agents · workspace</summary>
 
 Every MCP tool mode maps to a CLI command, or is declared CLI-only / MCP-only with a reason (enforced
 by `tests/cli_parity/`). Add `--json` for
@@ -1187,16 +1177,6 @@ after handling it so each thread's inbox cursor advances independently.
 |---|---|
 | `workspaces` / `worktrees <repo-id>` / `branches <repo-id>` | List registered workspaces / a repo's worktrees / its local branches. |
 | `claim <repo-id> <name>` / `release <repo-id> <name>` | Take or give up an advisory claim on a worktree (a coordination hint; enforces nothing). |
-
-**Shell (`basemind shell`, `--features shells`)**
-
-| Command | Purpose |
-|---|---|
-| `spawn <command> [--cwd --env --title]` | Start a detached headless shell session; prints a `session_id`. |
-| `send <session-id> <text> [--no-enter]` | Type into a session's stdin. |
-| `capture <session-id> [--lines]` | Read up to 500 recent non-blank retained-output rows (50 by default). |
-| `kill <session-id>` / `list` | End a session / list live sessions. |
-| `broadcast <text> --session <id>…` | Send the same input to several sessions at once. |
 
 **Other commands (`scan`, `serve`, `watch`, …)**
 

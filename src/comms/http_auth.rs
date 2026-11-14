@@ -8,9 +8,9 @@
 //! to `127.0.0.1` so the browser treats the loopback server as same-origin — and it does nothing at
 //! all against a local process that opens a direct TCP connection and sends `Host: 127.0.0.1`.
 //!
-//! Behind that port sits the full shared tool router, which in the release build (compiled
-//! `--features full`) includes `shell`, enabled by default. So every process on the machine that
-//! could reach the port could run commands as the daemon's user. Loopback is a routing property, not
+//! Behind that port sits the full shared tool router. So every process on the machine that could
+//! reach the port could read the indexed source and documents, and write shared memory, as the
+//! daemon's user. Loopback is a routing property, not
 //! an authentication boundary: it is trustworthy only on a machine where no other principal — a
 //! second user, a container, a browser extension, an npm postinstall script — can open a socket.
 //!

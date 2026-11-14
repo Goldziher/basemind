@@ -3,7 +3,7 @@
 //! This test asserts the DEGRADED path: with no daemon serving, the tool must fall back to the
 //! `file://` export. `store::init_isolated_cache` mints one comms dir per test BINARY, so the
 //! premise only holds in a process where nothing spawns a comms daemon. It used to live in
-//! `mcp_smoke.rs` alongside the `agents` / `workspace` / `shell` tests, which do spawn one — and
+//! `mcp_smoke.rs` alongside the `agents` / `workspace` tests, which do spawn one — and
 //! whenever one of those won the race first, this test found its portfile and saw `served: true`.
 //! Cargo gives each integration-test file its own process, so isolating it here restores the
 //! premise instead of weakening the assertion. ~keep

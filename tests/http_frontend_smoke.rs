@@ -284,7 +284,7 @@ async fn streamable_http_serves_initialize_and_tools_list() {
 }
 
 /// The bearer gate on BOTH served routes. Reaching the port proves only that a local process opened
-/// a socket, and behind it sits the full tool surface — `shell` included in the release build — so an
+/// a socket, and behind it sits the full tool surface, so an
 /// unauthenticated request must be refused before any routing or workspace work happens.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn both_routes_require_the_daemon_bearer_token() {

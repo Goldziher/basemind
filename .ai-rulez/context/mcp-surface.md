@@ -12,8 +12,8 @@ x-ai-rulez:
 
 `basemind serve` exposes a stdio MCP server (`rmcp`). The live contract is `tests/mcp_smoke.rs` — read it before changing any tool's response shape.
 
-The surface is **eight domain tools**, each one `#[tool]` dispatching on a required,
-non-defaulted `mode` — never a distinct tool per verb. The same eight names are the CLI groups
+The surface is **seven domain tools**, each one `#[tool]` dispatching on a required,
+non-defaulted `mode` — never a distinct tool per verb. The same seven names are the CLI groups
 (`basemind <domain> <mode>`), enforced as a strict bijection by `tests/cli_parity/`. Read
 `src/mcp/mode.rs` for the authoritative wire spellings before writing about any mode; never infer
 one from prose.
@@ -29,7 +29,6 @@ one from prose.
 | `admin` | status, repo, rescan, cache_stats, gc, cache_clear, telemetry | always |
 | `agents` | register, list, thread_start, thread_list, join, leave, members, add_member, remove_member, archive, post, history, message, inbox, ack, wait | `comms` |
 | `workspace` | workspaces, worktrees, branches, claim, release | `comms` |
-| `shell` | spawn, send, capture, kill, list, broadcast | `shells` |
 
 ¹ Advertised always, body-gated on the `memory` / `documents` features.
 
@@ -92,18 +91,12 @@ messages), `wait` (block until a peer posts or the timeout elapses).
 `workspaces` / `worktrees` / `branches` (the daemon's machine-wide registry), `claim` / `release`
 (advisory worktree claims so sessions don't collide).
 
-### `shell` (`--features shells`)
-
-`spawn` (start a background terminal session), `send` (type into a live session), `capture`
-(read back what it printed), `kill` (terminate it), `list` (every session the shell daemon
-hosts), `broadcast` (type the same input into several sessions at once).
-
 ## Contract rules
 
 - All paths are `RelPath` (byte-precise, repo-relative). Do not accept arbitrary `String` paths.
 - Responses are `JsonSchema`-derived and stable; new fields are additive with `#[serde(default)]`.
 - Lists are capped (`limit`, default 100, max 1000). Index scans use `scan_cap = limit * 8` to bound work on common names.
 - Mode descriptions are the routing surface for agents; state semantics (substring vs prefix, scope-aware vs name-only) explicitly.
-- Each domain owns a `types_<domain>.rs` / `tools_<domain>.rs` / `helpers_<domain>.rs` trio (`code`'s live in the base `types.rs`/`tools.rs`/`helpers_code.rs`; `agents` in the `*_comms.rs` files; `workspace` in the `*_registry.rs` files; `shell` in the `*_shells.rs` files — filenames predate the CLI/tool rename). `tools.rs` and the `tools_<area>.rs` siblings contain `#[tool]` shims only, one per domain, dispatching on `mode`.
+- Each domain owns a `types_<domain>.rs` / `tools_<domain>.rs` / `helpers_<domain>.rs` trio (`code`'s live in the base `types.rs`/`tools.rs`/`helpers_code.rs`; `agents` in the `*_comms.rs` files; `workspace` in the `*_registry.rs` files — filenames predate the CLI/tool rename). `tools.rs` and the `tools_<area>.rs` siblings contain `#[tool]` shims only, one per domain, dispatching on `mode`.
 - No `output_schema` on any of the domain tools — every domain's modes return different response shapes, and SEP-2106 allows exactly one schema per tool. Per-mode shapes are documented in the description instead.
-- Annotations coarsen to the union of a domain's modes, resolving toward the side effect (e.g. `shell` advertises `destructive_hint` because `kill` is one of its modes). See ADR-0011.
+- Annotations coarsen to the union of a domain's modes, resolving toward the side effect (e.g. `admin` advertises `destructive_hint` because `cache_clear` is one of its modes). See ADR-0011.
