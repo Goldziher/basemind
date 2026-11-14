@@ -1,18 +1,20 @@
 #!/usr/bin/env bash
 # basemind PreToolUse guard.
 #
-# Fires only for the codebase-search tools (matcher "Grep|Glob" in hooks.json) and
-# steers the agent toward basemind's indexed tools, which return paths + line numbers
-# instead of file bodies. Three modes via the BASEMIND_GUARD env var:
+# Fires for the codebase-search tools and for Bash (matcher "Grep|Glob|Bash" in hooks.json)
+# and steers the agent toward basemind's indexed tools, which return paths + line numbers
+# instead of file bodies. For Bash it only reacts to a code search or history lookup
+# (rg, grep, git log/blame/show, find -name); every other command proceeds silently.
+# Three modes via the BASEMIND_GUARD env var:
 #
-#   nudge    (default) — allow the call, attach a one-time advisory pointing at the
-#                        cheaper basemind tool. Fires once per session per tool.
-#   redirect           — deny the call with a reason telling the agent to use the
-#                        basemind tool instead. Enforcing; no dedup.
+#   nudge    (default) — allow the call, attach a one-time advisory naming the basemind
+#                        call that replaces it. Fires once per agent per tool kind.
+#   redirect           — deny a Grep/Glob call with a reason telling the agent to use the
+#                        basemind tool instead. Enforcing; no dedup. Bash stays advisory.
 #   off                — no-op.
 #
-# Caveat: whether Claude Code fires PreToolUse inside subagents is undocumented, so
-# this reliably covers main-session tool calls; subagent coverage is best-effort.
+# Hook input fields used: tool_name, tool_input.command (Bash), session_id and, when the
+# call comes from a subagent, agent_id. Without agent_id the marker is per session.
 #
 # Output is the PreToolUse JSON result on stdout; the hook never blocks startup and
 # degrades to a silent no-op (exit 0 = proceed normally) when it cannot run.
@@ -29,8 +31,46 @@ input="$(cat 2>/dev/null || true)"
 tool="$(printf '%s' "${input}" | jq -r '.tool_name // empty' 2>/dev/null || true)"
 session="$(printf '%s' "${input}" | jq -r '.session_id // "nosession"' 2>/dev/null || echo nosession)"
 
+agent="$(printf '%s' "${input}" | jq -r '.agent_id // "main"' 2>/dev/null || echo main)"
+
+# Name the basemind call that replaces a Bash search or history command; empty when the
+# command is something else. Only a command in leading position counts (start, or after
+# ; && || or a new line, which grep treats as a line start), so `cmd | grep x` output
+# filtering is not mistaken for a search.
+bash_kind=""
+bash_alt=""
+classify_bash() {
+  local cmd="$1" lead='(^|;|&&|\|\|)[[:space:]]*(sudo[[:space:]]+)?'
+  if printf '%s' "${cmd}" | grep -Eq "${lead}(rg|grep|egrep|fgrep|ag|ack)([[:space:]]|\$)"; then
+    bash_kind="search"
+    bash_alt="the basemind code tool: mode=grep (indexed regex over code content), mode=symbols (definitions), mode=references or mode=callers (usages); markdown, config and data files: memory mode=documents"
+  elif printf '%s' "${cmd}" | grep -Eq "${lead}git([[:space:]]+-C[[:space:]]+[^[:space:]]+)?[[:space:]]+blame([[:space:]]|\$)"; then
+    bash_kind="blame"
+    bash_alt="the basemind git tool: mode=blame (per line) or mode=blame_symbol (per symbol)"
+  elif printf '%s' "${cmd}" | grep -Eq "${lead}git([[:space:]]+-C[[:space:]]+[^[:space:]]+)?[[:space:]]+log([[:space:]]|\$)"; then
+    bash_kind="log"
+    bash_alt="the basemind git tool: mode=recent (recent commits), mode=touching (commits for a path), mode=search (commit messages and authors) or mode=symbol_history"
+  elif printf '%s' "${cmd}" | grep -Eq "${lead}git([[:space:]]+-C[[:space:]]+[^[:space:]]+)?[[:space:]]+show([[:space:]]|\$)"; then
+    bash_kind="show"
+    bash_alt="the basemind git tool: mode=show (one commit) or mode=diff / mode=diff_outline (changes between revisions)"
+  elif printf '%s' "${cmd}" | grep -Eq "${lead}find[[:space:]].*-(i?name|i?path|i?regex)([[:space:]]|\$)"; then
+    bash_kind="find"
+    bash_alt="the basemind code tool: mode=find (fuzzy path search) or mode=files (indexed paths with language / path filters)"
+  fi
+}
+
 # Tailor the suggestion to the tool. Anything outside the matcher set just proceeds.
+kind="${tool}"
 case "${tool}" in
+Bash)
+  command_text="$(printf '%s' "${input}" | jq -r '.tool_input.command // empty' 2>/dev/null || true)"
+  [ -n "${command_text}" ] || exit 0
+  classify_bash "${command_text}"
+  [ -n "${bash_kind}" ] || exit 0
+  kind="Bash-${bash_kind}"
+  alt="${bash_alt}"
+  [ "${MODE}" = "redirect" ] && MODE="nudge"
+  ;;
 Grep)
   alt="basemind: code mode=symbols (definitions), code mode=references / mode=callers (call sites), or code mode=grep (indexed regex over code content; markdown/config/data files: memory mode=documents)"
   ;;
@@ -58,21 +98,23 @@ or BASEMIND_GUARD=off to disable."
   exit 0
 fi
 
-# nudge: one advisory per session per tool so it informs without nagging.
-# Sanitize session_id before building a path from it — it is untrusted input, and a
+# nudge: one advisory per agent per tool kind so it informs without nagging.
+# Sanitize session_id and agent_id before building a path from it — it is untrusted input, and a
 # value containing "/" or ".." would otherwise let the marker escape marker_dir.
 # Collapse everything outside [A-Za-z0-9._-] to "_".
 safe_session="$(printf '%s' "${session}" | tr -c 'A-Za-z0-9._-' '_')"
 [ -n "${safe_session}" ] || safe_session="nosession"
+safe_agent="$(printf '%s' "${agent}" | tr -c 'A-Za-z0-9._-' '_')"
+[ -n "${safe_agent}" ] || safe_agent="main"
 marker_dir="${TMPDIR:-/tmp}/basemind-guard"
-marker="${marker_dir}/${safe_session}.${tool}"
+marker="${marker_dir}/${safe_session}.${safe_agent}.${kind}"
 mkdir -p "${marker_dir}" 2>/dev/null || true
 if [ -e "${marker}" ]; then
   exit 0
 fi
 : >"${marker}" 2>/dev/null || true
 
-emit_allow "basemind is indexed for this repo. For codebase structure, prefer ${alt} — it returns \
+emit_allow "basemind is indexed for this repo. Instead of this ${tool} call, use ${alt} — it returns \
 paths + line numbers without reading file bodies, at a fraction of the tokens. Proceeding with \
 ${tool} for now. (BASEMIND_GUARD=off silences this; =redirect enforces it.)"
 exit 0

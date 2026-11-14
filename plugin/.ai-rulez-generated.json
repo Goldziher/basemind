@@ -1,6 +1,6 @@
 {
   "schema_version": "v1",
-  "source_hash": "blake3:adb7b86d0f9ac468d207f562d77ca89c3a7d88b0119ad6afe25b37cf41e93f7a",
+  "source_hash": "blake3:c72bfe893be1e1c5d7b6a1a11f10f90cb0018f1261aade543421064ddda85234",
   "outputs": {
     ".claude-plugin/plugin.json": {
       "content_hash": "blake3:f73e2bd2477ffa3a638be0489f38b674ce559c06a0590782f0a8f9e16bdc229c",
@@ -35,7 +35,7 @@
       "mode": "0644"
     },
     ".cursor-plugin/hooks/hooks.json": {
-      "content_hash": "blake3:b125e0fe7e866830c4ace556e184452621b109e34450d31a202357e58aea663d",
+      "content_hash": "blake3:27010252378c6fdd446b2bbc7ecde217e0ed193a9fbd8fc5da5b8c859fb18744",
       "mode": "0644"
     },
     ".cursor-plugin/plugin.json": {
@@ -639,7 +639,7 @@
       "mode": "0644"
     },
     "gemini-extension.json": {
-      "content_hash": "blake3:8714f667fd1dddaddcf86a04b1c3aba878c65d5984c8b5d2b197c2e9b93a435a",
+      "content_hash": "blake3:4d30c751078b64da6589614042cf68085f7ea9bc3a8973361a2eff31448e0c3f",
       "mode": "0644"
     },
     "hooks/compress-output": {
@@ -647,15 +647,15 @@
       "mode": "0755"
     },
     "hooks/hooks.json": {
-      "content_hash": "blake3:59a9ccfcb2f7fa6e357653d1655f87807f82ecf75ce71db66311ee655cbe29b3",
+      "content_hash": "blake3:7f6c84fef3ca3ce3f22b3104e9e51100cca64da78ff2884a82d70d85e5843fe9",
       "mode": "0644"
     },
     "hooks/inbox-notify": {
-      "content_hash": "blake3:bc4b25bf5859513c323cc1a97304da0ac251d64f7e4322b2576fb66134f079ec",
+      "content_hash": "blake3:7353f58f7552d20620b37efd2aa318366f13188354b61a2ad8dc948020a824ba",
       "mode": "0755"
     },
     "hooks/pre-tool-guard": {
-      "content_hash": "blake3:0edb0f6fcfa9ec1cfd163e0772972bcdc234e0840f7ce6a95fc1e6cd09104155",
+      "content_hash": "blake3:5e667a590a1fc17b13908c2a53e38598a1f8dd40d07826d8cc42780601b0f207",
       "mode": "0755"
     },
     "hooks/read-cache": {
@@ -667,7 +667,7 @@
       "mode": "0755"
     },
     "hooks/session-start": {
-      "content_hash": "blake3:1994276180a5e51f970538a26ebca04ff59c99d86d69e4fe75d8b7d246683aac",
+      "content_hash": "blake3:8fef27307e38157e993f4b84b60777d211d353dee169a9790fb5678b32ac499c",
       "mode": "0755"
     },
     "kimi.plugin.json": {

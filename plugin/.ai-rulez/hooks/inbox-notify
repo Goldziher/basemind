@@ -24,7 +24,12 @@ HWM_FILE="${TMPDIR:-/tmp}/basemind-comms-hwm-${SID}"
 
 # Pull recent inbox front-matter (across the agent's threads). mark_read stays false so the hook
 # never consumes the agent's own inbox state — its own cursor is the hwm file below.
-INBOX_JSON="$(timeout 6 "${PLUGIN_ROOT}/scripts/mcp-launch.sh" agents inbox --root "$PWD" --json --limit 30 2>/dev/null)" || exit 0
+# macOS has no coreutils `timeout` by default; run unbounded there rather than failing every turn.
+if command -v timeout >/dev/null 2>&1; then
+  INBOX_JSON="$(timeout 6 "${PLUGIN_ROOT}/scripts/mcp-launch.sh" agents inbox --root "$PWD" --json --limit 30 2>/dev/null)" || exit 0
+else
+  INBOX_JSON="$("${PLUGIN_ROOT}/scripts/mcp-launch.sh" agents inbox --root "$PWD" --json --limit 30 2>/dev/null)" || exit 0
+fi
 [ -n "$INBOX_JSON" ] || exit 0
 
 MAXTS="$(printf '%s' "$INBOX_JSON" | jq -r '[.messages[].ts_micros] | max // 0' 2>/dev/null | tr -cd '0-9')"

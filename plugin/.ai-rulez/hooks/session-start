@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # basemind SessionStart hook.
-#   1. Daemon pre-warm: ensure a version-matched basemind binary is cached so the
-#      first MCP tool call isn't a cold install. After the first run the launcher's
-#      fast path makes this instant.
+#   1. Availability probe: run `basemind status` through the launcher, which also
+#      caches a version-matched binary so the first MCP tool call isn't a cold install.
 #   2. Context-economy nudge: always inject the operating discipline so the agent
 #      defaults to basemind over grep/read and stays token-frugal.
 #   3. Status-line nudge: Claude Code plugins cannot set the main status line, so
@@ -14,63 +13,63 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PLUGIN_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-# 1. Ensure the daemon that hosts the streamable-HTTP MCP transport is listening BEFORE the client
-#    dials its URL. SessionStart command hooks run before MCP servers connect, so this runs the
-#    launcher's `daemon ensure` synchronously (which also warms the version-matched binary cache on
-#    first run, then returns fast when the daemon is already up). `daemon ensure` self-bounds its
-#    wait, and we wrap it in `timeout` when available; either way it is fail-open so it never blocks
-#    or fails session startup.
-ENSURE_JSON=""
-if command -v timeout >/dev/null 2>&1; then
-  ENSURE_JSON="$(timeout 30 "${PLUGIN_ROOT}/scripts/mcp-launch.sh" daemon ensure --json 2>/dev/null || true)"
-else
-  ENSURE_JSON="$("${PLUGIN_ROOT}/scripts/mcp-launch.sh" daemon ensure --json 2>/dev/null || true)"
-fi
-
-# 2. PROBE before advertising. A hook that tells the agent to prefer tools that are not there is
-#    worse than no hook at all: the agent burns calls hunting for them, then falls back to grep and
-#    reports basemind as broken — multiplied by every subagent. So ask the server what it will
-#    actually serve FOR THIS WORKSPACE before claiming anything.
-#
-#    A daemon can be healthy and still fail to host this workspace. Confirm the response
-#    is a tools/list result before treating it as proof of availability.
-MCP_URL=""
-if [ -n "${ENSURE_JSON}" ] && command -v jq >/dev/null 2>&1; then
-  MCP_URL="$(printf '%s' "${ENSURE_JSON}" | jq -r '.url | strings' 2>/dev/null || true)"
-fi
-
 WORKSPACE="${CLAUDE_PROJECT_DIR:-$PWD}"
-TOOLS_SERVED=""
-if [ -n "${MCP_URL}" ] && command -v curl >/dev/null 2>&1; then
-  ROOT_QUERY="$(jq -nr --arg root "${WORKSPACE}" '$root | @uri')"
-  case "${MCP_URL}" in
-  *\?*) QUERY_SEPARATOR="&" ;;
-  *) QUERY_SEPARATOR="?" ;;
-  esac
-  PROBE="$(curl --max-time 8 -fsS -X POST "${MCP_URL}${QUERY_SEPARATOR}root=${ROOT_QUERY}" \
-    -H 'Content-Type: application/json' \
-    -H 'Accept: application/json, text/event-stream' \
-    -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' 2>/dev/null || true)"
-  # Accept either JSON or an SSE data envelope. Empty, error, or malformed responses are unknown.
-  TOOLS_SERVED="$(printf '%s
-' "${PROBE}" | sed '/^event:/d; /^id:/d; /^:/d; s/^data: *//' |
-    jq -rs '[.[] | select(.id == 1) | .result.tools | arrays | length] | first // empty' 2>/dev/null || true)"
+
+# 1. PROBE before advertising. A hook that tells the agent to prefer tools that are not there is
+#    worse than no hook at all: the agent burns calls hunting for them, then falls back to grep and
+#    reports basemind as broken. Ask the CLI, through the same launcher the MCP server uses, for
+#    this workspace's index status. That works on a default install (no HTTP front-end needed), and
+#    the first run also warms the version-matched binary cache. Bounded by `timeout` when available
+#    and fail-open: a failure only changes the context line, never the exit status.
+STATUS_TIMEOUT=20
+STATUS_RC=0
+STATUS_JSON=""
+if command -v timeout >/dev/null 2>&1; then
+  STATUS_JSON="$(timeout "${STATUS_TIMEOUT}" "${PLUGIN_ROOT}/scripts/mcp-launch.sh" status --root "${WORKSPACE}" --json 2>/dev/null)" || STATUS_RC=$?
+else
+  STATUS_JSON="$("${PLUGIN_ROOT}/scripts/mcp-launch.sh" status --root "${WORKSPACE}" --json 2>/dev/null)" || STATUS_RC=$?
+fi
+
+FILE_COUNT=""
+SCHEMA_VER=""
+if [ "${STATUS_RC}" -eq 0 ] && [ -n "${STATUS_JSON}" ] && command -v jq >/dev/null 2>&1; then
+  FILE_COUNT="$(printf '%s' "${STATUS_JSON}" | jq -r '.file_count | numbers' 2>/dev/null || true)"
+  SCHEMA_VER="$(printf '%s' "${STATUS_JSON}" | jq -r '.schema_version | numbers' 2>/dev/null || true)"
+fi
+
+# Tool names as the host registers them; ToolSearch needs these exact names. Claude Code namespaces
+# plugin MCP tools as mcp__plugin_<plugin>_<server>__<tool>.
+TOOL_PREFIX="mcp__plugin_basemind_basemind__"
+TOOL_NAMES="code git graph memory admin agents workspace web shell"
+SELECT=""
+for t in ${TOOL_NAMES}; do
+  SELECT="${SELECT:+${SELECT},}${TOOL_PREFIX}${t}"
+done
+
+FALLBACK="Use ordinary file and git tools for now; run /bm-doctor to diagnose."
+LOAD_TOOLS=""
+if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -z "${CURSOR_PLUGIN_ROOT:-}" ] && [ -z "${COPILOT_CLI:-}" ]; then
+  LOAD_TOOLS=" Load the basemind tools with a single ToolSearch call, query \"select:${SELECT}\", before the first search."
+fi
+
+if [ "${STATUS_RC}" -eq 124 ]; then
+  STATUS_LINE="basemind status timed out after ${STATUS_TIMEOUT}s (the first run may still be installing the binary), so basemind is unverified. ${FALLBACK}"
+elif [ "${STATUS_RC}" -ne 0 ] || [ -z "${STATUS_JSON}" ]; then
+  STATUS_LINE="basemind is unavailable: the launcher could not run \`basemind status\` (exit ${STATUS_RC}; binary missing or not installable). ${FALLBACK}"
+elif ! command -v jq >/dev/null 2>&1; then
+  STATUS_LINE="basemind runs but jq is not installed, so the index could not be read. ${FALLBACK}"
+elif [ -z "${FILE_COUNT}" ]; then
+  STATUS_LINE="basemind returned an unreadable status (no file_count). ${FALLBACK}"
+elif [ "${FILE_COUNT}" -eq 0 ]; then
+  STATUS_LINE="basemind index is empty for ${WORKSPACE}: run /bm-scan (basemind scan) before relying on its tools. Use ordinary file and git tools until then."
+else
+  STATUS_LINE="basemind verified: ${FILE_COUNT} files indexed (schema ${SCHEMA_VER:-unknown}).${LOAD_TOOLS}"
 fi
 
 ROUTING="Use basemind first for supported repository work: code outline before opening a source file; code symbols for definitions; code references or callers for usages; code find for fuzzy paths; code grep for exact matches in indexed code; git history for commit and blame questions. Use workspace for worktree and claim coordination, agents for thread communication, and web to scrape or crawl when those tools are available. Use memory documents for semantic queries over indexed documents, including Jupyter notebooks. For exact literals or regex outside the code map, search the files directly; a semantic miss does not establish absence. Fall back to ordinary tools when basemind cannot cover the task, and run admin rescan after editing indexed files."
-case "${TOOLS_SERVED}" in
-0)
-  CONTEXT="The basemind MCP probe returned zero tools for this workspace. Use the basemind CLI for supported repository work if it is available, or use ordinary file and git tools. Run /bm-doctor to diagnose MCP availability. ${ROUTING}"
-  ;;
-"")
-  CONTEXT="Basemind MCP availability could not be verified. If the tools are listed in this session, use them first; otherwise use the basemind CLI if available. ${ROUTING}"
-  ;;
-*)
-  CONTEXT="Basemind MCP tools were verified for this workspace. ${ROUTING}"
-  ;;
-esac
+CONTEXT="${STATUS_LINE} ${ROUTING}"
 
-# 3. Append the status-line nudge only when a basemind status line isn't wired yet.
+# 2. Append the status-line nudge only when a basemind status line isn't wired yet.
 #    Detect robustly: prefer parsing the `statusLine.command` value with jq (catches
 #    any script name / absolute path that references basemind), and fall back to a
 #    case-insensitive grep for "basemind" near a statusLine key when jq is absent.
@@ -92,7 +91,7 @@ if ! statusline_wired; then
   CONTEXT="${CONTEXT} The basemind status line is not enabled in the user's Claude Code settings; if the user asks about the status line or basemind activity, tell them they can enable a live status line (indexed files, scan age, tool calls, tokens saved) by running the /bm-statusline command once."
 fi
 
-# 4. Agent-comms boot: connect to the broker (starting it if needed) and surface a CONDENSED view
+# 3. Agent-comms boot: connect to the broker (starting it if needed) and surface a CONDENSED view
 #    of the agent's inbox — front-matter only, never bodies — so the agent knows the conversation
 #    state and the levers to participate. Threads are scope-discovered and explicit-join (no
 #    auto-join). Best-effort + time-boxed; comms never blocks or fails session startup. Requires jq

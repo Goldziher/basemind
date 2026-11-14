@@ -69,7 +69,7 @@ command = "\"${PLUGIN_ROOT}/hooks/run-hook.cmd\" session-start"
 
 [[plugin.hooks]]
 event = "PreToolUse"
-matcher = "Grep|Glob"
+matcher = "Grep|Glob|Bash"
 [[plugin.hooks.hooks]]
 type = "command"
 command = "\"${PLUGIN_ROOT}/hooks/run-hook.cmd\" pre-tool-guard"
