@@ -10,14 +10,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.33.0] - 2026-11-14
+
+This minor bumps the persisted blob, index, git-history and LanceDB memory schema versions, so existing
+`.basemind/` data is rebuilt on the next scan.
+
+### Added
+
+- **Shared worktree indexes, opt-in with `BASEMIND_INDEX_LAYERED=1`** (ADR-0016, issue #87). Worktrees of one
+  repository serve code, graph, git and document queries from an immutable base index of the committed tree
+  plus a small per-worktree overlay for uncommitted edits, instead of each worktree holding a full index.
+  Semantic search runs through verified shared LanceDB snapshots, the daemon refreshes overlays for connected
+  sessions, and a verified standalone working view can be retired (`BASEMIND_INDEX_RECLAIM_BACKUP=1` also
+  reclaims its backup). `BASEMIND_INDEX_MAX_GROUP_BYTES` caps a shared group's storage and
+  `BASEMIND_INDEX_CACHE_BYTES` sizes the index cache. Without the variable, indexing is unchanged.
+
 ### Changed
 
+- `xberg` 1.4.0, with the bundled ONNX Runtime now `ort` 2.0.0-rc.15; `crawlberg` 1.13.0, `oxc_*` 0.158.0,
+  `rmcp` 3.10, `jsonschema` 0.61, `tree-sitter-language-pack` 1.25.0, `zstd` 0.14.4, `arc-swap` 1.9.5; website
+  `astro` 7.4.7.
 - Startup instructions direct agents to Basemind first for capabilities enabled during initialization.
 
 ### Fixed
 
 - The MCP `agents` message mode accepts the `message_ref` field returned by history and inbox.
 - Index plugin resources so agents can discover their skills and instructions.
+- BM25 keyword postings shared by identical files are retained, and legacy keyword postings are rebuilt on
+  scan.
+- The `intelligence` feature builds on its own again, with embeddings enabled.
+- macOS builds with the `full` feature link clang's compiler-rt, which the bundled ONNX Runtime needs for
+  `___isPlatformVersionAtLeast`; without it the release link failed.
 
 ### Security
 
