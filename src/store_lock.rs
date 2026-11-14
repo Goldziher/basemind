@@ -61,26 +61,13 @@ pub fn probe_writer_lock(basemind_dir: &Path) -> WriterProbe {
     }
 }
 
-/// The held store write lock. Dropping it unlocks explicitly before the handle closes: on Windows a
-/// lock that is still held when its handle is closed (or its process exits) is released by the OS
-/// asynchronously, "depending on available system resources", so a CLI writer that just exited could
-/// still block the next writer's probe and acquisition. An explicit unlock is released at once.
-#[derive(Debug)]
-pub(crate) struct StoreLock(File);
-
-impl Drop for StoreLock {
-    fn drop(&mut self) {
-        let _ = FileExt::unlock(&self.0);
-    }
-}
-
-pub(crate) fn acquire_lock(basemind_dir: &Path) -> Result<StoreLock, StoreError> {
+pub(crate) fn acquire_lock(basemind_dir: &Path) -> Result<File, StoreError> {
     acquire_lock_as(basemind_dir, LockHolder::Maintenance)
 }
 
 /// Acquire the store lock, recording `holder` in the `.lock.meta` sidecar on success and
 /// reading the *existing* holder's sidecar on contention so the error names the live holder.
-pub(crate) fn acquire_lock_as(basemind_dir: &Path, holder: LockHolder) -> Result<StoreLock, StoreError> {
+pub(crate) fn acquire_lock_as(basemind_dir: &Path, holder: LockHolder) -> Result<File, StoreError> {
     let path = basemind_dir.join(LOCK_FILE);
     let file = OpenOptions::new()
         .create(true)
@@ -98,7 +85,7 @@ pub(crate) fn acquire_lock_as(basemind_dir: &Path, holder: LockHolder) -> Result
         match file.try_lock_exclusive() {
             Ok(()) => {
                 write_lock_meta(basemind_dir, holder);
-                return Ok(StoreLock(file));
+                return Ok(file);
             }
             Err(_) if attempt + 1 < LOCK_ATTEMPTS => std::thread::sleep(LOCK_BACKOFF),
             Err(_) => {
