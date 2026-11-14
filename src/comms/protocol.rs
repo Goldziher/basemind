@@ -201,6 +201,10 @@ pub enum CommsRequest {
         /// `ts_micros >= since_micros` surface. `None` returns ALL unread.
         #[serde(default)]
         since_micros: Option<i64>,
+        /// Restrict the read to this one thread; `None` reads every joined thread. Additive with
+        /// `#[serde(default)]`: an older client omits it and an older daemon ignores it.
+        #[serde(default)]
+        thread: Option<ThreadId>,
     },
     /// Acknowledge inbox messages by ADVANCING the calling agent's per-thread read cursors. This
     /// never deletes from the shared append-only log nor affects any other agent — it only moves
@@ -744,6 +748,28 @@ mod tests {
         };
         let bytes = rmp_serde::to_vec_named(&new).expect("encode");
         assert_eq!(rmp_serde::from_slice::<CommsResponse>(&bytes).expect("decode"), new);
+    }
+
+    #[test]
+    fn inbox_without_a_thread_filter_decodes_as_unfiltered() {
+        let old = serde_json::json!({
+            "method": "inbox",
+            "params": {"limit": 5, "mark_read": true}
+        });
+        let bytes = rmp_serde::to_vec_named(&old).expect("encode");
+        let back: CommsRequest = rmp_serde::from_slice(&bytes).expect("decode");
+        assert_eq!(
+            back,
+            CommsRequest::Inbox {
+                remote: None,
+                cwd: None,
+                cursor: None,
+                limit: Some(5),
+                mark_read: true,
+                since_micros: None,
+                thread: None,
+            }
+        );
     }
 
     #[test]

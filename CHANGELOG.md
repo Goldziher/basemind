@@ -18,6 +18,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   indexed"). A store stamped with a newer schema is now left untouched and the open fails with
   `index written by a newer basemind (schema N); this binary understands M — upgrade basemind`. A store
   stamped with an older schema is still wiped and rebuilt.
+- `agents` mode `inbox` with `mark_read` no longer advances a read cursor past messages the `since_hours`
+  window hid, so a message older than the window is still returned by a later read instead of being consumed
+  unseen. A thread holding such a message keeps its newer messages unread until the older one is read (pass
+  `since_hours=0`) or acknowledged.
+- `agents` mode `wait` with `thread` no longer returns on unread messages in other threads. Its response gains
+  `reason` (`message`, `timeout`, `discovery` or `shutdown`), which separates a discovery wake and a closed
+  broker link from a real timeout; `timed_out` is unchanged.
+- The comms daemon's startup and hourly retention sweep now takes the store write lock the request handlers
+  use, so it can no longer overwrite a concurrent post, archive or membership change on a thread record.
 
 ## [0.33.0] - 2026-11-14
 

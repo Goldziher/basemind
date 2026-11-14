@@ -55,7 +55,10 @@ impl BasemindServer {
         paginate (`limit` default 100 max 1000, `cursor` from the previous `next_cursor`). In `history`, \
         pass `after_seq` instead of a cursor to resume after a known thread sequence. `wait` \
         long-polls up to `timeout_secs` (default 30, max 40; call again to keep waiting) and returns the moment a peer posts, \
-        instead of you looping `inbox`; it never marks anything read. `ack` clears messages you \
+        instead of you looping `inbox`; with `thread` only that thread's messages count. Its `reason` \
+        says why it returned: `message` (rows in `messages`), `timeout`, `discovery` (a thread became \
+        discoverable; no rows) or `shutdown` (broker link closed; call again); `timed_out` is true for \
+        `timeout` and `shutdown`. It never marks anything read. `ack` clears messages you \
         have handled by ADVANCING your own per-thread read cursors (`message_ids`, and/or `thread` \
         + `to_seq`) — it deletes nothing and touches no other agent's inbox. `register` publishes \
         this agent's card (name / description / version / skills) so peers can see who you are, and \

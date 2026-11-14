@@ -173,13 +173,6 @@ pub fn run() -> Result<()> {
             Err(error) => return Err(anyhow::anyhow!("open comms store: {error}")),
         };
         log_retention_policy();
-        // The sweep scans every message/thread/agent range and may fsync; keep it off the runtime.
-        {
-            let store = store.clone();
-            if let Err(error) = tokio::task::spawn_blocking(move || run_retention_maintenance(&store)).await {
-                tracing::warn!(%error, "comms: startup retention maintenance task failed");
-            }
-        }
         let machine_registry = match crate::registry::Registry::from_data_home() {
             Ok(registry) => registry,
             Err(error) => {
@@ -188,8 +181,9 @@ pub fn run() -> Result<()> {
                     .context("open fallback machine registry")?
             }
         };
-        let broker = Arc::new(Broker::with_registry(store.clone(), machine_registry));
+        let broker = Arc::new(Broker::with_registry(store, machine_registry));
         broker.install_comms_dir(paths.comms_dir.clone());
+        broker.run_retention_maintenance().await;
 
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
         broker.install_shutdown(shutdown_tx);
@@ -246,7 +240,6 @@ pub fn run() -> Result<()> {
             }
         });
 
-        let store_for_prune = store.clone();
         let broker_for_prune = broker.clone();
         tokio::spawn(async move {
             use crate::comms::daemon::WORKSPACE_HOT_TTL;
@@ -257,10 +250,7 @@ pub fn run() -> Result<()> {
             prune_missing_registry_rows(&broker_for_prune).await;
             loop {
                 tick.tick().await;
-                let store = store_for_prune.clone();
-                if let Err(error) = tokio::task::spawn_blocking(move || run_retention_maintenance(&store)).await {
-                    tracing::warn!(%error, "comms: retention maintenance task failed");
-                }
+                broker_for_prune.run_retention_maintenance().await;
                 let evicted = broker_for_prune.evict_idle_workspaces(WORKSPACE_HOT_TTL);
                 if evicted > 0 {
                     tracing::info!(evicted, "daemon: shed idle hot workspaces from RAM");
@@ -438,57 +428,6 @@ async fn prune_missing_registry_rows(broker: &Broker) {
     let removed = broker.prune_missing_registry_rows().await;
     if removed > 0 {
         tracing::info!(removed, "daemon: pruned machine-registry rows whose path is gone");
-    }
-}
-
-/// Apply the effective machine-global comms retention policy. Called at startup and hourly so a
-/// frequently restarted daemon still converges, and so policy is visible in structured logs.
-fn run_retention_maintenance(store: &CommsStore) {
-    use crate::comms::store::{EPHEMERAL_AGENT_TTL, MESSAGE_TTL, THREAD_IDLE_TTL, THREAD_RETENTION_TTL};
-
-    let mut succeeded = true;
-    match store.prune_expired(MESSAGE_TTL) {
-        Ok(count) if count > 0 => tracing::info!(pruned = count, "comms: pruned expired messages"),
-        Ok(_) => {}
-        Err(error) => {
-            succeeded = false;
-            tracing::warn!(%error, "comms: message prune failed");
-        }
-    }
-    match store.archive_idle(THREAD_IDLE_TTL) {
-        Ok(count) if count > 0 => tracing::info!(archived = count, "comms: archived idle threads"),
-        Ok(_) => {}
-        Err(error) => {
-            succeeded = false;
-            tracing::warn!(%error, "comms: thread archive failed");
-        }
-    }
-    match store.purge_archived(THREAD_RETENTION_TTL) {
-        Ok(count) if count > 0 => tracing::info!(purged = count, "comms: purged archived threads"),
-        Ok(_) => {}
-        Err(error) => {
-            succeeded = false;
-            tracing::warn!(%error, "comms: archived-thread purge failed");
-        }
-    }
-    match store.prune_ephemeral_agents(EPHEMERAL_AGENT_TTL) {
-        Ok(count) if count > 0 => tracing::info!(pruned = count, "comms: pruned stale ephemeral agents"),
-        Ok(_) => {}
-        Err(error) => {
-            succeeded = false;
-            tracing::warn!(%error, "comms: ephemeral-agent prune failed");
-        }
-    }
-    match crate::comms::identity::prune_expired_claims(crate::comms::identity::CLAIM_TTL) {
-        Ok(count) if count > 0 => tracing::info!(pruned = count, "comms: pruned stale identity claims"),
-        Ok(_) => {}
-        Err(error) => {
-            succeeded = false;
-            tracing::warn!(%error, "comms: identity-claim prune failed");
-        }
-    }
-    if succeeded && let Err(error) = store.record_maintenance() {
-        tracing::warn!(%error, "comms: record maintenance completion failed");
     }
 }
 

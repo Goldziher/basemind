@@ -340,7 +340,7 @@ pub(super) async fn run_inbox_wait(
     };
     // Dropping `client` on any exit (including cancellation) closes the link, and the broker reaps
     // the subscription with it.
-    let (timed_out, metas, unread, next_cursor) = match client
+    let outcome = match client
         .wait_inbox_unseen(
             remote,
             cwd,
@@ -361,21 +361,23 @@ pub(super) async fn run_inbox_wait(
     drop(client);
     {
         let mut waited = state.waited_messages.lock().await;
-        for row in &metas {
+        for row in &outcome.messages {
             waited.put(row.meta.id.clone(), ());
         }
     }
 
     let now = now_micros();
-    let messages: Vec<MessageFrontMatter> = metas
+    let messages: Vec<MessageFrontMatter> = outcome
+        .messages
         .iter()
         .map(|sm| MessageFrontMatter::from_seq_meta(sm, now))
         .collect();
     json_result(&InboxWaitResponse {
-        timed_out,
+        timed_out: outcome.timed_out(),
+        reason: outcome.reason.as_str().to_string(),
         total: messages.len(),
-        unread,
+        unread: outcome.unread,
         messages,
-        next_cursor,
+        next_cursor: outcome.next_cursor,
     })
 }

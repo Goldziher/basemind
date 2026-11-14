@@ -63,6 +63,24 @@ impl Broker {
         .await
     }
 
+    /// Apply the retention policy once: the daemon's startup and hourly sweep. It runs through
+    /// `store_write` because it rewrites thread records and deletes
+    /// memberships, which would otherwise race a concurrent post, archive, or membership change
+    /// and write back a stale thread record. Failures are logged, never returned: a failed sweep
+    /// must not stop the maintenance loop that called it.
+    pub async fn run_retention_maintenance(&self) {
+        let swept = self
+            .store_write(|store| {
+                Ok(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| retention_sweep(store))).is_ok())
+            })
+            .await;
+        match swept {
+            Ok(true) => {}
+            Ok(false) => tracing::warn!("comms: retention maintenance panicked"),
+            Err(error) => tracing::warn!(%error, "comms: retention maintenance task failed"),
+        }
+    }
+
     /// Run `f` against the machine registry on the blocking pool. Its mutations rewrite a file and
     /// its prune stats every row's path, so none of that belongs on a worker. The registry's async
     /// lock is taken owned and moved into the closure: other registry users queue behind it (that
@@ -79,5 +97,56 @@ impl Broker {
             // Only a runtime shutdown cancels a blocking task; the caller is being torn down too.
             Err(_) => std::future::pending().await,
         }
+    }
+}
+
+/// Apply the effective machine-global comms retention policy. Called at startup and hourly so a
+/// frequently restarted daemon still converges, and so policy is visible in structured logs.
+fn retention_sweep(store: &CommsStore) {
+    use crate::comms::store::{EPHEMERAL_AGENT_TTL, MESSAGE_TTL, THREAD_IDLE_TTL, THREAD_RETENTION_TTL};
+
+    let mut succeeded = true;
+    match store.prune_expired(MESSAGE_TTL) {
+        Ok(count) if count > 0 => tracing::info!(pruned = count, "comms: pruned expired messages"),
+        Ok(_) => {}
+        Err(error) => {
+            succeeded = false;
+            tracing::warn!(%error, "comms: message prune failed");
+        }
+    }
+    match store.archive_idle(THREAD_IDLE_TTL) {
+        Ok(count) if count > 0 => tracing::info!(archived = count, "comms: archived idle threads"),
+        Ok(_) => {}
+        Err(error) => {
+            succeeded = false;
+            tracing::warn!(%error, "comms: thread archive failed");
+        }
+    }
+    match store.purge_archived(THREAD_RETENTION_TTL) {
+        Ok(count) if count > 0 => tracing::info!(purged = count, "comms: purged archived threads"),
+        Ok(_) => {}
+        Err(error) => {
+            succeeded = false;
+            tracing::warn!(%error, "comms: archived-thread purge failed");
+        }
+    }
+    match store.prune_ephemeral_agents(EPHEMERAL_AGENT_TTL) {
+        Ok(count) if count > 0 => tracing::info!(pruned = count, "comms: pruned stale ephemeral agents"),
+        Ok(_) => {}
+        Err(error) => {
+            succeeded = false;
+            tracing::warn!(%error, "comms: ephemeral-agent prune failed");
+        }
+    }
+    match crate::comms::identity::prune_expired_claims(crate::comms::identity::CLAIM_TTL) {
+        Ok(count) if count > 0 => tracing::info!(pruned = count, "comms: pruned stale identity claims"),
+        Ok(_) => {}
+        Err(error) => {
+            succeeded = false;
+            tracing::warn!(%error, "comms: identity-claim prune failed");
+        }
+    }
+    if succeeded && let Err(error) = store.record_maintenance() {
+        tracing::warn!(%error, "comms: record maintenance completion failed");
     }
 }

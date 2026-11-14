@@ -652,8 +652,13 @@ pub struct InboxWaitParams {
 /// Response for mode `wait`.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(crate) struct InboxWaitResponse {
-    /// True when the call returned because `timeout_secs` elapsed with nothing new to report.
+    /// True when the call returned with nothing new because `timeout_secs` elapsed or the broker
+    /// link closed; `reason` tells the two apart.
     pub timed_out: bool,
+    /// Why the call returned: `message` (unread rows are in `messages`), `timeout`, `discovery`
+    /// (a thread became discoverable; `messages` is empty, see mode `thread_list`), or `shutdown`
+    /// (the broker is stopping or the link closed; call again to reconnect).
+    pub reason: String,
     /// Number of messages in this page.
     pub total: usize,
     /// Count of unread messages remaining after this page.

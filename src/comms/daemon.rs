@@ -847,8 +847,12 @@ impl Broker {
                 limit,
                 mark_read,
                 since_micros,
+                thread,
                 ..
-            } => self.on_inbox(session, cursor, limit, mark_read, since_micros).await,
+            } => {
+                self.on_inbox(session, cursor, limit, mark_read, since_micros, thread)
+                    .await
+            }
             CommsRequest::AckInbox {
                 message_ids,
                 thread,

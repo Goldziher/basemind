@@ -306,6 +306,7 @@ async fn inbox_scan_is_bounded_by_the_page_limit_not_the_backlog() {
         limit: Some(1),
         mark_read: false,
         since_micros: None,
+        thread: None,
     };
 
     let CommsResponse::Inbox {
@@ -357,4 +358,102 @@ async fn correlated_call_is_answered_with_a_reply_echoing_its_id() {
     );
     let bare = broker.handle_framed(CommsRequest::Ping, &mut session, &tx).await;
     assert_eq!(bare, CommsOut::Response(CommsResponse::Pong));
+}
+
+async fn read_inbox(
+    broker: &Broker,
+    session: &mut Session,
+    tx: &mpsc::Sender<CommsOut>,
+    mark_read: bool,
+    since_micros: Option<i64>,
+    thread: Option<ThreadId>,
+) -> Vec<String> {
+    let request = CommsRequest::Inbox {
+        remote: None,
+        cwd: None,
+        cursor: None,
+        limit: None,
+        mark_read,
+        since_micros,
+        thread,
+    };
+    match broker.handle(request, session, tx).await {
+        CommsResponse::Inbox { messages, .. } => messages.into_iter().map(|row| row.meta.subject).collect(),
+        other => panic!("expected Inbox, got {other:?}"),
+    }
+}
+
+/// `mark_read` must not advance the cursor past a message the recency window hid: the caller was
+/// never shown it, so a later read without the window still has to return it.
+#[tokio::test]
+async fn inbox_mark_read_does_not_consume_messages_hidden_by_the_recency_window() {
+    let (_d, broker) = temp_broker();
+    let (tx, _rx) = mpsc::channel(32);
+    let mut alice = hello(&broker, &tx, "alice").await;
+    let thread = start_thread(&broker, &mut alice, &tx, &["bob"]).await;
+    let mut bob = hello(&broker, &tx, "bob").await;
+    post(&broker, &mut alice, &tx, &thread, "old").await;
+    // Timestamps are wall-clock microseconds; the pause keeps the two posts strictly ordered.
+    tokio::time::sleep(Duration::from_millis(2)).await;
+    post(&broker, &mut alice, &tx, &thread, "new").await;
+    let rows = inbox(&broker, &mut bob, &tx).await;
+    assert!(rows[0].meta.ts_micros < rows[1].meta.ts_micros);
+    let window = Some(rows[1].meta.ts_micros);
+
+    let shown = read_inbox(&broker, &mut bob, &tx, true, window, None).await;
+    assert_eq!(shown, ["new"], "the window hides the older message");
+
+    let everything = read_inbox(&broker, &mut bob, &tx, false, None, None).await;
+    assert_eq!(
+        everything,
+        ["old", "new"],
+        "the hidden message is still unread, and the cursor did not skip past it"
+    );
+
+    let drained = read_inbox(&broker, &mut bob, &tx, true, None, None).await;
+    assert_eq!(drained, ["old", "new"]);
+    assert!(
+        read_inbox(&broker, &mut bob, &tx, false, None, None).await.is_empty(),
+        "a read that showed every message consumes them all"
+    );
+}
+
+/// The cursor still moves over the reader's own posts and the rows it was shown when nothing in
+/// between was hidden.
+#[tokio::test]
+async fn inbox_mark_read_advances_over_own_posts_and_shown_rows() {
+    let (_d, broker) = temp_broker();
+    let (tx, _rx) = mpsc::channel(32);
+    let mut alice = hello(&broker, &tx, "alice").await;
+    let thread = start_thread(&broker, &mut alice, &tx, &["bob"]).await;
+    let mut bob = hello(&broker, &tx, "bob").await;
+    post(&broker, &mut bob, &tx, &thread, "mine").await;
+    post(&broker, &mut alice, &tx, &thread, "theirs").await;
+    post(&broker, &mut bob, &tx, &thread, "mine again").await;
+
+    let shown = read_inbox(&broker, &mut bob, &tx, true, None, None).await;
+    assert_eq!(shown, ["theirs"]);
+    assert_eq!(
+        broker.store.read_cursor(&agent("bob"), &thread).expect("cursor"),
+        3,
+        "the cursor covers the shown row and the reader's own posts around it"
+    );
+}
+
+/// A `thread` filter restricts both the rows returned and the cursors `mark_read` moves.
+#[tokio::test]
+async fn inbox_thread_filter_reads_and_marks_only_that_thread() {
+    let (_d, broker) = temp_broker();
+    let (tx, _rx) = mpsc::channel(32);
+    let mut alice = hello(&broker, &tx, "alice").await;
+    let first = start_thread(&broker, &mut alice, &tx, &["bob"]).await;
+    let second = start_thread(&broker, &mut alice, &tx, &["bob"]).await;
+    let mut bob = hello(&broker, &tx, "bob").await;
+    post(&broker, &mut alice, &tx, &first, "in first").await;
+    post(&broker, &mut alice, &tx, &second, "in second").await;
+
+    let filtered = read_inbox(&broker, &mut bob, &tx, true, None, Some(first.clone())).await;
+    assert_eq!(filtered, ["in first"]);
+    let rest = read_inbox(&broker, &mut bob, &tx, false, None, None).await;
+    assert_eq!(rest, ["in second"], "the other thread stays unread");
 }

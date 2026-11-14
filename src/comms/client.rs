@@ -575,6 +575,7 @@ fn is_connection_lost(err: &CommsClientError) -> bool {
 
 #[path = "client_ops.rs"]
 mod ops;
+pub use ops::{WaitOutcome, WaitReason};
 
 #[cfg(all(test, feature = "comms", unix))]
 #[path = "client_tests.rs"]

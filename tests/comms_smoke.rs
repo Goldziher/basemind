@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::time::{Duration, Instant};
 
-use basemind::comms::client::CommsClient;
+use basemind::comms::client::{CommsClient, WaitReason};
 use basemind::comms::ids::AgentId;
 use basemind::comms::singleton::{CommsPaths, comms_socket_path, probe_alive};
 
@@ -625,6 +625,127 @@ async fn inbox_wait_delivers_peer_post_promptly() {
         elapsed < Duration::from_secs(2),
         "bob should wake on the push within ~100ms, not the 10s timeout: {elapsed:?}"
     );
+}
+
+/// Against a real daemon: a `wait` filtered to one thread ignores an unread message in another
+/// joined thread (reporting `Timeout`), and wakes with `Message` for a post in the filtered thread.
+#[tokio::test(flavor = "multi_thread")]
+async fn inbox_wait_thread_filter_ignores_other_threads() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let comms_dir = tmp.path().join("comms");
+    let root = tmp.path().to_path_buf();
+    let daemon = Daemon::start(&comms_dir);
+    let socket = daemon.socket().to_path_buf();
+
+    let mut alice = connect(&socket, "agent-alice", &root).await;
+    let mut bob = connect(&socket, "agent-bob", &root).await;
+    let watched = alice
+        .start_thread(Some("watched".to_string()), None, vec![agent("agent-bob")])
+        .await
+        .expect("start watched thread")
+        .id;
+    let other = alice
+        .start_thread(Some("other".to_string()), None, vec![agent("agent-bob")])
+        .await
+        .expect("start other thread")
+        .id;
+    alice
+        .post_message(other, "elsewhere".to_string(), Vec::new(), vec![], None)
+        .await
+        .expect("post to the other thread");
+
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let outcome = bob
+        .wait_inbox_unseen(
+            None,
+            None,
+            Some(watched.clone()),
+            None,
+            None,
+            100,
+            Duration::from_millis(500),
+            &cancel,
+            |_| false,
+        )
+        .await
+        .expect("filtered wait");
+    assert_eq!(
+        outcome.reason,
+        WaitReason::Timeout,
+        "another thread's unread message must not end the wait: {outcome:?}"
+    );
+    assert!(outcome.messages.is_empty());
+
+    alice
+        .post_message(watched.clone(), "here".to_string(), Vec::new(), vec![], None)
+        .await
+        .expect("post to the watched thread");
+    let outcome = bob
+        .wait_inbox_unseen(
+            None,
+            None,
+            Some(watched),
+            None,
+            None,
+            100,
+            Duration::from_secs(10),
+            &cancel,
+            |_| false,
+        )
+        .await
+        .expect("filtered wait");
+    assert_eq!(outcome.reason, WaitReason::Message);
+    let subjects: Vec<&str> = outcome.messages.iter().map(|row| row.meta.subject.as_str()).collect();
+    assert_eq!(subjects, ["here"]);
+}
+
+/// Against a real daemon: `mark_read` under a recency window leaves the message the window hid
+/// unread, so a read without the window still returns it.
+#[tokio::test(flavor = "multi_thread")]
+async fn inbox_mark_read_keeps_messages_outside_the_recency_window() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let comms_dir = tmp.path().join("comms");
+    let root = tmp.path().to_path_buf();
+    let daemon = Daemon::start(&comms_dir);
+    let socket = daemon.socket().to_path_buf();
+
+    let mut alice = connect(&socket, "agent-alice", &root).await;
+    let mut bob = connect(&socket, "agent-bob", &root).await;
+    let thread = alice
+        .start_thread(Some("window".to_string()), None, vec![agent("agent-bob")])
+        .await
+        .expect("start thread")
+        .id;
+    alice
+        .post_message(thread.clone(), "old".to_string(), Vec::new(), vec![], None)
+        .await
+        .expect("post old");
+    tokio::time::sleep(Duration::from_millis(5)).await;
+    alice
+        .post_message(thread, "new".to_string(), Vec::new(), vec![], None)
+        .await
+        .expect("post new");
+
+    let (rows, _, _) = bob
+        .read_inbox(None, None, None, 100, false, None)
+        .await
+        .expect("unfiltered read");
+    assert_eq!(rows.len(), 2);
+    let window = Some(rows[1].meta.ts_micros);
+
+    let (shown, _, _) = bob
+        .read_inbox(None, None, None, 100, true, window)
+        .await
+        .expect("windowed mark_read");
+    let shown: Vec<&str> = shown.iter().map(|row| row.meta.subject.as_str()).collect();
+    assert_eq!(shown, ["new"]);
+
+    let (all, _, _) = bob
+        .read_inbox(None, None, None, 100, false, None)
+        .await
+        .expect("read all history");
+    let all: Vec<&str> = all.iter().map(|row| row.meta.subject.as_str()).collect();
+    assert_eq!(all, ["old", "new"], "the hidden message must still be unread");
 }
 
 /// Companion to [`inbox_wait_delivers_peer_post_promptly`]: with no peer posting anything, a real

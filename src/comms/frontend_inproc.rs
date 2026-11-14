@@ -234,6 +234,7 @@ mod tests {
                 limit: Some(10),
                 mark_read: true,
                 since_micros: None,
+                thread: None,
             })
             .await
             .expect("inbox");
@@ -253,6 +254,7 @@ mod tests {
                 limit: Some(10),
                 mark_read: false,
                 since_micros: None,
+                thread: None,
             })
             .await
             .expect("inbox");
@@ -302,6 +304,7 @@ mod tests {
                 limit: Some(10),
                 mark_read: false,
                 since_micros: None,
+                thread: None,
             })
             .await
             .expect("inbox");
@@ -338,6 +341,7 @@ mod tests {
                 limit: Some(10),
                 mark_read: false,
                 since_micros: None,
+                thread: None,
             })
             .await
             .expect("inbox");
@@ -361,7 +365,7 @@ mod wait_inbox_tests {
     use std::sync::Arc;
     use std::time::{Duration, Instant};
 
-    use crate::comms::client::CommsClient;
+    use crate::comms::client::{CommsClient, WaitReason};
     use crate::comms::daemon::Broker;
     use crate::comms::frontend_uds::UdsFrontend;
     use crate::comms::ids::{AgentId, ThreadId};
@@ -611,7 +615,7 @@ mod wait_inbox_tests {
             .expect("post old");
 
         let started = Instant::now();
-        let (timed_out, rows, unread, _) = alice
+        let outcome = alice
             .wait_inbox_unseen(
                 None,
                 None,
@@ -625,9 +629,12 @@ mod wait_inbox_tests {
             )
             .await
             .expect("wait");
-        assert!(timed_out && rows.is_empty(), "the seen backlog must not wake the wait");
+        assert!(
+            outcome.timed_out() && outcome.messages.is_empty(),
+            "the seen backlog must not wake the wait"
+        );
         assert_eq!(
-            unread, 0,
+            outcome.unread, 0,
             "`unread` counts only rows beyond the page, and the page held the backlog"
         );
         assert!(
@@ -654,14 +661,146 @@ mod wait_inbox_tests {
         bob.post_message(thread, "new".to_string(), Vec::new(), Vec::new(), None)
             .await
             .expect("post new");
-        let (timed_out, rows, _, _) = tokio::time::timeout(Duration::from_secs(5), waiter)
+        let outcome = tokio::time::timeout(Duration::from_secs(5), waiter)
             .await
             .expect("woken")
             .expect("join")
             .expect("wait");
-        assert!(!timed_out);
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].meta.subject, "new");
+        assert!(!outcome.timed_out());
+        assert_eq!(outcome.messages.len(), 1);
+        assert_eq!(outcome.messages[0].meta.subject, "new");
+
+        let _ = shutdown_tx.send(true);
+        let _ = serve.await;
+    }
+
+    /// `wait` with a thread filter must ignore unread messages in other joined threads, on the
+    /// immediate read and on every wake, and report why it returned.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn thread_filtered_wait_ignores_other_threads_and_reports_its_reason() {
+        let (mut alice, mut bob, watched, shutdown_tx, serve, _dir, broker) = two_clients_in_a_thread().await;
+        let other = alice
+            .start_thread(
+                Some("elsewhere".to_string()),
+                None,
+                vec![AgentId::parse("bob").expect("agent")],
+            )
+            .await
+            .expect("start other thread")
+            .id;
+        bob.post_message(other, "other thread".to_string(), Vec::new(), Vec::new(), None)
+            .await
+            .expect("post to the other thread");
+
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let outcome = alice
+            .wait_inbox_unseen(
+                None,
+                None,
+                Some(watched.clone()),
+                None,
+                None,
+                100,
+                Duration::from_millis(300),
+                &cancel,
+                |_| false,
+            )
+            .await
+            .expect("filtered wait");
+        assert_eq!(
+            outcome.reason,
+            WaitReason::Timeout,
+            "an unread message in another thread must not satisfy the wait: {outcome:?}"
+        );
+        assert!(outcome.timed_out() && outcome.messages.is_empty());
+
+        let filter = watched.clone();
+        let waiter = tokio::spawn(async move {
+            alice
+                .wait_inbox_unseen(
+                    None,
+                    None,
+                    Some(filter),
+                    None,
+                    None,
+                    100,
+                    Duration::from_secs(30),
+                    &tokio_util::sync::CancellationToken::new(),
+                    |_| false,
+                )
+                .await
+        });
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while broker.subscriber_count() == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("wait subscription was not registered");
+        bob.post_message(
+            watched.clone(),
+            "watched thread".to_string(),
+            Vec::new(),
+            Vec::new(),
+            None,
+        )
+        .await
+        .expect("post to the watched thread");
+
+        let outcome = tokio::time::timeout(Duration::from_secs(5), waiter)
+            .await
+            .expect("woken")
+            .expect("join")
+            .expect("filtered wait");
+        assert_eq!(outcome.reason, WaitReason::Message);
+        assert!(!outcome.timed_out());
+        let subjects: Vec<&str> = outcome.messages.iter().map(|row| row.meta.subject.as_str()).collect();
+        assert_eq!(
+            subjects,
+            ["watched thread"],
+            "only the filtered thread's rows are returned"
+        );
+
+        let _ = shutdown_tx.send(true);
+        let _ = serve.await;
+    }
+
+    /// A daemon shutdown ends the wait with its own reason instead of masquerading as a timeout.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn wait_reports_shutdown_when_the_daemon_drains() {
+        let (mut alice, _bob, _thread, shutdown_tx, serve, _dir, broker) = two_clients_in_a_thread().await;
+        let waiter = tokio::spawn(async move {
+            alice
+                .wait_inbox_unseen(
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    100,
+                    Duration::from_secs(30),
+                    &tokio_util::sync::CancellationToken::new(),
+                    |_| false,
+                )
+                .await
+        });
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while broker.subscriber_count() == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("wait subscription was not registered");
+
+        broker.begin_drain().await;
+        let outcome = tokio::time::timeout(Duration::from_secs(5), waiter)
+            .await
+            .expect("a draining daemon must end the wait")
+            .expect("join")
+            .expect("wait");
+        assert_eq!(outcome.reason, WaitReason::Shutdown);
+        assert!(outcome.timed_out(), "`timed_out` stays true for a closed link");
+        assert_eq!(outcome.unread, 0);
 
         let _ = shutdown_tx.send(true);
         let _ = serve.await;

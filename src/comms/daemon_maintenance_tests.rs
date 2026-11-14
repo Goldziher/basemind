@@ -397,6 +397,43 @@ async fn archive_idle_threads_flips_stale_active_threads() {
     assert!(!broker.store.get_thread(&thread).unwrap().unwrap().active);
 }
 
+/// The retention sweep rewrites thread records and deletes memberships, so it must queue behind the
+/// write gate the request handlers take instead of racing them.
+#[tokio::test]
+async fn retention_maintenance_waits_for_the_store_write_gate() {
+    crate::store::init_isolated_cache();
+    let (_d, broker) = temp_broker();
+    let gate = Arc::clone(&broker.store_write_gate);
+    let (held_tx, held_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    let holder = std::thread::spawn(move || {
+        let _held = gate.lock().expect("write gate");
+        let _ = held_tx.send(());
+        let _ = release_rx.recv();
+    });
+    held_rx.await.expect("the holder thread took the write gate");
+
+    let mut sweep = std::pin::pin!(broker.run_retention_maintenance());
+    tokio::select! {
+        biased;
+        () = &mut sweep => panic!("retention maintenance ran while a writer held the store write gate"),
+        () = tokio::time::sleep(Duration::from_millis(150)) => {}
+    }
+    assert_eq!(
+        broker.store.last_maintenance().expect("maintenance time"),
+        None,
+        "nothing may be swept before the gate is released"
+    );
+
+    release_tx.send(()).expect("release the write gate");
+    sweep.await;
+    holder.join().expect("holder thread");
+    assert!(
+        broker.store.last_maintenance().expect("maintenance time").is_some(),
+        "the sweep completes once it holds the gate"
+    );
+}
+
 /// A slow store call (injected latency on the blocking pool) must not stall other connections. The
 /// test runtime is single-threaded, so if the call ran inline on the worker the `Ping` and `Status`
 /// below could not even be polled until it finished.

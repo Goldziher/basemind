@@ -591,6 +591,7 @@ impl Broker {
         limit: Option<u32>,
         mark_read: bool,
         since_micros: Option<i64>,
+        only_thread: Option<ThreadId>,
     ) -> Result<CommsResponse, CommsStoreError> {
         let Some(agent) = session.agent.clone() else {
             return Ok(need_hello());
@@ -601,6 +602,9 @@ impl Broker {
         // mutates, so a plain inbox read (and the per-tool-call delivery probe) skips the write gate.
         let scan = move |store: &CommsStore| -> Result<CommsResponse, CommsStoreError> {
             let mut threads = store.threads_for_agent(&agent)?;
+            if let Some(only) = &only_thread {
+                threads.retain(|thread| thread == only);
+            }
             threads.sort_by(|a, b| a.as_str().cmp(b.as_str()));
 
             let mut collected = Vec::with_capacity(limit);
@@ -629,8 +633,14 @@ impl Broker {
                 rows.truncate(scan_cap);
                 let mut high = after;
                 let mut blocked = false;
+                // The read cursor is stricter than the page cursor `high`: it stops before the first
+                // row this response did not show (over the page limit, or hidden by `since_micros`),
+                // so `mark_read` never consumes a message the caller has not been given.
+                let mut read_high = after;
+                let mut read_blocked = false;
                 for (seq, meta) in rows {
-                    let eligible = meta.from != agent && keep_since(meta.ts_micros, since_micros);
+                    let own = meta.from == agent;
+                    let eligible = !own && keep_since(meta.ts_micros, since_micros);
                     if eligible && collected.len() < limit {
                         collected.push(SeqMeta { seq, meta });
                         high = seq;
@@ -640,13 +650,17 @@ impl Broker {
                     } else if !blocked {
                         high = seq;
                     }
+                    read_blocked |= blocked || !(own || eligible);
+                    if !read_blocked {
+                        read_high = seq;
+                    }
                 }
                 if truncated {
                     unread_remaining = unread_remaining.saturating_add(1);
                 }
                 progress.push((thread.as_str().to_string(), high));
-                if mark_read && high > after {
-                    store.set_read_cursor(&agent, thread, high)?;
+                if mark_read && read_high > after {
+                    store.set_read_cursor(&agent, thread, read_high)?;
                 }
             }
 
