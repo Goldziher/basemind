@@ -191,11 +191,12 @@ fn render_setup_notes(out: &mut String) {
     );
 }
 
-/// Render the full ai-rulez rule file (frontmatter + body). ai-rulez rules carry a `priority`
-/// front-matter key; the body is the same content as the delimited block, sans delimiters.
+/// Render the full ai-rulez rule file (frontmatter + body) in the OKF shape `ai-rulez init`
+/// writes: `type`/`title` plus an `x-ai-rulez` block holding the id and `metadata.priority`. The
+/// body is the same content as the delimited block, sans delimiters.
 pub fn render_ai_rulez_rule(caps: &[Capability], sections: BlockSections) -> String {
     let mut out = String::new();
-    out.push_str("---\npriority: high\n---\n\n");
+    out.push_str("---\ntype: Decision\ntitle: Basemind Usage\nx-ai-rulez:\n  kind: rule\n  id: basemind-usage\n  metadata:\n    priority: high\n---\n\n");
     out.push_str("# basemind usage\n\n");
     out.push_str(&render_block_body(caps, sections));
     out
@@ -207,6 +208,20 @@ mod tests {
 
     fn all() -> Vec<Capability> {
         Capability::ALL.to_vec()
+    }
+
+    #[test]
+    fn ai_rulez_rule_uses_the_okf_frontmatter_shape() {
+        let rule = render_ai_rulez_rule(
+            &all(),
+            BlockSections {
+                usage_rules: true,
+                setup_notes: false,
+            },
+        );
+        assert!(rule.starts_with(
+            "---\ntype: Decision\ntitle: Basemind Usage\nx-ai-rulez:\n  kind: rule\n  id: basemind-usage\n  metadata:\n    priority: high\n---\n\n# basemind usage\n"
+        ));
     }
 
     #[test]

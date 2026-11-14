@@ -49,7 +49,8 @@ pub(crate) fn is_covered(root: &Path, target: &Path) -> Result<bool> {
         }
     }
     let matcher = builder.build().context("compile gitignore matcher")?;
-    Ok(matcher.matched(target, false).is_ignore())
+    // ~keep A directory pattern like `.ai-rulez/local/` ignores a file only through its parent.
+    Ok(matcher.matched_path_or_any_parents(target, false).is_ignore())
 }
 
 /// Ensure `target` is covered by `.gitignore`, prompting in an interactive TTY unless `assume_yes`.
@@ -161,6 +162,20 @@ mod tests {
             local_pattern(root, &root.join(".ai-rulez").join("rules").join("basemind-usage.md")),
             None,
             "committed ai-rulez rule untouched"
+        );
+    }
+
+    #[test]
+    fn a_directory_pattern_covers_files_beneath_it() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        std::fs::write(root.join(".gitignore"), ".ai-rulez/local/\n").expect("seed .gitignore");
+        let target = root.join(".ai-rulez/local/rules/basemind-usage.md");
+        assert!(is_covered(root, &target).expect("check coverage"));
+        assert!(
+            ensure_coverage(root, &target, ".ai-rulez/local/", true)
+                .expect("ensure")
+                .is_none()
         );
     }
 

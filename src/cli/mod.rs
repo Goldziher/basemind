@@ -27,6 +27,7 @@ pub mod init;
 pub mod init_gitignore;
 pub mod init_rules;
 pub mod init_settings;
+pub mod init_verb;
 pub mod interrupt;
 pub mod memory;
 #[cfg(all(feature = "comms", any(unix, windows)))]

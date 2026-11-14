@@ -24,6 +24,7 @@ use clap::{Args, ValueEnum};
 use super::init_gitignore;
 use super::init_rules::{self, BlockSections, Capability};
 use super::init_settings;
+use super::init_verb::Verb;
 use crate::config;
 
 /// BEGIN delimiter of the managed rules block. Load-bearing: the splice matches this verbatim.
@@ -281,15 +282,20 @@ pub struct InitArgs {
 /// faithful dry-run and the real run reports the same set. `pub(crate)` so [`init_settings`] can
 /// build one for the settings-permissions step.
 pub(crate) enum Change {
-    /// A file will be created or its content changed. `note` is the human summary.
+    /// A file will be created or its content changed: `verb` applied to `what`.
     Write {
         path: PathBuf,
-        note: &'static str,
+        verb: Verb,
+        what: &'static str,
         contents: String,
     },
     /// Nothing to do for this target (already converged / opted out).
     NoOp { note: String },
 }
+
+/// Why a `.gitignore` line is added. Coverage is judged against the repository's own `.gitignore`
+/// files only: a user's global excludes file does not reach collaborators, so it does not count.
+const NOT_COVERED: &str = "not covered by the repository's .gitignore";
 
 /// Entry point. `root` is already resolved by `main`.
 pub fn run(root: &Path, args: &InitArgs) -> Result<()> {
@@ -321,7 +327,10 @@ pub fn run(root: &Path, args: &InitArgs) -> Result<()> {
             if let Some(pattern) = init_gitignore::local_pattern(root, target)
                 && !init_gitignore::is_covered(root, target)?
             {
-                println!("would add {pattern:?} to .gitignore ({})", target.display());
+                println!(
+                    "would add {pattern:?} to .gitignore ({NOT_COVERED}): {}",
+                    target.display()
+                );
             }
         }
         return Ok(());
@@ -334,19 +343,27 @@ pub fn run(root: &Path, args: &InitArgs) -> Result<()> {
         if let Some(pattern) = init_gitignore::local_pattern(root, target)
             && let Some(gitignore_path) = init_gitignore::ensure_coverage(root, target, &pattern, args.yes)?
         {
-            println!("added {pattern:?} to .gitignore: {}", gitignore_path.display());
+            println!(
+                "added {pattern:?} to .gitignore ({NOT_COVERED}): {}",
+                gitignore_path.display()
+            );
         }
     }
 
     let mut any_write = false;
     for change in &changes {
         match change {
-            Change::Write { path, note, contents } => {
+            Change::Write {
+                path,
+                verb,
+                what,
+                contents,
+            } => {
                 if let Some(parent) = path.parent() {
                     std::fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
                 }
                 std::fs::write(path, contents).with_context(|| format!("write {}", path.display()))?;
-                println!("{note}: {}", path.display());
+                println!("{} {what}: {}", verb.past(), path.display());
                 any_write = true;
             }
             Change::NoOp { note } => println!("{note}"),
@@ -515,7 +532,8 @@ fn plan_config(root: &Path, config_dir: Option<&str>) -> Result<Change> {
     }
     Ok(Change::Write {
         path,
-        note: "wrote basemind.toml scaffold",
+        verb: Verb::Write,
+        what: "basemind.toml scaffold",
         contents: INIT_SCAFFOLD_TOML.to_string(),
     })
 }
@@ -626,7 +644,8 @@ fn plan_rules_change(plan: &RulesPlan, caps: &[Capability], sections: BlockSecti
             }
             Ok(Some(Change::Write {
                 path: path.clone(),
-                note: "wrote ai-rulez rule (run `ai-rulez generate` to render outputs)",
+                verb: Verb::Write,
+                what: "ai-rulez rule (run `ai-rulez generate` to render outputs)",
                 contents,
             }))
         }
@@ -649,7 +668,8 @@ fn plan_rules_change(plan: &RulesPlan, caps: &[Capability], sections: BlockSecti
             }
             Ok(Some(Change::Write {
                 path: path.clone(),
-                note: "injected basemind rules block",
+                verb: Verb::Inject,
+                what: "basemind rules block",
                 contents: next,
             }))
         }
@@ -719,8 +739,8 @@ fn report_dry_run(changes: &[Change]) {
     let mut pending = 0;
     for change in changes {
         match change {
-            Change::Write { path, note, .. } => {
-                println!("would {note}: {}", path.display());
+            Change::Write { path, verb, what, .. } => {
+                println!("would {} {what}: {}", verb.imperative(), path.display());
                 pending += 1;
             }
             Change::NoOp { note } => println!("{note}"),

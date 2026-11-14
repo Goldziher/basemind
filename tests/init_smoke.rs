@@ -254,3 +254,117 @@ fn existing_config_is_kept_not_clobbered() {
     let config = std::fs::read_to_string(root.join("basemind.toml")).expect("read config");
     assert_eq!(config, sentinel, "existing config must be kept verbatim");
 }
+
+/// Like [`run_init`], but with HOME / XDG_CONFIG_HOME / GIT_CONFIG_GLOBAL pointed at `home` so a
+/// developer's real global git ignore can never influence the result.
+fn run_init_isolated(root: &Path, home: &Path, extra: &[&str]) -> String {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_basemind"));
+    cmd.arg("--root").arg(root).arg("init").args(extra);
+    cmd.env("HOME", home)
+        .env("XDG_CONFIG_HOME", home.join(".config"))
+        .env("GIT_CONFIG_GLOBAL", home.join("gitconfig"));
+    let output = cmd.output().expect("spawn basemind init");
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert!(
+        output.status.success(),
+        "init failed: status={:?}\nstdout:\n{stdout}\nstderr:\n{stderr}",
+        output.status
+    );
+    format!("{stdout}{stderr}")
+}
+
+const LOCAL_FLAGS: &[&str] = &[
+    "--yes",
+    "--rules-target",
+    "ai-rulez-local",
+    "--settings-target",
+    "local",
+];
+
+fn with_print<'a>(flags: &[&'a str]) -> Vec<&'a str> {
+    let mut v = flags.to_vec();
+    v.push("--print");
+    v
+}
+
+#[test]
+fn print_does_not_announce_a_gitignore_pattern_that_already_covers_the_target() {
+    let dir = tmpdir();
+    let home = tmpdir();
+    let root = dir.path();
+    std::fs::write(root.join(".gitignore"), ".ai-rulez/local/\n").expect("seed .gitignore");
+
+    let out = run_init_isolated(root, home.path(), &with_print(LOCAL_FLAGS));
+
+    assert!(
+        !out.contains("would add \".ai-rulez/local/\""),
+        "an already-covered pattern must not be previewed:\n{out}"
+    );
+    assert!(
+        out.contains("would add \".claude/settings.local.json\" to .gitignore"),
+        "the uncovered settings file is still previewed:\n{out}"
+    );
+}
+
+#[test]
+fn print_after_convergence_reports_only_no_changes() {
+    let dir = tmpdir();
+    let home = tmpdir();
+    let root = dir.path();
+    std::fs::write(root.join(".gitignore"), ".ai-rulez/local/\n").expect("seed .gitignore");
+    run_init_isolated(root, home.path(), LOCAL_FLAGS);
+
+    let out = run_init_isolated(root, home.path(), &with_print(LOCAL_FLAGS));
+
+    assert!(
+        out.contains("basemind init --print: no changes — already up to date."),
+        "converged --print must say so:\n{out}"
+    );
+    assert!(!out.contains("would "), "no 'would' line after convergence:\n{out}");
+}
+
+#[test]
+fn print_uses_imperative_verbs() {
+    let dir = tmpdir();
+    let home = tmpdir();
+    let out = run_init_isolated(dir.path(), home.path(), &with_print(LOCAL_FLAGS));
+
+    assert!(out.contains("would write ai-rulez rule"), "got:\n{out}");
+    assert!(out.contains("would write basemind.toml scaffold"), "got:\n{out}");
+    assert!(
+        out.contains("would add basemind's MCP tools to permissions.allow"),
+        "got:\n{out}"
+    );
+    assert!(
+        !out.contains("would wrote") && !out.contains("would added"),
+        "got:\n{out}"
+    );
+}
+
+#[test]
+fn path_ignored_only_by_the_global_ignore_is_still_added_to_the_repo_gitignore() {
+    let dir = tmpdir();
+    let home = tmpdir();
+    let root = dir.path();
+    let xdg_git = home.path().join(".config").join("git");
+    std::fs::create_dir_all(&xdg_git).expect("mkdir global git dir");
+    std::fs::write(xdg_git.join("ignore"), "**/.claude/settings.local.json\n").expect("seed global ignore");
+
+    let preview = run_init_isolated(root, home.path(), &with_print(LOCAL_FLAGS));
+    assert!(
+        preview.contains("not covered by the repository's .gitignore"),
+        "the preview says why:\n{preview}"
+    );
+
+    let out = run_init_isolated(root, home.path(), LOCAL_FLAGS);
+    assert!(
+        out.contains("not covered by the repository's .gitignore"),
+        "the real run says why:\n{out}"
+    );
+    let gitignore = std::fs::read_to_string(root.join(".gitignore")).expect("read .gitignore");
+    assert!(
+        gitignore.lines().any(|l| l == ".claude/settings.local.json"),
+        "collaborators lack the global ignore, so the repo .gitignore must carry it:\n{gitignore}"
+    );
+}

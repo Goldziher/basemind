@@ -21,6 +21,7 @@ use clap::ValueEnum;
 use serde_json::{Map, Value};
 
 use super::init::{Change, InitArgs};
+use super::init_verb::Verb;
 
 /// Permission glob covering every basemind MCP tool exposed through the Claude Code plugin.
 /// Claude Code names plugin MCP tools `mcp__plugin_<pluginName>_<serverName>__<toolName>`; both
@@ -119,7 +120,8 @@ pub(crate) fn plan_settings_change(plan: &SettingsPlan) -> Result<Option<Change>
     }
     Ok(Some(Change::Write {
         path: path.clone(),
-        note: "added basemind's MCP tools to permissions.allow",
+        verb: Verb::Add,
+        what: "basemind's MCP tools to permissions.allow",
         contents,
     }))
 }
