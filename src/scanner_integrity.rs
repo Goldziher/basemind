@@ -10,16 +10,18 @@ use crate::index::IndexDb;
 use crate::scanner::ScanError;
 use crate::store::{ScanHealth, Store};
 
-/// Run before a scan touches the index: forget a full-disk latch from an earlier pass (the space
-/// check below decides whether it is cured), refuse a poisoned handle outright, and refuse a volume
-/// without room for the index.
-pub(crate) fn preflight(store: &Store) -> Result<(), ScanError> {
+/// Run before a full scan touches the index: forget a full-disk latch from an earlier pass (the
+/// space check below decides whether it is cured), refuse a poisoned handle outright, empty an index
+/// that is behind its file map so the pass rebuilds it, and refuse a volume without room for the
+/// index.
+pub(crate) fn preflight(store: &mut Store) -> Result<(), ScanError> {
     if let Some(db) = store.index_db.as_ref() {
         db.clear_recoverable_fault();
         if let Some(reason) = db.fatal_fault() {
             return Err(ScanError::IndexFault(reason));
         }
     }
+    store.rebuild_index_if_behind()?;
     ensure_space(store)
 }
 
@@ -46,12 +48,13 @@ pub(crate) fn abort_on_fault(store: &Store, done: usize, total: usize) -> Result
 }
 
 /// Close out the resolve pass: abort on a fatal commit failure, otherwise record the resolve tier
-/// complete only when `resolved` says every commit landed. A pass that panicked or lost a
-/// non-fatal commit leaves the marker unset and the scan degraded rather than failed.
+/// complete only when `resolved` says every commit landed and its rows are synced. A pass that
+/// panicked or lost a non-fatal commit leaves the marker unset and the scan degraded rather than
+/// failed.
 pub(crate) fn finish_resolve(store: &Store, resolved: bool) -> Result<(), ScanError> {
     let files = store.index.files.len();
     abort_on_fault(store, files, files)?;
-    if resolved {
+    if resolved && sync_index_tail(store) {
         store.write_status_sidecar_with(&ScanHealth::complete());
     }
     Ok(())
@@ -79,6 +82,20 @@ pub(crate) fn flush_code_map(store: &mut Store, health: &ScanHealth) -> Result<(
     // statusline sees fresh counts without ever opening the Fjall index. Best-effort by design.
     store.write_status_sidecar_with(health);
     Ok(())
+}
+
+/// Make the index rows a scan wrote after [`flush_code_map`] durable (the resolve pass, BM25
+/// statistics): the file map already calls their files unchanged, so a row lost to a power cut would
+/// never be rewritten. One journal fsync, and none when nothing was written since the last one.
+/// Returns whether the rows are durable. A failure is not fatal: the code map is durable, and a
+/// poisoned handle is latched for the next scan's preflight to refuse.
+pub(crate) fn sync_index_tail(store: &Store) -> bool {
+    let Some(db) = store.index_db.as_ref() else {
+        return true;
+    };
+    db.sync_tail()
+        .inspect_err(|error| tracing::warn!(%error, "could not fsync the index after the resolve pass"))
+        .is_ok()
 }
 
 #[cfg(test)]

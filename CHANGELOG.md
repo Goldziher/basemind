@@ -58,9 +58,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the file map could record a file as indexed and unchanged whose index rows never reached the disk, and
   every later scan skipped it. The index journal is now fsynced once per scan before the file map is
   written, both carry a scan generation, and an index stamped below its file map is discarded and rebuilt
-  from the cached blobs on the next writer open. A file whose index batch failed to commit is no longer
-  recorded in the file map (it is reported as a failed extraction and indexed by the next scan), and the
-  file map's directory is fsynced after the rename. File maps written before this change open unchanged.
+  from the cached blobs on the next writer open, or emptied and rebuilt by the next scan into a store that
+  was opened read-only; the file map is never written over an index it is ahead of. The rows a scan writes
+  after that point (resolved references, keyword statistics) are fsynced once more at its end. A file whose
+  index batch or keyword postings failed to commit is no longer recorded in the file map (it is reported as
+  a failed extraction and indexed by the next scan), and the file map's directory is fsynced after the
+  rename. Discarding an index (also on a schema change) renames it aside before deleting it, so a crash
+  midway no longer leaves a directory that cannot be opened. File maps written before this change open
+  unchanged.
 - An older basemind no longer wipes a cache a newer one wrote. Two binaries of different versions sharing
   the machine-global cache used to destroy each other's code index, git-history index, comms store and
   LanceDB store on every open, and read-only commands reported the newer index as empty ("file not

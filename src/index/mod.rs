@@ -297,6 +297,13 @@ pub enum IndexError {
          — upgrade basemind"
     )]
     NewerSchema { stored: u32, current: u32 },
+    /// The file map vouches for a scan generation the index never sealed: the index lost the tail
+    /// of its journal and must be rebuilt before it is sealed again (see [`durability`]).
+    #[error(
+        "the code index (generation {index}) is behind its file map (generation {file_map}); \
+         rescan to rebuild it"
+    )]
+    BehindFileMap { index: u64, file_map: u64 },
 }
 
 /// One `(keyspace, key, value)` row, as returned by [`IndexDb::resolution_rows`].
@@ -367,6 +374,9 @@ pub struct IndexDb {
     /// First fatal commit error (disk full, poisoned handle) seen through any clone of this handle;
     /// shared so the writers record it where it happens and the scan polls one place.
     pub(crate) fault: std::sync::Arc<fault::IndexFault>,
+    /// The database sequence number as of the last journal fsync made through this handle; see
+    /// [`IndexDb::sync_tail`].
+    synced_seqno: std::sync::Arc<std::sync::atomic::AtomicU64>,
     /// Keeps the shared group memory database open for as long as any `IndexDb` clone uses its
     /// keyspaces above.
     _memory: std::sync::Arc<memory_store::MemoryDb>,
@@ -486,6 +496,7 @@ impl IndexDb {
 
     fn open_inner(view_dir: &Path, memory_dir: &Path, tolerate_held_memory: bool) -> Result<Self, IndexError> {
         let dir = view_dir.join(INDEX_DIR);
+        durability::sweep_discarded(view_dir);
         std::fs::create_dir_all(&dir).map_err(|source| IndexError::Io {
             path: dir.clone(),
             source,
@@ -530,10 +541,7 @@ impl IndexDb {
         if wiped_on_open {
             drop(meta);
             drop(db);
-            std::fs::remove_dir_all(&dir).map_err(|source| IndexError::Io {
-                path: dir.clone(),
-                source,
-            })?;
+            durability::discard_dir(&dir)?;
             std::fs::create_dir_all(&dir).map_err(|source| IndexError::Io {
                 path: dir.clone(),
                 source,
@@ -617,6 +625,7 @@ impl IndexDb {
             embeddings,
             memory_by_key,
             fault: std::sync::Arc::default(),
+            synced_seqno: std::sync::Arc::default(),
             _memory: memory,
             memory_detached,
             wiped_on_open,

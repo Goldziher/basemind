@@ -284,3 +284,26 @@ fn a_pre_digest_index_decodes_with_neutral_defaults() {
     assert!(doc.config_digest.is_empty());
     assert_eq!(index.files.len(), 1);
 }
+
+/// A store without an index handle writes no index rows, so flushing it must not withdraw the claim
+/// its file map makes about the index another handle maintains.
+#[test]
+fn flush_without_an_index_handle_keeps_the_file_map_generation() {
+    init_isolated_cache();
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let sealed = {
+        let mut store = Store::open(tmp.path(), VIEW_WORKING).expect("writer creates the view");
+        store.flush().expect("flush");
+        store.flush().expect("flush");
+        store.index.generation
+    };
+    assert_eq!(sealed, 2);
+
+    let mut blobs_only = Store::open_read_only_no_index(tmp.path(), VIEW_WORKING).expect("open without the index");
+    assert!(blobs_only.index_db.is_none());
+    blobs_only.flush().expect("flush");
+    let on_disk = read_index(&blobs_only.view_dir)
+        .expect("read")
+        .expect("file map exists");
+    assert_eq!(on_disk.generation, sealed);
+}

@@ -651,6 +651,7 @@ pub fn scan_with_observer(
     {
         tracing::debug!(%error, "shared Lance snapshot publication failed");
     }
+    crate::scanner_integrity::sync_index_tail(store);
     phase_peaks.sample_now();
     report.phase_peaks = phase_peaks.snapshot();
     Ok(report)
@@ -755,6 +756,10 @@ pub fn scan_paths_with_observer(
     observer: &mut dyn ScanObserver,
 ) -> Result<ScanReport, ScanError> {
     let source = ScanSource::WorkingTree;
+    // Only a full pass can rebuild an index that is behind its file map (see `preflight`). ~keep
+    if store.index_is_behind_file_map()? {
+        return scan_with_observer(root, store, config, source, embed, cancel, observer);
+    }
     let filter = IndexFilter::new(root, config)?;
 
     let mut rels: Vec<String> = Vec::with_capacity(paths.len());
@@ -960,6 +965,7 @@ pub fn scan_paths_with_observer(
     run_optional_lane(crate::scanner_lanes::LANE_LANCE_MAINTENANCE, || {
         maintain_lance_if_open(store)
     });
+    crate::scanner_integrity::sync_index_tail(store);
     Ok(report)
 }
 

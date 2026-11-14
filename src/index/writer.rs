@@ -22,11 +22,11 @@ pub struct IndexWriter {
     /// same way. Callers batch against [`Self::staged_bytes`]; see
     /// `scanner_index_batch::WorkerIndexBatch`.
     staged_bytes: u64,
-    /// Test-only fault seam: make the next [`Self::upsert_file`] stage its deletes and inserts and
-    /// *then* fail. The real failures have exactly that shape — a fjall read error inside
-    /// `stage_deletes_for`, an `rmp_serde` encode error inside `stage_inserts_for` — and neither is
-    /// reachable from a test, so without this seam the caller's "bytes staged by a failed upsert
-    /// still count" invariant cannot be exercised at all.
+    /// Test-only fault seam: make the next [`Self::upsert_file`] (or `upsert_bm25_file`) stage its
+    /// deletes and inserts and *then* fail. The real failures have exactly that shape — a fjall read
+    /// error inside `stage_deletes_for`, an `rmp_serde` encode error inside `stage_inserts_for` — and
+    /// neither is reachable from a test, so without this seam the caller's "bytes staged by a failed
+    /// upsert still count" invariant cannot be exercised at all.
     #[cfg(test)]
     pub(crate) fail_after_staging: bool,
 }
@@ -197,6 +197,13 @@ impl IndexWriter {
     pub fn upsert_bm25_file(&mut self, rel: &RelPath, postings: &[ChunkPosting]) -> Result<(), IndexError> {
         self.stage_bm25_deletes_for(rel)?;
         self.stage_bm25_inserts_for(rel, postings)?;
+        #[cfg(test)]
+        if self.fail_after_staging {
+            return Err(IndexError::Io {
+                path: rel.to_path_buf(),
+                source: std::io::Error::other("injected bm25 upsert failure after staging"),
+            });
+        }
         Ok(())
     }
 

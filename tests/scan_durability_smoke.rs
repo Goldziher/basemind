@@ -207,10 +207,10 @@ fn an_index_older_than_its_file_map_is_rebuilt_from_blobs() {
             .len(),
         1
     );
-    assert!(reopened.index.generation > sealed);
     assert_eq!(
         reopened.index_db.as_ref().unwrap().scan_generation().unwrap(),
-        reopened.index.generation
+        reopened.index.generation,
+        "the rebuilt index and the file map are sealed together again"
     );
 
     drop(reopened);
@@ -327,4 +327,127 @@ fn the_index_is_sealed_before_the_file_map_is_written() {
         !reopened.index_rebuild_needed,
         "an index ahead of its file map is the safe direction and is left alone"
     );
+}
+
+/// Lose `beta.rs`'s index rows and leave the index one generation behind its file map, as a journal
+/// that lost its tail would. Returns the view directory and the generation the file map carries
+/// (two scans, so at least 2: a rebuilt index sealing generation 1 is distinguishable from it).
+fn scanned_store_with_an_index_behind(root: &Path) -> (std::path::PathBuf, u64) {
+    let mut store = scanned_store(root);
+    rescan(root, &mut store);
+    let mut writer = store.index_db.as_ref().unwrap().writer();
+    writer
+        .remove_file(&basemind::path::RelPath::from("beta.rs"))
+        .expect("stage the loss");
+    writer.commit().expect("commit the loss");
+    let (view_dir, sealed) = (store.view_dir.clone(), store.index.generation);
+    drop(store);
+    forge_index_generation(&view_dir, sealed - 1);
+    (view_dir, sealed)
+}
+
+/// A store opened read-only never ran the writer open's generation check, yet a scan can run into it
+/// in place (`mcp::helpers::scan_and_refresh`). Skipping the file map's files as unchanged and then
+/// sealing past the file map would make the two sides agree over the lost rows for good.
+#[test]
+fn a_scan_into_a_read_only_opened_store_rebuilds_an_index_behind_its_file_map() {
+    basemind::store::init_isolated_cache();
+    let dir = TempDir::new().unwrap();
+    let root = dir.path();
+    let (_, sealed) = scanned_store_with_an_index_behind(root);
+
+    let mut in_place = Store::open_read_only(root, VIEW_WORKING).expect("open read-only");
+    assert!(in_place.index_db.is_some(), "the read-only open holds the index");
+    assert_eq!(in_place.index.files.len(), 3, "and never ran the writer open's check");
+    assert!(indexed_symbol_paths(&in_place, "beta").is_empty());
+    in_place.ensure_dirs().unwrap();
+
+    let report = rescan(root, &mut in_place);
+    assert_eq!(report.stats.skipped_unchanged, 0, "no file is skipped as unchanged");
+    assert_eq!(report.stats.updated, 3);
+    assert_eq!(report.stats.reused_extraction, 3, "from the blobs, without re-parsing");
+    assert_eq!(indexed_symbol_paths(&in_place, "beta"), vec!["beta.rs".to_string()]);
+    assert_eq!(indexed_symbol_paths(&in_place, "alpha"), vec!["alpha.rs".to_string()]);
+    assert_eq!(
+        in_place.index_db.as_ref().unwrap().scan_generation().unwrap(),
+        in_place.index.generation
+    );
+    assert!(
+        in_place.index.generation < sealed,
+        "the rebuilt index starts a new count"
+    );
+
+    drop(in_place);
+    let settled = Store::open(root, VIEW_WORKING).expect("writer open after the rebuild");
+    assert!(!settled.index_rebuild_needed);
+    assert_eq!(settled.index.files.len(), 3);
+}
+
+/// An incremental scan cannot rebuild the index from the paths it was handed, so it runs the full
+/// pass instead of re-indexing one file and sealing over the rest.
+#[test]
+fn an_incremental_scan_over_an_index_behind_its_file_map_runs_the_full_rebuild() {
+    basemind::store::init_isolated_cache();
+    let dir = TempDir::new().unwrap();
+    let root = dir.path();
+    scanned_store_with_an_index_behind(root);
+
+    let mut in_place = Store::open_read_only(root, VIEW_WORKING).expect("open read-only");
+    in_place.ensure_dirs().unwrap();
+    let report = basemind::scanner::scan_paths(
+        root,
+        &mut in_place,
+        &ConfigV1::with_defaults(),
+        &[root.join("alpha.rs")],
+        EmbedMode::Deferred,
+    )
+    .expect("incremental scan");
+
+    assert_eq!(report.stats.updated, 3, "every file, not only the one named");
+    assert_eq!(indexed_symbol_paths(&in_place, "beta"), vec!["beta.rs".to_string()]);
+    assert_eq!(in_place.index.files.len(), 3);
+}
+
+/// The choke point behind both scans: a file map is never written over an index it is ahead of.
+#[test]
+fn flush_refuses_to_seal_an_index_behind_its_file_map() {
+    basemind::store::init_isolated_cache();
+    let dir = TempDir::new().unwrap();
+    let root = dir.path();
+    let (view_dir, sealed) = scanned_store_with_an_index_behind(root);
+
+    let mut in_place = Store::open_read_only(root, VIEW_WORKING).expect("open read-only");
+    let refused = in_place.flush().expect_err("the index is behind the file map");
+    assert!(
+        refused.to_string().contains("behind its file map"),
+        "unexpected error: {refused}"
+    );
+    assert_eq!(
+        in_place.index_db.as_ref().unwrap().scan_generation().unwrap(),
+        sealed - 1,
+        "nothing was stamped"
+    );
+    let on_disk: basemind::store::Index = rmp_serde::from_slice(&fs::read(view_dir.join(INDEX_FILE)).unwrap()).unwrap();
+    assert_eq!(on_disk.generation, sealed, "the file map on disk still exposes the gap");
+}
+
+/// A crash between setting the index aside and deleting it leaves no `index.fjall` at all. The next
+/// writer open must start a fresh index, rebuild it and remove what was set aside.
+#[test]
+fn a_half_discarded_index_opens_and_rebuilds() {
+    basemind::store::init_isolated_cache();
+    let dir = TempDir::new().unwrap();
+    let root = dir.path();
+    let store = scanned_store(root);
+    let view_dir = store.view_dir.clone();
+    drop(store);
+    let aside = view_dir.join("index.fjall.discard-4242-0");
+    fs::rename(view_dir.join("index.fjall"), &aside).unwrap();
+
+    let mut reopened = Store::open(root, VIEW_WORKING).expect("open over a half-finished discard");
+    assert!(reopened.index_rebuild_needed);
+    assert!(!aside.exists(), "the index set aside is deleted on open");
+    let report = rescan(root, &mut reopened);
+    assert_eq!(report.stats.updated, 3);
+    assert_eq!(indexed_symbol_paths(&reopened, "beta"), vec!["beta.rs".to_string()]);
 }

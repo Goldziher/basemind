@@ -15,6 +15,8 @@ use crate::path::RelPath;
 use crate::store_hash_refs::HashRefs;
 #[path = "store_base_open.rs"]
 mod base_open;
+#[path = "store_durability.rs"]
+mod durability;
 
 /// Cache layout: where the global cache root is, how a worktree root maps to a workspace cache
 /// dir, and the `workspace.json` marker recording that mapping. Lives in its own module (like
@@ -206,8 +208,8 @@ pub struct Index {
     pub doc_tombstones: AHashMap<RelPath, crate::store_doc_tombstone::DocTombstone>,
     /// The scan generation [`Store::flush`] sealed into the Fjall index before writing this file map
     /// (see [`crate::index::durability`]). An index stamped below it lost writes this map vouches
-    /// for and is rebuilt at open. `0` (also what a file map from before the field decodes to, via
-    /// `#[serde(default)]`: additive, no schema bump) makes no claim about the index.
+    /// for and is rebuilt before it is sealed again. `0` (also what a file map from before the field
+    /// decodes to, via `#[serde(default)]`: additive, no schema bump) makes no claim about the index.
     #[serde(default)]
     pub generation: u64,
 }
@@ -339,7 +341,10 @@ impl Store {
         view: std::sync::Arc<dyn crate::index::view::IndexView>,
     ) {
         self.hash_refs = HashRefs::of(&index.files);
+        // The generation vouches for this store's own index, not the shared manifest's. ~keep
+        let generation = self.index.generation;
         self.index = index;
+        self.index.generation = generation;
         self.blobs_dir = blobs;
         self.fallback_blobs_dir = Some(fallback);
         self.layered_read = Some(view);
@@ -558,6 +563,8 @@ impl Store {
             crate::index::durability::discard_index(&view_dir)?;
             index_db = open_index_with_retry(root, &view_dir)?;
         }
+        // A replaced index starts unsealed, and its emptied file map vouches for nothing. ~keep
+        index.generation = index.generation.min(index_db.scan_generation()?);
         let index_rebuild_needed =
             !index.files.is_empty() && (index_db.wiped_on_open() || index_db.view().symbols_index_is_empty());
         if index_rebuild_needed {
@@ -753,12 +760,12 @@ impl Store {
     ///
     /// The file map is what lets the next scan skip a file as unchanged, so the rows it vouches for
     /// must be on disk before it is: the index seals a new generation (one journal fsync) first, and
-    /// a failed seal fails the flush with the previous file map left in place.
+    /// a failed or refused seal fails the flush with the previous file map left in place. A store
+    /// with no index handle writes no rows, so its file map keeps the generation it carries.
     pub fn flush(&mut self) -> Result<(), StoreError> {
-        self.index.generation = match self.index_db.as_ref() {
-            Some(db) => db.seal_scan(self.index.generation)?,
-            None => 0,
-        };
+        if let Some(db) = self.index_db.as_ref() {
+            self.index.generation = db.seal_scan(self.index.generation)?;
+        }
         let final_path = self.view_dir.join(INDEX_FILE);
         let tmp_path = self.view_dir.join(format!("{INDEX_FILE}.tmp"));
         let bytes = rmp_serde::to_vec_named(&self.index)?;

@@ -225,7 +225,8 @@ impl<'a> WorkerIndexBatch<'a> {
         };
         let writer = self.writer.get_or_insert_with(|| index.writer());
         if writer.upsert_bm25_file(rel, postings).is_err() {
-            tracing::warn!(rel = %rel, "bm25 upsert failed; keyword search may be incomplete");
+            tracing::warn!(rel = %rel, "bm25 upsert failed; the file is left for the next scan");
+            self.lost_in_flight = true;
         }
         self.commit_if_full();
     }
@@ -805,6 +806,36 @@ mod tests {
         assert_eq!(
             claims(&batch.finish()),
             vec![("src/ok.rs", true), ("src/doomed.rs", false), ("src/next.rs", true)]
+        );
+    }
+
+    /// A file whose keyword postings failed to stage would otherwise keep its place in the file map
+    /// and never be seen by keyword search: no later scan re-stages an unchanged file.
+    #[cfg(feature = "code-search")]
+    #[test]
+    fn a_failed_bm25_upsert_disowns_its_file() {
+        static LEDGER: StagedByteLedger = StagedByteLedger::new(u64::MAX);
+        let (_dir, db) = fresh_index();
+        let l1 = bulky_l1(4);
+        let postings = [crate::search::bm25::ChunkPosting {
+            chunk_id: "hash:0".to_string(),
+            doclen: 1,
+            terms: vec![("term".to_string(), 1)],
+        }];
+        let mut batch = WorkerIndexBatch::with_budget(Some(&db), u64::MAX, &LEDGER);
+
+        assert!(batch.stage(&RelPath::from("src/ok.rs"), &l1, None));
+        batch.stage_bm25(&RelPath::from("src/ok.rs"), &postings);
+        batch.push_result(updated("src/ok.rs"));
+        assert!(batch.stage(&RelPath::from("src/doomed.rs"), &l1, None));
+        batch.writer.as_mut().expect("writer").fail_after_staging = true;
+        batch.stage_bm25(&RelPath::from("src/doomed.rs"), &postings);
+        batch.writer.as_mut().expect("writer").fail_after_staging = false;
+        batch.push_result(updated("src/doomed.rs"));
+
+        assert_eq!(
+            claims(&batch.finish()),
+            vec![("src/ok.rs", true), ("src/doomed.rs", false)]
         );
     }
 

@@ -66,3 +66,48 @@ fn a_file_whose_index_commit_failed_is_left_out_of_the_file_map_and_indexed_by_t
         1
     );
 }
+
+/// The resolve pass writes its rows after the code map was sealed, and the file map already calls
+/// their files unchanged, so nothing would rewrite a row a power cut took. Both scan entry points
+/// must leave the journal synced past them.
+#[test]
+fn rows_written_after_the_seal_are_synced_before_a_scan_returns() {
+    init_isolated_cache();
+    let dir = one_file_repo();
+    let root = dir.path();
+    let outer = root.join("outer.py");
+    std::fs::write(&outer, b"def outer(a):\n    count = 1\n    return count + a\n").expect("write");
+    let mut store = Store::open(root, VIEW_WORKING).expect("open");
+
+    full_scan(root, &mut store);
+    let db = store.index_db.clone().expect("index");
+    let resolved = db.resolution_rows().expect("rows");
+    assert!(
+        !resolved.is_empty(),
+        "the resolve pass wrote rows after the seal, or this test proves nothing"
+    );
+    assert!(
+        !db.has_unsynced_tail(),
+        "a full scan syncs what it wrote after the seal"
+    );
+
+    std::fs::write(&outer, b"def outer(a):\n    total = 2\n    return total + total + a\n").expect("rewrite");
+    let report = crate::scanner::scan_paths(
+        root,
+        &mut store,
+        &ConfigV1::with_defaults(),
+        &[outer],
+        EmbedMode::Deferred,
+    )
+    .expect("incremental scan");
+    assert_eq!(report.stats.updated, 1);
+    assert_ne!(
+        db.resolution_rows().expect("rows"),
+        resolved,
+        "the incremental resolve pass rewrote rows after the seal"
+    );
+    assert!(
+        !db.has_unsynced_tail(),
+        "an incremental scan syncs what it wrote after the seal"
+    );
+}
