@@ -42,19 +42,22 @@ them.
 | ADR | Title | Status |
 |---|---|---|
 | [0000](0000-record-architecture-decisions.md) | Record architecture decisions | Accepted |
-| [0001](0001-unified-typed-code-graph.md) | Unified typed code-graph model | Accepted |
-| [0002](0002-edge-provenance-and-confidence.md) | Edge provenance and confidence | Accepted |
-| [0003](0003-graph-traversal-tools.md) | Graph traversal capabilities | Accepted |
-| [0004](0004-community-detection.md) | Community detection and deterministic labels | Accepted |
-| [0005](0005-rendering-engine.md) | Rendering engine — one payload, pluggable renderers | Accepted |
+| [0001](0001-unified-typed-code-graph.md) | Unified typed code-graph model | Superseded by ADR-0017 |
+| [0002](0002-edge-provenance-and-confidence.md) | Edge provenance and confidence | Superseded by ADR-0017 |
+| [0003](0003-graph-traversal-tools.md) | Graph traversal capabilities | Superseded by ADR-0017 |
+| [0004](0004-community-detection.md) | Community detection and deterministic labels | Superseded by ADR-0017 |
+| [0005](0005-rendering-engine.md) | Rendering engine — one payload, pluggable renderers | Superseded by ADR-0017 |
 | [0006](0006-interactive-ui-tauri.md) | Interactive UI — Tauri desktop app | Withdrawn |
-| [0007](0007-agent-launchable-display-tool.md) | Agent-launchable UI display tool | Accepted (baseline only) |
-| [0008](0008-documents-code-graph.md) | Documents ↔ code graph | Accepted |
-| [0009](0009-rationale-decision-nodes.md) | Rationale / decision nodes | Accepted |
+| [0007](0007-agent-launchable-display-tool.md) | Agent-launchable UI display tool | Superseded by ADR-0017 |
+| [0008](0008-documents-code-graph.md) | Documents ↔ code graph | Superseded by ADR-0017 |
+| [0009](0009-rationale-decision-nodes.md) | Rationale / decision nodes | Superseded by ADR-0017 |
 | [0010](0010-branch-integration-release-strategy.md) | Branch, integration & release strategy | Accepted |
-| [0011](0011-mcp-tool-surface-redesign.md) | MCP tool-surface redesign — consolidation into nine domains | Accepted (§2 withdrawn) |
+| [0011](0011-mcp-tool-surface-redesign.md) | MCP tool-surface redesign — consolidation into nine domains | Superseded by ADR-0018 |
 | [0012](0012-grep-content-prefilter.md) | Per-file trigram bloom prefilter for `code grep` | Accepted |
 | [0013](0013-comms-robustness-idempotency-replay.md) | Comms robustness: correlated requests, bounded waits, idempotent posts, relay replay | Accepted |
-| [0014](0014-cli-mcp-parity-guard.md) | Executable CLI/MCP parity guard | Accepted |
+| [0014](0014-cli-mcp-parity-guard.md) | Executable CLI/MCP parity guard | Accepted (amended by ADR-0018) |
 | [0015](0015-bounded-document-extraction.md) | Bound document extraction with a thread cap, tombstones and a phase budget | Proposed |
 | [0016](0016-shared-base-index-and-worktree-overlays.md) | Shared base index with per-worktree overlays | Accepted |
+| [0017](0017-surface-reduction.md) | Surface reduction — remove graph, web, shell, token-saving and review queue | Accepted |
+| [0018](0018-mcp-verb-tools.md) | MCP surface — verb tools with exact schemas | Accepted |
+| [0019](0019-library-crate-layering.md) | Library crate layering | Accepted |

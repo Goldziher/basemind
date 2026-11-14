@@ -1,6 +1,6 @@
 # ADR-0014: Executable CLI/MCP parity guard
 
-- **Status:** Accepted
+- **Status:** Accepted; amended by ADR-0018 (2026-11-14)
 - **Date:** 2026-10-09
 - **Deciders:** basemind maintainers
 - **Related:** ADR-0011

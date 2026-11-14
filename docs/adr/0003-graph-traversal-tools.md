@@ -1,6 +1,6 @@
 # ADR-0003: Graph traversal capabilities
 
-- **Status:** Accepted
+- **Status:** Superseded by ADR-0017 (2026-11-14)
 - **Date:** 2026-08-02
 - **Deciders:** basemind maintainers
 - **Related:** ADR-0001 (unified typed code-graph), ADR-0002 (edge provenance + confidence),

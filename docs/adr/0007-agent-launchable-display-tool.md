@@ -1,8 +1,6 @@
 # ADR-0007: Agent-launchable UI display tool
 
-- **Status:** Accepted — baseline implemented on `feat/agent-layer`, 2026-08-04; the live-window push
-  was deferred with ADR-0006, which has since been withdrawn (the UI stack was removed), so only the
-  browser-opened `display` baseline exists
+- **Status:** Superseded by ADR-0017 (2026-11-14)
 - **Date:** 2026-08-02
 - **Deciders:** basemind maintainers
 - **Related:** ADR-0005 (rendering engine), ADR-0006 (interactive UI)

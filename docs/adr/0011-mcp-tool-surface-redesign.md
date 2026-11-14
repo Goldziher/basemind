@@ -1,6 +1,6 @@
 # ADR-0011: MCP tool-surface redesign — consolidation into nine domains
 
-- **Status:** Accepted (§1 and §3, sharpened to nine domains) — §2 withdrawn
+- **Status:** Superseded by ADR-0018 (2026-11-14); domain count amended by ADR-0017
 - **Date:** 2026-08-05
 - **Deciders:** basemind maintainers
 - **Related:** GH #50 (all tools silently failed to register), ADR-0005 (CLI parity), ADR-0007
