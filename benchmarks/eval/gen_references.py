@@ -42,8 +42,8 @@ def main() -> None:
     a = p.parse_args()
 
     repo = c.Repo(a.repo, a.exclude, a.ext, a.max_bytes)
-    calls: dict[str, list[tuple[str, int, int]]] = defaultdict(list)  # name -> (path, start, func_end)
-    defs: dict[str, list[str]] = defaultdict(list)  # name -> [defining paths] (def/class only)
+    calls: dict[str, list[tuple[str, int, int]]] = defaultdict(list)
+    defs: dict[str, list[str]] = defaultdict(list)
     for path, src in repo.blobs(repo.files()):
         tree = c.parse_python(src)
         if tree is None:

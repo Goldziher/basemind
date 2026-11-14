@@ -707,7 +707,6 @@ fn read_working_tree(
             return Err(not_regular("not a regular file (symlinks are not followed)"));
         }
         if !rel.starts_with('/') {
-            // A symlinked *directory* on the way (`link -> /etc`, path `link/passwd`) passes the leaf check.
             let inside = match (abs.canonicalize(), root.canonicalize()) {
                 (Ok(abs), Ok(root)) => abs.starts_with(root),
                 _ => false,

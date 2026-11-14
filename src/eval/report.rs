@@ -450,7 +450,6 @@ mod tests {
         let rep = aggregate(&rs, "o200k", "/r", "t", 0.8);
         let sv = rep.modes[&EvalMode::Symbols].savings.as_ref().unwrap();
         assert_eq!((sv.credited, sv.uncredited), (2, 1));
-        // ratios 10x and 5x -> nearest-rank median = 5x, p90 = 10x
         assert_eq!(sv.ratio.median, 5.0);
         assert_eq!(sv.ratio.p90, 10.0);
         assert_eq!(sv.baseline_tokens_total, 1500);

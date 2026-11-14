@@ -137,7 +137,6 @@ pub fn score(returned: &[Item], gold: &[Item], slack: u32, ranked_k: Option<usiz
         s.hit_at_5 = Some(b(first(5)));
         s.hit_at_k = Some(b(first(k)));
         s.mrr = Some(rel_rank.iter().position(|r| *r).map_or(0.0, |p| 1.0 / (p as f64 + 1.0)));
-        // `fold` from +0.0: an empty `sum()` of f64 is -0.0, which would print as `-0.0`.
         let discount = |i: usize| 1.0 / (i as f64 + 2.0).log2();
         let dcg = rel_rank
             .iter()

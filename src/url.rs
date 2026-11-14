@@ -50,7 +50,6 @@ fn is_loopback_name(candidate: &str) -> bool {
 /// Return `true` when the private-host denylist is disabled via the
 /// [`ALLOW_PRIVATE_HOSTS_ENV`] escape hatch.
 fn private_hosts_allowed() -> bool {
-    // Same spellings as the config trust gate (`config::trust`): `1`, `true`, `yes`.
     std::env::var(ALLOW_PRIVATE_HOSTS_ENV).is_ok_and(|v| {
         let v = v.trim();
         v.eq_ignore_ascii_case("1") || v.eq_ignore_ascii_case("true") || v.eq_ignore_ascii_case("yes")

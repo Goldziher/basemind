@@ -27,7 +27,7 @@ def main() -> None:
     a = p.parse_args()
 
     repo = c.Repo(a.repo, a.exclude, a.ext, a.max_bytes)
-    where: dict[str, list[tuple[str, int]]] = defaultdict(list)  # name -> [(path, line)]
+    where: dict[str, list[tuple[str, int]]] = defaultdict(list)
     for path, src in repo.blobs(repo.files()):
         tree = c.parse_python(src)
         if tree is not None:

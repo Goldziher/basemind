@@ -21,7 +21,7 @@ def main() -> None:
     a = p.parse_args()
 
     repo = c.Repo(a.repo, a.exclude, a.ext, a.max_bytes)
-    stmts: dict[str, list[str]] = {}  # path -> import statement texts
+    stmts: dict[str, list[str]] = {}
     modules: set[str] = set()
     for path, src in repo.blobs(repo.files()):
         tree = c.parse_python(src)

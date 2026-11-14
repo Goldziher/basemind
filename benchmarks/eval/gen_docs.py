@@ -38,7 +38,7 @@ def main() -> None:
     a = p.parse_args()
 
     repo = c.Repo(a.repo, a.exclude, a.ext, a.max_bytes)
-    found: dict[str, list[str]] = {}  # sentence -> files
+    found: dict[str, list[str]] = {}
     for path, md in repo.blobs(repo.files()):
         for s in sentences(md):
             words = len(s.split())
@@ -54,7 +54,7 @@ def main() -> None:
             break
         if counts[path] > 50:  # one chatty file should not dominate
             continue
-        query = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", sentence)  # [text](url) -> text
+        query = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", sentence)
         query = re.sub(r"[`*]", "", query)
         word = max(re.findall(r"[A-Za-z_]{5,}", query) or [""], key=lambda w: (len(w), w))
         task = {

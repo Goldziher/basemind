@@ -49,7 +49,7 @@ function parseSkill(text, fallbackId) {
           }
           meta[key] = inline.startsWith("|") ? block.join("\n") : block.join(" ");
         } else {
-          meta[key] = inline.replace(/^["']|["']$/g, "");
+          meta[key] = inline.replaceAll(/^["']|["']$/g, "");
         }
       }
       body = text.slice(end + 4).replace(/^\s*\n/, "");
