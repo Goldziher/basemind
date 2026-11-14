@@ -1,4 +1,4 @@
-//! Structural-fingerprint helpers for `symbol_history` and governance verification. Split out of
+//! Structural-fingerprint helpers for `symbol_history`. Split out of
 //! `helpers.rs` to keep both files under the 1000-line module cap. Everything here is `pub(super)`
 //! or module-private, and re-exported from `helpers.rs` so existing call sites resolve unchanged.
 

@@ -90,7 +90,7 @@ fn request_timeout(req: &CommsRequest) -> Option<std::time::Duration> {
         | CommsRequest::IndexRead { .. }
         | CommsRequest::CodeSearchLanes { .. } => None,
         #[cfg(feature = "memory")]
-        CommsRequest::Memory { .. } | CommsRequest::Governance { .. } => None,
+        CommsRequest::Memory { .. } => None,
         _ => Some(timeout_from_env(REQUEST_TIMEOUT_ENV, DEFAULT_REQUEST_TIMEOUT_SECS)),
     }
 }

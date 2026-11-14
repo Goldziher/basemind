@@ -132,7 +132,7 @@ fn the_generic_layer_reads_what_each_keyspace_holds() {
 fn parts_name_exactly_the_layered_keyspaces() {
     let names: std::collections::BTreeSet<_> = Part::ALL.iter().map(|p| p.name()).collect();
     assert_eq!(names.len(), Part::ALL.len(), "part names are unique");
-    let unlayered = ["embeddings", "memory_by_key", "memory_archive", "proposals"];
+    let unlayered = ["embeddings", "memory_by_key"];
     for name in &names {
         assert!(
             super::KEYSPACE_MEMTABLE_BYTES.iter().any(|(k, _)| k == name),

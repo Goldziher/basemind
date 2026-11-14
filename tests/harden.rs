@@ -564,27 +564,6 @@ async fn drive_tools(svc: &ServiceHandle, sample: Option<&SampleFile>) -> Vec<To
         svc,
         &mut records,
         "memory",
-        json!({ "mode": "put",  "key": "harden_audit_probe", "value": "audit probe", "embed": false }),
-    )
-    .await;
-    call(
-        svc,
-        &mut records,
-        "memory",
-        json!({ "mode": "audit",  "key": "harden_audit_probe", "dry_run": true }),
-    )
-    .await;
-    call(
-        svc,
-        &mut records,
-        "memory",
-        json!({ "mode": "delete",  "key": "harden_audit_probe" }),
-    )
-    .await;
-    call(
-        svc,
-        &mut records,
-        "memory",
         json!({ "mode": "documents",  "query": "code map scanner" }),
     )
     .await;
@@ -616,21 +595,6 @@ async fn drive_tools(svc: &ServiceHandle, sample: Option<&SampleFile>) -> Vec<To
         json!({ "mode": "chunk", "path": "src/lib.rs" })
     };
     call(svc, &mut records, "code", chunk_path_arg).await;
-
-    call(
-        svc,
-        &mut records,
-        "memory",
-        json!({ "mode": "mine",  "window": 100, "min_support": 5, "min_confidence": 0.6 }),
-    )
-    .await;
-    call(
-        svc,
-        &mut records,
-        "memory",
-        json!({ "mode": "proposals",  "kind": "skill", "limit": 20 }),
-    )
-    .await;
 
     call(svc, &mut records, "admin", json!({ "mode": "cache_stats" })).await;
     call(svc, &mut records, "admin", json!({ "mode": "gc" })).await;
@@ -963,13 +927,6 @@ fn assert_passing(repo_name: &str, scan: &ScanOutcome, repo_record: &mut RepoRec
                         "django canary: search_git_history(field=author) returned a commit whose author does not match the query — author scope leaked".into(),
                     );
                 }
-            }
-            if let Some(mined) = repo_record.canaries.get("proposals_mined").and_then(Value::as_u64)
-                && mined < 1
-            {
-                failures.push(format!(
-                    "django canary: proposals_mine (default thresholds) returned {mined} candidates (expected ≥ 1)"
-                ));
             }
             if precise_resolution_expected() {
                 let resolved_total = repo_record
@@ -1317,18 +1274,6 @@ async fn capture_canaries(svc: &ServiceHandle, repo_name: &str, repo_root: &Path
                     .canaries
                     .insert("author_search_consistent".into(), json!(consistent));
                 record.canaries.insert("author_search_token".into(), json!(token));
-            }
-            if let Ok(out) = svc
-                .call_tool(call_params(
-                    "memory",
-                    &json!({ "mode": "mine",  "window": 100, "min_support": 5, "min_confidence": 0.6 }),
-                ))
-                .await
-            {
-                let body = decode_text(&out);
-                if let Some(mined) = body.get("mined").and_then(Value::as_u64) {
-                    record.canaries.insert("proposals_mined".into(), json!(mined));
-                }
             }
             if let Ok(out) = svc
                 .call_tool(call_params(

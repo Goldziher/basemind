@@ -19,7 +19,6 @@ use crate::mcp::mode::MemoryMode;
 use crate::mcp::params::{Lenient, Parameters};
 use crate::mcp::types_memory::{MemoryParams, Visibility};
 
-use super::choices::ProposalKind;
 use super::render::{Emit, WireFormat, emit, wire};
 use super::run_tool;
 
@@ -85,25 +84,6 @@ pub enum MemoryCmd {
         #[arg(long)]
         individual: bool,
     },
-    /// Audit stored memories against the live index: refresh verdicts, decay importance,
-    /// archive long-stale records.
-    Audit {
-        /// Audit exactly this one key instead of the whole scope.
-        #[arg(long)]
-        key: Option<String>,
-        /// Audit the per-agent (individual) tier instead of shared (group).
-        #[arg(long)]
-        individual: bool,
-        /// Compute verdicts but persist no mutations.
-        #[arg(long)]
-        dry_run: bool,
-        /// Maximum records to audit (default 100, max 1000).
-        #[arg(long)]
-        limit: Option<u32>,
-        /// Also scan the archived/stale `memory_archive` keyspace.
-        #[arg(long)]
-        include_archived: bool,
-    },
     /// Semantic search over indexed document chunks (PDF / Office / HTML / email / OCR).
     Documents {
         query: String,
@@ -122,49 +102,6 @@ pub enum MemoryCmd {
         #[arg(long, value_enum)]
         format: Option<WireFormat>,
     },
-    /// Mine co-change skill proposals from recent git history.
-    Mine {
-        /// Number of recent commits to inspect (default 200, max 2000).
-        #[arg(long)]
-        window: Option<u32>,
-        /// Minimum co-change count for a pair to be emitted (default 5).
-        #[arg(long)]
-        min_support: Option<u32>,
-        /// Minimum confidence (support / anchor_freq) for a pair (default 0.6).
-        #[arg(long)]
-        min_confidence: Option<f32>,
-        /// Skip commits touching more than N files (default 25).
-        #[arg(long)]
-        max_files_per_commit: Option<u32>,
-    },
-    /// List pending governance proposals.
-    Proposals {
-        /// Filter by kind: `skill` or `memory` (default: all).
-        #[arg(long, value_enum)]
-        kind: Option<ProposalKind>,
-        /// Maximum results to return (default 100).
-        #[arg(long)]
-        limit: Option<u32>,
-        /// Resume token: pass the previous page's `next_cursor`.
-        #[arg(long)]
-        cursor: Option<String>,
-    },
-    /// Accept a proposal and promote it to a searchable skill memory.
-    Accept {
-        /// Proposal id (as returned by `memory proposals`).
-        id: String,
-        /// Override the auto-derived memory key.
-        #[arg(long)]
-        key: Option<String>,
-    },
-    /// Reject a proposal and suppress it from future mining runs.
-    Reject {
-        /// Proposal id (as returned by `memory proposals`).
-        id: String,
-        /// Optional human-readable reason (logged only, not persisted).
-        #[arg(long)]
-        reason: Option<String>,
-    },
 }
 
 /// Every field the `memory` tool accepts, with the ones this mode does not use left `None` — the
@@ -182,21 +119,12 @@ fn params(mode: MemoryMode) -> MemoryParams {
         limit: None,
         cursor: None,
         query: None,
-        dry_run: None,
-        include_archived: None,
         max_tokens: None,
         format: None,
         mime_type: None,
         scope: None,
         entity_category: None,
         keywords_contains: None,
-        window: None,
-        min_support: None,
-        min_confidence: None,
-        max_files_per_commit: None,
-        kind: None,
-        id: None,
-        reason: None,
     }
 }
 
@@ -252,20 +180,6 @@ pub async fn run(server: &BasemindServer, cmd: MemoryCmd, opts: &Emit, out: &mut
             visibility: visibility(individual),
             ..params(MemoryMode::Delete)
         },
-        MemoryCmd::Audit {
-            key,
-            individual,
-            dry_run,
-            limit,
-            include_archived,
-        } => MemoryParams {
-            key,
-            visibility: visibility(individual),
-            dry_run: dry_run.then_some(true),
-            limit,
-            include_archived: include_archived.then_some(true),
-            ..params(MemoryMode::Audit)
-        },
         MemoryCmd::Documents {
             query,
             limit,
@@ -281,34 +195,6 @@ pub async fn run(server: &BasemindServer, cmd: MemoryCmd, opts: &Emit, out: &mut
             max_tokens,
             format: wire(format),
             ..params(MemoryMode::Documents)
-        },
-        MemoryCmd::Mine {
-            window,
-            min_support,
-            min_confidence,
-            max_files_per_commit,
-        } => MemoryParams {
-            window,
-            min_support,
-            min_confidence,
-            max_files_per_commit,
-            ..params(MemoryMode::Mine)
-        },
-        MemoryCmd::Proposals { kind, limit, cursor } => MemoryParams {
-            kind: kind.map(|k| k.as_str().to_string()),
-            limit,
-            cursor: cursor.map(Cursor),
-            ..params(MemoryMode::Proposals)
-        },
-        MemoryCmd::Accept { id, key } => MemoryParams {
-            id: Some(id),
-            key,
-            ..params(MemoryMode::Accept)
-        },
-        MemoryCmd::Reject { id, reason } => MemoryParams {
-            id: Some(id),
-            reason,
-            ..params(MemoryMode::Reject)
         },
     };
 

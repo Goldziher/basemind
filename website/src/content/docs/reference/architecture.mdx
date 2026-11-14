@@ -77,8 +77,7 @@ code-map modes through the read stack it hosts):
 | `code_bm25_postings` / `code_bm25_by_path` | Term postings and their per-file companion for the code-search keyword lane |
 | `grep_bloom` | Per-file trigram bloom filter and the size and mtime it was built under; prefilter for `code grep` |
 | `embeddings` | Reserved for future in-Fjall vector index |
-| `memory_by_key` / `memory_archive` | Agent memory namespaced by (scope, visibility, owner), and stale entries the audit archived |
-| `proposals` | Co-change proposals awaiting review |
+| `memory_by_key` | Agent memory namespaced by (scope, visibility, owner) |
 
 All composite keys are **length-prefixed** (`u16:len ‖ bytes`), ensuring a prefix like `Foo` never spills into `Foobar`.
 

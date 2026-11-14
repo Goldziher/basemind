@@ -109,7 +109,7 @@ pub fn workspace_cache_dir(root: &Path) -> PathBuf {
 /// keyed by [`repo_group_key`]. Today that is the user-authored memory store; nothing under it is
 /// rebuildable, so no garbage collector may list it.
 pub const REPOS_DIR: &str = "repos";
-/// Fjall database under a repo-group dir holding `memory_by_key`, `memory_archive` and `proposals`.
+/// Fjall database under a repo-group dir holding `memory_by_key`.
 pub const MEMORY_STORE_DIR: &str = "memory.fjall";
 
 /// Group key for the worktree at `root`: the blake3 of the canonical main worktree root (the parent

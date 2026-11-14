@@ -83,11 +83,10 @@ dropped commit.
 
 See [Git Intelligence](/capabilities/git-intelligence/) for examples.
 
-## `memory` — shared memory, documents, and proposals
+## `memory` — shared memory and documents
 
 A per-repo memory agents write to and search by meaning (clones of the same repo share it, unrelated
-repos stay separate), semantic search over indexed documents, and a review queue of notes mined from
-files that change together.
+repos stay separate) and semantic search over indexed documents.
 
 | Mode | Purpose | Scope |
 |---|---|---|
@@ -96,12 +95,7 @@ files that change together.
 | `list` | Enumerate memory entries, newest first, optional prefix/tag filter. | per-repo |
 | `search` | Semantic search across stored memory. | per-repo |
 | `delete` | Remove a memory entry by key. | per-repo |
-| `audit` | The write history behind a memory entry; also recomputes verdicts and archives stale entries. | per-repo |
 | `documents` | Semantic search over indexed PDFs, Office files, and HTML instead of opening them. Needs `--features documents` (or `full`). | per-scope |
-| `mine` | Derive co-change proposals from git history. | per-repo |
-| `proposals` | List proposals awaiting review. | per-repo |
-| `accept` | Accept a proposal into memory. | per-repo |
-| `reject` | Reject a proposal. | per-repo |
 
 See [Document Search](/capabilities/document-search/) and [Shared memory](/concepts/memory/) for
 examples.

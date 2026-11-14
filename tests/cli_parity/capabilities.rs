@@ -132,12 +132,7 @@ pub fn table() -> Vec<Row> {
         pair("memory", "list", "memory list"),
         pair("memory", "search", "memory search"),
         pair("memory", "delete", "memory delete"),
-        pair("memory", "audit", "memory audit"),
         pair("memory", "documents", "memory documents"),
-        pair("memory", "mine", "memory mine"),
-        pair("memory", "proposals", "memory proposals"),
-        pair("memory", "accept", "memory accept"),
-        pair("memory", "reject", "memory reject"),
         // ---- CLI-only: indexing, hooks, grammars, serving ----
         cli_only(
             "init",

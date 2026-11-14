@@ -123,7 +123,6 @@ fn migration_merges_conflicting_rows_by_timestamp() {
         ],
     );
     plant_legacy(&view_b, "memory_by_key", &[("view-only", row("view-b", 9))]);
-    plant_legacy(&view_b, "proposals", &[("p", row("proposal", 3))]);
 
     let a = IndexDb::open_with_memory(&view_a, &memory_dir).unwrap();
     let b = IndexDb::open_with_memory(&view_b, &memory_dir).unwrap();
@@ -133,14 +132,16 @@ fn migration_merges_conflicting_rows_by_timestamp() {
     assert_eq!(get(b"both-view-newer"), "view-a");
     assert_eq!(get(b"store-only"), "store");
     assert_eq!(get(b"view-only"), "view-b", "the newer of two views wins");
-    assert_eq!(value_of(&b.proposals.get(b"p").unwrap().unwrap()), "proposal");
     drop((a, b));
 
     assert!(
         !legacy_keyspace_exists(&view_a, "memory_by_key"),
         "view copy is cleared"
     );
-    assert!(!legacy_keyspace_exists(&view_b, "proposals"), "view copy is cleared");
+    assert!(
+        !legacy_keyspace_exists(&view_b, "memory_by_key"),
+        "view copy is cleared"
+    );
 }
 
 #[test]
@@ -148,20 +149,79 @@ fn migration_is_idempotent_across_reopens() {
     let tmp = tempfile::tempdir().unwrap();
     let memory_dir = tmp.path().join("repos/g/memory.fjall");
     let view = tmp.path().join("v");
-    plant_legacy(&view, "memory_archive", &[("k", row("old", 4))]);
+    plant_legacy(&view, "memory_by_key", &[("k", row("old", 4))]);
     IndexDb::open_with_memory(&view, &memory_dir).unwrap();
     {
         let store = open_shared(&memory_dir).unwrap();
-        store.memory_archive.insert(b"k".to_vec(), row("newer", 8)).unwrap();
+        store.memory_by_key.insert(b"k".to_vec(), row("newer", 8)).unwrap();
     }
 
     let db = IndexDb::open_with_memory(&view, &memory_dir).unwrap();
 
     assert_eq!(
-        value_of(&db.memory_archive.get(b"k").unwrap().unwrap()),
+        value_of(&db.memory_by_key.get(b"k").unwrap().unwrap()),
         "newer",
         "a second open must not re-import the cleared view rows over newer writes"
     );
+}
+
+/// A group store written before the audit and mining features were removed holds two more
+/// keyspaces. It must open, keep serving `memory_by_key`, and keep the retired rows on disk.
+#[test]
+fn a_store_holding_the_retired_keyspaces_opens_and_keeps_them() {
+    const RETIRED: [&str; 2] = ["memory_archive", "proposals"];
+    let tmp = tempfile::tempdir().unwrap();
+    let memory_dir = tmp.path().join("repos/g/memory.fjall");
+    std::fs::create_dir_all(&memory_dir).unwrap();
+    {
+        let old = Database::builder(&memory_dir).open().expect("open old store");
+        for name in ["memory_by_key", RETIRED[0], RETIRED[1]] {
+            let ks = old
+                .keyspace(name, KeyspaceCreateOptions::default)
+                .expect("old keyspace");
+            ks.insert(b"k".to_vec(), row(name, 5)).expect("plant row");
+            ks.rotate_memtable_and_wait().expect("flush to disk");
+        }
+    }
+
+    {
+        let db = IndexDb::open_with_memory(&tmp.path().join("ws/views/working"), &memory_dir).unwrap();
+        assert_eq!(value_of(&db.memory_by_key.get(b"k").unwrap().unwrap()), "memory_by_key");
+        db.memory_by_key.insert(b"new".to_vec(), row("written", 9)).unwrap();
+    }
+
+    let reopened = IndexDb::open_with_memory(&tmp.path().join("ws/views/working"), &memory_dir).unwrap();
+    assert_eq!(
+        value_of(&reopened.memory_by_key.get(b"new").unwrap().unwrap()),
+        "written"
+    );
+    drop(reopened);
+
+    let raw = Database::builder(&memory_dir).open().expect("reopen through fjall");
+    for name in RETIRED {
+        assert!(raw.keyspace_exists(name), "{name} must not be dropped");
+        let ks = raw
+            .keyspace(name, KeyspaceCreateOptions::default)
+            .expect("retired keyspace");
+        assert_eq!(value_of(&ks.get(b"k").unwrap().expect("row kept")), name);
+    }
+}
+
+/// The retired keyspaces an older build left in a view's own database are left where they are.
+#[test]
+fn migration_leaves_a_views_retired_keyspaces_alone() {
+    let tmp = tempfile::tempdir().unwrap();
+    let memory_dir = tmp.path().join("repos/g/memory.fjall");
+    let view = tmp.path().join("v");
+    plant_legacy(&view, "proposals", &[("p", row("proposal", 3))]);
+    plant_legacy(&view, "memory_by_key", &[("k", row("mem", 3))]);
+
+    let db = IndexDb::open_with_memory(&view, &memory_dir).unwrap();
+    assert_eq!(value_of(&db.memory_by_key.get(b"k").unwrap().unwrap()), "mem");
+    drop(db);
+
+    assert!(!legacy_keyspace_exists(&view, "memory_by_key"));
+    assert!(legacy_keyspace_exists(&view, "proposals"));
 }
 
 #[test]

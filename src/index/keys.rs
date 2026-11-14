@@ -10,18 +10,17 @@
 //! `calls_by_callee` returns exactly the hits for callee `"foo"`.
 //!
 //! This module holds the **code-map** keyspaces — every key here is addressed by a
-//! `(rel_path, byte offset)` position in the scanned tree. The governance-tier keyspaces
-//! (agent memory, mined proposals), which are addressed by a `(scope, ordinal, owner)`
-//! namespace instead, live in [`crate::index::keys_governance`] and are re-exported below so
-//! the `crate::index::keys::*` paths stay stable.
+//! `(rel_path, byte offset)` position in the scanned tree. The agent-memory keyspace, which is
+//! addressed by a `(scope, ordinal, owner)` namespace instead, lives in
+//! [`crate::index::keys_memory`] and is re-exported below so the `crate::index::keys::*` paths
+//! stay stable.
 
 use crate::extract::SymbolKind;
 use crate::path::RelPath;
 
-pub use crate::index::keys_governance::{
-    MEMORY_VIS_GROUP, MEMORY_VIS_INDIVIDUAL, PROPOSAL_KIND_MEMORY, PROPOSAL_KIND_SKILL, PROPOSAL_KIND_TOMBSTONE,
-    memory_by_key, memory_by_key_ns_prefix, memory_scope_prefix, parse_memory_by_key, parse_memory_key_only,
-    parse_proposal_by_id, proposal_by_id, proposal_ns_prefix,
+pub use crate::index::keys_memory::{
+    MEMORY_VIS_GROUP, MEMORY_VIS_INDIVIDUAL, memory_by_key, memory_by_key_ns_prefix, parse_memory_by_key,
+    parse_memory_key_only,
 };
 pub use crate::index::keys_probe::{
     PROBE_HASH_LEN, PROBE_MANIFEST_START, ProbeHash, import_target, import_target_value, import_targets_prefix,

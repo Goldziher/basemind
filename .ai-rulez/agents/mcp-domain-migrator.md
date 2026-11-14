@@ -26,7 +26,7 @@ parallelizes.
 | `code` | outline, symbols, grep, files, find, definition, references, callers, implementations, dependents, expand, semantic, chunk | always |
 | `graph` | calls, neighbors, path, subgraph, communities, map, export, display, open | always |
 | `git` | status, recent, touching, by_path, churn, diff, diff_outline, blame, blame_symbol, symbol_history, search | always |
-| `memory` | put, get, list, search, delete, audit, documents, mine, proposals, accept, reject | always (body-gated) |
+| `memory` | put, get, list, search, delete, documents | always (body-gated) |
 | `agents` | register, list, thread_start, thread_list, join, leave, members, add_member, remove_member, archive, post, history, message, inbox, ack, wait | `comms` |
 | `workspace` | workspaces, worktrees, branches, claim, release | `comms` |
 | `admin` | status, repo, rescan, cache_stats, gc, cache_clear, telemetry | always |

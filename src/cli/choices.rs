@@ -92,8 +92,3 @@ choice_enum! {
     /// `admin telemetry` aggregation window.
     TelemetryWindow { Today => "today", Hour => "1h", Day => "24h", All => "all" }
 }
-
-choice_enum! {
-    /// `memory proposals` kind filter.
-    ProposalKind { Skill => "skill", Memory => "memory" }
-}

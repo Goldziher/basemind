@@ -1,5 +1,5 @@
 //! Forwarded-op handlers for the [`Broker`](super::daemon::Broker): the resolved-refs read plus the
-//! CORE memory and PROPOSAL governance operations a `daemon_writer` serve ships to the daemon (the
+//! CORE memory operations a `daemon_writer` serve ships to the daemon (the
 //! machine's sole fjall writer). Split out of `daemon.rs` to keep it under the 1000-line
 //! `rust-max-lines` cap; this is a second `impl Broker` block. The request dispatch stays in
 //! `daemon.rs` and calls these methods on the same type.
@@ -151,47 +151,6 @@ impl Broker {
             },
             Err(join) => CommsResponse::Error {
                 code: "memory_panicked".to_string(),
-                message: join.to_string(),
-            },
-        }
-    }
-
-    /// Run a forwarded PROPOSAL governance operation against the workspace's read-write index. Same
-    /// contract as [`on_memory`](Self::on_memory): the daemon is the sole fjall writer, the pool's
-    /// per-workspace store lock serializes same-workspace ops (so the mine-apply tombstone-check +
-    /// insert see one consistent view), the fjall work runs on a blocking thread, and any error
-    /// becomes a `CommsResponse::Error` (never a torn link).
-    #[cfg(feature = "memory")]
-    pub(super) async fn on_governance(
-        &self,
-        root: std::path::PathBuf,
-        scope: String,
-        op: super::proposals_proto::GovernanceOp,
-    ) -> CommsResponse {
-        self.mark_active().await;
-        let pool = Arc::clone(&self.workspaces);
-        let outcome = tokio::task::spawn_blocking(move || {
-            pool.with_workspace_mut(&root, |store| {
-                let idx = store
-                    .index_db
-                    .as_ref()
-                    .ok_or(crate::mcp::memory_ops::MemoryOpError::IndexUnavailable)?;
-                crate::mcp::proposals_ops::run_governance_op(idx, &scope, &op)
-            })
-        })
-        .await;
-        match outcome {
-            Ok(Ok(Ok(outcome))) => CommsResponse::Governance(outcome),
-            Ok(Ok(Err(error))) => CommsResponse::Error {
-                code: "governance_op_failed".to_string(),
-                message: error.to_string(),
-            },
-            Ok(Err(error)) => CommsResponse::Error {
-                code: "governance_workspace_failed".to_string(),
-                message: error.to_string(),
-            },
-            Err(join) => CommsResponse::Error {
-                code: "governance_panicked".to_string(),
                 message: join.to_string(),
             },
         }

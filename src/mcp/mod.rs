@@ -43,16 +43,12 @@ mod helpers_fingerprint;
 mod helpers_git;
 mod helpers_git_file;
 mod helpers_git_show;
-#[cfg(feature = "memory")]
-mod helpers_governance;
 mod helpers_graph;
 mod helpers_graphview;
 mod helpers_grep;
 mod helpers_impls;
 mod helpers_intel;
 mod helpers_memory;
-#[cfg(feature = "memory")]
-mod helpers_proposals;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 mod helpers_registry;
 mod helpers_telemetry;
@@ -81,8 +77,6 @@ pub(crate) mod memory_ops;
 pub mod mode;
 mod notifications;
 mod prompts;
-#[cfg(feature = "memory")]
-pub(crate) mod proposals_ops;
 mod resources;
 mod router_cache;
 pub(crate) mod savings;
@@ -113,7 +107,6 @@ pub(crate) mod types_comms;
 mod types_community;
 mod types_documents;
 mod types_git;
-pub(crate) mod types_governance;
 mod types_graph;
 mod types_graphview;
 mod types_impls;
@@ -181,9 +174,6 @@ pub mod params {
     pub use super::types_admin::{AdminParams, CacheClearParams, CacheGcParams, CacheStatsParams};
     pub use super::types_code::CodeParams;
     pub use super::types_git::GitParams;
-    pub use super::types_governance::{
-        MemoryAuditParams, ProposalAcceptParams, ProposalRejectParams, ProposalsListParams, ProposalsMineParams,
-    };
     pub use super::types_graph::{CallGraphParams, GraphParams};
     pub use super::types_impls::FindImplementationsParams;
     pub use super::types_memory::{

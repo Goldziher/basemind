@@ -130,7 +130,7 @@ The broker is built so a stalled or restarted daemon does not lose or duplicate 
 - **Diagnostics.** The daemon's output goes to `daemon.log` in the comms directory (rotated at
   8 MiB); `basemind comms doctor` prints its path.
 
-Protocol version 4 correlates every request with a reply id, so a late reply to an abandoned request
+The protocol (version 5) correlates every request with a reply id, so a late reply to an abandoned request
 is discarded instead of being mistaken for the next answer. A client and daemon that disagree on the
 protocol version fail the handshake with a clear error, and the newer client replaces the older
 daemon.

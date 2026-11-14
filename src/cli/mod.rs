@@ -61,8 +61,7 @@ pub enum ToolCmd {
     /// open.
     #[command(subcommand)]
     Graph(graph::GraphCmd),
-    /// Shared agent memory, document search, and the co-change proposal queue
-    /// (needs `--features memory,documents`).
+    /// Shared agent memory and document search (needs `--features memory,documents`).
     #[command(subcommand)]
     Memory(memory::MemoryCmd),
     /// Server administration: repo identity, telemetry, tokens, eval.

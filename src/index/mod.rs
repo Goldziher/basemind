@@ -20,7 +20,7 @@
 pub mod fault;
 pub mod grep_bloom;
 pub mod keys;
-pub mod keys_governance;
+pub mod keys_memory;
 pub mod keys_probe;
 pub(crate) mod layered_merge;
 #[cfg(test)]
@@ -113,8 +113,6 @@ const KEYSPACE_MEMTABLE_BYTES: &[(&str, u64)] = &[
     ("grep_bloom", MEMTABLE_COLD_BYTES),
     ("embeddings", MEMTABLE_COLD_BYTES),
     ("memory_by_key", MEMTABLE_COLD_BYTES),
-    ("memory_archive", MEMTABLE_COLD_BYTES),
-    ("proposals", MEMTABLE_COLD_BYTES),
 ];
 
 /// Memtable size for the BM25 posting keyspace — the one partition that measurably benefits from
@@ -365,15 +363,6 @@ pub struct IndexDb {
     /// Always created for DB stability; used by `memory` feature tools.
     #[allow(dead_code)]
     pub(crate) memory_by_key: Keyspace,
-    /// `memory_archive`: same key shape as `memory_by_key` — holds memories the W10 audit
-    /// auto-archived after going stale > 90 days. Recoverable; never read on the hot path.
-    /// Always created for DB stability; used by `memory` feature governance tools.
-    #[allow(dead_code)]
-    pub(crate) memory_archive: Keyspace,
-    /// `proposals`: scope + kind + content-addressed id → msgpack proposal record. Backs the
-    /// W11 propose-don't-commit skill-mining surface. Always created for DB stability.
-    #[allow(dead_code)]
-    pub(crate) proposals: Keyspace,
     /// First fatal commit error (disk full, poisoned handle) seen through any clone of this handle;
     /// shared so the writers record it where it happens and the scan polls one place.
     pub(crate) fault: std::sync::Arc<fault::IndexFault>,
@@ -466,7 +455,7 @@ impl IndexDb {
         Self::open_with_memory(view_dir, &view_dir.join(crate::store_layout::MEMORY_STORE_DIR))
     }
 
-    /// [`IndexDb::open`] with the memory keyspaces (`memory_by_key`, `memory_archive`, `proposals`)
+    /// [`IndexDb::open`] with the memory keyspace (`memory_by_key`)
     /// backed by the shared Fjall database at `memory_dir` — one per repo group, so they survive
     /// eviction of any view and are shared by every worktree of the clone. Rows an older build left
     /// in this view are merged into that store (last writer wins by timestamp) and removed from the
@@ -572,8 +561,6 @@ impl IndexDb {
         let grep_bloom = open_keyspace(&db, "grep_bloom")?;
         let embeddings = open_keyspace(&db, "embeddings")?;
         let memory_by_key = memory.memory_by_key.clone();
-        let memory_archive = memory.memory_archive.clone();
-        let proposals = memory.proposals.clone();
 
         meta.insert(META_SCHEMA_VER, INDEX_SCHEMA_VER.to_be_bytes())?;
 
@@ -628,8 +615,6 @@ impl IndexDb {
             grep_bloom,
             embeddings,
             memory_by_key,
-            memory_archive,
-            proposals,
             fault: std::sync::Arc::default(),
             _memory: memory,
             memory_detached,
@@ -836,7 +821,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         {
             let db = IndexDb::open(dir.path()).unwrap();
-            for ks in [&db.code_bm25_postings, &db.refs_by_def, &db.proposals] {
+            for ks in [&db.code_bm25_postings, &db.refs_by_def, &db.memory_by_key] {
                 for i in 0..ROWS {
                     ks.insert(i.to_be_bytes(), vec![7u8; VALUE_LEN]).unwrap();
                 }
@@ -915,12 +900,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         {
             let db = IndexDb::open(dir.path()).unwrap();
-            assert_eq!(db.proposals.disk_space(), 0, "nothing written yet");
+            assert_eq!(db.memory_by_key.disk_space(), 0, "nothing written yet");
         }
         let db = IndexDb::open(dir.path()).unwrap();
-        write_until_rotation_probe(&db.proposals);
+        write_until_rotation_probe(&db.memory_by_key);
         assert!(
-            flushed_within(&db.proposals, std::time::Duration::from_secs(30)),
+            flushed_within(&db.memory_by_key, std::time::Duration::from_secs(30)),
             "a reopened keyspace must still rotate at its configured {MEMTABLE_COLD_BYTES}-byte \
              memtable size; no flush means fjall recovered the 64 MiB default instead"
         );

@@ -951,24 +951,6 @@ impl crate::mcp::HostBackend for WorkspacePool {
         .map_err(|error| error.to_string())
         .and_then(|result| result.map_err(|error| error.to_string()))
     }
-
-    #[cfg(feature = "memory")]
-    fn host_governance(
-        &self,
-        root: &Path,
-        scope: &str,
-        op: crate::comms::proposals_proto::GovernanceOp,
-    ) -> Result<crate::comms::proposals_proto::GovernanceOutcome, String> {
-        self.with_workspace_mut(root, |store| {
-            let idx = store
-                .index_db
-                .as_ref()
-                .ok_or(crate::mcp::memory_ops::MemoryOpError::IndexUnavailable)?;
-            crate::mcp::proposals_ops::run_governance_op(idx, scope, &op)
-        })
-        .map_err(|error| error.to_string())
-        .and_then(|result| result.map_err(|error| error.to_string()))
-    }
 }
 
 #[cfg(test)]

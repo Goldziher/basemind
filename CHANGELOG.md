@@ -32,6 +32,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `basemind.toml` is still accepted and ignored; one with keys in it logs a warning. `BASEMIND_SHELLS_SOCKET`
   has no effect. Kill any shell sessions before upgrading: a shells daemon an older version left running is
   still listed by `basemind comms doctor` for one more release, but this version cannot stop it.
+- **Memory audit, mining and proposals.** The `memory` modes `audit`, `mine`, `proposals`, `accept` and
+  `reject` are gone from the MCP tool, together with the matching `basemind memory` commands; a rescan no
+  longer audits stored notes. `put`, `get`, `list`, `search`, `delete` and `documents` are unchanged. Stored
+  notes keep their `verified`, `last_verified` and `importance` fields, which nothing updates any more. The
+  `memory_archive` and `proposals` keyspaces an older version wrote stay in the repo's `memory.fjall`
+  untouched and are never opened. The comms protocol version goes from 4 to 5 because the `governance`
+  request was removed: the first upgraded session replaces a running older daemon, and a client and daemon
+  that disagree fail the handshake with `proto_skew`.
 
 ### Fixed
 

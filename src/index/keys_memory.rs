@@ -1,16 +1,15 @@
-//! Byte-level key encoding/decoding for the **governance-tier** Fjall keyspaces: agent memory
-//! (`memory_by_key` / `memory_archive`) and mined proposals (`proposals`).
+//! Byte-level key encoding/decoding for the agent-memory Fjall keyspace (`memory_by_key`).
 //!
 //! Carved out of [`crate::index::keys`], which holds the *code-map* keyspaces. The two groups
 //! share the length-prefix codec but nothing else: a code-map key is addressed by
-//! `(rel_path, byte offset)` — a position in the scanned tree — whereas a governance key is
+//! `(rel_path, byte offset)` — a position in the scanned tree — whereas a memory key is
 //! addressed by a `(scope, ordinal byte, owner)` namespace triple with NUL separators, and never
 //! names a file at all. They are written by different subsystems (the rayon scanner vs. the MCP
-//! memory/proposal tools), evolve on different schedules, and have no shared encoder.
+//! memory tools), evolve on different schedules, and have no shared encoder.
 //!
-//! Both encoders here place the namespace triple ahead of the payload identifier so that one
+//! The encoder places the namespace triple ahead of the payload identifier so that one
 //! namespace's entries sort contiguously and a single range scan returns exactly that namespace.
-//! The `*_VIS_*` / `*_KIND_*` ordinals are persisted on disk: they are stable and append-only.
+//! The `*_VIS_*` ordinals are persisted on disk: they are stable and append-only.
 //!
 //! Public paths are unchanged — [`crate::index::keys`] re-exports every item below, so call sites
 //! keep using `crate::index::keys::memory_by_key` and friends.
@@ -50,17 +49,6 @@ pub fn memory_by_key_ns_prefix(scope: &str, vis_byte: u8, owner: &str) -> Vec<u8
     out.push(0u8);
     out.push(vis_byte);
     let _ = write_len_prefixed(&mut out, owner.as_bytes());
-    out.push(0u8);
-    out
-}
-
-/// Prefix bytes for "every memory entry in this `scope`" — across all visibility tiers and
-/// owners. Because `scope` is length-prefixed, this prefix bounds exactly one scope's keys
-/// (a longer scope encodes a different `u16` length, so no spillover). Used by the background
-/// rescan audit to scope its scan to one repo without enumerating per-agent owners.
-pub fn memory_scope_prefix(scope: &str) -> Vec<u8> {
-    let mut out = Vec::with_capacity(2 + scope.len() + 1);
-    let _ = write_len_prefixed(&mut out, scope.as_bytes());
     out.push(0u8);
     out
 }
@@ -105,55 +93,6 @@ pub fn parse_memory_key_only(buf: &[u8]) -> Option<&str> {
     c += 1;
     let key = read_len_prefixed_ref(buf, &mut c)?;
     std::str::from_utf8(key).ok()
-}
-
-/// Proposal kind ordinal for a **memory** candidate. Stable, append-only.
-pub const PROPOSAL_KIND_MEMORY: u8 = 0;
-/// Proposal kind ordinal for a **skill** candidate (co-change association-rule). Stable, append-only.
-pub const PROPOSAL_KIND_SKILL: u8 = 1;
-/// Tombstone kind — written when a proposal is rejected so re-mining cannot resurface it.
-/// Value bytes are empty (marker only). Stable, append-only.
-pub const PROPOSAL_KIND_TOMBSTONE: u8 = 2;
-
-/// `proposal_by_id`: `u16:scope_len ‖ scope ‖ NUL ‖ kind_byte ‖ u16:id_len ‖ id`.
-///
-/// `(scope, kind_byte)` is the namespace; `id` is the content-addressed proposal id (hex blake3
-/// of the normalized candidate) so re-mining the same candidate overwrites rather than dupes.
-/// Layout mirrors [`memory_by_key`]: the namespace prefix sorts contiguously, so a
-/// [`proposal_ns_prefix`] range scan returns exactly one `(scope, kind)` namespace.
-pub fn proposal_by_id(scope: &str, kind_byte: u8, id: &str) -> Vec<u8> {
-    let mut out = Vec::with_capacity(2 + scope.len() + 1 + 1 + 2 + id.len());
-    let _ = write_len_prefixed(&mut out, scope.as_bytes());
-    out.push(0u8);
-    out.push(kind_byte);
-    let _ = write_len_prefixed(&mut out, id.as_bytes());
-    out
-}
-
-/// Prefix bytes for "all proposals in this `(scope, kind_byte)` namespace" — feed to a range scan.
-pub fn proposal_ns_prefix(scope: &str, kind_byte: u8) -> Vec<u8> {
-    let mut out = Vec::with_capacity(2 + scope.len() + 1 + 1);
-    let _ = write_len_prefixed(&mut out, scope.as_bytes());
-    out.push(0u8);
-    out.push(kind_byte);
-    out
-}
-
-/// Decode `(scope, kind_byte, id)` from a raw `proposal_by_id` key buffer.
-pub fn parse_proposal_by_id(buf: &[u8]) -> Option<(String, u8, String)> {
-    let mut c = 0;
-    let scope = String::from_utf8(read_len_prefixed(buf, &mut c)?).ok()?;
-    if buf.len() <= c {
-        return None;
-    }
-    c += 1;
-    if buf.len() <= c {
-        return None;
-    }
-    let kind_byte = buf[c];
-    c += 1;
-    let id = String::from_utf8(read_len_prefixed(buf, &mut c)?).ok()?;
-    Some((scope, kind_byte, id))
 }
 
 #[cfg(test)]

@@ -873,8 +873,6 @@ impl Broker {
             CommsRequest::GitHistory { root, op } => Ok(self.on_git_history(root, op).await),
             #[cfg(feature = "memory")]
             CommsRequest::Memory { root, scope, op } => Ok(self.on_memory(root, scope, op).await),
-            #[cfg(feature = "memory")]
-            CommsRequest::Governance { root, scope, op } => Ok(self.on_governance(root, scope, op).await),
             CommsRequest::AccessedPaths => Ok(self.on_accessed_paths()),
             CommsRequest::WorkspacesList => Ok(self.on_workspaces_list().await),
             CommsRequest::WorktreesList { repo_id } => Ok(self.on_worktrees_list(repo_id).await),

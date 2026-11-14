@@ -4,7 +4,7 @@
 version = 1
 ai_rulez_version = '5.13.2'
 scope = 'all'
-tree = 'sha256:744d1101b785db39a86ca571d16c3e6277695bcf73c9c488e6a621816cb747f2'
+tree = 'sha256:5ffa74fca1461ab232180c9bf12c36057e1b9d350ec795379a3c75dc6e4eff19'
 
 [[served]]
 name = 'adr-workflow'
@@ -160,7 +160,7 @@ digest = 'sha256:ada4405aa2cd8071ff0dcd12117493229d428f843925952483050a980084ff5
 kind = 'agent'
 id = 'mcp-domain-migrator'
 path = 'agents/mcp-domain-migrator.md'
-digest = 'sha256:33ea138672313846a9f4bb34184e70516a134efe5882f34001e659b8c8166bbf'
+digest = 'sha256:1b45276113326eff57a0878164fef33bbd4f76b45ad5219c16754916d51703a5'
 
 [[item]]
 kind = 'agent'
@@ -238,7 +238,7 @@ digest = 'sha256:2d23ea5488d2fcd665d4b170b1cefe57c255f221dd58dcc38f2d4a8577d66f9
 kind = 'context'
 id = 'mcp-surface'
 path = 'context/mcp-surface.md'
-digest = 'sha256:868bb35a1c6b6c3b194212b5680284c7fa560ffc05b5dfbd1f8cf47a6cc84150'
+digest = 'sha256:94a0d6d70466d35826fff2f513fc3d6e26bc72a1cc47e903716c8ae3694d73d2'
 
 [[item]]
 kind = 'context'

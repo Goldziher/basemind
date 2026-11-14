@@ -201,13 +201,8 @@ define_mode! {
         List => "list", "enumerate memory entries in key order";
         Search => "search", "semantic search across stored memory";
         Delete => "delete", "remove a memory entry by key";
-        Audit => "audit", "re-verify stored notes against the live code index and decay stale ones";
         Documents => "documents", "semantic search over indexed PDFs, Office, HTML, markdown, \
                      config and data files instead of opening them";
-        Mine => "mine", "derive co-change proposals from git history";
-        Proposals => "proposals", "list proposals awaiting review";
-        Accept => "accept", "accept a proposal into memory";
-        Reject => "reject", "reject a proposal";
     }
 }
 

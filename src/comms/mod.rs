@@ -12,7 +12,7 @@ pub mod ids;
 
 #[cfg(all(feature = "comms", any(unix, windows)))]
 pub mod client;
-/// Second `impl CommsClient` block: the daemon-forwarding rescan / memory / governance /
+/// Second `impl CommsClient` block: the daemon-forwarding rescan / memory /
 /// resolved-refs / git-history RPCs, split out of `client.rs` for the line cap.
 #[cfg(all(feature = "comms", any(unix, windows)))]
 mod client_forward;
@@ -22,7 +22,7 @@ pub mod code_search_proto;
 pub mod cursor;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 pub mod daemon;
-/// Second `impl Broker` block: the forwarded memory / governance / resolved-refs handlers, split
+/// Second `impl Broker` block: the forwarded memory / resolved-refs handlers, split
 /// out of `daemon.rs` for the line cap.
 #[cfg(all(feature = "comms", any(unix, windows)))]
 mod daemon_forward_handlers;
@@ -73,8 +73,6 @@ pub mod keys;
 pub mod memory_proto;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 pub mod model;
-#[cfg(all(feature = "comms", feature = "memory"))]
-pub mod proposals_proto;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 pub mod protocol;
 #[cfg(all(feature = "comms", any(unix, windows)))]

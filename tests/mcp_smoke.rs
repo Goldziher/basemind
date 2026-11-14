@@ -1367,319 +1367,6 @@ async fn mcp_server_exercises_representative_tools() {
         );
     }
 
-    #[cfg(feature = "memory")]
-    {
-        let _ = service
-            .call_tool(call_params(
-                "memory",
-                json!({ "mode": "put",
-                    "key": "audit_probe",
-                    "value": "a memory note with no code refs",
-                    "embed": false,
-                }),
-            ))
-            .await
-            .expect("memory_put audit_probe");
-
-        let body = decode_text(
-            &service
-                .call_tool(call_params("memory", json!({ "mode": "audit",  "key": "audit_probe" })))
-                .await
-                .expect("memory_audit single-key"),
-        );
-        assert_eq!(
-            body.get("audited").and_then(Value::as_u64),
-            Some(1),
-            "memory_audit single-key must report audited=1: {body}"
-        );
-        let results = body.get("results").and_then(Value::as_array).expect("results");
-        assert_eq!(results.len(), 1, "single-key audit must return one result");
-        assert_eq!(
-            results[0].get("state").and_then(Value::as_str),
-            Some("unverified"),
-            "empty-provenance memory must audit as unverified: {results:?}"
-        );
-
-        let dry_body = decode_text(
-            &service
-                .call_tool(call_params(
-                    "memory",
-                    json!({ "mode": "audit",  "key": "audit_probe", "dry_run": true }),
-                ))
-                .await
-                .expect("memory_audit dry_run"),
-        );
-        assert_eq!(
-            dry_body.get("audited").and_then(Value::as_u64),
-            Some(1),
-            "dry_run audit must still report audited=1: {dry_body}"
-        );
-
-        let range_body = decode_text(
-            &service
-                .call_tool(call_params("memory", json!({ "mode": "audit",  "limit": 50 })))
-                .await
-                .expect("memory_audit range"),
-        );
-        let range_audited = range_body.get("audited").and_then(Value::as_u64).expect("audited");
-        assert!(
-            range_audited >= 1,
-            "range audit must cover at least the audit_probe key: {range_body}"
-        );
-
-        let _ = service
-            .call_tool(call_params(
-                "memory",
-                json!({ "mode": "delete",  "key": "audit_probe" }),
-            ))
-            .await
-            .expect("memory_delete audit_probe");
-    }
-
-    #[cfg(feature = "memory")]
-    {
-        let mine_body = decode_text(
-            &service
-                .call_tool(call_params("memory", json!({ "mode": "mine"})))
-                .await
-                .expect("proposals_mine default"),
-        );
-        assert!(
-            mine_body.get("mined").and_then(Value::as_u64).is_some(),
-            "proposals_mine must return `mined` field: {mine_body}"
-        );
-        assert_eq!(
-            mine_body.get("window_inspected").and_then(Value::as_u64),
-            Some(200),
-            "proposals_mine must echo window_inspected=200 (default): {mine_body}"
-        );
-        assert!(
-            mine_body.get("skipped_bulk").and_then(Value::as_u64).is_some(),
-            "proposals_mine must return `skipped_bulk` field: {mine_body}"
-        );
-
-        let list_body = decode_text(
-            &service
-                .call_tool(call_params(
-                    "memory",
-                    json!({ "mode": "proposals",  "kind": "skill", "limit": 50 }),
-                ))
-                .await
-                .expect("proposals_list after default mine"),
-        );
-        assert_eq!(
-            list_body.get("total").and_then(Value::as_u64),
-            Some(0),
-            "proposals_list must return total=0 after a no-candidate mine: {list_body}"
-        );
-        assert_eq!(
-            list_body.get("truncated").and_then(Value::as_bool),
-            Some(false),
-            "proposals_list must return truncated=false for an empty list: {list_body}"
-        );
-        assert!(
-            list_body.get("proposals").and_then(Value::as_array).map(Vec::is_empty) == Some(true),
-            "proposals array must be empty: {list_body}"
-        );
-
-        let mine_low = decode_text(
-            &service
-                .call_tool(call_params(
-                    "memory",
-                    json!({ "mode": "mine",
-                        "min_support": 1,
-                        "min_confidence": 0.1,
-                        "max_files_per_commit": 10,
-                        "window": 50,
-                    }),
-                ))
-                .await
-                .expect("proposals_mine min_support=1"),
-        );
-        let mined_low = mine_low.get("mined").and_then(Value::as_u64).unwrap_or(0);
-        assert!(
-            mined_low >= 1,
-            "proposals_mine(min_support=1) must mine the fixture's co-change cluster: {mine_low}"
-        );
-
-        let list2 = decode_text(
-            &service
-                .call_tool(call_params("memory", json!({ "mode": "proposals",  "limit": 10 })))
-                .await
-                .expect("proposals_list after low-threshold mine"),
-        );
-        let proposals = list2
-            .get("proposals")
-            .and_then(Value::as_array)
-            .expect("proposals array");
-        assert_eq!(
-            proposals.len() as u64,
-            mined_low,
-            "proposals_list count must match mined count: {list2}"
-        );
-        let accept_id = proposals[0]
-            .get("id")
-            .and_then(Value::as_str)
-            .expect("accept id")
-            .to_string();
-        let accept_files: Vec<String> = proposals[0]
-            .get("files")
-            .and_then(Value::as_array)
-            .expect("proposal files")
-            .iter()
-            .filter_map(|f| f.as_str().map(String::from))
-            .collect();
-        assert!(
-            !accept_files.is_empty(),
-            "a co-change proposal must carry at least one file: {list2}"
-        );
-
-        let accept_body = decode_text(
-            &service
-                .call_tool(call_params("memory", json!({ "mode": "accept",  "id": accept_id })))
-                .await
-                .expect("proposal_accept"),
-        );
-        assert_eq!(
-            accept_body.get("accepted").and_then(Value::as_bool),
-            Some(true),
-            "proposal_accept must return accepted=true: {accept_body}"
-        );
-        let memory_key = accept_body
-            .get("memory_key")
-            .and_then(Value::as_str)
-            .expect("memory_key from proposal_accept")
-            .to_string();
-        assert!(
-            memory_key.starts_with("skill/cochange-"),
-            "auto-derived key must start with skill/cochange-: {memory_key}"
-        );
-
-        let audit_live = decode_text(
-            &service
-                .call_tool(call_params("memory", json!({ "mode": "audit",  "key": &memory_key })))
-                .await
-                .expect("memory_audit after accept"),
-        );
-        let live_results = audit_live
-            .get("results")
-            .and_then(Value::as_array)
-            .expect("live audit results");
-        assert_eq!(
-            live_results.len(),
-            1,
-            "memory_audit must return one result for the accepted key: {audit_live}"
-        );
-        assert_eq!(
-            live_results[0].get("state").and_then(Value::as_str),
-            Some("verified"),
-            "freshly accepted skill (all files present) must audit as verified: {audit_live}"
-        );
-
-        let probe_file = accept_files[0].clone();
-        let probe_abs = root.join(&probe_file);
-        let saved = std::fs::read(&probe_abs).expect("read probe file before delete");
-        std::fs::remove_file(&probe_abs).expect("remove probe file");
-        let _ = service
-            .call_tool(call_params("admin", json!({ "mode": "rescan"})))
-            .await
-            .expect("rescan after file deletion");
-        let stale_audit = decode_text(
-            &service
-                .call_tool(call_params(
-                    "memory",
-                    json!({ "mode": "audit",  "key": &memory_key, "dry_run": true }),
-                ))
-                .await
-                .expect("memory_audit stale wedge"),
-        );
-        let stale_results = stale_audit
-            .get("results")
-            .and_then(Value::as_array)
-            .expect("stale audit results");
-        assert_eq!(stale_results.len(), 1, "stale audit must have one result");
-        assert_eq!(
-            stale_results[0].get("state").and_then(Value::as_str),
-            Some("stale"),
-            "memory_audit must return state=stale after a referenced file is deleted: \
-             {stale_results:?} (file: {probe_file})"
-        );
-
-        std::fs::write(&probe_abs, &saved).expect("restore probe file");
-        let _ = service
-            .call_tool(call_params("admin", json!({ "mode": "rescan"})))
-            .await
-            .expect("rescan after restore");
-        let _ = service
-            .call_tool(call_params("memory", json!({ "mode": "delete",  "key": &memory_key })))
-            .await;
-
-        let mine_e = decode_text(
-            &service
-                .call_tool(call_params(
-                    "memory",
-                    json!({ "mode": "mine",
-                        "min_support": 1,
-                        "min_confidence": 0.1,
-                        "max_files_per_commit": 10,
-                        "window": 50,
-                    }),
-                ))
-                .await
-                .expect("proposals_mine for reject test"),
-        );
-        let mined_e = mine_e.get("mined").and_then(Value::as_u64).unwrap_or(0);
-        assert!(
-            mined_e >= 1,
-            "re-mine must regenerate the cluster (git history is immutable): {mine_e}"
-        );
-        let list_e = decode_text(
-            &service
-                .call_tool(call_params("memory", json!({ "mode": "proposals",  "limit": 10 })))
-                .await
-                .expect("proposals_list for reject"),
-        );
-        let reject_id = list_e["proposals"][0]
-            .get("id")
-            .and_then(Value::as_str)
-            .expect("reject id")
-            .to_string();
-        let reject_body = decode_text(
-            &service
-                .call_tool(call_params(
-                    "memory",
-                    json!({ "mode": "reject",  "id": reject_id, "reason": "smoke-test rejection" }),
-                ))
-                .await
-                .expect("proposal_reject"),
-        );
-        assert_eq!(
-            reject_body.get("rejected").and_then(Value::as_bool),
-            Some(true),
-            "proposal_reject must return rejected=true: {reject_body}"
-        );
-        let mine_after = decode_text(
-            &service
-                .call_tool(call_params(
-                    "memory",
-                    json!({ "mode": "mine",
-                        "min_support": 1,
-                        "min_confidence": 0.1,
-                        "max_files_per_commit": 10,
-                        "window": 50,
-                    }),
-                ))
-                .await
-                .expect("proposals_mine after reject"),
-        );
-        let mined_after = mine_after.get("mined").and_then(Value::as_u64).unwrap_or(0);
-        assert!(
-            mined_after < mined_e,
-            "re-mine after reject must produce fewer candidates (tombstone suppressed): \
-             mined_after={mined_after} mined_e={mined_e}"
-        );
-    }
-
     let body = decode_text(
         &service
             .call_tool(call_params("admin", json!({ "mode": "rescan"})))
@@ -5187,22 +4874,26 @@ async fn memory_tool_validates_every_mode_before_running_it() {
         .find(|t| t.name.as_ref() == "memory")
         .expect("the `memory` domain tool must always be advertised");
     let schema = serde_json::to_string(&memory.input_schema).expect("serialize inputSchema");
-    for mode in [
-        "put",
-        "get",
-        "list",
-        "search",
-        "delete",
-        "audit",
-        "documents",
-        "mine",
-        "proposals",
-        "accept",
-        "reject",
-    ] {
+    for mode in ["put", "get", "list", "search", "delete", "documents"] {
         assert!(
             schema.contains(&format!("\"{mode}\"")),
             "`memory` inputSchema must advertise mode `{mode}`: {schema}"
+        );
+    }
+
+    // The audit, mining and proposal modes are gone: not advertised, and refused as unknown.
+    for mode in ["audit", "mine", "proposals", "accept", "reject"] {
+        assert!(
+            !schema.contains(&format!("\"{mode}\"")),
+            "`memory` inputSchema must not advertise removed mode `{mode}`: {schema}"
+        );
+        let message = refusal(
+            service.call_tool(call_params("memory", json!({ "mode": mode }))).await,
+            "a removed mode",
+        );
+        assert!(
+            message.contains("put") && message.contains("documents"),
+            "removed mode `{mode}` must be refused with the accepted set: {message}"
         );
     }
 
@@ -5228,19 +4919,19 @@ async fn memory_tool_validates_every_mode_before_running_it() {
         "an unknown mode must list the accepted set: {message}"
     );
 
-    // A field belonging to a DIFFERENT mode is rejected, not silently ignored: `window` belongs to
-    // `mine`, not `get`.
+    // A field belonging to a DIFFERENT mode is rejected, not silently ignored: `prefix` belongs to
+    // `list`, not `get`.
     let message = refusal(
         service
             .call_tool(call_params(
                 "memory",
-                json!({ "mode": "get", "key": "k", "window": 10 }),
+                json!({ "mode": "get", "key": "k", "prefix": "skill/" }),
             ))
             .await,
-        "mode `get` given a `mine` field",
+        "mode `get` given a `list` field",
     );
     assert!(
-        message.contains("`memory` mode `get` does not accept") && message.contains("`window`"),
+        message.contains("`memory` mode `get` does not accept") && message.contains("`prefix`"),
         "mode `get` must reject a sibling mode's field rather than ignore it: {message}"
     );
 

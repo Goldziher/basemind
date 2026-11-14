@@ -78,14 +78,4 @@ pub(crate) trait HostBackend: Send + Sync {
         scope: &str,
         op: crate::comms::memory_proto::MemoryOp,
     ) -> Result<crate::comms::memory_proto::MemoryOutcome, String>;
-
-    /// Run a PROPOSAL governance operation against the workspace's read-write index. Same locking
-    /// contract as [`host_memory`](Self::host_memory).
-    #[cfg(feature = "memory")]
-    fn host_governance(
-        &self,
-        root: &Path,
-        scope: &str,
-        op: crate::comms::proposals_proto::GovernanceOp,
-    ) -> Result<crate::comms::proposals_proto::GovernanceOutcome, String>;
 }

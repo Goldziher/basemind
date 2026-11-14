@@ -179,9 +179,9 @@ src/
 │   ├── helpers_<area>.rs   — the run_<mode> dispatch bodies, area-sliced: admin, archmap,
 │   │                         calls, calls_scan, code, code_search (feature code-search),
 │   │                         comms, community, documents, expand, files, fingerprint,
-│   │                         git, git_file, governance (feature memory), graph, graphview,
-│   │                         grep, impls, intel (definition mode body), memory, proposals
-│   │                         (feature memory), registry, telemetry, traverse
+│   │                         git, git_file, graph, graphview,
+│   │                         grep, impls, intel (definition mode body), memory,
+│   │                         registry, telemetry, traverse
 │   ├── memory.rs           — search_documents + memory_* bodies behind the `memory` domain
 │   ├── types.rs, types_<area>.rs — one flat <Domain>Params per domain (optional sibling
 │   │                         fields per mode) + response structs, mirroring the
@@ -215,8 +215,7 @@ src/
 │                             (feature code-search)
 ├── registry/                — daemon-side worktree/branch claim registry
 ├── cli/                     — CLI subcommand groups, 1:1 with the seven MCP domains: admin,
-│                             agents (daemon-agent verbs), code, git, graph, memory (absorbs
-│                             the old governance mine/proposals/accept/reject/audit),
+│                             agents (daemon-agent verbs), code, git, graph, memory,
 │                             registry (the `workspace` group);
 │                             comms_daemon.rs is `basemind comms` — daemon lifecycle only
 │                             (daemon/start/stop/status/doctor)
@@ -412,7 +411,9 @@ database at `<cache>/cache/repos/<group>/memory.fjall/` (see [Split memory](#spl
 | Keyspace (in `memory.fjall`) | Purpose |
 |---|---|
 | `memory_by_key` | Agent memory (`memory` modes `put` / `get`); LanceDB owns the embeddings. |
-| `memory_archive`, `proposals` | Archived memory entries and mined co-change proposals (governance tier). |
+
+A store written before the audit and mining features were removed also holds `memory_archive` and
+`proposals`. They are never opened and never deleted.
 
 Key shapes (length-prefixed, see `src/index/keys.rs`):
 
@@ -538,7 +539,7 @@ single source of the wire spellings, the CLI parity table, and the telemetry key
 | `code` | outline, symbols, grep, files, find, definition, references, callers, implementations, dependents, expand, semantic, chunk | always |
 | `graph` | calls, neighbors, path, subgraph, communities, map, export, display, open | always |
 | `git` | status, recent, touching, by_path, churn, diff, diff_outline, blame, blame_symbol, symbol_history, search | always |
-| `memory` | put, get, list, search, delete, audit, documents, mine, proposals, accept, reject | always¹ |
+| `memory` | put, get, list, search, delete, documents | always¹ |
 | `admin` | status, repo, rescan, cache_stats, gc, cache_clear, telemetry | always |
 | `agents` | register, list, thread_start, thread_list, join, leave, members, add_member, remove_member, archive, post, history, message, inbox, ack, wait | `comms` |
 | `workspace` | workspaces, worktrees, branches, claim, release | `comms` |
@@ -811,7 +812,7 @@ ceiling is real rather than merely configured — ships at `docs/systemd/basemin
 ### Request correlation, timeouts and the daemon log
 
 Every client request after `Hello` travels as a `Call { id, request }` and is answered by a
-`Reply { id, response }` (protocol version 4; `ensure_daemon` replaces an older daemon on its
+`Reply { id, response }` (since protocol version 4; the current version is 5; `ensure_daemon` replaces an older daemon on its
 version check, and a skewed peer fails `Hello` with `proto_skew`). A client that abandons a request
 mid-flight (a timeout, a cancelled tool call) therefore cannot mistake the late reply for the next
 request's answer: stale ids are discarded, and only a drop in the middle of writing a frame forces
@@ -921,15 +922,15 @@ Group memory (`visibility=group`, default, `owner=""`) is shared across agents i
 memory (`visibility=individual`, `owner=agent_id`) is private to one agent. Schema is guarded by
 `MEMORY_SCHEMA_VER` (derives from `RELEASE_MINOR`); a mismatch wipes and rebuilds.
 
-The Fjall half (`memory_by_key`, `memory_archive`, `proposals`) is stored once per repo group, not per
+The Fjall half (`memory_by_key`) is stored once per repo group, not per
 view: `<cache>/cache/repos/<group>/memory.fjall/`, where `<group>` is the blake3 of the canonical main
 worktree root (the parent of the git common dir), so every linked worktree of a clone shares it; a
 root outside git uses its own workspace key. The daemon stays the sole writer and holds one handle per
 group. No garbage collector lists `repos/`: budget eviction and the orphan reaper only touch
 `workspaces/<key>/`, so evicting a cold workspace never deletes memory. On open, rows an older build
-left in a view's own keyspaces are merged into the group store (last writer wins by `updated_at`, or
-`created_at` for proposals; ties keep the larger payload) and the view's keyspaces are dropped, before
-any schema-mismatch wipe. A seeded worktree view therefore carries no memory after its first open.
+left in a view's own `memory_by_key` keyspace are merged into the group store (last writer wins by
+`updated_at`; ties keep the larger payload) and the view's keyspace is dropped, before any
+schema-mismatch wipe. A seeded worktree view therefore carries no memory after its first open.
 
 ### Worktree registry
 

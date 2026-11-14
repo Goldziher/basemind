@@ -80,9 +80,7 @@ pub struct MemoryParams {
     /// Which operation to run.
     pub mode: MemoryMode,
 
-    /// Memory key. Required by `put` / `get` / `delete`. Optional for `audit` (audit this one
-    /// record instead of the whole scope) and for `accept` (override the auto-derived
-    /// `skill/cochange-<short_id>` key).
+    /// Memory key. Required by `put` / `get` / `delete`.
     #[serde(default, alias = "name")]
     pub key: Option<String>,
     /// `put` only, required: the note body to store.
@@ -104,10 +102,10 @@ pub struct MemoryParams {
     /// `list`/`search`: exact tag filter.
     #[serde(default)]
     pub tag: Option<String>,
-    /// Result cap: `search`/`documents` default 10 (max 100); `list`/`audit`/`proposals` default 100 (max 1000).
+    /// Result cap: `search`/`documents` default 10 (max 100); `list` default 100 (max 1000).
     #[serde(default)]
     pub limit: Option<u32>,
-    /// `list`/`proposals`: resume token from `next_cursor`.
+    /// `list`: resume token from `next_cursor`.
     #[serde(default)]
     pub cursor: Option<Cursor>,
 
@@ -122,13 +120,6 @@ pub struct MemoryParams {
         alias = "search"
     )]
     pub query: Option<String>,
-
-    /// `audit`: return verdicts without persisting.
-    #[serde(default)]
-    pub dry_run: Option<bool>,
-    /// `audit`: also scan archived records.
-    #[serde(default)]
-    pub include_archived: Option<bool>,
 
     /// `documents`: token budget for `hits`.
     #[serde(default, alias = "token_budget", alias = "budget")]
@@ -149,30 +140,6 @@ pub struct MemoryParams {
     /// `documents`: case-insensitive substring over document keywords.
     #[serde(default)]
     pub keywords_contains: Option<String>,
-
-    /// `mine` only: number of recent commits to inspect (default 200, max 2000).
-    #[serde(default)]
-    pub window: Option<u32>,
-    /// `mine` only: minimum co-change count for a candidate to be emitted (default 5).
-    #[serde(default)]
-    pub min_support: Option<u32>,
-    /// `mine`: minimum support / anchor_freq (default 0.6).
-    #[serde(default)]
-    pub min_confidence: Option<f32>,
-    /// `mine`: skip commits touching more files (default 25).
-    #[serde(default)]
-    pub max_files_per_commit: Option<u32>,
-
-    /// `proposals` only: filter by proposal kind — `"skill"` or `"memory"`. Omit for all.
-    #[serde(default)]
-    #[schemars(extend("enum" = ["skill", "memory"]))]
-    pub kind: Option<String>,
-    /// Proposal id as returned by `proposals`. Required by `accept` and `reject`.
-    #[serde(default)]
-    pub id: Option<String>,
-    /// `reject` only: human-readable reason. Logged, never persisted.
-    #[serde(default)]
-    pub reason: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]

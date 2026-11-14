@@ -13,7 +13,7 @@ LanceDB vector store and answers meaning-based queries with optional cross-encod
 ## Requirements
 
 - The `memory` MCP tool's `documents` mode needs a build with `--features documents` (or
-  `full`). The other `memory` modes (`put`, `get`, `list`, `search`, `delete`, `audit`) are
+  `full`). The other `memory` modes (`put`, `get`, `list`, `search`, `delete`) are
   gated on the separate `--features memory` (also in `full`). Without the relevant feature
   the tool is advertised but the mode's body returns an error.
 - Documents must be scanned first: `basemind scan` with the documents feature extracts

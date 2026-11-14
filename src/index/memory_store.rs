@@ -1,7 +1,9 @@
-//! The per-repo-group store for user-authored state: `memory_by_key`, `memory_archive` and
-//! `proposals`.
+//! The per-repo-group store for user-authored state: `memory_by_key`.
 //!
-//! These keyspaces used to live in each view's `index.fjall`, so budget eviction of a cold workspace
+//! A store written by an older build also holds the `memory_archive` and `proposals` keyspaces of
+//! the removed audit and mining features. They are never opened and never deleted.
+//!
+//! The memory keyspace used to live in each view's `index.fjall`, so budget eviction of a cold workspace
 //! deleted its memory and every seeded worktree forked its own copy. They now live in one Fjall
 //! database per repo group (`cache/repos/<group>/memory.fjall`, see
 //! [`crate::store_layout::memory_store_dir`]), shared by every worktree of the clone and never
@@ -10,8 +12,9 @@
 //! Fjall's directory lock is exclusive, and the daemon holds several workspaces of one group in the
 //! same process, so [`open_shared`] hands out one [`MemoryDb`] per directory per process.
 //!
-//! [`migrate_legacy`] folds the rows an older build left in a view's own keyspaces into the group
-//! store, last writer wins by the record's timestamp, then drops those keyspaces from the view.
+//! [`migrate_legacy`] folds the rows an older build left in a view's own `memory_by_key` keyspace
+//! into the group store, last writer wins by the record's timestamp, then drops that keyspace from
+//! the view.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -24,15 +27,11 @@ use super::{FJALL_MAX_JOURNAL_BYTES, FJALL_WORKER_THREADS, IndexError, open_keys
 
 const MEMORY_CACHE_BYTES: u64 = 8 * 1_024 * 1_024;
 const MEMORY_BY_KEY: &str = "memory_by_key";
-const MEMORY_ARCHIVE: &str = "memory_archive";
-const PROPOSALS: &str = "proposals";
 
-/// An open group memory database plus its three keyspaces.
+/// An open group memory database plus its keyspace.
 pub(crate) struct MemoryDb {
     db: Database,
     pub(crate) memory_by_key: Keyspace,
-    pub(crate) memory_archive: Keyspace,
-    pub(crate) proposals: Keyspace,
 }
 
 impl MemoryDb {
@@ -47,14 +46,7 @@ impl MemoryDb {
             .max_journaling_size(FJALL_MAX_JOURNAL_BYTES)
             .open()?;
         let memory_by_key = open_keyspace(&db, MEMORY_BY_KEY)?;
-        let memory_archive = open_keyspace(&db, MEMORY_ARCHIVE)?;
-        let proposals = open_keyspace(&db, PROPOSALS)?;
-        Ok(Self {
-            db,
-            memory_by_key,
-            memory_archive,
-            proposals,
-        })
+        Ok(Self { db, memory_by_key })
     }
 
     /// Names of the keyspaces this database holds.
@@ -106,8 +98,8 @@ pub(crate) fn open_detached(view_dir: &Path) -> Result<Arc<MemoryDb>, IndexError
     open_shared(&dir)
 }
 
-/// The only fields the merge needs; both `MemoryRecord` and `ProposalRecord` are stored as named
-/// msgpack maps, so unknown fields are skipped and this decodes either.
+/// The only fields the merge needs; a `MemoryRecord` is stored as a named msgpack map, so unknown
+/// fields are skipped.
 #[derive(Deserialize, Default)]
 struct Stamp {
     #[serde(default)]
@@ -116,8 +108,7 @@ struct Stamp {
     updated_at: i64,
 }
 
-/// A record's last-write time: `updated_at` for memory rows, `created_at` for proposals (which
-/// carry no `updated_at`). Undecodable bytes sort oldest so a readable row always wins.
+/// A record's last-write time. Undecodable bytes sort oldest so a readable row always wins.
 fn stamp_of(bytes: &[u8]) -> i64 {
     rmp_serde::from_slice::<Stamp>(bytes)
         .map(|stamp| stamp.updated_at.max(stamp.created_at))
@@ -144,25 +135,18 @@ fn merge_keyspace(from: &Keyspace, into: &Keyspace) -> Result<(), IndexError> {
     Ok(())
 }
 
-/// Fold the memory rows an older build left in `view_db` into `memory`, then drop those keyspaces
+/// Fold the memory rows an older build left in `view_db` into `memory`, then drop that keyspace
 /// from the view. Safe to repeat and safe when several worktrees migrate: a view with no legacy
-/// keyspaces is a no-op, and the merge is commutative. The group store is persisted before the
+/// keyspace is a no-op, and the merge is commutative. The group store is persisted before the
 /// view's copy is deleted, so a crash between the two leaves duplicates, never a loss.
 pub(crate) fn migrate_legacy(view_db: &Database, memory: &MemoryDb) -> Result<(), IndexError> {
-    let targets = [
-        (MEMORY_BY_KEY, &memory.memory_by_key),
-        (MEMORY_ARCHIVE, &memory.memory_archive),
-        (PROPOSALS, &memory.proposals),
-    ];
-    for (name, target) in targets {
-        if !view_db.keyspace_exists(name) {
-            continue;
-        }
-        let legacy = open_keyspace(view_db, name)?;
-        merge_keyspace(&legacy, target)?;
-        memory.db.persist(PersistMode::SyncAll)?;
-        view_db.delete_keyspace(legacy)?;
+    if !view_db.keyspace_exists(MEMORY_BY_KEY) {
+        return Ok(());
     }
+    let legacy = open_keyspace(view_db, MEMORY_BY_KEY)?;
+    merge_keyspace(&legacy, &memory.memory_by_key)?;
+    memory.db.persist(PersistMode::SyncAll)?;
+    view_db.delete_keyspace(legacy)?;
     Ok(())
 }
 

@@ -283,30 +283,6 @@ pub(super) async fn dispatch_memory_op(
         .map_err(comms_err)
 }
 
-/// Route a PROPOSAL governance op to the machine's sole fjall writer and return the outcome. Same
-/// host-vs-forward dispatch as [`dispatch_memory_op`], running `run_governance_op` writer-side.
-#[cfg(feature = "memory")]
-pub(super) async fn dispatch_governance_op(
-    state: &ServerState,
-    op: crate::comms::proposals_proto::GovernanceOp,
-) -> Result<crate::comms::proposals_proto::GovernanceOutcome, McpError> {
-    if let Some(host) = &state.shared.host {
-        let host = Arc::clone(host);
-        let root = state.shared.root.clone();
-        let scope = state.shared.scope.clone();
-        return tokio::task::spawn_blocking(move || host.host_governance(&root, &scope, op))
-            .await
-            .map_err(|error| McpError::internal_error(format!("host governance task panicked: {error}"), None))?
-            .map_err(|error| McpError::internal_error(format!("host governance: {error}"), None));
-    }
-    let client = resolve_comms_client(state, None).await?;
-    let mut guard = client.lock().await;
-    guard
-        .governance_op(state.shared.root.clone(), state.shared.scope.clone(), op)
-        .await
-        .map_err(comms_err)
-}
-
 /// Clamp a caller-supplied limit to `[1, MAX_LIMIT]`, defaulting when absent.
 fn clamp_limit(limit: Option<u32>) -> u32 {
     limit.unwrap_or(DEFAULT_LIMIT).clamp(1, crate::comms::daemon::MAX_LIMIT)

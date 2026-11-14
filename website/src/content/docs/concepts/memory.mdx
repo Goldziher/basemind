@@ -2,11 +2,11 @@
 title: Shared memory
 description: >
   Per-repo memory agents can write to and search. Clones of the same repo share it;
-  unrelated repos stay separate. Suggestions spot files that change together.
+  unrelated repos stay separate.
 ---
 
-basemind provides a shared memory layer scoped to your repository: agents can store notes, search
-them by meaning, and propose new notes worth remembering based on how files change together.
+basemind provides a shared memory layer scoped to your repository: agents can store notes and search
+them by meaning.
 
 ## How it works
 
@@ -22,8 +22,6 @@ Any agent can:
 - **Retrieve exact keys:** `memory get {key: "auth-flow"}` fetches one stored note.
 - **List by prefix:** `memory list {prefix: "auth-"}` finds all keys starting with a prefix.
 - **Delete:** `memory delete {key: "auth-flow"}` removes a note.
-- **Audit:** `memory audit` recomputes importance scores, archives stale entries, and refreshes
-  verdicts on stored notes.
 
 ## What notes look like
 
@@ -36,32 +34,6 @@ value: "All user inputs are parameterized at the data layer via the Query class.
 ```
 
 The key is a short identifier; the value is prose explaining what you want to remember.
-
-## Suggestions: spots files that change together
-
-basemind watches how your files evolve and suggests notes worth saving. When it spots files that
-frequently change together (the `migrations/` and `models/` directories, for example), it proposes
-a note:
-
-```text
-"Files that change together in this repo: [migrations, models, controllers].
-Consider documenting the pattern or relationship."
-```
-
-This is a suggestion, not a stored fact — you approve before anything is kept.
-
-### Proposal workflow
-
-1. **Mine for candidates:** `memory mine {window: 200, min_support: 5}` analyzes the last 200
-   commits (the default; max 2000) and finds groups of files that changed together at least 5
-   times (the default) with a confidence of at least 0.6 (`min_confidence`). Commits touching more
-   than 25 files (`max_files_per_commit`) are skipped so bulk changes do not dominate. The mode
-   returns pending suggestions.
-2. **List pending:** `memory proposals {}` shows the suggestions awaiting your decision (optional
-   kind filter).
-3. **Accept:** `memory accept {id: "prop-1", key: "file-pattern-migrations"}` stores a suggestion
-   as a note under the given key.
-4. **Reject:** `memory reject {id: "prop-1", reason: "too noisy"}` dismisses a suggestion permanently.
 
 ## Uses
 

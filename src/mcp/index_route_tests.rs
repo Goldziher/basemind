@@ -125,16 +125,6 @@ impl HostBackend for StoreHost {
     ) -> Result<crate::comms::memory_proto::MemoryOutcome, String> {
         Err("unused".into())
     }
-
-    #[cfg(feature = "memory")]
-    fn host_governance(
-        &self,
-        _root: &Path,
-        _scope: &str,
-        _op: crate::comms::proposals_proto::GovernanceOp,
-    ) -> Result<crate::comms::proposals_proto::GovernanceOutcome, String> {
-        Err("unused".into())
-    }
 }
 
 fn round_trip<T: serde::Serialize + serde::de::DeserializeOwned>(value: &T) -> T {

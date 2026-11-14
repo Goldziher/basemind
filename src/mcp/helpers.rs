@@ -643,9 +643,6 @@ pub(super) async fn scan_and_refresh(
         .cache_generation
         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
-    #[cfg(feature = "memory")]
-    super::helpers_governance::audit_scope_on_rescan(&state).await;
-
     Ok(report)
 }
 

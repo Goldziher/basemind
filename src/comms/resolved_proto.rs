@@ -8,7 +8,7 @@
 //! to the name-based fallback on every daemon-backed session. Serve forwards the lookup here; the
 //! daemon — the sole fjall writer, holding the index — answers from `refs_by_def` / `refs_by_path`.
 //!
-//! Both types are float-free, so `Eq` is derivable (unlike the memory/proposal wire types).
+//! Both types are float-free, so `Eq` is derivable (unlike the memory wire types).
 
 #![cfg(all(feature = "comms", any(unix, windows)))]
 

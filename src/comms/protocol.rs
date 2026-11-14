@@ -21,8 +21,10 @@ use super::model::{AgentCard, MessageMeta, Thread};
 /// to a new daemon, or vice versa, now fails the Hello skew check instead of risking a decode
 /// error on the new variant); bumped 3→4 for request correlation ([`CommsRequest::Call`] /
 /// [`CommsOut::Reply`]), so a skewed peer fails the Hello check with a clear error and the daemon
-/// takeover in `ensure_daemon` replaces an older daemon.
-pub const PROTO_VER: u32 = 4;
+/// takeover in `ensure_daemon` replaces an older daemon; bumped 4→5 when the `governance`
+/// request and response variants were removed, so a client that could still send one is refused
+/// at Hello instead of failing to decode mid-session.
+pub const PROTO_VER: u32 = 5;
 
 /// A request from a client to the broker. `method` selects the variant; `params` are the
 /// flattened fields.
@@ -278,19 +280,6 @@ pub enum CommsRequest {
         /// The operation to run.
         op: crate::comms::memory_proto::MemoryOp,
     },
-    /// Forward a PROPOSAL governance operation to the daemon (the sole fjall writer). The `scope` is
-    /// resolved serve-side; the daemon runs the fjall reads/writes against the workspace's read-write
-    /// `proposals` (and, for a promote, `memory_by_key`) index. The compute halves — git-log mining,
-    /// the audit verdict, and the LanceDB embed — stay on serve.
-    #[cfg(feature = "memory")]
-    Governance {
-        /// Canonical workspace root (worktree root).
-        root: std::path::PathBuf,
-        /// Memory scope resolved serve-side (git scope key or `path:<root>`).
-        scope: String,
-        /// The operation to run.
-        op: crate::comms::proposals_proto::GovernanceOp,
-    },
     /// Forward a git-history operation to the daemon. `git-history.fjall/` is a fjall database, and
     /// fjall's directory lock is exclusive — so exactly ONE process may hold a repo's history index.
     /// Under this model that process is the daemon: it BUILDS the index ([`GitHistoryOp::Sync`],
@@ -418,8 +407,6 @@ impl CommsRequest {
             Self::Rescan { .. } => "rescan",
             #[cfg(feature = "memory")]
             Self::Memory { .. } => "memory",
-            #[cfg(feature = "memory")]
-            Self::Governance { .. } => "governance",
             Self::GitHistory { .. } => "git_history",
             Self::ResolvedRefs { .. } => "resolved_refs",
             Self::IndexRead { .. } => "index_read",
@@ -554,9 +541,6 @@ pub enum CommsResponse {
     /// Reply to [`CommsRequest::Memory`]: the outcome of the forwarded memory operation.
     #[cfg(feature = "memory")]
     Memory(crate::comms::memory_proto::MemoryOutcome),
-    /// Reply to [`CommsRequest::Governance`]: the outcome of the forwarded proposal operation.
-    #[cfg(feature = "memory")]
-    Governance(crate::comms::proposals_proto::GovernanceOutcome),
     /// Reply to [`CommsRequest::AccessedPaths`]: the daemon's currently-hot workspaces.
     Accessed {
         /// One row per hot workspace, most-recently-used first.

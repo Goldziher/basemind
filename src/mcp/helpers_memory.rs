@@ -2,12 +2,11 @@
 //!
 //! One entry point — [`run_memory`] — validates the flat [`MemoryParams`] against the selected
 //! [`MemoryMode`] and delegates to the per-operation body, which stays where it already lives: the
-//! core key-value store in `memory.rs`, the audit engine in `helpers_governance.rs`, the proposal
-//! lifecycle in `helpers_proposals.rs`, document retrieval in `memory.rs`.
+//! core key-value store and document retrieval, both in `memory.rs`.
 //!
 //! # Why the gate is per mode, not per tool
 //!
-//! Unlike `agents`, the `memory` tool is advertised in EVERY build: nine of its modes need
+//! Unlike `agents`, the `memory` tool is advertised in EVERY build: five of its modes need
 //! `--features memory` and `documents` needs `--features documents`, but an agent searching for
 //! "remember this" or "search the PDFs" is better served a tool that answers "rebuild with
 //! --features memory" than a tool that is not there at all. So the tool registers unconditionally
@@ -39,7 +38,7 @@ fn not_enabled(feature: &'static str) -> Result<CallToolResult, McpError> {
 
 /// Unwrap a parameter the selected mode requires, naming the `mode`/field pair on failure.
 ///
-/// "missing parameter" would leave the agent guessing which of two dozen siblings this mode wanted.
+/// "missing parameter" would leave the agent guessing which of the sibling fields this mode wanted.
 #[cfg(any(feature = "memory", feature = "documents"))]
 fn require<T>(mode: MemoryMode, field: &str, value: Option<T>) -> Result<T, McpError> {
     value.ok_or_else(|| {
@@ -55,7 +54,7 @@ fn require<T>(mode: MemoryMode, field: &str, value: Option<T>) -> Result<T, McpE
 /// One list walked against [`accepted`], rather than a hand-written reject list per mode: a field
 /// added to [`MemoryParams`] but forgotten in some mode's accept list is then rejected by default,
 /// which is the safe direction — the unsafe one is a parameter silently ignored.
-fn supplied(p: &MemoryParams) -> [(&'static str, bool); 25] {
+fn supplied(p: &MemoryParams) -> [(&'static str, bool); 16] {
     [
         ("key", p.key.is_some()),
         ("value", p.value.is_some()),
@@ -67,21 +66,12 @@ fn supplied(p: &MemoryParams) -> [(&'static str, bool); 25] {
         ("limit", p.limit.is_some()),
         ("cursor", p.cursor.is_some()),
         ("query", p.query.is_some()),
-        ("dry_run", p.dry_run.is_some()),
-        ("include_archived", p.include_archived.is_some()),
         ("max_tokens", p.max_tokens.is_some()),
         ("format", p.format.is_some()),
         ("mime_type", p.mime_type.is_some()),
         ("scope", p.scope.is_some()),
         ("entity_category", p.entity_category.is_some()),
         ("keywords_contains", p.keywords_contains.is_some()),
-        ("window", p.window.is_some()),
-        ("min_support", p.min_support.is_some()),
-        ("min_confidence", p.min_confidence.is_some()),
-        ("max_files_per_commit", p.max_files_per_commit.is_some()),
-        ("kind", p.kind.is_some()),
-        ("id", p.id.is_some()),
-        ("reason", p.reason.is_some()),
     ]
 }
 
@@ -93,7 +83,6 @@ fn accepted(mode: MemoryMode) -> &'static [&'static str] {
         MemoryMode::List => &["prefix", "tag", "limit", "cursor", "visibility"],
         MemoryMode::Search => &["query", "limit", "tag", "visibility"],
         MemoryMode::Delete => &["key", "visibility"],
-        MemoryMode::Audit => &["key", "visibility", "dry_run", "limit", "include_archived"],
         MemoryMode::Documents => &[
             "query",
             "limit",
@@ -105,10 +94,6 @@ fn accepted(mode: MemoryMode) -> &'static [&'static str] {
             "keywords_contains",
             "documents config overrides",
         ],
-        MemoryMode::Mine => &["window", "min_support", "min_confidence", "max_files_per_commit"],
-        MemoryMode::Proposals => &["kind", "limit", "cursor"],
-        MemoryMode::Accept => &["id", "key"],
-        MemoryMode::Reject => &["id", "reason"],
     }
 }
 
@@ -137,9 +122,6 @@ pub(super) async fn run_memory(state: &ServerState, params: MemoryParams) -> Res
 /// hand the whole object on rather than reconstructing it.
 #[cfg(feature = "memory")]
 async fn run_memory_ops(state: &ServerState, mut params: MemoryParams) -> Result<CallToolResult, McpError> {
-    use super::types_governance::{
-        MemoryAuditParams, ProposalAcceptParams, ProposalRejectParams, ProposalsListParams, ProposalsMineParams,
-    };
     use super::types_memory::{
         MemoryDeleteParams, MemoryGetParams, MemoryListParams, MemoryPutParams, MemorySearchParams,
     };
@@ -192,52 +174,6 @@ async fn run_memory_ops(state: &ServerState, mut params: MemoryParams) -> Result
             };
             super::memory::run_memory_delete(state, p).await
         }
-        MemoryMode::Audit => {
-            let p = MemoryAuditParams {
-                key: params.key.take(),
-                visibility,
-                dry_run: params.dry_run.unwrap_or(false),
-                limit: params.limit,
-                include_archived: params.include_archived.unwrap_or(false),
-            };
-            // The audit resolves symbol provenance against the in-RAM map, so it must not run
-            // against a half-warmed cache — every record would read as Stale.
-            state.await_cache_ready().await;
-            super::helpers_governance::run_memory_audit(state, p).await
-        }
-        MemoryMode::Mine => {
-            let p = ProposalsMineParams {
-                window: params.window,
-                min_support: params.min_support,
-                min_confidence: params.min_confidence,
-                max_files_per_commit: params.max_files_per_commit,
-            };
-            super::helpers_proposals::run_proposals_mine(state, p).await
-        }
-        MemoryMode::Proposals => {
-            let p = ProposalsListParams {
-                kind: params.kind.take(),
-                limit: params.limit,
-                cursor: params.cursor.take(),
-            };
-            super::helpers_proposals::run_proposals_list(state, p).await
-        }
-        MemoryMode::Accept => {
-            let p = ProposalAcceptParams {
-                id: require(mode, "id", params.id.take())?,
-                key: params.key.take(),
-            };
-            // Accepting stamps `verified` from the live index, same warm-cache requirement.
-            state.await_cache_ready().await;
-            super::helpers_proposals::run_proposal_accept(state, p).await
-        }
-        MemoryMode::Reject => {
-            let p = ProposalRejectParams {
-                id: require(mode, "id", params.id.take())?,
-                reason: params.reason.take(),
-            };
-            super::helpers_proposals::run_proposal_reject(state, p).await
-        }
     }
 }
 
@@ -283,21 +219,12 @@ mod tests {
             limit: None,
             cursor: None,
             query: None,
-            dry_run: None,
-            include_archived: None,
             max_tokens: None,
             format: None,
             mime_type: None,
             scope: None,
             entity_category: None,
             keywords_contains: None,
-            window: None,
-            min_support: None,
-            min_confidence: None,
-            max_files_per_commit: None,
-            kind: None,
-            id: None,
-            reason: None,
         }
     }
 
@@ -313,10 +240,6 @@ mod tests {
                 MemoryMode::Get | MemoryMode::Delete => p.key = Some("k".into()),
                 MemoryMode::List => p.prefix = Some("skill/".into()),
                 MemoryMode::Search | MemoryMode::Documents => p.query = Some("retry".into()),
-                MemoryMode::Audit => p.dry_run = Some(true),
-                MemoryMode::Mine => p.window = Some(50),
-                MemoryMode::Proposals => p.kind = Some("skill".into()),
-                MemoryMode::Accept | MemoryMode::Reject => p.id = Some("abc".into()),
             }
             assert!(reject_inapplicable(&p).is_ok(), "mode `{mode}` rejected its own field");
         }
@@ -326,14 +249,14 @@ mod tests {
     fn should_name_every_field_the_mode_does_not_accept() {
         let mut p = params(MemoryMode::Get);
         p.key = Some("k".into());
-        p.window = Some(10);
+        p.prefix = Some("skill/".into());
         p.mime_type = Some("application/pdf".into());
 
         let error = reject_inapplicable(&p).expect_err("fields from other modes must be rejected");
         let message = error.message.to_string();
         assert!(message.contains("`memory` mode `get` does not accept"), "{message}");
         assert!(
-            message.contains("`window`") && message.contains("`mime_type`"),
+            message.contains("`prefix`") && message.contains("`mime_type`"),
             "{message}"
         );
         assert!(

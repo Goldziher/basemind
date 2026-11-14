@@ -25,7 +25,7 @@ one from prose.
 | `code` | outline, symbols, grep, files, find, definition, references, callers, implementations, dependents, expand, semantic, chunk | always |
 | `graph` | calls, neighbors, path, subgraph, communities, map, export, display, open | always |
 | `git` | status, recent, touching, by_path, churn, diff, diff_outline, blame, blame_symbol, symbol_history, search, show | always |
-| `memory` | put, get, list, search, delete, audit, documents, mine, proposals, accept, reject | always¹ |
+| `memory` | put, get, list, search, delete, documents | always¹ |
 | `admin` | status, repo, rescan, cache_stats, gc, cache_clear, telemetry | always |
 | `agents` | register, list, thread_start, thread_list, join, leave, members, add_member, remove_member, archive, post, history, message, inbox, ack, wait | `comms` |
 | `workspace` | workspaces, worktrees, branches, claim, release | `comms` |
@@ -64,12 +64,11 @@ files), `diff` / `diff_outline` (file and outline diffs across revisions), `blam
 `blame_symbol` (per-line and per-symbol blame), `symbol_history` (cross-commit history of a
 symbol's structural hash), `search` (full-text search over commit messages and authors).
 
-### `memory` — shared memory, documents, and the co-change proposal queue
+### `memory` — shared memory and documents
 
 `put` / `get` / `list` / `search` / `delete` (a per-repo memory agents write to and search by
-meaning), `audit` (write history behind an entry), `documents` (semantic search over indexed
-PDFs / Office / HTML instead of opening them), `mine` (derive co-change proposals from git
-history), `proposals` / `accept` / `reject` (the review queue).
+meaning), `documents` (semantic search over indexed PDFs / Office / HTML instead of opening
+them).
 
 ### `admin` — server + cache administration
 

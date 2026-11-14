@@ -50,6 +50,14 @@ table in `basemind.toml` is still accepted and ignored. Stop a shells daemon an 
 running before upgrading (`basemind shell kill` each session, or kill the process); this version
 still lists it in `basemind comms doctor` but cannot talk to it.
 
+The `memory` modes `audit`, `mine`, `proposals`, `accept` and `reject` and their `basemind memory`
+commands were removed; they have no replacement. `put`, `get`, `list`, `search`, `delete` and
+`documents` are unchanged, and stored notes keep every field, including the verdict and importance
+an audit wrote, which nothing updates any more. Archived notes and pending proposals stay on disk in
+the repo's `memory.fjall` and are never read. The comms protocol version is now 5: the first
+upgraded session replaces a running older daemon, and a client and daemon that still disagree fail
+the handshake with `proto_skew`.
+
 Also check scripts for these behaviour changes:
 
 - Exit codes are `0` ok, `1` error, `2` usage, `3` writer lock held, `4` daemon unreachable, `130`

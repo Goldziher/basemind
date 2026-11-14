@@ -1,6 +1,6 @@
 //! Daemon-forwarding half of [`CommsClient`](super::client::CommsClient): the write/read RPCs a
 //! `daemon_writer` serve ships to the daemon (the machine's sole fjall writer) rather than running
-//! in-process — rescan, CORE memory, PROPOSAL governance, precise resolved-refs, and git-history.
+//! in-process — rescan, CORE memory, precise resolved-refs, and git-history.
 //!
 //! Split out of `client.rs` to keep it under the 1000-line `rust-max-lines` cap. These are a second
 //! `impl CommsClient` block; the request/response correlation core stays in `client.rs`.
@@ -71,23 +71,6 @@ impl CommsClient {
         match self.request(CommsRequest::Memory { root, scope, op }).await? {
             CommsResponse::Memory(outcome) => Ok(outcome),
             other => Err(self.shape_err(other, "memory_op")),
-        }
-    }
-
-    /// Forward a PROPOSAL governance operation to the daemon (the sole fjall writer). A
-    /// `daemon_writer` serve does the git-log mining / audit verdict / LanceDB embed on its side and
-    /// ships only the fjall reads/writes here. Idempotent for list/get; reject + promote are
-    /// terminal writes and mine-apply is tombstone-guarded, so a replayed retry is safe.
-    #[cfg(feature = "memory")]
-    pub async fn governance_op(
-        &mut self,
-        root: PathBuf,
-        scope: String,
-        op: crate::comms::proposals_proto::GovernanceOp,
-    ) -> Result<crate::comms::proposals_proto::GovernanceOutcome, CommsClientError> {
-        match self.request(CommsRequest::Governance { root, scope, op }).await? {
-            CommsResponse::Governance(outcome) => Ok(outcome),
-            other => Err(self.shape_err(other, "governance_op")),
         }
     }
 
