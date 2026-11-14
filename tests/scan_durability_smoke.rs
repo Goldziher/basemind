@@ -331,9 +331,11 @@ fn the_index_is_sealed_before_the_file_map_is_written() {
 
 /// Lose `beta.rs`'s index rows and leave the index one generation behind its file map, as a journal
 /// that lost its tail would. Returns the view directory and the generation the file map carries
-/// (two scans, so at least 2: a rebuilt index sealing generation 1 is distinguishable from it).
+/// (three scans, so at least 3: a rebuilt index, sealed once for its emptied file map and once by the
+/// rebuild scan, is distinguishable from it).
 fn scanned_store_with_an_index_behind(root: &Path) -> (std::path::PathBuf, u64) {
     let mut store = scanned_store(root);
+    rescan(root, &mut store);
     rescan(root, &mut store);
     let mut writer = store.index_db.as_ref().unwrap().writer();
     writer
@@ -450,4 +452,66 @@ fn a_half_discarded_index_opens_and_rebuilds() {
     let report = rescan(root, &mut reopened);
     assert_eq!(report.stats.updated, 3);
     assert_eq!(indexed_symbol_paths(&reopened, "beta"), vec!["beta.rs".to_string()]);
+}
+
+fn file_map_on_disk(view_dir: &Path) -> basemind::store::Index {
+    rmp_serde::from_slice(&fs::read(view_dir.join(INDEX_FILE)).unwrap()).unwrap()
+}
+
+/// A rebuilt index counts its generations from 0 again. The file map that listed every file must not
+/// stay on disk beside it: the open writes the emptied one before any scan runs.
+#[test]
+fn a_writer_open_persists_the_emptied_file_map_before_any_scan() {
+    basemind::store::init_isolated_cache();
+    let dir = TempDir::new().unwrap();
+    let root = dir.path();
+    let (view_dir, sealed) = scanned_store_with_an_index_behind(root);
+    assert_eq!(file_map_on_disk(&view_dir).files.len(), 3);
+
+    let reopened = Store::open(root, VIEW_WORKING).expect("reopen");
+    assert!(reopened.index_rebuild_needed, "the following scan is still a rebuild");
+    let on_disk = file_map_on_disk(&view_dir);
+    assert!(on_disk.files.is_empty(), "no file map vouches for the discarded index");
+    let index_generation = reopened.index_db.as_ref().unwrap().scan_generation().unwrap();
+    assert_eq!(on_disk.generation, index_generation);
+    assert!(index_generation < sealed, "the rebuilt index starts a new count");
+}
+
+/// The restarted count can reach the old file map's generation while the rebuild is still partial:
+/// each flush seals the index first, so a flush whose file-map write fails advances it anyway. The
+/// old file map would then match an index holding one file's rows and skip the other two for good.
+#[test]
+fn an_interrupted_rebuild_is_not_adopted_by_the_file_map_it_replaces() {
+    basemind::store::init_isolated_cache();
+    let dir = TempDir::new().unwrap();
+    let root = dir.path();
+    let (view_dir, sealed) = scanned_store_with_an_index_behind(root);
+
+    let mut rebuilding = Store::open(root, VIEW_WORKING).expect("reopen");
+    let blocker = view_dir.join(format!("{INDEX_FILE}.tmp"));
+    fs::create_dir(&blocker).unwrap();
+    while rebuilding.index_db.as_ref().unwrap().scan_generation().unwrap() < sealed {
+        basemind::scanner::scan_paths(
+            root,
+            &mut rebuilding,
+            &ConfigV1::with_defaults(),
+            &[root.join("alpha.rs")],
+            EmbedMode::Deferred,
+        )
+        .expect_err("the file map cannot be written over a directory");
+    }
+    assert_eq!(indexed_symbol_paths(&rebuilding, "alpha"), vec!["alpha.rs".to_string()]);
+    assert!(indexed_symbol_paths(&rebuilding, "beta").is_empty(), "a partial index");
+    drop(rebuilding);
+    fs::remove_dir(&blocker).unwrap();
+
+    let mut reopened = Store::open(root, VIEW_WORKING).expect("reopen after the interrupted rebuild");
+    let report = rescan(root, &mut reopened);
+    assert_eq!(
+        report.stats.skipped_unchanged, 0,
+        "no file is skipped over missing rows"
+    );
+    assert_eq!(report.stats.updated, 3);
+    assert_eq!(indexed_symbol_paths(&reopened, "beta"), vec!["beta.rs".to_string()]);
+    assert_eq!(indexed_symbol_paths(&reopened, "alpha"), vec!["alpha.rs".to_string()]);
 }

@@ -7,7 +7,6 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::extract::SCHEMA_VER;
-use crate::index::view::IndexView;
 use crate::index::{IndexDb, IndexError};
 #[cfg(feature = "intelligence")]
 use crate::lance::LanceStore;
@@ -325,9 +324,9 @@ pub struct Store {
     pub reset_stale_schema: bool,
     /// True when the fjall index was empty or just wiped (a partition-revision bump) while the file
     /// map was populated: symbol / call / reference reads would answer empty until a full scan
-    /// rebuilds it. Set at open, which also drops the in-memory file map so that scan re-extracts
-    /// every file (blobs are reused by hash) instead of skipping them as unchanged over an empty
-    /// index. Only a writer opening the index can know it.
+    /// rebuilds it. Set at open, which also empties the file map, in memory and on disk, so that
+    /// scan re-extracts every file (blobs are reused by hash) instead of skipping them as unchanged
+    /// over an empty index. Only a writer opening the index can know it.
     pub index_rebuild_needed: bool,
     _lock: Option<File>,
 }
@@ -550,28 +549,8 @@ impl Store {
             }
             Err(e) => return Err(e),
         };
-        let mut index_db = open_index_with_retry(root, &view_dir)?;
-        // The file map is fsynced only after the index sealed the same generation, so an index
-        // stamped below it lost the tail of its journal. Which rows went is unknowable, so the whole
-        // index is discarded and the empty-index rebuild below takes over. ~keep
-        if !index_db.wiped_on_open() && index.generation > index_db.scan_generation()? {
-            tracing::warn!(
-                view,
-                "code index is older than its file map (unclean shutdown); rebuilding it"
-            );
-            drop(index_db);
-            crate::index::durability::discard_index(&view_dir)?;
-            index_db = open_index_with_retry(root, &view_dir)?;
-        }
-        // A replaced index starts unsealed, and its emptied file map vouches for nothing. ~keep
-        index.generation = index.generation.min(index_db.scan_generation()?);
-        let index_rebuild_needed =
-            !index.files.is_empty() && (index_db.wiped_on_open() || index_db.view().symbols_index_is_empty());
-        if index_rebuild_needed {
-            index.files.clear();
-        }
-        let index_db = Some(index_db);
-        Ok(Self {
+        let (index_db, index_rebuild_needed) = durability::open_index_for_writer(root, view, &view_dir, &mut index)?;
+        let mut store = Self {
             root: root.to_path_buf(),
             basemind_dir,
             blobs_dir,
@@ -582,13 +561,15 @@ impl Store {
             view: view.to_string(),
             hash_refs: HashRefs::of(&index.files),
             index,
-            index_db,
+            index_db: Some(index_db),
             #[cfg(feature = "intelligence")]
             lance: None,
             reset_stale_schema,
             index_rebuild_needed,
             _lock: Some(lock),
-        })
+        };
+        store.persist_file_map_emptied_on_open()?;
+        Ok(store)
     }
 
     /// Materialize this store's on-disk directories (`basemind_dir`, `blobs_dir`, `views/`,

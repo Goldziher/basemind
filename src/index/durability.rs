@@ -20,7 +20,7 @@ use super::{INDEX_DIR, INDEX_SCHEMA_VER, IndexDb, IndexError, META_SCHEMA_VER};
 
 const META_SCAN_GENERATION: &[u8] = b"scan_generation";
 /// Name prefix of an index directory renamed aside by [`discard_dir`] and not yet deleted.
-const DISCARD_PREFIX: &str = "index.fjall.discard-";
+pub(crate) const DISCARD_PREFIX: &str = "index.fjall.discard-";
 
 impl IndexDb {
     /// The generation the last [`Self::seal_scan`] stamped; `0` for an index no scan has sealed.
@@ -49,6 +49,9 @@ impl IndexDb {
             });
         }
         let generation = stored + 1;
+        // Read before the commit: a write landing after the fsync must not be recorded as synced.
+        // The batch takes one sequence number, so any other write leaves the two unequal. ~keep
+        let synced_seqno = self.db.seqno() + 1;
         let mut batch = self.db.batch().durability(Some(PersistMode::SyncAll));
         batch.insert(&self.meta, META_SCAN_GENERATION, generation.to_be_bytes());
         let sealed = batch.commit().map_err(IndexError::from);
@@ -56,7 +59,7 @@ impl IndexDb {
             self.record_commit_error(error);
         }
         sealed?;
-        self.synced_seqno.store(self.db.seqno(), Ordering::Release);
+        self.synced_seqno.store(synced_seqno, Ordering::Release);
         Ok(generation)
     }
 
@@ -128,7 +131,7 @@ pub(super) fn discard_dir(dir: &Path) -> Result<(), IndexError> {
 
 /// Delete what an interrupted [`discard_dir`] left under `view_dir`. Best-effort: a leftover costs
 /// disk space only.
-pub(super) fn sweep_discarded(view_dir: &Path) {
+pub(crate) fn sweep_discarded(view_dir: &Path) {
     let Ok(entries) = std::fs::read_dir(view_dir) else {
         return;
     };

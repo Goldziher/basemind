@@ -19,15 +19,11 @@ use crate::scanner_docs::PendingDocBatch;
 use crate::scanner_drive::{DriveOutcome, ScanDrive, drive_scan};
 use crate::scanner_file::scanner_pool;
 use crate::scanner_filter::{Filters, IndexFilter};
-#[cfg(feature = "documents")]
-use crate::scanner_flush::flush_doc_removals_if_any;
 use crate::scanner_flush::{
     derive_scope, finalize_bm25_stats_if_any, flush_code_batches_if_any, flush_code_removals_if_any,
     flush_doc_batches_if_any, maintain_lance_if_open,
 };
 use crate::scanner_integrity::{abort_on_fault, ensure_space, finish_resolve, flush_code_map, preflight};
-#[cfg(feature = "documents")]
-use crate::scanner_lanes::LANE_DOC_REMOVALS;
 use crate::scanner_lanes::{
     LANE_BM25_STATS, LANE_CODE_BATCHES, LANE_CODE_REMOVALS, LANE_DOC_BATCHES, LANE_EMBED_POLICY, LANE_RESOLVE,
     run_optional_lane,
@@ -634,12 +630,7 @@ pub fn scan_with_observer(
         flush_code_removals_if_any(store, config, &scope, &stale);
     });
     #[cfg(feature = "documents")]
-    if !doc_stale.is_empty() {
-        run_optional_lane(LANE_DOC_REMOVALS, || {
-            flush_doc_removals_if_any(store, config, &scope, &doc_stale);
-        });
-        store.flush()?;
-    }
+    crate::scanner_integrity::remove_docs_and_flush(store, config, &scope, &doc_stale)?;
     run_optional_lane(LANE_BM25_STATS, || finalize_bm25_stats_if_any(store, config, true));
     run_optional_lane(crate::scanner_lanes::LANE_LANCE_MAINTENANCE, || {
         maintain_lance_if_open(store)
@@ -756,8 +747,7 @@ pub fn scan_paths_with_observer(
     observer: &mut dyn ScanObserver,
 ) -> Result<ScanReport, ScanError> {
     let source = ScanSource::WorkingTree;
-    // Only a full pass can rebuild an index that is behind its file map (see `preflight`). ~keep
-    if store.index_is_behind_file_map()? {
+    if crate::scanner_integrity::needs_full_rebuild(store)? {
         return scan_with_observer(root, store, config, source, embed, cancel, observer);
     }
     let filter = IndexFilter::new(root, config)?;
@@ -955,12 +945,7 @@ pub fn scan_paths_with_observer(
         flush_code_removals_if_any(store, config, &scope, &removed);
     });
     #[cfg(feature = "documents")]
-    if !doc_removed.is_empty() {
-        run_optional_lane(LANE_DOC_REMOVALS, || {
-            flush_doc_removals_if_any(store, config, &scope, &doc_removed);
-        });
-        store.flush()?;
-    }
+    crate::scanner_integrity::remove_docs_and_flush(store, config, &scope, &doc_removed)?;
     run_optional_lane(LANE_BM25_STATS, || finalize_bm25_stats_if_any(store, config, false));
     run_optional_lane(crate::scanner_lanes::LANE_LANCE_MAINTENANCE, || {
         maintain_lance_if_open(store)

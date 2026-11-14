@@ -218,11 +218,20 @@ fn clone_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
     let (s, d) = (c(src)?, c(dst)?);
     // SAFETY: both pointers are valid NUL-terminated strings for the duration of the call.
     let rc = unsafe { libc::clonefile(s.as_ptr(), d.as_ptr(), 0) };
-    if rc == 0 {
-        Ok(())
-    } else {
-        Err(std::io::Error::last_os_error())
+    if rc != 0 {
+        return Err(std::io::Error::last_os_error());
     }
+    // `clonefile` takes the directory whole, including an index an interrupted discard set aside.
+    crate::index::durability::sweep_discarded(dst);
+    Ok(())
+}
+
+/// An index set aside by an interrupted discard: dead weight a clone must not carry.
+#[cfg(all(unix, not(target_os = "macos")))]
+fn is_discarded_index(entry: &std::fs::DirEntry) -> bool {
+    let name = entry.file_name();
+    name.to_string_lossy()
+        .starts_with(crate::index::durability::DISCARD_PREFIX)
 }
 
 #[cfg(all(unix, not(target_os = "macos")))]
@@ -250,6 +259,9 @@ fn dir_size(dir: &Path) -> std::io::Result<u64> {
     let mut total = 0;
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
+        if is_discarded_index(&entry) {
+            continue;
+        }
         let meta = entry.metadata()?;
         total += if meta.is_dir() {
             dir_size(&entry.path())?
@@ -266,6 +278,9 @@ fn copy_tree(src: &Path, dst: &Path) -> std::io::Result<()> {
     std::fs::create_dir(dst)?;
     for entry in std::fs::read_dir(src)? {
         let entry = entry?;
+        if is_discarded_index(&entry) {
+            continue;
+        }
         let (from, to) = (entry.path(), dst.join(entry.file_name()));
         if entry.file_type()?.is_dir() {
             copy_tree(&from, &to)?;
@@ -456,6 +471,23 @@ mod tests {
             !dir.join(SEED_TMP_DIR).exists(),
             "debris from a crashed clone is removed"
         );
+    }
+
+    /// An index set aside by an interrupted discard is dead weight; the clone must not carry it.
+    #[test]
+    fn an_index_set_aside_in_the_source_is_not_cloned() {
+        let (_tmp, main, _wt) = fixture();
+        let view = workspace_cache_dir(&main).join(VIEWS_DIR).join(VIEW_WORKING);
+        let aside = format!("{}4242-0", crate::index::durability::DISCARD_PREFIX);
+        std::fs::create_dir(view.join(&aside)).unwrap();
+        std::fs::write(view.join(&aside).join("0.jnl"), b"leftover").unwrap();
+
+        let clone = workspace_cache_dir(&main).join(SEED_TMP_DIR);
+        clone_dir(&view, &clone).expect("clone");
+        assert!(clone.join(INDEX_DB_DIR).is_dir(), "the live index is cloned");
+        assert!(clone.join(INDEX_FILE).is_file());
+        assert!(!clone.join(&aside).exists(), "the index set aside is left behind");
+        assert!(view.join(&aside).exists(), "the source is untouched");
     }
 
     #[test]

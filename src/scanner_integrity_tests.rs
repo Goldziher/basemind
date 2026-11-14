@@ -111,3 +111,31 @@ fn rows_written_after_the_seal_are_synced_before_a_scan_returns() {
         "an incremental scan syncs what it wrote after the seal"
     );
 }
+
+/// The in-place rebuild restarts the generation count, so the file map that listed every file is
+/// replaced on disk before the scan walks anything: a scan that dies leaves no map to skip by.
+#[test]
+fn preflight_persists_the_emptied_file_map_of_an_index_it_rebuilds_in_place() {
+    init_isolated_cache();
+    let dir = one_file_repo();
+    let root = dir.path();
+    let mut store = Store::open(root, VIEW_WORKING).expect("open");
+    full_scan(root, &mut store);
+    let view_dir = store.view_dir.clone();
+    let mut ahead = store.index.clone();
+    drop(store);
+    ahead.generation += 1;
+    let manifest = view_dir.join(crate::store::INDEX_FILE);
+    std::fs::write(&manifest, rmp_serde::to_vec_named(&ahead).expect("encode")).expect("forge the file map");
+
+    let mut in_place = Store::open_read_only(root, VIEW_WORKING).expect("open read-only");
+    assert_eq!(in_place.index.files.len(), 1);
+    preflight(&mut in_place).expect("preflight");
+
+    let on_disk = crate::store::read_index(&view_dir).expect("read").expect("a file map");
+    assert!(on_disk.files.is_empty(), "no file map vouches for the emptied index");
+    let db = in_place.index_db.as_ref().expect("index");
+    assert!(db.view().symbols_index_is_empty());
+    assert_eq!(on_disk.generation, db.scan_generation().expect("read"));
+    assert_eq!(on_disk.generation, 1, "the emptied index starts a new count");
+}

@@ -64,8 +64,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   index batch or keyword postings failed to commit is no longer recorded in the file map (it is reported as
   a failed extraction and indexed by the next scan), and the file map's directory is fsynced after the
   rename. Discarding an index (also on a schema change) renames it aside before deleting it, so a crash
-  midway no longer leaves a directory that cannot be opened. File maps written before this change open
-  unchanged.
+  midway no longer leaves a directory that cannot be opened. The emptied file map is written as soon as an
+  index is discarded or emptied, so a rebuild that is interrupted is never taken for a complete index. File
+  maps written before this change open unchanged.
 - An older basemind no longer wipes a cache a newer one wrote. Two binaries of different versions sharing
   the machine-global cache used to destroy each other's code index, git-history index, comms store and
   LanceDB store on every open, and read-only commands reported the newer index as empty ("file not

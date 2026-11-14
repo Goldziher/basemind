@@ -25,6 +25,12 @@ pub(crate) fn preflight(store: &mut Store) -> Result<(), ScanError> {
     ensure_space(store)
 }
 
+/// Whether an incremental scan must hand over to a full one: only a full pass can rebuild an index
+/// that is behind its file map (see [`preflight`]).
+pub(crate) fn needs_full_rebuild(store: &Store) -> Result<bool, ScanError> {
+    Ok(store.index_is_behind_file_map()?)
+}
+
 /// The free-space check alone, for the resolve pass: the file map is already durable by then, so a
 /// refusal costs only the resolve tier.
 pub(crate) fn ensure_space(store: &Store) -> Result<(), ScanError> {
@@ -81,6 +87,25 @@ pub(crate) fn flush_code_map(store: &mut Store, health: &ScanHealth) -> Result<(
     // Refresh the cheap statusline sidecar the moment the code map is durable, so a shell
     // statusline sees fresh counts without ever opening the Fjall index. Best-effort by design.
     store.write_status_sidecar_with(health);
+    Ok(())
+}
+
+/// The doc-removal lane, then the flush it owes for the `store.index` entries it dropped (see
+/// [`flush_code_map`]). Nothing runs when no document was removed.
+#[cfg(feature = "documents")]
+pub(crate) fn remove_docs_and_flush(
+    store: &mut Store,
+    config: &crate::config::Config,
+    scope: &str,
+    removed: &[String],
+) -> Result<(), ScanError> {
+    if removed.is_empty() {
+        return Ok(());
+    }
+    crate::scanner_lanes::run_optional_lane(crate::scanner_lanes::LANE_DOC_REMOVALS, || {
+        crate::scanner_flush::flush_doc_removals_if_any(store, config, scope, removed);
+    });
+    store.flush()?;
     Ok(())
 }
 
