@@ -517,7 +517,7 @@ fn open_store_for_write(root: &std::path::Path, view: &str, what: &str, holder: 
 /// reactively via [`basemind::store::LOCK_CONTENTION_HELP`].
 fn writer_collision_notice(root: &std::path::Path) -> Option<String> {
     let basemind_dir = basemind::store::workspace_cache_dir(root);
-    match basemind::store::probe_writer_lock(&basemind_dir) {
+    match basemind::store::probe_writer_lock_settled(&basemind_dir) {
         basemind::store::WriterProbe::Free => None,
         basemind::store::WriterProbe::Held { holder: Some(meta) } => Some(format!(
             "`{}` (pid {}) is already running against this repo and keeping the index fresh — \
