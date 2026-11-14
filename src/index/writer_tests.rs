@@ -19,18 +19,79 @@ fn open_reports_a_wipe_only_when_the_stamped_schema_version_differs() {
         .meta
         .insert(
             crate::index::META_SCHEMA_VER,
-            (crate::index::INDEX_SCHEMA_VER + 1).to_be_bytes(),
+            (crate::index::INDEX_SCHEMA_VER - 1).to_be_bytes(),
         )
-        .expect("stamp a foreign schema version");
+        .expect("stamp an older schema version");
     drop(fresh);
 
     let wiped = IndexDb::open_with_memory(dir.path(), &memory).expect("reopen");
-    assert!(wiped.wiped_on_open(), "a mismatched revision wipes the index");
+    assert!(wiped.wiped_on_open(), "an older revision wipes the index");
     assert!(wiped.view().symbols_index_is_empty());
     drop(wiped);
 
     let again = IndexDb::open_with_memory(dir.path(), &memory).expect("third open");
     assert!(!again.wiped_on_open(), "the rewritten stamp matches, so no second wipe");
+}
+
+/// Stamp a schema version one past this binary's and return the directory holding the index.
+fn index_stamped_by_a_newer_basemind() -> (TempDir, std::path::PathBuf, u32) {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let memory = dir.path().join("memory.fjall");
+    let newer = crate::index::INDEX_SCHEMA_VER + 1;
+    let fresh = IndexDb::open_with_memory(dir.path(), &memory).expect("fresh open");
+    fresh
+        .meta
+        .insert(crate::index::META_SCHEMA_VER, newer.to_be_bytes())
+        .expect("stamp a newer schema version");
+    drop(fresh);
+    (dir, memory, newer)
+}
+
+#[test]
+fn writer_open_refuses_an_index_stamped_by_a_newer_basemind_and_leaves_it_intact() {
+    let (dir, memory, newer) = index_stamped_by_a_newer_basemind();
+
+    let Err(error) = IndexDb::open_with_memory(dir.path(), &memory) else {
+        panic!("a newer index must not open for writing");
+    };
+
+    assert!(
+        matches!(
+            error,
+            IndexError::NewerSchema { stored, current }
+                if stored == newer && current == crate::index::INDEX_SCHEMA_VER
+        ),
+        "expected NewerSchema, got: {error}"
+    );
+    let message = error.to_string();
+    assert!(
+        message.contains("newer basemind") && message.contains("upgrade basemind"),
+        "the error must tell the user to upgrade, got: {message}"
+    );
+    assert_eq!(
+        crate::index::peek_index_schema_ver(dir.path()).expect("peek"),
+        Some(newer),
+        "the newer index keeps its stamp: it was neither wiped nor restamped"
+    );
+}
+
+#[test]
+fn read_only_open_refuses_an_index_stamped_by_a_newer_basemind_and_leaves_it_intact() {
+    let (dir, memory, newer) = index_stamped_by_a_newer_basemind();
+
+    let Err(error) = IndexDb::open_tolerating_held_memory(dir.path(), &memory) else {
+        panic!("a newer index must not open read-only");
+    };
+
+    assert!(
+        matches!(error, IndexError::NewerSchema { stored, .. } if stored == newer),
+        "expected NewerSchema, got: {error}"
+    );
+    assert_eq!(
+        crate::index::peek_index_schema_ver(dir.path()).expect("peek"),
+        Some(newer),
+        "a read-only open must not wipe or restamp a newer index"
+    );
 }
 
 fn synthetic_l1(syms: &[(&str, SymbolKind, u32)]) -> FileMapL1 {

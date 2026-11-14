@@ -141,6 +141,59 @@ fn fjall_internal_lock_is_lock_contention() {
     assert!(err.is_lock_contention());
 }
 
+/// The msgpack file map matches this binary but the fjall index carries a later partition revision:
+/// a read-only consumer must surface the upgrade error instead of degrading to blob-only reads.
+#[test]
+fn open_read_only_reports_a_fjall_index_written_by_a_newer_basemind() {
+    init_isolated_cache();
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let view_dir = {
+        let store = Store::open(tmp.path(), VIEW_WORKING).expect("writer creates the view");
+        store.flush().expect("flush the file map");
+        store.view_dir.clone()
+    };
+    let newer = crate::index::INDEX_SCHEMA_VER + 1;
+    {
+        let db = fjall::Database::builder(view_dir.join(crate::index::INDEX_DIR))
+            .open()
+            .expect("open raw index");
+        let meta = db
+            .keyspace("meta", fjall::KeyspaceCreateOptions::default)
+            .expect("meta keyspace");
+        meta.insert(b"schema_ver", newer.to_be_bytes())
+            .expect("stamp a newer schema version");
+    }
+
+    let Err(error) = Store::open_read_only(tmp.path(), VIEW_WORKING) else {
+        panic!("a newer index must not read as empty");
+    };
+
+    assert!(
+        matches!(
+            &error,
+            StoreError::Index(IndexError::NewerSchema { stored, .. }) if *stored == newer
+        ),
+        "expected the newer-schema error, got: {error}"
+    );
+    assert!(
+        error.to_string().contains("upgrade basemind"),
+        "the error must be actionable, got: {error}"
+    );
+}
+
+#[test]
+fn check_schema_separates_an_older_blob_schema_from_a_newer_one() {
+    assert!(check_schema(SCHEMA_VER).is_ok());
+    assert!(matches!(
+        check_schema(SCHEMA_VER - 1),
+        Err(StoreError::SchemaMismatch { found, expected }) if found == SCHEMA_VER - 1 && expected == SCHEMA_VER
+    ));
+    assert!(matches!(
+        check_schema(SCHEMA_VER + 1),
+        Err(StoreError::NewerSchema { stored, current }) if stored == SCHEMA_VER + 1 && current == SCHEMA_VER
+    ));
+}
+
 #[test]
 fn schema_mismatch_is_not_lock_contention() {
     let err = StoreError::SchemaMismatch { found: 1, expected: 2 };

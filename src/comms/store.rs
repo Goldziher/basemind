@@ -4,9 +4,9 @@
 //! `src/index/`), living user-globally under `<data_dir>/comms/`. It mirrors the operational
 //! shape of `crate::store::Store`: an exclusive advisory flock (`acquire_lock`) so only one
 //! daemon writes, and a `meta`-keyspace schema-version row checked against
-//! `COMMS_SCHEMA_VER` — a mismatch wipes the store and the daemon
+//! `COMMS_SCHEMA_VER` — an older stored version wipes the store and the daemon
 //! rebuilds from scratch (comms history is durable-but-disposable scratch, not a source of
-//! truth).
+//! truth); a newer one fails the open and is left untouched.
 //!
 //! ## Two-tier message storage
 //!
@@ -93,6 +93,18 @@ pub enum CommsStoreError {
     /// Another daemon already holds the store lock.
     #[error("another basemind comms daemon holds the lock on {0}")]
     Locked(PathBuf),
+    /// The on-disk store carries a schema newer than `COMMS_SCHEMA_VER`. Never wiped: it belongs to
+    /// a newer basemind sharing this cache.
+    #[error(
+        "comms store written by a newer basemind (schema {stored}); this binary understands \
+         {current} — upgrade basemind"
+    )]
+    NewerSchema {
+        /// Schema version found on disk.
+        stored: u32,
+        /// Schema version this binary reads and writes.
+        current: u32,
+    },
 }
 
 /// Outcome of resolving a legacy id or compact message reference.
@@ -148,8 +160,8 @@ impl CommsStore {
             .and_then(|value| <[u8; 8]>::try_from(value.as_ref()).ok().map(i64::from_be_bytes)))
     }
     /// Open (or create) the comms store under `comms_dir`, taking the exclusive advisory
-    /// flock. On a schema-version mismatch the `store.fjall/` directory is wiped and rebuilt
-    /// empty.
+    /// flock. An OLDER on-disk schema version wipes the `store.fjall/` directory and rebuilds it
+    /// empty; a NEWER one is left untouched and fails with [`CommsStoreError::NewerSchema`].
     pub fn open(comms_dir: &Path) -> Result<Self, CommsStoreError> {
         std::fs::create_dir_all(comms_dir).map_err(|source| CommsStoreError::Io {
             path: comms_dir.to_path_buf(),
@@ -168,6 +180,12 @@ impl CommsStore {
             .get(META_SCHEMA_VER)?
             .and_then(|bytes| <[u8; 4]>::try_from(&bytes[..]).ok())
             .map(u32::from_be_bytes);
+        if let Some(stored) = on_disk_ver.filter(|ver| *ver > COMMS_SCHEMA_VER) {
+            return Err(CommsStoreError::NewerSchema {
+                stored,
+                current: COMMS_SCHEMA_VER,
+            });
+        }
         if matches!(on_disk_ver, Some(ver) if ver != COMMS_SCHEMA_VER) {
             drop(meta);
             drop(db);

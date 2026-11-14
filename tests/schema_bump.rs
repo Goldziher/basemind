@@ -3,8 +3,8 @@
 //! blob store.
 //!
 //! We synthesize a stale-schema-shaped index by serializing a struct with
-//! `schema_ver = 99` (a value distinct from any current or near-future
-//! `RELEASE_MINOR`) and the legacy `FileEntry` layout. `Store::open` should detect the
+//! `schema_ver = STALE_SCHEMA_VER` (one below the current `RELEASE_MINOR`) and the legacy
+//! `FileEntry` layout. `Store::open` should detect the
 //! mismatch, remove only `index.msgpack`, leave `blobs/` intact (orphans are reclaimed
 //! later by `store_gc::run_gc`), and return an empty in-memory index so the next scan
 //! re-extracts every file and overwrites stale blobs in place.
@@ -12,6 +12,99 @@
 use std::fs;
 
 use serde::Serialize;
+
+/// What an older basemind stamped: rebuildable, so it is wiped and re-extracted.
+const STALE_SCHEMA_VER: u16 = basemind::extract::SCHEMA_VER - 1;
+/// What a newer basemind sharing the cache stamped: never wiped by this binary.
+const NEWER_SCHEMA_VER: u16 = basemind::extract::SCHEMA_VER + 1;
+
+/// Write a view `index.msgpack` stamped `schema_ver` that references one file; returns its path.
+fn forge_view_index(root: &std::path::Path, schema_ver: u16) -> std::path::PathBuf {
+    let view_dir = basemind::store::workspace_cache_dir(root)
+        .join("views")
+        .join(basemind::store::VIEW_WORKING);
+    fs::create_dir_all(&view_dir).unwrap();
+    let mut files = std::collections::BTreeMap::new();
+    files.insert(
+        "a.rs".to_string(),
+        LegacyEntry {
+            hash_hex: "deadbeef".repeat(8),
+            language: "rust".to_string(),
+            size_bytes: 42,
+            mtime: 0,
+        },
+    );
+    let path = view_dir.join("index.msgpack");
+    fs::write(
+        &path,
+        rmp_serde::to_vec_named(&LegacyIndex { schema_ver, files }).unwrap(),
+    )
+    .unwrap();
+    path
+}
+
+fn assert_newer_schema(error: &basemind::store::StoreError) {
+    assert!(
+        matches!(
+            error,
+            basemind::store::StoreError::NewerSchema { stored, current }
+                if *stored == NEWER_SCHEMA_VER && *current == basemind::extract::SCHEMA_VER
+        ),
+        "expected NewerSchema, got: {error}"
+    );
+    let message = error.to_string();
+    assert!(
+        message.contains("newer basemind")
+            && message.contains(&NEWER_SCHEMA_VER.to_string())
+            && message.contains(&basemind::extract::SCHEMA_VER.to_string())
+            && message.contains("upgrade basemind"),
+        "the error must name both versions and tell the user to upgrade, got: {message}"
+    );
+}
+
+/// A writer from an older basemind must not wipe a view a newer basemind wrote into the shared
+/// cache: the open fails with the upgrade error and the view's index is byte-identical afterwards.
+#[test]
+fn writer_open_refuses_a_view_written_by_a_newer_basemind_and_leaves_it_intact() {
+    basemind::store::init_isolated_cache();
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let view_index = forge_view_index(root, NEWER_SCHEMA_VER);
+    let before = fs::read(&view_index).unwrap();
+
+    let Err(error) = basemind::store::Store::open(root, basemind::store::VIEW_WORKING) else {
+        panic!("a newer view must not open for writing");
+    };
+
+    assert_newer_schema(&error);
+    assert_eq!(
+        fs::read(&view_index).unwrap(),
+        before,
+        "the newer view's index.msgpack is untouched"
+    );
+}
+
+/// A read-only consumer must report a newer view as such, never as an empty ("file not indexed")
+/// index.
+#[test]
+fn open_read_only_reports_a_view_written_by_a_newer_basemind() {
+    basemind::store::init_isolated_cache();
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let view_index = forge_view_index(root, NEWER_SCHEMA_VER);
+    let before = fs::read(&view_index).unwrap();
+
+    let Err(error) = basemind::store::Store::open_read_only(root, basemind::store::VIEW_WORKING) else {
+        panic!("a newer view must not read as an empty index");
+    };
+
+    assert_newer_schema(&error);
+    assert_eq!(
+        fs::read(&view_index).unwrap(),
+        before,
+        "the newer view's index.msgpack is untouched"
+    );
+}
 
 #[derive(Serialize)]
 struct LegacyIndex {
@@ -199,7 +292,10 @@ fn opening_against_stale_schema_index_refreshes_durably_without_wiping_blobs() {
             mtime: 0,
         },
     );
-    let legacy = LegacyIndex { schema_ver: 99, files };
+    let legacy = LegacyIndex {
+        schema_ver: STALE_SCHEMA_VER,
+        files,
+    };
     let bytes = rmp_serde::to_vec_named(&legacy).unwrap();
     fs::write(basemind_dir.join("index.msgpack"), bytes).unwrap();
 
@@ -249,7 +345,10 @@ fn open_read_only_degrades_to_empty_on_stale_schema_without_error() {
             mtime: 0,
         },
     );
-    let legacy = LegacyIndex { schema_ver: 99, files };
+    let legacy = LegacyIndex {
+        schema_ver: STALE_SCHEMA_VER,
+        files,
+    };
     fs::write(
         view_dir.join("index.msgpack"),
         rmp_serde::to_vec_named(&legacy).unwrap(),
@@ -349,7 +448,7 @@ fn schema_bump_refreshes_blobs_in_place_and_gc_reclaims_only_orphans() {
         );
     }
     let forged = LegacyIndex {
-        schema_ver: 99,
+        schema_ver: STALE_SCHEMA_VER,
         files: forged_files,
     };
     fs::write(&view_index, rmp_serde::to_vec_named(&forged).unwrap()).unwrap();

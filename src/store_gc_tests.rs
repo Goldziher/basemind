@@ -529,6 +529,34 @@ fn global_gc_heals_a_mixed_release_workspace_index() {
 }
 
 #[test]
+fn global_gc_refuses_to_remove_a_view_written_by_a_newer_basemind() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let workspaces = tmp.path().join("workspaces");
+    let newer_view = workspaces.join("key-newer").join(VIEWS_DIR).join("working");
+    fs::create_dir_all(&newer_view).expect("mk newer view");
+    let mut newer = Index::empty();
+    newer.schema_ver = crate::extract::SCHEMA_VER + 1;
+    fs::write(
+        newer_view.join(INDEX_FILE),
+        rmp_serde::to_vec_named(&newer).expect("encode newer index"),
+    )
+    .expect("write newer index");
+
+    let Err(error) = collect_referenced_hashes_global_in(&workspaces) else {
+        panic!("an unreadable newer view must abort the sweep, not be healed away");
+    };
+
+    assert!(
+        matches!(error, GcError::Store(StoreError::NewerSchema { .. })),
+        "expected the newer-schema error, got: {error}"
+    );
+    assert!(
+        newer_view.join(INDEX_FILE).exists(),
+        "the newer basemind's view survives"
+    );
+}
+
+#[test]
 fn should_round_trip_component_tokens() {
     for component in [
         CacheComponent::Blobs,

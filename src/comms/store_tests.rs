@@ -655,3 +655,65 @@ fn idempotency_key_validation_rejects_empty_oversized_and_control_bytes() {
     assert!(!valid_idempotency_key("has space"));
     assert!(!valid_idempotency_key(&"x".repeat(MAX_IDEMPOTENCY_KEY_BYTES + 1)));
 }
+
+fn stamp_schema_ver(comms_dir: &Path, ver: u32) {
+    let store = CommsStore::open(comms_dir).expect("open store");
+    store.put_thread(&sample_thread("th-kept")).expect("put thread");
+    store
+        .meta
+        .insert(META_SCHEMA_VER, ver.to_be_bytes())
+        .expect("stamp schema version");
+}
+
+#[test]
+fn open_refuses_a_store_stamped_by_a_newer_basemind_and_leaves_it_intact() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let newer = COMMS_SCHEMA_VER + 1;
+    stamp_schema_ver(dir.path(), newer);
+
+    let Err(error) = CommsStore::open(dir.path()) else {
+        panic!("a newer comms store must not open");
+    };
+
+    assert!(
+        matches!(
+            error,
+            CommsStoreError::NewerSchema { stored, current } if stored == newer && current == COMMS_SCHEMA_VER
+        ),
+        "expected NewerSchema, got: {error}"
+    );
+    assert!(
+        error.to_string().contains("upgrade basemind"),
+        "the error must be actionable, got: {error}"
+    );
+    let db = Database::builder(dir.path().join(STORE_DIR))
+        .worker_threads(1)
+        .open()
+        .expect("open raw store");
+    let meta = db
+        .keyspace("meta", KeyspaceCreateOptions::default)
+        .expect("meta keyspace");
+    let stamped = meta.get(META_SCHEMA_VER).expect("read stamp").expect("stamp present");
+    assert_eq!(
+        &stamped[..],
+        &newer.to_be_bytes()[..],
+        "the newer store keeps its stamp: it was neither wiped nor restamped"
+    );
+    let threads = db
+        .keyspace("threads", KeyspaceCreateOptions::default)
+        .expect("threads keyspace");
+    assert!(threads.iter().next().is_some(), "the newer store keeps its rows");
+}
+
+#[test]
+fn open_wipes_a_store_stamped_by_an_older_basemind() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    stamp_schema_ver(dir.path(), COMMS_SCHEMA_VER - 1);
+
+    let store = CommsStore::open(dir.path()).expect("an older store is wiped and reopened");
+
+    assert!(
+        store.get_thread(&thread_id("th-kept")).expect("read thread").is_none(),
+        "rows written under the older schema are gone"
+    );
+}

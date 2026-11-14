@@ -291,6 +291,13 @@ pub enum IndexError {
     Encode(#[from] rmp_serde::encode::Error),
     #[error("msgpack decode error: {0}")]
     Decode(#[from] rmp_serde::decode::Error),
+    /// The on-disk index carries a schema newer than [`INDEX_SCHEMA_VER`]. Never wiped: it belongs to
+    /// a newer basemind sharing this cache, which would only rebuild it and be wiped again.
+    #[error(
+        "index written by a newer basemind (schema {stored}); this binary understands {current} \
+         — upgrade basemind"
+    )]
+    NewerSchema { stored: u32, current: u32 },
 }
 
 /// One `(keyspace, key, value)` row, as returned by [`IndexDb::resolution_rows`].
@@ -448,9 +455,10 @@ pub fn peek_index_schema_ver(view_dir: &Path) -> Result<Option<u32>, IndexError>
 }
 
 impl IndexDb {
-    /// Open (or create) the index DB under `view_dir`. On schema-version mismatch the
-    /// existing `index.fjall/` directory is dropped and a fresh one is created — the
-    /// caller is responsible for repopulating it via `IndexWriter`.
+    /// Open (or create) the index DB under `view_dir`. An index stamped with an OLDER schema
+    /// version is dropped and a fresh one is created — the caller is responsible for repopulating
+    /// it via `IndexWriter`. A NEWER one is left untouched and fails with
+    /// [`IndexError::NewerSchema`].
     ///
     /// The user-memory keyspaces live in a sibling `memory.fjall` under `view_dir`. Production opens
     /// go through [`IndexDb::open_with_memory`] with the per-repo-group store instead.
@@ -522,6 +530,12 @@ impl IndexDb {
             .get(META_SCHEMA_VER)?
             .and_then(|bytes| <[u8; 4]>::try_from(&bytes[..]).ok())
             .map(u32::from_be_bytes);
+        if let Some(stored) = on_disk_ver.filter(|ver| *ver > INDEX_SCHEMA_VER) {
+            return Err(IndexError::NewerSchema {
+                stored,
+                current: INDEX_SCHEMA_VER,
+            });
+        }
         let wiped_on_open = matches!(on_disk_ver, Some(ver) if ver != INDEX_SCHEMA_VER);
         if wiped_on_open {
             drop(meta);

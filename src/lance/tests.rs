@@ -96,3 +96,32 @@ fn schema_ver_bump_triggers_wipe() {
     wipe_on_mismatch(dir.path(), &meta_path, &expected).unwrap();
     assert!(!keep.exists(), "a schema_ver bump should wipe the store");
 }
+
+/// A `schema_ver` newer than this binary's belongs to a newer basemind sharing the cache: the open
+/// fails and the store is left untouched, even when dim and model match.
+#[test]
+fn newer_schema_ver_on_disk_is_refused_without_wiping() {
+    let dir = tempfile::tempdir().unwrap();
+    let meta_path = dir.path().join(META_FILE);
+    let expected = LanceMeta {
+        dim: 384,
+        embedding_model: "balanced".to_string(),
+        schema_ver: MEMORY_SCHEMA_VER,
+    };
+    let on_disk = LanceMeta {
+        schema_ver: MEMORY_SCHEMA_VER + 1,
+        ..expected.clone()
+    };
+    std::fs::write(&meta_path, serde_json::to_vec(&on_disk).unwrap()).unwrap();
+    let keep = sentinel(dir.path());
+
+    let error = wipe_on_mismatch(dir.path(), &meta_path, &expected).unwrap_err();
+
+    let message = error.to_string();
+    assert!(
+        message.contains("newer basemind") && message.contains("upgrade basemind"),
+        "the error must tell the user to upgrade, got: {message}"
+    );
+    assert!(keep.exists(), "a newer store must not be wiped");
+    assert!(meta_path.exists(), "a newer store keeps its meta.json");
+}

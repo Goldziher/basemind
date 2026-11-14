@@ -10,6 +10,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- An older basemind no longer wipes a cache a newer one wrote. Two binaries of different versions sharing
+  the machine-global cache used to destroy each other's code index, git-history index, comms store and
+  LanceDB store on every open, and read-only commands reported the newer index as empty ("file not
+  indexed"). A store stamped with a newer schema is now left untouched and the open fails with
+  `index written by a newer basemind (schema N); this binary understands M — upgrade basemind`. A store
+  stamped with an older schema is still wiped and rebuilt.
+
 ## [0.33.0] - 2026-11-14
 
 This minor bumps the persisted blob, index, git-history and LanceDB memory schema versions, so existing

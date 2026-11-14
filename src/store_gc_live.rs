@@ -98,7 +98,8 @@ impl Drop for SweepLock {
 /// it remains in the global mark set it blocks every workspace's GC forever. Remove only the bad
 /// view while holding the workspace lock, preserving `workspace.json`, `agent-id`, and durable
 /// memory. Transient I/O and lock failures remain fatal so an incomplete live set never drives a
-/// destructive sweep.
+/// destructive sweep, and so does a view a newer basemind wrote ([`StoreError::NewerSchema`]): it is
+/// that binary's live data, not stale cache.
 pub(crate) fn collect_workspace_hashes_healing_stale_views(workspace_dir: &Path) -> Result<LiveBlobs, GcError> {
     match collect_referenced_hashes(workspace_dir) {
         Ok(referenced) => Ok(referenced),

@@ -192,7 +192,8 @@ impl Drop for LanceStoreInner {
 impl LanceStore {
     /// Open (or initialise) the lance store rooted at `dir`. If a pre-existing
     /// meta.json reports a different `(dim, embedding_model, schema_ver)` triple, the
-    /// entire dir is wiped and rebuilt before the connection opens.
+    /// entire dir is wiped and rebuilt before the connection opens — unless its `schema_ver`
+    /// is newer than this binary's, which fails the open and leaves the dir untouched.
     pub fn open(dir: &Path, dim: u16, embedding_model: &str) -> Result<Self> {
         std::fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
         let meta_path = dir.join(META_FILE);
@@ -574,6 +575,14 @@ fn wipe_on_mismatch(dir: &Path, meta_path: &Path, expected: &LanceMeta) -> Resul
     let actual: LanceMeta = serde_json::from_slice(&bytes).with_context(|| format!("parse {}", meta_path.display()))?;
     if actual == *expected {
         return Ok(());
+    }
+    if actual.schema_ver > expected.schema_ver {
+        return Err(anyhow!(
+            "lance store at {} written by a newer basemind (schema {}); this binary understands {} — upgrade basemind",
+            dir.display(),
+            actual.schema_ver,
+            expected.schema_ver
+        ));
     }
     tracing::warn!(
         old_dim = actual.dim,

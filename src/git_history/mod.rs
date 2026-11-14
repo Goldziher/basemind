@@ -63,7 +63,8 @@ use crate::path::RelPath;
 
 /// On-disk schema for the git-history store. Offset from [`crate::version::RELEASE_MINOR`] (the
 /// code index owns `+2`, git_cache `+1`), so it moves with each minor release but is independent of
-/// the code-map index schema. Mismatch on open wipes `git-history.fjall/` and the next scan rebuilds.
+/// the code-map index schema. An older on-disk schema wipes `git-history.fjall/` on open and the next
+/// scan rebuilds; a newer one is refused ([`GitHistoryError::NewerSchema`]).
 ///
 /// The offset is `+5`: bumped from `+4` when the stored commit-meta head gained an `author_email`
 /// field (`sha ‖ time ‖ author ‖ email ‖ summary ‖ files`) for git-history full-text search. The
@@ -171,6 +172,13 @@ pub enum GitHistoryError {
     /// daemon's in-process runner so both the forwarded and the hosted path report it uniformly.
     #[error("git-history index disabled (BASEMIND_GH_INDEX=0)")]
     Disabled,
+    /// The on-disk index carries a schema newer than [`GIT_HISTORY_SCHEMA`]. Never wiped: it belongs
+    /// to a newer basemind sharing this cache.
+    #[error(
+        "git-history index written by a newer basemind (schema {stored}); this binary understands \
+         {current} — upgrade basemind"
+    )]
+    NewerSchema { stored: u32, current: u32 },
     /// The workspace root a client asked history for is not one basemind will index (issue #62).
     /// The payload is the full operator-facing guidance from
     /// [`refusal_message`](crate::config::root_guard::refusal_message).
@@ -242,8 +250,9 @@ pub struct GitHistoryIndex {
 impl GitHistoryIndex {
     /// Open (or create) `.basemind/git-history.fjall/` LOCALLY, taking fjall's exclusive lock. Only
     /// the process that owns the index may call this: a standalone `scan` / `rescan` / writable
-    /// `serve`, or the daemon. On schema mismatch the directory is wiped and recreated empty (the
-    /// caller rebuilds via the builder). Returns `Err` if another process holds the Fjall lock —
+    /// `serve`, or the daemon. An OLDER on-disk schema wipes the directory and recreates it empty (the
+    /// caller rebuilds via the builder); a NEWER one is left untouched and fails with
+    /// [`GitHistoryError::NewerSchema`]. Returns `Err` if another process holds the Fjall lock —
     /// read-only callers swallow that to `None`.
     pub fn open(basemind_dir: &Path) -> Result<Self, GitHistoryError> {
         let dir = basemind_dir.join(GIT_HISTORY_DIR);
@@ -327,6 +336,12 @@ impl GitHistoryIndex {
         let mut db = Database::builder(dir).worker_threads(1).open()?;
         let mut meta = db.keyspace("gh_meta", keyspace_options)?;
         let on_disk_ver = meta.get(keys::META_SCHEMA_VER)?.and_then(|b| keys::parse_u32(&b));
+        if let Some(stored) = on_disk_ver.filter(|ver| *ver > GIT_HISTORY_SCHEMA) {
+            return Err(GitHistoryError::NewerSchema {
+                stored,
+                current: GIT_HISTORY_SCHEMA,
+            });
+        }
         if matches!(on_disk_ver, Some(ver) if ver != GIT_HISTORY_SCHEMA) {
             drop(meta);
             drop(db);
@@ -682,5 +697,80 @@ impl GitHistoryWriter {
         meta.commit()?;
         self.db.compact()?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn stamp_schema_ver(basemind_dir: &Path, ver: u32) {
+        let index = GitHistoryIndex::open(basemind_dir).expect("open index");
+        let db = index.local().expect("local handle");
+        db.meta.insert(keys::META_ROOT_SHA, vec![7u8; 20]).expect("write a row");
+        db.meta
+            .insert(keys::META_SCHEMA_VER, ver.to_be_bytes())
+            .expect("stamp schema version");
+    }
+
+    fn raw_meta(basemind_dir: &Path, key: &[u8]) -> Option<Vec<u8>> {
+        let db = Database::builder(basemind_dir.join(GIT_HISTORY_DIR))
+            .worker_threads(1)
+            .open()
+            .expect("open raw index");
+        let meta = db.keyspace("gh_meta", keyspace_options).expect("meta keyspace");
+        meta.get(key).expect("read meta").map(|value| value.to_vec())
+    }
+
+    #[test]
+    fn open_refuses_an_index_stamped_by_a_newer_basemind_and_leaves_it_intact() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let newer = GIT_HISTORY_SCHEMA + 1;
+        stamp_schema_ver(dir.path(), newer);
+
+        let Err(error) = GitHistoryIndex::open(dir.path()) else {
+            panic!("a newer git-history index must not open");
+        };
+
+        assert!(
+            matches!(
+                error,
+                GitHistoryError::NewerSchema { stored, current } if stored == newer && current == GIT_HISTORY_SCHEMA
+            ),
+            "expected NewerSchema, got: {error}"
+        );
+        assert!(
+            error.to_string().contains("upgrade basemind"),
+            "the error must be actionable, got: {error}"
+        );
+        assert_eq!(
+            raw_meta(dir.path(), keys::META_SCHEMA_VER),
+            Some(newer.to_be_bytes().to_vec()),
+            "the newer index keeps its stamp: it was neither wiped nor restamped"
+        );
+        assert_eq!(
+            raw_meta(dir.path(), keys::META_ROOT_SHA),
+            Some(vec![7u8; 20]),
+            "the newer index keeps its rows"
+        );
+    }
+
+    #[test]
+    fn open_wipes_an_index_stamped_by_an_older_basemind() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        stamp_schema_ver(dir.path(), GIT_HISTORY_SCHEMA - 1);
+
+        drop(GitHistoryIndex::open(dir.path()).expect("an older index is wiped and reopened"));
+
+        assert_eq!(
+            raw_meta(dir.path(), keys::META_SCHEMA_VER),
+            Some(GIT_HISTORY_SCHEMA.to_be_bytes().to_vec()),
+            "the rebuilt index carries the current stamp"
+        );
+        assert_eq!(
+            raw_meta(dir.path(), keys::META_ROOT_SHA),
+            None,
+            "rows written under the older schema are gone"
+        );
     }
 }

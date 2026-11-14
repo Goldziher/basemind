@@ -92,6 +92,13 @@ pub enum StoreError {
     Decode(#[from] rmp_serde::decode::Error),
     #[error("schema version mismatch: stored {found}, current {expected}")]
     SchemaMismatch { found: u16, expected: u16 },
+    /// The on-disk schema is newer than this binary's. Never treated as rebuildable: the data
+    /// belongs to a newer basemind sharing this cache.
+    #[error(
+        "index written by a newer basemind (schema {stored}); this binary understands {current} \
+         — upgrade basemind"
+    )]
+    NewerSchema { stored: u16, current: u16 },
     #[error("corrupt blob at {path}: malformed or unsupported envelope")]
     CorruptBlob { path: PathBuf },
     #[error("blob payload exceeds the supported envelope limits")]
@@ -627,6 +634,7 @@ impl Store {
             match IndexDb::open_tolerating_held_memory(&view_dir, &memory_store_dir(root)) {
                 Ok(db) => Some(db),
                 Err(IndexError::Fjall(fjall::Error::Locked)) => None,
+                Err(error @ IndexError::NewerSchema { .. }) => return Err(error.into()),
                 Err(error) => {
                     tracing::warn!(%error, "read-only index open failed; degrading to blob-only reads");
                     None
@@ -863,7 +871,7 @@ fn migrate_legacy_index_into_views(basemind_dir: &Path) -> Result<(), StoreError
 }
 
 /// Read and deserialize a view's `index.msgpack`. `Ok(None)` when the file is absent;
-/// `Err(StoreError::SchemaMismatch)` on a version mismatch. Reused by `store_gc` to
+/// `Err(StoreError::SchemaMismatch)` on an older version, `Err(StoreError::NewerSchema)` on a newer one. Reused by `store_gc` to
 /// enumerate the live blob hashes referenced by every view.
 pub(crate) fn read_index(view_dir: &Path) -> Result<Option<Index>, StoreError> {
     let path = view_dir.join(INDEX_FILE);
@@ -911,16 +919,20 @@ pub(crate) fn open_index_with_retry(root: &Path, view_dir: &Path) -> Result<Inde
     }
 }
 
-/// Guard every blob / index read against a stale on-disk schema. `pub(crate)` because the blob
-/// accessors that call it live in [`crate::store_blob`].
+/// Guard every blob / index read against a foreign on-disk schema: an older one is a rebuildable
+/// [`StoreError::SchemaMismatch`], a newer one a [`StoreError::NewerSchema`] no caller may wipe.
+/// `pub(crate)` because the blob accessors that call it live in [`crate::store_blob`].
 pub(crate) fn check_schema(found: u16) -> Result<(), StoreError> {
-    if found == SCHEMA_VER {
-        Ok(())
-    } else {
-        Err(StoreError::SchemaMismatch {
+    match found.cmp(&SCHEMA_VER) {
+        std::cmp::Ordering::Equal => Ok(()),
+        std::cmp::Ordering::Less => Err(StoreError::SchemaMismatch {
             found,
             expected: SCHEMA_VER,
-        })
+        }),
+        std::cmp::Ordering::Greater => Err(StoreError::NewerSchema {
+            stored: found,
+            current: SCHEMA_VER,
+        }),
     }
 }
 

@@ -115,7 +115,7 @@ pub fn new_idempotency_key() -> String {
 }
 
 /// Schema version for the comms store, bound to the release minor exactly like
-/// `INDEX_SCHEMA_VER` and the blob `SCHEMA_VER`. A mismatch wipes the comms store and the
-/// daemon rebuilds it from scratch — comms history is durable-but-disposable scratch, not a
-/// source of truth.
+/// `INDEX_SCHEMA_VER` and the blob `SCHEMA_VER`. An older on-disk version wipes the comms store and
+/// the daemon rebuilds it from scratch — comms history is durable-but-disposable scratch, not a
+/// source of truth. A newer one is refused, so an older binary never destroys a newer daemon's store.
 pub const COMMS_SCHEMA_VER: u32 = crate::version::RELEASE_MINOR as u32;
