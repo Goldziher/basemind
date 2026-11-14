@@ -368,12 +368,14 @@ fn cold_dirty_scan_publishes_delta_without_standalone_fjall() {
             .output()
             .unwrap()
     };
-    assert!(opted_in_scan().status.success());
+    let scan = opted_in_scan();
+    assert!(scan.status.success(), "{}", String::from_utf8_lossy(&scan.stderr));
     assert!(cache.join("layered-promoted").is_file());
     for number in 0..2 {
         std::fs::remove_file(root.join(format!("overflow_{number}.rs"))).unwrap();
     }
-    assert!(opted_in_scan().status.success());
+    let scan = opted_in_scan();
+    assert!(scan.status.success(), "{}", String::from_utf8_lossy(&scan.stderr));
     assert!(cache.join("layered-promoted").is_file());
     assert!(!basemind::store_base::has_published_dirty_worktree(root, &config).unwrap());
 }
