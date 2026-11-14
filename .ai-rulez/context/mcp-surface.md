@@ -12,8 +12,8 @@ x-ai-rulez:
 
 `basemind serve` exposes a stdio MCP server (`rmcp`). The live contract is `tests/mcp_smoke.rs` — read it before changing any tool's response shape.
 
-The surface is **seven domain tools**, each one `#[tool]` dispatching on a required,
-non-defaulted `mode` — never a distinct tool per verb. The same seven names are the CLI groups
+The surface is **six domain tools**, each one `#[tool]` dispatching on a required,
+non-defaulted `mode` — never a distinct tool per verb. The same six names are the CLI groups
 (`basemind <domain> <mode>`), enforced as a strict bijection by `tests/cli_parity/`. Read
 `src/mcp/mode.rs` for the authoritative wire spellings before writing about any mode; never infer
 one from prose.
@@ -23,7 +23,6 @@ one from prose.
 | Tool / CLI group | `mode` values | Gate |
 |---|---|---|
 | `code` | outline, symbols, grep, files, find, definition, references, callers, implementations, dependents, expand, semantic, chunk | always |
-| `graph` | calls, neighbors, path, subgraph, communities, map, export, display, open | always |
 | `git` | status, recent, touching, by_path, churn, diff, diff_outline, blame, blame_symbol, symbol_history, search, show | always |
 | `memory` | put, get, list, search, delete, documents | always¹ |
 | `admin` | status, repo, rescan, cache_stats, gc, cache_clear, telemetry | always |
@@ -44,17 +43,6 @@ disambiguated by path — resolves the definition first, then runs the same name
 `dependents` (heuristic reverse-lookup via imports), `expand` (a symbol's raw source body),
 `semantic` (search by meaning, needs `--features code-search`), `chunk` (fetch one code chunk's
 body — the `semantic` fetch half).
-
-### `graph` — the unified typed code-graph (ADR-0001/0002/0003)
-
-`calls` (rooted call BFS, `callers`/`callees` direction, depth-bounded), `neighbors` (n-hop
-neighborhood; `direction`/`edges`/`depth`/`min_confidence`/`max_nodes`), `path`
-(confidence-weighted shortest path; containment excluded unless `include_contains`), `subgraph`
-(a symbol's neighborhood cut to its most central nodes), `communities` (cluster into de-facto
-modules; `label_propagation` default, `louvain` opt-in), `map` (whole-repo architecture: PageRank
-and SCC clusters, edge lanes carry provenance + confidence), `export` (render as node_link / dot /
-mermaid / graphml / cypher / html, deterministic and offline), `display` (open a rendered view in
-a human's desktop viewer), `open` (return a live browsable URL for the interactive graph page).
 
 ### `git` — git history (requires `basemind serve` inside a git repo)
 

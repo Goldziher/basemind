@@ -145,11 +145,6 @@ pub fn estimate_from_text(tool: &str, _corpus_bytes: u64, resp_text: &str) -> Sa
 
         "code:grep" => (actual, "no_baseline"),
 
-        // `display` and `open` join their read-only siblings here rather than staying unclassified:
-        // a rendered view replaces no grep/read baseline, so "saved nothing" is the honest label.
-        "graph:calls" | "graph:neighbors" | "graph:path" | "graph:subgraph" | "graph:communities" | "graph:map"
-        | "graph:export" | "graph:display" | "graph:open" => (actual, "no_baseline"),
-
         "memory:documents" => (scaled(actual, DOCUMENT_READ_PCT), "grep_plus_document_read"),
 
         "code:files" => (scaled(actual, LIST_FILES_PCT), "find_plus_filter"),
@@ -278,8 +273,6 @@ mod tests {
             "git:search",
             "code:grep",
             "code_grep",
-            "graph:calls",
-            "graph:display",
         ] {
             let s = estimate_from_text(tool, 1_000_000, &"a".repeat(500));
             assert_eq!(s.est_tokens_saved, 0, "{tool} must not claim savings");
@@ -303,7 +296,6 @@ mod tests {
             ("code_dependents", "code:dependents"),
             ("code_grep", "code:grep"),
             ("code_files", "code:files"),
-            ("graph_calls", "graph:calls"),
             ("git_recent", "git:recent"),
             ("git_blame_symbol", "git:blame_symbol"),
             ("git_diff", "git:diff"),

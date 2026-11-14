@@ -18,7 +18,7 @@ use std::fmt::Write as _;
 pub enum Capability {
     /// `code` modes `symbols` / `references` / `callers` / `grep` — code navigation.
     CodeSearchNavigation,
-    /// `code` mode `outline` / `graph` mode `map` — file + repo structure without opening source.
+    /// `code` mode `outline` — file structure without opening source.
     CodeMappingArchitecture,
     /// `git` modes `recent` / `blame_symbol` / `touching` — git history without shelling out.
     GitHistory,
@@ -65,7 +65,7 @@ impl Capability {
     pub fn label(self) -> &'static str {
         match self {
             Capability::CodeSearchNavigation => "Code search & navigation (symbols, references, callers, grep)",
-            Capability::CodeMappingArchitecture => "Code mapping & architecture (file outlines, architecture map)",
+            Capability::CodeMappingArchitecture => "Code mapping & architecture (file outlines)",
             Capability::GitHistory => "Git history (recent changes, blame, commits-touching)",
             Capability::FileFinding => "File finding (fuzzy fzf/fd-style filename & path search)",
             Capability::AgentComms => "Agent comms (multi-agent threads + inbox)",
@@ -86,12 +86,12 @@ impl Capability {
     fn routing_row(self) -> (&'static str, &'static str) {
         match self {
             Capability::CodeSearchNavigation => (
-                "`code` modes `symbols` / `definition` / `references` / `callers` / `implementations` / `grep`, `graph` mode `calls`",
+                "`code` modes `symbols` / `definition` / `references` / `callers` / `implementations` / `grep`",
                 "Find definitions, references, callers, implementations, or exact text in indexed code",
             ),
             Capability::CodeMappingArchitecture => (
-                "`code` mode `outline` (code files only) / `graph` mode `map`",
-                "Inspect a file outline, call graph, or repository architecture",
+                "`code` mode `outline` (code files only)",
+                "Inspect a file's structure without opening it",
             ),
             Capability::GitHistory => (
                 "`git` modes `recent` / `blame_symbol` / `touching` / `diff`",
@@ -244,7 +244,7 @@ mod tests {
         assert!(body.contains("`git` modes `recent`"), "git row present");
         assert!(!body.contains("exact literal in a notebook"));
         assert!(
-            !body.contains("`grep`, `graph`"),
+            !body.contains("`implementations` / `grep`"),
             "code-search row absent when unselected"
         );
     }

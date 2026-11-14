@@ -71,7 +71,6 @@ src/
 ├── scanner_code.rs         — code-search branch: L1/L2 → code chunks (feature code-search)
 ├── scanner_docs.rs         — document-tier scan (PDF/Office/HTML → LanceDB, feature documents); also takes
 │                             prose/data/config (md/json/yaml/toml, `lang::is_non_code`): the code map is code-only
-├── scanner_doc_links.rs    — document→code link production (ADR-0008) for the document tier
 ├── scanner_policy.rs       — embed-policy reconciliation: vector rows follow `embed*` config changes
 ├── scanner_candidates.rs   — candidate enumeration + the [scan] max_candidates ceilings and
 │                             the BASEMIND_ALLOW_EXTRA_ROOTS grant for extra_roots
@@ -159,7 +158,7 @@ src/
 │   ├── overrides.rs        — DocumentsCliOverrides — backs the clap flags
 │   ├── layered.rs          — merge_layers (Mcp > Cli > Env > File > Default)
 │   └── source.rs           — ConfigSource + ProvenanceMap ledger
-├── mcp/                    — MCP server: seven domain tools (code, graph, git, memory,
+├── mcp/                    — MCP server: six domain tools (code, git, memory,
 │                             agents, workspace, admin), each one #[tool] dispatching
 │                             on a required `mode` — see "MCP surface" below
 │   ├── mod.rs, state.rs    — server bootstrap; shared ServerState
@@ -167,7 +166,7 @@ src/
 │   │                         and domain_modes() (what tests/cli_parity/ walks)
 │   ├── tools.rs            — the `code` tool shim (#[tool], thin wrapper; 1000-line cap)
 │   ├── tools_<area>.rs     — one shim per remaining domain: admin, comms (→ `agents`),
-│   │                         git, graph, memory, registry (→ `workspace`) — filenames
+│   │                         git, memory, registry (→ `workspace`) — filenames
 │   │                         predate the tool/CLI rename
 │   ├── term_index.rs       — resident term index (symbol names + import strings) behind the
 │   │                         `symbols` / `dependents` substring sweeps
@@ -176,12 +175,12 @@ src/
 │   ├── index_read.rs       — daemon-side executor for the forwarded index reads (`IndexRead`)
 │   ├── l1_cache.rs         — byte-budgeted read-through cache of decoded outlines (max_map_cache_mb)
 │   ├── helpers.rs          — tool bodies; shared scan / decode helpers
-│   ├── helpers_<area>.rs   — the run_<mode> dispatch bodies, area-sliced: admin, archmap,
+│   ├── helpers_<area>.rs   — the run_<mode> dispatch bodies, area-sliced: admin,
 │   │                         calls, calls_scan, code, code_search (feature code-search),
-│   │                         comms, community, documents, expand, files, fingerprint,
-│   │                         git, git_file, graph, graphview,
+│   │                         comms, documents, expand, files, fingerprint,
+│   │                         git, git_file,
 │   │                         grep, impls, intel (definition mode body), memory,
-│   │                         registry, telemetry, traverse
+│   │                         registry, telemetry
 │   ├── memory.rs           — search_documents + memory_* bodies behind the `memory` domain
 │   ├── types.rs, types_<area>.rs — one flat <Domain>Params per domain (optional sibling
 │   │                         fields per mode) + response structs, mirroring the
@@ -190,7 +189,7 @@ src/
 │   ├── savings.rs          — token-savings heuristics, keyed by the domain:mode telemetry_key()
 │   │                         plus the bare pre-consolidation tool-name spellings
 │   ├── telemetry.rs        — per-call telemetry.jsonl writer
-│   └── budget.rs, toon.rs, lean.rs, lenient.rs, kneedle.rs, notifications.rs,
+│   └── budget.rs, toon.rs, lean.rs, lenient.rs, notifications.rs,
 │       completions.rs, prompts.rs, tokens.rs, background.rs, daemon_forward.rs,
 │       map_fingerprint.rs, identity.rs — response budgeting, TOON/lean output
 │       shaping, request leniency, daemon-forward plumbing for Seam B
@@ -214,8 +213,8 @@ src/
 ├── search/                 — BM25 / exact / RRF keyword search over code chunks
 │                             (feature code-search)
 ├── registry/                — daemon-side worktree/branch claim registry
-├── cli/                     — CLI subcommand groups, 1:1 with the seven MCP domains: admin,
-│                             agents (daemon-agent verbs), code, git, graph, memory,
+├── cli/                     — CLI subcommand groups, 1:1 with the six MCP domains: admin,
+│                             agents (daemon-agent verbs), code, git, memory,
 │                             registry (the `workspace` group);
 │                             comms_daemon.rs is `basemind comms` — daemon lifecycle only
 │                             (daemon/start/stop/status/doctor)
@@ -529,15 +528,14 @@ relays a client's stdio to it, and HTTP-native clients dial the daemon's streama
 directly (opt-in via `BASEMIND_ALLOW_HTTP`, bearer token in `<comms_dir>/http.addr`). The live
 contract is `tests/mcp_smoke.rs`.
 
-The surface is **seven domain tools**, each dispatching on a required, non-defaulted `mode` — not
-one tool per verb (ADR-0011). The same seven names are the CLI groups, checked per
+The surface is **six domain tools**, each dispatching on a required, non-defaulted `mode` — not
+one tool per verb (ADR-0011). The same six names are the CLI groups, checked per
 `(domain, mode)` by `tests/cli_parity/` (see [ADR-0014](adr/0014-cli-mcp-parity-guard.md)). `src/mcp/mode.rs` (`define_mode!`) is the
 single source of the wire spellings, the CLI parity table, and the telemetry keys.
 
 | Tool / CLI group | `mode` values | Gate |
 |---|---|---|
 | `code` | outline, symbols, grep, files, find, definition, references, callers, implementations, dependents, expand, semantic, chunk | always |
-| `graph` | calls, neighbors, path, subgraph, communities, map, export, display, open | always |
 | `git` | status, recent, touching, by_path, churn, diff, diff_outline, blame, blame_symbol, symbol_history, search | always |
 | `memory` | put, get, list, search, delete, documents | always¹ |
 | `admin` | status, repo, rescan, cache_stats, gc, cache_clear, telemetry | always |
@@ -558,10 +556,10 @@ Conventions:
   them by keyword search, so the description carries the retrieval vocabulary; semantics
   (substring vs prefix, scope-aware vs name-only) are stated honestly.
 - Tool bodies live in `src/mcp/helpers*.rs`, area-sliced (`helpers_calls.rs`,
-  `helpers_documents.rs`, `helpers_graph.rs`, `helpers_grep.rs`, `helpers_impls.rs`,
+  `helpers_documents.rs`, `helpers_grep.rs`, `helpers_impls.rs`,
   `helpers_intel.rs`, and more — see [Source layout](#source-layout));
   `tools.rs` and the `tools_<area>.rs` siblings contain `#[tool]` shims only, one per domain.
-- No `output_schema` on any of the seven tools (each domain's modes return different response
+- No `output_schema` on any of the six tools (each domain's modes return different response
   shapes; SEP-2106 allows one per tool). Annotations coarsen to the union of a domain's modes,
   resolving toward the side effect (e.g. `admin` advertises `destructive_hint` because `cache_clear` is
   one of its modes, while `code` and `git` keep `read_only_hint: true` since none of their modes
@@ -624,7 +622,7 @@ basemind's footprint on a constrained machine:
 | `document_models` | `full` | Model families document extraction runs: `full` \| `code_only` (embeddings only, no keywords/NER/summarization/OCR) \| `none` (metadata + keyword search only). |
 | `onnx_provider` | `cpu` | ONNX execution provider for embeddings, reranker, layout and NER: `cpu` \| `auto` \| `coreml` \| `cuda` \| `tensorrt`. `auto` on macOS means CoreML, which compiles per input shape and measured 7.6 GB for one tiny document vs 0.8 GB on CPU. |
 | `max_footprint_mb` | `0` (auto) | Ceiling on process memory footprint. A positive integer is an explicit mebibyte ceiling; `0` or `"auto"` derives one from the environment (75% of an enforced cgroup limit, else 25% of machine RAM, floored at 2048 MiB); `"off"` disables the gate. |
-| `max_map_cache_mb` | `256` | Byte budget for the MCP read stack's decoded-outline cache (`src/mcp/l1_cache.rs`), per workspace. `0` = unbounded. A miss costs one blob read and never changes an answer. The code-graph memo is charged at half this value, and a read-only session's projected call / implementation indexes are charged against it too. |
+| `max_map_cache_mb` | `256` | Byte budget for the MCP read stack's decoded-outline cache (`src/mcp/l1_cache.rs`), per workspace. `0` = unbounded. A miss costs one blob read and never changes an answer. A read-only session's projected call / implementation indexes are charged against it. |
 
 In the shared daemon these values are ceilings, not settings: `src/config/daemon.rs` applies
 `min(file, cap)` to each (and to `[scan]` / `[documents]` limits), with `0` / `"auto"` /
@@ -726,12 +724,11 @@ cargo test --release --test harden -- --ignored --nocapture
 
 It clones 8 upstream repos under `/tmp/basemind-harden/` (`ripgrep`, `tokio`,
 `typescript`, `react`, `django`, `requests`, `gin`, plus a shallow `ripgrep`
-variant), runs `basemind scan` on each, then sweeps every `code`/`graph` mode plus
+variant), runs `basemind scan` on each, then sweeps every `code` mode plus
 a representative subset of `git` modes. Canary assertions catch regressions:
 
 - **tokio**: `references("spawn")` ≥ 50 · `find("src")` ≥ 100 · `grep("fn spawn")` ≥ 20 ·
-  `implementations("Future")` ≥ 20 · `calls("spawn", callers, depth=2)` ≥ 5 nodes ·
-  `map(module)` ≥ 5 nodes and ≥ 1 import edge
+  `implementations("Future")` ≥ 20
 - **django**: `references("get")` ≥ 50 · `git search("fixed", message)` ≥ 20 commits ·
   `git touching("django/db/models/query.py")` ≥ 10 commits · author search ≥ 1 hit
 - **react**: `symbols("useState")` > 0
@@ -863,7 +860,7 @@ once (5 s replay timeout), but only when re-sending is safe:
 
 - the read methods `ping`, `tools/list`, `resources/list`, `resources/read`,
   `resources/templates/list`, `prompts/list`, `prompts/get` and `completion/complete`;
-- every `code`, `git` and `graph` call;
+- every `code` and `git` call;
 - `agents` modes `list`, `thread_list`, `members`, `history`, `message`, `inbox`, `ack`, `wait` and
   `status`;
 - `agents` `post`, which the relay stamps with a `relay-` key when the caller gave none.

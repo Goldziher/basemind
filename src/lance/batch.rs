@@ -101,14 +101,6 @@ impl LanceStore {
         })
     }
 
-    /// [`Self::replace_documents_many`] for the `doc_links` table (key column `doc_path`).
-    #[cfg(feature = "documents")]
-    pub fn replace_doc_links_many(&self, items: Vec<(String, String, Vec<super::DocLinkRow>)>) -> Result<()> {
-        self.replace_many(super::schema::DOC_LINKS_TABLE, "doc_path", items, |_, rows| {
-            super::doc_links::build_doc_links_batch(rows)
-        })
-    }
-
     /// [`Self::replace_documents_many`] for the `code_chunks` table.
     #[cfg(feature = "code-search")]
     pub fn replace_code_chunks_many(&self, items: Vec<(String, String, Vec<super::CodeRow>)>) -> Result<()> {

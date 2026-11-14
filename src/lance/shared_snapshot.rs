@@ -167,15 +167,6 @@ pub(crate) fn publish_scan(store: &crate::store::Store, config: &crate::config::
         })?;
         save(&snapshot, source, lane, scope)?;
     }
-    #[cfg(feature = "documents")]
-    if config.documents.enabled {
-        let lane = SharedLane::DocLinks;
-        let generation = generation(&store.index, config, lane)?;
-        let snapshot = publish(source, &shared, lane, scope, generation, |path| {
-            store.lookup_doc(path).map(|entry| entry.hash_hex.clone())
-        })?;
-        save(&snapshot, source, lane, scope)?;
-    }
     #[cfg(feature = "code-search")]
     if config.code_search.enabled && config.code_search.embed {
         let lane = SharedLane::Code;
@@ -238,7 +229,7 @@ fn project(
     paths: &mut BTreeSet<(String, u32, String)>,
     seen: &mut std::collections::BTreeSet<(String, u32)>,
 ) -> Result<Option<RecordBatch>> {
-    let path_column = if lane.name() == "doc_links" { "doc_path" } else { "path" };
+    let path_column = "path";
     let path = strings(batch, path_column)?;
     let ordinals = ordinals(batch, lane)?;
     let mut keys = Vec::with_capacity(batch.num_rows());
@@ -328,35 +319,6 @@ fn code_ordinal(id: &str) -> Result<u32> {
 mod tests {
     use super::*;
     use crate::lance::DocumentRow;
-
-    #[cfg(feature = "documents")]
-    #[test]
-    fn link_snapshot_preserves_mentions_and_falls_back_after_mutation() {
-        let directory = tempfile::tempdir().unwrap();
-        let source = LanceStore::open(&directory.path().join("standalone"), 2, "model").unwrap();
-        let group = directory.path().join("shared");
-        let shared = SharedStore::open(&group, "model", 2).unwrap();
-        let lane = SharedLane::DocLinks;
-        let rows = ["Beta", "Alpha"].map(|mention| crate::lance::DocLinkRow {
-            scope: "repo".into(),
-            doc_path: "current.md".into(),
-            chunk_idx: 0,
-            mention_kind: "name".into(),
-            mention_value: mention.into(),
-        });
-        source.replace_doc_links("repo", "current.md", rows.to_vec()).unwrap();
-        let snapshot = publish(&source, &shared, lane, "repo", "gen-1".into(), |_| Some("body".into())).unwrap();
-        save(&snapshot, &source, lane, "repo").unwrap();
-        let query = |shared: &SharedStore, paths: &LivePaths<'_>| shared.doc_links("repo", paths);
-        let hits = read(&source, &group, lane, "repo", "gen-1", query).unwrap();
-        assert_eq!(
-            hits.iter().map(|hit| hit.mention_value.as_str()).collect::<Vec<_>>(),
-            ["Alpha", "Beta"]
-        );
-        source.replace_doc_links("repo", "current.md", Vec::new()).unwrap();
-        assert!(read(&source, &group, lane, "repo", "gen-1", query).is_none());
-        assert!(source.all_doc_links("repo").unwrap().is_empty());
-    }
 
     #[test]
     fn snapshot_matches_generation_and_standalone_revision() {

@@ -9,8 +9,8 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:046c79d7d4365fd1146f4fbe2ba683674f8241eb6c1969fb85e9c51e7dcf763a
-Source-Hash: blake3:fbc7b4d75a7eb6eec0f28a10c0fe7172499c7b07b219d86838a7a4d3593da9ac
+Content-Hash: blake3:abbb1944b636a7a7f71bc514d82096742ad638df4fd186e2cadaba03bf1947fc
+Source-Hash: blake3:ab6d245011e4f10e9bfc8132b1e23982de2b960c8785fb46e7a09f139139c603
 Schema-Version: v1
 -->
 
@@ -32,7 +32,7 @@ different version there shares the same cache. Examples below write `basemind` f
 ## Capabilities
 
 - **Code map across 300+ languages** — tree-sitter outlines, symbol search, references, callers,
-  call graphs, implementations, dependents. Code only: markdown, JSON, YAML, TOML, XML, CSV and
+  implementations, dependents. Code only: markdown, JSON, YAML, TOML, XML, CSV and
   similar files are documents (`basemind memory documents`), not in the code map.
 - **Full-text + symbol search** — indexed regex over code content and substring symbol lookup.
 - **Git intelligence** — history, blame, and structural diffs at symbol resolution, plus churn.
@@ -50,7 +50,7 @@ different version there shares the same cache. Examples below write `basemind` f
   `views` / `all`, it needs `--yes` off a terminal, and `blobs` wipes the machine-global store; only
   `basemind cache gc` deletes orphaned blobs).
 
-**basemind first, shell/grep/git fallback.** Prefer `basemind code` / `graph` over reading files, over
+**basemind first, shell/grep/git fallback.** Prefer `basemind code` over reading files, over
 `grep`/`rg`, and over naked `git`: use it for code parsing (outlines, references, callers), git
 history / blame / diffs (`basemind git`), and document extraction / RAG / keyword + entity (NER) /
 summary (`basemind memory documents`). Drop to raw shell, grep, or git only when no basemind
@@ -64,7 +64,6 @@ command covers the question.
 | "What's the shape of file F?" | `basemind code outline path/F` | Add `--l2` for calls + docs. |
 | "What calls X?" (any name) | `basemind code references "X"` | Name-only substring, no scope resolution; complete. |
 | "What calls this specific definition?" | `basemind code callers path name [--kind]` | Specific definition lookup. |
-| "Trace the call graph?" | `basemind graph calls "name" [--direction --max-depth]` | BFS over calls. |
 | "What implements / extends X?" | `basemind code implementations "X"` | Rust, Python, TS/TSX, JS. |
 | "What imports module M?" | `basemind code dependents "M"` | Reverse-lookup via imports. |
 | "What code files are indexed?" | `basemind code files [--language --path-contains]` | Code only; filter by language/path. |

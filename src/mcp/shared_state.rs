@@ -69,13 +69,6 @@ pub(crate) struct SharedReadStack {
     /// against a stale generation can be detected and reported back as
     /// `cursor_invalidated = true`.
     pub(crate) cache_generation: AtomicU32,
-    /// Generation-keyed memo of built code-graphs, shared by every graph tool (`neighbors`/`path`/
-    /// `subgraph`/`communities`/`architecture_map`/`graph_export`). Keyed on the current
-    /// [`cache_generation`](Self::cache_generation), so it is invalidated wholesale on any `cache`
-    /// swap and never serves a stale graph. Byte-budgeted — a built graph is O(corpus), so without
-    /// one it would be the last unbounded resident structure on the read stack. See
-    /// [`super::codegraph::GraphMemo`].
-    pub(crate) graph_memo: Mutex<super::codegraph::GraphMemo>,
     /// Per-repo scope key for LanceDB tables and `memory_by_key` Fjall keyspace.
     /// Computed once at boot. Do NOT recompute per-call.
     #[allow(dead_code)]
@@ -147,15 +140,6 @@ pub(crate) struct SharedReadStack {
     /// non-hosted stack (in-process serve / CLI), where the `daemon_writer` FORWARD path stays live.
     #[cfg(all(feature = "comms", any(unix, windows)))]
     pub(crate) host: Option<std::sync::Arc<dyn crate::mcp::HostBackend>>,
-}
-
-/// Byte budget for the code-graph memo, derived from `[resources] max_map_cache_mb`.
-///
-/// Half the outline budget, because a graph is a rebuildable projection OF those outlines and
-/// should not outweigh them; `0` (unbounded outlines) stays unbounded here too. Derived rather than
-/// separately configurable so an operator bounds the whole read stack with one number.
-fn graph_memo_budget_bytes(resources: &crate::config::ResourcesConfig) -> u64 {
-    super::l1_cache::budget_bytes_from(resources) / 2
 }
 
 /// Whether the workspace's `status.json` records a partial or unresolved last scan. A missing or
@@ -230,7 +214,6 @@ impl SharedReadStack {
             lazy_cache = options.lazy_cache,
             "code map ready for MCP server (preloaded, warming in background, or lazy)"
         );
-        let graph_memo_budget = graph_memo_budget_bytes(&config.resources);
         let outline_cache: Arc<OutlineCache> = Arc::new(Mutex::new(LruCache::new(
             NonZeroUsize::new(OUTLINE_CACHE_CAP).expect("OUTLINE_CACHE_CAP > 0"),
         )));
@@ -247,7 +230,6 @@ impl SharedReadStack {
             telemetry: telemetry_handle,
             corpus_bytes: AtomicU64::new(corpus_bytes),
             cache_generation: AtomicU32::new(1),
-            graph_memo: Mutex::new(super::codegraph::new_graph_memo(graph_memo_budget)),
             scope,
             #[cfg(any(feature = "memory", feature = "documents", feature = "code-search"))]
             lance: tokio::sync::OnceCell::new(),
@@ -267,20 +249,6 @@ impl SharedReadStack {
             #[cfg(all(feature = "comms", any(unix, windows)))]
             host,
         }
-    }
-
-    /// Build the shared code-graph for `opts`, served from [`graph_memo`](Self::graph_memo) when an
-    /// identical graph was already built for the same cache snapshot. This is the single entry point
-    /// every graph tool uses instead of calling [`super::codegraph::build`] directly, so repeat calls
-    /// against one snapshot collapse to an `Arc` clone. The memo keys on the cache's own content
-    /// fingerprint, so it invalidates itself the moment the caller's `cache` differs.
-    pub(crate) fn graph(
-        &self,
-        idx: Option<&dyn crate::index::view::IndexView>,
-        cache: &MapCache,
-        opts: &super::codegraph::BuildOpts,
-    ) -> Result<Arc<super::codegraph::CodeGraph>, rmcp::ErrorData> {
-        super::codegraph::build_memoized(&self.graph_memo, idx, cache, opts)
     }
 }
 

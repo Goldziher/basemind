@@ -330,18 +330,7 @@ fn cold_dirty_scan_publishes_delta_without_standalone_fjall() {
         response
     };
     let requests: &[(&[&str], &str)] = &[
-        (
-            &[
-                "graph",
-                "calls",
-                "after_symbol",
-                "--direction",
-                "callees",
-                "--path",
-                "sample.rs",
-            ],
-            "after",
-        ),
+        (&["code", "outline", "sample.rs", "--l2"], "after"),
         (&["git", "status"], "sample.rs"),
         (&["git", "recent", "--limit", "1"], "fixture"),
     ];

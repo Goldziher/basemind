@@ -120,7 +120,7 @@ async fn serve_relays_stdio_client_to_the_daemon_hosted_router() {
     // floor would go red on the consolidation itself instead of on a broken relay.
     let tools = service.list_all_tools().await.expect("list_tools over relay");
     let names: Vec<&str> = tools.iter().map(|t| t.name.as_ref()).collect();
-    for domain in ["code", "graph", "git", "memory", "admin"] {
+    for domain in ["code", "git", "memory", "admin"] {
         assert!(
             names.contains(&domain),
             "relayed tool listing should include the always-on `{domain}` tool: {names:?}"

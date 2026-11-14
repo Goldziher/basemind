@@ -137,16 +137,7 @@ pub(super) fn spawn_cache_warm(state: Arc<ServerState>) {
         let built = tokio::task::spawn_blocking(move || {
             let store = build_state.shared.store.blocking_read();
             let budget = super::l1_cache::budget_bytes_from(&build_state.shared.config.resources);
-            let mut cache = MapCache::build(&store, budget);
-            // Load persisted doc↔code links (ADR-0008) on this blocking thread — the LanceStore's own
-            // block_on must not nest inside the async reactor.
-            super::doc_links_cache::attach(
-                &mut cache,
-                &store,
-                &build_state.shared.config,
-                &build_state.shared.scope,
-            );
-            cache
+            MapCache::build(&store, budget)
         })
         .await;
         match built {
@@ -408,11 +399,7 @@ pub(super) fn spawn_view_watcher(state: Arc<ServerState>) -> WatcherGuard {
                     continue;
                 }
                 let budget = super::l1_cache::budget_bytes_from(&state.shared.config.resources);
-                let mut rebuilt = MapCache::build(&new_store, budget);
-                // Reload doc↔code links (ADR-0008) after a refreshed-index rebuild; safe here because
-                // this runs on a plain std thread with no tokio runtime entered.
-                super::doc_links_cache::attach(&mut rebuilt, &new_store, &state.shared.config, &state.shared.scope);
-                let new_cache = Arc::new(rebuilt);
+                let new_cache = Arc::new(MapCache::build(&new_store, budget));
                 tracing::info!(
                     files = new_cache.len(),
                     "view watcher: rebuilt MapCache from refreshed index"

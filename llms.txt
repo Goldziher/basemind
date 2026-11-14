@@ -7,7 +7,7 @@
 
 basemind is a pure-Rust, content-addressed, Fjall + LanceDB-backed index. It pre-parses a repo with
 tree-sitter across 300+ languages and exposes a structured code map (outlines, symbol search,
-references, callers, call graphs, implementations), semantic + keyword code search, git history +
+references, callers, implementations), semantic + keyword code search, git history +
 blame at symbol resolution, full-text + semantic document search over 90+ formats (with OCR and
 cross-encoder reranking), shared per-repo memory, and an agent-to-agent comms
 broker. Every tool returns paths, line numbers, and signatures — not file bodies — so a structural
@@ -21,7 +21,7 @@ first, shell/grep/git fallback.**
 - [Token economy](https://basemind.ai/concepts/token-economy/): Why structural answers cost a fraction of the tokens of reading files.
 - [MCP tool reference](https://basemind.ai/reference/mcp-tools/): Every tool, its parameters, and matching semantics.
 - [CLI reference](https://basemind.ai/reference/cli/): The scriptable CLI, at parity with the MCP tools: top-level `status`, `rescan`, `cache`, `doctor`, `completions`, documented exit codes (0 ok, 1 error, 2 usage, 3 busy, 4 daemon unreachable, 130 interrupted), and `--format json|toon`.
-- MCP resources: `basemind://status`, `basemind://repo/map`, `basemind://outline/{path}`, `basemind://memory/{key}`.
+- MCP resources: `basemind://status`, `basemind://outline/{path}`, `basemind://memory/{key}`.
 - [Installation](https://basemind.ai/start/installation/): Plugin, MCP server, and standalone CLI setup.
 - [Configuration](https://basemind.ai/reference/configuration/): `basemind.toml` (repo root or `.config/`), scan and document scoping, per-grammar `[languages]` overrides, the credential exclude floor, operator trust grants (`BASEMIND_ALLOW_*`), daemon caps (`BASEMIND_DAEMON_MAX_*`), feature flags, and layered overrides.
 - [Hosted llms.txt](https://basemind.ai/llms.txt): Always-current docs map, generated from the site (this repo-root file is the hand-curated project map).
@@ -32,7 +32,7 @@ first, shell/grep/git fallback.**
 
 ## Capabilities
 
-- [Code intelligence](https://basemind.ai/capabilities/code-intelligence/): Find where code is defined and used — symbol search, file outlines, references, callers, call graphs, implementations, dependents, go-to-definition, fuzzy path search, indexed regex (one `code` tool: modes `outline`, `symbols`, `grep`, `files`, `find`, `definition`, `references`, `callers`, `implementations`, `dependents`, `expand`; the `graph` tool adds `calls`, `neighbors`, `path`, `subgraph`, `communities`, `map`, `export`, `display` and `open`). The code map is code only: Markdown, JSON, YAML, TOML and other prose/data/config files are document-tier content, searched with `memory` mode `documents` (`files` and `find` list documents too; `outline`, `grep` and `symbols` do not).
+- [Code intelligence](https://basemind.ai/capabilities/code-intelligence/): Find where code is defined and used — symbol search, file outlines, references, callers, implementations, dependents, go-to-definition, fuzzy path search, indexed regex (one `code` tool: modes `outline`, `symbols`, `grep`, `files`, `find`, `definition`, `references`, `callers`, `implementations`, `dependents`, `expand`). The code map is code only: Markdown, JSON, YAML, TOML and other prose/data/config files are document-tier content, searched with `memory` mode `documents` (`files` and `find` list documents too; `outline`, `grep` and `symbols` do not).
 - [Semantic code search](https://basemind.ai/capabilities/code-search/): Search code by meaning, term, or symbol over indexed chunks — hybrid RRF fusion, vector KNN, or BM25, with optional reranking (`code` modes `semantic` and `chunk`; requires `--features code-search`).
 - [Git intelligence](https://basemind.ai/capabilities/git-intelligence/): Recent commits, commits touching a path, per-line and per-symbol blame, structural diffs across revisions, churn ranking, symbol history, and full-text search over commit authors + messages (one `git` tool: modes `status`, `recent`, `touching`, `by_path`, `blame`, `blame_symbol`, `diff`, `diff_outline`, `churn`, `symbol_history`, `search`, `show`).
 - [Document search](https://basemind.ai/capabilities/document-search/): Semantic + full-text search over PDFs, Office, HTML, email, and images (OCR), with reranking, keyword and named-entity filters, and per-document summaries (`memory` mode `documents`).

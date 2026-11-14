@@ -199,12 +199,6 @@ impl IndexDb {
     }
 }
 
-/// `Some(&dyn IndexView)` for an optional concrete view, for the call sites that take an optional one.
-#[cfg(test)]
-pub(crate) fn as_dyn<V: IndexView>(view: &Option<V>) -> Option<&dyn IndexView> {
-    view.as_ref().map(|v| v as &dyn IndexView)
-}
-
 pub(super) fn kv(guard: fjall::Guard) -> KvResult {
     let (key, value) = guard.into_inner().map_err(IndexError::from)?;
     Ok((IndexBytes::from_fjall(key), IndexBytes::from_fjall(value)))

@@ -95,16 +95,6 @@ pub fn table() -> Vec<Row> {
         pair("code", "expand", "code expand"),
         pair("code", "semantic", "code semantic"),
         pair("code", "chunk", "code chunk"),
-        // ---- graph ----
-        pair("graph", "calls", "graph calls"),
-        pair("graph", "neighbors", "graph neighbors"),
-        pair("graph", "path", "graph path"),
-        pair("graph", "subgraph", "graph subgraph"),
-        pair("graph", "communities", "graph communities"),
-        pair("graph", "map", "graph map"),
-        pair("graph", "export", "graph export"),
-        pair("graph", "display", "graph display"),
-        pair("graph", "open", "graph open"),
         // ---- admin ----
         pair("admin", "status", "status"),
         pair("admin", "repo", "admin repo"),

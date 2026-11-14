@@ -8,7 +8,6 @@
 //! | URI                          | Backing tool call             |
 //! |------------------------------|-------------------------------|
 //! | `basemind://status`          | `admin` mode `status`         |
-//! | `basemind://repo/map`        | `graph` mode `map`            |
 //! | `basemind://outline/{path}`  | `code` mode `outline`         |
 //! | `basemind://memory/{key}`    | `memory` mode `get`           |
 //!
@@ -31,7 +30,6 @@ use super::server_handler::LIST_CACHE_TTL_MS;
 
 const SCHEME: &str = "basemind://";
 const URI_STATUS: &str = "basemind://status";
-const URI_REPO_MAP: &str = "basemind://repo/map";
 const TEMPLATE_OUTLINE: &str = "basemind://outline/{path}";
 const TEMPLATE_MEMORY: &str = "basemind://memory/{key}";
 const MIME_JSON: &str = "application/json";
@@ -40,7 +38,6 @@ const MIME_JSON: &str = "application/json";
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum ResourceUri {
     Status,
-    RepoMap,
     Outline(String),
     Memory(String),
 }
@@ -53,10 +50,8 @@ pub(super) fn parse_uri(uri: &str) -> Result<ResourceUri, String> {
     if rest.contains(['?', '#']) {
         return Err(format!("resource URI {uri:?} must not carry a query or fragment"));
     }
-    match rest {
-        "status" => return Ok(ResourceUri::Status),
-        "repo/map" => return Ok(ResourceUri::RepoMap),
-        _ => {}
+    if rest == "status" {
+        return Ok(ResourceUri::Status);
     }
     if let Some(encoded) = rest.strip_prefix("outline/") {
         return Ok(ResourceUri::Outline(validate_rel_path(&percent_decode(encoded)?)?));
@@ -144,10 +139,6 @@ pub(super) fn static_resources() -> Vec<Resource> {
             .with_title("Index status")
             .with_description("Index health: file counts, languages, lifecycle flags. Same as admin mode status.")
             .with_mime_type(MIME_JSON),
-        Resource::new(URI_REPO_MAP, "repo-map")
-            .with_title("Repository architecture map")
-            .with_description("Hub modules, fan-in/out and cycles, ranked by centrality. Same as graph mode map.")
-            .with_mime_type(MIME_JSON),
     ]
 }
 
@@ -183,21 +174,17 @@ impl BasemindServer {
     pub(super) async fn read_resource_uri(&self, uri: &str) -> Result<ReadResourceResult, McpError> {
         let parsed =
             parse_uri(uri).map_err(|message| McpError::invalid_params(message, Some(json!({ "uri": uri }))))?;
-        let class = if parsed == ResourceUri::RepoMap {
-            WorkClass::Heavy
-        } else {
-            WorkClass::Control
-        };
-        let _admission = self.heavy_admission.admit(class).await.map_err(McpError::from)?;
+        let _admission = self
+            .heavy_admission
+            .admit(WorkClass::Control)
+            .await
+            .map_err(McpError::from)?;
         self.state.await_cache_ready().await;
         let state = &self.state;
         let result = match parsed {
             ResourceUri::Status => {
                 let params = from_args(json!({ "mode": "status" }))?;
                 super::helpers_admin::run_admin(state.clone(), params, None).await?
-            }
-            ResourceUri::RepoMap => {
-                super::helpers_graph::run_graph(state, from_args(json!({ "mode": "map" }))?).await?
             }
             ResourceUri::Outline(path) => {
                 super::helpers_code::run_code(state, from_args(json!({ "mode": "outline", "path": path }))?).await?
@@ -242,7 +229,10 @@ mod tests {
     #[test]
     fn parses_static_and_templated_uris() {
         assert_eq!(parse_uri("basemind://status"), Ok(ResourceUri::Status));
-        assert_eq!(parse_uri("basemind://repo/map"), Ok(ResourceUri::RepoMap));
+        assert!(
+            parse_uri("basemind://repo/map").is_err(),
+            "the repo map resource is gone"
+        );
         assert_eq!(
             parse_uri("basemind://outline/src/a%20b.rs"),
             Ok(ResourceUri::Outline("src/a b.rs".to_string()))

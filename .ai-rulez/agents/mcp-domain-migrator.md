@@ -24,7 +24,6 @@ parallelizes.
 | Domain | Modes | Feature gate |
 |---|---|---|
 | `code` | outline, symbols, grep, files, find, definition, references, callers, implementations, dependents, expand, semantic, chunk | always |
-| `graph` | calls, neighbors, path, subgraph, communities, map, export, display, open | always |
 | `git` | status, recent, touching, by_path, churn, diff, diff_outline, blame, blame_symbol, symbol_history, search | always |
 | `memory` | put, get, list, search, delete, documents | always (body-gated) |
 | `agents` | register, list, thread_start, thread_list, join, leave, members, add_member, remove_member, archive, post, history, message, inbox, ack, wait | `comms` |
@@ -86,8 +85,7 @@ Your assignment names one domain. Migrate that one and no other.
 Every `src/**/*.rs` file is capped at 1000 lines by `tests/max_lines.rs` — a real `cargo test`
 failure, not a lint. Run `wc -l` on each file you touched before reporting. Known pressure:
 `tools_git.rs` (918, with 10 of 11 bodies still inline — moving them to `helpers_git.rs` is part of
-the git migration), `tools.rs` (941), `helpers_archmap.rs` (970 — the `graph` migration must not add
-a line to it).
+the git migration), `tools.rs` (941).
 
 ## Shared files are off-limits
 

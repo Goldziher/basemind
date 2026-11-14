@@ -1,5 +1,5 @@
 ---
-description: Find where code is defined and used without reading files — symbol search, file outlines, references, callers, call graphs, implementations, dependents, and indexed regex over content. Reach for it whenever the user asks "where is X defined", "what calls Y", "what implements Z", "what's the shape of this file", or whenever you're about to grep or open files to learn structure.
+description: Find where code is defined and used without reading files — symbol search, file outlines, references, callers, implementations, dependents, and indexed regex over content. Reach for it whenever the user asks "where is X defined", "what calls Y", "what implements Z", "what's the shape of this file", or whenever you're about to grep or open files to learn structure.
 name: basemind-code-search
 license: MIT
 metadata:
@@ -9,8 +9,8 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:c1e161f2685f07f1a117d81cec2de777179da225cc4f7164a8d440d19843e002
-Source-Hash: blake3:fbc7b4d75a7eb6eec0f28a10c0fe7172499c7b07b219d86838a7a4d3593da9ac
+Content-Hash: blake3:b5a5cbf59beb602eb65ffecdbff8ceaf623e410af45452b99060af7c949ff354
+Source-Hash: blake3:ab6d245011e4f10e9bfc8132b1e23982de2b960c8785fb46e7a09f139139c603
 Schema-Version: v1
 -->
 
@@ -49,11 +49,9 @@ raw shell only when no tool covers the question.
 |---|---|---|
 | "Where is X defined?" | `code { mode: "symbols", name: "X" }` (substring, optional `kind`) | `basemind code symbols "X"` |
 | "Jump to the definition of X used here?" | `code { mode: "definition", path: F, line }` (scope-aware) | `basemind code definition F line [--column]` |
-| "What's the high-level architecture / module map?" | `graph { mode: "map" }` | `basemind graph map` |
 | "What's the shape of file F?" | `code { mode: "outline", path: F }` (add `l2: true`) | `basemind code outline F [--l2]` |
 | "What calls X?" (any name) | `code { mode: "references", name: "X" }` | `basemind code references "X"` |
 | "What calls this specific definition?" | `code { mode: "callers", path: F, name }` | `basemind code callers F name [--kind]` |
-| "Trace the call graph from a function?" | `graph { mode: "calls", name }` (bounded BFS) | `basemind graph calls "name" [--direction --max-depth]` |
 | "What implements / extends / inherits X?" | `code { mode: "implementations", trait_name: "X" }` | `basemind code implementations "X"` |
 | "What imports module M?" | `code { mode: "dependents", module: "M" }` | `basemind code dependents "M"` |
 | "What code files are indexed?" | `code { mode: "files" }` (filter by language/path) | `basemind code files [--language --path-contains]` |

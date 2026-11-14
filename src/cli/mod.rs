@@ -9,7 +9,7 @@
 //! Layout:
 //! - `context.rs` — one-shot server construction.
 //! - `render.rs` — JSON extraction + generic human renderer.
-//! - `code.rs` / `git.rs` / `graph.rs` / `memory.rs` / `admin.rs` — subcommand groups.
+//! - `code.rs` / `git.rs` / `memory.rs` / `admin.rs` — subcommand groups.
 
 pub mod admin;
 #[cfg(all(feature = "comms", any(unix, windows)))]
@@ -21,7 +21,6 @@ pub mod comms_daemon;
 pub mod context;
 pub mod exit;
 pub mod git;
-pub mod graph;
 pub mod hook;
 pub mod init;
 pub mod init_gitignore;
@@ -57,10 +56,6 @@ pub enum ToolCmd {
     /// Git history / blame / diff queries.
     #[command(subcommand)]
     Git(git::GitCmd),
-    /// Code-graph navigation: calls, neighbors, path, subgraph, communities, map, export, display,
-    /// open.
-    #[command(subcommand)]
-    Graph(graph::GraphCmd),
     /// Shared agent memory and document search (needs `--features memory,documents`).
     #[command(subcommand)]
     Memory(memory::MemoryCmd),
@@ -147,7 +142,6 @@ pub fn run(
         match cmd {
             ToolCmd::Code(c) => code::run(&server, c, &opts, &mut out).await?,
             ToolCmd::Git(g) => git::run(&server, g, &opts, &mut out).await?,
-            ToolCmd::Graph(g) => graph::run(&server, g, &opts, &mut out).await?,
             ToolCmd::Memory(m) => memory::run(&server, m, &opts, &mut out).await?,
             ToolCmd::Admin(a) => admin::run(&server, a, &opts, &mut out).await?,
             ToolCmd::Status => admin::run_status(&server, &opts, &mut out).await?,

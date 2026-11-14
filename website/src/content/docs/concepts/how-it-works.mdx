@@ -44,7 +44,7 @@ bounded rather than proportional to the repo: decoded outlines live in an LRU ca
 `[resources] max_map_cache_mb`, symbol and import names in a compact resident term index, and
 callee and trait names in small resident dictionaries, with the rest read from the on-disk index
 on demand. `references`, `callers` and `implementations` are scanned inside the daemon, so a
-session holds no copy of the call graph. See [Memory and resources](/reference/memory/).
+session holds no copy of the call index. See [Memory and resources](/reference/memory/).
 
 ## Re-scans
 
@@ -79,8 +79,7 @@ symbols. That keeps `code outline`, `code symbols` and `code grep` free of READM
 config keys. `[documents] include` / `exclude` and `mime_allowlist` decide which of those files are
 indexed; with the `documents` feature compiled out they fall back to the code map.
 
-Markdown notes and Obsidian vaults are therefore searched by meaning and by keyword, and a decision
-record such as `docs/adr/0007-*.md` still resolves as a graph decision node.
+Markdown notes and Obsidian vaults are therefore searched by meaning and by keyword.
 
 ## Vector search and memory
 

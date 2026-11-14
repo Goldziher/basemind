@@ -105,9 +105,7 @@ impl FileIndexView {
         self.files.get(path)
     }
 
-    // Membership is asked only by the codegraph document lane (`documents`); gated rather than
-    // blanket-allowed so a build that drops it keeps no dead code.
-    #[cfg(any(test, feature = "documents"))]
+    #[cfg(test)]
     pub(crate) fn contains(&self, path: &RelPath) -> bool {
         self.files.contains_key(path)
     }

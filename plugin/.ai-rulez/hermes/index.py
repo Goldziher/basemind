@@ -37,7 +37,7 @@ _COMMANDS_DIR = _PKG_DIR / "commands"
 
 _DISCIPLINE = (
     "basemind is available over MCP in this session — a tree-sitter code map + git context. "
-    "Its surface is seven domain tools — code, graph, git, memory, admin, agents, and workspace "
+    "Its surface is six domain tools — code, git, memory, admin, agents, and workspace "
     "— each dispatched by a required mode. "
     "Prefer it over grep/read for structural and historical questions: its tools return paths, "
     "line numbers, and signatures, not file bodies, so they cost a fraction of the tokens of "
@@ -292,7 +292,7 @@ def _read_int(path: Path) -> int:
 PLUGIN_NAME = "basemind"
 CLI_COMMAND = "basemind"
 SERVER_ARGUMENTS = ["serve"]
-TOOL_NAMES = ["code", "graph", "git", "memory", "admin", "agents", "workspace"]
+TOOL_NAMES = ["code", "git", "memory", "admin", "agents", "workspace"]
 DISCOVERY_TOOL = "list_tools"
 REQUEST_TIMEOUT_SECONDS = 300
 

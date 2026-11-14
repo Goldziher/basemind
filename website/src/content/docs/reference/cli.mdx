@@ -5,7 +5,7 @@ description: Complete command list for the basemind command-line interface.
 
 import { Aside } from '@astrojs/starlight/components';
 
-The CLI mirrors the MCP surface exactly: **seven domains**, each a real clap subcommand group
+The CLI mirrors the MCP surface exactly: **six domains**, each a real clap subcommand group
 (`basemind <domain> <mode>`). `tests/cli_parity/` enforces it: every MCP mode maps to a CLI command
 with the same parameters and the same answer, and any command with no MCP counterpart is declared
 CLI-only with a reason. Some MCP modes live at the top level rather than under their domain
@@ -23,13 +23,13 @@ Commands that return lists share a set of paging and budget flags where their MC
 | Flag | Commands | Effect |
 |---|---|---|
 | `--cursor <TOKEN>` | `code symbols/grep/files/find/references/callers/implementations`, `git recent/search/touching/by-path/blame/blame-symbol/symbol-history`, `memory list`, `agents history/inbox/wait` | Resume from the previous page's `next_cursor`. |
-| `--max-tokens <N>` | `code outline/symbols/grep/files/find/references/callers/implementations/semantic`, `graph map`, `memory documents` | Token budget for the returned list; the overflow is dropped and the response is flagged `budgeted`. |
+| `--max-tokens <N>` | `code outline/symbols/grep/files/find/references/callers/implementations/semantic`, `memory documents` | Token budget for the returned list; the overflow is dropped and the response is flagged `budgeted`. |
 | `--format json\|toon` | `code outline/symbols/grep/files/find/references/semantic`, `memory documents` | Response encoding. `toon` is a compact tabular form, printed as-is in human mode; `--json` always prints JSON. |
 | `--rerank-top-k <N>` | `code semantic` | How many fused hits the cross-encoder reranks (default from config). |
 
 | Domain | Gate |
 |---|---|
-| `code`, `graph`, `git`, `memory`, `admin` | always available |
+| `code`, `git`, `memory`, `admin` | always available |
 | `agents`, `workspace` | `--features comms` |
 
 A default `cargo install basemind` build exposes 5 domains; `--features comms` adds `agents` +
@@ -69,32 +69,6 @@ basemind code chunk <path> [--chunk-id --byte-start]
 | `expand <path> <name> [--kind]` | One symbol's raw source body — the inverse of an outline entry. |
 | `semantic <query> [--limit --lane --rerank --rerank-preset --rerank-top-k --max-tokens --format]` | Search code by meaning; returns pointers, fetch bodies with `chunk`. Needs `--features code-search`. |
 | `chunk <path> [--chunk-id --byte-start]` | Fetch one code chunk's source body. Needs `--features code-search`. |
-
-## `graph` — the unified code-graph
-
-```bash
-basemind graph calls <name> [--direction --path --max-depth --max-nodes]
-basemind graph neighbors <name> [--path --direction --depth --edges --min-confidence --max-nodes]
-basemind graph path <from> <to> [--from-path --to-path --edges --include-contains --min-confidence]
-basemind graph subgraph <name> [--path --depth --edges --min-confidence --max-nodes]
-basemind graph communities [--edges --algorithm --min-confidence --max-communities --members-per-community]
-basemind graph map [--granularity --focus --depth --edges --no-churn --churn-window --max-nodes --max-edges --max-tokens]
-basemind graph export [--format --focus --edges --algorithm --min-confidence --max-nodes --max-edges --write]
-basemind graph display [--format --focus --edges --algorithm --min-confidence --max-nodes --max-edges --no-open]
-basemind graph open [--format --focus --edges --algorithm --min-confidence --max-nodes --max-edges --no-open]
-```
-
-| Command | Purpose |
-|---|---|
-| `calls <name> [--direction --path --max-depth --max-nodes]` | Walk the call chain up (`callers`) or down (`callees`) from one definition. |
-| `neighbors <name> [--path --direction --depth --edges --min-confidence --max-nodes]` | The n-hop neighborhood around a symbol. |
-| `path <from> <to> [--from-path --to-path --edges --include-contains --min-confidence]` | Confidence-weighted shortest path between two symbols. Containment edges excluded unless `--include-contains`. |
-| `subgraph <name> [--path --depth --edges --min-confidence --max-nodes]` | A symbol's neighborhood cut to its most central nodes. |
-| `communities [--edges --algorithm --min-confidence --max-communities --members-per-community]` | Cluster the graph into de-facto modules. `--algorithm` is `label_propagation` (default) or `louvain`. |
-| `map [--granularity --focus --depth --edges --no-churn --churn-window --max-nodes --max-edges --max-tokens]` | Whole-repo architecture: hub modules by centrality, plus dependency cycles. |
-| `export [--format --focus --edges --algorithm --min-confidence --max-nodes --max-edges --write]` | Render as `node_link`/`dot`/`mermaid`/`graphml`/`cypher`/`html`/`svg`. `--write` also caches the export and prints its path. |
-| `display [--format --focus --edges --algorithm --min-confidence --max-nodes --max-edges --no-open]` | Render a visual view and open it in your default desktop viewer; `--no-open` only writes + prints the path. |
-| `open [--format --focus --edges --algorithm --min-confidence --max-nodes --max-edges --no-open]` | Return a live browsable URL for the interactive graph page (a `file://` export when no daemon is serving). |
 
 ## `git` — git history
 
@@ -323,7 +297,7 @@ the index directly and read-only.
 <Aside type="note">
 Global flags (`--root`, `--quiet`, `--verbose`, `--no-color`, `--json`, `--view`) apply across all
 subcommands, though `--json` only takes effect on the tool subcommands (`code`, `git`,
-`graph`, `memory`, `admin`, `status`, `cache`, `doctor`, and — with `--features comms` — `comms`, `agents`,
+`memory`, `admin`, `status`, `cache`, `doctor`, and — with `--features comms` — `comms`, `agents`,
 `workspace`, `daemon`); `--view` also applies to `serve`. Ignored flags log a warning. Cursor-based pagination
 (`--cursor`) is covered in the paging table above.
 </Aside>

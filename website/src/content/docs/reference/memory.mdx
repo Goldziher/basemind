@@ -73,7 +73,7 @@ The daemon is the only process that opens the index. A session answers from:
   only the matching names instead of walking every call site.
 
 `references`, `callers` and `implementations` from a daemon-backed session are forwarded to the
-daemon, which runs the same scan as a writer session. The session holds no call-graph copy and the
+daemon, which runs the same scan as a writer session. The session holds no copy of the call index and the
 results and totals are complete. Only when no daemon is reachable does a session build an in-RAM
 projection, charged against `max_map_cache_mb` and flagged with a `projections_capped` notice if it
 is truncated.

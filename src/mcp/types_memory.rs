@@ -211,7 +211,7 @@ pub(super) struct MemoryListResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<Cursor>,
     /// Server-side handler latency in microseconds — the tool body's own execution (index / vector
-    /// search / graph walk + response construction), excluding MCP transport, argument
+    /// search + response construction), excluding MCP transport, argument
     /// deserialization, and response serialization. A first call against a cold server also
     /// includes index warm-up; such responses carry a `notice`. See
     /// [`crate::mcp::helpers::timing`] for the full contract.
@@ -248,7 +248,7 @@ pub(super) struct MemorySearchResponse {
     pub query: String,
     pub hits: Vec<MemorySearchHit>,
     /// Server-side handler latency in microseconds — the tool body's own execution (index / vector
-    /// search / graph walk + response construction), excluding MCP transport, argument
+    /// search + response construction), excluding MCP transport, argument
     /// deserialization, and response serialization. A first call against a cold server also
     /// includes index warm-up; such responses carry a `notice`. See
     /// [`crate::mcp::helpers::timing`] for the full contract.

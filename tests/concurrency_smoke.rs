@@ -481,11 +481,10 @@ async fn second_session_resolves_find_references_from_blobs() {
     let _ = serve2.cancel().await;
 }
 
-/// The other two Fjall-backed tools — `call_graph` and `find_implementations` —
-/// must also work on the read-only 2nd session, via the same in-RAM indexes built
-/// from the shared blobs.
+/// The other Fjall-backed tool, `find_implementations`, must also work on the read-only 2nd
+/// session, via the same in-RAM index built from the shared blobs.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn second_session_resolves_call_graph_and_impls_from_blobs() {
+async fn second_session_resolves_impls_from_blobs() {
     let dir = build_repo();
     let root = dir.path();
     run_scan(root);
@@ -493,28 +492,6 @@ async fn second_session_resolves_call_graph_and_impls_from_blobs() {
     let serve1 = spawn_server(root).await;
     let serve2 = spawn_server(root).await;
     let peer2 = serve2.peer().clone();
-
-    let cg = peer2
-        .call_tool(call_params(
-            "graph",
-            json!({ "mode": "calls", "name": "alpha", "direction": "callers" }),
-        ))
-        .await
-        .expect("call_graph on 2nd session");
-    let cg_body = decode_text(&cg);
-    let names: Vec<&str> = cg_body
-        .get("nodes")
-        .and_then(Value::as_array)
-        .map(|ns| {
-            ns.iter()
-                .filter_map(|n| n.get("name").and_then(Value::as_str))
-                .collect()
-        })
-        .unwrap_or_default();
-    assert!(
-        names.contains(&"caller"),
-        "call_graph must find caller() among alpha()'s callers, got: {cg_body}"
-    );
 
     let fi = peer2
         .call_tool(call_params(

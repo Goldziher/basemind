@@ -1,6 +1,6 @@
 ---
 title: Code Intelligence
-description: Navigate code structure across 300+ languages — symbols, references, call graphs, implementations, and definitions — without reading files.
+description: Navigate code structure across 300+ languages — symbols, references, callers, implementations, and definitions — without reading files.
 ---
 
 import { Aside, Badge, Card, CardGrid } from '@astrojs/starlight/components';
@@ -122,41 +122,6 @@ above.
   "path": "src/main.rs",
   "line": 42,
   "column": 10
-}
-```
-
-### `graph calls`
-
-A mode of the `graph` MCP tool (`basemind graph calls` on the CLI), not `code` — it walks
-the same indexed call edges but returns a chain, not a flat hit list.
-
-Walk the call chain up or down from a function, bounded by `max_depth` and `max_nodes`.
-BFS traversal over the indexed call edges.
-
-```json
-{
-  "name": "query_symbol",
-  "direction": "down",
-  "max_depth": 3
-}
-```
-
-### `graph map`
-
-Also a mode of the `graph` MCP tool (`basemind graph map` on the CLI).
-
-A deterministic, whole-repo overview built from the real call graph — no LLM. Ranks hub
-modules, files, or symbols by centrality (fixed-iteration PageRank + fan-in/out) blended with
-git churn, and surfaces circular-dependency clusters (strongly-connected components). Pick the
-altitude with `granularity` (`module` default → `file` → `symbol`); pass a `focus` path-prefix
-to scope the map to a subtree. Returns nodes (paths, lines, signatures, scores) and edges — never
-prose.
-
-```json
-{
-  "granularity": "module",
-  "focus": "src/mcp",
-  "include_churn": true
 }
 ```
 

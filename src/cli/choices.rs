@@ -24,56 +24,6 @@ macro_rules! choice_enum {
 }
 
 choice_enum! {
-    /// `graph calls` walk direction.
-    CallDirection { Callers => "callers", Callees => "callees" }
-}
-
-choice_enum! {
-    /// `graph neighbors` edge direction.
-    NeighborDirection { Both => "both", Out => "out", In => "in" }
-}
-
-choice_enum! {
-    /// Edge lanes a graph is built over.
-    EdgeLane {
-        All => "all",
-        Calls => "calls",
-        Imports => "imports",
-        Inherits => "inherits",
-        Both => "both",
-        Contains => "contains",
-    }
-}
-
-choice_enum! {
-    /// Community-detection algorithm.
-    CommunityAlgorithm { LabelPropagation => "label_propagation", Louvain => "louvain" }
-}
-
-choice_enum! {
-    /// `graph map` rollup level.
-    Granularity { Module => "module", File => "file", Symbol => "symbol" }
-}
-
-choice_enum! {
-    /// `graph export` output format.
-    ExportFormat {
-        NodeLink => "node_link",
-        Dot => "dot",
-        Mermaid => "mermaid",
-        Graphml => "graphml",
-        Cypher => "cypher",
-        Html => "html",
-        Svg => "svg",
-    }
-}
-
-choice_enum! {
-    /// `graph display` / `graph open` output format (visual formats only).
-    VisualFormat { Html => "html", Svg => "svg" }
-}
-
-choice_enum! {
     /// `code semantic` retrieval lane.
     SearchLane { Hybrid => "hybrid", Semantic => "semantic", Keyword => "keyword" }
 }

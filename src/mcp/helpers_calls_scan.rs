@@ -231,14 +231,13 @@ const L2_PROJECTION_CHUNK: usize = 256;
 /// In-RAM mirror of the Fjall `calls_by_callee` + `calls_by_path` keyspaces, built
 /// from the L2 call blobs for read-only `serve` sessions that can't open the
 /// single-holder Fjall index. Lets unlimited concurrent sessions answer
-/// `find_references` / `find_callers` / `call_graph` from the shared, immutable,
+/// `find_references` / `find_callers` from the shared, immutable,
 /// concurrently-readable blobs.
 pub(crate) struct InRamCallIndex {
     /// Sorted ascending by `key` to match Fjall's `range` iteration order
     /// (drives `find_references` / `find_callers`).
     entries: Vec<InRamCall>,
-    /// path → its call sites (the `calls_by_path` keyspace), for the call-graph
-    /// "callees" direction.
+    /// path → its call sites (the `calls_by_path` keyspace).
     by_path: ahash::AHashMap<crate::path::RelPath, Vec<CallRef>>,
     /// True when the byte budget cut the projection short, so its answers are incomplete.
     capped: bool,
@@ -351,8 +350,7 @@ impl InRamCallIndex {
         self.capped
     }
 
-    /// All call sites in `rel`, for the call-graph "callees" direction (the
-    /// `calls_by_path` keyspace).
+    /// All call sites in `rel` (the `calls_by_path` keyspace).
     pub(crate) fn calls_in_file(&self, rel: &crate::path::RelPath) -> &[CallRef] {
         self.by_path.get(rel).map_or(&[], Vec::as_slice)
     }

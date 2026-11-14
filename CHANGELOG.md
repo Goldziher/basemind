@@ -40,6 +40,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   untouched and are never opened. The comms protocol version goes from 4 to 5 because the `governance`
   request was removed: the first upgraded session replaces a running older daemon, and a client and daemon
   that disagree fail the handshake with `proto_skew`.
+- **The code graph.** The `graph` MCP tool (`calls`, `neighbors`, `path`, `subgraph`, `communities`, `map`,
+  `export`, `display`, `open`) and the `basemind graph` CLI group are gone, along with the
+  `basemind://repo/map` resource and the daemon's `/ui` page. The surface is now six domain tools: `code`,
+  `git`, `memory`, `admin`, `agents` and `workspace`. `code` modes `callers`, `references`,
+  `implementations`, `dependents` and `definition` never used the graph and are unchanged. The daemon's
+  HTTP front-end serves `/mcp` only and no longer accepts the bearer token as `?token=`; send it as
+  `Authorization: Bearer <token>`. Document-to-code links are no longer produced or stored: a
+  `doc_links.lance` table an older version wrote is never opened again and is reclaimed with the rest of a
+  workspace's cache. Inline rationale notes (`WHY:`, `NOTE:`, ADR citations) are still extracted into each
+  outline blob so the blob format stays unchanged until the next schema bump, but nothing surfaces them.
 
 ### Fixed
 

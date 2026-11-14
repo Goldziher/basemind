@@ -1,10 +1,10 @@
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:b454611412a51ddbf5e077a5a24939b9a18e7891e3f410df1ac590242a99f4d0
-Source-Hash: blake3:fbc7b4d75a7eb6eec0f28a10c0fe7172499c7b07b219d86838a7a4d3593da9ac
+Content-Hash: blake3:bd03af419cac31ce6c99b50f22fa2bc9d201e538c24d01774b8f8e4f8eacf7b4
+Source-Hash: blake3:ab6d245011e4f10e9bfc8132b1e23982de2b960c8785fb46e7a09f139139c603
 Schema-Version: v1
 -->
 
 # Concepts
 
-- [Basemind Code Search](SKILL.md) - Find where code is defined and used without reading files — symbol search, file outlines, references, callers, call graphs, implementations, dependents, and indexed regex over content. Reach for it whenever the user asks "where is X defined", "what calls Y", "what implements Z", "what's the shape of this file", or whenever you're about to grep or open files to learn structure.
+- [Basemind Code Search](SKILL.md) - Find where code is defined and used without reading files — symbol search, file outlines, references, callers, implementations, dependents, and indexed regex over content. Reach for it whenever the user asks "where is X defined", "what calls Y", "what implements Z", "what's the shape of this file", or whenever you're about to grep or open files to learn structure.

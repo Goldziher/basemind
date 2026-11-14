@@ -27,7 +27,7 @@ use super::init_verb::Verb;
 /// Claude Code names plugin MCP tools `mcp__plugin_<pluginName>_<serverName>__<toolName>`; both
 /// halves are `"basemind"` here per `.claude-plugin/plugin.json` (`"name": "basemind"`,
 /// `mcpServers.basemind`), confirmed against this plugin's own live tool names
-/// (`mcp__plugin_basemind_basemind__code`, `__git`, `__graph`, …).
+/// (`mcp__plugin_basemind_basemind__code`, `__git`, `__memory`, …).
 const PERMISSION_ENTRY: &str = "mcp__plugin_basemind_basemind__*";
 
 /// Where (if anywhere) to add basemind's MCP-tool permission entry.

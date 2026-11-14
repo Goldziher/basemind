@@ -11,20 +11,12 @@
 pub(crate) mod admission;
 mod background;
 mod budget;
-mod codegraph;
-mod community;
 mod completions;
 pub(crate) mod cursor;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 mod daemon_forward;
-mod doc_links_cache;
-mod file_url;
-mod graph_html;
-mod graph_svg;
-mod graph_view;
 mod helpers;
 mod helpers_admin;
-mod helpers_archmap;
 mod helpers_calls;
 mod helpers_calls_scan;
 #[cfg(test)]
@@ -34,7 +26,6 @@ mod helpers_code;
 mod helpers_code_search;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 mod helpers_comms;
-mod helpers_community;
 #[cfg(feature = "documents")]
 mod helpers_documents;
 mod helpers_expand;
@@ -43,8 +34,6 @@ mod helpers_fingerprint;
 mod helpers_git;
 mod helpers_git_file;
 mod helpers_git_show;
-mod helpers_graph;
-mod helpers_graphview;
 mod helpers_grep;
 mod helpers_impls;
 mod helpers_intel;
@@ -52,7 +41,6 @@ mod helpers_memory;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 mod helpers_registry;
 mod helpers_telemetry;
-mod helpers_traverse;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 mod host;
 mod identity;
@@ -65,7 +53,6 @@ mod index_route;
 mod index_route_tests;
 #[cfg(test)]
 mod index_view_tests;
-mod kneedle;
 mod l1_cache;
 mod lean;
 mod lenient;
@@ -92,28 +79,21 @@ mod tools_admin;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 mod tools_comms;
 mod tools_git;
-mod tools_graph;
 mod tools_memory;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 mod tools_registry;
 pub(crate) mod toon;
-mod traverse;
 mod types;
 mod types_admin;
-mod types_archmap;
 mod types_code;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 pub(crate) mod types_comms;
-mod types_community;
 mod types_documents;
 mod types_git;
-mod types_graph;
-mod types_graphview;
 mod types_impls;
 pub(crate) mod types_memory;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 pub(crate) mod types_registry;
-mod types_traverse;
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -163,7 +143,6 @@ pub mod params {
     pub use super::mode::AdminMode;
     pub use super::mode::CodeMode;
     pub use super::mode::GitMode;
-    pub use super::mode::GraphMode;
     pub use super::types::{
         BlameFileParams, BlameSymbolParams, CommitsTouchingParams, DependentsParams, DiffFileParams, DiffOutlineParams,
         FindCallersParams, FindCommitsByPathParams, FindFilesParams, FindReferencesParams, GotoDefinitionParams,
@@ -174,7 +153,6 @@ pub mod params {
     pub use super::types_admin::{AdminParams, CacheClearParams, CacheGcParams, CacheStatsParams};
     pub use super::types_code::CodeParams;
     pub use super::types_git::GitParams;
-    pub use super::types_graph::{CallGraphParams, GraphParams};
     pub use super::types_impls::FindImplementationsParams;
     pub use super::types_memory::{
         MemoryDeleteParams, MemoryGetParams, MemoryListParams, MemoryPutParams, MemorySearchParams, Visibility,
@@ -438,11 +416,8 @@ impl BasemindServer {
     /// `OnceLock` and hands back a clone. This is the one-time builder the cache calls into.
     fn assemble_router() -> ToolRouter<Self> {
         #[allow(unused_mut)]
-        let mut router = Self::tool_router_core()
-            + Self::tool_router_graph()
-            + Self::tool_router_git()
-            + Self::tool_router_memory()
-            + Self::tool_router_admin();
+        let mut router =
+            Self::tool_router_core() + Self::tool_router_git() + Self::tool_router_memory() + Self::tool_router_admin();
         #[cfg(all(feature = "comms", any(unix, windows)))]
         {
             router += Self::tool_router_comms();

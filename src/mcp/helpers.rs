@@ -144,8 +144,7 @@ pub(super) use timing::elapsed_us;
 ///
 /// "Tool body" means the `async` block inside the `#[tool]` shim when there is one, and otherwise the
 /// first statement of the `run_*` helper it delegates to. The distinction matters: several shims
-/// (`find_references`, `find_callers`, `workspace_grep`, `find_implementations`, `call_graph`,
-/// `architecture_map`) await the in-RAM map and acquire the store lock *in the shim* before calling
+/// (`find_references`, `find_callers`, `workspace_grep`, `find_implementations`) await the in-RAM map and acquire the store lock *in the shim* before calling
 /// their helper. Those shims start the timer themselves and pass the [`Instant`] down, so the wait and
 /// the lock acquisition are inside the measured region rather than silently omitted from it.
 ///
@@ -622,7 +621,7 @@ pub(super) async fn scan_and_refresh(
             .shared
             .corpus_bytes
             .store(corpus_bytes, std::sync::atomic::Ordering::Relaxed);
-        let mut cache = if was_scoped {
+        let cache = if was_scoped {
             state.shared.cache.load().with_delta(&store, &updated, &removed)
         } else {
             super::MapCache::build(
@@ -630,11 +629,6 @@ pub(super) async fn scan_and_refresh(
                 super::l1_cache::budget_bytes_from(&state.shared.config.resources),
             )
         };
-        // A scoped rescan carries doc↔code links (ADR-0008) forward via `with_delta`; a full rebuild
-        // starts empty, so reattach them (off-reactor) before publish or the `documents` lane goes stale.
-        if !was_scoped {
-            super::doc_links_cache::attach_async(&mut cache, &store, &state.shared.config, &state.shared.scope).await;
-        }
         std::sync::Arc::new(cache)
     };
     state.shared.cache.store(new_cache);

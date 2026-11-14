@@ -21,8 +21,6 @@ pub(crate) const DELIVERED_NOTIFICATION_CAP: usize = 4_096;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 pub(crate) const COMMS_CLIENT_CAP: usize = 32;
 
-#[cfg(feature = "documents")]
-use super::codegraph;
 use super::{SharedReadStack, helpers_calls, helpers_impls, l1_cache, map_fingerprint, types};
 use crate::extract::FileMapL1;
 use crate::store::Store;
@@ -212,14 +210,11 @@ impl ServerState {
                     .map(|h| h.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread)
                     .unwrap_or(false);
                 let budget = l1_cache::budget_bytes_from(&self.shared.config.resources);
-                let mut cache = if multi_thread {
+                let cache = if multi_thread {
                     tokio::task::block_in_place(|| MapCache::build(&store, budget))
                 } else {
                     MapCache::build(&store, budget)
                 };
-                // Attach persisted doc↔code links (ADR-0008) before publish; `attach_async` offloads
-                // the LanceStore read to a blocking thread so its block_on never nests on the reactor.
-                super::doc_links_cache::attach_async(&mut cache, &store, &self.shared.config, &self.shared.scope).await;
                 let files = cache.len();
                 let cache = Arc::new(cache);
                 self.shared.cache.store(Arc::clone(&cache));
@@ -268,8 +263,7 @@ pub(crate) struct MapCache {
     /// rescan is a refcount bump rather than a rebuild.
     l1: Arc<l1_cache::L1Cache>,
     /// In-RAM callee index: the LAST-RESORT fallback for a session that has neither a Fjall index
-    /// nor a daemon to forward `references` / `callers` to, and the backing for the whole-corpus
-    /// graph walks (`call_graph`, the architecture map), which cannot afford a round trip per file.
+    /// nor a daemon to forward `references` / `callers` to.
     /// Built on first use ([`calls_projection`](Self::calls_projection)) and never otherwise, so a
     /// daemon-backed session that only asks point queries holds none of it.
     calls: std::sync::OnceLock<helpers_calls::InRamCallIndex>,
@@ -285,13 +279,6 @@ pub(crate) struct MapCache {
     /// warm) and patched rather than rebuilt by [`with_delta`](Self::with_delta). Backs the
     /// substring sweeps of `symbols` and `dependents`.
     terms: std::sync::OnceLock<Arc<super::term_index::TermIndex>>,
-    /// Persisted document→code links (ADR-0008), loaded from the LanceDB document store by the async
-    /// cache-warm path ([`super::background::spawn_cache_warm`]) and the view watcher. Empty until
-    /// loaded; the codegraph `documents` lane reads it. Preserved across incremental
-    /// [`with_delta`](Self::with_delta) rescans. `Arc<[_]>` so a scoped rescan carries the links
-    /// forward with a refcount bump, not a deep clone of the whole vector.
-    #[cfg(feature = "documents")]
-    pub(crate) doc_links: std::sync::Arc<[codegraph::DocLink]>,
     /// Every path of the document tier (markdown, config, data, PDFs ...), sorted. The code map
     /// holds code only, so decision records (`docs/adr/*.md`) and path citations to prose / config
     /// files resolve against this set instead of [`Self::files`]. Projected straight from the index
@@ -328,8 +315,6 @@ impl MapCache {
             impls: Default::default(),
             terms: Default::default(),
             #[cfg(feature = "documents")]
-            doc_links: Default::default(),
-            #[cfg(feature = "documents")]
             doc_paths: doc_paths_of(store),
         }
     }
@@ -348,15 +333,13 @@ impl MapCache {
             impls: Default::default(),
             terms: Default::default(),
             #[cfg(feature = "documents")]
-            doc_links: Default::default(),
-            #[cfg(feature = "documents")]
             doc_paths: Default::default(),
         }
     }
 
-    /// Build a cache over a synthetic, blob-less corpus. Test-only seam: the graph lanes are
-    /// exercised against hand-built outlines that no scan produced, so there is no store to read
-    /// them back from and they are seeded straight into the L1 cache.
+    /// Build a cache over a synthetic, blob-less corpus. Test-only seam: hand-built outlines that
+    /// no scan produced have no store to be read back from, so they are seeded straight into the
+    /// L1 cache.
     #[cfg(test)]
     pub(crate) fn from_synthetic(files: Vec<(crate::path::RelPath, FileMapL1)>) -> Self {
         let l1 = Arc::new(l1_cache::L1Cache::new(std::path::PathBuf::new(), 0));
@@ -379,8 +362,6 @@ impl MapCache {
             calls: Default::default(),
             impls: Default::default(),
             terms: Default::default(),
-            #[cfg(feature = "documents")]
-            doc_links: Default::default(),
             #[cfg(feature = "documents")]
             doc_paths: Default::default(),
         }
@@ -424,9 +405,8 @@ impl MapCache {
     }
 
     /// Whether `path` is one of the indexed files. Answered from the symbol-free view, so it costs
-    /// no blob read. Gated on the features whose lanes ask the question (see
-    /// [`l1_cache::FileIndexView::contains`]).
-    #[cfg(any(test, feature = "documents", feature = "memory"))]
+    /// no blob read.
+    #[cfg(test)]
     pub(crate) fn contains(&self, path: &crate::path::RelPath) -> bool {
         self.files.contains(path)
     }
@@ -537,8 +517,6 @@ impl MapCache {
             calls: Default::default(),
             impls: Default::default(),
             terms: Default::default(),
-            #[cfg(feature = "documents")]
-            doc_links: std::sync::Arc::clone(&self.doc_links),
             #[cfg(feature = "documents")]
             doc_paths: doc_paths_of(store),
         };

@@ -78,6 +78,7 @@ esac""",
         self.assertIn("basemind verified: 631 files indexed (schema 33).", result)
         self.assertIn("single ToolSearch call", result)
         self.assertIn("select:mcp__plugin_basemind_basemind__code,mcp__plugin_basemind_basemind__git", result)
+        self.assertNotIn("mcp__plugin_basemind_basemind__graph", result)
         self.assertIn("code grep for exact matches in indexed code", result)
         self.assertIn("Jupyter notebooks", result)
         args = (self.root / "status-args").read_text().splitlines()

@@ -24,8 +24,8 @@
 //!
 //! ## Why a token on top of the opt-in
 //!
-//! Enabling the transport must not re-open the hole for anyone who enables it. Every request on both
-//! served routes therefore has to present a bearer token drawn from the OS CSPRNG when the daemon
+//! Enabling the transport must not re-open the hole for anyone who enables it. Every request
+//! therefore has to present a bearer token drawn from the OS CSPRNG when the daemon
 //! started — 32 bytes, hex-encoded — and the check runs before routing, before the daemon is pinned,
 //! and before any workspace is named or opened.
 //!
@@ -35,13 +35,8 @@
 //! separates principals here, so the portfile is both the discovery channel and the grant: a process
 //! that can read it is already the daemon's user.
 //!
-//! A token may be presented two ways, and both are accepted on both routes:
-//!
-//! * `Authorization: Bearer <token>` — the standard MCP client form, and what `/mcp` callers use.
-//! * `?token=<token>` in the query — `/ui` is opened by handing a URL to a *browser* (the `display`
-//!   and `ui` tools launch the system opener), and a navigation cannot carry a header. Uniformity
-//!   across the two routes is deliberate: a route that silently accepted a weaker credential than its
-//!   sibling is exactly the drift this module exists to prevent.
+//! The token is presented as `Authorization: Bearer <token>`, the standard MCP client form. A token
+//! in the query string is not accepted: it would end up in logs and shell history.
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -51,10 +46,6 @@ use anyhow::{Context, Result};
 /// Operator opt-in for the daemon's streamable-HTTP MCP front-end. Truthy (`1`, `true`, `yes`) in
 /// the daemon's environment starts the listener; unset or anything else means no socket is bound.
 pub const ALLOW_HTTP_ENV: &str = "BASEMIND_ALLOW_HTTP";
-
-/// Query-string key carrying the bearer token, for clients that cannot set a header (a browser
-/// navigating to `/ui`).
-pub const TOKEN_QUERY_KEY: &str = "token";
 
 /// Portfile name under `comms_dir`. Line 1 is the bound `host:port`, line 2 the bearer token, so
 /// tooling reads the address instead of assuming the default port and the credential instead of
@@ -67,7 +58,7 @@ const PORTFILE_NAME: &str = "http.addr";
 const PORTFILE_MODE: u32 = 0o600;
 
 /// Token entropy. 32 bytes is the conventional "unguessable forever" width for a bearer credential
-/// and hex-encodes to 64 characters, which survives a query string and a shell copy-paste unescaped.
+/// and hex-encodes to 64 characters, which survives a shell copy-paste unescaped.
 const TOKEN_BYTES: usize = 32;
 
 /// The portfile path for a resolved comms dir.
@@ -102,7 +93,7 @@ fn grants_http(value: Option<&str>) -> bool {
 /// One daemon process's bearer token.
 ///
 /// Deliberately not `Debug`/`Display`/`Serialize`: the only ways out are [`HttpToken::as_str`], for
-/// the portfile write and the `/ui` URL the tools hand to a browser, and [`HttpToken::matches`].
+/// the portfile write, and [`HttpToken::matches`].
 /// A derived `Debug` would put the credential into any `tracing` event that formatted a struct
 /// holding one.
 #[derive(Clone)]
@@ -117,7 +108,7 @@ impl HttpToken {
         Ok(Self(hex::encode(bytes)))
     }
 
-    /// The token as it appears in a header or query string.
+    /// The token as it appears in the `Authorization` header.
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -144,26 +135,20 @@ fn constant_time_eq(expected: &[u8], presented: &[u8]) -> bool {
     std::hint::black_box(diff) == 0
 }
 
-/// Extract the presented token from an `Authorization` header value or a request query, in that
-/// order. Returns `None` when neither carries one.
-pub fn presented_token(authorization: Option<&str>, query: Option<&str>) -> Option<String> {
-    if let Some(raw) = authorization {
-        let raw = raw.trim();
-        // RFC 7235 makes the scheme case-insensitive; clients send "Bearer", "bearer", and "BEARER".
-        // Compared as bytes so a non-ASCII header value cannot split a char boundary and panic.
-        let bytes = raw.as_bytes();
-        if bytes.len() > 7 && bytes[..6].eq_ignore_ascii_case(b"bearer") && bytes[6] == b' ' {
-            let value = raw[7..].trim();
-            if !value.is_empty() {
-                return Some(value.to_string());
-            }
+/// Extract the presented token from an `Authorization` header value. Returns `None` when it
+/// carries no bearer token.
+pub fn presented_token(authorization: Option<&str>) -> Option<String> {
+    let raw = authorization?.trim();
+    // RFC 7235 makes the scheme case-insensitive; clients send "Bearer", "bearer", and "BEARER".
+    // Compared as bytes so a non-ASCII header value cannot split a char boundary and panic.
+    let bytes = raw.as_bytes();
+    if bytes.len() > 7 && bytes[..6].eq_ignore_ascii_case(b"bearer") && bytes[6] == b' ' {
+        let value = raw[7..].trim();
+        if !value.is_empty() {
+            return Some(value.to_string());
         }
     }
-    let query = query?;
-    form_urlencoded::parse(query.as_bytes())
-        .find(|(key, _)| key == TOKEN_QUERY_KEY)
-        .map(|(_, value)| value.into_owned())
-        .filter(|value| !value.is_empty())
+    None
 }
 
 /// A portfile's contents: where the transport is listening and the credential it demands.
@@ -244,23 +229,14 @@ mod tests {
     }
 
     #[test]
-    fn presented_token_reads_header_then_query() {
-        assert_eq!(presented_token(Some("Bearer abc"), None).as_deref(), Some("abc"));
-        assert_eq!(presented_token(Some("bearer abc"), None).as_deref(), Some("abc"));
-        assert_eq!(presented_token(Some("BEARER  abc "), None).as_deref(), Some("abc"));
-        // A non-Bearer scheme falls through to the query rather than being taken literally.
-        assert_eq!(
-            presented_token(Some("Basic abc"), Some("token=xyz")).as_deref(),
-            Some("xyz")
-        );
-        assert_eq!(
-            presented_token(None, Some("root=%2Frepo&token=xyz")).as_deref(),
-            Some("xyz")
-        );
-        assert_eq!(presented_token(None, Some("root=%2Frepo")), None);
-        assert_eq!(presented_token(Some("Bearer"), None), None);
-        assert_eq!(presented_token(Some("Bearer "), None), None);
-        assert_eq!(presented_token(None, None), None);
+    fn presented_token_reads_only_a_bearer_header() {
+        assert_eq!(presented_token(Some("Bearer abc")).as_deref(), Some("abc"));
+        assert_eq!(presented_token(Some("bearer abc")).as_deref(), Some("abc"));
+        assert_eq!(presented_token(Some("BEARER  abc ")).as_deref(), Some("abc"));
+        assert_eq!(presented_token(Some("Basic abc")), None);
+        assert_eq!(presented_token(Some("Bearer")), None);
+        assert_eq!(presented_token(Some("Bearer ")), None);
+        assert_eq!(presented_token(None), None);
     }
 
     #[test]

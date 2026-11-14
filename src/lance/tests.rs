@@ -97,6 +97,50 @@ fn schema_ver_bump_triggers_wipe() {
     assert!(!keep.exists(), "a schema_ver bump should wipe the store");
 }
 
+/// A store written before the document-link table was dropped still holds `doc_links.lance`. The
+/// table is no longer declared, which must not read as a mismatch: the store opens, keeps its
+/// `meta.json`, and leaves the old table on disk.
+#[test]
+fn a_store_holding_the_retired_doc_links_table_opens_without_a_wipe() {
+    use lancedb::arrow::arrow_schema::{DataType, Field, Schema};
+
+    let dir = tempfile::tempdir().unwrap();
+    drop(LanceStore::open(dir.path(), 4, "test").unwrap());
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let connection = lancedb::connect(&dir.path().to_string_lossy()).execute().await.unwrap();
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("scope", DataType::Utf8, false),
+            Field::new("doc_path", DataType::Utf8, false),
+        ]));
+        connection
+            .create_empty_table("doc_links", schema)
+            .execute()
+            .await
+            .unwrap();
+    });
+    let old_table = dir.path().join("doc_links.lance");
+    assert!(old_table.is_dir(), "fixture must hold the retired table");
+    let meta_before = std::fs::read(dir.path().join(META_FILE)).unwrap();
+    let keep = sentinel(dir.path());
+
+    let store = LanceStore::open(dir.path(), 4, "test").unwrap();
+
+    assert!(keep.exists(), "an undeclared table is not a mismatch: nothing is wiped");
+    assert!(old_table.is_dir(), "the retired table is left on disk");
+    assert_eq!(std::fs::read(dir.path().join(META_FILE)).unwrap(), meta_before);
+    let tables: Vec<String> = store
+        .version_counts()
+        .unwrap()
+        .into_iter()
+        .map(|(name, _)| name)
+        .collect();
+    assert!(tables.iter().any(|name| name == "documents"), "{tables:?}");
+}
+
 /// A `schema_ver` newer than this binary's belongs to a newer basemind sharing the cache: the open
 /// fails and the store is left untouched, even when dim and model match.
 #[test]

@@ -12,8 +12,6 @@
 //! runtime context.
 
 mod batch;
-#[cfg(feature = "documents")]
-mod doc_links;
 pub mod schema;
 #[doc(hidden)]
 pub mod shared;
@@ -23,9 +21,6 @@ pub(crate) mod shared_snapshot;
 pub mod shared_store;
 
 pub use batch::{BATCH_MAX_DOCS, BATCH_MAX_ROWS, PendingBatch, SCAN_RETENTION};
-
-#[cfg(feature = "documents")]
-pub use doc_links::DocLinkRow;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -218,8 +213,6 @@ impl LanceStore {
             ensure_table(&connection, MEMORY_TABLE, memory_schema(dim)).await?;
             #[cfg(feature = "code-search")]
             ensure_table(&connection, schema::CODE_CHUNKS_TABLE, schema::code_chunks_schema(dim)).await?;
-            #[cfg(feature = "documents")]
-            ensure_table(&connection, schema::DOC_LINKS_TABLE, schema::doc_links_schema()).await?;
             anyhow::Ok(())
         })?;
 
@@ -483,12 +476,6 @@ impl LanceStore {
     /// [`Self::replace_document`] with no replacement rows.
     pub fn delete_documents_for_paths(&self, scope: &str, paths: &[String]) -> Result<()> {
         self.delete_paths_in(DOCUMENTS_TABLE, "path", scope, paths)
-    }
-
-    /// Delete every `doc_links` row of the given documents (ADR-0008) in bulk.
-    #[cfg(feature = "documents")]
-    pub fn delete_doc_links_for_paths(&self, scope: &str, paths: &[String]) -> Result<()> {
-        self.delete_paths_in(schema::DOC_LINKS_TABLE, "doc_path", scope, paths)
     }
 
     pub(super) fn delete_paths_in(&self, table_name: &str, key_col: &str, scope: &str, paths: &[String]) -> Result<()> {

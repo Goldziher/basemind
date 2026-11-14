@@ -125,7 +125,7 @@ async fn connect(repo_root: &Path) -> ServiceHandle {
     ().serve(transport).await.expect("rmcp handshake with basemind serve")
 }
 
-/// Build a tool call, rejecting any name that is not one of the seven domain tools.
+/// Build a tool call, rejecting any name that is not one of the six domain tools.
 ///
 /// Every call site here is wrapped in `if let Ok(out) = …`, so an unknown tool name does not fail
 /// the call — it skips the block, leaves the canary unset, and `unwrap_or(0)` then reports zero
@@ -134,14 +134,14 @@ async fn connect(repo_root: &Path) -> ServiceHandle {
 /// run blamed the engine for returning no `Future` implementations in tokio. Panicking on an
 /// unknown name turns that silent misattribution into an immediate, obvious failure. ~keep
 fn call_params(name: &'static str, args: &Value) -> CallToolRequestParams {
-    // Checked against the fixed seven, not `mode::domain_modes()`, because that list is cfg-gated:
+    // Checked against the fixed six, not `mode::domain_modes()`, because that list is cfg-gated:
     // under a default-feature build `agents` / `workspace` are absent, and the
     // harness calls them deliberately so it can record them as skipped. The invariant worth
     // asserting is that the name is a domain at all, not that this build serves it. ~keep
-    const DOMAINS: [&str; 7] = ["code", "graph", "git", "memory", "admin", "agents", "workspace"];
+    const DOMAINS: [&str; 6] = ["code", "git", "memory", "admin", "agents", "workspace"];
     assert!(
         DOMAINS.contains(&name),
-        "harden calls `{name}`, which is not one of the seven domain tools — a call site was missed \
+        "harden calls `{name}`, which is not one of the six domain tools — a call site was missed \
          when the surface consolidated; an unknown tool would silently read back as a zero canary"
     );
     let mut params = CallToolRequestParams::new(name);
@@ -454,34 +454,6 @@ async fn drive_tools(svc: &ServiceHandle, sample: Option<&SampleFile>) -> Vec<To
                 json!({ "mode": "references", "name": sym, "limit": 100 }),
             )
             .await;
-            call(
-                svc,
-                &mut records,
-                "graph",
-                json!({ "mode": "calls", "name": sym, "direction": "callers", "max_depth": 2 }),
-            )
-            .await;
-            call(
-                svc,
-                &mut records,
-                "graph",
-                json!({ "mode": "neighbors", "name": sym, "direction": "both", "depth": 2, "max_nodes": 100 }),
-            )
-            .await;
-            call(
-                svc,
-                &mut records,
-                "graph",
-                json!({ "mode": "path", "from": sym, "to": sym }),
-            )
-            .await;
-            call(
-                svc,
-                &mut records,
-                "graph",
-                json!({ "mode": "subgraph", "name": sym, "depth": 2, "max_nodes": 30 }),
-            )
-            .await;
         }
     }
 
@@ -490,39 +462,6 @@ async fn drive_tools(svc: &ServiceHandle, sample: Option<&SampleFile>) -> Vec<To
         &mut records,
         "code",
         json!({ "mode": "implementations", "trait_name": "Future", "limit": 100 }),
-    )
-    .await;
-
-    call(
-        svc,
-        &mut records,
-        "graph",
-        json!({ "mode": "communities", "algorithm": "label_propagation", "edges": "all", "max_communities": 50 }),
-    )
-    .await;
-
-    call(
-        svc,
-        &mut records,
-        "graph",
-        json!({ "mode": "export", "format": "dot", "edges": "all", "max_nodes": 200 }),
-    )
-    .await;
-
-    // open:false keeps the sweep headless — never launch a desktop viewer from the harness.
-    call(
-        svc,
-        &mut records,
-        "graph",
-        json!({ "mode": "display", "format": "html", "edges": "all", "max_nodes": 200, "open": false }),
-    )
-    .await;
-
-    call(
-        svc,
-        &mut records,
-        "graph",
-        json!({ "mode": "open", "format": "html", "edges": "all", "max_nodes": 200, "open": false }),
     )
     .await;
 
@@ -755,114 +694,6 @@ fn assert_passing(repo_name: &str, scan: &ScanOutcome, repo_record: &mut RepoRec
                     "tokio canary: find_implementations(\"Future\") returned {future_hits} hits (expected ≥ 20)"
                 ));
             }
-            let cg_nodes = repo_record
-                .canaries
-                .get("spawn_call_graph_nodes")
-                .and_then(Value::as_u64)
-                .unwrap_or(0);
-            if cg_nodes < 5 {
-                failures.push(format!(
-                    "tokio canary: call_graph(\"spawn\", callers, depth=2) returned {cg_nodes} nodes (expected ≥ 5)"
-                ));
-            }
-            let archmap_nodes = repo_record
-                .canaries
-                .get("archmap_module_nodes")
-                .and_then(Value::as_u64)
-                .unwrap_or(0);
-            if archmap_nodes < 5 {
-                failures.push(format!(
-                    "tokio canary: architecture_map(module) returned {archmap_nodes} nodes (expected ≥ 5)"
-                ));
-            }
-            let import_edges = repo_record
-                .canaries
-                .get("archmap_import_edges")
-                .and_then(Value::as_u64)
-                .unwrap_or(0);
-            if import_edges < 1 {
-                failures.push(format!(
-                    "tokio canary: architecture_map(module, edges=all) returned {import_edges} import edges (expected ≥ 1)"
-                ));
-            }
-            let neighbor_nodes = repo_record
-                .canaries
-                .get("neighbors_spawn_nodes")
-                .and_then(Value::as_u64)
-                .unwrap_or(0);
-            if neighbor_nodes < 2 {
-                failures.push(format!(
-                    "tokio canary: neighbors(\"spawn\", in, depth=2) returned {neighbor_nodes} nodes (expected ≥ 2)"
-                ));
-            }
-            let louvain_communities = repo_record
-                .canaries
-                .get("louvain_communities")
-                .and_then(Value::as_u64)
-                .unwrap_or(0);
-            if louvain_communities < 2 {
-                failures.push(format!(
-                    "tokio canary: communities(louvain) returned {louvain_communities} communities (expected ≥ 2)"
-                ));
-            }
-            let graph_export_nodes = repo_record
-                .canaries
-                .get("graph_export_nodes")
-                .and_then(Value::as_u64)
-                .unwrap_or(0);
-            if graph_export_nodes < 2 {
-                failures.push(format!(
-                    "tokio canary: graph_export(node_link) rendered {graph_export_nodes} nodes (expected ≥ 2)"
-                ));
-            }
-            let archmap_us = repo_record
-                .canaries
-                .get("archmap_module_elapsed_us")
-                .and_then(Value::as_u64);
-            let neighbors_us = repo_record
-                .canaries
-                .get("neighbors_spawn_elapsed_us")
-                .and_then(Value::as_u64);
-            let cold_us = repo_record.canaries.get("graph_calls_cold_us").and_then(Value::as_u64);
-            // Both readings below are WARM. `drive_tools` sweeps every graph mode before the first
-            // canary runs, so the shared codegraph entries are already built by the time these two
-            // are timed. The ratio therefore bounds warm-against-warm — a blow-up in the neighbors
-            // projection itself, on top of a build both calls got for free — and stays machine-
-            // independent by comparing two measurements from the same run rather than an absolute
-            // millisecond threshold. It says nothing about the build, which is what the cold guard
-            // below exists for. The +50ms floor absorbs timer noise on sub-millisecond runs. ~keep
-            if let (Some(archmap_us), Some(neighbors_us)) = (archmap_us, neighbors_us) {
-                let ceiling = archmap_us.saturating_mul(8).saturating_add(50_000);
-                if neighbors_us > ceiling {
-                    failures.push(format!(
-                        "tokio canary: warm neighbors latency {neighbors_us}µs > 8× warm \
-                         architecture_map baseline {archmap_us}µs + 50ms ({ceiling}µs) — \
-                         projection regression?"
-                    ));
-                }
-            }
-            // Memo effectiveness — the guard the ratio above structurally cannot provide. The
-            // neighbors canary asks for the same edge-kind set as the run's one cold build, so a
-            // working memo hands it a ready graph and it lands far cheaper. When `run_call_graph`
-            // took no shared stack and never populated the memo (fixed in 6a9ff7c), every graph
-            // call paid its own full build: warm ≈ cold, and the warm-vs-warm ratio above stayed
-            // green throughout because BOTH of its inputs were equally cold. Skipped when the cold
-            // build is itself under 50ms — below that the gap is timer noise, not evidence. ~keep
-            //
-            // 4× is calibrated against both ends, on tokio: a working memo measures cold 453ms vs
-            // warm 20ms (22×, so 5× headroom), and ef2fde4 — the commit where the memo went
-            // unpopulated — measured warm 443ms against a comparable cold build, which this fails
-            // and the ratio above did not. ~keep
-            if let (Some(cold_us), Some(neighbors_us)) = (cold_us, neighbors_us)
-                && cold_us >= 50_000
-                && neighbors_us.saturating_mul(4) > cold_us
-            {
-                failures.push(format!(
-                    "tokio canary: warm neighbors {neighbors_us}µs is not materially cheaper than \
-                     the run's cold codegraph build {cold_us}µs (expected at least 4× cheaper) — \
-                     is the shared graph memo still being populated?"
-                ));
-            }
             if cfg!(feature = "code-search")
                 && let Some(hits) = repo_record
                     .canaries
@@ -1070,100 +901,6 @@ async fn capture_canaries(svc: &ServiceHandle, repo_name: &str, repo_root: &Path
                     .map(|a| a.len() as u64)
                     .unwrap_or(0);
                 record.canaries.insert("future_impl_hits".into(), json!(hits));
-            }
-            if let Ok(out) = svc
-                .call_tool(call_params(
-                    "graph",
-                    &json!({ "mode": "calls", "name": "spawn", "direction": "callers", "max_depth": 2, "max_nodes": 500 }),
-                ))
-                .await
-            {
-                let body = decode_text(&out);
-                let nodes = body
-                    .get("nodes")
-                    .and_then(Value::as_array)
-                    .map(|a| a.len() as u64)
-                    .unwrap_or(0);
-                record.canaries.insert("spawn_call_graph_nodes".into(), json!(nodes));
-            }
-            if let Ok(out) = svc
-                .call_tool(call_params(
-                    "graph",
-                    &json!({ "mode": "map", "granularity": "module", "depth": 2, "max_nodes": 100, "include_churn": false }),
-                ))
-                .await
-            {
-                let body = decode_text(&out);
-                let nodes = body
-                    .get("nodes")
-                    .and_then(Value::as_array)
-                    .map(|a| a.len() as u64)
-                    .unwrap_or(0);
-                record.canaries.insert("archmap_module_nodes".into(), json!(nodes));
-                // Baseline for the shared codegraph-build cost: every graph tool pays this same
-                // full-repo build, so it anchors the machine-independent latency ratio below.
-                if let Some(us) = body.get("elapsed_us").and_then(Value::as_u64) {
-                    record.canaries.insert("archmap_module_elapsed_us".into(), json!(us));
-                }
-            }
-            if let Ok(out) = svc
-                .call_tool(call_params(
-                    "graph",
-                    &json!({ "mode": "map", "granularity": "module", "depth": 2, "max_nodes": 100, "max_edges": 2000, "edges": "all", "include_churn": false }),
-                ))
-                .await
-            {
-                let body = decode_text(&out);
-                let import_edges = body
-                    .get("edges")
-                    .and_then(Value::as_array)
-                    .map(|a| {
-                        a.iter()
-                            .filter(|e| e.get("kind").and_then(Value::as_str) == Some("imports"))
-                            .count() as u64
-                    })
-                    .unwrap_or(0);
-                record.canaries.insert("archmap_import_edges".into(), json!(import_edges));
-            }
-            if let Ok(out) = svc
-                .call_tool(call_params(
-                    "graph",
-                    &json!({ "mode": "neighbors", "name": "spawn", "direction": "in", "depth": 2, "edges": "calls", "max_nodes": 200 }),
-                ))
-                .await
-            {
-                let body = decode_text(&out);
-                let nodes = body
-                    .get("nodes")
-                    .and_then(Value::as_array)
-                    .map(|a| a.len() as u64)
-                    .unwrap_or(0);
-                record.canaries.insert("neighbors_spawn_nodes".into(), json!(nodes));
-                if let Some(us) = body.get("elapsed_us").and_then(Value::as_u64) {
-                    record.canaries.insert("neighbors_spawn_elapsed_us".into(), json!(us));
-                }
-            }
-            if let Ok(out) = svc
-                .call_tool(call_params(
-                    "graph",
-                    &json!({ "mode": "communities", "algorithm": "louvain", "edges": "all", "max_communities": 200 }),
-                ))
-                .await
-            {
-                let body = decode_text(&out);
-                let num = body.get("num_communities").and_then(Value::as_u64).unwrap_or(0);
-                record.canaries.insert("louvain_communities".into(), json!(num));
-            }
-            if let Ok(out) = svc
-                .call_tool(call_params(
-                    "graph",
-                    &json!({ "mode": "export", "format": "node_link", "edges": "all", "max_nodes": 500 }),
-                ))
-                .await
-            {
-                let body = decode_text(&out);
-                let nodes = body.get("node_count").and_then(Value::as_u64).unwrap_or(0);
-                record.canaries.insert("graph_export_nodes".into(), json!(nodes));
             }
             if let Ok(out) = svc
                 .call_tool(call_params(
@@ -1618,22 +1355,6 @@ async fn harden_repo() {
         git_history,
         canaries: BTreeMap::new(),
     };
-
-    // `drive_tools` issues `graph calls` as the session's first graph call, so it pays a COLD build
-    // of the {calls} edge-kind set (no focus) — the very memo entry the `neighbors` canary asks for
-    // later. Recording it here is the only cold baseline available: by the time `capture_canaries`
-    // runs, the sweep has warmed an entry for every edge set it uses, so every graph timing taken
-    // there is a warm one, and a memo that silently stopped working reads as perfectly normal. ~keep
-    if let Some(cold_us) = record
-        .tools
-        .iter()
-        .find(|t| t.tool == "graph:calls" && t.ok)
-        .map(|t| t.elapsed_us)
-    {
-        record
-            .canaries
-            .insert("graph_calls_cold_us".to_string(), json!(cold_us as u64));
-    }
 
     if let Some(m) = &record.git_history {
         record.canaries.insert("gh_index_commits".to_string(), json!(m.commits));

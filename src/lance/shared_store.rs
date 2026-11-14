@@ -12,16 +12,12 @@ use super::schema;
 use super::shared::{ContentHit, LivePaths, PathHit, search_live, shared_directory};
 
 const CHUNK_KEY: &[&str] = &["scope", "content_hash", "chunk_idx"];
-#[cfg(feature = "documents")]
-const LINK_KEY: &[&str] = &["scope", "content_hash", "chunk_idx", "mention_kind", "mention_value"];
 
 #[derive(Clone, Copy)]
 pub enum SharedLane {
     Documents,
     #[cfg(feature = "code-search")]
     Code,
-    #[cfg(feature = "documents")]
-    DocLinks,
 }
 
 impl SharedLane {
@@ -30,16 +26,6 @@ impl SharedLane {
             Self::Documents => schema::DOCUMENTS_TABLE,
             #[cfg(feature = "code-search")]
             Self::Code => schema::CODE_CHUNKS_TABLE,
-            #[cfg(feature = "documents")]
-            Self::DocLinks => schema::DOC_LINKS_TABLE,
-        }
-    }
-
-    fn keys(self) -> &'static [&'static str] {
-        match self {
-            #[cfg(feature = "documents")]
-            Self::DocLinks => LINK_KEY,
-            _ => CHUNK_KEY,
         }
     }
 
@@ -48,8 +34,6 @@ impl SharedLane {
             Self::Documents => schema::shared_documents_schema(dim),
             #[cfg(feature = "code-search")]
             Self::Code => schema::shared_code_chunks_schema(dim),
-            #[cfg(feature = "documents")]
-            Self::DocLinks => schema::shared_doc_links_schema(),
         }
     }
 }
@@ -77,8 +61,6 @@ impl SharedStore {
             ensure_lane(&connection, SharedLane::Documents, dim).await?;
             #[cfg(feature = "code-search")]
             ensure_lane(&connection, SharedLane::Code, dim).await?;
-            #[cfg(feature = "documents")]
-            ensure_lane(&connection, SharedLane::DocLinks, dim).await?;
             anyhow::Ok(connection)
         })?;
         Ok(Self {
@@ -105,11 +87,11 @@ impl SharedStore {
         if batch.num_rows() == 0 {
             return Ok(());
         }
-        validate_unique_keys(lane, &batch)?;
+        validate_unique_keys(&batch)?;
         let _lock = writer_lock(&self.group)?;
         self.runtime.block_on(async {
             let table = self.connection.open_table(lane.name()).execute().await?;
-            let mut merge = table.merge_insert(lane.keys());
+            let mut merge = table.merge_insert(CHUNK_KEY);
             merge.when_not_matched_insert_all();
             let schema = batch.schema();
             let rows = RecordBatchIterator::new([Ok(batch)], schema);
@@ -193,29 +175,6 @@ impl SharedStore {
         })?
         .context("shared Lance candidate cap reached")
     }
-
-    /// Restore link rows for the effective document manifest and the selected scope.
-    #[cfg(feature = "documents")]
-    pub fn doc_links(&self, scope: &str, paths: &LivePaths<'_>) -> Result<Vec<super::DocLinkRow>> {
-        self.runtime.block_on(async {
-            let table = self.connection.open_table(schema::DOC_LINKS_TABLE).execute().await?;
-            let predicate = scope_filter(scope);
-            let mut stream = table.query().only_if(predicate).execute().await?;
-            let mut rows = Vec::new();
-            while let Some(batch) = stream.try_next().await? {
-                project_links(scope, paths, &batch, &mut rows)?;
-            }
-            rows.sort_by(|a, b| {
-                (&a.doc_path, a.chunk_idx, &a.mention_kind, &a.mention_value).cmp(&(
-                    &b.doc_path,
-                    b.chunk_idx,
-                    &b.mention_kind,
-                    &b.mention_value,
-                ))
-            });
-            Ok(rows)
-        })
-    }
 }
 
 fn scope_filter(scope: &str) -> String {
@@ -236,37 +195,9 @@ fn decode_code(batch: &RecordBatch, out: &mut Vec<ContentHit<super::CodeChunkHit
     Ok(())
 }
 
-#[cfg(feature = "documents")]
-fn project_links(
-    scope: &str,
-    paths: &LivePaths<'_>,
-    batch: &RecordBatch,
-    rows: &mut Vec<super::DocLinkRow>,
-) -> Result<()> {
-    let hashes = column::<StringArray>(batch, "content_hash")?;
-    let ordinals = column::<UInt32Array>(batch, "chunk_idx")?;
-    let kinds = column::<StringArray>(batch, "mention_kind")?;
-    let values = column::<StringArray>(batch, "mention_value")?;
-    for index in 0..batch.num_rows() {
-        rows.extend(
-            paths
-                .paths_for_chunk(hashes.value(index), ordinals.value(index))
-                .map(|path| super::DocLinkRow {
-                    scope: scope.into(),
-                    doc_path: path.into(),
-                    chunk_idx: ordinals.value(index),
-                    mention_kind: kinds.value(index).into(),
-                    mention_value: values.value(index).into(),
-                }),
-        );
-    }
-    Ok(())
-}
-
-fn validate_unique_keys(lane: SharedLane, batch: &RecordBatch) -> Result<()> {
+fn validate_unique_keys(batch: &RecordBatch) -> Result<()> {
     let mut keys = std::collections::HashSet::with_capacity(batch.num_rows());
-    let columns = lane
-        .keys()
+    let columns = CHUNK_KEY
         .iter()
         .map(|key| batch.column_by_name(key).context("missing key"))
         .collect::<Result<Vec<_>>>()?;
@@ -414,35 +345,6 @@ mod tests {
             (10, 12, 20, 48)
         );
         assert_eq!(hit.distance, 1.0);
-    }
-
-    #[cfg(feature = "documents")]
-    #[test]
-    fn shared_links_keep_distinct_mentions_and_project_renames() {
-        use crate::lance::{DocLinkRow, doc_links::build_doc_links_batch};
-
-        let group = tempfile::tempdir().unwrap();
-        let store = SharedStore::open(group.path(), "test-model", 2).unwrap();
-        let rows = ["Beta", "Alpha"].map(|value| DocLinkRow {
-            scope: "repo".into(),
-            doc_path: "live".into(),
-            chunk_idx: 1,
-            mention_kind: "name".into(),
-            mention_value: value.into(),
-        });
-        let batch = build_doc_links_batch(&rows).unwrap();
-        let shared = RecordBatch::try_new(schema::shared_doc_links_schema(), batch.columns().to_vec()).unwrap();
-        store.insert(SharedLane::DocLinks, shared.clone()).unwrap();
-        store.insert(SharedLane::DocLinks, shared).unwrap();
-        let paths = LivePaths::from_iter([("live", "renamed.md")]);
-        let links = store.doc_links("repo", &paths).unwrap();
-        assert_eq!(
-            links
-                .iter()
-                .map(|row| (row.doc_path.as_str(), row.mention_value.as_str()))
-                .collect::<Vec<_>>(),
-            [("renamed.md", "Alpha"), ("renamed.md", "Beta")]
-        );
     }
 
     #[test]

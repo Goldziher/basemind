@@ -16,14 +16,14 @@ basemind is this repo's indexed context layer. Prefer it BEFORE grep, before rea
 
 ### Routing
 
-Every capability lives behind one of seven domain tools, dispatched by a required `mode`: `code`,
-`graph`, `git`, `memory`, `admin`, `agents`, `workspace`. The CLI mirrors the same
-seven groups (`basemind <domain> <mode>`).
+Every capability lives behind one of six domain tools, dispatched by a required `mode`: `code`,
+`git`, `memory`, `admin`, `agents`, `workspace`. The CLI mirrors the same
+six groups (`basemind <domain> <mode>`).
 
 | Reach for | Instead of |
 |---|---|
 | `code` modes `symbols` / `references` / `callers` / `grep` | `grep` / `rg` / opening files to find a symbol |
-| `code` mode `outline` / `graph` mode `map` | reading whole files to learn their shape |
+| `code` mode `outline` | reading whole files to learn their shape |
 | `code` mode `find` (fuzzy path search) | `find` / `fd` / `ls -R` to locate a file by name |
 | `git` modes `recent` / `blame_symbol` / `touching` / `diff` | `git log` / `git blame` / `git diff` |
 | `agents` modes `post` / `inbox` / `thread_list` | assuming you're the only agent in the repo |
@@ -33,9 +33,9 @@ seven groups (`basemind <domain> <mode>`).
 
 The code map is code-only; markdown, JSON, YAML, TOML and other prose/config/data files are a separate
 document tier (search them with `memory` mode `documents`; `code` modes `files` and `find` list them,
-`outline`/`grep`/`symbols` do not). MCP resources `basemind://status`, `basemind://repo/map`,
+`outline`/`grep`/`symbols` do not). MCP resources `basemind://status`,
 `basemind://outline/{path}` and `basemind://memory/{key}` expose the same data as `admin` `status`,
-`graph` `map`, `code` `outline` and `memory` `get`.
+`code` `outline` and `memory` `get`.
 
 ### Red flags — stop and re-route
 

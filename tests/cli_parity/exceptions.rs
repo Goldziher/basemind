@@ -13,6 +13,7 @@ const fn cli_only(cli: &'static str, param: &'static str, reason: &'static str) 
         reason,
     }
 }
+#[allow(dead_code)]
 const fn mcp_only(cli: &'static str, param: &'static str, reason: &'static str) -> Exception {
     Exception {
         cli,
@@ -84,8 +85,6 @@ pub const GLOBAL_FLAGS: &[(&str, &str)] = &[
     ),
 ];
 
-const GRAPH_KNOBS: &str =
-    "TODO parity: graph traversal knob not exposed on the CLI; the command runs with the MCP default";
 const INVERTED: &str = "CLI spells the negation (`--no-X`) of the MCP boolean `X`";
 
 pub fn all() -> Vec<Exception> {
@@ -114,7 +113,6 @@ pub fn all() -> Vec<Exception> {
             "repeatable CLI flag for the MCP list",
         ),
         alias("rescan", "path", "paths", "variadic positional for the MCP list"),
-        alias("graph map", "no_churn", "include_churn", INVERTED),
         alias(
             "cache clear",
             "yes",
@@ -149,47 +147,6 @@ pub fn all() -> Vec<Exception> {
             "TODO parity: the MCP `rescan` cannot wipe and rebuild the git-history index",
         ),
         // ---- MCP-only parameters ----
-        mcp_only("graph communities", "max_communities", GRAPH_KNOBS),
-        mcp_only("graph communities", "members_per_community", GRAPH_KNOBS),
-        mcp_only("graph export", "algorithm", GRAPH_KNOBS),
-        mcp_only("graph export", "edges", GRAPH_KNOBS),
-        mcp_only("graph export", "max_edges", GRAPH_KNOBS),
-        mcp_only("graph export", "max_nodes", GRAPH_KNOBS),
-        mcp_only("graph export", "min_confidence", GRAPH_KNOBS),
-        mcp_only(
-            "graph export",
-            "write",
-            "TODO parity: MCP can write the export to a file; the CLI prints it",
-        ),
-        mcp_only("graph neighbors", "depth", GRAPH_KNOBS),
-        mcp_only("graph neighbors", "direction", GRAPH_KNOBS),
-        mcp_only("graph neighbors", "edges", GRAPH_KNOBS),
-        mcp_only("graph neighbors", "max_nodes", GRAPH_KNOBS),
-        mcp_only("graph neighbors", "min_confidence", GRAPH_KNOBS),
-        mcp_only("graph path", "edges", GRAPH_KNOBS),
-        mcp_only("graph path", "include_contains", GRAPH_KNOBS),
-        mcp_only("graph path", "min_confidence", GRAPH_KNOBS),
-        mcp_only("graph path", "to_path", GRAPH_KNOBS),
-        mcp_only("graph subgraph", "depth", GRAPH_KNOBS),
-        mcp_only("graph subgraph", "edges", GRAPH_KNOBS),
-        mcp_only("graph subgraph", "max_nodes", GRAPH_KNOBS),
-        mcp_only("graph subgraph", "min_confidence", GRAPH_KNOBS),
-        // ---- allowed values ----
-        values(
-            "graph calls",
-            "direction",
-            "the MCP `direction` field is shared with `neighbors` (`both|out|in`) and also accepts `callers`/`callees` synonyms there, so no single enum fits",
-        ),
-        values(
-            "graph display",
-            "format",
-            "the MCP `format` enum is the `export` set; `display` accepts only the visual subset `html|svg`",
-        ),
-        values(
-            "graph open",
-            "format",
-            "the MCP `format` enum is the `export` set; `open` accepts only the visual subset `html|svg`",
-        ),
         // ---- required-ness ----
         required(
             "cache clear",

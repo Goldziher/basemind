@@ -43,7 +43,7 @@ struct Cli {
     no_color: bool,
 
     /// Emit machine-readable JSON instead of the human-readable rendering. Applies to the tool
-    /// subcommands (code / git / graph / memory / admin / status / cache), the
+    /// subcommands (code / git / memory / admin / status / cache), the
     /// coordination groups (agents / workspace / comms / daemon) and doctor. It is ignored, with a
     /// warning, on init / scan / rescan / watch / hook / lang / completions / man / statusline /
     /// serve.
@@ -79,9 +79,6 @@ enum Cmd {
     /// Git history / blame / diff queries.
     #[command(subcommand)]
     Git(basemind::cli::git::GitCmd),
-    /// Navigate the code graph (calls, neighbors, path, subgraph, communities, map, export, …).
-    #[command(subcommand)]
-    Graph(basemind::cli::graph::GraphCmd),
     /// Shared agent memory + document search (needs `--features memory,documents`).
     #[command(subcommand)]
     Memory(basemind::cli::memory::MemoryCmd),
@@ -344,10 +341,6 @@ fn run() -> Result<()> {
             dispatch(basemind::cli::ToolCmd::Code(c))
         }
         Cmd::Git(g) => dispatch(basemind::cli::ToolCmd::Git(g)),
-        Cmd::Graph(g) => {
-            let _ = basemind::lang::ensure_grammars();
-            dispatch(basemind::cli::ToolCmd::Graph(g))
-        }
         Cmd::Memory(m) => dispatch(basemind::cli::ToolCmd::Memory(m)),
         Cmd::Admin(a) => dispatch(basemind::cli::ToolCmd::Admin(a)),
         Cmd::Hook { action } => basemind::cli::hook::run(&root, action),
@@ -393,14 +386,7 @@ fn run() -> Result<()> {
 fn warn_ignored_global_flags(cmd: &Cmd, json: bool, view: &str) {
     let consumes_json = matches!(
         cmd,
-        Cmd::Code(_)
-            | Cmd::Git(_)
-            | Cmd::Graph(_)
-            | Cmd::Memory(_)
-            | Cmd::Admin(_)
-            | Cmd::Cache(_)
-            | Cmd::Status
-            | Cmd::Doctor
+        Cmd::Code(_) | Cmd::Git(_) | Cmd::Memory(_) | Cmd::Admin(_) | Cmd::Cache(_) | Cmd::Status | Cmd::Doctor
     );
     #[cfg(all(feature = "comms", any(unix, windows)))]
     let consumes_json = consumes_json

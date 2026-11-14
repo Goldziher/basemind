@@ -959,13 +959,6 @@ mod tests {
     }
 
     #[test]
-    fn call_graph_accepts_query_alias_for_name() {
-        let params: super::super::types_graph::CallGraphParams =
-            serde_json::from_value(serde_json::json!({ "query": "main" })).unwrap();
-        assert_eq!(params.name, "main");
-    }
-
-    #[test]
     fn find_implementations_accepts_trait_alias_for_trait_name() {
         let params: super::super::types_impls::FindImplementationsParams =
             serde_json::from_value(serde_json::json!({ "trait": "Iterator" })).unwrap();

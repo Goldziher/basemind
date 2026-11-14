@@ -83,7 +83,7 @@ Load the `basemind` skill in your agent and use `code` with an explicit `mode`, 
 
 ## API overview
 
-Seven domain tools dispatch through a required `mode`: `code`, `graph`, `git`, `memory`, `admin`,
+Six domain tools dispatch through a required `mode`: `code`, `git`, `memory`, `admin`,
 `agents`, and `workspace`. Optional capabilities depend on the installed binary's
 features. See the [MCP reference](../README.md) for modes and error handling.
 

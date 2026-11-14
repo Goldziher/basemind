@@ -27,7 +27,7 @@ without you reading whole files.
 ## Capabilities
 
 - **Code map across 300+ languages** — tree-sitter outlines, symbol search, references,
-  callers, call graphs, implementations, dependents. It holds **code only**: markdown, JSON,
+  callers, implementations, dependents. It holds **code only**: markdown, JSON,
   YAML, TOML, XML, CSV, INI and similar files are documents, searched with `memory` mode `documents`.
 - **Full-text + symbol search** — `code` modes `grep` and `symbols`.
 - **Git intelligence** — history, blame, and structural diffs at symbol resolution, plus churn.
@@ -39,7 +39,7 @@ without you reading whole files.
 
 This umbrella skill covers the whole surface. For focused workflows, reach for the dedicated skills:
 
-- **`basemind-code-search`** — outlines, symbol search, references, callers, call graphs.
+- **`basemind-code-search`** — outlines, symbol search, references, callers, implementations.
 - **`basemind-git-history`** — history, blame, structural diffs, churn.
 - **`basemind-documents`** — document RAG (`memory` mode `documents`), memory.
 - **`basemind-comms`** — coordinating with other agents in the same repo over the broker.
@@ -50,7 +50,7 @@ This umbrella skill covers the whole surface. For focused workflows, reach for t
 Use basemind for:
 
 - **Locating a symbol**: "where is `Foo` defined?", "find the constructor for `Bar`", "show me every type ending in `Service`".
-- **Following call graphs**: "what calls `process_file`?", "who depends on this module?".
+- **Following callers**: "what calls `process_file`?", "who depends on this module?".
 - **Mapping a file's shape** before reading it: which symbols, in what order, with what signatures.
 - **Walking recent history**: "what changed in this file in the last 20 commits?", "when did this symbol last change?".
 - **Blame and ownership**: "who last touched this function?", "what commit introduced this line?".
@@ -77,9 +77,9 @@ default workflow, not an optimization:
   returns capped, structured hits with an exact `total_matches`.
 - **Use `admin` mode `rescan` after you edit code**, not a server reconnect. Pass `paths: [...]` to limit it to
   the files you touched.
-- MCP resources are available for hosts that attach them: `basemind://status`, `basemind://repo/map`,
-  `basemind://outline/{path}` and `basemind://memory/{key}` (same data as `admin` `status`, `graph`
-  `map`, `code` `outline`, `memory` `get`).
+- MCP resources are available for hosts that attach them: `basemind://status`,
+  `basemind://outline/{path}` and `basemind://memory/{key}` (same data as `admin` `status`,
+  `code` `outline`, `memory` `get`).
 - **Do not re-read a file basemind already mapped.** If the outline answered the question, stop.
 
 Rule of thumb: if a question is about _where_, _what calls_, _what shape_, _who changed_, or
@@ -97,11 +97,9 @@ Drop to raw shell, grep, or git only when no basemind tool covers the question.
 |---|---|
 | "Where is X defined?" | `code { mode: "symbols", name: X }` (substring; optional `kind`) |
 | "Jump to the definition of X used here?" | `code { mode: "definition", path, line, column? }` |
-| "What's the high-level architecture / module map?" | `graph { mode: "map" }` |
 | "What's the shape of file F?" | `code { mode: "outline", path: F, l2?: true }` |
 | "What calls X?" (any name) | `code { mode: "references", name: X }` |
 | "What calls this specific definition?" | `code { mode: "callers", path: F, name: X }` |
-| "Trace the call graph from a function?" | `graph { mode: "calls", name: X }` |
 | "What implements / extends / inherits from X?" | `code { mode: "implementations", trait_name: X }` |
 | "What imports module M?" | `code { mode: "dependents", module: M }` |
 | "Which file is named like X?" | `code { mode: "find", query: X }` (fuzzy; not `find`/`ls -R`) |

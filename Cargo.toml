@@ -22,7 +22,6 @@ include = [
   "!/src/comms/daemon_forward_tests.rs",
   "!/src/lance/tests.rs",
   "!/src/mcp/helpers_calls_scan_tests.rs",
-  "!/src/mcp/codegraph_tests.rs",
   "!/src/mcp/index_route_tests.rs",
   "!/src/mcp/lazy_cache_tests.rs",
   "!/src/mcp/find_files_tests.rs",

@@ -34,7 +34,7 @@ different version there shares the same cache. Examples below write `basemind` f
 ## Capabilities
 
 - **Code map across 300+ languages** — tree-sitter outlines, symbol search, references, callers,
-  call graphs, implementations, dependents. Code only: markdown, JSON, YAML, TOML, XML, CSV and
+  implementations, dependents. Code only: markdown, JSON, YAML, TOML, XML, CSV and
   similar files are documents (`basemind memory documents`), not in the code map.
 - **Full-text + symbol search** — indexed regex over code content and substring symbol lookup.
 - **Git intelligence** — history, blame, and structural diffs at symbol resolution, plus churn.
@@ -52,7 +52,7 @@ different version there shares the same cache. Examples below write `basemind` f
   `views` / `all`, it needs `--yes` off a terminal, and `blobs` wipes the machine-global store; only
   `basemind cache gc` deletes orphaned blobs).
 
-**basemind first, shell/grep/git fallback.** Prefer `basemind code` / `graph` over reading files, over
+**basemind first, shell/grep/git fallback.** Prefer `basemind code` over reading files, over
 `grep`/`rg`, and over naked `git`: use it for code parsing (outlines, references, callers), git
 history / blame / diffs (`basemind git`), and document extraction / RAG / keyword + entity (NER) /
 summary (`basemind memory documents`). Drop to raw shell, grep, or git only when no basemind
@@ -66,7 +66,6 @@ command covers the question.
 | "What's the shape of file F?" | `basemind code outline path/F` | Add `--l2` for calls + docs. |
 | "What calls X?" (any name) | `basemind code references "X"` | Name-only substring, no scope resolution; complete. |
 | "What calls this specific definition?" | `basemind code callers path name [--kind]` | Specific definition lookup. |
-| "Trace the call graph?" | `basemind graph calls "name" [--direction --max-depth]` | BFS over calls. |
 | "What implements / extends X?" | `basemind code implementations "X"` | Rust, Python, TS/TSX, JS. |
 | "What imports module M?" | `basemind code dependents "M"` | Reverse-lookup via imports. |
 | "What code files are indexed?" | `basemind code files [--language --path-contains]` | Code only; filter by language/path. |

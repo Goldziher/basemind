@@ -11,10 +11,10 @@ use super::MapCache;
 use super::cursor::Cursor;
 use super::helpers::{SEARCH_LIMIT_DEFAULT, SEARCH_LIMIT_MAX, json_result, kind_to_str, parse_kind};
 pub(crate) use super::helpers_calls_scan::InRamCallIndex;
-use super::helpers_calls_scan::{CallRef, CallScanPage, budget_call_page, calls_in_file_fjall};
+use super::helpers_calls_scan::{CallRef, CallScanPage, budget_call_page};
 use super::index_route::IndexRoute;
 use super::types::ReferenceHit;
-use crate::index::view::{IndexView, Part};
+use crate::index::view::Part;
 use crate::path::RelPath;
 
 /// How `find_callers` fetches the cross-file resolved uses of a definition. The precise
@@ -95,38 +95,6 @@ impl RefsSource<'_> {
             }
         }
     }
-}
-
-/// Invoke `f(callee, start_byte)` for every call site in `path`, from whichever backend
-/// is live (Fjall index when open, in-RAM call projection for read-only sessions). Returning
-/// `false` from `f` stops iteration early — used to enforce per-file scan caps.
-///
-/// Shared by `helpers_archmap::RepoGraph::build`, `helpers_archmap::run_tier_symbol`,
-/// and `codegraph::build` (which backs `call_graph`). Keeping the dual-backend dispatch
-/// here removes the duplicate scan loops those callers previously maintained inline. These are
-/// whole-corpus walks, so a read-only session serves them from the (byte-budgeted) projection
-/// rather than one daemon round trip per file; `references` / `callers` / `implementations` are the
-/// point queries that forward instead.
-pub(super) fn for_each_call_in_file<F: FnMut(&str, u32) -> bool>(
-    idx: Option<&dyn IndexView>,
-    cache: &MapCache,
-    path: &RelPath,
-    mut f: F,
-) -> Result<(), McpError> {
-    let owned: Vec<CallRef>;
-    let refs: &[CallRef] = match idx {
-        Some(idx) => {
-            owned = calls_in_file_fjall(idx, path)?;
-            &owned
-        }
-        None => cache.calls_projection().calls_in_file(path),
-    };
-    for cref in refs {
-        if !f(&cref.callee, cref.start_byte) {
-            return Ok(());
-        }
-    }
-    Ok(())
 }
 
 /// Point-lookup a `Call` value in the index by `(path, start_byte)` and return its

@@ -13,7 +13,7 @@ x-ai-rulez:
 # surface-docs-writer
 
 You rewrite basemind's documentation against the consolidated surface: 85 flat MCP tools and their
-CLI groups collapse onto **7 domains** — `code`, `graph`, `git`, `memory`, `agents`, `workspace`,
+CLI groups collapse onto **6 domains** — `code`, `git`, `memory`, `agents`, `workspace`,
 `admin` — each one MCP tool plus one CLI group, dispatching on a required,
 non-defaulted `mode` enum. Every doc that names an old tool is now wrong.
 

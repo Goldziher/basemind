@@ -92,7 +92,6 @@ async fn refresh_cache_after_scan(state: &Arc<ServerState>) -> Result<(), McpErr
     let view = state.shared.store.read().await.view.clone();
     let root = state.shared.root.clone();
     let current_fingerprint = state.shared.cache.load().fingerprint;
-    let scope = state.shared.scope.clone();
     let config = Arc::clone(&state.shared.config);
     let (store, cache) = tokio::task::spawn_blocking(move || {
         let mut store = Store::open_read_only_no_index(&root, &view)?;
@@ -101,13 +100,8 @@ async fn refresh_cache_after_scan(state: &Arc<ServerState>) -> Result<(), McpErr
         {
             tracing::debug!(%error, "refresh shared worktree manifest failed");
         }
-        // Attach persisted doc↔code links (ADR-0008) on this blocking thread, before publish — the
-        // LanceStore's own block_on must not nest inside the async reactor.
-        let cache = (super::map_fingerprint::index_fingerprint(&store) != current_fingerprint).then(|| {
-            let mut cache = MapCache::build(&store, super::l1_cache::budget_bytes_from(&config.resources));
-            super::doc_links_cache::attach(&mut cache, &store, &config, &scope);
-            cache
-        });
+        let cache = (super::map_fingerprint::index_fingerprint(&store) != current_fingerprint)
+            .then(|| MapCache::build(&store, super::l1_cache::budget_bytes_from(&config.resources)));
         Ok::<(Store, Option<MapCache>), crate::store::StoreError>((store, cache))
     })
     .await

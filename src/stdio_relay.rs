@@ -34,7 +34,7 @@ const REPLAYABLE_METHODS: &[&str] = &[
     "completion/complete",
 ];
 /// Tools whose every mode is read-only.
-const READ_ONLY_TOOLS: &[&str] = &["code", "git", "graph"];
+const READ_ONLY_TOOLS: &[&str] = &["code", "git"];
 /// `agents` modes that are reads or naturally idempotent (`post` is made so by a key).
 const REPLAYABLE_AGENTS_MODES: &[&str] = &[
     "list",

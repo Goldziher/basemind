@@ -240,7 +240,7 @@ impl ServerHandler for BasemindServer {
         // Keep any edit under the ceiling — `instructions_stay_under_the_client_ceiling` enforces it.
         .with_instructions(
             "basemind is this repository's indexed context layer: a tree-sitter code map (symbols, \
-             references, callers, call graphs), git history and blame at symbol resolution, \
+             references, callers), git history and blame at symbol resolution, \
              full-text and semantic search, document RAG, and shared cross-session memory. The \
              index lives in a machine-global cache (override BASEMIND_DATA_HOME); nothing is \
              written into the repo and any number of sessions share it.\n\
@@ -251,7 +251,7 @@ impl ServerHandler for BasemindServer {
              Code: code mode outline before opening a file, then read only the span you need; \
              code mode symbols to find a definition; code modes references and callers instead of \
              grepping call sites; code mode grep instead of ripgrep; code mode find to locate a \
-             file by name; graph modes calls, neighbors and map to see what reaches what.\n\
+             file by name.\n\
              History: git modes recent, touching, blame, blame_symbol and diff instead of git log, \
              git blame or git diff.\n\
              Documents: memory mode documents instead of opening PDFs, markdown, config or data \

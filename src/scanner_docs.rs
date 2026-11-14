@@ -494,15 +494,6 @@ pub(crate) fn delete_stale_documents(store: &mut Store, config: &crate::config::
                 "doc stale purge failed; search_documents may return a removed path"
             );
         }
-        // Drop the removed docs' document→code links too (ADR-0008), or graph_export/neighbors would
-        // keep surfacing edges from docs that no longer exist.
-        if let Err(error) = lance.delete_doc_links_for_paths(doc_scope, paths) {
-            tracing::warn!(
-                paths = paths.len(),
-                ?error,
-                "doc links stale purge failed; doc↔code edges may be stale"
-            );
-        }
     }
 }
 

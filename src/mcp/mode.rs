@@ -1,6 +1,6 @@
 //! The `mode` vocabulary shared by every consolidated MCP tool and CLI group.
 //!
-//! basemind's surface is seven domains — `code`, `graph`, `git`, `memory`, `agents`, `workspace`,
+//! basemind's surface is six domains — `code`, `git`, `memory`, `agents`, `workspace`,
 //! `admin` — each a single MCP tool and a single CLI group. Which operation
 //! runs inside a domain is selected by a required `mode` enum rather than by a distinct tool name.
 //!
@@ -227,23 +227,6 @@ define_mode! {
 }
 
 define_mode! {
-    /// Which code-graph operation the `graph` tool should run.
-    pub enum GraphMode {
-        domain: "graph",
-        summary: "Code-graph operation to run.",
-        Calls => "calls", "walk the call chain up or down from one definition";
-        Neighbors => "neighbors", "the n-hop neighborhood around a symbol";
-        Path => "path", "the confidence-weighted shortest path between two symbols";
-        Subgraph => "subgraph", "a symbol's neighborhood cut to its most central nodes";
-        Communities => "communities", "cluster the graph into its de-facto modules";
-        Map => "map", "whole-repo architecture: hub modules by centrality, plus dependency cycles";
-        Export => "export", "render the graph as node-link JSON, DOT, Mermaid, GraphML, Cypher or HTML";
-        Display => "display", "open a rendered view in a human's desktop viewer";
-        Open => "open", "return a live browsable URL for the interactive graph page";
-    }
-}
-
-define_mode! {
     /// Which multi-agent coordination operation the `agents` tool should run.
     pub enum AgentsMode {
         domain: "agents",
@@ -328,7 +311,6 @@ pub fn domain_modes() -> Vec<(&'static str, &'static [&'static str])> {
         (AdminMode::DOMAIN, AdminMode::ALL_MODES),
         (CodeMode::DOMAIN, CodeMode::ALL_MODES),
         (GitMode::DOMAIN, GitMode::ALL_MODES),
-        (GraphMode::DOMAIN, GraphMode::ALL_MODES),
         (MemoryMode::DOMAIN, MemoryMode::ALL_MODES),
         #[cfg(all(feature = "comms", any(unix, windows)))]
         (AgentsMode::DOMAIN, AgentsMode::ALL_MODES),

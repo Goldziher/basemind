@@ -24,14 +24,12 @@ tokio::task_local! {
 
 /// Pure read-only modes that are safe to abandon mid-flight: they only read the in-RAM map / index
 /// (or the vector store) and write nothing durable, so dropping the handler future on client
-/// cancellation loses only recomputable work. NEVER add a mode that writes (rescan, put, accept,
+/// cancellation loses only recomputable work. NEVER add a mode that writes (rescan, put,
 /// cache or registry mutation): dropping those at an await point could strand a half-applied write.
 /// Keyed like [`SLOW_CALLS`] on `domain:mode`.
 pub(super) const CANCEL_AWARE_READS: &[&str] = &[
     "code:grep",
     "code:semantic",
-    "graph:map",
-    "graph:calls",
     "memory:documents",
     // Read-only long poll; it opens its own comms link whose drop is the cleanup, so abandoning it
     // (or cancelling its token) is exactly what frees the broker subscriber.
@@ -84,7 +82,6 @@ pub(super) async fn run_until_cancelled<T>(
 /// would make offload all-or-nothing per domain (every `code` call offloaded, or none).
 pub(super) const SLOW_CALLS: &[&str] = &[
     "admin:rescan",
-    "graph:map",
     "code:semantic",
     #[cfg(feature = "documents")]
     "memory:documents",
@@ -238,7 +235,7 @@ mod tests {
     fn should_not_match_a_mode_across_domains() {
         assert!(!is_slow_tool(
             "memory",
-            Some(&args(serde_json::json!({ "mode": "map" })))
+            Some(&args(serde_json::json!({ "mode": "rescan" })))
         ));
     }
 
@@ -254,13 +251,7 @@ mod tests {
 
     #[test]
     fn should_race_cancellation_only_for_the_pure_read_modes() {
-        for (tool, mode) in [
-            ("code", "grep"),
-            ("code", "semantic"),
-            ("graph", "map"),
-            ("graph", "calls"),
-            ("memory", "documents"),
-        ] {
+        for (tool, mode) in [("code", "grep"), ("code", "semantic"), ("memory", "documents")] {
             assert!(is_cancel_aware_read(
                 tool,
                 Some(&args(serde_json::json!({ "mode": mode })))
@@ -269,7 +260,7 @@ mod tests {
         for (tool, mode) in [
             ("admin", "rescan"),
             ("memory", "put"),
-            ("memory", "accept"),
+            ("memory", "delete"),
             ("code", "outline"),
         ] {
             assert!(!is_cancel_aware_read(

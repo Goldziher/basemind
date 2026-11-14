@@ -43,8 +43,6 @@ pub(crate) mod scanner_candidates;
 #[cfg(feature = "code-search")]
 pub mod scanner_code;
 #[cfg(feature = "documents")]
-pub mod scanner_doc_links;
-#[cfg(feature = "documents")]
 pub mod scanner_docs;
 pub(crate) mod scanner_drive;
 pub mod scanner_file;

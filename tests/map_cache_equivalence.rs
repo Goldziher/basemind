@@ -127,9 +127,8 @@ fn scrub(value: &mut Value) {
 }
 
 /// Every tool call the comparison drives. Chosen to cover both consumer classes the split created:
-/// point lookups (`outline`, `callers`), whole-corpus streams (`symbols`, `find`, `grep`,
-/// `dependents`), and the graph lanes that project a streamed corpus into a memoized structure
-/// (`neighbors`, `map`, `calls`).
+/// point lookups (`outline`, `callers`) and whole-corpus streams (`symbols`, `find`, `grep`,
+/// `dependents`).
 ///
 /// `mode = "files"` is deliberately absent: it enumerates `store.index.files` directly rather than
 /// the read stack, and that is an `AHashMap` whose iteration order is seeded per instance — so two
@@ -158,15 +157,6 @@ fn tool_matrix() -> Vec<(&'static str, Value)> {
         (
             "code",
             json!({"mode": "implementations", "trait_name": "Module007Drawable"}),
-        ),
-        (
-            "graph",
-            json!({"mode": "neighbors", "name": "module_000_caller", "depth": 2}),
-        ),
-        ("graph", json!({"mode": "map", "max_nodes": 40})),
-        (
-            "graph",
-            json!({"mode": "calls", "name": "module_000_caller", "direction": "callees"}),
         ),
     ]
 }

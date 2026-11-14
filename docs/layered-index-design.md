@@ -92,7 +92,7 @@ What already exists and is reused:
   not the base builder (ADR-0016, *Corrections to the issue text*).
 - **Probe index** (A1, `import_targets` / `importers_by_probe`): the O(affected) re-stitch of importers
   a changed path can affect. This is what makes the overlay's `S_refs` small.
-- **Blob-backed reads**: `code outline` / `expand`, the `graph` builders and `grep`'s candidate
+- **Blob-backed reads**: `code outline` / `expand` and `grep`'s candidate
   enumeration go through `L1Cache` / `FileIndexView` and read content-addressed blobs keyed by the file
   map's `hash_hex`, **not** Fjall. Only the *path → hash* map needs merging for these; the blob layer is
   already shared and content-addressed. `code symbols` uses the Fjall `symbols_by_name` fast path
@@ -105,7 +105,7 @@ cache/
   blobs/                                  # global, content-addressed (unchanged)
   repos/<group>/
     memory.fjall                          # A0, shipped
-    lance/                                # A7: shared documents / doc_links / code_chunks
+    lance/                                # A7: shared documents / code_chunks
     base/
       gen-<n>/
         index.fjall/                      # base index, never rewritten by basemind (not read-only on disk)
@@ -266,7 +266,7 @@ A `proptest` that, for a fixture repo:
 2. Builds a **base + overlay** index of worktree *i* on the same content.
 3. Applies random edits — modify / add / delete / rename / duplicate / barrel file / `tsconfig` /
    Python package layout — across three worktrees, rescanning the layered index.
-4. Asserts, for **every** `code` / `graph` / `git` mode: identical result rows, identical `total`, and
+4. Asserts, for **every** `code` / `git` mode: identical result rows, identical `total`, and
    identical cursors across a full pagination walk, versus a fresh standalone index of the same content.
 
 This is the gate that must be green before `layered` can default to `true` (A8).
@@ -321,7 +321,7 @@ Each phase is its own commit, lands behind `[index] layered = false`, and keeps 
 
 ### A7 — shared Lance tables
 
-- `documents` / `doc_links` re-keyed to `(scope, content_hash)`; queries over-fetch and filter by live
+- `documents` re-keyed to `(scope, content_hash)`; queries over-fetch and filter by live
   hashes. `code_chunks` is keyed `(scope, path)` and needs the same re-key (ADR-0016 §A7).
 - Documented deviation: top-k overlap with a per-worktree table stays ≥0.95.
 

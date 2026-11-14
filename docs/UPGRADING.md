@@ -29,7 +29,6 @@ is cleaned up.
 | `admin cache-stats` | `cache stats` |
 | `admin gc` | `cache gc` (deletes; `--dry-run` reports) |
 | `admin cache-clear` | `cache clear` (needs `--yes` outside a terminal) |
-| `graph map --include-churn` | `graph map --no-churn` |
 | `serve --git-cache-mem`, `--no-git-cache-disk`, `--no-watch`, `--documents-*` | removed (`serve` takes no flags) |
 
 `admin delta`, `admin checkpoint` and `admin waste` moved to the top level in 0.29 and were removed
@@ -53,6 +52,13 @@ an audit wrote, which nothing updates any more. Archived notes and pending propo
 the repo's `memory.fjall` and are never read. The comms protocol version is now 5: the first
 upgraded session replaces a running older daemon, and a client and daemon that still disagree fail
 the handshake with `proto_skew`.
+
+The `graph` tool and the `basemind graph` commands (`calls`, `neighbors`, `path`, `subgraph`,
+`communities`, `map`, `export`, `display`, `open`) were removed, with the `basemind://repo/map`
+resource and the daemon's `/ui` page; they have no replacement. `code` modes `callers`,
+`references`, `implementations`, `dependents` and `definition` are unchanged and answer the
+who-calls-what questions. The daemon's HTTP front-end now serves `/mcp` only and takes the bearer
+token in the `Authorization` header only: `?token=` is refused.
 
 Also check scripts for these behaviour changes:
 

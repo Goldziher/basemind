@@ -99,7 +99,7 @@ async fn instructions_stay_under_the_client_ceiling() {
 }
 
 /// Every advertised tool carries a human-readable `title`, so clients can show a label that is not
-/// the bare `code` / `graph` identifier.
+/// the bare `code` / `git` identifier.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn every_tool_has_a_title() {
     let dir = tempfile::tempdir().expect("tempdir");

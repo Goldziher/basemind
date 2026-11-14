@@ -2,7 +2,7 @@
 type: Playbook
 title: Basemind Code Search
 description: Find where code is defined and used without reading files — symbol search,
-  file outlines, references, callers, call graphs, implementations, dependents, and
+  file outlines, references, callers, implementations, dependents, and
   indexed regex over content. Reach for it whenever the user asks "where is X defined",
   "what calls Y", "what implements Z", "what's the shape of this file", or whenever
   you're about to grep or open files to learn structure.
@@ -52,11 +52,9 @@ raw shell only when no tool covers the question.
 |---|---|---|
 | "Where is X defined?" | `code { mode: "symbols", name: "X" }` (substring, optional `kind`) | `basemind code symbols "X"` |
 | "Jump to the definition of X used here?" | `code { mode: "definition", path: F, line }` (scope-aware) | `basemind code definition F line [--column]` |
-| "What's the high-level architecture / module map?" | `graph { mode: "map" }` | `basemind graph map` |
 | "What's the shape of file F?" | `code { mode: "outline", path: F }` (add `l2: true`) | `basemind code outline F [--l2]` |
 | "What calls X?" (any name) | `code { mode: "references", name: "X" }` | `basemind code references "X"` |
 | "What calls this specific definition?" | `code { mode: "callers", path: F, name }` | `basemind code callers F name [--kind]` |
-| "Trace the call graph from a function?" | `graph { mode: "calls", name }` (bounded BFS) | `basemind graph calls "name" [--direction --max-depth]` |
 | "What implements / extends / inherits X?" | `code { mode: "implementations", trait_name: "X" }` | `basemind code implementations "X"` |
 | "What imports module M?" | `code { mode: "dependents", module: "M" }` | `basemind code dependents "M"` |
 | "What code files are indexed?" | `code { mode: "files" }` (filter by language/path) | `basemind code files [--language --path-contains]` |

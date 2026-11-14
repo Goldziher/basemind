@@ -1,13 +1,13 @@
 ---
 title: MCP Tools Reference
-description: Complete catalog of basemind's seven domain tools, one section per domain.
+description: Complete catalog of basemind's six domain tools, one section per domain.
 ---
 
 import { Aside, Badge } from '@astrojs/starlight/components';
 
-basemind exposes **seven domain tools** over stdio MCP — `code`, `graph`, `git`, `memory`, `admin`,
+basemind exposes **six domain tools** over stdio MCP — `code`, `git`, `memory`, `admin`,
 `agents`, `workspace` — each dispatching on a required `mode` rather than one tool
-per operation. The CLI mirrors the same seven groups (`basemind <domain> <mode>`); `tests/cli_parity/` fails the build
+per operation. The CLI mirrors the same six groups (`basemind <domain> <mode>`); `tests/cli_parity/` fails the build
 when an MCP mode has no CLI command or the two disagree on parameters or results. All paths are byte-precise repo-relative (`RelPath`). Lists are
 capped per mode (see [Metadata & pagination](#metadata--pagination)); index scans use
 `scan_cap = limit * 8` (at least 2000) to bound work on common names. Mode descriptions state matching semantics (substring, prefix, scope-aware) and what's
@@ -37,25 +37,6 @@ calls, and definitions.
 
 See [Code Intelligence](/capabilities/code-intelligence/) and [Code Search](/capabilities/code-search/)
 for detailed examples.
-
-## `graph` — the unified code graph
-
-Walk the typed code graph built from resolved calls, imports, and containment. Every edge carries
-provenance and confidence; every result is deterministic and bounded.
-
-| Mode | Purpose |
-|---|---|
-| `calls` | Rooted call BFS: walk the call chain up (`callers`) or down (`callees`) from one definition, depth-bounded. |
-| `neighbors` | The n-hop neighborhood around a symbol (`direction` / `edges` / `depth` / `min_confidence` / `max_nodes`). |
-| `path` | The confidence-weighted shortest path between two symbols; containment excluded unless `include_contains`. |
-| `subgraph` | A symbol's neighborhood cut to its most central nodes. |
-| `communities` | Cluster the graph into its de-facto modules (`label_propagation` default, `louvain` opt-in). |
-| `map` | Whole-repo architecture: hub modules ranked by PageRank + git churn, plus dependency cycles (SCCs). |
-| `export` | Render the graph as node-link JSON, DOT, Mermaid, GraphML, Cypher, or offline interactive HTML. |
-| `display` | Open a rendered view in a human's desktop viewer. |
-| `open` | Return a live browsable URL for the interactive graph page. Both `display` and `open` accept `open: false` to return the path/URL without launching anything. |
-
-See [Code Intelligence](/capabilities/code-intelligence/) for examples.
 
 ## `git` — git history
 
@@ -168,14 +149,12 @@ name and decide what to auto-approve. The hints describe the union of a tool's m
 |---|---|---|---|---|---|
 | `code` | Code map | yes | no | yes | no |
 | `git` | Git history | yes | — | — | no |
-| `graph` | Code graph | no | no | no | yes |
 | `memory` | Memory and documents | no | yes | no | no |
 | `admin` | Admin | no | yes | no | no |
 | `agents` | Agent comms | no | no | no | no |
 | `workspace` | Workspace registry | no | no | yes | no |
 
-A dash means the hint is left unset. `graph` is open-world and not read-only because `display` and
-`open` launch a viewer or serve a page. The server no longer emits MCP logging notifications; use
+A dash means the hint is left unset. The server no longer emits MCP logging notifications; use
 `daemon.log` and `RUST_LOG` for diagnostics. The `mode` parameter is a flat string enum in the tool
 schema, so a client sees every valid mode and an invalid one is rejected with the accepted list.
 
@@ -190,7 +169,6 @@ mode, over the daemon stdio relay and over the HTTP front-end.
 | URI | Backing call |
 |---|---|
 | `basemind://status` | `admin` mode `status` |
-| `basemind://repo/map` | `graph` mode `map` |
 | `basemind://outline/{path}` | `code` mode `outline`; `{path}` is repo-relative and percent-encoded |
 | `basemind://memory/{key}` | `memory` mode `get` (shared tier) |
 
@@ -201,11 +179,11 @@ segments, backslashes and NUL are rejected. `completion/complete` completes `{pa
 ## Cancellation and tasks
 
 A client cancellation (`notifications/cancelled`) abandons these read-only calls at once and
-answers `request_cancelled` (-32800): `code` `grep` and `semantic`, `graph` `map` and `calls`,
+answers `request_cancelled` (-32800): `code` `grep` and `semantic`,
 `memory` `documents`, and `agents` `wait`. Writing modes are never dropped mid-flight.
 
 When the client declares the tasks extension (`io.modelcontextprotocol/tasks`), the slow calls
-(`admin` `rescan`, `graph` `map`, `code` `semantic`, and `memory` `documents`) return a pollable task handle (`tasks/get`) instead of blocking the connection.
+(`admin` `rescan`, `code` `semantic`, and `memory` `documents`) return a pollable task handle (`tasks/get`) instead of blocking the connection.
 Clients that did not declare the extension get the synchronous result.
 
 ## Metadata & pagination

@@ -6,7 +6,7 @@
 //! provider that panics on a plain client, and a raw loopback POST is dependency-free): a JSON-RPC
 //! `initialize` and `tools/list` over `POST /mcp?root=<repo>&agent=<id>`, asserting `200` + the
 //! expected server identity and tool list. Also checks that a non-`/mcp` path and a missing `root`
-//! both 404, and that both routes refuse a request with no bearer token or the wrong one. Uses an
+//! both 404, and that a request with no bearer token or the wrong one is refused. Uses an
 //! isolated `BASEMIND_DATA_HOME` (via `init_isolated_cache`) and a `127.0.0.1:0` port so it never
 //! collides with a real daemon or a sibling test.
 //!
@@ -107,13 +107,15 @@ fn is_connection_teardown(error: &std::io::Error) -> bool {
     )
 }
 
-/// One HTTP/1.1 GET over loopback with an explicit `Host` header, returning
-/// `(status_code, lowercased_header_block, body)`. `Connection: close` lets us read to EOF without
-/// parsing `Content-Length`. The explicit host also exercises the DNS-rebinding guard: a browser page
-/// that rebinds its domain to 127.0.0.1 sends the attacker's host here, not the loopback address.
-async fn http_get_with_host(addr: &str, target: &str, host: &str) -> (u16, String, String) {
+/// One HTTP/1.1 GET over loopback with an explicit `Host` header and an optional `Authorization`
+/// value, returning `(status_code, lowercased_header_block, body)`. `Connection: close` lets us read
+/// to EOF without parsing `Content-Length`. The explicit host also exercises the DNS-rebinding guard:
+/// a browser page that rebinds its domain to 127.0.0.1 sends the attacker's host here, not the
+/// loopback address.
+async fn http_get_with_host(addr: &str, target: &str, host: &str, bearer: Option<&str>) -> (u16, String, String) {
     let mut stream = TcpStream::connect(addr).await.expect("connect loopback");
-    let request = format!("GET {target} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n");
+    let authorization = bearer.map_or_else(String::new, |value| format!("Authorization: {value}\r\n"));
+    let request = format!("GET {target} HTTP/1.1\r\nHost: {host}\r\n{authorization}Connection: close\r\n\r\n");
     stream.write_all(request.as_bytes()).await.expect("write request");
     stream.flush().await.expect("flush");
 
@@ -130,8 +132,8 @@ async fn http_get_with_host(addr: &str, target: &str, host: &str) -> (u16, Strin
 }
 
 /// One HTTP/1.1 GET over loopback, addressed to the listener's own address.
-async fn http_get(addr: &str, target: &str) -> (u16, String, String) {
-    http_get_with_host(addr, target, addr).await
+async fn http_get(addr: &str, target: &str, bearer: Option<&str>) -> (u16, String, String) {
+    http_get_with_host(addr, target, addr, bearer).await
 }
 
 /// Make `dir` a project root the workspace-root allow-list accepts (issue #62). `.git/` is
@@ -283,11 +285,11 @@ async fn streamable_http_serves_initialize_and_tools_list() {
     served.stop().await;
 }
 
-/// The bearer gate on BOTH served routes. Reaching the port proves only that a local process opened
+/// The bearer gate. Reaching the port proves only that a local process opened
 /// a socket, and behind it sits the full tool surface, so an
 /// unauthenticated request must be refused before any routing or workspace work happens.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn both_routes_require_the_daemon_bearer_token() {
+async fn every_request_requires_the_daemon_bearer_token() {
     basemind::store::init_isolated_cache();
 
     let repo = tempfile::tempdir().expect("repo tempdir");
@@ -326,12 +328,9 @@ async fn both_routes_require_the_daemon_bearer_token() {
         &content_headers,
     )
     .await;
-    assert_eq!(
-        status, 401,
-        "a wrong ?token= is refused just like a wrong header: {body}"
-    );
+    assert_eq!(status, 401, "a wrong ?token= is refused: {body}");
 
-    // --- /mcp: the right credential, by header and by query ---
+    // --- /mcp: the right credential is accepted in the header only ---
     let bearer = format!("Bearer {}", served.token);
     let (status, body) = http_post(&addr, &mcp_target, list.as_bytes(), &json_headers(&bearer)).await;
     assert_eq!(status, 200, "POST /mcp with the right token is served: {body}");
@@ -342,109 +341,60 @@ async fn both_routes_require_the_daemon_bearer_token() {
         &content_headers,
     )
     .await;
-    assert_eq!(status, 200, "the query-string credential is accepted too: {body}");
+    assert_eq!(
+        status, 401,
+        "the token is not accepted in the query string, even the right one: {body}"
+    );
 
-    // --- /ui: no credential, then a wrong one, then the right one ---
-    let ui_target = format!("/ui?root={encoded_root}");
-    let (status, head, body) = http_get(&addr, &ui_target).await;
-    assert_eq!(status, 401, "GET /ui with no token must be refused: {body}");
+    // The gate runs BEFORE routing: an unknown path is 401, not 404, so an unauthenticated caller
+    // cannot probe the route table or the workspace guard.
+    let (status, _) = http_post(&addr, "/nope", b"{}", &content_headers).await;
+    assert_eq!(status, 401, "an unknown path is refused before it is routed");
+    let (status, head, _) = http_get(&addr, "/ui", None).await;
+    assert_eq!(status, 401, "an unauthenticated GET is refused before it is routed");
     assert!(
         head.contains("www-authenticate: bearer"),
         "the 401 advertises the scheme: {head}"
     );
-    let (status, _, body) = http_get(&addr, &format!("{ui_target}&token={}", "0".repeat(served.token.len()))).await;
-    assert_eq!(status, 401, "GET /ui with a wrong token must be refused: {body}");
-    let (status, _, body) = http_get(&addr, &format!("{ui_target}&token={}", served.token)).await;
-    assert_eq!(status, 200, "GET /ui with the right token is served: {body}");
-
-    // The gate runs BEFORE routing: an unknown path and a malformed query are both 401, not 404/400,
-    // so an unauthenticated caller cannot probe the route table or the workspace guard.
-    let (status, _) = http_post(&addr, "/nope", b"{}", &content_headers).await;
-    assert_eq!(status, 401, "an unknown path is refused before it is routed");
-    let (status, _, _) = http_get(&addr, "/ui").await;
-    assert_eq!(status, 401, "a malformed /ui query is refused before it is parsed");
 
     served.stop().await;
 }
 
-/// ADR-0006: `GET /ui?root=<repo>` serves the self-contained interactive graph page (the browser/
-/// agent-drivable twin the `ui` tool points at), and the route's error paths return the right status.
+/// `/mcp` is the only route. The removed `/ui` page is a 404 for a credentialed caller, and the
+/// DNS-rebinding guard refuses a foreign `Host` before the workspace is read.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn ui_route_serves_interactive_html() {
+async fn only_mcp_is_routed_and_a_foreign_host_is_refused() {
     basemind::store::init_isolated_cache();
 
     let repo = tempfile::tempdir().expect("repo tempdir");
     git_init(repo.path());
-    std::fs::write(
-        repo.path().join("a.rs"),
-        b"pub fn alpha() { beta(); }\npub fn beta() {}\n",
-    )
-    .expect("write source");
+    std::fs::write(repo.path().join("a.rs"), b"pub fn alpha() {}\n").expect("write source");
     let root = std::fs::canonicalize(repo.path()).expect("canonicalize repo root");
+    let encoded_root = encode_root(&root);
 
     let served = serve().await;
     let addr = served.addr.clone();
-    let token = served.token.clone();
+    let bearer = format!("Bearer {}", served.token);
 
-    let root_str = root.to_str().expect("utf-8 repo path");
-    // The route reads a percent-encoded root; `/` encodes to %2F.
-    let encoded_root = root_str.replace('/', "%2F");
-    let ui = |query: &str| format!("/ui?token={token}&{query}");
-
-    let (status, head, body) = http_get(&addr, &ui(&format!("root={encoded_root}"))).await;
-    assert_eq!(status, 200, "GET /ui must return 200: {body}");
-    assert!(head.contains("content-type: text/html"), "html content-type: {head}");
-    assert!(
-        body.contains("<!doctype html>"),
-        "serves the self-contained page: {}",
-        &body[..body.len().min(120)]
-    );
-    assert!(body.contains("id=\"c\""), "the canvas element is present");
-    assert!(body.contains("id=\"search\""), "the live-search input is present");
-    assert!(
-        body.contains("application/json"),
-        "the embedded graph-data island is present"
-    );
-
-    // A missing root is a 400 (the query is malformed), a nonexistent root is a 404. The error body
-    // is plain text that names the problem, not an opaque status.
-    let (status, head, body) = http_get(&addr, &format!("/ui?token={token}")).await;
-    assert_eq!(status, 400, "missing ?root must 400");
+    let (status, head, body) = http_get(&addr, &format!("/ui?root={encoded_root}"), Some(&bearer)).await;
+    assert_eq!(status, 404, "the /ui route is gone: {body}");
     assert!(
         head.contains("content-type: text/plain"),
-        "the 400 is plain text: {head}"
+        "the 404 is plain text: {head}"
     );
-    assert!(body.contains("root"), "the 400 body names the missing root: {body}");
-    let missing = filesystem_root().join("no").join("such").join("path").join("bm-xyz");
-    let (status, _, _) = http_get(&addr, &ui(&format!("root={}", encode_root(&missing)))).await;
-    assert_eq!(status, 404, "a root that does not resolve must 404");
+    assert!(body.contains("/mcp only"), "the 404 names the one route: {body}");
 
-    // DNS-rebinding guard: a foreign `Host` (a rebound-to-127.0.0.1 attacker page) is rejected before
-    // the workspace is read, even for an otherwise-valid, credentialed request — 403, not 200.
-    let (status, _, _) = http_get_with_host(&addr, &ui(&format!("root={encoded_root}")), "evil.example").await;
+    let mcp_target = format!("/mcp?root={encoded_root}");
+    let (status, _, _) = http_get_with_host(&addr, &mcp_target, "evil.example", Some(&bearer)).await;
     assert_eq!(
         status, 403,
         "a non-loopback Host must be rejected on the loopback listener"
     );
-    // A `localhost` Host is loopback and still served (regression guard for the allowlist).
-    let (status, _, _) = http_get_with_host(&addr, &ui(&format!("root={encoded_root}")), "localhost:1234").await;
-    assert_eq!(status, 200, "a loopback Host (localhost) is still served");
-
-    // The route serves visual formats only (like the `ui` tool): a graph *data* format is a 400 whose
-    // body names the rejected knob — the route and tool reject it through the same `render_ui_parts`.
-    let (status, _, body) = http_get(&addr, &ui(&format!("root={encoded_root}&format=node_link"))).await;
-    assert_eq!(status, 400, "a graph data format is rejected by the route: {body}");
-    assert!(body.contains("format"), "the 400 body names the bad format: {body}");
-    // `format=svg` renders and is served with the SVG content-type (proves the format knob is plumbed
-    // through to the response, not just the default HTML path).
-    let (status, head, _) = http_get(&addr, &ui(&format!("root={encoded_root}&format=svg"))).await;
-    assert_eq!(status, 200, "svg renders");
-    assert!(head.contains("image/svg+xml"), "svg content-type: {head}");
-
-    // `/ui` is a pure read render, so it is method-agnostic: a POST carrying the same query serves the
-    // same page (the body is ignored). Pins current behavior — the route has no write/side-effect path.
-    let (status, _) = http_post(&addr, &ui(&format!("root={encoded_root}")), b"", &[]).await;
-    assert_eq!(status, 200, "POST /ui serves the same read-only page");
+    let (status, _, body) = http_get_with_host(&addr, &mcp_target, "localhost:1234", Some(&bearer)).await;
+    assert!(
+        status != 403 && status != 401,
+        "a loopback Host (localhost) passes the guard, got {status}: {body}"
+    );
 
     served.stop().await;
 }

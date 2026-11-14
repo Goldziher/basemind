@@ -117,13 +117,8 @@ pub struct ModeParams {
 /// broker. They are not probed (probing executes the handler whenever a field is accepted); their
 /// parameters are compared domain-wide instead.
 const UNPROBED_TOOLS: &[&str] = &["memory", "agents", "workspace"];
-/// Individual modes that open a browser / run the embedding stack when their fields are accepted.
-const UNPROBED_MODES: &[(&str, &str)] = &[
-    ("code", "semantic"),
-    ("code", "chunk"),
-    ("graph", "open"),
-    ("graph", "display"),
-];
+/// Individual modes that run the embedding stack when their fields are accepted.
+const UNPROBED_MODES: &[(&str, &str)] = &[("code", "semantic"), ("code", "chunk")];
 
 pub fn is_probed(tool: &str, mode: &str) -> bool {
     !UNPROBED_TOOLS.contains(&tool) && !UNPROBED_MODES.contains(&(tool, mode))

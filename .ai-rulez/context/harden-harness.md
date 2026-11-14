@@ -25,12 +25,11 @@ cargo test --release --test harden -- --ignored --nocapture
 2. For each repo: `basemind scan`, then an **in-process git-ops measurement** (`measure_git_ops`):
    build the git-history index synchronously and time warm, microsecond-resolution indexed-vs-live
    latency for `commits_touching` (hot + rare path), `recent_changes`, and `window_commits`, plus the
-   build time and on-disk index size. Then it sweeps every `code`/`graph` mode plus `git` modes over
+   build time and on-disk index size. Then it sweeps every `code` mode plus `git` modes over
    stdio, capturing per-mode latency + result shapes.
 3. Asserts canaries (lower bounds, scan-resistant to upstream churn):
    - **tokio**: `references("spawn")` `>= 50`, `find("src")` `>= 100`, `grep("fn spawn")` `>= 20`,
-     `implementations("Future")` `>= 20`, `calls("spawn", callers, depth=2)` `>= 5` nodes,
-     `map(module)` `>= 5` nodes and `>= 1` import edge.
+     `implementations("Future")` `>= 20`.
    - **django**: `references("get")` `>= 50`, `git search("fixed", message)` `>= 20` commits,
      `git touching("django/db/models/query.py")` `>= 10` commits, author search `>= 1` hit.
    - **react**: `symbols("useState")` `> 0`.
