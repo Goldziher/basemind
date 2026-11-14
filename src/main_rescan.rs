@@ -74,7 +74,7 @@ pub(super) fn cmd_rescan(
         .join(basemind::store::INDEX_FILE)
         .is_file();
     let mut store = open_store_for_write(root, basemind::store::VIEW_WORKING, "rescan", LockHolder::Rescan)?;
-    let full = full || standalone_absent || store.index_rebuild_needed;
+    let full = full || standalone_absent || store.needs_full_scan();
 
     let report = if full {
         scan_streaming(

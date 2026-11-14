@@ -393,7 +393,7 @@ impl WorkspacePool {
             }
         }
         let from_layered = store.layered_read.is_some();
-        let full = full || rebuild_pending || from_layered;
+        let full = full || rebuild_pending || from_layered || store.needs_full_scan();
         let incremental = matches!(paths, Some(ref p) if !full && !p.is_empty());
         if store.layered_read.is_some() {
             *store = Store::open_with_holder(&entry.root, VIEW_WORKING, LockHolder::Rescan)?;

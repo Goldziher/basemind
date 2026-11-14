@@ -477,6 +477,30 @@ fn a_writer_open_persists_the_emptied_file_map_before_any_scan() {
     assert!(index_generation < sealed, "the rebuilt index starts a new count");
 }
 
+/// A process killed between the open that wrote the emptied file map and the rebuild scan leaves an
+/// empty map over an empty index. The next open has no rebuild flag to go on, so the store itself
+/// must say an incremental scan would index only the paths it is handed.
+#[test]
+fn a_rebuild_that_never_ran_still_asks_for_a_full_scan() {
+    basemind::store::init_isolated_cache();
+    let dir = TempDir::new().unwrap();
+    let root = dir.path();
+    scanned_store_with_an_index_behind(root);
+
+    drop(Store::open(root, VIEW_WORKING).expect("the open that empties the file map"));
+
+    let mut killed_before_the_scan = Store::open(root, VIEW_WORKING).expect("reopen");
+    assert!(
+        !killed_before_the_scan.index_rebuild_needed,
+        "an empty file map over an empty index carries no rebuild flag"
+    );
+    assert!(killed_before_the_scan.needs_full_scan(), "nothing is indexed");
+
+    let report = rescan(root, &mut killed_before_the_scan);
+    assert_eq!(report.stats.updated, 3);
+    assert!(!killed_before_the_scan.needs_full_scan(), "the tree is indexed again");
+}
+
 /// The restarted count can reach the old file map's generation while the rebuild is still partial:
 /// each flush seals the index first, so a flush whose file-map write fails advances it anyway. The
 /// old file map would then match an index holding one file's rows and skip the other two for good.

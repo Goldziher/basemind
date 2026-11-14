@@ -54,6 +54,15 @@ impl Store {
         Ok(())
     }
 
+    /// Whether an incremental scan would be wrong for this store: a rebuild is pending, or the file
+    /// map lists nothing. The second case is the first after a process died between writing the
+    /// emptied file map and finishing the rebuild scan: the next open sees an empty map, so
+    /// [`Store::index_rebuild_needed`] is unset, and scanning only the given paths would leave the
+    /// rest of the tree unindexed.
+    pub fn needs_full_scan(&self) -> bool {
+        self.index_rebuild_needed || (self.index.files.is_empty() && self.index.doc_files.is_empty())
+    }
+
     /// Whether the file map vouches for a scan generation the index never sealed (see
     /// [`crate::index::durability`]). `false` for a store with no index handle.
     pub(crate) fn index_is_behind_file_map(&self) -> Result<bool, StoreError> {
