@@ -140,10 +140,15 @@ fn scripted_broker(delays: Vec<std::time::Duration>) -> (CommsPaths, tokio::task
 }
 
 fn rand_suffix() -> u128 {
-    std::time::SystemTime::now()
+    // ~keep The clock alone collides when two tests start in the same tick, and the second bind
+    // then fails with AlreadyExists; the counter makes the suffix unique within the process.
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = u128::from(NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % 1000);
+    let micros = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0)
+        .map(|d| d.as_micros())
+        .unwrap_or(0);
+    micros * 1000 + seq
 }
 
 /// The reported failure: a request abandoned after its frame was written (the delivery-notice
