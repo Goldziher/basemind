@@ -42,7 +42,9 @@ Every tool has:
 - unknown fields rejected with a did-you-mean error;
 - one example call in the description;
 - an output schema;
-- accurate read-only and destructive annotations.
+- accurate read-only and destructive annotations;
+- `_meta["anthropic/alwaysLoad"]: true`, so a host that defers MCP tools by default loads the
+  schema at session start instead of needing a tool-search round trip.
 
 Conventions for all tools:
 
