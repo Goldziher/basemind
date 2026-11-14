@@ -11,6 +11,19 @@ fn bin() -> &'static str {
     env!("CARGO_BIN_EXE_basemind")
 }
 
+/// A `basemind` invocation isolated from every daemon but its own. `init_isolated_cache` pins one comms
+/// directory for the whole test binary, so on `comms` builds a daemon started by a sibling test is "up"
+/// for this one: `rescan` hands its scan to that daemon, which keeps the workspace writer lock for about
+/// 20 s, and a following local `scan` is refused. A private directory plus no auto-spawn keeps the scans
+/// local.
+fn basemind(comms: &Path) -> Command {
+    let mut command = Command::new(bin());
+    command
+        .env("BASEMIND_COMMS_DIR", comms)
+        .env("BASEMIND_NO_AUTOSPAWN", "1");
+    command
+}
+
 fn git(repo: &Path, args: &[&str]) {
     let status = Command::new("git")
         .args(args)
@@ -215,6 +228,7 @@ fn cold_dirty_scan_publishes_delta_without_standalone_fjall() {
     basemind::store::init_isolated_cache();
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path();
+    let comms = directory.path().join("comms");
     git(root, &["init", "-q"]);
     git(root, &["config", "core.autocrlf", "false"]);
     std::fs::write(root.join("sample.rs"), "fn sample() { before(); }").unwrap();
@@ -239,7 +253,7 @@ fn cold_dirty_scan_publishes_delta_without_standalone_fjall() {
             .is_some()
     );
     std::fs::write(root.join("sample.rs"), "fn after_symbol() { after(); }").unwrap();
-    let refused = Command::new(bin())
+    let refused = basemind(&comms)
         .env("BASEMIND_INDEX_LAYERED", "1")
         .env("BASEMIND_INDEX_MAX_GROUP_BYTES", "1")
         .args(["--root", root.to_str().unwrap(), "scan", "--no-git-history"])
@@ -250,7 +264,7 @@ fn cold_dirty_scan_publishes_delta_without_standalone_fjall() {
     assert!(!basemind::store_base::has_published_dirty_worktree(root, &config).unwrap());
     let working = basemind::store::workspace_cache_dir(root).join("views/working");
     std::fs::remove_dir_all(working).unwrap();
-    let result = Command::new(bin())
+    let result = basemind(&comms)
         .env("BASEMIND_INDEX_LAYERED", "1")
         .args(["--root", root.to_str().unwrap(), "scan", "--no-git-history"])
         .output()
@@ -265,7 +279,7 @@ fn cold_dirty_scan_publishes_delta_without_standalone_fjall() {
         (vec!["code", "files", "--path-contains", "sample.rs"], "sample.rs"),
         (vec!["code", "symbols", "after_symbol"], "after_symbol"),
     ] {
-        let query = Command::new(bin())
+        let query = basemind(&comms)
             .env("BASEMIND_INDEX_LAYERED", "1")
             .args(["--root", root.to_str().unwrap()])
             .args(args)
@@ -280,7 +294,7 @@ fn cold_dirty_scan_publishes_delta_without_standalone_fjall() {
     }
     assert!(!cache.join("views/working/index.fjall").exists());
     let rescan = || {
-        Command::new(bin())
+        basemind(&comms)
             .env("BASEMIND_INDEX_LAYERED", "1")
             .env("BASEMIND_COMMS_DIR", directory.path().join("comms"))
             .args(["--root", root.to_str().unwrap(), "rescan", "sample.rs"])
@@ -301,7 +315,7 @@ fn cold_dirty_scan_publishes_delta_without_standalone_fjall() {
     assert!(dirty.status.success(), "{}", String::from_utf8_lossy(&dirty.stderr));
     assert!(!cache.join("views/working/index.fjall").exists());
     let api = |layered: &str, args: &[&str]| {
-        let query = Command::new(bin())
+        let query = basemind(&comms)
             .env("BASEMIND_INDEX_LAYERED", layered)
             .args(["--json", "--root", root.to_str().unwrap()])
             .args(args)
@@ -338,7 +352,7 @@ fn cold_dirty_scan_publishes_delta_without_standalone_fjall() {
             result
         })
         .collect::<Vec<_>>();
-    let reference = Command::new(bin())
+    let reference = basemind(&comms)
         .env("BASEMIND_INDEX_LAYERED", "0")
         .args(["--root", root.to_str().unwrap(), "scan", "--no-git-history"])
         .output()
@@ -351,7 +365,7 @@ fn cold_dirty_scan_publishes_delta_without_standalone_fjall() {
     for ((args, _), expected) in requests.iter().zip(layered) {
         assert_eq!(api("0", args), expected, "request {args:?}");
     }
-    let full = Command::new(bin())
+    let full = basemind(&comms)
         .env("BASEMIND_INDEX_LAYERED", "1")
         .args(["--root", root.to_str().unwrap(), "rescan", "--full", "--no-git-history"])
         .output()
@@ -362,40 +376,14 @@ fn cold_dirty_scan_publishes_delta_without_standalone_fjall() {
         std::fs::write(root.join(format!("overflow_{number}.rs")), "fn overflow() {}").unwrap();
     }
     let opted_in_scan = || {
-        Command::new(bin())
+        basemind(&comms)
             .env("BASEMIND_INDEX_LAYERED", "1")
             .args(["--root", root.to_str().unwrap(), "scan", "--no-git-history"])
             .output()
             .unwrap()
     };
     let scan = opted_in_scan();
-    if !scan.status.success() {
-        let refused = String::from_utf8_lossy(&scan.stderr).into_owned();
-        let processes = Command::new(if cfg!(windows) { "tasklist" } else { "ps" })
-            .args(if cfg!(windows) { &["/V"][..] } else { &["-ef"][..] })
-            .output()
-            .map(|out| {
-                String::from_utf8_lossy(&out.stdout)
-                    .lines()
-                    .filter(|line| line.to_ascii_lowercase().contains("basemind"))
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            })
-            .unwrap_or_default();
-        let started = std::time::Instant::now();
-        let mut cleared_after = None;
-        while started.elapsed() < std::time::Duration::from_secs(30) {
-            std::thread::sleep(std::time::Duration::from_millis(250));
-            if opted_in_scan().status.success() {
-                cleared_after = Some(started.elapsed());
-                break;
-            }
-        }
-        panic!(
-            "scan refused after `rescan --full` exited: {refused}\nbasemind processes:\n{processes}\n\
-             lock cleared after: {cleared_after:?}"
-        );
-    }
+    assert!(scan.status.success(), "{}", String::from_utf8_lossy(&scan.stderr));
     assert!(cache.join("layered-promoted").is_file());
     for number in 0..2 {
         std::fs::remove_file(root.join(format!("overflow_{number}.rs"))).unwrap();
