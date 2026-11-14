@@ -1,7 +1,7 @@
 //! The `mode` vocabulary shared by every consolidated MCP tool and CLI group.
 //!
-//! basemind's surface is nine domains — `code`, `graph`, `git`, `memory`, `web`, `agents`,
-//! `workspace`, `shell`, `admin` — each a single MCP tool and a single CLI group. Which operation
+//! basemind's surface is eight domains — `code`, `graph`, `git`, `memory`, `agents`, `workspace`,
+//! `shell`, `admin` — each a single MCP tool and a single CLI group. Which operation
 //! runs inside a domain is selected by a required `mode` enum rather than by a distinct tool name.
 //!
 //! # Why one tool per domain
@@ -9,7 +9,7 @@
 //! Hosts defer MCP tools and surface them only through keyword search, so an agent never reads a
 //! list — it searches. Every additional tool name competes for the same query, and a name whose
 //! description omits the words an agent would actually type is unreachable in practice even when it
-//! registered cleanly. Nine dense descriptions retrieve better than eighty-five thin ones.
+//! registered cleanly. A few dense descriptions retrieve better than eighty-five thin ones.
 //!
 //! # Why the schema is hand-written
 //!
@@ -39,12 +39,12 @@ use rmcp::ErrorData as McpError;
 ///
 /// ```ignore
 /// define_mode! {
-///     /// What the `web` tool should do.
-///     pub enum WebMode {
-///         domain: "web",
-///         summary: "Web operation to run.",
-///         Scrape => "scrape", "fetch one page and index it";
-///         Crawl  => "crawl",  "follow links from a seed URL";
+///     /// What the `workspace` tool should do.
+///     pub enum WorkspaceMode {
+///         domain: "workspace",
+///         summary: "Registry operation to run.",
+///         Claim   => "claim",   "take an advisory claim on a worktree";
+///         Release => "release", "drop a claim";
 ///     }
 /// }
 /// ```
@@ -162,17 +162,6 @@ macro_rules! define_mode {
 // The domain vocabularies. Every enum is compiled unconditionally even when its tool is gated off,
 // so this file is the one place the whole surface can be read at once and so a feature build never
 // changes the spelling of a mode. Which domains are *advertised* is gated, in `domain_modes`. ~keep
-
-define_mode! {
-    /// Which web operation the `web` tool should run.
-    pub enum WebMode {
-        domain: "web",
-        summary: "Web operation to run.",
-        Scrape => "scrape", "fetch one URL, extract markdown, and index it into the documents store";
-        Crawl => "crawl", "follow links breadth-first from a seed URL and index every page";
-        Map => "map", "discover a site's URLs from its sitemap and link map without fetching bodies";
-    }
-}
 
 define_mode! {
     /// Which cache / server-administration operation the `admin` tool should run.
@@ -362,8 +351,6 @@ pub fn domain_modes() -> Vec<(&'static str, &'static [&'static str])> {
         (MemoryMode::DOMAIN, MemoryMode::ALL_MODES),
         #[cfg(all(feature = "shells", any(unix, windows)))]
         (ShellMode::DOMAIN, ShellMode::ALL_MODES),
-        #[cfg(feature = "crawl")]
-        (WebMode::DOMAIN, WebMode::ALL_MODES),
         #[cfg(all(feature = "comms", any(unix, windows)))]
         (AgentsMode::DOMAIN, AgentsMode::ALL_MODES),
         #[cfg(all(feature = "comms", any(unix, windows)))]
@@ -432,12 +419,12 @@ mod tests {
 
     #[test]
     fn should_reject_only_the_fields_the_caller_actually_supplied() {
-        assert!(reject_unsupported("web", "scrape", &[("max_depth", false), ("limit", false)]).is_ok());
+        assert!(reject_unsupported("code", "outline", &[("max_depth", false), ("limit", false)]).is_ok());
 
-        let error = reject_unsupported("web", "scrape", &[("max_depth", true), ("limit", true)])
+        let error = reject_unsupported("code", "outline", &[("max_depth", true), ("limit", true)])
             .expect_err("supplied inapplicable fields must fail");
         let message = error.message.to_string();
-        assert!(message.contains("`web` mode `scrape` does not accept"), "{message}");
+        assert!(message.contains("`code` mode `outline` does not accept"), "{message}");
         assert!(
             message.contains("`max_depth`") && message.contains("`limit`"),
             "{message}"

@@ -19,8 +19,8 @@
 //! the daemon's environment is fixed at spawn and belongs to whoever started it, whereas
 //! `<repo>/basemind.toml` is authored by whoever wrote the repository — the same distinction that
 //! put `scan.extra_roots` behind `BASEMIND_ALLOW_EXTRA_ROOTS` instead of a config flag. The name
-//! joins the existing `BASEMIND_ALLOW_ANY_ROOT` / `BASEMIND_ALLOW_PRIVATE_HOSTS` /
-//! `BASEMIND_ALLOW_EXTRA_ROOTS` family, all of which read as "the operator lifts a safety default".
+//! joins the existing `BASEMIND_ALLOW_ANY_ROOT` / `BASEMIND_ALLOW_EXTRA_ROOTS`
+//! family, all of which read as "the operator lifts a safety default".
 //!
 //! ## Why a token on top of the opt-in
 //!

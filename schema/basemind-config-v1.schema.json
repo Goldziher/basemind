@@ -203,15 +203,8 @@
       }
     },
     "crawl": {
-      "$ref": "#/$defs/CrawlConfig",
-      "default": {
-        "respect_robots_txt": true,
-        "max_pages": 32,
-        "max_depth": 2,
-        "max_body_size": 4194304,
-        "user_agent": "basemind/0.33.0 (+https://github.com/Goldziher/basemind)",
-        "allow_private_network": false
-      }
+      "description": "Deprecated and ignored: web crawling was removed. Accepted so files that still carry a\n`[crawl]` table (`basemind init` used to write one) keep loading.",
+      "$ref": "#/$defs/DeprecatedSection"
     },
     "shells": {
       "description": "Visual / headless agent-shell presentation config. Consumed by the `shells` feature's\nvisual launcher; the schema is stable regardless of feature gating.",
@@ -1221,48 +1214,11 @@
       },
       "additionalProperties": false
     },
-    "CrawlConfig": {
+    "DeprecatedSection": {
+      "description": "A table that configured a removed feature. Any content is accepted and nothing is read from it,\nso a `basemind.toml` written for an older version keeps loading under the strict schema.",
       "type": "object",
-      "properties": {
-        "respect_robots_txt": {
-          "description": "Honour `robots.txt` when fetching pages. Default `true`. Override only\nfor hosts you control — flipping this off violates `robots.txt`\ndirectives for every domain the crawler touches.",
-          "type": "boolean",
-          "default": true
-        },
-        "max_pages": {
-          "description": "Hard cap on pages visited in a single `web_crawl` call.",
-          "type": "integer",
-          "format": "uint32",
-          "minimum": 1,
-          "default": 32
-        },
-        "max_depth": {
-          "description": "Maximum link-following depth from the seed URL during `web_crawl`.",
-          "type": "integer",
-          "format": "uint32",
-          "minimum": 0,
-          "default": 2
-        },
-        "max_body_size": {
-          "description": "Truncate response bodies above this many bytes before parsing.",
-          "type": "integer",
-          "format": "uint64",
-          "minimum": 1024,
-          "default": 4194304
-        },
-        "user_agent": {
-          "description": "User-Agent header sent with every request. Override to identify your\ncrawler to operators; the default includes the basemind release\nversion + the upstream repo URL so site operators can trace traffic.",
-          "type": "string",
-          "minLength": 1,
-          "default": "basemind/0.33.0 (+https://github.com/Goldziher/basemind)"
-        },
-        "allow_private_network": {
-          "description": "Allow crawling URLs that resolve to private, loopback, or link-local\naddresses (`127.0.0.0/8`, `10.0.0.0/8`, `169.254.0.0/16`, …). Default\n`false`: the engine rejects them with an SSRF-policy violation. Flip this\non only to scrape an internal docs server you control. **`true` in the repository's own\n`basemind.toml` is ignored (with a warning) unless the operator sets\n`BASEMIND_ALLOW_PRIVATE_HOSTS=1` in the environment**, because a cloned repository could\notherwise aim the crawler at internal services. (The `CRAWLBERG_ALLOW_PRIVATE_NETWORK` env\nvar is honoured as a process-wide override regardless of this setting.)",
-          "type": "boolean",
-          "default": false
-        }
-      },
-      "additionalProperties": false
+      "additionalProperties": true,
+      "deprecated": true
     },
     "ShellsConfig": {
       "description": "`[shells]` config sub-tree. See module docs for context.",

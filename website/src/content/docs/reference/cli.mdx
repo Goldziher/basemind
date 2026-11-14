@@ -5,7 +5,7 @@ description: Complete command list for the basemind command-line interface.
 
 import { Aside } from '@astrojs/starlight/components';
 
-The CLI mirrors the MCP surface exactly: **nine domains**, each a real clap subcommand group
+The CLI mirrors the MCP surface exactly: **eight domains**, each a real clap subcommand group
 (`basemind <domain> <mode>`). `tests/cli_parity/` enforces it: every MCP mode maps to a CLI command
 with the same parameters and the same answer, and any command with no MCP counterpart is declared
 CLI-only with a reason. Some MCP modes live at the top level rather than under their domain
@@ -30,13 +30,12 @@ Commands that return lists share a set of paging and budget flags where their MC
 | Domain | Gate |
 |---|---|
 | `code`, `graph`, `git`, `memory`, `admin` | always available |
-| `web` | `--features crawl` |
 | `agents`, `workspace` | `--features comms` |
 | `shell` | `--features shells` |
 
 A default `cargo install basemind` build exposes 5 domains; `--features comms` adds `agents` +
-`workspace` (7); `--features full` adds `web` + `shell` too (9). Prebuilt downloads (Homebrew, npm,
-pip, GitHub releases) ship the full 9-domain build.
+`workspace` (7); `--features full` adds `shell` too (8). Prebuilt downloads (Homebrew, npm,
+pip, GitHub releases) ship the full 8-domain build.
 
 ## `code` — code-map lookups
 
@@ -178,22 +177,6 @@ The rest of the `admin` verbs live at the top level: `status`, `rescan` and `cac
 | `telemetry [--window --tool]` | Aggregate recorded tool calls into a usage and token-savings summary. |
 | `tokens --stdin` | Count tokens in stdin with the o200k tokenizer and print just the integer (needs the `tokenizer` feature, which `documents` includes). CLI-only; no `--json` envelope. |
 | `eval --tasks <FILE> [...]` | Score retrieval quality, latency and token savings over a JSONL task file. CLI-only; see [Evaluation](/reference/evaluation/). |
-
-## `web` — on-demand web ingestion
-
-Requires `--features crawl`.
-
-```bash
-basemind web scrape <url> [--no-index --scope]
-basemind web crawl <url> [--max-pages --max-depth --scope]
-basemind web map <url> [--limit]
-```
-
-| Command | Purpose |
-|---|---|
-| `scrape <url> [--no-index --scope]` | Fetch one URL, extract markdown, and index it. `--no-index` fetches metadata only. |
-| `crawl <url> [--max-pages --max-depth --scope]` | Follow links breadth-first from a seed URL and index every page. |
-| `map <url> [--limit]` | Discover a site's URLs from its sitemap and link map without fetching bodies. |
 
 ## `agents` — multi-agent coordination
 
@@ -373,7 +356,7 @@ the index directly and read-only.
 <Aside type="note">
 Global flags (`--root`, `--quiet`, `--verbose`, `--no-color`, `--json`, `--view`) apply across all
 subcommands, though `--json` only takes effect on the tool subcommands (`code`, `git`,
-`graph`, `memory`, `web`, `admin`, `status`, `cache`, `doctor`, and — with `--features comms` — `comms`, `agents`,
+`graph`, `memory`, `admin`, `status`, `cache`, `doctor`, and — with `--features comms` — `comms`, `agents`,
 `workspace`, `daemon`; and with `--features shells` — `shell`); `--view` also applies to `serve`. Ignored flags log a warning. Cursor-based pagination
 (`--cursor`) is covered in the paging table above.
 </Aside>

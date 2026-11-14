@@ -512,15 +512,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "astral-tl"
-version = "0.8.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5fe43b63a04560c41783a27e23209ca87a3f5d01bab21c74bec93268bad39e3a"
-dependencies = [
- "memchr",
-]
-
-[[package]]
 name = "async-channel"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -896,7 +887,6 @@ dependencies = [
  "clap",
  "clap_complete",
  "clap_mangen",
- "crawlberg",
  "criterion",
  "directories",
  "fjall",
@@ -954,7 +944,6 @@ dependencies = [
  "tracing-subscriber",
  "tree-sitter",
  "tree-sitter-language-pack",
- "url",
  "wiremock",
  "xberg",
  "zstd 0.14.4",
@@ -1830,7 +1819,6 @@ version = "0.4.47"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "84f840cff84d10085260e460023934d0af699e71212b09b2a41452e8bd9cda43"
 dependencies = [
- "brotli",
  "compression-core",
  "flate2",
  "memchr",
@@ -1977,7 +1965,6 @@ dependencies = [
  "idna",
  "indexmap 2.14.2",
  "log",
- "publicsuffix",
  "serde",
  "serde_derive",
  "serde_json",
@@ -2064,68 +2051,6 @@ checksum = "5ca28b0ae3115b884660db4118d803791fd6756b6e88f39c0f3f7859060d7566"
 dependencies = [
  "libc",
 ]
-
-[[package]]
-name = "crawlberg"
-version = "1.13.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6056c5ff22fb7e7f4a3b1e30376217a728b3a9f7532459f6b8d162af6798cbef"
-dependencies = [
- "ahash",
- "aho-corasick",
- "arc-swap",
- "astral-tl",
- "async-trait",
- "base64 0.23.1",
- "blake3",
- "chardetng",
- "chrono",
- "cookie_store",
- "crawlberg-robots",
- "dashmap",
- "encoding_rs",
- "fancy-regex 0.20.2",
- "flate2",
- "futures",
- "getrandom 0.3.4",
- "getrandom 0.4.3",
- "html-escape",
- "html-to-markdown-rs",
- "html5ever",
- "hyper-util",
- "icu_casemap",
- "icu_normalizer",
- "idna",
- "ipnet",
- "memchr",
- "notify",
- "opentelemetry",
- "opentelemetry-semantic-conventions",
- "percent-encoding",
- "psl",
- "quick-xml 0.42.0",
- "regex",
- "regex-syntax",
- "reqwest 0.13.5",
- "same-file",
- "serde",
- "serde_json",
- "sha2 0.11.1",
- "thiserror 2.0.21",
- "tokio",
- "tokio-stream",
- "toml 1.2.1+spec-1.1.0",
- "tower",
- "tracing",
- "url",
- "web-time",
-]
-
-[[package]]
-name = "crawlberg-robots"
-version = "1.13.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4c503c57dc1adab25a8d384b7b00d0e4bb9febe6b2d60fb34af67f1bdd8a4907"
 
 [[package]]
 name = "crc-fast"
@@ -5738,28 +5663,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "icu_casemap"
-version = "2.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1a6f143e9349267b80ae071a6ec25d4797c45756d8b2671a8b24b7b25b81ab94"
-dependencies = [
- "icu_casemap_data",
- "icu_collections",
- "icu_locale_core",
- "icu_properties",
- "icu_provider",
- "potential_utf",
- "writeable",
- "zerovec",
-]
-
-[[package]]
-name = "icu_casemap_data"
-version = "2.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "71a5c321208537711696af55bc2ab5dad939e4f6e0aef92dd6a2555deceedf3a"
-
-[[package]]
 name = "icu_collections"
 version = "2.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5767,7 +5670,6 @@ checksum = "fe090a42a0d3140fed8c63263ed1fecc02422cb2f4bfe55cd8de2de1b8e105dd"
 dependencies = [
  "displaydoc",
  "potential_utf",
- "serde",
  "utf8_iter",
  "yoke",
  "zerofrom",
@@ -8546,26 +8448,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "opentelemetry"
-version = "0.33.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8c1f1a6ac9c875a4941e4c7c085b61e8f4daa326de03b4701768c3491a6ad9ee"
-dependencies = [
- "futures-core",
- "futures-sink",
- "js-sys",
- "pin-project-lite",
- "thiserror 2.0.21",
- "tracing",
-]
-
-[[package]]
-name = "opentelemetry-semantic-conventions"
-version = "0.33.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7a3cf639fefd3e852869114f9925b578da6dd8e99281a2089bb0e773ead46962"
-
-[[package]]
 name = "option-ext"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9421,21 +9303,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "psl"
-version = "2.1.253"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "82576eafaa94759a92a0cf047f34d227665811d5cdf70f4b11e25cd813f3de54"
-dependencies = [
- "psl-types",
-]
-
-[[package]]
-name = "psl-types"
-version = "2.0.11"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "33cb294fe86a74cbcf50d4445b37da762029549ebeea341421c7c70370f86cac"
-
-[[package]]
 name = "ptr_meta"
 version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9453,16 +9320,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.10",
-]
-
-[[package]]
-name = "publicsuffix"
-version = "2.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6f42ea446cab60335f76979ec15e12619a2165b5ae2c12166bef27d283a9fadf"
-dependencies = [
- "idna",
- "psl-types",
 ]
 
 [[package]]
@@ -10064,8 +9921,6 @@ checksum = "16a1cfa75cc186dd73d5818e510e042e40927bccc9c236b061cea97e1eb08029"
 dependencies = [
  "base64 0.23.1",
  "bytes",
- "cookie",
- "cookie_store",
  "encoding_rs",
  "futures-channel",
  "futures-core",

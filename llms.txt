@@ -9,7 +9,7 @@ basemind is a pure-Rust, content-addressed, Fjall + LanceDB-backed index. It pre
 tree-sitter across 300+ languages and exposes a structured code map (outlines, symbol search,
 references, callers, call graphs, implementations), semantic + keyword code search, git history +
 blame at symbol resolution, full-text + semantic document search over 90+ formats (with OCR and
-cross-encoder reranking), shared per-repo memory, on-demand web crawl, and an agent-to-agent comms
+cross-encoder reranking), shared per-repo memory, and an agent-to-agent comms
 broker. Every tool returns paths, line numbers, and signatures — not file bodies — so a structural
 answer costs a fraction of the tokens of reading source. The operating rule for agents: **basemind
 first, shell/grep/git fallback.**
@@ -35,8 +35,7 @@ first, shell/grep/git fallback.**
 - [Code intelligence](https://basemind.ai/capabilities/code-intelligence/): Find where code is defined and used — symbol search, file outlines, references, callers, call graphs, implementations, dependents, go-to-definition, fuzzy path search, indexed regex (one `code` tool: modes `outline`, `symbols`, `grep`, `files`, `find`, `definition`, `references`, `callers`, `implementations`, `dependents`, `expand`; the `graph` tool adds `calls`, `neighbors`, `path`, `subgraph`, `communities`, `map`, `export`, `display` and `open`). The code map is code only: Markdown, JSON, YAML, TOML and other prose/data/config files are document-tier content, searched with `memory` mode `documents` (`files` and `find` list documents too; `outline`, `grep` and `symbols` do not).
 - [Semantic code search](https://basemind.ai/capabilities/code-search/): Search code by meaning, term, or symbol over indexed chunks — hybrid RRF fusion, vector KNN, or BM25, with optional reranking (`code` modes `semantic` and `chunk`; requires `--features code-search`).
 - [Git intelligence](https://basemind.ai/capabilities/git-intelligence/): Recent commits, commits touching a path, per-line and per-symbol blame, structural diffs across revisions, churn ranking, symbol history, and full-text search over commit authors + messages (one `git` tool: modes `status`, `recent`, `touching`, `by_path`, `blame`, `blame_symbol`, `diff`, `diff_outline`, `churn`, `symbol_history`, `search`, `show`).
-- [Document search](https://basemind.ai/capabilities/document-search/): Semantic + full-text search over PDFs, Office, HTML, email, and images (OCR) plus scraped/crawled web pages, with reranking, keyword and named-entity filters, and per-document summaries (`memory` mode `documents`).
-- [Web crawl](https://basemind.ai/capabilities/web-crawl/): Fetch, crawl, and map web pages into the document index (one `web` tool: modes `scrape`, `crawl`, `map`).
+- [Document search](https://basemind.ai/capabilities/document-search/): Semantic + full-text search over PDFs, Office, HTML, email, and images (OCR), with reranking, keyword and named-entity filters, and per-document summaries (`memory` mode `documents`).
 - [Shared memory](https://basemind.ai/concepts/memory/): Per-repo key/value + semantic memory that agents read and write, shared across clones of the same repo (one `memory` tool: modes `put`, `get`, `list`, `search`, `delete`, `audit`, plus `documents`, `mine`, `proposals`, `accept`, `reject`).
 - [Agent comms](https://basemind.ai/concepts/agent-comms/): Coordinate with other agents via explicit threads (per-repo, path-scoped, or subject-based), a per-agent inbox, and two-tier messages. Advisory worktree claims for collision detection (one `agents` tool: modes `register`, `list`, `thread_start`, `thread_list`, `join`, `leave`, `members`, `add_member`, `remove_member`, `archive`, `post` (with an optional `idempotency_key` for safe retries), `history`, `message`, `inbox`, `ack`, `wait`, `cleanup`, `status`; plus the `workspace` tool's `workspaces` / `worktrees` / `branches` / `claim` / `release` modes).
 - [Agent shells](https://basemind.ai/capabilities/agent-shells/): Spawn headless terminal sessions agents can drive — send stdin, capture the screen, list, kill, and broadcast (one `shell` tool: modes `spawn`, `send`, `capture`, `kill`, `list`, `broadcast`; requires `--features shells`).
@@ -46,7 +45,7 @@ first, shell/grep/git fallback.**
 - [basemind](https://github.com/Goldziher/basemind/blob/main/skills/basemind/SKILL.md): Umbrella overview of the whole indexed context layer and tool-routing table.
 - [basemind-code-search](https://github.com/Goldziher/basemind/blob/main/skills/basemind-code-search/SKILL.md): Navigate code without reading files.
 - [basemind-git-history](https://github.com/Goldziher/basemind/blob/main/skills/basemind-git-history/SKILL.md): Git intelligence over the index.
-- [basemind-documents](https://github.com/Goldziher/basemind/blob/main/skills/basemind-documents/SKILL.md): Document RAG and web ingestion.
+- [basemind-documents](https://github.com/Goldziher/basemind/blob/main/skills/basemind-documents/SKILL.md): Document RAG.
 - [basemind-comms](https://github.com/Goldziher/basemind/blob/main/skills/basemind-comms/SKILL.md): Agent coordination via explicit threads.
 - [basemind-cli](https://github.com/Goldziher/basemind/blob/main/skills/basemind-cli/SKILL.md): The scriptable CLI surface, at parity with the MCP tools.
 - [basemind-scan](https://github.com/Goldziher/basemind/blob/main/skills/basemind-scan/SKILL.md): Build or refresh the index with `basemind scan`.
@@ -63,4 +62,4 @@ first, shell/grep/git fallback.**
 - [.ai-rulez](https://github.com/Goldziher/basemind/tree/main/.ai-rulez): Project rules and skills for agents working in the repo.
 - [Architecture](https://github.com/Goldziher/basemind/blob/main/docs/ARCHITECTURE.md): How the scanner, index, daemon and MCP surface fit together; [upgrading](https://github.com/Goldziher/basemind/blob/main/docs/UPGRADING.md) and the [ADRs](https://github.com/Goldziher/basemind/tree/main/docs/adr).
 - [Benchmarks](https://github.com/Goldziher/basemind/blob/main/benchmarks/README.md): `basemind admin eval`, the retrieval-quality and token-savings harness, with measured results.
-- [Cargo.toml](https://github.com/Goldziher/basemind/blob/main/Cargo.toml): Crate manifest and feature flags (`documents`, `memory`, `crawl`, `comms`, `shells`, `code-intel`, `code-search`, `full`).
+- [Cargo.toml](https://github.com/Goldziher/basemind/blob/main/Cargo.toml): Crate manifest and feature flags (`documents`, `memory`, `comms`, `shells`, `code-intel`, `code-search`, `full`).

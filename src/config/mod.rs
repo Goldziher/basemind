@@ -30,7 +30,7 @@ pub use overrides::DocumentsCliOverrides;
 pub use resources::{DocumentModelProfile, FootprintKeyword, MaxFootprint, OnnxProvider, ResourcesConfig};
 pub use shells::{ShellsConfig, TerminalChoice, VisualMode};
 pub use source::{ConfigSource, ProvenanceMap};
-pub use v1::{CodeIntelConfig, ConfigV1, CrawlConfig, LanguageConfig};
+pub use v1::{CodeIntelConfig, ConfigV1, DeprecatedSection, LanguageConfig};
 
 pub type Config = ConfigV1;
 
@@ -95,6 +95,7 @@ pub fn load(root: &Path) -> Result<Config, ConfigError> {
     let mut config = parse_str(&raw).map_err(|e| annotate_path(e, &path))?;
     trust::sanitize_repo_config(&mut config, trust::Grants::from_env());
     trust::warn_inert_fields(&config);
+    trust::warn_deprecated_sections(&config);
     Ok(config)
 }
 

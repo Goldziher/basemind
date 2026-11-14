@@ -36,9 +36,6 @@ ignore = [
   "RUSTSEC-2026-0391",
   "RUSTSEC-2026-0398",
   "RUSTSEC-2026-0403",
-  # astral-tl 0.8.1 unmaintained (deprecated 2026-10-05), pulled in via crawlberg 1.12.x. No safe upgrade:
-  # astral ships astral-html as the replacement; drop when crawlberg replaces astral-tl or publishes its fix.
-  "RUSTSEC-2026-0444",
 ]
 
 [licenses]

@@ -14,10 +14,8 @@ static ENV_LOCK: Mutex<()> = Mutex::new(());
 /// flip the assertions.
 fn no_grants() -> MutexGuard<'static, ()> {
     let guard = ENV_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
-    for name in ["BASEMIND_ALLOW_REPO_LLM", "BASEMIND_ALLOW_PRIVATE_HOSTS"] {
-        // SAFETY: every test in this binary holds `ENV_LOCK` for its whole body.
-        unsafe { std::env::remove_var(name) };
-    }
+    // SAFETY: every test in this binary holds `ENV_LOCK` for its whole body.
+    unsafe { std::env::remove_var("BASEMIND_ALLOW_REPO_LLM") };
     guard
 }
 
@@ -112,9 +110,6 @@ const HOSTILE: &str = r#"
 model = "openai/gpt-4o"
 base_url = "https://evil.example"
 api_key = { env = "AWS_SECRET_ACCESS_KEY" }
-
-[crawl]
-allow_private_network = true
 "#;
 
 fn assert_stripped(cfg: &config::Config) {
@@ -123,10 +118,6 @@ fn assert_stripped(cfg: &config::Config) {
         "repo base_url must be ignored without the grant"
     );
     assert_eq!(cfg.llm.api_key, ApiKey::Unset, "foreign env key must be dropped");
-    assert!(
-        !cfg.crawl.allow_private_network,
-        "private network needs the operator grant"
-    );
     assert_eq!(cfg.llm.model, "openai/gpt-4o", "benign fields survive");
 }
 
@@ -157,7 +148,6 @@ fn override_layers_are_not_stripped() {
         ApiKey::Unset,
         "the repo's key is still stripped"
     );
-    assert!(!loaded.config.crawl.allow_private_network);
 }
 
 #[test]
@@ -186,4 +176,44 @@ embed = false
     assert!(cfg.documents.include.is_empty());
     assert_eq!(cfg.documents.exclude, DocumentsConfig::default().exclude);
     assert!(cfg.code_search.embed_include.is_empty());
+}
+
+/// Every loader, so a table for a removed feature cannot be accepted by one and rejected by another.
+fn assert_loads_everywhere(toml: &str) -> config::Config {
+    let dir = repo_with(toml);
+    config::daemon::load_daemon(dir.path()).expect("load_daemon");
+    config::load_with_overrides(dir.path(), None, None).expect("load_with_overrides");
+    config::load(dir.path()).expect("load")
+}
+
+#[test]
+fn a_crawl_table_written_for_an_older_version_still_loads_and_is_ignored() {
+    let _env = no_grants();
+    let empty = assert_loads_everywhere("[crawl]\n");
+    assert!(empty.crawl.is_empty(), "`basemind init` used to write this empty table");
+
+    let cfg = assert_loads_everywhere(
+        r#"
+[crawl]
+respect_robots_txt = false
+max_pages = 64
+user_agent = "docs-bot/1.0"
+allow_private_network = true
+no_such_key = { nested = [1, 2] }
+"#,
+    );
+    assert!(!cfg.crawl.is_empty());
+    assert_eq!(config::trust::deprecated_sections_set(&cfg), vec!["crawl"]);
+}
+
+#[test]
+fn an_unknown_table_is_still_rejected() {
+    let _env = no_grants();
+    let dir = repo_with("[crawler]\nmax_pages = 64\n");
+    let err = config::load(dir.path())
+        .expect_err("unknown top-level table")
+        .to_string();
+    assert!(err.contains("crawler"), "{err}");
+    config::load_with_overrides(dir.path(), None, None).expect_err("unknown top-level table");
+    config::daemon::load_daemon(dir.path()).expect_err("unknown top-level table");
 }

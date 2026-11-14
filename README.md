@@ -11,7 +11,7 @@ file reads — and gives a team of agents a **shared channel to coordinate** whi
 server does both.
 
 Code map across **300+ languages** · documents in **90+ formats** · semantic + full-text search ·
-git history & blame · shared memory · web crawl · agent-to-agent comms
+git history & blame · shared memory · agent-to-agent comms
 
 [![Docs](https://img.shields.io/badge/docs-basemind.ai-965aff?style=flat-square)](https://basemind.ai)
 [![crates.io](https://img.shields.io/crates/v/basemind?style=flat-square)](https://crates.io/crates/basemind)
@@ -48,7 +48,6 @@ about your code costs a small fraction of the tokens it takes to read the source
 | **Code graph** | Walk the typed code-graph: who calls what and what a function reaches (`calls`), a symbol's n-hop blast radius (`neighbors`), the confidence-weighted shortest route between two symbols (`path`), a readable centrality-cut neighborhood (`subgraph`), the repo's de-facto modules (`communities`), and the whole-repo architecture ranked by PageRank + git churn with its dependency cycles (`map`). Render it as node-link JSON / DOT / Mermaid / GraphML / Cypher / offline interactive HTML / static SVG (`export`), **show it to a human** in their desktop viewer (`display`), or **open the interactive UI** at a live `http://…/ui` URL (`open`, which needs the daemon's opt-in HTTP front-end and otherwise falls back to a `file://` export) — both take `open: false` to return the path or URL without launching anything. Every edge carries provenance + confidence; every result is deterministic and bounded. | `graph` (`calls` · `neighbors` · `path` · `subgraph` · `communities` · `map` · `export` · `display` · `open`) |
 | **Git intelligence** | Ask what changed recently, who last touched a function or a line, where the churn is, when a symbol's body actually changed, how a file's structure differs across commits, and full-text search commit authors + messages at full branch depth. | `git` (`status` · `recent` · `touching` · `by_path` · `churn` · `diff` · `diff_outline` · `blame` · `blame_symbol` · `symbol_history` · `search` · `show`) |
 | **Memory & documents** | A per-repo memory agents write to and search by meaning — clones of the same repo share it, unrelated repos stay separate — plus semantic search over PDFs, Office files, HTML, email, and images (OCR included, no extra setup), and a review queue of notes mined from files that change together, which you approve before anything is kept. | `memory` (`put` · `get` · `list` · `search` · `delete` · `audit` · `documents` · `mine` · `proposals` · `accept` · `reject`) |
-| **Web crawl** | Fetch a page or follow links from a starting URL; results join the document search above. | `web` (`scrape` · `crawl` · `map`) |
 | **Agent comms** | Threads addressed by subject, path-glob, and members; scope discovery; inbox delivery; lifecycle status; and dry-run/apply retention cleanup. | `agents` (`register` · `list` · `thread_start` · `thread_list` · `join` · `leave` · `members` · `add_member` · `remove_member` · `archive` · `post` · `history` · `message` · `inbox` · `ack` · `wait` · `cleanup` · `status`) |
 | **Agent shells** | Run headless terminal sessions in the background, capture recent retained output after commands exit, and explicitly stop sessions when their work is done. Visual terminal attachment is opt-in through `[shells].visual`. | `shell` (`spawn` · `send` · `capture` · `kill` · `list` · `broadcast`) |
 | **Admin** | Refresh the index after edits, check index health and repo identity, see what's been queried and how many tokens were saved, and inspect or clean the on-disk cache. | `admin` (`status` · `repo` · `rescan` · `cache_stats` · `gc` · `cache_clear` · `telemetry`) |
@@ -191,7 +190,7 @@ hermes plugins enable basemind
 ```
 
 Restart Hermes. The plugin registers ten skills, six slash commands, scoped comms notifications,
-and `basemind_call`, which bridges the local MCP server's nine domains and returns JSON text.
+and `basemind_call`, which bridges the local MCP server's domains and returns JSON text.
 The binary must be on `PATH`. Comms notifications are
 best-effort. You can also configure `mcp_servers.basemind` with `command: basemind` and
 `args: [serve]` for direct domain tools.
@@ -322,7 +321,7 @@ The MCP and CLI paths need `basemind` available on your system. (The plugin does
 <!-- markdownlint-enable MD013 -->
 
 The Homebrew / npm / pip / GitHub downloads include the full feature set — documents, OCR, search,
-web crawl, shared memory, agent comms, and agent shells — so the first run downloads the models it
+shared memory, agent comms, and agent shells — so the first run downloads the models it
 needs. The plain `cargo install` builds the code-map and git tools only: the one-shot CLI works, but
 `basemind serve` relays to the daemon and so needs the `comms` feature (`--features full` has it).
 
@@ -966,7 +965,6 @@ reach outside the process are gated on the operator's environment:
 |---|---|
 | `[llm] base_url` | `BASEMIND_ALLOW_REPO_LLM=1`; otherwise ignored with a warning (a clone could aim it at a host that collects your API key and document text). Pass it by `--llm-base-url` / `BASEMIND_LLM_BASE_URL` instead. |
 | `[llm] api_key = { env = "NAME" }` | `NAME` is the chosen provider's standard variable (`OPENAI_API_KEY` for `openai/...`, `ANTHROPIC_API_KEY` for `anthropic/...`, ...) or `BASEMIND_LLM_API_KEY`, or `BASEMIND_ALLOW_REPO_LLM=1`. |
-| `[crawl] allow_private_network = true` | `BASEMIND_ALLOW_PRIVATE_HOSTS=1`; otherwise reset to `false` with a warning. The same variable governs the URL guard for `web` fetches. |
 | `[scan] follow_symlinks = true` | `BASEMIND_ALLOW_FOLLOW_SYMLINKS=1`; otherwise reset to `false` with a warning (a tracked link can point at `~/.ssh`). |
 | `[scan] floor_allow` (a credential entry: `.env`, `*.pem`, `id_rsa`, ...) | `BASEMIND_ALLOW_REPO_CREDENTIALS=1`; otherwise the entry is ignored with a warning and the secret stays excluded (a clone could otherwise un-exclude your untracked `.env` and have every agent query it). Entries for build artifacts (`build`, `vendor`) need no grant. |
 | `[scan] extra_roots` | `BASEMIND_ALLOW_EXTRA_ROOTS=1` (every workspace this process scans) or a list of absolute workspace roots separated by `:` (`;` on Windows), which grants only those workspaces and their descendants. A relative entry is ignored with a warning, as is any other non-truthy word (`on`). A daemon is one long-lived process serving many repositories, so prefer the list form there: the bare `1` also opens `extra_roots` for any workspace it serves later. Credential directories (`.ssh`, `.aws`, `.gnupg`, `/etc`) and filesystem roots are refused even with the grant. |
@@ -1003,9 +1001,6 @@ resolve to the cap. The operator raises a cap in the daemon's own environment (a
 | `BASEMIND_DAEMON_MAX_DOCUMENT_PAGES` | `[documents] max_pages` | 5000 |
 | `BASEMIND_DAEMON_MAX_EXTRACTION_SECS` | `[documents] extraction_timeout_secs` | 1800 |
 | `BASEMIND_DAEMON_MAX_CHUNKS_PER_DOCUMENT` | `[documents] max_chunks_per_document` | 20000 |
-| `BASEMIND_DAEMON_MAX_CRAWL_PAGES` | `[crawl] max_pages`, and the per-call `web` `crawl` override | 500 |
-| `BASEMIND_DAEMON_MAX_CRAWL_DEPTH` | `[crawl] max_depth`, and the per-call override | 8 |
-| `BASEMIND_DAEMON_MAX_CRAWL_BODY_BYTES` | `[crawl] max_body_size` | 67108864 (64 MiB) |
 | `BASEMIND_DAEMON_MIN_DEBOUNCE_MS` | floor for `[watch] debounce_ms` (a minimum, not a ceiling) | 50 |
 
 A cap variable must be a positive integer; anything else falls back to the default.
@@ -1035,6 +1030,10 @@ logs a warning: `[watch] live_l2`, `[cache] file_map_lru`, `[mcp] transport`, `[
 `max_messages_per_room` / `retention_secs` / `max_rooms` / `workspace_root`, `[shells] keep_on_exit`,
 `[documents.ocr] backend` / `languages`, and `[documents.language] preferred_languages`.
 
+**Removed sections.** `[crawl]` configured web crawling, which was removed. The table is still
+accepted so an older `basemind.toml` keeps loading (`basemind init` used to write an empty one); its
+contents are not validated or read, and a table with keys in it logs one warning.
+
 **Config changes take effect on the next scan.** Cached chunks and documents carry a fingerprint of
 the settings that shape them (`[code_search]` `max_characters` / `overlap` / `max_chunks_per_file`;
 `[documents]` chunk size, page cap, language detection, keywords, NER, summarization, `extract_archives`,
@@ -1051,7 +1050,7 @@ files that became eligible from the cached blobs, without re-embedding.
 ## CLI reference
 
 <details>
-<summary><strong>Full command list</strong> — code · graph · git · memory · admin · cache · web · agents · workspace · shell</summary>
+<summary><strong>Full command list</strong> — code · graph · git · memory · admin · cache · agents · workspace · shell</summary>
 
 Every MCP tool mode maps to a CLI command, or is declared CLI-only / MCP-only with a reason (enforced
 by `tests/cli_parity/`). Add `--json` for
@@ -1154,14 +1153,6 @@ The other `admin` verbs live at the top level: `status`, `rescan` and `cache sta
 | `stats` | Disk footprint (per-component + total, matches `du`) and process RAM. |
 | `gc [--dry-run]` | Reap blobs no workspace on the machine references. Cross-workspace reference-counted, keeps blobs younger than 6 h (`BASEMIND_BLOB_GC_GRACE_SECS`), serialised by a machine-wide lock. `--dry-run` only counts the blobs in the store, plus the marker-less workspace dirs the daemon's sweep would reap, and deletes nothing. |
 | `clear --component <comp> [--yes]` | Clear part of the cache (`blobs`, `views`, `views:<name>`, `lance`, `git-cache`, `telemetry`, `all`; default `git-cache`). Everything but `git-cache` asks for confirmation on a terminal and needs `--yes` otherwise. `blobs` is the **machine-global** store shared by every workspace. Refuses (exit 3) while a writer holds the workspace lock, and for `blobs` while the daemon runs. |
-
-**Web (`basemind web`)**
-
-| Command | Purpose |
-|---|---|
-| `scrape <url>` | Fetch and index a single page. |
-| `crawl <seed-url>` | Follow links from a starting URL. |
-| `map <url>` | Discover a site's pages without fetching bodies. |
 
 **Agents (`basemind agents`, `--features comms`)**
 

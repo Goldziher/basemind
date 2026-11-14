@@ -17,8 +17,7 @@ standing directives for any agent working here:
 reading files, before grep/ripgrep, and before naked `git`: `code` modes `outline` / `symbols` /
 `references` / `callers` / `grep` for code navigation; `git` modes `recent` / `blame` /
 `blame_symbol` / `diff` / `diff_outline` / `touching` instead of `git log` / `git blame`; `memory`
-mode `documents` for extraction, RAG, keyword + entity (NER), and summary; `web` modes `scrape` /
-`crawl` / `map` for scraping, crawling, and sitemaps; `code` mode `outline` (tree-sitter) for code
+mode `documents` for extraction, RAG, keyword + entity (NER), and summary; `code` mode `outline` (tree-sitter) for code
 parsing. They return paths, lines, and signatures — a fraction of the tokens of reading source.
 basemind first; shell is the fallback.
 

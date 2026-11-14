@@ -102,7 +102,7 @@ process is killed before the next scheduled line. The resolve phase also waits a
 
 ## Daemon ceilings
 
-Inside the shared daemon, `[resources]`, `[scan]`, `[documents]` and `[crawl]` limits are ceilings:
+Inside the shared daemon, `[resources]`, `[scan]` and `[documents]` limits are ceilings:
 the effective value is the smaller of the repository's setting and the daemon's cap, and
 `0` / `"auto"` / `"off"` resolve to the cap. A repository cannot raise its own cap; the operator does
 that through `BASEMIND_DAEMON_MAX_*` in the daemon's environment. The full table is in

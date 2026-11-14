@@ -9,8 +9,8 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:eebd471b72dc23de1a1bbf279c246864cf8ab0575afc3a38f36979982a110b77
-Source-Hash: blake3:65edf7dbc94ca8766735f09cd21b608930acd91e278e792605dc6f3d40d964dd
+Content-Hash: blake3:cd53218e04205bc9c1cb8cc43b0d24e886d29b297c45f116bde0cef34d1b57c2
+Source-Hash: blake3:e09c651f27bce33463989a697aa75fe5c51be77ecaba769384a73c6adde83aa0
 Schema-Version: v1
 -->
 
@@ -132,7 +132,6 @@ didn't load; check the CLI before assuming silence. Use the `basemind-doctor` sk
 
 Comms is one capability of basemind; the rest is the indexed context layer. Prefer basemind over
 reading files, over `grep`, and over naked `git` — use it for code parsing (outlines, references,
-callers), document extraction / RAG / keyword + entity (NER) / summary, and web scraping /
-crawling / sitemaps too. See the `basemind` and `basemind-cli` skills for the whole surface, or
+callers) and document extraction / RAG / keyword + entity (NER) / summary too. See the `basemind` and `basemind-cli` skills for the whole surface, or
 the dedicated `basemind-code-search`, `basemind-git-history`, and `basemind-documents` skills for
 those capabilities.

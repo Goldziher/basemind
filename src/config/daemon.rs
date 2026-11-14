@@ -27,9 +27,6 @@ pub const MAX_DOC_BYTES_ENV: &str = "BASEMIND_DAEMON_MAX_DOCUMENT_BYTES";
 pub const MAX_DOC_PAGES_ENV: &str = "BASEMIND_DAEMON_MAX_DOCUMENT_PAGES";
 pub const MAX_EXTRACTION_SECS_ENV: &str = "BASEMIND_DAEMON_MAX_EXTRACTION_SECS";
 pub const MAX_CHUNKS_PER_DOC_ENV: &str = "BASEMIND_DAEMON_MAX_CHUNKS_PER_DOCUMENT";
-pub const MAX_CRAWL_PAGES_ENV: &str = "BASEMIND_DAEMON_MAX_CRAWL_PAGES";
-pub const MAX_CRAWL_DEPTH_ENV: &str = "BASEMIND_DAEMON_MAX_CRAWL_DEPTH";
-pub const MAX_CRAWL_BODY_BYTES_ENV: &str = "BASEMIND_DAEMON_MAX_CRAWL_BODY_BYTES";
 pub const MIN_DEBOUNCE_MS_ENV: &str = "BASEMIND_DAEMON_MIN_DEBOUNCE_MS";
 /// Set truthy to let a repository's `[documents] extract_archives = true` through.
 pub const ALLOW_EXTRACT_ARCHIVES_ENV: &str = "BASEMIND_DAEMON_ALLOW_EXTRACT_ARCHIVES";
@@ -54,9 +51,6 @@ const DEFAULT_MAX_EXTRACTION_SECS: u64 = 1_800;
 const DAEMON_MAX_PHASE_SECS: u64 = 7_200;
 const DAEMON_MAX_ABANDONED_EXTRACTIONS: usize = 16;
 const DEFAULT_MAX_CHUNKS_PER_DOC: usize = 20_000;
-const DEFAULT_MAX_CRAWL_PAGES: u32 = 500;
-const DEFAULT_MAX_CRAWL_DEPTH: u32 = 8;
-const DEFAULT_MAX_CRAWL_BODY_BYTES: u64 = 64 * 1024 * 1024;
 /// A `0` debounce makes every filesystem event trigger its own rescan.
 const DEFAULT_MIN_DEBOUNCE_MS: u64 = 50;
 
@@ -76,16 +70,6 @@ fn cap_u64(name: &str, default: u64) -> u64 {
         .and_then(|raw| raw.trim().parse::<u64>().ok())
         .filter(|n| *n > 0)
         .unwrap_or(default)
-}
-
-/// Ceiling on pages per `web_crawl` call, for the MCP per-call override.
-pub fn crawl_page_cap() -> u32 {
-    u32::try_from(cap_u64(MAX_CRAWL_PAGES_ENV, u64::from(DEFAULT_MAX_CRAWL_PAGES))).unwrap_or(u32::MAX)
-}
-
-/// Ceiling on link depth per `web_crawl` call, for the MCP per-call override.
-pub fn crawl_depth_cap() -> u32 {
-    u32::try_from(cap_u64(MAX_CRAWL_DEPTH_ENV, u64::from(DEFAULT_MAX_CRAWL_DEPTH))).unwrap_or(u32::MAX)
 }
 
 /// `min(value, cap)`, with `0` (the "unbounded / auto" sentinel) resolving to `cap`.
@@ -151,13 +135,6 @@ pub fn clamp_daemon_config(config: &mut Config) {
              in the daemon; set {ALLOW_EXTRACT_ARCHIVES_ENV}=1 in its environment to allow it"
         ));
     }
-
-    let crawl = &mut config.crawl;
-    crawl.max_pages = crawl.max_pages.min(crawl_page_cap());
-    crawl.max_depth = crawl.max_depth.min(crawl_depth_cap());
-    crawl.max_body_size = crawl
-        .max_body_size
-        .min(cap_u64(MAX_CRAWL_BODY_BYTES_ENV, DEFAULT_MAX_CRAWL_BODY_BYTES));
 
     config.watch.debounce_ms = config
         .watch
@@ -261,9 +238,6 @@ mod tests {
         MAX_DOC_PAGES_ENV,
         MAX_EXTRACTION_SECS_ENV,
         MAX_CHUNKS_PER_DOC_ENV,
-        MAX_CRAWL_PAGES_ENV,
-        MAX_CRAWL_DEPTH_ENV,
-        MAX_CRAWL_BODY_BYTES_ENV,
         MIN_DEBOUNCE_MS_ENV,
         ALLOW_EXTRACT_ARCHIVES_ENV,
     ];
@@ -304,7 +278,7 @@ mod tests {
     }
 
     #[test]
-    fn repo_document_scan_crawl_and_watch_knobs_are_clamped() {
+    fn repo_document_scan_and_watch_knobs_are_clamped() {
         let _g = ENV_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         clear_envs();
         let dir = tempfile::tempdir().expect("tempdir");
@@ -313,7 +287,6 @@ mod tests {
             "[scan]\nmax_file_bytes = 9223372036854775807\n\
              [documents]\nmax_file_bytes = 9223372036854775807\nmax_pages = 4000000000\n\
              extraction_timeout_secs = 999999\nphase_budget_secs = 999999\nmax_abandoned_extractions = 64\nmax_chunks_per_document = 4000000000\nextract_archives = true\n\
-             [crawl]\nmax_pages = 4000000000\nmax_depth = 4000000000\nmax_body_size = 9223372036854775807\n\
              [watch]\ndebounce_ms = 0\n",
         );
         let cfg = load_daemon(dir.path()).expect("load");
@@ -328,9 +301,6 @@ mod tests {
         );
         assert_eq!(cfg.documents.max_chunks_per_document, DEFAULT_MAX_CHUNKS_PER_DOC);
         assert!(!cfg.documents.extract_archives);
-        assert_eq!(cfg.crawl.max_pages, DEFAULT_MAX_CRAWL_PAGES);
-        assert_eq!(cfg.crawl.max_depth, DEFAULT_MAX_CRAWL_DEPTH);
-        assert_eq!(cfg.crawl.max_body_size, DEFAULT_MAX_CRAWL_BODY_BYTES);
         assert_eq!(cfg.watch.debounce_ms, DEFAULT_MIN_DEBOUNCE_MS);
     }
 

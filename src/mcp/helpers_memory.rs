@@ -7,7 +7,7 @@
 //!
 //! # Why the gate is per mode, not per tool
 //!
-//! Unlike `web`, the `memory` tool is advertised in EVERY build: nine of its modes need
+//! Unlike `agents`, the `memory` tool is advertised in EVERY build: nine of its modes need
 //! `--features memory` and `documents` needs `--features documents`, but an agent searching for
 //! "remember this" or "search the PDFs" is better served a tool that answers "rebuild with
 //! --features memory" than a tool that is not there at all. So the tool registers unconditionally

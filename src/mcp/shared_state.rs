@@ -86,11 +86,6 @@ pub(crate) struct SharedReadStack {
     /// Shared embedding engine. Lazy-init on first embed call.
     #[cfg(any(feature = "memory", feature = "documents", feature = "code-search"))]
     pub(crate) embedder: tokio::sync::OnceCell<Arc<crate::embeddings::SharedEmbedder>>,
-    /// Shared crawlberg engine. Initialised at server boot from the `[crawl]`
-    /// config section; `None` if engine construction failed (the web_* tools
-    /// will return an MCP error rather than crash).
-    #[cfg(feature = "crawl")]
-    pub(crate) crawl_engine: Option<crawlberg::CrawlEngineHandle>,
     /// Embedded rmux-backed headless shell runtime. Lazily connects to (or
     /// starts) the embedded daemon on the first `shell_*` tool call; cheap to
     /// hold otherwise (no daemon spawn until first use).
@@ -249,14 +244,6 @@ impl SharedReadStack {
             NonZeroUsize::new(OUTLINE_CACHE_CAP).expect("OUTLINE_CACHE_CAP > 0"),
         )));
         let telemetry_handle = Arc::new(telemetry::Telemetry::new(&store.basemind_dir));
-        #[cfg(feature = "crawl")]
-        let crawl_engine = match crate::web::build_engine(&config.crawl) {
-            Ok(e) => Some(e),
-            Err(error) => {
-                tracing::warn!(?error, "crawl engine init failed; web_* tools will report errors");
-                None
-            }
-        };
         Self {
             store: RwLock::new(store),
             root,
@@ -275,8 +262,6 @@ impl SharedReadStack {
             lance: tokio::sync::OnceCell::new(),
             #[cfg(any(feature = "memory", feature = "documents", feature = "code-search"))]
             embedder: tokio::sync::OnceCell::new(),
-            #[cfg(feature = "crawl")]
-            crawl_engine,
             #[cfg(all(feature = "shells", any(unix, windows)))]
             shell_runtime: crate::shells::ShellRuntime::new(),
             initial_scan_active: AtomicBool::new(false),

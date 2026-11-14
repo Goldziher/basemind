@@ -42,7 +42,7 @@ impl BasemindServer {
         cannot prove an exact string or regex is absent; use a literal or regex file search for \
         exact matches outside the code map. `mime_type` filters exactly, \
         `entity_category` / `keywords_contains` filter by NER category / keyword, and `scope` picks \
-        the ingestion scope (pages ingested by the `web` tool live under `web:<host>`), \
+        the ingestion scope (pages an older version ingested from the web stay under `web:<host>` and are no longer refreshed), \
         `max_tokens` budgets the hits and `format:\"toon\"` compacts them. `mine` derives \
         co-change proposals from git history (a candidate needs `min_support` co-changes and \
         `min_confidence` = support / anchor commits; bulk commits over `max_files_per_commit` are \

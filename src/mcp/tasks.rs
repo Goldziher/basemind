@@ -81,19 +81,13 @@ pub(super) async fn run_until_cancelled<T>(
 /// Entries are keyed the way telemetry is: a bare tool name matches every call of that tool, and a
 /// `domain:mode` key matches one mode of a consolidated domain tool. The distinction is load-bearing
 /// — consolidation put fast and slow operations behind one tool name, so keying on the name alone
-/// would make offload all-or-nothing per domain (every `web` call offloaded, or none).
+/// would make offload all-or-nothing per domain (every `code` call offloaded, or none).
 pub(super) const SLOW_CALLS: &[&str] = &[
     "admin:rescan",
     "graph:map",
     "code:semantic",
     #[cfg(feature = "documents")]
     "memory:documents",
-    #[cfg(feature = "crawl")]
-    "web:scrape",
-    #[cfg(feature = "crawl")]
-    "web:crawl",
-    #[cfg(feature = "crawl")]
-    "web:map",
 ];
 
 /// Whether this call is one of the [`SLOW_CALLS`] eligible for task offload.
@@ -222,22 +216,24 @@ mod tests {
         assert!(!is_slow_tool("outline", None));
     }
 
-    /// The reason the table is keyed on `domain:mode` at all: `web` carries both a multi-page crawl
-    /// and a body-less sitemap lookup, so a name-only key would offload every call of the domain or
-    /// none of them.
-    #[cfg(feature = "crawl")]
+    /// The reason the table is keyed on `domain:mode` at all: `memory` carries both an embedding
+    /// search over documents and a single-key lookup, so a name-only key would offload every call
+    /// of the domain or none of them.
+    #[cfg(feature = "documents")]
     #[test]
     fn should_offload_a_consolidated_domain_only_for_the_modes_that_are_slow() {
-        assert!(is_slow_tool("web", Some(&args(serde_json::json!({ "mode": "crawl" })))));
         assert!(is_slow_tool(
-            "web",
-            Some(&args(serde_json::json!({ "mode": "scrape" })))
+            "memory",
+            Some(&args(serde_json::json!({ "mode": "documents" })))
+        ));
+        assert!(!is_slow_tool(
+            "memory",
+            Some(&args(serde_json::json!({ "mode": "get" })))
         ));
     }
 
     /// A `mode` belonging to some other domain must not match, or one domain's slow mode would
     /// offload another domain's fast operation of the same name.
-    #[cfg(feature = "crawl")]
     #[test]
     fn should_not_match_a_mode_across_domains() {
         assert!(!is_slow_tool(
@@ -246,15 +242,14 @@ mod tests {
         ));
     }
 
-    #[cfg(feature = "crawl")]
     #[test]
     fn should_not_offload_a_domain_call_with_an_absent_or_unknown_mode() {
-        assert!(!is_slow_tool("web", None));
+        assert!(!is_slow_tool("memory", None));
         assert!(!is_slow_tool(
-            "web",
+            "memory",
             Some(&args(serde_json::json!({ "mode": "sniff" })))
         ));
-        assert!(!is_slow_tool("web", Some(&args(serde_json::json!({ "mode": 7 })))));
+        assert!(!is_slow_tool("memory", Some(&args(serde_json::json!({ "mode": 7 })))));
     }
 
     #[test]
@@ -276,7 +271,6 @@ mod tests {
             ("memory", "put"),
             ("memory", "accept"),
             ("code", "outline"),
-            ("web", "crawl"),
         ] {
             assert!(!is_cancel_aware_read(
                 tool,

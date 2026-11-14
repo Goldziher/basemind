@@ -56,7 +56,6 @@ All tunables live under a named section — there are no bare top-level options.
 | `[resources]` | Resource-governance knobs: scanner/embedder thread caps, batch size, footprint ceiling, document model profile. |
 | `[code_search]` | Semantic/keyword code search chunking + embedding (needs `--features code-search`). |
 | `[memory]` | Shared-memory scope and default visibility (needs `--features memory`). |
-| `[crawl]` | Web crawl limits + SSRF policy (needs `--features crawl`). |
 | `[comms]` | Agent comms identity + retention (needs `--features comms`). |
 | `[shells]` | Agent-shell presentation (needs `--features shells`). |
 | `[llm]` | Shared LLM settings for reranking, NER, and summarization. |
@@ -258,29 +257,12 @@ default_visibility = "group"
 
 All three `[memory]` keys parse but currently have no effect (see [Reserved keys](#reserved-keys)).
 
-### `[crawl]` Section
+### Removed sections
 
-Web crawl limits and SSRF policy. Requires `--features crawl`.
-
-```toml
-[crawl]
-respect_robots_txt = true
-max_pages = 32
-max_depth = 2
-allow_private_network = false
-```
-
-| Key | Type | Default | Notes |
-|---|---|---|---|
-| `respect_robots_txt` | bool | `true` | Honor `robots.txt`. Turn off only for hosts you control. |
-| `max_pages` | integer | `32` | Hard cap on pages visited per `web` mode `crawl` call. |
-| `max_depth` | integer | `2` | Maximum link-following depth from the seed URL. |
-| `max_body_size` | integer | `4194304` | Truncate response bodies above this many bytes (4 MiB). |
-| `user_agent` | string | `basemind/<version>` | Identifies the crawler to site operators. |
-| `allow_private_network` | bool | `false` | Allow URLs resolving to private/loopback/link-local addresses. Off by default (SSRF guard). Honoured from the repository's own file only with `BASEMIND_ALLOW_PRIVATE_HOSTS` (see [Trust boundary](#trust-boundary)). |
-
-The daemon caps `max_pages`, `max_depth` and `max_body_size`, and the per-call `web` `crawl`
-overrides for pages and depth, at operator-raisable ceilings (see [Daemon](#daemon)).
+`[crawl]` configured web crawling, which was removed. The table is still accepted so that a
+`basemind.toml` written for an older version keeps loading (`basemind init` used to write an empty
+one): its contents are not validated and nothing reads them. A `[crawl]` table with keys in it logs
+one warning per process; delete the table to silence it.
 
 ### `[comms]` Section
 
@@ -402,7 +384,6 @@ Grant variables accept `1`, `true` or `yes` (case-insensitive).
 |---|---|
 | `[llm] base_url` | `BASEMIND_ALLOW_REPO_LLM=1`; otherwise ignored with a warning (a clone could aim it at a host that collects your API key and document text). Pass it with `--llm-base-url` / `BASEMIND_LLM_BASE_URL` instead. |
 | `[llm] api_key = { env = "NAME" }` | `NAME` is the chosen provider's standard variable (`OPENAI_API_KEY` for `openai/...`, `ANTHROPIC_API_KEY` for `anthropic/...`, ...) or `BASEMIND_LLM_API_KEY`, or `BASEMIND_ALLOW_REPO_LLM=1`; otherwise the key is treated as unset with a warning. |
-| `[crawl] allow_private_network = true` | `BASEMIND_ALLOW_PRIVATE_HOSTS=1`; otherwise reset to `false` with a warning. The same variable governs the URL guard for `web` fetches. |
 | `[scan] follow_symlinks = true` | `BASEMIND_ALLOW_FOLLOW_SYMLINKS=1`; otherwise reset to `false` with a warning. |
 | `[scan] floor_allow` (a credential entry) | `BASEMIND_ALLOW_REPO_CREDENTIALS=1`; otherwise the entry is ignored with a warning and the secret stays excluded. Build-artifact entries need no grant. |
 | `[scan] extra_roots` | `BASEMIND_ALLOW_EXTRA_ROOTS` set to `1` / `true` / `yes` (every workspace the process scans), or to a list of absolute workspace roots separated by `:` (`;` on Windows) that grants only those workspaces and their descendants. A relative entry, or another word such as `on`, is ignored with a warning. Prefer the list form for a daemon, which serves many repositories: the bare `1` also opens `extra_roots` for any workspace it serves later. |
@@ -434,9 +415,6 @@ falls back to the default.
 | `BASEMIND_DAEMON_MAX_DOCUMENT_PAGES` | `[documents] max_pages` | 5000 |
 | `BASEMIND_DAEMON_MAX_EXTRACTION_SECS` | `[documents] extraction_timeout_secs` | 1800 |
 | `BASEMIND_DAEMON_MAX_CHUNKS_PER_DOCUMENT` | `[documents] max_chunks_per_document` | 20000 |
-| `BASEMIND_DAEMON_MAX_CRAWL_PAGES` | `[crawl] max_pages` and the per-call `crawl` override | 500 |
-| `BASEMIND_DAEMON_MAX_CRAWL_DEPTH` | `[crawl] max_depth` and the per-call override | 8 |
-| `BASEMIND_DAEMON_MAX_CRAWL_BODY_BYTES` | `[crawl] max_body_size` | 67108864 (64 MiB) |
 | `BASEMIND_DAEMON_MIN_DEBOUNCE_MS` | floor for `[watch] debounce_ms` (a minimum, not a ceiling) | 50 |
 
 **Reload.** The daemon re-reads a workspace's `basemind.toml` on the next request after it changes
@@ -497,7 +475,7 @@ Read directly rather than mapped from a config key:
 | `BASEMIND_BLAME_MAX_BYTES` / `BASEMIND_BLAME_MAX_LINES` | Size limits past which `git blame` refuses a file (defaults 1 MiB and 5000 lines). |
 | `BASEMIND_PARSE_TIMEOUT_MS` | Hard ceiling on one tree-sitter parse, in milliseconds (default 5000). |
 | `BASEMIND_GRAMMAR_OFFLINE` | Any non-empty value other than `0` stops basemind downloading tree-sitter grammars. |
-| `BASEMIND_MCP_LEAN` | Advertises three lean wrapper tools in `tools/list` instead of the nine domain tools. |
+| `BASEMIND_MCP_LEAN` | Advertises three lean wrapper tools in `tools/list` instead of the domain tools. |
 | `BASEMIND_COMMS_DIR` | Overrides the comms directory (singleton socket, `daemon.log`, `http.addr`). Keep the path short: a Unix socket path has a length limit. |
 | `BASEMIND_HTTP_ADDR` | `host:port` for the opt-in HTTP front-end (default `127.0.0.1:51786`; needs `BASEMIND_ALLOW_HTTP`). |
 | `BASEMIND_COMMS_REQUEST_TIMEOUT_SECS` | Seconds a coordination request waits for the broker's reply (default 10). Forwarded work is exempt. |
@@ -529,12 +507,11 @@ ONNX Runtime). Opt into the rest:
 |---|---|---|
 | `documents` | PDF/Office/HTML/email/image extraction, OCR, and the RAG stack (xberg). | yes |
 | `memory` | LanceDB-backed shared memory (`memory` tool). | yes |
-| `crawl` | Web scraping and crawling (`web` tool modes `scrape`, `crawl`, `map`); implies `documents`. | yes |
 | `code-search` | Hybrid code search — vector + BM25 + exact-symbol lanes (`code` tool modes `semantic`, `chunk`). | yes |
 | `comms` | Agent-to-agent comms — threads, per-agent inbox, DMs (`agents` + `workspace` tools; Unix domain sockets + Windows named pipes). | yes |
 | `shells` | Headless agent shells (`shell` tool modes `spawn`, `send`, …). | yes |
 | `code-intel` | Scope- and import-resolved JS/TS `code` tool modes `references` / `definition` (oxc). | yes |
-| `full` | `documents` + `memory` + `crawl` + `comms` + `shells` + `code-intel` + `code-search`. | — |
+| `full` | `documents` + `memory` + `comms` + `shells` + `code-intel` + `code-search`. | — |
 
 ### Installation Examples
 

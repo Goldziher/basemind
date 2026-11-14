@@ -1,6 +1,6 @@
 # AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-# Content-Hash: blake3:53a63c3fb338364350ee0b8ed5771841e0371c328540acd6bcecd62794a2f128
-# Source-Hash: blake3:65edf7dbc94ca8766735f09cd21b608930acd91e278e792605dc6f3d40d964dd
+# Content-Hash: blake3:ae110af405642490d6d1a30d87787c2cf089e288234bc46de4acab5b882fc09f
+# Source-Hash: blake3:e09c651f27bce33463989a697aa75fe5c51be77ecaba769384a73c6adde83aa0
 # Schema-Version: v1
 
 """Hermes Agent plugin registration for basemind.
@@ -42,7 +42,7 @@ _COMMANDS_DIR = _PKG_DIR / "commands"
 
 _DISCIPLINE = (
     "basemind is available over MCP in this session — a tree-sitter code map + git context. "
-    "Its surface is nine domain tools — code, graph, git, memory, admin, web, agents, workspace, "
+    "Its surface is eight domain tools — code, graph, git, memory, admin, agents, workspace, "
     "and shell — each dispatched by a required mode. "
     "Prefer it over grep/read for structural and historical questions: its tools return paths, "
     "line numbers, and signatures, not file bodies, so they cost a fraction of the tokens of "
@@ -56,7 +56,7 @@ _DISCIPLINE = (
 
 _COMMS_TOOLS = (
     "basemind first, shell/grep/git fallback — prefer basemind over grep, over naked git, and for "
-    "docs/RAG/NER, web crawl, and parsing. You are connected to basemind agent-comms — coordinate "
+    "docs/RAG/NER and parsing. You are connected to basemind agent-comms — coordinate "
     "with other agents via THREADS: scoped conversations addressed by at least two of {subject, "
     "path-glob, members}, discovered by scope (you're a member, your cwd matches the path-glob, or a "
     "subject filter) — never globally — and joined explicitly (no auto-join). All coordination uses "
@@ -297,7 +297,7 @@ def _read_int(path: Path) -> int:
 PLUGIN_NAME = "basemind"
 CLI_COMMAND = "basemind"
 SERVER_ARGUMENTS = ["serve"]
-TOOL_NAMES = ["code", "graph", "git", "memory", "admin", "web", "agents", "workspace", "shell"]
+TOOL_NAMES = ["code", "graph", "git", "memory", "admin", "agents", "workspace", "shell"]
 DISCOVERY_TOOL = "list_tools"
 REQUEST_TIMEOUT_SECONDS = 300
 

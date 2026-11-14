@@ -37,7 +37,7 @@ _COMMANDS_DIR = _PKG_DIR / "commands"
 
 _DISCIPLINE = (
     "basemind is available over MCP in this session — a tree-sitter code map + git context. "
-    "Its surface is nine domain tools — code, graph, git, memory, admin, web, agents, workspace, "
+    "Its surface is eight domain tools — code, graph, git, memory, admin, agents, workspace, "
     "and shell — each dispatched by a required mode. "
     "Prefer it over grep/read for structural and historical questions: its tools return paths, "
     "line numbers, and signatures, not file bodies, so they cost a fraction of the tokens of "
@@ -51,7 +51,7 @@ _DISCIPLINE = (
 
 _COMMS_TOOLS = (
     "basemind first, shell/grep/git fallback — prefer basemind over grep, over naked git, and for "
-    "docs/RAG/NER, web crawl, and parsing. You are connected to basemind agent-comms — coordinate "
+    "docs/RAG/NER and parsing. You are connected to basemind agent-comms — coordinate "
     "with other agents via THREADS: scoped conversations addressed by at least two of {subject, "
     "path-glob, members}, discovered by scope (you're a member, your cwd matches the path-glob, or a "
     "subject filter) — never globally — and joined explicitly (no auto-join). All coordination uses "
@@ -292,7 +292,7 @@ def _read_int(path: Path) -> int:
 PLUGIN_NAME = "basemind"
 CLI_COMMAND = "basemind"
 SERVER_ARGUMENTS = ["serve"]
-TOOL_NAMES = ["code", "graph", "git", "memory", "admin", "web", "agents", "workspace", "shell"]
+TOOL_NAMES = ["code", "graph", "git", "memory", "admin", "agents", "workspace", "shell"]
 DISCOVERY_TOOL = "list_tools"
 REQUEST_TIMEOUT_SECONDS = 300
 

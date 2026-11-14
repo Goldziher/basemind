@@ -41,8 +41,10 @@ pub struct ConfigV1 {
     pub memory: MemoryConfig,
     #[serde(default)]
     pub comms: CommsConfig,
-    #[serde(default)]
-    pub crawl: CrawlConfig,
+    /// Deprecated and ignored: web crawling was removed. Accepted so files that still carry a
+    /// `[crawl]` table (`basemind init` used to write one) keep loading.
+    #[serde(default, skip_serializing_if = "DeprecatedSection::is_empty")]
+    pub crawl: DeprecatedSection,
     /// Visual / headless agent-shell presentation config. Consumed by the `shells` feature's
     /// visual launcher; the schema is stable regardless of feature gating.
     #[serde(default)]
@@ -411,78 +413,16 @@ pub enum MemoryScopeStrategy {
     WorkdirOnly,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct CrawlConfig {
-    /// Honour `robots.txt` when fetching pages. Default `true`. Override only
-    /// for hosts you control — flipping this off violates `robots.txt`
-    /// directives for every domain the crawler touches.
-    #[serde(default = "CrawlConfig::default_respect_robots_txt")]
-    pub respect_robots_txt: bool,
-    /// Hard cap on pages visited in a single `web_crawl` call.
-    #[serde(default = "CrawlConfig::default_max_pages")]
-    #[schemars(range(min = 1))]
-    pub max_pages: u32,
-    /// Maximum link-following depth from the seed URL during `web_crawl`.
-    #[serde(default = "CrawlConfig::default_max_depth")]
-    #[schemars(range(min = 0))]
-    pub max_depth: u32,
-    /// Truncate response bodies above this many bytes before parsing.
-    #[serde(default = "CrawlConfig::default_max_body_size")]
-    #[schemars(range(min = 1024))]
-    pub max_body_size: u64,
-    /// User-Agent header sent with every request. Override to identify your
-    /// crawler to operators; the default includes the basemind release
-    /// version + the upstream repo URL so site operators can trace traffic.
-    #[serde(default = "CrawlConfig::default_user_agent")]
-    #[schemars(length(min = 1))]
-    pub user_agent: String,
-    /// Allow crawling URLs that resolve to private, loopback, or link-local
-    /// addresses (`127.0.0.0/8`, `10.0.0.0/8`, `169.254.0.0/16`, …). Default
-    /// `false`: the engine rejects them with an SSRF-policy violation. Flip this
-    /// on only to scrape an internal docs server you control. **`true` in the repository's own
-    /// `basemind.toml` is ignored (with a warning) unless the operator sets
-    /// `BASEMIND_ALLOW_PRIVATE_HOSTS=1` in the environment**, because a cloned repository could
-    /// otherwise aim the crawler at internal services. (The `CRAWLBERG_ALLOW_PRIVATE_NETWORK` env
-    /// var is honoured as a process-wide override regardless of this setting.)
-    #[serde(default = "CrawlConfig::default_allow_private_network")]
-    pub allow_private_network: bool,
-}
+/// A table that configured a removed feature. Any content is accepted and nothing is read from it,
+/// so a `basemind.toml` written for an older version keeps loading under the strict schema.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(transparent)]
+#[schemars(extend("deprecated" = true))]
+pub struct DeprecatedSection(serde_json::Map<String, serde_json::Value>);
 
-impl CrawlConfig {
-    fn default_respect_robots_txt() -> bool {
-        true
-    }
-    fn default_allow_private_network() -> bool {
-        false
-    }
-    fn default_max_pages() -> u32 {
-        32
-    }
-    fn default_max_depth() -> u32 {
-        2
-    }
-    fn default_max_body_size() -> u64 {
-        4 * 1024 * 1024
-    }
-    fn default_user_agent() -> String {
-        format!(
-            "basemind/{} (+https://github.com/Goldziher/basemind)",
-            env!("CARGO_PKG_VERSION")
-        )
-    }
-}
-
-impl Default for CrawlConfig {
-    fn default() -> Self {
-        Self {
-            respect_robots_txt: Self::default_respect_robots_txt(),
-            max_pages: Self::default_max_pages(),
-            max_depth: Self::default_max_depth(),
-            max_body_size: Self::default_max_body_size(),
-            user_agent: Self::default_user_agent(),
-            allow_private_network: Self::default_allow_private_network(),
-        }
+impl DeprecatedSection {
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
     }
 }
 
@@ -501,7 +441,7 @@ impl ConfigV1 {
             code_search: CodeSearchConfig::default(),
             memory: MemoryConfig::default(),
             comms: CommsConfig::default(),
-            crawl: CrawlConfig::default(),
+            crawl: DeprecatedSection::default(),
             shells: ShellsConfig::default(),
             llm: LlmConfig::default(),
         }

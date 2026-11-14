@@ -16,9 +16,9 @@ basemind is this repo's indexed context layer. Prefer it BEFORE grep, before rea
 
 ### Routing
 
-Every capability lives behind one of nine domain tools, dispatched by a required `mode`: `code`,
-`graph`, `git`, `memory`, `admin`, `web`, `agents`, `workspace`, `shell`. The CLI mirrors the same
-nine groups (`basemind <domain> <mode>`).
+Every capability lives behind one of eight domain tools, dispatched by a required `mode`: `code`,
+`graph`, `git`, `memory`, `admin`, `agents`, `workspace`, `shell`. The CLI mirrors the same
+eight groups (`basemind <domain> <mode>`).
 
 | Reach for | Instead of |
 |---|---|
@@ -28,7 +28,7 @@ nine groups (`basemind <domain> <mode>`).
 | `git` modes `recent` / `blame_symbol` / `touching` / `diff` | `git log` / `git blame` / `git diff` |
 | `agents` modes `post` / `inbox` / `thread_list` | assuming you're the only agent in the repo |
 | `workspace` modes `workspaces` / `worktrees` / `claim` | editing a worktree another session may already own |
-| `memory` mode `documents` / `web` modes `scrape` / `crawl` / `map` | manually reading PDFs / docs or ad-hoc fetching |
+| `memory` mode `documents` | manually reading PDFs / docs |
 | `code` mode `semantic` | keyword-only guessing at where a concept lives |
 
 The code map is code-only; markdown, JSON, YAML, TOML and other prose/config/data files are a separate

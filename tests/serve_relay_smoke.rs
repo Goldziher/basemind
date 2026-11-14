@@ -116,7 +116,7 @@ async fn serve_relays_stdio_client_to_the_daemon_hosted_router() {
     );
 
     // tools/list flows through the relay and returns the full domain surface. Asserted on the
-    // domain names rather than a count: the surface is nine tools at most by design, so a count
+    // domain names rather than a count: the surface is a handful of tools by design, so a count
     // floor would go red on the consolidation itself instead of on a broken relay.
     let tools = service.list_all_tools().await.expect("list_tools over relay");
     let names: Vec<&str> = tools.iter().map(|t| t.name.as_ref()).collect();

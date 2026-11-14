@@ -94,7 +94,6 @@ src/
 │                             against gold task files (see benchmarks/eval/README.md)
 ├── chunk.rs                — code-chunk model + chunker (feature code-search)
 ├── embeddings.rs           — shared ONNX embedding engine (feature intelligence)
-├── url.rs                  — boundary-validated Url newtype (feature crawl)
 ├── store.rs                — content-addressed msgpack blob store; Store facade; holds IndexDb
 ├── store_blob.rs           — blob (de)framing + atomic write
 ├── store_layout.rs         — cache root / workspace-dir mapping; workspace.json marker
@@ -161,7 +160,7 @@ src/
 │   ├── overrides.rs        — DocumentsCliOverrides — backs the clap flags
 │   ├── layered.rs          — merge_layers (Mcp > Cli > Env > File > Default)
 │   └── source.rs           — ConfigSource + ProvenanceMap ledger
-├── mcp/                    — MCP server: nine domain tools (code, graph, git, memory, web,
+├── mcp/                    — MCP server: eight domain tools (code, graph, git, memory,
 │                             agents, workspace, shell, admin), each one #[tool] dispatching
 │                             on a required `mode` — see "MCP surface" below
 │   ├── mod.rs, state.rs    — server bootstrap; shared ServerState
@@ -170,7 +169,7 @@ src/
 │   ├── tools.rs            — the `code` tool shim (#[tool], thin wrapper; 1000-line cap)
 │   ├── tools_<area>.rs     — one shim per remaining domain: admin, comms (→ `agents`),
 │   │                         git, graph, memory, registry (→ `workspace`), shells
-│   │                         (→ `shell`), web — filenames predate the tool/CLI rename
+│   │                         (→ `shell`) — filenames predate the tool/CLI rename
 │   ├── term_index.rs       — resident term index (symbol names + import strings) behind the
 │   │                         `symbols` / `dependents` substring sweeps
 │   ├── index_route.rs      — where a references/callers/implementations read runs: local index,
@@ -183,7 +182,7 @@ src/
 │   │                         comms, community, documents, expand, files, fingerprint,
 │   │                         git, git_file, governance (feature memory), graph, graphview,
 │   │                         grep, impls, intel (definition mode body), memory, proposals
-│   │                         (feature memory), registry, shells, telemetry, traverse, web
+│   │                         (feature memory), registry, shells, telemetry, traverse
 │   ├── memory.rs           — search_documents + memory_* bodies behind the `memory` domain
 │   ├── types.rs, types_<area>.rs — one flat <Domain>Params per domain (optional sibling
 │   │                         fields per mode) + response structs, mirroring the
@@ -217,12 +216,11 @@ src/
 │                             (feature code-search)
 ├── shells/                 — agent-spawned shell sessions (attach/daemon/launcher,
 │                             feature shells)
-├── web/                    — web crawl ingestion (feature crawl)
 ├── registry/                — daemon-side worktree/branch claim registry
-├── cli/                     — CLI subcommand groups, 1:1 with the nine MCP domains: admin,
+├── cli/                     — CLI subcommand groups, 1:1 with the eight MCP domains: admin,
 │                             agents (daemon-agent verbs), code, git, graph, memory (absorbs
 │                             the old governance mine/proposals/accept/reject/audit),
-│                             registry (the `workspace` group), shell, web;
+│                             registry (the `workspace` group), shell;
 │                             comms_daemon.rs is `basemind comms` — daemon lifecycle only
 │                             (daemon/start/stop/status/doctor)
 │                             choices.rs holds the clap value enums, exit.rs the exit-code
@@ -533,8 +531,8 @@ relays a client's stdio to it, and HTTP-native clients dial the daemon's streama
 directly (opt-in via `BASEMIND_ALLOW_HTTP`, bearer token in `<comms_dir>/http.addr`). The live
 contract is `tests/mcp_smoke.rs`.
 
-The surface is **nine domain tools**, each dispatching on a required, non-defaulted `mode` — not
-one tool per verb (ADR-0011). The same nine names are the CLI groups, checked per
+The surface is **eight domain tools**, each dispatching on a required, non-defaulted `mode` — not
+one tool per verb (ADR-0011). The same eight names are the CLI groups, checked per
 `(domain, mode)` by `tests/cli_parity/` (see [ADR-0014](adr/0014-cli-mcp-parity-guard.md)). `src/mcp/mode.rs` (`define_mode!`) is the
 single source of the wire spellings, the CLI parity table, and the telemetry keys.
 
@@ -545,7 +543,6 @@ single source of the wire spellings, the CLI parity table, and the telemetry key
 | `git` | status, recent, touching, by_path, churn, diff, diff_outline, blame, blame_symbol, symbol_history, search | always |
 | `memory` | put, get, list, search, delete, audit, documents, mine, proposals, accept, reject | always¹ |
 | `admin` | status, repo, rescan, cache_stats, gc, cache_clear, telemetry | always |
-| `web` | scrape, crawl, map | `crawl` |
 | `agents` | register, list, thread_start, thread_list, join, leave, members, add_member, remove_member, archive, post, history, message, inbox, ack, wait | `comms` |
 | `workspace` | workspaces, worktrees, branches, claim, release | `comms` |
 | `shell` | spawn, send, capture, kill, list, broadcast | `shells` |
@@ -565,9 +562,9 @@ Conventions:
   (substring vs prefix, scope-aware vs name-only) are stated honestly.
 - Tool bodies live in `src/mcp/helpers*.rs`, area-sliced (`helpers_calls.rs`,
   `helpers_documents.rs`, `helpers_graph.rs`, `helpers_grep.rs`, `helpers_impls.rs`,
-  `helpers_intel.rs`, `helpers_web.rs`, and more — see [Source layout](#source-layout));
+  `helpers_intel.rs`, and more — see [Source layout](#source-layout));
   `tools.rs` and the `tools_<area>.rs` siblings contain `#[tool]` shims only, one per domain.
-- No `output_schema` on any of the nine tools (each domain's modes return different response
+- No `output_schema` on any of the eight tools (each domain's modes return different response
   shapes; SEP-2106 allows one per tool). Annotations coarsen to the union of a domain's modes,
   resolving toward the side effect (e.g. `shell` advertises `destructive_hint` because `kill` is
   one of its modes, while `code` and `git` keep `read_only_hint: true` since none of their modes
@@ -633,7 +630,7 @@ basemind's footprint on a constrained machine:
 | `max_map_cache_mb` | `256` | Byte budget for the MCP read stack's decoded-outline cache (`src/mcp/l1_cache.rs`), per workspace. `0` = unbounded. A miss costs one blob read and never changes an answer. The code-graph memo is charged at half this value, and a read-only session's projected call / implementation indexes are charged against it too. |
 
 In the shared daemon these values are ceilings, not settings: `src/config/daemon.rs` applies
-`min(file, cap)` to each (and to `[scan]` / `[documents]` / `[crawl]` limits), with `0` / `"auto"` /
+`min(file, cap)` to each (and to `[scan]` / `[documents]` limits), with `0` / `"auto"` /
 `"off"` resolving to the cap, and the operator raises a cap through `BASEMIND_DAEMON_MAX_*` in the
 daemon's environment. ONNX Runtime memory is bounded in every process (`embeddings::bound_ort_memory`:
 no memory-pattern planning, no retained CPU arena; intra-op threads are the auto embed-thread count, or

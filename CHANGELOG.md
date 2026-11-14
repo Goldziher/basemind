@@ -19,6 +19,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `BASEMIND_DELTA_READS` have no effect; snapshots the `read-cache` hook left under
   `${XDG_CACHE_HOME:-~/.cache}/basemind/read-cache/` can be deleted. `code` mode `expand`, the search guard
   (`BASEMIND_GUARD`) and every other `admin` mode are unchanged.
+- **Web ingestion.** The `web` MCP tool (`scrape`, `crawl`, `map`), the `basemind web` CLI group and the
+  `crawl` cargo feature are gone, along with the `crawlberg` dependency; `full` no longer includes `crawl`,
+  so `--features crawl` now fails the build. A `[crawl]` table in `basemind.toml` is still accepted and
+  ignored (`basemind init` used to write an empty one, and no longer does); one with keys in it logs a
+  warning. `BASEMIND_ALLOW_PRIVATE_HOSTS` and `BASEMIND_DAEMON_MAX_CRAWL_PAGES` / `_DEPTH` / `_BODY_BYTES`
+  have no effect. Pages already ingested stay in the document store under their `web:<host>` scope and are
+  still searchable with `memory` mode `documents` and `scope: "web:<host>"`, but are never refreshed.
 
 ### Fixed
 

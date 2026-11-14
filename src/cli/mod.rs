@@ -9,7 +9,7 @@
 //! Layout:
 //! - `context.rs` — one-shot server construction.
 //! - `render.rs` — JSON extraction + generic human renderer.
-//! - `code.rs` / `git.rs` / `graph.rs` / `memory.rs` / `web.rs` / `admin.rs` — subcommand groups.
+//! - `code.rs` / `git.rs` / `graph.rs` / `memory.rs` / `admin.rs` — subcommand groups.
 
 pub mod admin;
 #[cfg(all(feature = "comms", any(unix, windows)))]
@@ -36,7 +36,6 @@ pub mod render;
 pub mod rescan;
 #[cfg(all(feature = "shells", any(unix, windows)))]
 pub mod shell;
-pub mod web;
 
 use std::io::Write;
 use std::path::Path;
@@ -68,9 +67,6 @@ pub enum ToolCmd {
     /// (needs `--features memory,documents`).
     #[command(subcommand)]
     Memory(memory::MemoryCmd),
-    /// On-demand web ingestion (needs `--features crawl`).
-    #[command(subcommand)]
-    Web(web::WebCmd),
     /// Server administration: repo identity, telemetry, tokens, eval.
     #[command(subcommand)]
     Admin(admin::AdminCmd),
@@ -161,7 +157,6 @@ pub fn run(
             ToolCmd::Git(g) => git::run(&server, g, &opts, &mut out).await?,
             ToolCmd::Graph(g) => graph::run(&server, g, &opts, &mut out).await?,
             ToolCmd::Memory(m) => memory::run(&server, m, &opts, &mut out).await?,
-            ToolCmd::Web(w) => web::run(&server, w, &opts, &mut out).await?,
             ToolCmd::Admin(a) => admin::run(&server, a, &opts, &mut out).await?,
             ToolCmd::Status => admin::run_status(&server, &opts, &mut out).await?,
             #[cfg(all(feature = "shells", any(unix, windows)))]

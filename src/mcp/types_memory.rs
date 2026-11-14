@@ -140,7 +140,7 @@ pub struct MemoryParams {
     /// `documents`: exact MIME-type filter.
     #[serde(default)]
     pub mime_type: Option<String>,
-    /// `documents`: ingestion scope (default this repo; web pages live under `web:<host>`).
+    /// `documents`: ingestion scope (default this repo; legacy web pages live under `web:<host>`, no longer refreshed).
     #[serde(default)]
     pub scope: Option<String>,
     /// `documents`: case-insensitive substring over NER entity categories (ANDed with `keywords_contains`).

@@ -59,8 +59,6 @@ mod helpers_registry;
 mod helpers_shells;
 mod helpers_telemetry;
 mod helpers_traverse;
-#[cfg(feature = "crawl")]
-mod helpers_web;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 mod host;
 mod identity;
@@ -108,8 +106,6 @@ mod tools_memory;
 mod tools_registry;
 #[cfg(all(feature = "shells", any(unix, windows)))]
 mod tools_shells;
-#[cfg(feature = "crawl")]
-mod tools_web;
 pub(crate) mod toon;
 mod traverse;
 mod types;
@@ -131,8 +127,6 @@ pub(crate) mod types_registry;
 #[cfg(all(feature = "shells", any(unix, windows)))]
 mod types_shells;
 mod types_traverse;
-#[cfg(feature = "crawl")]
-mod types_web;
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -185,7 +179,6 @@ pub mod params {
     pub use super::mode::GraphMode;
     #[cfg(all(feature = "shells", any(unix, windows)))]
     pub use super::mode::ShellMode;
-    pub use super::mode::WebMode;
     pub use super::types::{
         BlameFileParams, BlameSymbolParams, CommitsTouchingParams, DependentsParams, DiffFileParams, DiffOutlineParams,
         FindCallersParams, FindCommitsByPathParams, FindFilesParams, FindReferencesParams, GotoDefinitionParams,
@@ -206,8 +199,6 @@ pub mod params {
     };
     #[cfg(all(feature = "shells", any(unix, windows)))]
     pub use super::types_shells::{ShellEnv, ShellParams};
-    #[cfg(feature = "crawl")]
-    pub use super::types_web::WebParams;
 }
 
 pub use params::Parameters;
@@ -472,10 +463,6 @@ impl BasemindServer {
             + Self::tool_router_git()
             + Self::tool_router_memory()
             + Self::tool_router_admin();
-        #[cfg(feature = "crawl")]
-        {
-            router += Self::tool_router_web();
-        }
         #[cfg(all(feature = "comms", any(unix, windows)))]
         {
             router += Self::tool_router_comms();

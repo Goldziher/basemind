@@ -51,8 +51,8 @@ const TOP_CONTRIBUTORS: usize = 5;
 /// gitignore its own config.
 const ROOT_FILES_LABEL: &str = "(files in the root)";
 
-/// Operator opt-in for `scan.extra_roots`, mirroring the `BASEMIND_ALLOW_ANY_ROOT` /
-/// `BASEMIND_ALLOW_PRIVATE_HOSTS` style. Truthy (`1`, `true`, `yes`) enables the feature; unset or
+/// Operator opt-in for `scan.extra_roots`, mirroring the `BASEMIND_ALLOW_ANY_ROOT`
+/// style. Truthy (`1`, `true`, `yes`) enables the feature; unset or
 /// anything else makes every configured extra root a no-op, logged once per scan.
 ///
 /// **Why the feature needs a grant at all.** `scan.extra_roots` names directories *outside* the

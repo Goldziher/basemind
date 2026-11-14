@@ -489,11 +489,9 @@ async fn memory_delete_fjall(state: &ServerState, vis_byte: u8, owner: &str, key
 
 /// Pick the ingestion scope to search: the caller's if they named one, else this repo's.
 ///
-/// Documents are partitioned by ingestion scope, and the lanes do not agree on one: the scanner
-/// writes under the repo scope while `web_scrape` / `web_crawl` write under `web:<host>`. Reading
-/// only `state.shared.scope`, with no way to ask for another, made every scraped page permanently
-/// invisible — the write landed, LanceDB grew on disk, and the query filtered it out and returned
-/// an empty, error-free, 14 ms answer.
+/// Documents are partitioned by ingestion scope. The scanner writes under the repo scope; rows an
+/// older version ingested from the web sit under `web:<host>` and are no longer refreshed, so
+/// naming that scope is the only way to reach them.
 #[cfg(feature = "documents")]
 fn resolve_doc_scope(requested: Option<&str>, repo_scope: &str) -> String {
     requested.unwrap_or(repo_scope).to_string()
@@ -761,10 +759,9 @@ async fn attach_doc_metadata(
     Ok(())
 }
 
-#[cfg(all(test, feature = "crawl"))]
+#[cfg(all(test, feature = "documents"))]
 mod scope_tests {
     use super::resolve_doc_scope;
-    use crate::web::ingest::default_scope;
 
     #[test]
     fn defaults_to_the_repo_scope_when_the_caller_names_none() {
@@ -772,15 +769,12 @@ mod scope_tests {
     }
 
     #[test]
-    fn a_scraped_page_is_reachable_only_by_naming_its_web_scope() {
-        let url = crate::url::Url::parse("https://example.com/page").unwrap();
-        let write_scope = default_scope(&url);
-        assert_eq!(write_scope, "web:example.com");
-
+    fn a_legacy_web_scope_is_reachable_only_by_naming_it() {
+        let legacy_scope = "web:example.com";
         let repo_scope = "repo-abc123";
-        assert_ne!(resolve_doc_scope(None, repo_scope), write_scope);
+        assert_ne!(resolve_doc_scope(None, repo_scope), legacy_scope);
 
-        assert_eq!(resolve_doc_scope(Some(&write_scope), repo_scope), write_scope);
+        assert_eq!(resolve_doc_scope(Some(legacy_scope), repo_scope), legacy_scope);
     }
 }
 

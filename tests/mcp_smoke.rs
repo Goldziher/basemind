@@ -3402,7 +3402,7 @@ async fn serve_auto_scan_reports_index_build_ms_on_status() {
 ///   `invoke_tool { search_symbols }` returns the same payload as a direct `search_symbols` call.
 /// * flag UNSET → the full surface is advertised unchanged (well over the three wrappers, and
 ///   `search_symbols` is callable directly).
-/// SEP-2106 allows exactly ONE `output_schema` per tool, and every one of the nine domain tools has
+/// SEP-2106 allows exactly ONE `output_schema` per tool, and every one of the domain tools has
 /// modes returning differently-shaped responses — so none of them advertises one. Expressing the
 /// union would mean nested structs, which schemars emits as `$ref` into `$defs`, the construct the
 /// Anthropic input_schema subset rejects silently and registry-wide (GH #50).
@@ -3458,13 +3458,13 @@ async fn lean_surface_is_opt_in_and_round_trips_through_invoke_tool() {
     let full = spawn_serve(root, None).await;
     let full_tools = full.list_all_tools().await.expect("list tools (full)");
     let full_names: Vec<&str> = full_tools.iter().map(|t| t.name.as_ref()).collect();
-    // The surface is nine domain tools at most (fewer when `crawl` / `comms` / `shells` are off),
+    // The surface is eight domain tools at most (fewer when `comms` / `shells` are off),
     // which is the whole point of the consolidation: hosts defer tools and surface them by keyword
     // search, so a count that creeps back up is a regression, not growth. Asserted as a ceiling
     // plus the always-on names, rather than a floor that a re-flattening would still satisfy.
     assert!(
-        full_tools.len() <= 9,
-        "the surface must stay at nine domain tools or fewer, got {}: {full_names:?}",
+        full_tools.len() <= 8,
+        "the surface must stay at eight domain tools or fewer, got {}: {full_names:?}",
         full_tools.len()
     );
     for domain in ["code", "graph", "git", "memory", "admin"] {

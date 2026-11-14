@@ -48,6 +48,10 @@ fn fresh_dir_writes_config_and_local_block_and_gitignores_it() {
     assert!(config.exists(), "basemind.toml should be written");
     let config_text = std::fs::read_to_string(&config).expect("read config");
     assert!(config_text.contains("[scan]"), "scaffold content present");
+    assert!(
+        !config_text.contains("[crawl]"),
+        "the scaffold must not write a table for a removed feature"
+    );
 
     // ~keep The index cache is machine-global and out-of-repo, but the personal `.local` rule file
     // ~keep init writes is gitignored by convention, so init appends the covering pattern.

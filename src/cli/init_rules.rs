@@ -28,7 +28,7 @@ pub enum Capability {
     AgentComms,
     /// `workspace` modes — daemon registry + worktree coordination.
     WorktreeCoordination,
-    /// `memory` mode `documents` — RAG over PDFs / Office / HTML / markdown / config / the web.
+    /// `memory` mode `documents` — RAG over PDFs / Office / HTML / markdown / config.
     DocumentsRag,
     /// Semantic (vector) code search over the same index.
     SemanticSearch,
@@ -72,7 +72,7 @@ impl Capability {
             Capability::WorktreeCoordination => {
                 "Worktree coordination (daemon registry: workspaces, worktrees, advisory claims)"
             }
-            Capability::DocumentsRag => "Documents & RAG (PDF / Office / HTML / web search)",
+            Capability::DocumentsRag => "Documents & RAG (PDF / Office / HTML search)",
             Capability::SemanticSearch => "Semantic (vector) code search",
         }
     }
@@ -110,8 +110,8 @@ impl Capability {
                 "Inspect worktrees and check advisory claims before editing",
             ),
             Capability::DocumentsRag => (
-                "`memory` mode `documents` (PDFs, Office, markdown, config and data files; the code map holds code only) / `web` (modes `scrape` / `crawl` / `map`)",
-                "Search indexed documents or inspect web pages",
+                "`memory` mode `documents` (PDFs, Office, markdown, config and data files; the code map holds code only)",
+                "Search indexed documents",
             ),
             Capability::SemanticSearch => (
                 "`code` mode `semantic` (then `chunk`)",

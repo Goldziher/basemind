@@ -40,7 +40,6 @@ different version there shares the same cache. Examples below write `basemind` f
 - **Git intelligence** — history, blame, and structural diffs at symbol resolution, plus churn.
 - **Document RAG over 90+ file formats** — PDFs, Office, HTML, email, images (OCR), markdown and config/data files → semantic search.
 - **Shared memory** — per-repo, scope-keyed key-value + semantic memory across sessions.
-- **Web crawl** — scrape / follow-link crawl into the searchable document store.
 - **Cache management** — stats, garbage collection, selective and full clears.
 
 ## When to reach for it
@@ -55,9 +54,8 @@ different version there shares the same cache. Examples below write `basemind` f
 
 **basemind first, shell/grep/git fallback.** Prefer `basemind code` / `graph` over reading files, over
 `grep`/`rg`, and over naked `git`: use it for code parsing (outlines, references, callers), git
-history / blame / diffs (`basemind git`), document extraction / RAG / keyword + entity (NER) /
-summary (`basemind memory documents`), and web scraping / crawling / sitemaps
-(`basemind web scrape` / `crawl` / `map`). Drop to raw shell, grep, or git only when no basemind
+history / blame / diffs (`basemind git`), and document extraction / RAG / keyword + entity (NER) /
+summary (`basemind memory documents`). Drop to raw shell, grep, or git only when no basemind
 command covers the question.
 
 ## Command routing (copy this into your mental model)
@@ -91,9 +89,6 @@ command covers the question.
 | "Reclaim orphaned blobs?" | `basemind cache gc` | Cross-workspace sweep (blobs under 6 h old are kept). |
 | "Score retrieval quality?" | `basemind admin eval --tasks tasks.jsonl` | CLI-only; see `benchmarks/eval/README.md`. |
 | "Clear caches?" | `basemind cache clear --component blobs --yes` | Destructive; `--yes` is required off a terminal. `views` / `all` need the offline CLI. |
-| "Pull this URL into RAG?" | `basemind web scrape <url>` | Single page (requires `--features crawl`). |
-| "Ingest a docs site?" | `basemind web crawl <seed-url>` | Link-following crawl. |
-| "What URLs exist on this site?" | `basemind web map <url>` | Sitemap + link discovery. |
 | "Keep index fresh?" | `basemind watch` | Live re-index watcher; no MCP server (that's `serve`). |
 | "Refresh the index after edits?" | `basemind scan` | Full or incremental scan. |
 | "Refresh changed paths?" | `basemind rescan [path…]` | Re-index in the live server. |
@@ -206,4 +201,3 @@ stops a scan cleanly: work already committed is kept.
   (or the individual `documents` / `memory` flags).
 - Memory is scoped by the normalized `origin` remote URL — clones of the same repo share memory;
   unrelated repos do not see each other's entries.
-- `web` modes `scrape`, `crawl`, and `map` require `--features crawl`.

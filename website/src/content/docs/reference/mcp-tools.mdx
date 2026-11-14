@@ -1,13 +1,13 @@
 ---
 title: MCP Tools Reference
-description: Complete catalog of basemind's nine domain tools, one section per domain.
+description: Complete catalog of basemind's eight domain tools, one section per domain.
 ---
 
 import { Aside, Badge } from '@astrojs/starlight/components';
 
-basemind exposes **nine domain tools** over stdio MCP — `code`, `graph`, `git`, `memory`, `admin`,
-`web`, `agents`, `workspace`, `shell` — each dispatching on a required `mode` rather than one tool
-per operation. The CLI mirrors the same nine groups (`basemind <domain> <mode>`); `tests/cli_parity/` fails the build
+basemind exposes **eight domain tools** over stdio MCP — `code`, `graph`, `git`, `memory`, `admin`,
+`agents`, `workspace`, `shell` — each dispatching on a required `mode` rather than one tool
+per operation. The CLI mirrors the same eight groups (`basemind <domain> <mode>`); `tests/cli_parity/` fails the build
 when an MCP mode has no CLI command or the two disagree on parameters or results. All paths are byte-precise repo-relative (`RelPath`). Lists are
 capped per mode (see [Metadata & pagination](#metadata--pagination)); index scans use
 `scan_cap = limit * 8` (at least 2000) to bound work on common names. Mode descriptions state matching semantics (substring, prefix, scope-aware) and what's
@@ -120,18 +120,6 @@ Refresh the index and inspect health and cache footprint.
 | `cache_clear` | Delete one cache component (`component`). `blobs` needs `confirm`; `views` and `all` back the live index and are refused over MCP (use `basemind cache clear --yes`). |
 | `telemetry` | Aggregate recorded tool calls into a usage and token-savings summary. |
 
-## `web` — web crawl
-
-Fetch and index web pages; results join the document search index. Requires `--features crawl`.
-
-| Mode | Purpose |
-|---|---|
-| `scrape` | Fetch one URL, extract markdown, and index it into the documents store. |
-| `crawl` | Follow links breadth-first from a seed URL and index every page. |
-| `map` | Discover a site's URLs from its sitemap and link map, without fetching bodies. |
-
-See [Web Crawl](/capabilities/web-crawl/) for examples.
-
 ## `agents` — multi-agent coordination
 
 A shared chat layer for agents on the same repo: threads addressed by at least two of subject /
@@ -205,7 +193,6 @@ name and decide what to auto-approve. The hints describe the union of a tool's m
 | `graph` | Code graph | no | no | no | yes |
 | `memory` | Memory and documents | no | yes | no | no |
 | `admin` | Admin | no | yes | no | no |
-| `web` | Web | no | no | no | yes |
 | `agents` | Agent comms | no | no | no | no |
 | `workspace` | Workspace registry | no | no | yes | no |
 | `shell` | Shell sessions | no | yes | no | yes |
@@ -241,8 +228,7 @@ answers `request_cancelled` (-32800): `code` `grep` and `semantic`, `graph` `map
 `memory` `documents`, and `agents` `wait`. Writing modes are never dropped mid-flight.
 
 When the client declares the tasks extension (`io.modelcontextprotocol/tasks`), the slow calls
-(`admin` `rescan`, `graph` `map`, `code` `semantic`, `memory` `documents`, and `web` `scrape` /
-`crawl` / `map`) return a pollable task handle (`tasks/get`) instead of blocking the connection.
+(`admin` `rescan`, `graph` `map`, `code` `semantic`, and `memory` `documents`) return a pollable task handle (`tasks/get`) instead of blocking the connection.
 Clients that did not declare the extension get the synchronous result.
 
 ## Metadata & pagination

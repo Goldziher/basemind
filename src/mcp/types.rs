@@ -905,13 +905,6 @@ pub(super) struct RecentCallView {
     pub est_tokens_saved: u64,
 }
 
-#[cfg(feature = "crawl")]
-pub(super) use super::types_web::{
-    WebCrawlPageOutcome, WebCrawlResponse, WebMapEntry, WebMapResponse, WebScrapeResponse,
-};
-#[cfg(feature = "crawl")]
-pub use super::types_web::{WebCrawlParams, WebMapParams, WebScrapeParams};
-
 pub use super::types_admin::{CacheClearParams, CacheGcParams, CacheStatsParams};
 pub(super) use super::types_admin::{CacheClearResponse, CacheGcResponse, CacheStatsResponse};
 pub use super::types_documents::SearchDocumentsParams;

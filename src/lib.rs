@@ -75,12 +75,8 @@ mod store_lock;
 mod store_migration;
 mod store_seed;
 pub mod sysres;
-#[cfg(feature = "crawl")]
-pub mod url;
 pub mod version;
 pub mod watcher;
-#[cfg(feature = "crawl")]
-pub mod web;
 
 pub use config::Config;
 

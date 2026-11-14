@@ -38,12 +38,6 @@ vs. walking every file in the repo) where the alternative is reading far more ra
 outcomes are real; the harness reports what actually happened, not what would flatter the
 tool.
 
-## Out of scope for this round
-
-There is no web-crawl/scrape tier (`basemind web crawl`/`scrape`) in this harness yet. Wiring
-that up needs a set of stable, offline fixture pages (or network access + a `crawl`-feature
-build) that this round didn't set up — left for a follow-up.
-
 ## Prerequisites
 
 1. **Build with the `tokenizer` feature** — this is the one feature both sides of every task

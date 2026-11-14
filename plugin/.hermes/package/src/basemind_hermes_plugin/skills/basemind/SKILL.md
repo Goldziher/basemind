@@ -9,8 +9,8 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:1d0134b284006b796d871fb0b16b101d8e59599ff14bc79a2a2cb74c4b40aa16
-Source-Hash: blake3:65edf7dbc94ca8766735f09cd21b608930acd91e278e792605dc6f3d40d964dd
+Content-Hash: blake3:379562e8824457ef4e525f6f69d5e2839527d42368206996bff2c9cfb78c7a0a
+Source-Hash: blake3:e09c651f27bce33463989a697aa75fe5c51be77ecaba769384a73c6adde83aa0
 Schema-Version: v1
 -->
 
@@ -31,7 +31,6 @@ without you reading whole files.
 - **Document RAG over 90+ file formats** — PDFs, Office, HTML, email, images (OCR), markdown and
   config/data files → semantic search with cross-encoder reranking (`memory` mode `documents`).
 - **Shared memory** — per-repo, scope-keyed key-value + semantic memory across sessions.
-- **Web crawl** — scrape / follow-link crawl into the same searchable document store.
 
 ## Dedicated per-capability skills
 
@@ -39,7 +38,7 @@ This umbrella skill covers the whole surface. For focused workflows, reach for t
 
 - **`basemind-code-search`** — outlines, symbol search, references, callers, call graphs.
 - **`basemind-git-history`** — history, blame, structural diffs, churn.
-- **`basemind-documents`** — document RAG (`memory` mode `documents`), web ingestion, memory.
+- **`basemind-documents`** — document RAG (`memory` mode `documents`), memory.
 - **`basemind-comms`** — coordinating with other agents in the same repo over the broker.
 - **`basemind-cli`** — the same surface driven headlessly from the CLI.
 
@@ -86,9 +85,8 @@ only to see the actual implementation of a span you have already located.
 
 **basemind first, shell/grep/git fallback.** Prefer basemind over reading files, over `grep`/`rg`,
 and over naked `git`: use it for code parsing (outlines, references, callers), git history / blame /
-diffs, document extraction / RAG / keyword + entity (NER) / summary (`memory` mode `documents`), and
-`web` modes `scrape` / `crawl` / `map`. Drop to raw shell, grep, or
-git only when no basemind tool covers the question.
+diffs, and document extraction / RAG / keyword + entity (NER) / summary (`memory` mode `documents`).
+Drop to raw shell, grep, or git only when no basemind tool covers the question.
 
 ## Tool routing (copy this into your mental model)
 
@@ -120,9 +118,6 @@ git only when no basemind tool covers the question.
 | "Remember this for future sessions?" | `memory { mode: "put", key, value }` |
 | "Refresh the index after editing code?" | `admin { mode: "rescan", paths?: […] }` |
 | "Fetch next page of results?" | Pass `next_cursor` from prior response as `cursor` |
-| "Pull this URL into RAG?" | `web { mode: "scrape", url }` — single page, robots-aware |
-| "Ingest a docs site section?" | `web { mode: "crawl", url }` — link-following from a seed |
-| "What URLs exist on this site?" | `web { mode: "map", url }` — discovery without bodies |
 | "How much has basemind helped today?" | `admin { mode: "telemetry", window: "today" }` |
 
 ## Setup (one-time per repo)
@@ -201,11 +196,6 @@ A 1000-line file becomes a 30-line table of contents.
   Memory is scoped by the normalised `origin` remote URL (`git@github.com:Foo/bar.git` and
   `https://github.com/Foo/bar/` collapse to the same scope key) — clones of the same repo
   share memory; unrelated repos do not see each other's entries.
-- `web` modes `scrape`, `crawl`, and `map` require `--features crawl`.
-  When that feature is off they are NOT registered on the server at all — agents will simply
-  not see them in the tool list. Crawled pages land in the `documents` LanceDB table tagged
-  with scope `web:<host>`; `memory` mode `documents` finds them alongside every other ingested
-  document. By default it searches this repo's scope; pass `scope: "web:<host>"` to search one host's
-  pages.
-  robots.txt is honoured by default; only `[crawl].respect_robots_txt = false` in
-  the repo-root `basemind.toml` (config-file-only) disables it.
+- `memory` mode `documents` searches this repo's scope by default. Pages an older version ingested
+  from the web stay in the `documents` LanceDB table under scope `web:<host>` and are no longer
+  refreshed; pass `scope: "web:<host>"` to search one host's pages.

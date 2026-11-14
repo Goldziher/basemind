@@ -88,7 +88,6 @@ export default defineConfig({
             { label: "Git intelligence", slug: "capabilities/git-intelligence" },
             { label: "Document search", slug: "capabilities/document-search" },
             { label: "Semantic code search", slug: "capabilities/code-search" },
-            { label: "Web crawl", slug: "capabilities/web-crawl" },
             { label: "Agent shells", slug: "capabilities/agent-shells" },
           ],
         },

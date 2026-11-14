@@ -1,7 +1,7 @@
 ---
 type: Reference
 title: Mcp Tool Author
-description: Adds a mode to one of basemind's 9 MCP domains end-to-end — mode enum variant, params, shim arm, helper body, CLI subcommand, smoke assertion, README row.
+description: Adds a mode to one of basemind's MCP domains end-to-end — mode enum variant, params, shim arm, helper body, CLI subcommand, smoke assertion, README row.
 x-ai-rulez:
   kind: agent
   id: mcp-tool-author
@@ -12,13 +12,13 @@ x-ai-rulez:
 
 # mcp-tool-author
 
-basemind's MCP surface is **fixed at 9 domains** — `code`, `graph`, `git`, `memory`, `web`, `agents`,
-`workspace`, `shell`, `admin` — each one MCP tool plus one CLI group, dispatching on a required,
+basemind's MCP surface is **fixed at 8 domains** — `code`, `graph`, `git`, `memory`, `agents`, `workspace`,
+`shell`, `admin` — each one MCP tool plus one CLI group, dispatching on a required,
 non-defaulted `mode` enum. Adding capability means **adding a mode to an existing domain**, not
 adding a tool.
 
 **A brand-new top-level tool requires an ADR.** If the request cannot be expressed as a mode on one
-of the nine, stop and say so: the surface size is a deliberate decision (see `docs/adr/`, GH #50 —
+of them, stop and say so: the surface size is a deliberate decision (see `docs/adr/`, GH #50 —
 deferred retrieval dilutes, and one bad schema drops the whole registry). Propose the ADR; do not
 grow the surface unilaterally.
 

@@ -43,7 +43,7 @@ struct Cli {
     no_color: bool,
 
     /// Emit machine-readable JSON instead of the human-readable rendering. Applies to the tool
-    /// subcommands (code / git / graph / memory / web / shell / admin / status / cache), the
+    /// subcommands (code / git / graph / memory / shell / admin / status / cache), the
     /// coordination groups (agents / workspace / comms / daemon) and doctor. It is ignored, with a
     /// warning, on init / scan / rescan / watch / hook / lang / completions / man / statusline /
     /// serve.
@@ -85,9 +85,6 @@ enum Cmd {
     /// Shared agent memory + document search (needs `--features memory,documents`).
     #[command(subcommand)]
     Memory(basemind::cli::memory::MemoryCmd),
-    /// On-demand web ingestion (needs `--features crawl`).
-    #[command(subcommand)]
-    Web(basemind::cli::web::WebCmd),
     /// Headless agent shell sessions: spawn / send / capture / kill / list / broadcast
     /// (needs `--features shells`).
     #[cfg(all(feature = "shells", any(unix, windows)))]
@@ -361,7 +358,6 @@ fn run() -> Result<()> {
             dispatch(basemind::cli::ToolCmd::Graph(g))
         }
         Cmd::Memory(m) => dispatch(basemind::cli::ToolCmd::Memory(m)),
-        Cmd::Web(w) => dispatch(basemind::cli::ToolCmd::Web(w)),
         #[cfg(all(feature = "shells", any(unix, windows)))]
         Cmd::Shell(s) => dispatch(basemind::cli::ToolCmd::Shell(s)),
         Cmd::Admin(a) => dispatch(basemind::cli::ToolCmd::Admin(a)),
@@ -412,7 +408,6 @@ fn warn_ignored_global_flags(cmd: &Cmd, json: bool, view: &str) {
             | Cmd::Git(_)
             | Cmd::Graph(_)
             | Cmd::Memory(_)
-            | Cmd::Web(_)
             | Cmd::Admin(_)
             | Cmd::Cache(_)
             | Cmd::Status

@@ -94,7 +94,6 @@ pub fn all() -> Vec<Exception> {
         alias("code grep", "no_context", "include_context", INVERTED),
         alias("git recent", "no_files", "include_files", INVERTED),
         alias("memory put", "no_embed", "embed", INVERTED),
-        alias("web scrape", "no_index", "index", INVERTED),
         alias("shell send", "no_enter", "enter", INVERTED),
         alias("shell broadcast", "no_enter", "enter", INVERTED),
         alias(

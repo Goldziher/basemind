@@ -169,19 +169,13 @@ pub(crate) const INIT_SCAFFOLD_TOML: &str = r##"# basemind configuration — htt
 # ceilings: min(value here, daemon cap), with 0 / "auto" / "off" resolving to the cap. Raise a
 # daemon cap with BASEMIND_DAEMON_MAX_SCAN_THREADS / _EMBED_THREADS / _EMBED_BATCH /
 # _CONCURRENT_DOCUMENTS / _FOOTPRINT_MB / _MAP_CACHE_MB / _CANDIDATES in the daemon's environment
-# (the daemon also caps file, document, crawl and debounce settings; see the configuration docs).
+# (the daemon also caps file, document and debounce settings; see the configuration docs).
 # scan_threads = 0
 # embed_threads = 0
 # max_concurrent_documents = 0
 # embed_batch_size = 32
 # max_footprint_mb = 0
 # max_map_cache_mb = 256
-
-[crawl]
-# Web crawl / scrape limits. allow_private_network = true is ignored when it comes from this file
-# unless the operator sets BASEMIND_ALLOW_PRIVATE_HOSTS=1 in the environment.
-# respect_robots_txt = true
-# allow_private_network = false
 
 [llm]
 # Optional LLM for abstractive summaries and LLM NER. Inert while `model` is empty. In this file

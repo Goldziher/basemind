@@ -16,9 +16,6 @@ use super::v1::ConfigV1;
 /// [`is_allowed_api_key_env`].
 pub const ALLOW_REPO_LLM_ENV: &str = "BASEMIND_ALLOW_REPO_LLM";
 
-/// Shared with the web fetcher (`src/url.rs`): the one switch for reaching private / loopback hosts.
-pub const ALLOW_PRIVATE_HOSTS_ENV: &str = "BASEMIND_ALLOW_PRIVATE_HOSTS";
-
 /// Operator opt-in to honour the repository's `[scan] follow_symlinks = true`. A tracked link can
 /// point anywhere (`~/.ssh`), so following links is an operator decision, not a repo one.
 pub const ALLOW_FOLLOW_SYMLINKS_ENV: &str = "BASEMIND_ALLOW_FOLLOW_SYMLINKS";
@@ -27,7 +24,6 @@ pub const ALLOW_FOLLOW_SYMLINKS_ENV: &str = "BASEMIND_ALLOW_FOLLOW_SYMLINKS";
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Grants {
     pub repo_llm: bool,
-    pub private_hosts: bool,
     pub follow_symlinks: bool,
 }
 
@@ -35,7 +31,6 @@ impl Grants {
     pub fn from_env() -> Self {
         Self {
             repo_llm: env_truthy(ALLOW_REPO_LLM_ENV),
-            private_hosts: env_truthy(ALLOW_PRIVATE_HOSTS_ENV),
             follow_symlinks: env_truthy(ALLOW_FOLLOW_SYMLINKS_ENV),
         }
     }
@@ -109,13 +104,6 @@ pub fn sanitize_repo_config(config: &mut ConfigV1, grants: Grants) {
              the repository into the index; set {ALLOW_FOLLOW_SYMLINKS_ENV}=1 in the environment to honour it"
         ));
     }
-    if config.crawl.allow_private_network && !grants.private_hosts {
-        config.crawl.allow_private_network = false;
-        warn_once(format!(
-            "ignoring [crawl] allow_private_network = true from basemind.toml: set {ALLOW_PRIVATE_HOSTS_ENV}=1 \
-             in the environment to allow crawling private and loopback hosts"
-        ));
-    }
 }
 
 /// Dotted paths of fields that parse but that nothing reads. They stay in the schema so existing
@@ -161,6 +149,23 @@ pub fn warn_inert_fields(config: &ConfigV1) {
     for path in inert_fields_set(config) {
         warn_once(format!(
             "basemind.toml sets [{path}], which is reserved and currently has no effect"
+        ));
+    }
+}
+
+/// Removed-feature tables that `config` still carries with content.
+pub fn deprecated_sections_set(config: &ConfigV1) -> Vec<&'static str> {
+    [("crawl", &config.crawl)]
+        .into_iter()
+        .filter(|(_, section)| !section.is_empty())
+        .map(|(name, _)| name)
+        .collect()
+}
+
+pub fn warn_deprecated_sections(config: &ConfigV1) {
+    for name in deprecated_sections_set(config) {
+        warn_once(format!(
+            "basemind.toml sets [{name}], which configured a removed feature and is ignored; delete the table"
         ));
     }
 }
@@ -254,20 +259,12 @@ mod tests {
     }
 
     #[test]
-    fn allow_private_network_needs_the_operator_grant() {
-        let mut cfg = repo_config("[crawl]\nallow_private_network = true\n");
-        sanitize_repo_config(&mut cfg, Grants::default());
-        assert!(!cfg.crawl.allow_private_network);
-
-        let mut cfg = repo_config("[crawl]\nallow_private_network = true\n");
-        sanitize_repo_config(
-            &mut cfg,
-            Grants {
-                private_hosts: true,
-                ..Grants::default()
-            },
+    fn a_removed_feature_table_is_reported_only_when_it_has_content() {
+        assert!(deprecated_sections_set(&repo_config("[crawl]\n")).is_empty());
+        assert_eq!(
+            deprecated_sections_set(&repo_config("[crawl]\nallow_private_network = true\n")),
+            vec!["crawl"]
         );
-        assert!(cfg.crawl.allow_private_network);
     }
 
     #[test]

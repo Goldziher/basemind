@@ -89,11 +89,6 @@ const LIST_FILES_PCT: u64 = 100;
 /// median 2.54x (p90 7.5x) on the docs eval, where grep alone returns only bare lines.
 const DOCUMENT_READ_PCT: u64 = 250;
 
-/// Web-ingestion baseline multiplier (`web:scrape` / `web:crawl` / `web:map`). The alternative
-/// is the agent browsing the page(s) and pasting raw page text into context; the cleaned/extracted
-/// response is a fraction of that. Modelled conservatively at 3× the returned payload.
-const WEB_INGEST_MULTIPLIER: u64 = 3;
-
 /// Rewrite a tool name spelled `code_outline` to the telemetry key the baseline table is written
 /// against (`code:outline`).
 ///
@@ -158,8 +153,6 @@ pub fn estimate_from_text(tool: &str, _corpus_bytes: u64, resp_text: &str) -> Sa
         "memory:documents" => (scaled(actual, DOCUMENT_READ_PCT), "grep_plus_document_read"),
 
         "code:files" => (scaled(actual, LIST_FILES_PCT), "find_plus_filter"),
-
-        "web:scrape" | "web:crawl" | "web:map" => (actual.saturating_mul(WEB_INGEST_MULTIPLIER), "manual_browse_paste"),
 
         "memory:get"
         | "memory:put"
@@ -372,30 +365,6 @@ mod tests {
             assert_eq!(s.baseline, baseline, "{tool} baseline label");
             assert_eq!(s.baseline_tokens, s.actual_tokens, "{tool} must model a 1x baseline");
             assert_eq!(s.est_tokens_saved, 0, "{tool} must not claim savings");
-        }
-    }
-
-    #[test]
-    fn web_ingest_models_manual_browse_paste_at_3x() {
-        for tool in ["web:scrape", "web:crawl", "web:map"] {
-            let s = estimate_from_text(tool, 1_000_000, &"a".repeat(400));
-            assert_eq!(s.baseline, "manual_browse_paste", "{tool} baseline name");
-            assert_eq!(
-                s.baseline_tokens,
-                s.actual_tokens.saturating_mul(3),
-                "{tool} multiplier"
-            );
-            assert_eq!(
-                s.est_tokens_saved,
-                s.baseline_tokens.saturating_sub(s.actual_tokens),
-                "{tool} savings"
-            );
-            #[cfg(not(feature = "tokenizer"))]
-            {
-                assert_eq!(s.actual_tokens, 100, "{tool} actual");
-                assert_eq!(s.baseline_tokens, 300, "{tool} baseline");
-                assert_eq!(s.est_tokens_saved, 200, "{tool} saved");
-            }
         }
     }
 

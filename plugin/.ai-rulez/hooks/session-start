@@ -40,7 +40,7 @@ fi
 # Tool names as the host registers them; ToolSearch needs these exact names. Claude Code namespaces
 # plugin MCP tools as mcp__plugin_<plugin>_<server>__<tool>.
 TOOL_PREFIX="mcp__plugin_basemind_basemind__"
-TOOL_NAMES="code git graph memory admin agents workspace web shell"
+TOOL_NAMES="code git graph memory admin agents workspace shell"
 SELECT=""
 for t in ${TOOL_NAMES}; do
   SELECT="${SELECT:+${SELECT},}${TOOL_PREFIX}${t}"
@@ -66,7 +66,7 @@ else
   STATUS_LINE="basemind verified: ${FILE_COUNT} files indexed (schema ${SCHEMA_VER:-unknown}).${LOAD_TOOLS}"
 fi
 
-ROUTING="Use basemind first for supported repository work: code outline before opening a source file; code symbols for definitions; code references or callers for usages; code find for fuzzy paths; code grep for exact matches in indexed code; git history for commit and blame questions. Use workspace for worktree and claim coordination, agents for thread communication, and web to scrape or crawl when those tools are available. Use memory documents for semantic queries over indexed documents, including Jupyter notebooks. For exact literals or regex outside the code map, search the files directly; a semantic miss does not establish absence. Fall back to ordinary tools when basemind cannot cover the task, and run admin rescan after editing indexed files."
+ROUTING="Use basemind first for supported repository work: code outline before opening a source file; code symbols for definitions; code references or callers for usages; code find for fuzzy paths; code grep for exact matches in indexed code; git history for commit and blame questions. Use workspace for worktree and claim coordination and agents for thread communication when those tools are available. Use memory documents for semantic queries over indexed documents, including Jupyter notebooks. For exact literals or regex outside the code map, search the files directly; a semantic miss does not establish absence. Fall back to ordinary tools when basemind cannot cover the task, and run admin rescan after editing indexed files."
 CONTEXT="${STATUS_LINE} ${ROUTING}"
 
 # 2. Append the status-line nudge only when a basemind status line isn't wired yet.

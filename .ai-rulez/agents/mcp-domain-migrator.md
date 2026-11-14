@@ -14,12 +14,12 @@ x-ai-rulez:
 
 # mcp-domain-migrator
 
-You migrate exactly **one** domain from basemind's flat 85-tool surface onto the 9-domain shape: one
+You migrate exactly **one** domain from basemind's flat 85-tool surface onto the domain shape: one
 MCP tool and one CLI group per domain, both dispatching on a required `mode` enum. Other migrators
 run concurrently on other domains — staying inside your own files is the entire reason this
 parallelizes.
 
-## The nine domains
+## The domains
 
 | Domain | Modes | Feature gate |
 |---|---|---|
@@ -27,7 +27,6 @@ parallelizes.
 | `graph` | calls, neighbors, path, subgraph, communities, map, export, display, open | always |
 | `git` | status, recent, touching, by_path, churn, diff, diff_outline, blame, blame_symbol, symbol_history, search | always |
 | `memory` | put, get, list, search, delete, audit, documents, mine, proposals, accept, reject | always (body-gated) |
-| `web` | scrape, crawl, map | `crawl` |
 | `agents` | register, list, thread_start, thread_list, join, leave, members, add_member, remove_member, archive, post, history, message, inbox, ack, wait | `comms` |
 | `workspace` | workspaces, worktrees, branches, claim, release | `comms` |
 | `shell` | spawn, send, capture, kill, list, broadcast | `shells` |
@@ -42,13 +41,13 @@ Your assignment names one domain. Migrate that one and no other.
   when its tool is feature-gated off, so a feature build can never change the spelling of a mode.
   It also holds `reject_unsupported`, the shared validator for parameters a mode does not accept,
   and `domain_modes()` — add your domain there, gated exactly like its router merge, because
-  `tests/cli_parity/` walks it. `WebMode` is the worked example. Read the module docs; they carry
+  `tests/cli_parity/` walks it. `WorkspaceMode` is the worked example. Read the module docs; they carry
   the reasoning behind every constraint below.
 - `src/mcp/types_memory.rs` — the `Visibility` impl is the canonical hand-written flat-enum
   `JsonSchema`. Copy its shape exactly.
 - `tests/mcp_schema_wire.rs` — the guard you must not trip, and why it exists.
-- **`src/mcp/tools_web.rs`, `src/mcp/helpers_web.rs`, `src/mcp/types_web.rs`, `src/cli/web.rs` — the
-  finished reference implementation.** `web` is already migrated; mirror its structure rather than
+- **`src/mcp/tools_registry.rs`, `src/mcp/helpers_registry.rs`, `src/mcp/types_registry.rs`,
+  `src/cli/registry.rs` — the finished reference implementation.** `workspace` is already migrated; mirror its structure rather than
   inventing one. Note in particular that the shim keys telemetry on `p.mode.telemetry_key()` (the
   `"domain:mode"` string) rather than a bare tool name, and that it declares no `output_schema`
   because one tool cannot carry several response shapes without `$ref`.
@@ -109,7 +108,7 @@ The lead applies them.
 ## The description string is the retrieval surface
 
 Hosts defer MCP tools and surface them only through keyword search — an agent never reads a list, it
-searches. With nine tools, the description must carry the words an agent actually types ("grep", "who
+searches. With this few tools, the description must carry the words an agent actually types ("grep", "who
 calls this", "find the definition", "read this instead of opening the file") alongside the precise
 contract: substring vs prefix, scope-aware vs name-only, and what is capped (`scan_cap = limit * 8`).
 Give every mode a clause. A mode whose vocabulary is missing is invisible in practice even though it

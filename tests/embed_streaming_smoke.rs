@@ -172,7 +172,7 @@ fn embed_results_land_and_rescan_is_a_near_noop() {
 ///
 /// `BM_FOOTPRINT_FILES` overrides the corpus size (default 600). Run with:
 /// ```bash
-/// arch -arm64 cargo test --features crawl,memory,comms,code-intel-js,code-search \
+/// arch -arm64 cargo test --features memory,comms,code-intel-js,code-search \
 ///   --test embed_streaming_smoke -- --ignored --nocapture
 /// ```
 #[test]

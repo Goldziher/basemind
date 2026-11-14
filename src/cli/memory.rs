@@ -111,8 +111,8 @@ pub enum MemoryCmd {
         limit: Option<u32>,
         #[arg(long)]
         mime_type: Option<String>,
-        /// Ingestion scope to search. Defaults to this repo's. Scraped pages live under
-        /// `web:<host>`.
+        /// Ingestion scope to search. Defaults to this repo's. Pages an older version
+        /// ingested from the web live under `web:<host>` and are no longer refreshed.
         #[arg(long)]
         scope: Option<String>,
         /// Token budget for the returned hits; overflow is dropped and flagged `budgeted`.

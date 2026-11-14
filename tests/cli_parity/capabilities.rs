@@ -77,9 +77,6 @@ const fn mcp_only(tool: &'static str, mode: &'static str, reason: &'static str) 
 const LIFECYCLE: &str = "process/index lifecycle, not a query an agent issues over MCP";
 #[cfg(all(feature = "comms", any(unix, windows)))]
 const BROKER: &str = "comms-broker daemon lifecycle; the MCP surface reaches the broker through `agents`/`workspace`";
-#[cfg(not(feature = "crawl"))]
-const NO_CRAWL: &str =
-    "the MCP `web` tool is compiled out without the `crawl` feature; the CLI reports the missing feature";
 
 pub fn table() -> Vec<Row> {
     #[allow(unused_mut)]
@@ -175,19 +172,6 @@ pub fn table() -> Vec<Row> {
             "offline evaluation harness over a JSONL task file; drives the tools rather than being one",
         ),
     ];
-    #[cfg(feature = "crawl")]
-    rows.extend([
-        pair("web", "scrape", "web scrape"),
-        pair("web", "crawl", "web crawl"),
-        pair("web", "map", "web map"),
-    ]);
-    // The `web` CLI group is always compiled in; its MCP tool only exists with `crawl`.
-    #[cfg(not(feature = "crawl"))]
-    rows.extend([
-        cli_only("web scrape", NO_CRAWL),
-        cli_only("web crawl", NO_CRAWL),
-        cli_only("web map", NO_CRAWL),
-    ]);
     #[cfg(all(feature = "comms", any(unix, windows)))]
     rows.extend([
         pair("agents", "register", "agents register"),

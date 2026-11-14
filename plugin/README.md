@@ -39,7 +39,7 @@ hermes plugins enable basemind
 ```
 
 Restart Hermes after installation. The plugin registers ten skills, six slash commands, scoped
-session and inbox notifications, and `basemind_call`. The bridge calls the local MCP server's nine
+session and inbox notifications, and `basemind_call`. The bridge calls the local MCP server's
 domains and returns JSON text. Optional direct MCP configuration in `~/.hermes/config.yaml` is:
 
 ```yaml
@@ -83,8 +83,8 @@ Load the `basemind` skill in your agent and use `code` with an explicit `mode`, 
 
 ## API overview
 
-Nine domain tools dispatch through a required `mode`: `code`, `graph`, `git`, `memory`, `admin`,
-`web`, `agents`, `workspace`, and `shell`. Optional capabilities depend on the installed binary's
+Eight domain tools dispatch through a required `mode`: `code`, `graph`, `git`, `memory`, `admin`,
+`agents`, `workspace`, and `shell`. Optional capabilities depend on the installed binary's
 features. See the [MCP reference](../README.md) for modes and error handling.
 
 Install only the public skills with `npx skills add Goldziher/basemind`. Root `skills/` mirrors the

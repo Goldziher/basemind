@@ -35,6 +35,11 @@ is cleaned up.
 `admin delta`, `admin checkpoint` and `admin waste` moved to the top level in 0.29 and were removed
 afterwards, together with `admin compress` and `compress-output`; they have no replacement.
 
+The `web` tool and the `basemind web` commands (`scrape`, `crawl`, `map`) were removed, with the
+`crawl` cargo feature; they have no replacement. A `[crawl]` table in `basemind.toml` is still
+accepted and ignored. Pages already ingested stay searchable under their `web:<host>` scope
+(`memory documents --scope web:<host>`) and are no longer refreshed.
+
 Also check scripts for these behaviour changes:
 
 - Exit codes are `0` ok, `1` error, `2` usage, `3` writer lock held, `4` daemon unreachable, `130`

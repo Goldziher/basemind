@@ -125,7 +125,7 @@ async fn connect(repo_root: &Path) -> ServiceHandle {
     ().serve(transport).await.expect("rmcp handshake with basemind serve")
 }
 
-/// Build a tool call, rejecting any name that is not one of the nine domain tools.
+/// Build a tool call, rejecting any name that is not one of the eight domain tools.
 ///
 /// Every call site here is wrapped in `if let Ok(out) = …`, so an unknown tool name does not fail
 /// the call — it skips the block, leaves the canary unset, and `unwrap_or(0)` then reports zero
@@ -134,24 +134,23 @@ async fn connect(repo_root: &Path) -> ServiceHandle {
 /// run blamed the engine for returning no `Future` implementations in tokio. Panicking on an
 /// unknown name turns that silent misattribution into an immediate, obvious failure. ~keep
 fn call_params(name: &'static str, args: &Value) -> CallToolRequestParams {
-    // Checked against the fixed nine, not `mode::domain_modes()`, because that list is cfg-gated:
-    // under a default-feature build `shell` / `web` / `agents` / `workspace` are absent, and the
+    // Checked against the fixed eight, not `mode::domain_modes()`, because that list is cfg-gated:
+    // under a default-feature build `shell` / `agents` / `workspace` are absent, and the
     // harness calls them deliberately so it can record them as skipped. The invariant worth
     // asserting is that the name is a domain at all, not that this build serves it. ~keep
-    const DOMAINS: [&str; 9] = [
+    const DOMAINS: [&str; 8] = [
         "code",
         "graph",
         "git",
         "memory",
         "admin",
-        "web",
         "agents",
         "workspace",
         "shell",
     ];
     assert!(
         DOMAINS.contains(&name),
-        "harden calls `{name}`, which is not one of the nine domain tools — a call site was missed \
+        "harden calls `{name}`, which is not one of the eight domain tools — a call site was missed \
          when the surface consolidated; an unknown tool would silently read back as a zero canary"
     );
     let mut params = CallToolRequestParams::new(name);

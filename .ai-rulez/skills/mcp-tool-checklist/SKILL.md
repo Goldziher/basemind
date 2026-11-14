@@ -13,9 +13,9 @@ x-ai-rulez:
 
 Use this when extending basemind's MCP surface. Skipping a step leaves the tool half-wired.
 
-**The surface is nine domain tools, not one tool per verb.** Adding a capability means adding a
-**mode** to an existing domain — `code`, `graph`, `git`, `memory`, `web`, `agents`, `workspace`,
-`shell`, `admin`. Adding a tenth top-level tool is a surface change that needs its own ADR, not a
+**The surface is eight domain tools, not one tool per verb.** Adding a capability means adding a
+**mode** to an existing domain — `code`, `graph`, `git`, `memory`, `agents`, `workspace`,
+`shell`, `admin`. Adding another top-level tool is a surface change that needs its own ADR, not a
 checklist step: every extra name competes for the same keyword search in hosts that defer tools, and
 GH #50 showed one bad schema takes the whole registry down with it.
 
@@ -52,7 +52,7 @@ file stays under the **1000-line cap** enforced by `tests/max_lines.rs` — spli
    `--mode`, so each gets its own `--help` and argument validation.
 
 5. **`tests/cli_parity/capabilities.rs`** — add the `(tool, Some("mode"), "cli path")` row. Keyed on the pair, not
-   the tool name: keyed on names alone the test would verify nine tools and silently stop covering
+   the tool name: keyed on names alone the test would verify the tool names and silently stop covering
    the modes beneath them.
 
 6. **`tests/mcp_smoke.rs`** — add an assertion to that domain's per-mode coverage test, and to its
@@ -78,7 +78,7 @@ file stays under the **1000-line cap** enforced by `tests/max_lines.rs` — spli
 
 ## The description is a retrieval surface
 
-Hosts defer MCP tools and surface them by keyword search, so with nine names the description **is**
+Hosts defer MCP tools and surface them by keyword search, so with this few names the description **is**
 how an agent finds the tool. It must carry the words someone actually types — "grep", "who calls
 this", "find the definition", "read this instead of opening the file" — alongside the honest
 contract: substring vs exact matching, scope-aware vs name-only resolution, and what is capped.

@@ -1,7 +1,7 @@
 ---
 type: Reference
 title: Surface Docs Writer
-description: Rewrites basemind's docs, skills, and plugin manifests against the 9-domain MCP/CLI surface — knows the ai-rulez generation source, the four parallel skill trees, and the hand-synced command mirrors.
+description: Rewrites basemind's docs, skills, and plugin manifests against the domain-tool MCP/CLI surface — knows the ai-rulez generation source, the four parallel skill trees, and the hand-synced command mirrors.
 x-ai-rulez:
   kind: agent
   id: surface-docs-writer
@@ -13,8 +13,8 @@ x-ai-rulez:
 # surface-docs-writer
 
 You rewrite basemind's documentation against the consolidated surface: 85 flat MCP tools and their
-CLI groups collapse onto **9 domains** — `code`, `graph`, `git`, `memory`, `web`, `agents`,
-`workspace`, `shell`, `admin` — each one MCP tool plus one CLI group, dispatching on a required,
+CLI groups collapse onto **8 domains** — `code`, `graph`, `git`, `memory`, `agents`, `workspace`,
+`shell`, `admin` — each one MCP tool plus one CLI group, dispatching on a required,
 non-defaulted `mode` enum. Every doc that names an old tool is now wrong.
 
 ## Know what is generated before you edit anything
@@ -41,7 +41,7 @@ The ten public skills, including `basemind-multi-agent-room`, are authored under
 
 | Surface | Note |
 |---|---|
-| `README.md` | The MCP tools table becomes 9 rows, one per domain, modes listed inline. |
+| `README.md` | The MCP tools table has one row per domain, modes listed inline. |
 | `llms.txt` | Same collapse; keep it machine-skimmable. |
 | `docs/ARCHITECTURE.md` | The `types_/tools_/helpers_` per-domain trio and the CLI subcommand groups. |
 | `CHANGELOG.md` | An `Unreleased` entry naming the removed tools and their replacement mode. |
@@ -60,7 +60,7 @@ The ten public skills, including `basemind-multi-agent-room`, are authored under
 3. Rewrite per surface, not per tool. Each doc gets one coherent pass, not 85 find-and-replaces.
 4. Preserve the contract details the old docs carried: substring vs prefix matching, scope-aware vs
    name-only resolution, caps (`limit` default 100 / max 1000, `scan_cap = limit * 8`), and feature
-   gates (`crawl`, `comms`, `shells`).
+   gates (`comms`, `shells`).
 5. Verify: `poly lint .` (markdown line length, typos), then grep the tree for any old tool name you
    believed you had removed.
 

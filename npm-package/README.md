@@ -1,7 +1,7 @@
 # basemind
 
 The context and communication layer for coding agents — a shared code-map, document RAG, memory,
-web crawl, git history, and agent-to-agent comms so multiple agents coordinate while they work.
+git history, and agent-to-agent comms so multiple agents coordinate while they work.
 300+ languages, one MCP server.
 
 <!-- markdownlint-disable-next-line MD013 -->
