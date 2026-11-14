@@ -1,4 +1,4 @@
-use std::fs::{File, OpenOptions};
+use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -167,7 +167,7 @@ pub const LOCK_CONTENTION_HELP: &str = "the basemind index is locked by another 
 (likely the MCP server). If an editor/plugin is serving this repo, use its `rescan` tool \
 to refresh the index, or stop that server before running `basemind scan`.";
 
-pub use crate::store_lock::{WriterProbe, probe_writer_lock, probe_writer_lock_settled};
+pub use crate::store_lock::{WriterProbe, probe_writer_lock};
 pub(crate) use crate::store_lock::{acquire_lock, acquire_lock_as, writer_lock_is_held};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -313,7 +313,7 @@ pub struct Store {
     /// every file (blobs are reused by hash) instead of skipping them as unchanged over an empty
     /// index. Only a writer opening the index can know it.
     pub index_rebuild_needed: bool,
-    _lock: Option<File>,
+    _lock: Option<crate::store_lock::StoreLock>,
 }
 
 impl Store {
