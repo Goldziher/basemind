@@ -293,6 +293,13 @@ impl IndexWriter {
     /// by bytes rather than by file count samples that signal an order of magnitude more often on
     /// entry-dense files, and bounds the journal write burst to the same budget.
     pub fn commit(self) -> Result<(), IndexError> {
+        #[cfg(test)]
+        if self.db.fault.take_injected_commit_failure() {
+            return Err(IndexError::Io {
+                path: std::path::PathBuf::new(),
+                source: std::io::Error::other("injected commit failure"),
+            });
+        }
         let result = self.batch.commit().map_err(IndexError::from);
         if let Err(error) = &result {
             self.db.record_commit_error(error);

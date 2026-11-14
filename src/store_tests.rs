@@ -104,7 +104,8 @@ fn open_read_only_allows_unscanned_working_view() {
 fn ensure_dirs_lets_a_read_only_opened_store_flush_on_first_scan() {
     init_isolated_cache();
     let tmp = tempfile::tempdir().expect("tempdir");
-    let store = Store::open_read_only(tmp.path(), VIEW_WORKING).expect("working view opens even when never scanned");
+    let mut store =
+        Store::open_read_only(tmp.path(), VIEW_WORKING).expect("working view opens even when never scanned");
     assert!(
         !store.view_dir.exists(),
         "open_read_only must not create view_dir on a never-scanned workspace"
@@ -148,7 +149,7 @@ fn open_read_only_reports_a_fjall_index_written_by_a_newer_basemind() {
     init_isolated_cache();
     let tmp = tempfile::tempdir().expect("tempdir");
     let view_dir = {
-        let store = Store::open(tmp.path(), VIEW_WORKING).expect("writer creates the view");
+        let mut store = Store::open(tmp.path(), VIEW_WORKING).expect("writer creates the view");
         store.flush().expect("flush the file map");
         store.view_dir.clone()
     };

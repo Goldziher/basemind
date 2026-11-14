@@ -61,7 +61,8 @@ pub(crate) fn finish_resolve(store: &Store, resolved: bool) -> Result<(), ScanEr
 /// post-extraction lanes.
 ///
 /// Blobs and the Fjall index are committed per file, but the file map is a single msgpack rewrite at
-/// the end. When it was written *after* the optional lanes, any lane that panicked (the
+/// the end; [`Store::flush`] fsyncs the index journal before that rewrite, once per scan. When it was
+/// written *after* the optional lanes, any lane that panicked (the
 /// `stack-graphs` stitcher) or hung until the operator killed the process (the embedding-model
 /// download on a blackholed IPv6 route) left the workspace with gigabytes of committed blobs beside
 /// an `index.msgpack` reporting `file_count: 0` — a silently empty code map that forced a full
@@ -72,10 +73,14 @@ pub(crate) fn finish_resolve(store: &Store, resolved: bool) -> Result<(), ScanEr
 /// finished walk whose resolve pass is still to come, [`ScanHealth::partial`] for a cancelled one.
 ///
 /// A lane that mutates `store.index` must flush again after itself (only the doc-removal lane does).
-pub(crate) fn flush_code_map(store: &Store, health: &ScanHealth) -> Result<(), ScanError> {
+pub(crate) fn flush_code_map(store: &mut Store, health: &ScanHealth) -> Result<(), ScanError> {
     store.flush()?;
     // Refresh the cheap statusline sidecar the moment the code map is durable, so a shell
     // statusline sees fresh counts without ever opening the Fjall index. Best-effort by design.
     store.write_status_sidecar_with(health);
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "scanner_integrity_tests.rs"]
+mod tests;

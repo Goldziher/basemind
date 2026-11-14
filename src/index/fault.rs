@@ -20,6 +20,11 @@ pub struct IndexFault {
     /// Mirrors `reason.is_some()` so the per-file hot path polls an atomic, not the mutex.
     tripped: AtomicBool,
     reason: Mutex<Option<String>>,
+    /// Test-only fault seam: how many of the next [`IndexWriter::commit`](super::writer::IndexWriter::commit)
+    /// calls on this handle fail with a non-fatal error. A real commit failure needs a failing disk,
+    /// so nothing else can exercise what a scan does with the files of a lost batch.
+    #[cfg(test)]
+    injected_commit_failures: std::sync::atomic::AtomicU32,
 }
 
 impl IndexFault {
@@ -61,6 +66,18 @@ impl IndexFault {
     /// Whether the latched failure is a poisoned handle, which only reopening the database clears.
     pub fn is_poisoned(&self) -> bool {
         self.reason().is_some_and(|reason| reason.starts_with(POISONED))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn inject_commit_failures(&self, count: u32) {
+        self.injected_commit_failures.store(count, Ordering::Release);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn take_injected_commit_failure(&self) -> bool {
+        self.injected_commit_failures
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |left| left.checked_sub(1))
+            .is_ok()
     }
 }
 

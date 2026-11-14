@@ -204,6 +204,12 @@ pub struct Index {
     /// (additive, no schema bump).
     #[serde(default)]
     pub doc_tombstones: AHashMap<RelPath, crate::store_doc_tombstone::DocTombstone>,
+    /// The scan generation [`Store::flush`] sealed into the Fjall index before writing this file map
+    /// (see [`crate::index::durability`]). An index stamped below it lost writes this map vouches
+    /// for and is rebuilt at open. `0` (also what a file map from before the field decodes to, via
+    /// `#[serde(default)]`: additive, no schema bump) makes no claim about the index.
+    #[serde(default)]
+    pub generation: u64,
 }
 
 impl Index {
@@ -214,6 +220,7 @@ impl Index {
             doc_files: AHashMap::new(),
             embed_policy: String::new(),
             doc_tombstones: AHashMap::new(),
+            generation: 0,
         }
     }
 }
@@ -538,7 +545,19 @@ impl Store {
             }
             Err(e) => return Err(e),
         };
-        let index_db = open_index_with_retry(root, &view_dir)?;
+        let mut index_db = open_index_with_retry(root, &view_dir)?;
+        // The file map is fsynced only after the index sealed the same generation, so an index
+        // stamped below it lost the tail of its journal. Which rows went is unknowable, so the whole
+        // index is discarded and the empty-index rebuild below takes over. ~keep
+        if !index_db.wiped_on_open() && index.generation > index_db.scan_generation()? {
+            tracing::warn!(
+                view,
+                "code index is older than its file map (unclean shutdown); rebuilding it"
+            );
+            drop(index_db);
+            crate::index::durability::discard_index(&view_dir)?;
+            index_db = open_index_with_retry(root, &view_dir)?;
+        }
         let index_rebuild_needed =
             !index.files.is_empty() && (index_db.wiped_on_open() || index_db.view().symbols_index_is_empty());
         if index_rebuild_needed {
@@ -730,8 +749,16 @@ impl Store {
         self.index.doc_files.get(bstr::BStr::new(rel.as_ref()))
     }
 
-    /// Atomically rewrite the index file (tmp + rename).
-    pub fn flush(&self) -> Result<(), StoreError> {
+    /// Atomically rewrite the index file (tmp + rename), after making the Fjall index durable.
+    ///
+    /// The file map is what lets the next scan skip a file as unchanged, so the rows it vouches for
+    /// must be on disk before it is: the index seals a new generation (one journal fsync) first, and
+    /// a failed seal fails the flush with the previous file map left in place.
+    pub fn flush(&mut self) -> Result<(), StoreError> {
+        self.index.generation = match self.index_db.as_ref() {
+            Some(db) => db.seal_scan(self.index.generation)?,
+            None => 0,
+        };
         let final_path = self.view_dir.join(INDEX_FILE);
         let tmp_path = self.view_dir.join(format!("{INDEX_FILE}.tmp"));
         let bytes = rmp_serde::to_vec_named(&self.index)?;
@@ -758,6 +785,11 @@ impl Store {
             path: final_path,
             source,
         })?;
+        // The rename is durable only once the directory entry is. Not fatal: the new file map is
+        // already in place, and some filesystems refuse to fsync a directory.
+        if let Err(error) = crate::store_base::sync_directory(&self.view_dir) {
+            tracing::warn!(%error, "could not fsync the view directory after writing the file map");
+        }
         Ok(())
     }
 

@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use crate::extract::{FileMapL1, FileMapL2};
 use crate::index::{IndexDb, writer::IndexWriter};
 use crate::path::RelPath;
-use crate::scanner::FileResult;
+use crate::scanner::{FileResult, FileStatus};
 use crate::store::Store;
 
 /// Number of files whose index entries are accumulated into one Fjall write batch before
@@ -146,6 +146,26 @@ pub(crate) struct WorkerIndexBatch<'a> {
     byte_budget: u64,
     ledger: &'static StagedByteLedger,
     results: Vec<FileResult>,
+    /// `results[..settled]` have every index row committed or already disowned; the rest still ride
+    /// the open batch.
+    settled: usize,
+    /// The file being staged lost rows (a failed upsert, or a failed commit of a batch holding some
+    /// of them) before its result was pushed, so [`Self::push_result`] must disown it.
+    lost_in_flight: bool,
+}
+
+/// Withdraw `result`'s claim that its file is indexed: its rows did not reach the index, so the file
+/// map must not record it. It is reported as a failed extraction, which leaves it out of the file map
+/// and makes the next scan process it again.
+fn disown(result: &mut FileResult) {
+    if matches!(result.status, FileStatus::Updated { .. }) {
+        *result = FileResult::bare(
+            std::mem::take(&mut result.path),
+            FileStatus::ExtractFailed {
+                msg: "index commit failed".to_string(),
+            },
+        );
+    }
 }
 
 impl<'a> WorkerIndexBatch<'a> {
@@ -162,6 +182,8 @@ impl<'a> WorkerIndexBatch<'a> {
             byte_budget,
             ledger,
             results: Vec::new(),
+            settled: 0,
+            lost_in_flight: false,
         }
     }
 
@@ -179,6 +201,8 @@ impl<'a> WorkerIndexBatch<'a> {
         let staged_ok = writer.upsert_file(rel, l1, l2).is_ok();
         if staged_ok {
             self.staged += 1;
+        } else {
+            self.lost_in_flight = true;
         }
         self.commit_if_full();
         staged_ok
@@ -276,7 +300,8 @@ impl<'a> WorkerIndexBatch<'a> {
         }
     }
 
-    /// Flush the staged batch under Fjall's write lock and reset both counters.
+    /// Flush the staged batch under Fjall's write lock and reset both counters. A failed commit
+    /// disowns every file with rows in the batch, pushed or still being staged.
     fn commit(&mut self) {
         if let Some(writer) = self.writer.take() {
             self.ledger.record_commit();
@@ -284,10 +309,13 @@ impl<'a> WorkerIndexBatch<'a> {
                 if self.index.is_some_and(|index| index.fatal_fault().is_some()) {
                     tracing::error!(%error, "index commit failed fatally (disk full or poisoned handle); the scan will abort");
                 } else {
-                    tracing::warn!("index batch commit failed; reference search may be incomplete");
+                    tracing::warn!(%error, "index batch commit failed; its files are left for the next scan");
                 }
+                self.results[self.settled..].iter_mut().for_each(disown);
+                self.lost_in_flight = true;
             }
         }
+        self.settled = self.results.len();
         self.release_reported();
         self.staged = 0;
     }
@@ -299,7 +327,10 @@ impl<'a> WorkerIndexBatch<'a> {
 
     /// Record one file's scan outcome alongside the index work, so the parallel fold carries
     /// both out of the worker in a single pass.
-    pub(crate) fn push_result(&mut self, result: FileResult) {
+    pub(crate) fn push_result(&mut self, mut result: FileResult) {
+        if std::mem::take(&mut self.lost_in_flight) {
+            disown(&mut result);
+        }
         self.results.push(result);
     }
 
@@ -672,6 +703,109 @@ mod tests {
         );
         drop(batch);
         assert_eq!(LEDGER.in_flight(), 0);
+    }
+
+    fn updated(path: &str) -> FileResult {
+        let mut result = FileResult::bare(
+            path.to_string(),
+            FileStatus::Updated {
+                had_errors: false,
+                error_count: 0,
+                reused: false,
+            },
+        );
+        result.upsert = Some(crate::store::FileEntry {
+            hash_hex: "00".to_string(),
+            language: "rust".to_string(),
+            size_bytes: 0,
+            mtime: 0,
+            extract_epoch: crate::extract::EXTRACT_EPOCH,
+        });
+        result
+    }
+
+    /// `(path, still claims to be indexed)` for each result, in order.
+    fn claims(results: &[FileResult]) -> Vec<(&str, bool)> {
+        results
+            .iter()
+            .map(|result| (result.path.as_str(), result.upsert.is_some()))
+            .collect()
+    }
+
+    /// A lost batch must take back exactly its own files: the ones already pushed since the last
+    /// good commit and the one whose staging triggered the commit. Files committed before it, files
+    /// staged after it, and files that never claimed new rows keep their outcome.
+    #[test]
+    fn a_failed_commit_disowns_exactly_the_files_riding_that_batch() {
+        static LEDGER: StagedByteLedger = StagedByteLedger::new(u64::MAX);
+        let (_dir, db) = fresh_index();
+        let l1 = bulky_l1(4);
+        let mut batch = WorkerIndexBatch::with_budget(Some(&db), u64::MAX, &LEDGER);
+
+        assert!(batch.stage(&RelPath::from("src/committed.rs"), &l1, None));
+        batch.push_result(updated("src/committed.rs"));
+        batch.commit();
+
+        assert!(batch.stage(&RelPath::from("src/lost.rs"), &l1, None));
+        batch.push_result(updated("src/lost.rs"));
+        batch.push_result(FileResult::bare("src/unchanged.rs".to_string(), FileStatus::Unchanged));
+        assert!(batch.stage(&RelPath::from("src/in_flight.rs"), &l1, None));
+        db.fault.inject_commit_failures(1);
+        batch.commit();
+        batch.push_result(updated("src/in_flight.rs"));
+
+        assert!(batch.stage(&RelPath::from("src/after.rs"), &l1, None));
+        batch.push_result(updated("src/after.rs"));
+        let results = batch.finish();
+
+        assert_eq!(
+            claims(&results),
+            vec![
+                ("src/committed.rs", true),
+                ("src/lost.rs", false),
+                ("src/unchanged.rs", false),
+                ("src/in_flight.rs", false),
+                ("src/after.rs", true),
+            ]
+        );
+        assert!(matches!(results[1].status, FileStatus::ExtractFailed { .. }));
+        assert!(matches!(results[2].status, FileStatus::Unchanged));
+        assert!(matches!(results[3].status, FileStatus::ExtractFailed { .. }));
+        let indexed: ahash::AHashSet<String> = dump(db.keyspace_for_test(crate::index::view::Part::SymbolsByPath))
+            .iter()
+            .filter_map(|(key, _)| crate::index::keys::parse_symbol_by_path(key))
+            .map(|(path, _)| path.to_string())
+            .collect();
+        let expected: ahash::AHashSet<String> = ["src/committed.rs", "src/after.rs"]
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+        assert_eq!(indexed, expected, "the claims match what the index actually holds");
+        assert_eq!(LEDGER.in_flight(), 0);
+    }
+
+    /// A failed upsert leaves partial rows staged, so its file is no more indexed than one whose
+    /// commit failed, and must not be recorded either.
+    #[test]
+    fn a_failed_upsert_disowns_its_file() {
+        static LEDGER: StagedByteLedger = StagedByteLedger::new(u64::MAX);
+        let (_dir, db) = fresh_index();
+        let l1 = bulky_l1(4);
+        let mut batch = WorkerIndexBatch::with_budget(Some(&db), u64::MAX, &LEDGER);
+
+        assert!(batch.stage(&RelPath::from("src/ok.rs"), &l1, None));
+        batch.push_result(updated("src/ok.rs"));
+        batch.writer.as_mut().expect("writer").fail_after_staging = true;
+        assert!(!batch.stage(&RelPath::from("src/doomed.rs"), &l1, None));
+        batch.push_result(updated("src/doomed.rs"));
+        batch.writer.as_mut().expect("writer").fail_after_staging = false;
+        assert!(batch.stage(&RelPath::from("src/next.rs"), &l1, None));
+        batch.push_result(updated("src/next.rs"));
+
+        assert_eq!(
+            claims(&batch.finish()),
+            vec![("src/ok.rs", true), ("src/doomed.rs", false), ("src/next.rs", true)]
+        );
     }
 
     /// The shared ceiling has no hysteresis of its own: past `ceiling / per-worker budget` workers

@@ -53,7 +53,7 @@ pub(super) fn sync_file(path: &Path) -> io::Result<()> {
     file.sync_all()
 }
 
-pub(super) fn sync_directory(path: &Path) -> io::Result<()> {
+pub(crate) fn sync_directory(path: &Path) -> io::Result<()> {
     #[cfg(unix)]
     return fs::File::open(path)?.sync_all();
     #[cfg(not(unix))]

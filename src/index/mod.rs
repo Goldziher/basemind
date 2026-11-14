@@ -17,6 +17,7 @@
 //! msgpack blobs. This is fast (no parsing — just decode each L1, push to secondary
 //! indexes) and keeps the on-disk format free to evolve.
 
+pub(crate) mod durability;
 pub mod fault;
 pub mod grep_bloom;
 pub mod keys;
