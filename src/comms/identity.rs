@@ -280,6 +280,7 @@ fn resolve_id(request: &IdentityRequest<'_>) -> (AgentId, IdentitySource) {
 fn load_or_create_workspace_id(workspace_cache_dir: &Path) -> Option<AgentId> {
     let path = workspace_cache_dir.join(AGENT_ID_FILE);
     if let Some(id) = read_agent_id(&path) {
+        refresh_agent_id_mtime(&path);
         return Some(id);
     }
     std::fs::create_dir_all(workspace_cache_dir).ok()?;
@@ -293,6 +294,30 @@ fn load_or_create_workspace_id(workspace_cache_dir: &Path) -> Option<AgentId> {
         }
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => read_agent_id(&path),
         Err(_) => None,
+    }
+}
+
+/// How stale `agent-id`'s mtime may get before a resolution refreshes it.
+const AGENT_ID_REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+
+/// Keep `agent-id`'s mtime within [`AGENT_ID_REFRESH_INTERVAL`] of its last use.
+///
+/// The file is written once and only read afterwards, so its mtime would otherwise be the creation
+/// time. The workspace reaper ([`crate::store_gc_workspace`]) removes a marker-less cache dir whose
+/// files are all old, and an identity still in use must not look old to it. Best-effort: a failed
+/// refresh only leaves the mtime where it was.
+fn refresh_agent_id_mtime(path: &Path) {
+    let now = std::time::SystemTime::now();
+    let fresh = std::fs::metadata(path)
+        .and_then(|meta| meta.modified())
+        .ok()
+        .and_then(|modified| now.duration_since(modified).ok())
+        .is_none_or(|age| age < AGENT_ID_REFRESH_INTERVAL);
+    if fresh {
+        return;
+    }
+    if let Ok(file) = std::fs::File::options().write(true).open(path) {
+        let _ = file.set_modified(now);
     }
 }
 
@@ -435,6 +460,32 @@ fn cleanup_expired_claims_in(dir: &Path, ttl: std::time::Duration, apply: bool) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resolving_a_persisted_workspace_id_refreshes_a_stale_mtime() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let first = load_or_create_workspace_id(temp.path()).expect("create id");
+        let path = temp.path().join(AGENT_ID_FILE);
+        let long_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(30 * 24 * 60 * 60);
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .and_then(|file| file.set_modified(long_ago))
+            .expect("age the id file");
+
+        let second = load_or_create_workspace_id(temp.path()).expect("read id");
+
+        assert_eq!(second, first, "the id itself is unchanged");
+        let age = std::fs::metadata(&path)
+            .and_then(|meta| meta.modified())
+            .expect("mtime")
+            .elapsed()
+            .expect("mtime is not in the future");
+        assert!(
+            age < AGENT_ID_REFRESH_INTERVAL,
+            "a use refreshes the mtime, got {age:?}"
+        );
+    }
 
     #[test]
     fn claim_prune_removes_only_rows_older_than_the_ttl() {

@@ -246,6 +246,11 @@ pub(super) struct CacheGcResponse {
     pub removed: usize,
     /// Bytes reclaimed by the removals.
     pub bytes_freed: u64,
+    /// Workspace cache dirs with no root marker that hold only stale disposable leftovers; the
+    /// daemon's sweep removes them.
+    pub markerless_workspaces_reapable: usize,
+    /// On-disk size of those dirs.
+    pub markerless_workspace_bytes_reapable: u64,
 }
 
 impl From<crate::store_gc::GcReport> for CacheGcResponse {
@@ -254,6 +259,8 @@ impl From<crate::store_gc::GcReport> for CacheGcResponse {
             scanned: r.scanned,
             removed: r.removed,
             bytes_freed: r.bytes_freed,
+            markerless_workspaces_reapable: r.markerless_workspaces_reapable,
+            markerless_workspace_bytes_reapable: r.markerless_workspace_bytes_reapable,
         }
     }
 }

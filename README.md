@@ -1171,7 +1171,7 @@ The other former `admin` verbs live at the top level: `status`, `rescan`, `cache
 | Command | Purpose |
 |---|---|
 | `stats` | Disk footprint (per-component + total, matches `du`) and process RAM. |
-| `gc [--dry-run]` | Reap blobs no workspace on the machine references. Cross-workspace reference-counted, keeps blobs younger than 6 h (`BASEMIND_BLOB_GC_GRACE_SECS`), serialised by a machine-wide lock. `--dry-run` only counts the blobs in the store and deletes nothing. |
+| `gc [--dry-run]` | Reap blobs no workspace on the machine references. Cross-workspace reference-counted, keeps blobs younger than 6 h (`BASEMIND_BLOB_GC_GRACE_SECS`), serialised by a machine-wide lock. `--dry-run` only counts the blobs in the store, plus the marker-less workspace dirs the daemon's sweep would reap, and deletes nothing. |
 | `clear --component <comp> [--yes]` | Clear part of the cache (`blobs`, `views`, `views:<name>`, `lance`, `git-cache`, `telemetry`, `all`; default `git-cache`). Everything but `git-cache` asks for confirmation on a terminal and needs `--yes` otherwise. `blobs` is the **machine-global** store shared by every workspace. Refuses (exit 3) while a writer holds the workspace lock, and for `blobs` while the daemon runs. |
 
 **Web (`basemind web`)**

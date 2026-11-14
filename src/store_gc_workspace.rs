@@ -20,18 +20,43 @@
 //! |---|---|
 //! | marker present, recorded root missing | reap (`remove_dir_all`) |
 //! | marker present, recorded root exists | keep |
-//! | marker **absent** (pre-0.23 legacy dir) | **keep** — unverifiable; it self-heals on next open |
+//! | marker **absent**, holds index or other state | **keep** — unverifiable; it self-heals on next open |
+//! | marker **absent**, only stale disposable leftovers | reap — see [`DISPOSABLE_LEFTOVERS`] |
 //! | `.lock` held by another process | skip — never reap a workspace someone is using |
+//!
+//! A marker-less dir is reaped only when every entry in it is a regular file named in
+//! [`DISPOSABLE_LEFTOVERS`], nothing in it (nor the dir itself) was modified within
+//! [`MARKERLESS_WORKSPACE_GRACE`], and no process holds its `.lock`. These are the dirs a comms CLI
+//! verb or hook leaves behind when it resolves its identity for a directory that is never scanned:
+//! no store open ever writes their marker, so without this rule they accumulate forever.
 //!
 //! Split into its own module (mirroring `store_lock.rs`) to keep `store_gc.rs` under the module
 //! size cap; the entry points are re-exported from [`crate::store_gc`].
 
 use std::path::Path;
+use std::time::{Duration, SystemTime};
 
 use serde::Serialize;
 
-use crate::store::{CACHE_DIR, WORKSPACES_DIR, acquire_lock, cache_root, read_workspace_marker};
+use crate::comms::identity::AGENT_ID_FILE;
+use crate::store::{
+    CACHE_DIR, LOCK_FILE, LOCK_META_FILE, WORKSPACES_DIR, acquire_lock, cache_root, read_workspace_marker,
+    writer_lock_is_held,
+};
+use crate::store_cache_admin::TELEMETRY_FILENAME;
 use crate::store_gc::{GcError, dir_size};
+
+/// The only files a marker-less workspace dir may hold and still be reaped: the persisted CLI
+/// identity, the telemetry log, and the store lock with its holder sidecar. None of them is index
+/// state, and each is recreated on demand. Any other entry (a subdirectory, a symlink, an unknown
+/// file, an unparsable `workspace.json`) keeps the dir.
+const DISPOSABLE_LEFTOVERS: [&str; 4] = [AGENT_ID_FILE, TELEMETRY_FILENAME, LOCK_FILE, LOCK_META_FILE];
+
+/// How long a marker-less dir of [`DISPOSABLE_LEFTOVERS`] must sit untouched before it is reaped.
+/// A scan creates its dir and takes `.lock` before it writes the marker, and the identity resolver
+/// refreshes `agent-id` while it is in use, so the window only has to outlast a pause between uses
+/// of one identity.
+const MARKERLESS_WORKSPACE_GRACE: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 
 /// Result of an orphaned-workspace reap sweep. Every inspected dir lands in exactly one of the
 /// four outcome counters (`reaped` + `kept_live` + `kept_unverifiable` + `skipped_locked` ==
@@ -40,11 +65,16 @@ use crate::store_gc::{GcError, dir_size};
 pub struct ReapReport {
     /// Workspace directories inspected.
     pub scanned: usize,
-    /// Orphaned workspace directories removed (marker present, recorded root gone).
+    /// Workspace directories removed: orphans (marker present, recorded root gone) plus
+    /// [`Self::reaped_markerless`].
     pub reaped: usize,
+    /// The subset of [`Self::reaped`] that carried no marker and held only stale disposable
+    /// leftovers.
+    pub reaped_markerless: usize,
     /// Kept because the recorded root still exists.
     pub kept_live: usize,
-    /// Kept because the dir carries no marker, so its root cannot be verified (legacy dirs).
+    /// Kept because the root cannot be verified: no marker and the dir is not provably disposable,
+    /// or the recorded root sits on a volume that is not mounted.
     pub kept_unverifiable: usize,
     /// Skipped because another process holds the workspace `.lock`.
     pub skipped_locked: usize,
@@ -64,6 +94,12 @@ pub fn reap_orphaned_workspaces() -> Result<ReapReport, GcError> {
 /// global `cache/workspaces`; unit tests pass a per-test temp dir so they never mutate (nor race on)
 /// the machine-global cache. Mirrors the `*_in` seam convention in [`crate::store_gc`].
 pub(crate) fn reap_orphaned_workspaces_in(workspaces_dir: &Path) -> Result<ReapReport, GcError> {
+    reap_orphaned_workspaces_at(workspaces_dir, SystemTime::now())
+}
+
+/// [`reap_orphaned_workspaces_in`] with an explicit clock, so tests age a marker-less dir past
+/// [`MARKERLESS_WORKSPACE_GRACE`] without rewriting mtimes.
+fn reap_orphaned_workspaces_at(workspaces_dir: &Path, now: SystemTime) -> Result<ReapReport, GcError> {
     let mut report = ReapReport::default();
     if !workspaces_dir.exists() {
         return Ok(report);
@@ -84,11 +120,17 @@ pub(crate) fn reap_orphaned_workspaces_in(workspaces_dir: &Path) -> Result<ReapR
         report.scanned += 1;
 
         let Some(marker) = read_workspace_marker(&workspace_dir) else {
-            report.kept_unverifiable += 1;
-            tracing::debug!(
-                workspace = %workspace_dir.display(),
-                "workspace cache has no root marker; keeping (unverifiable, self-heals on next open)"
-            );
+            match classify_markerless(&workspace_dir, now) {
+                Markerless::Keep => {
+                    report.kept_unverifiable += 1;
+                    tracing::debug!(
+                        workspace = %workspace_dir.display(),
+                        "workspace cache has no root marker; keeping (unverifiable, self-heals on next open)"
+                    );
+                }
+                Markerless::Locked => report.skipped_locked += 1,
+                Markerless::Disposable => reap_markerless(&workspace_dir, &mut report)?,
+            }
             continue;
         };
         if marker.root.exists() {
@@ -132,6 +174,116 @@ pub(crate) fn reap_orphaned_workspaces_in(workspaces_dir: &Path) -> Result<ReapR
     Ok(report)
 }
 
+/// Marker-less workspace dirs the destructive sweep would reap, for the report-only GC paths.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct MarkerlessCandidates {
+    /// Dirs that hold only stale disposable leftovers.
+    pub count: usize,
+    /// Their combined on-disk size.
+    pub bytes: u64,
+}
+
+/// Count the marker-less workspace dirs [`reap_orphaned_workspaces`] would remove, deleting nothing
+/// and taking no lock.
+pub fn markerless_workspace_candidates() -> Result<MarkerlessCandidates, GcError> {
+    markerless_workspace_candidates_at(&cache_root().join(CACHE_DIR).join(WORKSPACES_DIR), SystemTime::now())
+}
+
+fn markerless_workspace_candidates_at(workspaces_dir: &Path, now: SystemTime) -> Result<MarkerlessCandidates, GcError> {
+    let mut candidates = MarkerlessCandidates::default();
+    if !workspaces_dir.exists() {
+        return Ok(candidates);
+    }
+    let io = |source| GcError::Io {
+        path: workspaces_dir.to_path_buf(),
+        source,
+    };
+    for entry in std::fs::read_dir(workspaces_dir).map_err(io)? {
+        let workspace_dir = entry.map_err(io)?.path();
+        if !workspace_dir.is_dir() || read_workspace_marker(&workspace_dir).is_some() {
+            continue;
+        }
+        if matches!(classify_markerless(&workspace_dir, now), Markerless::Disposable) {
+            candidates.count += 1;
+            candidates.bytes += dir_size(&workspace_dir)?;
+        }
+    }
+    Ok(candidates)
+}
+
+/// What the sweep may do with a workspace dir that has no readable marker.
+enum Markerless {
+    /// Holds state, or was touched within the grace window.
+    Keep,
+    /// Disposable and stale, but another process holds its `.lock`.
+    Locked,
+    /// Disposable, stale and unlocked.
+    Disposable,
+}
+
+fn classify_markerless(workspace_dir: &Path, now: SystemTime) -> Markerless {
+    let Some(newest) = newest_disposable_mtime(workspace_dir) else {
+        return Markerless::Keep;
+    };
+    let stale = now
+        .duration_since(newest)
+        .is_ok_and(|age| age >= MARKERLESS_WORKSPACE_GRACE);
+    if !stale {
+        return Markerless::Keep;
+    }
+    if writer_lock_is_held(workspace_dir) {
+        return Markerless::Locked;
+    }
+    Markerless::Disposable
+}
+
+/// The newest mtime among `workspace_dir` and its entries, or `None` unless every entry is a
+/// regular file named in [`DISPOSABLE_LEFTOVERS`]. Anything unreadable also yields `None`: a dir
+/// that cannot be inspected is never disposable.
+fn newest_disposable_mtime(workspace_dir: &Path) -> Option<SystemTime> {
+    let mut newest = std::fs::symlink_metadata(workspace_dir).ok()?.modified().ok()?;
+    for entry in std::fs::read_dir(workspace_dir).ok()? {
+        let entry = entry.ok()?;
+        if !entry.file_type().ok()?.is_file() {
+            return None;
+        }
+        let name = entry.file_name();
+        if !name.to_str().is_some_and(|name| DISPOSABLE_LEFTOVERS.contains(&name)) {
+            return None;
+        }
+        newest = newest.max(entry.metadata().ok()?.modified().ok()?);
+    }
+    Some(newest)
+}
+
+/// Remove a marker-less dir [`classify_markerless`] found disposable. The contents are checked
+/// again under the workspace lock, so a store open that raced the classification keeps its dir.
+fn reap_markerless(workspace_dir: &Path, report: &mut ReapReport) -> Result<(), GcError> {
+    let Ok(lock) = acquire_lock(workspace_dir) else {
+        report.skipped_locked += 1;
+        return Ok(());
+    };
+    if newest_disposable_mtime(workspace_dir).is_none() {
+        report.kept_unverifiable += 1;
+        return Ok(());
+    }
+    let bytes = dir_size(workspace_dir)?;
+    std::fs::remove_dir_all(workspace_dir).map_err(|source| GcError::Io {
+        path: workspace_dir.to_path_buf(),
+        source,
+    })?;
+    drop(lock);
+    report.reaped += 1;
+    report.reaped_markerless += 1;
+    report.bytes_freed += bytes;
+    tracing::info!(
+        workspace = %workspace_dir.display(),
+        bytes,
+        "reaped marker-less workspace cache (only stale disposable leftovers)"
+    );
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -139,7 +291,6 @@ mod tests {
     use crate::store_gc::{collect_referenced_hashes_global_in, gc_global_blobs_in};
     use std::fs;
     use std::path::PathBuf;
-    use std::time::Duration;
 
     /// Seed `<workspaces>/<key>/views/working/index.msgpack` referencing `stems`, and — when
     /// `root` is `Some` — the `workspace.json` marker recording that root. `None` reproduces a
@@ -371,5 +522,129 @@ mod tests {
         assert_eq!(report.reaped, 0, "a locked workspace is never reaped");
         assert_eq!(report.skipped_locked, 1);
         assert!(dead_ws.exists(), "the locked workspace dir survives");
+    }
+
+    const PAST_GRACE: Duration = Duration::from_secs(8 * 24 * 60 * 60);
+    const WITHIN_GRACE: Duration = Duration::from_secs(6 * 24 * 60 * 60);
+
+    /// A marker-less dir as the identity resolver leaves it: `<workspaces>/<key>/` holding `files`.
+    fn seed_leftovers(workspaces_dir: &Path, key: &str, files: &[&str]) -> PathBuf {
+        let workspace_dir = workspaces_dir.join(key);
+        fs::create_dir_all(&workspace_dir).expect("mk leftover dir");
+        for file in files {
+            fs::write(workspace_dir.join(file), b"session-1-2").expect("write leftover");
+        }
+        workspace_dir
+    }
+
+    #[test]
+    fn a_stale_markerless_dir_holding_only_an_agent_id_is_reaped() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let workspaces = tmp.path().join("workspaces");
+        let identity_only = seed_leftovers(&workspaces, "key-identity", &[AGENT_ID_FILE]);
+        let telemetry_only = seed_leftovers(&workspaces, "key-telemetry", &[TELEMETRY_FILENAME]);
+
+        let report = reap_orphaned_workspaces_at(&workspaces, SystemTime::now() + PAST_GRACE).expect("reap");
+
+        assert_eq!(report.scanned, 2);
+        assert_eq!(report.reaped, 2, "both leftover dirs are reaped");
+        assert_eq!(report.reaped_markerless, 2);
+        assert_eq!(report.kept_unverifiable, 0);
+        assert!(report.bytes_freed > 0, "the reaped bytes are accounted");
+        assert!(!identity_only.exists(), "the agent-id dir is removed");
+        assert!(!telemetry_only.exists(), "the telemetry dir is removed");
+    }
+
+    #[test]
+    fn a_markerless_dir_inside_the_grace_window_is_kept() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let workspaces = tmp.path().join("workspaces");
+        let fresh = seed_leftovers(&workspaces, "key-fresh", &[AGENT_ID_FILE]);
+
+        for now in [SystemTime::now(), SystemTime::now() + WITHIN_GRACE] {
+            let report = reap_orphaned_workspaces_at(&workspaces, now).expect("reap");
+            assert_eq!(report.reaped, 0, "a dir younger than the grace window is never reaped");
+            assert_eq!(report.kept_unverifiable, 1);
+        }
+        assert!(fresh.join(AGENT_ID_FILE).exists(), "the identity survives");
+    }
+
+    #[test]
+    fn a_markerless_dir_holding_anything_else_is_kept_regardless_of_age() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let workspaces = tmp.path().join("workspaces");
+        let with_views = seed_leftovers(&workspaces, "key-views", &[AGENT_ID_FILE]);
+        fs::create_dir_all(with_views.join(VIEWS_DIR)).expect("mk empty views dir");
+        let with_unknown_file = seed_leftovers(&workspaces, "key-unknown", &[AGENT_ID_FILE, "notes.txt"]);
+        let with_bad_marker = seed_leftovers(
+            &workspaces,
+            "key-bad-marker",
+            &[AGENT_ID_FILE, crate::store::WORKSPACE_MARKER_FILE],
+        );
+
+        let report = reap_orphaned_workspaces_at(&workspaces, SystemTime::now() + PAST_GRACE).expect("reap");
+
+        assert_eq!(report.scanned, 3);
+        assert_eq!(report.reaped, 0, "only an allow-listed dir is disposable");
+        assert_eq!(report.kept_unverifiable, 3);
+        assert!(
+            with_views.join(VIEWS_DIR).exists(),
+            "a dir with a subdirectory survives"
+        );
+        assert!(with_unknown_file.join("notes.txt").exists(), "an unknown file survives");
+        assert!(
+            with_bad_marker.join(AGENT_ID_FILE).exists(),
+            "an unparsable marker is not an absent one"
+        );
+    }
+
+    #[test]
+    fn a_locked_markerless_dir_is_skipped() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let workspaces = tmp.path().join("workspaces");
+        let locked = seed_leftovers(&workspaces, "key-locked", &[AGENT_ID_FILE]);
+        let _held = acquire_lock(&locked).expect("hold the workspace lock");
+
+        let report = reap_orphaned_workspaces_at(&workspaces, SystemTime::now() + PAST_GRACE).expect("reap");
+
+        assert_eq!(report.reaped, 0, "a locked dir is never reaped");
+        assert_eq!(report.skipped_locked, 1);
+        assert!(locked.join(AGENT_ID_FILE).exists(), "the locked dir survives");
+    }
+
+    #[test]
+    fn the_candidate_report_counts_disposable_dirs_without_touching_them() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let workspaces = tmp.path().join("workspaces");
+        let disposable = seed_leftovers(&workspaces, "key-identity", &[AGENT_ID_FILE]);
+        let legacy = seed_workspace(&workspaces, "key-legacy", None, &["a".repeat(64).as_str()]);
+        let dead_root = make_root(tmp.path(), "dead-repo");
+        seed_workspace(&workspaces, "key-dead", Some(&dead_root), &["b".repeat(64).as_str()]);
+        fs::remove_dir_all(&dead_root).expect("delete the orphan's root");
+        let stale = SystemTime::now() + PAST_GRACE;
+
+        assert_eq!(
+            markerless_workspace_candidates_at(&workspaces, SystemTime::now()).expect("fresh report"),
+            MarkerlessCandidates::default(),
+            "nothing is a candidate inside the grace window"
+        );
+        let candidates = markerless_workspace_candidates_at(&workspaces, stale).expect("report");
+
+        assert_eq!(candidates.count, 1, "only the leftover dir is a candidate");
+        assert_eq!(candidates.bytes, dir_size(&disposable).expect("size"));
+        assert!(candidates.bytes > 0);
+        assert_eq!(
+            fs::read_dir(&disposable).expect("list").count(),
+            1,
+            "the report adds no lock file and removes nothing"
+        );
+        assert!(legacy.exists(), "the legacy dir is untouched");
+
+        let reaped = reap_orphaned_workspaces_at(&workspaces, stale).expect("reap");
+        assert_eq!(
+            reaped.reaped_markerless, candidates.count,
+            "the sweep removes what was reported"
+        );
+        assert_eq!(reaped.reaped, 2, "plus the marked orphan");
     }
 }

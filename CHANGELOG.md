@@ -27,6 +27,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   broker link from a real timeout; `timed_out` is unchanged.
 - The comms daemon's startup and hourly retention sweep now takes the store write lock the request handlers
   use, so it can no longer overwrite a concurrent post, archive or membership change on a thread record.
+- The daemon's cache sweep now reaps workspace cache dirs that have no `workspace.json` marker and hold only
+  disposable leftovers. A comms CLI verb or hook run in a directory that is never scanned leaves a dir
+  holding just `agent-id` (or `telemetry.jsonl`), and the reaper kept every marker-less dir, so they
+  accumulated without bound. A marker-less dir is removed only when every entry is one of `agent-id`,
+  `telemetry.jsonl`, `.lock` or `.lock.meta`, nothing in it was modified for 7 days and no process holds its
+  lock; one with a view, a subdirectory or any other file is kept as before. Resolving the persisted CLI
+  identity now refreshes `agent-id`'s mtime (at most daily), so an identity still in use is not reaped.
+  `admin` mode `gc` and `cache gc --dry-run` report the candidates as `markerless_workspaces_reapable` and
+  `markerless_workspace_bytes_reapable`.
 
 ## [0.33.0] - 2026-11-14
 

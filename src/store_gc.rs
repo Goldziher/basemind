@@ -75,7 +75,9 @@ fn grace_from(raw: Option<&str>) -> Duration {
 /// The orphaned-workspace reaper — the other half of keeping the machine-global cache bounded.
 /// Lives in its own module (like `store_lock.rs`) to keep this file under the module size cap;
 /// re-exported here so callers see one GC surface.
-pub use crate::store_gc_workspace::{ReapReport, reap_orphaned_workspaces};
+pub use crate::store_gc_workspace::{
+    MarkerlessCandidates, ReapReport, markerless_workspace_candidates, reap_orphaned_workspaces,
+};
 
 /// Cache size-budget enforcement + persisted last-GC state — the third leg of keeping the
 /// machine-global cache bounded (and observable). Re-exported so callers see one GC surface.
@@ -134,6 +136,14 @@ pub struct GcReport {
     /// [`Self::bytes_freed`], which counts only global-blob bytes.
     #[serde(default)]
     pub workspace_bytes_freed: u64,
+    /// Marker-less workspace dirs the next destructive sweep would reap (see
+    /// [`markerless_workspace_candidates`]). Set only by [`gc_report_only`]; a destructive sweep
+    /// counts the ones it removed in [`Self::workspaces_reaped`].
+    #[serde(default)]
+    pub markerless_workspaces_reapable: usize,
+    /// On-disk size of those dirs.
+    #[serde(default)]
+    pub markerless_workspace_bytes_reapable: u64,
     /// Cold workspace dirs evicted by cache-budget enforcement (see
     /// [`crate::store_gc_budget::enforce_cache_budget`]). `0` on every path that does not
     /// enforce the budget.
@@ -444,12 +454,18 @@ pub fn run_gc(basemind_dir: &Path) -> Result<GcReport, GcError> {
     Ok(report)
 }
 
-/// Non-destructive GC report over the GLOBAL blob store: counts every blob file (`scanned`) and
-/// removes nothing. This is the safe standalone behavior while the blob store is machine-global —
-/// see [`run_gc`]. `bytes_freed` / `removed` are always `0`.
+/// Non-destructive GC report over the GLOBAL blob store: counts every blob file (`scanned`) and the
+/// marker-less workspace dirs the daemon's sweep would reap, and removes nothing. This is the safe
+/// standalone behavior while the blob store is machine-global — see [`run_gc`]. `bytes_freed` /
+/// `removed` are always `0`.
 pub fn gc_report_only() -> Result<GcReport, GcError> {
     let blobs_dir = global_blobs_dir();
-    let mut report = GcReport::default();
+    let candidates = markerless_workspace_candidates()?;
+    let mut report = GcReport {
+        markerless_workspaces_reapable: candidates.count,
+        markerless_workspace_bytes_reapable: candidates.bytes,
+        ..GcReport::default()
+    };
     if !blobs_dir.exists() {
         return Ok(report);
     }
