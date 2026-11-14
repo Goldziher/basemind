@@ -3,7 +3,7 @@
 This document acknowledges sources of forked/copied code and rule data used in the basemind
 project. Ordinary crates.io dependencies are tracked in `Cargo.toml` / `Cargo.lock` and governed by
 `deny.toml`; this file covers code and data files that were **copied into the repository** — either
-rule data or workspace crates under `crates/` that basemind now maintains as forks.
+rule data, query files or workspace crates under `crates/` that basemind now maintains as forks.
 
 ## stack-graphs name-binding rules (`.tsg`)
 
@@ -177,3 +177,28 @@ source code (see below), so basemind maintains it as a **fork** — a first-clas
 ### License Compatibility
 
 MIT OR Apache-2.0 is compatible with basemind's MIT license.
+
+---
+
+## tree-sitter-javascript `locals.scm` (TypeScript / TSX locals queries)
+
+Intra-file scope-resolution queries (`@local.scope` / `@local.definition` / `@local.reference`) that
+answer whether a name is local to a TypeScript or TSX file.
+
+- **Source**: <https://github.com/tree-sitter/tree-sitter-javascript>
+- **Upstream paths**: `queries/locals.scm`
+- **License**: MIT (Copyright (c) 2014 Max Brunsfeld)
+- **Location**: `src/queries/typescript-locals.scm`; `src/queries/tsx-locals.scm` mirrors it
+- **Purpose**: Consumed by `crate::extract::locals` to bind each reference to the nearest enclosing
+  same-named definition.
+
+### Modifications
+
+- Adapted for TypeScript (a grammar superset): the TypeScript-specific `required_parameter` /
+  `optional_parameter` parameter patterns were added. The TSX file reuses the same patterns under a
+  separate name.
+
+### License Compatibility
+
+MIT is permissive and compatible with basemind's MIT license. The query is a few lines of
+pattern-matching boilerplate; no upstream text is reproduced beyond those patterns.
