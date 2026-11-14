@@ -13,7 +13,10 @@ serve` MCP server seems dead.
 ## How to use
 
 Invoke `/bm-doctor` (optional free-text detail, e.g. `/bm-doctor tools return no indexed files`).
-It runs the checks below in order:
+It runs the checks below in order. Run every `basemind …` command through the plugin-managed,
+version-matched binary, `${CLAUDE_PLUGIN_ROOT}/scripts/mcp-launch.sh <args>` (in other hosts,
+`scripts/mcp-launch.sh` in the plugin directory), and use bare `basemind` from `PATH` only when no
+plugin launcher exists:
 
 1. Check the index: `basemind status`.
 2. Check for a lock-holding server: a `basemind scan` lock error names the holder (command + pid) from the workspace cache's `.lock.meta`.

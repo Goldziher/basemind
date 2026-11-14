@@ -9,8 +9,8 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:60851b154d1509a944c7a100c1d5420f90cf45de94e7f7d65264fdf418e4a778
-Source-Hash: blake3:5cb9f744df76bb5fbdf5efcd22ed9570bc68548c3328dee2591fb4fbb06961aa
+Content-Hash: blake3:b7117e6e750a15f9a8b063b4b372bb97af16ff2e8ef1e92cbd123440115080ae
+Source-Hash: blake3:adb7b86d0f9ac468d207f562d77ca89c3a7d88b0119ad6afe25b37cf41e93f7a
 Schema-Version: v1
 -->
 
@@ -21,6 +21,13 @@ They share the same machine-global cache (Linux `~/.local/share/basemind/`, macO
 `~/Library/Application Support/basemind/`; override `BASEMIND_DATA_HOME`) and are safe to run
 alongside each other. Reach for the CLI
 when you're scripting, batching queries, running in headless environments, or CI.
+
+## Running the CLI
+
+The plugin runs its own version-matched binary, so launch the CLI through it:
+`${CLAUDE_PLUGIN_ROOT}/scripts/mcp-launch.sh <args>` (in other hosts, `scripts/mcp-launch.sh` in the
+plugin directory). Bare `basemind` from `PATH` is the fallback when no plugin launcher exists; a
+different version there shares the same cache. Examples below write `basemind` for brevity.
 
 ## Capabilities
 

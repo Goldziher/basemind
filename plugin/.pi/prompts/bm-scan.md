@@ -6,8 +6,8 @@ description: Build or refresh the basemind index by running `basemind scan` via 
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:6c2f6f7c9aee594f8063387ce6b10e1e456b1ff382d303ac9594851baf989ca2
-Source-Hash: blake3:5cb9f744df76bb5fbdf5efcd22ed9570bc68548c3328dee2591fb4fbb06961aa
+Content-Hash: blake3:c0afd0da3ca700a5d00706c00d490b1a494d9fc9f47033d921571fb319bc245f
+Source-Hash: blake3:adb7b86d0f9ac468d207f562d77ca89c3a7d88b0119ad6afe25b37cf41e93f7a
 Schema-Version: v1
 -->
 
@@ -28,9 +28,10 @@ basemind scan ${ARGUMENTS:-}
 
 - No argument → full working-tree scan.
 - A path argument (`/bm-scan src/mcp`) → scope the scan to that path (incremental).
-- If `basemind` isn't on `PATH`: use the plugin-managed cache
-  (`${XDG_CACHE_HOME:-~/.cache}/basemind/bin/<version>/basemind`), or build a dev binary with
-  `cargo build --release` and use `./target/release/basemind`.
+- Prefer the plugin-managed, version-matched binary: run `${CLAUDE_PLUGIN_ROOT}/scripts/mcp-launch.sh scan ${ARGUMENTS:-}`
+  (in other hosts, `scripts/mcp-launch.sh` in the plugin directory). Use bare `basemind` from `PATH`
+  only when no plugin launcher exists, or build a dev binary with `cargo build --release` and use
+  `./target/release/basemind`.
 
 ## Notes
 

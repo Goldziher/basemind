@@ -235,7 +235,8 @@ impl ServerHandler for BasemindServer {
         // HEAD, everything from the agent-comms contract onward never reached any agent at all.
         // Per-tool routing detail belongs in the tool descriptions (which is what deferred-tool
         // search actually matches on); this text carries only what a client must read up front:
-        // what basemind is, the prefer-basemind-over-grep directive, and the coordination contract.
+        // what basemind is, the prefer-basemind-over-grep directive (code, history, documents) and,
+        // last, the optional coordination contract.
         // Keep any edit under the ceiling — `instructions_stay_under_the_client_ceiling` enforces it.
         .with_instructions(
             "basemind is this repository's indexed context layer: a tree-sitter code map (symbols, \
@@ -244,24 +245,22 @@ impl ServerHandler for BasemindServer {
              index lives in a machine-global cache (override BASEMIND_DATA_HOME); nothing is \
              written into the repo and any number of sessions share it.\n\
              Every tool takes a required mode; read its description for the modes it offers.\n\
-             basemind first, shell/grep/git fallback. These tools return paths, line numbers, and \
+             basemind first, shell/grep/git fallback: these tools return paths, line numbers, and \
              signatures rather than file bodies, so they cost a fraction of the tokens of reading \
-             source. Prefer code mode outline over opening a file, then read only the span you \
-             need; code mode symbols over grep for a definition; code modes references and callers \
-             over grepping call sites; code mode grep over ripgrep; code mode find to locate a file \
-             by name; git modes recent, blame, blame_symbol, diff and touching over git log or git \
-             blame; graph modes calls, neighbors and map to see what reaches what; memory mode \
-             documents over opening PDFs, markdown, config or data files (the code map holds code \
-             only); web modes scrape, crawl and map for the web. Do not \
-             re-read a file basemind already mapped. Run admin mode rescan after edits; if a tool \
-             reports no indexed files, run basemind scan first.\n\
-             You may be one of several agents in this repo, so coordinate rather than assuming you \
-             are alone. Coordination runs over threads: scoped conversations addressed by at least \
-             two of subject, path-glob, and members, discovered by scope and never globally, and \
-             joined explicitly. On start call agents mode inbox, then mode thread_list; both return \
-             front-matter only, so use mode message with an id to read a body. Use mode post when \
-             you begin, finish, or hit a decision, reply with reply_to to messages about your work, \
-             and poll again while you work so replies do not go stale.\n\
+             source. Do not re-read a file basemind already mapped.\n\
+             Code: code mode outline before opening a file, then read only the span you need; \
+             code mode symbols to find a definition; code modes references and callers instead of \
+             grepping call sites; code mode grep instead of ripgrep; code mode find to locate a \
+             file by name; graph modes calls, neighbors and map to see what reaches what.\n\
+             History: git modes recent, touching, blame, blame_symbol and diff instead of git log, \
+             git blame or git diff.\n\
+             Documents: memory mode documents instead of opening PDFs, markdown, config or data \
+             files (the code map holds code only).\n\
+             Run admin mode rescan after edits; if a tool reports no indexed files, run basemind \
+             scan first.\n\
+             Only when you are collaborating with other agents in this repo: agents mode inbox and \
+             thread_list show scoped threads (front-matter only; mode message reads a body), and \
+             mode post announces what you start, finish or decide. Skip this when working alone.\n\
              All paths are repository-relative with forward-slash separators. Paginate by passing a \
              response's next_cursor back as cursor.",
         )

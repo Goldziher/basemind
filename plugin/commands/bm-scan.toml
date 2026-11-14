@@ -17,9 +17,10 @@ basemind scan ${ARGUMENTS:-}
 
 - No argument → full working-tree scan.
 - A path argument (`/bm-scan src/mcp`) → scope the scan to that path (incremental).
-- If `basemind` isn't on `PATH`: use the plugin-managed cache
-  (`${XDG_CACHE_HOME:-~/.cache}/basemind/bin/<version>/basemind`), or build a dev binary with
-  `cargo build --release` and use `./target/release/basemind`.
+- Prefer the plugin-managed, version-matched binary: run `${CLAUDE_PLUGIN_ROOT}/scripts/mcp-launch.sh scan ${ARGUMENTS:-}`
+  (in other hosts, `scripts/mcp-launch.sh` in the plugin directory). Use bare `basemind` from `PATH`
+  only when no plugin launcher exists, or build a dev binary with `cargo build --release` and use
+  `./target/release/basemind`.
 
 ## Notes
 

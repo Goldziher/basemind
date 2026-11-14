@@ -161,6 +161,15 @@ fn codex_mcp_should_launch_latest_release_from_workspace() {
             .is_some_and(|loader| loader.contains("codex-mcp-launch.mjs")),
         "Codex must locate and run the bundled latest-release launcher",
     );
+    let loader = args.get(1).and_then(Value::as_str).unwrap_or_default();
+    assert!(
+        !loader.contains("throw Error"),
+        "a missing Codex launcher must not throw: every host that reads .mcp.json (Claude Code included) would show a dead server",
+    );
+    assert!(
+        loader.contains("mcp-launch.sh") && loader.contains("\"basemind\""),
+        "without the Codex cache the shim must fall back to scripts/mcp-launch.sh, then `basemind` on PATH",
+    );
     assert!(
         repository_root.join("scripts/codex-mcp-launch.mjs").is_file(),
         "the configured Codex bootstrap must be shipped with the plugin",

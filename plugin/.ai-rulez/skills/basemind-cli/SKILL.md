@@ -24,6 +24,13 @@ They share the same machine-global cache (Linux `~/.local/share/basemind/`, macO
 alongside each other. Reach for the CLI
 when you're scripting, batching queries, running in headless environments, or CI.
 
+## Running the CLI
+
+The plugin runs its own version-matched binary, so launch the CLI through it:
+`${CLAUDE_PLUGIN_ROOT}/scripts/mcp-launch.sh <args>` (in other hosts, `scripts/mcp-launch.sh` in the
+plugin directory). Bare `basemind` from `PATH` is the fallback when no plugin launcher exists; a
+different version there shares the same cache. Examples below write `basemind` for brevity.
+
 ## Capabilities
 
 - **Code map across 300+ languages** — tree-sitter outlines, symbol search, references, callers,

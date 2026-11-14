@@ -4,8 +4,8 @@ description: Diagnose and recover basemind when it isn't working (MCP tools miss
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:a2be743db64964e8d45b6628ff88dc31025db18ce27b77112df7e45cfc4afacd
-Source-Hash: blake3:5cb9f744df76bb5fbdf5efcd22ed9570bc68548c3328dee2591fb4fbb06961aa
+Content-Hash: blake3:d18c2a03afd47a94e196f546ca9f4252a1afc10741df2b842b29ec2b370d9817
+Source-Hash: blake3:adb7b86d0f9ac468d207f562d77ca89c3a7d88b0119ad6afe25b37cf41e93f7a
 Schema-Version: v1
 -->
 
@@ -22,7 +22,10 @@ serve` MCP server seems dead.
 ## How to use
 
 Invoke `/bm-doctor` (optional free-text detail, e.g. `/bm-doctor tools return no indexed files`).
-It runs the checks below in order:
+It runs the checks below in order. Run every `basemind …` command through the plugin-managed,
+version-matched binary, `${CLAUDE_PLUGIN_ROOT}/scripts/mcp-launch.sh <args>` (in other hosts,
+`scripts/mcp-launch.sh` in the plugin directory), and use bare `basemind` from `PATH` only when no
+plugin launcher exists:
 
 1. Check the index: `basemind status`.
 2. Check for a lock-holding server: a `basemind scan` lock error names the holder (command + pid) from the workspace cache's `.lock.meta`.

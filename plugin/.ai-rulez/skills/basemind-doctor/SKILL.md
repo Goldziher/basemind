@@ -30,6 +30,10 @@ make sure the index is healthy and clear anything blocking a restart.
 
 ## 1. Is there an index?
 
+Run the `basemind …` commands below through the plugin-managed, version-matched binary,
+`${CLAUDE_PLUGIN_ROOT}/scripts/mcp-launch.sh <args>` (in other hosts, `scripts/mcp-launch.sh` in the
+plugin directory); use bare `basemind` from `PATH` only when no plugin launcher exists.
+
 ```sh
 basemind doctor   # root, config, index, grammars, hook, daemon; exits 1 when a check fails
 basemind status

@@ -9,8 +9,8 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:40f19b5d630dc343bd1a0b0962644ab240fdfa3a6d6767a5c9b6ff3a756a2532
-Source-Hash: blake3:5cb9f744df76bb5fbdf5efcd22ed9570bc68548c3328dee2591fb4fbb06961aa
+Content-Hash: blake3:2e8730de715748419973d3b9c3ee562e2e75d6cec8628688c78ffa8d28aaf454
+Source-Hash: blake3:adb7b86d0f9ac468d207f562d77ca89c3a7d88b0119ad6afe25b37cf41e93f7a
 Schema-Version: v1
 -->
 
@@ -27,6 +27,10 @@ Reconnecting the server is the **MCP client's** job (see step 4). What you _can_
 make sure the index is healthy and clear anything blocking a restart.
 
 ## 1. Is there an index?
+
+Run the `basemind …` commands below through the plugin-managed, version-matched binary,
+`${CLAUDE_PLUGIN_ROOT}/scripts/mcp-launch.sh <args>` (in other hosts, `scripts/mcp-launch.sh` in the
+plugin directory); use bare `basemind` from `PATH` only when no plugin launcher exists.
 
 ```sh
 basemind doctor   # root, config, index, grammars, hook, daemon; exits 1 when a check fails

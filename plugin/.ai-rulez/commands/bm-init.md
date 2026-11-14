@@ -91,8 +91,10 @@ capabilities (documents/RAG, agent-comms, semantic search). Safe to re-run: it's
   `.claude/settings*.json` (e.g. `skillOverrides`), and its position in the file, is left exactly
   as it was.
 - An existing `basemind.toml` is kept verbatim, never clobbered.
-- If `basemind` isn't on `PATH`: use the plugin-managed cache binary or build a dev binary with
-  `cargo build --release` and use `./target/release/basemind`.
+- Prefer the plugin-managed, version-matched binary: `${CLAUDE_PLUGIN_ROOT}/scripts/mcp-launch.sh init …`
+  (in other hosts, `scripts/mcp-launch.sh` in the plugin directory). Use bare `basemind` from `PATH`
+  only when no plugin launcher exists, or build a dev binary with `cargo build --release` and use
+  `./target/release/basemind`.
 
 ## See also
 

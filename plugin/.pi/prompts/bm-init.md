@@ -6,8 +6,8 @@ description: Onboard (or refresh) basemind in this repo — write basemind.toml 
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:23c4d4a63b521b5da720ff533588311bfd0eef7f215924793deb7e77d51ee388
-Source-Hash: blake3:5cb9f744df76bb5fbdf5efcd22ed9570bc68548c3328dee2591fb4fbb06961aa
+Content-Hash: blake3:7db9ce4d4695183d01130a6e3df855f927e3321d498bff345c2df9efdb7a863a
+Source-Hash: blake3:adb7b86d0f9ac468d207f562d77ca89c3a7d88b0119ad6afe25b37cf41e93f7a
 Schema-Version: v1
 -->
 
@@ -91,8 +91,10 @@ capabilities (documents/RAG, agent-comms, semantic search). Safe to re-run: it's
   `.claude/settings*.json` (e.g. `skillOverrides`), and its position in the file, is left exactly
   as it was.
 - An existing `basemind.toml` is kept verbatim, never clobbered.
-- If `basemind` isn't on `PATH`: use the plugin-managed cache binary or build a dev binary with
-  `cargo build --release` and use `./target/release/basemind`.
+- Prefer the plugin-managed, version-matched binary: `${CLAUDE_PLUGIN_ROOT}/scripts/mcp-launch.sh init …`
+  (in other hosts, `scripts/mcp-launch.sh` in the plugin directory). Use bare `basemind` from `PATH`
+  only when no plugin launcher exists, or build a dev binary with `cargo build --release` and use
+  `./target/release/basemind`.
 
 ## See also
 
