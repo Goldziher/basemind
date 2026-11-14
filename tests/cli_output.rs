@@ -369,7 +369,33 @@ fn cold_dirty_scan_publishes_delta_without_standalone_fjall() {
             .unwrap()
     };
     let scan = opted_in_scan();
-    assert!(scan.status.success(), "{}", String::from_utf8_lossy(&scan.stderr));
+    if !scan.status.success() {
+        let refused = String::from_utf8_lossy(&scan.stderr).into_owned();
+        let processes = Command::new(if cfg!(windows) { "tasklist" } else { "ps" })
+            .args(if cfg!(windows) { &["/V"][..] } else { &["-ef"][..] })
+            .output()
+            .map(|out| {
+                String::from_utf8_lossy(&out.stdout)
+                    .lines()
+                    .filter(|line| line.to_ascii_lowercase().contains("basemind"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            })
+            .unwrap_or_default();
+        let started = std::time::Instant::now();
+        let mut cleared_after = None;
+        while started.elapsed() < std::time::Duration::from_secs(30) {
+            std::thread::sleep(std::time::Duration::from_millis(250));
+            if opted_in_scan().status.success() {
+                cleared_after = Some(started.elapsed());
+                break;
+            }
+        }
+        panic!(
+            "scan refused after `rescan --full` exited: {refused}\nbasemind processes:\n{processes}\n\
+             lock cleared after: {cleared_after:?}"
+        );
+    }
     assert!(cache.join("layered-promoted").is_file());
     for number in 0..2 {
         std::fs::remove_file(root.join(format!("overflow_{number}.rs"))).unwrap();
