@@ -71,7 +71,11 @@ def _platform_triple() -> str:
         if machine in {"aarch64", "arm64"}:
             return "aarch64-unknown-linux-gnu"
     elif system == "darwin":
-        return "aarch64-apple-darwin" if _is_apple_silicon(machine) else "x86_64-apple-darwin"
+        if _is_apple_silicon(machine):
+            return "aarch64-apple-darwin"
+        raise RuntimeError(
+            "macOS on Intel (x86_64) is not supported; basemind publishes Apple Silicon (arm64) binaries only"
+        )
 
     raise RuntimeError(f"Unsupported platform: {system} {machine}")
 

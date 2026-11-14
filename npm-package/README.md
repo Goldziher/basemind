@@ -17,8 +17,8 @@ Full documentation: **[basemind.ai](https://basemind.ai)**
 pnpm add -g basemind
 ```
 
-The installer downloads the appropriate pre-compiled Rust binary for your platform (macOS,
-Linux, Windows; x86_64 + arm64) from
+The installer downloads the appropriate pre-compiled Rust binary for your platform (macOS on
+Apple Silicon, Linux on x86_64 and arm64, Windows on x86_64) from
 [GitHub Releases](https://github.com/Goldziher/basemind/releases) on first install.
 
 ## Quickstart

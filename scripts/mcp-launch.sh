@@ -199,7 +199,7 @@ Darwin)
     [ "$(sysctl -n hw.optional.arm64 2>/dev/null)" = "1" ]; then
     TRIPLE="aarch64-apple-darwin"
   else
-    TRIPLE="x86_64-apple-darwin"
+    die "macOS on Intel (x86_64) is not supported; basemind publishes Apple Silicon (arm64) binaries only"
   fi
   ;;
 Linux)

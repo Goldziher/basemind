@@ -15,7 +15,7 @@ x86_64-unknown-linux-gnu | aarch64-unknown-linux-gnu)
   SYSTEM="linux"
   BINEXT=""
   ;;
-aarch64-apple-darwin | x86_64-apple-darwin)
+aarch64-apple-darwin)
   SYSTEM="macos"
   BINEXT=""
   ;;
@@ -153,50 +153,6 @@ macos)
     codesign --force --sign - "$bin_in_staging"
     codesign --verify --strict "$bin_in_staging"
   done
-
-  if [ "$TRIPLE" = "x86_64-apple-darwin" ]; then
-    echo "Vendoring ONNX Runtime (ort-dynamic) for Intel macOS..."
-    export HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK=1
-    brew install --bottle-tag=sonoma onnxruntime || brew install onnxruntime
-    ORT_PREFIX="$(brew --prefix onnxruntime)/lib"
-    ort_lib="$ORT_PREFIX/libonnxruntime.dylib"
-    [ -f "$ort_lib" ] || {
-      echo "ONNX Runtime dylib not found at $ort_lib" >&2
-      exit 1
-    }
-    cp "$ort_lib" "$STAGING_DIR/libonnxruntime.dylib"
-    chmod u+w "$STAGING_DIR/libonnxruntime.dylib"
-    install_name_tool -id "@loader_path/libonnxruntime.dylib" "$STAGING_DIR/libonnxruntime.dylib"
-    changed=1
-    while [ "$changed" = 1 ]; do
-      changed=0
-      for lib in "$STAGING_DIR"/*.dylib; do
-        [ -f "$lib" ] || continue
-        while IFS= read -r dep; do
-          [ -n "$dep" ] || continue
-          base=$(basename "$dep")
-          src="$dep"
-          case "$dep" in
-          @rpath/*) src="$ORT_PREFIX/$base" ;;
-          esac
-          if [ ! -f "$STAGING_DIR/$base" ]; then
-            [ -f "$src" ] || continue
-            cp "$src" "$STAGING_DIR/$base"
-            chmod u+w "$STAGING_DIR/$base"
-            install_name_tool -id "@loader_path/$base" "$STAGING_DIR/$base"
-            changed=1
-          fi
-          install_name_tool -change "$dep" "@loader_path/$base" "$lib" 2>/dev/null || true
-        done < <(otool -L "$lib" | tail -n +2 | awk '{print $1}' |
-          grep -E '^(/opt/homebrew|/usr/local|@rpath)/' || true)
-      done
-    done
-    for dylib in "$STAGING_DIR"/*.dylib; do
-      [ -f "$dylib" ] || continue
-      codesign --force --sign - "$dylib"
-    done
-    echo "✓ Vendored ONNX Runtime + closure next to the binary"
-  fi
 
   tar czf "basemind-${TRIPLE}.tar.gz" -C "$STAGING_DIR" .
   echo "✓ Created basemind-${TRIPLE}.tar.gz"

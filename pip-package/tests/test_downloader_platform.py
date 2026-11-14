@@ -4,7 +4,7 @@ Cover the two behaviours that broke real installs:
 
 * Apple Silicon under a Rosetta x86_64 shell must resolve to the NATIVE arm64
   binary — ``hw.optional.arm64`` is masked under Rosetta, so ``sysctl.proc_translated``
-  is the signal that catches it. Genuine Intel Macs resolve to ``x86_64-apple-darwin``.
+  is the signal that catches it. Genuine Intel Macs are rejected: no binary is published for them.
 * Old per-version cache dirs must be pruned so binaries don't accrue across upgrades.
 """
 
@@ -46,9 +46,9 @@ def test_apple_silicon_native_signal_resolves_arm64(monkeypatch):
     assert triple == "aarch64-apple-darwin"
 
 
-def test_genuine_intel_mac_resolves_x86_64(monkeypatch):
-    triple = _triple(monkeypatch, system="Darwin", machine="x86_64", sysctls={})
-    assert triple == "x86_64-apple-darwin"
+def test_genuine_intel_mac_is_rejected_with_a_clear_message(monkeypatch):
+    with pytest.raises(RuntimeError, match="Intel"):
+        _triple(monkeypatch, system="Darwin", machine="x86_64", sysctls={})
 
 
 def test_linux_and_windows_unaffected(monkeypatch):

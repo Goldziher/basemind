@@ -32,6 +32,13 @@ This minor bumps the persisted blob, index, git-history and LanceDB memory schem
   `astro` 7.4.7.
 - Startup instructions direct agents to Basemind first for capabilities enabled during initialization.
 
+### Removed
+
+- **Prebuilt macOS Intel binaries.** Releases no longer include `basemind-x86_64-apple-darwin.tar.gz`. The
+  npm and PyPI installers, the plugin launcher and the Homebrew formula now refuse Intel Macs with a clear
+  message instead of fetching a missing asset, and the `ort-dynamic` Cargo feature, which only that build
+  used, is gone. Apple Silicon, Linux (x86_64, arm64) and Windows (x86_64) are unchanged.
+
 ### Fixed
 
 - The MCP `agents` message mode accepts the `message_ref` field returned by history and inbox.

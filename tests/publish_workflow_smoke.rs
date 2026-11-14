@@ -95,7 +95,6 @@ fn finalize_requires_the_full_asset_set() {
         "basemind-x86_64-unknown-linux-gnu.tar.gz",
         "basemind-aarch64-unknown-linux-gnu.tar.gz",
         "basemind-aarch64-apple-darwin.tar.gz",
-        "basemind-x86_64-apple-darwin.tar.gz",
         "basemind-x86_64-pc-windows-msvc.zip",
     ] {
         assert!(
@@ -107,6 +106,20 @@ fn finalize_requires_the_full_asset_set() {
         block.contains("_checksums.txt"),
         "finalize_release must require the checksums file before promoting",
     );
+}
+
+/// macOS Intel is not a release target. The installers, launcher and Homebrew formula refuse it with
+/// a clear message, so a workflow that built or required its archive would ship an asset nothing
+/// downloads, or block promotion on one that is never built.
+#[test]
+fn release_has_no_intel_mac_target() {
+    let workflow = workflow();
+    for needle in ["x86_64-apple-darwin", "macos-26-intel", "ort-dynamic"] {
+        assert!(
+            !workflow.contains(needle),
+            "publish.yaml must not mention `{needle}`: macOS Intel is not built"
+        );
+    }
 }
 
 /// The "already published?" gate must count missing required assets, so a partial draft

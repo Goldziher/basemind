@@ -38,7 +38,8 @@ function getPlatformTriple() {
   }
 
   if (type === "Darwin") {
-    return isAppleSilicon() ? "aarch64-apple-darwin" : "x86_64-apple-darwin";
+    if (isAppleSilicon()) return "aarch64-apple-darwin";
+    throw new Error("macOS on Intel (x86_64) is not supported; basemind publishes Apple Silicon (arm64) binaries only");
   }
 
   throw new Error(`Unsupported platform: ${type} ${arch}`);

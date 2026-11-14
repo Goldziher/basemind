@@ -275,7 +275,6 @@ jobs:
             "basemind-x86_64-unknown-linux-gnu.tar.gz"
             "basemind-aarch64-unknown-linux-gnu.tar.gz"
             "basemind-aarch64-apple-darwin.tar.gz"
-            "basemind-x86_64-apple-darwin.tar.gz"
             "basemind-x86_64-pc-windows-msvc.zip"
             "basemind_${version}_checksums.txt"
           )
@@ -346,7 +345,7 @@ jobs:
             # Create as a DRAFT. The build matrix uploads binaries to it, but it
             # stays invisible (assets not publicly downloadable) until the
             # finalize_release job promotes it — and that job only runs once
-            # checksums (which requires all 5 platform binaries) succeeds. A failed
+            # checksums (which requires all 4 platform binaries) succeeds. A failed
             # platform build therefore leaves a hidden draft, not a live release
             # with missing binaries and no checksums (the v0.10.0 failure mode that
             # broke the plugin launcher's checksum-verified download).
@@ -396,10 +395,6 @@ jobs:
           # ~keep code; without it, cmake targets the macos-26 runner's SDK.
           - triple: aarch64-apple-darwin
             os: macos-26
-            macos_deployment_target: "14.0"
-          - triple: x86_64-apple-darwin
-            os: macos-26-intel
-            features: full,ort-dynamic
             macos_deployment_target: "14.0"
           - triple: x86_64-pc-windows-msvc
             # Pinned to windows-2022 (VS2022 / MSVC 14.4x). `windows-latest` rolled to a VS18 /
@@ -469,25 +464,6 @@ jobs:
       - name: Package release
         shell: bash
         run: ./scripts/package-release.sh ${{ matrix.triple }}
-
-      - name: Smoke-test packaged Intel binary (ONNX Runtime loads)
-        if: matrix.triple == 'x86_64-apple-darwin'
-        shell: bash
-        run: |
-          set -euo pipefail
-          dir="$(mktemp -d)"
-          tar xzf "basemind-x86_64-apple-darwin.tar.gz" -C "$dir"
-          # Binary + its otool-discovered lib/ closure load, and the ad-hoc signature is
-          # valid (a bad install_name_tool rewrite would get the process SIGKILLed).
-          "$dir/basemind" --version
-          # ONNX Runtime is vendored next to the binary; ort/load-dynamic resolves it
-          # relative to the executable. dlopen the vendored dylib + its full @loader_path
-          # closure — the exact load ort performs at runtime — so a missing closure
-          # member, broken install name, or invalid signature fails here. @loader_path
-          # never falls back to the runner's Homebrew copy, so this proves the bundle is
-          # self-contained even though onnxruntime is brew-installed on this runner.
-          test -f "$dir/libonnxruntime.dylib"
-          ( cd "$dir" && python3 -c "import ctypes; ctypes.CDLL('./libonnxruntime.dylib'); print('libonnxruntime.dylib + closure load OK')" )
 
       - name: Verify release state before upload
         shell: bash
@@ -706,7 +682,7 @@ jobs:
             "${{ needs.meta.outputs.tag }}" true "${{ needs.create_release.outputs.release_id }}")"
           echo "release_id=$id" >>"$GITHUB_ENV"
 
-      - name: Verify all 5 platform archives are present
+      - name: Verify all 4 platform archives are present
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -721,7 +697,6 @@ jobs:
             basemind-x86_64-unknown-linux-gnu.tar.gz \
             basemind-aarch64-unknown-linux-gnu.tar.gz \
             basemind-aarch64-apple-darwin.tar.gz \
-            basemind-x86_64-apple-darwin.tar.gz \
             basemind-x86_64-pc-windows-msvc.zip; do
             if ! grep -qx "$asset" /tmp/release_assets.txt; then
               echo "::error::release $release_id is missing $asset"
@@ -729,10 +704,10 @@ jobs:
             fi
           done
           if [ "$missing" -gt 0 ]; then
-            echo "::error::$missing of 5 platform archives missing; refusing to checksum a partial release"
+            echo "::error::$missing of 4 platform archives missing; refusing to checksum a partial release"
             exit 1
           fi
-          echo "all 5 archives present on release $release_id"
+          echo "all 4 archives present on release $release_id"
 
       - name: Download archives and generate checksums
         env:
@@ -790,7 +765,6 @@ jobs:
             "basemind-x86_64-unknown-linux-gnu.tar.gz"
             "basemind-aarch64-unknown-linux-gnu.tar.gz"
             "basemind-aarch64-apple-darwin.tar.gz"
-            "basemind-x86_64-apple-darwin.tar.gz"
             "basemind-x86_64-pc-windows-msvc.zip"
             "basemind_${version}_checksums.txt"
           )

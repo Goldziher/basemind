@@ -18,11 +18,10 @@ sha_for() {
 }
 
 MAC_ARM=$(sha_for aarch64-apple-darwin)
-MAC_X64=$(sha_for x86_64-apple-darwin)
 LINUX_ARM=$(sha_for aarch64-unknown-linux-gnu)
 LINUX_X64=$(sha_for x86_64-unknown-linux-gnu)
 
-for pair in "aarch64-apple-darwin:$MAC_ARM" "x86_64-apple-darwin:$MAC_X64" \
+for pair in "aarch64-apple-darwin:$MAC_ARM" \
   "aarch64-unknown-linux-gnu:$LINUX_ARM" "x86_64-unknown-linux-gnu:$LINUX_X64"; do
   if [ -z "${pair#*:}" ]; then
     echo "missing checksum for ${pair%%:*} in $SUMS" >&2
@@ -42,13 +41,12 @@ class Basemind < Formula
   license "MIT"
 
   on_macos do
+    # Only Apple Silicon builds are published; Intel Macs get Homebrew's arch message.
+    depends_on arch: :arm64
+
     on_arm do
       url "${BASE}/basemind-aarch64-apple-darwin.tar.gz"
       sha256 "${MAC_ARM}"
-    end
-    on_intel do
-      url "${BASE}/basemind-x86_64-apple-darwin.tar.gz"
-      sha256 "${MAC_X64}"
     end
   end
 
@@ -64,10 +62,9 @@ class Basemind < Formula
   end
 
   def install
-    # Archive root holds the binary + lib/ of bundled native libs (plus a co-located
-    # libonnxruntime.dylib on Intel macOS); the binary's rpath resolves lib/ relative
-    # to its own location and ort resolves the ONNX dylib relative to the executable,
-    # so keep them together in libexec and expose the binary on PATH via a symlink.
+    # Archive root holds the binary + lib/ of bundled native libs; the binary's rpath
+    # resolves lib/ relative to its own location, so keep them together in libexec and
+    # expose the binary on PATH via a symlink.
     libexec.install Dir["*"]
     bin.install_symlink libexec/"basemind"
   end

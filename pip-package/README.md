@@ -17,8 +17,8 @@ Full documentation: **[basemind.ai](https://basemind.ai)**
 pip install basemind
 ```
 
-On first invocation, the pre-compiled Rust binary for your platform (macOS, Linux, Windows;
-x86_64 + arm64) is downloaded from
+On first invocation, the pre-compiled Rust binary for your platform (macOS on Apple
+Silicon, Linux on x86_64 and arm64, Windows on x86_64) is downloaded from
 [GitHub Releases](https://github.com/Goldziher/basemind/releases) and cached under
 `~/.cache/basemind/<version>/`.
 

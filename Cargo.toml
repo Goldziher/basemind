@@ -129,8 +129,6 @@ full = ["documents", "memory", "crawl", "comms", "shells", "code-intel", "code-s
 
 test-support = []
 
-ort-dynamic = ["xberg?/ort-dynamic"]
-
 [dependencies]
 ahash = "0.8"
 anstream = "1.0"
