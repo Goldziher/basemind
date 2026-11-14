@@ -99,9 +99,6 @@ command covers the question.
 | "Refresh changed paths?" | `basemind rescan [path…]` | Re-index in the live server. |
 | "Per-operation activity summary?" | `basemind admin telemetry` | Histogram + estimated tokens saved. |
 | "Is this install healthy?" | `basemind doctor` | Checks root, config, index, grammars, hook, daemon; exits 1 on failure. |
-| "Re-read a changed file cheaply?" | `basemind delta --old <prev> < new` | `+N/-M` line diff; stdin is the new content. |
-| "Checkpoint a session?" | `basemind checkpoint < session.txt` | Decisions / errors / changed files, credential-safe. |
-| "Spot wasteful tool use?" | `basemind detect-waste < calls.jsonl` | Redundant reads, repeated queries, oversized reads. |
 | "Block commits from staling the index?" | `basemind hook install` | Pre-commit `scan --staged`; see Notes. |
 | "Shell completions / man page?" | `basemind completions <shell>` / `basemind man` | Print to stdout. |
 

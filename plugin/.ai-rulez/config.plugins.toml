@@ -75,20 +75,6 @@ type = "command"
 command = "\"${PLUGIN_ROOT}/hooks/run-hook.cmd\" pre-tool-guard"
 
 [[plugin.hooks]]
-event = "PostToolUse"
-matcher = "Bash"
-[[plugin.hooks.hooks]]
-type = "command"
-command = "\"${PLUGIN_ROOT}/hooks/run-hook.cmd\" compress-output"
-
-[[plugin.hooks]]
-event = "PostToolUse"
-matcher = "Read"
-[[plugin.hooks.hooks]]
-type = "command"
-command = "\"${PLUGIN_ROOT}/hooks/run-hook.cmd\" read-cache"
-
-[[plugin.hooks]]
 event = "UserPromptSubmit"
 [[plugin.hooks.hooks]]
 type = "command"

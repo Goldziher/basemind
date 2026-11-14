@@ -10,6 +10,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- **The token-saving text tools.** The `admin` modes `compress`, `delta`, `checkpoint` and `waste` are gone
+  from the MCP tool, together with their CLI commands `basemind admin compress`, `basemind compress-output`,
+  `basemind delta`, `basemind checkpoint` and `basemind detect-waste`. The plugin no longer ships the
+  `compress-output` and `read-cache` PostToolUse hooks, so `BASEMIND_COMPRESS_OUTPUT` and
+  `BASEMIND_DELTA_READS` have no effect; snapshots the `read-cache` hook left under
+  `${XDG_CACHE_HOME:-~/.cache}/basemind/read-cache/` can be deleted. `code` mode `expand`, the search guard
+  (`BASEMIND_GUARD`) and every other `admin` mode are unchanged.
+
 ### Fixed
 
 - An older basemind no longer wipes a cache a newer one wrote. Two binaries of different versions sharing

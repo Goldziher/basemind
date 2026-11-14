@@ -71,7 +71,7 @@ pub enum ToolCmd {
     /// On-demand web ingestion (needs `--features crawl`).
     #[command(subcommand)]
     Web(web::WebCmd),
-    /// Server administration: repo identity, telemetry, compression, tokens, eval.
+    /// Server administration: repo identity, telemetry, tokens, eval.
     #[command(subcommand)]
     Admin(admin::AdminCmd),
     /// Index health for this workspace: file counts, languages, scan age.

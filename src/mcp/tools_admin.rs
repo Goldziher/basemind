@@ -1,8 +1,7 @@
 //! The `admin` domain tool shim for `BasemindServer`.
 //!
-//! One tool, one required `mode` — index health, re-indexing, cache accounting, telemetry, and the
-//! context-compression operations — dispatched to `helpers_admin::run_admin`. Thin wrapper: the
-//! bodies live in `helpers_admin.rs` (and, for the text-compression modes, `helpers_compress.rs`).
+//! One tool, one required `mode` — index health, re-indexing, cache accounting and telemetry —
+//! dispatched to `helpers_admin::run_admin`. Thin wrapper: the bodies live in `helpers_admin.rs`.
 
 use rmcp::ErrorData as McpError;
 use rmcp::handler::server::wrapper::Parameters;
@@ -17,14 +16,14 @@ use super::types_admin::AdminParams;
 
 #[rmcp::tool_router(vis = "pub(super)", router = "tool_router_admin")]
 impl BasemindServer {
-    // No `output_schema`: the eleven modes return eleven different response shapes, and SEP-2106
+    // No `output_schema`: the seven modes return seven different response shapes, and SEP-2106
     // allows exactly one per tool. Declaring a union would mean nested structs, which schemars
     // emits as `$ref` into `$defs` — the construct that silently dropped the whole registry in
     // GH #50. The per-mode shapes are documented in the description instead. ~keep
     #[tool(
         title = "Admin",
         description = "Operate basemind itself: index health, re-indexing, cache footprint and \
-        cleanup, usage telemetry, and context-shrinking text tools. `mode` is required. `status` \
+        cleanup, and usage telemetry. `mode` is required. `status` \
         reports this workspace's indexed state — file count, per-language breakdown, total bytes, \
         on-disk blob count, schema version, and whether a scan is still running; ask it first when \
         a query comes back empty or says 'no index' / 'no indexed files'. `repo` returns repository \
@@ -44,16 +43,7 @@ impl BasemindServer {
         and run `basemind cache clear` instead. `telemetry` aggregates recorded calls into a usage \
         summary — total calls, per-tool histogram, response bytes, heuristic `est_tokens_saved` — \
         over `window` (`today` default, `1h`, `24h`, `all`), optionally filtered to one `tool`. \
-        `compress` shrinks content so it costs less context: with `path` it returns an indexed \
-        file's structural outline (imports + signatures, verbatim, never bodies and never \
-        paraphrased); with `text` it runs a lexical prose pass — supply exactly one of the two. \
-        `delta` emits a compact +N/-M line diff from `old` to `new` so re-reading something you \
-        already saw costs only what changed; either side over 50,000 bytes or 2,000 lines bails to \
-        a full re-read (`bailed=true`). `checkpoint` extracts decisions, errors, and changed files \
-        from session `text` into a credential-safe summary to persist or re-inject instead of the \
-        whole transcript — the changed-file list comes from this server's git working tree, not \
-        from the text. `waste` flags redundant reads, repeated queries, and oversized reads in a \
-        JSON-Lines tool-call `log`. Parameters that belong to another mode are rejected, not \
+        Parameters that belong to another mode are rejected, not \
         ignored.",
         annotations(
             read_only_hint = false,

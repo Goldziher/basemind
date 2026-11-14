@@ -87,14 +87,12 @@ pub const GLOBAL_FLAGS: &[(&str, &str)] = &[
 const GRAPH_KNOBS: &str =
     "TODO parity: graph traversal knob not exposed on the CLI; the command runs with the MCP default";
 const INVERTED: &str = "CLI spells the negation (`--no-X`) of the MCP boolean `X`";
-const STDIN: &str = "CLI reads this from stdin, MCP takes it as a required parameter";
 
 pub fn all() -> Vec<Exception> {
     vec![
         // ---- renamed / sense-inverted arguments ----
         alias("code grep", "no_context", "include_context", INVERTED),
         alias("git recent", "no_files", "include_files", INVERTED),
-        alias("admin compress", "no_preserve_code", "preserve_code", INVERTED),
         alias("memory put", "no_embed", "embed", INVERTED),
         alias("web scrape", "no_index", "index", INVERTED),
         alias("shell send", "no_enter", "enter", INVERTED),
@@ -160,7 +158,6 @@ pub fn all() -> Vec<Exception> {
             "TODO parity: the MCP `rescan` cannot wipe and rebuild the git-history index",
         ),
         // ---- MCP-only parameters ----
-        mcp_only("checkpoint", "text", STDIN),
         mcp_only("graph communities", "max_communities", GRAPH_KNOBS),
         mcp_only("graph communities", "members_per_community", GRAPH_KNOBS),
         mcp_only("graph export", "algorithm", GRAPH_KNOBS),
@@ -208,7 +205,5 @@ pub fn all() -> Vec<Exception> {
             "component",
             "TODO parity: MCP requires `component`; the CLI defaults to `git-cache`",
         ),
-        required("delta", "new", STDIN),
-        required("detect-waste", "log", STDIN),
     ]
 }

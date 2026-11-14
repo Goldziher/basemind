@@ -9,7 +9,7 @@ The CLI mirrors the MCP surface exactly: **nine domains**, each a real clap subc
 (`basemind <domain> <mode>`). `tests/cli_parity/` enforces it: every MCP mode maps to a CLI command
 with the same parameters and the same answer, and any command with no MCP counterpart is declared
 CLI-only with a reason. Some MCP modes live at the top level rather than under their domain
-(`status`, `rescan`, `cache`, `delta`, `checkpoint`, `detect-waste`). Multi-word mode names are kebab-cased on the CLI (`by_path` → `by-path`) but
+(`status`, `rescan`, `cache`). Multi-word mode names are kebab-cased on the CLI (`by_path` → `by-path`) but
 keep their snake_case spelling on the wire (MCP mode name, `--json` field names). Add `--json` to
 any tool subcommand for machine-readable output.
 
@@ -165,19 +165,17 @@ basemind memory reject <id> [--reason]
 ```bash
 basemind admin repo
 basemind admin telemetry [--window today|1h|24h|all] [--tool]
-basemind admin compress [--path --text --level off|light|moderate|aggressive|maximum --target-tokens --no-preserve-code]
 basemind admin tokens --stdin
 basemind admin eval --tasks <FILE> [--out --report --markdown --baseline --tolerance --cost-tolerance --min-recall --warmup --mode]
 ```
 
-The rest of the former `admin` verbs live at the top level: `status`, `rescan`, `cache stats|gc|clear`, `delta`,
-`checkpoint` and `detect-waste` (see [Other commands](#other-commands)).
+The rest of the `admin` verbs live at the top level: `status`, `rescan` and `cache stats|gc|clear`
+(see [Other commands](#other-commands)).
 
 | Command | Purpose |
 |---|---|
 | `repo` | Repository identity: workdir, branch, HEAD sha. |
 | `telemetry [--window --tool]` | Aggregate recorded tool calls into a usage and token-savings summary. |
-| `compress [--path --text --level --target-tokens --no-preserve-code]` | Shrink content for re-use in a smaller context: an indexed file's outline, or a prose pass read from `--text`/stdin. |
 | `tokens --stdin` | Count tokens in stdin with the o200k tokenizer and print just the integer (needs the `tokenizer` feature, which `documents` includes). CLI-only; no `--json` envelope. |
 | `eval --tasks <FILE> [...]` | Score retrieval quality, latency and token savings over a JSONL task file. CLI-only; see [Evaluation](/reference/evaluation/). |
 
@@ -332,10 +330,6 @@ basemind cache gc [--dry-run]
 basemind cache clear [--component]
 basemind daemon ensure
 basemind statusline
-basemind compress-output [--family]
-basemind delta --old <FILE> [--new <FILE>]
-basemind checkpoint
-basemind detect-waste [--log <FILE>]
 ```
 
 | Command | Purpose |
@@ -354,10 +348,6 @@ basemind detect-waste [--log <FILE>]
 | `cache stats`, `cache gc [--dry-run]`, `cache clear [--component --yes]` | Offline path directly against the machine-global cache. `gc` runs the real cross-workspace reference-counted sweep (blobs younger than six hours are kept; `BASEMIND_BLOB_GC_GRACE_SECS` overrides) and prints what it removed. `clear` is the only way to clear `views`/`all`, which the MCP `admin` `cache_clear` mode refuses because they back the live index. `gc --dry-run` only counts blobs and deletes nothing. `--component` is `blobs`, `views`, `lance`, `git-cache` (default), `telemetry`, `all`, or `views:<name>` for one view. Everything except `git-cache` is destructive: it prompts on a terminal and requires `--yes` otherwise (exit 2). `clear` exits 3 while a writer holds the workspace lock, and for `blobs` while the daemon runs; `blobs` is the machine-global extraction store shared by every workspace. |
 | `daemon ensure` | Ensure the daemon's streamable-HTTP MCP transport is up; idempotent. Needs `--features comms`. |
 | `statusline` | Print a one-line summary of the daemon's hot workspaces, for a shell statusline. Silent and exits 0 when no daemon is running. |
-| `compress-output [--family]` | Backend for the output-compression guardrail: compress stdin (e.g. piped command output) by detected or given family. |
-| `delta --old <FILE> [--new <FILE>]` | Backend for the delta-reads guardrail: diff the `--old` file against `--new` (stdin when omitted), emitting a compact `+N/-M` line diff. |
-| `checkpoint` | Extract decisions/errors/changed-files from session text on stdin into a JSON checkpoint. |
-| `detect-waste` | Flag wasteful tool use from a JSON-Lines tool-call log on stdin. |
 
 ## Output, exit codes and the daemon
 

@@ -2,9 +2,9 @@
 # Refresh it with `ai-rulez lock`; `ai-rulez generate --locked` fails when it is stale.
 
 version = 1
-ai_rulez_version = '5.9.8'
+ai_rulez_version = '5.13.2'
 scope = 'all'
-tree = 'sha256:cdf571a4268c6f5914e68ef59b976afb691e8b2cbb730555367893de3d909afc'
+tree = 'sha256:17ab32692b0835e8a924fe64a41b8d99b9ee5d51d7fad2f39a515e9314753e42'
 
 [[served]]
 name = 'adr-workflow'
@@ -160,7 +160,7 @@ digest = 'sha256:ada4405aa2cd8071ff0dcd12117493229d428f843925952483050a980084ff5
 kind = 'agent'
 id = 'mcp-domain-migrator'
 path = 'agents/mcp-domain-migrator.md'
-digest = 'sha256:16db10b0b05353f72ab6b64e2bc68adce1d34c0c684ff162de3ff781a5ce4a65'
+digest = 'sha256:73dcd84c237b20e4696773a27bb4974d1438b21a2d8cd0842df95344d9384a4d'
 
 [[item]]
 kind = 'agent'
@@ -238,7 +238,7 @@ digest = 'sha256:2d23ea5488d2fcd665d4b170b1cefe57c255f221dd58dcc38f2d4a8577d66f9
 kind = 'context'
 id = 'mcp-surface'
 path = 'context/mcp-surface.md'
-digest = 'sha256:5696cab5259fc2ac7d8816b17ae3d9afb467d1176d6b6033da1f8d46488b792b'
+digest = 'sha256:0aa56aac5954546bdf3724919dfb9e45317579b8e7fe63e5e24d172e7b595f92'
 
 [[item]]
 kind = 'context'

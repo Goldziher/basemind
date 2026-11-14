@@ -4,7 +4,7 @@
 //! `definition` / `references` / `callers` / `implementations` / `dependents` / `expand` /
 //! `semantic` / `chunk` — dispatched to `helpers_code::run_code`. Thin wrapper: the bodies live in
 //! `helpers_code.rs` (`outline`, `symbols`, `dependents`), `helpers_files.rs`, `helpers_grep.rs`,
-//! `helpers_calls.rs`, `helpers_impls.rs`, `helpers_intel.rs`, `helpers_compress.rs` and
+//! `helpers_calls.rs`, `helpers_impls.rs`, `helpers_intel.rs`, `helpers_expand.rs` and
 //! `helpers_code_search.rs`.
 //!
 //! The pagination / cap helpers the code-map bodies share stay here at the bottom of the file.

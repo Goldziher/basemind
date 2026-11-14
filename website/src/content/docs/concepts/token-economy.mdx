@@ -2,7 +2,7 @@
 title: Token economy
 description: >
   Why basemind saves tokens: pointers (paths and line numbers) cost less than whole files.
-  Good habits the plugin sets up by default, plus optional guardrails.
+  Good habits the plugin sets up by default, plus the search guard.
 ---
 
 basemind saves tokens by answering with **file paths, line numbers, and signatures — not whole
@@ -62,11 +62,9 @@ The plugin nudges agents toward the cheap path by default:
 - **Refresh the index after edits** — `admin rescan` instead of restarting the server.
 - **Don't re-read a file basemind already mapped** — use the outline instead.
 
-## Optional guardrails
+## Guard: redirect wasteful searches
 
-The plugin ships three hooks that enforce token discipline at the moment a tool is used. The guard is on by default; the other two are opt-in:
-
-### Guard: redirect wasteful searches
+The plugin ships a hook that enforces token discipline at the moment a tool is used. It is on by default:
 
 ```bash
 BASEMIND_GUARD=nudge    # default: allow the call, add a one-time advisory
@@ -79,49 +77,8 @@ basemind mode (`code grep` for patterns, `code symbols` for names, `code referen
 sites). In the default `nudge` mode the call goes through with an advisory, shown once per session
 per tool; `redirect` denies it. The guard needs `jq` and quietly does nothing without it.
 
-### Output compressor: shrink large results
+## Outline first, expand on demand
 
-```bash
-BASEMIND_COMPRESS_OUTPUT=1
-```
-
-Off by default; `1`, `on`, `true` or `yes` turns it on. When a Bash command returns long output (a
-build log, a directory listing), the compressor replaces it with a shorter summary chosen by the
-command family. It leaves the output alone when it detects a credential or would save under 10 %.
-The backend is the `basemind compress-output` command, which reads stdin.
-
-### Re-read shortcut: show only what changed
-
-```bash
-BASEMIND_DELTA_READS=1
-```
-
-Off by default; `1`, `on`, `true` or `yes` turns it on. When an agent re-reads a file it already
-read earlier in the session, the hook shows just the changed lines (`basemind delta`) instead of
-resending the whole file, and only when the diff is meaningfully smaller.
-
-## Compression that understands code
-
-basemind shrinks code by keeping the shape and dropping the bodies — function signatures and
-imports stay, implementations go — because a signature is useless without its shape:
-
-```rust
-// Original (2,400 tokens)
-pub fn process_file(path: &str) -> Result<Vec<Symbol>> {
-  let file = std::fs::read_to_string(path)?;
-  let mut tokens = vec![];
-  let mut depth = 0;
-  // 100 lines of parsing logic...
-  Ok(tokens)
-}
-
-// Compressed (240 tokens)
-pub fn process_file(path: &str) -> Result<Vec<Symbol>>;
-```
-
-For prose, compression does a light cleanup: extra whitespace, filler paragraphs, repeated
-content. It reports honest before/after token counts, and the code version is exact — nothing is
-lost, just set aside.
-
-`code expand` brings any one symbol's full body back when an agent actually needs it: compress to
-an outline, then expand only what you read.
+`code outline` returns a file's shape — signatures and imports, no bodies. `code expand` brings any
+one symbol's full body back when an agent actually needs it: read the outline, then expand only the
+symbol you need.

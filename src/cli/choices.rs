@@ -94,17 +94,6 @@ choice_enum! {
 }
 
 choice_enum! {
-    /// `admin compress` reduction intensity.
-    CompressLevel {
-        Off => "off",
-        Light => "light",
-        Moderate => "moderate",
-        Aggressive => "aggressive",
-        Maximum => "maximum",
-    }
-}
-
-choice_enum! {
     /// `memory proposals` kind filter.
     ProposalKind { Skill => "skill", Memory => "memory" }
 }

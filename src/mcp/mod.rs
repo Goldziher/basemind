@@ -35,9 +35,9 @@ mod helpers_code_search;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 mod helpers_comms;
 mod helpers_community;
-mod helpers_compress;
 #[cfg(feature = "documents")]
 mod helpers_documents;
+mod helpers_expand;
 mod helpers_files;
 mod helpers_fingerprint;
 mod helpers_git;
@@ -119,7 +119,6 @@ mod types_code;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 pub(crate) mod types_comms;
 mod types_community;
-mod types_compress;
 mod types_documents;
 mod types_git;
 pub(crate) mod types_governance;

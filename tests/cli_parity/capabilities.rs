@@ -116,10 +116,6 @@ pub fn table() -> Vec<Row> {
         pair("admin", "gc", "cache gc"),
         pair("admin", "cache_clear", "cache clear"),
         pair("admin", "telemetry", "admin telemetry"),
-        pair("admin", "compress", "admin compress"),
-        pair("admin", "delta", "delta"),
-        pair("admin", "checkpoint", "checkpoint"),
-        pair("admin", "waste", "detect-waste"),
         // ---- git ----
         pair("git", "status", "git status"),
         pair("git", "recent", "git recent"),
@@ -161,10 +157,6 @@ pub fn table() -> Vec<Row> {
         cli_only("lang list", "tree-sitter grammar cache management"),
         cli_only("lang install", "tree-sitter grammar cache management"),
         cli_only("lang clean", "tree-sitter grammar cache management"),
-        cli_only(
-            "compress-output",
-            "hook filter: family-detected compression of command output read from stdin, failing open to raw passthrough; `admin compress` takes an explicit level/target instead",
-        ),
         cli_only(
             "doctor",
             "installation and workspace health check printing human diagnostics and exiting 1 on failure; an MCP client is already connected",

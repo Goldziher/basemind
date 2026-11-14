@@ -186,10 +186,6 @@ define_mode! {
         Gc => "gc", "report orphaned blobs no live view references; deletes nothing (`basemind cache gc` sweeps)";
         CacheClear => "cache_clear", "delete one cache component (`component`); `blobs` needs `confirm`, `views`/`all` refused";
         Telemetry => "telemetry", "aggregate recorded tool calls into a usage and token-savings summary";
-        Compress => "compress", "shrink an indexed file (`path`, outline) or prose (`text`) to cost less context";
-        Delta => "delta", "compact +N/-M line diff from `old` to `new`";
-        Checkpoint => "checkpoint", "distill session `text` into decisions, errors and changed files";
-        Waste => "waste", "flag redundant reads and repeated queries in a tool-call `log`";
     }
 }
 

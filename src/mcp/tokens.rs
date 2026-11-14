@@ -1,11 +1,11 @@
-//! Token counting for compression reports (and, later, budgeting).
+//! Token counting for savings telemetry, `admin eval` and `basemind admin tokens`.
 //!
 //! Real HF-tokenizer counts (o200k / gpt-4o, via xberg) when the `tokenizer`
 //! feature is enabled (pulled in unconditionally by `documents`, which needs it
 //! for the same reason plus more); a `bytes/4` heuristic otherwise. The real
 //! path downloads the tokenizer from HF on first use and caches it, and falls
-//! back to a word estimate offline — acceptable for the explicit `compress` op
-//! and `basemind admin tokens`, NOT for any per-call hot path.
+//! back to a word estimate offline — acceptable for `basemind admin tokens`, NOT
+//! for any per-call hot path.
 
 /// Count the tokens in `text`.
 #[cfg(feature = "tokenizer")]

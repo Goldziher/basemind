@@ -46,7 +46,7 @@ struct Cli {
     /// subcommands (code / git / graph / memory / web / shell / admin / status / cache), the
     /// coordination groups (agents / workspace / comms / daemon) and doctor. It is ignored, with a
     /// warning, on init / scan / rescan / watch / hook / lang / completions / man / statusline /
-    /// serve and the stdin filters (compress-output / delta / checkpoint / detect-waste).
+    /// serve.
     #[arg(long, global = true)]
     json: bool,
 
@@ -93,7 +93,7 @@ enum Cmd {
     #[cfg(all(feature = "shells", any(unix, windows)))]
     #[command(subcommand)]
     Shell(basemind::cli::shell::ShellCmd),
-    /// Repository identity, telemetry, compression, token counting and retrieval evaluation.
+    /// Repository identity, telemetry, token counting and retrieval evaluation.
     #[command(subcommand)]
     Admin(basemind::cli::admin::AdminCmd),
     /// Manage the git pre-commit hook that runs `basemind scan --staged`.
@@ -118,19 +118,6 @@ enum Cmd {
         #[command(subcommand)]
         action: LangCmd,
     },
-    /// Compress verbose command output read from stdin into a compact summary,
-    /// failing open (raw passthrough) on errors and preserving credentials.
-    CompressOutput(basemind::textcompress::cli::CompressOutputArgs),
-    /// Emit a compact `+N/-M` line-diff from a prior file version (`--old`) to
-    /// new content read from stdin — the stateless delta re-read primitive.
-    Delta(basemind::textcompress::cli::DeltaArgs),
-    /// Extract a compact, credential-safe checkpoint (decisions / errors /
-    /// changed files) from session text read from stdin; changed files come
-    /// from the git working tree, not the text.
-    Checkpoint(basemind::textcompress::cli::CheckpointArgs),
-    /// Flag wasteful tool usage (redundant reads, repeated queries, oversized
-    /// reads) from a JSON-Lines tool-call log read from stdin. Pure analysis.
-    DetectWaste(basemind::textcompress::cli::DetectWasteArgs),
     /// Run an MCP server for a stdio client: ensure the daemon (the real server) is up, then relay
     /// this process's stdin/stdout to it. HTTP-native clients skip this and dial the daemon URL
     /// directly (see `daemon ensure`).
@@ -398,10 +385,6 @@ fn run() -> Result<()> {
             LangCmd::Install => lang_cli::cmd_lang_install(&root, verbosity, no_color),
             LangCmd::Clean => lang_cli::cmd_lang_clean(),
         },
-        Cmd::CompressOutput(args) => basemind::textcompress::cli::run(&args),
-        Cmd::Delta(args) => basemind::textcompress::cli::run_delta(&args),
-        Cmd::Checkpoint(args) => basemind::textcompress::cli::run_checkpoint(&root, &args),
-        Cmd::DetectWaste(args) => basemind::textcompress::cli::run_detect_waste(&args),
         Cmd::Serve => cmd_serve(&root, &view),
         Cmd::Cache(action) => basemind::cli::run_cache(&root, action, json),
         // An explicit `--root` selects the per-repo line for that (resolved) workspace; bare

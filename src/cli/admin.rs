@@ -3,12 +3,12 @@
 //!
 //! Real clap subcommands rather than a `--mode` flag, so each operation keeps its own `--help` and
 //! its own argument validation. The other `admin` modes live under their canonical command:
-//! `status`, `rescan`, `cache stats|gc|clear`, `delta`, `checkpoint` and `detect-waste`.
+//! `status`, `rescan` and `cache stats|gc|clear`.
 //!
 //! The `cache` subcommands call `store_gc` directly (no server, no flock), which is the only way to
 //! clear `views` / `all`, the components that back the live index.
 
-use std::io::{IsTerminal, Read, Write};
+use std::io::{IsTerminal, Write};
 use std::path::Path;
 use std::str::FromStr;
 
@@ -19,10 +19,10 @@ use crate::mcp::BasemindServer;
 use crate::mcp::params::*;
 use crate::store_gc::{self, CacheComponent};
 
-use super::choices::{CompressLevel, TelemetryWindow};
+use super::choices::TelemetryWindow;
 use super::exit::CliExit;
 use super::render::{Emit, emit, render_human, render_json};
-use super::{resolve_path, run_tool};
+use super::run_tool;
 
 #[derive(Subcommand, Debug)]
 pub enum AdminCmd {
@@ -36,24 +36,6 @@ pub enum AdminCmd {
         /// Optional exact tool-name filter.
         #[arg(long)]
         tool: Option<String>,
-    },
-    /// Shrink content for re-use in a smaller context: a file's outline, or a prose pass.
-    Compress {
-        /// Indexed source file to compress structurally. Mutually exclusive with `--text`.
-        #[arg(long)]
-        path: Option<String>,
-        /// Prose to compress. Read from stdin when neither this nor `--path` is given.
-        #[arg(long)]
-        text: Option<String>,
-        /// Reduction intensity.
-        #[arg(long, value_enum)]
-        level: Option<CompressLevel>,
-        /// Soft token budget hint, echoed back in the response.
-        #[arg(long)]
-        target_tokens: Option<u32>,
-        /// Let the prose pass rewrite code blocks (they are preserved by default).
-        #[arg(long)]
-        no_preserve_code: bool,
     },
     /// Count tokens in text with the real o200k tokenizer and print just the integer (needs the
     /// `tokenizer` feature, which `documents` also includes). No `--json` envelope and no MCP
@@ -95,7 +77,10 @@ fn run_tokens(_out: &mut impl Write) -> Result<()> {
 }
 
 /// Read the whole of stdin as lossy UTF-8, so non-UTF-8 input never aborts the pipe.
+#[cfg(feature = "tokenizer")]
 fn read_stdin() -> Result<String> {
+    use std::io::Read;
+
     let mut raw = Vec::new();
     std::io::stdin().read_to_end(&mut raw).context("read stdin")?;
     Ok(String::from_utf8_lossy(&raw).into_owned())
@@ -110,28 +95,6 @@ pub async fn run(server: &BasemindServer, cmd: AdminCmd, opts: &Emit, out: &mut 
             tool,
             ..AdminParams::new(AdminMode::Telemetry)
         },
-        AdminCmd::Compress {
-            path,
-            text,
-            level,
-            target_tokens,
-            no_preserve_code,
-        } => {
-            let resolved = path.as_deref().map(|p| resolve_path(server, p));
-            let text = match (&resolved, text) {
-                (Some(_), text) => text,
-                (None, Some(text)) => Some(text),
-                (None, None) => Some(read_stdin()?),
-            };
-            AdminParams {
-                path: resolved,
-                text,
-                level: level.map(|l| l.as_str().to_string()),
-                target_tokens,
-                preserve_code: no_preserve_code.then_some(false),
-                ..AdminParams::new(AdminMode::Compress)
-            }
-        }
         AdminCmd::Tokens { .. } => return run_tokens(out),
         AdminCmd::Eval(args) => return crate::eval::run(server, &args, out).await,
     };
@@ -308,16 +271,7 @@ mod tests {
         let command = AdminCmd::augment_subcommands(Harness::command());
         let names: Vec<String> = command.get_subcommands().map(|s| s.get_name().to_string()).collect();
         // Modes whose CLI home is a top-level command (`tests/cli_parity/` maps them).
-        const TOP_LEVEL: &[&str] = &[
-            "status",
-            "rescan",
-            "cache_stats",
-            "gc",
-            "cache_clear",
-            "delta",
-            "checkpoint",
-            "waste",
-        ];
+        const TOP_LEVEL: &[&str] = &["status", "rescan", "cache_stats", "gc", "cache_clear"];
         for mode in crate::mcp::mode::AdminMode::ALL_MODES
             .iter()
             .filter(|m| !TOP_LEVEL.contains(m))

@@ -9,8 +9,8 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:b7117e6e750a15f9a8b063b4b372bb97af16ff2e8ef1e92cbd123440115080ae
-Source-Hash: blake3:c72bfe893be1e1c5d7b6a1a11f10f90cb0018f1261aade543421064ddda85234
+Content-Hash: blake3:06ce45f18a77f5bc1d2e167810a3f3fd26fcdcce410eb36a1bbf24fe7eb90d94
+Source-Hash: blake3:65edf7dbc94ca8766735f09cd21b608930acd91e278e792605dc6f3d40d964dd
 Schema-Version: v1
 -->
 
@@ -97,9 +97,6 @@ command covers the question.
 | "Refresh changed paths?" | `basemind rescan [path…]` | Re-index in the live server. |
 | "Per-operation activity summary?" | `basemind admin telemetry` | Histogram + estimated tokens saved. |
 | "Is this install healthy?" | `basemind doctor` | Checks root, config, index, grammars, hook, daemon; exits 1 on failure. |
-| "Re-read a changed file cheaply?" | `basemind delta --old <prev> < new` | `+N/-M` line diff; stdin is the new content. |
-| "Checkpoint a session?" | `basemind checkpoint < session.txt` | Decisions / errors / changed files, credential-safe. |
-| "Spot wasteful tool use?" | `basemind detect-waste < calls.jsonl` | Redundant reads, repeated queries, oversized reads. |
 | "Block commits from staling the index?" | `basemind hook install` | Pre-commit `scan --staged`; see Notes. |
 | "Shell completions / man page?" | `basemind completions <shell>` / `basemind man` | Print to stdout. |
 

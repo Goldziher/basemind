@@ -5,7 +5,7 @@
 //! ([`SearchCodeParams`] / [`GetChunkParams`] here, `OutlineParams` / `SearchSymbolsParams` /
 //! `ListFilesParams` / `FindFilesParams` / `FindReferencesParams` / `FindCallersParams` /
 //! `GotoDefinitionParams` / `WorkspaceGrepParams` in `types.rs`, `FindImplementationsParams` in
-//! `types_impls.rs`, `ExpandParams` in `types_compress.rs`) stay as the helpers' internal shapes, so
+//! `types_impls.rs`) and [`ExpandParams`] stay as the helpers' internal shapes, so
 //! the bodies keep taking exactly the arguments they always did.
 //!
 //! `CodeParams` lives here rather than in `types.rs` because that file is already within ~90 lines
@@ -301,4 +301,71 @@ pub(crate) struct GetChunkResponse {
     /// [`crate::mcp::helpers::timing`] for the full contract.
     #[serde(default)]
     pub elapsed_us: u64,
+}
+
+/// Parameters for the `expand` MCP tool.
+///
+/// Resolves one symbol by `name` (and optionally `kind`) in the file's L1 outline, then
+/// reads the source file from disk and returns the raw bytes in `[start_byte..end_byte]`.
+/// When more than one symbol matches `name` (e.g. overloads), the tool returns an error
+/// listing the matches so the caller can disambiguate by supplying `kind`.
+#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
+pub struct ExpandParams {
+    /// Repo-relative path of the indexed source file.
+    pub path: RelPath,
+    /// Symbol name to expand. Matched exactly (case-sensitive) against the L1 outline.
+    /// Aliases: `symbol`, `needle`, `query`.
+    #[serde(alias = "symbol", alias = "needle", alias = "query")]
+    pub name: String,
+    /// Optional kind filter to disambiguate when `name` matches multiple symbols
+    /// (e.g. `"function"`, `"method"`, `"struct"`, …). Same values as `search_symbols`.
+    #[serde(default)]
+    pub kind: Option<String>,
+}
+
+/// Response from the `expand` MCP tool.
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub(super) struct ExpandResponse {
+    /// Repo-relative path of the file that was read.
+    pub path: String,
+    /// Resolved symbol name.
+    pub name: String,
+    /// Resolved symbol kind (e.g. `"function"`, `"struct"`).
+    pub kind: String,
+    /// One-based start row of the symbol in the source file.
+    pub start_row: u32,
+    /// One-based end row of the symbol in the source file (computed from the byte slice).
+    pub end_row: u32,
+    /// Raw source text of the symbol body (`file_bytes[start_byte..end_byte]`).
+    pub body: String,
+    /// Byte length of the returned body (before any truncation).
+    pub bytes: usize,
+    /// `true` when the body was truncated to the `EXPAND_BODY_CAP`.
+    pub truncated: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn expand_accepts_symbol_alias_for_name() {
+        let params: ExpandParams =
+            serde_json::from_value(serde_json::json!({ "path": "src/lib.rs", "symbol": "scan" })).unwrap();
+        assert_eq!(params.name, "scan");
+    }
+
+    #[test]
+    fn expand_accepts_query_alias_for_name() {
+        let params: ExpandParams =
+            serde_json::from_value(serde_json::json!({ "path": "src/lib.rs", "query": "scan" })).unwrap();
+        assert_eq!(params.name, "scan");
+    }
+
+    #[test]
+    fn expand_canonical_name_still_binds() {
+        let params: ExpandParams =
+            serde_json::from_value(serde_json::json!({ "path": "src/lib.rs", "name": "scan" })).unwrap();
+        assert_eq!(params.name, "scan");
+    }
 }

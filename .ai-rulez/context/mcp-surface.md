@@ -26,7 +26,7 @@ one from prose.
 | `graph` | calls, neighbors, path, subgraph, communities, map, export, display, open | always |
 | `git` | status, recent, touching, by_path, churn, diff, diff_outline, blame, blame_symbol, symbol_history, search, show | always |
 | `memory` | put, get, list, search, delete, audit, documents, mine, proposals, accept, reject | always¹ |
-| `admin` | status, repo, rescan, cache_stats, gc, cache_clear, telemetry, compress, delta, checkpoint, waste | always |
+| `admin` | status, repo, rescan, cache_stats, gc, cache_clear, telemetry | always |
 | `web` | scrape, crawl, map | `crawl` |
 | `agents` | register, list, thread_start, thread_list, join, leave, members, add_member, remove_member, archive, post, history, message, inbox, ack, wait | `comms` |
 | `workspace` | workspaces, worktrees, branches, claim, release | `comms` |
@@ -77,9 +77,7 @@ history), `proposals` / `accept` / `reject` (the review queue).
 
 `status` (index health) / `repo` (repository identity and layout), `rescan` (re-index changed
 files, or the whole workspace), `cache_stats` / `gc` / `cache_clear` (the machine-global cache),
-`telemetry` (usage + token-savings summary), `compress` / `delta` / `checkpoint` / `waste` (the
-token-saving guardrails: shrink a prior response, diff against a checkpoint, name a checkpoint,
-flag repeated tool calls).
+`telemetry` (usage + token-savings summary).
 
 ### `web` (`--features crawl`)
 

@@ -1,6 +1,6 @@
 {
   "schema_version": "v1",
-  "source_hash": "blake3:c72bfe893be1e1c5d7b6a1a11f10f90cb0018f1261aade543421064ddda85234",
+  "source_hash": "blake3:65edf7dbc94ca8766735f09cd21b608930acd91e278e792605dc6f3d40d964dd",
   "outputs": {
     ".claude-plugin/plugin.json": {
       "content_hash": "blake3:f73e2bd2477ffa3a638be0489f38b674ce559c06a0590782f0a8f9e16bdc229c",
@@ -35,7 +35,7 @@
       "mode": "0644"
     },
     ".cursor-plugin/hooks/hooks.json": {
-      "content_hash": "blake3:27010252378c6fdd446b2bbc7ecde217e0ed193a9fbd8fc5da5b8c859fb18744",
+      "content_hash": "blake3:64c8d81c526b58552d3aa12e639fd07d257c3982de3faa26a751868d7434b044",
       "mode": "0644"
     },
     ".cursor-plugin/plugin.json": {
@@ -43,7 +43,7 @@
       "mode": "0644"
     },
     ".cursor-plugin/skills/basemind-cli/SKILL.md": {
-      "content_hash": "blake3:b7117e6e750a15f9a8b063b4b372bb97af16ff2e8ef1e92cbd123440115080ae",
+      "content_hash": "blake3:06ce45f18a77f5bc1d2e167810a3f3fd26fcdcce410eb36a1bbf24fe7eb90d94",
       "mode": "0644"
     },
     ".cursor-plugin/skills/basemind-cli/index.md": {
@@ -167,7 +167,7 @@
       "mode": "0644"
     },
     ".hermes/package/src/basemind_hermes_plugin/skills/basemind-cli/SKILL.md": {
-      "content_hash": "blake3:b7117e6e750a15f9a8b063b4b372bb97af16ff2e8ef1e92cbd123440115080ae",
+      "content_hash": "blake3:06ce45f18a77f5bc1d2e167810a3f3fd26fcdcce410eb36a1bbf24fe7eb90d94",
       "mode": "0644"
     },
     ".hermes/package/src/basemind_hermes_plugin/skills/basemind-cli/index.md": {
@@ -283,7 +283,7 @@
       "mode": "0644"
     },
     ".hermes/plugins/basemind/skills/basemind-cli/SKILL.md": {
-      "content_hash": "blake3:b7117e6e750a15f9a8b063b4b372bb97af16ff2e8ef1e92cbd123440115080ae",
+      "content_hash": "blake3:06ce45f18a77f5bc1d2e167810a3f3fd26fcdcce410eb36a1bbf24fe7eb90d94",
       "mode": "0644"
     },
     ".hermes/plugins/basemind/skills/basemind-cli/index.md": {
@@ -403,7 +403,7 @@
       "mode": "0644"
     },
     ".opencode/skills/basemind-cli/SKILL.md": {
-      "content_hash": "blake3:b7117e6e750a15f9a8b063b4b372bb97af16ff2e8ef1e92cbd123440115080ae",
+      "content_hash": "blake3:06ce45f18a77f5bc1d2e167810a3f3fd26fcdcce410eb36a1bbf24fe7eb90d94",
       "mode": "0644"
     },
     ".opencode/skills/basemind-cli/index.md": {
@@ -507,7 +507,7 @@
       "mode": "0644"
     },
     ".pi/skills/basemind-cli/SKILL.md": {
-      "content_hash": "blake3:b7117e6e750a15f9a8b063b4b372bb97af16ff2e8ef1e92cbd123440115080ae",
+      "content_hash": "blake3:06ce45f18a77f5bc1d2e167810a3f3fd26fcdcce410eb36a1bbf24fe7eb90d94",
       "mode": "0644"
     },
     ".pi/skills/basemind-cli/index.md": {
@@ -639,15 +639,11 @@
       "mode": "0644"
     },
     "gemini-extension.json": {
-      "content_hash": "blake3:4d30c751078b64da6589614042cf68085f7ea9bc3a8973361a2eff31448e0c3f",
+      "content_hash": "blake3:66b003cd7d81d9dd5e7d124591ab4fb036cc038deffc6e73acbb48dcb197f0d2",
       "mode": "0644"
     },
-    "hooks/compress-output": {
-      "content_hash": "blake3:d96fa4225aa1ed9b9f113f1417c5b63b26080f3f37c1a6637476d49904081ea4",
-      "mode": "0755"
-    },
     "hooks/hooks.json": {
-      "content_hash": "blake3:7f6c84fef3ca3ce3f22b3104e9e51100cca64da78ff2884a82d70d85e5843fe9",
+      "content_hash": "blake3:a1ddb318e5bcf9a35f70f54eb6332c127d80798c51fe4bbd4814dc16c6b1311f",
       "mode": "0644"
     },
     "hooks/inbox-notify": {
@@ -656,10 +652,6 @@
     },
     "hooks/pre-tool-guard": {
       "content_hash": "blake3:5e667a590a1fc17b13908c2a53e38598a1f8dd40d07826d8cc42780601b0f207",
-      "mode": "0755"
-    },
-    "hooks/read-cache": {
-      "content_hash": "blake3:29bfecfe14fe2891e8003381d91e48170b530fadecd48c54c55cbcb54f1e699e",
       "mode": "0755"
     },
     "hooks/run-hook.cmd": {
@@ -691,7 +683,7 @@
       "mode": "0755"
     },
     "skills/basemind-cli/SKILL.md": {
-      "content_hash": "blake3:b7117e6e750a15f9a8b063b4b372bb97af16ff2e8ef1e92cbd123440115080ae",
+      "content_hash": "blake3:06ce45f18a77f5bc1d2e167810a3f3fd26fcdcce410eb36a1bbf24fe7eb90d94",
       "mode": "0644"
     },
     "skills/basemind-cli/index.md": {
@@ -773,10 +765,8 @@
   },
   "includes": [
     "assets/GEMINI.md",
-    "hooks/compress-output",
     "hooks/inbox-notify",
     "hooks/pre-tool-guard",
-    "hooks/read-cache",
     "hooks/run-hook.cmd",
     "hooks/session-start",
     "scripts/mcp-launch.sh"

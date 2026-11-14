@@ -75,7 +75,6 @@ mod store_lock;
 mod store_migration;
 mod store_seed;
 pub mod sysres;
-pub mod textcompress;
 #[cfg(feature = "crawl")]
 pub mod url;
 pub mod version;

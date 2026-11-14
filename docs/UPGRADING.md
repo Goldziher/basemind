@@ -29,11 +29,11 @@ is cleaned up.
 | `admin cache-stats` | `cache stats` |
 | `admin gc` | `cache gc` (deletes; `--dry-run` reports) |
 | `admin cache-clear` | `cache clear` (needs `--yes` outside a terminal) |
-| `admin delta` | `delta` |
-| `admin checkpoint` | `checkpoint` |
-| `admin waste` | `detect-waste` |
 | `graph map --include-churn` | `graph map --no-churn` |
 | `serve --git-cache-mem`, `--no-git-cache-disk`, `--no-watch`, `--documents-*` | removed (`serve` takes no flags) |
+
+`admin delta`, `admin checkpoint` and `admin waste` moved to the top level in 0.29 and were removed
+afterwards, together with `admin compress` and `compress-output`; they have no replacement.
 
 Also check scripts for these behaviour changes:
 

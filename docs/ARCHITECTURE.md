@@ -180,7 +180,7 @@ src/
 │   ├── helpers.rs          — tool bodies; shared scan / decode helpers
 │   ├── helpers_<area>.rs   — the run_<mode> dispatch bodies, area-sliced: admin, archmap,
 │   │                         calls, calls_scan, code, code_search (feature code-search),
-│   │                         comms, community, compress, documents, files, fingerprint,
+│   │                         comms, community, documents, expand, files, fingerprint,
 │   │                         git, git_file, governance (feature memory), graph, graphview,
 │   │                         grep, impls, intel (definition mode body), memory, proposals
 │   │                         (feature memory), registry, shells, telemetry, traverse, web
@@ -217,7 +217,6 @@ src/
 │                             (feature code-search)
 ├── shells/                 — agent-spawned shell sessions (attach/daemon/launcher,
 │                             feature shells)
-├── textcompress/           — delta-aware text-edit compression for large file writes
 ├── web/                    — web crawl ingestion (feature crawl)
 ├── registry/                — daemon-side worktree/branch claim registry
 ├── cli/                     — CLI subcommand groups, 1:1 with the nine MCP domains: admin,
@@ -545,7 +544,7 @@ single source of the wire spellings, the CLI parity table, and the telemetry key
 | `graph` | calls, neighbors, path, subgraph, communities, map, export, display, open | always |
 | `git` | status, recent, touching, by_path, churn, diff, diff_outline, blame, blame_symbol, symbol_history, search | always |
 | `memory` | put, get, list, search, delete, audit, documents, mine, proposals, accept, reject | always¹ |
-| `admin` | status, repo, rescan, cache_stats, gc, cache_clear, telemetry, compress, delta, checkpoint, waste | always |
+| `admin` | status, repo, rescan, cache_stats, gc, cache_clear, telemetry | always |
 | `web` | scrape, crawl, map | `crawl` |
 | `agents` | register, list, thread_start, thread_list, join, leave, members, add_member, remove_member, archive, post, history, message, inbox, ack, wait | `comms` |
 | `workspace` | workspaces, worktrees, branches, claim, release | `comms` |

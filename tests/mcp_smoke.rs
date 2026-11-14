@@ -2084,150 +2084,6 @@ async fn mcp_server_exercises_representative_tools() {
 
     let body = decode_text(
         &service
-            .call_tool(call_params("admin", json!({ "mode": "compress",  "path": "a.rs" })))
-            .await
-            .expect("compress(path=a.rs)"),
-    );
-    assert_eq!(
-        body.get("strategy").and_then(Value::as_str),
-        Some("structural"),
-        "code-file compress must use strategy=structural: {body}"
-    );
-    let original_bytes = body
-        .get("original_bytes")
-        .and_then(Value::as_u64)
-        .expect("original_bytes");
-    let compressed_bytes = body
-        .get("compressed_bytes")
-        .and_then(Value::as_u64)
-        .expect("compressed_bytes");
-    assert!(original_bytes > 0, "original_bytes must be positive for a.rs: {body}");
-    assert!(
-        compressed_bytes > 0,
-        "compressed_bytes must be positive for a non-empty outline: {body}"
-    );
-    let output = body.get("output").and_then(Value::as_str).expect("output");
-    assert!(
-        output.contains("alpha") || output.contains("Beta"),
-        "structural output must reference indexed symbols: {output:?}"
-    );
-    assert!(
-        !output.contains("let _ = 1"),
-        "structural output must NOT include function body literals: {output:?}"
-    );
-    let tokens_counted = body
-        .get("tokens_counted")
-        .and_then(Value::as_bool)
-        .expect("tokens_counted");
-    assert_eq!(
-        tokens_counted,
-        cfg!(feature = "documents"),
-        "tokens_counted must track the documents feature"
-    );
-    let tokens_note = body.get("tokens_note").and_then(Value::as_str).expect("tokens_note");
-    if cfg!(feature = "documents") {
-        assert!(
-            tokens_note.contains("tokenizer"),
-            "real-count note must mention the tokenizer: {tokens_note:?}"
-        );
-    } else {
-        assert!(
-            tokens_note.contains("bytes/4"),
-            "heuristic note must disclose bytes/4: {tokens_note:?}"
-        );
-    }
-    let original_tokens = body
-        .get("original_tokens")
-        .and_then(Value::as_u64)
-        .expect("original_tokens");
-    let compressed_tokens = body
-        .get("compressed_tokens")
-        .and_then(Value::as_u64)
-        .expect("compressed_tokens");
-    let tokens_reduced = body
-        .get("tokens_reduced")
-        .and_then(Value::as_u64)
-        .expect("tokens_reduced");
-    assert_eq!(
-        tokens_reduced,
-        original_tokens.saturating_sub(compressed_tokens),
-        "tokens_reduced must equal original - compressed"
-    );
-
-    let prose = "It is worth noting that this is a test paragraph.\n\n\
-                 It is worth noting that this is a test paragraph.\n\n\
-                 The code runs correctly.";
-    let body = decode_text(
-        &service
-            .call_tool(call_params("admin", json!({ "mode": "compress",  "text": prose })))
-            .await
-            .expect("compress(text prose)"),
-    );
-    assert_eq!(
-        body.get("strategy").and_then(Value::as_str),
-        Some("lexical"),
-        "prose compress must use strategy=lexical: {body}"
-    );
-    let prose_compressed = body
-        .get("compressed_bytes")
-        .and_then(Value::as_u64)
-        .expect("compressed_bytes");
-    let prose_original = body
-        .get("original_bytes")
-        .and_then(Value::as_u64)
-        .expect("original_bytes");
-    assert!(
-        prose_compressed < prose_original,
-        "lexical pass must reduce size for a repeated-filler prose input: {prose_original} → {prose_compressed}"
-    );
-    let prose_tokens_counted = body
-        .get("tokens_counted")
-        .and_then(Value::as_bool)
-        .expect("tokens_counted");
-    assert_eq!(
-        prose_tokens_counted,
-        cfg!(feature = "documents"),
-        "tokens_counted must track the documents feature"
-    );
-    let prose_orig_tokens = body
-        .get("original_tokens")
-        .and_then(Value::as_u64)
-        .expect("original_tokens");
-    let prose_comp_tokens = body
-        .get("compressed_tokens")
-        .and_then(Value::as_u64)
-        .expect("compressed_tokens");
-    let prose_reduced = body
-        .get("tokens_reduced")
-        .and_then(Value::as_u64)
-        .expect("tokens_reduced");
-    assert_eq!(
-        prose_reduced,
-        prose_orig_tokens.saturating_sub(prose_comp_tokens),
-        "tokens_reduced must equal original - compressed"
-    );
-
-    let err = service
-        .call_tool(call_params(
-            "admin",
-            json!({ "mode": "compress",  "text": "hello", "path": "a.rs" }),
-        ))
-        .await;
-    assert!(
-        err.is_err(),
-        "compress with both text and path must be rejected: {err:?}"
-    );
-
-    let err = service
-        .call_tool(call_params("admin", json!({ "mode": "compress"})))
-        .await;
-    assert!(
-        err.is_err(),
-        "compress with neither text nor path must be rejected: {err:?}"
-    );
-
-    let body = decode_text(
-        &service
             .call_tool(call_params(
                 "code",
                 json!({ "mode": "expand", "path": "a.rs", "name": "alpha" }),
@@ -2252,7 +2108,7 @@ async fn mcp_server_exercises_representative_tools() {
     );
     assert!(
         expand_body.contains("let _ = 1"),
-        "expanded body must include the function body literal (compress omits it, expand includes it): {expand_body:?}"
+        "expanded body must include the function body literal : {expand_body:?}"
     );
     let start_row = body.get("start_row").and_then(Value::as_u64).expect("start_row");
     let end_row = body.get("end_row").and_then(Value::as_u64).expect("end_row");
@@ -2285,137 +2141,6 @@ async fn mcp_server_exercises_representative_tools() {
         body.get("name").and_then(Value::as_str),
         Some("alpha"),
         "expand via `symbol` alias must resolve correctly: {body}"
-    );
-
-    let body = decode_text(
-        &service
-            .call_tool(call_params(
-                "admin",
-                json!({ "mode": "delta",
-                    "old": "alpha\nbeta\ngamma\n",
-                    "new": "alpha\nbeta2\ngamma\ndelta\n",
-                }),
-            ))
-            .await
-            .expect("delta(old, new)"),
-    );
-    assert_eq!(
-        body.get("changed").and_then(Value::as_bool),
-        Some(true),
-        "differing inputs must report changed=true: {body}"
-    );
-    assert_eq!(
-        body.get("bailed").and_then(Value::as_bool),
-        Some(false),
-        "small inputs must not bail: {body}"
-    );
-    assert_eq!(
-        body.get("added").and_then(Value::as_u64),
-        Some(2),
-        "beta2 + delta are the two adds: {body}"
-    );
-    assert_eq!(
-        body.get("removed").and_then(Value::as_u64),
-        Some(1),
-        "beta is the single deletion: {body}"
-    );
-    let delta_output = body.get("output").and_then(Value::as_str).expect("output");
-    assert!(
-        delta_output.starts_with("+2/-1"),
-        "delta output must lead with the +A/-R header: {delta_output:?}"
-    );
-
-    let body = decode_text(
-        &service
-            .call_tool(call_params(
-                "admin",
-                json!({ "mode": "delta",  "old": "same\n", "new": "same\n" }),
-            ))
-            .await
-            .expect("delta(identical)"),
-    );
-    assert_eq!(
-        body.get("changed").and_then(Value::as_bool),
-        Some(false),
-        "identical inputs must report changed=false: {body}"
-    );
-
-    std::fs::write(root.join("checkpoint_probe.txt"), b"probe\n").unwrap();
-    let body = decode_text(
-        &service
-            .call_tool(call_params(
-                "admin",
-                json!({ "mode": "checkpoint",  "text": "We decided to use rayon.\nerror: build failed\n" }),
-            ))
-            .await
-            .expect("checkpoint(text)"),
-    );
-    assert_eq!(
-        body.get("decisions").and_then(Value::as_array),
-        Some(&vec![Value::String("We decided to use rayon.".to_string())]),
-        "checkpoint must extract the decision line: {body}"
-    );
-    assert_eq!(
-        body.get("errors").and_then(Value::as_array),
-        Some(&vec![Value::String("error: build failed".to_string())]),
-        "checkpoint must extract the error line: {body}"
-    );
-    let files_changed: Vec<&str> = body
-        .get("files_changed")
-        .and_then(Value::as_array)
-        .expect("files_changed")
-        .iter()
-        .filter_map(Value::as_str)
-        .collect();
-    assert!(
-        files_changed.contains(&"checkpoint_probe.txt"),
-        "files_changed must come from this repo's git working tree: {files_changed:?}"
-    );
-
-    let log = "{\"tool\":\"Read\",\"target\":\"a.rs\",\"bytes\":100}\n\
-               {\"tool\":\"Read\",\"target\":\"a.rs\",\"bytes\":100}\n";
-    let body = decode_text(
-        &service
-            .call_tool(call_params("admin", json!({ "mode": "waste",  "log": log })))
-            .await
-            .expect("detect_waste(log)"),
-    );
-    let findings = body.get("findings").and_then(Value::as_array).expect("findings");
-    assert_eq!(
-        findings.len(),
-        1,
-        "two redundant reads of one target must yield exactly one finding: {body}"
-    );
-    let finding = &findings[0];
-    assert_eq!(
-        finding.get("kind").and_then(Value::as_str),
-        Some("redundant_read"),
-        "finding kind: {finding}"
-    );
-    assert_eq!(
-        finding.get("target").and_then(Value::as_str),
-        Some("a.rs"),
-        "finding target: {finding}"
-    );
-    assert_eq!(
-        finding.get("count").and_then(Value::as_u64),
-        Some(2),
-        "finding count: {finding}"
-    );
-    assert_eq!(
-        finding.get("estimated_waste_bytes").and_then(Value::as_u64),
-        Some(100),
-        "waste is the bytes of every read after the first: {finding}"
-    );
-    assert_eq!(
-        body.get("total_estimated_waste_bytes").and_then(Value::as_u64),
-        Some(100),
-        "total_estimated_waste_bytes: {body}"
-    );
-    assert_eq!(
-        body.get("truncated").and_then(Value::as_bool),
-        Some(false),
-        "well under MAX_FINDINGS must not truncate: {body}"
     );
 
     let _ = service.cancel().await;
@@ -5574,14 +5299,16 @@ async fn admin_tool_validates_every_mode_before_running_it() {
         "gc",
         "cache_clear",
         "telemetry",
-        "compress",
-        "delta",
-        "checkpoint",
-        "waste",
     ] {
         assert!(
             schema.contains(&format!("\"{mode}\"")),
             "`admin` inputSchema must advertise mode `{mode}`: {schema}"
+        );
+    }
+    for removed in ["compress", "delta", "checkpoint", "waste"] {
+        assert!(
+            !schema.contains(&format!("\"{removed}\"")),
+            "`admin` inputSchema must no longer advertise mode `{removed}`: {schema}"
         );
     }
 
@@ -5632,28 +5359,16 @@ async fn admin_tool_validates_every_mode_before_running_it() {
         "mode `rescan` must reject a sibling mode's field rather than ignore it: {message}"
     );
 
-    // `delta` requires both `old` and `new` — the missing one is named exactly.
+    // `cache_clear` requires `component` — the missing field is named exactly.
     let message = refusal(
         service
-            .call_tool(call_params("admin", json!({ "mode": "delta", "old": "a" })))
+            .call_tool(call_params("admin", json!({ "mode": "cache_clear" })))
             .await,
-        "a `new`-less delta",
+        "a component-less cache_clear",
     );
     assert!(
-        message.contains("`admin` mode=\"delta\" requires `new`"),
-        "mode `delta` must name the missing `new`: {message}"
-    );
-
-    // `checkpoint` requires `text`.
-    let message = refusal(
-        service
-            .call_tool(call_params("admin", json!({ "mode": "checkpoint" })))
-            .await,
-        "a text-less checkpoint",
-    );
-    assert!(
-        message.contains("`admin` mode=\"checkpoint\" requires `text`"),
-        "mode `checkpoint` must name the missing `text`: {message}"
+        message.contains("`admin` mode=\"cache_clear\" requires `component`"),
+        "mode `cache_clear` must name the missing `component`: {message}"
     );
 
     let _ = service.cancel().await;

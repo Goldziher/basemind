@@ -51,7 +51,7 @@ about your code costs a small fraction of the tokens it takes to read the source
 | **Web crawl** | Fetch a page or follow links from a starting URL; results join the document search above. | `web` (`scrape` · `crawl` · `map`) |
 | **Agent comms** | Threads addressed by subject, path-glob, and members; scope discovery; inbox delivery; lifecycle status; and dry-run/apply retention cleanup. | `agents` (`register` · `list` · `thread_start` · `thread_list` · `join` · `leave` · `members` · `add_member` · `remove_member` · `archive` · `post` · `history` · `message` · `inbox` · `ack` · `wait` · `cleanup` · `status`) |
 | **Agent shells** | Run headless terminal sessions in the background, capture recent retained output after commands exit, and explicitly stop sessions when their work is done. Visual terminal attachment is opt-in through `[shells].visual`. | `shell` (`spawn` · `send` · `capture` · `kill` · `list` · `broadcast`) |
-| **Admin** | Refresh the index after edits, check index health and repo identity, see what's been queried and how many tokens were saved, inspect or clean the on-disk cache, and shrink what an agent carries: a file's outline instead of its text, a diff instead of a re-read, a checkpoint instead of a transcript, plus a wasteful-tool-use report. | `admin` (`status` · `repo` · `rescan` · `cache_stats` · `gc` · `cache_clear` · `telemetry` · `compress` · `delta` · `checkpoint` · `waste`) |
+| **Admin** | Refresh the index after edits, check index health and repo identity, see what's been queried and how many tokens were saved, and inspect or clean the on-disk cache. | `admin` (`status` · `repo` · `rescan` · `cache_stats` · `gc` · `cache_clear` · `telemetry`) |
 | **Machine registry** | Machine-wide repo/worktree/branch coordination, backed by the daemon's always-on registry. Advisory claims let agent sessions avoid colliding on the same worktree. | `workspace` (`workspaces` · `worktrees` · `branches` · `claim` · `release`) |
 
 <!-- markdownlint-enable MD013 -->
@@ -612,26 +612,9 @@ The plugin nudges agents toward the cheap path by default:
 - Refresh the index after edits instead of restarting the server.
 - Don't re-read a file basemind already mapped.
 
-Optional guardrails enforce this at the moment a tool is used:
-
-- **Guard** — gently redirects `grep`-style searches to the matching basemind tool. On by default;
-  set `BASEMIND_GUARD=off` to disable, or `redirect` to block instead of nudge.
-- **Output compressor** — `BASEMIND_COMPRESS_OUTPUT=1` shrinks long command output. It never touches
-  anything that looks like a credential and leaves output alone if it can't help.
-- **Re-read shortcut** — `BASEMIND_DELTA_READS=1` shows just what changed when an agent re-reads a
-  file it already read this session.
-
-</details>
-
-<details>
-<summary><strong>Compression that understands code</strong></summary>
-
-basemind shrinks code by keeping the shape and dropping the bodies — function signatures and imports
-stay, the implementations go — because a signature is useless without its shape. For prose it does a
-light cleanup (extra whitespace, filler, repeated paragraphs). It reports honest before/after token
-counts, and the code version is exact — nothing is lost, just set aside. `expand` brings any one
-function's full body back when an agent actually needs it: compress to an outline, expand only what
-you need.
+A guard enforces this at the moment a tool is used: it gently redirects `grep`-style searches to the
+matching basemind tool. On by default; set `BASEMIND_GUARD=off` to disable, or `redirect` to block
+instead of nudge.
 
 </details>
 
@@ -1159,12 +1142,10 @@ degrading to a truncated in-memory view.
 |---|---|
 | `repo` | Git identity (branch, HEAD, origin). Index health is the top-level `basemind status`. |
 | `telemetry [--window --tool]` | What's been queried and how many tokens were saved. `--window` is one of `today`, `1h`, `24h`, `all`. |
-| `compress [--path --text --level --target-tokens --no-preserve-code]` | Outline an indexed file, or shrink prose. `--level` is one of `off`, `light`, `moderate`, `aggressive`, `maximum`. |
 | `eval --tasks <file> [--out --report --markdown --baseline --tolerance --cost-tolerance --min-recall --warmup --mode]` | Score retrieval quality and token savings against gold from a JSONL task file; `--baseline` gates regressions. See [`benchmarks/eval/`](benchmarks/eval/README.md). |
 | `tokens --stdin` | Count tokens in stdin with the real o200k tokenizer (needs the `tokenizer` feature). |
 
-The other former `admin` verbs live at the top level: `status`, `rescan`, `cache stats|gc|clear`, `delta`,
-`checkpoint` and `detect-waste`.
+The other `admin` verbs live at the top level: `status`, `rescan` and `cache stats|gc|clear`.
 
 **Cache (`basemind cache`)**
 
@@ -1242,8 +1223,6 @@ after handling it so each thread's inbox cursor advances independently.
 | `init [--config-dir .config\|.config/basemind --rules-target --settings-target --print]` | Re-runnable onboarding: write `basemind.toml` (at the root or under the `.config/` convention), select capabilities, inject usage rules. |
 | `lang <list\|install\|clean>` | Manage downloaded language grammars. |
 | `hook install [--force]` | Add a git pre-commit hook that runs `basemind scan --staged`. Honours `core.hooksPath`, works in linked worktrees, never blocks a commit, and refuses to overwrite a hook it did not write unless `--force` (the old one is kept as `pre-commit.bak`). |
-| `compress-output` / `delta --old <path> [--new <path>]` | Backends for the optional guardrails above. |
-| `checkpoint` / `detect-waste [--log <path>]` | Summarize session text from stdin / flag wasteful tool use from a JSON-Lines log. |
 
 <!-- markdownlint-enable MD013 -->
 

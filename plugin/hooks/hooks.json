@@ -1,27 +1,5 @@
 {
   "hooks": {
-    "PostToolUse": [
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/run-hook.cmd\" compress-output",
-            "async": false
-          }
-        ]
-      },
-      {
-        "matcher": "Read",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/run-hook.cmd\" read-cache",
-            "async": false
-          }
-        ]
-      }
-    ],
     "PreToolUse": [
       {
         "matcher": "Grep|Glob|Bash",

@@ -536,33 +536,17 @@ async fn drive_tools(svc: &ServiceHandle, sample: Option<&SampleFile>) -> Vec<To
     )
     .await;
 
-    if let Some(sample) = sample {
+    if let Some(sample) = sample
+        && let Some(sym) = &sample.sample_symbol
+    {
         call(
             svc,
             &mut records,
-            "admin",
-            json!({ "mode": "compress", "path": &sample.path }),
+            "code",
+            json!({ "mode": "expand", "path": &sample.path, "name": sym }),
         )
         .await;
-
-        if let Some(sym) = &sample.sample_symbol {
-            call(
-                svc,
-                &mut records,
-                "code",
-                json!({ "mode": "expand", "path": &sample.path, "name": sym }),
-            )
-            .await;
-        }
     }
-
-    call(
-        svc,
-        &mut records,
-        "admin",
-        json!({ "mode": "compress", "text": "It is worth noting that basemind provides code-aware compression. The index is fast." }),
-    )
-    .await;
 
     call(
         svc,

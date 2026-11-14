@@ -2,9 +2,6 @@
 //! plus the [`run_admin`] dispatcher the `#[tool]` shim and the CLI both call. Kept out of
 //! `helpers.rs` so that file stays under the 1000-line cap.
 //!
-//! The four text-compression modes (`compress` / `delta` / `checkpoint` / `waste`) keep their
-//! bodies in `helpers_compress.rs`, alongside `expand`'s, which shares their machinery.
-//!
 //! ## GC is a non-destructive report while the blob store is machine-global
 //!
 //! The blob store is a single machine-global directory shared by every workspace, so the MCP
@@ -29,7 +26,6 @@ use super::types::{
     RepoInfoResponse, StatusResponse,
 };
 use super::types_admin::AdminParams;
-use super::types_compress::{CheckpointParams, CompressParams, DeltaParams, DetectWasteParams};
 use crate::store_gc::{self, CacheComponent};
 
 /// The progress channel `rescan` reports on: the calling peer and the progress token it supplied.
@@ -38,8 +34,8 @@ pub(super) type Progress<'a> = Option<(&'a rmcp::Peer<rmcp::RoleServer>, Option<
 
 /// Fail a mode that was given a field belonging to some other mode.
 ///
-/// Inverted against `allowed` rather than listing every rejected field per mode: with eleven modes
-/// and fifteen sibling fields, an explicit per-mode reject list is where a newly added field
+/// Inverted against `allowed` rather than listing every rejected field per mode: with seven modes
+/// and six sibling fields, an explicit per-mode reject list is where a newly added field
 /// silently becomes accept-everywhere.
 fn reject_foreign_fields(mode: AdminMode, present: &[(&str, bool)], allowed: &[&str]) -> Result<(), McpError> {
     let foreign: Vec<(&str, bool)> = present
@@ -73,14 +69,6 @@ pub(super) async fn run_admin(
         tool,
         component,
         confirm,
-        text,
-        path,
-        level,
-        preserve_code,
-        target_tokens,
-        old,
-        new,
-        log,
     } = params;
     let present = [
         ("paths", paths.is_some()),
@@ -89,14 +77,6 @@ pub(super) async fn run_admin(
         ("tool", tool.is_some()),
         ("component", component.is_some()),
         ("confirm", confirm.is_some()),
-        ("text", text.is_some()),
-        ("path", path.is_some()),
-        ("level", level.is_some()),
-        ("preserve_code", preserve_code.is_some()),
-        ("target_tokens", target_tokens.is_some()),
-        ("old", old.is_some()),
-        ("new", new.is_some()),
-        ("log", log.is_some()),
     ];
     let reject = |allowed: &[&str]| reject_foreign_fields(mode, &present, allowed);
 
@@ -145,51 +125,6 @@ pub(super) async fn run_admin(
         AdminMode::Telemetry => {
             reject(&["window", "tool"])?;
             super::helpers::run_telemetry_summary(&state, super::types::TelemetrySummaryParams { window, tool }).await
-        }
-        AdminMode::Compress => {
-            reject(&["text", "path", "level", "preserve_code", "target_tokens"])?;
-            super::helpers_compress::run_compress(
-                &state,
-                CompressParams {
-                    text,
-                    path,
-                    level,
-                    preserve_code: preserve_code.unwrap_or(true),
-                    target_tokens,
-                },
-            )
-            .await
-        }
-        AdminMode::Delta => {
-            reject(&["old", "new"])?;
-            super::helpers_compress::run_delta(
-                &state,
-                DeltaParams {
-                    old: require_field(mode, "old", old)?,
-                    new: require_field(mode, "new", new)?,
-                },
-            )
-            .await
-        }
-        AdminMode::Checkpoint => {
-            reject(&["text"])?;
-            super::helpers_compress::run_checkpoint(
-                &state,
-                CheckpointParams {
-                    text: require_field(mode, "text", text)?,
-                },
-            )
-            .await
-        }
-        AdminMode::Waste => {
-            reject(&["log"])?;
-            super::helpers_compress::run_detect_waste(
-                &state,
-                DetectWasteParams {
-                    log: require_field(mode, "log", log)?,
-                },
-            )
-            .await
         }
     }
 }

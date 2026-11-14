@@ -13,7 +13,6 @@ use rmcp::schemars;
 use serde::{Deserialize, Serialize};
 
 use super::mode::AdminMode;
-use crate::path::RelPath;
 
 /// Wire parameters for the `admin` tool.
 ///
@@ -44,34 +43,6 @@ pub struct AdminParams {
     /// `cache_clear`: required for components backing the live code map.
     #[serde(default)]
     pub confirm: Option<bool>,
-    /// `compress` (prose input) and `checkpoint` (session transcript). Required by `checkpoint`;
-    /// `compress` takes exactly one of `text` or `path`.
-    #[serde(default)]
-    pub text: Option<String>,
-    /// `compress` only. Repo-relative path of an indexed source file to compress structurally.
-    /// Mutually exclusive with `text`.
-    #[serde(default)]
-    pub path: Option<RelPath>,
-    /// `compress`: `off|light|moderate|aggressive|maximum`.
-    #[serde(default)]
-    #[schemars(extend("enum" = ["off", "light", "moderate", "aggressive", "maximum"]))]
-    pub level: Option<String>,
-    /// `compress` only. When true (the default), code blocks inside prose are left intact.
-    #[serde(default)]
-    pub preserve_code: Option<bool>,
-    /// `compress`: soft token budget hint; not a hard cap.
-    #[serde(default)]
-    pub target_tokens: Option<u32>,
-    /// `delta` only. Previously seen content. Required by that mode.
-    #[serde(default)]
-    pub old: Option<String>,
-    /// `delta` only. Current content to diff against `old`. Required by that mode.
-    #[serde(default)]
-    pub new: Option<String>,
-    /// `waste` only. JSON-Lines tool-call log, one `{"tool","target","bytes"}` record per line.
-    /// Required by that mode.
-    #[serde(default)]
-    pub log: Option<String>,
 }
 
 impl AdminParams {
@@ -87,14 +58,6 @@ impl AdminParams {
             tool: None,
             component: None,
             confirm: None,
-            text: None,
-            path: None,
-            level: None,
-            preserve_code: None,
-            target_tokens: None,
-            old: None,
-            new: None,
-            log: None,
         }
     }
 }

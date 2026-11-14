@@ -5,7 +5,7 @@
 //! [`CodeParams`] against the selected [`CodeMode`] and delegates to the per-mode body. The other
 //! bodies stay where they already lived — `helpers_files` (`files`/`find`), `helpers_grep`
 //! (`grep`), `helpers_calls` (`references`/`callers`), `helpers_impls` (`implementations`),
-//! `helpers_intel` (`definition`), `helpers_compress` (`expand`), `helpers_code_search`
+//! `helpers_intel` (`definition`), `helpers_expand` (`expand`), `helpers_code_search`
 //! (`semantic`/`chunk`) — so consolidation moved the surface, not the queries.
 
 use rmcp::ErrorData as McpError;
@@ -25,8 +25,7 @@ use super::types::{
     GotoDefinitionParams, ImportView, ListFilesParams, OutlineParams, OutlineResponse, SearchHitView, SearchResponse,
     SearchSymbolsParams, SymbolView, WorkspaceGrepParams,
 };
-use super::types_code::{CodeParams, GetChunkParams, SearchCodeParams};
-use super::types_compress::ExpandParams;
+use super::types_code::{CodeParams, ExpandParams, GetChunkParams, SearchCodeParams};
 use super::types_impls::FindImplementationsParams;
 use crate::query;
 
@@ -272,7 +271,7 @@ pub(super) async fn run_code(state: &ServerState, params: CodeParams) -> Result<
         }
         CodeMode::Dependents => run_dependents(state, require_field(mode, "module", module)?, started).await,
         CodeMode::Expand => {
-            super::helpers_compress::run_expand(
+            super::helpers_expand::run_expand(
                 state,
                 ExpandParams {
                     path: require_field(mode, "path", path)?,
