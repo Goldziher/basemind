@@ -1,4 +1,4 @@
-use std::fs::OpenOptions;
+use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -313,7 +313,7 @@ pub struct Store {
     /// every file (blobs are reused by hash) instead of skipping them as unchanged over an empty
     /// index. Only a writer opening the index can know it.
     pub index_rebuild_needed: bool,
-    _lock: Option<crate::store_lock::StoreLock>,
+    _lock: Option<File>,
 }
 
 impl Store {
