@@ -4,8 +4,8 @@ use std::fs::{self, OpenOptions};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, ensure};
-use arrow_array::{Array, RecordBatch, RecordBatchIterator, StringArray, UInt32Array};
 use futures::TryStreamExt;
+use lancedb::arrow::arrow_array::{Array, RecordBatch, RecordBatchIterator, StringArray, UInt32Array};
 use lancedb::query::{ExecutableQuery, QueryBase};
 
 use super::schema;
@@ -43,7 +43,7 @@ impl SharedLane {
         }
     }
 
-    pub(super) fn schema(self, dim: u16) -> arrow_schema::SchemaRef {
+    pub(super) fn schema(self, dim: u16) -> lancedb::arrow::arrow_schema::SchemaRef {
         match self {
             Self::Documents => schema::shared_documents_schema(dim),
             #[cfg(feature = "code-search")]

@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
+use lancedb::arrow::arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
 
 /// Build the schema for the per-document-chunk `documents` table.
 ///

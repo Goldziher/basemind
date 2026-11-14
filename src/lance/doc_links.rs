@@ -8,9 +8,9 @@
 use std::sync::Arc;
 
 use anyhow::{Context, Result, anyhow};
-use arrow_array::builder::{StringBuilder, UInt32Builder};
-use arrow_array::{RecordBatch, StringArray};
 use futures::TryStreamExt;
+use lancedb::arrow::arrow_array::builder::{StringBuilder, UInt32Builder};
+use lancedb::arrow::arrow_array::{RecordBatch, StringArray};
 use lancedb::query::{ExecutableQuery, QueryBase};
 
 use super::{LanceStore, escape_sql_literal, schema};
@@ -118,7 +118,7 @@ pub(super) fn build_doc_links_batch(rows: &[DocLinkRow]) -> Result<RecordBatch> 
 }
 
 fn decode_doc_link_rows(scope: &str, batch: &RecordBatch, out: &mut Vec<DocLinkRow>) -> Result<()> {
-    use arrow_array::UInt32Array;
+    use lancedb::arrow::arrow_array::UInt32Array;
     let str_col = |name: &str| -> Result<&StringArray> {
         batch
             .column_by_name(name)

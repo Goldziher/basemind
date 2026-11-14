@@ -4,8 +4,8 @@ use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use arrow_array::{RecordBatch, StringArray, UInt32Array};
 use futures::TryStreamExt;
+use lancedb::arrow::arrow_array::{RecordBatch, StringArray, UInt32Array};
 use lancedb::query::{ExecutableQuery, QueryBase};
 
 use super::LanceStore;
@@ -262,7 +262,7 @@ fn project(
     columns[path_index] = Arc::new(StringArray::from(keys));
     for (index, column) in columns.iter_mut().enumerate() {
         if index != path_index {
-            *column = arrow_select::take::take(column.as_ref(), &selected, None)?;
+            *column = lancedb::arrow::arrow_select::take::take(column.as_ref(), &selected, None)?;
         }
     }
     #[cfg(feature = "code-search")]
@@ -285,7 +285,7 @@ fn row_key(batch: &RecordBatch, index: usize, content: &str, path_column: &str) 
         .collect::<Vec<_>>();
     let row = batch.slice(index, 1).project(&columns)?;
     let mut buffer = Vec::new();
-    let mut writer = arrow_ipc::writer::StreamWriter::try_new(&mut buffer, &row.schema())?;
+    let mut writer = lancedb::arrow::arrow_ipc::writer::StreamWriter::try_new(&mut buffer, &row.schema())?;
     writer.write(&row)?;
     writer.finish()?;
     let mut key = blake3::Hasher::new();

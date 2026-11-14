@@ -32,12 +32,12 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, anyhow};
-use arrow_array::builder::{
-    FixedSizeListBuilder, Float32Builder, ListBuilder, StringBuilder, TimestampMicrosecondBuilder, UInt32Builder,
-};
-use arrow_array::{Array, RecordBatch, StringArray};
 use futures::TryStreamExt;
 use lancedb::Connection;
+use lancedb::arrow::arrow_array::builder::{
+    FixedSizeListBuilder, Float32Builder, ListBuilder, StringBuilder, TimestampMicrosecondBuilder, UInt32Builder,
+};
+use lancedb::arrow::arrow_array::{Array, RecordBatch, StringArray};
 use lancedb::query::{ExecutableQuery, QueryBase};
 use serde::{Deserialize, Serialize};
 use tokio::runtime::Runtime;
@@ -597,7 +597,11 @@ fn wipe_on_mismatch(dir: &Path, meta_path: &Path, expected: &LanceMeta) -> Resul
     Ok(())
 }
 
-async fn ensure_table(connection: &Connection, name: &str, schema: arrow_schema::SchemaRef) -> Result<()> {
+async fn ensure_table(
+    connection: &Connection,
+    name: &str,
+    schema: lancedb::arrow::arrow_schema::SchemaRef,
+) -> Result<()> {
     let existing: Vec<String> = connection.table_names().execute().await.context("list lance tables")?;
     if existing.iter().any(|t| t == name) {
         return Ok(());
@@ -730,7 +734,7 @@ fn decode_code_chunk_hits_with_path_column(
     path_column: &str,
     out: &mut Vec<CodeChunkHit>,
 ) -> Result<()> {
-    use arrow_array::{Float32Array, UInt32Array};
+    use lancedb::arrow::arrow_array::{Float32Array, UInt32Array};
     let str_col = |name: &str| -> Result<&StringArray> {
         batch
             .column_by_name(name)
@@ -836,7 +840,7 @@ fn decode_document_hits_with_path_column(
     path_column: &str,
     out: &mut Vec<DocumentHit>,
 ) -> Result<()> {
-    use arrow_array::{Float32Array, UInt32Array};
+    use lancedb::arrow::arrow_array::{Float32Array, UInt32Array};
     let path = batch
         .column_by_name(path_column)
         .and_then(|c| c.as_any().downcast_ref::<StringArray>())
@@ -880,7 +884,7 @@ fn decode_document_hits_with_path_column(
 }
 
 fn decode_memory_hits(batch: &RecordBatch, out: &mut Vec<MemoryHit>) -> Result<()> {
-    use arrow_array::{Float32Array, ListArray};
+    use lancedb::arrow::arrow_array::{Float32Array, ListArray};
     let key = batch
         .column_by_name("key")
         .and_then(|c| c.as_any().downcast_ref::<StringArray>())

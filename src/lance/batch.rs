@@ -122,7 +122,7 @@ impl LanceStore {
         table_name: &str,
         key_col: &str,
         items: Vec<(String, String, Vec<R>)>,
-        build: impl Fn(u16, &[R]) -> Result<arrow_array::RecordBatch>,
+        build: impl Fn(u16, &[R]) -> Result<lancedb::arrow::arrow_array::RecordBatch>,
     ) -> Result<()> {
         if items.is_empty() {
             return Ok(());
