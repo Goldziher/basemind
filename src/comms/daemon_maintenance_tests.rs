@@ -236,6 +236,10 @@ async fn work_in_flight_blocks_the_idle_reap_even_with_no_links() {
     );
 }
 
+/// Every blob sweep records its outcome in the one GC state file of the process-wide test cache,
+/// so the tests that run a sweep and then assert on that file take turns. ~keep
+static GC_STATE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 /// The destructive global blob GC must not sweep while a rescan is in flight: a rescan writes new
 /// content-addressed blobs before its `index.msgpack` (which the GC reference-counts) is rewritten,
 /// so a mid-rescan sweep would see those blobs as orphans and reap them. `on_rescan` holds the
@@ -243,6 +247,7 @@ async fn work_in_flight_blocks_the_idle_reap_even_with_no_links() {
 /// until the rescan releases.
 #[tokio::test]
 async fn blob_gc_waits_for_an_in_flight_rescan() {
+    let _one_sweep = GC_STATE.lock().await;
     crate::store::init_isolated_cache();
     let (_d, broker) = temp_broker();
 
@@ -265,6 +270,7 @@ async fn blob_gc_waits_for_an_in_flight_rescan() {
 /// grew to 116 GB.
 #[tokio::test]
 async fn blob_gc_returns_starved_instead_of_hanging_behind_an_endless_rescan() {
+    let _one_sweep = GC_STATE.lock().await;
     crate::store::init_isolated_cache();
     let (_d, broker) = temp_broker();
 
@@ -301,6 +307,7 @@ async fn blob_gc_returns_starved_instead_of_hanging_behind_an_endless_rescan() {
 /// incident go unnoticed.
 #[tokio::test]
 async fn a_completed_sweep_persists_gc_state() {
+    let _one_sweep = GC_STATE.lock().await;
     crate::store::init_isolated_cache();
     let (_d, broker) = temp_broker();
 
@@ -321,6 +328,7 @@ async fn a_completed_sweep_persists_gc_state() {
 /// references still exists on disk.
 #[tokio::test(flavor = "multi_thread")]
 async fn concurrent_rescan_and_blob_gc_never_reaps_a_referenced_blob() {
+    let _one_sweep = GC_STATE.lock().await;
     crate::store::init_isolated_cache();
     let (_d, broker) = temp_broker();
     let (tx, _rx) = mpsc::channel(8);
