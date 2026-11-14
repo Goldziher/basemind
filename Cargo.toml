@@ -187,6 +187,7 @@ libc = "0.2"
 libmimalloc-sys = { version = "0.1", features = ["extended"] }
 lru = "0.19.0"
 memchr = "2"
+memmap2 = "0.9"
 mimalloc = "0.1"
 notify = "8"
 notify-debouncer-full = "0.7"
@@ -238,7 +239,6 @@ xberg = { git = "https://github.com/xberg-io/xberg.git", rev = "7510f9d01d6535fa
   "tokio-runtime",
   "simd-utf8",
 ], optional = true }
-memmap2 = "0.9"
 zstd = "0.14.4"
 
 [target.'cfg(target_os = "macos")'.dependencies]
