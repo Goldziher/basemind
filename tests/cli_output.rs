@@ -16,6 +16,7 @@ fn bin() -> &'static str {
 /// for this one: `rescan` hands its scan to that daemon, which keeps the workspace writer lock for about
 /// 20 s, and a following local `scan` is refused. A private directory plus no auto-spawn keeps the scans
 /// local.
+#[cfg(not(any(feature = "code-intel-js", feature = "code-intel-stack")))]
 fn basemind(comms: &Path) -> Command {
     let mut command = Command::new(bin());
     command
