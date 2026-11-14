@@ -7,14 +7,31 @@
 
 use std::fs;
 use std::path::Path;
+use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use basemind::config::ConfigV1;
 use basemind::extract::ExtractError;
 use basemind::extract::doc::{DocConfig, extract_doc};
-use basemind::extract::doc_guard::ChunkCutovers;
+use basemind::extract::doc_guard::{ChunkCutovers, abandoned_extractions};
 use basemind::scanner::{EmbedMode, ScanSource, scan};
 use basemind::store::Store;
+
+static SERIAL: Mutex<()> = Mutex::new(());
+
+/// Run one test at a time, starting from an idle process. These tests each push megabytes through a
+/// splitter, and a timed-out extraction keeps burning a core for several seconds after its budget
+/// expires. Run in parallel, or right behind one, a small runner starves the 1 s budget of the small
+/// guide document; so each test waits for its neighbours' abandoned threads to finish first.
+fn exclusive() -> MutexGuard<'static, ()> {
+    let guard = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+    // Best effort: a runner too slow to drain in time gets the old behavior, never a new failure.
+    let deadline = Instant::now() + Duration::from_secs(120);
+    while abandoned_extractions() > 0 && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    guard
+}
 
 /// A syslog-style file. At 3 MB the markdown splitter needs ~100 s in a debug build (measured: 0.9 s at
 /// 256 KB, 3.3 s at 512 KB, 11.6 s at 1 MB, 40 s at 2 MB), so any run under a few seconds proves it
@@ -53,6 +70,7 @@ fn offline_doc_config() -> DocConfig {
 
 #[test]
 fn pathological_text_file_completes_quickly_via_linear_chunking() {
+    let _serial = exclusive();
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("syslog.txt");
     let body = pathological_log(5 * 1024 * 1024);
@@ -84,6 +102,7 @@ fn pathological_text_file_completes_quickly_via_linear_chunking() {
 
 #[test]
 fn normal_documents_chunk_exactly_as_before() {
+    let _serial = exclusive();
     let dir = tempfile::tempdir().unwrap();
     for (name, mime, body) in [
         ("guide.md", "text/markdown", markdown_doc()),
@@ -115,6 +134,7 @@ fn normal_documents_chunk_exactly_as_before() {
 
 #[test]
 fn extraction_past_its_wall_clock_budget_is_abandoned() {
+    let _serial = exclusive();
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("syslog.txt");
     fs::write(&path, pathological_log(2 * 1024 * 1024)).unwrap();
@@ -152,6 +172,7 @@ fn offline_scan_config() -> ConfigV1 {
 
 #[test]
 fn scan_with_a_pathological_file_completes_and_counts_it_as_degraded() {
+    let _serial = exclusive();
     let dir = tempfile::tempdir().unwrap();
     fs::write(dir.path().join("syslog.txt"), pathological_log(5 * 1024 * 1024)).unwrap();
     fs::write(dir.path().join("guide.md"), markdown_doc()).unwrap();
@@ -174,6 +195,7 @@ fn scan_with_a_pathological_file_completes_and_counts_it_as_degraded() {
 
 #[test]
 fn structured_data_is_linear_but_not_counted_as_degraded() {
+    let _serial = exclusive();
     let dir = tempfile::tempdir().unwrap();
     fs::write(dir.path().join("cfg.json"), r#"{"name": "demo", "items": [1, 2, 3]}"#).unwrap();
     fs::write(dir.path().join("cfg.yaml"), "name: demo\nitems:\n  - alpha\n").unwrap();
@@ -187,6 +209,7 @@ fn structured_data_is_linear_but_not_counted_as_degraded() {
 
 #[test]
 fn scan_counts_a_timed_out_document_and_still_indexes_the_rest() {
+    let _serial = exclusive();
     let dir = tempfile::tempdir().unwrap();
     fs::write(dir.path().join("syslog.txt"), pathological_log(2 * 1024 * 1024)).unwrap();
     fs::write(dir.path().join("guide.md"), markdown_doc()).unwrap();

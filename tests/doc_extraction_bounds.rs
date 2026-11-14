@@ -11,14 +11,27 @@
 use std::fs;
 use std::path::Path;
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use basemind::config::ConfigV1;
+use basemind::extract::doc_guard::abandoned_extractions;
 use basemind::scanner::{EmbedMode, ScanReport, ScanSource, scan};
 use basemind::store::{Store, VIEW_WORKING};
 
 /// Scans share the process-wide abandoned-thread ledger; run them one at a time so a neighbour's
 /// still-burning thread cannot change what a scan sees.
 static SERIAL: Mutex<()> = Mutex::new(());
+
+/// Wait for every timed-out extraction thread to finish. An abandoned quadratic splitter keeps a core
+/// busy for several seconds after its budget expires; scans started meanwhile compete with it, and on a
+/// 4-vCPU runner the small guide can then miss its own 1 s budget (the failure these tests used to show).
+fn drain_abandoned() {
+    // Best effort: a runner too slow to drain in time gets the old behavior, never a new failure.
+    let deadline = Instant::now() + Duration::from_secs(120);
+    while abandoned_extractions() > 0 && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
 
 fn slow_log(seed: u32) -> String {
     let mut text = String::with_capacity(4 * 1024 * 1024 + 100);
@@ -57,6 +70,7 @@ fn slow_config() -> ConfigV1 {
 }
 
 fn scan_once(root: &Path, cfg: &ConfigV1) -> ScanReport {
+    drain_abandoned();
     let mut store = Store::open(root, VIEW_WORKING).expect("open store");
     scan(root, &mut store, cfg, ScanSource::WorkingTree, EmbedMode::Inline).expect("scan")
 }
