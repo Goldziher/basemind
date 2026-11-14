@@ -8,12 +8,13 @@ fn main() {
 /// its `CoreML` provider, which lower to `___isPlatformVersionAtLeast` from clang's compiler-rt. rustc
 /// links with `-nodefaultlibs`, so that archive is never pulled in and the release link fails. Link it
 /// explicitly; a static archive only contributes the members that resolve undefined symbols, so this
-/// is a no-op for builds without ONNX Runtime.
+/// is a no-op for builds without ONNX Runtime. The archive is asked of `cc`, the driver rustc links
+/// with, so it matches the linker even when another `clang` (a Swift toolchain, say) leads `PATH`.
 fn link_macos_compiler_rt() {
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("macos") {
         return;
     }
-    let Ok(output) = std::process::Command::new("clang").arg("--print-resource-dir").output() else {
+    let Ok(output) = std::process::Command::new("cc").arg("--print-resource-dir").output() else {
         return;
     };
     if !output.status.success() {
