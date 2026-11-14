@@ -61,6 +61,24 @@ pub fn probe_writer_lock(basemind_dir: &Path) -> WriterProbe {
     }
 }
 
+/// [`probe_writer_lock`] with the same contention budget as [`acquire_lock_as`], for the CLI write
+/// path's pre-check. A holder that is exiting can keep the lock briefly after its last write: on
+/// Windows the OS releases a lock left by an exiting process asynchronously, so a scan launched right
+/// after another CLI writer exits can observe it. Acquisition already tolerates that window; without
+/// the same patience here the pre-check refuses a scan that would have acquired the lock.
+pub fn probe_writer_lock_settled(basemind_dir: &Path) -> WriterProbe {
+    for _ in 1..LOCK_ATTEMPTS {
+        if !writer_lock_is_held(basemind_dir) {
+            return WriterProbe::Free;
+        }
+        std::thread::sleep(LOCK_BACKOFF);
+    }
+    probe_writer_lock(basemind_dir)
+}
+
+const LOCK_ATTEMPTS: u32 = 25;
+const LOCK_BACKOFF: std::time::Duration = std::time::Duration::from_millis(20);
+
 pub(crate) fn acquire_lock(basemind_dir: &Path) -> Result<File, StoreError> {
     acquire_lock_as(basemind_dir, LockHolder::Maintenance)
 }
@@ -79,8 +97,6 @@ pub(crate) fn acquire_lock_as(basemind_dir: &Path, holder: LockHolder) -> Result
             path: path.clone(),
             source,
         })?;
-    const LOCK_ATTEMPTS: u32 = 25;
-    const LOCK_BACKOFF: std::time::Duration = std::time::Duration::from_millis(20);
     for attempt in 0..LOCK_ATTEMPTS {
         match file.try_lock_exclusive() {
             Ok(()) => {
@@ -166,5 +182,30 @@ mod tests {
             );
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
+    }
+
+    #[test]
+    fn settled_probe_waits_out_a_holder_that_releases() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let guard = acquire_lock_as(tmp.path(), LockHolder::Rescan).expect("acquire exclusive lock");
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            drop(guard);
+        });
+        assert!(
+            matches!(probe_writer_lock_settled(tmp.path()), WriterProbe::Free),
+            "a holder releasing inside the acquisition budget is not a collision"
+        );
+        release.join().expect("release thread");
+    }
+
+    #[test]
+    fn settled_probe_still_reports_a_holder_that_stays() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let _guard = acquire_lock_as(tmp.path(), LockHolder::Serve).expect("acquire exclusive lock");
+        assert!(matches!(
+            probe_writer_lock_settled(tmp.path()),
+            WriterProbe::Held { holder: Some(_) }
+        ));
     }
 }

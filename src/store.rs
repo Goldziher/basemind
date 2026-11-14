@@ -167,7 +167,7 @@ pub const LOCK_CONTENTION_HELP: &str = "the basemind index is locked by another 
 (likely the MCP server). If an editor/plugin is serving this repo, use its `rescan` tool \
 to refresh the index, or stop that server before running `basemind scan`.";
 
-pub use crate::store_lock::{WriterProbe, probe_writer_lock};
+pub use crate::store_lock::{WriterProbe, probe_writer_lock, probe_writer_lock_settled};
 pub(crate) use crate::store_lock::{acquire_lock, acquire_lock_as, writer_lock_is_held};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
