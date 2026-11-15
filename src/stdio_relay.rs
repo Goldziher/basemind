@@ -7,11 +7,90 @@ use std::io;
 use std::time::Duration;
 
 use serde_json::Value;
-use tokio::io::{AsyncBufReadExt as _, AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _, BufReader};
+use tokio::io::{AsyncBufReadExt as _, AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _, BufReader, Lines};
 
 const BACKEND_RESTARTED_CODE: i64 = -32001;
+/// JSON-RPC code answering a request while no backend can be reached; the message says why.
+const BACKEND_UNAVAILABLE_CODE: i64 = -32003;
 const INITIAL_RECONNECT_DELAY: Duration = Duration::from_millis(250);
 const MAX_RECONNECT_DELAY: Duration = Duration::from_secs(5);
+/// Cap on the back-off while something outside this process keeps the backend away.
+const MAX_BLOCKED_RECONNECT_DELAY: Duration = Duration::from_secs(60);
+/// How long the relay keeps answering the host after a fatal reconnect failure, so a request
+/// already on its way gets the reason rather than a closed pipe.
+const FATAL_ANSWER_WINDOW: Duration = Duration::from_secs(1);
+/// The least time between two reconnect attempts that ask an older daemon to stop.
+const STOP_REQUEST_INTERVAL: Duration = Duration::from_secs(60);
+
+/// What a failed reconnect means for the relay.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ReconnectFailure {
+    /// The backend is restarting; retry soon.
+    Transient,
+    /// Something outside this process must change first, such as an older daemon that will not
+    /// stop. Retried with a long back-off; host requests are refused with the reason meanwhile.
+    Blocked,
+    /// No retry can succeed. The relay answers what is pending with the reason and ends.
+    Fatal,
+}
+
+/// An error a reconnect attempt can fail with.
+pub(crate) trait ReconnectError: std::fmt::Display {
+    /// How the relay should treat this failure.
+    fn failure(&self) -> ReconnectFailure {
+        ReconnectFailure::Transient
+    }
+
+    /// The text given to the host and the log.
+    fn reason(&self) -> String {
+        self.to_string()
+    }
+}
+
+impl ReconnectError for &str {}
+
+impl ReconnectError for anyhow::Error {
+    fn failure(&self) -> ReconnectFailure {
+        use basemind::comms::singleton::SingletonError;
+        match self.chain().find_map(|cause| cause.downcast_ref::<SingletonError>()) {
+            Some(SingletonError::NewerDaemon { .. }) => ReconnectFailure::Fatal,
+            Some(
+                SingletonError::BusyPredecessor { .. }
+                | SingletonError::StalePredecessor { .. }
+                | SingletonError::FailingPredecessor { .. },
+            ) => ReconnectFailure::Blocked,
+            _ => ReconnectFailure::Transient,
+        }
+    }
+
+    fn reason(&self) -> String {
+        format!("{self:#}")
+    }
+}
+
+/// Decides which reconnect attempts may ask an older daemon to stop: the first, and then one per
+/// [`STOP_REQUEST_INTERVAL`], so a daemon that declined is not sent `Stop` on every retry.
+#[derive(Debug, Default)]
+pub(crate) struct StopPacing {
+    last_asked: Option<std::time::Instant>,
+}
+
+impl StopPacing {
+    /// Whether the attempt starting now may ask; an attempt that may is recorded as having asked.
+    pub(crate) fn may_ask(&mut self) -> bool {
+        self.may_ask_at(std::time::Instant::now())
+    }
+
+    fn may_ask_at(&mut self, now: std::time::Instant) -> bool {
+        let due = self
+            .last_asked
+            .is_none_or(|asked| now.duration_since(asked) >= STOP_REQUEST_INTERVAL);
+        if due {
+            self.last_asked = Some(now);
+        }
+        due
+    }
+}
 const REPLAY_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_JSON_LINE_BYTES: usize = 8 * 1024 * 1024;
 /// JSON-RPC code answering a request the backend never replied to within the relay deadline.
@@ -302,6 +381,52 @@ fn id_key(id: &Value) -> String {
     id.to_string()
 }
 
+fn unavailable_error(id: &Value, reason: &str, retryable: bool) -> String {
+    serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "error": {
+            "code": BACKEND_UNAVAILABLE_CODE,
+            "message": format!("backend_unavailable: {reason}"),
+            "data": { "retryable": retryable }
+        }
+    })
+    .to_string()
+}
+
+impl SessionState {
+    /// Fail every request still waiting for a backend, the ones held for replay included, with
+    /// `reason`. `fatal` says no backend will ever come: the errors are then final, and an
+    /// `initialize` still in flight is answered too instead of being kept for replay.
+    fn drain_unavailable_errors(&mut self, reason: &str, fatal: bool) -> Vec<String> {
+        self.replay.clear();
+        self.started.clear();
+        let mut ids: Vec<Value> = std::mem::take(&mut self.pending).into_values().collect();
+        if fatal
+            && !self.initialize_complete
+            && let Some(id) = self.initialize_id.take()
+            && !ids.contains(&id)
+        {
+            ids.push(id);
+        }
+        ids.iter().map(|id| unavailable_error(id, reason, !fatal)).collect()
+    }
+
+    /// The answer to a host frame that arrives while no backend is connected: an error for a
+    /// request, nothing for a notification. `notifications/initialized` is still remembered, since
+    /// a later backend needs it replayed.
+    fn refuse_client(&mut self, line: &str, reason: &str, retryable: bool) -> Option<String> {
+        let message = serde_json::from_str::<Value>(line).ok()?;
+        let method = message.get("method").and_then(Value::as_str)?;
+        if method == "notifications/initialized" {
+            self.initialized = Some(format!("{line}\n"));
+            return None;
+        }
+        let id = message.get("id").filter(|id| !id.is_null())?;
+        Some(unavailable_error(id, reason, retryable))
+    }
+}
+
 /// Relay newline-framed MCP messages until the client closes stdin. When the backend disappears,
 /// every in-flight request fails once with `backend_restarted`; the proxy reconnects, silently
 /// replays MCP initialization, and forwards later requests over the replacement connection.
@@ -312,7 +437,7 @@ where
     S: AsyncRead + AsyncWrite + Unpin,
     C: FnMut() -> F,
     F: Future<Output = Result<S, E>>,
-    E: std::fmt::Display,
+    E: ReconnectError,
 {
     run_with_deadline(input, output, stream, reconnect, request_deadline_from_env()).await
 }
@@ -332,7 +457,7 @@ where
     S: AsyncRead + AsyncWrite + Unpin,
     C: FnMut() -> F,
     F: Future<Output = Result<S, E>>,
-    E: std::fmt::Display,
+    E: ReconnectError,
 {
     let mut input = BufReader::new(input).lines();
     let mut state = SessionState::default();
@@ -391,7 +516,21 @@ where
         }
         output.flush().await?;
 
-        let (mut replacement, initialize_response, buffered) = reconnect_and_replay(&mut reconnect, &mut state).await?;
+        let reconnected = reconnect_and_replay(&mut reconnect, &mut state, &mut input, &mut output).await?;
+        let (mut replacement, initialize_response, buffered) = match reconnected {
+            Reconnected::Backend {
+                stream,
+                initialize_response,
+                buffered,
+            } => (stream, initialize_response, buffered),
+            Reconnected::HostClosed => return Ok(()),
+            Reconnected::Fatal(reason) => {
+                tracing::error!(%reason, "daemon relay cannot reconnect; ending the session");
+                write_lines(&mut output, state.drain_unavailable_errors(&reason, true)).await?;
+                refuse_while_waiting(&mut input, &mut output, &mut state, FATAL_ANSWER_WINDOW, &reason, false).await?;
+                return Err(io::Error::other(reason));
+            }
+        };
         for line in state.take_replays() {
             // A write failure here just means the replacement died too; the read half sees EOF and
             // the loop reconnects, failing the (now already replayed) requests.
@@ -413,30 +552,116 @@ where
     }
 }
 
-async fn reconnect_and_replay<S, C, F, E>(
+/// How an attempt to replace the backend ended.
+enum Reconnected<S> {
+    /// A replacement backend, initialized.
+    Backend {
+        stream: S,
+        initialize_response: Option<String>,
+        buffered: Vec<String>,
+    },
+    /// The host closed its end while the relay was waiting to retry.
+    HostClosed,
+    /// A failure no retry can cure, with the reason to give the host.
+    Fatal(String),
+}
+
+async fn reconnect_and_replay<R, W, S, C, F, E>(
     reconnect: &mut C,
     state: &mut SessionState,
-) -> io::Result<(S, Option<String>, Vec<String>)>
+    input: &mut Lines<BufReader<R>>,
+    output: &mut W,
+) -> io::Result<Reconnected<S>>
 where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
     S: AsyncRead + AsyncWrite + Unpin,
     C: FnMut() -> F,
     F: Future<Output = Result<S, E>>,
-    E: std::fmt::Display,
+    E: ReconnectError,
 {
     let mut delay = INITIAL_RECONNECT_DELAY;
     loop {
-        match reconnect().await {
+        let blocked = match reconnect().await {
             Ok(mut stream) => match replay_initialization(&mut stream, state).await {
                 Ok((initialize_response, buffered)) => {
                     state.initialize_complete |= initialize_response.is_some();
-                    return Ok((stream, initialize_response, buffered));
+                    return Ok(Reconnected::Backend {
+                        stream,
+                        initialize_response,
+                        buffered,
+                    });
                 }
-                Err(error) => tracing::warn!(%error, "daemon reconnect initialization failed; retrying"),
+                Err(error) => {
+                    tracing::warn!(%error, "daemon reconnect initialization failed; retrying");
+                    None
+                }
             },
-            Err(error) => tracing::debug!(%error, "daemon reconnect failed; retrying"),
+            Err(error) => match error.failure() {
+                ReconnectFailure::Fatal => return Ok(Reconnected::Fatal(error.reason())),
+                ReconnectFailure::Blocked => {
+                    let reason = error.reason();
+                    tracing::warn!(%reason, retry_in_ms = delay.as_millis(), "daemon reconnect is blocked; retrying");
+                    Some(reason)
+                }
+                ReconnectFailure::Transient => {
+                    tracing::debug!(%error, "daemon reconnect failed; retrying");
+                    None
+                }
+            },
+        };
+        match &blocked {
+            Some(reason) => {
+                // A request held for replay would otherwise wait out the whole blockage unanswered.
+                write_lines(output, state.drain_unavailable_errors(reason, false)).await?;
+                if !refuse_while_waiting(input, output, state, delay, reason, true).await? {
+                    return Ok(Reconnected::HostClosed);
+                }
+                delay = delay.saturating_mul(2).min(MAX_BLOCKED_RECONNECT_DELAY);
+            }
+            None => {
+                tokio::time::sleep(delay).await;
+                delay = delay.saturating_mul(2).min(MAX_RECONNECT_DELAY);
+            }
         }
-        tokio::time::sleep(delay).await;
-        delay = delay.saturating_mul(2).min(MAX_RECONNECT_DELAY);
+    }
+}
+
+async fn write_lines<W: AsyncWrite + Unpin>(output: &mut W, lines: Vec<String>) -> io::Result<()> {
+    for line in lines {
+        output.write_all(line.as_bytes()).await?;
+        output.write_all(b"\n").await?;
+    }
+    output.flush().await
+}
+
+/// Wait `delay` with no backend, answering each host request that arrives with `reason` instead of
+/// leaving it unread. Returns `false` when the host closed its end.
+async fn refuse_while_waiting<R, W>(
+    input: &mut Lines<BufReader<R>>,
+    output: &mut W,
+    state: &mut SessionState,
+    delay: Duration,
+    reason: &str,
+    retryable: bool,
+) -> io::Result<bool>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    let wake = tokio::time::Instant::now() + delay;
+    loop {
+        tokio::select! {
+            () = tokio::time::sleep_until(wake) => return Ok(true),
+            read = input.next_line() => {
+                let Some(line) = read? else {
+                    return Ok(false);
+                };
+                if let Some(error) = state.refuse_client(&line, reason, retryable) {
+                    write_lines(output, vec![error]).await?;
+                }
+            }
+        }
     }
 }
 

@@ -290,3 +290,240 @@ fn response_line(id: u64) -> String {
 fn response_id(line: &str) -> Value {
     serde_json::from_str::<Value>(line).expect("valid response")["id"].clone()
 }
+
+/// A reconnect failure of a chosen kind.
+#[derive(Debug)]
+struct Refusal(ReconnectFailure, &'static str);
+
+impl std::fmt::Display for Refusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.1)
+    }
+}
+
+impl ReconnectError for Refusal {
+    fn failure(&self) -> ReconnectFailure {
+        self.0
+    }
+}
+
+/// Read the relay's next line to the host. Bounded in the paused clock's time, so a relay that
+/// keeps retrying instead of answering fails the test rather than spinning it forever.
+async fn read_json(reader: &mut BufReader<tokio::io::DuplexStream>) -> Value {
+    const HOST_WAIT: Duration = Duration::from_secs(3600);
+    let mut line = String::new();
+    tokio::time::timeout(HOST_WAIT, reader.read_line(&mut line))
+        .await
+        .expect("the relay must answer the host")
+        .expect("read a line from the relay");
+    serde_json::from_str(&line).expect("the relay writes JSON lines")
+}
+
+/// A newer daemon on another protocol can never be reconnected to. The relay must say so on every
+/// request it still owes an answer, and on one that arrives just after, then end with an error.
+#[tokio::test(start_paused = true)]
+async fn a_fatal_reconnect_failure_answers_the_host_and_ends_the_relay() {
+    const REASON: &str = "a newer basemind comms daemon is running; update this basemind";
+    let (client_input, proxy_input) = tokio::io::duplex(4096);
+    let (proxy_output, client_output) = tokio::io::duplex(4096);
+    let (proxy_backend, backend) = tokio::io::duplex(4096);
+    let attempts = Arc::new(Mutex::new(0u32));
+    let counted = Arc::clone(&attempts);
+    let proxy = tokio::spawn(run_with_deadline(
+        proxy_input,
+        proxy_output,
+        proxy_backend,
+        move || {
+            *counted.lock().expect("attempts lock") += 1;
+            std::future::ready(Err::<tokio::io::DuplexStream, _>(Refusal(
+                ReconnectFailure::Fatal,
+                REASON,
+            )))
+        },
+        None,
+    ));
+
+    let mut client_write = client_input;
+    let mut client_read = BufReader::new(client_output);
+    client_write.write_all(request_line(2).as_bytes()).await.expect("send");
+    let mut backend = BufReader::new(backend);
+    let mut seen = String::new();
+    backend
+        .read_line(&mut seen)
+        .await
+        .expect("the backend sees the request");
+    drop(backend);
+
+    let pending = read_json(&mut client_read).await;
+    assert_eq!(pending["id"], serde_json::json!(2));
+    assert_eq!(pending["error"]["code"], BACKEND_UNAVAILABLE_CODE);
+    assert!(
+        pending["error"]["message"].as_str().expect("message").contains(REASON),
+        "{pending}"
+    );
+    assert_eq!(pending["error"]["data"]["retryable"], false);
+
+    client_write.write_all(request_line(3).as_bytes()).await.expect("send");
+    let later = read_json(&mut client_read).await;
+    assert_eq!(later["id"], serde_json::json!(3));
+    assert!(
+        later["error"]["message"].as_str().expect("message").contains(REASON),
+        "{later}"
+    );
+
+    let ended = tokio::time::timeout(Duration::from_secs(30), proxy)
+        .await
+        .expect("a fatal failure must end the relay rather than retry")
+        .expect("proxy join");
+    let error = ended.expect_err("the relay ends with an error, so the process exits non-zero");
+    assert!(error.to_string().contains(REASON), "{error}");
+    assert_eq!(
+        *attempts.lock().expect("attempts lock"),
+        1,
+        "a fatal failure is not retried"
+    );
+}
+
+/// An older daemon that will not stop keeps the backend away for as long as its sessions last. The
+/// relay backs off further than for a restart, tells the host why instead of leaving requests
+/// unread, and carries on once a backend is there.
+#[tokio::test(start_paused = true)]
+async fn a_blocked_reconnect_backs_off_refuses_requests_and_then_recovers() {
+    const REASON: &str = "a basemind comms daemon from another build refused to stop";
+    const BLOCKED_ATTEMPTS: usize = 12;
+    let (client_input, proxy_input) = tokio::io::duplex(4096);
+    let (proxy_output, client_output) = tokio::io::duplex(4096);
+    let (proxy_backend_one, backend_one) = tokio::io::duplex(4096);
+    let (proxy_backend_two, backend_two) = tokio::io::duplex(4096);
+    let attempts: Arc<Mutex<Vec<tokio::time::Instant>>> = Arc::default();
+    let recorded = Arc::clone(&attempts);
+    let mut replacement = Some(proxy_backend_two);
+    let proxy = tokio::spawn(run_with_deadline(
+        proxy_input,
+        proxy_output,
+        proxy_backend_one,
+        move || {
+            let mut attempts = recorded.lock().expect("attempts lock");
+            attempts.push(tokio::time::Instant::now());
+            let outcome = if attempts.len() <= BLOCKED_ATTEMPTS {
+                Err(Refusal(ReconnectFailure::Blocked, REASON))
+            } else {
+                Ok(replacement.take().expect("one replacement backend"))
+            };
+            std::future::ready(outcome)
+        },
+        None,
+    ));
+
+    let mut client_write = client_input;
+    let mut client_read = BufReader::new(client_output);
+    client_write.write_all(request_line(4).as_bytes()).await.expect("send");
+    let mut backend_one = BufReader::new(backend_one);
+    let mut in_flight = String::new();
+    backend_one
+        .read_line(&mut in_flight)
+        .await
+        .expect("the first backend sees the request");
+    drop(backend_one);
+    let held = read_json(&mut client_read).await;
+    assert_eq!(
+        held["id"],
+        serde_json::json!(4),
+        "a request held for replay is not left waiting"
+    );
+    assert_eq!(held["error"]["code"], BACKEND_UNAVAILABLE_CODE, "{held}");
+    assert_eq!(held["error"]["data"]["retryable"], true);
+
+    client_write.write_all(request_line(5).as_bytes()).await.expect("send");
+    let refused = read_json(&mut client_read).await;
+    assert_eq!(refused["id"], serde_json::json!(5));
+    assert_eq!(refused["error"]["code"], BACKEND_UNAVAILABLE_CODE);
+    assert!(
+        refused["error"]["message"].as_str().expect("message").contains(REASON),
+        "{refused}"
+    );
+    assert_eq!(refused["error"]["data"]["retryable"], true);
+
+    while attempts.lock().expect("attempts lock").len() <= BLOCKED_ATTEMPTS {
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+    let (read, mut write) = tokio::io::split(backend_two);
+    let mut read = BufReader::new(read);
+    client_write.write_all(request_line(6).as_bytes()).await.expect("send");
+    let mut forwarded = String::new();
+    read.read_line(&mut forwarded)
+        .await
+        .expect("the replacement backend is used");
+    assert_eq!(response_id(&forwarded), serde_json::json!(6));
+    write.write_all(response_line(6).as_bytes()).await.expect("reply");
+    let answer = read_json(&mut client_read).await;
+    assert_eq!(answer["id"], serde_json::json!(6));
+    assert!(answer.get("result").is_some(), "{answer}");
+
+    let attempts = attempts.lock().expect("attempts lock").clone();
+    assert_eq!(attempts.len(), BLOCKED_ATTEMPTS + 1);
+    let gaps: Vec<Duration> = attempts.windows(2).map(|pair| pair[1] - pair[0]).collect();
+    assert!(
+        gaps.windows(2).all(|pair| pair[1] >= pair[0]),
+        "the back-off never shrinks: {gaps:?}"
+    );
+    assert_eq!(gaps[0], INITIAL_RECONNECT_DELAY);
+    assert_eq!(
+        gaps.last().copied(),
+        Some(MAX_BLOCKED_RECONNECT_DELAY),
+        "a blocked reconnect backs off past the restart cap: {gaps:?}"
+    );
+
+    drop(client_write);
+    let _ = proxy.await;
+}
+
+#[test]
+fn stop_is_asked_on_the_first_attempt_and_then_once_per_interval() {
+    let mut pacing = StopPacing::default();
+    let start = std::time::Instant::now();
+
+    assert!(pacing.may_ask_at(start), "the first attempt asks");
+    assert!(!pacing.may_ask_at(start + Duration::from_secs(1)));
+    assert!(!pacing.may_ask_at(start + STOP_REQUEST_INTERVAL - Duration::from_millis(1)));
+    assert!(pacing.may_ask_at(start + STOP_REQUEST_INTERVAL));
+    assert!(!pacing.may_ask_at(start + STOP_REQUEST_INTERVAL + Duration::from_secs(1)));
+}
+
+#[test]
+fn takeover_errors_decide_how_the_relay_reconnects() {
+    use anyhow::Context as _;
+    use basemind::comms::singleton::SingletonError;
+
+    let through_context = |error: SingletonError| Err::<(), _>(error).context("ensure daemon").expect_err("an error");
+    let newer = through_context(SingletonError::NewerDaemon {
+        version: "9.9.9".to_string(),
+        pid: 1,
+        daemon_proto: 99,
+        ours: "0.1.0".to_string(),
+        our_proto: 1,
+    });
+    assert_eq!(newer.failure(), ReconnectFailure::Fatal);
+    assert!(newer.reason().contains("update this basemind"), "{}", newer.reason());
+
+    let busy = through_context(SingletonError::BusyPredecessor {
+        version: "0.1.0".to_string(),
+        pid: 1,
+        code: "daemon_busy".to_string(),
+        message: "busy".to_string(),
+    });
+    assert_eq!(busy.failure(), ReconnectFailure::Blocked);
+    let stale = through_context(SingletonError::StalePredecessor {
+        version: "0.1.0".to_string(),
+        pid: 1,
+    });
+    assert_eq!(stale.failure(), ReconnectFailure::Blocked);
+    assert_eq!(
+        through_context(SingletonError::SpawnTimeout).failure(),
+        ReconnectFailure::Transient
+    );
+    assert_eq!(
+        anyhow::anyhow!("connection refused").failure(),
+        ReconnectFailure::Transient
+    );
+}

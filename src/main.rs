@@ -842,7 +842,9 @@ fn try_serve_relay(root: &std::path::Path, view: &str) -> Result<()> {
         let agent = identity::mcp_session_agent_id(root);
         let canonical_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
         let view = view.to_owned();
-        let stream = open_relay_connection(canonical_root.clone(), view.clone(), agent.clone()).await?;
+        let mut stop_pacing = stdio_relay::StopPacing::default();
+        let ask = stop_pacing.may_ask();
+        let stream = open_relay_connection(canonical_root.clone(), view.clone(), agent.clone(), ask).await?;
 
         tracing::info!(
             pid = std::process::id(),
@@ -851,7 +853,8 @@ fn try_serve_relay(root: &std::path::Path, view: &str) -> Result<()> {
             "basemind serve: persistent relay connected"
         );
         stdio_relay::run(tokio::io::stdin(), tokio::io::stdout(), stream, move || {
-            open_relay_connection(canonical_root.clone(), view.clone(), agent.clone())
+            let ask = stop_pacing.may_ask();
+            open_relay_connection(canonical_root.clone(), view.clone(), agent.clone(), ask)
         })
         .await
         .context("run persistent daemon relay")
@@ -864,16 +867,24 @@ type RelayStream = tokio::net::UnixStream;
 #[cfg(all(feature = "comms", windows))]
 type RelayStream = tokio::net::windows::named_pipe::NamedPipeClient;
 
+/// Connect a relay to the daemon, bringing one up if needed. `ask_stop` says whether this attempt
+/// may ask an older daemon to make way (see `stdio_relay::StopPacing`).
 #[cfg(all(feature = "comms", any(unix, windows)))]
 async fn open_relay_connection(
     root: PathBuf,
     view: String,
     agent: basemind::comms::ids::AgentId,
+    ask_stop: bool,
 ) -> Result<RelayStream> {
     use basemind::comms::{relay, singleton};
 
     let paths = singleton::resolve_paths().context("resolve comms paths")?;
-    singleton::ensure_daemon(&paths).await.context("ensure daemon")?;
+    if ask_stop {
+        singleton::ensure_daemon(&paths).await
+    } else {
+        singleton::ensure_daemon_without_stop(&paths).await
+    }
+    .context("ensure daemon")?;
     let mut stream = relay_connect_stream(&paths.socket_path)
         .await
         .context("connect to daemon socket")?;
