@@ -121,7 +121,8 @@ pub(crate) const INIT_SCAFFOLD_TOML: &str = r##"# basemind configuration — htt
 # transport = "stdio"
 
 [documents]
-# Document RAG tier (PDF / Office / HTML / email / images). Requires a `documents` build.
+# Document RAG tier (PDF / Office / HTML / email). Requires a `documents` build; images and scanned
+# PDFs also need `documents-ocr`.
 # enabled = true
 # Embed documents for semantic search. ON by default — embeddings pay off on real prose / OCR.
 # embed = true

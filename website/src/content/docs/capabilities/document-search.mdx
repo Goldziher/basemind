@@ -21,8 +21,8 @@ feature and entity filtering needs `documents-ner` (both in `full`)
 - OCR and named-entity recognition are separate Cargo features, `documents-ocr` and
   `documents-ner`. The published binaries (Homebrew, npm, pip, GitHub releases) are built with
   `full` and have both. A source build with `--features documents` alone has neither: raster
-  images are not indexed as documents, a PDF with no text layer is reported as a failed extraction
-  ("no text extracted (OCR not compiled in)"), `[documents.ner] enabled = true` logs a warning
+  images are not indexed as documents, a PDF with no text layer is indexed with no text and logs a
+  warning naming the file and `documents-ocr`, `[documents.ner] enabled = true` logs a warning
   and has no effect, and a search with `entity_category` returns an error naming `documents-ner`.
 - Archives (`.zip`, `.tar`, `.7z`, `.gz`) are never extracted.
 - Documents must be scanned first: `basemind scan` with the documents feature extracts

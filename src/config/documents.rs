@@ -128,14 +128,15 @@ pub struct DocumentsConfig {
     /// loading; `true` logs a warning.
     #[serde(default = "DocumentsConfig::default_extract_archives")]
     pub extract_archives: bool,
-    /// Cap on the total *uncompressed* bytes xberg may unpack from one archive when
-    /// `extract_archives = true`. An archive past the cap fails extraction (counted as an extract
-    /// failure) instead of being unpacked into memory. Default 64 MiB; xberg's own default is 500 MB.
+    /// Cap on the total *uncompressed* bytes xberg may unpack from the zip container of one Office
+    /// document (`.docx/.pptx/.xlsx/.odt`). A document past the cap fails extraction (counted as an
+    /// extract failure) instead of being unpacked into memory. Default 64 MiB; xberg's own default
+    /// is 500 MB.
     #[serde(default = "DocumentsConfig::default_max_archive_bytes")]
     #[schemars(range(min = 1024))]
     pub max_archive_bytes: u64,
-    /// Cap on the number of entries in one archive when `extract_archives = true`. Default 1000;
-    /// xberg's own default is 10,000.
+    /// Cap on the number of entries in the zip container of one Office document
+    /// (`.docx/.pptx/.xlsx/.odt`). Default 1000; xberg's own default is 10,000.
     #[serde(default = "DocumentsConfig::default_max_archive_entries")]
     #[schemars(range(min = 1))]
     pub max_archive_entries: usize,
@@ -577,18 +578,12 @@ pub struct LlmConfig {
     pub model: String,
     /// API key — either a literal (discouraged; keeps secrets in version control)
     /// or an `{ env = "OPENAI_API_KEY" }` reference. `Unset` lets the underlying
-    /// provider SDK fall back to its standard environment variable lookup. In the repository's
-    /// own `basemind.toml`, an env reference is honoured only for the chosen provider's standard
-    /// variable (`OPENAI_API_KEY` for `openai/...`, `ANTHROPIC_API_KEY` for `anthropic/...`, ...)
-    /// or `BASEMIND_LLM_API_KEY`; any other name is ignored with a warning unless
-    /// `BASEMIND_ALLOW_REPO_LLM=1` is set.
+    /// provider SDK fall back to its standard environment variable lookup. Never resolved: nothing
+    /// reads `[llm]` any more.
     #[serde(default)]
     pub api_key: ApiKey,
-    /// Override the provider base URL (for self-hosted vLLM, Azure OpenAI, …). **Ignored (with a
-    /// warning) when it comes from the repository's own `basemind.toml`** unless the operator sets
-    /// `BASEMIND_ALLOW_REPO_LLM=1` in the environment: a cloned repository could otherwise point
-    /// the summarizer and NER at a host that collects your API key and document text. A value
-    /// passed by CLI flag or environment override is operator-supplied and always honoured.
+    /// Override the provider base URL (for self-hosted vLLM, Azure OpenAI, …). Never contacted:
+    /// nothing reads `[llm]` any more.
     #[serde(default)]
     pub base_url: Option<String>,
     /// Sampling temperature. Provider-default when unset.

@@ -133,7 +133,7 @@ code-intel-stack = ["dep:stack-graphs", "dep:tree-sitter-graph", "dep:tree-sitte
 
 code-intel = ["code-intel-js", "code-intel-stack"]
 
-full = ["documents", "documents-ocr", "documents-ner", "tokenizer", "memory", "comms", "code-intel", "code-search"]
+full = ["documents", "documents-ocr", "documents-ner", "memory", "comms", "code-intel", "code-search"]
 
 test-support = []
 

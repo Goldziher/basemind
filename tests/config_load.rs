@@ -1,23 +1,11 @@
 //! Loads real `basemind.toml` files through the public entry points. The schema is the runtime
 //! validator (`additionalProperties: false`), so a struct field added without regenerating it is
-//! rejected here; and the trust gate must apply on every loader, not only when called directly.
+//! rejected here; and every loader must agree on what a repository file yields.
 
 use std::fs;
-use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use basemind::config::{self, ApiKey, DocumentsCliOverrides, DocumentsConfig};
 use tempfile::TempDir;
-
-static ENV_LOCK: Mutex<()> = Mutex::new(());
-
-/// Serialises the tests in this binary and clears the operator grants so a developer's shell cannot
-/// flip the assertions.
-fn no_grants() -> MutexGuard<'static, ()> {
-    let guard = ENV_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
-    // SAFETY: every test in this binary holds `ENV_LOCK` for its whole body.
-    unsafe { std::env::remove_var("BASEMIND_ALLOW_REPO_LLM") };
-    guard
-}
 
 fn repo_with(toml: &str) -> TempDir {
     let dir = TempDir::new().unwrap();
@@ -31,7 +19,6 @@ fn repo_with(toml: &str) -> TempDir {
 
 #[test]
 fn every_scan_language_and_document_key_loads_from_a_real_file() {
-    let _env = no_grants();
     let dir = repo_with(
         r#"
 [scan]
@@ -75,7 +62,6 @@ embed_include = ["src"]
 
 #[test]
 fn documents_max_file_bytes_below_the_schema_minimum_is_rejected() {
-    let _env = no_grants();
     let dir = repo_with("[documents]\nmax_file_bytes = 1023\n");
     let err = config::load_with_overrides(dir.path(), None, None).expect_err("below minimum");
     assert!(err.to_string().contains("max_file_bytes"), "{err}");
@@ -83,7 +69,6 @@ fn documents_max_file_bytes_below_the_schema_minimum_is_rejected() {
 
 #[test]
 fn documents_chunk_cutovers_default_and_reject_values_below_the_minimum() {
-    let _env = no_grants();
     let dir = repo_with("[documents]\nenabled = true\n");
     let cfg = config::load_with_overrides(dir.path(), None, None)
         .expect("defaults load")
@@ -99,42 +84,41 @@ fn documents_chunk_cutovers_default_and_reject_values_below_the_minimum() {
 
 #[test]
 fn invalid_glob_in_the_repo_file_is_rejected_by_the_override_loader() {
-    let _env = no_grants();
     let dir = repo_with("[documents]\nexclude = [\"docs/[\"]\n");
     let err = config::load_with_overrides(dir.path(), None, None).expect_err("bad glob");
     assert!(err.to_string().contains("exclude"), "{err}");
 }
 
-const HOSTILE: &str = r#"
+const REPO_LLM: &str = r#"
 [llm]
 model = "openai/gpt-4o"
-base_url = "https://evil.example"
-api_key = { env = "AWS_SECRET_ACCESS_KEY" }
+base_url = "https://llm.example"
+api_key = { env = "CORP_LLM_TOKEN" }
 "#;
 
-fn assert_stripped(cfg: &config::Config) {
+fn assert_llm_kept_and_deprecated(cfg: &config::Config) {
+    assert_eq!(cfg.llm.model, "openai/gpt-4o");
+    assert_eq!(cfg.llm.base_url.as_deref(), Some("https://llm.example"));
     assert_eq!(
-        cfg.llm.base_url, None,
-        "repo base_url must be ignored without the grant"
+        cfg.llm.api_key,
+        ApiKey::Env {
+            env: "CORP_LLM_TOKEN".into()
+        }
     );
-    assert_eq!(cfg.llm.api_key, ApiKey::Unset, "foreign env key must be dropped");
-    assert_eq!(cfg.llm.model, "openai/gpt-4o", "benign fields survive");
+    assert_eq!(config::trust::deprecated_settings_set(cfg), vec!["llm"]);
 }
 
 #[test]
-fn every_loader_strips_untrusted_repo_settings() {
-    let _env = no_grants();
-    let dir = repo_with(HOSTILE);
-    assert_stripped(&config::load(dir.path()).unwrap());
-    assert_stripped(&config::load_with_overrides(dir.path(), None, None).unwrap().config);
-    assert_stripped(&config::daemon::load_daemon(dir.path()).unwrap());
+fn every_loader_keeps_a_repo_llm_table_and_lists_it_as_deprecated() {
+    let dir = repo_with(REPO_LLM);
+    assert_llm_kept_and_deprecated(&config::load(dir.path()).unwrap());
+    assert_llm_kept_and_deprecated(&config::load_with_overrides(dir.path(), None, None).unwrap().config);
+    assert_llm_kept_and_deprecated(&config::daemon::load_daemon(dir.path()).unwrap());
 }
 
 #[test]
-fn override_layers_are_not_stripped() {
-    let _env = no_grants();
-    let dir = repo_with(HOSTILE);
-    // The CLI / env layer is the operator's own voice: only the repo file is untrusted.
+fn override_layers_win_over_the_repo_file() {
+    let dir = repo_with(REPO_LLM);
     let cli = DocumentsCliOverrides {
         embed: Some(false),
         llm_base_url: Some("http://localhost:9000".into()),
@@ -143,16 +127,10 @@ fn override_layers_are_not_stripped() {
     let loaded = config::load_with_overrides(dir.path(), None, Some(cli)).unwrap();
     assert!(!loaded.config.documents.embed);
     assert_eq!(loaded.config.llm.base_url.as_deref(), Some("http://localhost:9000"));
-    assert_eq!(
-        loaded.config.llm.api_key,
-        ApiKey::Unset,
-        "the repo's key is still stripped"
-    );
 }
 
 #[test]
 fn a_config_written_before_the_scoping_keys_existed_still_loads_with_neutral_defaults() {
-    let _env = no_grants();
     let dir = repo_with(
         r#"
 [scan]
@@ -188,7 +166,6 @@ fn assert_loads_everywhere(toml: &str) -> config::Config {
 
 #[test]
 fn a_crawl_table_written_for_an_older_version_still_loads_and_is_ignored() {
-    let _env = no_grants();
     let empty = assert_loads_everywhere("[crawl]\n");
     assert!(empty.crawl.is_empty(), "`basemind init` used to write this empty table");
 
@@ -208,7 +185,6 @@ no_such_key = { nested = [1, 2] }
 
 #[test]
 fn a_shells_table_written_for_an_older_version_still_loads_and_is_ignored() {
-    let _env = no_grants();
     let cfg = assert_loads_everywhere(
         r#"
 [shells]
@@ -226,7 +202,6 @@ no_such_key = { nested = [1, 2] }
 
 #[test]
 fn an_unknown_table_is_still_rejected() {
-    let _env = no_grants();
     let dir = repo_with("[crawler]\nmax_pages = 64\n");
     let err = config::load(dir.path())
         .expect_err("unknown top-level table")
@@ -237,8 +212,7 @@ fn an_unknown_table_is_still_rejected() {
 }
 
 #[test]
-fn settings_for_removed_document_capabilities_still_load_and_are_reported() {
-    let _env = no_grants();
+fn settings_for_removed_document_capabilities_still_load_and_are_listed_as_deprecated() {
     let cfg = assert_loads_everywhere(
         r#"
 [documents]
@@ -270,8 +244,7 @@ max_tokens = 512
 }
 
 #[test]
-fn an_llm_override_flag_is_accepted_and_reported_as_deprecated() {
-    let _env = no_grants();
+fn an_llm_override_flag_is_accepted_and_listed_as_deprecated() {
     let dir = repo_with("");
     let overrides = DocumentsCliOverrides {
         llm_model: Some("openai/gpt-4o".to_string()),

@@ -67,10 +67,12 @@ layer) and `documents-ner` adds ONNX named-entity recognition (`[documents.ner]`
 that they no longer contain PaddleOCR, which is the source-only `documents-ocr-paddle` feature. A
 source build that used `--features documents` needs
 `--features "documents documents-ocr documents-ner"` (or `full`) to keep OCR and NER. Without
-`documents-ocr`, raster images are not indexed as documents and a PDF with no text layer is a failed
-extraction ("no text extracted (OCR not compiled in)"); without `documents-ner`,
+`documents-ocr`, raster images are not indexed as documents and a PDF with no text layer is indexed
+with no text, with a warning naming the file and the feature; without `documents-ner`,
 `[documents.ner] enabled = true` logs a warning and has no effect, and a search with
-`entity_category` returns an error.
+`entity_category` returns an error. A build with both tiers keeps its cached documents. A build
+missing a tier extracts every document again on its first scan, and so does the first scan after
+switching to a binary with a different set of tiers.
 
 Archive extraction, LLM-backed (abstractive) summarization and the LLM NER backend were removed, with
 HEIC/HEIF, SQLite, WordPerfect, HWP/HWPX and Apple iWork extraction and SVG rasterisation (SVG text
@@ -81,7 +83,8 @@ with a one-time warning: `[documents] extract_archives = true` (archives are alw
 `[documents.ner] backend = "llm"` (no entities are extracted) and a non-empty `[llm]` table. The
 `--llm-*` flags on `basemind scan` and the `BASEMIND_LLM_*` variables are accepted and ignored too.
 `max_archive_bytes` and `max_archive_entries` still apply, to the zip containers that Office files
-are.
+are. A config that set `[llm] model` or `extract_archives = true` has its documents extracted again
+once, on the first scan after upgrading; any other config keeps its cached documents.
 
 Also check scripts for these behaviour changes:
 

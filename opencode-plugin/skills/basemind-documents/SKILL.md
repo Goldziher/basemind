@@ -9,8 +9,8 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:3bbbd19195579d011dd851dfb6ac967a13a2c4c89c80790a332049e94f68682c
-Source-Hash: blake3:9daf6b8d0c9dc6113cc1da15a5fdf01cd6d78d41040e50a2762db8705229dd12
+Content-Hash: blake3:6e6a9dd45206a897357144d72fa6f9b81ecf7c5aef5c856f8b871bcf726494dc
+Source-Hash: blake3:7ed9416a6577f30723b1881e657b978a919914f876e0f1fd64d7732dfda8e8c7
 Schema-Version: v1
 -->
 
@@ -32,7 +32,7 @@ this skill is for prose and documents.
   Without them the tools dispatch but return an MCP error.
 - OCR and entity filtering depend on the binary's build: OCR is the `documents-ocr` Cargo feature
   and named-entity recognition is `documents-ner`. The published binary has both. On a build
-  without OCR, images are not indexed and a scanned PDF (no text layer) is a failed extraction; on
+  without OCR, images are not indexed and a scanned PDF (no text layer) is indexed with no text; on
   a build without NER, an `entity_category` filter returns an error, not an empty result.
 - Archives (`.zip`, `.tar`, ...) are never extracted, so their contents are not searchable.
 - Documents must be scanned first: `basemind scan` with the documents feature extracts and embeds

@@ -295,7 +295,7 @@ Key invariants:
   with no text layer), `documents-ner` adds ONNX named-entity recognition (`[documents.ner]`, the
   `entity_category` filter), and `documents-ocr-paddle` adds PaddleOCR as a fallback stage for source
   builds. `full` enables the first three. Without `documents-ocr` a raster image is skipped like a
-  binary and a PDF with no text layer is a failed extraction; without `documents-ner` an
+  binary and a PDF with no text layer is indexed empty with a warning; without `documents-ner` an
   `entity_category` search is an error and `[documents.ner] enabled = true` logs a warning. Archive
   extraction and the LLM-backed summarization and NER backends are not compiled into any build.
   Source: `src/extract/doc_tiers.rs`.

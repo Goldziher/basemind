@@ -338,8 +338,8 @@ A source build picks its document tiers by Cargo feature:
 
 `--features documents` alone no longer includes OCR or NER; use
 `--features "documents documents-ocr documents-ner"` (or `full`) to keep both. Without
-`documents-ocr`, raster images are not indexed as documents and a PDF with no text layer is reported
-as a failed extraction ("no text extracted (OCR not compiled in)"). Without `documents-ner`,
+`documents-ocr`, raster images are not indexed as documents and a PDF with no text layer is indexed
+with no text, with a warning naming the file and the feature. Without `documents-ner`,
 `[documents.ner] enabled = true` has no effect and logs a warning, and a document search with
 `entity_category` returns an error naming the feature.
 

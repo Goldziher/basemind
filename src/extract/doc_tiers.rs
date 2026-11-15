@@ -81,18 +81,20 @@ fn entity_filter_unavailable_for(ner_compiled: bool) -> Option<String> {
     })
 }
 
-/// Why a document that extracted to no text is a failure rather than an empty success, or `None`
-/// when it is a genuine result. A PDF with no text layer is a scan; only OCR can read it.
-pub fn no_text_without_ocr(mime_type: &str, content: &str) -> Option<String> {
-    no_text_without_ocr_for(mime_type, content, ocr_compiled())
+/// The warning for a PDF that extracted to no text in a build without OCR, or `None` when there is
+/// nothing to say. The document is still indexed, empty: failing it would re-parse the file on every
+/// scan and misreport a genuinely blank PDF. `config::rules::doc_digest` differs between a build with
+/// and without OCR, so a binary that has the tier extracts the file again.
+pub fn textless_pdf_warning(mime_type: &str, content: &str) -> Option<String> {
+    textless_pdf_warning_for(mime_type, content, ocr_compiled())
 }
 
-fn no_text_without_ocr_for(mime_type: &str, content: &str, ocr_compiled: bool) -> Option<String> {
+fn textless_pdf_warning_for(mime_type: &str, content: &str, ocr_compiled: bool) -> Option<String> {
     (!ocr_compiled && mime_type == "application/pdf" && content.trim().is_empty()).then(|| {
         format!(
-            "no text extracted (OCR not compiled in): the PDF has no text layer and this basemind binary was \
-             built without the `{OCR_FEATURE}` Cargo feature; rebuild with `--features {OCR_FEATURE}` (the \
-             published release binary includes it)"
+            "the PDF has no text layer and may be a scan; it is indexed with no text because this basemind \
+             binary was built without the `{OCR_FEATURE}` Cargo feature. Rebuild with `--features {OCR_FEATURE}` \
+             (the published release binary includes it) to OCR it"
         )
     })
 }
@@ -167,16 +169,15 @@ mod tests {
     }
 
     #[test]
-    fn a_textless_pdf_is_a_failure_only_without_ocr() {
-        let message = no_text_without_ocr_for("application/pdf", " \n", false).expect("failure");
-        assert!(
-            message.starts_with("no text extracted (OCR not compiled in)"),
-            "{message}"
-        );
-        assert!(message.contains("documents-ocr"), "{message}");
-        assert_eq!(no_text_without_ocr_for("application/pdf", " \n", true), None);
-        assert_eq!(no_text_without_ocr_for("application/pdf", "text", false), None);
-        assert_eq!(no_text_without_ocr_for("text/plain", "", false), None);
+    fn a_textless_pdf_is_warned_about_only_without_ocr() {
+        let message = textless_pdf_warning_for("application/pdf", " \n", false).expect("warning");
+        assert!(message.contains("no text layer"), "{message}");
+        assert!(message.contains("may be a scan"), "{message}");
+        assert!(message.contains("--features documents-ocr"), "{message}");
+        assert_eq!(textless_pdf_warning_for("application/pdf", " \n", true), None);
+        assert_eq!(textless_pdf_warning_for("application/pdf", "text", false), None);
+        assert_eq!(textless_pdf_warning_for("text/plain", "", false), None);
+        assert_eq!(textless_pdf_warning("application/pdf", "").is_none(), ocr_compiled());
     }
 
     #[test]

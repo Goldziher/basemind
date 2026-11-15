@@ -187,27 +187,40 @@ mod without_ocr {
     }
 
     #[test]
-    fn a_pdf_without_a_text_layer_is_a_named_failure_not_an_empty_document() {
+    fn a_pdf_without_a_text_layer_is_indexed_empty_and_not_extracted_again() {
         let dir = tempfile::tempdir().expect("tempdir");
         let cfg = offline_config();
         fs::write(dir.path().join("scan.pdf"), textless_pdf()).unwrap();
 
         let (report, observer) = scan_collecting(dir.path(), &cfg);
 
-        assert_eq!(report.stats.docs_indexed, 0, "stats: {:?}", report.stats);
-        assert_eq!(report.stats.extract_failed, 1, "stats: {:?}", report.stats);
-        let failure = observer
+        assert_eq!(report.stats.docs_indexed, 1, "stats: {:?}", report.stats);
+        assert_eq!(report.stats.extract_failed, 0, "stats: {:?}", report.stats);
+        let chunk_count = observer
             .results()
             .iter()
             .find_map(|result| match &result.status {
-                FileStatus::ExtractFailed { msg } if result.path == "scan.pdf" => Some(msg.clone()),
+                FileStatus::DocIndexed { chunk_count, .. } if result.path == "scan.pdf" => Some(*chunk_count),
                 _ => None,
             })
-            .expect("scan.pdf is reported as a failed extraction");
-        assert!(failure.contains("no text extracted (OCR not compiled in)"), "{failure}");
-        assert!(failure.contains("documents-ocr"), "{failure}");
+            .expect("scan.pdf is reported as an indexed document");
+        assert_eq!(chunk_count, 0, "a PDF with no text layer has nothing to chunk");
         let store = Store::open(dir.path(), basemind::store::VIEW_WORKING).unwrap();
-        assert!(store.lookup_doc("scan.pdf").is_none());
+        assert!(store.lookup_doc("scan.pdf").is_some(), "the empty document is tracked");
+        drop(store);
+
+        let (report, observer) = scan_collecting(dir.path(), &cfg);
+
+        assert_eq!(report.stats.docs_indexed, 0, "stats: {:?}", report.stats);
+        assert_eq!(report.stats.extract_failed, 0, "stats: {:?}", report.stats);
+        assert!(report.stats.skipped_unchanged >= 1, "stats: {:?}", report.stats);
+        assert!(
+            observer
+                .results()
+                .iter()
+                .any(|result| result.path == "scan.pdf" && matches!(result.status, FileStatus::DocUnchanged)),
+            "the second scan must settle scan.pdf from its entry, not extract it again"
+        );
     }
 }
 

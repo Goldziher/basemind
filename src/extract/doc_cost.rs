@@ -10,9 +10,9 @@
 //!
 //! The multipliers are calibrated against measured peaks, not derived; see the constants.
 
-/// Working-set bytes per pixel for a raster image: the decoded bitmap, the binarised and scaled
-/// copies OCR makes of it, and layout detection's tensors. Measured ~25 B/px on a 10 MP PNG; rounded
-/// up to leave room for the transient the one-second sampler misses.
+/// Working-set bytes per pixel for a raster image: the decoded bitmap and the binarised and scaled
+/// copies OCR makes of it. Measured ~25 B/px on a 10 MP PNG; rounded up to leave room for the
+/// transient the one-second sampler misses.
 const BYTES_PER_PIXEL: u64 = 64;
 
 /// Working-set bytes per *uncompressed* byte of an OOXML / OpenDocument package. Measured ~230 on a

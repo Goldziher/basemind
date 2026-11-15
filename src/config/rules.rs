@@ -121,11 +121,17 @@ pub fn doc_digest(cfg: &DocumentsConfig, resources: &ResourcesConfig) -> String 
     // re-extract every document on upgrade.
     let defaults = DocumentsConfig::default();
     let cutovers = (cfg.markdown_chunk_max_bytes, cfg.plain_text_chunk_max_bytes);
-    let tag = if cutovers == (defaults.markdown_chunk_max_bytes, defaults.plain_text_chunk_max_bytes) {
+    let mut tag = if cutovers == (defaults.markdown_chunk_max_bytes, defaults.plain_text_chunk_max_bytes) {
         "doc/1".to_string()
     } else {
         format!("doc/1/cutover={},{}", cutovers.0, cutovers.1)
     };
+    // `extract::doc_tiers` is compiled only with `documents`, and this function is not.
+    tag.push_str(missing_tier_suffix(
+        cfg!(feature = "documents"),
+        cfg!(feature = "documents-ocr"),
+        cfg!(feature = "documents-ner"),
+    ));
     digest_of(
         &tag,
         &(
@@ -133,7 +139,10 @@ pub fn doc_digest(cfg: &DocumentsConfig, resources: &ResourcesConfig) -> String 
             cfg.overlap,
             cfg.max_chunks_per_document,
             cfg.max_pages,
-            cfg.extract_archives,
+            // The slot `extract_archives` held before archive extraction was removed. Its default was
+            // `false`, so a config that left it there keeps its digest; one that set `true`
+            // re-extracts its documents once.
+            false,
             // Only the knobs that reach the extractor: `preferred_languages` and `[ocr]` are
             // reserved, so editing them must not re-extract every document.
             (
@@ -145,12 +154,25 @@ pub fn doc_digest(cfg: &DocumentsConfig, resources: &ResourcesConfig) -> String 
             &cfg.ner,
             &cfg.summarization,
             resources.document_models,
-            // The slot `[llm] model` held before the LLM backends were removed, and
-            // `extract_archives` above, no longer shape the output. Both stay in the tuple so
-            // digests written by earlier versions still match and no document is re-extracted.
+            // The slot `[llm] model` held before the LLM backends were removed. Its default was
+            // empty, so a config that left it unset keeps its digest; one that set a model
+            // re-extracts its documents once.
             "",
         ),
     )
+}
+
+/// Digest-tag suffix naming the document tiers this binary lacks. A document extracted without OCR or
+/// NER is missing text or entities that a build with the tier produces, so the two builds must not
+/// share a digest: swapping binaries then re-extracts. Empty when both tiers are compiled in, which
+/// keeps the digest of a full build what it was before the tiers existed.
+fn missing_tier_suffix(documents: bool, ocr: bool, ner: bool) -> &'static str {
+    match (documents, ocr, ner) {
+        (false, _, _) | (true, true, true) => "",
+        (true, false, true) => "/no-ocr",
+        (true, true, false) => "/no-ner",
+        (true, false, false) => "/no-ocr/no-ner",
+    }
 }
 
 /// Fingerprint of the limits a document's extraction ran under, for its timeout tombstone (see
@@ -216,12 +238,35 @@ mod tests {
             "reserved keys must not invalidate documents"
         );
 
+        let mut archives = base.clone();
+        archives.extract_archives = !archives.extract_archives;
+        assert_eq!(
+            digest(&base),
+            digest(&archives),
+            "extract_archives is ignored, so toggling it must not invalidate documents"
+        );
+
         let mut live = base.clone();
         live.language.detect_multiple = !live.language.detect_multiple;
         assert_ne!(digest(&base), digest(&live));
         let mut live = base.clone();
         live.max_pages += 1;
         assert_ne!(digest(&base), digest(&live));
+    }
+
+    #[test]
+    fn the_digest_tag_names_only_the_tiers_a_documents_build_lacks() {
+        assert_eq!(missing_tier_suffix(true, true, true), "");
+        assert_eq!(missing_tier_suffix(true, false, true), "/no-ocr");
+        assert_eq!(missing_tier_suffix(true, true, false), "/no-ner");
+        assert_eq!(missing_tier_suffix(true, false, false), "/no-ocr/no-ner");
+        for (ocr, ner) in [(false, false), (false, true), (true, false), (true, true)] {
+            assert_eq!(
+                missing_tier_suffix(false, ocr, ner),
+                "",
+                "no documents feature, no suffix"
+            );
+        }
     }
 
     #[test]

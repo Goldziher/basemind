@@ -573,14 +573,14 @@
           "default": false
         },
         "max_archive_bytes": {
-          "description": "Cap on the total *uncompressed* bytes xberg may unpack from one archive when\n`extract_archives = true`. An archive past the cap fails extraction (counted as an extract\nfailure) instead of being unpacked into memory. Default 64 MiB; xberg's own default is 500 MB.",
+          "description": "Cap on the total *uncompressed* bytes xberg may unpack from the zip container of one Office\ndocument (`.docx/.pptx/.xlsx/.odt`). A document past the cap fails extraction (counted as an\nextract failure) instead of being unpacked into memory. Default 64 MiB; xberg's own default\nis 500 MB.",
           "type": "integer",
           "format": "uint64",
           "minimum": 1024,
           "default": 67108864
         },
         "max_archive_entries": {
-          "description": "Cap on the number of entries in one archive when `extract_archives = true`. Default 1000;\nxberg's own default is 10,000.",
+          "description": "Cap on the number of entries in the zip container of one Office document\n(`.docx/.pptx/.xlsx/.odt`). Default 1000; xberg's own default is 10,000.",
           "type": "integer",
           "format": "uint",
           "minimum": 1,
@@ -1222,12 +1222,12 @@
           "default": ""
         },
         "api_key": {
-          "description": "API key — either a literal (discouraged; keeps secrets in version control)\nor an `{ env = \"OPENAI_API_KEY\" }` reference. `Unset` lets the underlying\nprovider SDK fall back to its standard environment variable lookup. In the repository's\nown `basemind.toml`, an env reference is honoured only for the chosen provider's standard\nvariable (`OPENAI_API_KEY` for `openai/...`, `ANTHROPIC_API_KEY` for `anthropic/...`, ...)\nor `BASEMIND_LLM_API_KEY`; any other name is ignored with a warning unless\n`BASEMIND_ALLOW_REPO_LLM=1` is set.",
+          "description": "API key — either a literal (discouraged; keeps secrets in version control)\nor an `{ env = \"OPENAI_API_KEY\" }` reference. `Unset` lets the underlying\nprovider SDK fall back to its standard environment variable lookup. Never resolved: nothing\nreads `[llm]` any more.",
           "$ref": "#/$defs/ApiKey",
           "default": null
         },
         "base_url": {
-          "description": "Override the provider base URL (for self-hosted vLLM, Azure OpenAI, …). **Ignored (with a\nwarning) when it comes from the repository's own `basemind.toml`** unless the operator sets\n`BASEMIND_ALLOW_REPO_LLM=1` in the environment: a cloned repository could otherwise point\nthe summarizer and NER at a host that collects your API key and document text. A value\npassed by CLI flag or environment override is operator-supplied and always honoured.",
+          "description": "Override the provider base URL (for self-hosted vLLM, Azure OpenAI, …). Never contacted:\nnothing reads `[llm]` any more.",
           "type": [
             "string",
             "null"

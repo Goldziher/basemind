@@ -567,8 +567,8 @@ pub fn extract_doc(path: &Path, mime_type: Option<&str>, config: &DocConfig) -> 
             .unwrap_or_else(|| "xberg returned no extracted document".to_string());
         ExtractError::Document(message)
     })?;
-    if let Some(reason) = super::doc_tiers::no_text_without_ocr(&result.mime_type, &result.content) {
-        return Err(ExtractError::Document(reason));
+    if let Some(warning) = super::doc_tiers::textless_pdf_warning(&result.mime_type, &result.content) {
+        tracing::warn!(path = %path.display(), "{warning}");
     }
 
     let mut chunks: Vec<DocChunk> = Vec::new();

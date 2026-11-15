@@ -487,12 +487,12 @@ ONNX Runtime). Opt into the rest:
 | `code-search` | Hybrid code search — vector + BM25 + exact-symbol lanes (`code` tool modes `semantic`, `chunk`). | yes |
 | `comms` | Agent-to-agent comms — threads, per-agent inbox, DMs (`agents` + `workspace` tools; Unix domain sockets + Windows named pipes). | yes |
 | `code-intel` | Scope- and import-resolved JS/TS `code` tool modes `references` / `definition` (oxc). | yes |
-| `full` | `documents` + `documents-ocr` + `documents-ner` + `tokenizer` + `memory` + `code-search` + `comms` + `code-intel`. | — |
+| `full` | `documents` + `documents-ocr` + `documents-ner` + `memory` + `code-search` + `comms` + `code-intel`. | — |
 
 `--features documents` alone no longer includes OCR or NER. A source build that wants both uses
 `--features "documents documents-ocr documents-ner"` (or `full`). Without `documents-ocr`, raster
-images are not indexed as documents and a PDF with no text layer is reported as a failed extraction
-("no text extracted (OCR not compiled in)"). Without `documents-ner`, a document search with
+images are not indexed as documents and a PDF with no text layer is indexed with no text, with a
+warning naming the file and the feature. Without `documents-ner`, a document search with
 `entity_category` returns an error naming the feature. Archive extraction, LLM-backed summarization
 and HEIC/HEIF, SQLite, WordPerfect, HWP/HWPX and Apple iWork extraction are not in any build.
 

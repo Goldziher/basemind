@@ -35,7 +35,7 @@ this skill is for prose and documents.
   Without them the tools dispatch but return an MCP error.
 - OCR and entity filtering depend on the binary's build: OCR is the `documents-ocr` Cargo feature
   and named-entity recognition is `documents-ner`. The published binary has both. On a build
-  without OCR, images are not indexed and a scanned PDF (no text layer) is a failed extraction; on
+  without OCR, images are not indexed and a scanned PDF (no text layer) is indexed with no text; on
   a build without NER, an `entity_category` filter returns an error, not an empty result.
 - Archives (`.zip`, `.tar`, ...) are never extracted, so their contents are not searchable.
 - Documents must be scanned first: `basemind scan` with the documents feature extracts and embeds

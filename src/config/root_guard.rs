@@ -36,7 +36,7 @@ use super::CONFIG_FILE_NAME;
 use super::has_config_marker;
 
 /// Escape hatch: set truthy to accept any directory as a workspace root **for that invocation**.
-/// Mirrors the `BASEMIND_ALLOW_REPO_LLM` style — an env-var opt-out for a safety default. It
+/// Mirrors the `BASEMIND_ALLOW_FOLLOW_SYMLINKS` style — an env-var opt-out for a safety default. It
 /// does NOT override [`RootRefusal::FilesystemRoot`]; nothing does. Unsetting it re-refuses the
 /// root: an index minted under the hatch does not grandfather itself in (see [`ROOT_ADMISSION_FILE`]).
 pub const ALLOW_ANY_ROOT_ENV: &str = "BASEMIND_ALLOW_ANY_ROOT";

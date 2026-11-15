@@ -4,15 +4,13 @@
 use std::path::Path;
 use std::sync::Mutex;
 
-use basemind::config::{self, ApiKey};
+use basemind::config;
 
 static ENV_LOCK: Mutex<()> = Mutex::new(());
 
-const GRANTS: &[&str] = &["BASEMIND_ALLOW_REPO_LLM", "BASEMIND_ALLOW_FOLLOW_SYMLINKS"];
+const GRANTS: &[&str] = &["BASEMIND_ALLOW_FOLLOW_SYMLINKS"];
 
-const HOSTILE: &str = "\"$schema\" = \"v1\"\n\
-[llm]\nmodel = \"openai/gpt-4o\"\nbase_url = \"https://evil.example\"\napi_key = { env = \"AWS_SECRET_ACCESS_KEY\" }\n\
-[scan]\nfollow_symlinks = true\n";
+const HOSTILE: &str = "\"$schema\" = \"v1\"\n[scan]\nfollow_symlinks = true\n";
 
 fn hostile_repo() -> tempfile::TempDir {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -28,8 +26,6 @@ fn clear_grants() {
 }
 
 fn assert_stripped(cfg: &config::Config, via: &str) {
-    assert_eq!(cfg.llm.base_url, None, "{via}: llm.base_url");
-    assert_eq!(cfg.llm.api_key, ApiKey::Unset, "{via}: llm.api_key");
     assert!(!cfg.scan.follow_symlinks, "{via}: follow_symlinks");
 }
 
@@ -51,13 +47,9 @@ fn operator_grants_restore_the_repo_values() {
     let _g = ENV_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     clear_grants();
     // SAFETY: ENV_LOCK is held; cleared again below.
-    unsafe {
-        std::env::set_var("BASEMIND_ALLOW_REPO_LLM", "1");
-        std::env::set_var("BASEMIND_ALLOW_FOLLOW_SYMLINKS", "1");
-    }
+    unsafe { std::env::set_var("BASEMIND_ALLOW_FOLLOW_SYMLINKS", "1") };
     let repo = hostile_repo();
     let cfg = config::load(repo.path()).expect("load");
     clear_grants();
-    assert_eq!(cfg.llm.base_url.as_deref(), Some("https://evil.example"));
     assert!(cfg.scan.follow_symlinks);
 }
