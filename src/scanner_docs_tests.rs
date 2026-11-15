@@ -357,31 +357,26 @@ fn preset_dim_for_unknown_errors() {
 }
 
 #[test]
-fn extract_archives_toggle_gates_only_archives_not_binaries() {
-    let default_cfg = DocumentsConfig::default();
-    assert!(!default_cfg.extract_archives, "archives rejected by default");
-    assert!(is_denied_binary_or_archive(
-        Path::new("bundle.zip"),
-        "application/zip",
-        &default_cfg
-    ));
-
-    let extract_cfg = DocumentsConfig {
-        extract_archives: true,
-        ..DocumentsConfig::default()
-    };
-    assert!(
-        !is_denied_binary_or_archive(Path::new("bundle.zip"), "application/zip", &extract_cfg),
-        "extract_archives=true must route archives to the extractor"
-    );
-    assert!(
-        is_denied_binary_or_archive(Path::new("libfoo.so"), "application/x-sharedlib", &extract_cfg),
-        "binaries stay denied even with extract_archives=true"
-    );
-    assert!(
-        is_denied_binary_or_archive(Path::new("mod.wasm"), "application/wasm", &extract_cfg),
-        "wasm binary stays denied"
-    );
+fn archives_stay_denied_whatever_extract_archives_says() {
+    for extract_archives in [false, true] {
+        let cfg = DocumentsConfig {
+            extract_archives,
+            ..DocumentsConfig::default()
+        };
+        assert!(
+            is_denied_binary_or_archive(Path::new("bundle.zip"), "application/zip", &cfg),
+            "archive extraction is not compiled in (extract_archives = {extract_archives})"
+        );
+        assert!(
+            is_denied_binary_or_archive(Path::new("bundle.tgz"), "application/gzip", &cfg),
+            "archive extraction is not compiled in (extract_archives = {extract_archives})"
+        );
+        assert!(is_denied_binary_or_archive(
+            Path::new("libfoo.so"),
+            "application/x-sharedlib",
+            &cfg
+        ));
+    }
 }
 
 #[test]
@@ -406,7 +401,7 @@ fn doc_config_from_propagates_language_settings() {
         },
         ..Default::default()
     };
-    let doc_cfg = doc_config_from(&cfg, &LlmConfig::default(), &ResourcesConfig::default(), cfg.embed);
+    let doc_cfg = doc_config_from(&cfg, &ResourcesConfig::default(), cfg.embed);
     assert!(doc_cfg.language.auto_detect);
     assert_eq!(doc_cfg.language.min_confidence, 0.5);
     assert!(doc_cfg.language.detect_multiple);
@@ -419,13 +414,13 @@ fn doc_config_from_propagates_extraction_limits() {
         extraction_timeout_secs: 42,
         ..Default::default()
     };
-    let doc_cfg = doc_config_from(&cfg, &LlmConfig::default(), &ResourcesConfig::default(), cfg.embed);
+    let doc_cfg = doc_config_from(&cfg, &ResourcesConfig::default(), cfg.embed);
     assert_eq!(doc_cfg.max_pages, 37);
     assert_eq!(doc_cfg.extraction_timeout_secs, 42);
 }
 
 #[test]
-fn doc_config_from_propagates_summarization_and_llm() {
+fn doc_config_from_propagates_summarization() {
     use crate::config::{SummarizationConfig, SummarizationStrategy};
     let cfg = DocumentsConfig {
         summarization: SummarizationConfig {
@@ -435,14 +430,9 @@ fn doc_config_from_propagates_summarization_and_llm() {
         },
         ..Default::default()
     };
-    let llm = LlmConfig {
-        model: "openai/gpt-4o".to_string(),
-        ..Default::default()
-    };
-    let doc_cfg = doc_config_from(&cfg, &llm, &ResourcesConfig::default(), cfg.embed);
+    let doc_cfg = doc_config_from(&cfg, &ResourcesConfig::default(), cfg.embed);
     assert!(doc_cfg.summarization.enabled);
     assert_eq!(doc_cfg.summarization.max_tokens, Some(150));
-    assert_eq!(doc_cfg.llm.model, "openai/gpt-4o");
 }
 
 #[test]
@@ -498,11 +488,41 @@ fn should_extract_document_honors_extension_denylist_override() {
 }
 
 #[test]
-fn images_pass_but_audio_video_denied() {
+fn audio_and_video_are_denied() {
     let cfg = DocumentsConfig::default();
-    assert!(should_extract_document(Path::new("assets/photo.png"), &cfg).is_some());
     assert!(should_extract_document(Path::new("clips/audio.mp3"), &cfg).is_none());
     assert!(should_extract_document(Path::new("clips/movie.mp4"), &cfg).is_none());
+}
+
+#[cfg(feature = "documents-ocr")]
+#[test]
+fn images_pass_with_the_ocr_tier() {
+    let cfg = DocumentsConfig::default();
+    assert!(should_extract_document(Path::new("assets/photo.png"), &cfg).is_some());
+}
+
+#[cfg(not(feature = "documents-ocr"))]
+#[test]
+fn images_are_denied_without_the_ocr_tier_but_svg_is_text() {
+    let cfg = DocumentsConfig::default();
+    for path in ["assets/photo.png", "assets/photo.jpg", "scans/page.tiff", "a/b.webp"] {
+        assert!(
+            should_extract_document(Path::new(path), &cfg).is_none(),
+            "an image has no text without OCR: {path}"
+        );
+    }
+    assert_eq!(
+        should_extract_document(Path::new("assets/diagram.svg"), &cfg).as_deref(),
+        Some("image/svg+xml")
+    );
+    let allowlisted = DocumentsConfig {
+        mime_allowlist: vec!["image/".to_string()],
+        ..DocumentsConfig::default()
+    };
+    assert!(
+        should_extract_document(Path::new("assets/photo.png"), &allowlisted).is_none(),
+        "the allowlist cannot route an image to an extractor that is not compiled in"
+    );
 }
 
 #[test]

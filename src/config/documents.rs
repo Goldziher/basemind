@@ -123,11 +123,9 @@ pub struct DocumentsConfig {
     #[serde(default)]
     #[schemars(inner(length(min = 1)))]
     pub embed_exclude: Vec<String>,
-    /// Route archives (`.zip/.tar/.jar/...`) into xberg's recursive archive extractor. Default
-    /// `false`: archives and compressed containers are rejected by the built-in floor before any
-    /// extraction, so a single archive can't explode into thousands of embeds. Flip to `true` to opt
-    /// into extracting the files *inside* archives — at the cost of the extra recursion + embedding
-    /// work. True binaries (`.so/.wasm/.exe/...`) are always rejected regardless of this flag.
+    /// Deprecated and ignored: archive extraction was removed, so archives and compressed
+    /// containers (`.zip/.tar/.jar/...`) are always skipped. Accepted so existing files keep
+    /// loading; `true` logs a warning.
     #[serde(default = "DocumentsConfig::default_extract_archives")]
     pub extract_archives: bool,
     /// Cap on the total *uncompressed* bytes xberg may unpack from one archive when
@@ -449,13 +447,13 @@ pub enum KeywordAlgorithm {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct NerConfig {
-    /// Master switch — off by default; ONNX backend downloads gline-rs weights on
-    /// first use, LLM backend costs API tokens. Maps to `Some(NerConfig)` /
-    /// `None` on `ExtractionConfig.ner`.
+    /// Master switch — off by default; the ONNX backend downloads gline-rs weights on first use.
+    /// Needs a build with the `documents-ner` Cargo feature (the published binaries have it);
+    /// without it the switch has no effect and a warning is logged.
     #[serde(default)]
     pub enabled: bool,
-    /// Backend selection. `onnx` uses gline-rs locally; `llm` routes through the
-    /// shared `[llm]` config.
+    /// Backend selection. `onnx` uses gline-rs locally. `llm` is accepted but not supported: no
+    /// entities are extracted and a warning is logged.
     #[serde(default)]
     pub backend: NerBackend,
     /// Override the ONNX model name (xberg has a default catalogue when unset).
@@ -468,8 +466,7 @@ pub struct NerConfig {
     /// boundary. Empty means "use the backend default".
     #[serde(default)]
     pub categories: Vec<String>,
-    /// Arbitrary user-supplied entity labels for gline-rs zero-shot inference
-    /// (and the LLM backend's structured-output schema). Matches xberg's
+    /// Arbitrary user-supplied entity labels for gline-rs zero-shot inference. Matches xberg's
     /// `NerConfig.custom_labels`. Useful for domain-specific types like
     /// `"Treatment"`, `"Vessel"` without forking GLiNER's taxonomy. Custom
     /// labels surface as `EntityCategory::Custom(_)` in the entity stream.
@@ -493,10 +490,8 @@ pub struct SummarizationConfig {
     /// surfaces on `FileMapDoc.summary` and `DocumentSearchHit.summary`.
     #[serde(default)]
     pub enabled: bool,
-    /// Strategy: `extractive` (TextRank, no LLM) or `abstractive` (routed via
-    /// the top-level `[llm]` config). When `abstractive` is set but `[llm].model`
-    /// is empty, the boundary falls back to `extractive` with a warning so the
-    /// scan still completes.
+    /// Strategy: `extractive` (TextRank). `abstractive` is deprecated: LLM summarization was
+    /// removed, so it logs a warning and produces extractive summaries.
     #[serde(default)]
     pub strategy: SummarizationStrategy,
     /// Soft cap on summary length in tokens. `None` lets xberg pick a default
@@ -567,16 +562,12 @@ pub enum OutputFormat {
     Toon,
 }
 
-/// Shared LLM credentials + model selection. Consumed by every LLM-backed
-/// capability (ner-llm, summarization-llm, reranker-llm, VLM OCR).
-///
-/// Mirrors xberg's `LlmConfig` field-for-field with one safety upgrade:
-/// `api_key` is the [`ApiKey`] tri-state (literal / env-ref / unset) instead of
-/// `Option<String>`, so credentials are never stored as bare literals in TOML.
-/// At the boundary the env-ref is resolved into a [`SecretString`] and then
-/// exposed via [`SecretString::expose`] when constructing xberg's struct.
+/// Deprecated and ignored: LLM credentials + model selection for the removed LLM summarization
+/// and LLM entity recognition. Nothing reads it; it stays typed so existing files keep loading
+/// under the strict schema and a literal `api_key` keeps serialising as `"<redacted>"`.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
 #[serde(deny_unknown_fields)]
+#[schemars(extend("deprecated" = true))]
 pub struct LlmConfig {
     /// Combined provider/model string following liter-llm's routing format:
     /// `"openai/gpt-4o"`, `"anthropic/claude-sonnet-4-20250514"`,
@@ -614,36 +605,6 @@ pub struct LlmConfig {
     /// Maximum tokens to generate. Provider-default when unset.
     #[serde(default)]
     pub max_tokens: Option<u64>,
-}
-
-#[cfg(feature = "intelligence")]
-impl LlmConfig {
-    /// Translate the basemind-side `LlmConfig` into xberg's `LlmConfig`.
-    ///
-    /// Returns `None` when `model` is empty — every LLM-backed feature treats
-    /// `None` as "no LLM configured" and falls back to the non-LLM path. The
-    /// `ApiKey` enum is resolved here: `Unset` and missing env vars become
-    /// `None` (letting the provider SDK fall back to its own env-var lookup),
-    /// `Literal` and resolved env-refs are exposed via [`SecretString::expose`].
-    pub fn to_xberg(&self) -> Option<xberg::LlmConfig> {
-        if self.model.is_empty() {
-            return None;
-        }
-        Some(xberg::LlmConfig {
-            model: self.model.clone(),
-            api_key: self.api_key.resolve().map(|s| s.expose().to_string()),
-            base_url: self.base_url.clone(),
-            timeout_secs: self.timeout_secs,
-            max_retries: self.max_retries,
-            temperature: self.temperature,
-            max_tokens: self.max_tokens,
-            // `None` preserves the prior behavior: basemind resolves the api key itself, ~keep
-            // adds no custom provider headers, and leaves xberg's env handling default. ~keep
-            load_env: None,
-            headers: None,
-            ..Default::default()
-        })
-    }
 }
 
 /// Tri-state API key wrapper. Serde-deserialised as `null` (`Unset`), a plain

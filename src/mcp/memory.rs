@@ -537,6 +537,11 @@ pub(super) async fn run_search_documents(
     params: SearchDocumentsParams,
 ) -> Result<CallToolResult, McpError> {
     let __body = std::time::Instant::now();
+    if params.entity_category.is_some()
+        && let Some(reason) = crate::extract::doc_tiers::entity_filter_unavailable()
+    {
+        return Err(McpError::invalid_request(reason, None));
+    }
     let (output_format, reranker_enabled, reranker_preset, reranker_top_k) = {
         let r = &state.shared.config.documents.reranker;
         (

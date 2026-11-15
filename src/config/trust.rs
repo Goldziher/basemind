@@ -167,19 +167,66 @@ pub fn warn_deprecated_sections(config: &ConfigV1) {
             "basemind.toml sets [{name}], which configured a removed feature and is ignored; delete the table"
         ));
     }
+    for (_, message) in deprecated_settings(config) {
+        warn_once(message.to_string());
+    }
 }
 
-/// Log a warning the first time this process sees `message`; a CLI invocation loads the config
-/// several times and would otherwise repeat it.
-pub(crate) fn warn_once(message: String) {
+/// Settings for document capabilities that were removed (archive extraction, LLM summarization and
+/// the `[llm]` credentials only it and LLM NER read), as `(dotted path, warning)`. Unlike a
+/// [`DeprecatedSection`](super::DeprecatedSection) these stay typed, so a literal `[llm] api_key`
+/// keeps serialising redacted; `[llm]` counts as set by a `--llm-*` flag or `BASEMIND_LLM_*` too.
+fn deprecated_settings(config: &ConfigV1) -> Vec<(&'static str, &'static str)> {
+    let mut set = Vec::new();
+    if config.documents.extract_archives {
+        set.push((
+            "documents.extract_archives",
+            "[documents] extract_archives = true is ignored: archive extraction was removed and archives are \
+             always skipped; delete the key",
+        ));
+    }
+    if config.documents.summarization.strategy == super::SummarizationStrategy::Abstractive {
+        set.push((
+            "documents.summarization.strategy",
+            "[documents.summarization] strategy = \"abstractive\" is deprecated: LLM summarization was removed and \
+             extractive summaries are produced instead; set strategy = \"extractive\"",
+        ));
+    }
+    let llm_is_set = match (
+        serde_json::to_value(&config.llm),
+        serde_json::to_value(super::LlmConfig::default()),
+    ) {
+        (Ok(set), Ok(default)) => set != default,
+        _ => false,
+    };
+    if llm_is_set {
+        set.push((
+            "llm",
+            "[llm] (and the --llm-* flags and BASEMIND_LLM_* variables) is ignored: it only configured LLM \
+             summarization and LLM entity recognition, which were removed; delete the table",
+        ));
+    }
+    set
+}
+
+/// Dotted paths of the removed-capability settings `config` still carries.
+pub fn deprecated_settings_set(config: &ConfigV1) -> Vec<&'static str> {
+    deprecated_settings(config).into_iter().map(|(path, _)| path).collect()
+}
+
+/// Log a warning the first time this process sees `message`, and say whether it was logged; a CLI
+/// invocation loads the config several times and would otherwise repeat it.
+pub(crate) fn warn_once(message: String) -> bool {
     static SEEN: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
     let mut seen = SEEN
         .get_or_init(Default::default)
         .lock()
         .unwrap_or_else(PoisonError::into_inner);
-    if seen.insert(message.clone()) {
+    let first = seen.insert(message.clone());
+    if first {
         tracing::warn!("{message}");
     }
+    first
 }
 
 #[cfg(test)]

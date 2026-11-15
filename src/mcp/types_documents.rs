@@ -34,7 +34,8 @@ pub struct SearchDocumentsParams {
     /// Optional case-insensitive substring match against `DocEntity.category`.
     /// When set, only hits whose parent document carries at least one entity
     /// in that category are returned. Combined with `keywords_contains` via
-    /// AND semantics (both must match when both are set).
+    /// AND semantics (both must match when both are set). Errors on a build without the
+    /// `documents-ner` feature, where no document carries entities.
     #[serde(default)]
     pub entity_category: Option<String>,
     /// Optional case-insensitive substring match against `DocKeyword.text`.

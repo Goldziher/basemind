@@ -4,7 +4,8 @@
 //!
 //! Layered on top of the existing `l1` / `l2` blob shape:
 //! - `l1`/`l2`/`l3` cover source code (tree-sitter outlines + calls + body hashes)
-//! - `doc` covers everything else (PDFs, DOCX, XLSX, EML, HTML, images via OCR, …)
+//! - `doc` covers everything else (PDFs, DOCX, XLSX, EML, HTML, …; images and scanned PDFs when the
+//!   OCR tier is compiled in, see [`super::doc_tiers`])
 //!
 //! When the document feature is on, each extracted chunk carries its embedding
 //! vector inline so the scanner can stage it for LanceDB insert without a second
@@ -24,8 +25,8 @@ use xberg::{ExtractInput, extract};
 use super::doc_guard::{self, ChunkCutovers, DeadlineError, DocPhase};
 use super::{ExtractError, SCHEMA_VER};
 use crate::config::{
-    DocLanguageConfig, DocumentModelProfile, KeywordAlgorithm, KeywordsConfig, LlmConfig, NerBackend, NerConfig,
-    OnnxProvider, SummarizationConfig, SummarizationStrategy,
+    DocLanguageConfig, DocumentModelProfile, KeywordAlgorithm, KeywordsConfig, NerBackend, NerConfig, OnnxProvider,
+    SummarizationConfig,
 };
 
 /// Per-file document extraction result. Mirrors the shape of `FileMapL1` —
@@ -73,8 +74,7 @@ pub struct FileMapDoc {
     pub entities: Vec<DocEntity>,
     /// Document-level summary produced by the summarisation post-processor.
     /// `None` when summarisation was disabled at scan time or when xberg
-    /// declined to produce one (e.g. empty content, abstractive strategy with
-    /// no LLM model configured).
+    /// declined to produce one (e.g. empty content).
     ///
     /// TAIL field — pre-iter-7 blobs deserialise via `#[serde(default)]` and
     /// surface as `None`.
@@ -159,8 +159,8 @@ pub struct DocEntity {
 pub struct DocSummary {
     /// Plain-prose summary text.
     pub text: String,
-    /// Strategy that produced this summary — `"extractive"` (TextRank) or
-    /// `"abstractive"` (LLM).
+    /// Strategy that produced this summary: `"extractive"` (TextRank). Blobs written before LLM
+    /// summarization was removed may still say `"abstractive"`.
     pub strategy: String,
     /// Approximate token count of `text`, when the backend reports one. `None`
     /// when the backend (typically the extractive path) does not measure.
@@ -210,11 +210,8 @@ pub struct DocConfig {
     pub language: DocLanguageConfig,
     pub keywords: KeywordsConfig,
     pub ner: NerConfig,
-    /// Summarisation knobs (`enabled`, `strategy`, `max_tokens`).
+    /// Summarisation knobs (`enabled`, `max_tokens`; `strategy` is always extractive).
     pub summarization: SummarizationConfig,
-    /// Shared LLM credentials reached for when `summarization.strategy = Abstractive`
-    /// (and, in future iters, by `ner.backend = Llm`, VLM OCR, etc.).
-    pub llm: LlmConfig,
     /// Bounded thread cap for xberg's internal ONNX embedding fan-out.
     /// `0` resolves to `max(2, cores / 4)` via `crate::embeddings::resolve_embed_threads`.
     pub embed_max_threads: usize,
@@ -226,7 +223,7 @@ pub struct DocConfig {
     /// profiles strip enrichment / embeddings to shrink the scan-time footprint — see
     /// [`crate::config::DocumentModelProfile`] and [`DocConfig::to_xberg`].
     pub document_models: DocumentModelProfile,
-    /// ONNX execution provider for the embedder and xberg's layout / NER models (from
+    /// ONNX execution provider for the embedder and xberg's NER model (from
     /// `[resources].onnx_provider`).
     pub onnx_provider: OnnxProvider,
     /// Cap on total uncompressed bytes unpacked from one archive (from `[documents].max_archive_bytes`).
@@ -255,7 +252,6 @@ impl Default for DocConfig {
             keywords: KeywordsConfig::default(),
             ner: NerConfig::default(),
             summarization: SummarizationConfig::default(),
-            llm: LlmConfig::default(),
             embed_max_threads: 0,
             embed_batch_size: 32,
             document_models: DocumentModelProfile::default(),
@@ -315,7 +311,7 @@ impl DocConfig {
             keywords,
             ner,
             summarization,
-            disable_ocr: strip_enrichment,
+            disable_ocr: strip_enrichment || !super::doc_tiers::ocr_compiled(),
             acceleration: crate::embeddings::acceleration(self.onnx_provider),
             concurrency,
             extraction_timeout_secs: Some(self.extraction_timeout_secs),
@@ -328,30 +324,15 @@ impl DocConfig {
     /// `SummarizationConfig`. Returns `None` when summarisation is gated off —
     /// xberg treats `ExtractionConfig.summarization == None` as "do not run".
     ///
-    /// When `strategy = Abstractive` and `[llm].model` is empty, we fall back to
-    /// `Extractive` (TextRank, no LLM) with a one-time warning. This keeps the
-    /// scan completing instead of failing midway with an opaque liter-llm error
-    /// the agent can't act on.
+    /// Always extractive (TextRank): the LLM backend is not compiled in, and a config that still
+    /// says `strategy = "abstractive"` is reported once at load
+    /// ([`crate::config::trust::deprecated_settings_set`]).
     fn xberg_summarization(&self) -> Option<xberg::SummarizationConfig> {
-        if !self.summarization.enabled {
-            return None;
-        }
-        let mut sc = xberg::SummarizationConfig {
-            strategy: match self.summarization.strategy {
-                SummarizationStrategy::Extractive => xberg::SummaryStrategy::Extractive,
-                SummarizationStrategy::Abstractive => xberg::SummaryStrategy::Abstractive,
-            },
+        self.summarization.enabled.then(|| xberg::SummarizationConfig {
+            strategy: xberg::SummaryStrategy::Extractive,
             max_tokens: self.summarization.max_tokens,
             llm: None,
-        };
-        if matches!(self.summarization.strategy, SummarizationStrategy::Abstractive) {
-            sc.llm = self.llm.to_xberg();
-            if sc.llm.is_none() {
-                tracing::warn!("summarization.strategy = abstractive but llm.model unset; falling back to extractive");
-                sc.strategy = xberg::SummaryStrategy::Extractive;
-            }
-        }
-        Some(sc)
+        })
     }
 
     /// Translate the basemind-side `KeywordsConfig` into xberg's
@@ -421,29 +402,16 @@ impl DocConfig {
     /// String category names round-trip via `EntityCategory::from(String)` —
     /// unknown names land in the `Custom(_)` variant rather than failing.
     ///
-    /// When `backend == Llm`, the shared `LlmConfig` is resolved via
-    /// `to_xberg()` and threaded into the xberg-side `NerConfig.llm`.
-    /// If the user selected the LLM backend but left `llm.model` empty, we
-    /// emit a warning — xberg silently falls back to ONNX in that case
-    /// and the user almost certainly wants to know.
+    /// Also `None` when NER cannot run in this build: the `documents-ner` tier is not compiled in,
+    /// or the config selects the LLM backend, which basemind never ships. Both are reported by
+    /// [`super::doc_tiers::warn_unavailable_settings`] rather than left to xberg, which would skip
+    /// the first silently and fail every document on the second.
     fn xberg_ner(&self) -> Option<xberg::core::config::ner::NerConfig> {
-        if !self.ner.enabled {
+        if !self.ner.enabled || !super::doc_tiers::ner_compiled() || self.ner.backend == NerBackend::Llm {
             return None;
         }
-        let llm = if matches!(self.ner.backend, NerBackend::Llm) {
-            let cfg = self.llm.to_xberg();
-            if cfg.is_none() {
-                tracing::warn!("ner.backend = llm but llm.model is unset; NER will fall back to ONNX inside xberg");
-            }
-            cfg
-        } else {
-            None
-        };
         Some(xberg::core::config::ner::NerConfig {
-            backend: match self.ner.backend {
-                NerBackend::Onnx => xberg::core::config::ner::NerBackendKind::Onnx,
-                NerBackend::Llm => xberg::core::config::ner::NerBackendKind::Llm,
-            },
+            backend: xberg::core::config::ner::NerBackendKind::Onnx,
             categories: self
                 .ner
                 .categories
@@ -451,7 +419,7 @@ impl DocConfig {
                 .map(|s| xberg::types::entity::EntityCategory::from(s.clone()))
                 .collect(),
             model: self.ner.model.clone(),
-            llm,
+            llm: None,
             custom_labels: self.ner.custom_labels.clone(),
         })
     }
@@ -599,6 +567,9 @@ pub fn extract_doc(path: &Path, mime_type: Option<&str>, config: &DocConfig) -> 
             .unwrap_or_else(|| "xberg returned no extracted document".to_string());
         ExtractError::Document(message)
     })?;
+    if let Some(reason) = super::doc_tiers::no_text_without_ocr(&result.mime_type, &result.content) {
+        return Err(ExtractError::Document(reason));
+    }
 
     let mut chunks: Vec<DocChunk> = Vec::new();
     let mut dense_inputs = Vec::new();
@@ -842,13 +813,21 @@ mod tests {
     }
 
     #[test]
-    fn to_xberg_full_profile_keeps_enrichment_and_ocr() {
+    fn to_xberg_full_profile_keeps_enrichment_and_the_compiled_tiers() {
         let cfg = doc_config_all_enrichment_on(DocumentModelProfile::Full);
         let x = cfg.to_xberg();
         assert!(x.keywords.is_some(), "Full keeps keyword extraction");
-        assert!(x.ner.is_some(), "Full keeps NER");
+        assert_eq!(
+            x.ner.is_some(),
+            crate::extract::doc_tiers::ner_compiled(),
+            "Full runs NER exactly when the tier is compiled in"
+        );
         assert!(x.summarization.is_some(), "Full keeps summarisation");
-        assert!(!x.disable_ocr, "Full leaves OCR enabled");
+        assert_eq!(
+            x.disable_ocr,
+            !crate::extract::doc_tiers::ocr_compiled(),
+            "Full leaves OCR on exactly when the tier is compiled in"
+        );
         assert!(x.chunking.as_ref().and_then(|c| c.embedding.as_ref()).is_none());
     }
 
@@ -875,6 +854,35 @@ mod tests {
             x.chunking.as_ref().and_then(|c| c.embedding.as_ref()).is_none(),
             "None skips embeddings entirely even when embed = true"
         );
+    }
+
+    #[test]
+    fn abstractive_summarization_falls_back_to_extractive() {
+        let cfg = DocConfig {
+            summarization: SummarizationConfig {
+                enabled: true,
+                strategy: crate::config::SummarizationStrategy::Abstractive,
+                max_tokens: Some(64),
+            },
+            ..DocConfig::default()
+        };
+        let summarization = cfg.to_xberg().summarization.expect("summarisation stays on");
+        assert_eq!(summarization.strategy, xberg::SummaryStrategy::Extractive);
+        assert_eq!(summarization.max_tokens, Some(64));
+        assert!(summarization.llm.is_none());
+    }
+
+    #[test]
+    fn the_llm_ner_backend_is_never_handed_to_xberg() {
+        let cfg = DocConfig {
+            ner: NerConfig {
+                enabled: true,
+                backend: NerBackend::Llm,
+                ..NerConfig::default()
+            },
+            ..DocConfig::default()
+        };
+        assert!(cfg.to_xberg().ner.is_none());
     }
 
     #[test]

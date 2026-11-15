@@ -287,7 +287,9 @@ impl Filters {
                     .map(|s| format!("{}/", s.replace('\\', "/").trim_end_matches('/')))
             })
             .collect();
-        let doc_digest = crate::config::rules::doc_digest(&config.documents, &config.resources, &config.llm);
+        #[cfg(feature = "documents")]
+        crate::extract::doc_tiers::warn_unavailable_settings(&config.documents);
+        let doc_digest = crate::config::rules::doc_digest(&config.documents, &config.resources);
         let doc_guard_digest = crate::config::rules::doc_guard_digest(&config.documents, &doc_digest);
         Ok(Self {
             include,

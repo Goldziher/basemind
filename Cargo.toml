@@ -70,30 +70,44 @@ intelligence = ["dep:xberg", "dep:lancedb", "dep:futures", "xberg/embeddings"]
 # `intelligence` — it stays cheap enough to build without also pulling in the vector-store deps.
 tokenizer = ["dep:xberg", "xberg/chunking-tokenizers"]
 
+# Document RAG on local files: PDF text layers, Office, spreadsheets, email, HTML, XML (SVG text
+# included), Markdown/MDX and notebooks (`xberg/office` carries `notebook`). xberg's `formats` and
+# `analysis` umbrellas are deliberately not used: they also pull in archives, sqlite, heic, svg
+# rasterisation, wordperfect, hwp, iwork and diff, none of which basemind reaches.
 documents = [
   "intelligence",
   "tokenizer",
-  "xberg/formats",
-  "xberg/analysis",
-  "xberg/reranker",
-  "xberg/reranker-presets",
-  "xberg/ocr",
-  "xberg/paddle-ocr",
-  "xberg/layout-detection",
-  "xberg/auto-rotate",
-  "xberg/ner-onnx",
+  "dep:serde_toon_format",
+  "xberg/pdf",
+  "xberg/office",
+  "xberg/excel",
+  "xberg/email",
+  "xberg/html",
+  "xberg/xml",
+  "xberg/mdx",
+  "xberg/language-detection",
+  "xberg/quality",
+  "xberg/markdown-footnotes",
   "xberg/keywords-yake",
   "xberg/keywords-rake",
   "xberg/summarization",
-  "xberg/summarization-llm",
-  "xberg/redaction",
-  "xberg/qr-codes",
-  "dep:serde_toon_format",
+  "xberg/reranker",
+  "xberg/reranker-presets",
 ]
+
+# Tesseract OCR for images and PDFs with no text layer. Its own tier because it compiles leptonica
+# and tesseract from source through cmake.
+documents-ocr = ["documents", "xberg/ocr"]
+
+# PaddleOCR as an extra OCR stage. Opt-in for source builds, never part of `full`.
+documents-ocr-paddle = ["documents-ocr", "xberg/paddle-ocr"]
+
+# ONNX named-entity recognition: `[documents.ner]` and the `entity_category` search filter.
+documents-ner = ["documents", "xberg/ner-onnx"]
 
 code-search = ["intelligence", "xberg/reranker", "xberg/reranker-presets"]
 
-memory = ["intelligence", "xberg/keywords", "xberg/ner-onnx"]
+memory = ["intelligence"]
 
 comms = [
   "dep:hyper",
@@ -119,7 +133,7 @@ code-intel-stack = ["dep:stack-graphs", "dep:tree-sitter-graph", "dep:tree-sitte
 
 code-intel = ["code-intel-js", "code-intel-stack"]
 
-full = ["documents", "memory", "comms", "code-intel", "code-search"]
+full = ["documents", "documents-ocr", "documents-ner", "tokenizer", "memory", "comms", "code-intel", "code-search"]
 
 test-support = []
 
@@ -292,14 +306,10 @@ opt-level = 3
 [profile.release.package.aws-lc-sys]
 opt-level = 3
 
-# ~keep Also not perf tuning. xberg's own workspace pins these two because the archive crates
-# ~keep miscompile into a SIGBUS on macOS ARM64 at higher optimization -- sevenz-rust2 needs
-# ~keep opt-level 1 specifically (2 still faulted), zip needs at most 2. Cargo profiles only apply
-# ~keep from the workspace ROOT, so building xberg as a dependency here silently drops those pins;
-# ~keep the `package."*"` size override above would otherwise compile both well past the safe level.
-[profile.release.package.sevenz-rust2]
-opt-level = 1
-
+# ~keep Also not perf tuning. xberg's own workspace pins `zip` because it miscompiles into a SIGBUS
+# ~keep on macOS ARM64 above opt-level 2. Cargo profiles only apply from the workspace ROOT, so
+# ~keep building xberg as a dependency here silently drops that pin; the `package."*"` size override
+# ~keep above would otherwise compile it past the safe level. Office and spreadsheet files are zips.
 [profile.release.package.zip]
 opt-level = 2
 

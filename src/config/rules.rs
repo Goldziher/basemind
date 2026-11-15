@@ -11,7 +11,7 @@
 
 use globset::{Glob, GlobSet, GlobSetBuilder};
 
-use super::{CodeSearchConfig, ConfigV1, DocumentsConfig, LlmConfig, ResourcesConfig};
+use super::{CodeSearchConfig, ConfigV1, DocumentsConfig, ResourcesConfig};
 
 /// Length of a config digest in hex characters.
 pub const DIGEST_LEN: usize = 16;
@@ -115,7 +115,7 @@ pub fn code_digest(cfg: &CodeSearchConfig) -> String {
 /// Fingerprint of the settings that shape a document's extracted content, chunks, keywords,
 /// entities and summary. `output` (MCP response format) and the embedding preset / threads are
 /// deliberately excluded: they do not change what is stored.
-pub fn doc_digest(cfg: &DocumentsConfig, resources: &ResourcesConfig, llm: &LlmConfig) -> String {
+pub fn doc_digest(cfg: &DocumentsConfig, resources: &ResourcesConfig) -> String {
     // The splitter cutovers decide which chunker a text file gets, so they belong in the digest, but only
     // when moved off their defaults: folding the defaults in would change every existing digest and
     // re-extract every document on upgrade.
@@ -145,7 +145,10 @@ pub fn doc_digest(cfg: &DocumentsConfig, resources: &ResourcesConfig, llm: &LlmC
             &cfg.ner,
             &cfg.summarization,
             resources.document_models,
-            &llm.model,
+            // The slot `[llm] model` held before the LLM backends were removed, and
+            // `extract_archives` above, no longer shape the output. Both stay in the tuple so
+            // digests written by earlier versions still match and no document is re-extracted.
+            "",
         ),
     )
 }
@@ -200,9 +203,8 @@ mod tests {
     #[test]
     fn doc_digest_ignores_reserved_fields_but_tracks_live_ones() {
         let resources = ResourcesConfig::default();
-        let llm = LlmConfig::default();
         let base = DocumentsConfig::default();
-        let digest = |cfg: &DocumentsConfig| doc_digest(cfg, &resources, &llm);
+        let digest = |cfg: &DocumentsConfig| doc_digest(cfg, &resources);
 
         let mut reserved = base.clone();
         reserved.language.preferred_languages = vec!["fra".into()];
@@ -225,9 +227,8 @@ mod tests {
     #[test]
     fn doc_digest_tracks_chunker_cutovers_only_off_their_defaults() {
         let resources = ResourcesConfig::default();
-        let llm = LlmConfig::default();
         let base = DocumentsConfig::default();
-        let digest = |cfg: &DocumentsConfig| doc_digest(cfg, &resources, &llm);
+        let digest = |cfg: &DocumentsConfig| doc_digest(cfg, &resources);
 
         let mut moved = base.clone();
         moved.markdown_chunk_max_bytes += 1;
@@ -403,27 +404,23 @@ mod tests {
 
     #[test]
     fn doc_digest_tracks_extraction_knobs_only() {
-        let (cfg, res, llm) = (
-            DocumentsConfig::default(),
-            ResourcesConfig::default(),
-            LlmConfig::default(),
-        );
-        let digest = doc_digest(&cfg, &res, &llm);
+        let (cfg, res) = (DocumentsConfig::default(), ResourcesConfig::default());
+        let digest = doc_digest(&cfg, &res);
         let mut other = cfg.clone();
         other.max_characters += 1;
-        assert_ne!(doc_digest(&other, &res, &llm), digest);
+        assert_ne!(doc_digest(&other, &res), digest);
         let mut other = cfg.clone();
         other.keywords.enabled = !other.keywords.enabled;
-        assert_ne!(doc_digest(&other, &res, &llm), digest);
+        assert_ne!(doc_digest(&other, &res), digest);
         let mut other = cfg.clone();
         other.summarization.enabled = !other.summarization.enabled;
-        assert_ne!(doc_digest(&other, &res, &llm), digest);
+        assert_ne!(doc_digest(&other, &res), digest);
         let mut other = cfg.clone();
         other.embedding_preset = "quality".to_string();
         other.embed_exclude = vec!["x".to_string()];
         other.embed_max_threads = 3;
         assert_eq!(
-            doc_digest(&other, &res, &llm),
+            doc_digest(&other, &res),
             digest,
             "embedding knobs are tracked elsewhere"
         );

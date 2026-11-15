@@ -30,7 +30,7 @@ use anyhow::Context as _;
 use xberg::core::mime;
 use xberg::embeddings::{EMBEDDING_PRESETS, EmbeddingPreset};
 
-use crate::config::{DocumentsConfig, LlmConfig, ResourcesConfig};
+use crate::config::{DocumentsConfig, ResourcesConfig};
 use crate::extract::doc::{DocConfig, FileMapDoc, extract_doc};
 use crate::extract::doc_guard::ChunkCutovers;
 use crate::hashing::{self, Hash};
@@ -110,12 +110,7 @@ pub(crate) fn preset_dim(name: &str) -> anyhow::Result<u16> {
 /// Translate the project-level `[documents]` config into the xberg-facing
 /// [`DocConfig`] the extractor expects. Pulled out so the wiring in
 /// `process_file` stays a single call.
-pub(crate) fn doc_config_from(
-    cfg: &DocumentsConfig,
-    llm: &LlmConfig,
-    resources: &ResourcesConfig,
-    embed: bool,
-) -> DocConfig {
+pub(crate) fn doc_config_from(cfg: &DocumentsConfig, resources: &ResourcesConfig, embed: bool) -> DocConfig {
     DocConfig {
         max_pages: cfg.max_pages,
         extraction_timeout_secs: cfg.extraction_timeout_secs,
@@ -134,7 +129,6 @@ pub(crate) fn doc_config_from(
         keywords: cfg.keywords.clone(),
         ner: cfg.ner.clone(),
         summarization: cfg.summarization.clone(),
-        llm: llm.clone(),
         embed_max_threads: resources.effective_embed_threads(cfg.embed_max_threads),
         embed_batch_size: resources.embed_batch_size,
         document_models: resources.document_models,
@@ -144,22 +138,18 @@ pub(crate) fn doc_config_from(
     }
 }
 
-/// Archive / compressed-container extensions. xberg routes `.zip/.tar/.gz/...` into its
-/// `ZipExtractor`/`GzipExtractor`/`build_archive_doc` path, which recursively unpacks the archive and
-/// embeds every entry — an enormous, pointless cost during a code-map scan (the observed 1119%-CPU /
-/// 15 GB footgun). Rejected by default so a single archive can't explode into thousands of embeds;
-/// gated OFF (relaxed → routed to xberg's archive extractor) when `documents.extract_archives` is
-/// set. This extension floor is the primary guard because `mime::detect_mime_type` is extension-based
-/// and several of these (`.jar/.whl/.war/...`) collapse to `application/octet-stream` via the
-/// `mime_guess` fallback, so a MIME-only denylist would miss them. Kept separate from
-/// [`BINARY_EXTENSIONS`] so the toggle only affects archives, never true binaries.
+/// Archive / compressed-container extensions. ALWAYS rejected: xberg's archive extractor is not
+/// compiled in (recursively unpacking and embedding every entry was the observed 1119%-CPU / 15 GB
+/// footgun), and `documents.extract_archives` is accepted but inert. This extension floor is the
+/// primary guard because `mime::detect_mime_type` is extension-based and several of these
+/// (`.jar/.whl/.war/...`) collapse to `application/octet-stream` via the `mime_guess` fallback, so a
+/// MIME-only denylist would miss them.
 const ARCHIVE_EXTENSIONS: &[&str] = &[
     "zip", "tar", "gz", "tgz", "bz2", "tbz2", "xz", "txz", "zst", "zstd", "7z", "rar", "lz", "lz4", "lzma", "br",
     "cab", "ar", "iso", "dmg", "jar", "war", "ear", "apk", "whl", "egg", "deb", "rpm", "nupkg", "pkg", "msi", "crate",
 ];
 
-/// Native / compiled-binary extensions. ALWAYS rejected — these carry no extractable text, and
-/// `extract_archives` never relaxes them (they are not archives).
+/// Native / compiled-binary extensions. ALWAYS rejected — these carry no extractable text.
 const BINARY_EXTENSIONS: &[&str] = &[
     "so", "dylib", "dll", "a", "o", "obj", "bin", "exe", "wasm", "class", "pyc", "pyo", "pyd", "node", "pack", "idx",
 ];
@@ -174,8 +164,8 @@ const UNSAFE_DOCUMENT_EXTENSIONS: &[&str] = &["enw"];
 const UNSAFE_DOCUMENT_MIME: &[&str] = &["application/x-endnote+xml"];
 
 /// Archive MIME denylist (belt-and-suspenders with [`ARCHIVE_EXTENSIONS`]) — catches content-typed
-/// archives xberg maps to a real archive MIME. Gated OFF by `documents.extract_archives`, mirroring
-/// the extension floor. Entries ending in `/` are prefix matches (see [`matches_mime`]).
+/// archives xberg maps to a real archive MIME. Entries ending in `/` are prefix matches (see
+/// [`matches_mime`]).
 const ARCHIVE_MIME: &[&str] = &[
     "application/zip",
     "application/x-tar",
@@ -186,8 +176,9 @@ const ARCHIVE_MIME: &[&str] = &[
 ];
 
 /// Binary MIME denylist — the unambiguously non-extractable native-binary + audio/video/font
-/// families. ALWAYS rejected (never relaxed by `extract_archives`). `image/` is deliberately NOT
-/// denied: xberg OCR can extract text from images, so images retain their allowlist behavior.
+/// families. ALWAYS rejected. `image/` is deliberately NOT listed here: with the OCR tier compiled
+/// in, xberg extracts text from images. Without it they are denied separately, see
+/// [`is_denied_binary_or_archive`].
 const BINARY_MIME: &[&str] = &[
     "application/wasm",
     "application/x-executable",
@@ -221,9 +212,8 @@ fn binary_ext_set() -> &'static AHashSet<&'static str> {
 }
 
 /// True when a file must be skipped by the document tier because it is unsafe to parse, a binary
-/// blob, or (unless `documents.extract_archives` is set) an archive / compressed container. Unsafe
-/// formats, true binaries, and the user-configured `extension_denylist` are always rejected; the
-/// archive floor is relaxed only when the caller opts into archive extraction.
+/// blob, an archive / compressed container, on the user-configured `extension_denylist`, or a raster
+/// image in a build without the OCR tier (it would be indexed with metadata and no text).
 fn is_denied_binary_or_archive(abs: &Path, mime_type: &str, cfg: &DocumentsConfig) -> bool {
     if let Some(ext) = abs.extension().and_then(|e| e.to_str()) {
         let ext_lower = ext.to_ascii_lowercase();
@@ -236,7 +226,7 @@ fn is_denied_binary_or_archive(abs: &Path, mime_type: &str, cfg: &DocumentsConfi
         {
             return true;
         }
-        if !cfg.extract_archives && archive_ext_set().contains(ext_lower.as_str()) {
+        if archive_ext_set().contains(ext_lower.as_str()) {
             return true;
         }
     }
@@ -246,7 +236,10 @@ fn is_denied_binary_or_archive(abs: &Path, mime_type: &str, cfg: &DocumentsConfi
     if UNSAFE_DOCUMENT_MIME.iter().any(|entry| matches_mime(entry, mime_type)) {
         return true;
     }
-    !cfg.extract_archives && ARCHIVE_MIME.iter().any(|entry| matches_mime(entry, mime_type))
+    if ARCHIVE_MIME.iter().any(|entry| matches_mime(entry, mime_type)) {
+        return true;
+    }
+    !crate::extract::doc_tiers::ocr_compiled() && crate::extract::doc_tiers::is_ocr_only_mime(mime_type)
 }
 
 /// Quick filter run before any xberg work happens. Returns the detected
@@ -292,7 +285,6 @@ pub(crate) fn extract_and_persist_doc(
     hash: &Hash,
     mime_type: &str,
     cfg: &DocumentsConfig,
-    llm: &LlmConfig,
     resources: &ResourcesConfig,
     filters: &Filters,
     scope: &str,
@@ -317,7 +309,7 @@ pub(crate) fn extract_and_persist_doc(
         return Ok(Some(pending_from_doc(&cached, rel, hash_hex, scope, cfg, embed, true)));
     }
 
-    let mut doc_config = doc_config_from(cfg, llm, resources, embed);
+    let mut doc_config = doc_config_from(cfg, resources, embed);
     doc_config.phase = Some(Arc::clone(&filters.doc_phase));
     let mut doc: FileMapDoc =
         extract_doc(abs, Some(mime_type), &doc_config).with_context(|| format!("extract document {rel}"))?;

@@ -854,8 +854,8 @@ fn extract_doc_surfaces_keywords_when_enabled() {
 
 /// End-to-end keywords + NER assertion. NER (gline-rs ONNX) downloads ~250 MB
 /// of weights on first run, so the test is `#[ignore]`-gated. Pre-warm with:
-/// `cargo test --features documents scan_extracts_keywords_and_entities -- --ignored`.
-#[cfg(feature = "documents")]
+/// `cargo test --features documents-ner scan_extracts_keywords_and_entities -- --ignored`.
+#[cfg(feature = "documents-ner")]
 #[test]
 #[ignore = "downloads gline-rs ONNX weights (~250MB) on first run; pre-warm explicitly"]
 fn scan_extracts_keywords_and_entities() {

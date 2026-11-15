@@ -6,6 +6,8 @@ pub mod doc_cost;
 pub mod doc_fallback;
 #[cfg(feature = "documents")]
 pub mod doc_guard;
+#[cfg(feature = "documents")]
+pub mod doc_tiers;
 pub mod l1;
 pub mod l2;
 pub mod l3;

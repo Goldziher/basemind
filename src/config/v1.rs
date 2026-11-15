@@ -48,9 +48,9 @@ pub struct ConfigV1 {
     /// `[shells]` table keep loading.
     #[serde(default, skip_serializing_if = "DeprecatedSection::is_empty")]
     pub shells: DeprecatedSection,
-    /// Shared LLM configuration. Consumed by reranker-llm, ner-llm, summarization-llm,
-    /// VLM OCR, and any future LLM-backed capability. Off by default — leaving
-    /// `api_key` `Unset` short-circuits any LLM-backed feature.
+    /// Deprecated and ignored: LLM summarization and LLM entity recognition were removed and
+    /// nothing else read this table. Accepted so existing files keep loading; a table with content
+    /// logs a warning.
     #[serde(default)]
     pub llm: LlmConfig,
 }

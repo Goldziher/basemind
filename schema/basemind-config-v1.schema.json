@@ -211,7 +211,7 @@
       "$ref": "#/$defs/DeprecatedSection"
     },
     "llm": {
-      "description": "Shared LLM configuration. Consumed by reranker-llm, ner-llm, summarization-llm,\nVLM OCR, and any future LLM-backed capability. Off by default — leaving\n`api_key` `Unset` short-circuits any LLM-backed feature.",
+      "description": "Deprecated and ignored: LLM summarization and LLM entity recognition were removed and\nnothing else read this table. Accepted so existing files keep loading; a table with content\nlogs a warning.",
       "$ref": "#/$defs/LlmConfig",
       "default": {
         "model": "",
@@ -568,7 +568,7 @@
           "default": []
         },
         "extract_archives": {
-          "description": "Route archives (`.zip/.tar/.jar/...`) into xberg's recursive archive extractor. Default\n`false`: archives and compressed containers are rejected by the built-in floor before any\nextraction, so a single archive can't explode into thousands of embeds. Flip to `true` to opt\ninto extracting the files *inside* archives — at the cost of the extra recursion + embedding\nwork. True binaries (`.so/.wasm/.exe/...`) are always rejected regardless of this flag.",
+          "description": "Deprecated and ignored: archive extraction was removed, so archives and compressed\ncontainers (`.zip/.tar/.jar/...`) are always skipped. Accepted so existing files keep\nloading; `true` logs a warning.",
           "type": "boolean",
           "default": false
         },
@@ -787,12 +787,12 @@
       "type": "object",
       "properties": {
         "enabled": {
-          "description": "Master switch — off by default; ONNX backend downloads gline-rs weights on\nfirst use, LLM backend costs API tokens. Maps to `Some(NerConfig)` /\n`None` on `ExtractionConfig.ner`.",
+          "description": "Master switch — off by default; the ONNX backend downloads gline-rs weights on first use.\nNeeds a build with the `documents-ner` Cargo feature (the published binaries have it);\nwithout it the switch has no effect and a warning is logged.",
           "type": "boolean",
           "default": false
         },
         "backend": {
-          "description": "Backend selection. `onnx` uses gline-rs locally; `llm` routes through the\nshared `[llm]` config.",
+          "description": "Backend selection. `onnx` uses gline-rs locally. `llm` is accepted but not supported: no\nentities are extracted and a warning is logged.",
           "$ref": "#/$defs/NerBackend",
           "default": "onnx"
         },
@@ -813,7 +813,7 @@
           "default": []
         },
         "custom_labels": {
-          "description": "Arbitrary user-supplied entity labels for gline-rs zero-shot inference\n(and the LLM backend's structured-output schema). Matches xberg's\n`NerConfig.custom_labels`. Useful for domain-specific types like\n`\"Treatment\"`, `\"Vessel\"` without forking GLiNER's taxonomy. Custom\nlabels surface as `EntityCategory::Custom(_)` in the entity stream.",
+          "description": "Arbitrary user-supplied entity labels for gline-rs zero-shot inference. Matches xberg's\n`NerConfig.custom_labels`. Useful for domain-specific types like\n`\"Treatment\"`, `\"Vessel\"` without forking GLiNER's taxonomy. Custom\nlabels surface as `EntityCategory::Custom(_)` in the entity stream.",
           "type": "array",
           "items": {
             "type": "string"
@@ -839,7 +839,7 @@
           "default": false
         },
         "strategy": {
-          "description": "Strategy: `extractive` (TextRank, no LLM) or `abstractive` (routed via\nthe top-level `[llm]` config). When `abstractive` is set but `[llm].model`\nis empty, the boundary falls back to `extractive` with a warning so the\nscan still completes.",
+          "description": "Strategy: `extractive` (TextRank). `abstractive` is deprecated: LLM summarization was\nremoved, so it logs a warning and produces extractive summaries.",
           "$ref": "#/$defs/SummarizationStrategy",
           "default": "extractive"
         },
@@ -1213,7 +1213,7 @@
       "deprecated": true
     },
     "LlmConfig": {
-      "description": "Shared LLM credentials + model selection. Consumed by every LLM-backed\ncapability (ner-llm, summarization-llm, reranker-llm, VLM OCR).\n\nMirrors xberg's `LlmConfig` field-for-field with one safety upgrade:\n`api_key` is the [`ApiKey`] tri-state (literal / env-ref / unset) instead of\n`Option<String>`, so credentials are never stored as bare literals in TOML.\nAt the boundary the env-ref is resolved into a [`SecretString`] and then\nexposed via [`SecretString::expose`] when constructing xberg's struct.",
+      "description": "Deprecated and ignored: LLM credentials + model selection for the removed LLM summarization\nand LLM entity recognition. Nothing reads it; it stays typed so existing files keep loading\nunder the strict schema and a literal `api_key` keeps serialising as `\"<redacted>\"`.",
       "type": "object",
       "properties": {
         "model": {
@@ -1274,7 +1274,8 @@
           "default": null
         }
       },
-      "additionalProperties": false
+      "additionalProperties": false,
+      "deprecated": true
     },
     "ApiKey": {
       "description": "Tri-state API key wrapper. Serde-deserialised as `null` (`Unset`), a plain\nstring (`Literal`), or a `{ env = \"NAME\" }` table (`Env`).\n\n`Serialize` is implemented manually — the `Literal` variant NEVER emits its\ncleartext secret. It serialises to the marker string `\"<redacted>\"` so any\ndownstream pipeline that round-trips this enum through JSON / TOML (e.g.\nthe config validator at `src/config/mod.rs`) cannot leak credentials into\nlogs, snapshot tests, or error messages. Deserialisation is unchanged:\nloading a TOML config with a literal `api_key = \"sk-...\"` still produces\n`ApiKey::Literal(...)`. The redaction is one-way by design.",

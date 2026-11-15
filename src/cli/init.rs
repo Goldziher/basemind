@@ -145,10 +145,6 @@ pub(crate) const INIT_SCAFFOLD_TOML: &str = r##"# basemind configuration — htt
 # removes the vectors of newly ineligible documents on the next scan.
 # embed_include = []
 # embed_exclude = []
-# Route archives (.zip/.tar/.jar/…) into the recursive archive extractor. Off by default so one
-# archive can't explode into thousands of embeds. True binaries are always skipped. In the shared
-# daemon this also needs BASEMIND_DAEMON_ALLOW_EXTRACT_ARCHIVES=1 in the daemon's environment.
-# extract_archives = false
 
 [code_search]
 # Semantic code-search tier. Requires a `code-search` build.
@@ -176,14 +172,6 @@ pub(crate) const INIT_SCAFFOLD_TOML: &str = r##"# basemind configuration — htt
 # embed_batch_size = 32
 # max_footprint_mb = 0
 # max_map_cache_mb = 256
-
-[llm]
-# Optional LLM for abstractive summaries and LLM NER. Inert while `model` is empty. In this file
-# `base_url` is ignored and api_key env references are limited to the provider's standard variable
-# (OPENAI_API_KEY for openai/..., ANTHROPIC_API_KEY for anthropic/..., or BASEMIND_LLM_API_KEY)
-# unless the operator sets BASEMIND_ALLOW_REPO_LLM=1 in the environment.
-# model = "openai/gpt-4o"
-# api_key = { env = "OPENAI_API_KEY" }
 "##;
 
 /// Where to inject the usage rules. `Auto` never writes a COMMITTED agent-instructions file

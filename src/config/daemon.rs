@@ -28,8 +28,6 @@ pub const MAX_DOC_PAGES_ENV: &str = "BASEMIND_DAEMON_MAX_DOCUMENT_PAGES";
 pub const MAX_EXTRACTION_SECS_ENV: &str = "BASEMIND_DAEMON_MAX_EXTRACTION_SECS";
 pub const MAX_CHUNKS_PER_DOC_ENV: &str = "BASEMIND_DAEMON_MAX_CHUNKS_PER_DOCUMENT";
 pub const MIN_DEBOUNCE_MS_ENV: &str = "BASEMIND_DAEMON_MIN_DEBOUNCE_MS";
-/// Set truthy to let a repository's `[documents] extract_archives = true` through.
-pub const ALLOW_EXTRACT_ARCHIVES_ENV: &str = "BASEMIND_DAEMON_ALLOW_EXTRACT_ARCHIVES";
 
 const DEFAULT_MAX_SCAN_THREADS: usize = 4;
 const DEFAULT_MAX_EMBED_THREADS: usize = 4;
@@ -128,22 +126,11 @@ pub fn clamp_daemon_config(config: &mut Config) {
     docs.max_chunks_per_document = docs
         .max_chunks_per_document
         .min(cap(MAX_CHUNKS_PER_DOC_ENV, DEFAULT_MAX_CHUNKS_PER_DOC));
-    if docs.extract_archives && !env_truthy(ALLOW_EXTRACT_ARCHIVES_ENV) {
-        docs.extract_archives = false;
-        super::trust::warn_once(format!(
-            "ignoring [documents] extract_archives = true from basemind.toml: archive expansion is operator-only \
-             in the daemon; set {ALLOW_EXTRACT_ARCHIVES_ENV}=1 in its environment to allow it"
-        ));
-    }
 
     config.watch.debounce_ms = config
         .watch
         .debounce_ms
         .max(cap_u64(MIN_DEBOUNCE_MS_ENV, DEFAULT_MIN_DEBOUNCE_MS));
-}
-
-fn env_truthy(name: &str) -> bool {
-    std::env::var(name).is_ok_and(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
 }
 
 /// Resolve a workspace's config for the daemon, mirroring the CLI's `load_or_default`: a missing
@@ -239,7 +226,6 @@ mod tests {
         MAX_EXTRACTION_SECS_ENV,
         MAX_CHUNKS_PER_DOC_ENV,
         MIN_DEBOUNCE_MS_ENV,
-        ALLOW_EXTRACT_ARCHIVES_ENV,
     ];
 
     use super::TEST_ENV_LOCK as ENV_LOCK;
@@ -286,7 +272,7 @@ mod tests {
             dir.path(),
             "[scan]\nmax_file_bytes = 9223372036854775807\n\
              [documents]\nmax_file_bytes = 9223372036854775807\nmax_pages = 4000000000\n\
-             extraction_timeout_secs = 999999\nphase_budget_secs = 999999\nmax_abandoned_extractions = 64\nmax_chunks_per_document = 4000000000\nextract_archives = true\n\
+             extraction_timeout_secs = 999999\nphase_budget_secs = 999999\nmax_abandoned_extractions = 64\nmax_chunks_per_document = 4000000000\n\
              [watch]\ndebounce_ms = 0\n",
         );
         let cfg = load_daemon(dir.path()).expect("load");
@@ -300,26 +286,21 @@ mod tests {
             DAEMON_MAX_ABANDONED_EXTRACTIONS
         );
         assert_eq!(cfg.documents.max_chunks_per_document, DEFAULT_MAX_CHUNKS_PER_DOC);
-        assert!(!cfg.documents.extract_archives);
         assert_eq!(cfg.watch.debounce_ms, DEFAULT_MIN_DEBOUNCE_MS);
     }
 
     #[test]
-    fn small_repo_values_and_the_archive_grant_are_kept() {
+    fn small_repo_values_are_kept() {
         let _g = ENV_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         clear_envs();
-        // SAFETY: ENV_LOCK is held; cleared again below.
-        unsafe { std::env::set_var(ALLOW_EXTRACT_ARCHIVES_ENV, "1") };
         let dir = tempfile::tempdir().expect("tempdir");
         write_toml(
             dir.path(),
-            "[scan]\nmax_file_bytes = 4096\n[documents]\nextract_archives = true\nmax_pages = 7\n",
+            "[scan]\nmax_file_bytes = 4096\n[documents]\nmax_pages = 7\n",
         );
         let cfg = load_daemon(dir.path()).expect("load");
-        clear_envs();
         assert_eq!(cfg.scan.max_file_bytes, 4096);
         assert_eq!(cfg.documents.max_pages, 7);
-        assert!(cfg.documents.extract_archives);
     }
 
     #[test]

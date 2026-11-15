@@ -563,7 +563,6 @@ fn process_doc(
         &hash,
         &mime_type,
         &config.documents,
-        &config.llm,
         &config.resources,
         filters,
         scope,

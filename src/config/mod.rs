@@ -124,6 +124,8 @@ pub fn load_with_overrides(
         },
     );
     validate_merged(&loaded.config)?;
+    // Again on the merged result: a `--llm-*` flag or `BASEMIND_LLM_*` variable sets `[llm]` too.
+    trust::warn_deprecated_sections(&loaded.config);
     Ok(loaded)
 }
 

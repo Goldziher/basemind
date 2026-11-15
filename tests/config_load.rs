@@ -235,3 +235,48 @@ fn an_unknown_table_is_still_rejected() {
     config::load_with_overrides(dir.path(), None, None).expect_err("unknown top-level table");
     config::daemon::load_daemon(dir.path()).expect_err("unknown top-level table");
 }
+
+#[test]
+fn settings_for_removed_document_capabilities_still_load_and_are_reported() {
+    let _env = no_grants();
+    let cfg = assert_loads_everywhere(
+        r#"
+[documents]
+extract_archives = true
+
+[documents.summarization]
+enabled = true
+strategy = "abstractive"
+
+[documents.ner]
+enabled = true
+backend = "llm"
+
+[llm]
+model = "openai/gpt-4o"
+api_key = { env = "OPENAI_API_KEY" }
+temperature = 0.2
+timeout_secs = 30
+max_retries = 2
+max_tokens = 512
+"#,
+    );
+    assert_eq!(
+        config::trust::deprecated_settings_set(&cfg),
+        vec!["documents.extract_archives", "documents.summarization.strategy", "llm"]
+    );
+    assert!(config::trust::deprecated_settings_set(&config::ConfigV1::with_defaults()).is_empty());
+    assert!(config::trust::deprecated_sections_set(&cfg).is_empty());
+}
+
+#[test]
+fn an_llm_override_flag_is_accepted_and_reported_as_deprecated() {
+    let _env = no_grants();
+    let dir = repo_with("");
+    let overrides = DocumentsCliOverrides {
+        llm_model: Some("openai/gpt-4o".to_string()),
+        ..DocumentsCliOverrides::default()
+    };
+    let loaded = config::load_with_overrides(dir.path(), None, Some(overrides)).expect("load");
+    assert_eq!(config::trust::deprecated_settings_set(&loaded.config), vec!["llm"]);
+}
