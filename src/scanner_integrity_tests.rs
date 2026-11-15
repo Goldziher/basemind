@@ -259,6 +259,68 @@ fn the_pass_after_an_unclean_shutdown_rebuilds_a_torn_blob() {
     assert_eq!(full_scan(root, &mut store).stats.skipped_unchanged, 1);
 }
 
+/// Naming a file in an incremental scan validates its blob, which makes "rescan this path" the
+/// repair for a damaged blob without a full pass: an ordinary pass would trust the blob for existing.
+#[test]
+fn rescanning_a_named_file_rebuilds_its_torn_blob() {
+    init_isolated_cache();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    let file = root.join("torn.rs");
+    std::fs::write(&file, b"pub fn named_torn_blob_fixture() -> u32 { 9 }\n").expect("write");
+    let mut store = Store::open(root, VIEW_WORKING).expect("open");
+    assert_eq!(full_scan(root, &mut store).stats.updated, 1);
+    let hash_hex = store.lookup("torn.rs").expect("entry").hash_hex.clone();
+    std::fs::write(store.blob_path_fm_hex(&hash_hex), b"").expect("tear the blob");
+
+    let report = crate::scanner::scan_paths(
+        root,
+        &mut store,
+        &ConfigV1::with_defaults(),
+        &[file],
+        EmbedMode::Deferred,
+    )
+    .expect("scan_paths");
+
+    assert_eq!(
+        report.stats.updated, 1,
+        "the torn blob is rebuilt, not trusted for existing"
+    );
+    assert!(store.read_l1_by_hex(&hash_hex).expect("read").is_some());
+}
+
+/// The request to verify blobs is withdrawn only by a pass that ran to the end: one that was
+/// cancelled validated some of the files, not all, and the next pass must still verify.
+#[test]
+fn a_cancelled_pass_leaves_the_blob_verification_owed() {
+    init_isolated_cache();
+    let dir = one_file_repo();
+    let root = dir.path();
+    let mut store = Store::open(root, VIEW_WORKING).expect("open");
+    full_scan(root, &mut store);
+    std::mem::forget(crate::scan_evidence::ScanBreadcrumb::begin_in(&store.basemind_dir, root).expect("crumb"));
+    let cancel = crate::scanner::ScanCancel::new();
+    cancel.cancel();
+
+    let report = crate::scanner::scan_with_cancel(
+        root,
+        &mut store,
+        &ConfigV1::with_defaults(),
+        ScanSource::WorkingTree,
+        EmbedMode::Deferred,
+        &cancel,
+    )
+    .expect("a cancelled pass returns");
+
+    assert!(report.cancelled);
+    assert!(
+        crate::scan_evidence::blobs_need_verifying(&store.basemind_dir),
+        "the request was withdrawn by a pass that did not finish"
+    );
+    full_scan(root, &mut store);
+    assert!(!crate::scan_evidence::blobs_need_verifying(&store.basemind_dir));
+}
+
 /// The rebuild empties `files` only. A process that died after writing that emptied file map left a
 /// store with no code files but its documents, which read as scanned, so an incremental scan
 /// indexed the given paths and nothing else. The pending rebuild is in the file map itself, and the
@@ -305,6 +367,38 @@ fn a_rebuild_interrupted_after_the_emptied_file_map_is_finished_by_an_incrementa
         .expect("file map");
     assert!(!on_disk.rebuild_pending, "the finished rebuild is recorded on disk");
     assert!(on_disk.rebuild_pins.is_empty(), "and its pins are released");
+}
+
+/// An open that cannot tell the rebuild is owed (a read-only one) leaves the answer to the file
+/// map, which records a pending rebuild, and to the flag an open sets when it finds an index it
+/// must not serve. Either asks the incremental entry points to hand over to a full pass.
+#[test]
+fn a_rebuild_owed_by_the_file_map_or_by_the_open_makes_every_scan_go_full() {
+    init_isolated_cache();
+    let dir = one_file_repo();
+    let root = dir.path();
+    {
+        let mut store = Store::open(root, VIEW_WORKING).expect("open");
+        full_scan(root, &mut store);
+        assert!(!needs_full_rebuild(&store).expect("asked"));
+        store.index.rebuild_pending = true;
+        store.flush().expect("flush");
+    }
+
+    let mut store = Store::open_read_only(root, VIEW_WORKING).expect("open read-only");
+    assert!(!store.index_rebuild_needed, "this open found nothing wrong");
+    assert!(store.index.rebuild_pending);
+    assert!(store.needs_full_scan(), "a pending rebuild in the file map");
+    assert!(
+        needs_full_rebuild(&store).expect("asked"),
+        "so does the incremental entry"
+    );
+
+    store.index.rebuild_pending = false;
+    assert!(!store.needs_full_scan() && !needs_full_rebuild(&store).expect("asked"));
+    store.index_rebuild_needed = true;
+    assert!(store.needs_full_scan(), "an open that refused to serve the index");
+    assert!(needs_full_rebuild(&store).expect("asked"));
 }
 
 /// A deleted file leaves the file map only once its index rows are gone: dropped over rows that
