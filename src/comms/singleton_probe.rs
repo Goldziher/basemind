@@ -10,7 +10,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use super::super::protocol::{CommsRequest, CommsResponse};
-use super::{PROBE_ATTEMPTS, PROBE_RETRY_BACKOFF, roundtrip};
+use super::{ENDPOINT_TIMEOUT, PROBE_ATTEMPTS, PROBE_RETRY_BACKOFF, roundtrip, roundtrip_within};
 
 /// What a serviceability probe found at a daemon's endpoint. Distinct from [`super::probe_alive`],
 /// which
@@ -113,7 +113,13 @@ impl StopOutcome {
 /// which discards the reply, this keeps the distinction that decides whether escalating to the pid
 /// is legitimate.
 pub fn request_stop_classified(socket_path: &Path) -> StopOutcome {
-    match roundtrip(socket_path, &CommsRequest::Stop) {
+    request_stop_within(socket_path, ENDPOINT_TIMEOUT)
+}
+
+/// [`request_stop_classified`] waiting up to `timeout` for the answer. For an operator's explicit
+/// stop, where a daemon slow to answer must not be mistaken for one that will never answer.
+pub fn request_stop_within(socket_path: &Path, timeout: Duration) -> StopOutcome {
+    match roundtrip_within(socket_path, &CommsRequest::Stop, timeout) {
         Some(CommsResponse::Ok) => StopOutcome::Accepted,
         Some(CommsResponse::Error { code, message }) => StopOutcome::Refused { code, message },
         Some(other) => StopOutcome::Refused {

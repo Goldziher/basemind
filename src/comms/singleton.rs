@@ -603,7 +603,9 @@ use takeover::Takeover;
 /// the same question as [`probe_alive`].
 #[path = "singleton_probe.rs"]
 mod probe;
-pub use probe::{DaemonProbe, StopOutcome, force_terminate, probe_serving, request_stop_classified};
+pub use probe::{
+    DaemonProbe, StopOutcome, force_terminate, probe_serving, request_stop_classified, request_stop_within,
+};
 
 /// Best-effort `Stop` request asking a daemon to drain and exit. Errors are ignored — the caller
 /// polls the socket to confirm the daemon actually went away. Public so `comms stop --all` can
@@ -621,8 +623,18 @@ pub fn request_stop(socket_path: &Path) {
 /// failed for every reply — which left [`daemon_status`] returning `None` and the version-gated
 /// takeover in [`ensure_daemon`] never firing against a live daemon.
 fn roundtrip(socket_path: &Path, req: &CommsRequest) -> Option<CommsResponse> {
+    roundtrip_within(socket_path, req, ENDPOINT_TIMEOUT)
+}
+
+/// How long [`roundtrip`] waits on each read and write: enough for a daemon that is serving, short
+/// enough that probing a wedged one does not stall bring-up.
+const ENDPOINT_TIMEOUT: Duration = Duration::from_millis(800);
+
+/// [`roundtrip`] with an explicit bound on each read and write, for a request whose answer is
+/// worth waiting for. Windows opens the pipe blocking and does not apply the bound.
+fn roundtrip_within(socket_path: &Path, req: &CommsRequest, timeout: Duration) -> Option<CommsResponse> {
     use std::io::{Read, Write};
-    let mut stream = open_endpoint(socket_path)?;
+    let mut stream = open_endpoint(socket_path, timeout)?;
     let body = rmp_serde::to_vec_named(req).ok()?;
     let len = u32::try_from(body.len()).ok()?;
     stream.write_all(&len.to_be_bytes()).ok()?;
@@ -641,17 +653,17 @@ fn roundtrip(socket_path: &Path, req: &CommsRequest) -> Option<CommsResponse> {
     }
 }
 
-/// Open the platform endpoint (Unix socket / Windows named pipe) with short read/write timeouts.
+/// Open the platform endpoint (Unix socket / Windows named pipe) with `timeout` on reads and writes.
 #[cfg(unix)]
-fn open_endpoint(socket_path: &Path) -> Option<impl std::io::Read + std::io::Write> {
+fn open_endpoint(socket_path: &Path, timeout: Duration) -> Option<impl std::io::Read + std::io::Write> {
     let stream = std::os::unix::net::UnixStream::connect(socket_path).ok()?;
-    let _ = stream.set_read_timeout(Some(Duration::from_millis(800)));
-    let _ = stream.set_write_timeout(Some(Duration::from_millis(800)));
+    let _ = stream.set_read_timeout(Some(timeout));
+    let _ = stream.set_write_timeout(Some(timeout));
     Some(stream)
 }
 
 #[cfg(windows)]
-fn open_endpoint(socket_path: &Path) -> Option<impl std::io::Read + std::io::Write> {
+fn open_endpoint(socket_path: &Path, _timeout: Duration) -> Option<impl std::io::Read + std::io::Write> {
     std::fs::OpenOptions::new()
         .read(true)
         .write(true)

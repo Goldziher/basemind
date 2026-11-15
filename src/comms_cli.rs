@@ -363,14 +363,8 @@ fn cmd_comms_lifecycle_rpc(rpc: CommsRpc, json: bool) -> Result<()> {
                         // A daemon from another build fails the handshake before `Stop` is ever
                         // sent, yet stopping it is what the takeover errors tell the operator to
                         // do. Ask without the handshake; its answer is honoured the same way. ~keep
-                        if matches!(error, basemind::comms::client::CommsClientError::ProtoSkew { .. }) {
-                            return match singleton::request_stop_classified(&paths.socket_path) {
-                                singleton::StopOutcome::Accepted => Ok(StopVerdict::Accepted),
-                                singleton::StopOutcome::Refused { code, message } if code != "store_error" => {
-                                    Err(anyhow::anyhow!("stop: daemon refused [{code}]: {message}"))
-                                }
-                                _ => Ok(StopVerdict::Reclaimable),
-                            };
+                        if is_proto_skew(&error) {
+                            return stop_without_handshake(&paths.socket_path);
                         }
                         if !is_broken_store_error(&error) {
                             return Err(anyhow::anyhow!("stop: {error}"));
@@ -439,10 +433,16 @@ fn cmd_comms_lifecycle_rpc(rpc: CommsRpc, json: bool) -> Result<()> {
     // Confirm the daemon for THIS comms dir actually went away, escalating to its pid if it did not.
     // `asked_to_stop` only records whether the RPC was accepted — a daemon can accept a Stop and
     // still be wedged before it reaches the drain, so the pid is the thing worth verifying. ~keep
-    let ours: Vec<_> = basemind::daemon_lock::live_daemons_of(basemind::daemon_lock::DaemonKind::Comms)
-        .into_iter()
-        .filter(|record| record.dir == comms_dir)
-        .collect();
+    let ours: Vec<_> = if verdict == StopVerdict::Silent {
+        // Nothing was established over the wire, so only the process this generation's pidfile
+        // names may be terminated.
+        basemind::daemon_lock::recorded_holder(&comms_dir).into_iter().collect()
+    } else {
+        basemind::daemon_lock::live_daemons_of(basemind::daemon_lock::DaemonKind::Comms)
+            .into_iter()
+            .filter(|record| record.dir == comms_dir)
+            .collect()
+    };
     let forced = reclaim_unresponsive(&ours);
     let accepted = verdict == StopVerdict::Accepted;
     if json {
@@ -791,6 +791,41 @@ enum StopVerdict {
     Accepted,
     /// Nothing answered, or the answer proved the store is broken.
     Reclaimable,
+    /// A daemon on another protocol version answered neither `Stop` nor `Ping`.
+    Silent,
+}
+
+/// Whether the handshake failed because the daemon speaks another protocol version. A daemon
+/// answers a mismatched `Hello` with a `proto_skew` error, which reaches the client as a broker
+/// error; `ProtoSkew` is the client's own check of a `Welcome` and covers a daemon that sent one.
+#[cfg(all(feature = "comms", any(unix, windows)))]
+fn is_proto_skew(error: &basemind::comms::client::CommsClientError) -> bool {
+    use basemind::comms::client::CommsClientError;
+    match error {
+        CommsClientError::ProtoSkew { .. } => true,
+        CommsClientError::Broker { code, .. } => code == "proto_skew",
+        _ => false,
+    }
+}
+
+/// Ask a daemon that refused the handshake to stop, by the takeover rules: its refusal is final,
+/// and it is reclaimable by pid only when it answers neither `Stop` nor `Ping`. The answer is
+/// awaited for the full [`STOP_RPC_TIMEOUT`]: a daemon slow to answer is still serving sessions.
+#[cfg(all(feature = "comms", any(unix, windows)))]
+fn stop_without_handshake(socket_path: &std::path::Path) -> Result<StopVerdict> {
+    use basemind::comms::singleton::{self, StopOutcome};
+
+    match singleton::request_stop_within(socket_path, STOP_RPC_TIMEOUT) {
+        StopOutcome::Accepted => Ok(StopVerdict::Accepted),
+        StopOutcome::Refused { code, .. } if code == "store_error" => Ok(StopVerdict::Reclaimable),
+        StopOutcome::Refused { code, message } => Err(anyhow::anyhow!("stop: daemon refused [{code}]: {message}")),
+        StopOutcome::Unreachable if singleton::probe_alive(socket_path) => Err(anyhow::anyhow!(
+            "stop: the daemon did not answer the stop request within {}s but still answers pings, \
+             so it was left running; retry, or terminate its process yourself if it is stuck",
+            STOP_RPC_TIMEOUT.as_secs()
+        )),
+        StopOutcome::Unreachable => Ok(StopVerdict::Silent),
+    }
 }
 
 /// Whether a failed `Stop` came back as the broker's `store_error` — the one refusal that is not a
