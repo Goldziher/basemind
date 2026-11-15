@@ -174,11 +174,19 @@ async fn git_log_of_a_directory_says_when_its_window_was_exhausted() {
         "one commit fits the window: {recent}"
     );
 
-    for round in 0..205 {
+    for round in 0..199 {
         std::fs::write(root.join("src/churn.rs"), format!("pub const ROUND: u32 = {round};\n")).unwrap();
         git(root, &["add", "-A"]);
         git(root, &["commit", "-qm", "churn"]);
     }
+    let exact = call(&client, "git_log", json!({ "path": "src/", "limit": 5 })).await;
+    assert!(
+        exact.get("truncated").is_none(),
+        "200 commits fill the window exactly and nothing lies beyond it: {exact}"
+    );
+
+    std::fs::write(root.join("src/churn.rs"), "pub const ROUND: u32 = 1000;\n").unwrap();
+    git(root, &["commit", "-qam", "one past the window"]);
 
     let windowed = call(&client, "git_log", json!({ "path": "src/", "limit": 5 })).await;
     assert_eq!(windowed["truncated"], true, "{windowed}");

@@ -429,16 +429,22 @@ pub(super) fn run_by_path(state: &ServerState, params: FindCommitsByPathParams) 
         None => 0,
     };
 
-    let commits: Vec<CommitInfo> = match git_history_if_fresh(state, &head) {
-        Some(index) => index.window_commits(window as usize),
+    // One commit past the window is asked for, only to learn whether history continues beyond it.
+    let probe = window.saturating_add(1);
+    let mut commits: Vec<CommitInfo> = match git_history_if_fresh(state, &head) {
+        Some(index) => index.window_commits(probe as usize),
         None => state
             .shared
             .git_cache
-            .log(repo, &head, None, window, true)
+            .log(repo, &head, None, probe, true)
             .map_err(|e| McpError::internal_error(format!("log: {e}"), None))?
             .as_ref()
             .clone(),
     };
+    // History older than the window was never inspected: "no more commits" then only describes the
+    // window, and the response has to say so. A history that ends exactly at the window is whole.
+    let window_exhausted = commits.len() > window as usize;
+    commits.truncate(window as usize);
 
     let mut hits: Vec<CommitView> = Vec::new();
     let mut seen: usize = 0;
@@ -461,9 +467,6 @@ pub(super) fn run_by_path(state: &ServerState, params: FindCommitsByPathParams) 
     let (hits, budgeted) = budget_commits(hits, params.max_tokens);
     let has_more = has_more || budgeted;
     let next_cursor = has_more.then(|| super::cursor::Cursor::encode_in_memory((skip + hits.len()) as u64, snapshot));
-    // A full window means history older than it was never inspected: "no more commits" then only
-    // describes the window, and the response has to say so.
-    let window_exhausted = commits.len() >= window as usize;
     json_result(&FindCommitsByPathResponse {
         pattern: params.pattern,
         window_inspected: window,
