@@ -201,7 +201,9 @@ stops a scan cleanly: work already committed is kept.
 - Every line number is 1-based. `symbols` ranks the exact name, then prefix, then substring, then
   (with `--fuzzy`) fuzzy matches; `refs` matches the identifier exactly (`bar` matches `Foo::bar()`
   and `bar()`, not `bar_baz()`) unless `--match substring`; `callers` pins one definition and marks
-  the hits it proves `resolved`, or reports that resolution is unsupported for the language.
+  the hits it proves `resolved`, or reports why it cannot (no resolution for the language, or no
+  resolution facts for the file). `callers`, `read --symbol`, `git blame --symbol` and
+  `git log --symbol` take `--line` to pick one of several same-named definitions.
 - `outline` on a markdown/config/data file reports that it is a document; use `memory documents`.
 - An unknown flag is a usage error (exit 2). `--format toon`, `--l2`, `--path-contains`,
   `--no-context` and `--line-start` / `--line-end` no longer exist.

@@ -72,7 +72,7 @@ structural answer costs a fraction of the tokens of reading source.
   skips the comment, string and test-name noise.
 - **`code_refs` instead of grepping call sites.** Indexed call edges, not text matches.
 - **`code_grep` instead of shelling out to ripgrep.** The pattern is literal text unless you pass
-  `"regex":true`; every hit carries the full line and the enclosing symbol.
+  `"regex":true`; every hit carries its line and the enclosing symbol.
 - **`index_rescan` after you edit code**, not a server reconnect. Pass `paths` to limit it to the
   files you touched.
 - **Do not re-read a file basemind already mapped.** If the outline answered the question, stop.
@@ -186,10 +186,17 @@ A 1000-line file becomes a 30-line table of contents.
 - `code_refs {"name":"bar"}` matches the identifier exactly, with no scope resolution: `Foo::bar()`
   and `bar()` are calls to `bar`, `bar_baz()` is not. `"match":"substring"` widens it. Add `path` to
   pin one definition: the response names that `definition` and marks the hits it proves `resolved`
-  (`resolved_total`), or says `resolution: "unsupported for <language>"` and marks none.
+  (`resolved_total`), or says why it marks none: `resolution` is `unsupported for <language>` or
+  `no resolution facts for this file`. A missing file or symbol is an error, and so is a name that
+  several definitions in the file share, until you add `line` (any line inside the one you mean).
 - `code_search` reports which retrieval lanes ran (`lanes_ran`) and which could not, with the
   reason (`lanes_unavailable`).
-- `code_grep`'s `path` is a substring of the repo-relative path; a glob is rejected.
+- `code_grep`'s `path` is a literal substring of the repo-relative path, never a glob.
+- A cursor continues only the call that returned it, with the same arguments apart from `limit`
+  and `max_tokens`. On another query, or after a rescan or a new commit, the call is an error:
+  repeat it without `cursor`.
+- A scalar sent as a string (`"limit":"10"`, `"regex":"true"`) is accepted; any other type error
+  names the field.
 - `code_outline`, `code_symbols` and `code_grep` cover code only. A markdown or config/data file is
   a document: `find_files` lists it, `docs_search` searches its contents, `code_read` with a line
   span reads it.

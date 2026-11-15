@@ -64,17 +64,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   Contract changes:
 
-  - The tools are always loaded (`_meta["anthropic/alwaysLoad"]: true`), so a host that defers MCP tools
-    needs no tool-search round trip. `tools/list` for them is about 17 KB (about 4.2k tokens), down from
-    about 25 KB (about 6.3k tokens) for the four tools they replace; a test enforces a 20,000-byte ceiling.
+  - The 15 tools are always loaded (`_meta["anthropic/alwaysLoad"]: true`), so a host that defers MCP
+    tools needs no tool-search round trip; `agents` and `workspace` are not marked and stay deferred
+    (ADR-0020). `tools/list` for the 15 is about 18 KB (about 4.5k tokens), down from about 25 KB (about
+    6.3k tokens) for the four tools they replace; a test enforces a 20,000-byte ceiling. No tool declares
+    an output schema.
   - Required arguments are required in the schema, and an unknown argument is rejected with a did-you-mean
-    suggestion and the accepted list. The hidden aliases (`q`, `needle`, `token_budget`) and the `format`
-    argument (`"toon"`) are gone.
-  - `code_grep` treats `pattern` as literal text unless `regex: true`; `path` replaces `path_contains` and
-    `context` (default off) replaces `include_context`.
+    suggestion and the accepted list. A stringified integer or boolean (`"limit": "10"`) is coerced; any
+    other type error names the field, and every problem with a call is reported in one message. The
+    hidden aliases (`q`, `needle`, `token_budget`) and the `format` argument (`"toon"`) are gone, and
+    `[documents.output] format = "toon"` no longer applies to these tools.
+  - `code_grep` treats `pattern` as literal text unless `regex: true`; `path` replaces `path_contains`
+    and is always a literal substring, and `context` (default off) replaces `include_context`. A hit on
+    a line over 400 bytes shows a window around the match.
+  - A path argument is read from the working tree only when it is indexed and stays inside the
+    repository: an absolute path, a `..` component and a symlink pointing outside are refused.
+  - A cursor is bound to the call that returned it. Passed to another query, or used after a rescan or
+    a new commit, it is an error telling the caller to repeat the call without `cursor`; no tool
+    answers a stale cursor with an empty page (`cursor_invalidated` is gone).
   - Every position is 1-based: `line`, `end_line` and `column`, in arguments and responses. The 0-based
     `start_row` is gone.
   - `code_refs` matches the whole identifier; `match: "substring"` restores the previous matching.
+    `relation: "importers"` matches whole segments of an import (`os` is not `posixpath`). With `path`, a
+    file that is not indexed or defines no such symbol is an error, and a name several definitions in
+    the file share is an error listing each with its lines until `line` picks one; `code_read`,
+    `git_blame` and `git_log` with `symbol` take the same `line`. `resolution` tells a language without
+    resolution (`unsupported for <language>`) from a file that bound nothing
+    (`no resolution facts for this file`).
   - Every list takes `limit` and `cursor`, returns `next_cursor`, and honours a default `max_tokens` budget
     of 6000, setting `budgeted` when it trims.
   - A failure the caller can fix is a tool result with `isError: true` that names the fix, not a JSON-RPC
@@ -82,8 +98,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Results are inline. `index_rescan`, `code_search` and `docs_search` become a server-side Task only when
     still running after 3 s.
   - `git_diff` with no arguments returns the working-tree status, and with only `path` diffs that file's
-    working tree against HEAD; `from` / `to` replace `rev_old` / `rev_new`. `git_blame` takes `line` /
-    `end_line` in place of `line_start` / `line_end`.
+    working tree against HEAD; `from` / `to` replace `rev_old` / `rev_new`. A diff is cut at 200 hunks or
+    128 KiB of hunk text and then sets `truncated` and `total_hunks`; a binary file reports `binary`.
+    `git_blame` takes `line` / `end_line` in place of `line_start` / `line_end`, returns 100 hunks per
+    page by default and honours `max_tokens`.
+  - `git_log` matches `query` against the commit message and `author` against the author, each on its
+    own field. A directory `path` reports `truncated` when its 200-commit window was used up.
+  - `memory_save` reports `embedded`. When the note cannot be embedded the save still succeeds, with a
+    `notice`, instead of answering with an error after the write.
+  - A call rejected because the server is at its limit of heavy calls is an `isError` result
+    (`server_busy`) that says to retry, not a JSON-RPC error.
   - `docs_search` takes `entity` and `keywords` in place of `entity_category` and `keywords_contains`.
   - Annotations are exact per tool: everything is read-only except `memory_save` and `index_rescan`, and
     nothing is destructive.

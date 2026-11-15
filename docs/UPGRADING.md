@@ -15,8 +15,8 @@ and `workspace` are unchanged. The plugin's skills, commands, hooks and rules sh
 release and the plugin downloads the matching binary, so update both together.
 
 The tools are always loaded (`_meta["anthropic/alwaysLoad"]: true`): a host that defers MCP tools
-needs no tool-search round trip, so call them directly. `tools/list` for them is about 17 KB (about
-4.2k tokens), down from about 25 KB (about 6.3k tokens) for the four tools they replace.
+needs no tool-search round trip, so call them directly. `tools/list` for them is about 18 KB (about
+4.5k tokens), down from about 25 KB (about 6.3k tokens) for the four tools they replace.
 
 ### Tool mapping
 
@@ -62,7 +62,7 @@ needs no tool-search round trip, so call them directly. `tools/list` for them is
 
 | Old | New | Where |
 | --- | --- | --- |
-| `path_contains` | `path` | `code_grep` (still a substring of the repo-relative path; a glob is rejected) |
+| `path_contains` | `path` | `code_grep` (still a literal substring of the repo-relative path, never a glob) |
 | `path_contains` | `path_prefix` | `find_files` (now a prefix) |
 | `include_context` | `context` | `code_grep` (default off) |
 | `line_start` / `line_end` | `line` / `end_line` | `git_blame` |
@@ -198,14 +198,14 @@ token in the `Authorization` header only: `?token=` is refused.
 The `documents` cargo feature was split into tiers. `documents` is document search without OCR or
 named-entity recognition; `documents-ocr` adds Tesseract OCR (raster images and PDFs with no text
 layer) and `documents-ner` adds ONNX named-entity recognition (`[documents.ner]` and the
-`entity_category` filter). `full` includes all three, so the published binaries are unchanged except
+`entity` filter of `docs_search`). `full` includes all three, so the published binaries are unchanged except
 that they no longer contain PaddleOCR, which is the source-only `documents-ocr-paddle` feature. A
 source build that used `--features documents` needs
 `--features "documents documents-ocr documents-ner"` (or `full`) to keep OCR and NER. Without
 `documents-ocr`, raster images are not indexed as documents and a PDF with no text layer is indexed
 with no text, with a warning naming the file and the feature; without `documents-ner`,
-`[documents.ner] enabled = true` logs a warning and has no effect, and a search with
-`entity_category` returns an error. A build with both tiers keeps its cached documents. A build
+`[documents.ner] enabled = true` logs a warning and has no effect, and `docs_search` with
+`entity` returns an error. A build with both tiers keeps its cached documents. A build
 missing a tier extracts every document again on its first scan, and so does the first scan after
 switching to a binary with a different set of tiers.
 

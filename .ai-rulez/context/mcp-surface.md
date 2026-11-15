@@ -24,15 +24,15 @@ from prose. A `comms` build adds two tools that are still mode-dispatched, `agen
 |---|---|---|
 | `code_outline` | `path`, `limit?`, `cursor?`, `max_tokens?` | a file's symbols (kind, signature, 1-based `line` / `end_line`) and imports |
 | `code_symbols` | `name`, `kind?`, `fuzzy?`, `limit?`, `cursor?`, `max_tokens?` | find a definition by name; ranked exact, prefix, substring, then (with `fuzzy`) fuzzy subsequence; each row carries `match` |
-| `code_read` | `path`, then `symbol?` (+ `kind?`) or `line?` + `end_line?` | one symbol's body, or a 1-based inclusive line span; cut at 128 KiB |
-| `code_grep` | `pattern`, `regex?`, `path?`, `language?`, `context?`, `limit?`, `cursor?`, `max_tokens?` | text search over indexed code; literal unless `regex`; `path` is a substring, a glob is rejected; a hit is the full line `text` (cut at 400 bytes) plus the enclosing `symbol` |
+| `code_read` | `path`, then `symbol?` (+ `line?` / `kind?` when several share the name) or `line?` + `end_line?` | one symbol's body, or a 1-based inclusive line span; cut at 128 KiB |
+| `code_grep` | `pattern`, `regex?`, `path?`, `language?`, `context?`, `limit?`, `cursor?`, `max_tokens?` | text search over indexed code; literal unless `regex`; `path` is a literal substring, never a glob; a hit is its line `text` (a line over 400 bytes is cut around the match) plus the enclosing `symbol` |
 | `code_search` | `query`, `lane?`, `limit?`, `cursor?`, `max_tokens?` | search code by meaning; returns pointers, not bodies; reports `lanes_ran` and `lanes_unavailable` (lane + reason) |
-| `code_refs` | `name`, `relation?`, `path?`, `line?`, `column?`, `match?`, `limit?`, `cursor?`, `max_tokens?` | usages: call sites of a name, callers of one definition (`path`: returns `definition` and `resolved_total` + per-hit `resolved`, or `resolution: "unsupported for <language>"`), `implementations`, `importers`, or the `definition` a reference binds to; `match` is `exact` (default: the identifier is the name, or a qualified path ending in it) or `substring` |
+| `code_refs` | `name`, `relation?`, `path?`, `line?`, `column?`, `match?`, `limit?`, `cursor?`, `max_tokens?` | usages: call sites of a name, callers of one definition (`path`: returns `definition` and `resolved_total` + per-hit `resolved`, or a `resolution` note: `unsupported for <language>` / `no resolution facts for this file`; add `line` when several definitions share the name), `implementations`, `importers`, or the `definition` a reference binds to; `match` is `exact` (default: the identifier is the name, or a qualified path ending in it) or `substring` |
 | `find_files` | `query?`, `path_prefix?`, `language?`, `limit?`, `cursor?`, `max_tokens?` | fuzzy file-name search, or a listing without `query`; code and documents |
 | `docs_search` | `query`, `mime_type?`, `keywords?`, `entity?`, `scope?`, `limit?`, `cursor?`, `max_tokens?` | semantic search over indexed documents |
-| `git_log` | `path?`, `query?`, `author?`, `symbol?`, `rev?`, `limit?`, `cursor?`, `max_tokens?` | recent commits, a path's history, a commit search, a symbol's history, or one commit |
-| `git_blame` | `path`, `line?` + `end_line?`, `symbol?`, `rev?`, `limit?`, `cursor?` | per-line authorship of a file, a span, or one symbol |
-| `git_diff` | `path?`, `from?`, `to?`, `structural?` | no arguments: working-tree status; `path`: that file's diff (`from` defaults to HEAD, `to` to the working tree); `structural`: symbols added and removed since `from`, no `to` |
+| `git_log` | `path?`, `query?`, `author?`, `symbol?`, `line?`, `rev?`, `limit?`, `cursor?`, `max_tokens?` | recent commits, a path's history, a commit search (`query` on the message, `author` on the author), a symbol's history, or one commit |
+| `git_blame` | `path`, `line?` + `end_line?`, `symbol?`, `rev?`, `limit?`, `cursor?`, `max_tokens?` | per-line authorship of a file, a span, or one symbol |
+| `git_diff` | `path?`, `from?`, `to?`, `structural?` | no arguments: working-tree status; `path`: that file's diff (`from` defaults to HEAD, `to` to the working tree); `structural`: symbols added and removed since `from`, no `to`; at most 200 hunks, then `truncated`; `binary` for a binary file |
 | `memory_save` | `key`, `value`, `tags?`, `visibility?` | write a durable note |
 | `memory_search` | `query?` or `key?` or `prefix?`, `tag?`, `visibility?`, `limit?`, `cursor?` | recall notes by meaning, by key, or by key prefix |
 | `index_status` | none | index health and repository identity (files per language, scan state, `cache_dir` for this workspace, `grammar_dir`, branch, HEAD) |
@@ -50,23 +50,38 @@ Off the MCP surface and reachable only from the CLI: `git churn`, `git by-path <
 
 - **Exact arguments.** Each params struct is `deny_unknown_fields` and deserialized through
   `Strict<T>` (`src/mcp/strict.rs`): an argument the tool does not take is refused with a
-  did-you-mean and the accepted list, never silently dropped. A field is optional only when the
-  tool runs without it. "Exactly one of" constraints cannot be stated in the flat schema subset
-  and are checked in the body.
+  did-you-mean and the accepted list, never silently dropped. A stringified integer or boolean is
+  coerced; any other type error names the field, and unknown keys, type errors and missing fields
+  are reported in one message. A field is optional only when the tool runs without it. "Exactly
+  one of" constraints cannot be stated in the flat schema subset and are checked in the body; each
+  is also a clause on the field's doc.
 - **Paths and positions.** `path` is a `RelPath` (repo-relative, forward slashes); do not accept an
-  arbitrary `String` path. `line`, `end_line` and `column` are 1-based.
+  arbitrary `String` path. `RelPath` does not normalise, so a body that reads the working tree goes
+  through `tool_contract::working_file` / `indexed_file`, which refuse an absolute path, a `..`
+  component and a symlink leaving the repository, and consults the index before reading. `line`,
+  `end_line` and `column` are 1-based; a position the index does not hold is omitted, never 0.
 - **Lists.** Every list takes `limit` and `cursor` and returns `next_cursor`. A list is trimmed to
   a default budget of 6000 tokens (`DEFAULT_MAX_TOKENS`) and then sets `budgeted`. Index scans
   stay bounded by a scan cap and report `total_is_partial`.
+- **Cursors are bound to their query.** Every paginated `*_call` runs its body through
+  `cursor_bind::bound`, which prefixes `next_cursor` with a hash of the tool name and the
+  list-selecting arguments. A cursor passed to another query, or one that outlived its index or
+  HEAD, is an `isError` result telling the agent to call again without `cursor`; no tool answers a
+  stale cursor with an empty page.
+- **Pinned symbols.** `code_refs` with `path`, `code_read`, `git_blame` and `git_log` with `symbol`
+  resolve the name through `helpers_pick::pick_symbol`: a missing file or symbol is an error, and a
+  name several definitions share is an error listing each with its line span until `line` picks one.
 - **Failures are results.** `BasemindServer::answer` (`src/mcp/tool_contract.rs`) turns an `McpError`
-  returned by a tool body into a tool result with `isError: true` whose text names the fix. JSON-RPC
-  errors are left to the protocol layer.
+  returned by a tool body into a tool result with `isError: true` whose text names the fix. An
+  overloaded server answers the same way (`server_busy`, retry). JSON-RPC errors are left to the
+  protocol layer.
 - **Notices.** An empty index is never a plain empty result: the response carries a `notice`
   (`empty_index`, `warming_up`, `building_index`, `rescanning`).
 - **Inline results.** A server-side Task is used only for a call still running after the threshold
   (`tasks::SLOW_CALLS`: `index_rescan`, `code_search`, `docs_search`).
-- **Always loaded.** `finalize_router` stamps `_meta["anthropic/alwaysLoad"]: true` on every tool,
-  so a host that defers MCP tools still loads the schemas at session start.
+- **Always loaded.** `finalize_router` stamps `_meta["anthropic/alwaysLoad"]: true` on the verb
+  tools, so a host that defers MCP tools still loads their schemas at session start. `agents` and
+  `workspace` are not marked and stay deferred (ADR-0020).
 - **Descriptions.** Each opens with "Use …", states the contract, and ends with one
   `Example: {…}` call. Field docs are one clause each.
 - **Annotations are exact per tool.** Everything is read-only except `memory_save` and

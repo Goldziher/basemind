@@ -55,8 +55,8 @@ about your code costs a small fraction of the tokens it takes to read the source
 
 The code, git, memory, document and index rows are 15 tools, one per job, each with its own exact
 schema; there is no `mode` argument. They are always loaded (`_meta["anthropic/alwaysLoad"]`), so a host that defers MCP tools
-needs no tool-search round trip: call them directly. Their `tools/list` entry is about 17 KB (about
-4.2k tokens). `agents` and `workspace` (`comms` builds) still take a `mode`. An unknown argument is
+needs no tool-search round trip: call them directly. Their `tools/list` entry is about 18 KB (about
+4.5k tokens). `agents` and `workspace` (`comms` builds) still take a `mode` and are not always loaded. An unknown argument is
 rejected with a did-you-mean suggestion, every line number is 1-based, and a failure the caller can
 fix comes back as an `isError` result that names the fix. Arguments, examples and the mapping from
 the previous `code` / `git` / `memory` / `admin` tools: the
@@ -352,7 +352,7 @@ A source build picks its document tiers by Cargo feature:
 |---|---|---|
 | `documents` | Document search over local files: PDF (text layer), Office formats, spreadsheets, email, HTML, XML (SVG text is read as XML), Markdown/MDX and Jupyter notebooks, with chunking, language detection, quality scoring, keywords, extractive summaries, the cross-encoder reranker and embeddings. No OCR, no NER. | yes |
 | `documents-ocr` | `documents` plus Tesseract OCR: raster images and scanned PDFs (no text layer). Runs implicitly, no configuration. | yes |
-| `documents-ner` | `documents` plus ONNX named-entity recognition (GLiNER): `[documents.ner]` and the `entity_category` search filter. | yes |
+| `documents-ner` | `documents` plus ONNX named-entity recognition (GLiNER): `[documents.ner]` and the `entity` filter of `docs_search`. | yes |
 | `documents-ocr-paddle` | `documents-ocr` plus PaddleOCR as an optional fallback stage. Source builds only. | no |
 
 <!-- markdownlint-enable MD013 -->
@@ -361,8 +361,8 @@ A source build picks its document tiers by Cargo feature:
 `--features "documents documents-ocr documents-ner"` (or `full`) to keep both. Without
 `documents-ocr`, raster images are not indexed as documents and a PDF with no text layer is indexed
 with no text, with a warning naming the file and the feature. Without `documents-ner`,
-`[documents.ner] enabled = true` has no effect and logs a warning, and a document search with
-`entity_category` returns an error naming the feature.
+`[documents.ner] enabled = true` has no effect and logs a warning, and `docs_search` with
+`entity` returns an error naming the feature.
 
 ### Get started
 

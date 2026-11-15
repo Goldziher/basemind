@@ -309,10 +309,10 @@ Key invariants:
   spreadsheets, email, HTML, XML, Markdown/MDX and Jupyter notebooks, with keywords, extractive
   summaries, the reranker and embeddings. `documents-ocr` adds Tesseract OCR (raster images, PDFs
   with no text layer), `documents-ner` adds ONNX named-entity recognition (`[documents.ner]`, the
-  `entity_category` filter), and `documents-ocr-paddle` adds PaddleOCR as a fallback stage for source
+  `entity` filter of `docs_search`), and `documents-ocr-paddle` adds PaddleOCR as a fallback stage for source
   builds. `full` enables the first three. Without `documents-ocr` a raster image is skipped like a
-  binary and a PDF with no text layer is indexed empty with a warning; without `documents-ner` an
-  `entity_category` search is an error and `[documents.ner] enabled = true` logs a warning. Archive
+  binary and a PDF with no text layer is indexed empty with a warning; without `documents-ner` a
+  `docs_search` with `entity` is an error and `[documents.ner] enabled = true` logs a warning. Archive
   extraction and the LLM-backed summarization and NER backends are not compiled into any build.
   Source: `src/extract/doc_tiers.rs`.
 - **Bounded scan** — per-file results are streamed to the index in chunks (`scanner_drive.rs`), never
@@ -586,7 +586,8 @@ Contract of the 15 tools (`src/mcp/tool_contract.rs`, `src/mcp/strict.rs`):
 - **Exact arguments.** Each tool has its own `deny_unknown_fields` struct with required fields
   required in the schema. Arguments are deserialized through `Strict<T>`, which never fails at the
   protocol layer: an unknown key is answered with a did-you-mean suggestion and the accepted list, not
-  dropped. "Exactly one of" constraints cannot be stated in the flat schema subset hosts accept
+  dropped. A stringified integer or boolean (`"limit":"10"`) is coerced; any other type error names
+  the field. "Exactly one of" constraints cannot be stated in the flat schema subset hosts accept
   (`tests/mcp_schema_wire.rs` forbids `$ref` / `$defs` / `oneOf` / `anyOf` / `allOf`) and are checked
   in the tool body.
 - **Positions.** `path` is a `RelPath` (byte-precise, repo-relative, forward slashes). `line`,
@@ -604,11 +605,19 @@ Contract of the 15 tools (`src/mcp/tool_contract.rs`, `src/mcp/strict.rs`):
   `index_rescan`, `code_search` and `docs_search` run on their own task and are handed to the task
   manager only when still running after 3 s (`TASK_THRESHOLD` in `src/mcp/tasks.rs`); until then the
   answer is an ordinary `tools/call` result.
-- **Always loaded.** Every definition carries `_meta["anthropic/alwaysLoad"]: true`, so a host that
-  defers MCP tools loads the schemas at session start and no tool-search round trip is needed.
+- **Always loaded.** Every verb-tool definition carries `_meta["anthropic/alwaysLoad"]: true`, so a
+  host that defers MCP tools loads the schemas at session start and no tool-search round trip is
+  needed. `agents` and `workspace` are not marked and stay deferred
+  ([ADR-0020](adr/0020-verb-tool-contract-amendments.md)).
+- **Cursors.** A `next_cursor` is bound to the query that issued it (`src/mcp/cursor_bind.rs`): the
+  tool name and the arguments that select the list, hashed. Passed to another query, or used after
+  the index or HEAD moved, it is an `isError` result saying to call again without `cursor`.
+- **Paths.** A caller-supplied path is read from the working tree only after it is found in the
+  index and shown to stay inside the repository (`tool_contract::working_file`): an absolute path, a
+  `..` component and a symlink pointing outside are refused.
 - **Annotations.** Exact per tool: everything is read-only except `memory_save` and `index_rescan`,
   and nothing is destructive. No `output_schema`.
-- **Size.** `tools/list` for the 15 tools is about 17 KB (about 4.2k tokens), down from about 25 KB
+- **Size.** `tools/list` for the 15 tools is about 18 KB (about 4.5k tokens), down from about 25 KB
   (about 6.3k tokens) for the four domain tools they replace. `tests/mcp_schema_wire.rs` enforces a
   20,000-byte ceiling; a description that pushes past it is shortened, the ceiling is not raised.
 - **Descriptions.** Each description says when to use the tool and carries one example call; field

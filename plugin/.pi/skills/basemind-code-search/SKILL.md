@@ -9,8 +9,8 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:b0ed7b27ebeb26e03bf7b9d92afbb35b9527246c90a44c5ccd408e80e624cdab
-Source-Hash: blake3:cedfa4bf6ba470275f00d362ebb8180f60f5812f1912dd7ea32768d91fd82ba9
+Content-Hash: blake3:5959bbd9ca3e5f513955d04b0ab6a2f73f06e6660ef661901565e442ea269e3c
+Source-Hash: blake3:61c3cc3336814057f9f3f504f4c447200806568f8e8e32a331a19bd3694a87a4
 Schema-Version: v1
 -->
 
@@ -35,7 +35,7 @@ no tool covers the question.
   the comment, string and test-name noise.
 - **`code_refs` instead of grepping call sites.** Indexed call edges, not text matches.
 - **`code_grep` instead of shelling out to ripgrep.** It sweeps every indexed code file (a trigram
-  filter skips files that cannot match) and returns each hit's full line and enclosing symbol.
+  filter skips files that cannot match) and returns each hit's line and enclosing symbol.
 - **Do not re-read a file basemind already mapped.** If the outline answered the question, stop.
 - **`index_rescan` after you edit code**, not a server reconnect. Pass `paths` to limit it.
 
@@ -90,8 +90,9 @@ code_outline {"path":"src/mcp/tools.rs"}
   not both. Bodies over 128 KiB are cut and flagged `truncated`.
 - `code_outline` omits `imports` when the file has none.
 - `code_grep`: `pattern` is literal text unless `"regex":true`. `path` is a substring of the
-  repo-relative path, and a glob is rejected. A hit is `path`, `line`, `column`, `text` (the full
-  matching line, cut at 400 bytes) and `symbol` (`name`, `kind` of the innermost enclosing symbol);
+  repo-relative path, never a glob. A hit is `path`, `line`, `column`, `text` (the matching line; one
+  over 400 bytes is cut to a window around the match, `…` marking each cut side) and `symbol`
+  (`name`, `kind` of the innermost enclosing symbol; absent for a file edited since it was indexed);
   `"context":true` adds `context_before` / `context_after`. The response echoes `pattern` and
   `regex`. It never caps files, so `total_matches` is exact.
 - `code_symbols` ranks the exact name first, then prefix, then substring; `"fuzzy":true` adds fuzzy
@@ -101,8 +102,12 @@ code_outline {"path":"src/mcp/tools.rs"}
   and `bar()` are calls to `bar`, `bar_baz()` is not. `"match":"substring"` widens it, and the
   response echoes `match`. Add `path` for one specific definition: the response carries that
   `definition` (`path`, `name`, `kind`, `line`, `column`) and either `resolved_total` with a
-  `resolved` flag per hit, or `resolution: "unsupported for <language>"` with no flags.
-  `relation:"importers"` is a substring match over recorded imports and takes no `match`.
+  `resolved` flag per hit, or a `resolution` note with no flags: `unsupported for <language>`, or
+  `no resolution facts for this file` when the language is supported but the file bound nothing.
+  A `path` that is not indexed, or that defines no such symbol, is an error; so is a name several
+  definitions in the file share, which lists each with its lines until you add `line`.
+  `relation:"importers"` matches whole segments of recorded imports (`os` finds `import os.path`,
+  not `import posixpath`) and takes no `match`.
   `relation:"definition"` needs `path` and `line` and returns the reference's `path`, `line`,
   `column` plus the `definition` it binds to (or a `resolution` note), all 1-based.
 - `code_search` returns pointers (path, `line` / `end_line`, symbol), not bodies; read a hit with
@@ -113,7 +118,9 @@ code_outline {"path":"src/mcp/tools.rs"}
   `code_grep` / `code_refs` 100, `find_files` 200, `code_outline` 500 symbols, `code_search` 10.
   A list is trimmed to a default budget of 6000 tokens and then sets `budgeted`: raise `max_tokens`
   or follow `next_cursor`. Index scanners stop at a scan cap and set `total_is_partial`.
-- A cursor from before a rescan may be refused (`cursor_invalidated`): restart the query.
+- A cursor continues only the call that returned it, with the same arguments apart from `limit`
+  and `max_tokens`. Passed to another query, or used after a rescan, the call is an error: repeat
+  it without `cursor`.
 - A `notice` (`empty_index`, `warming_up`, `building_index`, `rescanning`) means results may be
   incomplete or a moment stale.
 - Needs an index in the machine-global cache (Linux `~/.local/share/basemind/`, macOS

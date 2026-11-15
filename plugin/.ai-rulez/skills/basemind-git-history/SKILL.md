@@ -77,16 +77,27 @@ git_diff {"path":"src/mcp/tools.rs","from":"HEAD~5","structural":true}
   walk. The index auto-builds on first use and is a fraction of the size of `.git`.
 - `git_log` with no arguments is a recency window; use `query` or `author` to find a commit
   arbitrarily far back. `symbol` needs `path`. `limit` defaults to 20 and caps at 100.
-- `git_blame`: `line` needs `end_line`; both are 1-based and inclusive. `rev` blames at a revision
-  other than HEAD. A hunk is `commit_sha`, `short_sha`, `line`, `end_line`, `source_line`, `author`,
+- `git_blame`: `line` and `end_line` are 1-based and inclusive, and `end_line` defaults to `line`.
+  `rev` blames at a revision other than HEAD. `limit` defaults to 100 hunks and the list is trimmed
+  to `max_tokens` (default 6000), then sets `budgeted`. A hunk is `commit_sha`, `short_sha`, `line`, `end_line`, `source_line`, `author`,
   `author_time_unix` and `summary`; a symbol blame also carries the symbol's `line` / `end_line`.
 - `git_diff`: `path` alone is that file's working-tree diff against HEAD; `from` defaults to HEAD
   and `to` to the working tree. The response has `from`, `to` (a sha, or `"working tree"`),
   `present_at_from`, `present_at_to` and `hunks`. A structural diff compares `from` against the
   indexed working tree and takes no `to`.
 - All paths are repository-relative with forward-slash separators. Page with `next_cursor` ->
-  `cursor`; a moved HEAD invalidates a cursor (`cursor_invalidated`). A shallow clone sets
-  `truncated`: absence is then inconclusive.
+  `cursor`. A cursor continues only the call that returned it (same arguments apart from `limit`
+  and `max_tokens`); on another query, or after HEAD moved, the call is an error: repeat it without
+  `cursor`. A shallow clone sets `truncated`: absence is then inconclusive.
+- `query` is matched against the commit message and `author` against the author name and email,
+  each on its own field: `{"query":"review","author":"alice"}` is commits by alice that mention a
+  review. A directory `path` inspects the last 200 commits and sets `truncated` with
+  `truncated_reason: "window"` when it used them all.
+- When several definitions in the file share the name, `symbol` is an error listing each with its
+  lines: add `line` (any line inside the one you mean).
+- `git_diff` returns at most 200 hunks or 128 KiB of hunk text and then sets `truncated` and
+  `total_hunks`; a binary file reports `binary: true` and no hunks. A path that leaves the
+  repository is refused.
 - An argument a tool does not take is rejected with a did-you-mean and the accepted list.
 
 For code structure see `basemind-code-search`; for document search see `basemind-documents`; for

@@ -9,8 +9,8 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:0b103ae626a248da8b078dba68f356260161a8c87d966c68383df1166145d285
-Source-Hash: blake3:cedfa4bf6ba470275f00d362ebb8180f60f5812f1912dd7ea32768d91fd82ba9
+Content-Hash: blake3:8f86088627e3d4cc6c32071d8bdc6630b6f64ff1f732bcec0d4019e1b7c8ead9
+Source-Hash: blake3:61c3cc3336814057f9f3f504f4c447200806568f8e8e32a331a19bd3694a87a4
 Schema-Version: v1
 -->
 
@@ -199,7 +199,9 @@ stops a scan cleanly: work already committed is kept.
 - Every line number is 1-based. `symbols` ranks the exact name, then prefix, then substring, then
   (with `--fuzzy`) fuzzy matches; `refs` matches the identifier exactly (`bar` matches `Foo::bar()`
   and `bar()`, not `bar_baz()`) unless `--match substring`; `callers` pins one definition and marks
-  the hits it proves `resolved`, or reports that resolution is unsupported for the language.
+  the hits it proves `resolved`, or reports why it cannot (no resolution for the language, or no
+  resolution facts for the file). `callers`, `read --symbol`, `git blame --symbol` and
+  `git log --symbol` take `--line` to pick one of several same-named definitions.
 - `outline` on a markdown/config/data file reports that it is a document; use `memory documents`.
 - An unknown flag is a usage error (exit 2). `--format toon`, `--l2`, `--path-contains`,
   `--no-context` and `--line-start` / `--line-end` no longer exist.
