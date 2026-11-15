@@ -104,4 +104,4 @@ them.
 | [0018](0018-mcp-verb-tools.md) | MCP surface — verb tools with exact schemas | Accepted (amended by ADR-0020) |
 | [0019](0019-library-crate-layering.md) | Library crate layering | Accepted |
 | [0020](0020-verb-tool-contract-amendments.md) | Verb-tool contract — no output schemas, always-load scope, kept domain tools | Accepted |
-| [0021](0021-agent-comms-v2.md) | Agent comms v2 — stable identity, repository-open threads, three verb tools | Accepted |
+| [0021](0021-agent-comms-v2.md) | Agent comms v2 — stable identity, repository-open threads, three verb tools | Proposed |
