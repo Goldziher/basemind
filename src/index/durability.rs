@@ -99,7 +99,9 @@ impl IndexDb {
 
     /// Flush every keyspace so the sealed journals can be deleted. Call after [`Self::seal_scan`] and
     /// [`Self::sync_tail`]: the rows are already durable in the journal, so a failure here costs disk
-    /// space only and is logged, not returned. Returns whether the flush completed.
+    /// space only and is logged, not returned. Returns whether the flush completed. fjall's worker
+    /// thread deletes the released journals after its last flush, so the files and
+    /// `journal_count` may trail the return by a moment.
     ///
     /// Waits for every flush, so it belongs at the end of a scan, never in the per-file loop. It
     /// cannot shrink the ACTIVE journal: fjall seals that one only at a memtable flush after it
@@ -316,8 +318,28 @@ mod tests {
             .count()
     }
 
+    /// How long [`await_journal_count`] gives fjall's worker thread.
+    const WORKER_SETTLE: std::time::Duration = std::time::Duration::from_secs(120);
+
+    /// Waits until fjall counts `expected` journals. Its worker thread seals a journal when it takes
+    /// up a flush and deletes a released one after the flush, in both cases after
+    /// `rotate_memtable_and_wait` may have returned, and fjall has no call that waits for either.
+    /// The count and the journal files change together under fjall's journal lock.
+    fn await_journal_count(db: &IndexDb, expected: usize) {
+        let deadline = std::time::Instant::now() + WORKER_SETTLE;
+        while db.db.journal_count() != expected {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "fjall still counts {} journals, not {expected}",
+                db.db.journal_count()
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
     /// Writes past one journal's worth into one keyspace so fjall seals the journal, leaving `meta`
-    /// unflushed: the straggler that keeps a sealed journal alive.
+    /// unflushed: the straggler that keeps a sealed journal alive. Returns once the journal is
+    /// sealed.
     fn seal_a_journal_with_a_straggler(db: &IndexDb) {
         let rows = db.keyspace(Part::SymbolsByPath);
         let mut state = 0x9E37_79B9_7F4A_7C15_u64;
@@ -332,6 +354,7 @@ mod tests {
             rows.insert(row.to_be_bytes(), &value).expect("insert");
         }
         rows.rotate_memtable_and_wait().expect("flush the written keyspace");
+        await_journal_count(db, 2);
     }
 
     #[test]
@@ -347,8 +370,8 @@ mod tests {
         assert_eq!(journal_files(dir.path()), 2);
 
         assert!(db.reclaim_journal());
-        assert_eq!(db.db.journal_count(), 1, "only the active journal is left");
-        assert_eq!(journal_files(dir.path()), 1);
+        await_journal_count(&db, 1);
+        assert_eq!(journal_files(dir.path()), 1, "only the active journal is left");
         drop(db);
 
         let reopened = IndexDb::open(dir.path()).expect("reopen");
@@ -367,7 +390,7 @@ mod tests {
         seal_a_journal_with_a_straggler(&db);
         assert!(db.reclaim_journal_if_grown());
         assert_eq!(db.fault.rotations.load(Ordering::Acquire), 1);
-        assert_eq!(db.db.journal_count(), 1);
+        await_journal_count(&db, 1);
     }
 
     /// The rows are durable before the flush runs, so a flush that fails costs disk space, not data.
@@ -387,6 +410,6 @@ mod tests {
         assert_eq!(db.keyspace(Part::SymbolsByPath).iter().count(), 70);
 
         assert!(db.reclaim_journal_if_grown());
-        assert_eq!(db.db.journal_count(), 1);
+        await_journal_count(&db, 1);
     }
 }
