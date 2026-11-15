@@ -86,6 +86,16 @@ pub(crate) struct SearchDocumentsResponse {
     /// cursor; raise `max_tokens` (or omit it) to retrieve more hits.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub budgeted: bool,
+    /// True when the ranking was cut by a hard bound, so better-matching hits may exist than the
+    /// ones that can be paged to. Narrow the query or the filters.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub truncated: bool,
+    /// What cut it: `depth` (the ranking goes on past the 100 hits that can be paged),
+    /// `rerank_top_k` (the reranker kept its `top_k` best) or
+    /// `filter_depth` (a `keywords` / `entity` filter saw only the 400 best-ranked chunks, and all
+    /// 400 were retrieved, so matching documents ranked below them were never looked at).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub truncated_reason: Option<String>,
     pub hits: Vec<DocumentSearchHit>,
     /// Server-side handler latency in microseconds — the tool body's own execution (index / vector
     /// search + response construction), excluding MCP transport, argument

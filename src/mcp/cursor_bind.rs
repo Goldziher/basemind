@@ -284,6 +284,24 @@ mod tests {
     }
 
     #[test]
+    fn a_ranked_search_under_another_filter_is_another_query() {
+        use crate::mcp::types_tools::DocsSearchParams;
+        let id =
+            |arguments: Value| query_id(&serde_json::from_value::<DocsSearchParams>(arguments).expect("arguments"));
+        let plain = id(json!({ "query": "harbour" }));
+        assert_eq!(plain, id(json!({ "query": "harbour", "limit": 3, "max_tokens": 50 })));
+        for filtered in [
+            json!({ "query": "harbour", "keywords": "pilots" }),
+            json!({ "query": "harbour", "entity": "PERSON" }),
+            json!({ "query": "harbour", "mime_type": "application/pdf" }),
+            json!({ "query": "harbour", "scope": "web:example.org" }),
+            json!({ "query": "tides" }),
+        ] {
+            assert_ne!(plain, id(filtered.clone()), "{filtered}");
+        }
+    }
+
+    #[test]
     fn the_same_arguments_under_another_tool_are_another_query() {
         #[derive(serde::Deserialize, Serialize, schemars::JsonSchema)]
         struct Twin {

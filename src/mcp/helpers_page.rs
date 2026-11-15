@@ -4,9 +4,13 @@
 //! bodies return a top-k, so a page is cut out of one top-k here, on the tool's own response,
 //! instead of teaching every retrieval pipeline about cursors.
 //!
-//! That top-k has the same depth for every page of a query. Fusion and rerank depth follow the
-//! retrieval size, so a retrieval sized to the page ranked the same hits differently on page two
-//! than on page one, and a hit could be repeated or skipped between them.
+//! That top-k has the same depth for every page of a query: fusion and rerank depth follow the
+//! retrieval size, so retrievals of different sizes rank the same hits in different orders, and a
+//! page cut from each would repeat or skip a hit.
+//!
+//! The depth is a hard bound on how far a ranking can be paged. One hit more than the depth is
+//! retrieved to learn whether the ranking goes on past it, and a ranking that does is flagged
+//! `truncated`, so a list of exactly [`RANKED_DEPTH`] hits is told from one cut there.
 
 use rmcp::ErrorData as McpError;
 use rmcp::model::CallToolResult;
@@ -23,29 +27,39 @@ use super::cursor::Cursor;
     )
 )]
 pub(super) const RANKED_LIMIT_DEFAULT: u32 = 10;
-/// How many hits a ranked tool retrieves, whatever page is asked for; paging stops here.
+/// How many hits of a ranking can be paged through, whatever page is asked for.
 pub(super) const RANKED_DEPTH: u32 = 100;
-/// Snapshot id carried by ranked cursors. A ranked page is recomputed from the query, so there is
-/// no index generation to pin; the constant only tells these cursors apart from the others.
-const RANKED_SNAPSHOT: u32 = 0x7261_6e6b;
+/// What a ranked tool asks its retrieval for: the depth, and one hit that only says whether the
+/// ranking continues past it.
+#[cfg_attr(
+    not(any(feature = "code-search", feature = "documents")),
+    allow(
+        dead_code,
+        reason = "compiled for its tests when neither ranked tool is in the build"
+    )
+)]
+pub(super) const RANKED_FETCH: u32 = RANKED_DEPTH + 1;
+/// `truncated_reason` of a ranking that goes on past [`RANKED_DEPTH`].
+const REASON_DEPTH: &str = "depth";
 
-/// The rank a ranked-search page starts at.
-pub(super) fn ranked_offset(cursor: Option<&Cursor>) -> Result<u32, McpError> {
+/// The rank a ranked-search page starts at. `generation` is the index generation the page is
+/// cut from: a cursor issued before a rescan points into a ranking that no longer exists.
+pub(super) fn ranked_offset(tool: &str, cursor: Option<&Cursor>, generation: u32) -> Result<u32, McpError> {
     let Some(cursor) = cursor else {
         return Ok(0);
     };
     let (offset, snapshot) = cursor.decode_in_memory()?;
-    if snapshot != RANKED_SNAPSHOT {
-        return Err(McpError::invalid_params(
-            "this `cursor` came from a different tool; pass the `next_cursor` of this tool's previous page".to_string(),
-            None,
-        ));
+    if snapshot != generation {
+        return Err(super::cursor_bind::stale_cursor(tool));
     }
     Ok(u32::try_from(offset).unwrap_or(RANKED_DEPTH))
 }
 
 /// Cut the page `[offset, offset + limit)` out of the ranked list at `list_key` (a retrieval of
-/// [`RANKED_DEPTH`]), apply the token budget, and attach `next_cursor` when the list goes on.
+/// [`RANKED_FETCH`]), apply the token budget, and attach `next_cursor` when the list goes on.
+///
+/// A retrieval that came back with more than [`RANKED_DEPTH`] hits is flagged `truncated` with
+/// reason `depth` on every page, unless the body already names a tighter cut of its own.
 ///
 /// A response with no structured content (a TOON-encoded one) is returned untouched: it is page
 /// one and carries no cursor.
@@ -55,24 +69,31 @@ pub(super) fn page_ranked(
     offset: u32,
     limit: u32,
     max_tokens: Option<u32>,
+    generation: u32,
 ) -> Result<CallToolResult, McpError> {
     let Some(Value::Object(mut body)) = result.structured_content.take() else {
         return Ok(result);
     };
-    let Some(Value::Array(hits)) = body.remove(list_key) else {
+    let Some(Value::Array(mut hits)) = body.remove(list_key) else {
         return Ok(CallToolResult::structured(Value::Object(body)));
     };
+    let goes_on = hits.len() > RANKED_DEPTH as usize;
+    hits.truncate(RANKED_DEPTH as usize);
     let fetched = hits.len() as u32;
     let page: Vec<Value> = hits.into_iter().skip(offset as usize).take(limit as usize).collect();
     let budgeted = super::budget::apply_budget(page, max_tokens);
     let next = offset + budgeted.items.len() as u32;
-    let more = !budgeted.items.is_empty() && next < fetched.min(RANKED_DEPTH);
+    let more = !budgeted.items.is_empty() && next < fetched;
     body.insert(list_key.to_string(), Value::Array(budgeted.items));
     if budgeted.budgeted {
         body.insert("budgeted".to_string(), Value::Bool(true));
     }
+    if goes_on && body.get("truncated") != Some(&Value::Bool(true)) {
+        body.insert("truncated".to_string(), Value::Bool(true));
+        body.insert("truncated_reason".to_string(), Value::String(REASON_DEPTH.to_string()));
+    }
     if more {
-        let cursor = Cursor::encode_in_memory(u64::from(next), RANKED_SNAPSHOT);
+        let cursor = Cursor::encode_in_memory(u64::from(next), generation);
         body.insert(
             "next_cursor".to_string(),
             serde_json::to_value(cursor).unwrap_or(Value::Null),
@@ -86,6 +107,8 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    const GENERATION: u32 = 7;
+
     fn ranked(count: usize) -> CallToolResult {
         let hits: Vec<Value> = (0..count).map(|rank| json!({ "rank": rank })).collect();
         CallToolResult::structured(json!({ "query": "q", "hits": hits }))
@@ -95,37 +118,78 @@ mod tests {
         result.structured_content.as_ref().expect("structured")
     }
 
-    #[test]
-    fn a_page_with_ranks_left_in_the_retrieval_offers_a_cursor() {
-        let page = page_ranked(ranked(25), "hits", 0, 10, None).expect("page");
-        assert_eq!(body(&page)["hits"].as_array().expect("hits").len(), 10);
-        assert!(body(&page).get("next_cursor").is_some());
+    fn page(result: CallToolResult, offset: u32, limit: u32, max_tokens: Option<u32>) -> CallToolResult {
+        page_ranked(result, "hits", offset, limit, max_tokens, GENERATION).expect("page")
     }
 
-    /// The retrieval has the same depth for every page, so a page that uses it up is the last
-    /// one. Sized to the page, a retrieval that came back full only meant "ask again, deeper".
+    #[test]
+    fn a_page_with_ranks_left_in_the_retrieval_offers_a_cursor() {
+        let first = page(ranked(25), 0, 10, None);
+        assert_eq!(body(&first)["hits"].as_array().expect("hits").len(), 10);
+        assert!(body(&first).get("next_cursor").is_some());
+        assert!(body(&first).get("truncated").is_none());
+    }
+
     #[test]
     fn a_page_that_uses_up_the_retrieval_is_the_last_page() {
-        let exact = page_ranked(ranked(10), "hits", 0, 10, None).expect("page");
+        let exact = page(ranked(10), 0, 10, None);
         assert_eq!(body(&exact)["hits"].as_array().expect("hits").len(), 10);
         assert!(body(&exact).get("next_cursor").is_none());
 
-        let short = page_ranked(ranked(4), "hits", 0, 10, None).expect("page");
+        let short = page(ranked(4), 0, 10, None);
         assert_eq!(body(&short)["hits"].as_array().expect("hits").len(), 4);
         assert!(body(&short).get("next_cursor").is_none());
+    }
 
-        let deepest = page_ranked(ranked(RANKED_DEPTH as usize), "hits", RANKED_DEPTH - 10, 10, None).expect("page");
-        assert_eq!(body(&deepest)["hits"].as_array().expect("hits").len(), 10);
-        assert!(body(&deepest).get("next_cursor").is_none());
+    #[test]
+    fn a_ranking_of_exactly_the_depth_is_whole_and_one_that_goes_on_says_so() {
+        let depth = RANKED_DEPTH as usize;
+        let exact = page(ranked(depth), RANKED_DEPTH - 10, 10, None);
+        assert_eq!(body(&exact)["hits"].as_array().expect("hits").len(), 10);
+        assert!(body(&exact).get("next_cursor").is_none());
+        assert!(body(&exact).get("truncated").is_none(), "exactly {depth} hits exist");
+
+        let first = page(ranked(depth + 1), 0, 10, None);
+        assert_eq!(body(&first)["truncated"], json!(true), "flagged from the first page");
+        assert_eq!(body(&first)["truncated_reason"], json!("depth"));
+        assert!(body(&first).get("next_cursor").is_some());
+
+        let last = page(ranked(depth + 1), RANKED_DEPTH - 10, 10, None);
+        let ranks: Vec<u64> = body(&last)["hits"]
+            .as_array()
+            .expect("hits")
+            .iter()
+            .map(|hit| hit["rank"].as_u64().expect("rank"))
+            .collect();
+        assert_eq!(
+            ranks.last(),
+            Some(&(u64::from(RANKED_DEPTH) - 1)),
+            "the probe hit is never returned"
+        );
+        assert!(
+            body(&last).get("next_cursor").is_none(),
+            "the depth is where paging stops"
+        );
+        assert_eq!(body(&last)["truncated"], json!(true));
+        assert_eq!(body(&last)["truncated_reason"], json!("depth"));
+    }
+
+    #[test]
+    fn a_cut_the_retrieval_already_named_is_kept() {
+        let hits: Vec<Value> = (0..=RANKED_DEPTH).map(|rank| json!({ "rank": rank })).collect();
+        let result =
+            CallToolResult::structured(json!({ "hits": hits, "truncated": true, "truncated_reason": "filter_depth" }));
+        let paged = page(result, 0, 10, None);
+        assert_eq!(body(&paged)["truncated_reason"], json!("filter_depth"));
     }
 
     #[test]
     fn the_second_page_starts_where_the_first_stopped() {
-        let first = page_ranked(ranked(13), "hits", 0, 10, None).expect("first");
+        let first = page(ranked(13), 0, 10, None);
         let cursor: Cursor = serde_json::from_value(body(&first)["next_cursor"].clone()).expect("cursor");
-        let offset = ranked_offset(Some(&cursor)).expect("offset");
+        let offset = ranked_offset("code_search", Some(&cursor), GENERATION).expect("offset");
         assert_eq!(offset, 10);
-        let second = page_ranked(ranked(13), "hits", offset, 10, None).expect("second");
+        let second = page(ranked(13), offset, 10, None);
         let ranks: Vec<u64> = body(&second)["hits"]
             .as_array()
             .expect("hits")
@@ -138,15 +202,22 @@ mod tests {
 
     #[test]
     fn a_budget_cut_is_flagged_and_resumable() {
-        let page = page_ranked(ranked(10), "hits", 0, 10, Some(1)).expect("page");
-        assert_eq!(body(&page)["hits"].as_array().expect("hits").len(), 1);
-        assert_eq!(body(&page)["budgeted"], json!(true));
-        assert!(body(&page).get("next_cursor").is_some());
+        let cut = page(ranked(10), 0, 10, Some(1));
+        assert_eq!(body(&cut)["hits"].as_array().expect("hits").len(), 1);
+        assert_eq!(body(&cut)["budgeted"], json!(true));
+        assert!(body(&cut).get("next_cursor").is_some());
     }
 
     #[test]
-    fn a_cursor_from_another_tool_is_refused() {
-        let foreign = Cursor::encode_in_memory(3, 7);
-        assert!(ranked_offset(Some(&foreign)).is_err());
+    fn a_cursor_cut_from_another_index_generation_is_refused() {
+        let first = page(ranked(13), 0, 10, None);
+        let cursor: Cursor = serde_json::from_value(body(&first)["next_cursor"].clone()).expect("cursor");
+        assert!(ranked_offset("docs_search", Some(&cursor), GENERATION).is_ok());
+        let refused = ranked_offset("docs_search", Some(&cursor), GENERATION + 1).expect_err("rescanned");
+        assert!(
+            refused.message.contains("Call again without `cursor`"),
+            "{}",
+            refused.message
+        );
     }
 }

@@ -653,7 +653,7 @@ pub(super) async fn run_search_documents(
         )
     };
 
-    let limit = params.limit.unwrap_or(10).min(100) as usize;
+    let limit = params.limit.unwrap_or(10).min(super::helpers_page::RANKED_FETCH) as usize;
     // The keyword / entity filters run on the retrieved hits, so retrieval goes deeper than the
     // page: a matching document ranked past `limit` would otherwise never be seen.
     let filtered = params.entity_category.is_some() || params.keywords_contains.is_some();
@@ -682,6 +682,9 @@ pub(super) async fn run_search_documents(
     .await
     .map_err(|e| McpError::internal_error(format!("spawn_blocking: {e}"), None))?
     .map_err(|e| McpError::internal_error(format!("search_documents: {e}"), None))?;
+    // A filter that was handed every chunk the retrieval allows has not seen the whole ranking: a
+    // matching document below that depth was never looked at, so the result is not "no match".
+    let filter_depth_used = filtered && hits_raw.len() >= fetch;
     let mut hits: Vec<DocumentSearchHit> = hits_raw
         .into_iter()
         .map(|h| DocumentSearchHit {
@@ -708,6 +711,7 @@ pub(super) async fn run_search_documents(
     .await?;
     hits.truncate(limit);
 
+    let candidates = hits.len();
     if reranker_enabled && !hits.is_empty() {
         if xberg::get_reranker_preset(&reranker_preset).is_none() {
             return Err(McpError::invalid_params(
@@ -764,11 +768,20 @@ pub(super) async fn run_search_documents(
         _ => output_format,
     };
 
+    let truncated_reason = if filter_depth_used {
+        Some("filter_depth")
+    } else if hits.len() < candidates {
+        Some("rerank_top_k")
+    } else {
+        None
+    };
     let budget = super::budget::apply_budget(hits, params.max_tokens);
     format_response(
         &SearchDocumentsResponse {
             query: params.query,
             budgeted: budget.budgeted,
+            truncated: truncated_reason.is_some(),
+            truncated_reason: truncated_reason.map(str::to_string),
             hits: budget.items,
             elapsed_us: elapsed_us(__body),
         },

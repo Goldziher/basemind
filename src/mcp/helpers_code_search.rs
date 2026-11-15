@@ -51,7 +51,7 @@ fn wants_toon(state: &ServerState, format: Option<&str>) -> bool {
 
 pub(super) async fn run_search_code(state: &ServerState, params: SearchCodeParams) -> Result<CallToolResult, McpError> {
     let __body = std::time::Instant::now();
-    let limit = params.limit.unwrap_or(10).min(100) as usize;
+    let limit = params.limit.unwrap_or(10).min(super::helpers_page::RANKED_FETCH) as usize;
     let want_toon = wants_toon(state, params.format.as_deref());
 
     let rr = &state.shared.config.code_search.reranker;
@@ -81,17 +81,23 @@ pub(super) async fn run_search_code(state: &ServerState, params: SearchCodeParam
         ));
     };
 
+    // The reranker returns its `top_k` best and drops the rest: a hard cut the paging depth never
+    // sees, so it is named here.
+    let candidates = hits.len();
     let hits = if rerank_enabled {
         rerank_hits(state, &params.query, hits, &rerank_preset, rerank_top_k).await?
     } else {
         hits
     };
+    let truncated_reason = (hits.len() < candidates).then(|| "rerank_top_k".to_string());
 
     let budget = super::budget::apply_budget(hits, params.max_tokens);
     format_code_response(
         &SearchCodeResponse {
             query: params.query,
             budgeted: budget.budgeted,
+            truncated: truncated_reason.is_some(),
+            truncated_reason,
             hits: budget.items,
             lanes_ran: report.ran,
             lanes_unavailable: report.unavailable,

@@ -123,6 +123,14 @@ pub(crate) struct SearchCodeResponse {
     /// True when a `max_tokens` budget dropped trailing `hits`. No cursor — raise `max_tokens`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub budgeted: bool,
+    /// True when the ranking was cut by a hard bound, so better-matching hits may exist than the
+    /// ones that can be paged to. Narrow the query or the filters.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub truncated: bool,
+    /// What cut it: `depth` (the ranking goes on past the 100 hits that can be paged),
+    /// `rerank_top_k` (the reranker kept its `top_k` best).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub truncated_reason: Option<String>,
     pub hits: Vec<CodeSearchHit>,
     /// Lanes that produced a ranking for this query: `vector`, `keyword`, `exact`.
     pub lanes_ran: Vec<&'static str>,

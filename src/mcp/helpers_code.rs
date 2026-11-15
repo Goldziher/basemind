@@ -82,13 +82,14 @@ pub(super) async fn code_symbols(state: &ServerState, p: CodeSymbolsParams) -> R
 pub(super) async fn code_search(state: &ServerState, p: CodeSearchParams) -> Result<CallToolResult, McpError> {
     #[cfg(feature = "code-search")]
     {
-        use super::helpers_page::{RANKED_DEPTH, RANKED_LIMIT_DEFAULT, page_ranked, ranked_offset};
+        use super::helpers_page::{RANKED_FETCH, RANKED_LIMIT_DEFAULT, page_ranked, ranked_offset};
 
-        let offset = ranked_offset(p.cursor.as_ref())?;
+        let generation = state.shared.cache_generation.load(std::sync::atomic::Ordering::Relaxed);
+        let offset = ranked_offset("code_search", p.cursor.as_ref(), generation)?;
         let limit = p.limit.unwrap_or(RANKED_LIMIT_DEFAULT);
         let search = super::types_code::SearchCodeParams {
             query: p.query,
-            limit: Some(RANKED_DEPTH),
+            limit: Some(RANKED_FETCH),
             max_tokens: None,
             // The page is cut out of the structured response, which only the JSON encoding has, so
             // `[documents.output] format = "toon"` does not apply to this tool.
@@ -99,7 +100,7 @@ pub(super) async fn code_search(state: &ServerState, p: CodeSearchParams) -> Res
             reranker_top_k: None,
         };
         let result = super::helpers_code_search::run_search_code(state, search).await?;
-        page_ranked(result, "hits", offset, limit, budget(p.max_tokens))
+        page_ranked(result, "hits", offset, limit, budget(p.max_tokens), generation)
     }
     #[cfg(not(feature = "code-search"))]
     {
