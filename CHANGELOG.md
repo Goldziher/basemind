@@ -274,6 +274,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   it. Signals are sent only to a process still there afterwards, silent to `Stop` and `Ping`, that
   the generation's `daemon.pid` then names. `basemind comms stop` now reaches a daemon that speaks
   another protocol version, waits the normal stop timeout for its answer and honours a refusal.
+  On Windows every such exchange with a daemon is now bounded: the pipe read takes no timeout, so
+  a daemon that accepted a connection and never answered could hang `comms stop` and daemon
+  bring-up for good.
   "Older" and "newer" follow semantic-version precedence, pre-release included: the daemon of
   `0.34.0-rc.1` makes way for `0.34.0` and is never preferred to it.
 - `basemind serve` no longer retries forever, silently, when it cannot get a daemon, and no longer

@@ -49,6 +49,32 @@ fn version_is_older_orders_pre_releases_by_semver_precedence() {
     assert!(version_is_older("0.10.0-rc.1+build.9", "0.10.0+build.1"));
 }
 
+/// What bounds a pipe exchange on Windows, where a read takes no timeout: the caller gets `None`
+/// at the limit even though the call it started is still blocked.
+#[test]
+fn bounded_gives_up_on_work_that_never_returns_and_passes_on_what_returns_in_time() {
+    const LIMIT: Duration = Duration::from_millis(100);
+    const PROMPT: Duration = Duration::from_secs(5);
+    let (release, blocked) = std::sync::mpsc::channel::<()>();
+    let started = std::time::Instant::now();
+
+    let hung = bounded(LIMIT, move || {
+        let _ = blocked.recv();
+        Some("too late")
+    });
+
+    assert_eq!(hung, None, "work still blocked at the limit yields nothing");
+    assert!(started.elapsed() >= LIMIT);
+    assert!(
+        started.elapsed() < PROMPT,
+        "the caller is not held: {:?}",
+        started.elapsed()
+    );
+    drop(release);
+    assert_eq!(bounded(PROMPT, || Some(7)), Some(7));
+    assert_eq!(bounded(PROMPT, || None::<u8>), None);
+}
+
 /// Runs on every platform: the name is a pure function of the user and the directory path.
 #[test]
 fn the_pipe_name_is_stable_and_distinct_per_generation_directory() {

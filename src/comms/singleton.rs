@@ -711,15 +711,30 @@ fn roundtrip(socket_path: &Path, req: &CommsRequest) -> Option<CommsResponse> {
 /// enough that probing a wedged one does not stall bring-up.
 const ENDPOINT_TIMEOUT: Duration = Duration::from_millis(800);
 
-/// [`roundtrip`] with an explicit bound on each read and write, for a request whose answer is
-/// worth waiting for. Windows opens the pipe blocking and does not apply the bound.
+/// [`roundtrip`] with an explicit bound, for a request whose answer is worth waiting for. On Unix
+/// `timeout` bounds each read and write. A Windows pipe opened this way has no read timeout, so
+/// there the whole exchange runs on a thread of its own and is given up on after `timeout`.
 fn roundtrip_within(socket_path: &Path, req: &CommsRequest, timeout: Duration) -> Option<CommsResponse> {
+    let body = rmp_serde::to_vec_named(req).ok()?;
+    #[cfg(windows)]
+    {
+        let socket_path = socket_path.to_path_buf();
+        bounded(timeout, move || exchange(&socket_path, &body, timeout))
+    }
+    #[cfg(not(windows))]
+    {
+        exchange(socket_path, &body, timeout)
+    }
+}
+
+/// Send one framed request body and decode the one framed reply. Blocks for as long as the
+/// endpoint lets a read or write block.
+fn exchange(socket_path: &Path, body: &[u8], timeout: Duration) -> Option<CommsResponse> {
     use std::io::{Read, Write};
     let mut stream = open_endpoint(socket_path, timeout)?;
-    let body = rmp_serde::to_vec_named(req).ok()?;
     let len = u32::try_from(body.len()).ok()?;
     stream.write_all(&len.to_be_bytes()).ok()?;
-    stream.write_all(&body).ok()?;
+    stream.write_all(body).ok()?;
     let mut prefix = [0u8; 4];
     stream.read_exact(&mut prefix).ok()?;
     let rlen = u32::from_be_bytes(prefix) as usize;
@@ -732,6 +747,21 @@ fn roundtrip_within(socket_path: &Path, req: &CommsRequest, timeout: Duration) -
         CommsOut::Response(resp) | CommsOut::Reply { response: resp, .. } => Some(resp),
         CommsOut::Notification(_) => None,
     }
+}
+
+/// Run blocking `work` on a thread of its own and wait at most `limit` for what it returns. For
+/// I/O that takes no timeout: past the limit the caller moves on with `None`, and the thread ends
+/// whenever its call returns.
+#[cfg(any(windows, test))]
+fn bounded<T: Send + 'static>(limit: Duration, work: impl FnOnce() -> Option<T> + Send + 'static) -> Option<T> {
+    let (done, result) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .name("comms-endpoint".to_string())
+        .spawn(move || {
+            let _ = done.send(work());
+        })
+        .ok()?;
+    result.recv_timeout(limit).ok().flatten()
 }
 
 /// Open the platform endpoint (Unix socket / Windows named pipe) with `timeout` on reads and writes.
@@ -820,28 +850,28 @@ fn probe_once(socket_path: &Path) -> bool {
 /// wrapper. A `\\.\pipe\...` path opens as an ordinary [`std::fs::File`], so we open it blocking
 /// and write the SAME framed `Ping` the Unix probe sends (u32-be length prefix + msgpack), then
 /// read a 4-byte response prefix. Any successful read ⇒ alive. A transient busy/not-found at open
-/// time ⇒ not alive (the caller treats that as "reclaimable").
+/// time ⇒ not alive (the caller treats that as "reclaimable"). The read has no timeout of its own,
+/// so the attempt runs under [`bounded`]: a daemon that accepts and never answers is not alive.
 #[cfg(windows)]
 fn probe_once(socket_path: &Path) -> bool {
     use std::io::{Read, Write};
 
-    let Ok(mut stream) = std::fs::OpenOptions::new().read(true).write(true).open(socket_path) else {
-        return false;
-    };
-
-    let body = match rmp_serde::to_vec_named(&super::protocol::CommsRequest::Ping) {
-        Ok(b) => b,
-        Err(_) => return false,
-    };
-    let len = match u32::try_from(body.len()) {
-        Ok(l) => l,
-        Err(_) => return false,
-    };
-    if stream.write_all(&len.to_be_bytes()).is_err() || stream.write_all(&body).is_err() {
-        return false;
-    }
-    let mut prefix = [0u8; 4];
-    stream.read_exact(&mut prefix).is_ok()
+    const PING_TIMEOUT: Duration = Duration::from_millis(500);
+    let socket_path = socket_path.to_path_buf();
+    bounded(PING_TIMEOUT, move || {
+        let mut stream = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&socket_path)
+            .ok()?;
+        let body = rmp_serde::to_vec_named(&super::protocol::CommsRequest::Ping).ok()?;
+        let len = u32::try_from(body.len()).ok()?;
+        stream.write_all(&len.to_be_bytes()).ok()?;
+        stream.write_all(&body).ok()?;
+        let mut prefix = [0u8; 4];
+        stream.read_exact(&mut prefix).ok()
+    })
+    .is_some()
 }
 
 #[cfg(not(any(unix, windows)))]
