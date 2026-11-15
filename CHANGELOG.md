@@ -71,26 +71,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     an output schema.
   - Required arguments are required in the schema, and an unknown argument is rejected with a did-you-mean
     suggestion and the accepted list. A stringified integer or boolean (`"limit": "10"`) is coerced; any
-    other type error names the field, and every problem with a call is reported in one message. The
+    other type error names the field (and the element, for a list), and every problem with a call is
+    reported in one message. An integer written as a float (`10.0`) is accepted. The
     hidden aliases (`q`, `needle`, `token_budget`) and the `format` argument (`"toon"`) are gone, and
     `[documents.output] format = "toon"` no longer applies to these tools.
   - `code_grep` treats `pattern` as literal text unless `regex: true`; `path` replaces `path_contains`
     and is always a literal substring, and `context` (default off) replaces `include_context`. A hit on
     a line over 400 bytes shows a window around the match.
   - A path argument is read from the working tree only when it is indexed and stays inside the
-    repository: an absolute path, a `..` component and a symlink pointing outside are refused.
+    repository: an absolute path, a `..` component and a symlink pointing outside are refused. With
+    `[scan] follow_symlinks` granted, a link the scan indexed is read by every tool, as `code_grep`
+    reads it. `git_diff` between two revisions reads only git objects, so it diffs a tracked symlink
+    as the target path git stores.
   - A cursor is bound to the call that returned it. Passed to another query, or used after a rescan or
     a new commit, it is an error telling the caller to repeat the call without `cursor`; no tool
     answers a stale cursor with an empty page (`cursor_invalidated` is gone).
   - Every position is 1-based: `line`, `end_line` and `column`, in arguments and responses. The 0-based
     `start_row` is gone.
   - `code_refs` matches the whole identifier; `match: "substring"` restores the previous matching.
-    `relation: "importers"` matches whole segments of an import (`os` is not `posixpath`). With `path`, a
+    `relation: "importers"` matches whole segments of an import (`os` is not `posixpath`, `react` is not
+    `react-dom`). With `path`, a
     file that is not indexed or defines no such symbol is an error, and a name several definitions in
     the file share is an error listing each with its lines until `line` picks one; `code_read`,
     `git_blame` and `git_log` with `symbol` take the same `line`. `resolution` tells a language without
     resolution (`unsupported for <language>`) from a file that bound nothing
-    (`no resolution facts for this file`).
+    (`no resolution facts for this file`) and from an index whose resolve pass did not finish
+    (``resolution has not run for this index; run `index_rescan` ``). An exact scan stops after
+    examining 200,000 index keys, sets `total_is_partial` and returns a `next_cursor` that continues it.
   - Every list takes `limit` and `cursor`, returns `next_cursor`, and honours a default `max_tokens` budget
     of 6000, setting `budgeted` when it trims.
   - A failure the caller can fix is a tool result with `isError: true` that names the fix, not a JSON-RPC
@@ -99,11 +106,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     still running after 3 s.
   - `git_diff` with no arguments returns the working-tree status, and with only `path` diffs that file's
     working tree against HEAD; `from` / `to` replace `rev_old` / `rev_new`. A diff is cut at 200 hunks or
-    128 KiB of hunk text and then sets `truncated` and `total_hunks`; a binary file reports `binary`.
+    128 KiB of hunk text (a single larger hunk is clipped to that) and then sets `truncated` and
+    `total_hunks`; a binary file reports `binary`, and a file over 4 MiB on either side is not diffed
+    and reports `too_large`.
     `git_blame` takes `line` / `end_line` in place of `line_start` / `line_end`, returns 100 hunks per
     page by default and honours `max_tokens`.
   - `git_log` matches `query` against the commit message and `author` against the author, each on its
-    own field. A directory `path` reports `truncated` when its 200-commit window was used up.
+    own field. A directory `path` reports `truncated` when history continues past its 200-commit
+    window.
   - `memory_save` reports `embedded`. When the note cannot be embedded the save still succeeds, with a
     `notice`, instead of answering with an error after the write.
   - A call rejected because the server is at its limit of heavy calls is an `isError` result
