@@ -30,6 +30,7 @@ mod params;
 use std::collections::{BTreeMap, BTreeSet};
 
 use capabilities::{McpOp, Row};
+use serde_json::Value;
 
 fn row_text(row: &Row) -> String {
     match row {
@@ -234,16 +235,8 @@ async fn read_only_queries_agree_between_mcp_and_cli() {
     let mut failures = Vec::new();
     let (mut answered, mut refused) = (0usize, 0usize);
     let cases = behaviour::cases();
-    for case in &cases {
+    let mut compare = |case: &behaviour::Case, mcp: Result<Value, String>, cli: Result<Value, String>| {
         let label = format!("{} {} (basemind {})", case.tool, case.mcp, case.cli);
-        if !behaviour::table_pairs(&rows, case.tool, case.cli) {
-            failures.push(format!(
-                "{label}: the capability table does not map this command to the tool"
-            ));
-            continue;
-        }
-        let mcp = session.call(case.tool, case.mcp.clone()).await;
-        let cli = behaviour::run_cli(session.repo.path(), case.cli, case.cli_operands);
         match (mcp, cli) {
             (Ok(mut m), Ok(mut c)) => {
                 behaviour::normalize(&mut m, case.volatile);
@@ -258,7 +251,33 @@ async fn read_only_queries_agree_between_mcp_and_cli() {
             (Err(m), Err(c)) if c.contains(&m) && m.contains("Cargo feature") => refused += 1,
             (m, c) => failures.push(format!("{label}: mcp={m:?} cli={c:?}")),
         }
+    };
+
+    let mut unmapped = Vec::new();
+    let mut deferred = Vec::new();
+    for case in &cases {
+        if !behaviour::table_pairs(&rows, case.tool, case.cli) {
+            unmapped.push(format!(
+                "{} {} (basemind {}): the capability table does not map this command to the tool",
+                case.tool, case.mcp, case.cli
+            ));
+            continue;
+        }
+        let mcp = session.call(case.tool, case.mcp.clone()).await;
+        if case.after_session {
+            deferred.push((case, mcp));
+            continue;
+        }
+        let cli = behaviour::run_cli(session.repo.path(), case.cli, case.cli_operands);
+        compare(case, mcp, cli);
     }
+    let repo = session.close().await;
+    for (case, mcp) in deferred {
+        let cli = behaviour::run_cli_once_unlocked(repo.path(), case.cli, case.cli_operands);
+        compare(case, mcp, cli);
+    }
+    failures.extend(unmapped);
+
     assert!(
         cases.len() >= 27,
         "the behaviour layer lost its cases ({} left)",

@@ -150,6 +150,14 @@ impl Session {
         Self { service, repo }
     }
 
+    /// End the session and hand back the repo. The server is a writer session holding the workspace
+    /// store lock; a CLI command that needs the daemon to open that store (memory, the keyword
+    /// lane) can only run once it is gone.
+    pub async fn close(self) -> tempfile::TempDir {
+        let _ = self.service.cancel().await;
+        self.repo
+    }
+
     /// Call `tool` with `args`; the tool's JSON payload on success, the error text on failure.
     pub async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
         let arguments = args.as_object().expect("object args").clone();

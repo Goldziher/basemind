@@ -21,6 +21,9 @@ pub struct Case {
     /// Fields of this tool's payload that differ between two calls by design (a write timestamp,
     /// the answering process).
     pub volatile: &'static [&'static str],
+    /// The CLI side needs the daemon to open the workspace store, which the in-process server
+    /// locks for as long as it lives: the command runs after the MCP session has ended.
+    pub after_session: bool,
 }
 
 const fn case(tool: &'static str, mcp: Value, cli: &'static str, cli_operands: &'static [&'static str]) -> Case {
@@ -30,12 +33,18 @@ const fn case(tool: &'static str, mcp: Value, cli: &'static str, cli_operands: &
         cli,
         cli_operands,
         volatile: &[],
+        after_session: false,
     }
 }
 
 impl Case {
     const fn ignoring(mut self, volatile: &'static [&'static str]) -> Self {
         self.volatile = volatile;
+        self
+    }
+
+    const fn after_session(mut self) -> Self {
+        self.after_session = true;
         self
     }
 }
@@ -152,28 +161,32 @@ pub fn cases() -> Vec<Case> {
             json!({"query": "adds one", "lane": "keyword"}),
             "code search",
             &["adds one", "--lane", "keyword"],
-        ),
+        )
+        .after_session(),
         case(
             "memory_save",
             json!({"key": "parity/note", "value": "written by the parity test"}),
             "memory put",
             &["parity/note", "written by the parity test"],
         )
-        .ignoring(NOTE_VOLATILE),
+        .ignoring(NOTE_VOLATILE)
+        .after_session(),
         case(
             "memory_search",
             json!({"key": "parity/note"}),
             "memory get",
             &["parity/note"],
         )
-        .ignoring(NOTE_VOLATILE),
+        .ignoring(NOTE_VOLATILE)
+        .after_session(),
         case(
             "memory_search",
             json!({"prefix": "parity/"}),
             "memory list",
             &["--prefix", "parity/"],
         )
-        .ignoring(NOTE_VOLATILE),
+        .ignoring(NOTE_VOLATILE)
+        .after_session(),
         case("index_status", json!({}), "status", &[]).ignoring(STATUS_VOLATILE),
     ]
 }
@@ -215,4 +228,21 @@ pub fn run_cli(root: &std::path::Path, cli_path: &str, operands: &[&str]) -> Res
     }
     serde_json::from_slice(&output.stdout)
         .map_err(|e| format!("non-JSON stdout ({e}): {}", String::from_utf8_lossy(&output.stdout)))
+}
+
+/// [`run_cli`] for a command issued right after the in-process server ended: its store lock is
+/// released when the server task winds down, which can trail the client's disconnect by a moment.
+pub fn run_cli_once_unlocked(root: &std::path::Path, cli_path: &str, operands: &[&str]) -> Result<Value, String> {
+    const ATTEMPTS: usize = 20;
+    let mut last = run_cli(root, cli_path, operands);
+    for _ in 1..ATTEMPTS {
+        match &last {
+            Err(message) if message.contains("holds the lock") => {
+                std::thread::sleep(std::time::Duration::from_millis(250));
+                last = run_cli(root, cli_path, operands);
+            }
+            _ => break,
+        }
+    }
+    last
 }
