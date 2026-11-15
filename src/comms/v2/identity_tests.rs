@@ -250,7 +250,7 @@ fn serve_identity(env: &[(&str, &str)], config: Option<&str>, root: &Path) -> Re
 /// What a hook does: the same shared environment through the CLI's wrapper, with the root spelled
 /// however the host passed it.
 fn hook_identity(env: &[(&str, &str)], config: Option<&str>, root: &Path) -> ResolvedIdentity {
-    resolve_with(|name| lookup(env, name), config.map(str::to_string), root)
+    resolve_with(|name| lookup(env, name), config.map(str::to_string), root).expect("an absolute root")
 }
 
 fn lookup(env: &[(&str, &str)], name: &str) -> Option<String> {
@@ -320,14 +320,14 @@ fn a_symlinked_root_resolves_to_the_id_of_its_target() {
 }
 
 #[test]
-fn a_root_that_cannot_be_canonicalised_is_cleaned_lexically() {
+fn an_absolute_root_that_cannot_be_canonicalised_is_cleaned_lexically() {
     let dir = tempfile::tempdir().expect("tempdir");
     let base = dir.path().canonicalize().expect("canonical tempdir");
     let missing = base.join("gone");
-    assert_eq!(canonical_root(&missing), missing);
+    assert_eq!(canonical_root(&missing), Ok(missing.clone()));
     assert_eq!(
         canonical_root(&base.join("x").join("..").join("gone").join(".")),
-        missing
+        Ok(missing.clone())
     );
 
     let no_env = |_: &str| None;
@@ -335,9 +335,83 @@ fn a_root_that_cannot_be_canonicalised_is_cleaned_lexically() {
         resolve_with(no_env, None, &base.join("x/../gone/.")),
         resolve_with(no_env, None, &missing)
     );
-    let relative = canonical_root(Path::new("no-such-dir-for-identity-tests/a/.."));
-    assert!(relative.is_absolute(), "{relative:?}");
-    assert!(relative.ends_with("no-such-dir-for-identity-tests"), "{relative:?}");
+}
+
+#[test]
+fn a_relative_root_is_refused_and_never_completed_from_the_working_directory() {
+    let no_env = |_: &str| None;
+    for relative in [
+        "",
+        ".",
+        "repo",
+        "./repo",
+        "../repo",
+        "no-such-dir-for-identity-tests/a/..",
+    ] {
+        let refused = IdentityError::RelativeRoot {
+            root: PathBuf::from(relative),
+        };
+        assert_eq!(
+            canonical_root(Path::new(relative)),
+            Err(refused.clone()),
+            "{relative:?}"
+        );
+        assert_eq!(
+            resolve_with(no_env, None, Path::new(relative)),
+            Err(refused.clone()),
+            "{relative:?}"
+        );
+        assert_eq!(
+            resolve_with(
+                |name| (name == AGENT_ID_ENV).then(|| "lead".to_string()),
+                None,
+                Path::new(relative)
+            ),
+            Err(refused),
+            "a configured id does not excuse a relative root"
+        );
+    }
+    let message = IdentityError::RelativeRoot {
+        root: PathBuf::from("re\npo"),
+    }
+    .to_string();
+    assert!(
+        message.contains("\"re\\npo\"") && message.contains("absolute"),
+        "{message}"
+    );
+}
+
+/// A canonicaliser as the filesystem would be seen from the working directory `cwd`: a relative
+/// path is completed from there, which is how [`Path::canonicalize`] comes to depend on it.
+fn canonicalize_from(cwd: &'static str) -> impl FnOnce(&Path) -> std::io::Result<PathBuf> {
+    move |path| Ok(lexically_clean(&Path::new(cwd).join(path)))
+}
+
+#[test]
+fn the_id_of_an_absolute_root_does_not_depend_on_the_working_directory() {
+    for root in [ROOT, "/home/dev/projects/./basemind/sub/.."] {
+        let from_one = canonical_root_via(Path::new(root), canonicalize_from("/work/one")).expect("absolute");
+        let from_other = canonical_root_via(Path::new(root), canonicalize_from("/somewhere/else")).expect("absolute");
+        assert_eq!(from_one, from_other, "{root:?}");
+        assert_eq!(from_one, PathBuf::from(ROOT));
+        assert_eq!(
+            derived_principal(Some("claude-code"), &from_one).as_str(),
+            "claudecode-basemind-e3515d"
+        );
+    }
+
+    let asked = std::cell::Cell::new(false);
+    let refused = canonical_root_via(Path::new("projects/basemind"), |path| {
+        asked.set(true);
+        canonicalize_from("/work/one")(path)
+    });
+    assert_eq!(
+        refused,
+        Err(IdentityError::RelativeRoot {
+            root: PathBuf::from("projects/basemind")
+        })
+    );
+    assert!(!asked.get(), "a relative root never reaches the filesystem");
 }
 
 #[test]
@@ -400,46 +474,63 @@ fn hook_name(agent_type: &str, agent_id: &str) -> Option<String> {
 }
 
 #[test]
-fn the_hook_sub_name_joins_the_type_and_eight_bytes_of_the_id() {
+fn the_hook_sub_name_joins_the_type_and_eight_hex_of_the_hashed_id() {
     assert_eq!(
         hook_name("Explore", "a1b2c3d4e5f6"),
-        Some("explore-a1b2c3d4".to_string())
+        Some("explore-d5fae130".to_string())
     );
     assert_eq!(
         hook_name("general-purpose", "ABCDEF0123456789"),
-        Some("general-purpose-abcdef01".to_string())
+        Some("general-purpose-372ce358".to_string())
     );
-    assert_eq!(hook_name("test_writer", "abc"), Some("test_writer-abc".to_string()));
+    assert_eq!(
+        hook_name("test_writer", "abc"),
+        Some("test_writer-6437b3ac".to_string())
+    );
 }
 
 #[test]
-fn the_hook_sub_name_replaces_bytes_outside_the_grammar() {
+fn agent_ids_that_share_their_first_bytes_get_different_sub_names() {
+    assert_eq!(
+        hook_name("Explore", "a1b2c3d4-0001"),
+        Some("explore-71925a85".to_string())
+    );
+    assert_eq!(
+        hook_name("Explore", "a1b2c3d4-0002"),
+        Some("explore-17733319".to_string())
+    );
+    assert_ne!(hook_name("Explore", "abc"), hook_name("Explore", "ABC"));
+}
+
+#[test]
+fn the_hook_sub_name_replaces_bytes_of_the_type_outside_the_grammar() {
     assert_eq!(
         hook_name("basemind:code reviewer", "a1.b2/c3d4"),
-        Some("basemind-code-reviewer-a1-b2-c3".to_string())
+        Some("basemind-code-reviewer-456f8846".to_string())
     );
-    assert_eq!(hook_name("café", "12345678"), Some("caf---12345678".to_string()));
+    assert_eq!(hook_name("café", "12345678"), Some("caf---07d4aeb7".to_string()));
 }
 
 #[test]
-fn a_long_agent_type_is_cut_before_the_id_is() {
+fn a_long_agent_type_is_cut_to_what_the_hash_leaves() {
     let name = hook_name("basemind:mcp-domain-migrator-extended", "0123456789abcdef").expect("name");
-    assert_eq!(name, "basemind-mcp-domain-mig-01234567");
+    assert_eq!(name, "basemind-mcp-domain-mig-b8f6b168");
     assert_eq!(name.len(), 32);
     let sibling = hook_name("basemind:mcp-domain-migrator-extended", "fedcba9876543210").expect("name");
-    assert_ne!(name, sibling);
+    assert_eq!(sibling, "basemind-mcp-domain-mig-56e97f22");
     assert_eq!(hook_name(&"t".repeat(40), "").map(|name| name.len()), Some(32));
 }
 
 #[test]
 fn an_empty_part_is_left_out_with_its_separator() {
     assert_eq!(hook_name("Explore", ""), Some("explore".to_string()));
-    assert_eq!(hook_name("", "a1b2c3d4e5"), Some("a1b2c3d4".to_string()));
+    assert_eq!(hook_name("", "a1b2c3d4e5"), Some("52e6ac8f".to_string()));
+    assert_eq!(hook_name("::", "..."), Some("---2f1145ba".to_string()));
 }
 
 #[test]
 fn the_hook_sub_name_is_none_when_nothing_valid_remains() {
-    for (agent_type, agent_id) in [("", ""), ("::", ""), ("", "..."), ("日本", "!!!"), ("-", "-")] {
+    for (agent_type, agent_id) in [("", ""), ("::", ""), ("日本", ""), ("-", "")] {
         assert_eq!(hook_name(agent_type, agent_id), None, "{agent_type:?} {agent_id:?}");
     }
 }
@@ -448,7 +539,7 @@ fn the_hook_sub_name_is_none_when_nothing_valid_remains() {
 fn a_hook_sub_name_composes_with_a_principal() {
     let name = hook_sub_name("Explore", "a1b2c3d4e5f6").expect("name");
     let actor = compose(&principal("claudecode-basemind-e3515d"), Some(name.as_str())).expect("actor");
-    assert_eq!(actor.as_str(), "claudecode-basemind-e3515d.explore-a1b2c3d4");
+    assert_eq!(actor.as_str(), "claudecode-basemind-e3515d.explore-d5fae130");
 }
 
 fn assert_derived_shape(id: &Principal, host: Option<&str>) -> Result<(), proptest::test_runner::TestCaseError> {

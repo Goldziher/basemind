@@ -6,6 +6,12 @@
 //!
 //! [`resolve`] is pure and takes everything it needs in [`IdentityInputs`]; [`resolve_from_env`] is
 //! the thin wrapper that reads the process environment and canonicalises the root.
+//!
+//! The root must be absolute. A relative one would be resolved against the working directory of
+//! whichever process asked, and a hook does not run where its `serve` does, so it is refused with
+//! [`IdentityError::RelativeRoot`] instead. `serve`, the CLI and the hooks must therefore all take
+//! the root from one shared discovery function that returns an absolute path: two discoveries
+//! that disagree give two ids, and nothing here can tell.
 
 use std::path::{Component, Path, PathBuf};
 
@@ -30,8 +36,8 @@ pub const MAX_REPO_LEN: usize = 24;
 /// Hex digits of the root's blake3 hash that end a derived id.
 pub const ROOT_HASH_HEX_LEN: usize = 6;
 
-/// How much of a Claude Code `agent_id` a hook-injected sub-name carries, in bytes.
-pub const HOOK_AGENT_ID_LEN: usize = 8;
+/// Hex digits of the blake3 hash of a Claude Code `agent_id` that end a hook-injected sub-name.
+pub const HOOK_AGENT_HASH_HEX_LEN: usize = 8;
 
 /// Separator between the parts of a derived id and of a hook-injected sub-name.
 const PART_SEPARATOR: char = '-';
@@ -56,6 +62,20 @@ impl IdentityTier {
             Self::Derived => "derived",
         }
     }
+}
+
+/// Why the identity of a process cannot be resolved.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum IdentityError {
+    /// The checkout root is not absolute, so the id derived from it would depend on the working
+    /// directory of the process that asked.
+    #[error(
+        "the checkout root {root:?} is not an absolute path: resolve it to the repository's absolute root before asking for an identity"
+    )]
+    RelativeRoot {
+        /// The root as it was given.
+        root: PathBuf,
+    },
 }
 
 /// Everything identity resolution depends on, gathered by the caller.
@@ -199,18 +219,21 @@ pub fn repo_part(root: &Path) -> String {
 /// Resolve the identity of this process for the checkout at `root`.
 ///
 /// Reads [`AGENT_ID_ENV`] and [`HOST_ENV`], canonicalises `root` with [`canonical_root`], and logs
-/// a warning for every configured id that was refused.
-pub fn resolve_from_env(config_agent_id: Option<String>, root: &Path) -> ResolvedIdentity {
-    let resolved = resolve_with(process_env, config_agent_id, root);
+/// a warning for every configured id that was refused. `root` must be absolute, and must come
+/// from the discovery `serve`, the CLI and the hooks share; a relative one is refused, whatever
+/// the configured ids are, because the result must not depend on the working directory.
+pub fn resolve_from_env(config_agent_id: Option<String>, root: &Path) -> Result<ResolvedIdentity, IdentityError> {
+    let resolved = resolve_with(process_env, config_agent_id, root)?;
     for rejected in &resolved.rejected {
+        // ~keep The refused value is whatever the environment held: `?` escapes control characters.
         tracing::warn!(
             setting = rejected.tier.label(),
-            value = %rejected.value,
+            value = ?rejected.value,
             in_use = resolved.principal.as_str(),
             "comms: configured agent id is not a valid id and is not used"
         );
     }
-    resolved
+    Ok(resolved)
 }
 
 /// [`resolve_from_env`] over an explicit environment lookup.
@@ -218,14 +241,14 @@ fn resolve_with(
     env: impl Fn(&str) -> Option<String>,
     config_agent_id: Option<String>,
     root: &Path,
-) -> ResolvedIdentity {
-    let root = canonical_root(root);
-    resolve(&IdentityInputs {
+) -> Result<ResolvedIdentity, IdentityError> {
+    let root = canonical_root(root)?;
+    Ok(resolve(&IdentityInputs {
         env_agent_id: env(AGENT_ID_ENV),
         config_agent_id,
         env_host: env(HOST_ENV),
         root: &root,
-    })
+    }))
 }
 
 /// A process environment variable, decoded lossily so a non-Unicode id is refused and reported
@@ -236,14 +259,27 @@ fn process_env(name: &str) -> Option<String> {
 
 /// The form of `root` the derived id hashes: the canonical path, symlinks resolved.
 ///
-/// When `root` cannot be canonicalised (it does not exist, or a parent is unreadable) the path is
-/// made absolute against the working directory and [`lexically_clean`]ed instead, so `repo/.` and
-/// `repo/` still agree.
-pub fn canonical_root(root: &Path) -> PathBuf {
-    root.canonicalize().unwrap_or_else(|_| {
-        let absolute = std::path::absolute(root).unwrap_or_else(|_| root.to_path_buf());
-        lexically_clean(&absolute)
-    })
+/// `root` must be absolute; a relative one is refused and never completed from the working
+/// directory. When an absolute `root` cannot be canonicalised (it does not exist, or a parent is
+/// unreadable) it is [`lexically_clean`]ed instead, so `repo/.` and `repo/` still agree. That id
+/// is stable, but it is not the one the checkout gets once it can be canonicalised if a symlink
+/// lies on the way.
+pub fn canonical_root(root: &Path) -> Result<PathBuf, IdentityError> {
+    canonical_root_via(root, Path::canonicalize)
+}
+
+/// [`canonical_root`] over an explicit canonicaliser, which is only ever given an absolute path
+/// and is therefore the only thing the result depends on beside `root`.
+fn canonical_root_via(
+    root: &Path,
+    canonicalize: impl FnOnce(&Path) -> std::io::Result<PathBuf>,
+) -> Result<PathBuf, IdentityError> {
+    if !root.is_absolute() {
+        return Err(IdentityError::RelativeRoot {
+            root: root.to_path_buf(),
+        });
+    }
+    Ok(canonicalize(root).unwrap_or_else(|_| lexically_clean(root)))
 }
 
 /// `path` with `.` components and redundant separators removed and `..` folded into the component
@@ -277,15 +313,19 @@ pub fn compose(principal: &Principal, as_: Option<&str>) -> Result<Actor, CommsE
 }
 
 /// The sub-name the Claude Code `PreToolUse` hook injects for a subagent that passed no `as`:
-/// `<agent_type>-<first 8 of agent_id>`, reduced to the sub-name grammar.
+/// `<agent_type>-<8 hex of blake3(agent_id)>`.
 ///
-/// Each part is ASCII-lowercased and every byte outside `[a-z0-9_-]` becomes `-`. The id part is
-/// then cut to [`HOOK_AGENT_ID_LEN`] bytes and the type part to what is left of the 32-byte
-/// sub-name, so a long agent type never pushes out the id that tells two subagents of that type
-/// apart. An empty part is left out together with its separator. `None` when no letter, digit or
-/// `_` survives, because a name of only `-` identifies nothing.
+/// The id part is a hash of the whole `agent_id`, not its first bytes, because two ids may share
+/// a prefix. The type part is ASCII-lowercased, every byte of it outside `[a-z0-9_-]` becomes
+/// `-`, and it is cut to what the id part leaves of the 32-byte sub-name (23 bytes), so a long
+/// agent type never pushes out what tells two subagents of that type apart. An empty part is left
+/// out together with its separator. `None` when no letter, digit or `_` is left, because a name
+/// of only `-` identifies nothing.
 pub fn hook_sub_name(agent_type: &str, agent_id: &str) -> Option<SubName> {
-    let id = reduce_to_sub_name(agent_id, HOOK_AGENT_ID_LEN);
+    let id = match agent_id {
+        "" => String::new(),
+        agent_id => blake3::hash(agent_id.as_bytes()).to_hex()[..HOOK_AGENT_HASH_HEX_LEN].to_string(),
+    };
     let type_budget = match id.len() {
         0 => MAX_SUB_NAME_LEN,
         id_len => MAX_SUB_NAME_LEN - id_len - PART_SEPARATOR.len_utf8(),
