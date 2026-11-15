@@ -9,9 +9,11 @@
 //!
 //! The root must be absolute. A relative one would be resolved against the working directory of
 //! whichever process asked, and a hook does not run where its `serve` does, so it is refused with
-//! [`IdentityError::RelativeRoot`] instead. `serve`, the CLI and the hooks must therefore all take
-//! the root from one shared discovery function that returns an absolute path: two discoveries
-//! that disagree give two ids, and nothing here can tell.
+//! [`IdentityError::RelativeRoot`] instead. An id is only ever derived from a [`CanonicalRoot`],
+//! which nothing but [`canonical_root`] makes, so no caller can hash a relative path by going
+//! around the check. `serve`, the CLI and the hooks must still all take the root from one shared
+//! discovery function that returns an absolute path: two discoveries that disagree give two ids,
+//! and nothing here can tell.
 
 use std::path::{Component, Path, PathBuf};
 
@@ -78,6 +80,18 @@ pub enum IdentityError {
     },
 }
 
+/// A checkout root in the form a derived id hashes: absolute, and canonical as far as the
+/// filesystem allowed. Only [`canonical_root`] makes one.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct CanonicalRoot(PathBuf);
+
+impl CanonicalRoot {
+    /// The root as a path.
+    pub fn as_path(&self) -> &Path {
+        &self.0
+    }
+}
+
 /// Everything identity resolution depends on, gathered by the caller.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IdentityInputs<'a> {
@@ -87,8 +101,8 @@ pub struct IdentityInputs<'a> {
     pub config_agent_id: Option<String>,
     /// The raw `BASEMIND_HOST` value, when set.
     pub env_host: Option<String>,
-    /// The checkout root, canonical (see [`canonical_root`]): its bytes are hashed as given.
-    pub root: &'a Path,
+    /// The checkout root: its bytes are hashed as given.
+    pub root: &'a CanonicalRoot,
 }
 
 /// A configured id that failed validation and was skipped.
@@ -159,9 +173,10 @@ pub fn resolve(inputs: &IdentityInputs<'_>) -> ResolvedIdentity {
 
 /// The derived id: `<host>-<repo>-<6 hex of blake3(root)>`.
 ///
-/// `root` is hashed byte for byte, so it must already be canonical for two spellings of one
-/// checkout to agree.
-pub fn derived_principal(host: Option<&str>, root: &Path) -> Principal {
+/// `root` is hashed byte for byte; being canonical is what makes two spellings of one checkout
+/// agree.
+pub fn derived_principal(host: Option<&str>, root: &CanonicalRoot) -> Principal {
+    let root = root.as_path();
     let hash = blake3::hash(root.as_os_str().as_encoded_bytes()).to_hex();
     let id = format!(
         "{}{PART_SEPARATOR}{}{PART_SEPARATOR}{}",
@@ -264,7 +279,7 @@ fn process_env(name: &str) -> Option<String> {
 /// unreadable) it is [`lexically_clean`]ed instead, so `repo/.` and `repo/` still agree. That id
 /// is stable, but it is not the one the checkout gets once it can be canonicalised if a symlink
 /// lies on the way.
-pub fn canonical_root(root: &Path) -> Result<PathBuf, IdentityError> {
+pub fn canonical_root(root: &Path) -> Result<CanonicalRoot, IdentityError> {
     canonical_root_via(root, Path::canonicalize)
 }
 
@@ -273,13 +288,15 @@ pub fn canonical_root(root: &Path) -> Result<PathBuf, IdentityError> {
 fn canonical_root_via(
     root: &Path,
     canonicalize: impl FnOnce(&Path) -> std::io::Result<PathBuf>,
-) -> Result<PathBuf, IdentityError> {
+) -> Result<CanonicalRoot, IdentityError> {
     if !root.is_absolute() {
         return Err(IdentityError::RelativeRoot {
             root: root.to_path_buf(),
         });
     }
-    Ok(canonicalize(root).unwrap_or_else(|_| lexically_clean(root)))
+    Ok(CanonicalRoot(
+        canonicalize(root).unwrap_or_else(|_| lexically_clean(root)),
+    ))
 }
 
 /// `path` with `.` components and redundant separators removed and `..` folded into the component
