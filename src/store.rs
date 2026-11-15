@@ -172,7 +172,7 @@ fn lock_contention_message(path: &Path, holder: &Option<LockMeta>) -> String {
 /// store lock because another basemind process is holding it. Kept as a constant so the
 /// scan and rescan paths emit identical wording and a test can assert the contract.
 pub const LOCK_CONTENTION_HELP: &str = "the basemind index is locked by another process \
-(likely the MCP server). If an editor/plugin is serving this repo, use its `rescan` tool \
+(likely the MCP server). If an editor/plugin is serving this repo, use its `index_rescan` tool \
 to refresh the index, or stop that server before running `basemind scan`.";
 
 pub use crate::store_lock::{WriterProbe, probe_writer_lock};
