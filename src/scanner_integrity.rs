@@ -21,6 +21,7 @@ pub(crate) fn preflight(store: &mut Store) -> Result<(), ScanError> {
             return Err(ScanError::IndexFault(reason));
         }
     }
+    store.open_index_owed_to_scan()?;
     store.rebuild_index_if_behind()?;
     ensure_space(store)
 }
@@ -28,7 +29,7 @@ pub(crate) fn preflight(store: &mut Store) -> Result<(), ScanError> {
 /// Whether an incremental scan must hand over to a full one: only a full pass can rebuild an index
 /// that is behind its file map (see [`preflight`]).
 pub(crate) fn needs_full_rebuild(store: &Store) -> Result<bool, ScanError> {
-    Ok(store.index_is_behind_file_map()? || store.index.rebuild_pending)
+    Ok(store.index_is_behind_file_map()? || store.index.rebuild_pending || store.index_rebuild_needed)
 }
 
 /// Drop a file that is gone: its index rows first, then its file-map entry. A failed commit is

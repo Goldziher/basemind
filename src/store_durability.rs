@@ -82,6 +82,19 @@ impl Store {
             || (self.index.files.is_empty() && self.index.doc_files.is_empty())
     }
 
+    /// Open, for the scan about to write into this store, the index a read-only open left alone
+    /// for being of an older schema. This is where that index is replaced: the same recovery a
+    /// writer open takes, file map emptied and written at once. A no-op for every other store.
+    pub(crate) fn open_index_owed_to_scan(&mut self) -> Result<(), StoreError> {
+        if self.index_db.is_some() || !self.index_rebuild_needed || self.layered_read.is_some() {
+            return Ok(());
+        }
+        let (index_db, _) = open_index_for_writer(&self.root, &self.view, &self.view_dir, &mut self.index)?;
+        self.hash_refs = HashRefs::of(&self.index.files);
+        self.index_db = Some(index_db);
+        self.flush()
+    }
+
     /// Whether the file map vouches for a scan generation the index never sealed (see
     /// [`crate::index::durability`]). `false` for a store with no index handle.
     pub(crate) fn index_is_behind_file_map(&self) -> Result<bool, StoreError> {

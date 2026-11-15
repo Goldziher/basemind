@@ -301,6 +301,10 @@ pub enum IndexError {
     /// open discards it and rescans, a read-only open serves from blobs.
     #[error("the code index is damaged ({0}); opening it for writing rebuilds it")]
     Corrupt(#[source] fjall::Error),
+    /// A read-only open found an index of an older schema. It is left exactly as it is: only a scan,
+    /// which holds the right to write, may replace it.
+    #[error("the code index was written under an older schema ({stored}, current {current}); rescan to rebuild it")]
+    NeedsRescan { stored: u32, current: u32 },
     /// The file map vouches for a scan generation the index never sealed: the index lost the tail
     /// of its journal and must be rebuilt before it is sealed again (see [`durability`]).
     #[error(
@@ -506,7 +510,10 @@ impl IndexDb {
 
     fn open_inner(view_dir: &Path, memory_dir: &Path, tolerate_held_memory: bool) -> Result<Self, IndexError> {
         let dir = view_dir.join(INDEX_DIR);
-        durability::sweep_discarded(view_dir);
+        // `tolerate_held_memory` is the read-only open: it deletes, migrates and wipes nothing. ~keep
+        if !tolerate_held_memory {
+            durability::sweep_discarded(view_dir);
+        }
         std::fs::create_dir_all(&dir).map_err(|source| IndexError::Io {
             path: dir.clone(),
             source,
@@ -534,7 +541,7 @@ impl IndexDb {
             }
             Err(error) => return Err(error),
         };
-        if !memory_detached {
+        if !memory_detached && !tolerate_held_memory {
             memory_store::migrate_legacy(&db, &memory)?;
         }
         let mut meta = open_keyspace(&db, "meta")?;
@@ -549,6 +556,12 @@ impl IndexDb {
             });
         }
         let wiped_on_open = matches!(on_disk_ver, Some(ver) if ver != INDEX_SCHEMA_VER);
+        if let Some(stored) = on_disk_ver.filter(|_| wiped_on_open && tolerate_held_memory) {
+            return Err(IndexError::NeedsRescan {
+                stored,
+                current: INDEX_SCHEMA_VER,
+            });
+        }
         if wiped_on_open {
             drop(meta);
             drop(db);

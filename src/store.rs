@@ -334,9 +334,10 @@ pub struct Store {
     pub reset_stale_schema: bool,
     /// True when the fjall index was empty or just wiped (a partition-revision bump) while the file
     /// map was populated: symbol / call / reference reads would answer empty until a full scan
-    /// rebuilds it. Set at open, which also empties the file map, in memory and on disk, so that
-    /// scan re-extracts every file (blobs are reused by hash) instead of skipping them as unchanged
-    /// over an empty index. Only a writer opening the index can know it.
+    /// rebuilds it. A writer open also empties the file map, in memory and on disk, so that scan
+    /// re-extracts every file (blobs are reused by hash) instead of skipping them as unchanged over
+    /// an empty index. A read-only open sets it for an index of an older schema, which it leaves
+    /// untouched and unopened (`index_db` is `None`) for the scan to replace.
     pub index_rebuild_needed: bool,
     _lock: Option<File>,
 }
@@ -647,11 +648,17 @@ impl Store {
             }
             Err(e) => return Err(e),
         };
+        let mut index_rebuild_needed = false;
         let index_db = if allow_index_db && schema_ok && view_dir.exists() && !writer_lock_is_held(&basemind_dir) {
             match IndexDb::open_tolerating_held_memory(&view_dir, &memory_store_dir(root)) {
                 Ok(db) => Some(db),
                 Err(IndexError::Fjall(fjall::Error::Locked)) => None,
                 Err(error @ IndexError::NewerSchema { .. }) => return Err(error.into()),
+                Err(error @ IndexError::NeedsRescan { .. }) => {
+                    tracing::warn!(%error, "serving from blobs until a scan rebuilds the index");
+                    index_rebuild_needed = true;
+                    None
+                }
                 Err(error) => {
                     tracing::warn!(%error, "read-only index open failed; degrading to blob-only reads");
                     None
@@ -675,7 +682,7 @@ impl Store {
             #[cfg(feature = "intelligence")]
             lance: None,
             reset_stale_schema: false,
-            index_rebuild_needed: false,
+            index_rebuild_needed,
             _lock: None,
         })
     }

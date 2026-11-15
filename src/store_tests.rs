@@ -400,3 +400,62 @@ fn a_writer_open_rebuilds_a_damaged_index_and_a_read_only_open_leaves_it() {
     assert!(store.index_rebuild_needed, "and orders the rebuild");
     assert!(store.index.files.is_empty());
 }
+
+/// A read-only open used to run the writer's open: it wiped an index of an older schema and
+/// stamped the new one. It now changes nothing and says a rescan is owed; the scan that follows,
+/// into the same store, is what replaces the index.
+#[test]
+fn a_read_only_open_leaves_an_older_index_for_the_scan_to_replace() {
+    use crate::index::view::IndexView;
+
+    init_isolated_cache();
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path();
+    std::fs::write(root.join("a.rs"), b"pub fn older_index_fixture() {}\n").expect("write");
+    let config = crate::config::ConfigV1::with_defaults();
+    let scan = |store: &mut Store| {
+        crate::scanner::scan(
+            root,
+            store,
+            &config,
+            crate::scanner::ScanSource::WorkingTree,
+            crate::scanner::EmbedMode::Deferred,
+        )
+        .expect("scan");
+    };
+    let view_dir = {
+        let mut store = Store::open(root, VIEW_WORKING).expect("open");
+        scan(&mut store);
+        store.view_dir.clone()
+    };
+    let older = crate::index::INDEX_SCHEMA_VER - 1;
+    let stamp = |write: Option<u32>| -> Option<Vec<u8>> {
+        let db = fjall::Database::builder(view_dir.join(crate::index::INDEX_DIR))
+            .open()
+            .expect("open raw index");
+        let meta = db
+            .keyspace("meta", fjall::KeyspaceCreateOptions::default)
+            .expect("meta keyspace");
+        if let Some(ver) = write {
+            meta.insert(b"schema_ver", ver.to_be_bytes()).expect("stamp");
+            db.persist(fjall::PersistMode::SyncAll).expect("persist");
+        }
+        meta.get(b"schema_ver").expect("read stamp").map(|bytes| bytes.to_vec())
+    };
+    stamp(Some(older));
+
+    let mut store = Store::open_read_only(root, VIEW_WORKING).expect("read-only open");
+    assert!(store.index_db.is_none(), "an older index is not opened");
+    assert!(store.index_rebuild_needed, "and the caller is told a rescan is owed");
+    assert_eq!(store.index.files.len(), 1, "the file map is untouched");
+    assert_eq!(
+        stamp(None),
+        Some(older.to_be_bytes().to_vec()),
+        "nothing was wiped or stamped"
+    );
+
+    scan(&mut store);
+    assert!(!store.index_rebuild_needed);
+    let view = store.index_view().expect("the scan opened the index");
+    assert_eq!(view.symbols_by_name_lookup("older_index_fixture", 4).len(), 1);
+}

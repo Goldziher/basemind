@@ -572,6 +572,7 @@ pub fn scan_with_observer(
     advance(&mut breadcrumb, &phase_peaks, PHASE_FLUSH, None);
     // A whole pass re-indexed every file: the rebuild the emptied file map asked for is done. ~keep
     store.index.rebuild_pending = false;
+    store.index_rebuild_needed = false;
     flush_code_map(store, &ScanHealth::resolving())?;
 
     // A token tripped after the last per-file check still stops the pass here, once the code map ~keep
