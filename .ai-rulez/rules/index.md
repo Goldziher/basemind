@@ -1,5 +1,6 @@
 # Concepts
 
+- [Adr Immutability](adr-immutability.md)
 - [Agent Comms](agent-comms.md)
 - [Basemind Usage](basemind-usage.md)
 - [Mcp Tool Conventions](mcp-tool-conventions.md)

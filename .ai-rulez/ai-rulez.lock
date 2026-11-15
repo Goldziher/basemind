@@ -4,7 +4,7 @@
 version = 1
 ai_rulez_version = '5.13.2'
 scope = 'all'
-tree = 'sha256:3aa24555265217b3b282b7949ff14cd39d80a38922dc99ef0f8b827aed8474f4'
+tree = 'sha256:23124924c77817db0f4841571d42feba74a267dff6b6f58899d58529f37e2bfa'
 
 [[served]]
 name = 'adr-workflow'
@@ -245,6 +245,12 @@ kind = 'context'
 id = 'scanner-pipeline'
 path = 'context/scanner-pipeline.md'
 digest = 'sha256:b8708c0e2cad3be814cc827a11e2d3482ecac5291928ea6603a15741c50e6c4a'
+
+[[item]]
+kind = 'rule'
+id = 'adr-immutability'
+path = 'rules/adr-immutability.md'
+digest = 'sha256:11e2ffe63678e74b67fdb24aef3cdcb702fe661b588f4174c3ab167363eb2cf3'
 
 [[item]]
 kind = 'rule'

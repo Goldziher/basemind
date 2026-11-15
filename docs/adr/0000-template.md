@@ -1,7 +1,10 @@
+---
+status: proposed
+date: YYYY-MM-DD
+---
+
 # ADR-NNNN: <short decision title>
 
-- **Status:** Proposed
-- **Date:** YYYY-MM-DD
 - **Deciders:** <who>
 - **Related:** <ADR-XXXX, ADR-YYYY, or none>
 

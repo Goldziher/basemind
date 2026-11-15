@@ -12,25 +12,67 @@ decision instead of re-litigating it. They complement [`../ARCHITECTURE.md`](../
 
 ## Format
 
-Each ADR is one file, `NNNN-<kebab-slug>.md`, numbered in creation order. Copy
-[`0000-template.md`](0000-template.md) to start a new one. The template follows the
+Each ADR is one file, `NNNN-<kebab-slug>.md`, numbered in creation order from `0000` with no gaps.
+Copy [`0000-template.md`](0000-template.md) to start a new one. The template follows the
 Nygard/MADR shape:
 
+- **Front matter** — a YAML block at the top of the file holding the record's metadata:
+
+  ```yaml
+  ---
+  status: proposed
+  date: 2026-11-15
+  ---
+  ```
+
+  | Key | Value |
+  |---|---|
+  | `status` | `proposed`, `accepted`, `rejected`, `superseded`, `deprecated` or `withdrawn`, in lower case |
+  | `date` | the day the record was written, `YYYY-MM-DD` |
+  | `superseded-by` | on a superseded record, the successor's number as a quoted string: `"0017"` |
+  | `supersedes` | on the successor, the number it replaces (`"0011"`), or a list of them |
+  | `amends` | on an amending record, a list of the numbers it amends: `["0018"]` |
+
 - **Title** — `# ADR-NNNN: <decision>`
-- **Status** — `Proposed` → `Accepted` → (optionally) `Superseded by ADR-MMMM` / `Deprecated`
+- **Deciders**, **Related** — a bullet each under the title
 - **Context** — the forces at play: the problem, constraints, and what exists today
 - **Decision** — what we will do (active voice, present tense)
 - **Consequences** — what becomes easier and harder as a result; follow-on work
 - **Alternatives considered** — the options we rejected and why
 
+ADRs 0000–0020 predate the front matter and also carry `- **Status:**` and `- **Date:**` bullets
+under the title, some with a note on when and why the status changed. The front matter is the
+authoritative value; where a record has both, they must agree.
+
 ## Lifecycle
 
-1. Author the ADR as **Proposed**.
-2. A maintainer (human) reviews and moves it to **Accepted** (or requests changes).
-3. Implement against the Accepted decision. If a later ADR overrides it, mark the old one
-   **Superseded by ADR-MMMM** rather than editing its decision.
+1. Author the ADR as `status: proposed` and add its row to the index below.
+2. A maintainer (human) reviews and moves it to `status: accepted` (or requests changes).
+3. Implement against the accepted decision. An accepted record's decision is never edited. A later
+   ADR overrides it by superseding or amending it:
+   - **Supersede.** The new record carries `supersedes`; the old one gets `status: superseded` and
+     `superseded-by`, and nothing else in it changes.
+   - **Amend.** The new record carries `amends`; the old one stays `accepted`.
 
 Keep ADRs short — a decision, not a design doc. Link related ADRs by number.
+
+## Linting
+
+[adrlint](https://github.com/Goldziher/adrlint) checks the log. It runs inside poly, switched on by
+`[lint.markdown.adrlint]` in `poly.toml`, so there is nothing separate to install:
+
+```bash
+poly lint docs/adr
+```
+
+- Per record, also in the pre-commit hook: a title and a `## Context` section, no empty section,
+  one level-1 heading, valid YAML front matter and working in-document anchors.
+- Over the whole log, on a whole-tree run (`poly lint .`, which is what CI runs): it starts at
+  `0000`, has no gap and no duplicate number, and holds only `NNNN-<slug>.md` files plus this index.
+
+The MADR section names (`Decision Outcome`, `Considered Options`) are not required: the records
+keep `Decision` and `Alternatives considered`. adrlint does not check the `status` vocabulary, so
+keep to the values in the table above.
 
 ## Index
 
