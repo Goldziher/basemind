@@ -330,7 +330,8 @@ fn cmd_comms_start() -> Result<()> {
 /// up to 0.33, that no daemon holds and nothing has used for `older_than_days`. Reads locks and
 /// file ages only; this generation's directory is never a candidate. With `older_than_days` zero
 /// the age test is off, so the previous release's message store goes as soon as none of its
-/// daemons is running.
+/// daemons is running. It also removes the registry records other generations left for daemons
+/// that are gone, which otherwise count toward the daemon ceiling whenever their pid is reused.
 #[cfg(all(feature = "comms", any(unix, windows)))]
 fn cmd_comms_cleanup(json: bool, dry_run: bool, older_than_days: u64) -> Result<()> {
     use basemind::comms::generation_cleanup::{self, Rendezvous, Verdict};
@@ -339,10 +340,23 @@ fn cmd_comms_cleanup(json: bool, dry_run: bool, older_than_days: u64) -> Result<
     let base = basemind::comms::singleton::comms_base_dir().context("resolve the comms directory")?;
     let max_age = std::time::Duration::from_secs(older_than_days.saturating_mul(DAY_SECS));
     let findings = generation_cleanup::sweep(&base, max_age, dry_run, std::time::SystemTime::now());
+    // After the sweep, so that the record of a daemon whose directory it just removed goes too.
+    let stale_records = basemind::daemon_lock::prune_other_generations_records(dry_run);
     if json {
-        println!("{}", serde_json::json!({ "dry_run": dry_run, "rendezvous": findings }));
+        println!(
+            "{}",
+            serde_json::json!({
+                "dry_run": dry_run,
+                "rendezvous": findings,
+                "stale_registry_records": stale_records,
+            })
+        );
     } else if findings.is_empty() {
         println!("nothing to clean up in {}", base.display());
+    }
+    if !json && stale_records > 0 {
+        let outcome = if dry_run { "would remove" } else { "removed" };
+        println!("{outcome}: {stale_records} registry record(s) of other generations whose daemon is gone");
     }
     for finding in findings.iter().filter(|_| !json) {
         let name = match &finding.rendezvous {

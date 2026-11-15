@@ -242,7 +242,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is running. A directory is renamed aside under the lock before it is deleted, so a daemon
   starting meanwhile finds its generation whole or absent. The command reads locks and file ages
   only, never contacts or signals a daemon, and never touches the generation of the binary that
-  runs it (ADR-0024 rule 7).
+  runs it (ADR-0024 rule 7). It also removes the daemon-registry records other generations left
+  for a daemon whose directory is gone or whose lock is free; with a reused pid such a record
+  counted toward the ceiling of live daemons for good.
 
 ### Fixed
 

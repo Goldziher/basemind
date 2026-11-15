@@ -330,6 +330,78 @@ fn count_recorded_in(dir: &Path, kind: DaemonKind) -> usize {
         .count()
 }
 
+/// What `<dir>/daemon.lock` says about a daemon in `dir`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LockState {
+    /// There is no lock file: no daemon of this lock scheme has run here, or the directory is gone.
+    Absent,
+    /// The lock was taken, and released again at once: no daemon is running here.
+    Free,
+    /// Another process holds the lock, or the file cannot be opened, so that cannot be ruled out.
+    Held,
+}
+
+/// Test `<dir>/daemon.lock` by taking it for an instant. A contender starting at that instant
+/// reads the lock as held with no live holder recorded, which it waits out (see
+/// `contend_for_lock`).
+pub fn lock_state(dir: &Path) -> LockState {
+    match OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(dir.join(DAEMON_LOCK_FILE))
+    {
+        Ok(file) if file.try_lock_exclusive().is_ok() => {
+            let _ = FileExt::unlock(&file);
+            LockState::Free
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => LockState::Absent,
+        Ok(_) | Err(_) => LockState::Held,
+    }
+}
+
+/// Remove the registry records of other generations whose daemon is provably gone: the directory
+/// it owned no longer exists, or its `daemon.lock` is there and free. Such a record still counts
+/// toward the ceiling whenever its pid has been reused by a live process, and the generation that
+/// wrote it may never run again to prune it. A record this binary cannot parse stays, and so does
+/// one whose directory has no `daemon.lock`: a later release may lock another way. With `dry_run`
+/// nothing is removed. Returns how many records were (or would be) removed.
+pub fn prune_other_generations_records(dry_run: bool) -> usize {
+    prune_other_generations_in(&daemons_root(), dry_run)
+}
+
+/// [`prune_other_generations_records`] over an explicit registry root.
+fn prune_other_generations_in(root: &Path, dry_run: bool) -> usize {
+    let own = generation_registry_in(root);
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return 0;
+    };
+    let mut registries = vec![root.to_path_buf()];
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let named_generation = entry.file_name().to_str().is_some_and(is_generation_name);
+        if named_generation && path != own && path.is_dir() {
+            registries.push(path);
+        }
+    }
+    let mut pruned = 0;
+    for registry in registries {
+        for entry in std::fs::read_dir(&registry).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("pid") {
+                continue;
+            }
+            let Some(record) = read_record(&path) else {
+                continue;
+            };
+            let gone = !record.dir.exists() || lock_state(&record.dir) == LockState::Free;
+            if gone && (dry_run || std::fs::remove_file(&path).is_ok()) {
+                pruned += 1;
+            }
+        }
+    }
+    pruned
+}
+
 /// The single-owner daemon lock: an exclusive flock plus the two pidfiles, released and removed on
 /// `Drop`. Acquire it at the very top of the daemon entry point, before binding the socket.
 #[derive(Debug)]
@@ -631,6 +703,83 @@ mod tests {
         for kept in [&pre_generation, &other_live, &other_dead, &other_unreadable] {
             assert!(kept.exists(), "{} is another generation's to prune", kept.display());
         }
+    }
+
+    #[test]
+    fn the_lock_state_tells_absent_free_and_held_apart() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let machine = tempfile::tempdir().expect("machine tempdir");
+        assert_eq!(lock_state(dir.path()), LockState::Absent);
+        assert_eq!(lock_state(&dir.path().join("missing")), LockState::Absent);
+
+        let held = DaemonLock::acquire_at(DaemonKind::Comms, dir.path(), "9.9.9", machine.path()).expect("acquire");
+        assert!(matches!(held, DaemonLockOutcome::Acquired(_)));
+        assert_eq!(lock_state(dir.path()), LockState::Held);
+
+        drop(held);
+        assert_eq!(lock_state(dir.path()), LockState::Free);
+        let again = DaemonLock::acquire_at(DaemonKind::Comms, dir.path(), "9.9.9", machine.path()).expect("acquire");
+        assert!(
+            matches!(again, DaemonLockOutcome::Acquired(_)),
+            "testing the lock does not keep it"
+        );
+    }
+
+    /// A registry record whose pid was reused counts as a live daemon for good, unless something
+    /// that can prove the daemon gone removes it.
+    #[test]
+    fn records_of_other_generations_are_pruned_only_when_their_daemon_is_provably_gone() {
+        let root = tempfile::tempdir().expect("registry root");
+        let dirs = tempfile::tempdir().expect("daemon dirs");
+        let other = root.path().join(format!("g{}", RENDEZVOUS_GENERATION + 3));
+        let own = generation_registry_in(root.path());
+        std::fs::create_dir_all(&other).expect("another generation's registry");
+        std::fs::create_dir_all(&own).expect("this generation's registry");
+        let live = std::process::id();
+        let daemon_dir = |name: &str, lock: bool| {
+            let dir = dirs.path().join(name);
+            std::fs::create_dir_all(&dir).expect("daemon dir");
+            if lock {
+                std::fs::write(dir.join(DAEMON_LOCK_FILE), b"").expect("lock file");
+            }
+            dir
+        };
+        let record = |registry: &Path, name: &str, dir: &Path| {
+            let path = registry.join(format!("comms-{name}.pid"));
+            std::fs::write(&path, comms_record(live, &dir.to_string_lossy())).expect("write record");
+            path
+        };
+        let unlocked = daemon_dir("unlocked", true);
+        let running = daemon_dir("running", true);
+        let other_scheme = daemon_dir("other-scheme", false);
+        let holder = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(running.join(DAEMON_LOCK_FILE))
+            .expect("open lock");
+        holder.try_lock_exclusive().expect("hold the running daemon's lock");
+
+        let dir_gone = record(root.path(), "dir-gone", &dirs.path().join("removed"));
+        let lock_free = record(&other, "lock-free", &unlocked);
+        let lock_held = record(&other, "lock-held", &running);
+        let no_lock = record(&other, "no-lock", &other_scheme);
+        let ours = record(&own, "ours", &dirs.path().join("removed"));
+        let unreadable = other.join("comms-newer-shape.pid");
+        std::fs::write(&unreadable, br#"{"pid":"a later shape"}"#).expect("write");
+        assert_eq!(count_other_generations_in(root.path(), DaemonKind::Comms), 4);
+
+        assert_eq!(prune_other_generations_in(root.path(), true), 2, "a dry run counts");
+        assert!(dir_gone.exists() && lock_free.exists(), "and removes nothing");
+
+        assert_eq!(prune_other_generations_in(root.path(), false), 2);
+        assert!(!dir_gone.exists(), "its directory is gone");
+        assert!(!lock_free.exists(), "its lock is free");
+        assert!(lock_held.exists(), "a held lock is a running daemon");
+        assert!(no_lock.exists(), "no daemon.lock proves nothing");
+        assert!(unreadable.exists(), "an unreadable record may be a later shape");
+        assert!(ours.exists(), "this generation prunes its own records by pid");
+        assert_eq!(count_other_generations_in(root.path(), DaemonKind::Comms), 2);
+        drop(holder);
     }
 
     #[test]
