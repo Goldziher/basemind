@@ -177,8 +177,9 @@ fn summarize(
     let mut unread = 0;
     if let Some(position) = position {
         let last = record.newest_from_others(actor);
-        if position.read_seq < last {
-            for entry in reader.metas(id, position.read_seq + 1..=last) {
+        let first = record.first_stored(position.read_seq + 1);
+        if first <= last {
+            for entry in reader.metas(id, first..=last) {
                 if entry?.1.from != *actor {
                     unread += 1;
                 }

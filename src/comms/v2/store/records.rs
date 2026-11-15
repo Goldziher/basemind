@@ -13,7 +13,9 @@ use serde::{Deserialize, Serialize};
 
 use super::Keyspaces;
 use super::keys;
-use crate::comms::v2::api::{Actor, Caller, CommsError, InboxMessage, MessageId, RepoKey, ThreadId};
+use crate::comms::v2::api::{
+    Actor, Caller, CommsError, InboxMessage, MAX_MESSAGES_PER_THREAD, MessageId, RepoKey, ThreadId,
+};
 use crate::comms::v2::rules::{self, Access, Position};
 use crate::path::RelPath;
 
@@ -50,6 +52,15 @@ impl ThreadRecord {
         } else {
             self.head
         }
+    }
+
+    /// Where a walk of the thread's messages from sequence number `first` may start instead:
+    /// `first`, or the oldest sequence number the thread's cap has not pushed out when that is
+    /// later. Every post removes the message exactly [`MAX_MESSAGES_PER_THREAD`] behind it, so
+    /// nothing is stored below `head - MAX_MESSAGES_PER_THREAD + 1`, and a range that starts
+    /// lower only walks the tombstones of what was there.
+    pub fn first_stored(&self, first: u64) -> u64 {
+        first.max(self.head.saturating_sub(MAX_MESSAGES_PER_THREAD) + 1)
     }
 
     /// The record after `actor` posts message `seq` at `ts_micros`.

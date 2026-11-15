@@ -173,7 +173,7 @@ impl Scan {
         } else {
             record.newest_from_others(actor)
         };
-        let mut first = position.floor(kind) + 1;
+        let mut first = record.first_stored(position.floor(kind) + 1);
         if let Some(after) = after.filter(|_| first <= last) {
             first = first_past(reader, id, first, last, after)?;
         }

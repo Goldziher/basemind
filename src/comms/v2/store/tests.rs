@@ -367,6 +367,90 @@ fn history_pages_by_cursor_through_a_thread_that_dropped_its_oldest_messages() {
 }
 
 #[test]
+fn reads_of_a_thread_far_past_its_cap_start_at_the_oldest_message_still_stored() {
+    use crate::comms::v2::api::MAX_MESSAGES_PER_THREAD;
+    let harness = Harness::new();
+    let created = start(&harness, "a", "topic", &["b", "c"]);
+    let early = say(&harness, "a", &created.thread, "early");
+    let marked = harness.inbox(&caller("c"), InboxBody::default()).expect("inbox");
+    assert_eq!(marked.read_to, [early.id]);
+    for n in 0..MAX_MESSAGES_PER_THREAD + 300 {
+        say(&harness, "a", &created.thread, &format!("m{n}"));
+    }
+    let head = MAX_MESSAGES_PER_THREAD + 302;
+    let oldest = head - MAX_MESSAGES_PER_THREAD + 1;
+    let id = |seq: u64| MessageId::new(created.thread.clone(), seq).expect("id");
+
+    let store = harness.store();
+    let reader = store.reader(store.clock.now_micros());
+    let record = reader.thread(&created.thread).expect("read").expect("thread");
+    assert_eq!(record.head, head);
+    assert_eq!(
+        (record.first_stored(1), record.first_stored(oldest + 5)),
+        (oldest, oldest + 5)
+    );
+    assert!(reader.stored_meta(&created.thread, oldest).expect("read").is_some());
+    assert!(reader.stored_meta(&created.thread, oldest - 1).expect("read").is_none());
+    drop(reader);
+
+    for (name, position) in [("b", 0), ("c", 2)] {
+        let summary = &harness
+            .threads_query(&caller(name), ThreadQuery::Describe(created.thread.clone()))
+            .expect("describe")
+            .threads[0];
+        assert_eq!(
+            (summary.head, summary.unread),
+            (head, MAX_MESSAGES_PER_THREAD),
+            "{name}"
+        );
+        let peeked = harness
+            .inbox(
+                &caller(name),
+                InboxBody {
+                    limit: Some(2),
+                    ..peek()
+                },
+            )
+            .expect("peek");
+        let ids: Vec<MessageId> = peeked.messages.into_iter().map(|message| message.id).collect();
+        assert_eq!(ids, [id(oldest), id(oldest + 1)], "{name}");
+        let page_two = harness
+            .inbox(
+                &caller(name),
+                InboxBody {
+                    limit: Some(2),
+                    cursor: peeked.next_cursor,
+                    ..peek()
+                },
+            )
+            .expect("peek");
+        let ids: Vec<MessageId> = page_two.messages.into_iter().map(|message| message.id).collect();
+        assert_eq!(ids, [id(oldest + 2), id(oldest + 3)], "{name}");
+        assert_eq!(
+            harness.position(&created.thread, &caller(name).actor),
+            Some((position, position)),
+            "{name}"
+        );
+    }
+
+    let read = harness
+        .inbox(
+            &caller("c"),
+            InboxBody {
+                limit: Some(1),
+                ..InboxBody::default()
+            },
+        )
+        .expect("inbox");
+    assert_eq!(read.read_to, [id(oldest)]);
+    let summary = &harness
+        .threads_query(&caller("c"), ThreadQuery::Describe(created.thread.clone()))
+        .expect("describe")
+        .threads[0];
+    assert_eq!(summary.unread, MAX_MESSAGES_PER_THREAD - 1);
+}
+
+#[test]
 fn thread_row_tracks_the_newest_message_of_everyone_but_its_author() {
     let (a, b, c) = (caller("a").actor, caller("b").actor, caller("c").actor);
     let harness = Harness::new();
