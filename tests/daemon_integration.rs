@@ -1539,13 +1539,11 @@ async fn daemon_hosts_cold_layered_files_and_symbols_without_standalone_fjall() 
 
 /// Two installed releases must not fight over one daemon. A release up to 0.33 keeps its daemon at
 /// the top of the comms directory and stops, then kills, any daemon whose version or protocol is not
-/// its own; this binary did the same to it, so every session start severed the other install's
-/// sessions. Here a stand-in for that daemon holds the unscoped socket and reports 0.33.0 /
+/// its own. Here a stand-in for that daemon holds the unscoped socket and reports 0.33.0 /
 /// protocol 4, naming a real process as its pid. Bringing this binary's daemon up in the same comms
-/// directory must leave it uncontacted and that process alive, with both daemons serving.
-///
-/// Against the unscoped layout this fails three ways: `comms start` reads the stand-in's `Status`
-/// (a contact), kills the pid it reports, and never binds a socket of its own.
+/// directory must leave it uncontacted and that process alive, with both daemons serving, and must
+/// put nothing at the top of the comms directory or of the daemon registry but a generation
+/// directory: those two top levels are what the released binary reads.
 #[cfg(unix)]
 #[test]
 fn a_daemon_of_this_generation_starts_beside_a_pre_generation_daemon_and_leaves_it_alone() {
@@ -1564,6 +1562,7 @@ fn a_daemon_of_this_generation_starts_beside_a_pre_generation_daemon_and_leaves_
     struct Cleanup<'a> {
         pid: u32,
         comms_dir: &'a Path,
+        data_home: &'a Path,
     }
     impl Drop for Cleanup<'_> {
         fn drop(&mut self) {
@@ -1571,9 +1570,19 @@ fn a_daemon_of_this_generation_starts_beside_a_pre_generation_daemon_and_leaves_
             let _ = Command::new(BIN)
                 .args(["comms", "stop"])
                 .env("BASEMIND_COMMS_DIR", self.comms_dir)
-                .env("BASEMIND_DATA_HOME", self.comms_dir)
+                .env("BASEMIND_DATA_HOME", self.data_home)
                 .output();
         }
+    }
+
+    fn names_in(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .expect("read directory")
+            .flatten()
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
     }
 
     fn ask_status(socket: &Path) -> Option<StatusReport> {
@@ -1594,7 +1603,9 @@ fn a_daemon_of_this_generation_starts_beside_a_pre_generation_daemon_and_leaves_
 
     let tmp = tempfile::tempdir().expect("tempdir");
     let comms_dir = tmp.path().join("comms");
+    let data_home = tmp.path().join("data");
     std::fs::create_dir_all(&comms_dir).expect("mkdir comms");
+    std::fs::create_dir_all(&data_home).expect("mkdir data home");
 
     // Started through a shell that exits at once, so it is reparented to init and a kill would ~keep
     // make it disappear rather than linger as this test's zombie, which still reads as live. ~keep
@@ -1609,6 +1620,7 @@ fn a_daemon_of_this_generation_starts_beside_a_pre_generation_daemon_and_leaves_
     let _cleanup = Cleanup {
         pid: released_pid,
         comms_dir: &comms_dir,
+        data_home: &data_home,
     };
     assert!(pid_is_live(released_pid), "the stand-in process must be running");
 
@@ -1653,7 +1665,7 @@ fn a_daemon_of_this_generation_starts_beside_a_pre_generation_daemon_and_leaves_
     let start = Command::new(BIN)
         .args(["comms", "start"])
         .env("BASEMIND_COMMS_DIR", &comms_dir)
-        .env("BASEMIND_DATA_HOME", &comms_dir)
+        .env("BASEMIND_DATA_HOME", &data_home)
         .output()
         .expect("run comms start");
     assert!(
@@ -1693,6 +1705,18 @@ fn a_daemon_of_this_generation_starts_beside_a_pre_generation_daemon_and_leaves_
     assert_eq!(released_report.version, RELEASED_VERSION);
     assert_eq!(released_report.proto_ver, RELEASED_PROTO);
     assert!(pid_is_live(ours_report.pid), "both daemons end up alive");
+
+    let generation = format!("g{}", basemind::comms::singleton::RENDEZVOUS_GENERATION);
+    assert_eq!(
+        names_in(&comms_dir),
+        ["comms.sock".to_string(), generation.clone()],
+        "no lock, pidfile or store of this generation's daemon may land beside the pre-generation ones"
+    );
+    assert_eq!(
+        names_in(&data_home.join("daemons")),
+        [generation],
+        "this generation's registry record must be out of a pre-generation scan's sight"
+    );
 
     done.store(true, Ordering::SeqCst);
     released_daemon.join().expect("released daemon thread");

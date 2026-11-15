@@ -13,14 +13,19 @@
 //!    removed on `Drop`. This is the authoritative "one daemon per dir" gate, uniform across Unix
 //!    and Windows (a real lock, not the Unix-only socket-inode watchdog).
 //!
-//! 2. **The machine ceiling** — every live daemon registers a pidfile under `<data_home>/daemons/`.
-//!    [`count_live_daemons_of`] tallies one kind's holders, pruning dead ones via [`pid_is_live`],
-//!    and a spawner (e.g. `ensure_daemon` in `comms::singleton`) refuses to spawn past
-//!    [`max_live_daemons`]. The ceiling is applied per kind so one runaway family cannot starve
-//!    another. It is keyed on the resolved data home (`BASEMIND_DATA_HOME`), so it is a
-//!    **production** ceiling on a shared cache — NOT the test guard. Tests isolate the data home
-//!    per process, so a suite's daemons never accumulate here; their leak safety comes from the
-//!    bootstrap reaper and the kill-and-wait test harness, not this count.
+//! 2. **The machine ceiling** — every live daemon registers a pidfile under
+//!    `<data_home>/daemons/g<N>/`, `N` being its [`RENDEZVOUS_GENERATION`]. [`live_daemons`] and
+//!    [`live_daemons_of`] list this generation's holders only, pruning dead ones via
+//!    [`pid_is_live`]; they are what `comms doctor` and `comms stop --all` act on, so neither can
+//!    reach another generation's daemon. [`count_live_daemons_of`] tallies one kind's holders
+//!    across every generation — this one's directory, the other `g<M>/` directories and the
+//!    unscoped `daemons/` that releases up to 0.33 register in — by reading the records, never by
+//!    contacting a daemon, and a spawner (e.g. `ensure_daemon` in `comms::singleton`) refuses to
+//!    spawn past [`max_live_daemons`]. The ceiling is applied per kind so one runaway family
+//!    cannot starve another. It is keyed on the resolved data home (`BASEMIND_DATA_HOME`), so it
+//!    is a **production** ceiling on a shared cache — NOT the test guard. Tests isolate the data
+//!    home per process, so a suite's daemons never accumulate here; their leak safety comes from
+//!    the bootstrap reaper and the kill-and-wait test harness, not this count.
 
 #![cfg(any(unix, windows))]
 
@@ -40,6 +45,38 @@ const DAEMON_LOCK_FILE: &str = "daemon.lock";
 const DAEMON_PID_FILE: &str = "daemon.pid";
 /// The machine-wide directory of live-daemon pidfiles under the data home.
 const DAEMONS_SUBDIR: &str = "daemons";
+
+/// The protocol generation: which subdirectory of the comms directory
+/// (`comms::singleton::generation_dir`) this binary's daemon and clients meet in, and which
+/// subdirectory of the machine registry its daemons are listed in. Binaries of different
+/// generations never contact each other, so each keeps its own daemon alive for as long as its own
+/// sessions need it.
+///
+/// Deliberately not `PROTO_VER`. A protocol bump is survivable inside a generation: mismatched
+/// peers refuse each other by the takeover table without anyone being signalled. A generation bump
+/// is not free — the new generation starts with an empty comms store (threads, messages and the
+/// agent roster do not carry over) and one more daemon runs until the old sessions end.
+///
+/// Unrelated to the scan generation and to the index's base generations: this one only names where
+/// a daemon and its clients meet.
+///
+/// Bump it, by one, only when a release must stay invisible to binaries ALREADY RELEASED into the
+/// current generation, because they would mishandle its daemon or its files and cannot be patched:
+///
+/// - a released binary's takeover rule would stop or signal this release's daemon (the reason
+///   generation 1 exists: every release up to 0.33 kills any daemon whose version or protocol
+///   differs from its own);
+/// - the bring-up exchange they rely on changes shape: the length-prefixed msgpack framing, the
+///   `Ping` / `Status` / `Stop` requests, or the `pid` / `version` / `proto_ver` fields of
+///   `StatusReport`;
+/// - the meaning of `daemon.lock` / `daemon.pid`, of a registry record, or of the socket bind as a
+///   lock, changes;
+/// - the store changes on disk in a way its schema version does not announce, so an older binary
+///   would open it instead of failing with `NewerSchema`.
+///
+/// Do not bump it for a `PROTO_VER` bump, a new request or response variant, or a store schema
+/// bump: the first two are refused at the handshake and the third is versioned in the store.
+pub const RENDEZVOUS_GENERATION: u32 = 1;
 
 /// Default machine-wide ceiling, per kind, on concurrently live daemons before a spawn is refused.
 /// Well above any legitimate need (one per user is the norm; a handful covers isolated
@@ -71,8 +108,7 @@ pub enum DaemonKind {
     #[default]
     Comms,
     /// The agent-shells daemon of an older release. Never written by this version; kept readable
-    /// so such a daemon's registry record still parses and the daemon stays visible to
-    /// `comms doctor` instead of being reaped as corrupt while it runs. See `read_record`.
+    /// so a record of that kind still parses instead of being reaped as corrupt. See `read_record`.
     Shells,
 }
 
@@ -114,11 +150,30 @@ pub struct DaemonRecord {
     pub started_unix: i64,
 }
 
-/// The machine-wide daemons directory (`<data_home>/daemons/`). The registry lives here so it is
-/// keyed on the resolved data home; the `_in`/`_at` helpers take it explicitly so unit tests inject
-/// a temp dir without mutating the process-global `BASEMIND_DATA_HOME`.
-fn daemons_dir() -> PathBuf {
+/// The registry root (`<data_home>/daemons/`), holding one subdirectory per generation. Releases
+/// up to 0.33 keep their records directly in it; their scan reads only `*.pid` files there, so a
+/// generation subdirectory is invisible to them.
+fn daemons_root() -> PathBuf {
     cache_root().join(DAEMONS_SUBDIR)
+}
+
+/// This generation's registry directory (`<data_home>/daemons/g<N>/`): where this binary's daemons
+/// register and the only place its listings look. Keyed on the resolved data home; the `_in`/`_at`
+/// helpers take a directory explicitly so unit tests inject a temp dir without mutating the
+/// process-global `BASEMIND_DATA_HOME`.
+fn daemons_dir() -> PathBuf {
+    generation_registry_in(&daemons_root())
+}
+
+/// This generation's registry directory under an explicit registry root.
+fn generation_registry_in(root: &Path) -> PathBuf {
+    root.join(format!("g{RENDEZVOUS_GENERATION}"))
+}
+
+/// Whether `name` names a generation's registry directory: `g` followed by decimal digits.
+fn is_generation_registry_name(name: &str) -> bool {
+    name.strip_prefix('g')
+        .is_some_and(|digits| !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit()))
 }
 
 /// The registry pidfile for a daemon dir within a given machine dir: `<machine_dir>/<kind>-<hash>.pid`.
@@ -179,9 +234,10 @@ pub fn recorded_holder(dir: &Path) -> Option<DaemonRecord> {
     read_record(&dir.join(DAEMON_PID_FILE)).filter(|record| pid_is_live(record.pid))
 }
 
-/// Every live daemon registered on this machine (under the resolved data home), of any kind, with
-/// the pidfiles of any that have died pruned as a side effect. Best-effort: an unreadable registry
-/// dir yields empty. Powers `comms doctor`.
+/// Every live daemon of this generation registered on this machine (under the resolved data home),
+/// of any kind, with the pidfiles of any that have died pruned as a side effect. Best-effort: an
+/// unreadable registry dir yields empty. Powers `comms doctor`. Daemons of other generations are
+/// never listed: the caller would address them over a protocol they may not speak.
 pub fn live_daemons() -> Vec<DaemonRecord> {
     live_daemons_in(&daemons_dir())
 }
@@ -222,9 +278,55 @@ fn live_daemons_in(machine_dir: &Path) -> Vec<DaemonRecord> {
     live
 }
 
-/// Count the live daemons of one kind on this machine, pruning dead pidfiles. See [`live_daemons`].
+/// Count the live daemons of one kind on this machine across every generation, for the ceiling.
+/// This generation's dead pidfiles are pruned; the others' records are only read.
 pub fn count_live_daemons_of(kind: DaemonKind) -> usize {
-    live_daemons_of(kind).len()
+    count_all_generations_in(&daemons_root(), kind)
+}
+
+/// [`count_live_daemons_of`] over an explicit registry root.
+fn count_all_generations_in(root: &Path, kind: DaemonKind) -> usize {
+    live_daemons_of_in(&generation_registry_in(root), kind).len() + count_other_generations_in(root, kind)
+}
+
+/// How many live daemons of one kind other generations have registered: the releases up to 0.33,
+/// whose records sit directly in the registry root, and every `g<M>/` but this binary's. They count
+/// toward the ceiling and are otherwise out of this binary's reach.
+pub fn count_live_daemons_of_other_generations(kind: DaemonKind) -> usize {
+    count_other_generations_in(&daemons_root(), kind)
+}
+
+/// [`count_live_daemons_of_other_generations`] over an explicit registry root.
+fn count_other_generations_in(root: &Path, kind: DaemonKind) -> usize {
+    let own = generation_registry_in(root);
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return 0;
+    };
+    let mut count = count_recorded_in(root, kind);
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let named_generation = entry.file_name().to_str().is_some_and(is_generation_registry_name);
+        if named_generation && path != own && path.is_dir() {
+            count += count_recorded_in(&path, kind);
+        }
+    }
+    count
+}
+
+/// The live `kind` daemons recorded directly in `dir`. Read-only, unlike [`live_daemons_in`]: a
+/// record another generation wrote is that generation's to prune, and one this binary cannot parse
+/// may be a shape a later release introduced.
+fn count_recorded_in(dir: &Path, kind: DaemonKind) -> usize {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().and_then(|e| e.to_str()) == Some("pid"))
+        .filter_map(|path| read_record(&path))
+        .filter(|record| record.kind == kind && pid_is_live(record.pid))
+        .count()
 }
 
 /// The single-owner daemon lock: an exclusive flock plus the two pidfiles, released and removed on
@@ -235,7 +337,7 @@ pub struct DaemonLock {
     lock: File,
     /// `<dir>/daemon.pid`, removed on drop.
     pid_path: PathBuf,
-    /// `<data_home>/daemons/<kind>-<hash>.pid`, removed on drop.
+    /// `<data_home>/daemons/g<N>/<kind>-<hash>.pid`, removed on drop.
     machine_path: PathBuf,
 }
 
@@ -454,6 +556,80 @@ mod tests {
             1,
             "the shells daemon is counted under its own kind"
         );
+    }
+
+    /// A registry record as a release up to 0.33 writes it.
+    fn comms_record(pid: u32, dir: &str) -> String {
+        format!(r#"{{"pid":{pid},"kind":"comms","dir":"{dir}","version":"0.33.0","started_unix":1}}"#)
+    }
+
+    /// What a release up to 0.33 sees of the registry: the `*.pid` files directly in its root.
+    fn flat_scan(root: &Path) -> Vec<PathBuf> {
+        std::fs::read_dir(root)
+            .expect("read registry root")
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().and_then(|e| e.to_str()) == Some("pid"))
+            .collect()
+    }
+
+    #[test]
+    fn this_generations_daemons_register_where_a_pre_generation_scan_cannot_see_them() {
+        assert_eq!(
+            daemons_dir(),
+            daemons_root().join(format!("g{RENDEZVOUS_GENERATION}")),
+            "the registry this binary writes and lists is its generation's subdirectory"
+        );
+
+        let root = tempfile::tempdir().expect("registry root");
+        let comms = tempfile::tempdir().expect("comms tempdir");
+        let own = generation_registry_in(root.path());
+        let held = DaemonLock::acquire_at(DaemonKind::Comms, comms.path(), "9.9.9", &own).expect("acquire");
+        assert!(matches!(held, DaemonLockOutcome::Acquired(_)));
+
+        assert_eq!(live_daemons_in(&own).len(), 1, "registered in its own generation");
+        assert_eq!(
+            flat_scan(root.path()),
+            Vec::<PathBuf>::new(),
+            "nothing a release up to 0.33 would list, stop or prune"
+        );
+    }
+
+    #[test]
+    fn listings_cover_this_generation_only_and_the_ceiling_counts_all_of_them() {
+        let root = tempfile::tempdir().expect("registry root");
+        let comms = tempfile::tempdir().expect("comms tempdir");
+        let own = generation_registry_in(root.path());
+        let _held = DaemonLock::acquire_at(DaemonKind::Comms, comms.path(), "9.9.9", &own).expect("acquire");
+
+        let other = root.path().join(format!("g{}", RENDEZVOUS_GENERATION + 6));
+        std::fs::create_dir_all(&other).expect("another generation's registry");
+        let not_a_generation = root.path().join("gone");
+        std::fs::create_dir_all(&not_a_generation).expect("unrelated directory");
+        let pre_generation = root.path().join("comms-flat.pid");
+        let other_live = other.join("comms-live.pid");
+        let other_dead = other.join("comms-dead.pid");
+        let other_unreadable = other.join("comms-newer-shape.pid");
+        let live = std::process::id();
+        std::fs::write(&pre_generation, comms_record(live, "/tmp/pre-generation")).expect("write");
+        std::fs::write(&other_live, comms_record(live, "/tmp/other-generation")).expect("write");
+        std::fs::write(&other_dead, comms_record(0x7FFF_FFFE, "/tmp/dead")).expect("write");
+        std::fs::write(&other_unreadable, br#"{"pid":"a later shape"}"#).expect("write");
+        std::fs::write(not_a_generation.join("comms-x.pid"), comms_record(live, "/tmp/x")).expect("write");
+
+        let listed = live_daemons_of_in(&own, DaemonKind::Comms);
+        assert_eq!(listed.len(), 1, "only this generation's daemon is listed: {listed:?}");
+        assert_eq!(listed[0].dir, comms.path());
+        assert_eq!(count_other_generations_in(root.path(), DaemonKind::Comms), 2);
+        assert_eq!(
+            count_all_generations_in(root.path(), DaemonKind::Comms),
+            3,
+            "this generation's, the pre-generation one and the other generation's live one"
+        );
+        assert_eq!(count_all_generations_in(root.path(), DaemonKind::Shells), 0);
+        for kept in [&pre_generation, &other_live, &other_dead, &other_unreadable] {
+            assert!(kept.exists(), "{} is another generation's to prune", kept.display());
+        }
     }
 
     #[test]

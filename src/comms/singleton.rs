@@ -17,8 +17,10 @@
 //! `daemon.log`, `http.addr` — lives in a per-generation subdirectory of the comms directory, named
 //! by [`RENDEZVOUS_GENERATION`]. A binary only ever looks inside its own generation, so two installed
 //! releases of different generations each run their own daemon and cannot see, stop or signal the
-//! other's. Releases up to 0.33 predate this and use the comms directory itself; that unscoped
-//! layout is their generation, and this binary never opens it.
+//! other's. The machine registry is scoped the same way (see [`crate::daemon_lock`]), so
+//! `comms stop --all` and `comms doctor` reach this generation's daemons only. Releases up to 0.33
+//! predate this and use the comms directory itself; that unscoped layout is their generation, and
+//! this binary never opens it.
 //!
 //! ## Takeover within a generation
 //!
@@ -55,34 +57,8 @@ use super::protocol::{CommsOut, CommsRequest, CommsResponse, PROTO_VER, StatusRe
 /// Subdirectory under the user data dir holding the comms generations.
 const COMMS_SUBDIR: &str = "comms";
 
-/// The protocol generation: which subdirectory of the comms directory ([`generation_dir`]) this
-/// binary's daemon and clients meet in. Binaries of different generations never contact each
-/// other, so each keeps its own daemon alive for as long as its own sessions need it.
-///
-/// Deliberately not `PROTO_VER`. A protocol bump is survivable inside a generation: mismatched
-/// peers refuse each other by the takeover table without anyone being signalled. A generation bump
-/// is not free — the new generation starts with an empty comms store (threads, messages and the
-/// agent roster do not carry over) and one more daemon runs until the old sessions end.
-///
-/// Unrelated to the scan generation and to the index's base generations: this one only names where
-/// a daemon and its clients meet.
-///
-/// Bump it, by one, only when a release must stay invisible to binaries ALREADY RELEASED into the
-/// current generation, because they would mishandle its daemon or its files and cannot be patched:
-///
-/// - a released binary's takeover rule would stop or signal this release's daemon (the reason
-///   generation 1 exists: every release up to 0.33 kills any daemon whose version or protocol
-///   differs from its own);
-/// - the bring-up exchange they rely on changes shape: the length-prefixed msgpack framing, the
-///   `Ping` / `Status` / `Stop` requests, or the `pid` / `version` / `proto_ver` fields of
-///   `StatusReport`;
-/// - the meaning of `daemon.lock` / `daemon.pid`, or of the socket bind as a lock, changes;
-/// - the store changes on disk in a way its schema version does not announce, so an older binary
-///   would open it instead of failing with `NewerSchema`.
-///
-/// Do not bump it for a `PROTO_VER` bump, a new request or response variant, or a store schema
-/// bump: the first two are refused at the handshake and the third is versioned in the store.
-pub const RENDEZVOUS_GENERATION: u32 = 1;
+pub use crate::daemon_lock::RENDEZVOUS_GENERATION;
+
 /// The Unix socket file name within [`COMMS_SUBDIR`]. Unused on Windows, where the endpoint is
 /// a named pipe resolved by [`comms_socket_path`] rather than a file under `comms_dir`.
 #[cfg(not(windows))]
@@ -271,7 +247,7 @@ pub const COMMS_DIR_ENV: &str = "BASEMIND_COMMS_DIR";
 
 /// This binary's generation directory inside a comms directory: `<comms_base>/g<N>`. The one place
 /// the generation enters a path — the socket, lock, pidfile, store and log are all derived from the
-/// directory this returns, and on Windows the pipe name carries its `g<N>` and a hash of it.
+/// directory this returns, and on Windows the pipe name is a hash of it.
 pub fn generation_dir(comms_base: &Path) -> PathBuf {
     comms_base.join(format!("g{RENDEZVOUS_GENERATION}"))
 }
@@ -303,27 +279,12 @@ pub fn resolve_paths() -> Result<CommsPaths, SingletonError> {
 }
 
 /// The socket path for a generation directory (see [`generation_dir`]). On Unix,
-/// `<comms_dir>/comms.sock`. On Windows, the named pipe
-/// `\\.\pipe\basemind-comms-<USERNAME>-g<N>-<hash of the directory>`.
-///
-/// A directory not named `g<N>` gets the pipe name without that segment, which is the name releases
-/// up to 0.33 gave it. `comms stop --all` and `comms doctor` address every registered daemon by its
-/// own directory, so they must still compute an older daemon's pipe exactly.
+/// `<comms_dir>/comms.sock`. On Windows, the named pipe [`pipe_name`] gives the directory.
 pub fn comms_socket_path(comms_dir: &Path) -> PathBuf {
     #[cfg(windows)]
     {
-        use std::hash::{Hash, Hasher};
         let user = std::env::var("USERNAME").unwrap_or_else(|_| "default".to_string());
-        let mut hasher = std::hash::DefaultHasher::new();
-        comms_dir.hash(&mut hasher);
-        let dir_hash = hasher.finish();
-        let generation = comms_dir
-            .file_name()
-            .and_then(|name| name.to_str())
-            .filter(|name| is_generation_dir_name(name))
-            .map(|name| format!("-{name}"))
-            .unwrap_or_default();
-        PathBuf::from(format!(r"\\.\pipe\basemind-comms-{user}{generation}-{dir_hash:016x}"))
+        PathBuf::from(pipe_name(&user, comms_dir))
     }
     #[cfg(not(windows))]
     {
@@ -331,11 +292,21 @@ pub fn comms_socket_path(comms_dir: &Path) -> PathBuf {
     }
 }
 
-/// Whether `name` is a generation directory's name: `g` followed by decimal digits.
+/// Hex digits of the directory hash carried in a pipe name: 64 bits, enough to keep one user's
+/// comms directories apart.
 #[cfg(any(windows, test))]
-fn is_generation_dir_name(name: &str) -> bool {
-    name.strip_prefix('g')
-        .is_some_and(|digits| !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit()))
+const PIPE_HASH_HEX_LEN: usize = 16;
+
+/// The named pipe of the daemon that owns `comms_dir`:
+/// `\\.\pipe\basemind-comms-<user>-<hash of the directory path>`. The path is the generation
+/// directory, so the generation is in the hash and two generations in one comms directory get two
+/// pipes. BLAKE3 rather than the standard library's hasher, whose output is not specified across
+/// toolchains: every binary of a generation must compute the same name. Releases up to 0.33 named
+/// their pipe from another hash of the unscoped directory; this binary never computes that name.
+#[cfg(any(windows, test))]
+fn pipe_name(user: &str, comms_dir: &Path) -> String {
+    let digest = blake3::hash(comms_dir.as_os_str().as_encoded_bytes()).to_hex();
+    format!(r"\\.\pipe\basemind-comms-{user}-{}", &digest[..PIPE_HASH_HEX_LEN])
 }
 
 #[cfg(unix)]
@@ -547,7 +518,8 @@ async fn ensure_daemon_with_spawn_policy(paths: &CommsPaths, policy: SpawnPolicy
     // No compatible daemon answered — we are about to spawn one. Enforce the machine ceiling for the
     // comms family first so a runaway (each isolated comms dir spawning its own detached daemon) is
     // refused loudly, not silently piled up. Counting per kind keeps another family's daemons from
-    // consuming the comms budget. The count prunes dead holders as a side effect.
+    // consuming the comms budget. The count covers every generation's daemons, read from the
+    // registry without contacting them, and prunes this generation's dead holders as a side effect.
     let live = crate::daemon_lock::count_live_daemons_of(crate::daemon_lock::DaemonKind::Comms);
     let max = crate::daemon_lock::max_live_daemons();
     if live >= max {

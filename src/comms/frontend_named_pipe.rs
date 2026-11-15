@@ -12,7 +12,8 @@
 //!
 //! Windows has no `SO_PEERCRED` analogue cheap enough to read inline, so `NamedPipeLink`
 //! reports an empty `PeerCred`. The pipe is user-scoped by name
-//! (`\\.\pipe\basemind-comms-<USERNAME>`, see `singleton::comms_socket_path`) and the default
+//! (`\\.\pipe\basemind-comms-<USERNAME>-<hash of the generation directory>`, see
+//! `singleton::comms_socket_path`) and the default
 //! pipe DACL grants access to the creating user, so cross-user connections are refused by the
 //! OS at connect time rather than by a uid comparison in the accept loop.
 

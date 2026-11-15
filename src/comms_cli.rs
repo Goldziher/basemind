@@ -469,8 +469,10 @@ fn now_unix() -> i64 {
         .unwrap_or(0)
 }
 
-/// `basemind comms doctor`: enumerate the live daemons registered on this machine — every family in
-/// the shared registry, each row tagged with its `kind` — and flag a pile-up over the ceiling.
+/// `basemind comms doctor`: enumerate this protocol generation's live daemons registered on this
+/// machine — every family in the registry, each row tagged with its `kind` — and flag a pile-up
+/// over the ceiling. Daemons of other generations (a release up to 0.33, say) are counted from
+/// their registry records and never listed or probed: they may not speak this binary's protocol.
 ///
 /// The default report is pure and cheap — it reads the pidfile registry (pruning dead holders) and
 /// issues no daemon RPC — so it is safe to run even when the machine is in a bad state. That
@@ -562,6 +564,7 @@ fn cmd_comms_doctor(json: bool, probe: bool, clear_fatal: bool) -> Result<()> {
     let stale_scans = basemind::scan_evidence::stale_inflight_scans();
 
     let daemons = daemon_lock::live_daemons();
+    let other_generations = daemon_lock::count_live_daemons_of_other_generations(DaemonKind::Comms);
     let ceiling = daemon_lock::max_live_daemons();
     let now = now_unix();
 
@@ -603,8 +606,9 @@ fn cmd_comms_doctor(json: bool, probe: bool, clear_fatal: bool) -> Result<()> {
             .collect();
         let report = serde_json::json!({
             "count": daemons.len(),
+            "other_generations": other_generations,
             "ceiling": ceiling,
-            "over_ceiling": daemons.len() > ceiling,
+            "over_ceiling": daemons.len() + other_generations > ceiling,
             "checked": if probe { "registry+probe" } else { "registry" },
             "daemons": items,
             "last_fatal_store_error": fatal.as_ref().map(|(dir, record)| serde_json::json!({
@@ -641,12 +645,18 @@ fn cmd_comms_doctor(json: bool, probe: bool, clear_fatal: bool) -> Result<()> {
                 );
             }
         }
-        if daemons.len() > ceiling {
+        if daemons.len() + other_generations > ceiling {
             println!(
                 "WARNING: {} daemons exceed the ceiling of {ceiling}; run `basemind comms stop --all` to reclaim",
-                daemons.len(),
+                daemons.len() + other_generations,
             );
         }
+    }
+    if other_generations > 0 {
+        println!(
+            "{other_generations} more comms daemon(s) belong to other basemind versions' protocol generations. \
+             They count toward the ceiling; this version does not list, probe or stop them."
+        );
     }
 
     if let Some((dir, record)) = &fatal {
@@ -711,16 +721,18 @@ fn humanize_age(secs: i64) -> String {
     }
 }
 
-/// `basemind comms stop --all`: signal every live comms daemon on this machine to drain, addressing
-/// each by its own socket. Uses the low-level [`singleton::request_stop`] rather than a `CommsClient`
-/// (which could respawn the very daemon it meant to stop).
+/// `basemind comms stop --all`: ask every live comms daemon of this protocol generation on this
+/// machine to drain, addressing each by its own socket. Daemons of other generations are out of
+/// reach by design: their own version's `comms stop --all` stops them. Uses the low-level
+/// [`singleton::request_stop_classified`] rather than a `CommsClient` (which could respawn the very
+/// daemon it meant to stop).
 #[cfg(all(feature = "comms", any(unix, windows)))]
 fn cmd_comms_stop_all(json: bool) -> Result<()> {
     use basemind::comms::singleton;
     use basemind::daemon_lock::{self, DaemonKind};
 
     // Comms-only: this addresses each holder over the comms stop protocol, which another daemon
-    // family in the shared registry does not speak.
+    // family in the registry does not speak.
     let daemons = daemon_lock::live_daemons_of(DaemonKind::Comms);
     // Classify each answer rather than discarding it. A daemon that ignored the request is exactly
     // the case `stop` most needs to handle — asking it to drain is itself a request, and a daemon

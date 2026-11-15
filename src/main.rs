@@ -165,18 +165,18 @@ enum CommsLifecycleCmd {
     Daemon,
     /// Ensure the daemon is running (spawn if needed); noop when already alive.
     Start,
-    /// Ask the running daemon to drain and stop. With `--all`, stop EVERY live daemon registered on
-    /// this machine (reclaims a pile-up), not just the one for the current comms dir.
+    /// Ask the running daemon to drain and stop. With `--all`, stop EVERY live daemon of this
+    /// version's protocol generation on this machine, not just the one for the current comms dir.
     Stop {
-        /// Stop every live daemon on this machine, not just the current one.
+        /// Stop every live daemon of this protocol generation on this machine, not just the current one.
         #[arg(long)]
         all: bool,
     },
     /// Report the daemon's pid / version / uptime / room + subscriber counts.
     Status,
-    /// List every live daemon registered on this machine (pid / comms dir / version / uptime) and
-    /// flag any pile-up over the ceiling. Prunes dead registry entries as a side effect. Reports
-    /// process liveness only unless --probe is given.
+    /// List every live daemon of this version's protocol generation on this machine (pid / comms
+    /// dir / version / uptime) and flag any pile-up over the ceiling. Prunes dead registry entries
+    /// as a side effect. Reports process liveness only unless --probe is given.
     Doctor {
         /// Also ask each comms daemon whether it can actually serve, and report the verdict per
         /// row. Off by default so the plain report stays RPC-free and safe on a wedged machine.

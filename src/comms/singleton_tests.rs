@@ -14,15 +14,46 @@ fn version_is_older_orders_releases_and_ignores_prerelease() {
     assert!(version_is_older("0.9.0-rc.2", "0.10.0"));
 }
 
+/// Runs on every platform: the name is a pure function of the user and the directory path.
 #[test]
-fn only_a_generation_directory_name_enters_the_pipe_name() {
+fn the_pipe_name_is_stable_and_distinct_per_generation_directory() {
+    /// The longest account name Windows allows in `USERNAME`.
+    const LONGEST_USERNAME: usize = 20;
+    /// `CreateNamedPipe` rejects a name longer than this, prefix included.
+    const PIPE_NAME_MAX: usize = 256;
+
+    assert_eq!(
+        pipe_name("alice", Path::new("pinned-dir")),
+        r"\\.\pipe\basemind-comms-alice-7c676306023f55ea",
+        "every binary of a generation must compute the same name for a directory"
+    );
+
     let ours = generation_dir(Path::new("comms"));
-    let name = ours.file_name().and_then(|name| name.to_str()).expect("utf-8 name");
-    assert_eq!(name, format!("g{RENDEZVOUS_GENERATION}"));
-    assert!(is_generation_dir_name(name));
-    for other in ["comms", "g", "gx", "g1x", "G1", "1"] {
-        assert!(!is_generation_dir_name(other), "{other}");
-    }
+    let name = pipe_name("alice", &ours);
+    assert_eq!(name, pipe_name("alice", &generation_dir(Path::new("comms"))));
+    assert_ne!(
+        name,
+        pipe_name("alice", Path::new("comms")),
+        "not the unscoped directory's pipe"
+    );
+    assert_ne!(name, pipe_name("alice", &generation_dir(Path::new("other"))));
+    assert_ne!(name, pipe_name("bob", &ours));
+
+    let deep = generation_dir(&Path::new("x").join("y".repeat(4096)));
+    let longest = pipe_name(&"u".repeat(LONGEST_USERNAME), &deep);
+    assert!(longest.len() <= PIPE_NAME_MAX, "{} bytes: {longest}", longest.len());
+}
+
+#[cfg(windows)]
+#[test]
+fn the_windows_endpoint_is_the_pipe_named_for_the_generation_directory() {
+    let user = std::env::var("USERNAME").unwrap_or_else(|_| "default".to_string());
+    let one = generation_dir(Path::new(r"C:\one\comms"));
+    let two = generation_dir(Path::new(r"C:\two\comms"));
+    assert_eq!(comms_socket_path(&one), PathBuf::from(pipe_name(&user, &one)));
+    assert_eq!(comms_socket_path(&one), comms_socket_path(&one));
+    assert_ne!(comms_socket_path(&one), comms_socket_path(&two));
+    assert_ne!(comms_socket_path(&one), comms_socket_path(Path::new(r"C:\one\comms")));
 }
 
 #[cfg(unix)]
