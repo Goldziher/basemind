@@ -19,6 +19,10 @@
 //! other, but no sweep finds it through this index again: a message goes when its thread does or
 //! when the thread's cap pushes it out, and a thread, replay entry or seen record stays until it
 //! is next written, which gives it a new index row.
+//!
+//! A `post_order` row is believed only when the message it names is stored with the row's stamp
+//! and post position. One that names no message, or another one, is stale: it is removed alone
+//! and counted, and the message is left to its own row.
 
 use fjall::{Keyspace, OwnedWriteBatch, UserKey};
 use serde::de::IgnoredAny;
@@ -53,6 +57,9 @@ pub struct SweepReport {
     pub seen: usize,
     /// Index rows that could not be decoded and were removed without the record they named.
     pub skipped_unreadable: usize,
+    /// `post_order` rows removed alone because the message they named is gone, or is not the
+    /// one stamped and posted where the row says.
+    pub stale: usize,
     /// Whether the budget ran out with expired records left: sweep again.
     pub more: bool,
 }
@@ -121,10 +128,12 @@ impl FjallAgents {
         batch
             .commit()
             .map_err(|error| backend("sweep the comms store", error))?;
-        if report.skipped_unreadable > 0 {
+        if report.skipped_unreadable > 0 || report.stale > 0 {
             tracing::warn!(
-                rows = report.skipped_unreadable,
-                "comms: the sweep removed index rows it could not decode; the records they named are not swept"
+                unreadable = report.skipped_unreadable,
+                stale = report.stale,
+                "comms: the sweep removed index rows it could not decode or that named no stored message; the \
+                 records they named are not swept"
             );
         }
         Ok(report)
@@ -179,11 +188,22 @@ fn sweep_messages(
             return Ok(Swept(Some(key)));
         }
         let message = keys::message(&entry.thread, entry.seq);
-        batch.remove(&ks.messages, message);
-        batch.remove(&ks.bodies, message);
+        // ~keep A row is only believed when the message it names carries the row's stamp and
+        // post position. A stale one would otherwise delete whatever now has that id, which
+        // may be alive.
+        let named = reader
+            .get(&ks.messages, message)?
+            .and_then(|bytes| decode::<MessageMeta>("a message", &bytes).ok())
+            .is_some_and(|meta| keys::order(meta.ts_micros, meta.order)[..] == key[..]);
+        if named {
+            batch.remove(&ks.messages, message);
+            batch.remove(&ks.bodies, message);
+            report.messages += 1;
+        } else {
+            report.stale += 1;
+        }
         batch.remove(&ks.post_order, key);
         budget.spend(1);
-        report.messages += 1;
     }
     Ok(Swept(None))
 }
@@ -243,10 +263,11 @@ fn sweep_threads(
 /// Remove the messages an expired thread still has: those the walk of `post_order` did not
 /// reach. Returns whether none is left, which is false when the budget ran out first.
 ///
-/// A message is staged already when its index row is there and sorts before where the walk
-/// stopped. One whose index row is gone (see the module doc) was never reached by the walk and
-/// is removed here. Reading is bounded with the budget too: a message is either staged already,
-/// and a sweep stages no more than its budget, or costs the budget one.
+/// A message is staged already when its index row is there, names it, and sorts before where
+/// the walk stopped. One whose index row is gone or names something else (see the module doc)
+/// was never staged by the walk and is removed here. Reading is bounded with the budget too: a
+/// message is either staged already, and a sweep stages no more than its budget, or costs the
+/// budget one.
 fn sweep_thread_messages(
     reader: &Reader<'_>,
     batch: &mut OwnedWriteBatch,
@@ -262,7 +283,11 @@ fn sweep_thread_messages(
             .map_err(|error| backend("read the comms store", error))?;
         let meta: MessageMeta = decode("a message", &value)?;
         let order_key = keys::order(meta.ts_micros, meta.order);
-        if swept.covers(&order_key) && reader.get(&ks.post_order, order_key)?.is_some() {
+        let staged = swept.covers(&order_key)
+            && reader
+                .get(&ks.post_order, order_key)?
+                .is_some_and(|named| named[..] == key[..]);
+        if staged {
             continue;
         }
         if !budget.allows() {

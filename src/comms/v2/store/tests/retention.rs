@@ -33,6 +33,7 @@ fn sweep_removes_no_more_than_its_budget_and_says_when_more_is_left() {
             replays: 0,
             seen: 0,
             skipped_unreadable: 0,
+            stale: 0,
             more: true,
         }
     );
@@ -56,6 +57,7 @@ fn sweep_removes_no_more_than_its_budget_and_says_when_more_is_left() {
             replays: removed.replays + next.replays,
             seen: removed.seen + next.seen,
             skipped_unreadable: removed.skipped_unreadable + next.skipped_unreadable,
+            stale: removed.stale + next.stale,
             more: next.more,
         };
         sweeps += 1;
@@ -233,6 +235,7 @@ fn sweep_removes_index_rows_it_cannot_decode_and_goes_on() {
             replays: 1,
             seen: 1,
             skipped_unreadable: 4,
+            stale: 0,
             more: false,
         }
     );
@@ -406,5 +409,74 @@ fn message_whose_index_row_is_gone_is_swept_with_its_thread() {
     let report = store.sweep().expect("sweep");
 
     assert_eq!((report.messages, report.threads, report.more), (2, 1, false));
+    assert_eq!(store.stored_rows(), only_seen(1));
+}
+
+#[test]
+fn stale_index_row_naming_a_live_message_is_removed_without_the_message() {
+    let harness = Harness::new();
+    let created = start(&harness, "a", "topic", &["b"]);
+    harness.clock.advance(MESSAGE_TTL - Duration::from_secs(60));
+    let live = say(&harness, "a", &created.thread, "live");
+    let store = harness.store();
+    let stale_rows = [
+        (
+            keys::order(START_MICROS - 2, 0),
+            keys::message(&live.thread, live.id.seq()),
+        ),
+        (keys::order(START_MICROS - 1, 0), keys::message(&live.thread, 77)),
+    ];
+    for (key, names) in stale_rows {
+        store.ks.post_order.insert(key, names).expect("write");
+    }
+    harness.clock.advance(Duration::from_secs(120));
+
+    let report = store.sweep().expect("sweep");
+
+    assert_eq!(
+        report,
+        SweepReport {
+            messages: 1,
+            stale: 2,
+            ..SweepReport::default()
+        },
+        "the first message expired; the stale rows named a live message and none"
+    );
+    assert_eq!(
+        bodies(&harness.inbox(&caller("b"), history()).expect("inbox")),
+        ["live"]
+    );
+    let rows = store.stored_rows();
+    assert_eq!((rows[1], rows[2], rows[3]), (1, 1, 1));
+}
+
+#[test]
+fn message_whose_index_row_names_nothing_readable_is_swept_with_its_thread() {
+    let harness = Harness::new();
+    let created = start(&harness, "a", "topic", &[]);
+    say(&harness, "a", &created.thread, "second");
+    let store = harness.store();
+    let oldest = store
+        .ks
+        .post_order
+        .iter()
+        .next()
+        .expect("an index row")
+        .key()
+        .expect("read");
+    store.ks.post_order.insert(oldest, b"not a message key").expect("write");
+    harness.clock.advance(MESSAGE_TTL + Duration::from_secs(1));
+
+    let report = store.sweep().expect("sweep");
+
+    assert_eq!(
+        report,
+        SweepReport {
+            messages: 2,
+            threads: 1,
+            skipped_unreadable: 1,
+            ..SweepReport::default()
+        }
+    );
     assert_eq!(store.stored_rows(), only_seen(1));
 }
