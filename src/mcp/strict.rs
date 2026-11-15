@@ -321,7 +321,9 @@ impl Kind {
             }
             Self::Text { one_of } => match &*value {
                 Value::String(text) if one_of.is_empty() || one_of.iter().any(|variant| variant == text) => None,
-                Value::String(_) => Some(format!(
+                // A path may also arrive as `{"bytes": […]}`; serde decides. A path has no vocabulary.
+                Value::Object(_) if one_of.is_empty() => None,
+                Value::String(_) | Value::Object(_) => Some(format!(
                     "`{key}` must be one of {} (got {})",
                     one_of
                         .iter()
@@ -330,8 +332,6 @@ impl Kind {
                         .join(", "),
                     shown(value)
                 )),
-                // A path may also arrive as `{"bytes": […]}`; serde decides.
-                Value::Object(_) => None,
                 _ => Some(format!("`{key}` must be a string (got {})", shown(value))),
             },
             Self::Array(item) => {
@@ -353,10 +353,11 @@ impl Kind {
 }
 
 /// `number` as an unsigned integer when it is one written as a float (`10.0`), which some clients
-/// send for every JSON number. Above 2^53 a float no longer names one integer.
+/// send for every JSON number. From 2^53 a float no longer names one integer: 2^53 + 1 written as
+/// a float reads back as 2^53.
 fn integral(number: f64) -> Option<u64> {
     const EXACT_MAX: f64 = 9_007_199_254_740_992.0;
-    (number.fract() == 0.0 && (0.0..=EXACT_MAX).contains(&number)).then_some(number as u64)
+    (number.fract() == 0.0 && (0.0..EXACT_MAX).contains(&number)).then_some(number as u64)
 }
 
 /// The accepted arguments of one tool, read off its schema.
@@ -728,6 +729,26 @@ mod tests {
         assert!(negative.contains("`limit` must be an integer"), "{negative}");
         let huge = error(json!({ "pattern": "x", "limit": 1e12 }));
         assert!(huge.contains("`limit` is too large"), "{huge}");
+    }
+
+    #[test]
+    fn a_float_is_an_integer_only_below_two_to_the_53() {
+        assert_eq!(integral(9_007_199_254_740_991.0), Some(9_007_199_254_740_991));
+        assert_eq!(integral(9_007_199_254_740_992.0), None);
+        let rounded: serde_json::Value = serde_json::from_str("9007199254740993.0").expect("json");
+        assert_eq!(rounded.as_f64().and_then(integral), None, "2^53 + 1 is not 2^53");
+    }
+
+    #[test]
+    fn an_object_in_a_fixed_vocabulary_field_names_the_field() {
+        use crate::mcp::types_tools::CodeRefsParams;
+        let message = match parse::<CodeRefsParams>(json!({ "name": "x", "relation": {} })) {
+            Ok(_) => panic!("expected a rejection"),
+            Err(message) => message,
+        };
+        assert!(message.contains("`relation` must be one of `callers`"), "{message}");
+        assert!(message.contains("(got {})"), "{message}");
+        assert!(!message.contains("invalid type"), "{message}");
     }
 
     #[test]
