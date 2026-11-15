@@ -217,7 +217,7 @@ pub enum CommsError {
     #[error("`invite` is empty: name at least one agent id")]
     EmptyInvite,
     /// The store or the daemon failed; nothing about the request was wrong.
-    #[error("the comms store failed: {detail}; retry, and run `basemind agents status` if it persists")]
+    #[error("the comms store failed: {detail}; retry, and run `basemind agent status` if it persists")]
     Backend {
         /// What failed.
         detail: String,

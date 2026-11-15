@@ -268,3 +268,11 @@ fn refusals_say_what_to_do_next() {
         assert!(error.to_string().contains(token), "{error} lacks {token:?}");
     }
 }
+
+#[test]
+fn backend_refusal_names_the_status_command() {
+    let refusal = CommsError::Backend {
+        detail: "disk full".to_string(),
+    };
+    assert!(refusal.to_string().contains("`basemind agent status`"), "{refusal}");
+}
