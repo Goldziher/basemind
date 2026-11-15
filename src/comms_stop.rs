@@ -153,9 +153,9 @@ fn why_left_running(paths: &CommsPaths, left: &Reclaimed) -> String {
         ),
         Reclaimed::Unidentified => format!(
             "something still holds the daemon lock or socket in {dir} and answers nothing, but {} does not \
-             name a live comms daemon, so nothing was signalled; find the process (`lsof {}` shows the \
-             lock's holder, `basemind comms doctor` the registered daemons), terminate it yourself, then \
-             retry",
+             name a live comms daemon that holds the lock, so nothing was signalled; find the process \
+             (`lsof {}` shows the lock's holder, `basemind comms doctor` the registered daemons), terminate \
+             it yourself, then retry",
             paths.comms_dir.join("daemon.pid").display(),
             paths.comms_dir.join("daemon.lock").display(),
         ),
@@ -190,7 +190,9 @@ fn is_broken_store_error(error: &CommsClientError) -> bool {
 ///
 /// A daemon that answered `daemon_busy` made an informed decision to protect the persistent
 /// clients attached to it, and is reported, never reclaimed. One that answered `store_error`, or
-/// nothing, goes through [`singleton::reclaim_holder`] like a single `stop`.
+/// nothing, goes through [`singleton::reclaim_holder`] like a single `stop`. The command fails
+/// when any daemon is still running afterwards, whether it refused or could not be reclaimed, and
+/// names each with its reason, as a single `stop` does for its one daemon.
 pub(crate) fn cmd_comms_stop_all(json: bool) -> Result<()> {
     // Comms-only: this addresses each holder over the comms stop protocol, which another daemon
     // family in the registry does not speak.
@@ -260,10 +262,16 @@ pub(crate) fn cmd_comms_stop_all(json: bool) -> Result<()> {
             println!("  pid={pid} left running: {reason}");
         }
     }
+    let still_running: Vec<String> = refused
+        .iter()
+        .map(|(pid, code, message)| format!("pid={pid} refused [{code}]: {message}"))
+        .chain(left.iter().map(|(pid, reason)| format!("pid={pid}: {reason}")))
+        .collect();
     anyhow::ensure!(
-        left.is_empty(),
-        "{} daemon(s) could not be stopped and were not signalled",
-        left.len()
+        still_running.is_empty(),
+        "{} daemon(s) are still running and were not signalled: {}",
+        still_running.len(),
+        still_running.join("; ")
     );
     Ok(())
 }

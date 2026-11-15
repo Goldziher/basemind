@@ -643,6 +643,38 @@ fn comms_stop_all_does_not_signal_a_daemon_that_ignores_stop_but_answers_ping() 
     assert!(stand_in.alive(), "a daemon that still answers must not be signalled");
 }
 
+/// The same refusal that makes a single `comms stop` fail must make `stop --all` fail: a script
+/// that goes on as if every daemon were gone would otherwise find one still serving.
+#[test]
+fn comms_stop_all_fails_and_names_a_daemon_that_refused_to_stop() {
+    let machine = Machine::new();
+    let stand_in = StandIn::spawn();
+    machine.record_daemon(stand_in.0);
+    let daemon = Scripted::serve(&machine.socket(), |request| match request {
+        CommsRequest::Stop => Some(busy()),
+        CommsRequest::Ping => Some(CommsResponse::Pong),
+        _ => None,
+    });
+
+    let out = machine.run(&["--json", "comms", "stop", "--all"], &[]);
+
+    assert!(
+        !out.status.success(),
+        "a daemon is still running: {}",
+        text(&out.stdout)
+    );
+    let report: serde_json::Value = serde_json::from_slice(&out.stdout).expect("stop --all --json prints JSON");
+    assert_eq!(report["stopped"], 0, "{report}");
+    assert_eq!(report["refused"][0]["pid"], stand_in.0, "{report}");
+    let stderr = text(&out.stderr);
+    assert!(
+        stderr.contains(&format!("pid={} refused [daemon_busy]", stand_in.0)),
+        "the error names the daemon and its reason: {stderr}"
+    );
+    assert_eq!(daemon.asked(), ["stop"], "a refusal is not asked about twice");
+    assert!(stand_in.alive(), "a daemon that refused is not signalled");
+}
+
 /// `BASEMIND_NO_AUTOSPAWN` in the client's own environment: an older daemon is used as it is,
 /// because the client could not replace it. Without the variable the same client asks it to stop.
 #[test]
