@@ -163,7 +163,7 @@ fn the_windows_endpoint_is_the_pipe_named_for_the_generation_directory() {
     assert_eq!(comms_socket_path(&one), comms_socket_path(&one));
     assert_eq!(
         comms_socket_path(&one),
-        comms_socket_path(Path::new(r"C:/one/comms/g1/")),
+        comms_socket_path(Path::new(&format!("C:/one/comms/g{RENDEZVOUS_GENERATION}/"))),
         "the same directory, spelt another way"
     );
     assert_ne!(comms_socket_path(&one), comms_socket_path(&two));
