@@ -67,6 +67,9 @@ pub(crate) enum MemoryOpError {
         /// The underlying fjall error.
         source: fjall::Error,
     },
+    /// The fsync that makes an acknowledged write durable failed.
+    #[error("fsync memory store: {0}")]
+    Sync(String),
     /// Serializing a [`MemoryRecord`] to msgpack failed.
     #[error("serialize memory record: {0}")]
     Serialize(rmp_serde::encode::Error),
@@ -117,7 +120,16 @@ fn write_record(
     let bytes = rmp_serde::to_vec_named(record).map_err(MemoryOpError::Serialize)?;
     idx.memory_by_key
         .insert(raw_key, bytes)
-        .map_err(|source| MemoryOpError::Fjall { op: "insert", source })
+        .map_err(|source| MemoryOpError::Fjall { op: "insert", source })?;
+    sync_memory(idx)
+}
+
+/// Make the write just issued durable before it is acknowledged (see
+/// [`MemoryDb::sync`](crate::index::memory_store::MemoryDb::sync)).
+fn sync_memory(idx: &IndexDb) -> Result<(), MemoryOpError> {
+    idx.memory_db()
+        .sync()
+        .map_err(|error| MemoryOpError::Sync(error.to_string()))
 }
 
 /// Remove the record at `(scope, vis_byte, owner, key)`; returns whether it existed.
@@ -132,6 +144,7 @@ fn remove_record(idx: &IndexDb, scope: &str, vis_byte: u8, owner: &str, key: &st
         idx.memory_by_key
             .remove(raw_key)
             .map_err(|source| MemoryOpError::Fjall { op: "remove", source })?;
+        sync_memory(idx)?;
     }
     Ok(existed)
 }
@@ -370,5 +383,27 @@ pub(crate) fn run_memory_op(
         MemoryOp::Delete { vis_byte, owner, key } => Ok(MemoryOutcome::Deleted {
             deleted: delete_core(idx, scope, *vis_byte, owner, key)?,
         }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::Ordering;
+
+    use super::*;
+
+    /// A note cannot be rebuilt from anything, so it is fsynced before the call returns.
+    #[test]
+    fn a_put_and_a_delete_are_fsynced_before_they_are_acknowledged() {
+        let dir = tempfile::tempdir().unwrap();
+        let idx = IndexDb::open(dir.path()).unwrap();
+        let syncs = || idx.memory_db().syncs.load(Ordering::Acquire);
+        let before = syncs();
+
+        put_core(&idx, "scope", 0, "", "k", "v", &[]).unwrap();
+        assert_eq!(syncs(), before + 1, "a put must fsync the memory store");
+
+        assert!(delete_core(&idx, "scope", 0, "", "k").unwrap());
+        assert_eq!(syncs(), before + 2, "a delete must fsync the memory store");
     }
 }

@@ -488,6 +488,12 @@ impl IndexDb {
         self.memory_detached
     }
 
+    /// The group memory database behind [`Self::memory_by_key`].
+    #[cfg(feature = "memory")]
+    pub(crate) fn memory_db(&self) -> &memory_store::MemoryDb {
+        &self._memory
+    }
+
     /// True when this open discarded an index written under another schema revision; the caller
     /// must rebuild it from a full scan.
     pub fn wiped_on_open(&self) -> bool {

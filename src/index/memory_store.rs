@@ -32,6 +32,9 @@ const MEMORY_BY_KEY: &str = "memory_by_key";
 pub(crate) struct MemoryDb {
     db: Database,
     pub(crate) memory_by_key: Keyspace,
+    /// How many times [`MemoryDb::sync`] ran.
+    #[cfg(all(test, feature = "memory"))]
+    pub(crate) syncs: std::sync::atomic::AtomicU32,
 }
 
 impl MemoryDb {
@@ -46,7 +49,21 @@ impl MemoryDb {
             .max_journaling_size(FJALL_MAX_JOURNAL_BYTES)
             .open()?;
         let memory_by_key = open_keyspace(&db, MEMORY_BY_KEY)?;
-        Ok(Self { db, memory_by_key })
+        Ok(Self {
+            db,
+            memory_by_key,
+            #[cfg(all(test, feature = "memory"))]
+            syncs: std::sync::atomic::AtomicU32::new(0),
+        })
+    }
+
+    /// Fsync the journal. A note exists nowhere else, so unlike the code index (rebuilt from
+    /// source by a scan) a write that only reached the OS is lost for good by a power failure.
+    #[cfg(feature = "memory")]
+    pub(crate) fn sync(&self) -> Result<(), IndexError> {
+        #[cfg(test)]
+        self.syncs.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        Ok(self.db.persist(PersistMode::SyncAll)?)
     }
 
     /// Names of the keyspaces this database holds.
