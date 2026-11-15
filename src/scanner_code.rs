@@ -60,7 +60,7 @@ pub(crate) fn should_chunk(config: &Config) -> bool {
 /// of decision. Over-cap files still get their `.chunk.msgpack` sidecar (outline and grep are
 /// unaffected); what they lose is the per-chunk fan-out — keyword postings, vector rows, embeds.
 /// Mirrors `scanner_docs::pending_from_doc`'s `max_chunks_per_document` handling.
-fn over_chunk_cap(rel: &str, chunk_count: usize, cfg: &CodeSearchConfig) -> bool {
+pub(crate) fn over_chunk_cap(rel: &str, chunk_count: usize, cfg: &CodeSearchConfig) -> bool {
     let over = chunk_count > cfg.max_chunks_per_file;
     if over {
         tracing::warn!(
@@ -494,7 +494,7 @@ pub(crate) fn flush_code_batches(
     let mut inserted = 0usize;
     let mut pending: PendingBatch<CodeRow> = PendingBatch::default();
     // Paths this call leaves owing nothing: rows written, or no rows to write. A path whose sidecar
-    // could not be read or whose write failed is left in `pending_vectors` for the next scan.
+    // could not be read or whose write failed stays owed for the next scan.
     let mut settled: Vec<String> = Vec::new();
     let write = |pending: &mut PendingBatch<CodeRow>, inserted: &mut usize, settled: &mut Vec<String>| {
         let items = pending.take();
@@ -524,8 +524,10 @@ pub(crate) fn flush_code_batches(
                 settled.push(batch.rel_path);
                 continue;
             }
+            // No sidecar, no rows to build: the file's next chunking queues it again.
             Ok(None) => {
-                tracing::warn!(rel = %batch.rel_path, "chunk sidecar missing at flush; skipping vector rows");
+                tracing::warn!(rel = %batch.rel_path, "chunk sidecar missing at flush; no vector rows to write");
+                settled.push(batch.rel_path);
                 continue;
             }
             Err(error) => {
@@ -546,7 +548,7 @@ pub(crate) fn flush_code_batches(
     if !pending.is_empty() {
         write(&mut pending, &mut inserted, &mut settled);
     }
-    store.index.pending_vectors.settle_code(&settled);
+    store.pending_vectors.settle_code(&settled);
     inserted
 }
 

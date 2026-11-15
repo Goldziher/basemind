@@ -19,7 +19,8 @@ use crate::scanner_drive::{DriveOutcome, ScanDrive, drive_scan};
 use crate::scanner_file::scanner_pool;
 use crate::scanner_filter::{Filters, IndexFilter};
 use crate::scanner_flush::{
-    derive_scope, finalize_bm25_stats_if_any, flush_code_removals_if_any, flush_vector_lanes, maintain_lance_if_open,
+    REQUEUE_PER_INCREMENTAL, derive_scope, finalize_bm25_stats_if_any, flush_code_removals_if_any, flush_vector_lanes,
+    maintain_lance_if_open,
 };
 use crate::scanner_integrity::{abort_on_fault, ensure_space, finish_resolve, flush_code_map, preflight};
 use crate::scanner_lanes::{LANE_BM25_STATS, LANE_CODE_REMOVALS, LANE_EMBED_POLICY, LANE_RESOLVE, run_optional_lane};
@@ -496,7 +497,15 @@ pub fn scan_with_observer(
     if cancel.is_cancelled() {
         report.cancelled = true;
         flush_code_map(store, &ScanHealth::partial("cancelled", seen_count, total_candidates))?;
-        flush_vector_lanes(store, config, &scope, driven.doc_batches, driven.code_batches)?;
+        flush_vector_lanes(
+            store,
+            config,
+            &filters,
+            &scope,
+            driven.doc_batches,
+            driven.code_batches,
+            usize::MAX,
+        )?;
         phase_peaks.sample_now();
         report.phase_peaks = phase_peaks.snapshot();
         return Ok(report);
@@ -581,7 +590,7 @@ pub fn scan_with_observer(
     // their rows would leave them tracked-but-rowless (blob-sourced, no inference; bounded). ~keep
     if cancel.is_cancelled() {
         report.cancelled = true;
-        flush_vector_lanes(store, config, &scope, doc_batches, code_batches)?;
+        flush_vector_lanes(store, config, &filters, &scope, doc_batches, code_batches, usize::MAX)?;
         phase_peaks.sample_now();
         report.phase_peaks = phase_peaks.snapshot();
         return Ok(report);
@@ -601,7 +610,7 @@ pub fn scan_with_observer(
     }
 
     advance(&mut breadcrumb, &phase_peaks, PHASE_LANES, None);
-    flush_vector_lanes(store, config, &scope, doc_batches, code_batches)?;
+    flush_vector_lanes(store, config, &filters, &scope, doc_batches, code_batches, usize::MAX)?;
     run_optional_lane(LANE_CODE_REMOVALS, || {
         flush_code_removals_if_any(store, config, &scope, &stale);
     });
@@ -881,7 +890,15 @@ pub fn scan_paths_with_observer(
     // would leave them tracked-but-rowless (blob-sourced, no inference; bounded). ~keep
     if cancel.is_cancelled() {
         report.cancelled = true;
-        flush_vector_lanes(store, config, &scope, doc_batches, code_batches)?;
+        flush_vector_lanes(
+            store,
+            config,
+            filter.filters(),
+            &scope,
+            doc_batches,
+            code_batches,
+            REQUEUE_PER_INCREMENTAL,
+        )?;
         return Ok(report);
     }
 
@@ -902,7 +919,15 @@ pub fn scan_paths_with_observer(
         });
     });
 
-    flush_vector_lanes(store, config, &scope, doc_batches, code_batches)?;
+    flush_vector_lanes(
+        store,
+        config,
+        filter.filters(),
+        &scope,
+        doc_batches,
+        code_batches,
+        REQUEUE_PER_INCREMENTAL,
+    )?;
     run_optional_lane(LANE_CODE_REMOVALS, || {
         flush_code_removals_if_any(store, config, &scope, &removed);
     });

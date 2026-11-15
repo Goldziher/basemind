@@ -370,14 +370,18 @@ fn cached_doc_is_reusable(cached: &FileMapDoc, cfg: &DocumentsConfig, embed: boo
     if !embed || cached.chunks.is_empty() {
         return true;
     }
-    let want_dim = preset_dim(&cfg.embedding_preset).ok();
-    cached.embedding_dim > 0
-        && Some(cached.embedding_dim) == want_dim
-        && cached.embedding_model == cfg.embedding_preset
-        && cached
+    doc_has_vectors_of(cached, &cfg.embedding_preset)
+}
+
+/// Whether every chunk of `doc` carries a vector of `preset`: the model's name and its dimension.
+pub(crate) fn doc_has_vectors_of(doc: &FileMapDoc, preset: &str) -> bool {
+    doc.embedding_dim > 0
+        && Some(doc.embedding_dim) == preset_dim(preset).ok()
+        && doc.embedding_model == preset
+        && doc
             .chunks
             .iter()
-            .all(|c| c.embedding.len() == cached.embedding_dim as usize)
+            .all(|c| c.embedding.len() == doc.embedding_dim as usize)
 }
 
 /// Assemble the deferred-write descriptor from an extracted-or-cached document. Decides — while the
@@ -385,7 +389,7 @@ fn cached_doc_is_reusable(cached: &FileMapDoc, cfg: &DocumentsConfig, embed: boo
 /// is on, the doc has embeddings, it has chunks, and it is under the per-doc chunk cap. The heavy
 /// row-building (chunk text + embedding vectors) is deferred to [`flush_document_batches`], which
 /// re-reads the persisted blob per file so no embeddings are held across the corpus.
-fn pending_from_doc(
+pub(crate) fn pending_from_doc(
     doc: &FileMapDoc,
     rel: &str,
     blob_hash: &str,
@@ -623,7 +627,7 @@ pub(crate) fn flush_document_batches(store: &mut Store, batches: Vec<PendingDocB
     // rows are still built one document at a time, so peak RAM is one batch's rows.
     let mut pending: PendingBatch<DocumentRow> = PendingBatch::default();
     // Paths this call leaves owing nothing: rows written, or no rows to write. A path whose blob
-    // could not be read or whose write failed is left in `pending_vectors` for the next scan.
+    // could not be read or whose write failed stays owed for the next scan.
     let mut settled: Vec<String> = Vec::new();
     let flush = |pending: &mut PendingBatch<DocumentRow>, inserted: &mut usize, settled: &mut Vec<String>| {
         let items = pending.take();
@@ -649,8 +653,10 @@ pub(crate) fn flush_document_batches(store: &mut Store, batches: Vec<PendingDocB
         }
         let doc = match store.read_doc_by_hex(&batch.blob_hash) {
             Ok(Some(doc)) => doc,
+            // No blob, no rows to build: the entry's next extraction queues the file again.
             Ok(None) => {
-                tracing::warn!(rel = %batch.rel_path, "doc blob missing at flush; skipping vector rows");
+                tracing::warn!(rel = %batch.rel_path, "doc blob missing at flush; no vector rows to write");
+                settled.push(batch.rel_path);
                 continue;
             }
             Err(error) => {
@@ -659,7 +665,9 @@ pub(crate) fn flush_document_batches(store: &mut Store, batches: Vec<PendingDocB
             }
         };
         let rows = build_doc_rows(doc, &batch.rel_path, &batch.doc_scope);
-        if rows.is_empty() {
+        // Rows of another dimension would fail the whole write, and every document batched with
+        // them: the blob holds no vectors this table can take.
+        if rows.is_empty() || rows.iter().any(|row| row.embedding.len() != usize::from(dim)) {
             settled.push(batch.rel_path);
             continue;
         }
@@ -671,7 +679,7 @@ pub(crate) fn flush_document_batches(store: &mut Store, batches: Vec<PendingDocB
     if !pending.is_empty() {
         flush(&mut pending, &mut inserted, &mut settled);
     }
-    store.index.pending_vectors.settle_docs(&settled);
+    store.pending_vectors.settle_docs(&settled);
     inserted
 }
 

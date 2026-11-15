@@ -24,6 +24,7 @@ impl Store {
             lance: None,
             reset_stale_schema: false,
             index_rebuild_needed: false,
+            pending_vectors: crate::store_pending::PendingVectors::default(),
             _lock: None,
         })
     }

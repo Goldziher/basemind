@@ -211,14 +211,14 @@ pub struct Index {
     /// decodes to, via `#[serde(default)]`: additive, no schema bump) makes no claim about the index.
     #[serde(default)]
     pub generation: u64,
-    /// Paths whose vector rows are not written yet (see [`crate::store_pending`]). Additive, no
-    /// schema bump.
-    #[serde(default)]
-    pub pending_vectors: crate::store_pending::PendingVectors,
     /// Set when `files` was emptied so a full scan rebuilds the index, cleared by the full scan that
     /// does. Survives a process that died in between. Additive, no schema bump.
     #[serde(default)]
     pub rebuild_pending: bool,
+    /// Content hashes `files` held when it was emptied for the rebuild: the blob sweep counts them
+    /// as referenced until the rebuild is done, since the rebuild re-indexes from those blobs.
+    #[serde(default)]
+    pub rebuild_pins: Vec<String>,
 }
 
 impl Index {
@@ -230,8 +230,8 @@ impl Index {
             embed_policy: String::new(),
             doc_tombstones: AHashMap::new(),
             generation: 0,
-            pending_vectors: crate::store_pending::PendingVectors::default(),
             rebuild_pending: false,
+            rebuild_pins: Vec::new(),
         }
     }
 }
@@ -339,6 +339,8 @@ pub struct Store {
     /// an empty index. A read-only open sets it for an index of an older schema, which it leaves
     /// untouched and unopened (`index_db` is `None`) for the scan to replace.
     pub index_rebuild_needed: bool,
+    /// Paths whose vector rows are not written yet (see [`crate::store_pending`]).
+    pub pending_vectors: crate::store_pending::PendingVectors,
     _lock: Option<File>,
 }
 
@@ -561,6 +563,7 @@ impl Store {
             Err(e) => return Err(e),
         };
         let (index_db, index_rebuild_needed) = durability::open_index_for_writer(root, view, &view_dir, &mut index)?;
+        let pending_vectors = crate::store_pending::PendingVectors::load(&view_dir);
         let mut store = Self {
             root: root.to_path_buf(),
             basemind_dir,
@@ -577,6 +580,7 @@ impl Store {
             lance: None,
             reset_stale_schema,
             index_rebuild_needed,
+            pending_vectors,
             _lock: Some(lock),
         };
         store.persist_file_map_emptied_on_open()?;
@@ -667,6 +671,7 @@ impl Store {
         } else {
             None
         };
+        let pending_vectors = crate::store_pending::PendingVectors::load(&view_dir);
         Ok(Self {
             root: root.to_path_buf(),
             basemind_dir,
@@ -683,6 +688,7 @@ impl Store {
             lance: None,
             reset_stale_schema: false,
             index_rebuild_needed,
+            pending_vectors,
             _lock: None,
         })
     }
@@ -759,8 +765,10 @@ impl Store {
     /// The file map is what lets the next scan skip a file as unchanged, so the rows it vouches for
     /// must be on disk before it is: the index seals a new generation (one journal fsync) first, and
     /// a failed or refused seal fails the flush with the previous file map left in place. A store
-    /// with no index handle writes no rows, so its file map keeps the generation it carries.
+    /// with no index handle writes no rows, so its file map keeps the generation it carries. The
+    /// paths owed vector rows are written first: the map must not claim a file whose debt is lost.
     pub fn flush(&mut self) -> Result<(), StoreError> {
+        self.pending_vectors.persist(&self.view_dir)?;
         if let Some(db) = self.index_db.as_ref() {
             self.index.generation = db.seal_scan(self.index.generation)?;
         }

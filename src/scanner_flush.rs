@@ -8,6 +8,7 @@ use crate::config::Config;
 #[cfg(feature = "documents")]
 use crate::scanner_docs::flush_document_batches;
 use crate::scanner_drive::{PendingCodeBatchOpt, PendingDocBatchOpt};
+use crate::scanner_filter::Filters;
 use crate::scanner_lanes::{LANE_CODE_BATCHES, LANE_DOC_BATCHES, run_optional_lane};
 use crate::store::Store;
 
@@ -24,105 +25,207 @@ pub(crate) fn maintain_lance_if_open(store: &Store) {
     let _ = store;
 }
 
-/// Write the vector rows this scan owes, and the ones an earlier scan left owing, then drop the
-/// settled paths from the file map with a second flush (see [`crate::store_pending`]).
+/// How many owed paths an incremental scan re-queues. A watcher batch that embeds one file must not
+/// also re-read every blob a long outage left owing; a full pass takes them all.
+pub(crate) const REQUEUE_PER_INCREMENTAL: usize = 64;
+
+/// Write the vector rows this scan owes and up to `requeue` of the ones an earlier scan left
+/// owing, then rewrite the owed set beside the file map (see [`crate::store_pending`]).
 ///
-/// The lanes are fault-contained and report nothing: what they could not write simply stays in
-/// `pending_vectors`. Only the flush can fail.
+/// The lanes are fault-contained and report nothing: what they could not write simply stays owed.
+/// Only the write of the owed set can fail.
 pub(crate) fn flush_vector_lanes(
     store: &mut Store,
     config: &Config,
+    filters: &Filters,
     scope: &str,
     mut doc_batches: Vec<PendingDocBatchOpt>,
     mut code_batches: Vec<PendingCodeBatchOpt>,
+    requeue: usize,
 ) -> Result<(), crate::store::StoreError> {
-    let owed = store.index.pending_vectors.len();
-    requeue_pending_docs(store, config, scope, &mut doc_batches);
-    requeue_pending_code(store, config, &mut code_batches);
+    if owes_beyond(store, &doc_batches, &code_batches) && vector_store_opens(store, config) {
+        let mut budget = requeue;
+        requeue_pending_docs(store, config, filters, scope, &mut doc_batches, &mut budget);
+        requeue_pending_code(store, config, filters, &mut code_batches, &mut budget);
+    }
     run_optional_lane(LANE_DOC_BATCHES, || {
         flush_doc_batches_if_any(store, config, doc_batches);
     });
     run_optional_lane(LANE_CODE_BATCHES, || {
         flush_code_batches_if_any(store, config, scope, code_batches);
     });
-    // The lanes only ever remove paths, so an unchanged count is an unchanged set.
-    if store.index.pending_vectors.len() != owed {
-        store.flush()?;
-    }
-    Ok(())
+    store.pending_vectors.persist(&store.view_dir)
 }
 
-/// Queue a batch for every document an earlier scan left owing rows and this scan did not process.
-/// Its rows are rebuilt from the cached blob. A path that is no longer indexed, or whose entry was
-/// embedded under another preset (the scan re-embeds it and queues it again), owes nothing.
+/// Whether an earlier scan left a path owing rows that this scan has no batch for.
+fn owes_beyond(store: &Store, doc_batches: &[PendingDocBatchOpt], code_batches: &[PendingCodeBatchOpt]) -> bool {
+    let pending = &store.pending_vectors;
+    #[cfg(feature = "documents")]
+    let docs = pending.docs().len() > doc_batches.len()
+        || doc_batches
+            .iter()
+            .any(|batch| !pending.docs().contains(bstr::BStr::new(batch.rel_path.as_bytes())));
+    #[cfg(not(feature = "documents"))]
+    let docs = {
+        let _ = doc_batches;
+        false
+    };
+    #[cfg(feature = "code-search")]
+    let code = pending.code().len() > code_batches.len()
+        || code_batches
+            .iter()
+            .any(|batch| !pending.code().contains(bstr::BStr::new(batch.rel_path.as_bytes())));
+    #[cfg(not(feature = "code-search"))]
+    let code = {
+        let _ = code_batches;
+        false
+    };
+    !pending.is_empty() && (docs || code)
+}
+
+/// Open the vector store before any owed path is looked at: when it cannot be opened nothing can
+/// be written, and re-reading a blob per owed path would be repeated by every scan until it can.
+#[cfg(any(feature = "documents", feature = "code-search"))]
+fn vector_store_opens(store: &mut Store, config: &Config) -> bool {
+    let preset = &config.documents.embedding_preset;
+    let opened = crate::embeddings::SharedEmbedder::load(preset, 0, config.resources.embed_batch_size)
+        .and_then(|embedder| store.lance_or_open(embedder.dim(), preset).map(|_| ()));
+    if let Err(error) = &opened {
+        tracing::warn!(%error, owed = store.pending_vectors.len(), "vector store unavailable; owed rows stay owed");
+    }
+    opened.is_ok()
+}
+
+#[cfg(not(any(feature = "documents", feature = "code-search")))]
+fn vector_store_opens(_store: &mut Store, _config: &Config) -> bool {
+    false
+}
+
+/// Queue a batch for documents an earlier scan left owing rows and this scan did not process, at
+/// most `budget` of them. The rows are rebuilt from the cached blob, so a path owes nothing, and
+/// leaves the set, when no rows can come of it: it is no longer indexed, the embed policy or the
+/// chunk cap now excludes it, its entry or its blob was embedded under another preset, or the blob
+/// is gone or does not decode. Only a blob that could not be read from disk stays owed.
 #[cfg(feature = "documents")]
-fn requeue_pending_docs(store: &mut Store, config: &Config, scope: &str, batches: &mut Vec<PendingDocBatchOpt>) {
-    if store.index.pending_vectors.docs.is_empty() {
+fn requeue_pending_docs(
+    store: &mut Store,
+    config: &Config,
+    filters: &Filters,
+    scope: &str,
+    batches: &mut Vec<PendingDocBatchOpt>,
+    budget: &mut usize,
+) {
+    use crate::store::StoreError;
+
+    if store.pending_vectors.docs().is_empty() {
         return;
     }
-    let preset = &config.documents.embedding_preset;
-    let Ok(dim) = crate::scanner_docs::preset_dim(preset) else {
-        return;
-    };
+    let cfg = &config.documents;
+    let preset = &cfg.embedding_preset;
     let queued: ahash::AHashSet<&str> = batches.iter().map(|batch| batch.rel_path.as_str()).collect();
     let mut requeued = Vec::new();
     let mut settled = Vec::new();
-    for rel in &store.index.pending_vectors.docs {
+    for rel in store.pending_vectors.docs() {
         let rel_path = rel.to_str_lossy();
         if queued.contains(rel_path.as_ref()) {
             continue;
         }
-        match store.lookup_doc(rel) {
-            Some(entry) if entry.embedding_preset == *preset => {
-                let doc_scope = crate::scanner_docs::doc_scope_for(&rel_path, scope, config).into_owned();
-                requeued.push(crate::scanner_docs::PendingDocBatch {
-                    blob_hash: entry.hash_hex.clone(),
-                    doc_scope,
-                    chunk_count: 0,
-                    embedding_dim: dim,
-                    emit_rows: true,
-                    embedded: entry.embedded,
-                    embed_attempted: entry.embed_attempted,
-                    reused: true,
-                    degraded: false,
-                    text_fallback: false,
-                    rel_path: rel_path.into_owned(),
-                });
+        if *budget == 0 {
+            break;
+        }
+        let wanted = cfg.enabled && cfg.embed && filters.doc_embed_allowed(&rel_path);
+        let entry = store
+            .lookup_doc(rel)
+            .filter(|entry| wanted && entry.embedding_preset == *preset);
+        let Some(entry) = entry else {
+            settled.push(rel_path.into_owned());
+            continue;
+        };
+        match store.read_doc_by_hex(&entry.hash_hex) {
+            Ok(Some(doc)) if crate::scanner_docs::doc_has_vectors_of(&doc, preset) => {
+                let doc_scope = crate::scanner_docs::doc_scope_for(&rel_path, scope, config);
+                let batch = crate::scanner_docs::pending_from_doc(
+                    &doc,
+                    &rel_path,
+                    &entry.hash_hex,
+                    &doc_scope,
+                    cfg,
+                    true,
+                    true,
+                );
+                if batch.emit_rows {
+                    *budget -= 1;
+                    requeued.push(batch);
+                } else {
+                    settled.push(rel_path.into_owned());
+                }
             }
-            _ => settled.push(rel_path.into_owned()),
+            Err(StoreError::Io { source, .. }) => {
+                tracing::warn!(rel = %rel_path, error = %source, "doc blob unreadable; its vector rows stay owed");
+            }
+            Ok(_) | Err(_) => settled.push(rel_path.into_owned()),
         }
     }
     drop(queued);
-    store.index.pending_vectors.settle_docs(&settled);
+    store.pending_vectors.settle_docs(&settled);
     batches.extend(requeued);
 }
 
 #[cfg(not(feature = "documents"))]
-fn requeue_pending_docs(_store: &mut Store, _config: &Config, _scope: &str, _batches: &mut Vec<PendingDocBatchOpt>) {}
+fn requeue_pending_docs(
+    _store: &mut Store,
+    _config: &Config,
+    _filters: &Filters,
+    _scope: &str,
+    _batches: &mut Vec<PendingDocBatchOpt>,
+    _budget: &mut usize,
+) {
+}
 
-/// Queue a batch for every code file an earlier scan left owing rows and this scan did not process.
-/// Its rows are rebuilt from the cached chunk sidecar. A path that is no longer indexed, or whose
-/// sidecar carries no vectors of the current preset (the scan re-embeds it and queues it again),
-/// owes nothing; one whose sidecar cannot be read stays owed.
+/// Queue a batch for code files an earlier scan left owing rows and this scan did not process, at
+/// most `budget` of them. The rows are rebuilt from the cached chunk sidecar, so a path owes
+/// nothing, and leaves the set, when no rows can come of it: it is no longer indexed, the embed
+/// policy or the chunk cap now excludes it, or its sidecar is gone, does not decode or carries no
+/// vectors of the current preset. Only a sidecar that could not be read from disk stays owed.
 #[cfg(feature = "code-search")]
-fn requeue_pending_code(store: &mut Store, config: &Config, batches: &mut Vec<PendingCodeBatchOpt>) {
-    if store.index.pending_vectors.code.is_empty() {
+fn requeue_pending_code(
+    store: &mut Store,
+    config: &Config,
+    filters: &Filters,
+    batches: &mut Vec<PendingCodeBatchOpt>,
+    budget: &mut usize,
+) {
+    use crate::store::StoreError;
+
+    if store.pending_vectors.code().is_empty() {
         return;
     }
+    let cfg = &config.code_search;
+    let preset = &config.documents.embedding_preset;
     let queued: ahash::AHashSet<&str> = batches.iter().map(|batch| batch.rel_path.as_str()).collect();
     let mut requeued = Vec::new();
     let mut settled = Vec::new();
-    for rel in &store.index.pending_vectors.code {
+    for rel in store.pending_vectors.code() {
         let rel_path = rel.to_str_lossy();
         if queued.contains(rel_path.as_ref()) {
             continue;
         }
-        let Some(entry) = store.lookup(rel) else {
+        if *budget == 0 {
+            break;
+        }
+        let wanted = cfg.enabled && cfg.embed && filters.code_embed_allowed(&rel_path);
+        let Some(entry) = store.lookup(rel).filter(|_| wanted) else {
             settled.push(rel_path.into_owned());
             continue;
         };
         match store.peek_chunk_state(&entry.hash_hex) {
-            Ok(Some(peek)) if peek.embedding_dim > 0 && peek.embedding_model == config.documents.embedding_preset => {
+            Ok(Some(peek))
+                if peek.embedding_dim > 0
+                    && peek.embedding_model == *preset
+                    && peek.embeddings.len() == peek.chunks.len()
+                    && !crate::scanner_code::over_chunk_cap(&rel_path, peek.chunks.len(), cfg) =>
+            {
+                *budget -= 1;
                 requeued.push(crate::scanner_code::PendingCodeBatch {
                     rel_path: rel_path.into_owned(),
                     blob_hash: entry.hash_hex.clone(),
@@ -130,19 +233,26 @@ fn requeue_pending_code(store: &mut Store, config: &Config, batches: &mut Vec<Pe
                     bm25: Vec::new(),
                 });
             }
-            Ok(_) => settled.push(rel_path.into_owned()),
-            Err(error) => {
-                tracing::warn!(rel = %rel_path, %error, "chunk sidecar unreadable; its vector rows stay owed");
+            Err(StoreError::Io { source, .. }) => {
+                tracing::warn!(rel = %rel_path, error = %source, "chunk sidecar unreadable; its vector rows stay owed");
             }
+            Ok(_) | Err(_) => settled.push(rel_path.into_owned()),
         }
     }
     drop(queued);
-    store.index.pending_vectors.settle_code(&settled);
+    store.pending_vectors.settle_code(&settled);
     batches.extend(requeued);
 }
 
 #[cfg(not(feature = "code-search"))]
-fn requeue_pending_code(_store: &mut Store, _config: &Config, _batches: &mut Vec<PendingCodeBatchOpt>) {}
+fn requeue_pending_code(
+    _store: &mut Store,
+    _config: &Config,
+    _filters: &Filters,
+    _batches: &mut Vec<PendingCodeBatchOpt>,
+    _budget: &mut usize,
+) {
+}
 
 /// Push the buffered document batches into LanceDB. No-op without the `documents` feature.
 #[cfg(feature = "documents")]
@@ -243,3 +353,7 @@ pub(crate) fn derive_scope(root: &Path, source: &crate::scanner::ScanSource<'_>)
         },
     }
 }
+
+#[cfg(all(test, feature = "documents"))]
+#[path = "scanner_flush_tests.rs"]
+mod tests;

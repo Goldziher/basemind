@@ -473,17 +473,23 @@ fn apply_outcomes(ctx: &mut DriveCtx<'_>, outcomes: Vec<FileResult>) {
         if let Some(entry) = o.doc_upsert.take() {
             ctx.store.upsert_doc(&o.path, entry);
         }
+        // A batch with rows to write puts its path in the owed set; one with none takes it out, so
+        // a debt from an earlier scan does not outlive the content it was for. ~keep
         #[cfg(feature = "documents")]
         if let Some(batch) = o.doc_batch.take() {
-            if batch.emit_rows {
-                ctx.store.index.pending_vectors.docs.insert(o.path.as_str().into());
+            if batch.emit_rows && batch.embedding_dim > 0 {
+                ctx.store.pending_vectors.owe_doc(&o.path);
+            } else {
+                ctx.store.pending_vectors.settle_docs(&[o.path.as_str()]);
             }
             ctx.out.doc_batches.push(batch);
         }
         #[cfg(feature = "code-search")]
         if let Some(batch) = o.code_batch.take() {
             if batch.embedding_dim > 0 {
-                ctx.store.index.pending_vectors.code.insert(o.path.as_str().into());
+                ctx.store.pending_vectors.owe_code(&o.path);
+            } else {
+                ctx.store.pending_vectors.settle_code(&[o.path.as_str()]);
             }
             ctx.out.code_batches.push(batch);
         }
