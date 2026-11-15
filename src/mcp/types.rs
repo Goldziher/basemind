@@ -578,8 +578,10 @@ pub(crate) struct ReferenceHit {
     /// Byte column of the call site: 0-based here, written 1-based.
     pub column: u32,
     pub callee: String,
-    /// With a pinned definition: whether scope / import resolution proved this site binds to it.
-    /// Absent when no definition was pinned or the language has no resolution.
+    /// With a pinned definition: `true` when scope / import resolution proved this site binds to
+    /// it, `false` when resolution checked the site and did not. Absent when nothing was checked:
+    /// no definition was pinned, resolution has no facts about the definition (`resolution` on the
+    /// response says why), or the site's file lies past the probe cap.
     pub resolved: Option<bool>,
 }
 
@@ -640,8 +642,9 @@ pub(super) struct FindCallersResponse {
     /// How `name` was matched against callee identifiers: `exact` or `substring`.
     #[serde(rename = "match")]
     pub matching: &'static str,
-    /// Why no hit is marked `resolved`, when scope / import resolution could not run for the
-    /// definition's language: `unsupported for <language>`.
+    /// Why no hit carries `resolved`: `unsupported for <language>`, `no resolution facts for this
+    /// file`, `no resolution facts for this definition` (the file has facts and none names it), or
+    /// that the index's resolve pass has not finished.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolution: Option<String>,
     /// Hits proven to bind to `definition`. Absent, not 0, when resolution did not run.

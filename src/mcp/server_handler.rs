@@ -265,7 +265,9 @@ pub(super) fn server_config() -> ServerConfig {
          when a tool says the index is empty.\n\
          Conventions: paths are repository-relative with forward slashes; line and end_line are \
          1-based and inclusive; lists take limit and cursor and return next_cursor; a list trimmed \
-         to its token budget sets budgeted (raise max_tokens or follow next_cursor); a failure is a \
+         to its token budget sets budgeted (raise max_tokens or follow next_cursor); a result cut \
+         by a hard bound sets truncated and truncated_reason, with omitted counting what was left \
+         out (follow next_cursor or narrow the call); a failure is a \
          tool result with isError naming the fix; a notice field means the result is incomplete \
          and says why. An unknown argument is rejected, never ignored.\n\
          Only when collaborating with other agents in this repository: the agents tool (mode inbox, \

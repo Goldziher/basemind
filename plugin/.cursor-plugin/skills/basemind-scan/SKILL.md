@@ -9,8 +9,8 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:1898a7b38358c8c7617db84e2efc404ed24c59c32a6c8675bff1b1cba0957e1f
-Source-Hash: blake3:0b0d4f8d1f2a349df94c159321bf5e0bab8e184dbf01967f0963123284587699
+Content-Hash: blake3:df59db0faad119427b203a3077cd30f33000600111d28048e0beb444c0244e12
+Source-Hash: blake3:fed0351e46a3a0a3e8f6635abb94f8ccfe8ba77968cf135c737f71cf3ed7c973
 Schema-Version: v1
 -->
 
@@ -44,7 +44,7 @@ use it first: a bare `basemind` from `PATH` can be a different version over the 
 
 1. The plugin launcher, which installs and execs the version-matched binary:
    `${CLAUDE_PLUGIN_ROOT}/scripts/mcp-launch.sh scan` (in other hosts, `scripts/mcp-launch.sh` in the
-   plugin directory). Its binary is cached at `${XDG_CACHE_HOME:-~/.cache}/basemind/versions/<version>/basemind`.
+   plugin directory). Its binary is cached at `${XDG_CACHE_HOME:-~/.cache}/basemind/bin/<version>/basemind`.
 2. Fallback when no plugin launcher exists: `basemind` on `PATH`.
 3. A dev build: `cargo build --release` then `./target/release/basemind scan`.
 

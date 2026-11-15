@@ -22,7 +22,8 @@ impl BasemindServer {
         description = "Use instead of `git log`/`git show` for \"what changed recently\", \"what \
         touched this file\", \"which commit mentions X\" or \"when did this function change\". No \
         arguments lists recent commits; `path`, `query`/`author`, `path`+`symbol` or `rev` narrow \
-        it. \
+        it. A symbol's history is read one window of commits per page: follow `next_cursor`, even \
+        from an empty page (`truncated_reason` `window`). \
         Example: {\"path\":\"src/store.rs\",\"limit\":5}",
         annotations(
             read_only_hint = true,
@@ -41,7 +42,8 @@ impl BasemindServer {
     #[tool(
         title = "Blame",
         description = "Use instead of `git blame` for \"who last changed this\": per-line authorship \
-        of a file, of a 1-based `line`..`end_line` span, or of one `symbol`. \
+        of a file, of a 1-based `line`..`end_line` span, or of one `symbol`, located in the file \
+        as it is at `rev`. \
         Example: {\"path\":\"src/store.rs\",\"symbol\":\"open\"}",
         annotations(
             read_only_hint = true,
@@ -60,9 +62,11 @@ impl BasemindServer {
     #[tool(
         title = "Diff and status",
         description = "Use instead of `git status`/`git diff`. No arguments returns the working-tree \
-        status (staged, modified, untracked); `path` alone diffs that file's working tree against \
-        HEAD; `from`/`to` pick revisions; `structural` lists the symbols added and removed instead \
-        of text hunks. A diff over 200 hunks is cut and flagged `truncated`. \
+        status (staged, modified, untracked; 200 paths per list, a `path` ending in `/` narrows it \
+        to that directory); `path` alone diffs that file's working tree against HEAD; `from`/`to` \
+        pick revisions; `structural` lists the symbols added and removed, and counts the `common` \
+        ones, instead of text hunks. A diff over 200 hunks or 128 KiB is cut and flagged \
+        `truncated`. \
         Example: {\"path\":\"src/store.rs\",\"from\":\"HEAD~1\",\"to\":\"HEAD\"}",
         annotations(
             read_only_hint = true,

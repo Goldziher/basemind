@@ -32,7 +32,8 @@ impl BasemindServer {
         title = "Outline a file",
         description = "Use to see what a file contains before, or instead of, reading it: every \
         symbol with its kind, signature and 1-based `line`/`end_line`, plus the file's imports. \
-        Feed a span to `code_read`. Code files only. \
+        Feed a span to `code_read`. Code files only. `stale` means the file changed since it was \
+        indexed and is outlined as it is now. \
         Example: {\"path\":\"src/store.rs\"}",
         annotations(
             read_only_hint = true,
@@ -73,7 +74,9 @@ impl BasemindServer {
         title = "Read a symbol or line span",
         description = "Use to read the source of one function or type, or an exact line span, \
         instead of the whole file. Pass `symbol` (plus `line` when several share the name), or a \
-        `line`..`end_line` span. Bodies over 128 KiB are cut and flagged `truncated`. \
+        `line`..`end_line` span. A body over 128 KiB is cut after a whole line and flagged \
+        `truncated`: read on from `end_line` + 1. `stale` means the file changed since it was \
+        indexed and the symbol was found by parsing it as it is now. \
         Example: {\"path\":\"src/store.rs\",\"symbol\":\"open\"}",
         annotations(
             read_only_hint = true,
@@ -93,8 +96,10 @@ impl BasemindServer {
         title = "Search code text",
         description = "Use instead of `rg`/`grep` to find exact text (a string, identifier or \
         comment) anywhere in the indexed code. `pattern` is literal unless `regex` is true. Each \
-        hit is its line plus the symbol it sits in. Code files only: search documents with \
-        `docs_search`. \
+        hit is its line plus the symbol it sits in; a hit in a file edited since it was indexed \
+        has `stale` and no symbol. `skipped_files` counts files that could not be searched. A \
+        `path` or `language` no indexed file has is an error. Code files only: search documents \
+        with `docs_search`. \
         Example: {\"pattern\":\"cache_root(\",\"path\":\"src/\"}",
         annotations(
             read_only_hint = true,
@@ -114,8 +119,8 @@ impl BasemindServer {
         title = "Search code by meaning",
         description = "Use when you know what the code does but not a name or string in it: \
         searches code chunks by meaning and returns pointers (path, `line`/`end_line`, symbol), \
-        not bodies. \
-        `lanes_unavailable` says when a lane could not run. Read a hit with `code_read`. \
+        not bodies. `lanes_unavailable` says when a lane could not run; `truncated` that the \
+        ranking goes on past the 100 hits that can be paged. Read a hit with `code_read`. \
         Example: {\"query\":\"retry a failed upload with backoff\"}",
         annotations(
             read_only_hint = true,
@@ -135,7 +140,10 @@ impl BasemindServer {
         title = "Find usages",
         description = "Use for \"what calls X\", \"what implements X\", \"what imports X\" and \
         \"which definition does this reference bind to\". `relation` picks the question; the name \
-        is matched exactly; `path` pins the definition in that file and marks each hit `resolved`. \
+        is matched exactly. `path` pins the definition in that file; a hit then has `resolved` \
+        true (proven to bind to it), false (checked, not proven) or absent (not checked: \
+        `resolution` says why). A pinned file edited since it was indexed is an error naming \
+        `index_rescan`. \
         Example: {\"name\":\"open_store\",\"path\":\"src/store.rs\"}",
         annotations(
             read_only_hint = true,
@@ -155,7 +163,8 @@ impl BasemindServer {
         title = "Find files",
         description = "Use instead of `find`/`fd`/`ls -R` to locate a file by a fuzzy fragment of \
         its name or path, or to list indexed files when `query` is omitted. Covers code and \
-        documents (markdown, config, PDFs). \
+        documents (markdown, config, PDFs). A `path_prefix` or `language` no indexed file has is \
+        an error. \
         Example: {\"query\":\"readme\"}",
         annotations(
             read_only_hint = true,

@@ -23,7 +23,8 @@ impl BasemindServer {
         title = "Search documents",
         description = "Use to find where a topic is discussed in the repository's documents \
         (markdown, PDFs, Office, HTML, config and data files) instead of opening them. Returns the \
-        best-matching passages with their path. Code is searched with `code_grep`/`code_search`. \
+        best-matching passages with their path; `truncated` says the ranking was cut (see \
+        `truncated_reason`). Code is searched with `code_grep`/`code_search`. \
         Example: {\"query\":\"how releases are versioned\"}",
         annotations(
             read_only_hint = true,

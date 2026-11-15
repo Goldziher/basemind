@@ -111,8 +111,10 @@ longer names too.
 }
 ```
 
-Callers of one definition. `path` pins the definition in that file; each hit is marked `resolved`
-when resolution proved the binding.
+Callers of one definition. `path` pins the definition in that file. A hit then has `resolved: true`
+when resolution proved the binding, `resolved: false` when it checked and could not, and no
+`resolved` when the hit was not checked; `resolution` says why when nothing could be checked. A
+pinned file edited since it was indexed is an error naming `index_rescan`.
 
 ```json
 {

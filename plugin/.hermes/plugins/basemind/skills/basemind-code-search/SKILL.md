@@ -9,8 +9,8 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:5959bbd9ca3e5f513955d04b0ab6a2f73f06e6660ef661901565e442ea269e3c
-Source-Hash: blake3:0b0d4f8d1f2a349df94c159321bf5e0bab8e184dbf01967f0963123284587699
+Content-Hash: blake3:80008ab62a085f6b5bf2f554ef0b3b844c7bd3bcd196e4a7a176f303fe1c87d8
+Source-Hash: blake3:fed0351e46a3a0a3e8f6635abb94f8ccfe8ba77968cf135c737f71cf3ed7c973
 Schema-Version: v1
 -->
 
@@ -87,12 +87,18 @@ code_outline {"path":"src/mcp/tools.rs"}
   at `find_files`.
 - `path` is repo-relative with forward slashes. `line`, `end_line` and `column` are 1-based.
 - `code_read` takes `symbol` (add `kind` when several share the name) or `line` with `end_line`,
-  not both. Bodies over 128 KiB are cut and flagged `truncated`.
+  not both. A body over 128 KiB is cut after a whole line and flagged `truncated`: read on from
+  `end_line + 1`. `stale: true` (also on `code_outline`) means the file changed since it was
+  indexed and was read as it is now; a file deleted since the scan is an error naming
+  `index_rescan`.
 - `code_outline` omits `imports` when the file has none.
-- `code_grep`: `pattern` is literal text unless `"regex":true`. `path` is a substring of the
-  repo-relative path, never a glob. A hit is `path`, `line`, `column`, `text` (the matching line; one
+- `code_grep`: `pattern` is literal text unless `"regex":true`, and a regex anchors `^` / `$` at
+  every line. `path` is a substring of the repo-relative path, never a glob; a `path` or
+  `language` that no indexed code file has is an error (it names `docs_search` when only
+  documents match). `skipped_files` counts files that could not be searched. A hit is `path`, `line`, `column`, `text` (the matching line; one
   over 400 bytes is cut to a window around the match, `…` marking each cut side) and `symbol`
-  (`name`, `kind` of the innermost enclosing symbol; absent for a file edited since it was indexed);
+  (`name`, `kind` of the innermost enclosing symbol; absent, with `stale: true`, for a file edited
+  since it was indexed);
   `"context":true` adds `context_before` / `context_after`. The response echoes `pattern` and
   `regex`. It never caps files, so `total_matches` is exact.
 - `code_symbols` ranks the exact name first, then prefix, then substring; `"fuzzy":true` adds fuzzy
@@ -101,9 +107,12 @@ code_outline {"path":"src/mcp/tools.rs"}
 - `code_refs {"name":"bar"}` matches the identifier exactly, with no scope resolution: `Foo::bar()`
   and `bar()` are calls to `bar`, `bar_baz()` is not. `"match":"substring"` widens it, and the
   response echoes `match`. Add `path` for one specific definition: the response carries that
-  `definition` (`path`, `name`, `kind`, `line`, `column`) and either `resolved_total` with a
-  `resolved` flag per hit, or a `resolution` note with no flags: `unsupported for <language>`, or
-  `no resolution facts for this file` when the language is supported but the file bound nothing.
+  `definition` (`path`, `name`, `kind`, `line`, `column`) and either `resolved_total` with
+  `resolved` on the hits it checked (`true`: proven to bind to the definition; `false`: checked
+  and not proven; absent: not checked), or a `resolution` note with no flags:
+  `unsupported for <language>`, `no resolution facts for this file` when the language is supported
+  but the file bound nothing, or `no resolution facts for this definition`. A pinned file edited
+  since it was indexed is an error naming `index_rescan`.
   A `path` that is not indexed, or that defines no such symbol, is an error; so is a name several
   definitions in the file share, which lists each with its lines until you add `line`.
   `relation:"importers"` matches whole segments of recorded imports (`os` finds `import os.path`,

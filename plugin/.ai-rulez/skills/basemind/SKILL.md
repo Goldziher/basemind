@@ -137,7 +137,7 @@ The MCP server is launched by the host (`basemind serve`, wired up in `.claude-p
 for you). You do not start it manually.
 
 Re-run `basemind scan` after large changes, or run `basemind watch` to keep the index fresh on file
-save. A tool that reports an empty index says so in its result: run `index_rescan {"full":true}` or
+save. A tool that reports an empty index says so in its result: run `index_rescan {}` or
 `basemind scan`.
 
 ## Examples
@@ -185,10 +185,13 @@ A 1000-line file becomes a 30-line table of contents.
   subsequence matches last. Each row says which with `match`, and `total` counts the whole corpus.
 - `code_refs {"name":"bar"}` matches the identifier exactly, with no scope resolution: `Foo::bar()`
   and `bar()` are calls to `bar`, `bar_baz()` is not. `"match":"substring"` widens it. Add `path` to
-  pin one definition: the response names that `definition` and marks the hits it proves `resolved`
-  (`resolved_total`), or says why it marks none: `resolution` is `unsupported for <language>` or
-  `no resolution facts for this file`. A missing file or symbol is an error, and so is a name that
-  several definitions in the file share, until you add `line` (any line inside the one you mean).
+  pin one definition: the response names that `definition`, and a hit then has `resolved: true`
+  (proven to bind to it), `resolved: false` (checked, not proven) or no `resolved` (not checked);
+  `resolution` says why when no hit could be checked (`unsupported for <language>`,
+  `no resolution facts for this file`, `no resolution facts for this definition`). A missing file
+  or symbol is an error, and so is a name that several definitions in the file share, until you
+  add `line` (any line inside the one you mean). A pinned file edited since it was indexed is an
+  error naming `index_rescan`.
 - `code_search` reports which retrieval lanes ran (`lanes_ran`) and which could not, with the
   reason (`lanes_unavailable`).
 - `code_grep`'s `path` is a literal substring of the repo-relative path, never a glob.

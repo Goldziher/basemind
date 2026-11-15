@@ -76,19 +76,37 @@ git_diff {"path":"src/mcp/tools.rs","from":"HEAD~5","structural":true}
 - History queries are indexed: commits touching a path resolve in tens of microseconds vs a live
   walk. The index auto-builds on first use and is a fraction of the size of `.git`.
 - `git_log` with no arguments is a recency window; use `query` or `author` to find a commit
-  arbitrarily far back. `symbol` needs `path`. `limit` defaults to 20 and caps at 100.
+  arbitrarily far back. `symbol` needs `path`. `limit` defaults to 20 and caps at 100, and
+  `limit: 0` is refused. A `path` that no commit reachable from HEAD touches and that is not on
+  disk is an error, for a file and for a directory.
+- `git_log` with `path` + `symbol` reads one window of the commits touching the file per page.
+  When older commits remain the page returns `next_cursor`, and says `truncated_reason: "window"`
+  when it is short or empty: follow the cursor until it is absent to reach every change back to
+  the introduction. A symbol the working tree no longer defines still has its history read.
+- `git_log` with `rev` holds the commit's file list to `max_tokens` and then sets `budgeted`, with
+  `omitted` counting the files left out.
 - `git_blame`: `line` and `end_line` are 1-based and inclusive, and `end_line` defaults to `line`.
-  `rev` blames at a revision other than HEAD. `limit` defaults to 100 hunks and the list is trimmed
+  `rev` blames at a revision other than HEAD. A `symbol` is located in the file as it is at `rev`,
+  not in the working tree, so its lines (and a `line` passed to pick one of several) are that
+  revision's; a symbol that exists only uncommitted is "no symbol ... at HEAD". `limit` defaults to 100 hunks and the list is trimmed
   to `max_tokens` (default 6000), then sets `budgeted`. A hunk is `commit_sha`, `short_sha`, `line`, `end_line`, `source_line`, `author`,
   `author_time_unix` and `summary`; a symbol blame also carries the symbol's `line` / `end_line`.
 - `git_diff`: `path` alone is that file's working-tree diff against HEAD; `from` defaults to HEAD
   and `to` to the working tree. The response has `from`, `to` (a sha, or `"working tree"`),
-  `present_at_from`, `present_at_to` and `hunks`. A structural diff compares `from` against the
-  indexed working tree and takes no `to`.
+  `present_at_from`, `present_at_to` and `hunks`. A diff is cut at 200 hunks or 128 KiB of hunk
+  text and then sets `truncated`, `truncated_reason` (`hunk_cap` or `byte_cap`) and `omitted` (the
+  hunks left out); it has no cursor, so narrow it with a closer `from` / `to`. A structural diff
+  compares `from` against the indexed working tree, takes no `to`, and returns `added`, `removed`
+  and `common`, the count of unchanged symbols.
+- `git_diff {}` lists at most 200 paths per status list, in path order. A cut status sets
+  `truncated`, `truncated_reason: "path_cap"` and `omitted`; pass a directory `path` (one ending
+  in `/`) for the status under that directory.
 - All paths are repository-relative with forward-slash separators. Page with `next_cursor` ->
   `cursor`. A cursor continues only the call that returned it (same arguments apart from `limit`
   and `max_tokens`); on another query, or after HEAD moved, the call is an error: repeat it without
-  `cursor`. A shallow clone sets `truncated`: absence is then inconclusive.
+  `cursor`. A shallow clone sets `truncated` with `truncated_reason: "shallow_clone"`: absence is
+  then inconclusive. Every cut uses the same words: `truncated` + `truncated_reason` for a hard
+  bound, `budgeted` for the token budget, `omitted` for the count left out.
 - `query` is matched against the commit message and `author` against the author name and email,
   each on its own field: `{"query":"review","author":"alice"}` is commits by alice that mention a
   review. A directory `path` inspects the last 200 commits and sets `truncated` with

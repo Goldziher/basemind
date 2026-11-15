@@ -125,7 +125,7 @@ pub struct CodeReadParams {
 pub struct CodeGrepParams {
     /// Text to find, not empty; a literal unless `regex` is true.
     pub pattern: String,
-    /// Treat `pattern` as a Rust regex.
+    /// Treat `pattern` as a Rust regex; `^` and `$` match at every line.
     #[serde(default)]
     pub regex: Option<bool>,
     /// Literal substring of the repo-relative path, e.g. `src/mcp/`; not a glob.
@@ -272,13 +272,14 @@ pub struct GitLogParams {
     /// Words the author name or email must all contain. Combines with `query` only.
     #[serde(default)]
     pub author: Option<String>,
-    /// History of this symbol's body; needs `path`, combines with nothing else but `line`.
+    /// History of this symbol's body, one window of commits per page; needs `path`, combines
+    /// with nothing else but `line`.
     #[serde(default)]
     pub symbol: Option<String>,
     /// With `symbol`: 1-based line inside the definition meant, when several share the name.
     #[serde(default)]
     pub line: Option<u32>,
-    /// Show this one commit in full. Combines with nothing.
+    /// Show this one commit in full; `max_tokens` bounds its file list. Combines with nothing.
     #[serde(default)]
     pub rev: Option<String>,
     /// Max commits (default 20).
@@ -305,7 +306,7 @@ pub struct GitBlameParams {
     /// Last line of a span, inclusive (default: `line`). Needs `line`; not with `symbol`.
     #[serde(default)]
     pub end_line: Option<u32>,
-    /// Blame this symbol's lines instead of a span.
+    /// Blame this symbol's lines, as they are at `rev`, instead of a span.
     #[serde(default)]
     pub symbol: Option<String>,
     /// Revision to blame at (default HEAD).
@@ -326,7 +327,8 @@ pub struct GitBlameParams {
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct GitDiffParams {
-    /// File to diff; omit every argument for the working-tree status.
+    /// File to diff, or a directory ending in `/` to narrow the status; omit every argument for
+    /// the whole working-tree status.
     #[serde(default)]
     pub path: Option<RelPath>,
     /// Old revision (default HEAD). Needs `path`.

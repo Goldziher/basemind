@@ -452,8 +452,10 @@ LSP server.
 
 Resolution **refines, but never shrinks, a result set.** `code_refs` with a `path` (callers of the
 definition in that file) reports every call site whose callee is exactly that name — the same sound
-floor a `code_refs` call without `path` uses — and marks each hit `resolved` when resolution proved
-it binds to that definition (`resolved_total` counts them). Matching is on the whole identifier, so
+floor a `code_refs` call without `path` uses — and gives each hit it checked a `resolved` flag: `true`
+when resolution proved it binds to that definition (`resolved_total` counts them), `false` when it
+checked and could not, and no flag at all for a hit it did not check (`resolution` says why when that
+holds for the whole definition). Matching is on the whole identifier, so
 `open` no longer counts `open_store`; pass `match: "substring"` for the looser match. It deliberately
 does *not* return only the resolved subset: resolution cannot see through a module-object import
 (`from pkg import mod` then `mod.f()`) or an unresolvable path alias, so filtering to it would drop

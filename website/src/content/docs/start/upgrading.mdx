@@ -81,6 +81,8 @@ trip. See the [MCP tools reference](/reference/mcp-tools/) for every argument.
 - `format` (`"toon"`): responses are JSON.
 - Hidden aliases such as `q`, `needle` and `token_budget`: only the documented names are accepted.
 - `field` on commit search: pass `query` for messages, `author` for authors.
+- `full` on `index_rescan`, and `basemind rescan --full`: `index_rescan {}` (`basemind rescan` with
+  no path) already walks the whole workspace.
 
 ### CLI changes
 
@@ -126,6 +128,21 @@ The command groups keep their names, and the old subcommands stay as shorthands 
   (`index_rescan`, `code_search`, `docs_search`). Fast calls used to come back as background tasks.
 - **An empty index is reported**, never returned as a plain empty result: the response carries a
   `notice` with `state: "empty_index"`.
+- **`limit: 0` is refused** by every tool that takes `limit`.
+- **A filter that selects no file is an error.** A `path` / `path_prefix` / `language` that no
+  indexed file passes is refused with what would match (`code_grep`, `find_files`), as is a
+  `git_log` `path` that no commit touches and that is not on disk. While the index is still being
+  built the empty page comes back with its `notice` instead.
+- **`code_grep {regex: true}` anchors `^` / `$` at every line.**
+- **Edited and deleted files.** `code_outline`, `code_read` and `code_grep` describe an edited file
+  as it is now and say `stale: true`; `code_refs` with `path` returns an error naming
+  `index_rescan`, and so does every tool for a file deleted since the scan.
+- **`git_blame {symbol}`** locates the symbol in the file as it is at `rev`, not in the working tree.
+- **`git_log {path, symbol}`** pages past its window: follow `next_cursor` until it is absent.
+- **One vocabulary for a cut.** A hard bound sets `truncated` and `truncated_reason`, with `omitted`
+  counting what was left out; the token budget sets `budgeted`. `truncation_reason` (`code_grep`),
+  `total_hunks` (`git_diff`) and `imports_truncated` (`code_outline`) are gone. The full table is in
+  [`docs/UPGRADING.md`](https://github.com/Goldziher/basemind/blob/main/docs/UPGRADING.md).
 - **Telemetry keys are the tool names.**
 
 ## Running two basemind versions side by side

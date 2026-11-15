@@ -10,6 +10,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `stale` on `code_read` (a symbol found by parsing a file edited since it was indexed), on `code_outline`
+  (outlined from the file as it is) and on a `code_grep` hit in such a file.
+- `skipped_files` on `code_grep`: the files it could not search (deleted, not UTF-8, grown past
+  `scan.max_file_bytes`, or leading out of the repository).
+- `budgeted` and `omitted` on `git_log {rev}`: the commit's file list is held to `max_tokens`.
+- `budgeted`, `truncated_reason: "window"` and a `next_cursor` that continues past the window on
+  `git_log {path, symbol}`.
+- `resolution: "no resolution facts for this definition"` on `code_refs` with `path`.
+- `truncated` / `truncated_reason` on `code_search` and `docs_search` (`depth`, `rerank_top_k`,
+  `filter_depth`), and `truncated_reason` wherever `truncated` stood alone (`code_read`, `code_symbols`,
+  `find_files`).
+- `git_diff` with a `path` ending in `/` returns the working-tree status under that directory.
+
 ### Changed
 
 - **BREAKING: the MCP tools are one per job.** The mode-dispatched `code`, `git`, `memory` and `admin`
@@ -106,8 +121,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     still running after 3 s.
   - `git_diff` with no arguments returns the working-tree status, and with only `path` diffs that file's
     working tree against HEAD; `from` / `to` replace `rev_old` / `rev_new`. A diff is cut at 200 hunks or
-    128 KiB of hunk text (a single larger hunk is clipped to that) and then sets `truncated` and
-    `total_hunks`; a binary file reports `binary`, and a file over 4 MiB on either side is not diffed
+    128 KiB of hunk text (a single larger hunk is clipped to that) and then sets `truncated`,
+    `truncated_reason` and `omitted`; a binary file reports `binary`, and a file over 4 MiB on either side is not diffed
     and reports `too_large`.
     `git_blame` takes `line` / `end_line` in place of `line_start` / `line_end`, returns 100 hunks per
     page by default and honours `max_tokens`.
@@ -130,6 +145,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `--hash-mode`, `--no-embed` and `--no-files` are removed. CLI parity is now "every MCP tool has a
     command" (ADR-0014 as amended): churn, changed-path regex search, chunk fetch, memory deletion, cache
     maintenance and telemetry are CLI only.
+- **BREAKING: the verb tools refuse calls that can only come back empty, bound what they return, and say
+  every cut in one vocabulary.** These change responses and behaviour of the tools above.
+  - One vocabulary for a cut: a hard bound sets `truncated: true` and `truncated_reason`, with `omitted`
+    counting what was left out where the count is known, and a cut made by the token budget sets
+    `budgeted`. `code_grep`'s `truncation_reason` is renamed `truncated_reason` and gains `omitted`;
+    `git_diff`'s `total_hunks` is replaced by `truncated_reason` (`hunk_cap`, `byte_cap`) and `omitted`;
+    `code_outline`'s `imports_truncated` is replaced by `truncated`, `truncated_reason: "imports"` and
+    `omitted`. `skipped_files` is not a cut and keeps its name.
+  - `git_diff {structural}`: `common` is a count, not a list. Two definitions sharing a name and kind are
+    counted once.
+  - `git_diff {}`: each status list is cut at 200 paths, in path order; `omitted` counts the rest and the
+    cut sets `truncated` with `truncated_reason: "path_cap"`. A directory `path` narrows the status.
+  - `code_grep`, `find_files`: a `path` / `path_prefix` / `language` filter that no indexed file passes is
+    an error saying what would match; `code_grep` names `docs_search` when the filter matches only
+    documents. While the index is still being built the empty page is returned with its `notice` instead.
+  - `git_log {path}`: a path that no commit reachable from HEAD touches and that is not on disk is an
+    error, for a file and for a directory. An empty indexed answer is checked against the live walk first.
+  - `limit: 0` is refused by every tool that takes `limit`.
+  - `code_grep {regex}`: `^` / `$` match at every line, CRLF-aware, and no hit is reported past the last
+    line.
+  - `git_blame {symbol}`: the span, and the `line` that picks one of several definitions, are taken from
+    the blamed revision. An error names that revision, and a blob over `scan.max_file_bytes` is refused.
+  - `code_read`: an oversized body ends at a whole line and `end_line` is the last line returned (read on
+    from `end_line + 1`); a symbol read refuses a file over `scan.max_file_bytes`.
+  - `code_search` / `docs_search`: every page is cut from one 100-deep retrieval; a reranker scores up to
+    100 candidates per call. A ranking cut at that depth, by the reranker's `top_k` or by a filter that
+    saw only the 400 best chunks sets `truncated`, and a cursor issued before a rescan is refused.
+  - `git_log {rev}` and `{path, symbol}` now honour `max_tokens`. A symbol's history is paged by a cursor
+    over the commits touching the file, so a change older than the first window can be reached, and a
+    symbol the working tree no longer defines has its history read.
+  - A file edited since it was indexed: `code_outline` and `code_read` describe it as it is now and set
+    `stale`; `code_refs` with `path`, and `relation: "definition"`, return an error naming `index_rescan`.
+    A file deleted since the scan gets one error from every tool, naming `index_rescan`. No tool reads an
+    indexed file whole past `scan.max_file_bytes`.
 - **The `documents` cargo feature is split into tiers.** `documents` is now document search over local
   files without OCR or named-entity recognition: PDF (text layer), Office formats, spreadsheets, email,
   HTML, XML (SVG text is read as XML), Markdown/MDX and Jupyter notebooks, with chunking, language
@@ -156,6 +205,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
+- **BREAKING: `index_rescan`'s `full` argument and `basemind rescan --full`.** `{}` and `{"full": true}`
+  ran the same walk; the flag's only effect was to discard `paths` when both were passed. `index_rescan {}`
+  (`basemind rescan` with no path) is the whole workspace, and a call that still passes `full` is refused
+  as an unknown argument. The empty-index notice and error name `index_rescan {}`.
+- The `insta` and `wiremock` dev-dependencies, which nothing used.
 - **BREAKING: the `workspace` MCP tool and worktree claims.** Advisory worktree claims enforced nothing
   and nothing read them, so they are gone everywhere: the `workspace` tool (all five modes), the
   `basemind workspace claim` and `basemind workspace release` commands, the `claimed_by` field of a
@@ -447,6 +501,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   client that finds this daemon is told to update and never takes it over.
 - The agent comms store is still versioned by the release minor, so the 0.34 bump empties it once
   more.
+- `docs_search` hits carry their document's `keywords`, `entities` and `summary`, and the `keywords` /
+  `entity` filters work (over the 400 best-ranked chunks; `truncated_reason: "filter_depth"` says when that
+  depth was used up). The metadata was looked up in the code file map, where no document lives.
+- A same-size edit is detected as stale: the content hash decides when the size and timestamp do not.
+- Symbol history no longer reports the edge of its window as `introduced`.
+- `code_refs` leaves `resolved` absent when nothing was checked, instead of `false`.
+- `code_grep` and `code_refs` definition no longer read through a file swapped for a link out of the
+  repository, and `code_grep` no longer counts matches through a directory swapped for one: the count
+  answered "does the file outside match this pattern".
+- `code_refs` with `path`, and `relation: "definition"`, no longer lay indexed positions over a file edited
+  since it was indexed, which reported another line under the right name.
+- A structural diff's `common` no longer counts a repeated symbol twice, and `code_read` keeps a line that
+  ends exactly at its size cap.
+- Blocking tool work (file reads, blob reads, git walks) runs off the async reactor.
 - `find_files` (previously `code` modes `find` and `files`) no longer misses document-tier files
   (markdown, config, PDFs) on a long-lived server.
 - `index_status.cache_dir` reports basemind's cache directory. It reported the tree-sitter grammar
