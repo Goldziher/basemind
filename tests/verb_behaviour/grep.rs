@@ -222,3 +222,39 @@ async fn code_grep_names_what_cut_a_page_and_how_much_it_left_out() {
     assert_eq!(budgeted["omitted"].as_u64(), Some(total - 1), "{budgeted}");
     assert!(budgeted["next_cursor"].is_string(), "{budgeted}");
 }
+
+/// Every hit is on a line the file has. An anchor also matches at the end of the text, which after
+/// a trailing newline is one line past the last: a hit there names a line `code_read` refuses.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn code_grep_reports_no_hit_past_the_last_line() {
+    let (_dir, client) = started().await;
+
+    let blank = call(
+        &client,
+        "code_grep",
+        json!({ "pattern": "^$", "regex": true, "path": "tools.py" }),
+    )
+    .await;
+    assert_eq!(
+        blank["total_matches"], 0,
+        "tools.py has three lines and none is empty: {blank}"
+    );
+
+    let ends = call(
+        &client,
+        "code_grep",
+        json!({ "pattern": "$", "regex": true, "path": "tools.py" }),
+    )
+    .await;
+    assert_eq!(ends["total_matches"], 3, "one per line: {ends}");
+    let lines: Vec<u64> = ends["hits"]
+        .as_array()
+        .expect("hits")
+        .iter()
+        .map(|hit| hit["line"].as_u64().expect("line"))
+        .collect();
+    assert_eq!(lines, [1, 2, 3], "{ends}");
+    for line in lines {
+        call(&client, "code_read", json!({ "path": "tools.py", "line": line })).await;
+    }
+}

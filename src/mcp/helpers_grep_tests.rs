@@ -72,10 +72,10 @@ fn counts_every_match_and_the_prefilter_never_changes_the_count() {
     );
 }
 
-// ---- equivalence against the pre-optimisation sweep -------------------------------------
+// ---- equivalence against a plain read-per-file sweep ------------------------------------
 
-/// The sweep exactly as it was before the buffer-reuse rewrite: `read_to_string` per file, count
-/// pass, then a second read of the selected files. Kept verbatim as the oracle.
+/// The oracle: `read_to_string` per file for the count pass, then a second read of the selected
+/// files. No buffer reuse, no parallelism, nothing to get wrong.
 mod reference {
     use super::*;
 
@@ -99,7 +99,7 @@ mod reference {
                     {
                         0
                     } else {
-                        re.find_iter(&source).count().min(u32::MAX as usize) as u32
+                        line_matches(re, &source).count().min(u32::MAX as usize) as u32
                     }
                 }
                 None => 0,
@@ -515,4 +515,40 @@ fn a_file_over_the_size_bound_is_not_read() {
     std::fs::write(&file, b"12345").expect("write");
     assert_eq!(with_indexed_bytes(Some(file.clone()), 5, <[u8]>::len), Some(5));
     assert_eq!(with_indexed_bytes(Some(file), 4, <[u8]>::len), None);
+}
+
+fn line_anchored(pattern: &str) -> Regex {
+    regex::RegexBuilder::new(pattern)
+        .multi_line(true)
+        .crlf(true)
+        .build()
+        .expect("regex")
+}
+
+/// An anchor matches at the end of the text as well as at every line. After a trailing newline
+/// that position is past the last line, where there is nothing to report.
+#[test]
+fn an_anchor_does_not_match_past_the_last_line() {
+    let count = |pattern: &str, text: &str| count_matches(text.as_bytes(), &line_anchored(pattern), None);
+    assert_eq!(count("^$", "a\n\nb\n"), Some(1), "the empty second line only");
+    assert_eq!(count("^", "a\nb\n"), Some(2));
+    assert_eq!(count("$", "a\nb\n"), Some(2));
+    assert_eq!(
+        count("$", "a\nb"),
+        Some(2),
+        "the end of an unterminated last line is on that line"
+    );
+    assert_eq!(count(r"^\s*$", "a\n  \n"), Some(1));
+    assert_eq!(count("^$", "a\r\n\r\nb\r\n"), Some(1), "CRLF line ends");
+    assert_eq!(count("^$", "a\n"), Some(0));
+    assert_eq!(count("^$", "\n"), Some(1), "one empty line");
+
+    let positions: Vec<usize> = line_matches(&line_anchored("^"), "a\nb\n")
+        .map(|found| found.start())
+        .collect();
+    assert_eq!(
+        positions,
+        [0, 2],
+        "the page is built from the same matches as the count"
+    );
 }

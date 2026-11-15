@@ -37,10 +37,10 @@ const GREP_BYTE_BUDGET: u64 = 2 * 1024 * 1024 * 1024;
 ///
 /// Scans every indexed file that passes the `path_contains` / `language` filters — the full corpus,
 /// in parallel — reads each as UTF-8 (non-UTF-8 and unreadable files are skipped and counted in
-/// `skipped_files`), and applies the compiled regex. `limit` caps returned HITS, never files scanned, so `total_matches` and
-/// `total_files_matched` are exact for the scanned window. Supports in-memory pagination via
-/// `cursor` / `next_cursor` on the same `encode_in_memory(offset, generation)` scheme as
-/// `list_files`.
+/// `skipped_files`), and applies the compiled regex. `limit` caps returned HITS, never files
+/// scanned, so `total_matches` and `total_files_matched` are exact for the scanned window. Supports
+/// in-memory pagination via `cursor` / `next_cursor` on the same
+/// `encode_in_memory(offset, generation)` scheme as `list_files`.
 pub(super) async fn run_workspace_grep(
     state: &ServerState,
     params: WorkspaceGrepParams,
@@ -360,7 +360,18 @@ fn count_matches(bytes: &[u8], re: &Regex, literal: Option<&Finder<'static>>) ->
         return Some(0);
     }
     let source = std::str::from_utf8(bytes).ok()?;
-    Some(re.find_iter(source).count().min(u32::MAX as usize) as u32)
+    Some(line_matches(re, source).count().min(u32::MAX as usize) as u32)
+}
+
+/// The matches of `re` that lie on a line of `source`.
+///
+/// `^` and `$` anchor at every line, so an empty match is also found at the very end of a file
+/// that ends in a newline: after the last line, at a line number the file does not have and
+/// `code_read` refuses. The counting pass and the page are both built from this, so the two agree.
+pub(super) fn line_matches<'s>(re: &Regex, source: &'s str) -> impl Iterator<Item = regex::Match<'s>> {
+    let past_the_last_line = source.ends_with('\n').then_some(source.len());
+    re.find_iter(source)
+        .filter(move |found| Some(found.start()) != past_the_last_line)
 }
 
 /// One file's contribution to the page: its index in the scanned window, how many of its matches the
@@ -462,7 +473,7 @@ fn collect_hits(
         .collect();
 
     let mut out = Vec::with_capacity(sel.take);
-    for (ordinal, mat) in re.find_iter(source).enumerate().skip(sel.hit_skip as usize) {
+    for (ordinal, mat) in line_matches(re, source).enumerate().skip(sel.hit_skip as usize) {
         if out.len() >= sel.take {
             break;
         }
