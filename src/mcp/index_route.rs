@@ -302,10 +302,10 @@ impl IndexRoute {
     }
 }
 
-/// Run work that may build the whole-corpus projection (rayon + blob IO) without stalling the
-/// reactor. `block_in_place` needs the multi-thread runtime the CLI builds; on a `current_thread`
+/// Run work that blocks (the whole-corpus projection's rayon + blob IO, an fsync) without stalling
+/// the reactor. `block_in_place` needs the multi-thread runtime the CLI builds; on a `current_thread`
 /// runtime (tests) it runs inline, which is safe because that runtime has no other task to starve.
-fn blocking<R>(work: impl FnOnce() -> R) -> R {
+pub(super) fn blocking<R>(work: impl FnOnce() -> R) -> R {
     let multi_thread = tokio::runtime::Handle::try_current()
         .map(|handle| handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread)
         .unwrap_or(false);

@@ -22,6 +22,7 @@ pub(crate) mod shared_snapshot;
 pub mod shared_store;
 
 pub use batch::{BATCH_MAX_DOCS, BATCH_MAX_ROWS, PendingBatch, SCAN_RETENTION};
+pub use memory::MemoryStamps;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -217,10 +218,6 @@ impl LanceStore {
             ensure_table(&connection, schema::CODE_CHUNKS_TABLE, schema::code_chunks_schema(dim)).await?;
             anyhow::Ok(())
         })?;
-
-        if !meta_path.exists() {
-            write_meta(&meta_path, &expected)?;
-        }
 
         Ok(Self {
             inner: Arc::new(LanceStoreInner {
@@ -778,17 +775,6 @@ fn memory_namespace_predicate(scope: &str, visibility: &str, agent_id: &str) -> 
         escape_sql_literal(scope),
         escape_sql_literal(visibility),
         escape_sql_literal(agent_id),
-    )
-}
-
-/// Predicate selecting exactly one memory row by `(scope, visibility, agent_id, key)`.
-///
-/// Used by [`LanceStore::upsert_memory`] (delete-then-insert) and [`LanceStore::delete_memory`].
-fn memory_row_predicate(scope: &str, visibility: &str, agent_id: &str, key: &str) -> String {
-    format!(
-        "{} AND key = '{}'",
-        memory_namespace_predicate(scope, visibility, agent_id),
-        escape_sql_literal(key),
     )
 }
 

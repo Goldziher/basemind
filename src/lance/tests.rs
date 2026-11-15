@@ -27,14 +27,14 @@ fn search_predicate_isolates_namespaces() {
     assert_ne!(indiv_a, indiv_b);
 }
 
-/// The row predicate appends the key clause to the namespace predicate, and a
+/// The keys predicate appends the key list to the namespace predicate, and a
 /// single-quote in any segment is escaped so the literal cannot break out.
 #[test]
-fn row_predicate_pins_key_and_escapes_quotes() {
-    let p = memory_row_predicate("s", "individual", "a", "o'brien");
+fn keys_predicate_pins_keys_and_escapes_quotes() {
+    let p = memory::memory_keys_predicate("s", "individual", "a", &["o'brien", "k"]);
     assert_eq!(
         p,
-        "scope = 's' AND visibility = 'individual' AND agent_id = 'a' AND key = 'o''brien'"
+        "scope = 's' AND visibility = 'individual' AND agent_id = 'a' AND key IN ('o''brien', 'k')"
     );
 }
 
@@ -204,7 +204,7 @@ fn memory_stamps_list_one_namespace() {
     let dir = tempfile::tempdir().unwrap();
     let store = LanceStore::open(dir.path(), 4, "test").unwrap();
     assert!(
-        store.memory_stamps("s", "group", "").unwrap().is_empty(),
+        store.memory_stamps("s", "group", "").unwrap().stamps.is_empty(),
         "a new table holds no rows"
     );
     store.upsert_memory(memory_row("a", "one", 3)).unwrap();
@@ -213,10 +213,59 @@ fn memory_stamps_list_one_namespace() {
     other.scope = "other".into();
     store.upsert_memory(other).unwrap();
 
-    let stamps = store.memory_stamps("s", "group", "").unwrap();
+    let found = store.memory_stamps("s", "group", "").unwrap();
 
-    assert_eq!(stamps.len(), 2);
-    assert_eq!((stamps["a"], stamps["b"]), (3, 4));
+    assert_eq!(found.stamps.len(), 2);
+    assert_eq!((found.stamps["a"], found.stamps["b"]), (3, 4));
+    assert!(found.duplicated.is_empty());
+}
+
+/// Upserting the same rows twice leaves one row per key, and one upsert carries many rows.
+#[test]
+fn a_repeated_batch_upsert_leaves_one_row_per_key() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = LanceStore::open(dir.path(), 4, "test").unwrap();
+    let rows = [memory_row("a", "one", 3), memory_row("b", "two", 4)];
+
+    store.upsert_memory_rows(&rows).unwrap();
+    store.upsert_memory_rows(&rows).unwrap();
+
+    let hits = store.search_memory("s", "group", "", vec![0.0; 4], 10, None).unwrap();
+    assert_eq!(hits.len(), 2, "{hits:?}");
+    assert!(store.memory_stamps("s", "group", "").unwrap().duplicated.is_empty());
+}
+
+/// Two rows for one key (two writers racing) are reported, so the caller can rewrite the key.
+#[test]
+fn memory_stamps_name_the_keys_with_more_than_one_row() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = LanceStore::open(dir.path(), 4, "test").unwrap();
+    store.upsert_memory(memory_row("a", "one", 3)).unwrap();
+    store.add_memory_rows_unchecked(&[memory_row("a", "one", 3)]).unwrap();
+
+    let found = store.memory_stamps("s", "group", "").unwrap();
+
+    assert!(found.duplicated.contains("a"), "{found:?}");
+    store.upsert_memory(memory_row("a", "one", 3)).unwrap();
+    assert!(store.memory_stamps("s", "group", "").unwrap().duplicated.is_empty());
+}
+
+/// A delete bounded by an instant spares a row written after it: a prune decided from an earlier
+/// listing must not remove a note saved since.
+#[test]
+fn a_bounded_delete_spares_rows_written_later() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = LanceStore::open(dir.path(), 4, "test").unwrap();
+    store.upsert_memory(memory_row("old", "one", 100)).unwrap();
+    store.upsert_memory(memory_row("new", "two", 300)).unwrap();
+
+    let deleted = store
+        .delete_memory_keys("s", "group", "", &["old", "new"], Some(200))
+        .unwrap();
+
+    assert_eq!(deleted, 1);
+    let found = store.memory_stamps("s", "group", "").unwrap();
+    assert_eq!(found.stamps.keys().collect::<Vec<_>>(), ["new"]);
 }
 
 /// A `meta.json` that cannot be parsed (a write cut short) is a mismatch: the store is a cache and

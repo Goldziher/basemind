@@ -79,10 +79,10 @@ pub(crate) struct SharedReadStack {
     /// The repo group's memory vector store (see `memory_vectors`). Lazy-init on first use.
     #[cfg(feature = "memory")]
     pub(crate) memory_lance: tokio::sync::OnceCell<Arc<crate::lance::LanceStore>>,
-    /// Memory namespaces `(vis_byte, owner)` whose vector rows this process has brought up to date
-    /// with the notes.
+    /// Memory namespaces `(vis_byte, owner)` whose vector rows a search in this process is bringing
+    /// up to date with the notes, or has.
     #[cfg(feature = "memory")]
-    pub(crate) memory_backfilled: std::sync::Mutex<ahash::AHashSet<(u8, String)>>,
+    pub(crate) memory_backfill: std::sync::Mutex<ahash::AHashMap<(u8, String), super::memory_vectors::Backfill>>,
     /// Shared embedding engine. Lazy-init on first embed call.
     #[cfg(any(feature = "memory", feature = "documents", feature = "code-search"))]
     pub(crate) embedder: tokio::sync::OnceCell<Arc<crate::embeddings::SharedEmbedder>>,
@@ -245,7 +245,7 @@ impl SharedReadStack {
             #[cfg(feature = "memory")]
             memory_lance: tokio::sync::OnceCell::new(),
             #[cfg(feature = "memory")]
-            memory_backfilled: std::sync::Mutex::new(ahash::AHashSet::new()),
+            memory_backfill: std::sync::Mutex::new(ahash::AHashMap::new()),
             initial_scan_active: AtomicBool::new(false),
             initial_scan_ms: AtomicU64::new(0),
             cache_warming: AtomicBool::new(defer_warm),

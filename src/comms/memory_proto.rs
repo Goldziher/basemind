@@ -31,6 +31,16 @@ pub enum MemoryOp {
         /// The memory key.
         key: String,
     },
+    /// Read several records of one namespace in one round trip, for the search by meaning that
+    /// joins every vector hit against its note.
+    GetMany {
+        /// Visibility tier byte.
+        vis_byte: u8,
+        /// Owner segment (`""` for group).
+        owner: String,
+        /// The memory keys to read, in the order the replies are wanted.
+        keys: Vec<String>,
+    },
     /// Upsert a record (read-modify-write preserving `created_at`). Returns [`MemoryOutcome::Put`].
     Put {
         /// Visibility byte resolved serve-side.
@@ -83,6 +93,8 @@ pub enum MemoryOutcome {
     },
     /// Reply to [`MemoryOp::Get`]: the record, or `None` when the key is absent.
     Got(Option<WireMemoryEntry>),
+    /// Reply to [`MemoryOp::GetMany`]: one slot per requested key, in order, `None` where absent.
+    GotMany(Vec<Option<WireMemoryEntry>>),
     /// Reply to [`MemoryOp::List`]: a page of entries plus pagination metadata.
     Listed {
         /// The page of entries (preview-truncated values).

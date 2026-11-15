@@ -14,25 +14,68 @@ use lancedb::arrow::arrow_array::{Array, RecordBatch, StringArray};
 use lancedb::query::{ExecutableQuery, QueryBase};
 
 use super::schema::{MEMORY_TABLE, memory_schema};
-use super::{LanceStore, MemoryHit, MemoryRow, memory_namespace_predicate, memory_row_predicate};
+use super::{LanceStore, MemoryHit, MemoryRow, escape_sql_literal, memory_namespace_predicate};
+
+/// The rows of one memory namespace, by key: the `updated_at` each was embedded from, and the keys
+/// that have more than one row (two processes upserting the same note at once).
+#[derive(Debug, Default)]
+pub struct MemoryStamps {
+    pub stamps: ahash::AHashMap<String, i64>,
+    pub duplicated: ahash::AHashSet<String>,
+}
+
+/// Predicate selecting the rows of `keys` in one `(scope, visibility, agent_id)` namespace.
+pub(super) fn memory_keys_predicate(scope: &str, visibility: &str, agent_id: &str, keys: &[&str]) -> String {
+    let list = keys
+        .iter()
+        .map(|key| format!("'{}'", escape_sql_literal(key)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "{} AND key IN ({list})",
+        memory_namespace_predicate(scope, visibility, agent_id)
+    )
+}
 
 impl LanceStore {
-    /// Insert / upsert one memory row keyed by `(scope, key)`. Existing rows
-    /// with the same key are removed first.
+    /// Insert / upsert one memory row keyed by `(scope, visibility, agent_id, key)`.
     pub fn upsert_memory(&self, row: MemoryRow) -> Result<()> {
+        self.upsert_memory_rows(std::slice::from_ref(&row))
+    }
+
+    /// Upsert the rows of ONE `(scope, visibility, agent_id)` namespace: one delete of every row
+    /// their keys already have, then one insert. Run again with the same rows it leaves the same
+    /// table, and it removes duplicates of those keys that two writers racing each other left.
+    pub fn upsert_memory_rows(&self, rows: &[MemoryRow]) -> Result<()> {
+        let Some(first) = rows.first() else {
+            return Ok(());
+        };
+        if rows
+            .iter()
+            .any(|r| r.scope != first.scope || r.visibility != first.visibility || r.agent_id != first.agent_id)
+        {
+            return Err(anyhow!("memory rows of more than one namespace in one upsert"));
+        }
+        let keys: Vec<&str> = rows.iter().map(|r| r.key.as_str()).collect();
+        let predicate = memory_keys_predicate(&first.scope, &first.visibility, &first.agent_id, &keys);
+        let batch = build_memory_batch(self.inner.dim, rows)?;
         self.inner.rt().block_on(async {
-            let table = self
-                .inner
-                .connection
-                .open_table(MEMORY_TABLE)
-                .execute()
-                .await
-                .with_context(|| format!("open {MEMORY_TABLE} table"))?;
-            let predicate = memory_row_predicate(&row.scope, &row.visibility, &row.agent_id, &row.key);
-            table.delete(&predicate).await.context("delete previous memory entry")?;
-            let batch = build_memory_batch(self.inner.dim, std::slice::from_ref(&row))?;
-            table.add(batch).execute().await.context("insert memory row")?;
+            let table = self.memory_table().await?;
+            table.delete(&predicate).await.context("delete previous memory rows")?;
+            table.add(batch).execute().await.context("insert memory rows")?;
             self.after_commit(&table, MEMORY_TABLE).await;
+            anyhow::Ok(())
+        })
+    }
+
+    /// Insert rows without removing the ones their keys already have: what a writer racing another
+    /// leaves behind.
+    #[cfg(test)]
+    pub(crate) fn add_memory_rows_unchecked(&self, rows: &[MemoryRow]) -> Result<()> {
+        let batch = build_memory_batch(self.inner.dim, rows)?;
+        self.inner.rt().block_on(async {
+            let table = self.memory_table().await?;
+            table.add(batch).execute().await.context("insert memory rows")?;
             anyhow::Ok(())
         })
     }
@@ -40,34 +83,50 @@ impl LanceStore {
     /// Delete one memory entry by `(scope, visibility, agent_id, key)`. Returns the
     /// number of rows LanceDB actually deleted (`0` when no row matched the predicate).
     pub fn delete_memory(&self, scope: &str, visibility: &str, agent_id: &str, key: &str) -> Result<u64> {
+        self.delete_memory_keys(scope, visibility, agent_id, &[key], None)
+    }
+
+    /// Delete the rows of `keys` in one namespace with one predicate. With `written_by`, only rows
+    /// whose `updated_at` is at or before that instant (microseconds) go: a caller that decided
+    /// from an earlier listing must not remove a row written since.
+    pub fn delete_memory_keys(
+        &self,
+        scope: &str,
+        visibility: &str,
+        agent_id: &str,
+        keys: &[&str],
+        written_by: Option<i64>,
+    ) -> Result<u64> {
+        if keys.is_empty() {
+            return Ok(0);
+        }
+        let mut predicate = memory_keys_predicate(scope, visibility, agent_id, keys);
+        if let Some(micros) = written_by {
+            predicate.push_str(&format!(" AND updated_at <= to_timestamp_micros({micros})"));
+        }
         self.inner.rt().block_on(async {
-            let table = self
-                .inner
-                .connection
-                .open_table(MEMORY_TABLE)
-                .execute()
-                .await
-                .with_context(|| format!("open {MEMORY_TABLE} table"))?;
-            let predicate = memory_row_predicate(scope, visibility, agent_id, key);
-            let result = table.delete(&predicate).await.context("delete memory entry")?;
+            let table = self.memory_table().await?;
+            let result = table.delete(&predicate).await.context("delete memory rows")?;
             anyhow::Ok(result.num_deleted_rows)
         })
     }
 
-    /// `key -> updated_at` of every row in one `(scope, visibility, agent_id)` namespace: which
-    /// write of each note the table holds a vector for.
-    pub fn memory_stamps(&self, scope: &str, visibility: &str, agent_id: &str) -> Result<ahash::AHashMap<String, i64>> {
+    async fn memory_table(&self) -> Result<lancedb::Table> {
+        self.inner
+            .connection
+            .open_table(MEMORY_TABLE)
+            .execute()
+            .await
+            .with_context(|| format!("open {MEMORY_TABLE} table"))
+    }
+
+    /// Which write of each note one `(scope, visibility, agent_id)` namespace holds a vector for.
+    pub fn memory_stamps(&self, scope: &str, visibility: &str, agent_id: &str) -> Result<MemoryStamps> {
         use lancedb::arrow::arrow_array::TimestampMicrosecondArray;
         use lancedb::query::Select;
 
         self.inner.rt().block_on(async {
-            let table = self
-                .inner
-                .connection
-                .open_table(MEMORY_TABLE)
-                .execute()
-                .await
-                .with_context(|| format!("open {MEMORY_TABLE} table"))?;
+            let table = self.memory_table().await?;
             let mut stream = table
                 .query()
                 .only_if(memory_namespace_predicate(scope, visibility, agent_id))
@@ -75,7 +134,7 @@ impl LanceStore {
                 .execute()
                 .await
                 .context("list memory rows")?;
-            let mut stamps = ahash::AHashMap::new();
+            let mut found = MemoryStamps::default();
             while let Some(batch) = stream.try_next().await.context("stream next batch")? {
                 let key = batch
                     .column_by_name("key")
@@ -86,10 +145,16 @@ impl LanceStore {
                     .and_then(|c| c.as_any().downcast_ref::<TimestampMicrosecondArray>())
                     .ok_or_else(|| anyhow!("`updated_at` column missing"))?;
                 for i in 0..batch.num_rows() {
-                    stamps.insert(key.value(i).to_string(), updated.value(i));
+                    if found
+                        .stamps
+                        .insert(key.value(i).to_string(), updated.value(i))
+                        .is_some()
+                    {
+                        found.duplicated.insert(key.value(i).to_string());
+                    }
                 }
             }
-            anyhow::Ok(stamps)
+            anyhow::Ok(found)
         })
     }
 
@@ -114,13 +179,7 @@ impl LanceStore {
             ));
         }
         self.inner.rt().block_on(async {
-            let table = self
-                .inner
-                .connection
-                .open_table(MEMORY_TABLE)
-                .execute()
-                .await
-                .with_context(|| format!("open {MEMORY_TABLE} table"))?;
+            let table = self.memory_table().await?;
             let mut q = table
                 .vector_search(query)
                 .context("build memory vector search")?

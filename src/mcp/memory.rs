@@ -18,7 +18,7 @@ use super::types::{DocumentSearchHit, SearchDocumentsParams, SearchDocumentsResp
 #[cfg(feature = "memory")]
 use super::types_memory::{
     MemoryDeleteParams, MemoryDeleteResponse, MemoryEntry, MemoryGetParams, MemoryListParams, MemoryListResponse,
-    MemoryPutParams, MemoryPutResponse, MemorySearchParams, MemorySearchResponse, Visibility,
+    MemoryPutParams, MemoryPutResponse, MemorySearchParams, Visibility,
 };
 #[cfg(feature = "documents")]
 use crate::extract::doc::{DocEntity, DocKeyword, DocSummary};
@@ -105,28 +105,6 @@ pub(super) async fn lance_store(state: &ServerState) -> Result<Arc<crate::lance:
         .map_err(|e| McpError::internal_error(e.clone(), None))
 }
 
-/// The repo group's memory vector store, shared by every worktree of the clone like the notes
-/// themselves (see [`super::memory_vectors::memory_lance_dir`]).
-#[cfg(feature = "memory")]
-pub(super) async fn memory_lance_store(state: &ServerState) -> Result<Arc<crate::lance::LanceStore>, McpError> {
-    state
-        .shared
-        .memory_lance
-        .get_or_try_init(|| async {
-            let embedder = shared_embedder(state)
-                .await
-                .map_err(|e| format!("embedder init: {e}"))?;
-            let root = state.shared.root.clone();
-            let dir = tokio::task::spawn_blocking(move || super::memory_vectors::memory_lance_dir(&root))
-                .await
-                .map_err(|e| format!("memory lance dir join: {e}"))?;
-            open_lance(dir, &embedder).await
-        })
-        .await
-        .cloned()
-        .map_err(|e| McpError::internal_error(e.clone(), None))
-}
-
 /// Per-`(scope, key)` write serialization for `memory_put`.
 ///
 /// `memory_put` is a read-modify-write across two stores (Fjall + LanceDB).
@@ -184,7 +162,7 @@ pub(super) fn lance_visibility(visibility: Visibility) -> &'static str {
 /// server's resolved `agent_id`, which was validated through `AgentId` at boot and is
 /// therefore NUL-free — safe to embed in the length-prefixed Fjall key segment.
 #[cfg(feature = "memory")]
-fn namespace(state: &ServerState, visibility: Visibility) -> (u8, &str) {
+pub(super) fn memory_namespace(state: &ServerState, visibility: Visibility) -> (u8, &str) {
     let owner: &str = match visibility {
         Visibility::Individual => &state.agent_id,
         Visibility::Group => "",
@@ -194,7 +172,7 @@ fn namespace(state: &ServerState, visibility: Visibility) -> (u8, &str) {
 
 #[cfg(feature = "memory")]
 pub(super) async fn run_memory_put(state: &ServerState, params: MemoryPutParams) -> Result<CallToolResult, McpError> {
-    let (vis_byte, owner) = namespace(state, params.visibility);
+    let (vis_byte, owner) = memory_namespace(state, params.visibility);
     let tags = params.tags.clone().unwrap_or_default();
 
     let (created_at, updated_at) = memory_put_fjall(state, vis_byte, owner, &params.key, &params.value, &tags).await?;
@@ -203,12 +181,11 @@ pub(super) async fn run_memory_put(state: &ServerState, params: MemoryPutParams)
     // never as an error: an error would read as "not saved" and invite a retry of a write that
     // already happened.
     let embedded = if params.embed {
-        let outcome = embed_note(state, &params, owner, tags, created_at, updated_at).await;
-        // The previous vector row still holds the OLD text; left in place, a search by meaning
-        // would keep serving it for this key. The store is opened first because the embedder can
-        // fail before anything in this process has touched it.
-        if outcome.is_err() && memory_lance_store(state).await.is_ok() {
-            delete_vector_row(state, params.visibility, owner, &params.key).await;
+        let outcome = super::memory_vectors::embed_note(state, &params, owner, tags, created_at, updated_at).await;
+        // The previous vector row still holds the OLD text; the join refuses it, and removing it
+        // keeps it from taking a slot in every later search.
+        if outcome.is_err() {
+            super::memory_vectors::delete_vector_row(state, params.visibility, owner, &params.key).await;
         }
         Some(outcome)
     } else {
@@ -222,39 +199,6 @@ pub(super) async fn run_memory_put(state: &ServerState, params: MemoryPutParams)
         embedded,
         notice,
     })
-}
-
-/// Embed a saved note and upsert its vector row.
-#[cfg(feature = "memory")]
-async fn embed_note(
-    state: &ServerState,
-    params: &MemoryPutParams,
-    owner: &str,
-    tags: Vec<String>,
-    created_at: i64,
-    updated_at: i64,
-) -> Result<(), String> {
-    let embedding = embed_query(state, &params.value)
-        .await
-        .map_err(|error| error.message.into_owned())?;
-    let lance = memory_lance_store(state)
-        .await
-        .map_err(|error| error.message.into_owned())?;
-    let row = crate::lance::MemoryRow {
-        scope: state.shared.scope.clone(),
-        key: params.key.clone(),
-        value: params.value.clone(),
-        tags,
-        visibility: lance_visibility(params.visibility).to_string(),
-        agent_id: owner.to_string(),
-        embedding,
-        created_at,
-        updated_at,
-    };
-    tokio::task::spawn_blocking(move || lance.upsert_memory(row))
-        .await
-        .map_err(|error| format!("spawn_blocking: {error}"))?
-        .map_err(|error| format!("upsert_memory: {error}"))
 }
 
 /// What `memory_save` says about the vector row of a note that is already saved:
@@ -271,33 +215,6 @@ fn embed_report(outcome: Option<Result<(), String>>) -> (bool, Option<String>) {
             )),
         ),
         None => (false, None),
-    }
-}
-
-/// Best-effort removal of one note's vector row. The fjall record is the source of truth; a row
-/// that cannot be removed is logged, never an error.
-#[cfg(feature = "memory")]
-async fn delete_vector_row(state: &ServerState, visibility: Visibility, owner: &str, key: &str) {
-    let Some(lance) = state.shared.memory_lance.get() else {
-        return;
-    };
-    let lance = Arc::clone(lance);
-    let scope = state.shared.scope.clone();
-    let row_key = key.to_string();
-    let visibility = lance_visibility(visibility).to_string();
-    let agent_id = owner.to_string();
-    match tokio::task::spawn_blocking(move || lance.delete_memory(&scope, &visibility, &agent_id, &row_key)).await {
-        Ok(Ok(_rows_deleted)) => {}
-        Ok(Err(error)) => {
-            tracing::warn!(%key, ?error, "lance delete_memory failed; embedding may be stale relative to Fjall");
-        }
-        Err(join_error) => {
-            tracing::warn!(
-                %key,
-                ?join_error,
-                "lance delete_memory task panicked; embedding may be stale relative to Fjall"
-            );
-        }
     }
 }
 
@@ -343,20 +260,15 @@ async fn memory_put_fjall(
         .index_db
         .as_ref()
         .ok_or_else(|| McpError::internal_error("memory_by_key index not available", None))?;
-    Ok(super::memory_ops::put_core(
-        idx,
-        &state.shared.scope,
-        vis_byte,
-        owner,
-        key,
-        value,
-        tags,
-    )?)
+    // The put ends in an fsync: off the reactor, like every other blocking store call.
+    Ok(super::index_route::blocking(|| {
+        super::memory_ops::put_core(idx, &state.shared.scope, vis_byte, owner, key, value, tags)
+    })?)
 }
 
 #[cfg(feature = "memory")]
 pub(super) async fn run_memory_get(state: &ServerState, params: MemoryGetParams) -> Result<CallToolResult, McpError> {
-    let (vis_byte, owner) = namespace(state, params.visibility);
+    let (vis_byte, owner) = memory_namespace(state, params.visibility);
 
     let entry = memory_get_wire(state, vis_byte, owner, &params.key).await?;
     json_result(&entry.map(wire_to_entry))
@@ -402,6 +314,51 @@ pub(super) async fn memory_get_wire(
     )?)
 }
 
+/// Read several notes of one namespace from the Fjall truth, one slot per key in order: one round
+/// trip to the daemon when it owns the store, however many keys.
+#[cfg(feature = "memory")]
+pub(super) async fn memory_get_many_wire(
+    state: &ServerState,
+    vis_byte: u8,
+    owner: &str,
+    keys: Vec<String>,
+) -> Result<Vec<Option<super::memory_ops::WireMemoryEntry>>, McpError> {
+    if keys.is_empty() {
+        return Ok(Vec::new());
+    }
+    #[cfg(all(feature = "comms", any(unix, windows)))]
+    if state.shared.daemon_writer {
+        use crate::comms::memory_proto::{MemoryOp, MemoryOutcome};
+
+        let wanted = keys.len();
+        let op = MemoryOp::GetMany {
+            vis_byte,
+            owner: owner.to_string(),
+            keys,
+        };
+        return match super::helpers_comms::dispatch_memory_op(state, op).await? {
+            MemoryOutcome::GotMany(entries) if entries.len() == wanted => Ok(entries),
+            other => Err(McpError::internal_error(
+                format!("memory_get_many: unexpected daemon outcome {other:?}"),
+                None,
+            )),
+        };
+    }
+
+    let store = state.shared.store.read().await;
+    let idx = store
+        .index_db
+        .as_ref()
+        .ok_or_else(|| McpError::internal_error("memory_by_key index not available", None))?;
+    Ok(super::memory_ops::get_many_core(
+        idx,
+        &state.shared.scope,
+        vis_byte,
+        owner,
+        &keys,
+    )?)
+}
+
 /// Map a wire memory entry onto the MCP [`MemoryEntry`] response shape.
 #[cfg(feature = "memory")]
 fn wire_to_entry(w: super::memory_ops::WireMemoryEntry) -> MemoryEntry {
@@ -423,7 +380,7 @@ pub(super) async fn run_memory_list(state: &ServerState, params: MemoryListParam
         .limit
         .unwrap_or(super::helpers::SEARCH_LIMIT_DEFAULT)
         .min(super::helpers::SEARCH_LIMIT_MAX) as usize;
-    let (vis_byte, owner) = namespace(state, params.visibility);
+    let (vis_byte, owner) = memory_namespace(state, params.visibility);
     let key_prefix_filter = params.prefix.clone().unwrap_or_default();
     let cursor_bytes = params.cursor.as_ref().map(|c| c.decode_fjall()).transpose()?;
 
@@ -513,34 +470,7 @@ pub(super) async fn run_memory_search(
     state: &ServerState,
     params: MemorySearchParams,
 ) -> Result<CallToolResult, McpError> {
-    let __body = std::time::Instant::now();
-    let limit = params.limit.unwrap_or(10).min(100) as usize;
-    let (vis_byte, owner) = namespace(state, params.visibility);
-    let visibility = lance_visibility(params.visibility).to_string();
-    let agent_id = owner.to_string();
-    let embedding = embed_query(state, &params.query).await?;
-    let lance = memory_lance_store(state).await?;
-    super::memory_vectors::backfill_once(state, params.visibility, vis_byte, owner).await;
-    let scope = state.shared.scope.clone();
-    let tag = params.tag.clone();
-    // Rows the join drops must not shrink the answer, so the vector search over-fetches.
-    let fetch = limit.saturating_mul(2);
-    let hits_raw = tokio::task::spawn_blocking(move || {
-        lance.search_memory(&scope, &visibility, &agent_id, embedding, fetch, tag.as_deref())
-    })
-    .await
-    .map_err(|e| McpError::internal_error(format!("spawn_blocking: {e}"), None))?
-    .map_err(|e| McpError::internal_error(format!("search_memory: {e}"), None))?;
-    let mut notes = Vec::with_capacity(hits_raw.len());
-    for hit in &hits_raw {
-        notes.push(memory_get_wire(state, vis_byte, owner, &hit.key).await?);
-    }
-    let hits = super::memory_vectors::truth_join(hits_raw, notes, limit);
-    json_result(&MemorySearchResponse {
-        query: params.query,
-        hits,
-        elapsed_us: elapsed_us(__body),
-    })
+    super::memory_vectors::search(state, params).await
 }
 
 #[cfg(feature = "memory")]
@@ -548,9 +478,9 @@ pub(super) async fn run_memory_delete(
     state: &ServerState,
     params: MemoryDeleteParams,
 ) -> Result<CallToolResult, McpError> {
-    let (vis_byte, owner) = namespace(state, params.visibility);
+    let (vis_byte, owner) = memory_namespace(state, params.visibility);
     let deleted_fjall = memory_delete_fjall(state, vis_byte, owner, &params.key).await?;
-    delete_vector_row(state, params.visibility, owner, &params.key).await;
+    super::memory_vectors::delete_vector_row(state, params.visibility, owner, &params.key).await;
     json_result(&MemoryDeleteResponse { deleted: deleted_fjall })
 }
 
@@ -584,13 +514,9 @@ async fn memory_delete_fjall(state: &ServerState, vis_byte: u8, owner: &str, key
         .index_db
         .as_ref()
         .ok_or_else(|| McpError::internal_error("memory_by_key index not available", None))?;
-    Ok(super::memory_ops::delete_core(
-        idx,
-        &state.shared.scope,
-        vis_byte,
-        owner,
-        key,
-    )?)
+    Ok(super::index_route::blocking(|| {
+        super::memory_ops::delete_core(idx, &state.shared.scope, vis_byte, owner, key)
+    })?)
 }
 
 /// Pick the ingestion scope to search: the caller's if they named one, else this repo's.

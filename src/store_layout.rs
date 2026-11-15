@@ -137,6 +137,15 @@ pub fn memory_store_dir(root: &Path) -> PathBuf {
     repo_group_dir(root).join(MEMORY_STORE_DIR)
 }
 
+/// Directory, beside [`MEMORY_STORE_DIR`], that holds the vector stores of the memory notes: one
+/// subdirectory per embedding model and dimension.
+pub const MEMORY_VECTORS_DIR: &str = "memory.lance";
+
+/// `<repo_group_dir>/memory.lance/`: the memory notes' vector stores of every embedding model.
+pub fn memory_vectors_dir(root: &Path) -> PathBuf {
+    repo_group_dir(root).join(MEMORY_VECTORS_DIR)
+}
+
 /// Root of the global blob store: `cache_root()/cache/blobs/`. Holds one namespace directory per
 /// blob schema; only [`global_blobs_dir`] is read or written by this binary.
 pub fn global_blobs_root() -> PathBuf {

@@ -123,6 +123,10 @@ pub fn embed_pool(max_threads: usize) -> &'static rayon::ThreadPool {
     })
 }
 
+/// What stands in for the model in a test: the vector for a text.
+#[cfg(test)]
+pub(crate) type FakeEmbed = fn(&str) -> Result<Vec<f32>>;
+
 /// Loaded, ready-to-query embedding engine. `Clone` is cheap (config is stack-only).
 #[derive(Clone)]
 pub struct SharedEmbedder {
@@ -133,9 +137,22 @@ pub struct SharedEmbedder {
     /// auto heuristic inside `resolve_embed_threads`; first caller wins for the
     /// global pool.
     max_embed_threads: usize,
+    /// A stand-in for the model: tests exercise the callers of an embedder without loading one.
+    #[cfg(test)]
+    fake: Option<FakeEmbed>,
 }
 
 impl SharedEmbedder {
+    /// An embedder that reports `model` and `dim` and answers every text with `embed`.
+    #[cfg(test)]
+    pub(crate) fn fake(model: &str, dim: u16, embed: FakeEmbed) -> Self {
+        let mut embedder = Self::load("fast", 1, 8).expect("the fast preset exists");
+        embedder.dim = dim;
+        embedder.model_name = model.to_string();
+        embedder.fake = Some(embed);
+        embedder
+    }
+
     /// Build a `SharedEmbedder` from a named xberg preset.
     ///
     /// `max_embed_threads` bounds the process-wide embedding pool (see
@@ -180,6 +197,8 @@ impl SharedEmbedder {
             dim,
             model_name: preset.to_string(),
             max_embed_threads,
+            #[cfg(test)]
+            fake: None,
         })
     }
 
@@ -201,6 +220,10 @@ impl SharedEmbedder {
         if text.is_empty() {
             return Err(anyhow!("embed: input text must not be empty"));
         }
+        #[cfg(test)]
+        if let Some(fake) = self.fake {
+            return fake(text);
+        }
         let (config, model, text) = (self.config.clone(), self.model_name.clone(), text.to_string());
         self.run_on_embed_pool(move || {
             let mut results = xberg::embeddings::embed_texts(&[text.as_str()], &config)
@@ -212,17 +235,20 @@ impl SharedEmbedder {
     }
 
     /// Embed a batch of texts in one call. Returns one `Vec<f32>` of length `self.dim()` per
-    /// input, in order. Used by the code-search scanner to embed a file's chunks in bulk.
+    /// input, in order.
     ///
     /// Errors if any input text is empty (xberg rejects empty strings, which produce meaningless
     /// embeddings). An empty batch returns an empty vector without touching the model.
     ///
     /// The call is routed through the process-wide bounded [`embed_pool`] so it
     /// cannot saturate the global rayon pool used by the code-map scanner.
-    #[cfg(any(feature = "code-search", feature = "documents"))]
     pub fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
         if texts.is_empty() {
             return Ok(Vec::new());
+        }
+        #[cfg(test)]
+        if let Some(fake) = self.fake {
+            return texts.iter().map(|text| fake(text)).collect();
         }
         let (config, model) = (self.config.clone(), self.model_name.clone());
         let owned: Vec<String> = texts.iter().map(|t| (*t).to_string()).collect();

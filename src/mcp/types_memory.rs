@@ -179,6 +179,9 @@ pub(super) struct MemorySearchHit {
 pub(super) struct MemorySearchResponse {
     pub query: String,
     pub hits: Vec<MemorySearchHit>,
+    /// Set while the vector index is behind the saved notes: the hits may be incomplete.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub notice: Option<String>,
     /// Server-side handler latency in microseconds — the tool body's own execution (index / vector
     /// search + response construction), excluding MCP transport, argument
     /// deserialization, and response serialization. A first call against a cold server also

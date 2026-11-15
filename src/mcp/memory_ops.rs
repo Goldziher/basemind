@@ -201,6 +201,19 @@ pub(crate) fn get_core(
     }))
 }
 
+/// [`get_core`] for several keys of one namespace: one slot per key, in order.
+pub(crate) fn get_many_core(
+    idx: &IndexDb,
+    scope: &str,
+    vis_byte: u8,
+    owner: &str,
+    keys: &[String],
+) -> Result<Vec<Option<WireMemoryEntry>>, MemoryOpError> {
+    keys.iter()
+        .map(|key| get_core(idx, scope, vis_byte, owner, key))
+        .collect()
+}
+
 /// Delete core for `memory_delete`: remove the record, reporting whether it existed.
 pub(crate) fn delete_core(
     idx: &IndexDb,
@@ -343,6 +356,9 @@ pub(crate) fn run_memory_op(
 
     match op {
         MemoryOp::Get { vis_byte, owner, key } => Ok(MemoryOutcome::Got(get_core(idx, scope, *vis_byte, owner, key)?)),
+        MemoryOp::GetMany { vis_byte, owner, keys } => Ok(MemoryOutcome::GotMany(get_many_core(
+            idx, scope, *vis_byte, owner, keys,
+        )?)),
         MemoryOp::Put {
             vis_byte,
             owner,
@@ -405,5 +421,45 @@ mod tests {
 
         assert!(delete_core(&idx, "scope", 0, "", "k").unwrap());
         assert_eq!(syncs(), before + 2, "a delete must fsync the memory store");
+    }
+
+    /// One slot per requested key, in the order asked, `None` where no note exists.
+    #[test]
+    fn a_batched_read_answers_every_key_in_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let idx = IndexDb::open(dir.path()).unwrap();
+        put_core(&idx, "scope", 0, "", "a", "one", &[]).unwrap();
+        put_core(&idx, "scope", 0, "", "b", "two", &[]).unwrap();
+        let keys = ["b".to_string(), "missing".to_string(), "a".to_string()];
+
+        let read = get_many_core(&idx, "scope", 0, "", &keys).unwrap();
+
+        let values: Vec<Option<&str>> = read
+            .iter()
+            .map(|note| note.as_ref().map(|n| n.value.as_str()))
+            .collect();
+        assert_eq!(values, [Some("two"), None, Some("one")]);
+    }
+
+    /// The daemon answers the batched read through the same dispatch as every other memory op.
+    #[cfg(all(feature = "comms", any(unix, windows)))]
+    #[test]
+    fn the_daemon_dispatch_serves_a_batched_read() {
+        use crate::comms::memory_proto::{MemoryOp, MemoryOutcome};
+
+        let dir = tempfile::tempdir().unwrap();
+        let idx = IndexDb::open(dir.path()).unwrap();
+        put_core(&idx, "scope", 0, "", "a", "one", &[]).unwrap();
+        let op = MemoryOp::GetMany {
+            vis_byte: 0,
+            owner: String::new(),
+            keys: vec!["a".into(), "missing".into()],
+        };
+
+        let MemoryOutcome::GotMany(read) = run_memory_op(&idx, "scope", &op).unwrap() else {
+            panic!("a batched read answers with GotMany");
+        };
+        assert_eq!(read.len(), 2);
+        assert!(read[0].as_ref().is_some_and(|note| note.value == "one") && read[1].is_none());
     }
 }
