@@ -64,7 +64,7 @@ pub fn warn_unavailable_settings(cfg: &DocumentsConfig) -> usize {
         .count()
 }
 
-/// Why an `entity_category` document-search filter cannot be answered, or `None` when it can.
+/// Why the `entity` filter of `docs_search` cannot be answered, or `None` when it can.
 /// Without the NER tier no document carries entities, so the filter would return an empty result
 /// that reads as "no such documents".
 pub fn entity_filter_unavailable() -> Option<String> {
@@ -74,7 +74,7 @@ pub fn entity_filter_unavailable() -> Option<String> {
 fn entity_filter_unavailable_for(ner_compiled: bool) -> Option<String> {
     (!ner_compiled).then(|| {
         format!(
-            "the `entity_category` filter requires the `{NER_FEATURE}` feature, which is not compiled into this \
+            "the `entity` filter of `docs_search` requires the `{NER_FEATURE}` feature, which is not compiled into this \
              basemind binary, so no document carries entities. Rebuild with `--features {NER_FEATURE}` (the \
              published release binary includes it), or drop the filter."
         )
@@ -162,7 +162,8 @@ mod tests {
     #[test]
     fn entity_filter_is_refused_only_without_the_tier() {
         let message = entity_filter_unavailable_for(false).expect("refused");
-        assert!(message.contains("entity_category"), "{message}");
+        assert!(message.contains("`entity` filter of `docs_search`"), "{message}");
+        assert!(!message.contains("entity_category"), "{message}");
         assert!(message.contains("--features documents-ner"), "{message}");
         assert_eq!(entity_filter_unavailable_for(true), None);
         assert_eq!(entity_filter_unavailable().is_none(), ner_compiled());

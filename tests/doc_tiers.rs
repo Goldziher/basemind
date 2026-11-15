@@ -245,16 +245,21 @@ mod without_ner {
             .await
             .expect("in-memory serve");
         let service = ().serve(transport).await.expect("rmcp handshake");
-        let arguments = json!({ "mode": "documents", "query": "fox", "entity_category": "person" });
-        let params = CallToolRequestParams::new("memory").with_arguments(arguments.as_object().unwrap().clone());
+        let arguments = json!({ "query": "fox", "entity": "person" });
+        let params = CallToolRequestParams::new("docs_search").with_arguments(arguments.as_object().unwrap().clone());
 
-        let error = service
+        let result = service
             .call_tool(params)
             .await
-            .expect_err("an entity filter cannot be answered without the NER tier");
+            .expect("a tool result, not a protocol error");
 
-        let message = format!("{error:?}");
-        assert!(message.contains("entity_category"), "{message}");
+        assert_eq!(
+            result.is_error,
+            Some(true),
+            "an entity filter cannot be answered without the NER tier"
+        );
+        let message = format!("{:?}", result.content);
+        assert!(message.contains("`entity` filter of `docs_search`"), "{message}");
         assert!(message.contains("documents-ner"), "{message}");
         let _ = service.cancel().await;
     }

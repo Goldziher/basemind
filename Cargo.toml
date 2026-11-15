@@ -102,7 +102,7 @@ documents-ocr = ["documents", "xberg/ocr"]
 # PaddleOCR as an extra OCR stage. Opt-in for source builds, never part of `full`.
 documents-ocr-paddle = ["documents-ocr", "xberg/paddle-ocr"]
 
-# ONNX named-entity recognition: `[documents.ner]` and the `entity_category` search filter.
+# ONNX named-entity recognition: `[documents.ner]` and the `entity` filter of `docs_search`.
 documents-ner = ["documents", "xberg/ner-onnx"]
 
 code-search = ["intelligence", "xberg/reranker", "xberg/reranker-presets"]
