@@ -72,8 +72,7 @@ enum Cmd {
     Rescan(RescanArgs),
     /// Long-running watcher; keeps the code map current as files change.
     Watch,
-    /// Read the code map: outline, symbols, grep, files, find, definition, references, callers,
-    /// implementations, dependents, expand, semantic, chunk.
+    /// Read the code map: outline, symbols, read, grep, search, refs, find (plus shorthands).
     #[command(subcommand)]
     Code(basemind::cli::code::CodeCmd),
     /// Git history / blame / diff queries.

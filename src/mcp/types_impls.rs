@@ -11,7 +11,6 @@ use crate::path::RelPath;
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct FindImplementationsParams {
     /// The trait / interface / base-class name to find implementations of.
-    #[serde(alias = "name", alias = "needle", alias = "query", alias = "trait", alias = "type")]
     pub trait_name: String,
     /// Optional language filter (e.g. "rust", "typescript"). When set, only matches
     /// from files in that language are returned.
@@ -23,7 +22,7 @@ pub struct FindImplementationsParams {
     /// Optional token budget bounding the returned `hits` list (not the whole envelope).
     /// Hits are kept in scan order until the budget is hit; the rest are dropped and the
     /// response carries `budgeted: true` plus a `next_cursor` to page them.
-    #[serde(default, alias = "token_budget", alias = "budget")]
+    #[serde(default)]
     pub max_tokens: Option<u32>,
     /// Resume token returned by the previous call's `next_cursor`. Stable across rescans
     /// because the underlying Fjall keys are content-addressed.

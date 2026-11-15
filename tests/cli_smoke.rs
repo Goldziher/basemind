@@ -100,10 +100,19 @@ fn code_outline_reports_symbols() {
     let v = assert_json_fields(
         root,
         &["code", "outline", "a.rs"],
-        &["path", "language", "symbols", "imports"],
+        &["path", "language", "total", "symbols"],
     );
     let symbols = v["symbols"].as_array().expect("symbols array");
     assert_eq!(symbols.len(), 2, "expected alpha + Beta");
+    let line_of = |name: &str| {
+        symbols
+            .iter()
+            .find(|symbol| symbol["name"] == name)
+            .unwrap_or_else(|| panic!("no symbol `{name}` in {v}"))["line"]
+            .clone()
+    };
+    assert_eq!(line_of("alpha"), 1, "outline lines are 1-based");
+    assert_eq!(line_of("Beta"), 2);
     assert_human_contains(root, &["code", "outline", "a.rs"], "alpha");
 }
 
@@ -164,10 +173,10 @@ fn git_status_is_clean() {
 fn git_search_finds_commit_by_author() {
     let dir = build_and_scan();
     let root = dir.path();
-    let v = assert_json_fields(root, &["git", "search", "t", "--field", "author"], &["commits"]);
+    let v = assert_json_fields(root, &["git", "log", "--author", "t"], &["commits"]);
     let commits = v["commits"].as_array().expect("commits array");
     assert_eq!(commits.len(), 1, "author search should find the one commit");
-    assert_human_contains(root, &["git", "search", "init", "--field", "message"], "init");
+    assert_human_contains(root, &["git", "search", "init"], "init");
 }
 
 #[test]

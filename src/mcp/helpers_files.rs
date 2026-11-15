@@ -54,6 +54,7 @@ pub(super) async fn run_list_files(state: &ServerState, params: ListFilesParams)
         .path_contains
         .as_ref()
         .map(|n| memchr::memmem::Finder::new(n.as_bytes()));
+    let prefix_filter = params.path_prefix.as_deref().map(str::as_bytes);
     let lang_filter = params.language.as_deref();
 
     let mut files: Vec<ListFilesEntry> = Vec::with_capacity(limit.min(256));
@@ -68,7 +69,6 @@ pub(super) async fn run_list_files(state: &ServerState, params: ListFilesParams)
     let code = code_sorted
         .into_iter()
         .map(|(p, e)| (p, e.language.clone(), e.size_bytes));
-    #[cfg(feature = "documents")]
     let docs = state
         .shared
         .cache
@@ -80,12 +80,10 @@ pub(super) async fn run_list_files(state: &ServerState, params: ListFilesParams)
             (p.clone(), language, store.lookup_doc(p).map_or(0, |d| d.size_bytes))
         })
         .collect::<Vec<_>>();
-    #[cfg(feature = "documents")]
     let docs = docs.iter().map(|(p, l, sz)| (p, l.clone(), *sz));
-    #[cfg(not(feature = "documents"))]
-    let docs = std::iter::empty::<(&crate::path::RelPath, String, u64)>();
     for (p, language, size_bytes) in code.chain(docs) {
-        let path_ok = path_finder.as_ref().is_none_or(|f| f.find(p.as_bytes()).is_some());
+        let path_ok = path_finder.as_ref().is_none_or(|f| f.find(p.as_bytes()).is_some())
+            && prefix_filter.is_none_or(|prefix| p.as_bytes().starts_with(prefix));
         let lang_ok = lang_filter.is_none_or(|l| language == l);
         if !(path_ok && lang_ok) {
             continue;
@@ -212,7 +210,6 @@ pub(super) async fn run_find_files(state: &ServerState, params: FindFilesParams)
     // The document tier (markdown, JSON, YAML, PDFs ...) is not code-mapped, but a file finder
     // must cover every indexed path. Docs carry no size in the cache view; it is filled from the
     // store for the returned page below.
-    #[cfg(feature = "documents")]
     for p in cache.doc_paths.iter() {
         let Some(path_str) = p.as_str() else {
             continue;
@@ -247,7 +244,6 @@ pub(super) async fn run_find_files(state: &ServerState, params: FindFilesParams)
         .take(limit)
         .map(|(_, entry)| entry)
         .collect();
-    #[cfg(feature = "documents")]
     let page = {
         let mut page = page;
         if page.iter().any(|e| cache.contains_doc(&e.path)) {
@@ -316,7 +312,6 @@ fn rank_and_cut(scored: &mut Vec<(u32, FindFilesEntry)>) {
 
 /// Language label for a document-tier path: the grammar name when one resolves (`markdown`,
 /// `json`, `yaml` ...), else the lowercased extension (`pdf`, `docx`), else `document`.
-#[cfg(feature = "documents")]
 fn doc_language(path: &str) -> String {
     if let Some(l) = crate::lang::detect(std::path::Path::new(path)) {
         return l.to_string();
@@ -361,7 +356,6 @@ mod tests {
         assert!(e.is_empty());
     }
 
-    #[cfg(feature = "documents")]
     #[test]
     fn doc_language_labels() {
         assert_eq!(doc_language("docs/README.md"), "markdown");

@@ -565,23 +565,52 @@ fn scrub_timings(value: &mut serde_json::Value) {
     }
 }
 
-/// Answer one `code` call against a hosted stack, returning the response body with timings scrubbed.
+/// A read answered through a hosted stack.
+enum CodeQuery {
+    /// A whole-corpus symbol scan: the read stack's L1 outline path.
+    Symbols,
+    /// A working-tree grep: a different consumer of the same stack, so the comparison is not one path.
+    Grep,
+}
+
+/// Answer one code-tool call against a hosted stack, returning the response body with timings scrubbed.
 /// Goes through a real per-connection [`crate::mcp::BasemindServer`], so what is compared is the
 /// bytes a client would receive, not an internal projection of them.
-async fn code_response(
-    shared: &std::sync::Arc<crate::mcp::SharedReadStack>,
-    params: crate::mcp::params::CodeParams,
-) -> String {
+async fn code_response(shared: &std::sync::Arc<crate::mcp::SharedReadStack>, query: CodeQuery) -> String {
     use rmcp::model::ContentBlock;
     let server = crate::mcp::BasemindServer::from_shared(
         std::sync::Arc::clone(shared),
         "read-stack-tester".to_string(),
         std::sync::Arc::new(crate::mcp::admission::HeavyAdmission::default()),
     );
-    let result = server
-        .code(crate::mcp::params::Parameters(crate::mcp::params::Lenient(params)))
-        .await
-        .expect("code call");
+    let result = match query {
+        CodeQuery::Symbols => {
+            server
+                .code_symbols_call(crate::mcp::params::CodeSymbolsParams {
+                    name: "alpha".to_string(),
+                    kind: None,
+                    limit: None,
+                    cursor: None,
+                    max_tokens: None,
+                })
+                .await
+        }
+        CodeQuery::Grep => {
+            server
+                .code_grep_call(crate::mcp::params::CodeGrepParams {
+                    pattern: "pub fn".to_string(),
+                    regex: None,
+                    path: None,
+                    language: None,
+                    context: None,
+                    limit: None,
+                    cursor: None,
+                    max_tokens: None,
+                })
+                .await
+        }
+    }
+    .expect("code call");
     let text = result
         .content
         .iter()
@@ -593,20 +622,6 @@ async fn code_response(
     let mut parsed: serde_json::Value = serde_json::from_str(&text).unwrap_or(serde_json::Value::Null);
     scrub_timings(&mut parsed);
     serde_json::to_string(&parsed).expect("re-serialize the scrubbed response")
-}
-
-/// A whole-corpus symbol scan — the read stack's L1 outline path.
-fn symbols_query() -> crate::mcp::params::CodeParams {
-    let mut params = crate::mcp::params::CodeParams::new(crate::mcp::params::CodeMode::Symbols);
-    params.name = Some("alpha".to_string());
-    params
-}
-
-/// A working-tree grep — a different consumer of the same stack, so the comparison is not one path.
-fn grep_query() -> crate::mcp::params::CodeParams {
-    let mut params = crate::mcp::params::CodeParams::new(crate::mcp::params::CodeMode::Grep);
-    params.pattern = Some("pub fn".to_string());
-    params
 }
 
 /// Warm read stacks are capped SEPARATELY from — and far below — the store cap. A hot entry is a
@@ -637,7 +652,7 @@ async fn warm_read_stacks_are_capped_independently_of_hot_stores() {
         // ~keep (`begin_conn`) pins a stack against the cap.
         let shared = hosted_stack(&pool, root.path()).await;
         if i == 0 {
-            first_answer = code_response(&shared, symbols_query()).await;
+            first_answer = code_response(&shared, CodeQuery::Symbols).await;
         }
         drop(shared);
         assert!(
@@ -668,7 +683,7 @@ async fn warm_read_stacks_are_capped_independently_of_hot_stores() {
         "the query must actually match, or the comparison is vacuous: {first_answer}"
     );
     assert_eq!(
-        code_response(&rebuilt, symbols_query()).await,
+        code_response(&rebuilt, CodeQuery::Symbols).await,
         first_answer,
         "a stack the cap evicted answers byte-identically once rebuilt"
     );
@@ -687,8 +702,8 @@ async fn a_rebuilt_read_stack_answers_byte_identically() {
         .expect("scan workspace");
 
     let shared = hosted_stack(&pool, workspace.path()).await;
-    let before_symbols = code_response(&shared, symbols_query()).await;
-    let before_grep = code_response(&shared, grep_query()).await;
+    let before_symbols = code_response(&shared, CodeQuery::Symbols).await;
+    let before_grep = code_response(&shared, CodeQuery::Grep).await;
     drop(shared);
     assert!(
         before_symbols.contains("alpha"),
@@ -709,8 +724,8 @@ async fn a_rebuilt_read_stack_answers_byte_identically() {
 
     let rebuilt = hosted_stack(&pool, workspace.path()).await;
     assert_eq!(pool.warm_read_stacks(), 1, "the next request rebuilds the stack");
-    assert_eq!(code_response(&rebuilt, symbols_query()).await, before_symbols);
-    assert_eq!(code_response(&rebuilt, grep_query()).await, before_grep);
+    assert_eq!(code_response(&rebuilt, CodeQuery::Symbols).await, before_symbols);
+    assert_eq!(code_response(&rebuilt, CodeQuery::Grep).await, before_grep);
 }
 
 /// A live connection pins a warm stack against BOTH shedding paths, exactly as it pins the store

@@ -1,11 +1,10 @@
-//! `basemind code` — the CLI half of the `code` domain.
+//! `basemind code` — the CLI half of the code verb tools.
 //!
-//! Real clap subcommands rather than a `--mode` flag, so each lookup keeps its own `--help` and its
-//! own argument validation; they map one-to-one onto the MCP `code` tool's [`CodeMode`] values,
-//! which is what `tests/cli_parity/` asserts.
-//!
-//! Each handler leaves every field its mode does not use `None`: the helper rejects a field
-//! belonging to another mode, so populating them blindly would fail the call.
+//! Every MCP code tool has a command here that runs the identical body (`outline` → `code_outline`,
+//! `symbols` → `code_symbols`, `read` → `code_read`, `grep` → `code_grep`, `search` →
+//! `code_search`, `refs` → `code_refs`, `find` → `find_files`), which is what `tests/cli_parity/`
+//! asserts. `callers`, `implementations`, `dependents`, `definition` and `files` are shorthands for
+//! one shape of `refs` / `find`; `chunk` has no MCP tool.
 
 use std::io::Write;
 
@@ -16,28 +15,27 @@ use crate::mcp::BasemindServer;
 use crate::mcp::cursor::Cursor;
 use crate::mcp::params::*;
 
-use super::choices::SearchLane;
-use super::render::{Emit, WireFormat, emit, wire};
+use super::choices::{RefsRelation, SearchLane};
+use super::render::{Emit, emit};
 use super::{resolve_path, run_tool};
 
 #[derive(Subcommand, Debug)]
 pub enum CodeCmd {
-    /// File structure: symbols + imports, optionally calls + docs (L2). Read this instead of the
+    /// File structure: symbols with 1-based line spans, plus imports. Read this instead of the
     /// file.
     Outline {
         /// Repository-relative path.
         path: String,
-        /// Also include calls + doc comments (L2).
         #[arg(long)]
-        l2: bool,
+        limit: Option<u32>,
+        /// Resume token: pass the previous page's `next_cursor`.
+        #[arg(long)]
+        cursor: Option<String>,
         /// Token budget for the returned list; overflow is dropped and flagged `budgeted`.
         #[arg(long)]
         max_tokens: Option<u32>,
-        /// Response encoding: `json` (default) or `toon` (compact tabular).
-        #[arg(long, value_enum)]
-        format: Option<WireFormat>,
     },
-    /// Find a definition by name across every indexed file (case-sensitive substring).
+    /// Find a definition by name across every indexed file.
     Symbols {
         name: String,
         #[arg(long)]
@@ -50,38 +48,40 @@ pub enum CodeCmd {
         /// Token budget for the returned list; overflow is dropped and flagged `budgeted`.
         #[arg(long)]
         max_tokens: Option<u32>,
-        /// Response encoding: `json` (default) or `toon` (compact tabular).
-        #[arg(long, value_enum)]
-        format: Option<WireFormat>,
     },
-    /// Regex content search across indexed files.
+    /// A symbol's source body (`--symbol`), or a 1-based inclusive line span (`--line`,
+    /// `--end-line`).
+    #[command(alias = "expand")]
+    Read {
+        /// Repository-relative path.
+        path: String,
+        /// Symbol whose body to print (exact name).
+        #[arg(long)]
+        symbol: Option<String>,
+        /// Kind filter to disambiguate `--symbol`.
+        #[arg(long)]
+        kind: Option<String>,
+        /// First line, 1-based.
+        #[arg(long)]
+        line: Option<u32>,
+        /// Last line, inclusive (default: `--line`).
+        #[arg(long)]
+        end_line: Option<u32>,
+    },
+    /// Content search across indexed code files. The pattern is literal text unless `--regex`.
     Grep {
         pattern: String,
+        /// Treat the pattern as a Rust regex.
+        #[arg(long)]
+        regex: bool,
+        /// Substring of the repository-relative path (not a glob).
+        #[arg(long)]
+        path: Option<String>,
         #[arg(long)]
         language: Option<String>,
+        /// Add one line before and after each match.
         #[arg(long)]
-        path_contains: Option<String>,
-        #[arg(long)]
-        limit: Option<u32>,
-        /// Suppress the 1-line before/after context for each match.
-        #[arg(long = "no-context")]
-        no_context: bool,
-        /// Resume token: pass the previous page's `next_cursor`.
-        #[arg(long)]
-        cursor: Option<String>,
-        /// Token budget for the returned list; overflow is dropped and flagged `budgeted`.
-        #[arg(long)]
-        max_tokens: Option<u32>,
-        /// Response encoding: `json` (default) or `toon` (compact tabular).
-        #[arg(long, value_enum)]
-        format: Option<WireFormat>,
-    },
-    /// List indexed files, optionally filtered.
-    Files {
-        #[arg(long)]
-        path_contains: Option<String>,
-        #[arg(long)]
-        language: Option<String>,
+        context: bool,
         #[arg(long)]
         limit: Option<u32>,
         /// Resume token: pass the previous page's `next_cursor`.
@@ -90,13 +90,102 @@ pub enum CodeCmd {
         /// Token budget for the returned list; overflow is dropped and flagged `budgeted`.
         #[arg(long)]
         max_tokens: Option<u32>,
-        /// Response encoding: `json` (default) or `toon` (compact tabular).
-        #[arg(long, value_enum)]
-        format: Option<WireFormat>,
     },
-    /// Locate a file by a fuzzy fragment of its name or path (fzf/fd-style), ranked by score.
-    Find {
+    /// Search code by meaning; returns pointers, read one with `code read`.
+    #[command(alias = "semantic")]
+    Search {
         query: String,
+        /// Retrieval lane (default hybrid).
+        #[arg(long, value_enum)]
+        lane: Option<SearchLane>,
+        #[arg(long)]
+        limit: Option<u32>,
+        /// Resume token: pass the previous page's `next_cursor`.
+        #[arg(long)]
+        cursor: Option<String>,
+        /// Token budget for the returned list; overflow is dropped and flagged `budgeted`.
+        #[arg(long)]
+        max_tokens: Option<u32>,
+    },
+    /// Usages of a name: call sites (default), implementations, importers, or the definition a
+    /// reference binds to.
+    #[command(alias = "references")]
+    Refs {
+        name: String,
+        /// What to list (default callers).
+        #[arg(long, value_enum)]
+        relation: Option<RefsRelation>,
+        /// File defining the name (pins one definition); for `definition`, the file holding the
+        /// reference.
+        #[arg(long)]
+        path: Option<String>,
+        /// `definition` only: 1-based line of the reference.
+        #[arg(long)]
+        line: Option<u32>,
+        /// `definition` only: 1-based column (default: where the name occurs on the line).
+        #[arg(long)]
+        column: Option<u32>,
+        #[arg(long)]
+        limit: Option<u32>,
+        /// Resume token: pass the previous page's `next_cursor`.
+        #[arg(long)]
+        cursor: Option<String>,
+        /// Token budget for the returned list; overflow is dropped and flagged `budgeted`.
+        #[arg(long)]
+        max_tokens: Option<u32>,
+    },
+    /// Callers of the definition of `name` in `path`. Shorthand for `refs <name> --path <path>`.
+    Callers {
+        path: String,
+        name: String,
+        #[arg(long)]
+        limit: Option<u32>,
+        /// Resume token: pass the previous page's `next_cursor`.
+        #[arg(long)]
+        cursor: Option<String>,
+        /// Token budget for the returned list; overflow is dropped and flagged `budgeted`.
+        #[arg(long)]
+        max_tokens: Option<u32>,
+    },
+    /// Types implementing a trait / interface / base class. Shorthand for
+    /// `refs <name> --relation implementations`.
+    Implementations {
+        name: String,
+        #[arg(long)]
+        limit: Option<u32>,
+        /// Resume token: pass the previous page's `next_cursor`.
+        #[arg(long)]
+        cursor: Option<String>,
+        /// Token budget for the returned list; overflow is dropped and flagged `budgeted`.
+        #[arg(long)]
+        max_tokens: Option<u32>,
+    },
+    /// Files importing a module. Shorthand for `refs <module> --relation importers`.
+    Dependents {
+        module: String,
+        #[arg(long)]
+        limit: Option<u32>,
+        /// Resume token: pass the previous page's `next_cursor`.
+        #[arg(long)]
+        cursor: Option<String>,
+    },
+    /// The definition the reference `name` at `path`:`line` binds to. Shorthand for
+    /// `refs <name> --relation definition --path <path> --line <line>`.
+    Definition {
+        /// Repository-relative path of the file holding the reference.
+        path: String,
+        /// 1-based line of the reference.
+        line: u32,
+        /// The referenced identifier.
+        name: String,
+        /// 1-based column (default: where the name occurs on the line).
+        #[arg(long)]
+        column: Option<u32>,
+    },
+    /// Locate a file by a fuzzy fragment of its name or path, or list indexed files when the query
+    /// is omitted. Covers code and documents.
+    Find {
+        query: Option<String>,
         #[arg(long)]
         path_prefix: Option<String>,
         #[arg(long)]
@@ -109,53 +198,11 @@ pub enum CodeCmd {
         /// Token budget for the returned list; overflow is dropped and flagged `budgeted`.
         #[arg(long)]
         max_tokens: Option<u32>,
-        /// Response encoding: `json` (default) or `toon` (compact tabular).
-        #[arg(long, value_enum)]
-        format: Option<WireFormat>,
     },
-    /// Resolve the reference at a position to the definition it binds to (scope-resolved).
-    Definition {
-        /// Repository-relative path of the file holding the reference.
-        path: String,
-        /// 1-based line of the reference identifier.
-        line: u32,
-        /// 0-based byte column of the reference within the line (default 0).
-        #[arg(long, default_value_t = 0)]
-        column: u32,
-    },
-    /// Every call site of a name (name-only — no scope resolution).
-    References {
-        name: String,
+    /// List indexed files. Shorthand for `find` with no query.
+    Files {
         #[arg(long)]
-        limit: Option<u32>,
-        /// Resume token: pass the previous page's `next_cursor`.
-        #[arg(long)]
-        cursor: Option<String>,
-        /// Token budget for the returned list; overflow is dropped and flagged `budgeted`.
-        #[arg(long)]
-        max_tokens: Option<u32>,
-        /// Response encoding: `json` (default) or `toon` (compact tabular).
-        #[arg(long, value_enum)]
-        format: Option<WireFormat>,
-    },
-    /// Callers of one specific definition (path + name + optional kind).
-    Callers {
-        path: String,
-        name: String,
-        #[arg(long)]
-        kind: Option<String>,
-        #[arg(long)]
-        limit: Option<u32>,
-        /// Resume token: pass the previous page's `next_cursor`.
-        #[arg(long)]
-        cursor: Option<String>,
-        /// Token budget for the returned list; overflow is dropped and flagged `budgeted`.
-        #[arg(long)]
-        max_tokens: Option<u32>,
-    },
-    /// Types implementing / extending / inheriting from a trait, interface, or base class.
-    Implementations {
-        trait_name: String,
+        path_prefix: Option<String>,
         #[arg(long)]
         language: Option<String>,
         #[arg(long)]
@@ -167,120 +214,190 @@ pub enum CodeCmd {
         #[arg(long)]
         max_tokens: Option<u32>,
     },
-    /// Files whose imports mention the given module (heuristic).
-    Dependents { module: String },
-    /// One symbol's raw source body — the inverse of an outline entry.
-    Expand {
-        /// Repository-relative path of the indexed file.
-        path: String,
-        /// Symbol name (matched exactly, case-sensitive).
-        name: String,
-        /// Kind filter to disambiguate (e.g. `function`, `struct`, `method`).
-        #[arg(long)]
-        kind: Option<String>,
-    },
-    /// Search code by meaning. Returns pointers; fetch bodies with `chunk`. Needs
-    /// `--features code-search`.
-    Semantic {
-        query: String,
-        #[arg(long)]
-        limit: Option<u32>,
-        /// Retrieval lane: `hybrid` (default), `semantic`, or `keyword`.
-        #[arg(long, value_enum)]
-        lane: Option<SearchLane>,
-        /// Run the cross-encoder rerank pass over the fused hits (first call downloads a model).
-        #[arg(long)]
-        rerank: bool,
-        /// Reranker preset name (default `bge-reranker-base`).
-        #[arg(long)]
-        rerank_preset: Option<String>,
-        /// How many top fused hits to rerank (default from config).
-        #[arg(long)]
-        rerank_top_k: Option<usize>,
-        /// Token budget for the returned hits (best-first); overflow is dropped and flagged `budgeted`.
-        #[arg(long)]
-        max_tokens: Option<u32>,
-        /// Response encoding: `json` (default) or `toon` (compact tabular).
-        #[arg(long, value_enum)]
-        format: Option<WireFormat>,
-    },
-    /// Fetch one code chunk's source body by path. Needs `--features code-search`.
+    /// Fetch one semantic-search chunk body by path (CLI only).
     Chunk {
-        /// Repository-relative path of the source file.
+        /// Repository-relative path of the source file the chunk belongs to.
         path: String,
+        /// The content-addressed chunk id from a search hit.
         #[arg(long)]
         chunk_id: Option<String>,
+        /// The chunk's start byte offset, an alternative to `--chunk-id`.
         #[arg(long)]
         byte_start: Option<u32>,
     },
 }
 
+/// Dispatch a `code` subcommand through the in-process server.
 pub async fn run(server: &BasemindServer, cmd: CodeCmd, opts: &Emit, out: &mut impl Write) -> Result<()> {
-    let p = match cmd {
+    let (tool, result) = match cmd {
         CodeCmd::Outline {
             path,
-            l2,
+            limit,
+            cursor,
             max_tokens,
-            format,
-        } => CodeParams {
-            path: Some(resolve_path(server, &path)),
-            l2: Some(l2),
-            max_tokens,
-            format: wire(format),
-            ..CodeParams::new(CodeMode::Outline)
-        },
+        } => (
+            "code_outline",
+            server
+                .code_outline_call(CodeOutlineParams {
+                    path: resolve_path(server, &path),
+                    limit,
+                    cursor: cursor.map(Cursor),
+                    max_tokens,
+                })
+                .await,
+        ),
         CodeCmd::Symbols {
             name,
             kind,
             limit,
             cursor,
             max_tokens,
-            format,
-        } => CodeParams {
-            name: Some(name),
+        } => (
+            "code_symbols",
+            server
+                .code_symbols_call(CodeSymbolsParams {
+                    name,
+                    kind,
+                    limit,
+                    cursor: cursor.map(Cursor),
+                    max_tokens,
+                })
+                .await,
+        ),
+        CodeCmd::Read {
+            path,
+            symbol,
             kind,
-            limit,
-            cursor: cursor.map(Cursor),
-            max_tokens,
-            format: wire(format),
-            ..CodeParams::new(CodeMode::Symbols)
-        },
+            line,
+            end_line,
+        } => (
+            "code_read",
+            server
+                .code_read_call(CodeReadParams {
+                    path: resolve_path(server, &path),
+                    symbol,
+                    kind,
+                    line,
+                    end_line,
+                })
+                .await,
+        ),
         CodeCmd::Grep {
             pattern,
+            regex,
+            path,
             language,
-            path_contains,
-            limit,
-            no_context,
-            cursor,
-            max_tokens,
-            format,
-        } => CodeParams {
-            pattern: Some(pattern),
-            language,
-            path_contains,
-            limit,
-            cursor: cursor.map(Cursor),
-            max_tokens,
-            format: wire(format),
-            include_context: Some(!no_context),
-            ..CodeParams::new(CodeMode::Grep)
-        },
-        CodeCmd::Files {
-            path_contains,
-            language,
+            context,
             limit,
             cursor,
             max_tokens,
-            format,
-        } => CodeParams {
-            path_contains,
-            language,
+        } => (
+            "code_grep",
+            server
+                .code_grep_call(CodeGrepParams {
+                    pattern,
+                    regex: regex.then_some(true),
+                    path,
+                    language,
+                    context: context.then_some(true),
+                    limit,
+                    cursor: cursor.map(Cursor),
+                    max_tokens,
+                })
+                .await,
+        ),
+        CodeCmd::Search {
+            query,
+            lane,
             limit,
-            cursor: cursor.map(Cursor),
+            cursor,
             max_tokens,
-            format: wire(format),
-            ..CodeParams::new(CodeMode::Files)
-        },
+        } => (
+            "code_search",
+            server
+                .code_search_call(CodeSearchParams {
+                    query,
+                    lane: lane.map(|lane| lane.as_str().to_string()),
+                    limit,
+                    cursor: cursor.map(Cursor),
+                    max_tokens,
+                })
+                .await,
+        ),
+        CodeCmd::Refs {
+            name,
+            relation,
+            path,
+            line,
+            column,
+            limit,
+            cursor,
+            max_tokens,
+        } => {
+            let refs = CodeRefsParams {
+                name,
+                relation: relation.map(|relation| relation.as_str().to_string()),
+                path: path.map(|path| resolve_path(server, &path)),
+                line,
+                column,
+                limit,
+                cursor: cursor.map(Cursor),
+                max_tokens,
+            };
+            ("code_refs", server.code_refs_call(refs).await)
+        }
+        CodeCmd::Callers {
+            path,
+            name,
+            limit,
+            cursor,
+            max_tokens,
+        } => {
+            let refs = CodeRefsParams {
+                path: Some(resolve_path(server, &path)),
+                limit,
+                cursor: cursor.map(Cursor),
+                max_tokens,
+                ..refs(name, RefsRelation::Callers)
+            };
+            ("code_refs", server.code_refs_call(refs).await)
+        }
+        CodeCmd::Implementations {
+            name,
+            limit,
+            cursor,
+            max_tokens,
+        } => {
+            let refs = CodeRefsParams {
+                limit,
+                cursor: cursor.map(Cursor),
+                max_tokens,
+                ..refs(name, RefsRelation::Implementations)
+            };
+            ("code_refs", server.code_refs_call(refs).await)
+        }
+        CodeCmd::Dependents { module, limit, cursor } => {
+            let refs = CodeRefsParams {
+                limit,
+                cursor: cursor.map(Cursor),
+                ..refs(module, RefsRelation::Importers)
+            };
+            ("code_refs", server.code_refs_call(refs).await)
+        }
+        CodeCmd::Definition {
+            path,
+            line,
+            name,
+            column,
+        } => {
+            let refs = CodeRefsParams {
+                path: Some(resolve_path(server, &path)),
+                line: Some(line),
+                column,
+                ..refs(name, RefsRelation::Definition)
+            };
+            ("code_refs", server.code_refs_call(refs).await)
+        }
         CodeCmd::Find {
             query,
             path_prefix,
@@ -288,110 +405,68 @@ pub async fn run(server: &BasemindServer, cmd: CodeCmd, opts: &Emit, out: &mut i
             limit,
             cursor,
             max_tokens,
-            format,
-        } => CodeParams {
-            query: Some(query),
+        } => (
+            "find_files",
+            server
+                .find_files_call(FindFilesToolParams {
+                    query,
+                    path_prefix,
+                    language,
+                    limit,
+                    cursor: cursor.map(Cursor),
+                    max_tokens,
+                })
+                .await,
+        ),
+        CodeCmd::Files {
             path_prefix,
             language,
             limit,
-            cursor: cursor.map(Cursor),
-            max_tokens,
-            format: wire(format),
-            ..CodeParams::new(CodeMode::Find)
-        },
-        CodeCmd::Definition { path, line, column } => CodeParams {
-            path: Some(resolve_path(server, &path)),
-            line: Some(line),
-            column: Some(column),
-            ..CodeParams::new(CodeMode::Definition)
-        },
-        CodeCmd::References {
-            name,
-            limit,
             cursor,
             max_tokens,
-            format,
-        } => CodeParams {
-            name: Some(name),
-            limit,
-            cursor: cursor.map(Cursor),
-            max_tokens,
-            format: wire(format),
-            ..CodeParams::new(CodeMode::References)
-        },
-        CodeCmd::Callers {
-            path,
-            name,
-            kind,
-            limit,
-            cursor,
-            max_tokens,
-        } => CodeParams {
-            path: Some(resolve_path(server, &path)),
-            name: Some(name),
-            kind,
-            limit,
-            cursor: cursor.map(Cursor),
-            max_tokens,
-            ..CodeParams::new(CodeMode::Callers)
-        },
-        CodeCmd::Implementations {
-            trait_name,
-            language,
-            limit,
-            cursor,
-            max_tokens,
-        } => CodeParams {
-            trait_name: Some(trait_name),
-            language,
-            limit,
-            cursor: cursor.map(Cursor),
-            max_tokens,
-            ..CodeParams::new(CodeMode::Implementations)
-        },
-        CodeCmd::Dependents { module } => CodeParams {
-            module: Some(module),
-            ..CodeParams::new(CodeMode::Dependents)
-        },
-        CodeCmd::Expand { path, name, kind } => CodeParams {
-            path: Some(resolve_path(server, &path)),
-            name: Some(name),
-            kind,
-            ..CodeParams::new(CodeMode::Expand)
-        },
-        CodeCmd::Semantic {
-            query,
-            limit,
-            lane,
-            rerank,
-            rerank_preset,
-            rerank_top_k,
-            max_tokens,
-            format,
-        } => CodeParams {
-            query: Some(query),
-            limit,
-            lane: lane.map(|l| l.as_str().to_string()),
-            rerank: rerank.then_some(true),
-            rerank_preset,
-            rerank_top_k,
-            max_tokens,
-            format: wire(format),
-            ..CodeParams::new(CodeMode::Semantic)
-        },
+        } => (
+            "find_files",
+            server
+                .find_files_call(FindFilesToolParams {
+                    query: None,
+                    path_prefix,
+                    language,
+                    limit,
+                    cursor: cursor.map(Cursor),
+                    max_tokens,
+                })
+                .await,
+        ),
         CodeCmd::Chunk {
             path,
             chunk_id,
             byte_start,
-        } => CodeParams {
-            path: Some(resolve_path(server, &path)),
-            chunk_id,
-            byte_start,
-            ..CodeParams::new(CodeMode::Chunk)
-        },
+        } => (
+            "code_chunk",
+            server
+                .code_chunk_call(GetChunkParams {
+                    path: resolve_path(server, &path),
+                    chunk_id,
+                    byte_start,
+                })
+                .await,
+        ),
     };
 
-    let key = p.mode.telemetry_key();
-    let r = run_tool(key, server.code(Parameters(Lenient(p))).await)?;
-    emit(key, &r, opts, out)
+    let r = run_tool(tool, result)?;
+    emit(tool, &r, opts, out)
+}
+
+/// A `code_refs` call for `name` with only its relation set.
+fn refs(name: String, relation: RefsRelation) -> CodeRefsParams {
+    CodeRefsParams {
+        name,
+        relation: Some(relation.as_str().to_string()),
+        path: None,
+        line: None,
+        column: None,
+        limit: None,
+        cursor: None,
+        max_tokens: None,
+    }
 }

@@ -74,9 +74,7 @@ pub(super) async fn run_search_code(state: &ServerState, params: SearchCodeParam
         )
     } else {
         return Err(McpError::invalid_request(
-            format!(
-                "`code` mode=\"semantic\": unknown lane {mode:?}; expected \"hybrid\", \"semantic\", or \"keyword\""
-            ),
+            format!("`code_search`: unknown lane {mode:?}; expected \"hybrid\", \"semantic\", or \"keyword\""),
             None,
         ));
     };
@@ -147,7 +145,7 @@ async fn hybrid_hits(
         let reason = report.reason.clone().unwrap_or_default();
         return Err(McpError::internal_error(
             format!(
-                "`code` mode=\"semantic\": no lane could run — {reason}. Nothing was searched; this \
+                "`code_search`: no lane could run — {reason}. Nothing was searched; this \
                  is not an empty result set."
             ),
             None,
@@ -388,7 +386,7 @@ async fn keyword_hits(state: &ServerState, query: &str, limit: usize) -> Result<
     if let Some(reason) = lanes.degraded {
         return Err(McpError::internal_error(
             format!(
-                "`code` mode=\"semantic\" lane=\"keyword\": the BM25 index lives in the daemon's \
+                "`code_search` lane \"keyword\": the BM25 index lives in the daemon's \
                  fjall store and {reason}. No search ran; this is not an empty result set."
             ),
             None,
@@ -519,16 +517,16 @@ pub(super) async fn run_get_chunk(state: &ServerState, params: GetChunkParams) -
     let blob = {
         let store = state.shared.store.read().await;
         let entry = store.lookup(&params.path).ok_or_else(|| {
-            McpError::invalid_params(format!("`code` mode `chunk`: file not indexed: {}", params.path), None)
+            McpError::invalid_params(format!("`code chunk`: file not indexed: {}", params.path), None)
         })?;
         let hash_hex = entry.hash_hex.clone();
         store
             .read_chunks_by_hex(&hash_hex)
-            .map_err(|e| McpError::internal_error(format!("`code` mode `chunk`: read chunk blob: {e}"), None))?
+            .map_err(|e| McpError::internal_error(format!("`code chunk`: read chunk blob: {e}"), None))?
             .ok_or_else(|| {
                 McpError::invalid_params(
                     format!(
-                        "`code` mode `chunk`: no code chunks indexed for {} (scan with --features code-search)",
+                        "`code chunk`: no code chunks indexed for {} (scan with --features code-search)",
                         params.path
                     ),
                     None,
@@ -539,7 +537,7 @@ pub(super) async fn run_get_chunk(state: &ServerState, params: GetChunkParams) -
     let chunks = &blob.chunks;
     if chunks.is_empty() {
         return Err(McpError::invalid_params(
-            format!("`code` mode `chunk`: {} has no chunks", params.path),
+            format!("`code chunk`: {} has no chunks", params.path),
             None,
         ));
     }
@@ -547,14 +545,14 @@ pub(super) async fn run_get_chunk(state: &ServerState, params: GetChunkParams) -
     let chunk = if let Some(id) = params.chunk_id.as_deref() {
         chunks.iter().find(|c| c.chunk_id == id).ok_or_else(|| {
             McpError::invalid_params(
-                format!("`code` mode `chunk`: chunk_id {id:?} not found in {}", params.path),
+                format!("`code chunk`: chunk_id {id:?} not found in {}", params.path),
                 None,
             )
         })?
     } else if let Some(bs) = params.byte_start {
         chunks.iter().find(|c| c.byte_start == bs).ok_or_else(|| {
             McpError::invalid_params(
-                format!("`code` mode `chunk`: no chunk at byte_start {bs} in {}", params.path),
+                format!("`code chunk`: no chunk at byte_start {bs} in {}", params.path),
                 None,
             )
         })?
@@ -564,7 +562,7 @@ pub(super) async fn run_get_chunk(state: &ServerState, params: GetChunkParams) -
         let ids: Vec<&str> = chunks.iter().map(|c| c.chunk_id.as_str()).collect();
         return Err(McpError::invalid_params(
             format!(
-                "`code` mode `chunk`: {} has {} chunks; pass `chunk_id` or `byte_start` to disambiguate: {}",
+                "`code chunk`: {} has {} chunks; pass `chunk_id` or `byte_start` to disambiguate: {}",
                 params.path,
                 chunks.len(),
                 ids.join(", ")

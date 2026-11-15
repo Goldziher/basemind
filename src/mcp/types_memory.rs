@@ -1,22 +1,21 @@
-//! Request / response shapes for the `memory` domain tool.
+//! Internal request shapes and response payloads of the memory bodies.
 //!
-//! [`MemoryParams`] is what crosses the wire: one flat parameter object for the single `memory`
-//! tool, with a required [`MemoryMode`] selecting the operation and every per-mode field an
-//! optional sibling. The per-operation structs below stay as the helpers' internal shapes.
+//! The wire arguments of `memory_save` / `memory_search` live in `types_tools.rs`; the
+//! per-operation structs below are what the bodies in `memory.rs` take.
 //!
 //! Split out of `types.rs` to keep that file within the per-file size budget. The param structs are
-//! always compiled — the `memory` tool is advertised in every build and gates per mode, so the
-//! shapes it deserializes into must exist without the `memory` feature. The response structs and
-//! the blob-record types (`MemoryRecord`, `SymbolRef`, `Provenance`, `VerifyState`) are
-//! `#[cfg(feature = "memory")]`-gated: they only exist when the LanceDB-backed memory store is
-//! compiled in to construct them. The [`Visibility`] tier selector is always compiled — it is part
-//! of the wire params.
+//! always compiled: the memory tools are advertised in every build and gate in the body, so the
+//! shapes must exist without the `memory` feature. The response structs and the blob-record types
+//! (`MemoryRecord`, `SymbolRef`, `Provenance`, `VerifyState`) are `#[cfg(feature = "memory")]`-gated:
+//! they only exist when the LanceDB-backed memory store is compiled in to construct them. The
+//! [`Visibility`] tier selector is always compiled: it is part of the wire arguments.
 
 use rmcp::schemars;
 use serde::{Deserialize, Serialize};
 
+#[cfg(feature = "memory")]
 use super::cursor::Cursor;
-use super::mode::MemoryMode;
+#[cfg(feature = "memory")]
 use super::types::default_true;
 
 /// Memory tier selector. `group` (the default) is the shared, cross-agent tier — today's
@@ -69,82 +68,9 @@ impl Visibility {
     }
 }
 
-/// Wire parameters for the `memory` tool.
-///
-/// `mode` is the only required field. Every other field belongs to a subset of the modes and is
-/// rejected — not ignored — when passed to a mode that has no use for it (see
-/// [`super::mode::reject_unsupported`]); a field a mode requires but did not receive is reported by
-/// name (`mode="put" requires \`value\``) rather than as a bare "missing parameter".
-#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
-pub struct MemoryParams {
-    /// Which operation to run.
-    pub mode: MemoryMode,
-
-    /// Memory key. Required by `put` / `get` / `delete`.
-    #[serde(default, alias = "name")]
-    pub key: Option<String>,
-    /// `put` only, required: the note body to store.
-    #[serde(default)]
-    pub value: Option<String>,
-    /// `put`: tags for exact filtering by `list`/`search`.
-    #[serde(default)]
-    pub tags: Option<Vec<String>>,
-    /// `put`: also embed for `search` (default true).
-    #[serde(default)]
-    pub embed: Option<bool>,
-    /// `group` (shared, default) or `individual` (this agent only).
-    #[serde(default)]
-    pub visibility: Option<Visibility>,
-
-    /// `list`: key-prefix filter.
-    #[serde(default)]
-    pub prefix: Option<String>,
-    /// `list`/`search`: exact tag filter.
-    #[serde(default)]
-    pub tag: Option<String>,
-    /// Result cap: `search`/`documents` default 10 (max 100); `list` default 100 (max 1000).
-    #[serde(default)]
-    pub limit: Option<u32>,
-    /// `list`: resume token from `next_cursor`.
-    #[serde(default)]
-    pub cursor: Option<Cursor>,
-
-    /// Search text. Required by `search` (vector KNN over stored memory) and by `documents`
-    /// (semantic search over indexed document chunks).
-    #[serde(
-        default,
-        alias = "needle",
-        alias = "pattern",
-        alias = "q",
-        alias = "text",
-        alias = "search"
-    )]
-    pub query: Option<String>,
-
-    /// `documents`: token budget for `hits`.
-    #[serde(default, alias = "token_budget", alias = "budget")]
-    pub max_tokens: Option<u32>,
-    /// `documents`: `"json"` (default) or `"toon"`.
-    #[serde(default, alias = "encoding")]
-    #[schemars(extend("enum" = ["json", "toon"]))]
-    pub format: Option<String>,
-    /// `documents`: exact MIME-type filter.
-    #[serde(default)]
-    pub mime_type: Option<String>,
-    /// `documents`: ingestion scope (default this repo; legacy web pages live under `web:<host>`, no longer refreshed).
-    #[serde(default)]
-    pub scope: Option<String>,
-    /// `documents`: case-insensitive substring over NER entity categories (ANDed with `keywords_contains`).
-    #[serde(default)]
-    pub entity_category: Option<String>,
-    /// `documents`: case-insensitive substring over document keywords.
-    #[serde(default)]
-    pub keywords_contains: Option<String>,
-}
-
+#[cfg(feature = "memory")]
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct MemoryPutParams {
-    #[serde(alias = "name")]
     pub key: String,
     pub value: String,
     #[serde(default)]
@@ -164,9 +90,9 @@ pub(super) struct MemoryPutResponse {
     pub updated_at: i64,
 }
 
+#[cfg(feature = "memory")]
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct MemoryGetParams {
-    #[serde(alias = "name")]
     pub key: String,
     /// Memory tier: `group` (shared, default) or `individual` (per-agent).
     #[serde(default)]
@@ -183,6 +109,7 @@ pub(super) struct MemoryEntry {
     pub updated_at: i64,
 }
 
+#[cfg(feature = "memory")]
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct MemoryListParams {
     #[serde(default)]
@@ -219,9 +146,9 @@ pub(super) struct MemoryListResponse {
     pub elapsed_us: u64,
 }
 
+#[cfg(feature = "memory")]
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct MemorySearchParams {
-    #[serde(alias = "needle", alias = "pattern", alias = "q", alias = "search")]
     pub query: String,
     #[serde(default)]
     pub limit: Option<u32>,
@@ -258,7 +185,6 @@ pub(super) struct MemorySearchResponse {
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct MemoryDeleteParams {
-    #[serde(alias = "name")]
     pub key: String,
     /// Memory tier: `group` (shared, default) or `individual` (per-agent).
     #[serde(default)]
@@ -334,72 +260,6 @@ pub struct MemoryRecord {
     /// Git-derived importance in `[0,1)`; decays when the memory goes stale. Never an LLM rating.
     #[serde(default)]
     pub importance: f32,
-}
-
-#[cfg(test)]
-mod param_alias_tests {
-    use super::*;
-
-    #[test]
-    fn memory_search_accepts_query_aliases() {
-        let by_needle: MemorySearchParams = serde_json::from_value(serde_json::json!({ "needle": "retry" })).unwrap();
-        assert_eq!(by_needle.query, "retry");
-        let by_q: MemorySearchParams = serde_json::from_value(serde_json::json!({ "q": "retry" })).unwrap();
-        assert_eq!(by_q.query, "retry");
-        let by_query: MemorySearchParams = serde_json::from_value(serde_json::json!({ "query": "retry" })).unwrap();
-        assert_eq!(by_query.query, "retry");
-    }
-
-    #[test]
-    fn memory_get_accepts_name_alias_for_key() {
-        let params: MemoryGetParams = serde_json::from_value(serde_json::json!({ "name": "skill/foo" })).unwrap();
-        assert_eq!(params.key, "skill/foo");
-    }
-
-    /// `mode` carries no `Default` and no `#[serde(default)]`: an omitted mode must fail loudly
-    /// rather than silently pick an operation the caller did not ask for.
-    #[test]
-    fn memory_params_reject_an_omitted_mode() {
-        let error = serde_json::from_value::<MemoryParams>(serde_json::json!({ "key": "k" }))
-            .expect_err("a `memory` call without a mode must fail");
-        assert!(error.to_string().contains("mode"), "{error}");
-    }
-
-    #[test]
-    fn memory_params_report_every_accepted_mode_on_an_unknown_one() {
-        let error = serde_json::from_value::<MemoryParams>(serde_json::json!({ "mode": "recall" }))
-            .expect_err("an unknown mode must fail");
-        assert!(error.to_string().contains("put|get|list|search|delete"), "{error}");
-    }
-
-    #[test]
-    fn memory_params_accept_the_query_and_key_aliases() {
-        let by_needle: MemoryParams =
-            serde_json::from_value(serde_json::json!({ "mode": "search", "needle": "retry" })).unwrap();
-        assert_eq!(by_needle.query.as_deref(), Some("retry"));
-        let by_name: MemoryParams =
-            serde_json::from_value(serde_json::json!({ "mode": "get", "name": "skill/foo" })).unwrap();
-        assert_eq!(by_name.key.as_deref(), Some("skill/foo"));
-    }
-
-    /// The published input schema must stay inside the Anthropic subset — one `oneOf`/`$ref`
-    /// anywhere silently drops the WHOLE tool registry (GH #50).
-    #[test]
-    fn memory_params_schema_stays_within_the_anthropic_subset() {
-        let mut generator = schemars::SchemaGenerator::default();
-        let schema =
-            serde_json::to_string(&<MemoryParams as schemars::JsonSchema>::json_schema(&mut generator)).unwrap();
-        for forbidden in ["$ref", "$defs", "oneOf", "anyOf", "allOf"] {
-            assert!(!schema.contains(forbidden), "{forbidden} leaked into {schema}");
-        }
-    }
-
-    #[test]
-    fn memory_put_accepts_name_alias_for_key() {
-        let params: MemoryPutParams = serde_json::from_value(serde_json::json!({ "name": "k", "value": "v" })).unwrap();
-        assert_eq!(params.key, "k");
-        assert_eq!(params.value, "v");
-    }
 }
 
 #[cfg(all(test, feature = "memory"))]

@@ -3,10 +3,11 @@
 //! Builds a throwaway repo, scans it, hosts the server in-process over an in-memory duplex
 //! transport, and drives the task lifecycle over the real rmcp client:
 //!
-//! * a task-capable client calling a slow call (`admin` mode `rescan`) gets a `CallToolResponse::Task`, and
-//!   polling `tasks/get` settles into a `Completed` payload carrying the tool's `CallToolResult`;
-//! * a plain client (no tasks extension) calling the same tool keeps the synchronous path and gets
-//!   an ordinary `CallToolResult`;
+//! * a task-capable client calling `index_rescan` gets its result INLINE when the call finishes
+//!   within the threshold: a fast call is never wrapped in a task;
+//! * the same call on a server whose threshold is zero gets a `CallToolResponse::Task`, and polling
+//!   `tasks/get` settles into a `Completed` payload carrying the tool's `CallToolResult`;
+//! * a plain client (no tasks extension) always keeps the synchronous path;
 //! * `get_info` advertises the tasks capability.
 //!
 //! Modeled on rmcp's own `tests/test_task.rs`, adapted to basemind's in-process serve harness.
@@ -74,6 +75,13 @@ async fn serve(root: &Path) -> tokio::io::DuplexStream {
         .expect("in-memory serve")
 }
 
+/// A server on which every offload-eligible call has already outlived its threshold.
+async fn serve_with_zero_threshold(root: &Path) -> tokio::io::DuplexStream {
+    basemind::mcp::serve_in_memory_with_task_threshold(root, "working", std::time::Duration::ZERO)
+        .await
+        .expect("in-memory serve")
+}
+
 fn tasks_client() -> ClientConfig {
     ClientConfig::new(
         ClientCapabilities::builder().enable_tasks().build(),
@@ -81,17 +89,25 @@ fn tasks_client() -> ClientConfig {
     )
 }
 
-/// A task-capable client calling a slow call (`admin` mode `rescan`) is answered with a task handle; polling
-/// `tasks/get` settles into a `Completed` payload carrying the tool's real `CallToolResult`.
+fn call(tool: &'static str, arguments: Value) -> CallToolRequestParams {
+    CallToolRequestParams::new(tool).with_arguments(arguments.as_object().cloned().expect("object"))
+}
+
+fn body_of(result: &rmcp::model::CallToolResult) -> Value {
+    let text = result.content[0].as_text().expect("result has a text block");
+    serde_json::from_str(&text.text).expect("result text is JSON")
+}
+
+/// The defect this guards: calls that took 6 to 27 ms were answered as background tasks because
+/// offload was decided by tool name alone. A task-capable client must get the result itself.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn slow_tool_offloads_to_task_and_completes() {
+async fn a_fast_call_returns_inline_to_a_task_capable_client() {
     let dir = build_repo();
     let root = dir.path();
     run_scan(root);
 
     let client = tasks_client().serve(serve(root).await).await.expect("rmcp handshake");
 
-    // The server must advertise the tasks extension so a client knows to poll.
     let caps = client
         .peer_info()
         .map(|info| info.capabilities.clone())
@@ -101,20 +117,55 @@ async fn slow_tool_offloads_to_task_and_completes() {
         "get_info must advertise the SEP-2663 tasks capability: {caps:?}"
     );
 
+    for (tool, arguments, field) in [
+        ("index_rescan", json!({}), "scanned"),
+        ("index_status", json!({}), "file_count"),
+        ("code_symbols", json!({ "name": "alpha" }), "results"),
+    ] {
+        let response = client
+            .call_tool_once(call(tool, arguments))
+            .await
+            .unwrap_or_else(|error| panic!("{tool}: {error}"));
+        match response {
+            CallToolResponse::Complete(result) => {
+                let body = body_of(&result);
+                assert!(
+                    body.get(field).is_some(),
+                    "{tool} must answer inline with its own result: {body}"
+                );
+            }
+            CallToolResponse::Task(create) => panic!(
+                "a `{tool}` call that finishes within the threshold must not become a task; got task {:?}",
+                create.task.task_id
+            ),
+            other => panic!("unexpected response variant for {tool}: {other:?}"),
+        }
+    }
+
+    client.cancel().await.expect("shutdown client");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_call_past_the_threshold_becomes_a_task_and_completes() {
+    let dir = build_repo();
+    let root = dir.path();
+    run_scan(root);
+
+    let client = tasks_client()
+        .serve(serve_with_zero_threshold(root).await)
+        .await
+        .expect("rmcp handshake");
+
     let response = client
-        .call_tool_once(
-            CallToolRequestParams::new("admin")
-                .with_arguments(json!({ "mode": "rescan" }).as_object().cloned().unwrap()),
-        )
+        .call_tool_once(call("index_rescan", json!({})))
         .await
         .expect("rescan call");
     let create = match response {
         CallToolResponse::Task(create) => create,
-        other => panic!("task-capable client must get a task handle for a slow tool, got {other:?}"),
+        other => panic!("a call still running past the threshold must return a task handle, got {other:?}"),
     };
     let task_id = create.task.task_id.clone();
 
-    // Poll until terminal, then assert the completed payload is the tool's CallToolResult.
     let final_task = loop {
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         let info = client
@@ -131,8 +182,7 @@ async fn slow_tool_offloads_to_task_and_completes() {
         TaskPayload::Completed { result } => {
             let result: rmcp::model::CallToolResult =
                 serde_json::from_value(Value::Object(result)).expect("completed payload is a CallToolResult");
-            let text = result.content[0].as_text().expect("rescan result has a text block");
-            let body: Value = serde_json::from_str(&text.text).expect("rescan text is JSON");
+            let body = body_of(&result);
             assert!(
                 body.get("scanned").and_then(Value::as_u64).is_some(),
                 "rescan task result must carry a `scanned` count: {body}"
@@ -144,69 +194,48 @@ async fn slow_tool_offloads_to_task_and_completes() {
     client.cancel().await.expect("shutdown client");
 }
 
-/// Offload is decided per `(tool, mode)`, not per tool name.
-///
-/// This is the regression that consolidation invites and nothing else catches: `rescan` and `status`
-/// are now the SAME tool. Keyed on the name alone, the slow-call table would offload every `admin`
-/// call — turning an instant `status` into a task the client has to poll — or, if the entry were
-/// dropped instead, silently stop offloading `rescan` and let a multi-second scan block the
-/// transport. Both failures look like working software.
+/// A tool that is not offload-eligible never becomes a task, whatever the threshold.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_fast_mode_of_a_slow_tool_stays_synchronous() {
+async fn a_tool_that_cannot_run_long_is_never_a_task() {
     let dir = build_repo();
     let root = dir.path();
     run_scan(root);
 
-    let client = tasks_client().serve(serve(root).await).await.expect("rmcp handshake");
+    let client = tasks_client()
+        .serve(serve_with_zero_threshold(root).await)
+        .await
+        .expect("rmcp handshake");
 
     let response = client
-        .call_tool_once(
-            CallToolRequestParams::new("admin")
-                .with_arguments(json!({ "mode": "status" }).as_object().cloned().unwrap()),
-        )
+        .call_tool_once(call("index_status", json!({})))
         .await
-        .expect("admin status call");
-
+        .expect("index_status call");
     match response {
         CallToolResponse::Complete(result) => {
-            let text = result.content[0].as_text().expect("status result has a text block");
-            let body: Value = serde_json::from_str(&text.text).expect("status text is JSON");
-            assert!(
-                body.get("file_count").and_then(Value::as_u64).is_some(),
-                "a fast mode must answer inline with its own result: {body}"
-            );
+            let body = body_of(&result);
+            assert!(body.get("file_count").and_then(Value::as_u64).is_some(), "{body}");
         }
-        CallToolResponse::Task(create) => panic!(
-            "`admin` mode `status` is not a slow call and must not be offloaded; got task {:?}",
-            create.task.task_id
-        ),
-        other => panic!("unexpected response variant for a fast mode: {other:?}"),
+        other => panic!("`index_status` must answer inline, got {other:?}"),
     }
 
     client.cancel().await.expect("shutdown client");
 }
 
-/// A plain client that did not declare the tasks extension keeps the synchronous path: the same
-/// slow tool returns an ordinary `CallToolResult`, never a task handle.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn slow_tool_stays_synchronous_without_capability() {
+async fn a_client_without_the_capability_always_gets_the_result() {
     let dir = build_repo();
     let root = dir.path();
     run_scan(root);
 
-    let client = ().serve(serve(root).await).await.expect("rmcp handshake");
+    let client = ().serve(serve_with_zero_threshold(root).await).await.expect("rmcp handshake");
     let result = client
-        .call_tool(
-            CallToolRequestParams::new("admin")
-                .with_arguments(json!({ "mode": "rescan" }).as_object().cloned().unwrap()),
-        )
+        .call_tool(call("index_rescan", json!({})))
         .await
-        .expect("synchronous rescan");
-    let text = result.content[0].as_text().expect("rescan result has a text block");
-    let body: Value = serde_json::from_str(&text.text).expect("rescan text is JSON");
+        .expect("plain client gets a synchronous CallToolResult");
+    let body = body_of(&result);
     assert!(
         body.get("scanned").and_then(Value::as_u64).is_some(),
-        "non-task client must get the tool's result directly: {body}"
+        "synchronous rescan result must carry a `scanned` count: {body}"
     );
 
     client.cancel().await.expect("shutdown client");

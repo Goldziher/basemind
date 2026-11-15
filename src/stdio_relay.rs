@@ -33,8 +33,13 @@ const REPLAYABLE_METHODS: &[&str] = &[
     "prompts/get",
     "completion/complete",
 ];
-/// Tools whose every mode is read-only.
-const READ_ONLY_TOOLS: &[&str] = &["code", "git"];
+/// Verb tools that write, and so must never be re-sent: every other verb tool is a read.
+const WRITING_TOOLS: &[&str] = &["memory_save", "index_rescan"];
+
+/// Whether `tool` is a read-only verb tool, safe to replay after a backend restart.
+fn is_read_only_tool(tool: &str) -> bool {
+    basemind::mcp::params::VERB_TOOLS.contains(&tool) && !WRITING_TOOLS.contains(&tool)
+}
 /// `agents` modes that are reads or naturally idempotent (`post` is made so by a key).
 const REPLAYABLE_AGENTS_MODES: &[&str] = &[
     "list",
@@ -75,7 +80,7 @@ fn classify_request(message: &mut Value, line: &str) -> (String, bool) {
         .pointer("/params/arguments/mode")
         .and_then(Value::as_str)
         .unwrap_or_default();
-    if READ_ONLY_TOOLS.contains(&tool) || (tool == "agents" && REPLAYABLE_AGENTS_MODES.contains(&mode)) {
+    if is_read_only_tool(tool) || (tool == "agents" && REPLAYABLE_AGENTS_MODES.contains(&mode)) {
         return (line.to_owned(), true);
     }
     if tool == "agents" && mode == "post" {
@@ -695,11 +700,11 @@ mod tests {
     fn only_reads_and_keyed_posts_are_replayable() {
         let mut state = SessionState::default();
         state.observe_client(&request_line(1));
-        state.observe_client(&call_line(2, "code", "outline"));
+        state.observe_client(&call_line(2, "code_outline", ""));
         state.observe_client(&call_line(3, "agents", "inbox"));
         state.observe_client(&call_line(4, "agents", "thread_start"));
-        state.observe_client(&call_line(5, "shell", "run"));
-        state.observe_client(&call_line(6, "memory", "store"));
+        state.observe_client(&call_line(5, "index_rescan", ""));
+        state.observe_client(&call_line(6, "memory_save", ""));
         let errors = state.drain_restart_errors();
         let failed: Vec<Value> = errors
             .iter()

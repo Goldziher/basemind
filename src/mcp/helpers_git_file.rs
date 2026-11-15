@@ -1,9 +1,9 @@
-//! The five `git` modes scoped to a single path — `diff`, `diff_outline`, `blame`, `blame_symbol`,
+//! The five git operations scoped to a single path — `diff`, `diff_outline`, `blame`, `blame_symbol`,
 //! `symbol_history`.
 //!
-//! Split out of `helpers_git.rs`, which owns the dispatcher and the commit-log family, purely to
-//! keep both files under the 1000-line cap. Nothing here is reachable except through
-//! [`super::helpers_git::run_git`].
+//! Split out of `helpers_git.rs`, which owns the `git_log` / `git_blame` / `git_diff` bodies and the
+//! commit-log family, purely to keep both files under the 1000-line cap. Nothing here is reachable
+//! except through those three bodies.
 
 use rmcp::ErrorData as McpError;
 use rmcp::model::CallToolResult;
@@ -22,7 +22,7 @@ use super::types::{
 };
 use crate::git::CommitInfo;
 
-/// Body for `git` mode `diff`: content hunks for one path between two revisions.
+/// The `diff` operation: content hunks for one path between two revisions.
 pub(super) fn run_diff(state: &ServerState, params: DiffFileParams) -> Result<CallToolResult, McpError> {
     let started = std::time::Instant::now();
     let repo = require_git_repo(state)?;
@@ -67,7 +67,7 @@ fn detect_lang(state: &ServerState, path: impl AsRef<std::ffi::OsStr>) -> Option
         .lang()
 }
 
-/// Body for `git` mode `diff_outline`: which symbols the served view has that `rev` does not, and
+/// The `diff_outline` operation: which symbols the served view has that `rev` does not, and
 /// vice versa — "what did this branch add" without reading source.
 pub(super) async fn run_diff_outline(
     state: &ServerState,
@@ -178,7 +178,7 @@ pub(super) async fn run_diff_outline(
     })
 }
 
-/// Body for `git` mode `blame`: per-line blame at `rev`, optionally clamped to a 1-based inclusive
+/// The `blame` operation: per-line blame at `rev`, optionally clamped to a 1-based inclusive
 /// line range.
 pub(super) fn run_blame(state: &ServerState, params: BlameFileParams) -> Result<CallToolResult, McpError> {
     let started = std::time::Instant::now();
@@ -231,7 +231,7 @@ pub(super) fn run_blame(state: &ServerState, params: BlameFileParams) -> Result<
     })
 }
 
-/// Body for `git` mode `blame_symbol`: blame clamped to one symbol's line span, resolved through
+/// The `blame_symbol` operation: blame clamped to one symbol's line span, resolved through
 /// the cached L1 outline of the served view.
 pub(super) async fn run_blame_symbol(
     state: &ServerState,
@@ -309,7 +309,7 @@ pub(super) async fn run_blame_symbol(
     })
 }
 
-/// Body for `git` mode `symbol_history`: tree-sitter × git — the commits where a named symbol's
+/// The `symbol_history` operation: tree-sitter × git — the commits where a named symbol's
 /// body fingerprint actually changed (or where it was introduced / removed).
 pub(super) fn run_symbol_history(state: &ServerState, params: SymbolHistoryParams) -> Result<CallToolResult, McpError> {
     let started = std::time::Instant::now();

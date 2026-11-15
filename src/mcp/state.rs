@@ -66,6 +66,10 @@ pub(crate) struct ServerState {
     /// several servers with different surfaces coexist in one process (integration tests). The
     /// in-memory test serve overrides it directly.
     pub(crate) lean: std::sync::atomic::AtomicBool,
+    /// Milliseconds an offload-eligible call may run before it becomes a task
+    /// ([`super::tasks::TASK_THRESHOLD`]). Per-server so the in-memory test serve can lower it to
+    /// exercise the task path without a genuinely slow call.
+    pub(crate) task_threshold_ms: std::sync::atomic::AtomicU64,
 }
 
 /// A lazily-initialised, shared handle to one identity's broker client. The cell is what a slow connect
@@ -110,6 +114,7 @@ impl ServerState {
             #[cfg(all(feature = "comms", any(unix, windows)))]
             delivery_probe: tokio::sync::Mutex::new(DeliveryProbe::default()),
             lean: std::sync::atomic::AtomicBool::new(super::lean::lean_mode_enabled()),
+            task_threshold_ms: std::sync::atomic::AtomicU64::new(super::tasks::TASK_THRESHOLD.as_millis() as u64),
         }
     }
 }
@@ -239,9 +244,18 @@ impl ServerState {
     /// A [`LifecycleNotice`](types::LifecycleNotice) to attach to a tool response, or `None` when
     /// [`Ready`](Lifecycle::Ready). Lets every read tool label a possibly-incomplete result with the
     /// server state + an actionable message, so an agent knows to retry rather than concluding "empty".
+    /// The notice for a workspace nothing has been scanned into, so an empty answer is never read
+    /// as "no matches". Judged on the store's file map, not the in-RAM map, which is also empty
+    /// before a lazy build. `None` while another task holds the store lock.
+    fn empty_index_notice(&self) -> Option<types::LifecycleNotice> {
+        let store = self.shared.store.try_read().ok()?;
+        (store.index.files.is_empty() && store.index.doc_files.is_empty()).then(types::LifecycleNotice::empty_index)
+    }
+
     pub(crate) fn lifecycle_notice(&self) -> Option<types::LifecycleNotice> {
         types::LifecycleNotice::for_state(self.lifecycle())
             .or_else(|| self.index_rebuilding_notice())
+            .or_else(|| self.empty_index_notice())
             .or_else(|| {
                 // A read-only session whose projected call/impl indexes were capped answers reference
                 // queries from a truncated set. Reported through the same channel as the warming/
@@ -283,12 +297,10 @@ pub(crate) struct MapCache {
     /// holds code only, so decision records (`docs/adr/*.md`) and path citations to prose / config
     /// files resolve against this set instead of [`Self::files`]. Projected straight from the index
     /// (no blob or LanceDB read), so it is rebuilt with every cache build and delta.
-    #[cfg(feature = "documents")]
     pub(crate) doc_paths: std::sync::Arc<[crate::path::RelPath]>,
 }
 
 /// The sorted document-tier paths of `store`'s index.
-#[cfg(feature = "documents")]
 fn doc_paths_of(store: &Store) -> std::sync::Arc<[crate::path::RelPath]> {
     let mut paths: Vec<crate::path::RelPath> = store.index.doc_files.keys().cloned().collect();
     paths.sort_unstable();
@@ -314,7 +326,6 @@ impl MapCache {
             calls: Default::default(),
             impls: Default::default(),
             terms: Default::default(),
-            #[cfg(feature = "documents")]
             doc_paths: doc_paths_of(store),
         }
     }
@@ -332,7 +343,6 @@ impl MapCache {
             calls: Default::default(),
             impls: Default::default(),
             terms: Default::default(),
-            #[cfg(feature = "documents")]
             doc_paths: Default::default(),
         }
     }
@@ -362,7 +372,6 @@ impl MapCache {
             calls: Default::default(),
             impls: Default::default(),
             terms: Default::default(),
-            #[cfg(feature = "documents")]
             doc_paths: Default::default(),
         }
     }
@@ -412,7 +421,6 @@ impl MapCache {
     }
 
     /// Whether `path` is a tracked document (non-code file in the document tier).
-    #[cfg(feature = "documents")]
     pub(crate) fn contains_doc(&self, path: &crate::path::RelPath) -> bool {
         self.doc_paths.binary_search(path).is_ok()
     }
@@ -517,7 +525,6 @@ impl MapCache {
             calls: Default::default(),
             impls: Default::default(),
             terms: Default::default(),
-            #[cfg(feature = "documents")]
             doc_paths: doc_paths_of(store),
         };
         if let Some(terms) = self.terms.get() {

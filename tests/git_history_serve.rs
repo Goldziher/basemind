@@ -23,7 +23,7 @@ use serde_json::{Value, json};
 use tempfile::TempDir;
 
 /// A commit-message body token that exists ONLY in a commit body — never in a summary, an author
-/// name, or a file. The live-walk fallback in `search_git_history` searches summaries + authors of a
+/// name, or a file. The live-walk fallback of `git_log {query}` searches summaries + authors of a
 /// bounded window and never loads bodies, so a hit on this token can ONLY come from the git-history
 /// index's full-text posting lists. It is the observable that separates "index-backed" from
 /// "degraded to the live walk".
@@ -110,7 +110,7 @@ async fn spawn_server(root: &Path) -> rmcp::service::RunningService<rmcp::RoleCl
 /// live-walk fallback. Whoever legitimately owns the index in this build (serve itself standalone,
 /// the daemon on a `comms` build) must build it, and serve must then use it.
 ///
-/// Observable: `search_git_history` sets `partial: true` and searches only summaries/authors over a
+/// Observable: `git_log {query}` sets `partial: true` and searches only summaries/authors over a
 /// bounded window when it falls back to the live walk. A hit on [`BODY_ONLY_TOKEN`] — which exists
 /// only in a commit BODY — with `partial` unset therefore proves the answer came from the index.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -125,12 +125,9 @@ async fn serve_answers_git_history_from_the_index_not_the_live_walk() {
     let mut last;
     loop {
         let result = peer
-            .call_tool(call_params(
-                "git",
-                json!({ "mode": "search", "pattern": BODY_ONLY_TOKEN, "limit": 5 }),
-            ))
+            .call_tool(call_params("git_log", json!({ "query": BODY_ONLY_TOKEN, "limit": 5 })))
             .await
-            .expect("search_git_history call");
+            .expect("git_log call");
         last = decode_text(&result);
         let indexed = !last.get("partial").and_then(Value::as_bool).unwrap_or(false);
         let hits = last.get("commits").and_then(Value::as_array).map(Vec::len).unwrap_or(0);
@@ -139,7 +136,7 @@ async fn serve_answers_git_history_from_the_index_not_the_live_walk() {
         }
         if std::time::Instant::now() > deadline {
             panic!(
-                "serve never answered search_git_history from the git-history index \
+                "serve never answered git_log from the git-history index \
                  (expected a body-only hit with partial=false); last response: {last}"
             );
         }

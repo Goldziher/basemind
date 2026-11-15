@@ -1,36 +1,48 @@
 //! SEP-2663 Tasks extension (`io.modelcontextprotocol/tasks`) wiring for [`BasemindServer`].
 //!
-//! A handful of basemind tools routinely run for seconds — a full-corpus rescan, document / web
-//! ingestion. Blocking the MCP transport for that long starves every other request on the same
-//! connection. When the client has declared the tasks extension, `call_tool` hands those tools off
-//! here: the work is spawned onto the server's [`TaskManager`], and the caller gets a pollable task
-//! handle (`tasks/get`) instead of a stalled `tools/call`. Clients that did not declare the
-//! extension keep the synchronous path unchanged.
+//! Results are returned inline. A handful of tools can run for seconds (a full-corpus rescan, a
+//! cold embedding search), and blocking the transport that long starves every other request on the
+//! connection, so for a client that declared the tasks extension those calls are started on their
+//! own task and given [`TASK_THRESHOLD`] to finish. One that does is answered as an ordinary
+//! `tools/call` result; only a call still running past the threshold is handed to the
+//! [`TaskManager`](rmcp::task_manager::TaskManager) and answered with a pollable handle
+//! (`tasks/get`). Wrapping by tool name alone used to return a 6 ms search as a background task.
+
+use std::sync::{Arc, OnceLock};
+use std::time::Duration;
 
 use rmcp::ErrorData as McpError;
 use rmcp::model::{CallToolRequestParams, CallToolResponse, CreateTaskResult};
 use rmcp::service::{RequestContext, RoleServer};
-use rmcp::task_manager::{TaskExit, TaskOptions};
+use rmcp::task_manager::{TaskContext, TaskExit, TaskOptions};
 
 use super::BasemindServer;
 
+/// How long an offload-eligible call may run before it is answered with a task handle instead of
+/// its result.
+pub(super) const TASK_THRESHOLD: Duration = Duration::from_secs(3);
+
+/// The task a slow tool was handed to, filled in once (and only if) the call outlives
+/// [`TASK_THRESHOLD`].
+pub(super) type TaskSlot = Arc<OnceLock<TaskContext>>;
+
 tokio::task_local! {
-    /// The task a slow tool is running inside, set around the router call by [`spawn_slow_tool`].
-    /// Lets [`super::notifications::emit_progress`] mirror each progress message onto the task's
-    /// `statusMessage`, so a client polling `tasks/get` sees the same counter a progress-token
-    /// subscriber does.
-    pub(super) static CURRENT_TASK: rmcp::task_manager::TaskContext;
+    /// The slot of the call a slow tool is running inside, set around the router call by
+    /// [`run_slow_tool`]. Lets [`super::notifications::emit_progress`] mirror each progress message
+    /// onto the task's `statusMessage` once the call has become a task, so a client polling
+    /// `tasks/get` sees the same counter a progress-token subscriber does.
+    pub(super) static CURRENT_TASK: TaskSlot;
 }
 
-/// Pure read-only modes that are safe to abandon mid-flight: they only read the in-RAM map / index
+/// Pure read-only calls that are safe to abandon mid-flight: they only read the in-RAM map / index
 /// (or the vector store) and write nothing durable, so dropping the handler future on client
-/// cancellation loses only recomputable work. NEVER add a mode that writes (rescan, put,
-/// cache or registry mutation): dropping those at an await point could strand a half-applied write.
-/// Keyed like [`SLOW_CALLS`] on `domain:mode`.
+/// cancellation loses only recomputable work. NEVER add a call that writes (`index_rescan`,
+/// `memory_save`, a registry mutation): dropping those at an await point could strand a
+/// half-applied write. Keyed like [`SLOW_CALLS`].
 pub(super) const CANCEL_AWARE_READS: &[&str] = &[
-    "code:grep",
-    "code:semantic",
-    "memory:documents",
+    "code_grep",
+    "code_search",
+    "docs_search",
     // Read-only long poll; it opens its own comms link whose drop is the cleanup, so abandoning it
     // (or cancelling its token) is exactly what frees the broker subscriber.
     "agents:wait",
@@ -38,20 +50,19 @@ pub(super) const CANCEL_AWARE_READS: &[&str] = &[
 
 /// Whether this call is one of the [`CANCEL_AWARE_READS`].
 pub(super) fn is_cancel_aware_read(name: &str, arguments: Option<&serde_json::Map<String, serde_json::Value>>) -> bool {
-    let Some(mode) = arguments
-        .and_then(|args| args.get("mode"))
-        .and_then(serde_json::Value::as_str)
-    else {
-        return false;
-    };
-    CANCEL_AWARE_READS.iter().any(|read| {
-        read.split_once(':')
-            .is_some_and(|(tool, read_mode)| tool == name && read_mode == mode)
-    })
+    matches_call(CANCEL_AWARE_READS, name, arguments)
 }
 
 /// JSON-RPC code for a request the client cancelled (the LSP `RequestCancelled` code).
 const REQUEST_CANCELLED_CODE: i32 = -32800;
+
+fn request_cancelled() -> McpError {
+    McpError::new(
+        rmcp::model::ErrorCode(REQUEST_CANCELLED_CODE),
+        "request_cancelled",
+        None,
+    )
+}
 
 /// Race `work` against the request's cancellation signal. On cancellation the work future is dropped
 /// (releasing every guard it holds) and a `request_cancelled` error is returned immediately.
@@ -61,38 +72,27 @@ pub(super) async fn run_until_cancelled<T>(
 ) -> Result<T, McpError> {
     tokio::select! {
         biased;
-        () = cancelled => Err(McpError::new(
-            rmcp::model::ErrorCode(REQUEST_CANCELLED_CODE),
-            "request_cancelled",
-            None,
-        )),
+        () = cancelled => Err(request_cancelled()),
         result = work => result,
     }
 }
 
-/// Calls whose work can dominate the transport for long enough that a task-capable client is better
-/// served an async handle it can poll than a blocked `tools/call`. Kept deliberately small and
-/// centralized: only operations that routinely run for seconds belong here. Feature-gated entries
-/// drop out of the slice when their tool is not compiled in, so the set never names a call the
-/// router does not advertise.
+/// Calls that CAN dominate the transport for seconds, and so are eligible to become a task when
+/// they outlive [`TASK_THRESHOLD`]. Eligibility only decides whether the call runs on its own task
+/// with a deadline; a fast one is still answered inline.
 ///
 /// Entries are keyed the way telemetry is: a bare tool name matches every call of that tool, and a
-/// `domain:mode` key matches one mode of a consolidated domain tool. The distinction is load-bearing
-/// — consolidation put fast and slow operations behind one tool name, so keying on the name alone
-/// would make offload all-or-nothing per domain (every `code` call offloaded, or none).
-pub(super) const SLOW_CALLS: &[&str] = &[
-    "admin:rescan",
-    "code:semantic",
-    #[cfg(feature = "documents")]
-    "memory:documents",
-];
+/// `domain:mode` key matches one mode of a mode-dispatched domain tool (`agents`, `workspace`).
+pub(super) const SLOW_CALLS: &[&str] = &["index_rescan", "code_search", "docs_search"];
 
 /// Whether this call is one of the [`SLOW_CALLS`] eligible for task offload.
-///
-/// `arguments` is the raw request payload; a consolidated domain tool carries its operation in a
-/// `mode` string, so the lookup tries `name:mode` before falling back to the bare tool name.
 pub(super) fn is_slow_tool(name: &str, arguments: Option<&serde_json::Map<String, serde_json::Value>>) -> bool {
-    if SLOW_CALLS.contains(&name) {
+    matches_call(SLOW_CALLS, name, arguments)
+}
+
+/// Whether the call `name` (with its `mode` argument, for a domain tool) is listed in `table`.
+fn matches_call(table: &[&str], name: &str, arguments: Option<&serde_json::Map<String, serde_json::Value>>) -> bool {
+    if table.contains(&name) {
         return true;
     }
     let Some(mode) = arguments
@@ -101,13 +101,14 @@ pub(super) fn is_slow_tool(name: &str, arguments: Option<&serde_json::Map<String
     else {
         return false;
     };
-    SLOW_CALLS.iter().any(|slow| {
-        slow.split_once(':')
-            .is_some_and(|(tool, slow_mode)| tool == name && slow_mode == mode)
+    table.iter().any(|entry| {
+        entry
+            .split_once(':')
+            .is_some_and(|(tool, entry_mode)| tool == name && entry_mode == mode)
     })
 }
 
-/// Dispose of the tool's child task after `tasks/cancel`. The tool's token is always cancelled so a
+/// Dispose of the tool's child task after a cancellation. The tool's token is always cancelled so a
 /// cancel-aware handler unwinds on its own; a pure read ([`CANCEL_AWARE_READS`]) is also aborted so its
 /// guards (comms link, admission permit) drop immediately instead of at its next poll. Anything else
 /// (rescan) is left detached to finish its write.
@@ -118,51 +119,69 @@ fn settle_cancelled<T>(work: tokio::task::JoinHandle<T>, tool_ct: &tokio_util::s
     }
 }
 
-/// Spawn a slow tool's invocation as a SEP-2663 task and return the seed [`CreateTaskResult`].
+/// What the tool's own task produced, as a `tools/call` outcome.
+fn joined_response(
+    joined: Result<Result<CallToolResponse, McpError>, tokio::task::JoinError>,
+) -> Result<CallToolResponse, McpError> {
+    match joined {
+        Ok(response) => response,
+        Err(join_error) => Err(McpError::internal_error(
+            format!("tool task failed to complete: {join_error}"),
+            None,
+        )),
+    }
+}
+
+/// Run an offload-eligible call: inline if it finishes within `threshold`, otherwise as a SEP-2663
+/// task the client polls.
 ///
-/// The spawned future runs the SAME work the synchronous path would: it rebuilds a
-/// [`ToolCallContext`](rmcp::handler::server::tool::ToolCallContext) for the real tool and delegates
-/// to the identical static router, so results are byte-for-byte what a blocking `tools/call` would
-/// have produced. The router's terminal [`CallToolResponse::Complete`] is unwrapped into the task's
-/// `Completed` payload (`result_to_object` in the task manager serializes it); a router error settles
-/// the task as `failed`.
+/// The tool runs on its OWN [`tokio::spawn`]ed task from the start and through the SAME static
+/// router the synchronous path uses, so the result is byte-for-byte what a blocking `tools/call`
+/// produces whichever way it is delivered. Handing a still-running call to the task manager only
+/// moves its [`JoinHandle`](tokio::task::JoinHandle); the work is never restarted.
 ///
-/// Cancellation abandons only the RESULT we report, never the in-flight work. The tool runs on its
-/// OWN [`tokio::spawn`]ed task; a `tasks/cancel` settles the task as `cancelled` and drops that task's
-/// [`JoinHandle`](tokio::task::JoinHandle) — which DETACHES (never aborts) the tokio task. So a
-/// mutating tool like `rescan` always runs both its on-disk write AND its in-RAM cache refresh to
-/// completion, and the served state stays coherent even when the client cancels. (Dropping the future
-/// directly would instead cancel it at its next await point, stranding the write's cache-refresh
-/// continuation and desyncing the in-RAM map from disk.) The tool bodies themselves are not
-/// cancel-aware — this is a first-cut whole-call offload — so a cancelled long tool still consumes its
-/// CPU/IO to completion; only the reported outcome is discarded.
-pub(super) fn spawn_slow_tool(
+/// Cancellation (of the request while it is still inline, or `tasks/cancel` afterwards) abandons
+/// only the RESULT, never a write in flight: dropping the handle DETACHES the tokio task, so a
+/// mutating tool like `index_rescan` always runs both its on-disk write and its in-RAM cache
+/// refresh to completion. A pure read is aborted instead, releasing its guards at once.
+pub(super) async fn run_slow_tool(
     server: &BasemindServer,
     request: CallToolRequestParams,
     mut context: RequestContext<RoleServer>,
     admission: super::admission::Admission,
-) -> CreateTaskResult {
+    threshold: Duration,
+) -> Result<CallToolResponse, McpError> {
     let server = server.clone();
-    // The tool observes `context.ct` (e.g. `agents wait` selects on it), but `tasks/cancel` only
-    // fires the task's own signal. Give the tool a child of the request token that the task runner
-    // cancels, so task cancellation reaches cancel-aware handlers just like a direct cancel does.
-    let tool_ct = context.ct.child_token();
+    // The tool observes `context.ct`, but `tasks/cancel` only fires the task's own signal. Give the
+    // tool a child of the request token that both cancellation paths cancel.
+    let request_ct = context.ct.clone();
+    let tool_ct = request_ct.child_token();
     context.ct = tool_ct.clone();
-    let cancel_aware = super::tasks::is_cancel_aware_read(&request.name, request.arguments.as_ref());
-    // Clone the manager handle out so the spawned closure can move `server` wholesale (it needs the
-    // router by value for `'static`); `TaskManager` is a cheap Arc clone that shares the same store.
+    let cancel_aware = is_cancel_aware_read(&request.name, request.arguments.as_ref());
+    // `TaskManager` is a cheap Arc clone sharing the same store; taken out before `server` moves.
     let manager = server.tasks.clone();
+    let slot = TaskSlot::default();
+    let work_slot = Arc::clone(&slot);
+    let mut work = tokio::spawn(async move {
+        let _admission = admission;
+        let tcc = rmcp::handler::server::tool::ToolCallContext::new(&server, request, context);
+        CURRENT_TASK.scope(work_slot, server.tool_router.call(tcc)).await
+    });
+
+    tokio::select! {
+        biased;
+        () = request_ct.cancelled() => {
+            settle_cancelled(work, &tool_ct, cancel_aware);
+            return Err(request_cancelled());
+        }
+        joined = &mut work => return joined_response(joined),
+        () = tokio::time::sleep(threshold) => {}
+    }
+
     let task = manager.spawn(TaskOptions::new(), move |ctx| {
         Box::pin(async move {
-            // The real work runs on a detached-on-cancel child task (see the fn-level note); the
-            // outer future only races the tool's completion against cancellation.
-            let task_ctx = ctx.clone();
-            let mut work = tokio::spawn(async move {
-                let _admission = admission;
-                let tcc = rmcp::handler::server::tool::ToolCallContext::new(&server, request, context);
-                CURRENT_TASK.scope(task_ctx, server.tool_router.call(tcc)).await
-            });
-            let outcome = tokio::select! {
+            let _ = slot.set(ctx.clone());
+            let joined = tokio::select! {
                 biased;
                 () = ctx.cancelled() => {
                     settle_cancelled(work, &tool_ct, cancel_aware);
@@ -170,21 +189,17 @@ pub(super) fn spawn_slow_tool(
                 }
                 joined = &mut work => joined,
             };
-            match outcome {
-                Ok(Ok(CallToolResponse::Complete(result))) => Ok(result),
-                Ok(Ok(_)) => Err(TaskExit::Error(McpError::internal_error(
+            match joined_response(joined) {
+                Ok(CallToolResponse::Complete(result)) => Ok(result),
+                Ok(_) => Err(TaskExit::Error(McpError::internal_error(
                     "tool returned a non-terminal response inside a task",
                     None,
                 ))),
-                Ok(Err(error)) => Err(TaskExit::Error(error)),
-                Err(join_error) => Err(TaskExit::Error(McpError::internal_error(
-                    format!("slow tool task failed to complete: {join_error}"),
-                    None,
-                ))),
+                Err(error) => Err(TaskExit::Error(error)),
             }
         })
     });
-    CreateTaskResult::new(task)
+    Ok(CallToolResponse::Task(CreateTaskResult::new(task)))
 }
 
 #[cfg(test)]
@@ -196,79 +211,42 @@ mod tests {
     }
 
     #[test]
-    fn should_offload_the_slow_admin_mode_and_not_its_fast_siblings() {
-        assert!(is_slow_tool(
-            "admin",
-            Some(&args(serde_json::json!({ "mode": "rescan", "paths": ["src"] })))
-        ));
-        assert!(!is_slow_tool(
-            "admin",
-            Some(&args(serde_json::json!({ "mode": "status" })))
-        ));
-        assert!(!is_slow_tool("admin", None));
-    }
-
-    #[test]
-    fn should_not_offload_a_tool_that_is_not_listed() {
-        assert!(!is_slow_tool("outline", None));
-    }
-
-    /// The reason the table is keyed on `domain:mode` at all: `memory` carries both an embedding
-    /// search over documents and a single-key lookup, so a name-only key would offload every call
-    /// of the domain or none of them.
-    #[cfg(feature = "documents")]
-    #[test]
-    fn should_offload_a_consolidated_domain_only_for_the_modes_that_are_slow() {
-        assert!(is_slow_tool(
-            "memory",
-            Some(&args(serde_json::json!({ "mode": "documents" })))
-        ));
-        assert!(!is_slow_tool(
-            "memory",
-            Some(&args(serde_json::json!({ "mode": "get" })))
-        ));
-    }
-
-    /// A `mode` belonging to some other domain must not match, or one domain's slow mode would
-    /// offload another domain's fast operation of the same name.
-    #[test]
-    fn should_not_match_a_mode_across_domains() {
-        assert!(!is_slow_tool(
-            "memory",
-            Some(&args(serde_json::json!({ "mode": "rescan" })))
-        ));
-    }
-
-    #[test]
-    fn should_not_offload_a_domain_call_with_an_absent_or_unknown_mode() {
-        assert!(!is_slow_tool("memory", None));
-        assert!(!is_slow_tool(
-            "memory",
-            Some(&args(serde_json::json!({ "mode": "sniff" })))
-        ));
-        assert!(!is_slow_tool("memory", Some(&args(serde_json::json!({ "mode": 7 })))));
-    }
-
-    #[test]
-    fn should_race_cancellation_only_for_the_pure_read_modes() {
-        for (tool, mode) in [("code", "grep"), ("code", "semantic"), ("memory", "documents")] {
-            assert!(is_cancel_aware_read(
-                tool,
-                Some(&args(serde_json::json!({ "mode": mode })))
-            ));
+    fn should_offer_offload_only_to_the_tools_that_can_run_long() {
+        for tool in ["index_rescan", "code_search", "docs_search"] {
+            assert!(is_slow_tool(tool, None), "{tool}");
         }
-        for (tool, mode) in [
-            ("admin", "rescan"),
-            ("memory", "put"),
-            ("memory", "delete"),
-            ("code", "outline"),
-        ] {
-            assert!(!is_cancel_aware_read(
-                tool,
-                Some(&args(serde_json::json!({ "mode": mode })))
-            ));
+        for tool in ["index_status", "code_outline", "code_grep", "git_log", "memory_search"] {
+            assert!(!is_slow_tool(tool, None), "{tool}");
         }
-        assert!(!is_cancel_aware_read("code", None));
+    }
+
+    /// A `mode` only selects within a mode-dispatched domain tool; it must not turn a verb tool
+    /// that is not listed into a slow one.
+    #[test]
+    fn should_not_match_a_mode_argument_on_a_verb_tool() {
+        assert!(!is_slow_tool(
+            "code_outline",
+            Some(&args(serde_json::json!({ "mode": "index_rescan" })))
+        ));
+    }
+
+    #[test]
+    fn should_race_cancellation_only_for_the_pure_reads() {
+        for tool in ["code_grep", "code_search", "docs_search"] {
+            assert!(is_cancel_aware_read(tool, None), "{tool}");
+        }
+        assert!(is_cancel_aware_read(
+            "agents",
+            Some(&args(serde_json::json!({ "mode": "wait" })))
+        ));
+        for tool in ["index_rescan", "memory_save", "code_outline"] {
+            assert!(!is_cancel_aware_read(tool, None), "{tool}");
+        }
+        assert!(!is_cancel_aware_read(
+            "agents",
+            Some(&args(serde_json::json!({ "mode": "post" })))
+        ));
+        assert!(!is_cancel_aware_read("agents", None));
     }
 
     /// Holds a heavy admission permit; dropping it (as a cancelled handler future does) frees it.

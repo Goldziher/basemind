@@ -4,24 +4,26 @@
 //! cap as more documents-tier types are added in later iters. Re-exported wholesale via
 //! `pub use types_documents::*;` in `types.rs`.
 
+#[cfg(feature = "documents")]
 use rmcp::schemars;
+#[cfg(feature = "documents")]
 use serde::{Deserialize, Serialize};
 
+#[cfg(feature = "documents")]
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct SearchDocumentsParams {
-    #[serde(alias = "needle", alias = "pattern", alias = "q", alias = "text", alias = "search")]
     pub query: String,
     #[serde(default)]
     pub limit: Option<u32>,
     /// Optional token budget bounding the returned `hits` list (not the whole envelope).
     /// Hits are kept best-first until the budget is hit; the rest are dropped and the
     /// response carries `budgeted: true`.
-    #[serde(default, alias = "token_budget", alias = "budget")]
+    #[serde(default)]
     pub max_tokens: Option<u32>,
     /// Wire format for the response: `"json"` (default) or `"toon"`. TOON is a compact
     /// tabular encoding of the `hits` list — far fewer tokens than JSON for large hit sets.
     /// Overrides the `[documents.output] format` config knob for this call.
-    #[serde(default, alias = "encoding")]
+    #[serde(default)]
     pub format: Option<String>,
     #[serde(default)]
     pub mime_type: Option<String>,

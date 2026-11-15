@@ -1,7 +1,8 @@
-//! Wire-shape contract for every tool's `inputSchema`.
+//! Wire-shape contract for `tools/list`: every tool's `inputSchema`, its `_meta`, its description,
+//! and the size of the whole payload (ADR-0018).
 //!
-//! Regression guard for the silent all-or-nothing registration failure (GH #50): basemind's whole
-//! 78-tool surface connected cleanly to Claude Code — `tools/list` returned every tool and the
+//! The schema rules are the regression guard for the silent all-or-nothing registration failure
+//! (GH #50): basemind's whole 78-tool surface connected cleanly to Claude Code — `tools/list` returned every tool and the
 //! handshake reported `hasTools: true` — yet **zero** tools reached the agent's registry, with no
 //! error logged anywhere. The cause was JSON Schema constructs the Anthropic `input_schema` subset
 //! does not accept:
@@ -59,49 +60,46 @@ async fn every_tool_input_schema_is_flat_and_inlined() {
     let _ = service.cancel().await;
 }
 
-/// Clients truncate server instructions at a fixed budget and say so only in their own debug log
-/// ("Server instructions truncated from 5585 to 2048 chars") — the agent never learns that most of
-/// what the server told it was thrown away. Truncation keeps the HEAD, so overflow silently deletes
-/// whatever sits at the END: when this text ran ~6.5k, the entire agent-coordination contract was
-/// discarded on every connection while appearing to be delivered.
-const INSTRUCTIONS_CEILING: usize = 2048;
+/// Hosts truncate server instructions at a fixed budget (Claude Code at 4,096 characters) and say
+/// so only in their own debug log; the agent never learns that part of what the server told it was
+/// thrown away. Truncation keeps the HEAD, so overflow silently deletes whatever sits at the END.
+const INSTRUCTIONS_CEILING: usize = 4096;
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn instructions_stay_under_the_client_ceiling() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let root = dir.path();
-    std::fs::write(root.join("lib.rs"), "pub fn seed() {}\n").expect("seed file");
+/// Byte ceiling for the verb tools in the serialized `tools/list` (about 5,000 tokens at 4 bytes per
+/// token). Every session pays this before the first call, and the surface it replaced cost 25 KB
+/// for the same jobs. A description or schema that pushes past it has to be shortened, not the
+/// ceiling raised.
+const VERB_TOOLS_BYTE_CEILING: usize = 20_000;
 
-    let transport = basemind::mcp::serve_in_memory(root, "working")
-        .await
-        .expect("in-memory serve");
-    let service = ().serve(transport).await.expect("rmcp handshake");
+/// Ceiling for the two mode-dispatched domain tools a `comms` build still adds (`agents`,
+/// `workspace`). They predate ADR-0018 and are replaced by their own verb tools in later work; until
+/// then this only stops them growing.
+#[cfg(feature = "comms")]
+const DOMAIN_TOOLS_BYTE_CEILING: usize = 11_200;
 
-    let instructions = service
-        .peer_info()
-        .and_then(|info| info.instructions.clone())
-        .unwrap_or_default();
+/// The mode-dispatched domain tools still advertised by a `comms` build.
+const DOMAIN_TOOLS: [&str; 2] = ["agents", "workspace"];
 
-    assert!(
-        !instructions.is_empty(),
-        "the server must send instructions; an empty string means the agent gets no guidance at all"
-    );
-    assert!(
-        instructions.len() <= INSTRUCTIONS_CEILING,
-        "server instructions are {} chars, over the {INSTRUCTIONS_CEILING}-char client ceiling — the \
-         last {} chars would be silently dropped on every connection. Trim the text; per-tool routing \
-         detail belongs in tool descriptions, which is what deferred-tool search matches on.",
-        instructions.len(),
-        instructions.len() - INSTRUCTIONS_CEILING,
-    );
+/// Fields each verb tool cannot run without. Everything else in its schema must be optional.
+const REQUIRED: [(&str, &[&str]); 15] = [
+    ("code_outline", &["path"]),
+    ("code_symbols", &["name"]),
+    ("code_read", &["path"]),
+    ("code_grep", &["pattern"]),
+    ("code_search", &["query"]),
+    ("code_refs", &["name"]),
+    ("find_files", &[]),
+    ("docs_search", &["query"]),
+    ("git_log", &[]),
+    ("git_blame", &["path"]),
+    ("git_diff", &[]),
+    ("memory_save", &["key", "value"]),
+    ("memory_search", &[]),
+    ("index_status", &[]),
+    ("index_rescan", &[]),
+];
 
-    let _ = service.cancel().await;
-}
-
-/// Every advertised tool carries a human-readable `title`, so clients can show a label that is not
-/// the bare `code` / `git` identifier.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn every_tool_has_a_title() {
+async fn list_tools() -> (tempfile::TempDir, Vec<rmcp::model::Tool>, String) {
     let dir = tempfile::tempdir().expect("tempdir");
     std::fs::write(dir.path().join("lib.rs"), "pub fn seed() {}\n").expect("seed file");
     let transport = basemind::mcp::serve_in_memory(dir.path(), "working")
@@ -109,11 +107,255 @@ async fn every_tool_has_a_title() {
         .expect("in-memory serve");
     let service = ().serve(transport).await.expect("rmcp handshake");
     let tools = service.list_all_tools().await.expect("list tools");
+    let instructions = service
+        .peer_info()
+        .and_then(|info| info.instructions.clone())
+        .unwrap_or_default();
+    let _ = service.cancel().await;
+    (dir, tools, instructions)
+}
+
+fn verb_tools(tools: &[rmcp::model::Tool]) -> Vec<&rmcp::model::Tool> {
+    tools
+        .iter()
+        .filter(|tool| !DOMAIN_TOOLS.contains(&tool.name.as_ref()))
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn instructions_stay_under_the_client_ceiling() {
+    let (_dir, _tools, instructions) = list_tools().await;
+
+    assert!(
+        !instructions.is_empty(),
+        "the server must send instructions; an empty string means the agent gets no guidance at all"
+    );
+    assert!(
+        instructions.chars().count() <= INSTRUCTIONS_CEILING,
+        "server instructions are {} chars, over the {INSTRUCTIONS_CEILING}-char client ceiling: the tail \
+         would be silently dropped on every connection. Trim the text; per-tool detail belongs in the tool \
+         descriptions.",
+        instructions.chars().count(),
+    );
+    for tool in [
+        "code_outline",
+        "code_symbols",
+        "code_grep",
+        "code_refs",
+        "git_log",
+        "docs_search",
+    ] {
+        assert!(
+            instructions.contains(tool),
+            "instructions must name `{tool}`: {instructions}"
+        );
+    }
+    for retired in ["code mode", "git mode", "memory mode", "admin mode", "required mode"] {
+        assert!(
+            !instructions.contains(retired),
+            "instructions still describe the mode-dispatched surface (`{retired}`): {instructions}"
+        );
+    }
+}
+
+/// Every advertised tool carries a human-readable `title`, so clients can show a label that is not
+/// the bare identifier.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn every_tool_has_a_title() {
+    let (_dir, tools, _) = list_tools().await;
     let untitled: Vec<_> = tools
         .iter()
         .filter(|tool| tool.title.as_deref().is_none_or(|title| title.trim().is_empty()))
         .map(|tool| tool.name.to_string())
         .collect();
     assert!(untitled.is_empty(), "tools without a title: {untitled:?}");
-    let _ = service.cancel().await;
+}
+
+/// The advertised surface is exactly the ADR-0018 verb tools (plus the two domain tools a `comms`
+/// build still carries). In particular none of the replaced domain tools is left behind.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_advertised_tools_are_exactly_the_verb_tools() {
+    let (_dir, tools, _) = list_tools().await;
+    let mut advertised: Vec<String> = tools.iter().map(|tool| tool.name.to_string()).collect();
+    advertised.sort();
+
+    for retired in ["code", "git", "memory", "admin"] {
+        assert!(
+            !advertised.iter().any(|name| name == retired),
+            "the mode-dispatched `{retired}` tool is still advertised: {advertised:?}"
+        );
+    }
+
+    let mut expected: Vec<String> = basemind::mcp::params::VERB_TOOLS
+        .iter()
+        .map(|name| name.to_string())
+        .collect();
+    assert_eq!(expected.len(), REQUIRED.len(), "REQUIRED must list every verb tool");
+    if cfg!(feature = "comms") {
+        expected.extend(DOMAIN_TOOLS.iter().map(|name| name.to_string()));
+    }
+    expected.sort();
+    assert_eq!(advertised, expected);
+}
+
+/// A host that defers MCP tools loads only their names until a tool-search round trip; this marker
+/// keeps the schema loaded from the start of the session.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn every_tool_is_marked_always_load() {
+    let (_dir, tools, _) = list_tools().await;
+    assert!(!tools.is_empty());
+    for tool in &tools {
+        let wire = serde_json::to_value(tool).expect("serialize tool");
+        assert_eq!(
+            wire.pointer("/_meta/anthropic~1alwaysLoad"),
+            Some(&serde_json::Value::Bool(true)),
+            "`{}` must serialize `_meta[\"anthropic/alwaysLoad\"]: true`, got {}",
+            tool.name,
+            wire.get("_meta").cloned().unwrap_or_default(),
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn tools_list_stays_under_the_byte_ceiling() {
+    let (_dir, tools, _) = list_tools().await;
+    let size = |tools: &[&rmcp::model::Tool]| serde_json::to_string(tools).expect("serialize tools").len();
+
+    let verbs = verb_tools(&tools);
+    let verb_bytes = size(&verbs);
+    let mut per_tool: Vec<(usize, &str)> = verbs.iter().map(|tool| (size(&[*tool]), tool.name.as_ref())).collect();
+    per_tool.sort_unstable_by(|a, b| b.cmp(a));
+    println!(
+        "tools/list: {} verb tools, {verb_bytes} bytes (~{} tokens); whole list {} bytes",
+        verbs.len(),
+        verb_bytes / 4,
+        serde_json::to_string(&tools).expect("serialize tools").len(),
+    );
+    assert!(
+        verb_bytes <= VERB_TOOLS_BYTE_CEILING,
+        "the verb tools serialize to {verb_bytes} bytes (~{} tokens), over the {VERB_TOOLS_BYTE_CEILING}-byte \
+         ceiling. Shorten a description or a field doc; largest first: {per_tool:?}",
+        verb_bytes / 4,
+    );
+
+    #[cfg(feature = "comms")]
+    {
+        let domains: Vec<&rmcp::model::Tool> = tools
+            .iter()
+            .filter(|tool| DOMAIN_TOOLS.contains(&tool.name.as_ref()))
+            .collect();
+        assert_eq!(domains.len(), DOMAIN_TOOLS.len());
+        let domain_bytes = size(&domains);
+        assert!(
+            domain_bytes <= DOMAIN_TOOLS_BYTE_CEILING,
+            "`agents` + `workspace` serialize to {domain_bytes} bytes, over {DOMAIN_TOOLS_BYTE_CEILING}"
+        );
+    }
+}
+
+/// Required arguments are required in the schema, so a host can validate a call before sending it,
+/// and nothing else is: an `Option` field must not leak into `required`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn required_fields_are_required_in_the_schema() {
+    let (_dir, tools, _) = list_tools().await;
+    for (name, expected) in REQUIRED {
+        let tool = tools
+            .iter()
+            .find(|tool| tool.name == name)
+            .unwrap_or_else(|| panic!("`{name}` is not advertised"));
+        let mut required: Vec<&str> = tool
+            .input_schema
+            .get("required")
+            .and_then(|value| value.as_array())
+            .map(|items| items.iter().filter_map(|item| item.as_str()).collect())
+            .unwrap_or_default();
+        required.sort_unstable();
+        let mut expected: Vec<&str> = expected.to_vec();
+        expected.sort_unstable();
+        assert_eq!(required, expected, "`{name}` schema `required`");
+        assert_eq!(
+            tool.input_schema.get("type").and_then(|value| value.as_str()),
+            Some("object"),
+            "`{name}` schema must be an object"
+        );
+    }
+}
+
+/// Each description opens with when to use the tool and carries one complete example call whose
+/// arguments the tool's own schema accepts.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn every_verb_tool_description_carries_a_valid_example() {
+    let (_dir, tools, _) = list_tools().await;
+    for tool in verb_tools(&tools) {
+        let description = tool.description.as_deref().unwrap_or_default();
+        assert!(
+            description.starts_with("Use "),
+            "`{}` must open with when to use it: {description}",
+            tool.name
+        );
+        let (_, example) = description
+            .split_once("Example: ")
+            .unwrap_or_else(|| panic!("`{}` description has no `Example: {{…}}`: {description}", tool.name));
+        let arguments: serde_json::Value = serde_json::from_str(example.trim())
+            .unwrap_or_else(|error| panic!("`{}` example is not JSON ({error}): {example}", tool.name));
+        let arguments = arguments.as_object().expect("example arguments are an object");
+        let properties = tool
+            .input_schema
+            .get("properties")
+            .and_then(|value| value.as_object())
+            .cloned()
+            .unwrap_or_default();
+        for key in arguments.keys() {
+            assert!(
+                properties.contains_key(key),
+                "`{}` example passes `{key}`, which its schema does not define",
+                tool.name
+            );
+        }
+        let required = tool
+            .input_schema
+            .get("required")
+            .and_then(|value| value.as_array())
+            .cloned()
+            .unwrap_or_default();
+        for field in required.iter().filter_map(|field| field.as_str()) {
+            assert!(
+                arguments.contains_key(field),
+                "`{}` example omits the required `{field}`",
+                tool.name
+            );
+        }
+    }
+}
+
+/// Annotations are exact per tool, so a host that gates on read-only can allow `index_status` and
+/// `git_log` without allowing `index_rescan`. No verb tool is destructive.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn verb_tool_annotations_are_exact() {
+    let (_dir, tools, _) = list_tools().await;
+    for tool in verb_tools(&tools) {
+        let annotations = tool
+            .annotations
+            .as_ref()
+            .unwrap_or_else(|| panic!("`{}` has no annotations", tool.name));
+        let writes = matches!(tool.name.as_ref(), "memory_save" | "index_rescan");
+        assert_eq!(
+            annotations.read_only_hint,
+            Some(!writes),
+            "`{}` read_only_hint",
+            tool.name
+        );
+        assert_eq!(
+            annotations.destructive_hint,
+            Some(false),
+            "`{}` destructive_hint",
+            tool.name
+        );
+        assert!(
+            tool.output_schema.is_none(),
+            "`{}` declares an output schema; the response structs nest, which the flat-schema rule and the \
+             byte ceiling both rule out",
+            tool.name
+        );
+    }
 }

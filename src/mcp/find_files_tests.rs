@@ -1,4 +1,4 @@
-//! `find` / `files` cover every indexed path: the code map UNION the document tier, with a
+//! `find_files` covers every indexed path: the code map UNION the document tier, with a
 //! language label for documents, a relative-score cutoff and a deterministic order.
 
 use std::sync::Arc;
@@ -7,9 +7,7 @@ use rmcp::model::{CallToolResult, ContentBlock};
 use serde_json::Value;
 
 use super::BasemindServer;
-use super::mode::CodeMode;
-use super::params::{Lenient, Parameters};
-use super::types_code::CodeParams;
+use super::params::FindFilesToolParams;
 use crate::config::ConfigV1;
 use crate::git_cache::GitCache;
 use crate::scanner::{EmbedMode, ScanSource, scan};
@@ -56,13 +54,22 @@ fn json_of(result: &CallToolResult) -> Value {
     panic!("tool returned no text content");
 }
 
-async fn find(server: &BasemindServer, query: &str, language: Option<&str>) -> Vec<(String, String)> {
-    let params = CodeParams {
-        query: Some(query.to_string()),
+fn listing(query: Option<&str>, language: Option<&str>) -> FindFilesToolParams {
+    FindFilesToolParams {
+        query: query.map(str::to_string),
+        path_prefix: None,
         language: language.map(str::to_string),
-        ..CodeParams::new(CodeMode::Find)
-    };
-    let result = server.code(Parameters(Lenient(params))).await.expect("find");
+        limit: None,
+        cursor: None,
+        max_tokens: None,
+    }
+}
+
+async fn find(server: &BasemindServer, query: &str, language: Option<&str>) -> Vec<(String, String)> {
+    let result = server
+        .find_files_call(listing(Some(query), language))
+        .await
+        .expect("find");
     json_of(&result)["files"]
         .as_array()
         .expect("files")
@@ -129,11 +136,10 @@ async fn find_cuts_weak_matches_and_is_deterministic() {
 async fn files_lists_documents_alongside_code() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let server = server(tmp.path());
-    let params = CodeParams {
-        language: Some("markdown".to_string()),
-        ..CodeParams::new(CodeMode::Files)
-    };
-    let result = server.code(Parameters(Lenient(params))).await.expect("files");
+    let result = server
+        .find_files_call(listing(None, Some("markdown")))
+        .await
+        .expect("files");
     let payload = json_of(&result);
     let paths: Vec<&str> = payload["files"]
         .as_array()

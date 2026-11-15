@@ -2,14 +2,14 @@
 //!
 //! A deliberately small surface that re-exposes existing tool output as addressable, on-demand
 //! content. Nothing here is part of the always-loaded prompt: clients list resources lazily, so the
-//! cost to a session that never touches them is zero. Every read delegates to the same `run_*`
-//! dispatcher the matching tool uses, so a resource body is byte-for-byte the tool result.
+//! cost to a session that never touches them is zero. Every read runs the body of the matching
+//! tool, so a resource body is byte-for-byte the tool result.
 //!
 //! | URI                          | Backing tool call             |
 //! |------------------------------|-------------------------------|
-//! | `basemind://status`          | `admin` mode `status`         |
-//! | `basemind://outline/{path}`  | `code` mode `outline`         |
-//! | `basemind://memory/{key}`    | `memory` mode `get`           |
+//! | `basemind://status`          | `index_status`                |
+//! | `basemind://outline/{path}`  | `code_outline`                |
+//! | `basemind://memory/{key}`    | `memory_search` with `key`    |
 //!
 //! `{path}` is repo-relative and validated before it reaches the index (no absolute paths, `..`,
 //! backslashes, NUL, empty segments); the downstream code-only/document-tier policy still applies,
@@ -137,7 +137,7 @@ pub(super) fn static_resources() -> Vec<Resource> {
     vec![
         Resource::new(URI_STATUS, "status")
             .with_title("Index status")
-            .with_description("Index health: file counts, languages, lifecycle flags. Same as admin mode status.")
+            .with_description("Index health: file counts, languages, lifecycle flags. Same as the index_status tool.")
             .with_mime_type(MIME_JSON),
     ]
 }
@@ -147,12 +147,12 @@ pub(super) fn resource_templates() -> Vec<ResourceTemplate> {
         ResourceTemplate::new(TEMPLATE_OUTLINE, "file-outline")
             .with_title("File outline")
             .with_description(
-                "Symbols and imports of one indexed code file (repo-relative path). Same as code mode outline.",
+                "Symbols and imports of one indexed code file (repo-relative path). Same as the code_outline tool.",
             )
             .with_mime_type(MIME_JSON),
         ResourceTemplate::new(TEMPLATE_MEMORY, "memory-entry")
             .with_title("Memory entry")
-            .with_description("One shared memory note by key. Same as memory mode get.")
+            .with_description("One shared memory note by key. Same as memory_search with a key.")
             .with_mime_type(MIME_JSON),
     ]
 }
@@ -170,7 +170,7 @@ impl BasemindServer {
             .with_cache_scope(CacheScope::Public)
     }
 
-    /// `resources/read`: parse the URI, then run the same dispatcher the equivalent tool call uses.
+    /// `resources/read`: parse the URI, then run the body of the equivalent tool.
     pub(super) async fn read_resource_uri(&self, uri: &str) -> Result<ReadResourceResult, McpError> {
         let parsed =
             parse_uri(uri).map_err(|message| McpError::invalid_params(message, Some(json!({ "uri": uri }))))?;
@@ -182,16 +182,12 @@ impl BasemindServer {
         self.state.await_cache_ready().await;
         let state = &self.state;
         let result = match parsed {
-            ResourceUri::Status => {
-                let params = from_args(json!({ "mode": "status" }))?;
-                super::helpers_admin::run_admin(state.clone(), params, None).await?
-            }
+            ResourceUri::Status => super::helpers_admin::index_status(state).await?,
             ResourceUri::Outline(path) => {
-                super::helpers_code::run_code(state, from_args(json!({ "mode": "outline", "path": path }))?).await?
+                super::helpers_code::code_outline(state, from_args(json!({ "path": path }))?).await?
             }
             ResourceUri::Memory(key) => {
-                let result =
-                    super::helpers_memory::run_memory(state, from_args(json!({ "mode": "get", "key": key }))?).await?;
+                let result = super::helpers_memory::memory_search(state, from_args(json!({ "key": key }))?).await?;
                 let text = tool_text(result, uri)?;
                 if text.trim() == "null" {
                     return Err(McpError::resource_not_found(

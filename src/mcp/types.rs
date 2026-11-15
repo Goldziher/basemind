@@ -78,6 +78,18 @@ impl LifecycleNotice {
             .then(Self::index_rebuilding)
     }
 
+    /// The notice attached when nothing has been scanned: every list is empty for that reason, not
+    /// because the query matched nothing.
+    pub(crate) fn empty_index() -> Self {
+        Self {
+            state: "empty_index",
+            message: "The index is empty: nothing has been scanned for this workspace, so this result \
+                      says nothing about the code. Run `index_rescan {\"full\":true}` (or `basemind scan` \
+                      in a shell) and retry.",
+            retry: true,
+        }
+    }
+
     /// The notice for a workspace whose last scan is partial or whose resolve pass has not
     /// committed, notably an index wiped by a schema revision bump and rebuilding. Reference-shaped
     /// reads (`references` / `callers` / `implementations`) answer empty or short until it finishes.
@@ -93,35 +105,8 @@ impl LifecycleNotice {
 }
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
-pub struct OutlineParams {
-    /// Repository-relative path (forward-slash). Must be a file basemind has scanned.
-    pub path: RelPath,
-    /// When true, also include calls + doc comments (L2). Falls back to empty
-    /// arrays if no L2 blob exists for the file's current content.
-    #[serde(default)]
-    pub l2: bool,
-    /// Optional token budget bounding the returned `symbols` list (not the whole envelope,
-    /// and not `imports` / `calls` / `docs`). Symbols are kept in file order until the
-    /// budget is hit; the rest are dropped and the response carries `budgeted: true`.
-    #[serde(default, alias = "token_budget", alias = "budget")]
-    pub max_tokens: Option<u32>,
-    /// Wire format for the response: `"json"` (default) or `"toon"`. TOON is a compact
-    /// tabular encoding of the `symbols` list — far fewer tokens than JSON for large outlines.
-    #[serde(default, alias = "encoding")]
-    pub format: Option<String>,
-}
-
-#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct SearchSymbolsParams {
     /// Substring matched against symbol name (case-sensitive).
-    #[serde(
-        alias = "query",
-        alias = "pattern",
-        alias = "name",
-        alias = "q",
-        alias = "term",
-        alias = "symbol"
-    )]
     pub needle: String,
     /// Optional kind filter: function, method, struct, enum, class, interface,
     /// trait, type, const, module, macro.
@@ -133,11 +118,11 @@ pub struct SearchSymbolsParams {
     /// Optional token budget bounding the returned result list (not the whole envelope).
     /// Items are kept best-first until the budget is hit; the rest are dropped and the
     /// response carries `budgeted: true` plus a `next_cursor` to page them.
-    #[serde(default, alias = "token_budget", alias = "budget")]
+    #[serde(default)]
     pub max_tokens: Option<u32>,
     /// Wire format for the response: `"json"` (default) or `"toon"`. TOON is a compact
     /// tabular encoding of the `results` list — far fewer tokens than JSON for large hit sets.
-    #[serde(default, alias = "encoding")]
+    #[serde(default)]
     pub format: Option<String>,
     /// Resume token returned by the previous call's `next_cursor`. Cursors are scoped to
     /// the in-RAM index snapshot and invalidate on rescan.
@@ -150,6 +135,9 @@ pub struct ListFilesParams {
     /// Optional substring matched against the path. Cheaper than reading a glob crate.
     #[serde(default)]
     pub path_contains: Option<String>,
+    /// Optional prefix the path must start with.
+    #[serde(default)]
+    pub path_prefix: Option<String>,
     /// Filter by language (e.g. "rust", "python").
     #[serde(default)]
     pub language: Option<String>,
@@ -159,11 +147,11 @@ pub struct ListFilesParams {
     /// Optional token budget bounding the returned file list (not the whole envelope).
     /// Entries are kept in order until the budget is hit; the rest are dropped and the
     /// response carries `budgeted: true` plus a `next_cursor` to page them.
-    #[serde(default, alias = "token_budget", alias = "budget")]
+    #[serde(default)]
     pub max_tokens: Option<u32>,
     /// Wire format for the response: `"json"` (default) or `"toon"`. TOON is a compact
     /// tabular encoding of the `files` list — far fewer tokens than JSON for large listings.
-    #[serde(default, alias = "encoding")]
+    #[serde(default)]
     pub format: Option<String>,
     /// Resume token returned by the previous call's `next_cursor`. Cursors are scoped to
     /// the in-RAM index snapshot and invalidate on rescan.
@@ -175,7 +163,6 @@ pub struct ListFilesParams {
 pub struct FindFilesParams {
     /// Fuzzy query matched as a subsequence against each indexed path (fzf/fd-style — letters
     /// of `query` must appear in order in the path, not necessarily contiguous). Case-insensitive.
-    #[serde(alias = "needle", alias = "pattern")]
     pub query: String,
     /// Optional prefix filter applied before scoring (e.g. "src/mcp/").
     #[serde(default)]
@@ -189,11 +176,11 @@ pub struct FindFilesParams {
     /// Optional token budget bounding the returned file list (not the whole envelope).
     /// Entries are kept in score order until the budget is hit; the rest are dropped and the
     /// response carries `budgeted: true` plus a `next_cursor` to page them.
-    #[serde(default, alias = "token_budget", alias = "budget")]
+    #[serde(default)]
     pub max_tokens: Option<u32>,
     /// Wire format for the response: `"json"` (default) or `"toon"`. TOON is a compact
     /// tabular encoding of the `files` list — far fewer tokens than JSON for large listings.
-    #[serde(default, alias = "encoding")]
+    #[serde(default)]
     pub format: Option<String>,
     /// Resume token returned by the previous call's `next_cursor`. Cursors are scoped to
     /// the in-RAM index snapshot (and the score ordering computed for `query`); a rescan
@@ -203,24 +190,10 @@ pub struct FindFilesParams {
 }
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
-pub struct DependentsParams {
-    /// Module / import target (e.g. "tokio::sync" or "react").
-    #[serde(alias = "name", alias = "query", alias = "import")]
-    pub module: String,
-}
-
-#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
-pub struct StatusParams {}
-
-#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
-pub struct RepoInfoParams {}
-
-#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct FindReferencesParams {
     /// The callee identifier to look up. Substring match — case-sensitive, no scope
     /// resolution; both `Foo::bar()` and `bar()` register as callee `"bar"`. Use with
     /// caution on common names like `new` or `get`.
-    #[serde(alias = "needle", alias = "pattern", alias = "query", alias = "symbol", alias = "q")]
     pub name: String,
     /// Cap on results returned. Default 100, max 1000.
     #[serde(default)]
@@ -228,11 +201,11 @@ pub struct FindReferencesParams {
     /// Optional token budget bounding the returned `hits` list (not the whole envelope).
     /// Hits are kept in scan order until the budget is hit; the rest are dropped and the
     /// response carries `budgeted: true` plus a `next_cursor` to page them.
-    #[serde(default, alias = "token_budget", alias = "budget")]
+    #[serde(default)]
     pub max_tokens: Option<u32>,
     /// Wire format for the response: `"json"` (default) or `"toon"`. TOON is a compact
     /// tabular encoding of the `hits` list — far fewer tokens than JSON for large hit sets.
-    #[serde(default, alias = "encoding")]
+    #[serde(default)]
     pub format: Option<String>,
     /// Resume token returned by the previous call's `next_cursor`. Stable across rescans
     /// because the underlying Fjall keys are content-addressed.
@@ -245,7 +218,6 @@ pub struct FindCallersParams {
     /// Repository-relative path of the definition file.
     pub path: RelPath,
     /// Name of the definition.
-    #[serde(alias = "needle", alias = "query", alias = "symbol")]
     pub name: String,
     /// Optional kind filter for resolving the definition (function/method/class/...).
     #[serde(default)]
@@ -256,7 +228,7 @@ pub struct FindCallersParams {
     /// Optional token budget bounding the returned `hits` list (not the whole envelope).
     /// Hits are kept in scan order until the budget is hit; the rest are dropped and the
     /// response carries `budgeted: true` plus a `next_cursor` to page them.
-    #[serde(default, alias = "token_budget", alias = "budget")]
+    #[serde(default)]
     pub max_tokens: Option<u32>,
     /// Resume token returned by the previous call's `next_cursor`. Stable across rescans
     /// because the underlying Fjall keys are content-addressed.
@@ -269,12 +241,11 @@ pub struct GotoDefinitionParams {
     /// Repository-relative path of the file holding the reference.
     pub path: RelPath,
     /// 1-based line of the reference identifier.
-    #[serde(alias = "row")]
     pub line: u32,
     /// 0-based byte column of the reference within the line. Any byte inside the identifier
     /// resolves for span-aware engines (oxc JS/TS); the tree-sitter `locals` fallback matches
     /// only the identifier's start byte. Defaults to 0 (line start).
-    #[serde(default, alias = "col")]
+    #[serde(default)]
     pub column: u32,
 }
 
@@ -282,67 +253,48 @@ pub(super) fn default_true() -> bool {
     true
 }
 
+/// Response of `code_outline`.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct OutlineResponse {
     pub path: RelPath,
     pub language: String,
     pub size_bytes: u64,
+    /// The parser reported syntax errors; the outline may be missing symbols.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub had_errors: bool,
-    pub error_count: u32,
-    /// True when a `max_tokens` budget dropped trailing `symbols`. Outline has no cursor;
-    /// raise `max_tokens` (or omit it) to retrieve the full symbol list.
+    /// Symbols in the file, across every page.
+    pub total: usize,
+    /// True when the token budget dropped trailing symbols; page them with `next_cursor`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub budgeted: bool,
-    pub symbols: Vec<SymbolView>,
-    pub imports: Vec<ImportView>,
+    /// The working-tree file no longer matches the indexed content (or is gone), so line spans may
+    /// be off until `index_rescan`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub stale: bool,
+    pub symbols: Vec<OutlineSymbol>,
+    /// Imported modules, on the first page only.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub imports: Vec<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub imports_truncated: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub calls: Option<Vec<CallView>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub docs: Option<Vec<DocView>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub l2_status: Option<&'static str>,
-    /// Lifecycle notice when the server isn't fully ready (warming/building/rescanning); absent when
-    /// ready. Lets a caller tell "index still loading — retry" from a genuine empty result.
+    pub next_cursor: Option<Cursor>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notice: Option<LifecycleNotice>,
-    /// Server-side handler latency in microseconds — the tool body's own execution (index / store
-    /// lookup + response construction), excluding MCP transport, argument deserialization, and
-    /// response serialization. A first call against a cold server also includes index warm-up;
-    /// such responses carry a `notice`. See [`crate::mcp::helpers::timing`] for the full contract.
     #[serde(default)]
     pub elapsed_us: u64,
 }
 
+/// One symbol of a `code_outline` page. `line` and `end_line` are 1-based and inclusive, the span
+/// `code_read` and `git_blame` take.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(super) struct SymbolView {
+pub(super) struct OutlineSymbol {
     pub name: String,
     pub kind: &'static str,
-    pub start_row: u32,
-    pub start_col: u32,
-    pub start_byte: u32,
-    pub end_byte: u32,
+    pub line: u32,
+    pub end_line: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub signature: Option<String>,
-}
-
-#[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(super) struct ImportView {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub module: Option<String>,
-    pub raw: String,
-    pub start_byte: u32,
-}
-
-#[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(super) struct CallView {
-    pub callee: String,
-    pub start_byte: u32,
-}
-
-#[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(super) struct DocView {
-    pub text: String,
-    pub start_byte: u32,
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
@@ -475,15 +427,15 @@ pub(super) struct FindFilesResponse {
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct DependentsResponse {
     pub module: String,
+    /// Importing files, across every page.
+    pub total: usize,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub budgeted: bool,
     pub paths: Vec<RelPath>,
-    /// Lifecycle notice when the server isn't fully ready (warming/building/rescanning); absent when
-    /// ready. Lets a caller tell "index still loading — retry" from a genuine empty result.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<Cursor>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notice: Option<LifecycleNotice>,
-    /// Server-side handler latency in microseconds — the tool body's own execution (index / store
-    /// lookup + response construction), excluding MCP transport, argument deserialization, and
-    /// response serialization. A first call against a cold server also includes index warm-up;
-    /// such responses carry a `notice`. See [`crate::mcp::helpers::timing`] for the full contract.
     #[serde(default)]
     pub elapsed_us: u64,
 }
@@ -559,6 +511,14 @@ pub(super) struct StatusResponse {
     /// lookup + response construction), excluding MCP transport, argument deserialization, and
     /// response serialization. Distinct from `index_build_ms` / `warm_ms`, which report the
     /// one-time boot-scan and preload costs. See [`crate::mcp::helpers::timing`] for the contract.
+    /// Current branch; absent outside a git repository or on a detached HEAD.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    /// Full HEAD sha; absent outside a git repository.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub head_sha: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub head_short_sha: Option<String>,
     #[serde(default)]
     pub elapsed_us: u64,
 }
@@ -694,23 +654,9 @@ pub(super) struct GotoDefinitionResponse {
     pub elapsed_us: u64,
 }
 
-#[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(super) struct RepoInfoResponse {
-    pub workdir: String,
-    pub head_sha: Option<String>,
-    pub head_short_sha: Option<String>,
-    pub branch: Option<String>,
-    /// Server-side handler latency in microseconds — the tool body's own execution (git HEAD
-    /// lookup + response construction), excluding MCP transport, argument deserialization, and
-    /// response serialization. See [`crate::mcp::helpers::timing`] for the full contract.
-    #[serde(default)]
-    pub elapsed_us: u64,
-}
-
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct WorkspaceGrepParams {
     /// Rust regex syntax (`regex` crate). Required.
-    #[serde(alias = "query", alias = "needle", alias = "regex", alias = "q", alias = "search")]
     pub pattern: String,
     /// Optional language filter (e.g. `"rust"`, `"typescript"`). Same ID convention as
     /// `list_files`.
@@ -727,15 +673,18 @@ pub struct WorkspaceGrepParams {
     /// Optional token budget bounding the returned `hits` list (not the whole envelope).
     /// Hits are kept in scan order until the budget is hit; the rest are dropped and the
     /// response carries `budgeted: true` plus a `next_cursor` to page them.
-    #[serde(default, alias = "token_budget", alias = "budget")]
+    #[serde(default)]
     pub max_tokens: Option<u32>,
     /// Wire format for the response: `"json"` (default) or `"toon"`. TOON is a compact
     /// tabular encoding of the `hits` list — far fewer tokens than JSON for large hit sets.
-    #[serde(default, alias = "encoding")]
+    #[serde(default)]
     pub format: Option<String>,
     /// Include 1 line of context before + after each hit. Default true.
     #[serde(default = "default_true")]
     pub include_context: bool,
+    /// Match `pattern` as literal text instead of compiling it as a regex.
+    #[serde(default)]
+    pub literal: bool,
     /// Resume token returned by the previous call's `next_cursor`. Cursors are scoped to
     /// the in-RAM index snapshot and invalidate on rescan.
     #[serde(default)]
@@ -905,15 +854,13 @@ pub(super) struct RecentCallView {
     pub est_tokens_saved: u64,
 }
 
-pub use super::types_admin::{CacheClearParams, CacheGcParams, CacheStatsParams};
-pub(super) use super::types_admin::{CacheClearResponse, CacheGcResponse, CacheStatsResponse};
+#[cfg(feature = "documents")]
 pub use super::types_documents::SearchDocumentsParams;
 #[cfg(feature = "documents")]
 pub(super) use super::types_documents::{DocumentSearchHit, SearchDocumentsResponse};
 pub use super::types_git::{
     BlameFileParams, BlameSymbolParams, CommitsTouchingParams, DiffFileParams, DiffOutlineParams,
     FindCommitsByPathParams, HotFilesParams, RecentChangesParams, SearchGitHistoryParams, SymbolHistoryParams,
-    WorkingTreeStatusParams,
 };
 pub(super) use super::types_git::{
     BlameHunkView, BlameResponse, BlameSymbolResponse, CommitFileView, CommitView, CommitsTouchingResponse,
@@ -921,47 +868,3 @@ pub(super) use super::types_git::{
     HotFileEntry, HotFilesResponse, HunkView, RecentChangesResponse, SearchGitHistoryResponse, SymbolHistoryEntry,
     SymbolHistoryResponse, WorkingTreeStatusView,
 };
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn workspace_grep_accepts_query_alias_for_pattern() {
-        let params: WorkspaceGrepParams = serde_json::from_value(serde_json::json!({ "query": "foo" })).unwrap();
-        assert_eq!(params.pattern, "foo");
-    }
-
-    #[test]
-    fn search_symbols_accepts_pattern_alias_for_needle() {
-        let params: SearchSymbolsParams = serde_json::from_value(serde_json::json!({ "pattern": "x" })).unwrap();
-        assert_eq!(params.needle, "x");
-    }
-
-    #[test]
-    fn search_symbols_accepts_symbol_alias_for_needle() {
-        let params: SearchSymbolsParams = serde_json::from_value(serde_json::json!({ "symbol": "Foo" })).unwrap();
-        assert_eq!(params.needle, "Foo");
-    }
-
-    #[test]
-    fn workspace_grep_accepts_regex_and_needle_aliases() {
-        let by_regex: WorkspaceGrepParams = serde_json::from_value(serde_json::json!({ "regex": "a.*b" })).unwrap();
-        assert_eq!(by_regex.pattern, "a.*b");
-        let by_needle: WorkspaceGrepParams = serde_json::from_value(serde_json::json!({ "needle": "lit" })).unwrap();
-        assert_eq!(by_needle.pattern, "lit");
-    }
-
-    #[test]
-    fn find_references_accepts_symbol_alias_for_name() {
-        let params: FindReferencesParams = serde_json::from_value(serde_json::json!({ "symbol": "spawn" })).unwrap();
-        assert_eq!(params.name, "spawn");
-    }
-
-    #[test]
-    fn find_implementations_accepts_trait_alias_for_trait_name() {
-        let params: super::super::types_impls::FindImplementationsParams =
-            serde_json::from_value(serde_json::json!({ "trait": "Iterator" })).unwrap();
-        assert_eq!(params.trait_name, "Iterator");
-    }
-}

@@ -38,6 +38,8 @@ mod helpers_grep;
 mod helpers_impls;
 mod helpers_intel;
 mod helpers_memory;
+#[cfg(any(feature = "code-search", feature = "documents", test))]
+mod helpers_page;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 mod helpers_registry;
 mod helpers_telemetry;
@@ -55,6 +57,7 @@ mod index_route_tests;
 mod index_view_tests;
 mod l1_cache;
 mod lean;
+#[cfg(all(feature = "comms", any(unix, windows)))]
 mod lenient;
 mod map_fingerprint;
 #[cfg(any(feature = "memory", feature = "documents", feature = "code-search"))]
@@ -70,10 +73,12 @@ pub(crate) mod savings;
 mod server_handler;
 mod shared_state;
 mod state;
+mod strict;
 mod tasks;
 mod telemetry;
 mod term_index;
 pub(crate) mod tokens;
+mod tool_contract;
 mod tools;
 mod tools_admin;
 #[cfg(all(feature = "comms", any(unix, windows)))]
@@ -84,7 +89,6 @@ mod tools_memory;
 mod tools_registry;
 pub(crate) mod toon;
 mod types;
-mod types_admin;
 mod types_code;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 pub(crate) mod types_comms;
@@ -94,6 +98,7 @@ mod types_impls;
 pub(crate) mod types_memory;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 pub(crate) mod types_registry;
+mod types_tools;
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -112,7 +117,7 @@ pub(crate) use host::HostBackend;
 #[cfg(all(feature = "test-support", feature = "comms", any(unix, windows)))]
 pub use in_memory::serve_in_memory_daemon_writer;
 #[cfg(feature = "test-support")]
-pub use in_memory::{serve_in_memory, serve_in_memory_lean};
+pub use in_memory::{serve_in_memory, serve_in_memory_lean, serve_in_memory_with_task_threshold};
 pub(crate) use shared_state::SharedReadStack;
 pub(crate) use state::{Lifecycle, MapCache, ServerState};
 
@@ -131,31 +136,20 @@ impl HostedReadStack {
     }
 }
 
-/// Public re-export of every tool `*Params` type plus the `Parameters` wrapper, so the
-/// in-process CLI (`src/cli/`) can build tool arguments and call the `#[tool]` methods
-/// directly. This is the parity-by-construction surface: the CLI runs the identical tool
-/// code an MCP client would dispatch.
+/// Public re-export of every tool `*Params` type, so the in-process CLI (`src/cli/`) can build
+/// tool arguments and call the same `*_call` bodies the `#[tool]` shims call. This is the
+/// parity-by-construction surface: the CLI runs the identical tool code an MCP client would reach.
 pub mod params {
     pub use rmcp::handler::server::wrapper::Parameters;
 
-    pub(crate) use super::lenient::Lenient;
-
-    pub use super::mode::AdminMode;
-    pub use super::mode::CodeMode;
-    pub use super::mode::GitMode;
-    pub use super::types::{
-        BlameFileParams, BlameSymbolParams, CommitsTouchingParams, DependentsParams, DiffFileParams, DiffOutlineParams,
-        FindCallersParams, FindCommitsByPathParams, FindFilesParams, FindReferencesParams, GotoDefinitionParams,
-        HotFilesParams, ListFilesParams, OutlineParams, RecentChangesParams, RepoInfoParams, RescanParams,
-        SearchDocumentsParams, SearchGitHistoryParams, SearchSymbolsParams, StatusParams, SymbolHistoryParams,
-        TelemetrySummaryParams, WorkingTreeStatusParams, WorkspaceGrepParams,
-    };
-    pub use super::types_admin::{AdminParams, CacheClearParams, CacheGcParams, CacheStatsParams};
-    pub use super::types_code::CodeParams;
-    pub use super::types_git::GitParams;
-    pub use super::types_impls::FindImplementationsParams;
-    pub use super::types_memory::{
-        MemoryDeleteParams, MemoryGetParams, MemoryListParams, MemoryPutParams, MemorySearchParams, Visibility,
+    pub(crate) use super::strict::parse as parse_args;
+    pub use super::types::{FindCommitsByPathParams, HotFilesParams, TelemetrySummaryParams};
+    pub use super::types_code::GetChunkParams;
+    pub use super::types_memory::{MemoryDeleteParams, Visibility};
+    pub use super::types_tools::{
+        CodeGrepParams, CodeOutlineParams, CodeReadParams, CodeRefsParams, CodeSearchParams, CodeSymbolsParams,
+        DocsSearchParams, FindFilesToolParams, GitBlameParams, GitDiffParams, GitLogParams, IndexRescanParams,
+        IndexStatusParams, MemorySaveParams, MemorySearchToolParams, VERB_TOOLS,
     };
 }
 
@@ -363,6 +357,7 @@ impl BasemindServer {
             #[cfg(all(feature = "comms", any(unix, windows)))]
             delivery_probe: tokio::sync::Mutex::new(state::DeliveryProbe::default()),
             lean: std::sync::atomic::AtomicBool::new(lean::lean_mode_enabled()),
+            task_threshold_ms: std::sync::atomic::AtomicU64::new(tasks::TASK_THRESHOLD.as_millis() as u64),
         });
         Self::spawn_comms_presence(&state);
         let mut watcher = None;
@@ -402,6 +397,11 @@ impl BasemindServer {
         }
     }
 
+    /// How long an offload-eligible call may run before it is answered with a task handle.
+    pub(crate) fn task_threshold(&self) -> std::time::Duration {
+        std::time::Duration::from_millis(self.state.task_threshold_ms.load(std::sync::atomic::Ordering::Relaxed))
+    }
+
     /// Whether this server advertises the lean three-tool surface. Resolved once at construction
     /// (see [`ServerState::lean`]) and read here per request, so the decision is per-server rather
     /// than a global-env read.
@@ -423,7 +423,7 @@ impl BasemindServer {
             router += Self::tool_router_comms();
             router += Self::tool_router_registry();
         }
-        router
+        tool_contract::finalize_router(router)
     }
 
     /// Build a per-connection server that SHARES a workspace's [`SharedReadStack`] rather than
@@ -717,6 +717,9 @@ impl BasemindServer {
 #[cfg(test)]
 #[path = "lazy_cache_tests.rs"]
 mod lazy_cache_tests;
+
+#[cfg(test)]
+mod tool_contract_tests;
 
 #[cfg(test)]
 mod map_cache_tests {

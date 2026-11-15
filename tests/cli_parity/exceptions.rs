@@ -85,15 +85,34 @@ pub const GLOBAL_FLAGS: &[(&str, &str)] = &[
     ),
 ];
 
-const INVERTED: &str = "CLI spells the negation (`--no-X`) of the MCP boolean `X`";
+const REPEATABLE: &str = "repeatable CLI flag for the MCP list";
+const TIER: &str = "CLI switch selects the `individual` tier; MCP takes the tier name";
+const SYMBOL: &str = "the shorthand's positional `name` is the tool's `symbol`";
 
 pub fn all() -> Vec<Exception> {
     vec![
-        // ---- renamed / sense-inverted arguments ----
-        alias("code grep", "no_context", "include_context", INVERTED),
-        alias("git recent", "no_files", "include_files", INVERTED),
-        alias("memory put", "no_embed", "embed", INVERTED),
-        alias("agents post", "tag", "tags", "repeatable CLI flag for the MCP list"),
+        // ---- renamed arguments ----
+        alias("memory put", "tag", "tags", REPEATABLE),
+        alias("memory put", "individual", "visibility", TIER),
+        alias("memory search", "individual", "visibility", TIER),
+        alias("memory get", "individual", "visibility", TIER),
+        alias("memory list", "individual", "visibility", TIER),
+        alias(
+            "code dependents",
+            "module",
+            "name",
+            "the shorthand's positional `module` is the tool's `name`",
+        ),
+        alias("git symbol-history", "name", "symbol", SYMBOL),
+        alias("git blame-symbol", "name", "symbol", SYMBOL),
+        alias(
+            "git diff-outline",
+            "rev",
+            "from",
+            "the shorthand's `--rev` is the revision the working tree is compared against",
+        ),
+        alias("rescan", "path", "paths", "variadic positional for the MCP list"),
+        alias("agents post", "tag", "tags", REPEATABLE),
         alias(
             "agents ack",
             "message_id",
@@ -106,25 +125,7 @@ pub fn all() -> Vec<Exception> {
             "message_ref",
             "CLI positional accepts a compact reference or legacy ID",
         ),
-        alias(
-            "agents register",
-            "skill",
-            "skills",
-            "repeatable CLI flag for the MCP list",
-        ),
-        alias("rescan", "path", "paths", "variadic positional for the MCP list"),
-        alias(
-            "cache clear",
-            "yes",
-            "confirm",
-            "CLI `--yes` skips the interactive prompt; MCP has no terminal, so the caller confirms with `confirm`",
-        ),
-        alias(
-            "memory *",
-            "individual",
-            "visibility",
-            "CLI switch selects the `individual` tier; MCP takes the tier name",
-        ),
+        alias("agents register", "skill", "skills", REPEATABLE),
         // ---- CLI-only arguments ----
         cli_only(
             "agents cleanup",
@@ -132,26 +133,36 @@ pub fn all() -> Vec<Exception> {
             "no-op flag (preview is the default); MCP expresses intent through `apply`",
         ),
         cli_only(
-            "cache gc",
-            "dry_run",
-            "the CLI deletes by default and `--dry-run` selects the report; the MCP `gc` mode is always the read-only report",
-        ),
-        cli_only(
             "rescan",
             "no_git_history",
-            "TODO parity: the MCP `rescan` cannot skip the git-history index build",
+            "TODO parity: `index_rescan` cannot skip the git-history index build",
         ),
         cli_only(
             "rescan",
             "rebuild_git_history",
-            "TODO parity: the MCP `rescan` cannot wipe and rebuild the git-history index",
+            "TODO parity: `index_rescan` cannot wipe and rebuild the git-history index",
         ),
         // ---- MCP-only parameters ----
+        mcp_only(
+            "memory search",
+            "key",
+            "the `key` shape of `memory_search` is `basemind memory get`",
+        ),
+        mcp_only(
+            "memory search",
+            "prefix",
+            "the `prefix` shape of `memory_search` is `basemind memory list`",
+        ),
+        mcp_only(
+            "memory search",
+            "cursor",
+            "only a listing pages; `basemind memory list` takes `--cursor`",
+        ),
         // ---- required-ness ----
         required(
-            "cache clear",
-            "component",
-            "TODO parity: MCP requires `component`; the CLI defaults to `git-cache`",
+            "memory search",
+            "query",
+            "`basemind memory search` is the query shape of `memory_search`, whose selector is optional",
         ),
     ]
 }

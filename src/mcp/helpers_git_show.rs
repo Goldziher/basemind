@@ -1,4 +1,4 @@
-//! Bounding helpers for the commit-list modes of the `git` tool, plus `git` mode `show`.
+//! Bounding helpers for the commit lists of `git_log`, plus its single-commit (`rev`) form.
 //!
 //! A squash-merge commit can carry a message of hundreds of kilobytes (a pasted changelog, a list
 //! of every squashed commit) and a file list in the thousands, so a list response is bounded two
@@ -47,7 +47,7 @@ pub(super) fn cap_body(body: String, max_chars: usize, short_sha: &str) -> (Stri
     let mut kept = body;
     kept.truncate(cut);
     kept.push_str(&format!(
-        "\n[... body truncated, {total} bytes in all; `git` mode=\"show\" sha=\"{short_sha}\" returns it whole]"
+        "\n[... body truncated, {total} bytes in all; `git_log` with rev \"{short_sha}\" returns it whole]"
     ));
     (kept, true, Some(total))
 }
@@ -73,17 +73,17 @@ pub(super) fn resolve_body_chars(requested: Option<u32>) -> usize {
     requested.map_or(BODY_CHARS_DEFAULT, |n| (n as usize).min(BODY_CHARS_MAX))
 }
 
-/// Body for `git` mode `show`: one commit by sha or revision, with its whole message and its
+/// The `show` operation: one commit by sha or revision, with its whole message and its
 /// changed files.
 pub(super) fn run_show(state: &ServerState, sha: &str) -> Result<CallToolResult, McpError> {
     let started = std::time::Instant::now();
     let repo = require_git_repo(state)?;
     let full = repo
         .resolve_rev(sha)
-        .map_err(|e| McpError::invalid_params(format!("`git` mode=\"show\": cannot resolve `{sha}`: {e}"), None))?;
+        .map_err(|e| McpError::invalid_params(format!("`git_log`: cannot resolve `{sha}`: {e}"), None))?;
     let info = repo
         .commit_record(&full)
-        .ok_or_else(|| McpError::invalid_params(format!("`git` mode=\"show\": `{sha}` is not a commit"), None))?;
+        .ok_or_else(|| McpError::invalid_params(format!("`git_log`: `{sha}` is not a commit"), None))?;
     let files = info
         .files
         .iter()
@@ -116,7 +116,7 @@ mod tests {
         assert!(cut);
         assert_eq!(bytes, Some(long.len()));
         assert!(body.starts_with(&"é".repeat(10)));
-        assert!(body.contains("mode=\"show\" sha=\"abc1234\""), "{body}");
+        assert!(body.contains("`git_log` with rev \"abc1234\""), "{body}");
         assert!(!body.contains(&"é".repeat(11)));
     }
 

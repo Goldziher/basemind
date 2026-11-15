@@ -51,7 +51,7 @@ pub fn extract_items(mode: EvalMode, args: &Value, body: &Value) -> Vec<Item> {
                 .iter()
                 .map(|e| Item {
                     path: path.clone(),
-                    line: u(e, "start_row").map(|r| r + 1),
+                    line: u(e, "line"),
                 })
                 .collect()
         }
@@ -100,7 +100,7 @@ mod tests {
         let outline = extract_items(
             EvalMode::Outline,
             &json!({"path":"a.py"}),
-            &json!({"symbols":[{"name":"f","start_row":4}]}),
+            &json!({"symbols":[{"name":"f","line":5}]}),
         );
         assert_eq!(
             outline,

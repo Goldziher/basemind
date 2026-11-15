@@ -1,7 +1,7 @@
-//! Focused end-to-end smoke test for the scope-resolved `code` mode `callers` path.
+//! Focused end-to-end smoke test for the scope-resolved `code_refs` callers-of-a-definition path.
 //!
-//! Mirrors `mcp_smoke.rs`: scan a tiny fixture in-process, spawn `basemind serve`, and drive the
-//! `code` tool's `callers` mode over the rmcp child-process transport. This one exercises the *resolution*
+//! Mirrors `mcp_smoke.rs`: scan a tiny fixture in-process, spawn `basemind serve`, and drive
+//! `code_refs {name, path}` over the rmcp child-process transport. This one exercises the *resolution*
 //! layer — which ANNOTATES the name scan rather than replacing it.
 //!
 //! It used to assert that resolution *replaced* the name scan (returning only the resolved edges and
@@ -106,12 +106,9 @@ async fn find_callers_flags_scope_resolved_hits_without_dropping_same_named_ones
 
     let body = decode_text(
         &service
-            .call_tool(call_params(
-                "code",
-                json!({ "mode": "callers", "path": "util.ts", "name": "target", "kind": "function" }),
-            ))
+            .call_tool(call_params("code_refs", json!({ "name": "target", "path": "util.ts" })))
             .await
-            .expect("code callers"),
+            .expect("code_refs callers"),
     );
 
     assert_eq!(

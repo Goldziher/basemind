@@ -1,9 +1,6 @@
-//! `basemind admin` — the CLI half of the `admin` domain that has no better top-level home, plus the
-//! offline `cache` group.
-//!
-//! Real clap subcommands rather than a `--mode` flag, so each operation keeps its own `--help` and
-//! its own argument validation. The other `admin` modes live under their canonical command:
-//! `status`, `rescan` and `cache stats|gc|clear`.
+//! `basemind admin` — administrative commands with no MCP tool (`telemetry`, `tokens`, `eval`),
+//! plus the offline `cache` group. The index tools live under their own top-level commands:
+//! `status` (`index_status`) and `rescan` (`index_rescan`).
 //!
 //! The `cache` subcommands call `store_gc` directly (no server, no flock), which is the only way to
 //! clear `views` / `all`, the components that back the live index.
@@ -26,7 +23,7 @@ use super::run_tool;
 
 #[derive(Subcommand, Debug)]
 pub enum AdminCmd {
-    /// Repository identity: workdir, branch, HEAD sha.
+    /// Index health plus repository identity (branch, HEAD sha). Same as `basemind status`.
     Repo,
     /// Aggregate recorded tool calls into a usage and token-savings summary.
     Telemetry {
@@ -54,8 +51,7 @@ pub enum AdminCmd {
 }
 
 /// Count tokens in stdin and print just the integer, so a shell script can pipe straight into it.
-/// Bypasses the MCP tool dispatch entirely — there is no `AdminMode` for this, since it is a
-/// CLI-only convenience over [`crate::mcp::tokens::count_tokens`], not an agent-facing operation.
+/// Bypasses the tool dispatch entirely: it is a CLI-only convenience over [`crate::mcp::tokens::count_tokens`], not an agent-facing operation.
 #[cfg(feature = "tokenizer")]
 fn run_tokens(out: &mut impl Write) -> Result<()> {
     let text = read_stdin()?;
@@ -88,20 +84,23 @@ fn read_stdin() -> Result<String> {
 
 /// Dispatch an `admin` subcommand through the in-process server.
 pub async fn run(server: &BasemindServer, cmd: AdminCmd, opts: &Emit, out: &mut impl Write) -> Result<()> {
-    let p = match cmd {
-        AdminCmd::Repo => AdminParams::new(AdminMode::Repo),
-        AdminCmd::Telemetry { window, tool } => AdminParams {
-            window: window.map(|w| w.as_str().to_string()),
-            tool,
-            ..AdminParams::new(AdminMode::Telemetry)
-        },
+    let (tool, result) = match cmd {
+        AdminCmd::Repo => ("index_status", server.index_status_call(IndexStatusParams {}).await),
+        AdminCmd::Telemetry { window, tool } => (
+            "telemetry",
+            server
+                .telemetry_call(TelemetrySummaryParams {
+                    window: window.map(|w| w.as_str().to_string()),
+                    tool,
+                })
+                .await,
+        ),
         AdminCmd::Tokens { .. } => return run_tokens(out),
         AdminCmd::Eval(args) => return crate::eval::run(server, &args, out).await,
     };
 
-    let key = p.mode.telemetry_key();
-    let r = run_tool(key, server.admin_cli(p).await)?;
-    emit(key, &r, opts, out)
+    let r = run_tool(tool, result)?;
+    emit(tool, &r, opts, out)
 }
 
 #[derive(Subcommand, Debug)]
@@ -136,11 +135,10 @@ pub enum CacheCmd {
     },
 }
 
-/// Dispatch the top-level `status` command: index health for this workspace.
+/// `basemind status`: index health plus repository identity, the body of the `index_status` tool.
 pub async fn run_status(server: &BasemindServer, opts: &Emit, out: &mut impl Write) -> Result<()> {
-    let key = AdminMode::Status.telemetry_key();
-    let r = run_tool(key, server.admin_cli(AdminParams::new(AdminMode::Status)).await)?;
-    emit(key, &r, opts, out)
+    let r = run_tool("index_status", server.index_status_call(IndexStatusParams {}).await)?;
+    emit("index_status", &r, opts, out)
 }
 
 /// Dispatch a `cache` subcommand against the machine-global cache directories.
@@ -161,7 +159,7 @@ pub fn run_cache(root: &Path, cmd: CacheCmd, json: bool, out: &mut impl Write) -
             if json {
                 render_json(&value, out)
             } else {
-                render_human("admin:gc", &value, out)
+                render_human("cache_gc", &value, out)
             }
         }
         CacheCmd::Stats => {
@@ -170,7 +168,7 @@ pub fn run_cache(root: &Path, cmd: CacheCmd, json: bool, out: &mut impl Write) -
             if json {
                 render_json(&value, out)
             } else {
-                render_human("admin:cache_stats", &value, out)
+                render_human("cache_stats", &value, out)
             }
         }
         CacheCmd::Clear { component, yes } => {
@@ -188,7 +186,7 @@ pub fn run_cache(root: &Path, cmd: CacheCmd, json: bool, out: &mut impl Write) -
             if json {
                 render_json(&value, out)
             } else {
-                render_human("admin:cache_clear", &value, out)
+                render_human("cache_clear", &value, out)
             }
         }
     }
@@ -247,40 +245,5 @@ fn guard_clear(basemind_dir: &Path, component: &str, yes: bool) -> Result<()> {
         Ok(())
     } else {
         Err(CliExit::usage("aborted: nothing was cleared"))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use clap::{CommandFactory, Parser, Subcommand as _};
-
-    use super::AdminCmd;
-
-    #[derive(Parser)]
-    struct Harness {
-        #[command(subcommand)]
-        cmd: AdminCmd,
-    }
-
-    /// The CLI half of the parity contract, checked from this side too: every `admin` mode the MCP
-    /// tool advertises must resolve to a clap subcommand of the same (kebab-cased) name.
-    /// `tests/cli_parity/` proves the same thing end-to-end, but only for a build that ships the
-    /// binary — this one fails fast, in the file that owns the enum.
-    #[test]
-    fn should_expose_one_subcommand_per_advertised_admin_mode() {
-        let command = AdminCmd::augment_subcommands(Harness::command());
-        let names: Vec<String> = command.get_subcommands().map(|s| s.get_name().to_string()).collect();
-        // Modes whose CLI home is a top-level command (`tests/cli_parity/` maps them).
-        const TOP_LEVEL: &[&str] = &["status", "rescan", "cache_stats", "gc", "cache_clear"];
-        for mode in crate::mcp::mode::AdminMode::ALL_MODES
-            .iter()
-            .filter(|m| !TOP_LEVEL.contains(m))
-        {
-            let expected = mode.replace('_', "-");
-            assert!(
-                names.contains(&expected),
-                "`admin` mode `{mode}` has no `basemind admin {expected}` subcommand; got {names:?}"
-            );
-        }
     }
 }

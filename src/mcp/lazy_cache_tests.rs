@@ -10,9 +10,7 @@ use std::sync::Arc;
 use rmcp::model::{ArgumentInfo, CallToolResult, CompleteRequestParams, ContentBlock, Reference};
 use serde_json::Value;
 
-use super::mode::CodeMode;
-use super::params::{AdminMode, AdminParams, Lenient, Parameters};
-use super::types_code::CodeParams;
+use super::params::{CodeOutlineParams, CodeSymbolsParams, IndexStatusParams};
 use super::{BasemindServer, ServerState};
 use crate::config::ConfigV1;
 use crate::git_cache::GitCache;
@@ -50,7 +48,7 @@ fn mapped_files(state: &ServerState) -> usize {
 }
 
 /// A one-shot server must boot with an EMPTY code map, and a tool that never touches the map
-/// (`admin` mode `status` — a pure metadata query) must not cause it to be built. This is the whole point: the
+/// (`index_status`, a pure metadata query) must not cause it to be built. This is the whole point: the
 /// flat whole-corpus `MapCache::build` cost must not be charged to a query that never reads it.
 #[tokio::test]
 async fn one_shot_server_does_not_preload_the_code_map() {
@@ -64,9 +62,9 @@ async fn one_shot_server_does_not_preload_the_code_map() {
     );
 
     let result = server
-        .admin_cli(AdminParams::new(AdminMode::Status))
+        .index_status_call(IndexStatusParams {})
         .await
-        .expect("admin mode=status");
+        .expect("index_status");
     let payload = json_of(&result);
     assert_eq!(
         payload["file_count"].as_u64(),
@@ -90,14 +88,13 @@ async fn outline_answers_from_the_store_without_building_the_corpus_map() {
     let server = oneshot_server(tmp.path());
     assert_eq!(mapped_files(&server.state), 0, "starts unbuilt");
 
-    let params = CodeParams {
-        path: Some(crate::path::RelPath::from("a.rs")),
-        l2: Some(false),
+    let params = CodeOutlineParams {
+        path: crate::path::RelPath::from("a.rs"),
+        limit: None,
+        cursor: None,
         max_tokens: None,
-        format: None,
-        ..CodeParams::new(CodeMode::Outline)
     };
-    let result = server.code(Parameters(Lenient(params))).await.expect("outline");
+    let result = server.code_outline_call(params).await.expect("outline");
     let payload = json_of(&result);
 
     let names: Vec<&str> = payload["symbols"]
@@ -155,16 +152,14 @@ async fn corpus_tool_builds_the_map_on_demand_and_sees_every_file() {
     let server = oneshot_server(tmp.path());
     assert_eq!(mapped_files(&server.state), 0, "starts unbuilt");
 
-    let params = CodeParams {
-        name: Some("_marker".to_string()),
+    let params = CodeSymbolsParams {
+        name: "_marker".to_string(),
         kind: None,
         limit: None,
-        max_tokens: None,
-        format: None,
         cursor: None,
-        ..CodeParams::new(CodeMode::Symbols)
+        max_tokens: None,
     };
-    let result = server.code(Parameters(Lenient(params))).await.expect("search_symbols");
+    let result = server.code_symbols_call(params).await.expect("code_symbols");
     let payload = json_of(&result);
 
     let names: Vec<&str> = payload["results"]

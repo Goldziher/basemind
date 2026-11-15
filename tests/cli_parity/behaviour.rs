@@ -6,100 +6,110 @@ use std::process::Command;
 
 use serde_json::{Value, json};
 
-use crate::capabilities::{McpOp, Row};
+use crate::capabilities::Row;
 
-/// A query: the MCP call plus the CLI operands that follow the command path in the capability table.
+/// A query: the MCP tool call, and the CLI command (a `pair` or `shorthand` of that tool in the
+/// capability table) with the operands that follow it.
 pub struct Case {
-    pub op: McpOp,
+    pub tool: &'static str,
     pub mcp: Value,
+    pub cli: &'static str,
     pub cli_operands: &'static [&'static str],
-    /// Compare list order-insensitively (a known ordering gap, see the case's comment).
-    pub unordered: bool,
 }
 
-impl Case {
-    fn new(tool: &'static str, mode: &'static str, mcp: Value, cli_operands: &'static [&'static str]) -> Self {
-        Self {
-            op: McpOp { tool, mode },
-            mcp,
-            cli_operands,
-            unordered: false,
-        }
+const fn case(tool: &'static str, mcp: Value, cli: &'static str, cli_operands: &'static [&'static str]) -> Case {
+    Case {
+        tool,
+        mcp,
+        cli,
+        cli_operands,
     }
 }
 
 pub fn cases() -> Vec<Case> {
     vec![
-        Case::new(
-            "code",
-            "outline",
-            json!({"mode": "outline", "path": "src/alpha.rs"}),
+        case(
+            "code_outline",
+            json!({"path": "src/alpha.rs"}),
+            "code outline",
             &["src/alpha.rs"],
         ),
-        Case::new(
-            "code",
-            "symbols",
-            json!({"mode": "symbols", "name": "alpha"}),
-            &["alpha"],
+        case("code_symbols", json!({"name": "alpha"}), "code symbols", &["alpha"]),
+        case(
+            "code_read",
+            json!({"path": "src/alpha.rs", "symbol": "alpha"}),
+            "code read",
+            &["src/alpha.rs", "--symbol", "alpha"],
         ),
-        Case::new("code", "find", json!({"mode": "find", "query": "gamma"}), &["gamma"]),
-        Case {
-            // TODO parity: the listing order differs between the long-lived server and a fresh CLI
-            // process (hash-ordered code-map cache); compared as a set until it is made stable.
-            unordered: true,
-            ..Case::new("code", "files", json!({"mode": "files"}), &[])
-        },
-        Case::new(
-            "code",
-            "grep",
-            json!({"mode": "grep", "pattern": "alpha\\("}),
-            &["alpha\\("],
+        case(
+            "code_read",
+            json!({"path": "src/gamma.rs", "line": 3, "end_line": 5}),
+            "code read",
+            &["src/gamma.rs", "--line", "3", "--end-line", "5"],
         ),
-        Case::new(
-            "code",
-            "references",
-            json!({"mode": "references", "name": "alpha"}),
-            &["alpha"],
+        case("code_grep", json!({"pattern": "alpha("}), "code grep", &["alpha("]),
+        case(
+            "code_grep",
+            json!({"pattern": "alpha\\(\\d", "regex": true, "path": "gamma", "context": true}),
+            "code grep",
+            &["alpha\\(\\d", "--regex", "--path", "gamma", "--context"],
         ),
-        Case::new(
-            "code",
-            "callers",
-            json!({"mode": "callers", "path": "src/alpha.rs", "name": "alpha"}),
+        case("code_refs", json!({"name": "alpha"}), "code refs", &["alpha"]),
+        case(
+            "code_refs",
+            json!({"name": "alpha", "path": "src/alpha.rs"}),
+            "code callers",
             &["src/alpha.rs", "alpha"],
         ),
-        Case::new(
-            "code",
-            "dependents",
-            json!({"mode": "dependents", "module": "std::collections"}),
+        case(
+            "code_refs",
+            json!({"name": "std::collections", "relation": "importers"}),
+            "code dependents",
             &["std::collections"],
+        ),
+        case("find_files", json!({"query": "gamma"}), "code find", &["gamma"]),
+        case("find_files", json!({}), "code files", &[]),
+        case("git_log", json!({}), "git log", &[]),
+        case(
+            "git_log",
+            json!({"path": "src/alpha.rs"}),
+            "git touching",
+            &["src/alpha.rs"],
+        ),
+        case(
+            "git_blame",
+            json!({"path": "src/alpha.rs", "line": 4, "end_line": 6}),
+            "git blame",
+            &["src/alpha.rs", "--line", "4", "--end-line", "6"],
+        ),
+        case("git_diff", json!({}), "git status", &[]),
+        case(
+            "git_diff",
+            json!({"path": "src/alpha.rs", "structural": true}),
+            "git diff-outline",
+            &["src/alpha.rs"],
         ),
     ]
 }
 
 /// Drop fields that legitimately differ between two runs or between transports.
-pub fn normalize(value: &mut Value, unordered: bool) {
+pub fn normalize(value: &mut Value) {
     const NOISE: &[&str] = &["elapsed_us", "startup_us", "notice"];
     match value {
         Value::Object(map) => {
             map.retain(|k, _| !NOISE.contains(&k.as_str()));
-            map.values_mut().for_each(|v| normalize(v, unordered));
+            map.values_mut().for_each(normalize);
         }
-        Value::Array(items) => {
-            items.iter_mut().for_each(|v| normalize(v, unordered));
-            if unordered {
-                items.sort_by_key(Value::to_string);
-            }
-        }
+        Value::Array(items) => items.iter_mut().for_each(normalize),
         _ => {}
     }
 }
 
-/// The CLI path the capability table pairs with `op`.
-pub fn cli_path_for(rows: &[Row], op: McpOp) -> Option<&'static str> {
-    rows.iter().find_map(|r| match r {
-        Row::Pair { mcp, cli } if *mcp == op => Some(*cli),
-        _ => None,
-    })
+/// Whether the capability table says `cli` runs the body of `tool`.
+pub fn table_pairs(rows: &[Row], tool: &str, cli: &str) -> bool {
+    rows.iter()
+        .filter_map(Row::runs)
+        .any(|(mcp, path)| mcp.tool == tool && mcp.mode.is_empty() && path == cli)
 }
 
 pub fn run_cli(root: &std::path::Path, cli_path: &str, operands: &[&str]) -> Result<Value, String> {

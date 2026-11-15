@@ -1,15 +1,7 @@
-//! Request shape for the consolidated `code` domain tool, plus the semantic-search payloads.
+//! Internal request shapes and response payloads of the code-search and read bodies.
 //!
-//! [`CodeParams`] is what crosses the wire: one flat parameter object with a required [`CodeMode`]
-//! selecting the lookup and every per-mode field an optional sibling. The per-operation structs
-//! ([`SearchCodeParams`] / [`GetChunkParams`] here, `OutlineParams` / `SearchSymbolsParams` /
-//! `ListFilesParams` / `FindFilesParams` / `FindReferencesParams` / `FindCallersParams` /
-//! `GotoDefinitionParams` / `WorkspaceGrepParams` in `types.rs`, `FindImplementationsParams` in
-//! `types_impls.rs`) and [`ExpandParams`] stay as the helpers' internal shapes, so
-//! the bodies keep taking exactly the arguments they always did.
-//!
-//! `CodeParams` lives here rather than in `types.rs` because that file is already within ~90 lines
-//! of the 1000-line per-file cap `tests/max_lines.rs` enforces.
+//! The wire arguments live in `types_tools.rs`; [`SearchCodeParams`], [`GetChunkParams`] and
+//! [`ExpandParams`] are what the bodies in `helpers_code_search.rs` / `helpers_expand.rs` take.
 //!
 //! The response structs are gated on `code-search` since only the feature-on helper bodies build
 //! them.
@@ -17,172 +9,37 @@
 use rmcp::schemars;
 use serde::{Deserialize, Serialize};
 
-use super::cursor::Cursor;
-use super::mode::CodeMode;
 use crate::path::RelPath;
 
-/// Wire parameters for the `code` tool.
-///
-/// Only `mode` is required. Every other field belongs to a subset of the modes and is rejected —
-/// not ignored — when passed to a mode that has no use for it (see
-/// [`super::mode::reject_unsupported`]); a mode that needs one names the exact `mode`/field pair.
-/// Per-mode defaults are resolved in the helper, not here, because they differ by mode (`limit`
-/// defaults to 100 for the symbol/reference scanners, 200 for the file listers, 10 for `semantic`).
-#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
-pub struct CodeParams {
-    /// Which lookup to run.
-    pub mode: CodeMode,
-    /// Repo-relative path of the file to act on. Required by `outline`, `definition`, `callers`,
-    /// `expand` and `chunk`.
-    #[serde(default)]
-    pub path: Option<RelPath>,
-    /// Symbol name. `symbols` matches it as a case-sensitive SUBSTRING of every indexed symbol
-    /// name; `references` matches it against captured callee identifiers (also a substring, and
-    /// name-only — `Foo::bar()` and `bar()` both match `"bar"`); `callers` and `expand` match it
-    /// exactly against the definitions in `path`. Required by those four modes.
-    #[serde(default, alias = "needle", alias = "symbol", alias = "q")]
-    pub name: Option<String>,
-    /// Free-text query. `find` matches it as a fuzzy subsequence against every indexed code path;
-    /// `semantic` embeds / tokenizes it for retrieval. Required by both.
-    #[serde(default, alias = "text")]
-    pub query: Option<String>,
-    /// `grep` only. Rust regex syntax (`regex` crate). Required by that mode.
-    #[serde(default, alias = "regex", alias = "search")]
-    pub pattern: Option<String>,
-    /// `implementations` only. Trait / interface / base-class name, matched as a case-sensitive
-    /// substring. Required by that mode.
-    #[serde(default, alias = "trait", alias = "interface")]
-    pub trait_name: Option<String>,
-    /// `dependents` only. Module / import target (e.g. `"tokio::sync"`, `"react"`), matched as a
-    /// substring against each recorded import path. Required by that mode.
-    #[serde(default, alias = "import")]
-    pub module: Option<String>,
-    /// `symbols` / `callers` / `expand`. Symbol-kind filter: function, method, struct, enum, class,
-    /// interface, trait, type, const, module, macro.
-    #[serde(default)]
-    pub kind: Option<String>,
-    /// `grep` / `files` / `find` / `implementations`. Language filter (e.g. `"rust"`,
-    /// `"typescript"`), applied before matching.
-    #[serde(default)]
-    pub language: Option<String>,
-    /// `grep` / `files`. Substring filter on the repo-relative path.
-    #[serde(default)]
-    pub path_contains: Option<String>,
-    /// `find` only. Path prefix applied before fuzzy scoring (e.g. `"src/mcp/"`).
-    #[serde(default)]
-    pub path_prefix: Option<String>,
-    /// `definition` only. 1-based line of the reference identifier. Required by that mode.
-    #[serde(default, alias = "row")]
-    pub line: Option<u32>,
-    /// `definition` only. 0-based byte column of the reference within the line. Default 0.
-    #[serde(default, alias = "col")]
-    pub column: Option<u32>,
-    /// `outline` only. Also return calls + doc comments (L2). Default false; falls back to empty
-    /// lists when no L2 blob exists for the file's current content.
-    #[serde(default)]
-    pub l2: Option<bool>,
-    /// `grep` only. Include one line of context before and after each hit. Default true.
-    #[serde(default)]
-    pub include_context: Option<bool>,
-    /// Result cap: `files`/`find` default 200 (max 5000), `semantic` 10 (max 100), others 100 (max 1000).
-    #[serde(default)]
-    pub limit: Option<u32>,
-    /// Token budget bounding the returned list; overflow is dropped and flagged `budgeted: true`.
-    #[serde(default, alias = "token_budget", alias = "budget")]
-    pub max_tokens: Option<u32>,
-    /// `"json"` (default) or `"toon"` (compact tabular).
-    #[serde(default, alias = "encoding")]
-    #[schemars(extend("enum" = ["json", "toon"]))]
-    pub format: Option<String>,
-    /// Resume token from the previous `next_cursor`.
-    #[serde(default)]
-    pub cursor: Option<Cursor>,
-    /// `semantic`: `hybrid` (default), `semantic` (vector only) or `keyword` (BM25 only).
-    #[serde(default, alias = "strategy")]
-    #[schemars(extend("enum" = ["hybrid", "semantic", "keyword"]))]
-    pub lane: Option<String>,
-    /// `semantic`: cross-encoder rerank of fused hits (default from config; first use downloads a model).
-    #[serde(default, alias = "reranker_enabled")]
-    pub rerank: Option<bool>,
-    /// `semantic` only. Reranker preset name (default `bge-reranker-base`).
-    #[serde(default, alias = "reranker_preset")]
-    pub rerank_preset: Option<String>,
-    /// `semantic` only. How many top fused hits to rerank.
-    #[serde(default, alias = "reranker_top_k")]
-    pub rerank_top_k: Option<usize>,
-    /// `chunk` only. The content-addressed chunk id from a `semantic` hit.
-    #[serde(default)]
-    pub chunk_id: Option<String>,
-    /// `chunk` only. The chunk's start byte offset from a `semantic` hit — an alternative to
-    /// `chunk_id`. Both may be omitted when the file holds a single chunk.
-    #[serde(default)]
-    pub byte_start: Option<u32>,
-}
-
-impl CodeParams {
-    /// A call carrying only `mode`. Callers set the fields their mode uses and leave the rest
-    /// `None`: the helper rejects a field belonging to another mode, so populating them blindly
-    /// would fail the call.
-    pub fn new(mode: CodeMode) -> Self {
-        Self {
-            mode,
-            path: None,
-            name: None,
-            query: None,
-            pattern: None,
-            trait_name: None,
-            module: None,
-            kind: None,
-            language: None,
-            path_contains: None,
-            path_prefix: None,
-            line: None,
-            column: None,
-            l2: None,
-            include_context: None,
-            limit: None,
-            max_tokens: None,
-            format: None,
-            cursor: None,
-            lane: None,
-            rerank: None,
-            rerank_preset: None,
-            rerank_top_k: None,
-            chunk_id: None,
-            byte_start: None,
-        }
-    }
-}
-
 /// Params for the `semantic` mode — hybrid / vector / BM25 retrieval over indexed code chunks.
+#[cfg(feature = "code-search")]
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct SearchCodeParams {
-    #[serde(alias = "needle", alias = "pattern", alias = "q", alias = "text", alias = "search")]
     pub query: String,
     /// Max hits to return. Default 10, max 100.
     #[serde(default)]
     pub limit: Option<u32>,
     /// Optional token budget bounding the returned `hits` list (best-first; sets `budgeted`).
-    #[serde(default, alias = "token_budget", alias = "budget")]
+    #[serde(default)]
     pub max_tokens: Option<u32>,
     /// Wire format: `"json"` (default) or `"toon"`. Overrides the `[documents.output] format`
     /// config knob for this call.
-    #[serde(default, alias = "encoding")]
+    #[serde(default)]
     pub format: Option<String>,
     /// Retrieval lane: "hybrid" (RRF fusion of the vector + keyword + exact-symbol lanes — the
     /// default), "semantic" (vector KNN only), or "keyword" (native BM25 only). Hybrid degrades
     /// gracefully — it drops any lane that is unavailable (e.g. the vector lane without embeddings).
-    #[serde(default, alias = "lane")]
+    #[serde(default)]
     pub mode: Option<String>,
     /// Per-query override: run the cross-encoder rerank pass over the fused hits. Defaults to the
     /// `[code_search.reranker] enabled` config knob. The first rerank downloads an ONNX model.
-    #[serde(default, alias = "rerank")]
+    #[serde(default)]
     pub reranker_enabled: Option<bool>,
     /// Per-query override: the xberg reranker preset (e.g. `bge-reranker-base`).
-    #[serde(default, alias = "rerank_preset")]
+    #[serde(default)]
     pub reranker_preset: Option<String>,
     /// Per-query override: how many top fused hits to rerank.
-    #[serde(default, alias = "rerank_top_k")]
+    #[serde(default)]
     pub reranker_top_k: Option<usize>,
 }
 
@@ -314,8 +171,6 @@ pub struct ExpandParams {
     /// Repo-relative path of the indexed source file.
     pub path: RelPath,
     /// Symbol name to expand. Matched exactly (case-sensitive) against the L1 outline.
-    /// Aliases: `symbol`, `needle`, `query`.
-    #[serde(alias = "symbol", alias = "needle", alias = "query")]
     pub name: String,
     /// Optional kind filter to disambiguate when `name` matches multiple symbols
     /// (e.g. `"function"`, `"method"`, `"struct"`, …). Same values as `search_symbols`.
@@ -332,10 +187,10 @@ pub(super) struct ExpandResponse {
     pub name: String,
     /// Resolved symbol kind (e.g. `"function"`, `"struct"`).
     pub kind: String,
-    /// One-based start row of the symbol in the source file.
-    pub start_row: u32,
-    /// One-based end row of the symbol in the source file (computed from the byte slice).
-    pub end_row: u32,
+    /// 1-based first line of the symbol.
+    pub line: u32,
+    /// 1-based last line of the symbol, inclusive (derived from the working-tree file).
+    pub end_line: u32,
     /// Raw source text of the symbol body (`file_bytes[start_byte..end_byte]`).
     pub body: String,
     /// Byte length of the returned body (before any truncation).
@@ -344,28 +199,18 @@ pub(super) struct ExpandResponse {
     pub truncated: bool,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn expand_accepts_symbol_alias_for_name() {
-        let params: ExpandParams =
-            serde_json::from_value(serde_json::json!({ "path": "src/lib.rs", "symbol": "scan" })).unwrap();
-        assert_eq!(params.name, "scan");
-    }
-
-    #[test]
-    fn expand_accepts_query_alias_for_name() {
-        let params: ExpandParams =
-            serde_json::from_value(serde_json::json!({ "path": "src/lib.rs", "query": "scan" })).unwrap();
-        assert_eq!(params.name, "scan");
-    }
-
-    #[test]
-    fn expand_canonical_name_still_binds() {
-        let params: ExpandParams =
-            serde_json::from_value(serde_json::json!({ "path": "src/lib.rs", "name": "scan" })).unwrap();
-        assert_eq!(params.name, "scan");
-    }
+/// Response of a `code_read` line-span read.
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub(super) struct ReadSpanResponse {
+    pub path: String,
+    /// 1-based first line returned.
+    pub line: u32,
+    /// 1-based last line returned, inclusive (clamped to the file).
+    pub end_line: u32,
+    pub total_lines: u32,
+    pub body: String,
+    /// Byte length of the span before any truncation.
+    pub bytes: usize,
+    /// `true` when the body was cut at the size cap.
+    pub truncated: bool,
 }

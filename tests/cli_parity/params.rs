@@ -1,11 +1,12 @@
-//! Layer 2: parameter parity between a CLI command and the MCP mode it is paired with.
+//! Layer 2: parameter parity between a CLI command and the MCP tool it runs.
 //!
-//! For each `pair` row the MCP side is the set of fields the mode accepts (probed from the real
-//! validator, see `mcp_surface`; domain-wide for the modes that cannot be probed safely) and the CLI
-//! side is the command's non-global arguments. Names are compared after snake-casing. Every
-//! difference is a [`Violation`] that must be covered by a reviewed [`Exception`] carrying a reason;
-//! an exception that no longer matches anything is itself a failure, so the table only ever shrinks
-//! as the surfaces converge.
+//! For each `pair` row the MCP side is what the tool's own schema accepts and requires (exact per
+//! verb tool; domain-wide for the two mode-dispatched domain tools, whose flat schema cannot
+//! attribute a field to a mode) and the CLI side is the command's non-global arguments. A
+//! `shorthand` is checked one way: each of its arguments must be a field of its tool. Names are
+//! compared after snake-casing. Every difference is a [`Violation`] that must be covered by a
+//! reviewed [`Exception`] carrying a reason; an exception that no longer matches anything is itself
+//! a failure, so the table only ever shrinks as the surfaces converge.
 
 use std::collections::{BTreeMap, BTreeSet};
 

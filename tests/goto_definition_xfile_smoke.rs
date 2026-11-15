@@ -1,4 +1,4 @@
-//! Cross-file `code` mode `definition` through the real MCP tool.
+//! Cross-file `code_refs` relation `definition` through the real MCP tool.
 //!
 //! A use of an imported name must resolve to the definition in the file the import points at — not
 //! stop at the local import binding. The shape mirrors the monorepo case that surfaced the gap: a
@@ -74,12 +74,14 @@ async fn serve(root: &Path) -> Server {
     ().serve(transport).await.expect("rmcp handshake")
 }
 
-/// `code` mode `definition` at `path`:`line`:`column`; returns the `definition` object, if any.
-async fn goto(service: &Server, path: &str, line: u64, column: u64) -> Option<Value> {
-    let mut params = CallToolRequestParams::new("code");
-    let args = json!({ "mode": "definition", "path": path, "line": line, "column": column });
+/// `code_refs` relation `definition` for `name` at `path`:`line`:`column` (0-based byte column);
+/// returns the `definition` object, if any.
+async fn goto(service: &Server, path: &str, line: u64, column: u64, name: &str) -> Option<Value> {
+    let mut params = CallToolRequestParams::new("code_refs");
+    let args = json!({ "name": name, "relation": "definition", "path": path, "line": line, "column": column + 1 });
     params = params.with_arguments(args.as_object().unwrap().clone());
-    let result = service.call_tool(params).await.expect("code definition");
+    let result = service.call_tool(params).await.expect("code_refs definition");
+    assert_ne!(result.is_error, Some(true), "code_refs definition failed: {result:?}");
     decode_text(&result).get("definition").filter(|d| !d.is_null()).cloned()
 }
 
@@ -121,7 +123,14 @@ async fn goto_definition_follows_an_aliased_import_from_the_call_site_to_the_def
     let service = serve(dir.path()).await;
 
     let call_col = col_of("  const settings = useCustomerSettings();", "useCustomerSettings", 0);
-    let definition = goto(&service, "src/routes/SettingsRoutes.tsx", 4, call_col).await;
+    let definition = goto(
+        &service,
+        "src/routes/SettingsRoutes.tsx",
+        4,
+        call_col,
+        "useCustomerSettings",
+    )
+    .await;
 
     let definition = definition.expect(
         "the call site must resolve to a definition — a tsconfig-aliased import is the norm in a \
@@ -156,7 +165,14 @@ async fn goto_definition_resolves_the_aliased_import_binding_itself() {
         "useCustomerSettings",
         0,
     );
-    let definition = goto(&service, "src/routes/SettingsRoutes.tsx", 1, binding_col).await;
+    let definition = goto(
+        &service,
+        "src/routes/SettingsRoutes.tsx",
+        1,
+        binding_col,
+        "useCustomerSettings",
+    )
+    .await;
 
     let definition =
         definition.expect("standing ON the import binding must resolve to what it names — not silently return nothing");
@@ -192,7 +208,7 @@ async fn goto_definition_never_jumps_to_an_unimported_same_named_symbol() {
     let service = serve(root).await;
 
     let call_col = col_of("  const settings = useCustomerSettings();", "useCustomerSettings", 0);
-    let definition = goto(&service, "src/routes/Orphan.tsx", 2, call_col).await;
+    let definition = goto(&service, "src/routes/Orphan.tsx", 2, call_col, "useCustomerSettings").await;
 
     assert_eq!(
         definition, None,
@@ -229,7 +245,7 @@ async fn goto_definition_leaves_an_alias_with_no_target_file_unresolved() {
         "missingHook",
         0,
     );
-    let definition = goto(&service, "src/routes/Ghost.tsx", 1, binding_col).await;
+    let definition = goto(&service, "src/routes/Ghost.tsx", 1, binding_col, "missingHook").await;
     assert_eq!(
         definition, None,
         "an alias whose target file does not exist must stay unresolved: {definition:?}"
@@ -261,9 +277,15 @@ async fn goto_definition_still_follows_a_relative_import() {
     let service = serve(root).await;
 
     let call_col = col_of("  const settings = useCustomerSettings();", "useCustomerSettings", 0);
-    let definition = goto(&service, "routes/SettingsRoutes.tsx", 4, call_col)
-        .await
-        .expect("a relative import's call site must resolve");
+    let definition = goto(
+        &service,
+        "routes/SettingsRoutes.tsx",
+        4,
+        call_col,
+        "useCustomerSettings",
+    )
+    .await
+    .expect("a relative import's call site must resolve");
     assert_eq!(
         definition.get("path").and_then(Value::as_str),
         Some("hooks/useCustomerSettings.ts"),

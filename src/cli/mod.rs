@@ -1,10 +1,10 @@
-//! In-process CLI that gives `basemind` 1:1 parity with the MCP tool surface.
+//! In-process CLI over the same tool bodies the MCP server runs.
 //!
-//! Every tool subcommand builds the matching `*Params` struct, constructs a
-//! one-shot [`crate::mcp::BasemindServer`] (no background facilities), and calls
-//! the identical `#[tool]` method an MCP client would dispatch — then renders the
-//! returned [`rmcp::model::CallToolResult`]. Parity is by construction: the CLI
-//! runs the same tool code, not a re-implementation.
+//! Every MCP tool has a subcommand that builds the tool's `*Params` struct, constructs a one-shot
+//! [`crate::mcp::BasemindServer`] (no background facilities), and calls the `*_call` method the
+//! `#[tool]` shim calls, then renders the returned [`rmcp::model::CallToolResult`]. Parity is by
+//! construction: the CLI runs the same tool code, not a re-implementation. The CLI additionally
+//! has shorthands and administrative commands with no MCP tool (ADR-0018).
 //!
 //! Layout:
 //! - `context.rs` — one-shot server construction.
@@ -49,8 +49,7 @@ use crate::config::DocumentsCliOverrides;
 /// Tool subcommand groups dispatched through the in-process server.
 #[derive(Subcommand, Debug)]
 pub enum ToolCmd {
-    /// Code-map lookups: outline, symbols, grep, files, find, definition, references, callers,
-    /// implementations, dependents, expand, semantic, chunk.
+    /// Code lookups: outline, symbols, read, grep, search, refs, find (plus shorthands).
     #[command(subcommand)]
     Code(code::CodeCmd),
     /// Git history / blame / diff queries.
@@ -59,7 +58,7 @@ pub enum ToolCmd {
     /// Shared agent memory and document search (needs `--features memory,documents`).
     #[command(subcommand)]
     Memory(memory::MemoryCmd),
-    /// Server administration: repo identity, telemetry, tokens, eval.
+    /// Administration: telemetry, tokens, eval.
     #[command(subcommand)]
     Admin(admin::AdminCmd),
     /// Index health for this workspace: file counts, languages, scan age.

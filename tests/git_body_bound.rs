@@ -1,10 +1,10 @@
-//! `git` responses stay bounded when commit messages are huge (GH #74).
+//! `git_log` responses stay bounded when commit messages are huge (GH #74).
 //!
-//! A squash-merge commit can carry a body of hundreds of kilobytes; `search` used to return every
-//! hit's body whole, so one call at `limit` 100 cost megabytes. These tests build a repo with
-//! large-body commits and pin the three bounds: the per-hit body cap (`body_chars`), the token
-//! budget on the commit-list modes (`max_tokens` and its default, with `next_cursor` resuming at
-//! the first dropped commit), and `show` as the way back to the whole message.
+//! A squash-merge commit can carry a body of hundreds of kilobytes; a commit search used to return
+//! every hit's body whole, so one call at `limit` 100 cost megabytes. These tests build a repo with
+//! large-body commits and pin the three bounds: the per-hit body cap, the token budget on every
+//! commit list (`max_tokens`, with `next_cursor` resuming at the first dropped commit), and
+//! `git_log {rev}` as the way back to the whole message.
 
 use std::path::Path;
 use std::process::Command;
@@ -32,7 +32,7 @@ fn git(repo: &Path, args: &[&str]) {
     assert!(status.success(), "git {args:?} failed");
 }
 
-/// Four commits, each touching `a.rs` and carrying [`TOKEN`] in a ~200 KB body.
+/// Four commits, each touching `a.rs` and `dir/b.rs` and carrying [`TOKEN`] in a ~200 KB body.
 fn build_repo() -> TempDir {
     basemind::store::init_isolated_cache();
     let dir = tempfile::tempdir().expect("tempdir");
@@ -41,6 +41,8 @@ fn build_repo() -> TempDir {
     git(root, &["config", "commit.gpgsign", "false"]);
     for i in 0..COMMITS {
         std::fs::write(root.join("a.rs"), format!("pub fn alpha() -> u32 {{ {i} }}\n")).expect("write a.rs");
+        std::fs::create_dir_all(root.join("dir")).expect("create dir");
+        std::fs::write(root.join("dir/b.rs"), format!("pub fn beta() -> u32 {{ {i} }}\n")).expect("write dir/b.rs");
         git(root, &["add", "."]);
         let body = format!("{TOKEN} {}", "lorem ipsum dolor ".repeat(BIG_BODY_BYTES / 18));
         // The body is far past MAX_ARG_STRLEN (128 KiB on Linux), so it goes through a file, not argv.
@@ -61,7 +63,7 @@ fn decode(result: &CallToolResult) -> Value {
 }
 
 fn call_params(args: Value) -> CallToolRequestParams {
-    let mut params = CallToolRequestParams::new("git");
+    let mut params = CallToolRequestParams::new("git_log");
     if let Some(obj) = args.as_object() {
         params = params.with_arguments(obj.clone());
     }
@@ -77,9 +79,13 @@ async fn spawn(root: &Path) -> Session {
     ().serve(transport).await.expect("rmcp handshake")
 }
 
-/// Call `git`, returning the decoded body and the serialized size in bytes.
+/// Call `git_log`, returning the decoded body and the serialized size in bytes.
 async fn call(service: &Session, args: Value) -> (Value, usize) {
-    let result = service.call_tool(call_params(args)).await.expect("git call");
+    let result = service
+        .call_tool(call_params(args.clone()))
+        .await
+        .expect("git_log call");
+    assert_ne!(result.is_error, Some(true), "git_log {args} failed: {result:?}");
     let size = result
         .content
         .iter()
@@ -92,7 +98,7 @@ async fn call(service: &Session, args: Value) -> (Value, usize) {
 async fn indexed_search(service: &Session, extra: Value) -> (Value, usize) {
     let deadline = std::time::Instant::now() + Duration::from_secs(60);
     loop {
-        let mut args = json!({ "mode": "search", "pattern": TOKEN, "limit": 100 });
+        let mut args = json!({ "query": TOKEN, "limit": 100 });
         args.as_object_mut()
             .expect("object")
             .extend(extra.as_object().expect("object").clone());
@@ -130,9 +136,10 @@ async fn search_caps_each_body_and_marks_the_cut() {
     for hit in hits {
         let body = hit["body"].as_str().expect("body");
         assert!(body.starts_with(TOKEN), "{body}");
+        let short_sha = hit["short_sha"].as_str().expect("short_sha");
         assert!(
-            body.contains("mode=\"show\""),
-            "marker must name the way to the full body: {body}"
+            body.contains("body truncated") && body.contains(short_sha),
+            "marker must name the commit to ask for in full: {body}"
         );
         assert_eq!(hit["body_truncated"], json!(true));
         assert!(hit["body_bytes"].as_u64().expect("body_bytes") > BIG_BODY_BYTES as u64 - 100);
@@ -143,20 +150,11 @@ async fn search_caps_each_body_and_marks_the_cut() {
         );
     }
 
-    let (value, _) = indexed_search(&service, json!({ "body_chars": 20, "max_tokens": 1_000_000 })).await;
-    let body = commits(&value)[0]["body"].as_str().expect("body");
-    assert!(body.starts_with(TOKEN) && body.chars().count() < 220, "{body}");
-
-    let (value, _) = indexed_search(&service, json!({ "body_chars": 0, "max_tokens": 1_000_000 })).await;
-    let hit = &commits(&value)[0];
-    assert!(hit.get("body").is_none(), "body_chars=0 omits the body: {hit}");
-    assert_eq!(hit["body_truncated"], json!(true));
-
     let _ = service.cancel().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn search_default_budget_bounds_the_response_and_pages_on() {
+async fn search_budget_bounds_the_response_and_pages_on() {
     let dir = build_repo();
     let service = spawn(dir.path()).await;
 
@@ -169,11 +167,7 @@ async fn search_default_budget_bounds_the_response_and_pages_on() {
     assert!(cursor.is_string(), "a budgeted page must carry next_cursor: {first}");
 
     while cursor.is_string() {
-        let (page, _) = call(
-            &service,
-            json!({ "mode": "search", "pattern": TOKEN, "max_tokens": 1, "cursor": cursor }),
-        )
-        .await;
+        let (page, _) = call(&service, json!({ "query": TOKEN, "max_tokens": 1, "cursor": cursor })).await;
         let page_commits = commits(&page);
         assert_eq!(page_commits.len(), 1, "{page}");
         let sha = page_commits[0]["sha"].as_str().expect("sha").to_string();
@@ -194,35 +188,36 @@ async fn show_returns_the_whole_message_and_files() {
     let (value, _) = indexed_search(&service, json!({ "max_tokens": 1_000_000 })).await;
     let sha = commits(&value)[0]["sha"].as_str().expect("sha").to_string();
 
-    let (shown, size) = call(&service, json!({ "mode": "show", "sha": sha })).await;
+    let (shown, size) = call(&service, json!({ "rev": sha })).await;
     let commit = &shown["commit"];
     assert_eq!(commit["sha"], json!(sha));
     let body = commit["body"].as_str().expect("body");
     assert!(
         body.len() >= BIG_BODY_BYTES - 100,
-        "show must not truncate: {} bytes",
+        "`rev` must not truncate: {} bytes",
         body.len()
     );
     assert!(commit.get("body_truncated").is_none());
     assert!(size >= BIG_BODY_BYTES - 100);
-    assert_eq!(shown["files"][0]["path"], json!("a.rs"));
+    let files = shown["files"].as_array().expect("files");
+    assert!(files.iter().any(|file| file["path"] == json!("a.rs")), "{files:?}");
 
-    // An abbreviated sha and a revision both resolve.
-    let (by_rev, _) = call(&service, json!({ "mode": "show", "sha": "HEAD" })).await;
+    // A full sha and a symbolic revision both resolve.
+    let (by_rev, _) = call(&service, json!({ "rev": "HEAD" })).await;
     assert_eq!(by_rev["commit"]["summary"], json!(format!("squash {}", COMMITS - 1)));
 
     let _ = service.cancel().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn commit_list_modes_honour_max_tokens() {
+async fn commit_lists_honour_max_tokens() {
     let dir = build_repo();
     let service = spawn(dir.path()).await;
 
     for args in [
-        json!({ "mode": "recent", "max_tokens": 1 }),
-        json!({ "mode": "touching", "path": "a.rs", "max_tokens": 1 }),
-        json!({ "mode": "by_path", "pattern": "a\\.rs", "max_tokens": 1 }),
+        json!({ "max_tokens": 1 }),
+        json!({ "path": "a.rs", "max_tokens": 1 }),
+        json!({ "path": "dir/", "max_tokens": 1 }),
     ] {
         let (value, _) = call(&service, args.clone()).await;
         assert_eq!(commits(&value).len(), 1, "{args}: {value}");
@@ -231,7 +226,7 @@ async fn commit_list_modes_honour_max_tokens() {
     }
 
     // Without a budget pressure nothing is dropped and `budgeted` is absent.
-    let (value, _) = call(&service, json!({ "mode": "recent" })).await;
+    let (value, _) = call(&service, json!({})).await;
     assert_eq!(commits(&value).len(), COMMITS);
     assert!(
         value.get("budgeted").is_none() && value.get("next_cursor").is_none(),
@@ -242,22 +237,33 @@ async fn commit_list_modes_honour_max_tokens() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn foreign_and_missing_fields_are_refused() {
+async fn foreign_fields_and_conflicting_shapes_are_refused() {
     let dir = build_repo();
     let service = spawn(dir.path()).await;
 
-    for args in [
-        json!({ "mode": "recent", "body_chars": 10 }),
-        json!({ "mode": "churn", "max_tokens": 10 }),
-        json!({ "mode": "show" }),
-        json!({ "mode": "show", "sha": "HEAD", "limit": 1 }),
+    for (args, expected) in [
+        (json!({ "body_chars": 10 }), "unknown field `body_chars`"),
+        (json!({ "mode": "recent" }), "unknown field `mode`"),
+        (
+            json!({ "rev": "HEAD", "limit": 1 }),
+            "`rev` shows one commit and takes no `limit` or `cursor`",
+        ),
+        (
+            json!({ "rev": "HEAD", "path": "a.rs" }),
+            "`rev` shows one commit and combines with no other filter",
+        ),
     ] {
-        let result = service.call_tool(call_params(args.clone())).await;
-        let refused = match result {
-            Err(_) => true,
-            Ok(r) => r.is_error == Some(true),
-        };
-        assert!(refused, "{args} must be refused");
+        let result = service
+            .call_tool(call_params(args.clone()))
+            .await
+            .expect("a refusal is a tool result, not a protocol error");
+        assert_eq!(result.is_error, Some(true), "{args} must be refused: {result:?}");
+        let text = result
+            .content
+            .iter()
+            .find_map(|c| c.as_text().map(|t| t.text.clone()))
+            .unwrap_or_default();
+        assert!(text.contains(expected), "{args}: {text}");
     }
 
     let _ = service.cancel().await;

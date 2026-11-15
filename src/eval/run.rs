@@ -1,19 +1,17 @@
-//! Execute one task against a one-shot in-process server (the same `#[tool]` methods the MCP
-//! surface dispatches), score it, and run its token-savings baseline.
+//! Execute one task against a one-shot in-process server (the same tool bodies the MCP surface
+//! runs), score it, and run its token-savings baseline.
 
 use std::path::Path;
 use std::time::Instant;
 
 use anyhow::{Result, anyhow};
 use rmcp::model::{CallToolResult, ContentBlock};
-use serde_json::{Map, Value};
+use serde_json::Value;
 
 use crate::mcp::BasemindServer;
-use crate::mcp::mode::{CodeMode, GitMode, MemoryMode};
-use crate::mcp::params::{CodeParams, GitParams, Lenient, Parameters};
+use crate::mcp::params::parse_args;
 use crate::mcp::savings::estimate_from_text;
 use crate::mcp::tokens::count_tokens;
-use crate::mcp::types_memory::MemoryParams;
 
 use super::baseline::run_baseline;
 use super::extract::extract_items;
@@ -21,43 +19,25 @@ use super::report::{SavingsOutcome, TaskResult};
 use super::score::{Item, score};
 use super::task::{EvalMode, Scoring, Task};
 
-/// Tool arguments with the `mode` discriminator the tool's wire format wants.
-fn wire_args(mode: &str, args: &Value) -> Map<String, Value> {
-    let mut m = args.as_object().cloned().unwrap_or_default();
-    m.insert("mode".into(), Value::String(mode.into()));
-    m
-}
-
-/// Call the tool behind `mode`. Returns the raw response text, or a tool/argument error message.
+/// Call the tool behind `task.mode` with the task's `args`, which are that tool's own arguments.
+/// Returns the raw response text, or a tool/argument error message.
 async fn call(server: &BasemindServer, task: &Task) -> Result<String> {
-    let bad_args = |e: serde_json::Error| anyhow!("invalid args for mode `{}`: {e}", task.mode.as_str());
+    let bad_args = |message: String| anyhow!("invalid args for mode `{}`: {message}", task.mode.as_str());
+    let args = if task.args.is_null() {
+        Value::Object(serde_json::Map::new())
+    } else {
+        task.args.clone()
+    };
     let result: CallToolResult = match task.mode {
-        EvalMode::GitSearch => {
-            let p: GitParams = serde_json::from_value(Value::Object(wire_args(GitMode::Search.as_str(), &task.args)))
-                .map_err(bad_args)?;
-            server.git(Parameters(Lenient(p))).await
+        EvalMode::GitSearch => server.git_log_call(parse_args(args).map_err(bad_args)?).await,
+        EvalMode::Docs => server.docs_search_call(parse_args(args).map_err(bad_args)?).await,
+        EvalMode::Symbols => server.code_symbols_call(parse_args(args).map_err(bad_args)?).await,
+        EvalMode::Outline => server.code_outline_call(parse_args(args).map_err(bad_args)?).await,
+        EvalMode::References | EvalMode::Callers | EvalMode::Dependents => {
+            server.code_refs_call(parse_args(args).map_err(bad_args)?).await
         }
-        EvalMode::Docs => {
-            let p: MemoryParams =
-                serde_json::from_value(Value::Object(wire_args(MemoryMode::Documents.as_str(), &task.args)))
-                    .map_err(bad_args)?;
-            server.memory(Parameters(Lenient(p))).await
-        }
-        other => {
-            let code_mode = match other {
-                EvalMode::Symbols => CodeMode::Symbols,
-                EvalMode::Outline => CodeMode::Outline,
-                EvalMode::References => CodeMode::References,
-                EvalMode::Callers => CodeMode::Callers,
-                EvalMode::Grep => CodeMode::Grep,
-                EvalMode::Find => CodeMode::Find,
-                EvalMode::Dependents => CodeMode::Dependents,
-                EvalMode::GitSearch | EvalMode::Docs => unreachable!("handled above"),
-            };
-            let p: CodeParams =
-                serde_json::from_value(Value::Object(wire_args(code_mode.as_str(), &task.args))).map_err(bad_args)?;
-            server.code(Parameters(Lenient(p))).await
-        }
+        EvalMode::Grep => server.code_grep_call(parse_args(args).map_err(bad_args)?).await,
+        EvalMode::Find => server.find_files_call(parse_args(args).map_err(bad_args)?).await,
     }
     .map_err(|e| anyhow!("{}: {e}", task.mode.tool_key()))?;
 

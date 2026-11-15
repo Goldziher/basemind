@@ -1,81 +1,110 @@
-//! The `git` domain tool shim for `BasemindServer`.
+//! The git verb tools of `BasemindServer`: `git_log`, `git_blame` and `git_diff` (ADR-0018).
 //!
-//! One tool, one required `mode` — working-tree status, commit log, churn, diffs, blame, and
-//! symbol history — dispatched to `helpers_git::run_git`. Thin wrapper: every body lives in
-//! `helpers_git.rs` and `helpers_git_file.rs`.
+//! Thin shims over `helpers_git.rs` / `helpers_git_file.rs`; see `tools.rs` for the shim contract.
 
 use rmcp::ErrorData as McpError;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::CallToolResult;
 use rmcp::tool;
-use serde_json::Value;
 
 use super::BasemindServer;
-use super::helpers::record_call;
-use super::lenient::Lenient;
-use super::types_git::GitParams;
+use super::helpers_git;
+use super::strict::Strict;
+use super::types::{FindCommitsByPathParams, HotFilesParams};
+use super::types_tools::{GitBlameParams, GitDiffParams, GitLogParams};
 
 #[rmcp::tool_router(vis = "pub(super)", router = "tool_router_git")]
 impl BasemindServer {
-    // No `output_schema`: the twelve modes return twelve different response shapes, and SEP-2106
-    // allows exactly one per tool. Declaring a union would mean nested structs, which schemars
-    // emits as `$ref` into `$defs` — the construct that silently dropped the whole registry in
-    // GH #50. The per-mode shapes are documented in the description instead. ~keep
     #[tool(
-        title = "Git history",
-        description = "Read this repository's git history without shelling out to `git log`, \
-        `git blame`, `git diff` or `git status`. `mode` is required. `status` is `git status` for \
-        an agent: staged adds/modifies/deletes, working-tree modifications, untracked files, and \
-        `is_clean` when all five buckets are empty — ask it before assuming the tree is dirty or \
-        clean. `recent` is 'what changed recently': the last N commits on the current branch, \
-        newest first, each with sha, summary, author, unix time and (unless `include_files=false`) \
-        the per-file change list. It is a bounded RECENCY WINDOW, not a search — `limit` is page \
-        size (default 20, max 100), so it sees at most the newest ~100 commits. `search` is the \
-        one for 'what did <author> do', 'which commit mentions X', or '<author>'s last commit': \
-        tokenized AND full-text over the ENTIRE branch history — author name + email, commit \
-        summary, and full body — so it finds matches arbitrarily far back, newest first. `field` \
-        scopes it to `author`, `message`, or `all` (default; `summary`/`body` alias `message`); \
-        served from the git-history index when fresh, otherwise a bounded live fallback flagged \
-        `partial` (author + summary only); each hit's body is cut at `body_chars` (default 1000, 0 omits it) \
-        and flagged `body_truncated`. `show` takes a `sha` (or any revision) and returns that one \
-        commit with its FULL message and changed files — use it to read a body `search` cut. `touching` answers 'when was this file changed' — the \
-        commits that modified one `path`, newest first. `by_path` is a cheap pickaxe: commits in a \
-        recent `window` (default 200, max 1000) whose changed-file list has a path matching the \
-        regex `pattern`; it matches PATHS ONLY, never patch text. `churn` answers 'what changes \
-        most often' / 'where is the hot code': the `top_k` (default 20, max 200) most-frequently \
-        modified files in the last `window` commits (default 200, max 2000), with an \
-        added/modified/deleted breakdown. `diff` is `git diff <rev_old> <rev_new> -- <path>`: \
-        hunks with 1-based old/new line ranges and '-'/'+' prefixed text, plus \
-        `present_at_old`/`present_at_new` when the file exists on only one side. `diff_outline` is \
-        the structural version — which SYMBOLS the current view added, removed, or kept versus \
-        `rev` (default HEAD) — use it to see what a branch introduced without reading the source. \
-        `blame` answers 'who last touched this line' / 'who wrote this': one hunk per consecutive \
-        run of lines sharing a source commit, at `rev` (default HEAD), optionally clamped to \
-        `line_start`..`line_end` (1-based, inclusive, supplied together). `blame_symbol` does the \
-        same for one named symbol — it resolves the symbol through the indexed outline (so the \
-        file must be in the current view), then blames exactly its line span; `kind` disambiguates \
-        same-named symbols. `symbol_history` answers 'when did this function actually change': the \
-        commits where the symbol's BODY fingerprint changed, or where it was introduced or \
-        removed — file-level history filtered down to symbol identity via tree-sitter; `hash_mode` \
-        picks `normalized` (default), `structural`, or `structural_loose`. Paths are \
-        repository-relative and forward-slash. The commit-list modes (`recent`, `touching`, `by_path`, `search`) hold their \
-        output to `max_tokens` (default 20000): overflow is dropped, `budgeted` is set and \
-        `next_cursor` resumes at the first dropped commit. Every paged mode returns `next_cursor`; cursors are \
-        scoped to HEAD and a moved HEAD comes back as `cursor_invalidated`. A shallow clone sets \
-        `truncated` / `truncated_reason`, so a missing commit is inconclusive rather than absent. \
-        Requires a git repository. Parameters that belong to another mode are rejected, not \
-        ignored.",
-        annotations(read_only_hint = true, open_world_hint = false)
+        title = "Commit history",
+        description = "Use instead of `git log`/`git show` for \"what changed recently\", \"what \
+        touched this file\", \"which commit mentions X\" or \"when did this function change\". No \
+        arguments lists recent commits; `path`, `query`/`author`, `path`+`symbol` or `rev` narrow \
+        it. \
+        Example: {\"path\":\"src/store.rs\",\"limit\":5}",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
     )]
-    pub(crate) async fn git(
+    pub(crate) async fn git_log(
         &self,
-        Parameters(Lenient(p)): Parameters<Lenient<GitParams>>,
+        Parameters(args): Parameters<Strict<GitLogParams>>,
     ) -> Result<CallToolResult, McpError> {
-        let __started = std::time::Instant::now();
-        let __key = p.mode.telemetry_key();
-        let __params_json = serde_json::to_value(&p).unwrap_or(Value::Null);
-        let __result: Result<CallToolResult, McpError> = super::helpers_git::run_git(&self.state, p).await;
-        record_call(&self.state, __key, &__params_json, __started, &__result);
-        __result
+        self.answer(args, |p| self.git_log_call(p)).await
+    }
+
+    #[tool(
+        title = "Blame",
+        description = "Use instead of `git blame` for \"who last changed this\": per-line authorship \
+        of a file, of a 1-based `line`..`end_line` span, or of one `symbol`. \
+        Example: {\"path\":\"src/store.rs\",\"symbol\":\"open\"}",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    pub(crate) async fn git_blame(
+        &self,
+        Parameters(args): Parameters<Strict<GitBlameParams>>,
+    ) -> Result<CallToolResult, McpError> {
+        self.answer(args, |p| self.git_blame_call(p)).await
+    }
+
+    #[tool(
+        title = "Diff and status",
+        description = "Use instead of `git status`/`git diff`. No arguments returns the working-tree \
+        status (staged, modified, untracked); `path` with `from` and `to` diffs one file between \
+        revisions; `structural` lists the symbols added and removed instead of text hunks. \
+        Example: {\"path\":\"src/store.rs\",\"from\":\"HEAD~1\",\"to\":\"HEAD\"}",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    pub(crate) async fn git_diff(
+        &self,
+        Parameters(args): Parameters<Strict<GitDiffParams>>,
+    ) -> Result<CallToolResult, McpError> {
+        self.answer(args, |p| self.git_diff_call(p)).await
+    }
+}
+
+impl BasemindServer {
+    /// Body of `git_log`, shared with `basemind git log`.
+    pub(crate) async fn git_log_call(&self, p: GitLogParams) -> Result<CallToolResult, McpError> {
+        crate::instrument_tool!(&self.state, "git_log", p, helpers_git::git_log(&self.state, p))
+    }
+
+    /// Body of `git_blame`, shared with `basemind git blame`.
+    pub(crate) async fn git_blame_call(&self, p: GitBlameParams) -> Result<CallToolResult, McpError> {
+        crate::instrument_tool!(
+            &self.state,
+            "git_blame",
+            p,
+            helpers_git::git_blame(&self.state, p).await
+        )
+    }
+
+    /// Body of `git_diff`, shared with `basemind git diff`.
+    pub(crate) async fn git_diff_call(&self, p: GitDiffParams) -> Result<CallToolResult, McpError> {
+        crate::instrument_tool!(&self.state, "git_diff", p, helpers_git::git_diff(&self.state, p).await)
+    }
+
+    /// Churn-ranked files. No MCP tool: `basemind git churn`.
+    pub(crate) fn git_churn_call(&self, p: HotFilesParams) -> Result<CallToolResult, McpError> {
+        helpers_git::run_churn(&self.state, p)
+    }
+
+    /// Commits whose changed paths match a regex. No MCP tool of its own (`git_log` with a
+    /// directory `path` covers the common case): `basemind git by-path`.
+    pub(crate) fn git_by_path_call(&self, p: FindCommitsByPathParams) -> Result<CallToolResult, McpError> {
+        helpers_git::run_by_path(&self.state, p)
     }
 }

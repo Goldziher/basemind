@@ -138,7 +138,11 @@ async fn hosted_tool_call(
     tool: &str,
     arguments: Value,
 ) -> Value {
-    let mode = arguments["mode"].as_str().unwrap_or("unknown");
+    // Only the mode-dispatched tools (`agents`, `workspace`) carry a `mode`.
+    let call = match arguments["mode"].as_str() {
+        Some(mode) => format!("{tool}/{mode}"),
+        None => tool.to_string(),
+    };
     let target = format!("/mcp?root={}&agent={agent}", root.display());
     let body = json!({
         "jsonrpc": "2.0",
@@ -169,15 +173,15 @@ async fn hosted_tool_call(
         .and_then(|code| code.parse::<u16>().ok())
         .unwrap_or_else(|| panic!("hosted MCP response has no status: {response}"));
     let response_body = response.split("\r\n\r\n").nth(1).unwrap_or_default();
-    assert_eq!(status, 200, "hosted {tool}/{mode} must return 200: {response_body}");
+    assert_eq!(status, 200, "hosted {call} must return 200: {response_body}");
     assert!(
         !response_body.contains("SpawnTimeout")
             && !response_body.contains("spawned comms daemon")
             && !response_body.contains("contender"),
-        "hosted {tool}/{mode} must not probe or spawn a daemon contender: {response_body}"
+        "hosted {call} must not probe or spawn a daemon contender: {response_body}"
     );
     serde_json::from_str(response_body)
-        .unwrap_or_else(|error| panic!("hosted {tool}/{mode} response is not JSON ({error}): {response_body}"))
+        .unwrap_or_else(|error| panic!("hosted {call} response is not JSON ({error}): {response_body}"))
 }
 
 /// Run a git command in `cwd`, asserting success.
@@ -385,9 +389,8 @@ async fn hosted_keyword_search_reads_the_daemon_index_without_self_forwarding() 
             &repo,
             "hosted-keyword-search",
             1,
-            "code",
+            "code_search",
             json!({
-                "mode": "semantic",
                 "query": "parse config",
                 "lane": "keyword",
                 "limit": 10
@@ -1234,7 +1237,7 @@ fn hosted_payload(response: &Value) -> Value {
     serde_json::from_str(text).unwrap_or_else(|error| panic!("hosted payload is not JSON ({error}): {text}"))
 }
 
-/// Page through a hosted `code` query via `next_cursor`, returning the reported total and every hit.
+/// Page through a hosted `code_refs` query via `next_cursor`, returning the reported total and every hit.
 async fn hosted_paginated(addr: &str, token: &str, repo: &Path, tool_args: Value) -> (Value, Vec<Value>) {
     const HOSTED_CALL_BOUND: Duration = Duration::from_secs(30);
     let mut hits: Vec<Value> = Vec::new();
@@ -1242,16 +1245,12 @@ async fn hosted_paginated(addr: &str, token: &str, repo: &Path, tool_args: Value
     let mut total = Value::Null;
     for id in 1..200usize {
         let mut arguments = tool_args.clone();
-        if arguments["mode"] == "references" {
-            // Only `references` takes a wire format; pin JSON so the hits decode.
-            arguments["format"] = json!("json");
-        }
         if let Some(cursor) = &cursor {
             arguments["cursor"] = json!(cursor);
         }
         let response = tokio::time::timeout(
             HOSTED_CALL_BOUND,
-            hosted_tool_call(addr, token, repo, "refs-hosted", id, "code", arguments),
+            hosted_tool_call(addr, token, repo, "refs-hosted", id, "code_refs", arguments),
         )
         .await
         .expect("hosted call completes");
@@ -1260,6 +1259,11 @@ async fn hosted_paginated(addr: &str, token: &str, repo: &Path, tool_args: Value
             // `total` counts matches from the cursor onward, so only the first page reports the whole.
             total = payload["total"].clone();
         }
+        assert_ne!(
+            response["result"]["isError"],
+            Value::Bool(true),
+            "hosted code_refs returned a tool error: {response}"
+        );
         assert!(
             payload.get("notice").is_none() || payload["notice"].is_null(),
             "a complete answer carries no truncation notice: {payload}"
@@ -1318,11 +1322,32 @@ async fn daemon_backed_references_and_implementations_equal_the_writer_session()
         String::from_utf8_lossy(&scan.stderr)
     );
 
-    let truth_refs = writer_truth(&repo, &comms_dir, &["code", "references", "get_arg", "--limit", "1000"]);
+    // An explicit budget far above the page: the default one would cut the ground truth short.
+    let truth_refs = writer_truth(
+        &repo,
+        &comms_dir,
+        &[
+            "code",
+            "references",
+            "get_arg",
+            "--limit",
+            "1000",
+            "--max-tokens",
+            "1000000",
+        ],
+    );
     let truth_impls = writer_truth(
         &repo,
         &comms_dir,
-        &["code", "implementations", "Tr1", "--limit", "1000"],
+        &[
+            "code",
+            "implementations",
+            "Tr1",
+            "--limit",
+            "1000",
+            "--max-tokens",
+            "1000000",
+        ],
     );
     assert_eq!(
         truth_refs["total"],
@@ -1384,13 +1409,7 @@ async fn daemon_backed_references_and_implementations_equal_the_writer_session()
         .await
         .expect("daemon-hosted MCP transport ready");
     let token = http_frontend::published_token(&comms_dir).expect("the daemon publishes its bearer token");
-    let (total, hits) = hosted_paginated(
-        &addr,
-        &token,
-        &repo,
-        json!({"mode": "references", "name": "get_arg", "limit": 40}),
-    )
-    .await;
+    let (total, hits) = hosted_paginated(&addr, &token, &repo, json!({"name": "get_arg", "limit": 40})).await;
     assert_eq!(
         total, truth_refs["total"],
         "hosted references total equals the writer's"
@@ -1404,7 +1423,7 @@ async fn daemon_backed_references_and_implementations_equal_the_writer_session()
         &addr,
         &token,
         &repo,
-        json!({"mode": "implementations", "trait_name": "Tr1", "limit": 9}),
+        json!({"name": "Tr1", "relation": "implementations", "limit": 9}),
     )
     .await;
     assert_eq!(
@@ -1479,18 +1498,21 @@ async fn daemon_hosts_cold_layered_files_and_symbols_without_standalone_fjall() 
         .await
         .unwrap();
     let token = http_frontend::published_token(&comms).unwrap();
-    for (id, args, expected) in [
-        (1, json!({"mode":"find","query":"cold.rs"}), "cold.rs"),
-        (6, json!({"mode":"symbols","name":"alpha"}), "alpha"),
+    for (id, tool, args, expected) in [
+        (1, "find_files", json!({"query":"cold.rs"}), "cold.rs"),
+        (6, "code_symbols", json!({"name":"alpha"}), "alpha"),
         (
             2,
-            json!({"mode":"symbols","name":"cold_layered_symbol"}),
+            "code_symbols",
+            json!({"name":"cold_layered_symbol"}),
             "cold_layered_symbol",
         ),
     ] {
-        let response = hosted_tool_call(&addr, &token, &root, "cold-layered", id, "code", args).await;
+        let response = hosted_tool_call(&addr, &token, &root, "cold-layered", id, tool, args).await;
         assert!(
-            response.get("error").is_none() && response.to_string().contains(expected),
+            response.get("error").is_none()
+                && response["result"]["isError"] != Value::Bool(true)
+                && response.to_string().contains(expected),
             "{response}"
         );
     }
@@ -1505,12 +1527,14 @@ async fn daemon_hosts_cold_layered_files_and_symbols_without_standalone_fjall() 
         &root,
         "cold-layered",
         3,
-        "admin",
-        json!({"mode":"rescan","paths":["cold.rs"]}),
+        "index_rescan",
+        json!({"paths":["cold.rs"]}),
     )
     .await;
     assert!(
-        refresh.get("error").is_none() && refresh["result"].is_object(),
+        refresh.get("error").is_none()
+            && refresh["result"].is_object()
+            && refresh["result"]["isError"] != Value::Bool(true),
         "{refresh}"
     );
     for (id, name) in [
@@ -1526,8 +1550,8 @@ async fn daemon_hosts_cold_layered_files_and_symbols_without_standalone_fjall() 
                 &root,
                 "cold-layered",
                 id,
-                "code",
-                json!({"mode":"symbols","name":name}),
+                "code_symbols",
+                json!({"name":name}),
             )
             .await;
             assert!(response.get("error").is_none(), "{response}");

@@ -1,6 +1,5 @@
-//! End-to-end checks of the CLI's output contract: `--format toon` renders, human output never
-//! shortens a body, the timing footer stays off stdout, and `--cursor` / `--max-tokens` reach the
-//! MCP tool.
+//! End-to-end checks of the CLI's output contract: human output never shortens a body, the timing
+//! footer stays off stdout, and `--cursor` / `--max-tokens` reach the MCP tool.
 
 use std::path::Path;
 use std::process::{Command, Output};
@@ -86,31 +85,15 @@ fn stdout(out: &Output) -> String {
 }
 
 #[test]
-fn code_expand_prints_the_whole_body_and_keeps_timing_off_stdout() {
+fn code_read_prints_the_whole_body_and_keeps_timing_off_stdout() {
     let dir = build_repo();
-    let out = run(dir.path(), &["code", "expand", "a.rs", "alpha"]);
+    let out = run(dir.path(), &["code", "read", "a.rs", "--symbol", "alpha"]);
     let text = stdout(&out);
     assert!(text.contains(&"z".repeat(400)), "the body was shortened:\n{text}");
     assert!(!text.contains('…'), "no ellipsis in a raw body:\n{text}");
     assert!(!text.contains("startup"), "timing footer leaked onto stdout:\n{text}");
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(err.contains("startup"), "timing footer must be on stderr:\n{err}");
-}
-
-#[test]
-fn format_toon_renders_and_json_wins_over_it() {
-    let dir = build_repo();
-    let toon = stdout(&run(dir.path(), &["code", "symbols", "a", "--format", "toon"]));
-    assert!(
-        toon.contains("results[") && toon.contains("]{"),
-        "expected a TOON table:\n{toon}"
-    );
-    let json = stdout(&run(
-        dir.path(),
-        &["--json", "code", "symbols", "a", "--format", "toon"],
-    ));
-    let parsed: serde_json::Value = serde_json::from_str(&json).expect("--json prints JSON even with toon");
-    assert!(parsed["results"].is_array(), "{json}");
 }
 
 #[test]
@@ -277,7 +260,7 @@ fn cold_dirty_scan_publishes_delta_without_standalone_fjall() {
     assert!(!cache.join("views/working/index.fjall").exists());
     assert!(basemind::store_base::has_published_dirty_worktree(root, &config).unwrap());
     for (args, expected) in [
-        (vec!["code", "files", "--path-contains", "sample.rs"], "sample.rs"),
+        (vec!["code", "files", "--path-prefix", "sample.rs"], "sample.rs"),
         (vec!["code", "symbols", "after_symbol"], "after_symbol"),
     ] {
         let query = basemind(&comms)
@@ -330,7 +313,7 @@ fn cold_dirty_scan_publishes_delta_without_standalone_fjall() {
         response
     };
     let requests: &[(&[&str], &str)] = &[
-        (&["code", "outline", "sample.rs", "--l2"], "after"),
+        (&["code", "outline", "sample.rs"], "after_symbol"),
         (&["git", "status"], "sample.rs"),
         (&["git", "recent", "--limit", "1"], "fixture"),
     ];

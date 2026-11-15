@@ -1,9 +1,8 @@
-//! Request/response shapes for the consolidated `git` domain tool.
+//! Internal request shapes and response payloads of the git bodies.
 //!
-//! [`GitParams`] is what crosses the wire: one flat parameter object with a required [`GitMode`]
-//! selecting the operation and every per-mode field an optional sibling. The per-operation structs
-//! below (`RecentChangesParams`, `BlameFileParams`, …) stay as the helpers' internal shapes, so the
-//! bodies keep taking exactly the arguments they always did.
+//! The wire arguments of `git_log` / `git_blame` / `git_diff` live in `types_tools.rs`; the
+//! per-operation structs below (`RecentChangesParams`, `BlameFileParams`, …) are what the bodies in
+//! `helpers_git.rs` / `helpers_git_file.rs` take.
 //!
 //! Split out of `types.rs` to keep both files within the per-file size budget; the public paths stay
 //! stable via re-exports in `types.rs`.
@@ -12,127 +11,11 @@ use rmcp::schemars;
 use serde::{Deserialize, Serialize};
 
 use super::cursor::Cursor;
-use super::mode::GitMode;
 use super::types::default_true;
 use crate::path::RelPath;
 
-/// Wire parameters for the `git` tool.
-///
-/// Only `mode` is required. Every other field belongs to one or more modes and is rejected — not
-/// ignored — when passed to a mode that has no use for it (see [`super::mode::reject_unsupported`]);
-/// a mode that cannot run without one names the exact `mode`/field pair.
-#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
-pub struct GitParams {
-    /// Which operation to run.
-    pub mode: GitMode,
-    /// Repo-relative path; required by touching/diff/diff_outline/blame/blame_symbol/symbol_history.
-    #[serde(default)]
-    pub path: Option<RelPath>,
-    /// `by_path` — a regular expression matched against each commit's changed **file paths**; and
-    /// `search` — a full-text query over commit author + message, tokenized (lowercased, split on
-    /// non-alphanumeric) and matched as an AND. Required by both modes.
-    #[serde(
-        default,
-        alias = "query",
-        alias = "needle",
-        alias = "regex",
-        alias = "q",
-        alias = "search"
-    )]
-    /// `by_path`: regex over changed file paths. `search`: AND-matched full-text query over author + message. Required by both.
-    pub pattern: Option<String>,
-    /// `search`: `author`, `message` or `all` (default).
-    #[serde(default)]
-    #[schemars(extend("enum" = ["author", "message", "all"]))]
-    pub field: Option<String>,
-    /// `blame_symbol`/`symbol_history`: symbol name in `path` (required).
-    #[serde(default, alias = "symbol")]
-    pub name: Option<String>,
-    /// `blame_symbol`/`symbol_history`: symbol kind to disambiguate (`function`, `struct`, ...).
-    #[serde(default)]
-    pub kind: Option<String>,
-    /// Page size; default and cap vary per mode (see tool description).
-    #[serde(default)]
-    pub limit: Option<u32>,
-    /// Resume token from the previous `next_cursor`.
-    #[serde(default)]
-    pub cursor: Option<Cursor>,
-    /// `recent`/`touching`/`by_path`/`search`: token budget for the returned commit list (default
-    /// 20000). Commits past the budget are dropped, `budgeted: true` is set and `next_cursor`
-    /// resumes at the first dropped commit. At least one commit is always returned.
-    #[serde(default, alias = "token_budget", alias = "budget")]
-    pub max_tokens: Option<u32>,
-    /// `search` only: cap each hit's commit body at this many characters (default 1000, 0 omits
-    /// the body). A cut body ends in a marker and sets `body_truncated`; `show` returns it whole.
-    #[serde(default)]
-    pub body_chars: Option<u32>,
-    /// `show` only: commit to show, a full or abbreviated sha or any revision (required).
-    #[serde(default, alias = "commit", alias = "revision")]
-    pub sha: Option<String>,
-    /// `recent` only. Include each commit's per-file change list. Default true.
-    #[serde(default)]
-    pub include_files: Option<bool>,
-    /// `churn` only. How many files to keep in the churn ranking. Default 20, max 200.
-    #[serde(default)]
-    pub top_k: Option<u32>,
-    /// `by_path`/`churn`: commits back from HEAD to inspect (default 200).
-    #[serde(default)]
-    pub window: Option<u32>,
-    /// `diff_outline`, `blame`, `blame_symbol`. Revision to read at. Defaults to HEAD.
-    #[serde(default)]
-    pub rev: Option<String>,
-    /// `diff` only. Left-hand revision. Required by that mode.
-    #[serde(default)]
-    pub rev_old: Option<String>,
-    /// `diff` only. Right-hand revision. Required by that mode.
-    #[serde(default)]
-    pub rev_new: Option<String>,
-    /// `blame`: 1-based first line; pair with `line_end`.
-    #[serde(default)]
-    pub line_start: Option<u32>,
-    /// `blame`: 1-based last line, inclusive; pair with `line_start`.
-    #[serde(default)]
-    pub line_end: Option<u32>,
-    /// `symbol_history` only. Fingerprint strategy for detecting body changes between commits:
-    /// `normalized` (default), `structural`, or `structural_loose`.
-    #[serde(default)]
-    #[schemars(extend("enum" = ["normalized", "structural", "structural_loose"]))]
-    pub hash_mode: Option<String>,
-}
-
-impl GitParams {
-    /// A call carrying only `mode`. Callers set the fields their mode uses and leave the rest
-    /// `None`: the helper rejects a field belonging to another mode, so populating them blindly
-    /// would fail the call.
-    pub fn new(mode: GitMode) -> Self {
-        Self {
-            mode,
-            path: None,
-            pattern: None,
-            field: None,
-            name: None,
-            kind: None,
-            limit: None,
-            cursor: None,
-            max_tokens: None,
-            body_chars: None,
-            sha: None,
-            include_files: None,
-            top_k: None,
-            window: None,
-            rev: None,
-            rev_old: None,
-            rev_new: None,
-            line_start: None,
-            line_end: None,
-            hash_mode: None,
-        }
-    }
-}
-
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct SearchGitHistoryParams {
-    #[serde(alias = "query", alias = "needle", alias = "q", alias = "search", alias = "text")]
     /// Full-text query over commit history. Tokenized (lowercased, split on non-alphanumeric) and
     /// matched as an AND — a commit is returned only when EVERY query token is present in the
     /// scoped field. `"null deref"` requires both `null` and `deref`; `"jane@example.com"` matches
@@ -152,15 +35,12 @@ pub struct SearchGitHistoryParams {
     pub cursor: Option<Cursor>,
     /// Token budget for the returned hits. Default 20000; overflow is dropped, `budgeted: true`
     /// is set and `next_cursor` resumes at the first dropped hit.
-    #[serde(default, alias = "token_budget", alias = "budget")]
+    #[serde(default)]
     pub max_tokens: Option<u32>,
     /// Cap on each hit's commit body, in characters. Default 1000; 0 omits the body.
     #[serde(default)]
     pub body_chars: Option<u32>,
 }
-
-#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
-pub struct WorkingTreeStatusParams {}
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct RecentChangesParams {
@@ -177,7 +57,7 @@ pub struct RecentChangesParams {
     pub cursor: Option<Cursor>,
     /// Token budget for the returned commits. Default 20000; overflow is dropped, `budgeted: true`
     /// is set and `next_cursor` resumes at the first dropped commit.
-    #[serde(default, alias = "token_budget", alias = "budget")]
+    #[serde(default)]
     pub max_tokens: Option<u32>,
 }
 
@@ -195,7 +75,7 @@ pub struct CommitsTouchingParams {
     pub cursor: Option<Cursor>,
     /// Token budget for the returned commits. Default 20000; overflow is dropped, `budgeted: true`
     /// is set and `next_cursor` resumes at the first dropped commit.
-    #[serde(default, alias = "token_budget", alias = "budget")]
+    #[serde(default)]
     pub max_tokens: Option<u32>,
 }
 
@@ -229,7 +109,6 @@ pub struct BlameFileParams {
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct FindCommitsByPathParams {
-    #[serde(alias = "query", alias = "needle", alias = "regex", alias = "q", alias = "search")]
     /// Regular expression matched against each commit's changed **file paths** (not commit
     /// messages): a commit is returned when any path it touched matches. Invalid regex is a
     /// param error.
@@ -245,7 +124,7 @@ pub struct FindCommitsByPathParams {
     pub cursor: Option<Cursor>,
     /// Token budget for the returned commits. Default 20000; overflow is dropped, `budgeted: true`
     /// is set and `next_cursor` resumes at the first dropped commit.
-    #[serde(default, alias = "token_budget", alias = "budget")]
+    #[serde(default)]
     pub max_tokens: Option<u32>,
 }
 
@@ -267,7 +146,6 @@ pub struct DiffFileParams {
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct SymbolHistoryParams {
     pub path: RelPath,
-    #[serde(alias = "symbol", alias = "needle", alias = "query")]
     pub name: String,
     #[serde(default)]
     pub kind: Option<String>,
@@ -290,7 +168,6 @@ pub struct SymbolHistoryParams {
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct BlameSymbolParams {
     pub path: RelPath,
-    #[serde(alias = "symbol", alias = "needle", alias = "query")]
     pub name: String,
     #[serde(default)]
     pub kind: Option<String>,
@@ -337,7 +214,7 @@ pub(in crate::mcp) struct GitCommitHit {
     /// Full message body, present only for indexed hits with a non-empty body.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub body: String,
-    /// True when `body` was cut at `body_chars`; it then ends in a marker naming `git` mode `show`.
+    /// True when `body` was cut at `body_chars`; it then ends in a marker naming `git_log` with `rev`.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub body_truncated: bool,
     /// Full body length in bytes, present only when `body_truncated`.
@@ -345,7 +222,7 @@ pub(in crate::mcp) struct GitCommitHit {
     pub body_bytes: Option<usize>,
 }
 
-/// Response of `git` mode `show`: one commit with its whole message and changed-file list.
+/// Response of `git_log` with `rev`: one commit with its whole message and changed-file list.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(in crate::mcp) struct GitShowResponse {
     pub commit: GitCommitHit,
@@ -623,31 +500,6 @@ pub(in crate::mcp) struct SymbolHistoryEntry {
     pub author: String,
     pub author_time_unix: i64,
     pub change: &'static str,
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn find_commits_by_path_accepts_query_alias_for_pattern() {
-        let params: FindCommitsByPathParams = serde_json::from_value(serde_json::json!({ "query": "fix:" })).unwrap();
-        assert_eq!(params.pattern, "fix:");
-    }
-
-    #[test]
-    fn symbol_history_accepts_symbol_alias_for_name() {
-        let params: SymbolHistoryParams =
-            serde_json::from_value(serde_json::json!({ "path": "src/lib.rs", "symbol": "scan" })).unwrap();
-        assert_eq!(params.name, "scan");
-    }
-
-    #[test]
-    fn blame_symbol_accepts_needle_alias_for_name() {
-        let params: BlameSymbolParams =
-            serde_json::from_value(serde_json::json!({ "path": "src/lib.rs", "needle": "scan" })).unwrap();
-        assert_eq!(params.name, "scan");
-    }
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]

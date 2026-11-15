@@ -1,12 +1,9 @@
-//! The live MCP surface: tool input schemas, and a per-mode probe of which parameters each mode
-//! accepts and requires.
+//! The live MCP surface: every advertised tool's input schema, parsed.
 //!
-//! basemind publishes ONE flat input schema per domain tool (the Anthropic subset forbids `oneOf`),
-//! so the schema alone cannot say which fields belong to which mode. The server's own validator can:
-//! it rejects out-of-mode fields up front with ``` `<tool>` mode `<m>` does not accept `a`, `b` ```,
-//! and reports missing ones as ``` requires `f` ```. The probe drives those messages through an
-//! in-process MCP client, so the "accepted"/"required" sets are what the real validator enforces,
-//! not what a doc comment claims.
+//! A verb tool has an exact schema of its own (ADR-0018), so the fields it accepts and requires are
+//! read straight from it. The two domain tools that are still mode-dispatched (`agents`,
+//! `workspace`) publish one flat schema for all their modes, which cannot say which field belongs to
+//! which mode; their parameters are compared domain-wide.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -15,7 +12,7 @@ use basemind::config::DocumentsCliOverrides;
 use basemind::store::VIEW_WORKING;
 use rmcp::ServiceExt;
 use rmcp::model::{CallToolRequestParams, ContentBlock};
-use serde_json::{Value, json};
+use serde_json::Value;
 
 use crate::fixture;
 
@@ -37,11 +34,24 @@ pub struct Field {
     pub default: Option<String>,
 }
 
-/// One domain tool: its flat field set and its `mode` enum.
+/// One tool: its field set, the fields its schema requires, and its `mode` enum (empty for a verb
+/// tool).
 #[derive(Debug, Clone)]
 pub struct Domain {
     pub fields: BTreeMap<String, Field>,
+    pub required: BTreeSet<String>,
     pub modes: Vec<String>,
+}
+
+impl Domain {
+    /// The exact accepted/required sets of a verb tool; `None` for a mode-dispatched domain tool,
+    /// whose flat schema cannot attribute fields to modes.
+    pub fn exact_params(&self) -> Option<ModeParams> {
+        self.modes.is_empty().then(|| ModeParams {
+            accepted: self.fields.keys().cloned().collect(),
+            required: self.required.clone(),
+        })
+    }
 }
 
 fn kind_of(schema: &Value) -> Kind {
@@ -83,6 +93,10 @@ pub fn domains() -> BTreeMap<String, Domain> {
         .map(|(name, schema)| {
             let props = schema["properties"].as_object().cloned().unwrap_or_default();
             let modes = props.get("mode").map(|m| string_list(&m["enum"])).unwrap_or_default();
+            let required = string_list(&schema["required"])
+                .into_iter()
+                .filter(|field| field != "mode")
+                .collect();
             let fields = props
                 .iter()
                 .filter(|(k, _)| k.as_str() != "mode")
@@ -101,27 +115,23 @@ pub fn domains() -> BTreeMap<String, Domain> {
                     )
                 })
                 .collect();
-            (name, Domain { fields, modes })
+            (
+                name,
+                Domain {
+                    fields,
+                    required,
+                    modes,
+                },
+            )
         })
         .collect()
 }
 
-/// What one mode accepts and requires, as enforced by the server's validator.
+/// What one operation accepts and requires.
 #[derive(Debug, Clone)]
 pub struct ModeParams {
     pub accepted: BTreeSet<String>,
     pub required: BTreeSet<String>,
-}
-
-/// Tools whose handlers can reach the network, spawn processes, download models or need the comms
-/// broker. They are not probed (probing executes the handler whenever a field is accepted); their
-/// parameters are compared domain-wide instead.
-const UNPROBED_TOOLS: &[&str] = &["memory", "agents", "workspace"];
-/// Individual modes that run the embedding stack when their fields are accepted.
-const UNPROBED_MODES: &[(&str, &str)] = &[("code", "semantic"), ("code", "chunk")];
-
-pub fn is_probed(tool: &str, mode: &str) -> bool {
-    !UNPROBED_TOOLS.contains(&tool) && !UNPROBED_MODES.contains(&(tool, mode))
 }
 
 /// A live in-process MCP client/server pair over a freshly scanned fixture repo.
@@ -161,90 +171,4 @@ impl Session {
         }
         serde_json::from_str(&text).map_err(|e| format!("non-JSON payload ({e}): {text}"))
     }
-
-    /// Probe which fields `mode` accepts and requires.
-    pub async fn probe(&self, tool: &str, mode: &str, domain: &Domain) -> ModeParams {
-        let dummy = |name: &str| -> Value {
-            let field = &domain.fields[name];
-            match field.kind {
-                Kind::Bool => json!(true),
-                Kind::Int => json!(1),
-                Kind::List => json!(["x"]),
-                _ => json!(field.enum_values.first().cloned().unwrap_or_else(|| "x".to_string())),
-            }
-        };
-        let with = |names: &[&String]| -> Value {
-            let mut args = serde_json::Map::new();
-            args.insert("mode".into(), json!(mode));
-            for name in names {
-                args.insert((*name).clone(), dummy(name));
-            }
-            Value::Object(args)
-        };
-
-        // All fields at once: the validator names every out-of-mode field in one message.
-        let all: Vec<&String> = domain.fields.keys().collect();
-        let mut rejected = rejected_in(&self.call(tool, with(&all)).await);
-        if rejected.is_empty() {
-            // Dummies failed to deserialize (or nothing was rejected): ask one field at a time.
-            for name in &all {
-                if rejected_in(&self.call(tool, with(&[name])).await).contains(*name) {
-                    rejected.insert((*name).clone());
-                }
-            }
-        }
-        let accepted: BTreeSet<String> = all
-            .iter()
-            .filter(|n| !rejected.contains(**n))
-            .map(|n| (*n).clone())
-            .collect();
-
-        // Required: keep supplying whatever the validator says it still requires.
-        let mut required = BTreeSet::new();
-        for _ in 0..12 {
-            let supplied: Vec<&String> = required.iter().collect();
-            let Err(message) = self.call(tool, with(&supplied)).await else {
-                break;
-            };
-            let missing: Vec<String> = backticked_after(&message, &["requires ", "missing field "])
-                .into_iter()
-                .filter(|f| domain.fields.contains_key(f) && !required.contains(f))
-                .collect();
-            if missing.is_empty() {
-                break;
-            }
-            required.extend(missing);
-        }
-        ModeParams { accepted, required }
-    }
-}
-
-/// Field names a `does not accept` error lists.
-fn rejected_in(result: &Result<Value, String>) -> BTreeSet<String> {
-    match result {
-        Err(message) if message.contains("does not accept") => {
-            backticked_after(message, &["does not accept "]).into_iter().collect()
-        }
-        _ => BTreeSet::new(),
-    }
-}
-
-/// Backtick-quoted identifiers following any of the `markers` (``requires `path` ``, ``does not
-/// accept `a`, `b` ``). Takes the run of `` `x` `` tokens joined by `, `/` and `/` or `.
-fn backticked_after(message: &str, markers: &[&str]) -> Vec<String> {
-    let mut out = Vec::new();
-    for marker in markers {
-        let Some(start) = message.find(marker) else { continue };
-        let mut rest = &message[start + marker.len()..];
-        while let Some(tail) = rest.strip_prefix('`') {
-            let Some(end) = tail.find('`') else { break };
-            out.push(tail[..end].to_string());
-            rest = tail[end + 1..].trim_start_matches([',', ' ']);
-            rest = rest
-                .strip_prefix("and ")
-                .or_else(|| rest.strip_prefix("or "))
-                .unwrap_or(rest);
-        }
-    }
-    out
 }

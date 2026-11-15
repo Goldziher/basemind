@@ -24,18 +24,18 @@ macro_rules! choice_enum {
 }
 
 choice_enum! {
-    /// `code semantic` retrieval lane.
+    /// `code search` retrieval lane.
     SearchLane { Hybrid => "hybrid", Semantic => "semantic", Keyword => "keyword" }
 }
 
 choice_enum! {
-    /// `git search` field.
-    CommitField { Author => "author", Message => "message", All => "all" }
-}
-
-choice_enum! {
-    /// `git symbol-history` fingerprint strategy.
-    HashMode { Normalized => "normalized", Structural => "structural", StructuralLoose => "structural_loose" }
+    /// `code refs` relation.
+    RefsRelation {
+        Callers => "callers",
+        Implementations => "implementations",
+        Importers => "importers",
+        Definition => "definition",
+    }
 }
 
 choice_enum! {

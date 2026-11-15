@@ -1,10 +1,10 @@
-//! Helper bodies for the consolidated `git` domain tool — one `run_<mode>` per [`GitMode`], plus
-//! the [`run_git`] dispatcher the `#[tool]` shim and the CLI both call.
+//! Bodies of the git verb tools (`git_log`, `git_blame`, `git_diff`) and of the commit-log
+//! operations behind them.
 //!
 //! This file owns the commit-log family (`status`, `recent`, `touching`, `by_path`, `churn`,
-//! `search`); the five modes scoped to a single path (`diff`, `diff_outline`, `blame`,
+//! `search`); the operations scoped to a single path (`diff`, `diff_outline`, `blame`,
 //! `blame_symbol`, `symbol_history`) live in `helpers_git_file.rs`. The split is only about the
-//! 1000-line per-file cap — both halves are reached through the dispatcher here.
+//! 1000-line per-file cap.
 
 use rmcp::ErrorData as McpError;
 use rmcp::model::CallToolResult;
@@ -15,215 +15,191 @@ use super::helpers::{
     head_snapshot_id, json_result, require_git_repo,
 };
 use super::helpers_git_show::{budget_commits, commit_to_hit, resolve_body_chars, run_show};
-use super::mode::{GitMode, reject_unsupported};
+use super::tool_contract::budget;
 use super::types::{
-    CommitView, CommitsTouchingParams, CommitsTouchingResponse, FindCommitsByPathParams, FindCommitsByPathResponse,
-    HotFileEntry, HotFilesParams, HotFilesResponse, RecentChangesParams, RecentChangesResponse, SearchGitHistoryParams,
-    SearchGitHistoryResponse, WorkingTreeStatusView,
+    BlameFileParams, BlameSymbolParams, CommitView, CommitsTouchingParams, CommitsTouchingResponse, DiffFileParams,
+    DiffOutlineParams, FindCommitsByPathParams, FindCommitsByPathResponse, HotFileEntry, HotFilesParams,
+    HotFilesResponse, RecentChangesParams, RecentChangesResponse, SearchGitHistoryParams, SearchGitHistoryResponse,
+    SymbolHistoryParams, WorkingTreeStatusView,
 };
-use super::types_git::GitParams;
+use super::types_tools::{GitBlameParams, GitDiffParams, GitLogParams};
 use crate::git::CommitInfo;
 use crate::git_history::fts::{self, FtsScope};
 use crate::path::RelPath;
 
-/// Fail a mode that was given a field belonging to some other mode.
-///
-/// Inverted against `allowed` rather than listing every rejected field per mode: with eleven modes
-/// and sixteen sibling fields, an explicit per-mode reject list is where a newly added field
-/// silently becomes accept-everywhere.
-fn reject_foreign_fields(mode: GitMode, present: &[(&str, bool)], allowed: &[&str]) -> Result<(), McpError> {
-    let foreign: Vec<(&str, bool)> = present
-        .iter()
-        .filter(|(field, _)| !allowed.contains(field))
-        .copied()
-        .collect();
-    reject_unsupported(GitMode::DOMAIN, mode.as_str(), &foreign)
+/// The argument shapes `git_log` accepts, quoted in every shape error.
+const LOG_SHAPES: &str = "accepted shapes: {} (recent commits), {path} (commits touching a file, or a directory when \
+     it ends with `/`), {query} and/or {author} (search messages / authors), {path, symbol} (when a symbol's body \
+     changed), {rev} (one commit in full); `limit`, `cursor` and `max_tokens` page every list";
+
+/// `git_log`: recent commits, a path's history, a commit search, a symbol's history, or one commit.
+pub(super) fn git_log(state: &ServerState, p: GitLogParams) -> Result<CallToolResult, McpError> {
+    let shape_error = |problem: &str| McpError::invalid_params(format!("`git_log`: {problem}; {LOG_SHAPES}"), None);
+    let max_tokens = budget(p.max_tokens);
+
+    if let Some(rev) = p.rev {
+        if p.path.is_some() || p.query.is_some() || p.author.is_some() || p.symbol.is_some() {
+            return Err(shape_error("`rev` shows one commit and combines with no other filter"));
+        }
+        if p.limit.is_some() || p.cursor.is_some() {
+            return Err(shape_error("`rev` shows one commit and takes no `limit` or `cursor`"));
+        }
+        return run_show(state, &rev);
+    }
+    if let Some(symbol) = p.symbol {
+        let Some(path) = p.path else {
+            return Err(shape_error("`symbol` needs the `path` of the file defining it"));
+        };
+        if p.query.is_some() || p.author.is_some() {
+            return Err(shape_error(
+                "`symbol` history does not combine with `query` or `author`",
+            ));
+        }
+        return super::helpers_git_file::run_symbol_history(
+            state,
+            SymbolHistoryParams {
+                path,
+                name: symbol,
+                kind: None,
+                limit: p.limit,
+                hash_mode: None,
+                cursor: p.cursor,
+            },
+        );
+    }
+    if p.query.is_some() || p.author.is_some() {
+        if p.path.is_some() {
+            return Err(shape_error(
+                "`query` / `author` search the whole history and do not combine with `path`",
+            ));
+        }
+        let (pattern, field) = match (p.query, p.author) {
+            (Some(query), Some(author)) => (format!("{query} {author}"), "all"),
+            (Some(query), None) => (query, "message"),
+            (None, Some(author)) => (author, "author"),
+            (None, None) => unreachable!("guarded by the enclosing `if`"),
+        };
+        return run_search(
+            state,
+            SearchGitHistoryParams {
+                pattern,
+                field: Some(field.to_string()),
+                limit: p.limit,
+                cursor: p.cursor,
+                max_tokens,
+                body_chars: None,
+            },
+        );
+    }
+    match p.path {
+        Some(path) if path.as_bytes().ends_with(b"/") => run_by_path(
+            state,
+            FindCommitsByPathParams {
+                pattern: format!("^{}", regex::escape(&path.to_str_lossy())),
+                window: None,
+                limit: p.limit,
+                cursor: p.cursor,
+                max_tokens,
+            },
+        ),
+        Some(path) => run_touching(
+            state,
+            CommitsTouchingParams {
+                path,
+                limit: p.limit,
+                cursor: p.cursor,
+                max_tokens,
+            },
+        ),
+        None => run_recent(
+            state,
+            RecentChangesParams {
+                limit: p.limit,
+                include_files: true,
+                cursor: p.cursor,
+                max_tokens,
+            },
+        ),
+    }
 }
 
-/// Unwrap a field this mode cannot run without, naming the exact `mode`/field pair.
-pub(super) fn require_field<T>(mode: GitMode, field: &str, value: Option<T>) -> Result<T, McpError> {
-    value.ok_or_else(|| McpError::invalid_params(format!("`git` mode=\"{}\" requires `{field}`", mode.as_str()), None))
-}
-
-/// Dispatch the single `git` tool onto the per-operation helper its `mode` selects.
-///
-/// Fields belonging to another mode are rejected rather than dropped: a silently ignored `rev` on a
-/// `diff` call reads to an agent as a diff against the revision it named.
-pub(super) async fn run_git(state: &ServerState, params: GitParams) -> Result<CallToolResult, McpError> {
-    let GitParams {
-        mode,
-        path,
-        pattern,
-        field,
-        name,
-        kind,
-        limit,
-        cursor,
-        max_tokens,
-        body_chars,
-        sha,
-        include_files,
-        top_k,
-        window,
-        rev,
-        rev_old,
-        rev_new,
-        line_start,
-        line_end,
-        hash_mode,
-    } = params;
-    let present = [
-        ("path", path.is_some()),
-        ("pattern", pattern.is_some()),
-        ("field", field.is_some()),
-        ("name", name.is_some()),
-        ("kind", kind.is_some()),
-        ("limit", limit.is_some()),
-        ("cursor", cursor.is_some()),
-        ("max_tokens", max_tokens.is_some()),
-        ("body_chars", body_chars.is_some()),
-        ("sha", sha.is_some()),
-        ("include_files", include_files.is_some()),
-        ("top_k", top_k.is_some()),
-        ("window", window.is_some()),
-        ("rev", rev.is_some()),
-        ("rev_old", rev_old.is_some()),
-        ("rev_new", rev_new.is_some()),
-        ("line_start", line_start.is_some()),
-        ("line_end", line_end.is_some()),
-        ("hash_mode", hash_mode.is_some()),
-    ];
-    let reject = |allowed: &[&str]| reject_foreign_fields(mode, &present, allowed);
-
-    match mode {
-        GitMode::Status => {
-            reject(&[])?;
-            run_status(state)
-        }
-        GitMode::Recent => {
-            reject(&["limit", "cursor", "include_files", "max_tokens"])?;
-            run_recent(
-                state,
-                RecentChangesParams {
-                    limit,
-                    include_files: include_files.unwrap_or(true),
-                    cursor,
-                    max_tokens,
-                },
-            )
-        }
-        GitMode::Touching => {
-            reject(&["path", "limit", "cursor", "max_tokens"])?;
-            run_touching(
-                state,
-                CommitsTouchingParams {
-                    path: require_field(mode, "path", path)?,
-                    limit,
-                    cursor,
-                    max_tokens,
-                },
-            )
-        }
-        GitMode::ByPath => {
-            reject(&["pattern", "window", "limit", "cursor", "max_tokens"])?;
-            run_by_path(
-                state,
-                FindCommitsByPathParams {
-                    pattern: require_field(mode, "pattern", pattern)?,
-                    window,
-                    limit,
-                    cursor,
-                    max_tokens,
-                },
-            )
-        }
-        GitMode::Churn => {
-            reject(&["window", "top_k"])?;
-            run_churn(state, HotFilesParams { window, top_k })
-        }
-        GitMode::Diff => {
-            reject(&["path", "rev_old", "rev_new"])?;
-            super::helpers_git_file::run_diff(
-                state,
-                super::types::DiffFileParams {
-                    rev_old: require_field(mode, "rev_old", rev_old)?,
-                    rev_new: require_field(mode, "rev_new", rev_new)?,
-                    path: require_field(mode, "path", path)?,
-                },
-            )
-        }
-        GitMode::DiffOutline => {
-            reject(&["path", "rev"])?;
-            super::helpers_git_file::run_diff_outline(
-                state,
-                super::types::DiffOutlineParams {
-                    path: require_field(mode, "path", path)?,
-                    rev,
-                },
-            )
-            .await
-        }
-        GitMode::Blame => {
-            reject(&["path", "rev", "line_start", "line_end", "limit", "cursor"])?;
-            super::helpers_git_file::run_blame(
-                state,
-                super::types::BlameFileParams {
-                    path: require_field(mode, "path", path)?,
-                    line_start,
-                    line_end,
-                    rev,
-                    limit,
-                    cursor,
-                },
-            )
-        }
-        GitMode::BlameSymbol => {
-            reject(&["path", "name", "kind", "rev", "limit", "cursor"])?;
+/// `git_blame`: who last changed each line of a file, a line span, or one symbol.
+pub(super) async fn git_blame(state: &ServerState, p: GitBlameParams) -> Result<CallToolResult, McpError> {
+    let shape_error = |problem: &str| {
+        McpError::invalid_params(
+            format!(
+                "`git_blame`: {problem}; accepted shapes: {{path}} (whole file), {{path, line, end_line}} (a 1-based \
+                 inclusive span), {{path, symbol}} (one symbol's lines); `rev` picks the revision"
+            ),
+            None,
+        )
+    };
+    match p.symbol {
+        Some(symbol) => {
+            if p.line.is_some() || p.end_line.is_some() {
+                return Err(shape_error("`symbol` and a line span are alternatives"));
+            }
             super::helpers_git_file::run_blame_symbol(
                 state,
-                super::types::BlameSymbolParams {
-                    path: require_field(mode, "path", path)?,
-                    name: require_field(mode, "name", name)?,
-                    kind,
-                    rev,
-                    limit,
-                    cursor,
+                BlameSymbolParams {
+                    path: p.path,
+                    name: symbol,
+                    kind: None,
+                    rev: p.rev,
+                    limit: p.limit,
+                    cursor: p.cursor,
                 },
             )
             .await
         }
-        GitMode::SymbolHistory => {
-            reject(&["path", "name", "kind", "limit", "hash_mode", "cursor"])?;
-            super::helpers_git_file::run_symbol_history(
+        None => {
+            let (line_start, line_end) = match (p.line, p.end_line) {
+                (Some(line), end) => (Some(line), Some(end.unwrap_or(line))),
+                (None, Some(_)) => return Err(shape_error("`end_line` needs `line`")),
+                (None, None) => (None, None),
+            };
+            super::helpers_git_file::run_blame(
                 state,
-                super::types::SymbolHistoryParams {
-                    path: require_field(mode, "path", path)?,
-                    name: require_field(mode, "name", name)?,
-                    kind,
-                    limit,
-                    hash_mode,
-                    cursor,
+                BlameFileParams {
+                    path: p.path,
+                    line_start,
+                    line_end,
+                    rev: p.rev,
+                    limit: p.limit,
+                    cursor: p.cursor,
                 },
             )
         }
-        GitMode::Search => {
-            reject(&["pattern", "field", "limit", "cursor", "max_tokens", "body_chars"])?;
-            run_search(
-                state,
-                SearchGitHistoryParams {
-                    pattern: require_field(mode, "pattern", pattern)?,
-                    field,
-                    limit,
-                    cursor,
-                    max_tokens,
-                    body_chars,
-                },
-            )
+    }
+}
+
+/// The argument shapes `git_diff` accepts, quoted in every shape error.
+const DIFF_SHAPES: &str = "accepted shapes: {} (working-tree status), {path, from, to} (text diff of a file between \
+     two revisions), {path, structural:true} with optional `from` (symbols added / removed since `from`, default HEAD)";
+
+/// `git_diff`: the working-tree status, a file's text diff, or its symbol-level diff.
+pub(super) async fn git_diff(state: &ServerState, p: GitDiffParams) -> Result<CallToolResult, McpError> {
+    let shape_error = |problem: &str| McpError::invalid_params(format!("`git_diff`: {problem}; {DIFF_SHAPES}"), None);
+    let structural = p.structural.unwrap_or(false);
+    let Some(path) = p.path else {
+        if p.from.is_some() || p.to.is_some() || structural {
+            return Err(shape_error("a diff needs the `path` of one file"));
         }
-        GitMode::Show => {
-            reject(&["sha"])?;
-            run_show(state, &require_field(mode, "sha", sha)?)
+        return run_status(state);
+    };
+    if structural {
+        if p.to.is_some() {
+            return Err(shape_error(
+                "a structural diff compares `from` against the indexed working tree and takes no `to`",
+            ));
         }
+        return super::helpers_git_file::run_diff_outline(state, DiffOutlineParams { path, rev: p.from }).await;
+    }
+    match (p.from, p.to) {
+        (Some(rev_old), Some(rev_new)) => {
+            super::helpers_git_file::run_diff(state, DiffFileParams { rev_old, rev_new, path })
+        }
+        _ => Err(shape_error("a text diff needs both `from` and `to`")),
     }
 }
 
@@ -243,7 +219,7 @@ pub(super) fn reject_external_path(path: &RelPath) -> Result<(), McpError> {
     Ok(())
 }
 
-/// Body for `git` mode `status`: the working tree's staged / unstaged / untracked buckets.
+/// The `status` operation: the working tree's staged / unstaged / untracked buckets.
 fn run_status(state: &ServerState) -> Result<CallToolResult, McpError> {
     let started = std::time::Instant::now();
     let repo = require_git_repo(state)?;
@@ -266,7 +242,7 @@ fn run_status(state: &ServerState) -> Result<CallToolResult, McpError> {
     })
 }
 
-/// Body for `git` mode `recent`: a bounded recency window over HEAD's ancestry, newest first.
+/// The `recent` operation: a bounded recency window over HEAD's ancestry, newest first.
 fn run_recent(state: &ServerState, params: RecentChangesParams) -> Result<CallToolResult, McpError> {
     let started = std::time::Instant::now();
     let repo = require_git_repo(state)?;
@@ -327,7 +303,7 @@ fn run_recent(state: &ServerState, params: RecentChangesParams) -> Result<CallTo
     })
 }
 
-/// Body for `git` mode `touching`: commits whose tree differs from the parent's at `path`.
+/// The `touching` operation: commits whose tree differs from the parent's at `path`.
 fn run_touching(state: &ServerState, params: CommitsTouchingParams) -> Result<CallToolResult, McpError> {
     let started = std::time::Instant::now();
     let repo = require_git_repo(state)?;
@@ -390,9 +366,9 @@ fn run_touching(state: &ServerState, params: CommitsTouchingParams) -> Result<Ca
     })
 }
 
-/// Body for `git` mode `by_path`: a cheap pickaxe — regex over the changed **paths** of a bounded
+/// The `by_path` operation: a cheap pickaxe — regex over the changed **paths** of a bounded
 /// recent window, never over patch text.
-fn run_by_path(state: &ServerState, params: FindCommitsByPathParams) -> Result<CallToolResult, McpError> {
+pub(super) fn run_by_path(state: &ServerState, params: FindCommitsByPathParams) -> Result<CallToolResult, McpError> {
     let started = std::time::Instant::now();
     let repo = require_git_repo(state)?;
     let re = regex::Regex::new(&params.pattern)
@@ -465,8 +441,8 @@ fn run_by_path(state: &ServerState, params: FindCommitsByPathParams) -> Result<C
     })
 }
 
-/// Body for `git` mode `churn`: the top-K most-frequently-modified files in a recent window.
-fn run_churn(state: &ServerState, params: HotFilesParams) -> Result<CallToolResult, McpError> {
+/// The `churn` operation: the top-K most-frequently-modified files in a recent window.
+pub(super) fn run_churn(state: &ServerState, params: HotFilesParams) -> Result<CallToolResult, McpError> {
     let started = std::time::Instant::now();
     let repo = require_git_repo(state)?;
     let window = params.window.unwrap_or(200).min(2000);
@@ -517,7 +493,7 @@ fn run_churn(state: &ServerState, params: HotFilesParams) -> Result<CallToolResu
     })
 }
 
-/// Body for `git` mode `search`: full-text search over git history. Uses the git-history inverted
+/// The `search` operation: full-text search over git history. Uses the git-history inverted
 /// index when it is fresh (`last_indexed_head == HEAD`), searching author name + email + summary +
 /// full body; otherwise degrades to a bounded live walk over the recent window, flagged `partial`
 /// (author + summary only, no body). Pagination and the HEAD-scoped cursor mirror `recent`.

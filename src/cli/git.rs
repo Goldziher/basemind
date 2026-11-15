@@ -1,8 +1,9 @@
-//! `basemind git` — the CLI half of the `git` domain.
+//! `basemind git` — the CLI half of the git verb tools.
 //!
-//! Real clap subcommands rather than a `--mode` flag, so each operation keeps its own `--help` and
-//! its own argument validation; they map one-to-one onto the MCP `git` tool's [`GitMode`] values,
-//! which is what `tests/cli_parity/` asserts.
+//! `log`, `blame` and `diff` run the identical bodies as the MCP tools `git_log`, `git_blame` and
+//! `git_diff`, which is what `tests/cli_parity/` asserts. `status`, `recent`, `touching`,
+//! `search`, `show`, `symbol-history`, `blame-symbol` and `diff-outline` are shorthands for one
+//! shape of those three; `churn` and `by-path` have no MCP tool.
 
 use std::io::Write;
 
@@ -13,55 +14,85 @@ use crate::mcp::BasemindServer;
 use crate::mcp::cursor::Cursor;
 use crate::mcp::params::*;
 
-use super::choices::{CommitField, HashMode};
 use super::render::{Emit, emit};
 use super::{resolve_path, run_tool};
 
 #[derive(Subcommand, Debug)]
 pub enum GitCmd {
-    /// Staged / unstaged / untracked working-tree status.
+    /// Commit history: recent commits, a path's history, a commit search, a symbol's history, or
+    /// one commit in full.
+    Log {
+        /// Only commits touching this file (or directory, when it ends with `/`).
+        #[arg(long)]
+        path: Option<String>,
+        /// Full-text search of commit messages.
+        #[arg(long)]
+        query: Option<String>,
+        /// Search author names and emails.
+        #[arg(long)]
+        author: Option<String>,
+        /// History of this symbol's body (needs `--path`).
+        #[arg(long)]
+        symbol: Option<String>,
+        /// Show this one commit in full.
+        #[arg(long)]
+        rev: Option<String>,
+        #[arg(long)]
+        limit: Option<u32>,
+        /// Resume token: pass the previous page's `next_cursor`.
+        #[arg(long)]
+        cursor: Option<String>,
+        /// Token budget for the returned list; overflow is dropped and flagged `budgeted`.
+        #[arg(long)]
+        max_tokens: Option<u32>,
+    },
+    /// Who last changed each line of a file, a 1-based line span, or one symbol.
+    Blame {
+        path: String,
+        /// First line, 1-based.
+        #[arg(long)]
+        line: Option<u32>,
+        /// Last line, inclusive (default: `--line`).
+        #[arg(long)]
+        end_line: Option<u32>,
+        /// Blame this symbol's lines instead of a span.
+        #[arg(long)]
+        symbol: Option<String>,
+        #[arg(long)]
+        rev: Option<String>,
+        #[arg(long)]
+        limit: Option<u32>,
+        /// Resume token: pass the previous page's `next_cursor`.
+        #[arg(long)]
+        cursor: Option<String>,
+    },
+    /// The working-tree status (no path), a file's text diff, or its symbol-level diff.
+    Diff {
+        path: Option<String>,
+        /// Old revision (default HEAD).
+        #[arg(long)]
+        from: Option<String>,
+        /// New revision (default: the working tree).
+        #[arg(long)]
+        to: Option<String>,
+        /// Symbol-level diff instead of text hunks.
+        #[arg(long)]
+        structural: bool,
+    },
+    /// Working-tree status: staged / modified / untracked. Shorthand for `diff` with no arguments.
     Status,
-    /// Recent commits with paths + summaries (a recency window, not a search).
+    /// Recent commits. Shorthand for `log` with no filter.
     Recent {
         #[arg(long)]
         limit: Option<u32>,
-        /// Omit the per-file change list.
-        #[arg(long)]
-        no_files: bool,
         /// Resume token: pass the previous page's `next_cursor`.
         #[arg(long)]
         cursor: Option<String>,
-        /// Token budget for the returned commits (default 20000); overflow sets `budgeted` and
-        /// `next_cursor` resumes at the first dropped commit.
+        /// Token budget for the returned list; overflow is dropped and flagged `budgeted`.
         #[arg(long)]
         max_tokens: Option<u32>,
     },
-    /// Full-text search over commit history (author / message / all) at full branch depth.
-    /// This is the "what did <author> do" / "which commit mentions <X>" mode — it scans every
-    /// commit reachable from HEAD, not a recent window.
-    Search {
-        /// Query tokens (lowercased, split on non-alphanumeric) matched as an AND.
-        pattern: String,
-        /// Field to search: `author` (name + email), `message` (summary + body), or `all`
-        /// (default).
-        #[arg(long, value_enum)]
-        field: Option<CommitField>,
-        /// Max commits to return (default 20, max 100).
-        #[arg(long)]
-        limit: Option<u32>,
-        /// Resume token: pass the previous page's `next_cursor`.
-        #[arg(long)]
-        cursor: Option<String>,
-        /// Token budget for the returned commits (default 20000); overflow sets `budgeted` and
-        /// `next_cursor` resumes at the first dropped commit.
-        #[arg(long)]
-        max_tokens: Option<u32>,
-        /// Characters of each hit's commit body to keep (default 1000, 0 omits it). A cut body
-        /// ends in a marker; `basemind git show <sha>` prints it whole.
-        #[arg(long)]
-        body_chars: Option<u32>,
-    },
-    /// Commits that modified a given path.
+    /// Commits touching a path. Shorthand for `log --path <path>`.
     Touching {
         path: String,
         #[arg(long)]
@@ -69,12 +100,64 @@ pub enum GitCmd {
         /// Resume token: pass the previous page's `next_cursor`.
         #[arg(long)]
         cursor: Option<String>,
-        /// Token budget for the returned commits (default 20000); overflow sets `budgeted` and
-        /// `next_cursor` resumes at the first dropped commit.
+        /// Token budget for the returned list; overflow is dropped and flagged `budgeted`.
         #[arg(long)]
         max_tokens: Option<u32>,
     },
-    /// Path-filtered commit log (regex over changed paths).
+    /// Full-text search over commit messages. Shorthand for `log --query <query>`.
+    Search {
+        query: String,
+        /// Also require these author terms.
+        #[arg(long)]
+        author: Option<String>,
+        #[arg(long)]
+        limit: Option<u32>,
+        /// Resume token: pass the previous page's `next_cursor`.
+        #[arg(long)]
+        cursor: Option<String>,
+        /// Token budget for the returned list; overflow is dropped and flagged `budgeted`.
+        #[arg(long)]
+        max_tokens: Option<u32>,
+    },
+    /// One commit with its full message and changed files. Shorthand for `log --rev <rev>`.
+    Show { rev: String },
+    /// Commits where a symbol's body changed. Shorthand for `log --path <path> --symbol <name>`.
+    SymbolHistory {
+        path: String,
+        name: String,
+        #[arg(long)]
+        limit: Option<u32>,
+        /// Resume token: pass the previous page's `next_cursor`.
+        #[arg(long)]
+        cursor: Option<String>,
+    },
+    /// Blame for one symbol's line span. Shorthand for `blame <path> --symbol <name>`.
+    BlameSymbol {
+        path: String,
+        name: String,
+        #[arg(long)]
+        rev: Option<String>,
+        #[arg(long)]
+        limit: Option<u32>,
+        /// Resume token: pass the previous page's `next_cursor`.
+        #[arg(long)]
+        cursor: Option<String>,
+    },
+    /// Symbols a file gained or lost since a revision. Shorthand for
+    /// `diff <path> --structural --from <rev>`.
+    DiffOutline {
+        path: String,
+        #[arg(long)]
+        rev: Option<String>,
+    },
+    /// Top-K hot files by commit count over a recent window (CLI only).
+    Churn {
+        #[arg(long)]
+        window: Option<u32>,
+        #[arg(long)]
+        top_k: Option<u32>,
+    },
+    /// Commits whose changed paths match a regex (CLI only).
     ByPath {
         pattern: String,
         #[arg(long)]
@@ -84,237 +167,207 @@ pub enum GitCmd {
         /// Resume token: pass the previous page's `next_cursor`.
         #[arg(long)]
         cursor: Option<String>,
-        /// Token budget for the returned commits (default 20000); overflow sets `budgeted` and
-        /// `next_cursor` resumes at the first dropped commit.
+        /// Token budget for the returned list; overflow is dropped and flagged `budgeted`.
         #[arg(long)]
         max_tokens: Option<u32>,
     },
-    /// One commit with its full, untruncated message and changed files.
-    Show {
-        /// Full or abbreviated sha, or any revision (`HEAD~3`, a branch).
-        sha: String,
-    },
-    /// Churn-ranked files in a recent commit window.
-    Churn {
-        #[arg(long)]
-        window: Option<u32>,
-        #[arg(long)]
-        top_k: Option<u32>,
-    },
-    /// File content diff between two revisions.
-    Diff {
-        path: String,
-        rev_old: String,
-        rev_new: String,
-    },
-    /// Symbol-set diff between the current view and a revision.
-    DiffOutline {
-        path: String,
-        #[arg(long)]
-        rev: Option<String>,
-    },
-    /// Per-line blame for a file.
-    Blame {
-        path: String,
-        #[arg(long)]
-        line_start: Option<u32>,
-        #[arg(long)]
-        line_end: Option<u32>,
-        #[arg(long)]
-        rev: Option<String>,
-        #[arg(long)]
-        limit: Option<u32>,
-        /// Resume token: pass the previous page's `next_cursor`.
-        #[arg(long)]
-        cursor: Option<String>,
-    },
-    /// Blame clamped to a named symbol.
-    BlameSymbol {
-        path: String,
-        name: String,
-        #[arg(long)]
-        kind: Option<String>,
-        #[arg(long)]
-        rev: Option<String>,
-        #[arg(long)]
-        limit: Option<u32>,
-        /// Resume token: pass the previous page's `next_cursor`.
-        #[arg(long)]
-        cursor: Option<String>,
-    },
-    /// Commits where a symbol's body changed.
-    SymbolHistory {
-        path: String,
-        name: String,
-        #[arg(long)]
-        kind: Option<String>,
-        #[arg(long)]
-        limit: Option<u32>,
-        #[arg(long, value_enum)]
-        hash_mode: Option<HashMode>,
-        /// Resume token: pass the previous page's `next_cursor`.
-        #[arg(long)]
-        cursor: Option<String>,
-    },
+}
+
+/// A `git_log` call with no filter set.
+fn log() -> GitLogParams {
+    GitLogParams {
+        path: None,
+        query: None,
+        author: None,
+        symbol: None,
+        rev: None,
+        limit: None,
+        cursor: None,
+        max_tokens: None,
+    }
 }
 
 /// Dispatch a `git` subcommand through the in-process server.
 pub async fn run(server: &BasemindServer, cmd: GitCmd, opts: &Emit, out: &mut impl Write) -> Result<()> {
-    let p = match cmd {
-        GitCmd::Status => GitParams::new(GitMode::Status),
+    let (tool, result) = match cmd {
+        GitCmd::Log {
+            path,
+            query,
+            author,
+            symbol,
+            rev,
+            limit,
+            cursor,
+            max_tokens,
+        } => {
+            let p = GitLogParams {
+                path: path.map(|path| resolve_path(server, &path)),
+                query,
+                author,
+                symbol,
+                rev,
+                limit,
+                cursor: cursor.map(Cursor),
+                max_tokens,
+            };
+            ("git_log", server.git_log_call(p).await)
+        }
         GitCmd::Recent {
             limit,
-            no_files,
             cursor,
             max_tokens,
-        } => GitParams {
-            max_tokens,
-            limit,
-            cursor: cursor.map(Cursor),
-            include_files: no_files.then_some(false),
-            ..GitParams::new(GitMode::Recent)
-        },
-        GitCmd::Search {
-            pattern,
-            field,
-            limit,
-            cursor,
-            max_tokens,
-            body_chars,
-        } => GitParams {
-            max_tokens,
-            body_chars,
-            pattern: Some(pattern),
-            field: field.map(|f| f.as_str().to_string()),
-            limit,
-            cursor: cursor.map(Cursor),
-            ..GitParams::new(GitMode::Search)
-        },
+        } => {
+            let p = GitLogParams {
+                limit,
+                cursor: cursor.map(Cursor),
+                max_tokens,
+                ..log()
+            };
+            ("git_log", server.git_log_call(p).await)
+        }
         GitCmd::Touching {
             path,
             limit,
             cursor,
             max_tokens,
-        } => GitParams {
-            max_tokens,
-            path: Some(resolve_path(server, &path)),
+        } => {
+            let p = GitLogParams {
+                path: Some(resolve_path(server, &path)),
+                limit,
+                cursor: cursor.map(Cursor),
+                max_tokens,
+                ..log()
+            };
+            ("git_log", server.git_log_call(p).await)
+        }
+        GitCmd::Search {
+            query,
+            author,
             limit,
-            cursor: cursor.map(Cursor),
-            ..GitParams::new(GitMode::Touching)
-        },
+            cursor,
+            max_tokens,
+        } => {
+            let p = GitLogParams {
+                query: Some(query),
+                author,
+                limit,
+                cursor: cursor.map(Cursor),
+                max_tokens,
+                ..log()
+            };
+            ("git_log", server.git_log_call(p).await)
+        }
+        GitCmd::Show { rev } => {
+            let p = GitLogParams {
+                rev: Some(rev),
+                ..log()
+            };
+            ("git_log", server.git_log_call(p).await)
+        }
+        GitCmd::SymbolHistory {
+            path,
+            name,
+            limit,
+            cursor,
+        } => {
+            let p = GitLogParams {
+                path: Some(resolve_path(server, &path)),
+                symbol: Some(name),
+                limit,
+                cursor: cursor.map(Cursor),
+                ..log()
+            };
+            ("git_log", server.git_log_call(p).await)
+        }
+        GitCmd::Blame {
+            path,
+            line,
+            end_line,
+            symbol,
+            rev,
+            limit,
+            cursor,
+        } => {
+            let p = GitBlameParams {
+                path: resolve_path(server, &path),
+                line,
+                end_line,
+                symbol,
+                rev,
+                limit,
+                cursor: cursor.map(Cursor),
+            };
+            ("git_blame", server.git_blame_call(p).await)
+        }
+        GitCmd::BlameSymbol {
+            path,
+            name,
+            rev,
+            limit,
+            cursor,
+        } => {
+            let p = GitBlameParams {
+                path: resolve_path(server, &path),
+                line: None,
+                end_line: None,
+                symbol: Some(name),
+                rev,
+                limit,
+                cursor: cursor.map(Cursor),
+            };
+            ("git_blame", server.git_blame_call(p).await)
+        }
+        GitCmd::Diff {
+            path,
+            from,
+            to,
+            structural,
+        } => {
+            let p = GitDiffParams {
+                path: path.map(|path| resolve_path(server, &path)),
+                from,
+                to,
+                structural: structural.then_some(true),
+            };
+            ("git_diff", server.git_diff_call(p).await)
+        }
+        GitCmd::Status => {
+            let p = GitDiffParams {
+                path: None,
+                from: None,
+                to: None,
+                structural: None,
+            };
+            ("git_diff", server.git_diff_call(p).await)
+        }
+        GitCmd::DiffOutline { path, rev } => {
+            let p = GitDiffParams {
+                path: Some(resolve_path(server, &path)),
+                from: rev,
+                to: None,
+                structural: Some(true),
+            };
+            ("git_diff", server.git_diff_call(p).await)
+        }
+        GitCmd::Churn { window, top_k } => ("git_churn", server.git_churn_call(HotFilesParams { window, top_k })),
         GitCmd::ByPath {
             pattern,
             window,
             limit,
             cursor,
             max_tokens,
-        } => GitParams {
-            max_tokens,
-            pattern: Some(pattern),
-            window,
-            limit,
-            cursor: cursor.map(Cursor),
-            ..GitParams::new(GitMode::ByPath)
-        },
-        GitCmd::Show { sha } => GitParams {
-            sha: Some(sha),
-            ..GitParams::new(GitMode::Show)
-        },
-        GitCmd::Churn { window, top_k } => GitParams {
-            window,
-            top_k,
-            ..GitParams::new(GitMode::Churn)
-        },
-        GitCmd::Diff { path, rev_old, rev_new } => GitParams {
-            path: Some(resolve_path(server, &path)),
-            rev_old: Some(rev_old),
-            rev_new: Some(rev_new),
-            ..GitParams::new(GitMode::Diff)
-        },
-        GitCmd::DiffOutline { path, rev } => GitParams {
-            path: Some(resolve_path(server, &path)),
-            rev,
-            ..GitParams::new(GitMode::DiffOutline)
-        },
-        GitCmd::Blame {
-            path,
-            line_start,
-            line_end,
-            rev,
-            limit,
-            cursor,
-        } => GitParams {
-            path: Some(resolve_path(server, &path)),
-            line_start,
-            line_end,
-            rev,
-            limit,
-            cursor: cursor.map(Cursor),
-            ..GitParams::new(GitMode::Blame)
-        },
-        GitCmd::BlameSymbol {
-            path,
-            name,
-            kind,
-            rev,
-            limit,
-            cursor,
-        } => GitParams {
-            path: Some(resolve_path(server, &path)),
-            name: Some(name),
-            kind,
-            rev,
-            limit,
-            cursor: cursor.map(Cursor),
-            ..GitParams::new(GitMode::BlameSymbol)
-        },
-        GitCmd::SymbolHistory {
-            path,
-            name,
-            kind,
-            limit,
-            hash_mode,
-            cursor,
-        } => GitParams {
-            path: Some(resolve_path(server, &path)),
-            name: Some(name),
-            kind,
-            limit,
-            hash_mode: hash_mode.map(|m| m.as_str().to_string()),
-            cursor: cursor.map(Cursor),
-            ..GitParams::new(GitMode::SymbolHistory)
-        },
+        } => (
+            "git_by_path",
+            server.git_by_path_call(FindCommitsByPathParams {
+                pattern,
+                window,
+                limit,
+                cursor: cursor.map(Cursor),
+                max_tokens,
+            }),
+        ),
     };
 
-    let key = p.mode.telemetry_key();
-    let r = run_tool(key, server.git(Parameters(Lenient(p))).await)?;
-    emit(key, &r, opts, out)
-}
-
-#[cfg(test)]
-mod tests {
-    use clap::{CommandFactory, Parser, Subcommand as _};
-
-    use super::GitCmd;
-
-    #[derive(Parser)]
-    struct Harness {
-        #[command(subcommand)]
-        cmd: GitCmd,
-    }
-
-    /// The CLI half of the parity contract, checked from this side too: every `git` mode the MCP
-    /// tool advertises must resolve to a clap subcommand of the same (kebab-cased) name.
-    #[test]
-    fn should_expose_one_subcommand_per_advertised_git_mode() {
-        let command = GitCmd::augment_subcommands(Harness::command());
-        let names: Vec<String> = command.get_subcommands().map(|s| s.get_name().to_string()).collect();
-        for mode in crate::mcp::mode::GitMode::ALL_MODES {
-            let expected = mode.replace('_', "-");
-            assert!(
-                names.contains(&expected),
-                "`git` mode `{mode}` has no `basemind git {expected}` subcommand; got {names:?}"
-            );
-        }
-    }
+    let r = run_tool(tool, result)?;
+    emit(tool, &r, opts, out)
 }

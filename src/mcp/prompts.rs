@@ -23,8 +23,7 @@ use super::BasemindServer;
 /// and blame. Autocompleted by the completions handler from the `symbols_by_name` index.
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct TraceSymbolArgs {
-    /// Symbol name (function / type / method) to trace. Matched as a substring, like
-    /// `code` mode `symbols`.
+    /// Symbol name (function / type / method) to trace, as `code_symbols` takes it.
     pub symbol: String,
 }
 
@@ -49,12 +48,12 @@ impl BasemindServer {
             Role::User,
             "Help me get oriented in this repository. Work structure-first, using basemind \
              tools rather than reading files:\n\
-             1. `admin` modes `repo` and `status` for the language mix, file count, and index \
-             state.\n\
-             2. `git` mode `churn` to find the most-churned files — the code that matters most.\n\
-             3. `git` mode `recent` to see what's been happening lately.\n\
-             4. For each hot file, `code` mode `outline` (don't read it whole) and summarize its \
-             role.\n\
+             1. `index_status` for the language mix, file count, branch and index state.\n\
+             2. `git_log` with no arguments to see what has been happening lately and which \
+             files keep changing.\n\
+             3. `find_files` with a `path_prefix` to see how the tree is laid out.\n\
+             4. For each file that keeps changing, `code_outline` (don't read it whole) and \
+             summarize its role.\n\
              Then give me a short map of the codebase: its main components, where the activity is, \
              and where I'd start to make a change. Cite file paths.",
         )]
@@ -72,11 +71,12 @@ impl BasemindServer {
             Role::User,
             format!(
                 "Trace the symbol `{symbol}` through this codebase using basemind:\n\
-                 1. `code` mode `symbols` for `{symbol}` to find its definition(s) — note path + \
-                 signature.\n\
-                 2. `code` mode `references` for `{symbol}` to see every call site.\n\
-                 3. `code` mode `callers` on the definition to get the scope-resolved callers.\n\
-                 4. `git` mode `blame_symbol` to see who last changed it and when.\n\
+                 1. `code_symbols` with name `{symbol}` to find its definition(s): note path, \
+                 line and signature.\n\
+                 2. `code_refs` with name `{symbol}` to see every call site.\n\
+                 3. `code_refs` again with the definition's `path` to mark the callers that \
+                 resolve to that definition.\n\
+                 4. `git_blame` with that `path` and `symbol` to see who last changed it and when.\n\
                  Summarize what `{symbol}` is, who depends on it, and the blast radius of changing \
                  it. Cite paths and line numbers; do not read whole files."
             ),
@@ -95,10 +95,10 @@ impl BasemindServer {
             Role::User,
             format!(
                 "Explain the file `{path}` using basemind, structure-first:\n\
-                 1. `code` mode `outline` on `{path}` (add `l2: true`) for its symbols, \
-                 signatures, imports, and calls — do NOT read the whole file yet.\n\
+                 1. `code_outline` on `{path}` for its symbols, signatures, line spans and \
+                 imports. Do NOT read the whole file yet.\n\
                  2. From the outline, identify the few symbols that carry the file's purpose.\n\
-                 3. Only then read the specific line spans you need to explain those symbols.\n\
+                 3. Only then `code_read` those symbols (or their line spans) to explain them.\n\
                  Give me a concise explanation of what `{path}` does and how it fits the codebase, \
                  citing symbol names and line numbers."
             ),
@@ -115,11 +115,11 @@ impl BasemindServer {
         vec![PromptMessage::new_text(
             Role::User,
             "Review my uncommitted changes using basemind:\n\
-             1. `git` mode `status` for the staged / unstaged / untracked breakdown.\n\
-             2. For each changed file, `git` mode `diff_outline` to see which symbols changed \
-             structurally (not just line noise).\n\
-             3. For the non-trivial changes, `git` modes `blame_symbol` / `touching` to recover \
-             the prior intent of the code being modified.\n\
+             1. `git_diff` with no arguments for the staged / unstaged / untracked breakdown.\n\
+             2. For each changed file, `git_diff` with its `path` and `structural: true` to see \
+             which symbols were added or removed (not just line noise).\n\
+             3. For the non-trivial changes, `git_blame` with a `symbol` and `git_log` with the \
+             `path` to recover the prior intent of the code being modified.\n\
              Give me a focused review: what changed and why it matters, risks or regressions, and \
              anything that looks unfinished. Cite paths and symbols.",
         )]

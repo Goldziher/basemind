@@ -280,7 +280,7 @@ fn write_raw(out: &mut impl Write, text: &str) -> Result<()> {
 /// truncated grep gets mistaken for "no such symbol in the repo". So the bound gets its own line,
 /// naming the count that was withheld and the way to get it.
 fn render_grep_truncation(tool_name: &str, map: &serde_json::Map<String, Value>, out: &mut impl Write) -> Result<()> {
-    if tool_name != "code:grep" || map.get("truncated").and_then(Value::as_bool) != Some(true) {
+    if tool_name != "code_grep" || map.get("truncated").and_then(Value::as_bool) != Some(true) {
         return Ok(());
     }
     let shown = map.get("hits").and_then(Value::as_array).map_or(0, Vec::len);
@@ -289,12 +289,12 @@ fn render_grep_truncation(tool_name: &str, map: &serde_json::Map<String, Value>,
         Some("byte_budget") => writeln!(
             out,
             "\nwarning: TRUNCATED — the corpus exceeds what one grep may read, so files were left \
-             unscanned. Narrow with --path-contains / --language."
+             unscanned. Narrow with --path / --language."
         )?,
         _ => writeln!(
             out,
             "\nwarning: TRUNCATED — showing {shown} of {total} matches. Raise --limit, or narrow \
-             with --path-contains / --language."
+             with --path / --language."
         )?,
     }
     Ok(())
@@ -362,14 +362,18 @@ fn render_table(tool_name: &str, items: &[Value], out: &mut impl Write, cut: &mu
 /// when it handled the items, `None` to fall through to the generic table.
 fn render_special(tool_name: &str, items: &[Value], out: &mut impl Write, cut: &mut Truncated) -> Result<Option<()>> {
     match tool_name {
-        "code:outline" | "code:symbols" => {
+        "code_outline" | "code_symbols" => {
             for item in items.iter().take(MAX_HUMAN_ITEMS) {
                 let Some(obj) = item.as_object() else {
                     return Ok(None);
                 };
                 let name = obj.get("name").and_then(Value::as_str).unwrap_or("");
                 let kind = obj.get("kind").and_then(Value::as_str).unwrap_or("");
-                let row = obj.get("start_row").and_then(Value::as_u64).map(|r| r + 1).unwrap_or(0);
+                let row = obj
+                    .get("line")
+                    .and_then(Value::as_u64)
+                    .or_else(|| obj.get("start_row").and_then(Value::as_u64).map(|r| r + 1))
+                    .unwrap_or(0);
                 let path = obj.get("path").and_then(Value::as_str);
                 let sig = obj.get("signature").and_then(Value::as_str).unwrap_or("");
                 match path {
@@ -390,7 +394,7 @@ fn render_special(tool_name: &str, items: &[Value], out: &mut impl Write, cut: &
             }
             Ok(Some(()))
         }
-        "git:diff" => {
+        "git_diff" => {
             // Hunk bodies are multi-line diff text: print them raw under a unified-diff style
             // header instead of flattening them into a table cell.
             for item in items {
@@ -412,7 +416,7 @@ fn render_special(tool_name: &str, items: &[Value], out: &mut impl Write, cut: &
             }
             Ok(Some(()))
         }
-        "code:references" | "code:callers" => {
+        "code_refs" => {
             for item in items.iter().take(MAX_HUMAN_ITEMS) {
                 let Some(obj) = item.as_object() else {
                     return Ok(None);
@@ -445,7 +449,7 @@ mod tests {
 
     fn render_grep(value: &serde_json::Value) -> String {
         let mut buf: Vec<u8> = Vec::new();
-        render_human("code:grep", value, &mut buf).expect("render");
+        render_human("code_grep", value, &mut buf).expect("render");
         String::from_utf8(buf).expect("utf8")
     }
 
@@ -524,7 +528,7 @@ mod tests {
             "new_line_start": 2, "new_line_count": 1,
             "text": format!("-old\n+{}\n", "x".repeat(400)),
         }]});
-        render_human("git:diff", &value, &mut buf).expect("render");
+        render_human("git_diff", &value, &mut buf).expect("render");
         let out = String::from_utf8(buf).expect("utf8");
         assert!(out.contains("@@ -2,1 +2,1 @@ modified\n-old\n+"), "{out}");
         assert!(out.contains(&"x".repeat(400)), "{out}");
@@ -533,7 +537,7 @@ mod tests {
     #[test]
     fn timing_footer_goes_to_stderr_not_stdout() {
         let result = rmcp::model::CallToolResult::structured(json!({"total": 1, "elapsed_us": 250}));
-        let (out, err) = emit_capture("code:files", &result, false);
+        let (out, err) = emit_capture("find_files", &result, false);
         assert!(
             !out.contains("startup") && !out.contains("query"),
             "stdout must be clean: {out}"
@@ -548,7 +552,7 @@ mod tests {
             crate::mcp::toon::encode(&data),
         )]);
         result.structured_content = Some(data);
-        let (out, err) = emit_capture("code:symbols", &result, false);
+        let (out, err) = emit_capture("code_symbols", &result, false);
         assert!(
             out.contains("results[1]{name,path}:"),
             "human mode renders the TOON table: {out}"
@@ -558,7 +562,7 @@ mod tests {
             "timing is lifted out of the payload: {out}"
         );
         assert!(err.contains("query"), "{err}");
-        let (json_out, _) = emit_capture("code:symbols", &result, true);
+        let (json_out, _) = emit_capture("code_symbols", &result, true);
         let parsed: serde_json::Value = serde_json::from_str(&json_out).expect("--json stays JSON with toon");
         assert_eq!(parsed["results"][0]["name"], "alpha");
         assert_eq!(parsed["startup_us"], 1_500);
@@ -568,7 +572,7 @@ mod tests {
     fn json_text_only_results_still_parse() {
         let result =
             rmcp::model::CallToolResult::success(vec![rmcp::model::ContentBlock::text(r#"{"total": 2}"#.to_string())]);
-        let (out, _) = emit_capture("code:files", &result, false);
+        let (out, _) = emit_capture("find_files", &result, false);
         assert!(out.contains("total: 2"), "{out}");
     }
 

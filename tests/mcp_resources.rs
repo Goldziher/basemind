@@ -52,7 +52,7 @@ async fn resources_list_read_and_complete() {
     let templates = service.list_all_resource_templates().await.expect("templates");
     assert!(templates.iter().any(|t| t.uri_template == "basemind://outline/{path}"));
 
-    // Outline resource equals the code tool result.
+    // Outline resource equals the `code_outline` tool result.
     let outline = service
         .read_resource(ReadResourceRequestParams::new("basemind://outline/lib.rs"))
         .await
@@ -61,12 +61,8 @@ async fn resources_list_read_and_complete() {
     assert!(body.contains("seed"), "{body}");
     let tool = service
         .call_tool(
-            CallToolRequestParams::new("code").with_arguments(
-                serde_json::json!({"mode": "outline", "path": "lib.rs"})
-                    .as_object()
-                    .unwrap()
-                    .clone(),
-            ),
+            CallToolRequestParams::new("code_outline")
+                .with_arguments(serde_json::json!({"path": "lib.rs"}).as_object().unwrap().clone()),
         )
         .await
         .expect("tool");

@@ -1,22 +1,23 @@
-//! Executable CLI<->MCP parity guard, in three layers.
+//! Executable CLI<->MCP parity guard, in three layers (ADR-0014 as amended by ADR-0018).
 //!
-//! basemind's contract is that every operation an agent can invoke over MCP is also reachable from
-//! the `basemind` CLI, with the same parameters and the same answer. The guard enforces it:
+//! basemind's contract is that every tool an agent can call over MCP has a CLI command that runs
+//! the same body with the same parameters and gives the same answer. The mapping is injective, not
+//! a bijection: the CLI may also carry shorthands for one shape of a tool and administrative
+//! commands with no MCP tool. The guard enforces it:
 //!
-//! 1. **Coverage** (`capabilities.rs`): one checked-in table maps each MCP `tool`+`mode` to the CLI
-//!    command that runs it, or declares the operation `cli_only` / `mcp_only` with a required
-//!    reason. The test enumerates the live MCP surface (tool schemas) and the live command tree
-//!    (the built binary's `-h` output) and fails on any uncovered mode or command, stale row, empty
-//!    reason or duplicate mapping — with the exact row to add or delete.
-//! 2. **Parameters** (`params.rs`, `exceptions.rs`): for each mapped pair, the fields the MCP mode
-//!    accepts (probed from the server's own validator) are compared with the command's arguments —
-//!    names, switch/scalar/list shape, allowed values, defaults and required-ness. Every difference
-//!    needs a reasoned entry in the exceptions table; entries that no longer match fail as stale.
+//! 1. **Coverage** (`capabilities.rs`): one checked-in table maps each MCP tool (and, for the two
+//!    domain tools that are still mode-dispatched, each `mode`) to the one CLI command that is its
+//!    counterpart, and classifies every other CLI command as a `shorthand` of a tool or as
+//!    `cli_only` with a required reason. The test enumerates the live MCP surface (tool schemas)
+//!    and the live command tree (the built binary's `-h` output) and fails on any uncovered tool or
+//!    command, stale row, empty reason or duplicate mapping, with the exact row to add or delete.
+//! 2. **Parameters** (`params.rs`, `exceptions.rs`): for each mapped pair, the fields the tool's
+//!    schema accepts and requires are compared with the command's arguments: names,
+//!    switch/scalar/list shape, allowed values, defaults and required-ness. A shorthand's
+//!    arguments must all be fields of its tool. Every difference needs a reasoned entry in the
+//!    exceptions table; entries that no longer match fail as stale.
 //! 3. **Behaviour** (`behaviour.rs`): representative read-only queries run through the in-process
 //!    MCP server and through `basemind --json` over one scanned fixture repo and must agree.
-//!
-//! **Why `(tool, mode)` and not tool names.** The operations live in a required `mode` enum behind
-//! a handful of domain tools, so a name-keyed table would silently stop covering them.
 
 mod behaviour;
 mod capabilities;
@@ -32,23 +33,29 @@ use capabilities::{McpOp, Row};
 
 fn row_text(row: &Row) -> String {
     match row {
-        Row::Pair { mcp, cli } => format!("pair(\"{}\", \"{}\", \"{cli}\"),", mcp.tool, mcp.mode),
-        Row::CliOnly { cli, .. } => format!("cli_only(\"{cli}\", \"<why there is no MCP counterpart>\"),"),
-        Row::McpOnly { mcp, .. } => format!(
-            "mcp_only(\"{}\", \"{}\", \"<why there is no CLI command>\"),",
-            mcp.tool, mcp.mode
-        ),
+        Row::Pair { mcp, cli } => format!("pair `{}` <-> `{cli}`", mcp.label()),
+        Row::Shorthand { mcp, cli, .. } => format!("shorthand `{cli}` of `{}`", mcp.label()),
+        Row::CliOnly { cli, .. } => format!("cli_only `{cli}`"),
+        Row::McpOnly { mcp, .. } => format!("mcp_only `{}`", mcp.label()),
     }
 }
 
-/// Every `(tool, mode)` the live MCP surface advertises, from the tool schemas.
+/// Every operation the live MCP surface advertises, from the tool schemas: one per verb tool, one
+/// per mode of a mode-dispatched domain tool.
 fn live_mcp_ops(domains: &BTreeMap<String, mcp_surface::Domain>) -> BTreeSet<McpOp> {
+    let leak = |text: &str| -> &'static str { Box::leak(text.to_string().into_boxed_str()) };
     let mut ops = BTreeSet::new();
     for (tool, domain) in domains {
+        if domain.modes.is_empty() {
+            ops.insert(McpOp {
+                tool: leak(tool),
+                mode: "",
+            });
+        }
         for mode in &domain.modes {
             ops.insert(McpOp {
-                tool: Box::leak(tool.clone().into_boxed_str()),
-                mode: Box::leak(mode.clone().into_boxed_str()),
+                tool: leak(tool),
+                mode: leak(mode),
             });
         }
     }
@@ -63,7 +70,7 @@ fn capability_table_is_well_formed() {
     for row in &rows {
         if row.reason().is_some_and(|r| r.trim().is_empty()) {
             failures.push(format!(
-                "`{}` has an empty reason; cli_only/mcp_only rows must say why",
+                "`{}` has an empty reason; shorthand/cli_only/mcp_only rows must say why",
                 row_text(row)
             ));
         }
@@ -78,8 +85,9 @@ fn capability_table_is_well_formed() {
             && !seen_mcp.insert(mcp)
         {
             failures.push(format!(
-                "MCP operation `{}:{}` appears in more than one row; keep exactly one",
-                mcp.tool, mcp.mode
+                "MCP operation `{}` is paired with more than one CLI command; keep one `pair` and make the \
+                 others `shorthand` rows",
+                mcp.label()
             ));
         }
     }
@@ -90,22 +98,28 @@ fn capability_table_is_well_formed() {
     );
 }
 
-/// Layer 1, MCP side: every advertised mode has a row, every row names a real mode, and the schema
-/// enums agree with the server's compiled `domain_modes()`.
+/// Layer 1, MCP side: every advertised tool (and every mode of a domain tool) has exactly one
+/// counterpart row, every row names a real operation, the schemas agree with the server's compiled
+/// vocabulary, and every shorthand points at a tool that exists.
 #[test]
-fn every_mcp_mode_is_covered() {
+fn every_mcp_tool_is_covered() {
     let domains = mcp_surface::domains();
     let live = live_mcp_ops(&domains);
 
-    let compiled: BTreeSet<(String, String)> = basemind::mcp::mode::domain_modes()
+    let mut compiled: BTreeSet<(String, String)> = basemind::mcp::mode::domain_modes()
         .into_iter()
         .flat_map(|(tool, modes)| modes.iter().map(move |m| (tool.to_string(), m.to_string())))
         .collect();
+    compiled.extend(
+        basemind::mcp::params::VERB_TOOLS
+            .iter()
+            .map(|tool| (tool.to_string(), String::new())),
+    );
     let from_schema: BTreeSet<(String, String)> =
         live.iter().map(|o| (o.tool.to_string(), o.mode.to_string())).collect();
     assert_eq!(
         from_schema, compiled,
-        "tool schema `mode` enums disagree with mcp::mode::domain_modes()"
+        "the advertised tool schemas disagree with VERB_TOOLS + mcp::mode::domain_modes()"
     );
 
     let rows = capabilities::table();
@@ -113,15 +127,28 @@ fn every_mcp_mode_is_covered() {
     let mut failures = Vec::new();
     for op in live.difference(&mapped) {
         failures.push(format!(
-            "MCP `{0}` mode `{1}` has no capability row. Add the CLI command and a row to tests/cli_parity/capabilities.rs:\n    pair(\"{0}\", \"{1}\", \"<cli path, e.g. {0} {2}>\"),\n    (or mcp_only(\"{0}\", \"{1}\", \"<reason>\") if it must stay MCP-only)",
-            op.tool, op.mode, op.mode.replace('_', "-")
+            "MCP `{}` has no capability row. Every MCP tool needs a CLI command that runs the same body: add the \
+             command and a `tool(\"{}\", \"<cli path>\")` row to tests/cli_parity/capabilities.rs",
+            op.label(),
+            op.tool
         ));
     }
     for op in mapped.difference(&live) {
         failures.push(format!(
-            "capability row for MCP `{}:{}` is stale: the server no longer advertises it. Delete or rename the row in tests/cli_parity/capabilities.rs",
-            op.tool, op.mode
+            "capability row for MCP `{}` is stale: the server no longer advertises it. Delete or rename the row \
+             in tests/cli_parity/capabilities.rs",
+            op.label()
         ));
+    }
+    for row in &rows {
+        if let Row::Shorthand { mcp, cli, .. } = row
+            && !live.contains(mcp)
+        {
+            failures.push(format!(
+                "shorthand `{cli}` names MCP `{}`, which the server does not advertise",
+                mcp.label()
+            ));
+        }
     }
     assert!(failures.is_empty(), "MCP coverage gaps:\n  {}", failures.join("\n  "));
 }
@@ -136,7 +163,7 @@ fn every_cli_command_is_covered() {
     let mut failures = Vec::new();
     for path in live.difference(&mapped) {
         failures.push(format!(
-            "CLI command `basemind {path}` has no capability row. Add to tests/cli_parity/capabilities.rs:\n    cli_only(\"{path}\", \"<why there is no MCP counterpart>\"),\n    (or point an existing/new MCP mode at it with pair(\"<tool>\", \"<mode>\", \"{path}\"))"
+            "CLI command `basemind {path}` has no capability row. Add to tests/cli_parity/capabilities.rs:\n    cli_only(\"{path}\", \"<why there is no MCP tool>\"),\n    (or shorthand(\"<tool>\", \"{path}\", \"<the tool call it stands for>\") if it runs a tool's body)"
         ));
     }
     for path in mapped.difference(&live) {
@@ -162,40 +189,35 @@ fn global_flags_are_declared() {
     );
 }
 
-/// Layer 2.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn mapped_parameters_agree() {
+/// Layer 2. A `pair` is compared both ways against its tool's exact schema; a `shorthand` only has
+/// to pass arguments that are fields of its tool.
+#[test]
+fn mapped_parameters_agree() {
     let tree = cli_tree::load();
     let domains = mcp_surface::domains();
-    let session = mcp_surface::Session::start().await;
     let rows = capabilities::table();
     let exceptions = exceptions::all();
 
     let (mut violations, mut compared) = (Vec::new(), Vec::new());
+    let mut exact_pairs = 0usize;
     for row in &rows {
-        let Row::Pair { mcp, cli } = row else { continue };
-        let (Some(cmd), Some(domain)) = (tree.commands.get(*cli), domains.get(mcp.tool)) else {
+        let Some((mcp, cli)) = row.runs() else { continue };
+        let (Some(cmd), Some(domain)) = (tree.commands.get(cli), domains.get(mcp.tool)) else {
             continue; // reported by the coverage tests
         };
         compared.push(cli.to_string());
-        let probed = if mcp_surface::is_probed(mcp.tool, mcp.mode) {
-            let p = session.probe(mcp.tool, mcp.mode, domain).await;
-            if p.accepted.len() == domain.fields.len() {
-                violations.push(params::Violation {
-                    cli: cli.to_string(),
-                    param: "<probe>".into(),
-                    diff: params::Diff::CliOnly,
-                    detail: format!("probe of `{}:{}` rejected nothing, so the validator did not run; mark it unprobed in mcp_surface.rs", mcp.tool, mcp.mode),
-                });
-                None
-            } else {
-                Some(p)
-            }
-        } else {
-            None
+        let exact = match row {
+            Row::Pair { .. } => domain.exact_params(),
+            _ => None,
         };
-        violations.extend(params::compare(cmd, domain, probed.as_ref(), &exceptions));
+        exact_pairs += usize::from(exact.is_some());
+        violations.extend(params::compare(cmd, domain, exact.as_ref(), &exceptions));
     }
+    assert_eq!(
+        exact_pairs,
+        basemind::mcp::params::VERB_TOOLS.len(),
+        "every verb tool must be compared against its exact schema"
+    );
     let failures = params::reconcile(&violations, &exceptions, &compared);
     assert!(
         failures.is_empty(),
@@ -210,27 +232,33 @@ async fn read_only_queries_agree_between_mcp_and_cli() {
     let session = mcp_surface::Session::start().await;
     let rows = capabilities::table();
     let mut failures = Vec::new();
-    for case in behaviour::cases() {
-        let label = format!("{}:{}", case.op.tool, case.op.mode);
-        let Some(cli_path) = behaviour::cli_path_for(&rows, case.op) else {
-            failures.push(format!("{label}: no `pair` row in the capability table"));
+    let cases = behaviour::cases();
+    for case in &cases {
+        let label = format!("{} {} (basemind {})", case.tool, case.mcp, case.cli);
+        if !behaviour::table_pairs(&rows, case.tool, case.cli) {
+            failures.push(format!(
+                "{label}: the capability table does not map this command to the tool"
+            ));
             continue;
-        };
-        let mcp = session.call(case.op.tool, case.mcp.clone()).await;
-        let cli = behaviour::run_cli(session.repo.path(), cli_path, case.cli_operands);
+        }
+        let mcp = session.call(case.tool, case.mcp.clone()).await;
+        let cli = behaviour::run_cli(session.repo.path(), case.cli, case.cli_operands);
         match (mcp, cli) {
             (Ok(mut m), Ok(mut c)) => {
-                behaviour::normalize(&mut m, case.unordered);
-                behaviour::normalize(&mut c, case.unordered);
+                behaviour::normalize(&mut m);
+                behaviour::normalize(&mut c);
                 if m != c {
-                    failures.push(format!(
-                        "{label} (basemind {cli_path}): payloads differ\n    mcp: {m}\n    cli: {c}"
-                    ));
+                    failures.push(format!("{label}: payloads differ\n    mcp: {m}\n    cli: {c}"));
                 }
             }
-            (m, c) => failures.push(format!("{label} (basemind {cli_path}): mcp={m:?} cli={c:?}")),
+            (m, c) => failures.push(format!("{label}: mcp={m:?} cli={c:?}")),
         }
     }
+    assert!(
+        cases.len() >= 12,
+        "the behaviour layer lost its cases ({} left)",
+        cases.len()
+    );
     assert!(
         failures.is_empty(),
         "behavioural parity failures:\n  {}",

@@ -115,27 +115,23 @@ async fn serve_relays_stdio_client_to_the_daemon_hosted_router() {
         "relayed server should carry basemind's instructions: {instructions:?}"
     );
 
-    // tools/list flows through the relay and returns the full domain surface. Asserted on the
-    // domain names rather than a count: the surface is a handful of tools by design, so a count
-    // floor would go red on the consolidation itself instead of on a broken relay.
+    // tools/list flows through the relay and returns the full tool surface. Asserted on tool names
+    // rather than a count, so a change to the size of the surface does not read as a broken relay.
     let tools = service.list_all_tools().await.expect("list_tools over relay");
     let names: Vec<&str> = tools.iter().map(|t| t.name.as_ref()).collect();
-    for domain in ["code", "git", "memory", "admin"] {
+    for tool in ["code_outline", "git_log", "memory_search", "index_status"] {
         assert!(
-            names.contains(&domain),
-            "relayed tool listing should include the always-on `{domain}` tool: {names:?}"
+            names.contains(&tool),
+            "relayed tool listing should include the always-on `{tool}` tool: {names:?}"
         );
     }
 
     // A real tool round-trip: outline the scanned file and confirm the symbols came back through the
     // relay from the daemon-hosted index.
     let outlined = service
-        .call_tool(call_params(
-            "code",
-            serde_json::json!({ "mode": "outline", "path": "a.rs" }),
-        ))
+        .call_tool(call_params("code_outline", serde_json::json!({ "path": "a.rs" })))
         .await
-        .expect("code outline call over relay");
+        .expect("code_outline call over relay");
     let body = decode_text(&outlined);
     let symbols = body
         .get("symbols")
@@ -171,10 +167,7 @@ async fn serve_relays_stdio_client_to_the_daemon_hosted_router() {
     );
 
     let after_refusal = service
-        .call_tool(call_params(
-            "code",
-            serde_json::json!({ "mode": "outline", "path": "a.rs" }),
-        ))
+        .call_tool(call_params("code_outline", serde_json::json!({ "path": "a.rs" })))
         .await
         .expect("relay should remain callable after a refused stop");
     assert_eq!(decode_text(&after_refusal)["path"], "a.rs");

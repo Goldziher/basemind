@@ -1,66 +1,115 @@
-//! The `memory` domain tool shim for `BasemindServer`.
+//! The memory and document verb tools of `BasemindServer`: `memory_save`, `memory_search` and
+//! `docs_search` (ADR-0018).
 //!
-//! One tool, one required `mode` — `put` / `get` / `list` / `search` / `delete` /
-//! `documents` — dispatched to `helpers_memory::run_memory`. The tool is registered in every build; the `memory` and
-//! `documents` feature gates are enforced per mode inside the helper, so a binary without them
-//! answers with "rebuild with --features …" instead of hiding the whole domain.
+//! All three are registered in every build; the `memory` and `documents` feature gates are
+//! enforced in the bodies (`helpers_memory.rs`), so a binary without them answers "rebuild with
+//! `--features …`" instead of hiding the tool. See `tools.rs` for the shim contract.
 
 use rmcp::ErrorData as McpError;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::CallToolResult;
 use rmcp::tool;
-use serde_json::Value;
 
 use super::BasemindServer;
-use super::helpers::record_call;
-use super::lenient::Lenient;
-use super::types_memory::MemoryParams;
+use super::helpers_memory;
+use super::strict::Strict;
+use super::types_memory::MemoryDeleteParams;
+use super::types_tools::{DocsSearchParams, MemorySaveParams, MemorySearchToolParams};
 
 #[rmcp::tool_router(vis = "pub(super)", router = "tool_router_memory")]
 impl BasemindServer {
-    // No `output_schema`: the six modes return six different response shapes, and SEP-2106
-    // allows exactly one per tool. Declaring a union would mean nested structs, which schemars
-    // emits as `$ref` into `$defs` — the construct that silently dropped the whole registry in
-    // GH #50. The per-mode shapes are documented in the description instead. ~keep
     #[tool(
-        title = "Memory and documents",
-        description = "Durable repo-scoped memory plus retrieval over indexed documents: remember \
-        this, recall what we know, and search the PDFs. `mode` is \
-        required. `put` writes (upserts) a note under a key so later sessions and other agents \
-        read it back — `embed=false` skips vector indexing; `get` is an exact-key lookup, no \
-        vector touch; `list` enumerates entries with a key-PREFIX filter (`prefix`, not substring) \
-        and an exact `tag` filter, `cursor`-paged (default 100, max 1000); `search` is vector KNN \
-        over stored notes — \"what do we already know about X\" (default 10, max 100, ranked by L2 \
-        distance, `tag` filtered after the KNN); `delete` removes one key from both the index and \
-        the vector store. `documents` is \
-        semantic search over indexed documents — PDFs, Office files, HTML, email, OCR'd images, and \
-        also Jupyter notebooks, markdown, config and data files (JSON/YAML/TOML/XML/CSV). Use \
-        `mime_type: \"application/x-ipynb+json\"` to restrict results to notebooks. Semantic search \
-        cannot prove an exact string or regex is absent; use a literal or regex file search for \
-        exact matches outside the code map. `mime_type` filters exactly, \
-        `entity_category` / `keywords_contains` filter by NER category / keyword, and `scope` picks \
-        the ingestion scope (pages an older version ingested from the web stay under `web:<host>` and are no longer refreshed), \
-        `max_tokens` budgets the hits and `format:\"toon\"` compacts them. \
-        `visibility` selects the tier for the memory modes: `group` (shared across agents, the \
-        default) or `individual` (private to the calling agent). Parameters that belong to another \
-        mode are rejected, not ignored. Every mode except `documents` needs --features memory; \
-        `documents` needs --features documents.",
+        title = "Search documents",
+        description = "Use to find where a topic is discussed in the repository's documents \
+        (markdown, PDFs, Office, HTML, config and data files) instead of opening them. Returns the \
+        best-matching passages with their path. Code is searched with `code_grep`/`code_search`. \
+        Example: {\"query\":\"how releases are versioned\"}",
         annotations(
-            read_only_hint = false,
-            destructive_hint = true,
-            idempotent_hint = false,
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
             open_world_hint = false
         )
     )]
-    pub(crate) async fn memory(
+    pub(crate) async fn docs_search(
         &self,
-        Parameters(Lenient(p)): Parameters<Lenient<MemoryParams>>,
+        Parameters(args): Parameters<Strict<DocsSearchParams>>,
     ) -> Result<CallToolResult, McpError> {
-        let __started = std::time::Instant::now();
-        let __key = p.mode.telemetry_key();
-        let __params_json = serde_json::to_value(&p).unwrap_or(Value::Null);
-        let __result: Result<CallToolResult, McpError> = super::helpers_memory::run_memory(&self.state, p).await;
-        record_call(&self.state, __key, &__params_json, __started, &__result);
-        __result
+        self.answer(args, |p| self.docs_search_call(p)).await
+    }
+
+    #[tool(
+        title = "Save a note",
+        description = "Use to remember a decision, convention or finding for later sessions and \
+        other agents working in this repository. Saving an existing `key` replaces it. \
+        Example: {\"key\":\"decision/auth-tokens\",\"value\":\"Tokens rotate every 24h.\",\"tags\":[\"auth\"]}",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    pub(crate) async fn memory_save(
+        &self,
+        Parameters(args): Parameters<Strict<MemorySaveParams>>,
+    ) -> Result<CallToolResult, McpError> {
+        self.answer(args, |p| self.memory_save_call(p)).await
+    }
+
+    #[tool(
+        title = "Recall notes",
+        description = "Use to recall what was saved with `memory_save`: `query` searches notes by \
+        meaning, `key` reads one, `prefix` lists by key prefix, and no arguments lists everything. \
+        Example: {\"query\":\"token rotation\"}",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    pub(crate) async fn memory_search(
+        &self,
+        Parameters(args): Parameters<Strict<MemorySearchToolParams>>,
+    ) -> Result<CallToolResult, McpError> {
+        self.answer(args, |p| self.memory_search_call(p)).await
+    }
+}
+
+impl BasemindServer {
+    /// Body of `docs_search`, shared with `basemind memory documents`.
+    pub(crate) async fn docs_search_call(&self, p: DocsSearchParams) -> Result<CallToolResult, McpError> {
+        crate::instrument_tool!(
+            &self.state,
+            "docs_search",
+            p,
+            helpers_memory::docs_search(&self.state, p).await
+        )
+    }
+
+    /// Body of `memory_save`, shared with `basemind memory put`.
+    pub(crate) async fn memory_save_call(&self, p: MemorySaveParams) -> Result<CallToolResult, McpError> {
+        crate::instrument_tool!(
+            &self.state,
+            "memory_save",
+            p,
+            helpers_memory::memory_save(&self.state, p).await
+        )
+    }
+
+    /// Body of `memory_search`, shared with `basemind memory get|list|search`.
+    pub(crate) async fn memory_search_call(&self, p: MemorySearchToolParams) -> Result<CallToolResult, McpError> {
+        crate::instrument_tool!(
+            &self.state,
+            "memory_search",
+            p,
+            helpers_memory::memory_search(&self.state, p).await
+        )
+    }
+
+    /// Delete one note. No MCP tool: `basemind memory delete`.
+    pub(crate) async fn memory_delete_call(&self, p: MemoryDeleteParams) -> Result<CallToolResult, McpError> {
+        helpers_memory::memory_delete(&self.state, p).await
     }
 }

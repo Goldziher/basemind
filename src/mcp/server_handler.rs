@@ -44,9 +44,10 @@ impl ServerHandler for BasemindServer {
     /// In lean mode, route the three wrapper tools through `lean::lean_call_tool`, which itself
     /// delegates `invoke_tool` back to this same router — no tool logic is duplicated.
     ///
-    /// SEP-2663 Tasks: before the synchronous dispatch, a slow call ([`tasks::SLOW_CALLS`]) made by
-    /// a client that declared the tasks extension is offloaded onto the [`TaskManager`] and answered
-    /// with a pollable task handle instead of a blocked call. Every other case takes the normal path.
+    /// SEP-2663 Tasks: a call that can run long ([`tasks::SLOW_CALLS`]), made by a client that
+    /// declared the tasks extension, is answered inline when it finishes within
+    /// [`tasks::TASK_THRESHOLD`] and with a pollable task handle only when it is still running
+    /// after it. Every other case takes the normal path.
     async fn call_tool(
         &self,
         request: rmcp::model::CallToolRequestParams,
@@ -87,17 +88,15 @@ impl ServerHandler for BasemindServer {
             .map_err(rmcp::ErrorData::from)?;
         let client_supports_tasks = context.client_capabilities().is_some_and(|caps| caps.supports_tasks());
         if client_supports_tasks && tasks::is_slow_tool(&request.name, request.arguments.as_ref()) {
-            return Ok(rmcp::model::CallToolResponse::Task(tasks::spawn_slow_tool(
-                self, request, context, admission,
-            )));
+            return tasks::run_slow_tool(self, request, context, admission, self.task_threshold()).await;
         }
         let should_deliver_comms = request.name != "agents";
         let cancel_aware = tasks::is_cancel_aware_read(&request.name, request.arguments.as_ref());
         let _admission = admission;
         let tcc = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
-        // Pure read-only heavy modes race the client's cancellation: the handler future (and the
+        // Pure read-only heavy calls race the client's cancellation: the handler future (and the
         // admission permit it keeps alive alongside) is dropped the moment the request is cancelled.
-        // Mutating modes never take this branch — see `tasks::CANCEL_AWARE_READS`.
+        // Mutating calls never take this branch — see `tasks::CANCEL_AWARE_READS`.
         let response = if cancel_aware {
             let ct = tcc.request_context.ct.clone();
             tasks::run_until_cancelled(ct.cancelled(), self.tool_router.call(tcc)).await?
@@ -230,39 +229,42 @@ impl ServerHandler for BasemindServer {
                 .enable_tasks()
                 .build(),
         )
-        // Budgeted to stay under the 2048-char ceiling clients truncate at. The previous text ran
-        // ~6.5k, so roughly two thirds was silently discarded — and because truncation takes the
-        // HEAD, everything from the agent-comms contract onward never reached any agent at all.
-        // Per-tool routing detail belongs in the tool descriptions (which is what deferred-tool
-        // search actually matches on); this text carries only what a client must read up front:
-        // what basemind is, the prefer-basemind-over-grep directive (code, history, documents) and,
-        // last, the optional coordination contract.
-        // Keep any edit under the ceiling — `instructions_stay_under_the_client_ceiling` enforces it.
+        // Hosts cap this text (Claude Code at 4,096 chars) and truncate from the END without
+        // telling the agent, so it is ordered by what must survive: what basemind is, the tools for
+        // navigating code, then history, documents, memory and, last, optional coordination.
+        // `instructions_stay_under_the_client_ceiling` enforces the cap.
         .with_instructions(
-            "basemind is this repository's indexed context layer: a tree-sitter code map (symbols, \
-             references, callers), git history and blame at symbol resolution, \
-             full-text and semantic search, document RAG, and shared cross-session memory. The \
-             index lives in a machine-global cache (override BASEMIND_DATA_HOME); nothing is \
-             written into the repo and any number of sessions share it.\n\
-             Every tool takes a required mode; read its description for the modes it offers.\n\
-             basemind first, shell/grep/git fallback: these tools return paths, line numbers, and \
-             signatures rather than file bodies, so they cost a fraction of the tokens of reading \
-             source. Do not re-read a file basemind already mapped.\n\
-             Code: code mode outline before opening a file, then read only the span you need; \
-             code mode symbols to find a definition; code modes references and callers instead of \
-             grepping call sites; code mode grep instead of ripgrep; code mode find to locate a \
-             file by name.\n\
-             History: git modes recent, touching, blame, blame_symbol and diff instead of git log, \
-             git blame or git diff.\n\
-             Documents: memory mode documents instead of opening PDFs, markdown, config or data \
-             files (the code map holds code only).\n\
-             Run admin mode rescan after edits; if a tool reports no indexed files, run basemind \
-             scan first.\n\
-             Only when you are collaborating with other agents in this repo: agents mode inbox and \
-             thread_list show scoped threads (front-matter only; mode message reads a body), and \
-             mode post announces what you start, finish or decide. Skip this when working alone.\n\
-             All paths are repository-relative with forward-slash separators. Paginate by passing a \
-             response's next_cursor back as cursor.",
+            "basemind is this repository's indexed context layer: a tree-sitter code map, git history at symbol \
+             resolution, document search and shared memory. Its tools are always loaded; call them \
+             directly, before shell `rg`/`grep`/`find`/`git` and before reading whole files. They \
+             return paths, 1-based line numbers and signatures, so they cost a fraction of the tokens of \
+             reading source.\n\
+             Code:\n\
+             - what is in a file: code_outline {\"path\":\"src/store.rs\"}, then code_read \
+             {\"path\":\"src/store.rs\",\"symbol\":\"open\"} for only the body you need\n\
+             - where is X defined: code_symbols {\"name\":\"open_store\"}\n\
+             - what calls / implements / imports X: code_refs {\"name\":\"open_store\"}\n\
+             - find a string or comment: code_grep {\"pattern\":\"cache_root(\"} (literal unless \
+             \"regex\":true)\n\
+             - find code by what it does: code_search {\"query\":\"retry a failed upload\"}\n\
+             - find a file by name: find_files {\"query\":\"readme\"}\n\
+             History: git_log {} (recent commits; add path, query, author, symbol or rev), \
+             git_blame {\"path\":\"src/store.rs\",\"symbol\":\"open\"}, git_diff {} (working-tree status; \
+             add path, from, to).\n\
+             Documents (markdown, PDFs, config; the code tools cover code only): docs_search \
+             {\"query\":\"how releases are versioned\"}.\n\
+             Memory shared across sessions: memory_save {\"key\":\"decision/x\",\"value\":\"…\"}, \
+             memory_search {\"query\":\"…\"}.\n\
+             Index: index_status {} when a result is unexpectedly empty; index_rescan {} after edits or \
+             when a tool says the index is empty.\n\
+             Conventions: paths are repository-relative with forward slashes; line and end_line are \
+             1-based and inclusive; lists take limit and cursor and return next_cursor; a list trimmed \
+             to its token budget sets budgeted (raise max_tokens or follow next_cursor); a failure is a \
+             tool result with isError naming the fix; a notice field means the result is incomplete \
+             and says why. An unknown argument is rejected, never ignored.\n\
+             Only when collaborating with other agents in this repository: the agents tool (mode inbox, \
+             thread_list, message, post) carries scoped threads, and workspace tracks worktree claims. \
+             Skip both when working alone.",
         )
     }
 }

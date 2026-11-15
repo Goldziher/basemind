@@ -73,10 +73,22 @@ pub(super) async fn run_workspace_grep(
         None => (0, 0),
     };
 
-    let re = Regex::new(&params.pattern).map_err(|e| McpError::invalid_params(format!("invalid regex: {e}"), None))?;
+    // A literal pattern is escaped into the regex the rest of the sweep (and the trigram prefilter)
+    // already understands; the response still echoes what the caller typed.
+    let source = if params.literal {
+        regex::escape(&params.pattern)
+    } else {
+        params.pattern.clone()
+    };
+    let re = Regex::new(&source).map_err(|e| {
+        McpError::invalid_params(
+            format!("invalid regex: {e}. Drop `regex` to search for the pattern as literal text."),
+            None,
+        )
+    })?;
 
-    let literal =
-        (regex::escape(&params.pattern) == params.pattern).then(|| Finder::new(params.pattern.as_bytes()).into_owned());
+    let literal = (params.literal || regex::escape(&params.pattern) == params.pattern)
+        .then(|| Finder::new(params.pattern.as_bytes()).into_owned());
 
     let path_finder = params.path_contains.as_deref().map(|n| Finder::new(n.as_bytes()));
     let lang_filter = params.language.as_deref();
@@ -112,7 +124,7 @@ pub(super) async fn run_workspace_grep(
     let skip = if bloom_prefilter_enabled() {
         super::index_route::IndexRoute::resolve(state)
             .await
-            .grep_skip(root, &params.pattern, &entries)
+            .grep_skip(root, &source, &entries)
             .await
     } else {
         None

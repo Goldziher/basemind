@@ -127,36 +127,66 @@ fn scrub(value: &mut Value) {
 }
 
 /// Every tool call the comparison drives. Chosen to cover both consumer classes the split created:
-/// point lookups (`outline`, `callers`) and whole-corpus streams (`symbols`, `find`, `grep`,
-/// `dependents`).
+/// point lookups (`code_outline`, `code_refs` with a `path`) and whole-corpus streams
+/// (`code_symbols`, `find_files`, `code_grep`, `code_refs`).
 ///
-/// `mode = "files"` is deliberately absent: it enumerates `store.index.files` directly rather than
-/// the read stack, and that is an `AHashMap` whose iteration order is seeded per instance — so two
-/// runs disagree regardless of cache budget. That is a real (pre-existing, separate) pagination
-/// defect, not something this comparison can or should mask.
+/// A `find_files` listing (no `query`) is deliberately absent: it enumerates `store.index.files`
+/// directly rather than the read stack, and that is an `AHashMap` whose iteration order is seeded
+/// per instance — so two runs disagree regardless of cache budget. That is a real (pre-existing,
+/// separate) pagination defect, not something this comparison can or should mask.
+///
+/// Every list passes a budget far above its size, so the comparison covers whole pages rather than
+/// whatever prefix fits the default budget.
 fn tool_matrix() -> Vec<(&'static str, Value)> {
+    const WHOLE_PAGE: u32 = 1_000_000;
     vec![
-        ("code", json!({"mode": "outline", "path": "module_000.rs"})),
-        ("code", json!({"mode": "outline", "path": "module_119.rs", "l2": true})),
-        ("code", json!({"mode": "symbols", "name": "operation_001", "limit": 50})),
-        ("code", json!({"mode": "symbols", "name": "caller", "limit": 200})),
-        ("code", json!({"mode": "find", "query": "module_05", "limit": 50})),
         (
-            "code",
-            json!({"mode": "grep", "pattern": "module_00[0-3]_caller", "limit": 40}),
-        ),
-        ("code", json!({"mode": "dependents", "module": "Module007Drawable"})),
-        (
-            "code",
-            json!({"mode": "callers", "name": "module_000_operation_000_with_a_long_name", "path": "module_000.rs"}),
+            "code_outline",
+            json!({"path": "module_000.rs", "max_tokens": WHOLE_PAGE}),
         ),
         (
-            "code",
-            json!({"mode": "references", "name": "module_000_operation_000_with_a_long_name", "limit": 50}),
+            "code_outline",
+            json!({"path": "module_119.rs", "max_tokens": WHOLE_PAGE}),
         ),
         (
-            "code",
-            json!({"mode": "implementations", "trait_name": "Module007Drawable"}),
+            "code_symbols",
+            json!({"name": "operation_001", "limit": 50, "max_tokens": WHOLE_PAGE}),
+        ),
+        (
+            "code_symbols",
+            json!({"name": "caller", "limit": 200, "max_tokens": WHOLE_PAGE}),
+        ),
+        (
+            "find_files",
+            json!({"query": "module_05", "limit": 50, "max_tokens": WHOLE_PAGE}),
+        ),
+        (
+            "code_grep",
+            json!({"pattern": "module_00[0-3]_caller", "regex": true, "limit": 40, "max_tokens": WHOLE_PAGE}),
+        ),
+        (
+            "code_refs",
+            json!({"name": "Module007Drawable", "relation": "importers", "max_tokens": WHOLE_PAGE}),
+        ),
+        (
+            "code_refs",
+            json!({
+                "name": "module_000_operation_000_with_a_long_name",
+                "path": "module_000.rs",
+                "max_tokens": WHOLE_PAGE,
+            }),
+        ),
+        (
+            "code_refs",
+            json!({
+                "name": "module_000_operation_000_with_a_long_name",
+                "limit": 50,
+                "max_tokens": WHOLE_PAGE,
+            }),
+        ),
+        (
+            "code_refs",
+            json!({"name": "Module007Drawable", "relation": "implementations", "max_tokens": WHOLE_PAGE}),
         ),
     ]
 }
@@ -173,6 +203,7 @@ async fn collect_responses(root: &Path) -> Vec<Value> {
             .call_tool(call_params(tool, args.clone()))
             .await
             .unwrap_or_else(|e| panic!("call {tool} {args}: {e}"));
+        assert_ne!(result.is_error, Some(true), "call {tool} {args}: {}", text_of(&result));
         let mut parsed: Value = serde_json::from_str(&text_of(&result)).unwrap_or(Value::Null);
         scrub(&mut parsed);
         out.push(parsed);
@@ -205,7 +236,7 @@ where
     let started = std::time::Instant::now();
     loop {
         let probe = service
-            .call_tool(call_params("code", json!({"mode": "outline", "path": "module_000.rs"})))
+            .call_tool(call_params("code_outline", json!({"path": "module_000.rs"})))
             .await
             .expect("probe call");
         let parsed: Value = serde_json::from_str(&text_of(&probe)).unwrap_or(Value::Null);

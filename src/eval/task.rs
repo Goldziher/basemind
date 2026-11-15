@@ -9,7 +9,7 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// Retrieval modes the harness can drive. Each maps onto exactly one MCP tool mode.
+/// Retrieval modes the harness can drive. Each maps onto one MCP tool (several onto `code_refs`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EvalMode {
@@ -25,19 +25,17 @@ pub enum EvalMode {
 }
 
 impl EvalMode {
-    /// The `domain:mode` telemetry key of the tool call this mode drives; also the key
+    /// The telemetry key (the tool name) of the tool call this mode drives; also the key
     /// `savings::estimate_from_text` classifies on.
     pub fn tool_key(self) -> &'static str {
         match self {
-            Self::Symbols => "code:symbols",
-            Self::Outline => "code:outline",
-            Self::References => "code:references",
-            Self::Callers => "code:callers",
-            Self::Grep => "code:grep",
-            Self::Find => "code:find",
-            Self::Dependents => "code:dependents",
-            Self::GitSearch => "git:search",
-            Self::Docs => "memory:documents",
+            Self::Symbols => "code_symbols",
+            Self::Outline => "code_outline",
+            Self::References | Self::Callers | Self::Dependents => "code_refs",
+            Self::Grep => "code_grep",
+            Self::Find => "find_files",
+            Self::GitSearch => "git_log",
+            Self::Docs => "docs_search",
         }
     }
 
@@ -101,7 +99,7 @@ pub struct Task {
     pub id: String,
     pub mode: EvalMode,
     /// Tool arguments for the mode (`name`, `pattern`, `path`, `query`, ...), exactly as the MCP
-    /// tool takes them, minus `mode`.
+    /// tool takes them.
     #[serde(default)]
     pub args: Value,
     /// Expected items: `path` or `path:line`.

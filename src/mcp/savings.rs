@@ -9,8 +9,6 @@
 //! text to tokenize, so it falls back to the same `bytes / 4` rule of thumb basemind's scan-cost
 //! reporting uses. Under default features the two tiers are numerically identical.
 
-use std::borrow::Cow;
-
 use serde::Serialize;
 
 /// One row's worth of "tokens saved" reasoning. The `est_tokens_saved` field is what the
@@ -51,66 +49,81 @@ fn scaled(actual: u64, pct: u64) -> u64 {
 
 // Baseline multipliers, in percent. Each is the MEDIAN token ratio (baseline tokens / basemind
 // response tokens) measured by `basemind admin eval` (benchmarks/eval) on a ~63k-file Python/TS
-// monorepo, over the tasks where basemind's answer was correct (recall >= 0.8), rounded down. A mode
+// monorepo, over the tasks where basemind's answer was correct (recall >= 0.8), rounded down. A tool
 // whose measured median is below 1 claims 100: basemind did not beat its baseline there, so it
 // claims no saving. The baseline each figure is measured against is the disclosed `baseline` field
 // of the row; re-run the eval and update these when a response shape changes.
 
-/// `code:outline` vs reading the whole file. Measured median 1.24x (p90 2.6x) over files with 3-60
+/// `code_outline` vs reading the whole file. Measured median 1.24x (p90 2.6x) over files with 3-60
 /// symbols: a short file costs about as much to outline (symbols plus every import line) as to read.
 const OUTLINE_PCT: u64 = 120;
 
-/// `code:symbols` vs `git grep` plus whole-file reads of the (up to three) files holding the hits.
+/// `code_symbols` vs `git grep` plus whole-file reads of the (up to three) files holding the hits.
 /// Measured median 27.9x (p25 12x, p90 89x); large source files dominate the baseline.
 const SYMBOLS_PCT: u64 = 2500;
 
-/// `code:references` vs the `git grep -n -w` line listing. Measured median 1.22x (p90 2.5x).
-/// `code:implementations` returns the same response shape and has no eval mode of its own, so it
-/// shares this figure.
-const REFERENCES_PCT: u64 = 120;
+/// `code_refs` vs the `git grep -n -w` line listing. Its shapes measured 1.22x (call sites of a
+/// name), 0.76x (callers of one definition) and 0.64x (importers); one telemetry key covers all
+/// of them, so the tool claims no saving rather than the best shape's figure.
+const REFS_PCT: u64 = 100;
 
-/// `code:callers` vs the `git grep -n -w` line listing. Measured median 0.76x: grouping callers
-/// costs more tokens than the bare grep lines, so no saving is claimed.
-const CALLERS_PCT: u64 = 100;
-
-/// `code:dependents` vs `git grep -l` of the import lines. Measured median 0.64x (a bare path list
-/// is hard to beat), so no saving is claimed.
-const DEPENDENTS_PCT: u64 = 100;
-
-/// `code:find` vs `git ls-files | grep`. Measured median 0.30x: the baseline is one path line,
+/// `find_files` vs `git ls-files | grep`. Measured median 0.30x: the baseline is one path line,
 /// basemind's value is the fuzzy/typo-tolerant match, not fewer tokens. No saving is claimed.
 const FIND_PCT: u64 = 100;
 
-/// `code:files` vs `find` / `git ls-files` plus a filter. Same response shape as `find` (measured
-/// 0.30x there), no eval mode of its own: no saving is claimed.
-const LIST_FILES_PCT: u64 = 100;
-
-/// `memory:documents` vs `git grep` of a keyword plus opening the document it points at. Measured
+/// `docs_search` vs `git grep` of a keyword plus opening the document it points at. Measured
 /// median 2.54x (p90 7.5x) on the docs eval, where grep alone returns only bare lines.
 const DOCUMENT_READ_PCT: u64 = 250;
 
-/// Rewrite a tool name spelled `code_outline` to the telemetry key the baseline table is written
-/// against (`code:outline`).
-///
-/// The MCP surface spells a call `domain:mode`; some callers spell it `domain_mode`, since a colon
-/// is illegal in the provider tool-name pattern. The two vocabularies are otherwise the same
-/// `(domain, mode)` pairs, so one rewrite here keeps every baseline arm single-spelled. A pair that
-/// is not a real domain/mode is returned unchanged and falls through to `unclassified`. ~keep
-fn canonical_key(tool: &str) -> Cow<'_, str> {
-    if tool.contains(':') {
-        return Cow::Borrowed(tool);
-    }
-    let Some((domain, mode)) = tool.split_once('_') else {
-        return Cow::Borrowed(tool);
-    };
-    let known = super::mode::domain_modes()
-        .into_iter()
-        .any(|(d, modes)| d == domain && modes.contains(&mode));
-    if known {
-        Cow::Owned(format!("{domain}:{mode}"))
-    } else {
-        Cow::Borrowed(tool)
-    }
+/// Telemetry keys written before ADR-0018, mapped to the tool that replaced them. Rows recorded
+/// by an older binary (`code:outline`) and tool names older clients still send (`code_references`)
+/// keep resolving to a baseline instead of falling through to `unclassified`.
+const LEGACY_KEYS: &[(&str, &str)] = &[
+    ("code:outline", "code_outline"),
+    ("code:symbols", "code_symbols"),
+    ("code:grep", "code_grep"),
+    ("code:expand", "code_read"),
+    ("code:semantic", "code_search"),
+    ("code:references", "code_refs"),
+    ("code:callers", "code_refs"),
+    ("code:implementations", "code_refs"),
+    ("code:dependents", "code_refs"),
+    ("code:definition", "code_refs"),
+    ("code:find", "find_files"),
+    ("code:files", "find_files"),
+    ("memory:documents", "docs_search"),
+    ("memory:put", "memory_save"),
+    ("memory:get", "memory_search"),
+    ("memory:list", "memory_search"),
+    ("memory:search", "memory_search"),
+    ("git:recent", "git_log"),
+    ("git:touching", "git_log"),
+    ("git:by_path", "git_log"),
+    ("git:search", "git_log"),
+    ("git:show", "git_log"),
+    ("git:symbol_history", "git_log"),
+    ("git:blame", "git_blame"),
+    ("git:blame_symbol", "git_blame"),
+    ("git:diff", "git_diff"),
+    ("git:diff_outline", "git_diff"),
+    ("git:status", "git_diff"),
+    ("admin:status", "index_status"),
+    ("admin:repo", "index_status"),
+    ("admin:rescan", "index_rescan"),
+];
+
+/// The tool name the baseline table is written against, for a current name or a legacy key in
+/// either spelling (`code:outline` / `code_outline`, `code:references` / `code_references`).
+fn canonical_key(tool: &str) -> &str {
+    LEGACY_KEYS
+        .iter()
+        .find(|(legacy, _)| {
+            *legacy == tool
+                || legacy.split_once(':').is_some_and(|(domain, mode)| {
+                    tool.strip_prefix(domain).and_then(|rest| rest.strip_prefix('_')) == Some(mode)
+                })
+        })
+        .map_or(tool, |(_, current)| current)
 }
 
 /// Estimate baseline + actual tokens for one tool call from the full response **text**.
@@ -126,55 +139,32 @@ fn canonical_key(tool: &str) -> Cow<'_, str> {
 /// response payload), so this argument currently goes unused.
 pub fn estimate_from_text(tool: &str, _corpus_bytes: u64, resp_text: &str) -> SavingsRow {
     let actual = tokens_for_text(resp_text);
-    let (baseline, baseline_name) = match canonical_key(tool).as_ref() {
-        "code:outline" => (scaled(actual, OUTLINE_PCT), "full_file_read"),
+    let (baseline, baseline_name) = match canonical_key(tool) {
+        "code_outline" => (scaled(actual, OUTLINE_PCT), "full_file_read"),
 
-        "code:symbols" => (scaled(actual, SYMBOLS_PCT), "grep_plus_read_top_hits"),
+        "code_symbols" => (scaled(actual, SYMBOLS_PCT), "grep_plus_read_top_hits"),
 
-        "code:references" | "code:implementations" => (scaled(actual, REFERENCES_PCT), "grep_top_hits"),
+        "code_refs" => (scaled(actual, REFS_PCT), "grep_top_hits"),
 
-        "code:callers" => (scaled(actual, CALLERS_PCT), "grep_top_hits"),
+        "find_files" => (scaled(actual, FIND_PCT), "git_ls_files_grep"),
 
-        "code:dependents" => (scaled(actual, DEPENDENTS_PCT), "grep_imports_top_hits"),
+        "docs_search" => (scaled(actual, DOCUMENT_READ_PCT), "grep_plus_document_read"),
 
-        "code:find" => (scaled(actual, FIND_PCT), "git_ls_files_grep"),
-
-        "git:churn" => (actual.saturating_mul(3), "git_log_per_file"),
-
-        "git:symbol_history" => (actual.saturating_mul(4), "per_commit_outline_diff"),
-
-        "code:grep" => (actual, "no_baseline"),
-
-        "memory:documents" => (scaled(actual, DOCUMENT_READ_PCT), "grep_plus_document_read"),
-
-        "code:files" => (scaled(actual, LIST_FILES_PCT), "find_plus_filter"),
-
-        "memory:get"
-        | "memory:put"
-        | "memory:list"
-        | "memory:search"
-        | "memory:delete"
-        | "admin:telemetry"
-        | "admin:rescan"
-        | "admin:cache_stats"
-        | "admin:gc"
-        | "admin:cache_clear"
-        | "admin:status"
-        | "admin:repo"
+        "code_grep"
+        | "code_read"
+        | "code_search"
+        | "git_log"
+        | "git_blame"
+        | "git_diff"
+        | "memory_save"
+        | "memory_search"
+        | "index_status"
+        | "index_rescan"
         | "workspace:workspaces"
         | "workspace:worktrees"
         | "workspace:branches"
         | "workspace:claim"
-        | "workspace:release"
-        | "git:status"
-        | "git:recent"
-        | "git:touching"
-        | "git:by_path"
-        | "git:diff"
-        | "git:diff_outline"
-        | "git:blame"
-        | "git:blame_symbol"
-        | "git:search" => (actual, "no_baseline"),
+        | "workspace:release" => (actual, "no_baseline"),
 
         _ => (actual, "unclassified"),
     };
@@ -202,7 +192,7 @@ mod tests {
 
     #[test]
     fn outline_baseline_is_1_2x_response() {
-        let s = estimate_from_text("code:outline", 1_000_000, &"a".repeat(400));
+        let s = estimate_from_text("code_outline", 1_000_000, &"a".repeat(400));
         assert_eq!(s.baseline_tokens, scaled(s.actual_tokens, 120));
         assert_eq!(s.baseline, "full_file_read");
         #[cfg(not(feature = "tokenizer"))]
@@ -216,8 +206,8 @@ mod tests {
     #[test]
     fn search_symbols_savings_independent_of_corpus() {
         let text = "a".repeat(400);
-        let big = estimate_from_text("code:symbols", 1_000_000, &text);
-        let empty = estimate_from_text("code:symbols", 0, &text);
+        let big = estimate_from_text("code_symbols", 1_000_000, &text);
+        let empty = estimate_from_text("code_symbols", 0, &text);
         assert_eq!(big.est_tokens_saved, empty.est_tokens_saved);
         assert_grep_model(&big, "grep_plus_read_top_hits", 2500);
         #[cfg(not(feature = "tokenizer"))]
@@ -229,21 +219,9 @@ mod tests {
     }
 
     #[test]
-    fn find_references_grep_baseline_floors_at_zero_for_empty_corpus() {
-        let s = estimate_from_text("code:references", 0, &"a".repeat(200));
-        assert_grep_model(&s, "grep_top_hits", 120);
-        #[cfg(not(feature = "tokenizer"))]
-        {
-            assert_eq!(s.actual_tokens, 50);
-            assert_eq!(s.baseline_tokens, 60);
-            assert_eq!(s.est_tokens_saved, 10);
-        }
-    }
-
-    #[test]
     fn grep_savings_scale_with_response_not_corpus() {
-        let small = estimate_from_text("code:symbols", 1_000_000, &"word ".repeat(80));
-        let large = estimate_from_text("code:symbols", 1_000_000, &"word ".repeat(800));
+        let small = estimate_from_text("code_symbols", 1_000_000, &"word ".repeat(80));
+        let large = estimate_from_text("code_symbols", 1_000_000, &"word ".repeat(800));
         assert!(
             large.est_tokens_saved > small.est_tokens_saved,
             "bigger response must yield bigger savings: {} !> {}",
@@ -257,22 +235,17 @@ mod tests {
     #[test]
     fn no_baseline_tools_claim_zero_savings() {
         for tool in [
-            "memory:get",
-            "memory:put",
-            "admin:status",
-            "admin:repo",
-            "admin:telemetry",
-            "admin:rescan",
-            "admin:cache_stats",
+            "memory_search",
+            "memory_save",
+            "index_status",
+            "index_rescan",
             "workspace:worktrees",
-            "git:recent",
-            "git:touching",
-            "git:diff",
-            "git:blame",
-            "git:status",
-            "git:search",
-            "code:grep",
+            "git_log",
+            "git_diff",
+            "git_blame",
             "code_grep",
+            "code_read",
+            "code_search",
         ] {
             let s = estimate_from_text(tool, 1_000_000, &"a".repeat(500));
             assert_eq!(s.est_tokens_saved, 0, "{tool} must not claim savings");
@@ -280,49 +253,52 @@ mod tests {
         }
     }
 
-    /// LLM clients register tools under `domain_mode` (a colon is illegal in the provider
-    /// tool-name pattern) and route them through this estimator, so the underscore spelling must
-    /// reach the same baseline as the `domain:mode` key the MCP surface records. Without the
-    /// rewrite their "tokens saved" readout silently reports zero.
+    /// Rows written before ADR-0018 carry `domain:mode` keys, and older clients send the
+    /// `domain_mode` spelling. Both must keep resolving to the baseline of the tool that replaced
+    /// them, so a telemetry file spanning the upgrade still aggregates.
     #[test]
-    fn agent_tool_names_model_the_same_baseline_as_their_modes() {
+    fn legacy_keys_model_the_baseline_of_the_tool_that_replaced_them() {
         let text = "a".repeat(400);
-        for (agent, mode) in [
-            ("code_outline", "code:outline"),
-            ("code_symbols", "code:symbols"),
-            ("code_references", "code:references"),
-            ("code_callers", "code:callers"),
-            ("code_implementations", "code:implementations"),
-            ("code_dependents", "code:dependents"),
-            ("code_grep", "code:grep"),
-            ("code_files", "code:files"),
-            ("git_recent", "git:recent"),
-            ("git_blame_symbol", "git:blame_symbol"),
-            ("git_diff", "git:diff"),
+        for (legacy, current) in [
+            ("code:outline", "code_outline"),
+            ("code:symbols", "code_symbols"),
+            ("code:references", "code_refs"),
+            ("code_references", "code_refs"),
+            ("code_callers", "code_refs"),
+            ("code:dependents", "code_refs"),
+            ("code:find", "find_files"),
+            ("code_files", "find_files"),
+            ("memory:documents", "docs_search"),
+            ("git:recent", "git_log"),
+            ("git_blame_symbol", "git_blame"),
+            ("git:status", "git_diff"),
+            ("admin:status", "index_status"),
         ] {
-            let via_agent = estimate_from_text(agent, 1_000_000, &text);
-            let via_mode = estimate_from_text(mode, 1_000_000, &text);
+            let via_legacy = estimate_from_text(legacy, 1_000_000, &text);
+            let via_current = estimate_from_text(current, 1_000_000, &text);
             assert_eq!(
-                via_agent.baseline, via_mode.baseline,
-                "{agent} and {mode} must share a baseline"
+                via_legacy.baseline, via_current.baseline,
+                "{legacy} and {current} must share a baseline"
             );
             assert_eq!(
-                via_agent.est_tokens_saved, via_mode.est_tokens_saved,
-                "{agent} and {mode} must estimate the same savings"
+                via_legacy.est_tokens_saved, via_current.est_tokens_saved,
+                "{legacy} and {current} must estimate the same savings"
             );
-            assert_ne!(
-                via_agent.baseline, "unclassified",
-                "{agent} must resolve to a real mode, not fall through"
-            );
+            assert_ne!(via_legacy.baseline, "unclassified", "{legacy} must still resolve");
         }
     }
 
-    /// The rewrite is keyed off the real mode vocabulary, so a name that merely *looks* like
-    /// `domain_mode` must not be coerced into a baseline it was never modelled for. `code_nonsense`
-    /// is the live case: `code` is a domain but `nonsense` is not one of its modes.
+    /// A name that merely looks like a legacy key must not be coerced into a baseline it was never
+    /// modelled for.
     #[test]
-    fn underscore_names_that_are_not_real_modes_stay_unclassified() {
-        for tool in ["shell_exec", "code_nonsense", "not_a_real_tool", "room_broadcast"] {
+    fn names_that_are_not_tools_stay_unclassified() {
+        for tool in [
+            "shell_exec",
+            "code_nonsense",
+            "not_a_real_tool",
+            "room_broadcast",
+            "git:churn",
+        ] {
             let s = estimate_from_text(tool, 1_000_000, &"a".repeat(400));
             assert_eq!(s.baseline, "unclassified", "{tool} must not claim a baseline");
             assert_eq!(s.est_tokens_saved, 0, "{tool} must not claim savings");
@@ -331,7 +307,7 @@ mod tests {
 
     #[test]
     fn search_documents_models_grep_plus_document_read_at_2_5x() {
-        let s = estimate_from_text("memory:documents", 1_000_000, &"a".repeat(400));
+        let s = estimate_from_text("docs_search", 1_000_000, &"a".repeat(400));
         assert_eq!(s.baseline, "grep_plus_document_read");
         assert_eq!(s.baseline_tokens, scaled(s.actual_tokens, 250));
         assert_eq!(s.est_tokens_saved, s.baseline_tokens.saturating_sub(s.actual_tokens));
@@ -343,16 +319,11 @@ mod tests {
         }
     }
 
-    /// Modes whose eval-measured median ratio is below 1 (basemind's response costs more tokens than
+    /// Tools whose eval-measured median ratio is below 1 (basemind's response costs more tokens than
     /// the plain `rg` / `git ls-files` baseline) keep their disclosed baseline but claim no saving.
     #[test]
-    fn modes_that_did_not_beat_their_baseline_claim_no_saving() {
-        for (tool, baseline) in [
-            ("code:callers", "grep_top_hits"),
-            ("code:dependents", "grep_imports_top_hits"),
-            ("code:find", "git_ls_files_grep"),
-            ("code:files", "find_plus_filter"),
-        ] {
+    fn tools_that_did_not_beat_their_baseline_claim_no_saving() {
+        for (tool, baseline) in [("code_refs", "grep_top_hits"), ("find_files", "git_ls_files_grep")] {
             let s = estimate_from_text(tool, 1_000_000, &"a".repeat(400));
             assert_eq!(s.baseline, baseline, "{tool} baseline label");
             assert_eq!(s.baseline_tokens, s.actual_tokens, "{tool} must model a 1x baseline");
@@ -372,7 +343,7 @@ mod tests {
     #[cfg(not(feature = "tokenizer"))]
     #[test]
     fn estimate_from_text_is_bytes_over_four_under_heuristic() {
-        let s = estimate_from_text("code:outline", 0, &"x".repeat(800));
+        let s = estimate_from_text("code_outline", 0, &"x".repeat(800));
         assert_eq!(s.actual_tokens, 200);
         assert_eq!(s.baseline_tokens, 240);
         assert_eq!(s.est_tokens_saved, 40);
