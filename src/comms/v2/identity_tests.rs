@@ -397,16 +397,35 @@ fn a_relative_root_is_refused_and_never_completed_from_the_working_directory() {
 /// A canonicaliser as the filesystem would be seen from the working directory `cwd`: a relative
 /// path is completed from there, which is how [`Path::canonicalize`] comes to depend on it.
 fn canonicalize_from(cwd: &'static str) -> impl FnOnce(&Path) -> std::io::Result<PathBuf> {
-    move |path| Ok(lexically_clean(&Path::new(cwd).join(path)))
+    move |path| Ok(lexically_clean(&absolute(cwd).join(path)))
+}
+
+/// The `/`-rooted literal `unix` as a path that is absolute where the tests run: itself on Unix,
+/// and on a drive on Windows, where a path that names no drive is relative to the current one.
+fn absolute(unix: &str) -> PathBuf {
+    if cfg!(windows) {
+        PathBuf::from(format!("C:{unix}"))
+    } else {
+        PathBuf::from(unix)
+    }
 }
 
 #[test]
 fn the_id_of_an_absolute_root_does_not_depend_on_the_working_directory() {
+    let clean = canonical(lexically_clean(&absolute(ROOT)));
     for root in [ROOT, "/home/dev/projects/./basemind/sub/.."] {
-        let from_one = canonical_root_via(Path::new(root), canonicalize_from("/work/one")).expect("absolute");
-        let from_other = canonical_root_via(Path::new(root), canonicalize_from("/somewhere/else")).expect("absolute");
+        let root = absolute(root);
+        let from_one = canonical_root_via(&root, canonicalize_from("/work/one")).expect("absolute");
+        let from_other = canonical_root_via(&root, canonicalize_from("/somewhere/else")).expect("absolute");
         assert_eq!(from_one, from_other, "{root:?}");
-        assert_eq!(from_one.as_path(), Path::new(ROOT));
+        assert_eq!(from_one, clean, "{root:?}");
+        assert_eq!(
+            derived_principal(Some("claude-code"), &from_one),
+            derived_principal(Some("claude-code"), &clean),
+            "{root:?}"
+        );
+        // ~keep The pinned id hashes the Unix spelling of the root; a drive letter changes the bytes.
+        #[cfg(unix)]
         assert_eq!(
             derived_principal(Some("claude-code"), &from_one).as_str(),
             "claudecode-basemind-e3515d"
