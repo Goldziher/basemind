@@ -3,12 +3,12 @@
 use std::time::Duration;
 
 use super::super::api::{
-    Actor, COMMS_STORE_VER, CommsError, InboxBody, MAX_MESSAGES_PER_THREAD, MESSAGE_TTL, ThreadAction, ThreadFilter,
-    ThreadId,
+    Actor, COMMS_STORE_VER, CommsError, InboxBody, MAX_MESSAGES_PER_THREAD, MESSAGE_TTL, REPLAY_TTL, ReplayKey,
+    ThreadAction, ThreadFilter, ThreadId,
 };
 use super::{
-    ConformanceHarness, agent, agents, bodies, by_id, change, find, history, ids, list, notify, only, peek, read,
-    read_as, say, start, thread_ids, who,
+    ConformanceHarness, agent, agents, bodies, by_id, change, describe, find, history, ids, into, list, notify, only,
+    peek, read, read_as, say, start, thread_ids, who,
 };
 
 const DAY: Duration = Duration::from_secs(24 * 60 * 60);
@@ -166,4 +166,110 @@ pub fn nothing_is_recorded_on_a_newer_store(h: &impl ConformanceHarness) {
     assert_eq!(start(h, "a", "again", &["b"]).pending, agents(h, &["b"]));
     read(h, "b");
     assert_eq!(start(h, "a", "once more", &["b"]).pending, Vec::<Actor>::new());
+}
+
+/// What has expired is not returned by a newer store either, although nothing is removed from
+/// it: expiry is a matter of the clock, not of a sweep.
+pub fn expired_messages_are_not_returned_on_a_newer_store(h: &impl ConformanceHarness) {
+    let old = start(h, "a", "old", &["b"]);
+    h.advance(20 * DAY);
+    let second = say(h, "a", &old.thread, "second").expect("post");
+    let young = start(h, "a", "young", &["b"]);
+    h.set_store_version(COMMS_STORE_VER + 1);
+
+    h.advance(15 * DAY);
+    assert_eq!(
+        ids(&read_as(h, "b", peek()).expect("inbox")),
+        [second.id.clone(), young.id.clone()]
+    );
+    assert_eq!(
+        ids(&read_as(h, "b", history()).expect("inbox")),
+        [second.id.clone(), young.id.clone()]
+    );
+    assert_eq!(
+        read_as(h, "b", by_id(&old.id)).map(|reply| reply.messages),
+        Err(CommsError::MessageNotFound { id: old.id.clone() })
+    );
+    let summary = describe(h, &who(h, "b"), &old.thread).expect("the thread is still there");
+    assert_eq!((summary.head, summary.unread), (2, 1));
+
+    h.advance(16 * DAY);
+    assert_eq!(read_as(h, "b", peek()).expect("inbox").messages, Vec::new());
+    assert_eq!(read_as(h, "b", history()).expect("inbox").messages, Vec::new());
+    assert_eq!(thread_ids(&list(h, "b")), no_threads());
+    assert_eq!(
+        read_as(h, "b", by_id(&second.id)).map(|reply| reply.messages),
+        Err(CommsError::MessageNotFound { id: second.id })
+    );
+    assert_eq!(
+        describe(h, &who(h, "b"), &young.thread),
+        Err(CommsError::ThreadNotFound {
+            thread: young.thread.clone()
+        })
+    );
+    let peek_one = InboxBody {
+        select: only(&young.thread).select,
+        ..peek()
+    };
+    assert_eq!(
+        read_as(h, "b", peek_one).map(|reply| reply.messages),
+        Err(CommsError::ThreadNotFound { thread: young.thread })
+    );
+}
+
+/// A post made while the clock ran ahead is stamped ahead, and so is every post after it until
+/// the clock catches up, because timestamps never go back. That is all it changes: once the
+/// clock is corrected, replay entries and messages expire by the clock again, and a message
+/// stamped ahead expires when the clock passes its stamp by the retention.
+pub fn expiry_follows_the_clock_after_it_was_set_back(h: &impl ConformanceHarness) {
+    let ahead_by = 2 * DAY;
+    let second = Duration::from_secs(1);
+    let created = start(h, "a", "topic", &["b"]);
+    h.advance(ahead_by);
+    let ahead = say(h, "a", &created.thread, "stamped ahead").expect("post");
+    h.rewind(ahead_by);
+
+    let relayed = who(h, "a").with_replay_key(ReplayKey::parse("relay-1").expect("replay key"));
+    let first = h
+        .post(&relayed, into(&created.thread, "after the correction"))
+        .expect("post");
+    assert_eq!(
+        h.post(&relayed, into(&created.thread, "after the correction")),
+        Ok(first.clone())
+    );
+    h.advance(REPLAY_TTL + second);
+    let again = h
+        .post(&relayed, into(&created.thread, "after the correction"))
+        .expect("post");
+    assert_eq!(
+        again.id.seq(),
+        first.id.seq() + 1,
+        "the replay entry expired by the clock"
+    );
+
+    let whole = read_as(h, "b", history()).expect("inbox");
+    assert_eq!(whole.messages.len(), 4);
+    assert!(
+        whole
+            .messages
+            .windows(2)
+            .all(|pair| pair[0].ts_micros < pair[1].ts_micros),
+        "timestamps increase in post order"
+    );
+
+    h.advance(MESSAGE_TTL - REPLAY_TTL);
+    assert_eq!(
+        read_as(h, "b", by_id(&created.id)).map(|reply| reply.messages),
+        Err(CommsError::MessageNotFound { id: created.id })
+    );
+    assert_eq!(
+        ids(&read_as(h, "b", history()).expect("inbox")),
+        [ahead.id, first.id, again.id]
+    );
+
+    h.advance(ahead_by - 2 * second);
+    assert_eq!(read_as(h, "b", history()).expect("inbox").messages.len(), 3);
+    h.advance(2 * second);
+    assert_eq!(read_as(h, "b", history()).expect("inbox").messages, Vec::new());
+    assert_eq!(h.thread_count(), 0);
 }

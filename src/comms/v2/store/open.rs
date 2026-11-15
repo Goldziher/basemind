@@ -1,12 +1,26 @@
 //! Opening the store: creating it, checking its version, and bringing an older one forward.
+//!
+//! What may be created is decided before anything is. A directory holds a store when `meta`
+//! carries a layout version, and then every keyspace of the layout must already exist: a missing
+//! one is an error, at the current version as much as at a newer one, and is never created.
+//! Keyspaces are created only where there is no store: in a new or empty directory, or in one
+//! that holds nothing but empty keyspaces of this layout and no version, which is what a crash
+//! in the middle of creating a store leaves behind. Rows without a version, or keyspaces this
+//! layout does not have, are somebody else's data and are refused.
+//!
+//! "Left untouched" means that this module writes nothing to a store it refuses, or to one newer
+//! than the binary. It cannot open a store without opening the Fjall database, though, and
+//! Fjall then replays its journal and may flush or compact in the background, on a newer store
+//! as on any other. That rewrites files without changing what any key holds.
 
 use std::path::Path;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicI64, AtomicU32, AtomicU64};
+use std::sync::atomic::{AtomicU32, AtomicU64};
 
 use fjall::{Database, Keyspace, KeyspaceCreateOptions, OwnedWriteBatch};
 
 use super::records::{backend, corrupt, decode_i64, decode_u64};
+use super::skew::{self, SkewLog};
 use super::{FjallAgents, Keyspaces, META_LAST_TS, META_POSTS, META_STORE_VER, STORE_DIR, StoreOptions, Writer};
 use crate::comms::v2::api::{COMMS_STORE_VER, CommsError};
 
@@ -23,8 +37,8 @@ const JOURNAL_BYTES: u64 = 64 * 1024 * 1024;
 /// Name of the keyspace that holds the layout version.
 const META: &str = "meta";
 
-/// Every keyspace of this layout. A newer store that lacks one is not read at all, since
-/// opening a keyspace creates it and a newer store is never written to.
+/// Every keyspace of this layout. A store that lacks one is not opened, since asking Fjall for
+/// a keyspace creates it and a store is never completed behind its writer's back.
 const KEYSPACES: [&str; 11] = [
     META,
     "threads",
@@ -60,11 +74,13 @@ const MIGRATIONS: &[Migration] = &[];
 
 impl FjallAgents {
     /// Open the store in `comms_dir` with `options`, creating it at [`COMMS_STORE_VER`] when the
-    /// directory is new.
+    /// directory holds no store.
     ///
     /// An older store is migrated first. A newer one opens and refuses writes. A store that
-    /// cannot be opened, carries no version, or has no migration path is an error and is left
-    /// exactly as it was found: this function never deletes, renames or recreates one.
+    /// cannot be opened, has rows but no version, lacks a keyspace of its layout, or has no
+    /// migration path is a [`CommsError::Backend`] and is left as it was found: this function
+    /// never deletes, renames, recreates or completes one. Opening does let Fjall recover its
+    /// journal and compact, on a newer store too, which rewrites files but no key or value.
     pub fn open_with(comms_dir: &Path, options: StoreOptions) -> Result<Self, CommsError> {
         Self::open_migrating(comms_dir, options, MIGRATIONS)
     }
@@ -89,19 +105,41 @@ impl FjallAgents {
             })
             .map_err(|error| backend(untouched("open"), error))
         };
+        // ~keep `Database::keyspace` creates what it does not find, so whether anything may be
+        // created is settled here, from what exists, before any keyspace that might not exist
+        // is asked for.
+        let refuse = |found: &str| CommsError::Backend {
+            detail: untouched(found),
+        };
+        let existing: Vec<&str> = KEYSPACES.into_iter().filter(|name| db.keyspace_exists(name)).collect();
         let on_disk = if db.keyspace_exists(META) {
             stored_version(&keyspace(META)?)?
         } else {
             None
         };
-        let newer = on_disk.is_some_and(|version| version > COMMS_STORE_VER);
-        if newer && let Some(missing) = KEYSPACES.iter().find(|name| !db.keyspace_exists(name)) {
-            return Err(CommsError::Backend {
-                detail: untouched(&format!(
-                    "found no `{missing}` keyspace, which this basemind needs to read, in the newer layout of"
-                )),
-            });
+        match on_disk {
+            Some(version) => {
+                if let Some(missing) = KEYSPACES.iter().find(|name| !existing.contains(name)) {
+                    return Err(refuse(&format!(
+                        "found no `{missing}` keyspace, which layout version {version} has, in"
+                    )));
+                }
+            }
+            None => {
+                if db.keyspace_count() != existing.len() {
+                    return Err(refuse("found keyspaces of another layout and no layout version in"));
+                }
+                for name in &existing {
+                    let empty = keyspace(name)?
+                        .is_empty()
+                        .map_err(|error| backend(untouched("read"), error))?;
+                    if !empty {
+                        return Err(refuse(&format!("found rows in `{name}` and no layout version in")));
+                    }
+                }
+            }
         }
+        let newer = on_disk.is_some_and(|version| version > COMMS_STORE_VER);
         let ks = Keyspaces {
             meta: keyspace(META)?,
             threads: keyspace("threads")?,
@@ -119,12 +157,6 @@ impl FjallAgents {
         let found = match on_disk {
             Some(version) => version,
             None => {
-                let empty = ks.meta.is_empty().and_then(|meta| Ok(meta && ks.threads.is_empty()?));
-                if !empty.map_err(|error| backend(untouched("read"), error))? {
-                    return Err(CommsError::Backend {
-                        detail: untouched("found no layout version in"),
-                    });
-                }
                 ks.meta
                     .insert(META_STORE_VER, COMMS_STORE_VER.to_be_bytes())
                     .map_err(|error| backend(untouched("create"), error))?;
@@ -151,6 +183,9 @@ impl FjallAgents {
                 .transpose(),
         )?
         .unwrap_or(i64::MIN);
+        if let Some(behind_micros) = skew::clock_behind(options.clock.now_micros(), last_ts) {
+            skew::warn(behind_micros, "opening the store");
+        }
         Ok(Self {
             db,
             ks,
@@ -160,9 +195,9 @@ impl FjallAgents {
                 last_ts,
                 thread_ids: options.thread_ids,
                 swept_at: i64::MIN,
+                skew: SkewLog::default(),
             }),
             arrivals: AtomicU64::new(posts),
-            last_ts: AtomicI64::new(last_ts),
             store_ver: AtomicU32::new(version),
         })
     }

@@ -1,8 +1,8 @@
 //! Threads: listing, discovery, membership, archiving and the per-repository cap.
 
 use super::super::api::{
-    Actor, CommsError, Cursor, InboxBody, MAX_ACTIVE_THREADS_PER_REPO, ThreadAction, ThreadFilter, ThreadId,
-    ThreadQuery, ThreadSummary,
+    Actor, CommsError, Cursor, InboxBody, MAX_ACTIVE_THREADS_PER_REPO, MAX_RECIPIENTS, MAX_THREAD_MEMBERS,
+    ThreadAction, ThreadFilter, ThreadId, ThreadQuery, ThreadSummary,
 };
 use super::{
     ConformanceHarness, agent, agents, bodies, change, describe, elsewhere, find, gone_thread, history, into, list,
@@ -553,4 +553,70 @@ pub fn active_threads_are_capped_per_repository(h: &impl ConformanceHarness) {
     change(h, &who(h, "a"), &first.thread, ThreadAction::Archive).expect("archive");
     start(h, "a", "room again", &[]);
     assert_eq!(h.thread_count(), MAX_ACTIVE_THREADS_PER_REPO + 2);
+}
+
+/// A thread holds at most [`MAX_THREAD_MEMBERS`] members. A join or an invitation that would
+/// pass that is refused whole, inviting members that are already in adds nobody and is not, and
+/// a member that leaves frees a place.
+pub fn members_are_capped_per_thread(h: &impl ConformanceHarness) {
+    let created = start(h, "a", "topic", &[]);
+    let names: Vec<String> = (1..MAX_THREAD_MEMBERS).map(|n| format!("m{n}")).collect();
+    let (last, others) = names.split_last().expect("more than one member");
+    for batch in others.chunks(MAX_RECIPIENTS) {
+        let batch: Vec<&str> = batch.iter().map(String::as_str).collect();
+        change(
+            h,
+            &who(h, "a"),
+            &created.thread,
+            ThreadAction::Invite(agents(h, &batch)),
+        )
+        .expect("invite");
+    }
+    let full = CommsError::MemberCapReached {
+        thread: created.thread.clone(),
+        cap: MAX_THREAD_MEMBERS,
+    };
+
+    assert_eq!(
+        change(
+            h,
+            &who(h, "a"),
+            &created.thread,
+            ThreadAction::Invite(agents(h, &[last.as_str(), "x"]))
+        ),
+        Err(full.clone()),
+        "one place is left and the invitation needs two"
+    );
+    assert_eq!(h.position(&created.thread, &agent(h, last)), None, "refused whole");
+    change(h, &who(h, last), &created.thread, ThreadAction::Join).expect("the last place");
+    assert_eq!(
+        describe(h, &who(h, "a"), &created.thread).expect("thread").peers.len(),
+        MAX_THREAD_MEMBERS - 1
+    );
+
+    assert_eq!(
+        change(h, &who(h, "x"), &created.thread, ThreadAction::Join),
+        Err(full.clone())
+    );
+    assert_eq!(
+        change(
+            h,
+            &who(h, "a"),
+            &created.thread,
+            ThreadAction::Invite(agents(h, &["x"]))
+        ),
+        Err(full)
+    );
+    change(
+        h,
+        &who(h, "a"),
+        &created.thread,
+        ThreadAction::Invite(agents(h, &["m1", "m2", "m1"])),
+    )
+    .expect("inviting members adds nobody");
+    change(h, &who(h, last), &created.thread, ThreadAction::Join).expect("joining again changes nothing");
+
+    change(h, &who(h, "m1"), &created.thread, ThreadAction::Leave).expect("leave");
+    change(h, &who(h, "x"), &created.thread, ThreadAction::Join).expect("a place was freed");
+    assert_eq!(h.position(&created.thread, &agent(h, "x")), Some((1, 1)));
 }

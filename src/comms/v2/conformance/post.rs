@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use super::super::api::{
     Actor, CommsError, InboxBody, MAX_RECIPIENTS, MAX_THREAD_PATHS, MessageId, PostBody, PostTarget, REPLAY_TTL,
-    ReplayKey, SEEN_TTL, ThreadAction,
+    ReplayKey, SEEN_REFRESH_INTERVAL, SEEN_TTL, ThreadAction,
 };
 use super::{
     ConformanceHarness, agent, agents, bodies, by_id, change, gone_thread, ids, into, list, new_thread, notify, read,
@@ -98,15 +98,38 @@ pub fn failed_call_does_not_make_an_agent_seen(h: &impl ConformanceHarness) {
     assert_eq!(start(h, "a", "two", &["b"]).pending, Vec::<Actor>::new());
 }
 
-/// A seen record lasts [`SEEN_TTL`] from the agent's last call.
-pub fn seen_record_is_dropped_after_thirty_idle_days(h: &impl ConformanceHarness) {
+/// An agent is seen for [`SEEN_TTL`] from its last call, whether or not that call rewrote its
+/// record, and for at most [`SEEN_REFRESH_INTERVAL`] longer: a record is rewritten only once it
+/// is that old, so that a call need not write, and is kept that much longer to make up for it.
+pub fn seen_record_lasts_thirty_days_from_the_last_call_and_at_most_a_day_more(h: &impl ConformanceHarness) {
+    let second = Duration::from_secs(1);
     read(h, "b");
-    h.advance(SEEN_TTL - Duration::from_secs(1));
+    h.advance(SEEN_REFRESH_INTERVAL - second);
+    read(h, "b");
+    h.advance(SEEN_TTL - second);
     assert_eq!(start(h, "a", "one", &["b"]).pending, Vec::<Actor>::new());
+    h.advance(2 * second);
+    assert_eq!(start(h, "a", "two", &["b"]).pending, agents(h, &["b"]));
 
     read(h, "b");
-    h.advance(SEEN_TTL + Duration::from_secs(1));
-    assert_eq!(start(h, "a", "two", &["b"]).pending, agents(h, &["b"]));
+    h.advance(SEEN_TTL + second);
+    assert_eq!(start(h, "a", "three", &["b"]).pending, Vec::<Actor>::new());
+    h.advance(SEEN_REFRESH_INTERVAL);
+    assert_eq!(start(h, "a", "four", &["b"]).pending, agents(h, &["b"]));
+}
+
+/// The first successful call records an agent at once, and a record a day old is rewritten by
+/// the next call, so an agent that keeps calling stays seen however long it does.
+pub fn agent_that_keeps_calling_stays_seen(h: &impl ConformanceHarness) {
+    read(h, "b");
+    assert_eq!(start(h, "a", "one", &["b"]).pending, Vec::<Actor>::new());
+
+    for _ in 0..3 {
+        h.advance(SEEN_TTL / 2);
+        read(h, "b");
+    }
+    h.advance(SEEN_TTL - Duration::from_secs(1));
+    assert_eq!(start(h, "a", "two", &["b"]).pending, Vec::<Actor>::new());
 }
 
 /// Posting into a thread, directly or as a reply, requires membership.

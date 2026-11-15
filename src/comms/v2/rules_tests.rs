@@ -136,8 +136,92 @@ fn expiry_is_exclusive_of_the_last_microsecond_of_a_ttl() {
 
     assert!(!message_expired(1, ttl));
     assert!(message_expired(1, ttl + 1));
-    assert!(!seen_expired(1, ttl_micros(SEEN_TTL)));
-    assert!(seen_expired(1, ttl_micros(SEEN_TTL) + 1));
+    let seen_kept = ttl_micros(SEEN_TTL) + ttl_micros(SEEN_REFRESH_INTERVAL);
+    assert!(!seen_expired(1, seen_kept));
+    assert!(seen_expired(1, seen_kept + 1));
     assert!(!replay_expired(replay_expiry(10), 10 + ttl_micros(REPLAY_TTL) - 1));
     assert!(replay_expired(replay_expiry(10), 10 + ttl_micros(REPLAY_TTL)));
+}
+
+#[test]
+fn a_post_is_stamped_by_the_clock_unless_that_would_not_be_later_than_the_last_stamp() {
+    assert_eq!(post_timestamp(500, i64::MIN), 500, "the first post");
+    assert_eq!(post_timestamp(500, 499), 500);
+    assert_eq!(post_timestamp(500, 500), 501, "the clock stood still");
+    assert_eq!(post_timestamp(500, 9_000), 9_001, "the clock went back");
+    assert_eq!(post_timestamp(500, i64::MAX), i64::MAX);
+}
+
+#[test]
+fn a_seen_record_stands_for_a_day_and_never_when_it_is_ahead_of_the_clock() {
+    let day = ttl_micros(SEEN_REFRESH_INTERVAL);
+
+    assert!(!seen_record_is_current(None, 1_000), "a first call is recorded");
+    assert!(seen_record_is_current(Some(1_000), 1_000));
+    assert!(seen_record_is_current(Some(1_000), 1_000 + day - 1));
+    assert!(!seen_record_is_current(Some(1_000), 1_000 + day));
+    assert!(
+        !seen_record_is_current(Some(1_001), 1_000),
+        "written ahead of the clock"
+    );
+    assert!(!seen_record_is_current(Some(i64::MAX), i64::MIN));
+}
+
+#[test]
+fn joins_and_invitations_stop_at_the_member_cap() {
+    let id = thread(7);
+    let open = Access { open: true, ..MEMBER };
+    let outsider = Access { member: false, ..open };
+    let full = Err(CommsError::MemberCapReached {
+        thread: id.clone(),
+        cap: MAX_THREAD_MEMBERS,
+    });
+    let members = [actor("a"), actor("b")];
+    let is_member = |agent: &Actor| members.contains(agent);
+    let invite = |names: &[&str]| ThreadAction::Invite(names.iter().map(|name| actor(name)).collect());
+    let cap = MAX_THREAD_MEMBERS;
+
+    assert_eq!(
+        authorize_update(&id, &ThreadAction::Join, &outsider, cap - 1, is_member),
+        Ok(Change::Join)
+    );
+    assert_eq!(
+        authorize_update(&id, &ThreadAction::Join, &outsider, cap, is_member),
+        full
+    );
+    assert_eq!(
+        authorize_update(&id, &ThreadAction::Join, &open, cap, is_member),
+        Ok(Change::Nothing),
+        "a member that joins again adds nobody"
+    );
+    assert_eq!(
+        authorize_update(&id, &invite(&["c", "d"]), &MEMBER, cap - 2, is_member),
+        Ok(Change::Invite)
+    );
+    assert_eq!(
+        authorize_update(&id, &invite(&["c", "d"]), &MEMBER, cap - 1, is_member),
+        full
+    );
+    assert_eq!(
+        authorize_update(&id, &invite(&["c", "c", "a", "b"]), &MEMBER, cap - 1, is_member),
+        Ok(Change::Invite),
+        "an agent named twice and the members named are not counted"
+    );
+    assert_eq!(
+        authorize_update(&id, &invite(&["a", "b"]), &MEMBER, cap, is_member),
+        Ok(Change::Invite)
+    );
+    assert_eq!(
+        authorize_update(&id, &ThreadAction::Leave, &MEMBER, cap, is_member),
+        Ok(Change::Leave)
+    );
+    let archived = Access {
+        archived: true,
+        ..outsider
+    };
+    assert_eq!(
+        authorize_update(&id, &ThreadAction::Join, &archived, cap, is_member),
+        Err(CommsError::ThreadArchived { thread: id }),
+        "the cap is the last thing a join is refused for"
+    );
 }

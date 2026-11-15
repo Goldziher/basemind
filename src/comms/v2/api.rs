@@ -45,9 +45,15 @@ pub const MAX_LIMIT: u32 = 100;
 /// How long a message is kept.
 pub const MESSAGE_TTL: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 
-/// How long an agent stays "seen" without making a call. After it, a post naming the agent lists
-/// it under `pending` again.
+/// How long an agent stays "seen" without making a call, at the least. After it, a post naming
+/// the agent lists it under `pending` again, within [`SEEN_REFRESH_INTERVAL`].
 pub const SEEN_TTL: Duration = Duration::from_secs(30 * 24 * 60 * 60);
+
+/// How old a seen record may grow before a call by its agent rewrites it, so that a read does not
+/// write on every call. A record therefore trails the agent's last call by up to this much, and
+/// is kept this much longer than [`SEEN_TTL`] to make up for it: an agent is never `pending`
+/// within [`SEEN_TTL`] of a call, and is again at most this long after.
+pub const SEEN_REFRESH_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 
 /// Messages kept per thread; the oldest are dropped past it.
 pub const MAX_MESSAGES_PER_THREAD: u64 = 1_000;
@@ -57,6 +63,9 @@ pub const MAX_ACTIVE_THREADS_PER_REPO: usize = 256;
 
 /// Most agents one `to` or one `invite` may name.
 pub const MAX_RECIPIENTS: usize = 32;
+
+/// Most members one thread may have. A join or an invitation that would pass it is refused whole.
+pub const MAX_THREAD_MEMBERS: usize = 256;
 
 /// Most path prefixes a thread may be about.
 pub const MAX_THREAD_PATHS: usize = 16;

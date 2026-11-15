@@ -15,7 +15,9 @@ fn sweep_removes_no_more_than_its_budget_and_says_when_more_is_left() {
         let created = start(&harness, "a", &format!("topic {n}"), &[]);
         say(&harness, "a", &created.thread, "second");
     }
-    harness.clock.advance(MESSAGE_TTL + Duration::from_secs(1));
+    harness
+        .clock
+        .advance(MESSAGE_TTL + SEEN_REFRESH_INTERVAL + Duration::from_secs(1));
     let before = harness.store().stored_rows();
 
     let first = harness.store().sweep_bounded(3).expect("sweep");
@@ -27,6 +29,7 @@ fn sweep_removes_no_more_than_its_budget_and_says_when_more_is_left() {
             threads: 0,
             replays: 0,
             seen: 0,
+            skipped_unreadable: 0,
             more: true,
         }
     );
@@ -49,6 +52,7 @@ fn sweep_removes_no_more_than_its_budget_and_says_when_more_is_left() {
             threads: removed.threads + next.threads,
             replays: removed.replays + next.replays,
             seen: removed.seen + next.seen,
+            skipped_unreadable: removed.skipped_unreadable + next.skipped_unreadable,
             more: next.more,
         };
         sweeps += 1;
@@ -120,7 +124,7 @@ fn sweep_removes_expired_replay_entries_and_seen_records() {
     assert_eq!((report.replays, report.seen, report.messages), (2, 0, 0));
     assert_eq!(harness.store().stored_rows()[7], 0);
 
-    harness.clock.advance(SEEN_TTL);
+    harness.clock.advance(SEEN_TTL + SEEN_REFRESH_INTERVAL);
     let report = harness.store().sweep().expect("sweep");
     assert_eq!((report.messages, report.threads, report.seen), (2, 1, 2));
     assert_eq!(harness.store().stored_rows(), only_seen(0));
@@ -177,4 +181,58 @@ fn changes_sweep_as_they_go_so_a_store_without_a_daemon_tick_does_not_grow() {
         .expect("threads");
 
     assert_eq!(harness.store().stored_rows(), only_seen(1));
+}
+
+#[test]
+fn sweep_removes_index_rows_it_cannot_decode_and_goes_on() {
+    let harness = Harness::new();
+    let created = start(&harness, "a", "topic", &["b"]);
+    harness
+        .post(&keyed("a", "relay-1"), into(&created.thread, "second"))
+        .expect("post");
+    let store = harness.store();
+    store
+        .ks
+        .post_order
+        .insert(0u64.to_be_bytes(), b"not an entry")
+        .expect("write");
+    let no_timestamp = |kind: keys::Expiry| vec![kind as u8, 7];
+    let no_thread = keys::expiry(keys::Expiry::Thread, i64::MIN, b"x");
+    for key in [
+        no_timestamp(keys::Expiry::Thread),
+        no_thread,
+        no_timestamp(keys::Expiry::Replay),
+        no_timestamp(keys::Expiry::Seen),
+    ] {
+        store.ks.expiry.insert(key, []).expect("write");
+    }
+    harness
+        .clock
+        .advance(MESSAGE_TTL + SEEN_TTL + SEEN_REFRESH_INTERVAL + Duration::from_secs(1));
+
+    let first = store.sweep_bounded(1).expect("sweep");
+    assert_eq!(
+        first,
+        SweepReport {
+            skipped_unreadable: 1,
+            more: true,
+            ..SweepReport::default()
+        },
+        "an unreadable row counts against the budget like any other"
+    );
+
+    let rest = store.sweep().expect("sweep");
+    assert_eq!(
+        rest,
+        SweepReport {
+            messages: 2,
+            threads: 1,
+            replays: 1,
+            seen: 1,
+            skipped_unreadable: 4,
+            more: false,
+        }
+    );
+    assert_eq!(store.stored_rows(), only_seen(0));
+    assert_eq!(store.sweep(), Ok(SweepReport::default()));
 }

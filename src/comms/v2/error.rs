@@ -128,6 +128,17 @@ pub enum CommsError {
         /// The cap.
         cap: usize,
     },
+    /// The thread already holds [`MAX_THREAD_MEMBERS`](super::api::MAX_THREAD_MEMBERS) members, or
+    /// the invitation would take it past that.
+    #[error(
+        "thread {thread} cannot have more than {cap} members: invite fewer agents, ask a member that is done to leave, or start a new thread by posting with `subject`"
+    )]
+    MemberCapReached {
+        /// The thread at its cap.
+        thread: ThreadId,
+        /// The cap.
+        cap: usize,
+    },
     /// The store was written by a newer basemind; this binary must not write to it.
     #[error(
         "the comms store is version {store}, newer than this basemind understands ({binary}): upgrade basemind, and restart the daemon so every session runs the same version"

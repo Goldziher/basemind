@@ -39,6 +39,10 @@ fn every_known_variant() -> Vec<CommsError> {
             repo: RepoKey::parse("github.com/Foo/bar").expect("repo key"),
             cap: 256,
         },
+        CommsError::MemberCapReached {
+            thread: thread("t-aaaaac"),
+            cap: 256,
+        },
         CommsError::StoreNewer {
             store: 1001,
             binary: 1000,
@@ -99,7 +103,7 @@ fn error_carries_its_code_fields_and_rendered_message() {
 #[test]
 fn every_variant_round_trips_through_json_and_msgpack() {
     let variants = every_known_variant();
-    assert_eq!(variants.len(), 27, "a new variant belongs in this list");
+    assert_eq!(variants.len(), 28, "a new variant belongs in this list");
     for error in variants {
         let json = serde_json::to_value(&error).expect("json");
         assert_eq!(json["message"], error.to_string(), "{error:?}");
@@ -247,6 +251,13 @@ fn refusals_say_what_to_do_next() {
                 max: 32,
             },
             "maximum of 32",
+        ),
+        (
+            CommsError::MemberCapReached {
+                thread: thread("t-aaaaab"),
+                cap: 256,
+            },
+            "more than 256 members: invite fewer",
         ),
         (
             CommsError::from(InvalidId::new(IdKind::Thread, "backend")),

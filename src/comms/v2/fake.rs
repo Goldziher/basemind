@@ -28,7 +28,10 @@ pub struct FakeAgents {
 }
 
 struct State {
+    /// What the clock reads: what everything that expires is judged against.
     now_micros: i64,
+    /// The newest timestamp given to a message, which the next one must be later than.
+    last_ts: i64,
     /// Posts stored so far: the store-wide post order, and what [`AgentOps::arrivals`] reports.
     posts: u64,
     store_ver: u32,
@@ -75,6 +78,7 @@ impl FakeAgents {
         Self {
             state: Mutex::new(State {
                 now_micros: FAKE_EPOCH_MICROS,
+                last_ts: i64::MIN,
                 posts: 0,
                 store_ver: COMMS_STORE_VER,
                 next_bits: 0,
@@ -99,7 +103,8 @@ impl FakeAgents {
     }
 
     /// Run one operation: against the store as retention left it, recording the caller as seen
-    /// when it succeeds. A store newer than the binary is neither swept nor written to.
+    /// when it succeeds and its record is due. A store newer than the binary is neither swept nor
+    /// written to; what has expired there is left out by the reads themselves.
     fn call<T>(
         &self,
         caller: &Caller,
@@ -113,7 +118,10 @@ impl FakeAgents {
         let result = operation(&mut state);
         if writable && result.is_ok() {
             let now = state.now_micros;
-            state.seen.insert(caller.actor.clone(), now);
+            let recorded = state.seen.get(&caller.actor).copied();
+            if !rules::seen_record_is_current(recorded, now) {
+                state.seen.insert(caller.actor.clone(), now);
+            }
         }
         result
     }
@@ -123,6 +131,11 @@ impl ConformanceHarness for FakeAgents {
     fn advance(&self, by: Duration) {
         let mut state = self.lock();
         state.now_micros = state.now_micros.saturating_add(rules::ttl_micros(by));
+    }
+
+    fn rewind(&self, by: Duration) {
+        let mut state = self.lock();
+        state.now_micros = state.now_micros.saturating_sub(rules::ttl_micros(by));
     }
 
     fn position(&self, thread: &ThreadId, actor: &Actor) -> Option<(u64, u64)> {
@@ -166,7 +179,7 @@ impl AgentOps for FakeAgents {
             let pending = state.update(caller, &update)?;
             let thread = state.thread(&update.thread)?;
             Ok(ThreadsReply {
-                threads: vec![summarize(&update.thread, thread, &caller.actor)],
+                threads: vec![summarize(&update.thread, thread, &caller.actor, state.now_micros)],
                 pending,
                 next_cursor: None,
                 notices: Vec::new(),
@@ -181,8 +194,7 @@ impl AgentOps for FakeAgents {
 
 impl State {
     /// Drop what retention no longer keeps: expired messages, threads left without one, replay
-    /// entries past their hour, and agents that made no call for
-    /// [`SEEN_TTL`](super::api::SEEN_TTL).
+    /// entries past their hour, and seen records that expired ([`rules::seen_expired`]).
     fn expire(&mut self) {
         let now = self.now_micros;
         for thread in self.threads.values_mut() {
@@ -202,9 +214,17 @@ impl State {
         rules::check_writable(self.store_ver)
     }
 
-    fn thread(&self, id: &ThreadId) -> Result<&ThreadState, CommsError> {
+    /// The thread `id`, unless it has expired with its newest message. Reads go through this
+    /// and not through `threads`, so they are right on a store that [`State::expire`] is not
+    /// run on.
+    fn kept_thread(&self, id: &ThreadId) -> Option<&ThreadState> {
         self.threads
             .get(id)
+            .filter(|thread| !rules::message_expired(thread.last_activity_micros, self.now_micros))
+    }
+
+    fn thread(&self, id: &ThreadId) -> Result<&ThreadState, CommsError> {
+        self.kept_thread(id)
             .ok_or_else(|| CommsError::ThreadNotFound { thread: id.clone() })
     }
 
@@ -267,17 +287,18 @@ impl State {
             };
             rules::authorize_post(&thread_id, access.as_ref(), reply_to.as_ref(), reply_target_stored)?;
         }
-        self.now_micros = self.now_micros.saturating_add(1);
+        let ts_micros = rules::post_timestamp(self.now_micros, self.last_ts);
+        self.last_ts = ts_micros;
         self.posts += 1;
         let (now, order) = (self.now_micros, self.posts);
         let thread = self.thread_mut(&thread_id)?;
         thread.head += 1;
-        thread.last_activity_micros = now;
+        thread.last_activity_micros = ts_micros;
         thread.messages.insert(
             thread.head,
             StoredMessage {
                 from: actor.clone(),
-                ts_micros: now,
+                ts_micros,
                 order,
                 reply_to,
                 body,
@@ -374,9 +395,13 @@ impl State {
     }
 
     fn lookup(&self, caller: &Caller, id: &MessageId) -> Result<InboxMessage, CommsError> {
-        let thread = self.threads.get(id.thread());
+        let now = self.now_micros;
+        let thread = self.kept_thread(id.thread());
         let access = thread.map(|thread| thread.access(caller));
-        let message = thread.and_then(|thread| Some((thread, thread.messages.get(&id.seq())?)));
+        let message = thread.and_then(|thread| {
+            let message = thread.messages.get(&id.seq())?;
+            (!rules::message_expired(message.ts_micros, now)).then_some((thread, message))
+        });
         rules::authorize_lookup(id, access.as_ref(), message.is_some())?;
         let (thread, message) = message.ok_or_else(|| CommsError::MessageNotFound { id: id.clone() })?;
         Ok(thread.render(id.clone(), message, true))
@@ -391,19 +416,21 @@ impl State {
         after: Option<u64>,
     ) -> Result<Vec<(u64, InboxMessage)>, CommsError> {
         let actor = &caller.actor;
+        let now = self.now_micros;
         if let Some(only) = only {
-            let access = self.threads.get(only).map(|thread| thread.access(caller));
+            let access = self.kept_thread(only).map(|thread| thread.access(caller));
             rules::authorize_read(only, access.as_ref())?;
         }
         let mut candidates = Vec::new();
         for (id, thread) in &self.threads {
-            let selected = only.is_none_or(|only| only == id);
+            let selected = only.is_none_or(|only| only == id) && self.kept_thread(id).is_some();
             let Some(position) = thread.members.get(actor).filter(|_| selected) else {
                 continue;
             };
             for (seq, message) in thread.messages.range(position.floor(kind) + 1..) {
                 let paged_out = after.is_some_and(|after| message.order <= after);
-                if rules::is_candidate(kind, &message.from, actor) && !paged_out {
+                let expired = rules::message_expired(message.ts_micros, now);
+                if rules::is_candidate(kind, &message.from, actor) && !paged_out && !expired {
                     let id = MessageId::new(id.clone(), *seq)?;
                     candidates.push((message.order, thread.render(id, message, false)));
                 }
@@ -453,7 +480,7 @@ impl State {
         let thread = self.thread(id)?;
         rules::authorize_describe(id, &thread.access(caller))?;
         Ok(ThreadsReply {
-            threads: vec![summarize(id, thread, &caller.actor)],
+            threads: vec![summarize(id, thread, &caller.actor, self.now_micros)],
             pending: Vec::new(),
             next_cursor: None,
             notices: Vec::new(),
@@ -465,6 +492,7 @@ impl State {
         let matching = self
             .threads
             .iter()
+            .filter(|(id, _)| self.kept_thread(id).is_some())
             .filter(|(_, thread)| selection.selects(&thread.access(caller), &thread.subject, &thread.paths))
             .map(|(id, thread)| (thread.last_activity_micros, id.clone(), thread))
             .collect();
@@ -478,7 +506,7 @@ impl State {
             threads: page
                 .rows
                 .into_iter()
-                .map(|(id, thread)| summarize(&id, thread, &caller.actor))
+                .map(|(id, thread)| summarize(&id, thread, &caller.actor, self.now_micros))
                 .collect(),
             pending: Vec::new(),
             next_cursor: page.next_cursor,
@@ -495,7 +523,14 @@ impl State {
         };
         let thread = self.thread_mut(id)?;
         let at_head = Position::at_head(thread.head);
-        match rules::authorize_update(id, &update.action, &thread.access(caller))? {
+        let change = rules::authorize_update(
+            id,
+            &update.action,
+            &thread.access(caller),
+            thread.members.len(),
+            |agent| thread.members.contains_key(agent),
+        )?;
+        match change {
             Change::Nothing => {}
             Change::Join => {
                 thread.members.insert(actor.clone(), at_head);
@@ -544,13 +579,14 @@ impl ThreadState {
     }
 }
 
-fn summarize(id: &ThreadId, thread: &ThreadState, actor: &Actor) -> ThreadSummary {
+/// One thread as `actor` sees it at `now_micros`: the unread count is of what has not expired.
+fn summarize(id: &ThreadId, thread: &ThreadState, actor: &Actor, now_micros: i64) -> ThreadSummary {
     let position = thread.members.get(actor);
     let unread = position.map_or(0, |position| {
         thread
             .messages
             .range(position.read_seq + 1..)
-            .filter(|(_, message)| message.from != *actor)
+            .filter(|(_, message)| message.from != *actor && !rules::message_expired(message.ts_micros, now_micros))
             .count() as u64
     });
     ThreadSummary {

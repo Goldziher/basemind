@@ -1,5 +1,5 @@
 //! The store against the conformance suite, and what is true of the store only: what survives a
-//! reopen, how versions are handled, concurrency and the bounded sweep.
+//! reopen, how versions are handled, concurrency, when a call writes and the bounded sweep.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
@@ -10,13 +10,14 @@ use tempfile::TempDir;
 use super::open::Migration;
 use super::*;
 use crate::comms::v2::api::{
-    COMMS_STORE_VER, InboxSelect, MESSAGE_TTL, Mark, MessageId, PostTarget, REPLAY_TTL, ReplayKey, SEEN_TTL,
-    ThreadAction,
+    COMMS_STORE_VER, InboxSelect, MESSAGE_TTL, Mark, MessageId, PostTarget, REPLAY_TTL, ReplayKey,
+    SEEN_REFRESH_INTERVAL, SEEN_TTL, ThreadAction,
 };
 use crate::comms::v2::conformance::{ConformanceHarness, Repo, default_caller};
 
 mod lifecycle;
 mod retention;
+mod seen;
 
 /// Where the test clock starts, in microseconds since the unix epoch: 2026-01-01T00:00:00Z.
 const START_MICROS: i64 = 1_767_225_600_000_000;
@@ -78,8 +79,9 @@ impl Harness {
         self.store.as_ref().expect("the store is open")
     }
 
-    /// Drop the handle without flushing, the way a killed daemon leaves the store.
-    fn close(&mut self) {
+    /// Drop the handle without calling [`FjallAgents::flush`]. A clean drop inside a live
+    /// process: Fjall's own teardown still runs, so this is not what a killed daemon leaves.
+    fn drop_handle(&mut self) {
         self.store = None;
     }
 
@@ -88,7 +90,7 @@ impl Harness {
     }
 
     fn reopen_migrating(&mut self, migrations: &[Migration]) -> Result<(), CommsError> {
-        self.close();
+        self.drop_handle();
         let store = FjallAgents::open_migrating(self.dir.path(), options(&self.clock, Vec::new()), migrations)?;
         self.store = Some(store);
         Ok(())
@@ -113,6 +115,13 @@ impl FjallAgents {
             .insert(META_STORE_VER, version.to_be_bytes())
             .expect("write the version");
         self.store_ver.store(version, Ordering::Release);
+    }
+
+    /// When `name`'s seen record was last written, as stored.
+    fn recorded_seen(&self, name: &str) -> Option<i64> {
+        self.reader(self.clock.now_micros())
+            .stored_seen(&caller(name).actor)
+            .expect("seen record")
     }
 
     /// Rows physically in each keyspace but `meta`, in the order of the module's table.
@@ -159,6 +168,10 @@ impl AgentOps for Harness {
 impl ConformanceHarness for Harness {
     fn advance(&self, by: Duration) {
         self.clock.advance(by);
+    }
+
+    fn rewind(&self, by: Duration) {
+        self.clock.0.fetch_sub(rules::ttl_micros(by), Ordering::SeqCst);
     }
 
     fn position(&self, thread: &ThreadId, actor: &Actor) -> Option<(u64, u64)> {

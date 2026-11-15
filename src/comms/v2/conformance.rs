@@ -11,8 +11,8 @@
 //! ```
 //!
 //! Scenarios take every thread id, message id and cursor from a reply, compare timestamps only
-//! with each other, and move time only through [`ConformanceHarness::advance`], so they hold for
-//! a store with random ids and a real layout.
+//! with each other, and move time only through [`ConformanceHarness::advance`] and
+//! [`ConformanceHarness::rewind`], so they hold for a store with random ids and a real layout.
 
 use std::time::{Duration, Instant};
 
@@ -49,6 +49,10 @@ pub trait ConformanceHarness: AgentOps {
     /// Move the store's clock forward. Message, replay and seen expiry must follow this clock,
     /// by the next operation at the latest.
     fn advance(&self, by: Duration);
+
+    /// Move the store's clock back, the way a clock that ran ahead is corrected. Expiry must
+    /// follow the clock as it reads afterwards, and timestamps must go on increasing.
+    fn rewind(&self, by: Duration);
 
     /// `(read_seq, notified_seq)` of `actor` in `thread`; `None` when it is not a member.
     fn position(&self, thread: &ThreadId, actor: &Actor) -> Option<(u64, u64)>;
@@ -174,7 +178,8 @@ macro_rules! conformance_tests {
             pending_lists_only_recipients_that_made_no_call,
             being_named_in_to_does_not_make_an_agent_seen,
             failed_call_does_not_make_an_agent_seen,
-            seen_record_is_dropped_after_thirty_idle_days,
+            seen_record_lasts_thirty_days_from_the_last_call_and_at_most_a_day_more,
+            agent_that_keeps_calling_stays_seen,
             posting_requires_membership,
             sub_identity_is_a_different_member_than_its_principal,
             reply_goes_into_the_thread_of_the_message_it_answers,
@@ -240,12 +245,15 @@ macro_rules! conformance_tests {
             last_member_leaving_archives_the_thread,
             archived_thread_is_readable_but_closed_to_posts_joins_and_invitations,
             active_threads_are_capped_per_repository,
+            members_are_capped_per_thread,
             oldest_messages_are_dropped_past_the_per_thread_cap,
             thread_is_removed_when_its_last_message_expires,
             messages_expire_one_by_one_inside_a_live_thread,
             archived_thread_expires_like_any_other,
             store_newer_than_the_binary_is_refused_for_writing_only,
             nothing_is_recorded_on_a_newer_store,
+            expired_messages_are_not_returned_on_a_newer_store,
+            expiry_follows_the_clock_after_it_was_set_back,
         );
     };
     (@emit $harness:expr; $($scenario:ident),+ $(,)?) => {

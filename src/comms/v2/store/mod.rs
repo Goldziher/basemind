@@ -21,8 +21,12 @@
 //! | `member_threads` | `u16:len ‖ agent ‖ thread:u32` | empty | the threads an agent is in |
 //! | `repo_threads` | `u16:len ‖ repo ‖ state:u8 ‖ thread:u32` | empty | discovery, and the active-thread cap of a repository |
 //! | `replays` | `tag:u8 ‖ u16:len ‖ agent ‖ [thread:u32] ‖ key` | `Replay<PostReply>` or `Replay<Delivered>` | the first result of a relayed request |
-//! | `seen` | `agent` | `i64` last call | whether a recipient is `pending` |
+//! | `seen` | `agent` | `i64`: a call of the agent, its last one or up to a day before it | whether a recipient is `pending` |
 //! | `expiry` | `kind:u8 ‖ ts:u64 ‖ record key` | empty | threads, replay entries and seen records in the order they expire |
+//!
+//! A thread id is drawn at random and drawn again while it is taken, 64 times at most
+//! (`MAX_THREAD_ID_DRAWS`), after which the post fails as a [`CommsError::Backend`] and stores
+//! nothing.
 //!
 //! A message id is `<thread>.<seq>`, so reading one is a point lookup in `messages`. The
 //! `threads` row carries the head, the last activity and the newest message not posted by the
@@ -32,17 +36,36 @@
 //! ## Writing
 //!
 //! One writer at a time: every change takes the writer lock, reads a snapshot, stages all of its
-//! rows (the caller's seen record included) in one Fjall batch and commits it, so a change is
-//! whole or absent. Reads that change nothing run on a snapshot without the lock and take it only
-//! afterwards, to record the caller as seen. A commit reaches the operating system before the
-//! call returns, which survives a crash of the process; [`FjallAgents::flush`] forces it to disk.
+//! rows (the caller's seen record included, when it is due) in one Fjall batch and commits it, so
+//! a change is whole or absent. Reads that change nothing run on a snapshot without the lock. They
+//! take it afterwards only when the caller's seen record has to be written, which is on its first
+//! call and then once per [`SEEN_REFRESH_INTERVAL`](crate::comms::v2::api::SEEN_REFRESH_INTERVAL);
+//! every other read writes nothing at all.
+//!
+//! A commit is handed to the operating system before the call returns and is not synced: it
+//! survives a crash of the process, not a loss of power. [`FjallAgents::flush`] syncs, and is for
+//! the daemon to call on its periodic tick and at shutdown. What was committed after the last
+//! flush can be lost with the machine, messages included, and a sequence number lost that way is
+//! issued again to the next post in its thread.
+//!
+//! ## Time
+//!
+//! Two times, kept apart. Everything that expires is judged against the [`Clock`] as it reads
+//! now. A message is stamped [`rules::post_timestamp`]: the clock, or one microsecond past the
+//! previous stamp when the clock is not later, so stamps strictly increase in post order. The
+//! previous stamp is used for nothing else. If it were also the store's "now", one post made
+//! while the clock was ahead would hold the store in the future for as long as the clock took to
+//! catch up, with nothing expiring. Instead only what was stamped ahead is late: such a message,
+//! and those posted after it until the clock catches up, expire when the clock passes their
+//! stamp by the retention. A clock that reads more than a minute behind the newest stamp is
+//! logged at open and, at most every ten minutes, when a post is stamped.
 //!
 //! ## Retention
 //!
 //! Expiry is decided when a record is read, by comparing its time with the clock, so it holds
 //! from the next operation whether or not anything was deleted. Deleting is
 //! [`FjallAgents::sweep`], which walks `post_order` and `expiry` from their oldest entry and
-//! stops at the first one still alive or at its budget; operations run a small one after
+//! stops at the first one still alive or at its budget; changes run a small one after
 //! committing.
 //!
 //! ## Versions
@@ -51,17 +74,19 @@
 //! forward at open by numbered steps, each committed with its version; a newer one opens
 //! read-only in effect, refusing whatever would write with
 //! [`CommsError::StoreNewer`]. Nothing here ever deletes or replaces a store: one that cannot
-//! be opened, has no version, or has no migration path is reported as
-//! [`CommsError::Backend`] and left as it is.
+//! be opened, has rows but no version, lacks a keyspace, or has no migration path is reported
+//! as [`CommsError::Backend`] and left as it is. See [`FjallAgents::open_with`] for what opening
+//! may still do to the files of a store it does not write to.
 
 use std::path::Path;
-use std::sync::atomic::{AtomicI64, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use fjall::{Database, Keyspace, OwnedWriteBatch, PersistMode};
 
 use self::records::{Reader, backend};
+use self::skew::SkewLog;
 use super::api::{
     Actor, AgentOps, Caller, CommsError, InboxBody, InboxReply, PostBody, PostReply, ThreadId, ThreadQuery,
     ThreadUpdate, ThreadsReply, check_body,
@@ -75,6 +100,7 @@ mod open;
 mod post;
 mod records;
 mod retention;
+mod skew;
 mod threads;
 
 pub use legacy::{LEGACY_STORE_DIR, retire_legacy_store};
@@ -102,7 +128,7 @@ const THREAD_ID_BYTES: usize = 4;
 /// Where the store takes the time from, in microseconds since the unix epoch.
 pub trait Clock: Send + Sync {
     /// The current time. It may stand still or go back: the store never issues a timestamp that
-    /// is not later than the previous one.
+    /// is not later than the previous one, and judges expiry against this reading alone.
     fn now_micros(&self) -> i64;
 }
 
@@ -179,6 +205,8 @@ struct Writer {
     thread_ids: Box<dyn ThreadIds>,
     /// When an operation last ran its sweep.
     swept_at: i64,
+    /// When a clock behind the newest timestamp was last reported.
+    skew: SkewLog,
 }
 
 /// Agent coordination with ADR-0021 semantics, kept in a Fjall database.
@@ -189,8 +217,6 @@ pub struct FjallAgents {
     writer: Mutex<Writer>,
     /// Mirror of the persisted post counter, for [`AgentOps::arrivals`].
     arrivals: AtomicU64,
-    /// Mirror of the newest timestamp issued, for reads that do not take the writer lock.
-    last_ts: AtomicI64,
     store_ver: AtomicU32,
 }
 
@@ -198,21 +224,23 @@ pub struct FjallAgents {
 struct Txn<'a> {
     writer: &'a mut Writer,
     batch: OwnedWriteBatch,
-    /// The instant the change is judged at. A post moves it to the message's timestamp.
+    /// What the clock read when the change began: the instant expiry is judged at, a replay
+    /// entry starts at and a seen record is written at. Never a message's timestamp.
     now: i64,
-    posted: bool,
+    /// The timestamp of the message this change posts, when it posts one.
+    stamped: Option<i64>,
 }
 
 impl Txn<'_> {
     /// Take the next timestamp and post position, and stage both counters. A timestamp is
-    /// always later than the one before it, so post order and time order agree.
+    /// always later than the one before it, so post order and time order agree; it is the
+    /// message's own and does not move the instant the change is judged at.
     fn stamp_post(&mut self, ks: &Keyspaces) -> (i64, u64) {
-        let ts_micros = self.now.max(self.writer.last_ts.saturating_add(1));
+        let ts_micros = rules::post_timestamp(self.now, self.writer.last_ts);
         let order = self.writer.posts + 1;
         self.batch.insert(&ks.meta, META_POSTS, order.to_be_bytes());
         self.batch.insert(&ks.meta, META_LAST_TS, ts_micros.to_be_bytes());
-        self.now = ts_micros;
-        self.posted = true;
+        self.stamped = Some(ts_micros);
         (ts_micros, order)
     }
 
@@ -277,11 +305,12 @@ impl Txn<'_> {
         Ok(())
     }
 
-    /// Stage `actor`'s seen record at this change's instant.
+    /// Stage `actor`'s seen record at this change's instant, unless the one stored is recent
+    /// enough to stand (see [`rules::seen_record_is_current`]).
     fn touch_seen(&mut self, reader: &Reader<'_>, actor: &Actor) -> Result<(), CommsError> {
         let key = keys::seen(actor);
         let previous = reader.stored_seen(actor)?;
-        if previous == Some(self.now) {
+        if rules::seen_record_is_current(previous, self.now) {
             return Ok(());
         }
         if let Some(previous) = previous {
@@ -309,7 +338,8 @@ impl FjallAgents {
     }
 
     /// Force every committed change to disk. A commit is otherwise only handed to the operating
-    /// system, which loses nothing when the process dies but can when the machine does.
+    /// system, which loses nothing when the process dies but can when the machine does. For the
+    /// daemon to call on its periodic tick and at shutdown.
     pub fn flush(&self) -> Result<(), CommsError> {
         self.db
             .persist(PersistMode::SyncAll)
@@ -339,42 +369,52 @@ impl FjallAgents {
         change: impl FnOnce(&mut Txn<'_>, &Reader<'_>) -> Result<T, CommsError>,
     ) -> Result<T, CommsError> {
         let mut writer = self.lock();
-        let now = self.clock.now_micros().max(writer.last_ts);
+        let now = self.clock.now_micros();
         let reader = self.reader(now);
         let mut txn = Txn {
             writer: &mut writer,
             batch: self.db.batch(),
             now,
-            posted: false,
+            stamped: None,
         };
         let value = change(&mut txn, &reader)?;
         txn.touch_seen(&reader, &caller.actor)?;
-        let Txn { batch, now, posted, .. } = txn;
+        let Txn { batch, stamped, .. } = txn;
         batch
             .commit()
             .map_err(|error| backend("write to the comms store", error))?;
-        if posted {
+        if let Some(ts_micros) = stamped {
             writer.posts += 1;
-            writer.last_ts = now;
-            self.last_ts.store(now, Ordering::Release);
+            writer.last_ts = ts_micros;
             self.arrivals.store(writer.posts, Ordering::Release);
+            if let Some(behind_micros) = writer.skew.due(now, ts_micros) {
+                skew::warn(behind_micros, "stamping a post");
+            }
         }
         drop(reader);
         self.sweep_after_change(&mut writer, now);
         Ok(value)
     }
 
-    /// Run a read that changes nothing on a snapshot, then record the caller as seen. On a store
-    /// newer than the binary nothing is recorded. The read has succeeded by then, so a failure to
-    /// record is logged and the reply still returned.
+    /// Run a read that changes nothing on a snapshot, then record the caller as seen when its
+    /// record is due. Whether it is due is read from the same snapshot, so a read by a caller
+    /// seen within the refresh interval takes no lock, writes nothing and runs no sweep. On a
+    /// store newer than the binary nothing is recorded. The read has succeeded by then, so a
+    /// failure to record is logged and the reply still returned.
     fn read<T>(
         &self,
         caller: &Caller,
         read: impl FnOnce(&Reader<'_>) -> Result<T, CommsError>,
     ) -> Result<T, CommsError> {
-        let now = self.clock.now_micros().max(self.last_ts.load(Ordering::Acquire));
-        let value = read(&self.reader(now))?;
-        if self.check_writable().is_ok()
+        let reader = self.reader(self.clock.now_micros());
+        let value = read(&reader)?;
+        let recorded = match reader.stored_seen(&caller.actor) {
+            Ok(recorded) => rules::seen_record_is_current(recorded, reader.now),
+            Err(_) => false,
+        };
+        drop(reader);
+        if !recorded
+            && self.check_writable().is_ok()
             && let Err(error) = self.write(caller, |_, _| Ok(()))
         {
             tracing::warn!(%error, agent = %caller.actor, "comms: recording a caller as seen failed");

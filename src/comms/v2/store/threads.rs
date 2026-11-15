@@ -102,8 +102,14 @@ pub(super) fn update(
     let (actor, id) = (&caller.actor, &update.thread);
     let mut record = reader.thread(id)?.ok_or_else(|| not_found(id))?;
     let mut position = reader.position(id, actor)?;
-    let change = rules::authorize_update(id, &update.action, &record.access(caller, position.is_some()))?;
     let mut members = reader.members(id)?;
+    let change = rules::authorize_update(
+        id,
+        &update.action,
+        &record.access(caller, position.is_some()),
+        members.len(),
+        |agent| members.contains(agent),
+    )?;
     let at_head = Position::at_head(record.head);
     let mut pending = Vec::new();
     match change {

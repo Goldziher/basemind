@@ -65,7 +65,7 @@ fn colliding_thread_id_is_drawn_again() {
 }
 
 #[test]
-fn clock_starts_at_the_fake_epoch_and_each_post_takes_a_microsecond() {
+fn timestamps_start_at_the_fake_epoch_and_a_post_does_not_move_the_clock() {
     let fake = FakeAgents::new();
     start(&fake, "a", "topic", &["b"]);
 
@@ -76,7 +76,7 @@ fn clock_starts_at_the_fake_epoch_and_each_post_takes_a_microsecond() {
                 id: message("t-aaaaaa.1"),
                 subject: "topic".to_string(),
                 from: caller("a").actor,
-                ts_micros: FAKE_EPOCH_MICROS + 1,
+                ts_micros: FAKE_EPOCH_MICROS,
                 reply_to: None,
                 body: "first".to_string(),
                 truncated: false,
@@ -103,7 +103,7 @@ fn clock_starts_at_the_fake_epoch_and_each_post_takes_a_microsecond() {
                 member: true,
                 unread: 0,
                 head: 1,
-                last_activity_micros: FAKE_EPOCH_MICROS + 1,
+                last_activity_micros: FAKE_EPOCH_MICROS,
                 peers: vec![caller("b").actor],
             }],
             pending: Vec::new(),
@@ -111,6 +111,26 @@ fn clock_starts_at_the_fake_epoch_and_each_post_takes_a_microsecond() {
             notices: Vec::new(),
         }
     );
+}
+
+#[test]
+fn posts_within_one_clock_reading_are_a_microsecond_apart() {
+    let fake = FakeAgents::new();
+    start(&fake, "a", "one", &["b"]);
+    start(&fake, "a", "two", &["b"]);
+    fake.advance(Duration::from_micros(1));
+    start(&fake, "a", "three", &["b"]);
+    fake.advance(Duration::from_micros(5));
+    start(&fake, "a", "four", &["b"]);
+
+    let reply = fake.inbox(&caller("b"), InboxBody::default()).expect("inbox");
+
+    let offsets: Vec<i64> = reply
+        .messages
+        .iter()
+        .map(|message| message.ts_micros - FAKE_EPOCH_MICROS)
+        .collect();
+    assert_eq!(offsets, [0, 1, 2, 6]);
 }
 
 #[test]

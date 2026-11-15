@@ -15,10 +15,10 @@ use serde::{Deserialize, Serialize};
 
 use super::api::{
     Actor, COMMS_STORE_VER, Caller, CommsError, Cursor, InboxMessage, InboxReply, MAX_ACTIVE_THREADS_PER_REPO,
-    MESSAGE_TTL, MessageId, REPLAY_TTL, ReadKind, RepoKey, SEEN_TTL, ThreadAction, ThreadFilter, ThreadId,
-    ThreadListing, WaitOutcome, check_recipient_count, deliverable, effective_limit, inline_body, message_cost,
-    new_thread_recipients, normalize_query, normalize_subject, normalize_thread_path, normalize_thread_paths,
-    path_selects, subject_matches,
+    MAX_RECIPIENTS, MAX_THREAD_MEMBERS, MESSAGE_TTL, MessageId, REPLAY_TTL, ReadKind, RepoKey, SEEN_REFRESH_INTERVAL,
+    SEEN_TTL, ThreadAction, ThreadFilter, ThreadId, ThreadListing, WaitOutcome, check_recipient_count, deliverable,
+    effective_limit, inline_body, message_cost, new_thread_recipients, normalize_query, normalize_subject,
+    normalize_thread_path, normalize_thread_paths, path_selects, subject_matches,
 };
 use crate::path::RelPath;
 
@@ -38,15 +38,45 @@ pub fn check_writable(store_ver: u32) -> Result<(), CommsError> {
     Ok(())
 }
 
+/// The timestamp of a post made when the clock reads `clock_micros` and the newest timestamp
+/// issued so far is `last_micros`: the clock's, unless that is not later than the previous one.
+///
+/// Timestamps therefore strictly increase in post order whatever the clock does. This is the
+/// only place the previous timestamp is consulted: everything that expires is judged against
+/// the clock alone, so a post stamped while the clock was ahead cannot hold the store's time in
+/// the future once the clock is corrected.
+pub fn post_timestamp(clock_micros: i64, last_micros: i64) -> i64 {
+    clock_micros.max(last_micros.saturating_add(1))
+}
+
 /// Whether a message posted at `ts_micros` is past [`MESSAGE_TTL`] at `now_micros`. A thread
 /// expires with its newest message, so the same test on its last activity decides the thread.
+///
+/// `now_micros` is the clock, never a timestamp the store issued. A message stamped ahead of
+/// the clock (see [`post_timestamp`]) is no exception: it expires when the clock passes its
+/// stamp by the retention, which is later than it would have with a correct stamp.
 pub fn message_expired(ts_micros: i64, now_micros: i64) -> bool {
     ts_micros <= now_micros.saturating_sub(ttl_micros(MESSAGE_TTL))
 }
 
-/// Whether an agent whose last successful call was at `last_call_micros` is no longer seen.
-pub fn seen_expired(last_call_micros: i64, now_micros: i64) -> bool {
-    last_call_micros <= now_micros.saturating_sub(ttl_micros(SEEN_TTL))
+/// Whether the seen record written at `recorded_micros` no longer makes its agent seen.
+///
+/// A record is rewritten only once it is [`SEEN_REFRESH_INTERVAL`] old (see
+/// [`seen_record_is_current`]), so the agent's last call may be that much later than the record
+/// says. The record is kept that much longer than [`SEEN_TTL`]: an agent is never reported
+/// `pending` within [`SEEN_TTL`] of a call, and is reported at most one interval late.
+pub fn seen_expired(recorded_micros: i64, now_micros: i64) -> bool {
+    let kept = ttl_micros(SEEN_TTL).saturating_add(ttl_micros(SEEN_REFRESH_INTERVAL));
+    recorded_micros <= now_micros.saturating_sub(kept)
+}
+
+/// Whether a successful call at `now_micros` may leave the caller's seen record, last written at
+/// `recorded_micros`, as it is. It may not when there is none, which is what records an agent on
+/// its first call, when the record is [`SEEN_REFRESH_INTERVAL`] old, or when it was written
+/// ahead of the clock.
+pub fn seen_record_is_current(recorded_micros: Option<i64>, now_micros: i64) -> bool {
+    recorded_micros
+        .is_some_and(|recorded| (0..ttl_micros(SEEN_REFRESH_INTERVAL)).contains(&now_micros.saturating_sub(recorded)))
 }
 
 /// When a replay entry written at `now_micros` stops answering for its key.
@@ -165,6 +195,22 @@ impl NewThread {
     }
 }
 
+/// A new thread has its creator and at most [`MAX_RECIPIENTS`] others, so creating one can never
+/// pass [`MAX_THREAD_MEMBERS`] and [`NewThread::plan`] needs no refusal for it.
+const _: () = assert!(MAX_RECIPIENTS < MAX_THREAD_MEMBERS);
+
+/// Refuse a change that would leave `thread`, which has `members` members, with `adding` more
+/// than [`MAX_THREAD_MEMBERS`] allows.
+fn check_member_cap(thread: &ThreadId, members: usize, adding: usize) -> Result<(), CommsError> {
+    if adding > 0 && members.saturating_add(adding) > MAX_THREAD_MEMBERS {
+        return Err(CommsError::MemberCapReached {
+            thread: thread.clone(),
+            cap: MAX_THREAD_MEMBERS,
+        });
+    }
+    Ok(())
+}
+
 /// Refuse a new thread in a repository that already holds `active` active threads.
 pub fn check_thread_cap(repo: &RepoKey, active: usize) -> Result<(), CommsError> {
     if active >= MAX_ACTIVE_THREADS_PER_REPO {
@@ -254,13 +300,28 @@ pub enum Change {
 }
 
 /// Whether the caller may apply `action` to `thread`, and what doing so changes.
-pub fn authorize_update(thread: &ThreadId, action: &ThreadAction, access: &Access) -> Result<Change, CommsError> {
-    let thread = || thread.clone();
+///
+/// `members` is how many members the thread has and `is_member` tells whether an agent is one:
+/// a join, or an invitation of agents that are not members yet, is refused whole when it would
+/// take the thread past [`MAX_THREAD_MEMBERS`]. Inviting only agents that are already members
+/// adds nobody and is not refused for the cap.
+pub fn authorize_update(
+    thread: &ThreadId,
+    action: &ThreadAction,
+    access: &Access,
+    members: usize,
+    is_member: impl Fn(&Actor) -> bool,
+) -> Result<Change, CommsError> {
+    let id = thread;
+    let thread = || id.clone();
     match action {
         ThreadAction::Join if access.member => Ok(Change::Nothing),
         ThreadAction::Join if !access.open || !access.same_repo => Err(CommsError::ThreadClosed { thread: thread() }),
         ThreadAction::Join if access.archived => Err(CommsError::ThreadArchived { thread: thread() }),
-        ThreadAction::Join => Ok(Change::Join),
+        ThreadAction::Join => {
+            check_member_cap(id, members, 1)?;
+            Ok(Change::Join)
+        }
         ThreadAction::Leave | ThreadAction::Invite(_) if !access.member => {
             Err(CommsError::NotMember { thread: thread() })
         }
@@ -271,6 +332,10 @@ pub fn authorize_update(thread: &ThreadId, action: &ThreadAction, access: &Acces
             if access.archived {
                 return Err(CommsError::ThreadArchived { thread: thread() });
             }
+            let mut adding: Vec<&Actor> = invited.iter().filter(|agent| !is_member(agent)).collect();
+            adding.sort();
+            adding.dedup();
+            check_member_cap(id, members, adding.len())?;
             Ok(Change::Invite)
         }
         ThreadAction::Archive if !access.creator => Err(CommsError::NotCreator { thread: thread() }),

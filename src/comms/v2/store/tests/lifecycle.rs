@@ -103,8 +103,11 @@ fn reopening_a_dropped_handle_keeps_messages_positions_counters_and_replays() {
     assert_eq!(start(&harness, "a", "again", &["b", "d"]).pending, [caller("d").actor]);
 }
 
+/// That the flush reached the disk cannot be shown from inside the process that wrote: a reopen
+/// here reads the same operating-system buffers. This only holds `flush` to returning `Ok` and
+/// to leaving the store readable.
 #[test]
-fn flush_succeeds_and_what_was_flushed_is_read_after_a_reopen() {
+fn flush_returns_ok_and_leaves_the_store_readable_after_a_reopen() {
     let mut harness = Harness::new();
     let created = start(&harness, "a", "topic", &["b"]);
 
@@ -135,7 +138,7 @@ fn replay_and_seen_expiry_follow_the_clock_across_a_reopen() {
     assert_eq!(again.id.seq(), first.id.seq() + 1);
 
     harness.reopen();
-    harness.clock.advance(SEEN_TTL - REPLAY_TTL);
+    harness.clock.advance(SEEN_TTL + SEEN_REFRESH_INTERVAL - REPLAY_TTL);
     assert_eq!(start(&harness, "a", "late", &["b"]).pending, [caller("b").actor]);
 }
 
@@ -423,4 +426,88 @@ fn newer_store_with_counters_in_another_encoding_still_opens_for_reading() {
     harness.reopen();
 
     assert_eq!(bodies(&harness.inbox(&caller("b"), peek()).expect("inbox")), ["first"]);
+}
+
+/// The rows of one keyspace, as `(key, value)`.
+type Rows<'a> = &'a [(&'a [u8], &'a [u8])];
+
+/// A directory holding `keyspaces`, made the way another program or an interrupted start would
+/// have left it. Each is `(name, rows)`.
+fn directory_with(keyspaces: &[(&str, Rows<'_>)]) -> TempDir {
+    let dir = tempfile::tempdir().expect("temporary directory");
+    let db = fjall::Database::builder(dir.path().join(STORE_DIR))
+        .open()
+        .expect("create");
+    for (name, rows) in keyspaces {
+        let keyspace = db
+            .keyspace(name, fjall::KeyspaceCreateOptions::default)
+            .expect("keyspace");
+        for (key, value) in *rows {
+            keyspace.insert(*key, *value).expect("write");
+        }
+    }
+    dir
+}
+
+fn keyspaces_in(dir: &TempDir) -> usize {
+    fjall::Database::builder(dir.path().join(STORE_DIR))
+        .open()
+        .expect("the directory still holds the database")
+        .keyspace_count()
+}
+
+#[test]
+fn store_at_the_current_version_without_a_keyspace_is_refused_and_gains_none() {
+    let version = COMMS_STORE_VER.to_be_bytes();
+    let dir = directory_with(&[("meta", &[(META_STORE_VER, &version)]), ("threads", &[])]);
+
+    let refused = FjallAgents::open(dir.path())
+        .err()
+        .expect("a store is not completed by whoever opens it");
+
+    assert!(matches!(refused, CommsError::Backend { .. }), "{refused:?}");
+    let message = refused.to_string();
+    assert!(
+        message.contains("no `messages` keyspace") && message.contains("left untouched"),
+        "{message}"
+    );
+    assert_eq!(keyspaces_in(&dir), 2, "no keyspace was created");
+}
+
+#[test]
+fn rows_without_a_layout_version_are_refused_whichever_keyspace_holds_them() {
+    let dir = directory_with(&[("messages", &[(b"key", b"value")]), ("threads", &[])]);
+
+    let refused = FjallAgents::open(dir.path()).err().expect("rows nobody vouches for");
+
+    assert!(refused.to_string().contains("no layout version"), "{refused}");
+    assert_eq!(keyspaces_in(&dir), 2, "no keyspace was created, `meta` included");
+}
+
+#[test]
+fn keyspace_of_another_layout_without_a_version_is_refused() {
+    let dir = directory_with(&[("somebody_elses", &[])]);
+
+    let refused = FjallAgents::open(dir.path()).err().expect("not a comms store");
+
+    assert!(refused.to_string().contains("another layout"), "{refused}");
+    assert_eq!(keyspaces_in(&dir), 1);
+}
+
+#[test]
+fn creation_interrupted_before_the_version_was_written_is_completed() {
+    let dir = directory_with(&[("meta", &[]), ("threads", &[]), ("expiry", &[])]);
+
+    let store = FjallAgents::open(dir.path()).expect("empty keyspaces and no version hold no store");
+
+    assert_eq!(store.store_version(), COMMS_STORE_VER);
+    let body = PostBody {
+        target: PostTarget::NewThread {
+            subject: "topic".to_string(),
+            to: Vec::new(),
+            paths: Vec::new(),
+        },
+        body: "first".to_string(),
+    };
+    assert_eq!(store.post(&caller("a"), body).expect("post").id.seq(), 1);
 }

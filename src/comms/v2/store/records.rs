@@ -136,7 +136,8 @@ pub(super) fn decode_u64(what: &str, bytes: &[u8]) -> Result<u64, CommsError> {
 pub(super) struct Reader<'a> {
     pub ks: &'a Keyspaces,
     snapshot: Snapshot,
-    /// The instant retention is judged at, in microseconds since the unix epoch.
+    /// The instant retention is judged at: what the clock read, in microseconds since the unix
+    /// epoch. Never a timestamp the store issued.
     pub now: i64,
 }
 
@@ -275,7 +276,8 @@ impl<'a> Reader<'a> {
             .transpose()
     }
 
-    /// Whether `actor` made a successful call within the seen window.
+    /// Whether `actor` still counts as seen: its record has not expired
+    /// ([`rules::seen_expired`]).
     pub fn seen(&self, actor: &Actor) -> Result<bool, CommsError> {
         Ok(self
             .stored_seen(actor)?
