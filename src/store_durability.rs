@@ -35,9 +35,14 @@ pub(super) fn open_index_for_writer(
         index_db = open_index_with_retry(root, view_dir)?;
     }
     // A replaced index starts unsealed, and its emptied file map vouches for nothing. ~keep
-    index.generation = index.generation.min(index_db.scan_generation()?);
-    let index_rebuild_needed =
-        !index.files.is_empty() && (index_db.wiped_on_open() || index_db.view().symbols_index_is_empty());
+    let sealed = index_db.scan_generation()?;
+    index.generation = index.generation.min(sealed);
+    // An index some scan sealed holds what the file map says, whatever it holds: a repository whose
+    // files yield no symbols has no symbol rows to lose. Only an index nothing ever sealed (a
+    // replaced one, or one from before generations) is judged by looking empty. ~keep
+    let never_sealed = sealed == 0 && index.generation == 0;
+    let index_rebuild_needed = !index.files.is_empty()
+        && (index_db.wiped_on_open() || (never_sealed && index_db.view().symbols_index_is_empty()));
     if index_rebuild_needed {
         index.files.clear();
     }

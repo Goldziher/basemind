@@ -307,3 +307,35 @@ fn flush_without_an_index_handle_keeps_the_file_map_generation() {
         .expect("file map exists");
     assert_eq!(on_disk.generation, sealed);
 }
+
+/// A file map with files over an index with no symbol rows used to read as a lost index, so a
+/// repository whose files define nothing was emptied and fully rescanned on every writer open.
+#[test]
+fn a_sealed_index_without_symbols_is_not_rebuilt_on_every_open() {
+    use crate::index::view::IndexView;
+
+    init_isolated_cache();
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(dir.path().join("notes.rs"), b"// nothing to index\n").expect("write");
+    {
+        let mut store = Store::open(dir.path(), VIEW_WORKING).expect("open");
+        crate::scanner::scan(
+            dir.path(),
+            &mut store,
+            &crate::config::ConfigV1::with_defaults(),
+            crate::scanner::ScanSource::WorkingTree,
+            crate::scanner::EmbedMode::Deferred,
+        )
+        .expect("scan");
+        assert_eq!(store.index.files.len(), 1, "the fixture file must be indexed");
+        assert!(
+            store.index_view().expect("index").symbols_index_is_empty(),
+            "the fixture must yield no symbol rows"
+        );
+    }
+
+    let store = Store::open(dir.path(), VIEW_WORKING).expect("reopen");
+
+    assert!(!store.index_rebuild_needed, "a sealed index is not a lost one");
+    assert_eq!(store.index.files.len(), 1, "the file map must keep its files");
+}
