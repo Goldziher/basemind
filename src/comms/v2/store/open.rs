@@ -17,7 +17,7 @@ use std::path::Path;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU32, AtomicU64};
 
-use fjall::{Database, Keyspace, KeyspaceCreateOptions, OwnedWriteBatch};
+use fjall::{Database, Keyspace, KeyspaceCreateOptions, OwnedWriteBatch, PersistMode};
 
 use super::records::{backend, corrupt, decode_i64, decode_u64};
 use super::skew::{self, SkewLog};
@@ -160,6 +160,11 @@ impl FjallAgents {
             None => {
                 ks.meta
                     .insert(META_STORE_VER, COMMS_STORE_VER.to_be_bytes())
+                    .map_err(|error| backend(untouched("create"), error))?;
+                // ~keep Rows without a version are refused for good, so the version is on disk
+                // before any row can be: nothing a loss of power takes back may include it
+                // while keeping a row written after it.
+                db.persist(PersistMode::SyncAll)
                     .map_err(|error| backend(untouched("create"), error))?;
                 COMMS_STORE_VER
             }
