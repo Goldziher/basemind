@@ -47,7 +47,15 @@ coordination model was settled. No ADR describes that model, and an audit found 
    clock or file. `<host>` is `BASEMIND_HOST` lowercased, reduced to `[a-z0-9]` and cut to 16
    bytes, or `agent` when that leaves nothing. `<repo>` is the root directory's basename,
    lowercased, with every character outside `[a-z0-9-]` replaced by `-`, cut to 24 bytes. Both are
-   sanitised before they are cut, so both are ASCII.
+   sanitised before they are cut, so both are ASCII. A root with no basename, such as `/`, has an
+   empty `<repo>`, and its id reads `<host>--<hash>`.
+
+The root is an absolute path, and `serve`, the CLI and the hooks take it from one shared discovery
+function. A relative root is refused with a typed error and is never completed from the working
+directory, which a hook does not share with its `serve`. The root is canonicalised with symlinks
+resolved. When that fails, because the path does not exist or cannot be read, its `.` and `..` are
+folded lexically and the result is hashed instead: a stable id, though not the canonical one when
+a symlink lies on the way.
 
 The plugin launcher and the plugin hooks set `BASEMIND_HOST` from one shared script, and a test
 asserts that the hook identity equals the `serve` identity. The `session-*`, persisted `agent-id`
@@ -66,9 +74,11 @@ separator, so a principal id containing it fails validation. A composed id over 
 The server cannot tell a subagent from its parent, because both use one MCP connection, so it cannot
 require `as`. In Claude Code the plugin's `PreToolUse` hook, whose matcher is widened to the three
 agent tools, sees `agent_type` and `agent_id` inside a subagent. When the caller did not set `as`
-it injects `<agent_type>-<first 8 of agent_id>`, reduced to the sub-name grammar, through
-`updatedInput`. Such a name cannot be predicted, so an orchestrator that wants to address a
-subagent tells it to pass an explicit `as`. On other hosts the tool description is the only guard.
+it injects `<agent_type>-<8 hex of blake3(agent_id)>` through `updatedInput`. The type is
+lowercased, reduced to the sub-name grammar and cut to 23 bytes, which is what the hash leaves of
+the 32; the hash is of the whole `agent_id`, because two ids may share their first bytes. Such a
+name cannot be predicted, so an orchestrator that wants to address a subagent tells it to pass an
+explicit `as`. On other hosts the tool description is the only guard.
 
 **Caller.** Who is calling is derived by the daemon and never read from a request. The principal
 comes from the session's `Hello`, the sub-identity from the `sub` of the `Call`, the repository from
@@ -88,17 +98,19 @@ store produces none. The daemon appends the shared-identity notice, since only i
 and the tool layer appends the rejected-id notice, since only it knows what the resolver refused.
 
 **Threads and messages.** A thread id is `t-<6 base32>`, checked for collision at creation and
-regenerated. A message id is `<thread>.<seq>`, so a reference is a point lookup. A thread is created
-by a post that names a `subject` and no `thread`; the subject is not a key, so two such posts make
-two threads. A thread belongs to one repository: the registry `RepoId` when there is one, else
-`path:<canonical root>`. Two clones of one remote share a `RepoId` and therefore share threads, by
-design. A thread is open to its repository unless created with `to`, which makes it
-invitation-only. Its `paths` are repo-relative path prefixes, fixed at creation.
+drawn again, at most 64 times; a post that finds no free id in that many draws fails as a store
+error and stores nothing. A message id is `<thread>.<seq>`, so a reference is a point lookup. A
+thread is created by a post that names a `subject` and no `thread`; the subject is not a key, so
+two such posts make two threads. A thread belongs to one repository: the registry `RepoId` when
+there is one, else `path:<canonical root>`. Two clones of one remote share a `RepoId` and
+therefore share threads, by design. A thread is open to its repository unless created with `to`,
+which makes it invitation-only. Its `paths` are repo-relative path prefixes, fixed at creation.
 
 A subject is one line of at most 200 bytes and a body at most 64 KiB. `to` and `invite` name at most
 32 agents each (`MAX_RECIPIENTS`) and `paths` at most 16 prefixes (`MAX_THREAD_PATHS`). A value over
 a limit is refused, never cut, and so is a `to` that names only the creator, which would make a
-thread nobody else can reach.
+thread nobody else can reach. A thread has at most 256 members (`MAX_THREAD_MEMBERS`): a join, or
+an invitation of agents that are not members yet, is refused whole when it would pass that.
 
 **Membership and read position.** One table, `members(thread, agent, read_seq, notified_seq)`, with
 a reverse `member_threads` index, replaces `thread_members`, `thread_subs`, `Thread.members` and the
@@ -112,7 +124,11 @@ not started yet; it only makes both visible. `notified_seq` is the inbox hook's 
 
 An agent is seen once any call it makes succeeds, a hook's read included. Being named in `to` or
 `invite` does not make it seen, and neither does a refused call. A seen record is dropped when the
-agent has made no call for 30 days, after which it is `pending` again.
+agent has made no call for 30 days (`SEEN_TTL`), after which it is `pending` again. An agent's first
+call writes its record at once; after that the record is rewritten at most once a day
+(`SEEN_REFRESH_INTERVAL`), so that a read does not write on every call, and is kept a day longer
+to make up for it. An agent is therefore never `pending` within 30 days of a call, and is
+`pending` again at most a day after that.
 
 Only an unread read marks. It advances `read_seq` to the last message returned in each thread, and
 `notified_seq` with it, so what was read is not announced afterwards; there is no separate
@@ -122,7 +138,18 @@ that was not returned: a reply is always the oldest unread messages, in order, a
 limit or the budget stops it.
 
 Messages come in the order they were posted to the store, across threads. The store therefore
-keeps one monotonic post counter, and that counter also orders an inbox that spans threads. A body
+keeps one monotonic post counter, and that counter also orders an inbox that spans threads.
+
+A message's timestamp is the clock's reading, or one microsecond past the previous message's when
+the clock is not later, so timestamps strictly increase in post order whatever the clock does. The
+previous timestamp is used for nothing else: message, replay and seen expiry are judged against
+the clock as it reads. A post made while the clock ran ahead therefore does not hold the store in
+the future once the clock is corrected. That post is stamped ahead, and so is every post after it
+until the clock catches up; such a message expires when the clock passes its stamp by
+`MESSAGE_TTL`, later than a correctly stamped one. The store logs a warning when the clock reads
+more than a minute behind its newest message, at open and when it stamps a post.
+
+A body
 over 4 KB is returned cut, with `truncated: true`, and counts as read (the full body comes from
 `id`). The 16 KB response budget counts, for each message, the bytes of its body as returned, its
 subject, its sender and its id. The first message is always returned, and delivery stops at the
@@ -143,9 +170,11 @@ re-sends the same key on a replay. A `Post` into a thread dedupes on `(from, thr
 A `Post` that creates a thread dedupes on `(from, key)`, so a replay returns the thread already
 created. An `InboxRead` that moves a position stores the delivered range against the key, so a
 replay returns the same range, as stored, instead of an empty page; a read that moves nothing, an
-empty one included, stores nothing, because repeating it is harmless. Dedupe entries and stored ranges live for the existing one-hour
-`IDEMPOTENCY_TTL`, and the first write wins: a later call with the same key never replaces an
-entry. A model that repeats a call sends a new request and makes a second message. A CLI or hook
+empty one included, stores nothing, because repeating it is harmless. Dedupe entries and stored
+ranges live for one hour (`REPLAY_TTL`), and the first write wins: a later call with the same key
+never replaces an entry that still answers. An entry past its hour no longer answers, whether or
+not it has been deleted yet, and the next call with its key replaces it.
+A model that repeats a call sends a new request and makes a second message. A CLI or hook
 call has no relay and no key, so it has no replay protection; the hooks therefore read without
 marking as read and advance only `notified_seq`.
 
@@ -160,7 +189,8 @@ immediately before the marking read, so a waiter whose client is gone does not a
 position. And it registers the replay key as in flight before it starts to wait, so a replay that
 arrives while the first attempt is still waiting joins it instead of starting a second read.
 
-**Authorization.** All rules live in `src/comms/authz.rs`:
+**Authorization.** All rules live in `src/comms/v2/rules.rs`, as functions every store
+implementation calls:
 
 - reading and posting require membership;
 - joining requires an open thread in the caller's repository;
@@ -211,16 +241,30 @@ The three tools are not always-loaded: they stay deferred, outside `VERB_TOOLS`,
 release, everywhere. `cleanup` and `status`, and the read-only `workspaces`, `worktrees` and
 `branches` listings, remain as CLI commands only.
 
-**Storage.** The store stays on Fjall. `COMMS_STORE_VER = 1000` replaces `COMMS_SCHEMA_VER` and is
-no longer tied to `RELEASE_MINOR`, so a release does not wipe comms. Later shape changes are
+**Storage.** The store stays on Fjall, in `agents.fjall` inside the comms directory.
+`COMMS_STORE_VER = 1000` replaces `COMMS_SCHEMA_VER` and is no longer tied to `RELEASE_MINOR`, so
+a release does not wipe comms. Later shape changes are
 forward-only numbered migration steps run at open. A store newer than the binary is refused for
 writing with a message that names the fix, and is never wiped. Nothing is recorded on it, a seen
 record included, and the hooks' read is refused because it writes `notified_seq`. What only reads
-still works: a `peek`, history, a listing and a read by message id.
+still works: a `peek`, history, a listing and a read by message id. What has expired is not
+returned there either.
+
+A store that cannot be opened, holds rows but no version, lacks a keyspace of its layout or has
+no migration path is a typed error (`CommsError::Backend`) that names the directory, and is left
+untouched: basemind never deletes, recreates or completes one, and creates keyspaces only where
+there is no store. Opening does let Fjall recover its journal and compact, on a newer store too,
+which rewrites files but no key or value.
+
+A change is committed whole or not at all, and is handed to the operating system before the call
+returns. It is synced to disk on the daemon's periodic tick and at shutdown. A crash of the daemon
+therefore loses nothing; a loss of power can lose what was committed since the last sync. A `seq`
+lost that way is issued again to the next post in its thread.
 
 The legacy store is not imported. On first start the legacy `store.fjall` directory is renamed to
-`store.legacy-<date>` inside the comms directory, basemind never deletes it, and a fresh store is
-created. An import would carry little: most agent ids in it are per-process, messages older than
+`store.legacy-<date>` inside the comms directory (the UTC date, with `-2`, `-3` and so on appended
+when that name is taken), basemind never deletes it, and a fresh store is created. An import would
+carry little: most agent ids in it are per-process, messages older than
 three days are already deleted, and its threads carry no repository.
 
 **Retention.** Messages are kept 30 days (`MESSAGE_TTL`, three today) and at most 1000 per thread
@@ -267,6 +311,8 @@ dedupes on `(from, key)`.
   cancelled while it waits does not, because the daemon checks the connection before it reads.
 - A thread listing paged while threads receive posts can miss one; nothing unread is lost by it,
   since the inbox does not depend on the listing.
+- After a loss of power a message id a client still holds can name a different message than it
+  did, because the `seq` it carries was issued again.
 - Two sessions sharing an identity share one read position and do not see each other's posts as
   unread.
 - Outside Claude Code, a subagent that omits `as` acts as its principal and consumes the
