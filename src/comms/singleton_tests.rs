@@ -60,7 +60,7 @@ fn bounded_gives_up_on_work_that_never_returns_and_passes_on_what_returns_in_tim
     let (release, blocked) = std::sync::mpsc::channel::<()>();
     let started = std::time::Instant::now();
 
-    let hung = bounded(LIMIT, move || {
+    let hung = bounded(Path::new("bounded/hung"), LIMIT, move || {
         let _ = blocked.recv();
         Some("too late")
     });
@@ -73,8 +73,57 @@ fn bounded_gives_up_on_work_that_never_returns_and_passes_on_what_returns_in_tim
         started.elapsed()
     );
     drop(release);
-    assert_eq!(bounded(PROMPT, || Some(7)), Some(7));
-    assert_eq!(bounded(PROMPT, || None::<u8>), None);
+    assert_eq!(bounded(Path::new("bounded/prompt"), PROMPT, || Some(7)), Some(7));
+    assert_eq!(bounded(Path::new("bounded/prompt"), PROMPT, || None::<u8>), None);
+}
+
+/// A daemon that accepts and never answers is probed again and again. Each probe given up on
+/// leaves a thread blocked on an open pipe, so no further one is started while that one is still
+/// blocked: the endpoint costs one thread, not one per probe.
+#[test]
+fn bounded_starts_nothing_new_for_an_endpoint_whose_earlier_call_is_still_blocked() {
+    use endpoint::bounded;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    const LIMIT: Duration = Duration::from_millis(100);
+    const PROMPT: Duration = Duration::from_secs(5);
+    let wedged = Path::new("bounded/wedged");
+    let (release, blocked) = std::sync::mpsc::channel::<()>();
+    let started = Arc::new(AtomicUsize::new(0));
+    let count = |started: &Arc<AtomicUsize>| {
+        let started = Arc::clone(started);
+        move || {
+            started.fetch_add(1, Ordering::SeqCst);
+            Some(())
+        }
+    };
+
+    let first = bounded(wedged, LIMIT, move || blocked.recv().ok());
+    assert_eq!(first, None);
+    for _ in 0..3 {
+        assert_eq!(bounded(wedged, PROMPT, count(&started)), None);
+    }
+    assert_eq!(
+        started.load(Ordering::SeqCst),
+        0,
+        "nothing is started while the earlier call is still blocked"
+    );
+    assert_eq!(
+        bounded(Path::new("bounded/another"), PROMPT, count(&started)),
+        Some(()),
+        "another endpoint is not held up"
+    );
+
+    drop(release);
+    let deadline = std::time::Instant::now() + PROMPT;
+    while bounded(wedged, PROMPT, count(&started)).is_none() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the endpoint is usable again once the blocked call has returned"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
 }
 
 /// Runs on every platform: the name is a pure function of the user and the directory path.

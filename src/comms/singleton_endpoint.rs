@@ -3,11 +3,16 @@
 //!
 //! On Unix every read and write takes a timeout. A Windows pipe opened as a file takes none, so
 //! there an exchange runs on a thread of its own under [`bounded`], and the caller gives up on it
-//! at the limit.
+//! at the limit. Two things follow that this module keeps in hand:
 //!
-//! A pipe whose every instance is serving another client refuses the open with `ERROR_PIPE_BUSY`.
-//! That is a daemon at work, the opposite of a silent one: the open is retried for a bounded time,
-//! and a pipe still busy at the end counts as present.
+//! - A pipe whose every instance is serving another client refuses the open with
+//!   `ERROR_PIPE_BUSY`. That is a daemon at work, the opposite of a silent one: the open is
+//!   retried for a bounded time, and a pipe still busy at the end counts as present.
+//! - A call given up on leaves its thread blocked in the read, with the pipe open, until the
+//!   daemon answers, closes the pipe or dies. No new exchange is started with an endpoint while
+//!   one given up on is still blocked there, so a daemon that accepts and never answers holds one
+//!   thread and one pipe handle of this process, however often it is probed. (Callers that were
+//!   already waiting on the same endpoint at that moment may each leave one more.)
 
 use std::path::Path;
 use std::time::Duration;
@@ -20,7 +25,7 @@ pub(super) fn exchange(socket_path: &Path, body: Vec<u8>, timeout: Duration) -> 
     #[cfg(windows)]
     {
         let endpoint = socket_path.to_path_buf();
-        bounded(timeout, move || {
+        bounded(socket_path, timeout, move || {
             let Pipe::Open(stream) = open_pipe(&endpoint, timeout / 2) else {
                 return None;
             };
@@ -61,22 +66,67 @@ fn converse(mut stream: impl std::io::Read + std::io::Write, body: &[u8]) -> Opt
     }
 }
 
-/// Run blocking `work` on a thread of its own and wait at most `limit` for what it returns. For
-/// I/O that takes no timeout: past the limit the caller moves on with `None`, and the thread ends
-/// whenever its call returns.
+/// Endpoints with a [`bounded`] call that was given up on and is still blocked, and how many.
+#[cfg(any(windows, test))]
+static ABANDONED: std::sync::Mutex<std::collections::BTreeMap<std::path::PathBuf, usize>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+/// Run blocking `work` against `endpoint` on a thread of its own and wait at most `limit` for
+/// what it returns. For I/O that takes no timeout: past the limit the caller moves on with `None`,
+/// and the thread ends whenever its call returns. While a call given up on is still blocked,
+/// further calls for the same endpoint return `None` at once without starting `work`, which is
+/// what bounds the threads and handles one unanswering endpoint can hold.
 #[cfg(any(windows, test))]
 pub(super) fn bounded<T: Send + 'static>(
+    endpoint: &Path,
     limit: Duration,
     work: impl FnOnce() -> Option<T> + Send + 'static,
 ) -> Option<T> {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, PoisonError};
+
+    let abandoned = || ABANDONED.lock().unwrap_or_else(PoisonError::into_inner);
+    if abandoned().contains_key(endpoint) {
+        return None;
+    }
+    // Both flags are read and written only under the `ABANDONED` lock, which is what lets the
+    // thread and the caller agree on who saw the other first.
+    let finished = Arc::new(AtomicBool::new(false));
+    let given_up = Arc::new(AtomicBool::new(false));
     let (done, result) = std::sync::mpsc::channel();
+    let (thread_finished, thread_given_up, key) = (finished.clone(), given_up.clone(), endpoint.to_path_buf());
     std::thread::Builder::new()
         .name("comms-endpoint".to_string())
         .spawn(move || {
-            let _ = done.send(work());
+            let outcome = work();
+            {
+                let mut abandoned = ABANDONED.lock().unwrap_or_else(PoisonError::into_inner);
+                thread_finished.store(true, Ordering::Relaxed);
+                if thread_given_up.load(Ordering::Relaxed)
+                    && let Some(count) = abandoned.get_mut(&key)
+                {
+                    *count -= 1;
+                    if *count == 0 {
+                        abandoned.remove(&key);
+                    }
+                }
+            }
+            let _ = done.send(outcome);
         })
         .ok()?;
-    result.recv_timeout(limit).ok().flatten()
+    if let Ok(outcome) = result.recv_timeout(limit) {
+        return outcome;
+    }
+    {
+        let mut abandoned = abandoned();
+        if !finished.load(Ordering::Relaxed) {
+            given_up.store(true, Ordering::Relaxed);
+            *abandoned.entry(endpoint.to_path_buf()).or_insert(0) += 1;
+            return None;
+        }
+    }
+    // The work returned as the limit ran out; its result is on its way.
+    result.recv().ok().flatten()
 }
 
 /// What opening the daemon's pipe found.
@@ -172,7 +222,7 @@ pub(super) fn probe_once(socket_path: &Path) -> bool {
 
     const PING_TIMEOUT: Duration = Duration::from_millis(500);
     let endpoint = socket_path.to_path_buf();
-    bounded(PING_TIMEOUT, move || {
+    bounded(socket_path, PING_TIMEOUT, move || {
         let mut stream = match open_pipe(&endpoint, PING_TIMEOUT / 2) {
             Pipe::Open(stream) => stream,
             Pipe::Busy => return Some(()),
