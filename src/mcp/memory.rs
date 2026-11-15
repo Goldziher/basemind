@@ -628,6 +628,10 @@ pub(super) fn observe_semantic_route<T>(
     Ok(hits)
 }
 
+/// Hits retrieved when a `keywords` / `entity` filter is set, before the filter cuts them down.
+#[cfg(feature = "documents")]
+const FILTERED_FETCH_DEPTH: usize = 400;
+
 #[cfg(feature = "documents")]
 pub(super) async fn run_search_documents(
     state: &ServerState,
@@ -650,6 +654,14 @@ pub(super) async fn run_search_documents(
     };
 
     let limit = params.limit.unwrap_or(10).min(100) as usize;
+    // The keyword / entity filters run on the retrieved hits, so retrieval goes deeper than the
+    // page: a matching document ranked past `limit` would otherwise never be seen.
+    let filtered = params.entity_category.is_some() || params.keywords_contains.is_some();
+    let fetch = if filtered {
+        limit.max(FILTERED_FETCH_DEPTH)
+    } else {
+        limit
+    };
     let embedding = embed_query(state, &params.query).await?;
     let lance = lance_store(state).await?;
     let scope = resolve_doc_scope(params.scope.as_deref(), &state.shared.scope);
@@ -660,11 +672,11 @@ pub(super) async fn run_search_documents(
         let requested_shared = crate::lance::shared_snapshot::enabled();
         let shared = routing.and_then(|(group, generation)| {
             crate::lance::shared_snapshot::read(&lance, &group, lane, &scope, &generation, |shared, paths| {
-                shared.search_documents(&scope, embedding.clone(), mime.as_deref(), paths, limit)
+                shared.search_documents(&scope, embedding.clone(), mime.as_deref(), paths, fetch)
             })
         });
         observe_semantic_route("documents", requested_shared, shared, || {
-            lance.search_documents(&scope, embedding, limit, mime.as_deref())
+            lance.search_documents(&scope, embedding, fetch, mime.as_deref())
         })
     })
     .await
@@ -694,6 +706,7 @@ pub(super) async fn run_search_documents(
         params.keywords_contains.as_deref(),
     )
     .await?;
+    hits.truncate(limit);
 
     if reranker_enabled && !hits.is_empty() {
         if xberg::get_reranker_preset(&reranker_preset).is_none() {
@@ -763,14 +776,15 @@ pub(super) async fn run_search_documents(
     )
 }
 
-/// Load the parent doc blob for each unique hit path, copy its keywords +
+/// Load the parent doc blob for each unique hit path through the document map (a document is not
+/// in the code file map), copy its keywords +
 /// entities onto every hit pointing at that path, and (optionally) drop hits
 /// whose parent fails an `entity_category` / `keywords_contains` filter.
 ///
 /// We deliberately do this BEFORE the reranker so the cross-encoder only
-/// rescores survivors. Per-blob cost is bounded by the result-set size (at
-/// most `limit` distinct paths); blobs are skipped silently when the path is
-/// no longer in the working-tree index (e.g. file deleted between scan and
+/// rescores survivors. Per-blob cost is bounded by the result-set size (one
+/// blob per distinct path); blobs are skipped silently when the path is
+/// no longer in the document index (e.g. file deleted between scan and
 /// query) — a missing blob is not an error.
 #[cfg(feature = "documents")]
 async fn attach_doc_metadata(
@@ -792,45 +806,25 @@ async fn attach_doc_metadata(
         }
     }
 
-    let pairs: Vec<(String, std::path::PathBuf)> = {
-        let store = state.shared.store.read().await;
-        unique_paths
-            .iter()
-            .filter_map(|p| {
-                store
-                    .lookup(p.as_str())
-                    .map(|entry| (p.clone(), store.blob_path_doc_hex(&entry.hash_hex)))
-            })
-            .collect()
-    };
-
     type DocMeta = (Vec<DocKeyword>, Vec<DocEntity>, Option<DocSummary>);
-    let meta: ahash::AHashMap<String, Arc<DocMeta>> = tokio::task::spawn_blocking(move || {
-        let mut out: ahash::AHashMap<String, Arc<DocMeta>> = ahash::AHashMap::with_capacity(pairs.len());
-        for (path, blob_path) in pairs {
-            if !blob_path.exists() {
-                continue;
-            }
-            let bytes = match std::fs::read(&blob_path) {
-                Ok(b) => b,
-                Err(e) => {
-                    tracing::warn!(path = %path, error = %e, "read doc blob for metadata attach failed");
-                    continue;
-                }
-            };
-            match rmp_serde::from_slice::<crate::extract::doc::FileMapDoc>(&bytes) {
-                Ok(doc) => {
-                    out.insert(path, Arc::new((doc.keywords, doc.entities, doc.summary)));
-                }
-                Err(e) => {
-                    tracing::warn!(path = %path, error = %e, "decode doc blob for metadata attach failed");
-                }
-            }
-        }
-        out
-    })
-    .await
-    .unwrap_or_default();
+    let meta: ahash::AHashMap<String, Arc<DocMeta>> = {
+        let store = state.shared.store.read().await;
+        super::index_route::blocking(|| {
+            unique_paths
+                .into_iter()
+                .filter_map(|path| {
+                    let entry = store.lookup_doc(path.as_str())?;
+                    match store.read_doc_by_hex(&entry.hash_hex) {
+                        Ok(doc) => doc.map(|doc| (path, Arc::new((doc.keywords, doc.entities, doc.summary)))),
+                        Err(error) => {
+                            tracing::warn!(path = %path, %error, "read doc blob for metadata attach failed");
+                            None
+                        }
+                    }
+                })
+                .collect()
+        })
+    };
 
     let cat_needle = entity_category.map(|s| s.to_lowercase());
     let kw_needle = keywords_contains.map(|s| s.to_lowercase());

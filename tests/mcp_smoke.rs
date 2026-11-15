@@ -1790,37 +1790,111 @@ async fn summarizes_via_extractive_default() {
     let _ = service.cancel().await;
 }
 
+/// `docs_search` hits carry their document's keywords, and the `keywords` filter keeps the documents
+/// that have one, including a document ranked past `limit`.
+///
+/// The metadata was looked up in the code file map, where no document lives: every hit came back
+/// without keywords and any filter emptied the result.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[cfg(feature = "documents")]
-async fn search_documents_accepts_post_filter_params() {
+async fn docs_search_attaches_keywords_and_filters_on_them() {
     let dir = build_repo();
     let root = dir.path();
-    run_scan(root);
+    for name in ["one", "two", "three", "four"] {
+        std::fs::write(
+            root.join(format!("{name}.md")),
+            "# Harbour\n\nThe harbour pilots guide ships into the harbour. The harbour tides set the harbour \
+             timetable, and the harbour master signs the harbour log.\n",
+        )
+        .unwrap();
+    }
+    std::fs::write(
+        root.join("airship.md"),
+        "# Zeppelin\n\nA zeppelin is an airship. The zeppelin hangar holds one zeppelin, and the zeppelin crew \
+         moors the zeppelin at the mast beside the harbour.\n",
+    )
+    .unwrap();
+    let mut cfg = basemind::config::default_for_root(root);
+    cfg.documents.enabled = true;
+    cfg.documents.keywords.enabled = true;
+    let _ = basemind::lang::ensure_grammars().expect("grammar bootstrap");
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            let mut store = basemind::store::Store::open(root, basemind::store::VIEW_WORKING).expect("open store");
+            basemind::scanner::scan(
+                root,
+                &mut store,
+                &cfg,
+                basemind::scanner::ScanSource::WorkingTree,
+                basemind::scanner::EmbedMode::Inline,
+            )
+            .expect("scan");
+        });
+    });
 
     let transport = basemind::mcp::serve_in_memory(root, "working")
         .await
         .expect("in-memory serve");
     let service = ().serve(transport).await.expect("rmcp handshake");
 
-    let result = service
-        .call_tool(call_params(
-            "docs_search",
-            json!({ "query": "test",
-                "limit": 10,
-                "entity": "person",
-                "keywords": "foo",
-            }),
-        ))
-        .await;
-
-    let result = result.expect("docs_search");
-    if result.is_error == Some(true) {
-        let message = error_text(&result);
+    let unfiltered = service
+        .call_tool(call_params("docs_search", json!({ "query": "harbour", "limit": 10 })))
+        .await
+        .expect("docs_search");
+    if unfiltered.is_error == Some(true) {
+        eprintln!(
+            "SKIP: docs_search could not run here (no embedding model?): {}",
+            error_text(&unfiltered)
+        );
+        let _ = service.cancel().await;
+        return;
+    }
+    let body = decode_text(&unfiltered);
+    let hits = body["hits"].as_array().expect("hits");
+    if hits.is_empty() {
+        eprintln!("SKIP: no document vectors in this environment: {body}");
+        let _ = service.cancel().await;
+        return;
+    }
+    assert_eq!(hits.len(), 5, "one chunk per document: {body}");
+    for hit in hits {
         assert!(
-            !message.contains("unknown field"),
-            "post-filter params must be accepted: {message}"
+            hit["keywords"].as_array().is_some_and(|keywords| !keywords.is_empty()),
+            "every hit carries its document's keywords: {hit}"
         );
     }
+
+    let filtered = decode_text(
+        &service
+            .call_tool(call_params(
+                "docs_search",
+                json!({ "query": "harbour", "limit": 1, "keywords": "zeppelin" }),
+            ))
+            .await
+            .expect("docs_search"),
+    );
+    let paths: Vec<&str> = filtered["hits"]
+        .as_array()
+        .expect("hits")
+        .iter()
+        .map(|hit| hit["path"].as_str().unwrap_or_default())
+        .collect();
+    assert_eq!(
+        paths,
+        ["airship.md"],
+        "the one document with that keyword, whatever its rank for the query: {filtered}"
+    );
+
+    let unmatched = decode_text(
+        &service
+            .call_tool(call_params(
+                "docs_search",
+                json!({ "query": "harbour", "keywords": "no-document-has-this-keyword" }),
+            ))
+            .await
+            .expect("docs_search"),
+    );
+    assert_eq!(unmatched["hits"], json!([]), "{unmatched}");
 
     let _ = service.cancel().await;
 }

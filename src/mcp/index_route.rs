@@ -302,8 +302,8 @@ impl IndexRoute {
     }
 }
 
-/// Run work that blocks (the whole-corpus projection's rayon + blob IO, an fsync) without stalling
-/// the reactor. `block_in_place` needs the multi-thread runtime the CLI builds; on a `current_thread`
+/// Run blocking work (a corpus sweep, blob or file IO, a git walk) without stalling the
+/// reactor. `block_in_place` needs the multi-thread runtime the CLI builds; on a `current_thread`
 /// runtime (tests) it runs inline, which is safe because that runtime has no other task to starve.
 pub(super) fn blocking<R>(work: impl FnOnce() -> R) -> R {
     #[cfg(test)]
