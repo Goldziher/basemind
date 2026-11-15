@@ -3,15 +3,50 @@
 use super::*;
 
 #[test]
-fn version_is_older_orders_releases_and_ignores_prerelease() {
+fn version_is_older_orders_releases() {
     assert!(version_is_older("0.6.3", "0.10.0"));
     assert!(version_is_older("0.9.0", "0.10.0"));
     assert!(version_is_older("0.10.0", "0.10.1"));
     assert!(!version_is_older("0.10.0", "0.10.0"));
     assert!(!version_is_older("0.11.0", "0.10.0"));
     assert!(!version_is_older("1.0.0", "0.10.0"));
-    assert!(!version_is_older("0.10.0-rc.1", "0.10.0"));
     assert!(version_is_older("0.9.0-rc.2", "0.10.0"));
+}
+
+/// A release candidate's daemon must make way for the release it preceded, and the release's
+/// daemon must never be stopped by a candidate left installed.
+#[test]
+fn version_is_older_orders_pre_releases_by_semver_precedence() {
+    assert!(
+        version_is_older("0.10.0-rc.1", "0.10.0"),
+        "a candidate precedes its release"
+    );
+    assert!(!version_is_older("0.10.0", "0.10.0-rc.1"));
+    assert!(version_is_older("0.10.0-rc.1", "0.10.0-rc.2"));
+    assert!(!version_is_older("0.10.0-rc.2", "0.10.0-rc.1"));
+    assert!(!version_is_older("0.10.0-rc.1", "0.10.0-rc.1"));
+    assert!(
+        version_is_older("0.10.0-rc.9", "0.10.0-rc.10"),
+        "numeric identifiers compare as numbers"
+    );
+    assert!(version_is_older("0.10.0-alpha.3", "0.10.0-beta.1"));
+    assert!(
+        version_is_older("0.10.0-1", "0.10.0-alpha"),
+        "numeric precedes alphanumeric"
+    );
+    assert!(
+        version_is_older("0.10.0-rc", "0.10.0-rc.1"),
+        "more identifiers is later"
+    );
+    assert!(
+        !version_is_older("0.10.1-rc.1", "0.10.0"),
+        "the core decides before the pre-release"
+    );
+    assert!(
+        !version_is_older("0.10.0+build.1", "0.10.0+build.2"),
+        "build metadata has no precedence"
+    );
+    assert!(version_is_older("0.10.0-rc.1+build.9", "0.10.0+build.1"));
 }
 
 /// Runs on every platform: the name is a pure function of the user and the directory path.

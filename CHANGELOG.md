@@ -263,8 +263,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   their own protocol generation only, and can no longer stop or force-terminate a 0.33 daemon.
   `doctor` reports how many daemons of other generations it counted. The ceiling on live daemons
   counts every generation's, from their registry records. On Windows the named pipe is named from a
-  BLAKE3 hash of the account name and the generation directory's path components, so `C:\\x\\comms`,
-  `C:\\x\\comms\\` and `C:/x/comms` name one pipe, as they are one `daemon.lock`.
+  BLAKE3 hash of the account name and the generation directory's path components, so `C:\x\comms`,
+  `C:\x\comms\` and `C:/x/comms` name one pipe, as they are one `daemon.lock`.
 - Within a generation, bringing up the daemon no longer signals one that answers. A daemon of the
   same or a newer release is never asked to stop: it is used, or, when it is newer and speaks another
   protocol, reported with what to update. An older one is asked to stop, and a `daemon_busy` refusal
@@ -274,6 +274,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   it. Signals are sent only to a process still there afterwards, silent to `Stop` and `Ping`, that
   the generation's `daemon.pid` then names. `basemind comms stop` now reaches a daemon that speaks
   another protocol version, waits the normal stop timeout for its answer and honours a refusal.
+  "Older" and "newer" follow semantic-version precedence, pre-release included: the daemon of
+  `0.34.0-rc.1` makes way for `0.34.0` and is never preferred to it.
 - `basemind serve` no longer retries forever, silently, when it cannot get a daemon, and no longer
   exits before reading the host's `initialize` when it cannot get one at start. The first
   connection goes through the same path as a reconnect. A failure no retry can cure ends the

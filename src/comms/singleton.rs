@@ -618,15 +618,52 @@ async fn ensure_daemon_as(paths: &CommsPaths, policy: SpawnPolicy, takeover: Tak
     .await
 }
 
-/// True when `daemon`'s `MAJOR.MINOR.PATCH` is strictly older than `ours`. Pre-release suffixes
-/// (`-rc.N`) are ignored — close enough for the "is this a previous build?" takeover decision.
+/// True when version `daemon` is strictly older than `ours` by semantic-version precedence: the
+/// `MAJOR.MINOR.PATCH` core first, then the pre-release, so `0.34.0-rc.1` is older than `0.34.0`
+/// and `rc.2` older than `rc.10`. Build metadata (`+…`) is ignored, and a part that is not a number
+/// counts as zero.
 fn version_is_older(daemon: &str, ours: &str) -> bool {
-    fn triple(v: &str) -> (u64, u64, u64) {
-        let core = v.split('-').next().unwrap_or(v);
-        let mut it = core.split('.').map(|p| p.parse::<u64>().unwrap_or(0));
-        (it.next().unwrap_or(0), it.next().unwrap_or(0), it.next().unwrap_or(0))
+    use std::cmp::Ordering;
+
+    fn parts(version: &str) -> ([u64; 3], Option<&str>) {
+        let version = version.split('+').next().unwrap_or(version);
+        let (core, pre) = match version.split_once('-') {
+            Some((core, pre)) => (core, Some(pre)),
+            None => (version, None),
+        };
+        let mut numbers = core.split('.').map(|part| part.parse::<u64>().unwrap_or(0));
+        let core = std::array::from_fn(|_| numbers.next().unwrap_or(0));
+        (core, pre)
     }
-    triple(daemon) < triple(ours)
+    /// Numeric identifiers order by value and below alphanumeric ones; a longer list of otherwise
+    /// equal identifiers is the later one.
+    fn compare_pre(a: &str, b: &str) -> Ordering {
+        let (mut a, mut b) = (a.split('.'), b.split('.'));
+        loop {
+            let ordering = match (a.next(), b.next()) {
+                (None, None) => return Ordering::Equal,
+                (None, Some(_)) => return Ordering::Less,
+                (Some(_), None) => return Ordering::Greater,
+                (Some(x), Some(y)) => match (x.parse::<u64>(), y.parse::<u64>()) {
+                    (Ok(x), Ok(y)) => x.cmp(&y),
+                    (Ok(_), Err(_)) => Ordering::Less,
+                    (Err(_), Ok(_)) => Ordering::Greater,
+                    (Err(_), Err(_)) => x.cmp(y),
+                },
+            };
+            if ordering != Ordering::Equal {
+                return ordering;
+            }
+        }
+    }
+    let ((daemon_core, daemon_pre), (our_core, our_pre)) = (parts(daemon), parts(ours));
+    let ordering = daemon_core.cmp(&our_core).then_with(|| match (daemon_pre, our_pre) {
+        (None, None) => Ordering::Equal,
+        (Some(_), None) => Ordering::Less,
+        (None, Some(_)) => Ordering::Greater,
+        (Some(a), Some(b)) => compare_pre(a, b),
+    });
+    ordering == Ordering::Less
 }
 
 /// One-shot `Status` request against a live daemon — returns its [`StatusReport`] (pid / version /
