@@ -126,3 +126,132 @@ fn protected_workspaces_are_persisted_and_make_the_state_over_budget() {
         state.detail
     );
 }
+
+/// The budget is a disk budget: blobs in another schema's namespace and un-namespaced blobs of an
+/// older build occupy the same disk, so the footprint counts everything under the blobs root.
+#[test]
+fn the_budget_footprint_counts_every_blob_namespace() {
+    let (_tmp, workspaces, root) = roots();
+    let current = root.join("v7");
+    fs::create_dir_all(&current).expect("mk current");
+    fs::create_dir_all(root.join("v6")).expect("mk older");
+    fs::write(root.join("v6").join("old.fm.msgpack"), vec![0_u8; 64 * 1024]).expect("older blob");
+    fs::write(root.join("flat.fm.msgpack"), vec![0_u8; 64 * 1024]).expect("flat blob");
+    seed_workspace_aged(&workspaces, "key-a", &"a".repeat(64), Duration::from_secs(9999));
+
+    let report = enforce_cache_budget_at(&workspaces, &root, &current, u64::MAX, DAY, Duration::ZERO).expect("enforce");
+
+    assert!(
+        report.total_bytes_before >= 2 * 64 * 1024,
+        "blobs outside the current namespace are part of the footprint: {}",
+        report.total_bytes_before
+    );
+}
+
+fn write_index(workspace_dir: &std::path::Path, index: &crate::store::Index) {
+    let working = workspace_dir.join(crate::store::VIEWS_DIR).join("working");
+    fs::create_dir_all(&working).expect("mk view");
+    fs::write(
+        working.join(crate::store::INDEX_FILE),
+        rmp_serde::to_vec_named(index).expect("encode index"),
+    )
+    .expect("write index");
+}
+
+/// A file map emptied for a rebuild lists no file for as long as the rebuild takes. The blobs it
+/// held are what the rebuild re-indexes from, so the sweep still counts them as referenced.
+#[test]
+fn blobs_of_a_file_map_emptied_for_a_rebuild_survive_the_sweep() {
+    let (_tmp, workspaces, blobs) = roots();
+    let (pinned, loose) = ("a".repeat(64), "b".repeat(64));
+    for stem in [&pinned, &loose] {
+        fs::write(blobs.join(format!("{stem}.fm.msgpack")), b"blob").expect("blob");
+    }
+    let mut index = crate::store::Index::empty();
+    index.rebuild_pending = true;
+    index.rebuild_pins = vec![pinned.clone()];
+    write_index(&workspaces.join("key-rebuilding"), &index);
+
+    crate::store_gc::gc_global_blobs_in(&workspaces, &blobs, Duration::ZERO).expect("sweep");
+
+    assert!(
+        blobs.join(format!("{pinned}.fm.msgpack")).exists(),
+        "pinned for the rebuild"
+    );
+    assert!(
+        !blobs.join(format!("{loose}.fm.msgpack")).exists(),
+        "nothing references this one"
+    );
+}
+
+/// Emptying the map for a rebuild pins what it held; the scan that finishes the rebuild releases.
+#[test]
+fn emptying_a_file_map_pins_its_hashes_until_the_rebuild_is_done() {
+    crate::store::init_isolated_cache();
+    let tmp = tempfile::tempdir().expect("tempdir");
+    fs::write(tmp.path().join("a.rs"), "pub fn a() {}\n").expect("write");
+    let config = crate::config::ConfigV1::with_defaults();
+    let scan = |store: &mut crate::store::Store| {
+        crate::scanner::scan(
+            tmp.path(),
+            store,
+            &config,
+            crate::scanner::ScanSource::WorkingTree,
+            crate::scanner::EmbedMode::Deferred,
+        )
+        .expect("scan");
+    };
+    let mut store = crate::store::Store::open(tmp.path(), crate::store::VIEW_WORKING).expect("open");
+    scan(&mut store);
+    let hash = store.lookup("a.rs").expect("entry").hash_hex.clone();
+    // An index behind its file map: the recovery empties the map and orders a rebuild.
+    store.index.generation += 1;
+
+    assert!(store.rebuild_index_if_behind().expect("recover"));
+    let on_disk = crate::store::read_index(&store.view_dir).expect("read").expect("map");
+    assert!(on_disk.files.is_empty());
+    assert_eq!(
+        on_disk.rebuild_pins,
+        [hash],
+        "the emptied map on disk still pins the blob"
+    );
+
+    scan(&mut store);
+    assert!(store.index.rebuild_pins.is_empty(), "released once the rebuild is done");
+}
+
+/// The sweep after an eviction gives unreferenced blobs no grace, which is safe only against scans
+/// the caller excludes. A writer lock held by another process may be a scan whose fresh blobs no
+/// file map lists yet: with one present, the sweep keeps the grace period.
+#[test]
+fn an_eviction_sweep_keeps_the_grace_period_while_another_process_holds_a_writer_lock() {
+    let (_tmp, workspaces, blobs) = roots();
+    let cold = seed_workspace_aged(&workspaces, "key-cold", &"a".repeat(64), DAY * 30);
+    let scanning = seed_workspace_aged(&workspaces, "key-scanning", &"b".repeat(64), Duration::from_secs(5));
+    let fresh = blobs.join(format!("{}.fm.msgpack", "c".repeat(64)));
+    fs::write(&fresh, b"written by a scan whose file map is not flushed yet").expect("fresh blob");
+    let _held = crate::store::acquire_lock_as(&scanning, crate::store::LockHolder::Scan).expect("lock");
+    let foreign = serde_json::json!({ "command": "basemind scan", "pid": u32::MAX - 7, "acquired_unix": 0 });
+    fs::write(scanning.join(crate::store::LOCK_META_FILE), foreign.to_string()).expect("lock meta");
+
+    let report = enforce_cache_budget_in(&workspaces, &blobs, 1, Duration::ZERO, Duration::ZERO).expect("enforce");
+
+    assert!(
+        report.evicted >= 1 && !cold.join(crate::store::VIEWS_DIR).exists(),
+        "{report:?}"
+    );
+    assert!(
+        fresh.exists(),
+        "a blob a scan in another process just wrote is not reaped"
+    );
+
+    drop(_held);
+    fs::remove_file(scanning.join(crate::store::LOCK_META_FILE)).expect("release");
+    let cold_again = seed_workspace_aged(&workspaces, "key-cold", &"a".repeat(64), DAY * 30);
+    enforce_cache_budget_in(&workspaces, &blobs, 1, Duration::ZERO, Duration::ZERO).expect("enforce");
+    assert!(!cold_again.join(crate::store::VIEWS_DIR).exists());
+    assert!(
+        !fresh.exists(),
+        "with no writer anywhere the unreferenced blob goes at once"
+    );
+}

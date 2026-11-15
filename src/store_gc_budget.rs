@@ -40,9 +40,29 @@ const DEFAULT_CACHE_BUDGET_MIB: u64 = 20 * 1024;
 /// remain unbounded when hot workspaces alone exceed the configured budget.
 const BUDGET_EVICTION_HOT_FLOOR: Duration = Duration::from_secs(24 * 60 * 60);
 
-/// Budget eviction runs under the daemon's global GC write lock, so blobs orphaned by a deliberate
-/// workspace eviction can be reclaimed immediately without racing an in-flight scan.
+/// Budget eviction runs holding the daemon's blob-GC gate, so blobs orphaned by a deliberate
+/// workspace eviction can be reclaimed immediately without racing a scan the daemon runs. A scan
+/// in another process is outside that gate: see [`orphan_grace`].
 const BUDGET_ORPHAN_GRACE: Duration = Duration::ZERO;
+
+/// The grace the sweep after an eviction gives unreferenced blobs: none, unless another process
+/// holds a workspace's writer lock. That process may be a scan whose fresh blobs no file map
+/// references yet, and only the ordinary grace period protects those.
+fn orphan_grace(workspaces_dir: &Path) -> Duration {
+    let foreign_writer = std::fs::read_dir(workspaces_dir).is_ok_and(|entries| {
+        entries
+            .flatten()
+            .any(|entry| match crate::store::probe_writer_lock(&entry.path()) {
+                crate::store::WriterProbe::Free => false,
+                crate::store::WriterProbe::Held { holder } => holder.is_none_or(|meta| meta.pid != std::process::id()),
+            })
+    });
+    if foreign_writer {
+        crate::store_gc::blob_gc_grace()
+    } else {
+        BUDGET_ORPHAN_GRACE
+    }
+}
 
 /// Workspace directory containing Lance tables. Kept feature-independent because budget cleanup
 /// may inspect caches written by a richer binary than the one currently running.
@@ -298,8 +318,9 @@ pub(crate) fn read_gc_state_at(path: &Path) -> Option<GcState> {
 /// Locked workspaces remain protected. Each eviction immediately reclaims blobs that lost their
 /// final reference and remeasures the real footprint before selecting another victim.
 pub fn enforce_cache_budget(budget_bytes: u64) -> Result<EvictReport, GcError> {
-    enforce_cache_budget_in(
+    enforce_cache_budget_at(
         &cache_root().join(CACHE_DIR).join(WORKSPACES_DIR),
+        &crate::store_layout::global_blobs_root(),
         &global_blobs_dir(),
         budget_bytes,
         BUDGET_EVICTION_HOT_FLOOR,
@@ -307,8 +328,8 @@ pub fn enforce_cache_budget(budget_bytes: u64) -> Result<EvictReport, GcError> {
     )
 }
 
-/// [`enforce_cache_budget`] against explicit directories (tests pass a per-fixture cache and a
-/// zero hot floor).
+/// [`enforce_cache_budget`] against a per-fixture cache whose blob store is one flat directory.
+#[cfg(test)]
 pub(crate) fn enforce_cache_budget_in(
     workspaces_dir: &Path,
     blobs_dir: &Path,
@@ -316,7 +337,22 @@ pub(crate) fn enforce_cache_budget_in(
     hot_floor: Duration,
     grace: Duration,
 ) -> Result<EvictReport, GcError> {
-    let total = cache_footprint(workspaces_dir, blobs_dir)?;
+    enforce_cache_budget_at(workspaces_dir, blobs_dir, blobs_dir, budget_bytes, hot_floor, grace)
+}
+
+/// [`enforce_cache_budget`] against explicit directories. The footprint counts everything under
+/// `blobs_root`, the namespaces of other blob schemas included: they occupy the same disk. Blobs
+/// an eviction orphans are reclaimed in `blobs_dir`, the namespace the evicted workspaces of this
+/// version referenced.
+pub(crate) fn enforce_cache_budget_at(
+    workspaces_dir: &Path,
+    blobs_root: &Path,
+    blobs_dir: &Path,
+    budget_bytes: u64,
+    hot_floor: Duration,
+    grace: Duration,
+) -> Result<EvictReport, GcError> {
+    let total = cache_footprint(workspaces_dir, blobs_root)?;
     let mut report = EvictReport {
         total_bytes_before: total,
         total_bytes_after: total,
@@ -342,10 +378,10 @@ pub(crate) fn enforce_cache_budget_in(
                 .push(protected_entry(&candidate.dir, ProtectionReason::Locked));
             continue;
         };
-        let reclaimed = gc_global_blobs_in(workspaces_dir, blobs_dir, BUDGET_ORPHAN_GRACE)?;
+        let reclaimed = gc_global_blobs_in(workspaces_dir, blobs_dir, orphan_grace(workspaces_dir))?;
         report.blobs_removed += reclaimed.removed;
         report.blob_bytes_freed += reclaimed.bytes_freed;
-        report.total_bytes_after = cache_footprint(workspaces_dir, blobs_dir)?;
+        report.total_bytes_after = cache_footprint(workspaces_dir, blobs_root)?;
         let measured_freed = bytes_before_candidate.saturating_sub(report.total_bytes_after);
         if size > 0 || reclaimed.bytes_freed > 0 {
             report.evicted += 1;
@@ -479,8 +515,8 @@ fn remove_cache_path(path: &Path) -> Result<(), GcError> {
     })
 }
 
-fn cache_footprint(workspaces_dir: &Path, blobs_dir: &Path) -> Result<u64, GcError> {
-    Ok(dir_size_or_zero(workspaces_dir)? + dir_size_or_zero(blobs_dir)?)
+fn cache_footprint(workspaces_dir: &Path, blobs_root: &Path) -> Result<u64, GcError> {
+    Ok(dir_size_or_zero(workspaces_dir)? + dir_size_or_zero(blobs_root)?)
 }
 
 /// Newest mtime among the files a scan always rewrites (`workspace.json`, `status.json`, each view's

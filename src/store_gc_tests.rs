@@ -1,6 +1,6 @@
 use super::*;
 use crate::store::{BLOBS_DIR, FileEntry, INDEX_FILE, Index};
-use crate::store_cache_admin::{TELEMETRY_FILENAME, cache_stats_in, clear_component_in};
+use crate::store_cache_admin::{BlobStorePaths, TELEMETRY_FILENAME, cache_stats_in, clear_component_in};
 use std::fs;
 use std::path::PathBuf;
 
@@ -14,17 +14,31 @@ use std::path::PathBuf;
 pub(super) struct Fixture {
     _tmp: tempfile::TempDir,
     pub(super) basemind_dir: PathBuf,
-    /// Per-fixture blob directory (`basemind_dir/blobs`), passed to the `_in` seams.
+    /// Per-fixture blob namespace (`basemind_dir/blobs/v<schema>`), passed to the `_in` seams.
     pub(super) blobs_dir: PathBuf,
     referenced_stem: String,
     orphan_stem: String,
     orphan_len: u64,
 }
 
+impl Fixture {
+    /// The fixture's blob store: `blobs_dir` is its current namespace, `gc-state.json` sits beside
+    /// the store's root as it does in the cache.
+    pub(super) fn blobs(&self) -> BlobStorePaths {
+        BlobStorePaths {
+            root: self.basemind_dir.join(BLOBS_DIR),
+            schema: crate::extract::SCHEMA_VER,
+            gc_state: self.basemind_dir.join(crate::store_gc_budget::GC_STATE_FILE),
+        }
+    }
+}
+
 pub(super) fn build_fixture() -> Fixture {
     let tmp = tempfile::tempdir().expect("tempdir");
     let basemind_dir = tmp.path().join(".basemind");
-    let blobs = basemind_dir.join(BLOBS_DIR);
+    let blobs = basemind_dir
+        .join(BLOBS_DIR)
+        .join(format!("v{}", crate::extract::SCHEMA_VER));
     let working = basemind_dir.join(VIEWS_DIR).join("working");
     fs::create_dir_all(&blobs).expect("mk blobs");
     fs::create_dir_all(&working).expect("mk view");
@@ -85,7 +99,7 @@ fn cache_stats_counts_git_history_and_reconciles_total() {
     let stray = b"lockmeta";
     fs::write(fx.basemind_dir.join(".lock.meta"), stray).expect("write stray");
 
-    let stats = cache_stats_in(&fx.basemind_dir, &fx.blobs_dir).expect("cache_stats");
+    let stats = cache_stats_in(&fx.basemind_dir, &fx.blobs()).expect("cache_stats");
 
     assert!(
         stats.git_history_bytes >= gh_payload.len() as u64,
@@ -106,6 +120,7 @@ fn cache_stats_counts_git_history_and_reconciles_total() {
     let component_sum = stats.blobs_bytes
         + stats.views_bytes
         + stats.lance_bytes
+        + stats.memory_vectors_bytes
         + stats.git_cache_bytes
         + stats.telemetry_bytes
         + stats.git_history_bytes;
@@ -127,7 +142,7 @@ fn cache_stats_degrades_when_index_unreadable() {
         "an unreadable index must fail the delete-path safety check"
     );
 
-    let stats = cache_stats_in(&fx.basemind_dir, &fx.blobs_dir).expect("cache_stats must not hard-fail");
+    let stats = cache_stats_in(&fx.basemind_dir, &fx.blobs()).expect("cache_stats must not hard-fail");
     assert!(
         !stats.blob_accounting_ok,
         "orphan accounting must be flagged unavailable"
@@ -170,7 +185,7 @@ fn should_remove_only_orphan_blob() {
         "freed bytes equal the orphan's exact length"
     );
 
-    let blobs = fx.basemind_dir.join(BLOBS_DIR);
+    let blobs = fx.blobs_dir.clone();
     assert!(
         blobs.join(format!("{}.fm.msgpack", fx.referenced_stem)).exists(),
         "referenced filemap survives"
@@ -190,7 +205,7 @@ fn gc_grace_keeps_young_orphan_doc_blobs() {
     assert_eq!(report.scanned, 2, "both blobs inspected");
     assert_eq!(report.removed, 0, "young orphan survives the grace window");
 
-    let blobs = fx.basemind_dir.join(BLOBS_DIR);
+    let blobs = fx.blobs_dir.clone();
     assert!(
         blobs.join(format!("{}.fm.msgpack", fx.orphan_stem)).exists(),
         "young orphan blob still on disk"
@@ -225,7 +240,7 @@ fn gc_sweeps_stray_tmp_files_older_than_the_grace_window_and_keeps_fresh_ones() 
 #[test]
 fn should_reclaim_legacy_split_tier_blobs_even_when_stem_is_referenced() {
     let fx = build_fixture();
-    let blobs = fx.basemind_dir.join(BLOBS_DIR);
+    let blobs = fx.blobs_dir.clone();
     fs::write(blobs.join(format!("{}.l1.msgpack", fx.referenced_stem)), b"legacy-l1").expect("write legacy l1");
     fs::write(blobs.join(format!("{}.l2.msgpack", fx.referenced_stem)), b"legacy-l2").expect("write legacy l2");
 
@@ -255,7 +270,7 @@ fn should_reclaim_legacy_split_tier_blobs_even_when_stem_is_referenced() {
 fn should_report_one_orphan_before_gc_and_zero_after() {
     let fx = build_fixture();
 
-    let before = cache_stats_in(&fx.basemind_dir, &fx.blobs_dir).expect("stats before");
+    let before = cache_stats_in(&fx.basemind_dir, &fx.blobs()).expect("stats before");
     assert_eq!(before.blob_count, 2, "two blob files on disk");
     assert_eq!(before.orphan_blob_count, 1, "one orphan before GC");
     assert_eq!(
@@ -267,7 +282,7 @@ fn should_report_one_orphan_before_gc_and_zero_after() {
     let referenced = collect_referenced_hashes(&fx.basemind_dir).expect("collect");
     gc_blobs_in(&fx.blobs_dir, &referenced, Duration::ZERO).expect("gc");
 
-    let after = cache_stats_in(&fx.basemind_dir, &fx.blobs_dir).expect("stats after");
+    let after = cache_stats_in(&fx.basemind_dir, &fx.blobs()).expect("stats after");
     assert_eq!(after.blob_count, 1, "orphan reaped");
     assert_eq!(after.orphan_blob_count, 0, "no orphans remain");
 }
@@ -277,7 +292,7 @@ fn should_clear_only_blobs_component() {
     let fx = build_fixture();
     fs::write(fx.basemind_dir.join(TELEMETRY_FILENAME), b"{}\n").expect("telemetry");
 
-    clear_component_in(&fx.basemind_dir, CacheComponent::Blobs, &fx.blobs_dir).expect("clear blobs");
+    clear_component_in(&fx.basemind_dir, CacheComponent::Blobs, &fx.blobs()).expect("clear blobs");
 
     let blobs = &fx.blobs_dir;
     let remaining: Vec<_> = fs::read_dir(blobs)
@@ -571,4 +586,115 @@ fn should_round_trip_component_tokens() {
         assert_eq!(parsed, component, "round-trip {token}");
     }
     assert!("nonsense".parse::<CacheComponent>().is_err(), "unknown token rejected");
+}
+
+/// The record of the last sweep is read from where the sweep writes it, beside the blob store's
+/// root, not from inside the store.
+#[test]
+fn cache_stats_reports_the_last_sweep() {
+    let fx = build_fixture();
+    assert!(cache_stats_in(&fx.basemind_dir, &fx.blobs()).unwrap().last_gc.is_none());
+    let report = GcReport {
+        removed: 3,
+        ..GcReport::default()
+    };
+
+    crate::store_gc_budget::persist_gc_state_at(&fx.blobs().gc_state, &report);
+
+    let stats = cache_stats_in(&fx.basemind_dir, &fx.blobs()).unwrap();
+    assert_eq!(stats.last_gc.expect("the persisted sweep is reported").removed, 3);
+}
+
+/// The global record and the global store agree on where the record is: one function names it.
+#[test]
+fn the_global_blob_store_reads_the_record_the_sweep_persists() {
+    crate::store::init_isolated_cache();
+    let paths = BlobStorePaths::global();
+    assert_eq!(paths.gc_state, crate::store_gc_budget::gc_state_path());
+    assert_eq!(paths.current(), crate::store::global_blobs_dir());
+    assert_eq!(
+        paths.gc_state.parent(),
+        paths.root.parent(),
+        "beside blobs/, in the cache directory"
+    );
+}
+
+fn plant_blob(dir: &std::path::Path, stem: char) -> PathBuf {
+    fs::create_dir_all(dir).expect("mk namespace");
+    let path = dir.join(format!("{}.fm.msgpack", stem.to_string().repeat(64)));
+    fs::write(&path, vec![b'x'; 4096]).expect("write blob");
+    path
+}
+
+/// The footprint is the whole blob store, every namespace and the un-namespaced files of older
+/// builds; the current namespace is reported beside it, and blob counts are the current one's.
+#[test]
+fn cache_stats_measures_every_blob_namespace() {
+    let fx = build_fixture();
+    let root = fx.blobs().root;
+    let only_current = cache_stats_in(&fx.basemind_dir, &fx.blobs()).unwrap();
+    plant_blob(&root, 'c');
+    plant_blob(&root.join("v1"), 'd');
+    plant_blob(&root.join("v65000"), 'e');
+
+    let stats = cache_stats_in(&fx.basemind_dir, &fx.blobs()).unwrap();
+
+    assert_eq!(stats.blobs_current_bytes, only_current.blobs_current_bytes);
+    assert_eq!(
+        stats.blob_count, only_current.blob_count,
+        "counted in the current namespace"
+    );
+    assert!(
+        stats.blobs_bytes >= stats.blobs_current_bytes + 3 * 4096,
+        "the other namespaces and the flat blob are measured: {} vs {}",
+        stats.blobs_bytes,
+        stats.blobs_current_bytes
+    );
+}
+
+/// `cache clear blobs` takes what this binary and older ones wrote, and leaves a newer
+/// basemind's namespace alone, naming it.
+#[test]
+fn clearing_blobs_takes_older_namespaces_and_flat_blobs_and_spares_a_newer_one() {
+    let fx = build_fixture();
+    let root = fx.blobs().root;
+    let flat = plant_blob(&root, 'c');
+    let older = plant_blob(&root.join("v1"), 'd');
+    let newer = plant_blob(&root.join("v65000"), 'e');
+    let stray = root.join("notes.txt");
+    fs::write(&stray, b"not a blob").expect("write stray");
+
+    let report = clear_component_in(&fx.basemind_dir, CacheComponent::Blobs, &fx.blobs()).expect("clear blobs");
+
+    assert_eq!(report.spared_newer_blob_namespaces, ["v65000"]);
+    assert!(newer.exists(), "a newer basemind's blobs are not ours to clear");
+    assert!(!flat.exists(), "un-namespaced blobs go");
+    assert!(!older.exists() && !root.join("v1").exists(), "an older namespace goes");
+    assert!(stray.exists(), "a file that is not a blob is left alone");
+    assert!(fx.blobs_dir.exists() && fs::read_dir(&fx.blobs_dir).unwrap().next().is_none());
+}
+
+/// The sweep of the blob store is both sweeps: the current namespace's unreferenced blobs, and
+/// what older builds left beside it. A namespace of an older schema would otherwise never be
+/// collected by anything.
+#[test]
+fn the_blob_store_sweep_reaps_the_current_namespace_and_the_superseded_ones() {
+    let fx = build_fixture();
+    let paths = fx.blobs();
+    let workspaces = fx.basemind_dir.join("no-workspaces");
+    let orphan = fx.blobs_dir.join(format!("{}.fm.msgpack", fx.orphan_stem));
+    let older = plant_blob(&paths.root.join("v1"), 'd');
+    let flat = plant_blob(&paths.root, 'c');
+    let newer = plant_blob(&paths.root.join("v65000"), 'e');
+    assert!(orphan.exists());
+
+    let report = gc_blob_store_in(&workspaces, &paths.root, paths.schema, Duration::ZERO).expect("sweep");
+
+    assert!(
+        !orphan.exists(),
+        "an unreferenced blob of the current namespace is reaped"
+    );
+    assert!(!older.exists() && !flat.exists(), "and so is what older builds left");
+    assert!(newer.exists(), "a newer namespace is never touched");
+    assert!(report.removed >= 3, "{report:?}");
 }

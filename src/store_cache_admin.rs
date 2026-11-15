@@ -9,12 +9,41 @@
 //! the sweep changes when the liveness rules change. `store_gc.rs` re-exports every public item, so
 //! callers keep importing them from `crate::store_gc`.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
-use crate::store::{VIEWS_DIR, global_blobs_dir, read_index, wipe_blobs_in};
+use crate::store::{VIEWS_DIR, read_index, wipe_blobs_in};
 use crate::store_gc::{GcError, blob_stem, collect_referenced_hashes, read_dir};
+use crate::store_gc_namespaces::namespace_schema;
+
+/// Where the machine-global blob store and the record of its last sweep are.
+#[derive(Debug, Clone)]
+pub(crate) struct BlobStorePaths {
+    /// `cache/blobs/`: one namespace directory per blob schema, and the un-namespaced blob files
+    /// of builds from before the namespaces.
+    pub root: PathBuf,
+    /// The blob schema this binary reads and writes; its namespace is `root/v<schema>`.
+    pub schema: u16,
+    /// `cache/gc-state.json`, written by [`crate::store_gc_budget::persist_gc_state`].
+    pub gc_state: PathBuf,
+}
+
+impl BlobStorePaths {
+    /// The machine-global store.
+    pub(crate) fn global() -> Self {
+        Self {
+            root: crate::store_layout::global_blobs_root(),
+            schema: crate::extract::SCHEMA_VER,
+            gc_state: crate::store_gc_budget::gc_state_path(),
+        }
+    }
+
+    /// The namespace this binary reads and writes.
+    pub(crate) fn current(&self) -> PathBuf {
+        self.root.join(format!("v{}", self.schema))
+    }
+}
 
 /// Telemetry sink filename under `.basemind/`. Mirrors
 /// [`crate::mcp::telemetry::TELEMETRY_FILENAME`]; duplicated here to avoid a dependency on
@@ -75,12 +104,19 @@ impl std::str::FromStr for CacheComponent {
 /// Per-component byte sizes + blob accounting for the `.basemind/` cache.
 #[derive(Debug, Clone, Serialize)]
 pub struct CacheStats {
-    /// Recursive byte size of `blobs/`.
+    /// Recursive byte size of the whole blob store: the namespace of every blob schema on disk and
+    /// the un-namespaced blobs of older builds.
     pub blobs_bytes: u64,
+    /// The part of [`Self::blobs_bytes`] in the namespace this binary reads and writes. The rest
+    /// belongs to other installed versions or awaits the namespace sweep.
+    pub blobs_current_bytes: u64,
     /// Recursive byte size of `views/`.
     pub views_bytes: u64,
     /// Recursive byte size of `lance/`.
     pub lance_bytes: u64,
+    /// Recursive byte size of the memory notes' vector stores (`memory.lance/` in the repo group
+    /// directory, every embedding model). `0` when the workspace has no marker naming its root.
+    pub memory_vectors_bytes: u64,
     /// Recursive byte size of the **on-disk** git cache (`git-cache/`). The git cache is a
     /// two-layer cache (RAM LRU + optional disk); this counts only the disk layer. A `0`
     /// therefore means nothing has been *persisted* — either no disk-backed git tool has run
@@ -95,8 +131,8 @@ pub struct CacheStats {
     /// deep-history repo) was omitted, so the reported total undercounted `du` — the bug this
     /// field fixes.
     pub git_history_bytes: u64,
-    /// Recursive byte size of the **entire** `.basemind/` tree. This is the ground-truth total
-    /// (it matches `du`); the per-component fields are a breakdown of it, and any bytes not
+    /// Recursive byte size of the **entire** `.basemind/` tree, plus the blob store and the memory
+    /// vector stores, which live outside it. The per-component fields are a breakdown of it, and any bytes not
     /// attributed to a named component land in [`Self::other_bytes`]. Computed from the whole
     /// tree so a future uncounted directory can never silently shrink the reported footprint.
     pub total_bytes: u64,
@@ -104,7 +140,7 @@ pub struct CacheStats {
     /// sum of the component fields): the legacy top-level `index.msgpack`, lock/id/config
     /// sidecars, `.gitignore`, and anything a future version adds before it gets its own field.
     pub other_bytes: u64,
-    /// Total blob files on disk (every suffix counts as one file).
+    /// Blob files in the current namespace (every suffix counts as one file).
     pub blob_count: usize,
     /// Blob files whose hex stem is referenced by no view — reclaimable by
     /// [`run_gc`](crate::store_gc::run_gc). Meaningful only when [`Self::blob_accounting_ok`] is
@@ -128,32 +164,72 @@ pub struct CacheStats {
     pub last_gc: Option<crate::store_gc_budget::GcState>,
 }
 
+/// What a component clear left in place on purpose.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct ClearReport {
+    /// Blob namespaces of a NEWER blob schema, which a `Blobs` clear never touches: they belong
+    /// to a newer basemind sharing the cache.
+    pub spared_newer_blob_namespaces: Vec<String>,
+}
+
 /// Clear a whole cache component. Reuses the store's existing wipe helpers where they
 /// exist; mirrors the lance dir-wipe pattern for the (feature-gated) vector store.
 ///
-/// `Blobs` clears the machine-global blob store (shared by every workspace); all other components
-/// are per-workspace under `basemind_dir`.
-pub fn clear_component(basemind_dir: &Path, component: CacheComponent) -> Result<(), GcError> {
-    clear_component_in(basemind_dir, component, &global_blobs_dir())
+/// `Blobs` clears the machine-global blob store (shared by every workspace): the current
+/// namespace, the namespaces of older schemas and the un-namespaced blobs of older builds. All
+/// other components are per-workspace under `basemind_dir`.
+pub fn clear_component(basemind_dir: &Path, component: CacheComponent) -> Result<ClearReport, GcError> {
+    clear_component_in(basemind_dir, component, &BlobStorePaths::global())
 }
 
-/// [`clear_component`] against an explicit blob directory (used for the `Blobs` branch). Production
+/// [`clear_component`] against an explicit blob store (used for the `Blobs` branch). Production
 /// passes the global store; unit tests pass a per-test temp dir so a `Blobs` clear never wipes the
 /// machine-global store nor races sibling tests that rely on content-addressed blobs surviving.
 pub(crate) fn clear_component_in(
     basemind_dir: &Path,
     component: CacheComponent,
-    blobs_dir: &Path,
-) -> Result<(), GcError> {
+    blobs: &BlobStorePaths,
+) -> Result<ClearReport, GcError> {
+    let mut report = ClearReport::default();
     match component {
-        CacheComponent::Blobs => wipe_blobs_in(blobs_dir)?,
+        CacheComponent::Blobs => report.spared_newer_blob_namespaces = clear_blobs(blobs)?,
         CacheComponent::Views => remove_dir_if_exists(&basemind_dir.join(VIEWS_DIR))?,
         CacheComponent::Lance => clear_lance(basemind_dir)?,
         CacheComponent::GitCache => remove_dir_if_exists(&basemind_dir.join(crate::git_cache::GIT_CACHE_DIR))?,
         CacheComponent::Telemetry => remove_file_if_exists(&basemind_dir.join(TELEMETRY_FILENAME))?,
         CacheComponent::All => remove_dir_if_exists(basemind_dir)?,
     }
-    Ok(())
+    Ok(report)
+}
+
+/// Empty the current namespace (keeping its directory), remove the namespaces of older schemas
+/// and the un-namespaced blob files. A newer schema's namespace is left alone and named in the
+/// result; so is anything that is neither a namespace nor a blob file.
+fn clear_blobs(blobs: &BlobStorePaths) -> Result<Vec<String>, GcError> {
+    let mut spared = Vec::new();
+    if !blobs.root.exists() {
+        return Ok(spared);
+    }
+    for entry in read_dir(&blobs.root)? {
+        let entry = entry.map_err(|source| GcError::Io {
+            path: blobs.root.clone(),
+            source,
+        })?;
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if path.is_dir() {
+            match namespace_schema(&name) {
+                Some(schema) if schema > blobs.schema => spared.push(name),
+                Some(schema) if schema == blobs.schema => wipe_blobs_in(&path)?,
+                Some(_) => remove_dir_if_exists(&path)?,
+                None => {}
+            }
+        } else if blob_stem(&name).is_some() {
+            remove_file_if_exists(&path)?;
+        }
+    }
+    spared.sort();
+    Ok(spared)
 }
 
 /// Clear a single view by name: removes only `views/<name>/` (its `index.msgpack` + Fjall
@@ -184,13 +260,14 @@ pub fn clear_single_view(basemind_dir: &Path, name: &str) -> Result<(), GcError>
 /// Gather per-component sizes and blob accounting without mutating anything. The orphan
 /// count reuses [`collect_referenced_hashes`] but never deletes.
 pub fn cache_stats(basemind_dir: &Path) -> Result<CacheStats, GcError> {
-    cache_stats_in(basemind_dir, &global_blobs_dir())
+    cache_stats_in(basemind_dir, &BlobStorePaths::global())
 }
 
-/// [`cache_stats`] against an explicit blob directory. Production passes the global store; unit
+/// [`cache_stats`] against an explicit blob store. Production passes the global store; unit
 /// tests pass a per-test temp dir so they neither read the machine-global blob store nor race
 /// each other on it.
-pub(crate) fn cache_stats_in(basemind_dir: &Path, blobs_dir: &Path) -> Result<CacheStats, GcError> {
+pub(crate) fn cache_stats_in(basemind_dir: &Path, blobs: &BlobStorePaths) -> Result<CacheStats, GcError> {
+    let blobs_dir = &blobs.current();
     let referenced = match collect_referenced_hashes(basemind_dir) {
         Ok(set) => Some(set),
         Err(e) => {
@@ -232,23 +309,36 @@ pub(crate) fn cache_stats_in(basemind_dir: &Path, blobs_dir: &Path) -> Result<Ca
         }
     }
 
-    let blobs_bytes = dir_size(blobs_dir)?;
+    let blobs_bytes = dir_size(&blobs.root)?;
+    let blobs_current_bytes = dir_size(blobs_dir)?;
+    let memory_vectors_bytes = match crate::store::read_workspace_marker(basemind_dir) {
+        Some(marker) => dir_size(&crate::store_layout::memory_vectors_dir(&marker.root))?,
+        None => 0,
+    };
     let views_bytes = dir_size(&basemind_dir.join(VIEWS_DIR))?;
     let lance_bytes = dir_size(&basemind_dir.join("lance"))?;
     let git_cache_bytes = dir_size(&basemind_dir.join(crate::git_cache::GIT_CACHE_DIR))?;
     let telemetry_bytes = file_size(&basemind_dir.join(TELEMETRY_FILENAME))?;
     let git_history_bytes = dir_size(&basemind_dir.join(crate::git_history::GIT_HISTORY_DIR))?;
 
-    let total_bytes = dir_size(basemind_dir)? + blobs_bytes;
-    let accounted = blobs_bytes + views_bytes + lance_bytes + git_cache_bytes + telemetry_bytes + git_history_bytes;
+    let total_bytes = dir_size(basemind_dir)? + blobs_bytes + memory_vectors_bytes;
+    let accounted = blobs_bytes
+        + views_bytes
+        + lance_bytes
+        + memory_vectors_bytes
+        + git_cache_bytes
+        + telemetry_bytes
+        + git_history_bytes;
     let other_bytes = total_bytes.saturating_sub(accounted);
 
     let rss = crate::sysres::sample();
 
     Ok(CacheStats {
         blobs_bytes,
+        blobs_current_bytes,
         views_bytes,
         lance_bytes,
+        memory_vectors_bytes,
         git_cache_bytes,
         telemetry_bytes,
         git_history_bytes,
@@ -260,11 +350,7 @@ pub(crate) fn cache_stats_in(basemind_dir: &Path, blobs_dir: &Path) -> Result<Ca
         per_view_file_count: per_view_file_count(basemind_dir)?,
         rss_bytes: rss.current_bytes,
         peak_rss_bytes: rss.peak_bytes,
-        // gc-state.json sits next to blobs/ in the cache root, so deriving it from the injected ~keep
-        // blob dir keeps the test seam hermetic (prod: cache/blobs → cache/gc-state.json). ~keep
-        last_gc: blobs_dir.parent().and_then(|cache| {
-            crate::store_gc_budget::read_gc_state_at(&cache.join(crate::store_gc_budget::GC_STATE_FILE))
-        }),
+        last_gc: crate::store_gc_budget::read_gc_state_at(&blobs.gc_state),
     })
 }
 

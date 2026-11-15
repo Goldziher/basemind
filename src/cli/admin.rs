@@ -179,9 +179,16 @@ pub fn run_cache(root: &Path, cmd: CacheCmd, json: bool, out: &mut impl Write) -
                 serde_json::json!({ "component": format!("views:{name}"), "cleared": true })
             } else {
                 let comp = CacheComponent::from_str(&component).map_err(|e| anyhow::anyhow!(e))?;
-                store_gc::clear_component(&basemind_dir, comp)
+                let report = store_gc::clear_component(&basemind_dir, comp)
                     .with_context(|| format!("clear cache component {component}"))?;
-                serde_json::json!({ "component": comp.as_str(), "cleared": true })
+                let mut value = serde_json::json!({ "component": comp.as_str(), "cleared": true });
+                if !report.spared_newer_blob_namespaces.is_empty() {
+                    value["spared_newer_blob_namespaces"] = serde_json::json!(report.spared_newer_blob_namespaces);
+                    value["note"] = serde_json::json!(
+                        "blob namespaces of a newer basemind were left in place; clear them with that version"
+                    );
+                }
+                value
             };
             if json {
                 render_json(&value, out)

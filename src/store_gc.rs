@@ -63,7 +63,7 @@ pub const BLOB_GC_GRACE_ENV: &str = "BASEMIND_BLOB_GC_GRACE_SECS";
 
 /// The grace the destructive sweeps apply: [`BLOB_GC_GRACE_ENV`] when set to a number, else
 /// [`BLOB_GC_GRACE`].
-fn blob_gc_grace() -> Duration {
+pub(crate) fn blob_gc_grace() -> Duration {
     grace_from(std::env::var(BLOB_GC_GRACE_ENV).ok().as_deref())
 }
 
@@ -89,7 +89,9 @@ pub use crate::store_gc_budget::{
 /// Lives in its own module to keep this file under the module size cap; re-exported here so
 /// callers keep importing the whole cache surface from `crate::store_gc`.
 pub(crate) use crate::store_cache_admin::dir_size;
-pub use crate::store_cache_admin::{CacheComponent, CacheStats, cache_stats, clear_component, clear_single_view};
+pub use crate::store_cache_admin::{
+    CacheComponent, CacheStats, ClearReport, cache_stats, clear_component, clear_single_view,
+};
 
 /// Errors raised by the cache GC + cleanup layer. Wraps [`StoreError`] for the shared
 /// blob/index machinery and adds a thin I/O variant for the directory walks this module
@@ -214,6 +216,7 @@ pub fn collect_referenced_hashes(basemind_dir: &Path) -> Result<LiveBlobs, GcErr
         for entry in index.files.values() {
             referenced.code.insert(entry.hash_hex.clone());
         }
+        referenced.code.extend(index.rebuild_pins);
         for entry in index.doc_files.values() {
             referenced.docs.insert(entry.hash_hex.clone());
         }
@@ -376,12 +379,24 @@ pub fn gc_global_blobs() -> Result<GcReport, GcError> {
         tracing::debug!("global blob sweep already running in another process; skipping");
         return Ok(GcReport::default());
     };
-    let mut report = gc_global_blobs_in(&cache.join(WORKSPACES_DIR), &global_blobs_dir(), blob_gc_grace())?;
-    let superseded = crate::store_gc_namespaces::sweep_superseded_namespaces(
+    gc_blob_store_in(
+        &cache.join(WORKSPACES_DIR),
         &crate::store_layout::global_blobs_root(),
         crate::extract::SCHEMA_VER,
         blob_gc_grace(),
-    )?;
+    )
+}
+
+/// Sweep a whole blob store: the unreferenced blobs of the `schema` namespace under `blobs_root`,
+/// then everything older builds left there (see [`crate::store_gc_namespaces`]).
+pub(crate) fn gc_blob_store_in(
+    workspaces_dir: &Path,
+    blobs_root: &Path,
+    schema: u16,
+    grace: Duration,
+) -> Result<GcReport, GcError> {
+    let mut report = gc_global_blobs_in(workspaces_dir, &blobs_root.join(format!("v{schema}")), grace)?;
+    let superseded = crate::store_gc_namespaces::sweep_superseded_namespaces(blobs_root, schema, grace)?;
     report.scanned += superseded.scanned;
     report.removed += superseded.removed;
     report.bytes_freed += superseded.bytes_freed;

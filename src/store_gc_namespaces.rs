@@ -12,8 +12,14 @@ use std::time::{Duration, SystemTime};
 
 use crate::store_gc::{GcError, GcReport, read_dir};
 
+/// Whether a file name in the blobs root is a blob an older build wrote there: a current blob
+/// suffix, or one of the dead pre-0.9 ones. Anything else in the root is not this sweep's to take.
+fn is_blob_file(name: &str) -> bool {
+    crate::store_gc::blob_stem(name).is_some() || name.ends_with(".l1.msgpack") || name.ends_with(".l2.msgpack")
+}
+
 /// The blob schema a namespace directory name (`v<N>`) stands for.
-fn namespace_schema(name: &str) -> Option<u16> {
+pub(crate) fn namespace_schema(name: &str) -> Option<u16> {
     name.strip_prefix('v')?.parse().ok()
 }
 
@@ -65,8 +71,8 @@ fn reap_namespace(dir: &Path, now: SystemTime, grace: Duration, report: &mut GcR
 }
 
 /// Reap every aged blob under `blobs_root` that the `current` schema's namespace does not own:
-/// un-namespaced files and the namespaces of older schemas. Newer namespaces, the current one and
-/// anything unrecognised are left alone.
+/// un-namespaced blob files and the namespaces of older schemas. Newer namespaces, the current one
+/// and anything unrecognised, a file in the root that is not a blob included, are left alone.
 pub(crate) fn sweep_superseded_namespaces(
     blobs_root: &Path,
     current: u16,
@@ -92,7 +98,7 @@ pub(crate) fn sweep_superseded_namespaces(
             if older {
                 reap_namespace(&path, now, grace, &mut report)?;
             }
-        } else {
+        } else if entry.file_name().to_str().is_some_and(is_blob_file) {
             reap_if_aged(&path, now, grace, &mut report)?;
         }
     }
@@ -122,11 +128,18 @@ mod tests {
         let current = plant(root.path(), "v7/cc.fm.msgpack");
         let newer = plant(root.path(), "v8/dd.fm.msgpack");
         let unknown = plant(root.path(), "scratch/ee.fm.msgpack");
+        let not_a_blob = plant(root.path(), "gc-notes.json");
+        let dead_format = plant(root.path(), "ff.l1.msgpack");
 
         let report = sweep_superseded_namespaces(root.path(), CURRENT, Duration::ZERO).unwrap();
 
-        assert_eq!(report.removed, 2);
+        assert_eq!(report.removed, 3);
         assert!(!legacy.exists(), "an un-namespaced blob is garbage");
+        assert!(!dead_format.exists(), "so is one of a dead blob format");
+        assert!(
+            not_a_blob.exists(),
+            "a file in the root that is not a blob is not ours to reap"
+        );
         assert!(
             !older.exists() && !root.path().join("v6").exists(),
             "an older namespace goes"
