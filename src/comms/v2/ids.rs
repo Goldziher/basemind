@@ -46,8 +46,8 @@ const BASE32_BITS: u32 = 5;
 /// Mask selecting one base32 digit.
 const BASE32_MASK: u32 = (1 << BASE32_BITS) - 1;
 
-/// Longest offending value echoed back in an [`InvalidId`], in bytes. The value is caller input
-/// and ends up in a tool reply, so it is bounded.
+/// Longest caller-supplied value echoed back in a refusal or notice, in bytes. The value ends up in
+/// a tool reply, so it is bounded.
 const MAX_ECHOED_VALUE_LEN: usize = 160;
 
 /// Which identifier a value failed to be.
@@ -111,18 +111,23 @@ pub struct InvalidId {
 }
 
 impl InvalidId {
-    /// Record `value` as refused. The echo is cut at a character boundary so an oversized input
-    /// cannot inflate the reply that reports it.
+    /// Record `value` as refused, echoing at most [`bounded_echo`] of it.
     pub fn new(kind: IdKind, value: &str) -> Self {
-        let mut end = value.len().min(MAX_ECHOED_VALUE_LEN);
-        while !value.is_char_boundary(end) {
-            end -= 1;
-        }
         Self {
             kind,
-            value: value[..end].to_string(),
+            value: bounded_echo(value),
         }
     }
+}
+
+/// The part of a caller-supplied `value` a refusal or notice may repeat: cut at a character
+/// boundary so an oversized input cannot inflate the reply that reports it.
+pub fn bounded_echo(value: &str) -> String {
+    let mut end = value.len().min(MAX_ECHOED_VALUE_LEN);
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    value[..end].to_string()
 }
 
 macro_rules! string_schema {
@@ -475,3 +480,7 @@ impl<'de> Deserialize<'de> for MessageId {
 }
 
 string_schema!(MessageId, "^t-[a-z2-7]{6}\\.[1-9][0-9]{0,19}$");
+
+#[cfg(test)]
+#[path = "ids_tests.rs"]
+mod tests;

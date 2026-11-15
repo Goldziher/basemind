@@ -1,19 +1,27 @@
 //! The transport-neutral contract of agent comms v2 (ADR-0021): what the daemon, the three MCP
 //! tools, the CLI and the hooks all exchange.
 //!
-//! One set of types, so a rule is written once. Constraints the tool schema can only describe
-//! ("one of `thread`, `reply_to`, `subject`", "at most one of `join`, `leave`, `invite`,
-//! `archive`") are enums here, and [`PostTarget::from_fields`] / [`ThreadAction::from_fields`]
-//! are the single place a flat argument set is turned into one. Every type serializes as a named
-//! map with defaulted optional fields, the shape `protocol.rs` uses, so it goes on the wire as is.
+//! One set of types, so a rule is written once. A request is two parts. The body ([`PostBody`],
+//! [`InboxBody`], [`ThreadQuery`], [`ThreadUpdate`]) is what a client sends. The [`Caller`] is
+//! who sends it, and the daemon builds it from the session: a client cannot name the agent it
+//! acts as, so [`Caller`] is deliberately not deserializable.
+//!
+//! Constraints a tool schema can only describe ("one of `thread`, `reply_to`, `subject`", "at
+//! most one of `join`, `leave`, `invite`, `archive`") are enums here, and the `from_fields`
+//! constructors in [`fields`](super::fields) are the single place a flat argument set is turned
+//! into one. A field that does not apply is refused there, never ignored.
 
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
+pub use super::cursor::{Cursor, PagedRead, ThreadListing};
+pub use super::error::CommsError;
+pub use super::fields::{InboxCall, InboxFields, ThreadsCall, ThreadsFields};
 pub use super::ids::{
     Actor, ID_SEPARATOR, IdKind, InvalidId, MAX_REPLAY_KEY_LEN, MAX_REPO_KEY_LEN, MAX_SUB_NAME_LEN, MessageId,
     PATH_REPO_PREFIX, Principal, ReplayKey, RepoKey, SubName, THREAD_ID_DIGITS, THREAD_ID_PREFIX, ThreadId,
+    bounded_echo,
 };
 use crate::path::RelPath;
 
@@ -21,7 +29,8 @@ use crate::path::RelPath;
 /// body is read by message id.
 pub const MAX_INLINE_BODY_BYTES: usize = 4 * 1024;
 
-/// Inline body bytes one inbox reply may carry. Messages past it are left unread for the next call.
+/// Bytes one inbox reply may carry, counted per message by [`message_cost`]. The first message is
+/// always returned; delivery stops at the first one after it that does not fit.
 pub const RESPONSE_BUDGET_BYTES: usize = 16 * 1024;
 
 /// Longest wait an inbox read may ask for, in seconds: under the hosts' tool-call timeout.
@@ -30,17 +39,27 @@ pub const MAX_WAIT_SECS: u32 = 40;
 /// Page size when a request names none.
 pub const DEFAULT_LIMIT: u32 = 20;
 
-/// Largest page size honoured; a larger `limit` is clamped to it. Not set by ADR-0021.
+/// Largest page size honoured; a larger `limit` is clamped to it, and 0 means 1.
 pub const MAX_LIMIT: u32 = 100;
 
 /// How long a message is kept.
 pub const MESSAGE_TTL: Duration = Duration::from_secs(30 * 24 * 60 * 60);
+
+/// How long an agent stays "seen" without making a call. After it, a post naming the agent lists
+/// it under `pending` again.
+pub const SEEN_TTL: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 
 /// Messages kept per thread; the oldest are dropped past it.
 pub const MAX_MESSAGES_PER_THREAD: u64 = 1_000;
 
 /// Active (not archived) threads one repository may hold.
 pub const MAX_ACTIVE_THREADS_PER_REPO: usize = 256;
+
+/// Most agents one `to` or one `invite` may name.
+pub const MAX_RECIPIENTS: usize = 32;
+
+/// Most path prefixes a thread may be about.
+pub const MAX_THREAD_PATHS: usize = 16;
 
 /// Shortest discovery query, in characters, so a query cannot enumerate every subject.
 pub const MIN_QUERY_CHARS: usize = 3;
@@ -51,159 +70,45 @@ pub const REPLAY_TTL: Duration = Duration::from_secs(60 * 60);
 /// Version of the comms store layout. Not tied to the release, so an upgrade keeps history.
 pub const COMMS_STORE_VER: u32 = 1000;
 
-/// Largest body a post may carry, in bytes. Not set by ADR-0021, which bounds only what is
-/// returned inline; a stored body still needs a ceiling.
+/// Largest body a post may carry, in bytes. What is returned inline is bounded separately by
+/// [`MAX_INLINE_BODY_BYTES`].
 pub const MAX_POST_BODY_BYTES: usize = 64 * 1024;
 
-/// Longest thread subject, in bytes. Not set by ADR-0021; a subject is a one-line topic.
+/// Longest thread subject, in bytes: a subject is a one-line topic.
 pub const MAX_SUBJECT_BYTES: usize = 200;
 
-/// A refusal, worded as what the caller should do next.
+/// Who makes a request, as the daemon established it.
 ///
-/// Serializable, so the daemon's refusal reaches a tool reply unchanged.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
-#[serde(tag = "code", rename_all = "snake_case")]
-pub enum CommsError {
-    /// An identifier failed validation.
-    #[error(transparent)]
-    InvalidId(#[from] InvalidId),
-    /// No thread has this id.
-    #[error("thread {thread} not found: list your threads with agent_threads, or search with `query` or `path`")]
-    ThreadNotFound {
-        /// The id that was looked up.
-        thread: ThreadId,
-    },
-    /// No message has this id: never posted, or expired.
-    #[error("message {id} not found: it was never posted or has expired; read the thread with agent_inbox `thread`")]
-    MessageNotFound {
-        /// The id that was looked up.
-        id: MessageId,
-    },
-    /// The caller reads from, posts to, leaves or invites into a thread it is not a member of.
-    #[error(
-        "not a member of thread {thread}: join it with agent_threads {{thread, join: true}}, or ask a member to invite you"
-    )]
-    NotMember {
-        /// The thread the caller is not in.
-        thread: ThreadId,
-    },
-    /// The thread is invitation-only or belongs to another repository, so it cannot be joined or
-    /// looked up from here.
-    #[error(
-        "thread {thread} is closed to this repository (invitation-only, or owned by another repository): ask a member to invite you"
-    )]
-    ThreadClosed {
-        /// The thread that is not open to the caller's repository.
-        thread: ThreadId,
-    },
-    /// Only the creator may archive a thread.
-    #[error(
-        "only the creator of thread {thread} may archive it: leave it with agent_threads {{thread, leave: true}} instead"
-    )]
-    NotCreator {
-        /// The thread the caller did not create.
-        thread: ThreadId,
-    },
-    /// The thread is archived: readable, but closed to posts, joins and invitations.
-    #[error("thread {thread} is archived: read it with agent_inbox, or start a new thread by posting with `subject`")]
-    ThreadArchived {
-        /// The archived thread.
-        thread: ThreadId,
-    },
-    /// More than one of `join`, `leave`, `invite`, `archive` in one call.
-    #[error("pass at most one of join, leave, invite, archive; this call set [{}]: make one call per change", .fields.join(", "))]
-    MultipleUpdates {
-        /// The update fields the call set.
-        fields: Vec<String>,
-    },
-    /// A post named none, or more than one, of `thread`, `reply_to`, `subject`.
-    #[error("pass exactly one of thread, reply_to, subject; this call set [{}]: `subject` starts a thread, the others post into one", .given.join(", "))]
-    PostTarget {
-        /// The target fields the call set.
-        given: Vec<String>,
-    },
-    /// `to` or `paths` on a post that does not create a thread.
-    #[error(
-        "`{field}` is fixed when a thread is created and needs `subject`: to add members to an existing thread use agent_threads {{thread, invite}}"
-    )]
-    CreationOnly {
-        /// The creation-only field the call set.
-        field: String,
-    },
-    /// A discovery query shorter than [`MIN_QUERY_CHARS`].
-    #[error("`query` needs at least {min} characters: lengthen it, or search by `path`")]
-    QueryTooShort {
-        /// The minimum length, in characters.
-        min: usize,
-    },
-    /// The repository already holds [`MAX_ACTIVE_THREADS_PER_REPO`] active threads.
-    #[error(
-        "repository {repo} already has {cap} active threads: post into an existing one, or archive one you created"
-    )]
-    ThreadCapReached {
-        /// The repository at its cap.
-        repo: RepoKey,
-        /// The cap.
-        cap: usize,
-    },
-    /// The store was written by a newer basemind; this binary must not write to it.
-    #[error(
-        "the comms store is version {store}, newer than this basemind understands ({binary}): upgrade basemind, and restart the daemon so every session runs the same version"
-    )]
-    StoreNewer {
-        /// The version found on disk.
-        store: u32,
-        /// The newest version this binary writes.
-        binary: u32,
-    },
-    /// `wait_secs` above [`MAX_WAIT_SECS`].
-    #[error("`wait_secs` is {given}, above the maximum of {max}: wait at most {max} seconds and call again")]
-    WaitOutOfRange {
-        /// The requested wait.
-        given: u32,
-        /// The maximum wait.
-        max: u32,
-    },
-    /// A cursor this store did not issue, or issued for a different request.
-    #[error("`cursor` {cursor:?} is not a `next_cursor` of this request: repeat the call without `cursor`")]
-    InvalidCursor {
-        /// The refused cursor.
-        cursor: String,
-    },
-    /// A post without a body.
-    #[error("`body` is empty: write the message to post")]
-    EmptyBody,
-    /// A body over [`MAX_POST_BODY_BYTES`].
-    #[error("`body` is {len} bytes, above the maximum of {max}: shorten it, or split it across posts")]
-    BodyTooLarge {
-        /// The body's length in bytes.
-        len: usize,
-        /// The maximum length in bytes.
-        max: usize,
-    },
-    /// A subject that is empty, multi-line or over [`MAX_SUBJECT_BYTES`].
-    #[error("`subject` must be one non-empty line of at most {max} bytes: shorten it and put the detail in `body`")]
-    InvalidSubject {
-        /// The maximum length in bytes.
-        max: usize,
-    },
-    /// A thread path that is not a repository-relative prefix.
-    #[error(
-        "path {path:?} is not a repository-relative path prefix: pass it relative to the repository root, without `..`"
-    )]
-    InvalidPath {
-        /// The refused path.
-        path: String,
-    },
-    /// An invitation naming nobody.
-    #[error("`invite` is empty: name at least one agent id")]
-    EmptyInvite,
-    /// The store or the daemon failed; nothing about the request was wrong.
-    #[error("the comms store failed: {message}; retry, and run `basemind agents status` if it persists")]
-    Backend {
-        /// What failed.
-        message: String,
-    },
+/// The principal comes from the session's `Hello`, the sub-identity from the call's `sub`, the
+/// repository from the session's root, and the replay key from the relay. None of it is taken
+/// from a request body, which is why this type cannot be deserialized.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Caller {
+    /// The agent the request acts as.
+    pub actor: Actor,
+    /// The repository the session works in: the owner of a thread it creates, and the only
+    /// repository whose open threads it can discover or join.
+    pub repo: RepoKey,
+    /// The relay's key for this request, when it came through a relay. A replay with the same key
+    /// returns the first result.
+    pub replay_key: Option<ReplayKey>,
+}
+
+impl Caller {
+    /// A caller without a replay key: a CLI or hook call, or a test.
+    pub fn new(actor: Actor, repo: RepoKey) -> Self {
+        Self {
+            actor,
+            repo,
+            replay_key: None,
+        }
+    }
+
+    /// The same caller making the request the relay stamped with `key`.
+    pub fn with_replay_key(mut self, key: ReplayKey) -> Self {
+        self.replay_key = Some(key);
+        self
+    }
 }
 
 /// Where a post goes. Exactly one, by construction.
@@ -218,67 +123,27 @@ pub enum PostTarget {
     NewThread {
         /// The thread's subject.
         subject: String,
-        /// Members beside the creator. Any makes the thread invitation-only; none leaves it open
-        /// to its repository.
+        /// Members beside the creator, at most [`MAX_RECIPIENTS`]. Any makes the thread
+        /// invitation-only; none leaves it open to its repository.
         #[serde(default)]
         to: Vec<Actor>,
-        /// Repository-relative path prefixes the thread is about, fixed here.
+        /// Repository-relative path prefixes the thread is about, at most [`MAX_THREAD_PATHS`],
+        /// fixed here.
         #[serde(default)]
         paths: Vec<RelPath>,
     },
 }
 
-impl PostTarget {
-    /// Build the target from a tool's flat fields, refusing zero or several targets and refusing
-    /// `to` / `paths` without `subject` rather than dropping them.
-    pub fn from_fields(
-        thread: Option<ThreadId>,
-        reply_to: Option<MessageId>,
-        subject: Option<String>,
-        to: Vec<Actor>,
-        paths: Vec<RelPath>,
-    ) -> Result<Self, CommsError> {
-        let given: Vec<String> = [
-            ("thread", thread.is_some()),
-            ("reply_to", reply_to.is_some()),
-            ("subject", subject.is_some()),
-        ]
-        .into_iter()
-        .filter(|(_, set)| *set)
-        .map(|(field, _)| field.to_string())
-        .collect();
-        match (thread, reply_to, subject) {
-            (None, None, Some(subject)) => Ok(Self::NewThread { subject, to, paths }),
-            (Some(_), None, None) | (None, Some(_), None) if !to.is_empty() => Err(CommsError::CreationOnly {
-                field: "to".to_string(),
-            }),
-            (Some(_), None, None) | (None, Some(_), None) if !paths.is_empty() => Err(CommsError::CreationOnly {
-                field: "paths".to_string(),
-            }),
-            (Some(thread), None, None) => Ok(Self::Thread(thread)),
-            (None, Some(reply_to), None) => Ok(Self::ReplyTo(reply_to)),
-            _ => Err(CommsError::PostTarget { given }),
-        }
-    }
-}
-
 /// `agent_post`: post a message, creating the thread when the target is a new one.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PostRequest {
-    /// Who posts.
-    pub actor: Actor,
-    /// The caller's repository: the owner of a thread this post creates.
-    pub repo: RepoKey,
+pub struct PostBody {
     /// Where the post goes.
     pub target: PostTarget,
     /// The message text.
     pub body: String,
-    /// The relay's key for this request; a replay returns the first reply and posts nothing.
-    #[serde(default)]
-    pub replay_key: Option<ReplayKey>,
 }
 
-/// What an inbox read does to the caller's positions.
+/// What an unread inbox read does to the caller's positions.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Mark {
@@ -296,86 +161,140 @@ pub enum Mark {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum InboxSelect {
-    /// Every thread the caller is a member of.
+    /// Every thread the caller is a member of, in every repository.
     #[default]
     All,
     /// One thread.
     Thread(ThreadId),
-    /// One message, with its whole body. A point lookup: it moves no read position and ignores
-    /// `unread`, `limit`, `cursor` and `wait_secs`.
+    /// One message, with its whole body. A point lookup that writes nothing, so it is allowed on a
+    /// store newer than the binary.
     Message(MessageId),
 }
 
-/// `agent_inbox`: read messages, bodies inline.
+/// `agent_inbox`: read messages, bodies inline. Never blocks: the wait of `wait_secs` belongs to
+/// the daemon, which watches [`AgentOps::arrivals`] and reads again.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct InboxRequest {
-    /// Who reads.
-    pub actor: Actor,
-    /// The caller's repository. Not a filter: membership alone decides what is read.
-    pub repo: RepoKey,
+pub struct InboxBody {
     /// Which messages to read.
     #[serde(default)]
     pub select: InboxSelect,
-    /// Only unread messages from other agents (the default); `false` reads history, oldest first,
-    /// the caller's own posts included.
+    /// Only unread messages from other agents (the default). `false` reads history, oldest first,
+    /// the caller's own posts included, and moves no position.
     #[serde(default = "default_true")]
     pub unread: bool,
-    /// What the read does to the caller's positions.
+    /// What an unread read does to the caller's positions.
     #[serde(default)]
     pub mark: Mark,
-    /// With nothing unread, block up to this many seconds for a message. At most [`MAX_WAIT_SECS`].
-    #[serde(default)]
-    pub wait_secs: u32,
     /// Most messages to return; [`DEFAULT_LIMIT`] when absent, clamped to [`MAX_LIMIT`].
     #[serde(default)]
     pub limit: Option<u32>,
-    /// `next_cursor` of the previous page.
+    /// `next_cursor` of the previous page. Only a read that marks nothing takes one.
     #[serde(default)]
-    pub cursor: Option<String>,
-    /// The relay's key for this request; a replay returns the range first delivered instead of an
-    /// empty page.
-    #[serde(default)]
-    pub replay_key: Option<ReplayKey>,
+    pub cursor: Option<Cursor>,
 }
 
 fn default_true() -> bool {
     true
 }
 
-impl InboxRequest {
-    /// The tool's defaults: every thread, unread only, marking as read, no wait.
-    pub fn new(actor: Actor, repo: RepoKey) -> Self {
+impl Default for InboxBody {
+    /// The tool's defaults: every thread, unread only, marking as read.
+    fn default() -> Self {
         Self {
-            actor,
-            repo,
             select: InboxSelect::All,
             unread: true,
             mark: Mark::Read,
-            wait_secs: 0,
             limit: None,
             cursor: None,
-            replay_key: None,
         }
     }
 }
 
-/// `agent_threads` without an update: list or discover threads.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ThreadQuery {
-    /// Who asks.
-    pub actor: Actor,
-    /// The caller's repository: the only one whose open threads can be discovered.
-    pub repo: RepoKey,
+/// What an [`InboxBody`] asks for, once its fields are checked against each other.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReadKind {
+    /// One message by id. Writes nothing.
+    ById,
+    /// Unread messages, advancing `read_seq` (and `notified_seq` with it) to the last one
+    /// returned in each thread. Takes no cursor.
+    Marking,
+    /// Unread messages not announced yet, advancing only `notified_seq`. Takes no cursor.
+    Announcing,
+    /// Unread messages, moving nothing. Pages with a cursor.
+    Peek,
+    /// Every message, moving nothing. Pages with a cursor.
+    History,
+}
+
+impl ReadKind {
+    /// Whether the read moves a position, and so needs a writable store and is the kind a replay
+    /// key protects.
+    pub fn writes(self) -> bool {
+        matches!(self, Self::Marking | Self::Announcing)
+    }
+
+    /// The cursor family of a read that pages with one.
+    pub fn paged(self) -> Option<PagedRead> {
+        match self {
+            Self::Peek => Some(PagedRead::Peek),
+            Self::History => Some(PagedRead::History),
+            Self::ById | Self::Marking | Self::Announcing => None,
+        }
+    }
+}
+
+impl InboxBody {
+    /// Classify the read, refusing every field combination that would leave a field ignored: a
+    /// cursor on a read that marks, and `unread`, `peek`, `notify`, `limit` or `cursor` beside `id`.
+    ///
+    /// Every [`AgentOps::inbox`] calls this first, so a body that did not come through
+    /// [`InboxCall::from_fields`] is held to the same rules.
+    pub fn kind(&self) -> Result<ReadKind, CommsError> {
+        if matches!(self.select, InboxSelect::Message(_)) {
+            let extra = [
+                ("cursor", self.cursor.is_some()),
+                ("limit", self.limit.is_some()),
+                ("unread", !self.unread),
+                ("peek", self.mark == Mark::Peek),
+                ("notify", self.mark == Mark::Notify),
+            ];
+            return match extra.into_iter().find(|(_, set)| *set) {
+                Some((field, _)) => Err(CommsError::not_applicable(field, "id")),
+                None => Ok(ReadKind::ById),
+            };
+        }
+        let kind = match (self.unread, self.mark) {
+            (true, Mark::Read) => ReadKind::Marking,
+            (true, Mark::Notify) => ReadKind::Announcing,
+            (true, Mark::Peek) => ReadKind::Peek,
+            (false, Mark::Read | Mark::Peek) => ReadKind::History,
+            (false, Mark::Notify) => return Err(CommsError::not_applicable("unread", "notify")),
+        };
+        if kind.writes() && self.cursor.is_some() {
+            return Err(CommsError::CursorNotApplicable);
+        }
+        Ok(kind)
+    }
+
+    /// The thread the read is limited to, when it is.
+    pub fn thread(&self) -> Option<&ThreadId> {
+        match &self.select {
+            InboxSelect::Thread(thread) => Some(thread),
+            InboxSelect::All | InboxSelect::Message(_) => None,
+        }
+    }
+}
+
+/// Which threads a listing returns.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ThreadFilter {
     /// Case-insensitive substring of the subject, at least [`MIN_QUERY_CHARS`] characters.
     #[serde(default)]
     pub query: Option<String>,
     /// A repository-relative path; matches a thread whose `paths` contain a prefix of it or
-    /// something under it.
+    /// something under it. With `query`, both must match.
     #[serde(default)]
     pub path: Option<RelPath>,
-    /// Describe this one thread.
-    #[serde(default)]
-    pub thread: Option<ThreadId>,
     /// Include archived threads.
     #[serde(default)]
     pub archived: bool,
@@ -384,22 +303,33 @@ pub struct ThreadQuery {
     pub limit: Option<u32>,
     /// `next_cursor` of the previous page.
     #[serde(default)]
-    pub cursor: Option<String>,
+    pub cursor: Option<Cursor>,
 }
 
-impl ThreadQuery {
-    /// The tool with no arguments: the caller's own active threads.
-    pub fn new(actor: Actor, repo: RepoKey) -> Self {
-        Self {
-            actor,
-            repo,
-            query: None,
-            path: None,
-            thread: None,
-            archived: false,
-            limit: None,
-            cursor: None,
-        }
+impl ThreadFilter {
+    /// Whether the filter narrows by subject or path. Only then does a listing reach beyond the
+    /// caller's own threads, to the open threads of its repository.
+    pub fn discovers(&self) -> bool {
+        self.query.is_some() || self.path.is_some()
+    }
+}
+
+/// `agent_threads` without an update.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ThreadQuery {
+    /// List threads, newest activity first. With an empty filter: the caller's own active
+    /// threads, from every repository.
+    List(ThreadFilter),
+    /// Describe one thread: allowed to its members, and to anyone in its repository while it is
+    /// open.
+    Describe(ThreadId),
+}
+
+impl Default for ThreadQuery {
+    /// The tool with no arguments.
+    fn default() -> Self {
+        Self::List(ThreadFilter::default())
     }
 }
 
@@ -409,54 +339,18 @@ impl ThreadQuery {
 pub enum ThreadAction {
     /// Become a member, reading from the head.
     Join,
-    /// Stop being a member.
+    /// Stop being a member. The last member to leave archives the thread.
     Leave,
-    /// Make these agents members, each reading from the head as of now.
+    /// Make these agents members, each reading from the head as of now. At most
+    /// [`MAX_RECIPIENTS`], from any repository.
     Invite(Vec<Actor>),
-    /// Close the thread to posts, joins and invitations. Creator only.
+    /// Close the thread to posts, joins and invitations. Creator only, member or not.
     Archive,
-}
-
-impl ThreadAction {
-    /// Build the action from a tool's flat fields: `None` when the call is a query, a refusal
-    /// naming the fields when it sets more than one.
-    pub fn from_fields(
-        join: bool,
-        leave: bool,
-        invite: Option<Vec<Actor>>,
-        archive: bool,
-    ) -> Result<Option<Self>, CommsError> {
-        let fields: Vec<String> = [
-            ("join", join),
-            ("leave", leave),
-            ("invite", invite.is_some()),
-            ("archive", archive),
-        ]
-        .into_iter()
-        .filter(|(_, set)| *set)
-        .map(|(field, _)| field.to_string())
-        .collect();
-        if fields.len() > 1 {
-            return Err(CommsError::MultipleUpdates { fields });
-        }
-        Ok(match invite {
-            Some(invited) if invited.is_empty() => return Err(CommsError::EmptyInvite),
-            Some(invited) => Some(Self::Invite(invited)),
-            None if join => Some(Self::Join),
-            None if leave => Some(Self::Leave),
-            None if archive => Some(Self::Archive),
-            None => None,
-        })
-    }
 }
 
 /// `agent_threads` with an update.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ThreadUpdate {
-    /// Who acts.
-    pub actor: Actor,
-    /// The caller's repository: a thread can be joined only from the repository that owns it.
-    pub repo: RepoKey,
     /// The thread to change.
     pub thread: ThreadId,
     /// The change.
@@ -473,12 +367,13 @@ pub struct PostReply {
     /// Whether this post created the thread.
     #[serde(default)]
     pub created: bool,
-    /// Recipients the store has never seen: not yet started, or mistyped.
+    /// Recipients the store has not seen make a call: not yet started, long idle, or mistyped.
     #[serde(default)]
     pub pending: Vec<Actor>,
-    /// Something the agent should know that is not about this request, such as a shared identity.
+    /// Things the agent should know that are not about this request. Appended by the daemon and
+    /// the tool layer; an [`AgentOps`] implementation leaves it empty.
     #[serde(default)]
-    pub notice: Option<String>,
+    pub notices: Vec<String>,
 }
 
 /// One message in an inbox reply.
@@ -502,11 +397,12 @@ pub struct InboxMessage {
     pub truncated: bool,
 }
 
-/// How the wait of an inbox read ended.
+/// How the wait of an inbox read ended. Set by the daemon, which owns the wait.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WaitOutcome {
-    /// The read did not wait: it asked for none, or had something to return at once.
+    /// The read did not wait: it asked for none, or had something to return at once. What an
+    /// [`AgentOps`] implementation always reports.
     #[default]
     NotWaited,
     /// A message arrived during the wait.
@@ -518,18 +414,23 @@ pub enum WaitOutcome {
 /// Reply to an inbox read.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InboxReply {
-    /// The messages, oldest first.
+    /// The messages, in the store-wide order they were posted.
     #[serde(default)]
     pub messages: Vec<InboxMessage>,
     /// The last message now read in each thread this read advanced. Empty unless marking as read.
     #[serde(default)]
     pub read_to: Vec<MessageId>,
-    /// Set when the limit or the response budget left messages out; pass it back to continue.
+    /// Whether the limit or the response budget left messages out. After a read that marks, call
+    /// again; otherwise continue with `next_cursor`.
     #[serde(default)]
-    pub next_cursor: Option<String>,
-    /// Something the agent should know that is not about this request, such as a shared identity.
+    pub more: bool,
+    /// Set with `more` on a read that marks nothing; pass it back as `cursor` to continue.
     #[serde(default)]
-    pub notice: Option<String>,
+    pub next_cursor: Option<Cursor>,
+    /// Things the agent should know that are not about this request. Appended by the daemon and
+    /// the tool layer; an [`AgentOps`] implementation leaves it empty.
+    #[serde(default)]
+    pub notices: Vec<String>,
     /// How the wait ended.
     #[serde(default)]
     pub wait: WaitOutcome,
@@ -542,7 +443,7 @@ pub struct ThreadSummary {
     pub id: ThreadId,
     /// Its subject.
     pub subject: String,
-    /// The repository it belongs to.
+    /// The repository it belongs to. Not always the caller's: an invitation crosses repositories.
     pub repo: RepoKey,
     /// The path prefixes it is about.
     #[serde(default)]
@@ -556,7 +457,7 @@ pub struct ThreadSummary {
     pub creator: Actor,
     /// Whether the caller is a member.
     pub member: bool,
-    /// Messages from other agents the caller has not read. Zero for a non-member.
+    /// Stored messages from other agents the caller has not read. Zero for a non-member.
     #[serde(default)]
     pub unread: u64,
     /// Sequence number of the newest message.
@@ -571,38 +472,51 @@ pub struct ThreadSummary {
 /// Reply to a thread query or update.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ThreadsReply {
-    /// The threads, in ascending id order; after an update, the one thread changed.
+    /// The threads, newest activity first; after an update, the one thread changed.
     #[serde(default)]
     pub threads: Vec<ThreadSummary>,
-    /// Invited agents the store has never seen: not yet started, or mistyped.
+    /// Invited agents the store has not seen make a call: not yet started, long idle, or mistyped.
     #[serde(default)]
     pub pending: Vec<Actor>,
-    /// Set when the limit left threads out; pass it back to continue.
+    /// Set when the limit left threads out; pass it back as `cursor` to continue.
     #[serde(default)]
-    pub next_cursor: Option<String>,
-    /// Something the agent should know that is not about this request, such as a shared identity.
+    pub next_cursor: Option<Cursor>,
+    /// Things the agent should know that are not about this request. Appended by the daemon and
+    /// the tool layer; an [`AgentOps`] implementation leaves it empty.
     #[serde(default)]
-    pub notice: Option<String>,
+    pub notices: Vec<String>,
 }
 
 /// The agent-coordination operations, independent of transport.
 ///
-/// Synchronous on purpose: the one blocking operation, the inbox wait, is a field of its request
-/// and runs inside the implementation, so a caller needs no runtime to use it.
-pub trait AgentOps {
+/// Synchronous and never blocking, so a caller needs no runtime: the one wait in the design, the
+/// inbox's `wait_secs`, is the daemon's, built on [`AgentOps::arrivals`]. `Send + Sync`, because
+/// the daemon serves every session from one instance.
+///
+/// Every operation takes the [`Caller`] the daemon derived. An agent counts as seen once any of
+/// these returns `Ok` for it; nothing is recorded, seen included, on a store newer than the
+/// binary. No operation fills `notices`.
+pub trait AgentOps: Send + Sync {
     /// Post a message. Requires membership, except that a [`PostTarget::NewThread`] creates the
     /// thread with the caller and every `to` recipient as members at read position 0.
-    fn post(&self, request: PostRequest) -> Result<PostReply, CommsError>;
+    fn post(&self, caller: &Caller, body: PostBody) -> Result<PostReply, CommsError>;
 
-    /// Read messages from the caller's threads. Marks what it returns as read unless the request's
-    /// [`Mark`] says otherwise.
-    fn inbox(&self, request: InboxRequest) -> Result<InboxReply, CommsError>;
+    /// Read messages from the caller's threads without waiting. What the read moves is decided by
+    /// [`InboxBody::kind`].
+    fn inbox(&self, caller: &Caller, body: InboxBody) -> Result<InboxReply, CommsError>;
 
-    /// List the caller's threads, or discover open threads of its repository by query or path.
-    fn threads_query(&self, request: ThreadQuery) -> Result<ThreadsReply, CommsError>;
+    /// List the caller's threads, discover open threads of its repository by query or path, or
+    /// describe one thread.
+    fn threads_query(&self, caller: &Caller, query: ThreadQuery) -> Result<ThreadsReply, CommsError>;
 
     /// Join, leave, invite into or archive one thread.
-    fn threads_update(&self, request: ThreadUpdate) -> Result<ThreadsReply, CommsError>;
+    fn threads_update(&self, caller: &Caller, update: ThreadUpdate) -> Result<ThreadsReply, CommsError>;
+
+    /// A counter that increases every time a post is stored, in any thread, and at no other time.
+    /// Cheap, and all a waiter needs: when it has changed, an inbox read may return something
+    /// new. A store already keeps such a counter, because an inbox across threads is sorted by
+    /// the store-wide order of posts.
+    fn arrivals(&self) -> u64;
 }
 
 /// The page size a request's `limit` means.
@@ -635,6 +549,30 @@ pub fn inline_body(body: &str) -> (&str, bool) {
     (&body[..end], true)
 }
 
+/// What `message` takes from [`RESPONSE_BUDGET_BYTES`]: the bytes of its body as returned, its
+/// subject, its sender and its id. The subject counts every time, because every message repeats
+/// it.
+pub fn message_cost(message: &InboxMessage) -> usize {
+    message.body.len() + message.subject.len() + message.from.as_str().len() + message.id.to_string().len()
+}
+
+/// How many of `costs`, in order, one reply carries: the first always, then each next one while
+/// the running total stays within [`RESPONSE_BUDGET_BYTES`] and the count within `limit`. It
+/// stops at the first message that does not fit and never skips ahead to a smaller one, so what
+/// is delivered is a prefix.
+pub fn deliverable(costs: impl IntoIterator<Item = usize>, limit: usize) -> usize {
+    let mut spent = 0usize;
+    let mut count = 0usize;
+    for cost in costs {
+        if count == limit.max(1) || (count > 0 && spent.saturating_add(cost) > RESPONSE_BUDGET_BYTES) {
+            break;
+        }
+        spent = spent.saturating_add(cost);
+        count += 1;
+    }
+    count
+}
+
 /// Check a post body: not blank, at most [`MAX_POST_BODY_BYTES`].
 pub fn check_body(body: &str) -> Result<(), CommsError> {
     if body.trim().is_empty() {
@@ -647,6 +585,47 @@ pub fn check_body(body: &str) -> Result<(), CommsError> {
         });
     }
     Ok(())
+}
+
+/// Refuse a `to` or an `invite` (named by `field`) over [`MAX_RECIPIENTS`].
+pub fn check_recipient_count(field: &str, recipients: &[Actor]) -> Result<(), CommsError> {
+    if recipients.len() > MAX_RECIPIENTS {
+        return Err(CommsError::TooManyRecipients {
+            field: field.to_string(),
+            given: recipients.len(),
+            max: MAX_RECIPIENTS,
+        });
+    }
+    Ok(())
+}
+
+/// The members a new thread gets beside its `creator`: `to` without duplicates and without the
+/// creator, in id order. Refused over [`MAX_RECIPIENTS`], and when `to` names only the creator,
+/// which would make an invitation-only thread nobody else can reach.
+pub fn new_thread_recipients(creator: &Actor, to: &[Actor]) -> Result<Vec<Actor>, CommsError> {
+    check_recipient_count("to", to)?;
+    let mut others: Vec<Actor> = to.iter().filter(|recipient| *recipient != creator).cloned().collect();
+    others.sort();
+    others.dedup();
+    if others.is_empty() && !to.is_empty() {
+        return Err(CommsError::OnlySelfRecipient);
+    }
+    Ok(others)
+}
+
+/// The paths a new thread stores: each one [`normalize_thread_path`] output, sorted, without
+/// duplicates. Refused over [`MAX_THREAD_PATHS`].
+pub fn normalize_thread_paths(paths: &[RelPath]) -> Result<Vec<RelPath>, CommsError> {
+    if paths.len() > MAX_THREAD_PATHS {
+        return Err(CommsError::TooManyPaths {
+            given: paths.len(),
+            max: MAX_THREAD_PATHS,
+        });
+    }
+    let mut paths = paths.iter().map(normalize_thread_path).collect::<Result<Vec<_>, _>>()?;
+    paths.sort();
+    paths.dedup();
+    Ok(paths)
 }
 
 /// The subject a new thread stores: trimmed, one non-empty line of at most [`MAX_SUBJECT_BYTES`].
@@ -677,7 +656,7 @@ pub fn subject_matches(subject: &str, normalized_query: &str) -> bool {
 /// empty, absolute, or has an empty, `.` or `..` component, so a stored prefix always names a
 /// place inside the repository.
 pub fn normalize_thread_path(path: &RelPath) -> Result<RelPath, CommsError> {
-    let invalid = || CommsError::InvalidPath { path: path.to_string() };
+    let invalid = || CommsError::invalid_path(path);
     let mut bytes = path.as_bytes();
     while let [rest @ .., b'/'] = bytes {
         bytes = rest;
@@ -711,11 +690,23 @@ pub fn path_selects(path: &RelPath, thread_paths: &[RelPath]) -> bool {
         .any(|thread_path| is_path_prefix(path, thread_path) || is_path_prefix(thread_path, path))
 }
 
-/// The notice every agent-tool reply carries while more than one live session shares `principal`.
+/// The notice the daemon appends to every agent-tool reply while more than one live session
+/// shares `principal`.
 pub fn shared_identity_notice(principal: &str, sessions: usize) -> String {
     format!(
         "{sessions} live sessions share the identity {principal}: they share one inbox and read position. \
          Set BASEMIND_AGENT_ID in one of them, or pass `as`, to separate them."
+    )
+}
+
+/// The notice the tool layer appends to a session's first agent-tool reply when the id it was
+/// configured with (`BASEMIND_AGENT_ID` or `comms.agent_id`) failed validation. `rejected` is
+/// caller input, so only a bounded part of it is repeated.
+pub fn rejected_id_notice(rejected: &str, in_use: &str) -> String {
+    format!(
+        "the configured agent id {:?} is not a valid id and is not used: this session acts as {in_use}. \
+         Fix BASEMIND_AGENT_ID or `comms.agent_id` to choose the id.",
+        bounded_echo(rejected)
     )
 }
 
