@@ -93,7 +93,7 @@ them.
 | [0007](0007-agent-launchable-display-tool.md) | Agent-launchable UI display tool | Superseded by ADR-0017 |
 | [0008](0008-documents-code-graph.md) | Documents ↔ code graph | Superseded by ADR-0017 |
 | [0009](0009-rationale-decision-nodes.md) | Rationale / decision nodes | Superseded by ADR-0017 |
-| [0010](0010-branch-integration-release-strategy.md) | Branch, integration & release strategy | Accepted |
+| [0010](0010-branch-integration-release-strategy.md) | Branch, integration & release strategy | Superseded by ADR-0026 |
 | [0011](0011-mcp-tool-surface-redesign.md) | MCP tool-surface redesign — consolidation into nine domains | Superseded by ADR-0018 |
 | [0012](0012-grep-content-prefilter.md) | Per-file trigram bloom prefilter for `code grep` | Accepted |
 | [0013](0013-comms-robustness-idempotency-replay.md) | Comms robustness: correlated requests, bounded waits, idempotent posts, relay replay | Accepted (amended by ADR-0021) |
@@ -109,3 +109,4 @@ them.
 | [0023](0023-library-crate-layering-revised.md) | Library crate layering, revised | Accepted |
 | [0024](0024-daemon-and-process-model.md) | Daemon and process model — rendezvous scoped by protocol generation | Accepted |
 | [0025](0025-store-versioning-and-durability.md) | Store versioning and durability policy | Accepted |
+| [0026](0026-release-and-branch-policy.md) | Release and branch policy — trunk-based, three breaking releases | Accepted |

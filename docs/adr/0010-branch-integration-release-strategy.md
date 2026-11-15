@@ -1,11 +1,12 @@
 ---
-status: accepted
+status: superseded
 date: 2026-08-02
+superseded-by: "0026"
 ---
 
 # ADR-0010: Branch, integration & release strategy
 
-- **Status:** Accepted (adopted as the governing policy, 2026-08-04)
+- **Status:** Superseded by ADR-0026 (2026-11-15); accepted 2026-08-04
 - **Date:** 2026-08-02
 - **Deciders:** basemind maintainers
 - **Related:** ADR-0001 … ADR-0009 (all capabilities delivered under this roadmap),
