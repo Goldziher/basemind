@@ -4,12 +4,30 @@ This is the normative specification of agent messaging in basemind. The decision
 in [ADR-0021](adr/0021-agent-comms-v2.md); this document carries the detail and may change without a
 new ADR as long as it stays inside that ADR's rules. Where the two disagree, the ADR wins.
 
-**Implementation status.** The model is being built in `src/comms/v2/` on the branch
-`feat/comms-v2-api` and is not on `main`. That code predates ADR-0021, and where they differ this
-document wins: the post body limit (64 KiB there, 16 KiB here), the thread cap (refuses there,
-archives here), expiry (judged at read time there, by the sweep only here), the clock-tolerance rule
-(present there, absent here), read positions (per member there, per actor here), the timestamp
-floor (store-wide there, per thread here) and the legacy store (renamed there, left alone here).
+**Implementation status.** The model is built in `src/comms/v2/` on the branch
+`feat/comms-v2-api` and is not on `main`. Nothing there is wired into the daemon, the wire
+protocol, the MCP tools or the CLI yet. The code follows this document. Where the document leaves a
+point open, the branch does the following:
+
+- An actor's marks are created by its first marking or announcing read that covers the thread. A
+  peek, a history read and a thread listing write nothing: they use the starting position without
+  storing it.
+- Leaving removes the marks of every actor of the principal in that thread, so a principal that
+  joins again starts at the head.
+- A thread can hold more than 1,000 messages between two sweeps. All of them are returned until a
+  sweep drops the oldest.
+- A replay entry answers until a sweep removes it, which is at least one hour after it was written.
+- A `to` is refused only when it names nobody but the calling actor. A `to` that names a sibling
+  actor makes an invitation-only thread whose one member is the caller's principal.
+- On an archived thread, a join by a member, an invitation that names only members and a second
+  archive succeed and change nothing.
+- A replay key on an announcing read is ignored.
+- A message in a reply carries `body_bytes`, the size of its whole body. In an announcing read
+  `body` is empty.
+- The store puts the thread-cap notice into the reply of the post. The other notices are the
+  daemon's; `shared_identity_notice` returns none for a call that carries `as`.
+- The store has no operation with which `basemind agent cleanup` could archive a thread its caller
+  did not create.
 
 ## Terms
 
