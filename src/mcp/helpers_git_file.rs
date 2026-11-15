@@ -133,14 +133,17 @@ fn clip_to_whole_lines(text: &mut String, cap: usize) {
 
 /// The working-tree bytes of an indexed file, when they are still the bytes that were indexed (the
 /// outline's byte spans only line up with those).
-fn indexed_source(state: &ServerState, path: &crate::path::RelPath, indexed_size: u64) -> Option<Vec<u8>> {
-    let file = {
+fn indexed_source(state: &ServerState, path: &crate::path::RelPath) -> Option<Vec<u8>> {
+    let (file, entry) = {
         let store = state.shared.store.try_read().ok()?;
-        super::tool_contract::IndexedFiles::of(state).file(&store, path).ok()?
+        (
+            super::tool_contract::IndexedFiles::of(state).file(&store, path).ok()?,
+            store.lookup(path)?.clone(),
+        )
     };
-    std::fs::read(file)
+    std::fs::read(&file)
         .ok()
-        .filter(|bytes| bytes.len() as u64 == indexed_size)
+        .filter(|bytes| super::freshness::matches_index((&entry).into(), &file, bytes))
 }
 
 /// Clamp a 1-based inclusive blame span to the file as it is at `rev`, or explain why it does not
@@ -172,7 +175,7 @@ fn span_in_file(
 
 /// Grammar for `path`, honouring the workspace's `[languages]` overrides so git-side tools agree
 /// with what the scanner indexed.
-fn detect_lang(state: &ServerState, path: impl AsRef<std::ffi::OsStr>) -> Option<crate::lang::LangId> {
+pub(super) fn detect_lang(state: &ServerState, path: impl AsRef<std::ffi::OsStr>) -> Option<crate::lang::LangId> {
     crate::lang_rules::LangRules::from_config(&state.shared.config.languages)
         .unwrap_or_default()
         .detect(std::path::Path::new(path.as_ref()))
@@ -363,7 +366,7 @@ pub(super) async fn run_blame_symbol(
     let l1 = cache
         .get(&params.path)
         .ok_or_else(|| super::tool_contract::not_indexed(state, "git_blame", &params.path))?;
-    let source = indexed_source(state, &params.path, l1.size_bytes);
+    let source = indexed_source(state, &params.path);
     let sym = pick_symbol(
         "git_blame",
         &params.path,
@@ -453,7 +456,7 @@ pub(super) fn run_symbol_history(state: &ServerState, params: SymbolHistoryParam
     });
     let occurrence = match outline {
         Some(l1) => {
-            let source = indexed_source(state, &params.path, l1.size_bytes);
+            let source = indexed_source(state, &params.path);
             pick_symbol(
                 "git_log",
                 &params.path,

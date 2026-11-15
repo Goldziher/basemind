@@ -17,6 +17,7 @@ pub(crate) mod cursor;
 mod cursor_bind;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 mod daemon_forward;
+mod freshness;
 mod helpers;
 mod helpers_admin;
 mod helpers_calls;

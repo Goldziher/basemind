@@ -4,6 +4,7 @@ use rmcp::ErrorData as McpError;
 use rmcp::model::CallToolResult;
 
 use super::ServerState;
+use super::freshness::matches_index;
 use super::helpers::{json_result, kind_to_str, parse_kind};
 use super::helpers_pick::pick_symbol;
 use super::tool_contract::{indexed_file, not_indexed, not_indexed_in};
@@ -98,8 +99,9 @@ fn cap_body(raw: &[u8]) -> (String, bool) {
     (String::from_utf8_lossy(kept).into_owned(), truncated)
 }
 
-/// Resolve one symbol by `(path, name[, kind][, line])` from the L1 outline, then return
-/// `file_bytes[start_byte..end_byte]`, the raw source body.
+/// Resolve one symbol by `(path, name[, kind][, line])` and return its raw source body. The outline
+/// is the indexed one while the file still holds the indexed content, else a fresh parse of the
+/// file as it is now.
 ///
 /// A name that several definitions share is an error listing each with its line span (see
 /// [`pick_symbol`]), never a silent first match.
@@ -111,21 +113,49 @@ async fn run_expand(state: &ServerState, params: ExpandParams) -> Result<CallToo
         .transpose()
         .map_err(|e| McpError::invalid_params(format!("`code_read`: invalid kind {:?}: {e}", params.kind), None))?;
 
-    let (l1, file) = {
+    let (indexed, entry, file) = {
         let store = state.shared.store.read().await;
         let l1 = query::file_outline(&store, &params.path)
             .map_err(|_| not_indexed_in(&store, &state.shared.root, "code_read", &params.path))?;
-        (l1, indexed_file(state, &store, "code_read", &params.path)?)
+        let entry = store.lookup(&params.path).cloned();
+        (l1, entry, indexed_file(state, &store, "code_read", &params.path)?)
     };
-    let file_bytes = std::fs::read(file)
+    let file_bytes = std::fs::read(&file)
         .map_err(|e| McpError::invalid_params(format!("`code_read`: read {}: {e}", params.path), None))?;
-    // Byte spans from the outline only line up with the bytes that were indexed.
-    let source = (file_bytes.len() as u64 == l1.size_bytes).then_some(file_bytes.as_slice());
+    // The indexed spans locate a symbol only in the bytes that were indexed. In an edited file the
+    // symbol is found by parsing what is there now, never by cutting at the old offsets.
+    let stale = !entry
+        .as_ref()
+        .is_some_and(|entry| matches_index(entry.into(), &file, &file_bytes));
+    let l1 = if stale {
+        let language = super::helpers_git_file::detect_lang(state, &params.path).ok_or_else(|| {
+            McpError::invalid_params(
+                format!(
+                    "`code_read`: `{0}` changed since it was indexed and is no longer a supported language. Read \
+                     a line span instead, or run `index_rescan {{\"paths\":[\"{0}\"]}}`.",
+                    params.path
+                ),
+                None,
+            )
+        })?;
+        crate::extract::l1::extract_l1(language, &file_bytes).map_err(|error| {
+            McpError::invalid_params(
+                format!(
+                    "`code_read`: `{0}` changed since it was indexed and could not be parsed ({error}). Read a \
+                     line span instead, or run `index_rescan {{\"paths\":[\"{0}\"]}}`.",
+                    params.path
+                ),
+                None,
+            )
+        })?
+    } else {
+        indexed
+    };
     let symbol = pick_symbol(
         "code_read",
         &params.path,
         &l1.symbols,
-        source,
+        Some(&file_bytes),
         &params.name,
         kind_filter,
         params.line,
@@ -153,6 +183,7 @@ async fn run_expand(state: &ServerState, params: ExpandParams) -> Result<CallToo
         body,
         bytes: full_bytes,
         truncated,
+        stale,
     };
 
     json_result(&response)

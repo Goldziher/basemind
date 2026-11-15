@@ -210,6 +210,10 @@ pub(super) struct ExpandResponse {
     pub bytes: usize,
     /// `true` when the body was truncated to the `EXPAND_BODY_CAP`.
     pub truncated: bool,
+    /// The file changed since it was indexed, so the symbol was located by parsing the working-tree
+    /// file; the other tools describe the indexed content until `index_rescan`.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub stale: bool,
 }
 
 /// Response of a `code_read` line-span read.

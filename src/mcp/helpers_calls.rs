@@ -199,11 +199,12 @@ pub(super) async fn run_find_callers(
     let l1 = cache
         .get(&params.path)
         .ok_or_else(|| super::tool_contract::not_indexed_in(store, files.root, "code_refs", &params.path))?;
-    let source = files
-        .file(store, &params.path)
-        .ok()
-        .and_then(|file| std::fs::read(file).ok())
-        .filter(|bytes| bytes.len() as u64 == l1.size_bytes);
+    let source = files.file(store, &params.path).ok().and_then(|file| {
+        let entry = store.lookup(&params.path)?;
+        std::fs::read(&file)
+            .ok()
+            .filter(|bytes| super::freshness::matches_index(entry.into(), &file, bytes))
+    });
     let symbol = super::helpers_pick::pick_symbol(
         "code_refs",
         &params.path,

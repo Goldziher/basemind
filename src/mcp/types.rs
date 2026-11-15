@@ -746,7 +746,7 @@ pub(super) struct GrepHit {
     pub start_byte: u32,
     /// Size of the file the hit was read from; `symbol` is set only when the index agrees.
     #[serde(skip)]
-    pub source_len: u64,
+    pub source_fresh: bool,
 }
 
 /// The symbol a grep hit sits in.

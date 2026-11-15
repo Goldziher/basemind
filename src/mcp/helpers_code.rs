@@ -434,10 +434,18 @@ pub(super) async fn code_outline(state: &ServerState, p: CodeOutlineParams) -> R
 
     // The outline is already in hand, so a file that can no longer be read (deleted, or replaced by
     // a link out of the repository since the scan) costs only the derived `end_line`s: `stale`.
-    let source = super::tool_contract::indexed_file(state, &*state.shared.store.read().await, "code_outline", &p.path)
-        .ok()
-        .and_then(|file| std::fs::read(file).ok());
-    let stale = source.as_ref().is_none_or(|bytes| bytes.len() as u64 != l1.size_bytes);
+    let (file, entry) = {
+        let store = state.shared.store.read().await;
+        (
+            super::tool_contract::indexed_file(state, &store, "code_outline", &p.path).ok(),
+            store.lookup(&p.path).cloned(),
+        )
+    };
+    let source = file.as_ref().and_then(|file| std::fs::read(file).ok());
+    let stale = match (&file, &source, &entry) {
+        (Some(file), Some(bytes), Some(entry)) => !super::freshness::matches_index(entry.into(), file, bytes),
+        _ => true,
+    };
     let newlines: Vec<usize> = source
         .as_deref()
         .map(|bytes| memchr::memchr_iter(b'\n', bytes).collect())

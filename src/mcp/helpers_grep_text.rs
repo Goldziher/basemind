@@ -47,9 +47,9 @@ pub(super) fn clip_line(line: &str, match_start: usize, match_len: usize) -> Str
 
 /// Name the innermost symbol holding each hit. One outline read per file with hits on the page.
 ///
-/// The outline's byte spans describe the file as it was indexed. A file whose size has changed since
-/// then gets no annotation: its hits come from the bytes on disk, and a span laid over different
-/// bytes names the wrong symbol.
+/// The outline's byte spans describe the file as it was indexed. A file edited since then gets no
+/// annotation: its hits come from the bytes on disk, and a span laid over different bytes names the
+/// wrong symbol.
 pub(super) fn annotate_symbols(cache: &super::MapCache, hits: &mut [GrepHit]) {
     let mut current: Option<(RelPath, Option<std::sync::Arc<crate::extract::FileMapL1>>)> = None;
     for hit in hits {
@@ -59,7 +59,7 @@ pub(super) fn annotate_symbols(cache: &super::MapCache, hits: &mut [GrepHit]) {
         let Some((_, Some(l1))) = current.as_ref() else {
             continue;
         };
-        if l1.size_bytes != hit.source_len {
+        if !hit.source_fresh {
             continue;
         }
         hit.symbol = l1

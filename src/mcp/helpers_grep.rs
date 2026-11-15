@@ -142,7 +142,19 @@ pub(super) async fn run_workspace_grep(
     let total_files_matched = counts.iter().filter(|&&c| c > 0).count();
 
     let (selected, limit_resume) = select_hits(&counts, limit, skip_files, skip_hits);
-    let (mut hits, hit_cursors) = materialize(root, &paths, &selected, &re, params.include_context, skip_files);
+    let is_fresh = |file_idx: usize, bytes: &[u8]| {
+        let (path, meta) = scanned[file_idx];
+        super::freshness::matches_index(meta.into(), &root.join(path), bytes)
+    };
+    let (mut hits, hit_cursors) = materialize(
+        root,
+        &paths,
+        &selected,
+        &is_fresh,
+        &re,
+        params.include_context,
+        skip_files,
+    );
     annotate_symbols(&cache, &mut hits);
 
     let (truncated, truncation_reason, next_cursor) = match (limit_resume, byte_budget_hit) {
@@ -356,10 +368,14 @@ fn select_hits(counts: &[u32], limit: usize, skip_files: usize, skip_hits: u32) 
 ///
 /// Returns the hits alongside, for each hit, the packed cursor that resumes AT that hit — the token
 /// budget uses it to page a dropped tail exactly.
+///
+/// `is_fresh(file_idx, bytes)` says whether the bytes just read are the content the index holds
+/// for that file; only then may a hit be laid over the indexed outline.
 fn materialize(
     root: &Path,
     scanned: &[&RelPath],
     selected: &[Selection],
+    is_fresh: &(dyn Fn(usize, &[u8]) -> bool + Sync),
     re: &Regex,
     include_context: bool,
     skip_files: usize,
@@ -369,10 +385,11 @@ fn materialize(
         .map(|sel| {
             let path = scanned[sel.file_idx];
             with_indexed_bytes(root, path, |bytes| {
-                std::str::from_utf8(bytes).map_or_else(
-                    |_| Vec::new(),
-                    |source| collect_hits(path, source, re, sel, include_context, skip_files + sel.file_idx),
-                )
+                let Ok(source) = std::str::from_utf8(bytes) else {
+                    return Vec::new();
+                };
+                let fresh = is_fresh(sel.file_idx, bytes);
+                collect_hits(path, source, fresh, re, sel, include_context, skip_files + sel.file_idx)
             })
             .unwrap_or_default()
         })
@@ -393,6 +410,7 @@ fn materialize(
 fn collect_hits(
     path: &RelPath,
     source: &str,
+    source_fresh: bool,
     re: &Regex,
     sel: &Selection,
     include_context: bool,
@@ -431,7 +449,7 @@ fn collect_hits(
                 context_before,
                 context_after,
                 start_byte: match_start as u32,
-                source_len: source.len() as u64,
+                source_fresh,
             },
         ));
     }
@@ -556,7 +574,7 @@ mod tests {
             for sel in selected {
                 let path = scanned[sel.file_idx];
                 let Some(source) = read(root, path) else { continue };
-                for (c, h) in collect_hits(path, &source, re, sel, ctx, skip_files + sel.file_idx) {
+                for (c, h) in collect_hits(path, &source, true, re, sel, ctx, skip_files + sel.file_idx) {
                     hits.push(h);
                     cursors.push(c);
                 }
@@ -682,7 +700,7 @@ mod tests {
                             let window = &refs[skip_files.min(refs.len())..];
                             let counts = count_all(dir.path(), window, None, &re, literal.as_ref(), skip_hits);
                             let (sel, resume) = select_hits(&counts, limit, skip_files, skip_hits);
-                            let new = materialize(dir.path(), window, &sel, &re, ctx, skip_files);
+                            let new = materialize(dir.path(), window, &sel, &|_, _| true, &re, ctx, skip_files);
                             let old_counts = reference::count(dir.path(), window, &re, literal.as_ref(), skip_hits);
                             assert_eq!(counts, old_counts);
                             let old = reference::materialize(dir.path(), window, &sel, &re, ctx, skip_files);
@@ -818,7 +836,7 @@ mod tests {
                     let (sel_f, resume_f) = select_hits(&filtered, limit, 0, skip_hits);
                     let (sel_o, resume_o) = select_hits(&oracle, limit, 0, skip_hits);
                     assert_eq!(resume_f, resume_o, "cursor diverges for {pattern:?}");
-                    let hits_f = materialize(dir.path(), &refs, &sel_f, &re, true, 0);
+                    let hits_f = materialize(dir.path(), &refs, &sel_f, &|_, _| true, &re, true, 0);
                     let hits_o = reference::materialize(dir.path(), &refs, &sel_o, &re, true, 0);
                     assert_eq!(hits_f.1, hits_o.1);
                     assert_eq!(

@@ -27,6 +27,8 @@ mod history;
 mod refs;
 #[path = "verb_behaviour/safety.rs"]
 mod safety;
+#[path = "verb_behaviour/stale.rs"]
+mod stale;
 
 fn git(repo: &Path, args: &[&str]) {
     let status = Command::new("git")
