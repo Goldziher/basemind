@@ -20,6 +20,7 @@ pub mod error;
 #[cfg(any(test, feature = "test-support"))]
 pub mod fake;
 pub mod fields;
+pub mod identity;
 pub mod ids;
 
 pub use api::{
