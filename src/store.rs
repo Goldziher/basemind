@@ -211,6 +211,10 @@ pub struct Index {
     /// decodes to, via `#[serde(default)]`: additive, no schema bump) makes no claim about the index.
     #[serde(default)]
     pub generation: u64,
+    /// Paths whose vector rows are not written yet (see [`crate::store_pending`]). Additive, no
+    /// schema bump.
+    #[serde(default)]
+    pub pending_vectors: crate::store_pending::PendingVectors,
 }
 
 impl Index {
@@ -222,6 +226,7 @@ impl Index {
             embed_policy: String::new(),
             doc_tombstones: AHashMap::new(),
             generation: 0,
+            pending_vectors: crate::store_pending::PendingVectors::default(),
         }
     }
 }

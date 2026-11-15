@@ -475,10 +475,16 @@ fn apply_outcomes(ctx: &mut DriveCtx<'_>, outcomes: Vec<FileResult>) {
         }
         #[cfg(feature = "documents")]
         if let Some(batch) = o.doc_batch.take() {
+            if batch.emit_rows {
+                ctx.store.index.pending_vectors.docs.insert(o.path.as_str().into());
+            }
             ctx.out.doc_batches.push(batch);
         }
         #[cfg(feature = "code-search")]
         if let Some(batch) = o.code_batch.take() {
+            if batch.embedding_dim > 0 {
+                ctx.store.index.pending_vectors.code.insert(o.path.as_str().into());
+            }
             ctx.out.code_batches.push(batch);
         }
         ctx.observer.on_file(FileResult::bare(o.path, o.status));

@@ -674,3 +674,78 @@ fn embed_policy_purge_never_creates_the_vector_store() {
     purge_unembedded_documents(&mut store, &config, &filters, "repo:s");
     assert!(store.lance.is_none() && !store.lance_dir_exists());
 }
+
+/// The file map is flushed before the vector lanes run, so an entry that reads as embedded can
+/// sit over rows that never landed (a killed process, a LanceDB error). The owed path must survive
+/// in the file map and be written from the cached blob by the next scan, which has no batch of its
+/// own for an unchanged file.
+#[test]
+fn rows_a_scan_could_not_write_stay_owed_and_the_next_scan_writes_them() {
+    use crate::scanner_flush::flush_vector_lanes;
+
+    crate::store::init_isolated_cache();
+    let tmp = tempfile::tempdir().unwrap();
+    let mut store = Store::open(tmp.path(), crate::store::VIEW_WORKING).unwrap();
+    let mut config = crate::config::default_for_root(Path::new("."));
+    config.documents.embedding_preset = "balanced".to_string();
+    let rel = "docs/manual.pdf";
+    let hash = crate::hashing::hash_bytes(b"manual");
+    let hash_hex = crate::hashing::hex(&hash);
+    let doc = crate::extract::doc::FileMapDoc {
+        schema_ver: crate::extract::SCHEMA_VER,
+        ..doc_fixture(2, 768)
+    };
+    store.write_doc(&hash, &doc).unwrap();
+    store.upsert_doc(
+        rel,
+        crate::store::DocEntry {
+            config_digest: String::new(),
+            hash_hex: hash_hex.clone(),
+            embedding_preset: "balanced".to_string(),
+            size_bytes: 6,
+            mtime: 0,
+            embedded: true,
+            embed_attempted: true,
+        },
+    );
+    let batch = PendingDocBatch {
+        rel_path: rel.to_string(),
+        blob_hash: hash_hex,
+        doc_scope: "repo:s".to_string(),
+        chunk_count: 2,
+        embedding_dim: 768,
+        emit_rows: true,
+        embedded: true,
+        embed_attempted: true,
+        reused: false,
+        degraded: false,
+        text_fallback: false,
+    };
+    // What the drive records alongside the entry, and the map flush that precedes the lanes.
+    store.index.pending_vectors.docs.insert(rel.into());
+    store.flush().unwrap();
+    let owed_on_disk = |store: &Store| {
+        crate::store::read_index(&store.view_dir)
+            .unwrap()
+            .expect("file map")
+            .pending_vectors
+            .docs
+            .len()
+    };
+
+    // The vector store cannot be opened: a file sits where its directory belongs.
+    let lance_dir = store.basemind_dir.join(crate::store::LANCE_DIR);
+    std::fs::write(&lance_dir, b"not a directory").unwrap();
+    flush_vector_lanes(&mut store, &config, "repo:s", vec![batch], Vec::new()).unwrap();
+    assert_eq!(store.index.pending_vectors.docs.len(), 1, "failed rows stay owed");
+    assert_eq!(owed_on_disk(&store), 1, "and the file map on disk says so");
+
+    std::fs::remove_file(&lance_dir).unwrap();
+    flush_vector_lanes(&mut store, &config, "repo:s", Vec::new(), Vec::new()).unwrap();
+    let lance = store.lance_or_open(768, "balanced").expect("open lance").clone();
+    let mut written = doc_rows(&lance);
+    written.dedup();
+    assert_eq!(written, vec![rel.to_string()], "the next scan writes the owed rows");
+    assert!(store.index.pending_vectors.is_empty());
+    assert_eq!(owed_on_disk(&store), 0, "settled paths leave the file map on disk");
+}

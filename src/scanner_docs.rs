@@ -622,16 +622,23 @@ pub(crate) fn flush_document_batches(store: &mut Store, batches: Vec<PendingDocB
     // One delete+append commit pair per BATCH_MAX_DOCS documents instead of per document (#76);
     // rows are still built one document at a time, so peak RAM is one batch's rows.
     let mut pending: PendingBatch<DocumentRow> = PendingBatch::default();
-    let flush = |pending: &mut PendingBatch<DocumentRow>, inserted: &mut usize| {
+    // Paths this call leaves owing nothing: rows written, or no rows to write. A path whose blob
+    // could not be read or whose write failed is left in `pending_vectors` for the next scan.
+    let mut settled: Vec<String> = Vec::new();
+    let flush = |pending: &mut PendingBatch<DocumentRow>, inserted: &mut usize, settled: &mut Vec<String>| {
         let items = pending.take();
         let docs = items.len();
+        let paths: Vec<String> = items.iter().map(|(_, path, _)| path.clone()).collect();
         match lance.replace_documents_many(items) {
-            Ok(()) => *inserted += docs,
+            Ok(()) => {
+                *inserted += docs;
+                settled.extend(paths);
+            }
             Err(error) => {
                 tracing::warn!(
                     docs,
                     ?error,
-                    "lance replace_documents_many failed; document search may be incomplete"
+                    "lance replace_documents_many failed; the documents stay queued for the next scan"
                 );
             }
         }
@@ -653,16 +660,18 @@ pub(crate) fn flush_document_batches(store: &mut Store, batches: Vec<PendingDocB
         };
         let rows = build_doc_rows(doc, &batch.rel_path, &batch.doc_scope);
         if rows.is_empty() {
+            settled.push(batch.rel_path);
             continue;
         }
         pending.push(&batch.doc_scope, &batch.rel_path, rows);
         if pending.is_full() {
-            flush(&mut pending, &mut inserted);
+            flush(&mut pending, &mut inserted, &mut settled);
         }
     }
     if !pending.is_empty() {
-        flush(&mut pending, &mut inserted);
+        flush(&mut pending, &mut inserted, &mut settled);
     }
+    store.index.pending_vectors.settle_docs(&settled);
     inserted
 }
 

@@ -20,14 +20,10 @@ use crate::scanner_drive::{DriveOutcome, ScanDrive, drive_scan};
 use crate::scanner_file::scanner_pool;
 use crate::scanner_filter::{Filters, IndexFilter};
 use crate::scanner_flush::{
-    derive_scope, finalize_bm25_stats_if_any, flush_code_batches_if_any, flush_code_removals_if_any,
-    flush_doc_batches_if_any, maintain_lance_if_open,
+    derive_scope, finalize_bm25_stats_if_any, flush_code_removals_if_any, flush_vector_lanes, maintain_lance_if_open,
 };
 use crate::scanner_integrity::{abort_on_fault, ensure_space, finish_resolve, flush_code_map, preflight};
-use crate::scanner_lanes::{
-    LANE_BM25_STATS, LANE_CODE_BATCHES, LANE_CODE_REMOVALS, LANE_DOC_BATCHES, LANE_EMBED_POLICY, LANE_RESOLVE,
-    run_optional_lane,
-};
+use crate::scanner_lanes::{LANE_BM25_STATS, LANE_CODE_REMOVALS, LANE_EMBED_POLICY, LANE_RESOLVE, run_optional_lane};
 use crate::store::{FileEntry, ScanHealth, Store, StoreError};
 
 /// The per-file pipeline (`process_file` and the read / classify / extract helpers around it) and
@@ -500,12 +496,7 @@ pub fn scan_with_observer(
     if cancel.is_cancelled() {
         report.cancelled = true;
         flush_code_map(store, &ScanHealth::partial("cancelled", seen_count, total_candidates))?;
-        run_optional_lane(LANE_DOC_BATCHES, || {
-            flush_doc_batches_if_any(store, config, driven.doc_batches);
-        });
-        run_optional_lane(LANE_CODE_BATCHES, || {
-            flush_code_batches_if_any(store, config, &scope, driven.code_batches);
-        });
+        flush_vector_lanes(store, config, &scope, driven.doc_batches, driven.code_batches)?;
         phase_peaks.sample_now();
         report.phase_peaks = phase_peaks.snapshot();
         return Ok(report);
@@ -595,12 +586,7 @@ pub fn scan_with_observer(
     // their rows would leave them tracked-but-rowless (blob-sourced, no inference; bounded). ~keep
     if cancel.is_cancelled() {
         report.cancelled = true;
-        run_optional_lane(LANE_DOC_BATCHES, || {
-            flush_doc_batches_if_any(store, config, doc_batches);
-        });
-        run_optional_lane(LANE_CODE_BATCHES, || {
-            flush_code_batches_if_any(store, config, &scope, code_batches);
-        });
+        flush_vector_lanes(store, config, &scope, doc_batches, code_batches)?;
         phase_peaks.sample_now();
         report.phase_peaks = phase_peaks.snapshot();
         return Ok(report);
@@ -620,12 +606,7 @@ pub fn scan_with_observer(
     }
 
     advance(&mut breadcrumb, &phase_peaks, PHASE_LANES, None);
-    run_optional_lane(LANE_DOC_BATCHES, || {
-        flush_doc_batches_if_any(store, config, doc_batches);
-    });
-    run_optional_lane(LANE_CODE_BATCHES, || {
-        flush_code_batches_if_any(store, config, &scope, code_batches);
-    });
+    flush_vector_lanes(store, config, &scope, doc_batches, code_batches)?;
     run_optional_lane(LANE_CODE_REMOVALS, || {
         flush_code_removals_if_any(store, config, &scope, &stale);
     });
@@ -909,12 +890,7 @@ pub fn scan_paths_with_observer(
     // would leave them tracked-but-rowless (blob-sourced, no inference; bounded). ~keep
     if cancel.is_cancelled() {
         report.cancelled = true;
-        run_optional_lane(LANE_DOC_BATCHES, || {
-            flush_doc_batches_if_any(store, config, doc_batches);
-        });
-        run_optional_lane(LANE_CODE_BATCHES, || {
-            flush_code_batches_if_any(store, config, &scope, code_batches);
-        });
+        flush_vector_lanes(store, config, &scope, doc_batches, code_batches)?;
         return Ok(report);
     }
 
@@ -935,12 +911,7 @@ pub fn scan_paths_with_observer(
         });
     });
 
-    run_optional_lane(LANE_DOC_BATCHES, || {
-        flush_doc_batches_if_any(store, config, doc_batches);
-    });
-    run_optional_lane(LANE_CODE_BATCHES, || {
-        flush_code_batches_if_any(store, config, &scope, code_batches);
-    });
+    flush_vector_lanes(store, config, &scope, doc_batches, code_batches)?;
     run_optional_lane(LANE_CODE_REMOVALS, || {
         flush_code_removals_if_any(store, config, &scope, &removed);
     });

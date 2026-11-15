@@ -493,16 +493,23 @@ pub(crate) fn flush_code_batches(
 
     let mut inserted = 0usize;
     let mut pending: PendingBatch<CodeRow> = PendingBatch::default();
-    let write = |pending: &mut PendingBatch<CodeRow>, inserted: &mut usize| {
+    // Paths this call leaves owing nothing: rows written, or no rows to write. A path whose sidecar
+    // could not be read or whose write failed is left in `pending_vectors` for the next scan.
+    let mut settled: Vec<String> = Vec::new();
+    let write = |pending: &mut PendingBatch<CodeRow>, inserted: &mut usize, settled: &mut Vec<String>| {
         let items = pending.take();
         let files = items.len();
+        let paths: Vec<String> = items.iter().map(|(_, path, _)| path.clone()).collect();
         match lance.replace_code_chunks_many(items) {
-            Ok(()) => *inserted += files,
+            Ok(()) => {
+                *inserted += files;
+                settled.extend(paths);
+            }
             Err(error) => {
                 tracing::warn!(
                     files,
                     ?error,
-                    "lance replace_code_chunks_many failed; code search may be incomplete"
+                    "lance replace_code_chunks_many failed; the files stay queued for the next scan"
                 );
             }
         }
@@ -514,6 +521,7 @@ pub(crate) fn flush_code_batches(
         let blob = match store.read_chunks_by_hex(&batch.blob_hash) {
             Ok(Some(blob)) if blob.embedding_dim == dim && blob.embeddings.len() == blob.chunks.len() => blob,
             Ok(Some(_)) => {
+                settled.push(batch.rel_path);
                 continue;
             }
             Ok(None) => {
@@ -526,17 +534,19 @@ pub(crate) fn flush_code_batches(
             }
         };
         if blob.chunks.is_empty() {
+            settled.push(batch.rel_path);
             continue;
         }
         let rows = build_rows_owned(&batch.rel_path, scope, blob.chunks, blob.embeddings);
         pending.push(scope, &batch.rel_path, rows);
         if pending.is_full() {
-            write(&mut pending, &mut inserted);
+            write(&mut pending, &mut inserted, &mut settled);
         }
     }
     if !pending.is_empty() {
-        write(&mut pending, &mut inserted);
+        write(&mut pending, &mut inserted, &mut settled);
     }
+    store.index.pending_vectors.settle_code(&settled);
     inserted
 }
 

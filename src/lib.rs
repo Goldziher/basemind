@@ -70,6 +70,7 @@ mod store_hash_refs;
 pub mod store_layout;
 mod store_lock;
 mod store_migration;
+pub mod store_pending;
 mod store_seed;
 pub mod sysres;
 pub mod textmatch;
