@@ -141,9 +141,10 @@ Messages come in the order they were posted to the store, across threads. The st
 keeps one monotonic post counter, and that counter also orders an inbox that spans threads.
 
 A message's timestamp is the clock's reading. While the clock is not later than the previous
-message's timestamp and no more than a minute behind it, the timestamp is one microsecond past the
-previous one instead, so a clock that stands still or steps back slightly does not stamp two posts
-alike. Once the clock reads more than a minute behind the previous timestamp, that timestamp is
+message's timestamp and no more than a minute behind it (`CLOCK_BEHIND_TOLERANCE_MICROS`), the
+timestamp is one microsecond past the previous one instead, so a clock that stands still or steps
+back slightly does not stamp two posts alike. Once the clock reads more than a minute behind the
+previous timestamp, that timestamp is
 taken to be the wrong one and posts are stamped from the clock again. Timestamps therefore do not
 order messages: `seq` does within a thread and the post counter across threads, and read positions
 and cursors use nothing else. The previous timestamp is read for the next stamp and for a warning

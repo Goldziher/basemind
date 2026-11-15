@@ -19,8 +19,9 @@ pub(super) struct SkewLog {
 
 impl SkewLog {
     /// By how much the clock is behind `last_ts`, the previous stamp, when that is to be
-    /// reported now: it is over the threshold, and the last report was not within the interval. The interval is measured on
-    /// the clock in either direction, since the clock is what is in doubt.
+    /// reported now: it is over the tolerance, and the last report was not within the interval.
+    /// The interval is measured on the clock in either direction, since the clock is what is in
+    /// doubt.
     pub(super) fn due(&mut self, clock_micros: i64, last_ts: i64) -> Option<i64> {
         let behind = rules::clock_behind(clock_micros, last_ts)?;
         let recent = self
@@ -63,7 +64,7 @@ mod tests {
         assert_eq!(log.due(MINUTE, last_ts + 1), None);
         assert_eq!(log.due(-MINUTE, last_ts + 2), None, "the clock went back again");
         assert_eq!(log.due(10 * MINUTE, last_ts + 3), Some(90 * MINUTE + 3));
-        assert_eq!(log.due(99 * MINUTE + 10, last_ts + 4), None, "within the threshold");
+        assert_eq!(log.due(99 * MINUTE + 10, last_ts + 4), None, "within the tolerance");
         assert_eq!(log.due(-9 * MINUTE, last_ts), Some(109 * MINUTE));
     }
 }

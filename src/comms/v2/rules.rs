@@ -41,26 +41,27 @@ pub fn check_writable(store_ver: u32) -> Result<(), CommsError> {
 /// How far behind the previous stamp the clock may read, in microseconds, before a post is
 /// stamped from the clock again and the difference is reported. Far above what a burst of posts
 /// within one clock reading adds, which is one microsecond per post.
-pub const SKEW_WARN_MICROS: i64 = 60 * 1_000_000;
+pub const CLOCK_BEHIND_TOLERANCE_MICROS: i64 = 60 * 1_000_000;
 
 /// By how much `clock_micros` reads behind `last_micros`, the previous stamp, when that is more
-/// than [`SKEW_WARN_MICROS`]: the clock was ahead when that stamp was issued, or has gone back
-/// since. A clock that is ahead cannot be told from a store nobody posted to for a while, so
-/// only this direction is ever noticed.
+/// than [`CLOCK_BEHIND_TOLERANCE_MICROS`]: the clock was ahead when that stamp was issued, or
+/// has gone back since. A clock that is ahead cannot be told from a store nobody posted to for a
+/// while, so only this direction is ever noticed.
 pub fn clock_behind(clock_micros: i64, last_micros: i64) -> Option<i64> {
     let behind = last_micros.saturating_sub(clock_micros);
-    (behind > SKEW_WARN_MICROS).then_some(behind)
+    (behind > CLOCK_BEHIND_TOLERANCE_MICROS).then_some(behind)
 }
 
 /// The timestamp of a post made when the clock reads `clock_micros` and the previous post was
 /// stamped `last_micros`.
 ///
 /// It is the clock's reading. While the clock is not later than the previous stamp, and no more
-/// than [`SKEW_WARN_MICROS`] behind it, it is one microsecond past that stamp instead, so a
-/// clock that stands still or steps back a little does not stamp two posts alike. Once the clock
-/// reads further behind ([`clock_behind`]) the previous stamp is taken to be the wrong one and
-/// the clock is followed again: one post stamped while the clock ran ahead holds no later post
-/// in the future. Timestamps therefore do not order posts; the store-wide post position does.
+/// than [`CLOCK_BEHIND_TOLERANCE_MICROS`] behind it, it is one microsecond past that stamp
+/// instead, so a clock that stands still or steps back a little does not stamp two posts alike.
+/// Once the clock reads further behind ([`clock_behind`]) the previous stamp is taken to be the
+/// wrong one and the clock is followed again: one post stamped while the clock ran ahead holds no
+/// later post in the future. Timestamps therefore do not order posts; the store-wide post
+/// position does.
 pub fn post_timestamp(clock_micros: i64, last_micros: i64) -> i64 {
     if clock_behind(clock_micros, last_micros).is_some() {
         return clock_micros;
