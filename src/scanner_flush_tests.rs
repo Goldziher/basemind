@@ -225,6 +225,28 @@ fn settling_owed_rows_does_not_rewrite_the_file_map() {
     assert_eq!(std::fs::metadata(&map).unwrap().modified().unwrap(), written);
 }
 
+/// The owed set is written before the file map that claims its files. When it cannot be written
+/// the map must not be, or a crash would leave a map that vouches for rows nothing records as owed.
+#[test]
+fn the_owed_set_is_written_before_the_file_map_that_claims_its_files() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut store = open_store(tmp.path());
+    store.flush().unwrap();
+    let map = store.view_dir.join(crate::store::INDEX_FILE);
+    let before = std::fs::read(&map).unwrap();
+    owe_doc(&mut store, "docs/a.txt", Some(&doc(2, DIM)));
+    std::fs::create_dir(store.view_dir.join(format!("{PENDING_FILE}.tmp"))).unwrap();
+
+    assert!(store.flush().is_err(), "the owed set cannot be written");
+
+    assert_eq!(
+        std::fs::read(&map).unwrap(),
+        before,
+        "the file map was written although the owed set was not"
+    );
+    assert!(!store.view_dir.join(PENDING_FILE).exists());
+}
+
 /// A path no rows can come of leaves the owed set instead of failing its whole batch on every
 /// scan: a blob re-extracted without vectors, a blob that is gone, a document the embed policy or
 /// the chunk cap now excludes. The document beside them still gets its rows.
@@ -309,6 +331,33 @@ fn nothing_is_requeued_while_the_vector_store_cannot_be_opened() {
     std::fs::remove_file(&blocker).unwrap();
     lanes(&mut store, &config, usize::MAX);
     assert!(store.pending_vectors.is_empty());
+}
+
+/// A write that fails once the store is open leaves the document owed, on disk, for the next pass.
+#[test]
+fn rows_whose_write_failed_stay_owed_and_the_next_pass_writes_them() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut store = open_store(tmp.path());
+    let config = config();
+    owe_doc(&mut store, "docs/good.txt", Some(&doc(2, DIM)));
+    store.flush().unwrap();
+    let lance = store.lance_or_open(DIM, PRESET).unwrap().clone();
+    std::fs::remove_dir_all(lance.dir().join("documents.lance")).unwrap();
+
+    lanes(&mut store, &config, usize::MAX);
+
+    assert_eq!(
+        owed_on_disk(&store),
+        ["docs/good.txt"],
+        "the failed write must stay owed"
+    );
+    assert_eq!(store.pending_vectors.docs().len(), 1);
+
+    drop(lance);
+    store.lance = None;
+    lanes(&mut store, &config, usize::MAX);
+    assert_eq!(doc_rows(&mut store, SCOPE), ["docs/good.txt"]);
+    assert!(owed_on_disk(&store).is_empty());
 }
 
 /// An incremental scan re-queues a bounded number of owed paths and leaves the rest owed.
@@ -429,6 +478,78 @@ mod code {
         assert_eq!(code_rows(&mut store), ["src/good.rs"]);
         assert!(store.pending_vectors.is_empty(), "{:?}", store.pending_vectors);
         assert!(!store.view_dir.join(PENDING_FILE).exists());
+    }
+
+    /// The batch a scan hands over for a file whose sidecar is gone, or holds vectors of another
+    /// dimension, is settled by the lane instead of written: the write would fail every file
+    /// batched with it, and nothing can come of the file until it is chunked again.
+    #[test]
+    fn a_code_batch_whose_sidecar_is_gone_or_holds_other_vectors_is_settled_not_written() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut store = open_store(tmp.path());
+        let config = code_config();
+        owe_code(&mut store, "src/good.rs", Some(&sidecar(2, DIM)));
+        owe_code(&mut store, "src/other-dim.rs", Some(&sidecar(2, 384)));
+        owe_code(&mut store, "src/sidecarless.rs", None);
+        let batch = |store: &Store, rel: &str| crate::scanner_code::PendingCodeBatch {
+            rel_path: rel.to_string(),
+            blob_hash: store.lookup(rel).unwrap().hash_hex.clone(),
+            embedding_dim: DIM,
+            bm25: Vec::new(),
+        };
+        let batches = ["src/good.rs", "src/other-dim.rs", "src/sidecarless.rs"]
+            .map(|rel| batch(&store, rel))
+            .to_vec();
+
+        flush_vector_lanes(
+            &mut store,
+            &config,
+            &filters(&config),
+            SCOPE,
+            Vec::new(),
+            batches,
+            usize::MAX,
+        )
+        .unwrap();
+
+        assert_eq!(code_rows(&mut store), ["src/good.rs"]);
+        assert!(store.pending_vectors.is_empty(), "{:?}", store.pending_vectors);
+    }
+
+    /// A write that fails once the store is open leaves the code file owed.
+    #[test]
+    fn code_rows_whose_write_failed_stay_owed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut store = open_store(tmp.path());
+        let config = code_config();
+        owe_code(&mut store, "src/good.rs", Some(&sidecar(2, DIM)));
+        let batch = crate::scanner_code::PendingCodeBatch {
+            rel_path: "src/good.rs".to_string(),
+            blob_hash: store.lookup("src/good.rs").unwrap().hash_hex.clone(),
+            embedding_dim: DIM,
+            bm25: Vec::new(),
+        };
+        store.flush().unwrap();
+        let lance = store.lance_or_open(DIM, PRESET).unwrap().clone();
+        std::fs::remove_dir_all(lance.dir().join("code_chunks.lance")).unwrap();
+
+        flush_vector_lanes(
+            &mut store,
+            &config,
+            &filters(&config),
+            SCOPE,
+            Vec::new(),
+            vec![batch],
+            usize::MAX,
+        )
+        .unwrap();
+
+        assert_eq!(
+            PendingVectors::load(&store.view_dir).code().len(),
+            1,
+            "still owed on disk"
+        );
+        assert_eq!(store.pending_vectors.code().len(), 1);
     }
 
     /// A failed write leaves the code file owed, on disk, and the next pass writes it.
