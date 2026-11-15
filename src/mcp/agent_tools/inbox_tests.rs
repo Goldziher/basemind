@@ -12,7 +12,7 @@ use crate::comms::v2::api::{
     AgentOps, Caller, CommsError, InboxBody, InboxMessage, InboxReply, InboxSelect, MAX_INLINE_BODY_BYTES, Mark,
     RESPONSE_BUDGET_BYTES, RepoKey, WaitOutcome,
 };
-use crate::comms::v2::conformance::wait_then_read;
+use crate::comms::v2::conformance::{ConformanceHarness, wait_then_read};
 use crate::comms::v2::fake::{FAKE_EPOCH_MICROS, FakeAgents};
 
 /// A store in which alice has started `t-aaaaaa` with bob and posted `bodies` into it.
@@ -82,6 +82,7 @@ fn no_arguments_returns_the_unread_messages_and_marks_them_read() {
                 ts_micros: FAKE_EPOCH_MICROS,
                 reply_to: None,
                 body: "first".to_string(),
+                body_bytes: 5,
                 truncated: false,
             }],
             read_to: vec![message("t-aaaaaa.1")],
@@ -100,6 +101,7 @@ fn no_arguments_returns_the_unread_messages_and_marks_them_read() {
                 "from": "alice",
                 "ts_micros": FAKE_EPOCH_MICROS,
                 "body": "first",
+                "body_bytes": 5,
             }],
             "read_to": ["t-aaaaaa.1"],
             "more": false,
@@ -187,6 +189,7 @@ fn an_unknown_field_is_refused_naming_the_accepted_ones() {
         "`id`",
         "`unread`",
         "`peek`",
+        "`announce`",
         "`wait_secs`",
         "`limit`",
         "`cursor`",
@@ -194,7 +197,7 @@ fn an_unknown_field_is_refused_naming_the_accepted_ones() {
     ] {
         assert!(accepted.contains(field), "{field} is missing from: {accepted}");
     }
-    assert_eq!(accepted.matches('`').count(), 16, "eight fields: {accepted}");
+    assert_eq!(accepted.matches('`').count(), 18, "nine fields: {accepted}");
     assert!(!accepted.contains("(required)"), "{accepted}");
 }
 
@@ -252,6 +255,7 @@ fn a_field_at_its_default_or_empty_counts_as_left_out() {
                 "thread": "",
                 "unread": true,
                 "peek": false,
+                "announce": false,
                 "wait_secs": 0,
                 "limit": 20,
                 "cursor": "",
@@ -291,9 +295,9 @@ fn a_call_that_waits_hands_the_checked_read_to_the_daemons_hook() {
     );
 
     assert_eq!(
-        refused(read),
-        "`agent_inbox`: not a member of thread t-aaaaaa: join it with agent_threads {thread, join: true}, or ask a \
-         member to invite you"
+        ids(&read.expect("the hook's reply")),
+        ["t-aaaaaa.1"],
+        "the reviewer reads as a member: the member is its principal, bob"
     );
     assert_eq!(
         asked.into_inner(),
@@ -337,32 +341,160 @@ fn a_message_that_arrives_during_the_wait_is_returned_and_marked() {
 }
 
 #[test]
-fn as_reads_the_inbox_of_a_sub_identity_and_an_invalid_as_is_refused() {
-    let fake = FakeAgents::new();
-    let (alice, bob) = (Agent::new("alice"), Agent::new("bob"));
+fn a_sibling_actor_sees_its_principals_mail_from_where_the_principal_has_read() {
+    let (fake, alice, bob) = thread_with(&["first", "second"]);
+
+    bob.inbox(&fake, json!({ "limit": 1 }))
+        .expect("the principal reads one");
+    let reviewer = bob
+        .inbox(&fake, json!({ "as": "reviewer" }))
+        .expect("the sibling's first read");
+    assert_eq!(
+        ids(&reviewer),
+        ["t-aaaaaa.2"],
+        "it starts at the highest position of its principal"
+    );
+    assert_eq!(
+        ids(&bob.inbox(&fake, json!({})).expect("the principal")),
+        ["t-aaaaaa.2"]
+    );
+
     alice
-        .post(
-            &fake,
-            json!({ "subject": "review", "body": "for the reviewer", "to": ["bob.reviewer"] }),
-        )
-        .expect("a thread with bob's sub-identity");
+        .post(&fake, json!({ "thread": "t-aaaaaa", "body": "third" }))
+        .expect("alice's post");
+    assert_eq!(
+        ids(&bob.inbox(&fake, json!({ "as": "reviewer" })).expect("the sibling")),
+        ["t-aaaaaa.3"]
+    );
+    assert_eq!(
+        ids(&bob.inbox(&fake, json!({})).expect("the principal")),
+        ["t-aaaaaa.3"],
+        "each actor has its own read position"
+    );
+}
+
+#[test]
+fn a_post_by_a_sibling_is_unread_for_the_principal_and_never_for_its_poster() {
+    let (fake, _alice, bob) = thread_with(&["first"]);
+    bob.inbox(&fake, json!({})).expect("the principal reads");
+
+    bob.post(&fake, json!({ "thread": "t-aaaaaa", "body": "done", "as": "worker" }))
+        .expect("the sibling posts");
 
     assert!(
-        bob.inbox(&fake, json!({}))
-            .expect("the principal's inbox")
+        bob.inbox(&fake, json!({ "as": "worker" }))
+            .expect("the poster")
             .messages
             .is_empty()
     );
-    let refusal = refused(bob.inbox(&fake, json!({ "as": "Reviewer" })));
-    assert!(
-        refusal.starts_with("`agent_inbox`: `as`: invalid sub-identity name \"Reviewer\""),
-        "{refusal}"
-    );
+    let read = bob.inbox(&fake, json!({})).expect("the principal");
+    assert_eq!(ids(&read), ["t-aaaaaa.2"]);
+    assert_eq!(read.messages[0].from, actor("bob.worker"));
+}
+
+#[test]
+fn an_invalid_as_is_refused_and_as_never_names_another_principal() {
+    let (fake, _alice, bob) = thread_with(&["first"]);
+
+    for name in ["Reviewer", "bob.reviewer"] {
+        let refusal = refused(bob.inbox(&fake, json!({ "as": name })));
+        assert!(
+            refusal.starts_with(&format!("`agent_inbox`: `as`: invalid sub-identity name {name:?}")),
+            "{refusal}"
+        );
+    }
+    assert_eq!(fake.position(&thread("t-aaaaaa"), &actor("bob")), Some((0, 0)));
 
     let read = bob
-        .inbox(&fake, json!({ "as": "reviewer" }))
-        .expect("the sub-identity's inbox");
-    assert_eq!(ids(&read), ["t-aaaaaa.1"]);
+        .inbox(&fake, json!({ "as": "alice" }))
+        .expect("the sub-identity of bob that is named alice");
+    assert_eq!(ids(&read), ["t-aaaaaa.1"], "bob.alice reads bob's mail, not alice's");
+    assert_eq!(fake.position(&thread("t-aaaaaa"), &actor("bob.alice")), Some((1, 1)));
+}
+
+#[test]
+fn announce_lists_front_matter_once_and_leaves_the_messages_unread() {
+    let (fake, _alice, bob) = thread_with(&["first", "the second one", "third"]);
+    let marks = || fake.position(&thread("t-aaaaaa"), &actor("bob"));
+
+    let told = bob
+        .inbox(&fake, json!({ "announce": true, "limit": 2 }))
+        .expect("an announcing read");
+
+    assert_eq!(ids(&told), ["t-aaaaaa.1", "t-aaaaaa.2"], "at most `limit`");
+    assert!(told.more);
+    assert_eq!(told.next_cursor, None);
+    assert!(told.read_to.is_empty());
+    assert!(told.messages.iter().all(|message| message.body.is_empty()));
+    assert_eq!(told.messages[1].body_bytes, 14);
+    assert_eq!(
+        serde_json::to_value(&told).expect("serialize"),
+        json!({
+            "messages": [
+                {
+                    "id": "t-aaaaaa.1",
+                    "subject": "auth refactor",
+                    "from": "alice",
+                    "ts_micros": FAKE_EPOCH_MICROS,
+                    "body_bytes": 5,
+                },
+                {
+                    "id": "t-aaaaaa.2",
+                    "subject": "auth refactor",
+                    "from": "alice",
+                    "ts_micros": FAKE_EPOCH_MICROS + 1,
+                    "body_bytes": 14,
+                },
+            ],
+            "more": true,
+            "notices": [],
+        })
+    );
+    assert_eq!(marks(), Some((0, 2)), "only the announcement mark moved");
+    assert_eq!(unread(&fake, &bob), 3);
+
+    let rest = bob.inbox(&fake, json!({ "announce": true })).expect("the rest");
+    assert_eq!(ids(&rest), ["t-aaaaaa.3"]);
+    assert!(!rest.more);
+    assert!(
+        bob.inbox(&fake, json!({ "announce": true }))
+            .expect("nothing new to announce")
+            .messages
+            .is_empty()
+    );
+    assert_eq!(marks(), Some((0, 3)));
+
+    let read = bob.inbox(&fake, json!({})).expect("the read that marks");
+    assert_eq!(ids(&read), ["t-aaaaaa.1", "t-aaaaaa.2", "t-aaaaaa.3"]);
+    assert_eq!(read.messages[1].body, "the second one");
+    assert_eq!(marks(), Some((3, 3)));
+}
+
+#[test]
+fn announce_is_refused_beside_a_field_that_asks_for_another_read() {
+    let (fake, _alice, bob) = thread_with(&["first"]);
+    let announcing = |field: &str, value: Value| {
+        let mut arguments = json!({ "announce": true });
+        arguments[field] = value;
+        refused(bob.inbox(&fake, arguments))
+    };
+
+    assert_eq!(announcing("id", json!("t-aaaaaa.1")), not_applicable("id", "announce"));
+    assert_eq!(announcing("peek", json!(true)), not_applicable("peek", "announce"));
+    assert_eq!(announcing("unread", json!(false)), not_applicable("unread", "announce"));
+    assert_eq!(
+        announcing("wait_secs", json!(5)),
+        not_applicable("wait_secs", "announce")
+    );
+    assert!(
+        announcing("cursor", json!("abc")).starts_with("`agent_inbox`: `cursor` does not apply"),
+        "an announcing read takes no cursor"
+    );
+    assert_eq!(
+        fake.position(&thread("t-aaaaaa"), &actor("bob")),
+        Some((0, 0)),
+        "a refused read announces nothing"
+    );
 }
 
 #[test]
@@ -399,31 +531,49 @@ fn a_cut_body_ends_on_a_character_boundary() {
 }
 
 #[test]
-fn a_reply_is_held_to_the_inline_limit_whatever_the_store_returned() {
-    let uncut = InboxReply {
-        messages: vec![InboxMessage {
-            id: message("t-aaaaaa.1"),
-            subject: "topic".to_string(),
-            from: actor("alice"),
-            ts_micros: FAKE_EPOCH_MICROS,
-            reply_to: None,
-            body: "x".repeat(MAX_INLINE_BODY_BYTES + 1),
-            truncated: false,
-        }],
-        read_to: Vec::new(),
-        more: false,
+fn a_delivered_message_is_passed_on_as_the_store_returned_it() {
+    let delivered = |seq: u64, body: String, body_bytes: u64, truncated: bool| InboxMessage {
+        id: message(&format!("t-aaaaaa.{seq}")),
+        subject: "topic".to_string(),
+        from: actor("alice"),
+        ts_micros: FAKE_EPOCH_MICROS,
+        reply_to: None,
+        body,
+        body_bytes,
+        truncated,
+    };
+    let over_budget = "x".repeat(RESPONSE_BUDGET_BYTES + 1);
+    let reply = InboxReply {
+        messages: vec![
+            delivered(1, "x".repeat(MAX_INLINE_BODY_BYTES), 9_000, true),
+            delivered(2, over_budget.clone(), over_budget.len() as u64, false),
+            delivered(3, String::new(), 7, false),
+        ],
+        read_to: vec![message("t-aaaaaa.3")],
+        more: true,
         next_cursor: None,
         notices: Vec::new(),
         wait: WaitOutcome::NotWaited,
     };
 
-    let listed = AgentInboxResponse::from_reply(uncut.clone(), false, Vec::new());
-    assert_eq!(listed.messages[0].body.len(), MAX_INLINE_BODY_BYTES);
-    assert!(listed.messages[0].truncated);
+    let response = AgentInboxResponse::from_reply(reply, Vec::new());
 
-    let by_id = AgentInboxResponse::from_reply(uncut, true, Vec::new());
-    assert_eq!(by_id.messages[0].body.len(), MAX_INLINE_BODY_BYTES + 1);
-    assert!(!by_id.messages[0].truncated);
+    let shown: Vec<_> = response
+        .messages
+        .iter()
+        .map(|message| (message.body.len(), message.body_bytes, message.truncated))
+        .collect();
+    assert_eq!(
+        shown,
+        [
+            (MAX_INLINE_BODY_BYTES, 9_000, true),
+            (RESPONSE_BUDGET_BYTES + 1, (RESPONSE_BUDGET_BYTES + 1) as u64, false),
+            (0, 7, false),
+        ],
+        "a read that marks has moved past all three: none may be cut or dropped here"
+    );
+    assert_eq!(response.read_to, [message("t-aaaaaa.3")]);
+    assert!(response.more);
 }
 
 #[test]

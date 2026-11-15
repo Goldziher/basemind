@@ -5,7 +5,10 @@ use serde_json::json;
 use super::super::tests::{Agent, actor, args, message, parse_error, refused, thread};
 use super::super::{AgentPostParams, AgentPostResponse, AgentSession};
 use super::run_agent_post;
-use crate::comms::v2::api::{AgentOps, MAX_POST_BODY_BYTES, MAX_RECIPIENTS, MAX_THREAD_PATHS, ReplayKey};
+use crate::comms::v2::api::{
+    AgentOps, MAX_ACTIVE_THREADS_PER_REPO, MAX_POST_BODY_BYTES, MAX_RECIPIENTS, MAX_THREAD_PATHS, ReplayKey,
+    cap_archive_notice,
+};
 use crate::comms::v2::fake::FakeAgents;
 
 const NO_TARGET: &str = "`agent_post`: pass exactly one of thread, reply_to, subject; this call set";
@@ -172,7 +175,7 @@ fn a_malformed_id_is_refused_with_its_grammar() {
 #[test]
 fn as_acts_as_a_sub_identity_of_the_sessions_principal_and_as_nobody_else() {
     let fake = FakeAgents::new();
-    let (alice, bob) = (Agent::new("alice"), Agent::new("bob"));
+    let (alice, bob, mallory) = (Agent::new("alice"), Agent::new("bob"), Agent::new("mallory"));
 
     alice
         .post(
@@ -180,26 +183,23 @@ fn as_acts_as_a_sub_identity_of_the_sessions_principal_and_as_nobody_else() {
             json!({ "subject": "s", "body": "from the worker", "to": ["bob"], "as": "worker" }),
         )
         .expect("a post as a sub-identity");
+    alice
+        .post(&fake, json!({ "thread": "t-aaaaaa", "body": "as the principal" }))
+        .expect("the principal is the member, so every actor of it may post");
+    alice
+        .post(&fake, json!({ "thread": "t-aaaaaa", "body": "as bob?", "as": "bob" }))
+        .expect("`as` names a sub-identity of alice");
 
     let read = bob.inbox(&fake, json!({})).expect("bob's inbox");
-    assert_eq!(read.messages.len(), 1);
-    assert_eq!(read.messages[0].from, actor("alice.worker"));
+    let senders: Vec<_> = read.messages.iter().map(|message| message.from.clone()).collect();
+    assert_eq!(senders, [actor("alice.worker"), actor("alice"), actor("alice.bob")]);
 
-    let not_member = "`agent_post`: not a member of thread t-aaaaaa: join it with agent_threads {thread, join: true}, \
-                      or ask a member to invite you";
     assert_eq!(
-        refused(alice.post(&fake, json!({ "thread": "t-aaaaaa", "body": "as the principal" }))),
-        not_member
+        refused(mallory.post(&fake, json!({ "thread": "t-aaaaaa", "body": "me too", "as": "worker" }))),
+        "`agent_post`: not a member of thread t-aaaaaa: join it with agent_threads {thread, join: true}, or ask a \
+         member to invite you"
     );
-    assert_eq!(
-        refused(alice.post(&fake, json!({ "thread": "t-aaaaaa", "body": "as bob?", "as": "bob" }))),
-        not_member
-    );
-
-    alice
-        .post(&fake, json!({ "thread": "t-aaaaaa", "body": "again", "as": "worker" }))
-        .expect("the sub-identity is the member");
-    assert_eq!(fake.arrivals(), 2);
+    assert_eq!(fake.arrivals(), 3);
 }
 
 #[test]
@@ -213,6 +213,7 @@ fn an_empty_as_is_the_field_left_out() {
     alice
         .post(&fake, json!({ "thread": "t-aaaaaa", "body": "again" }))
         .expect("the principal is the member");
+    assert_eq!(fake.arrivals(), 2);
 }
 
 #[test]
@@ -258,7 +259,7 @@ fn a_body_is_refused_when_empty_or_over_the_post_limit() {
             &fake,
             json!({ "subject": "s", "body": "x".repeat(MAX_POST_BODY_BYTES + 1) })
         )),
-        "`agent_post`: `body` is 65537 bytes, above the maximum of 65536: shorten it, or split it across posts"
+        "`agent_post`: `body` is 16385 bytes, above the maximum of 16384: shorten it, or split it across posts"
     );
     assert_eq!(fake.arrivals(), 0);
 
@@ -374,4 +375,32 @@ fn a_replayed_request_returns_the_first_post_and_stores_no_second_one() {
     let repeated = alice.post(&fake, arguments).expect("a second request");
     assert_eq!(repeated.thread, thread("t-aaaaab"));
     assert_eq!(fake.arrivals(), 2);
+}
+
+#[test]
+fn the_post_that_archives_a_thread_at_the_cap_carries_the_stores_notice_unchanged() {
+    let fake = FakeAgents::new();
+    let alice = Agent::new("alice");
+    let own = ["the session's own notice".to_string()];
+    let session = AgentSession {
+        notices: &own,
+        ..alice.session()
+    };
+    for n in 0..MAX_ACTIVE_THREADS_PER_REPO {
+        let filled = alice
+            .post(&fake, json!({ "subject": format!("topic {n}"), "body": "b" }))
+            .expect("a thread under the cap");
+        assert!(filled.notices.is_empty(), "{:?}", filled.notices);
+    }
+
+    let over = run_agent_post(&fake, &session, args(json!({ "subject": "one more", "body": "b" })))
+        .expect("the post at the cap succeeds");
+
+    assert!(over.created);
+    assert_eq!(over.notices, [cap_archive_notice(&thread("t-aaaaaa")), own[0].clone()]);
+    assert_eq!(
+        refused(alice.post(&fake, json!({ "thread": "t-aaaaaa", "body": "still here?" }))),
+        "`agent_post`: thread t-aaaaaa is archived: read it with agent_inbox `thread`, or start a new thread by \
+         posting with `subject`"
+    );
 }

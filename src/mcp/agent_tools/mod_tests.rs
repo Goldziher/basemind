@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use rmcp::ErrorData as McpError;
 use rmcp::handler::server::common::schema_for_input;
-use rmcp::model::{ContentBlock, ErrorCode};
+use rmcp::model::{ContentBlock, ErrorCode, Tool};
 use serde_json::{Value, json};
 
 use super::{
@@ -156,43 +156,61 @@ impl AgentOps for Noticing {
     }
 }
 
-#[test]
-fn the_three_descriptions_and_schemas_fit_their_byte_ceiling() {
-    let tools = [
-        (
+/// The three tools as `tools/list` will carry them: name, description and input schema.
+fn advertised() -> Vec<Tool> {
+    let schema = |schema: Result<std::sync::Arc<rmcp::model::JsonObject>, String>, tool: &str| {
+        schema.unwrap_or_else(|error| panic!("`{tool}` has no input schema: {error}"))
+    };
+    vec![
+        Tool::new(
             AGENT_POST,
             AGENT_POST_DESCRIPTION,
-            schema_for_input::<AgentPostParams>(),
+            schema(schema_for_input::<AgentPostParams>(), AGENT_POST),
         ),
-        (
+        Tool::new(
             AGENT_INBOX,
             AGENT_INBOX_DESCRIPTION,
-            schema_for_input::<AgentInboxParams>(),
+            schema(schema_for_input::<AgentInboxParams>(), AGENT_INBOX),
         ),
-        (
+        Tool::new(
             AGENT_THREADS,
             AGENT_THREADS_DESCRIPTION,
-            schema_for_input::<AgentThreadsParams>(),
+            schema(schema_for_input::<AgentThreadsParams>(), AGENT_THREADS),
         ),
-    ];
-    let mut measured = Vec::new();
-    let mut total = 0;
-    for (tool, description, schema) in tools {
-        measured.push(tool);
-        let schema = schema.unwrap_or_else(|error| panic!("`{tool}` has no input schema: {error}"));
-        let properties = schema
+    ]
+}
+
+/// Bytes of `tools` in a `tools/list` reply: the measure `tests/mcp_schema_wire.rs` holds the verb
+/// tools to.
+fn wire_bytes(tools: &[Tool]) -> usize {
+    serde_json::to_string(tools).expect("serialize the tools").len()
+}
+
+#[test]
+fn the_three_tools_fit_their_byte_ceiling_as_tools_list_serializes_them() {
+    let tools = advertised();
+    let names: Vec<&str> = tools.iter().map(|tool| tool.name.as_ref()).collect();
+    assert_eq!(names, AGENT_TOOLS);
+
+    for tool in &tools {
+        let properties = tool
+            .input_schema
             .get("properties")
             .and_then(Value::as_object)
-            .map_or(0, |p| p.len());
-        assert!(properties >= 7, "`{tool}` advertises {properties} fields");
-        let schema = serde_json::to_string(&*schema).expect("serialize the schema");
-        for keyword in ["$ref", "$defs", "oneOf", "anyOf", "allOf"] {
-            assert!(!schema.contains(keyword), "`{tool}` schema uses `{keyword}`: {schema}");
+            .map_or(0, |properties| properties.len());
+        assert!(properties >= 7, "`{}` advertises {properties} fields", tool.name);
+        let schema = serde_json::to_string(&*tool.input_schema).expect("serialize the schema");
+        for keyword in ["$ref", "$defs", "oneOf", "anyOf", "allOf", "\"default\""] {
+            assert!(
+                !schema.contains(keyword),
+                "`{}` schema uses `{keyword}`: {schema}",
+                tool.name
+            );
         }
-        total += description.len() + schema.len();
     }
 
-    assert_eq!(measured, AGENT_TOOLS);
+    let total = wire_bytes(&tools);
+    println!("agent tools: {total} bytes in tools/list");
     assert!(
         total <= AGENT_TOOLS_BYTE_CEILING,
         "the agent tools take {total} bytes, over the {AGENT_TOOLS_BYTE_CEILING}-byte ceiling of ADR-0021: \
@@ -200,8 +218,20 @@ fn the_three_descriptions_and_schemas_fit_their_byte_ceiling() {
     );
     assert!(
         total > AGENT_TOOLS_BYTE_CEILING / 2,
-        "{total} bytes is too few to be three schemas"
+        "{total} bytes is too few to be three tools"
     );
+}
+
+#[test]
+fn the_byte_measure_counts_every_byte_of_a_description() {
+    let mut tools = advertised();
+    let before = wire_bytes(&tools);
+    let padding = AGENT_TOOLS_BYTE_CEILING - before + 1;
+    let padded = format!("{AGENT_POST_DESCRIPTION}{}", "x".repeat(padding));
+
+    tools[0].description = Some(padded.into());
+
+    assert_eq!(wire_bytes(&tools), AGENT_TOOLS_BYTE_CEILING + 1);
 }
 
 #[test]
@@ -282,7 +312,7 @@ fn a_store_failure_is_an_internal_error_and_not_the_callers_mistake() {
     assert_eq!(failed.code, ErrorCode::INTERNAL_ERROR);
     assert_eq!(
         failed.message,
-        "`agent_inbox`: the comms store failed: disk full; retry, and run `basemind agents status` if it persists"
+        "`agent_inbox`: the comms store failed: disk full; retry, and run `basemind agent status` if it persists"
     );
 
     let newer = refusal(

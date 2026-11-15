@@ -4,7 +4,7 @@ use serde_json::{Value, json};
 
 use super::super::tests::{Agent, HOME, actor, parse_error, refused, thread};
 use super::super::{AgentThread, AgentThreadsParams, AgentThreadsResponse};
-use crate::comms::v2::api::{MAX_RECIPIENTS, RepoKey};
+use crate::comms::v2::api::{AgentOps, MAX_RECIPIENTS, Principal, RepoKey};
 use crate::comms::v2::fake::{FAKE_EPOCH_MICROS, FakeAgents};
 
 /// A repository other than [`HOME`].
@@ -80,7 +80,7 @@ fn no_arguments_lists_the_callers_threads_with_unread_counts_and_peers() {
                 unread: 0,
                 head: 1,
                 last_activity_micros: FAKE_EPOCH_MICROS,
-                peers: vec![actor("bob")],
+                peers: vec![Principal::parse("bob").expect("a principal")],
             }],
             pending: Vec::new(),
             next_cursor: None,
@@ -333,6 +333,13 @@ fn an_invitation_is_refused_from_a_non_member_and_when_empty_malformed_or_too_lo
     );
 }
 
+fn archived(tool: &str, thread: &str) -> String {
+    format!(
+        "`{tool}`: thread {thread} is archived: read it with agent_inbox `thread`, or start a new thread by posting \
+         with `subject`"
+    )
+}
+
 #[test]
 fn only_the_creator_archives_and_an_archived_thread_is_closed_to_posts_and_invitations() {
     let (fake, alice, bob, _carol) = two_threads();
@@ -343,34 +350,76 @@ fn only_the_creator_archives_and_an_archived_thread_is_closed_to_posts_and_invit
          leave: true} instead"
     );
 
-    let archived = alice
+    let archived_now = alice
         .threads(&fake, json!({ "thread": "t-aaaaaa", "archive": true }))
         .expect("the creator archives");
-    assert!(archived.threads[0].archived);
-    assert!(archived.threads[0].member);
+    assert!(archived_now.threads[0].archived);
+    assert!(archived_now.threads[0].member);
 
     assert_eq!(
         refused(bob.post(&fake, json!({ "thread": "t-aaaaaa", "body": "too late" }))),
-        "`agent_post`: thread t-aaaaaa is archived: read it with agent_inbox, or start a new thread by posting with \
-         `subject`"
+        archived("agent_post", "t-aaaaaa")
+    );
+    assert_eq!(
+        refused(bob.post(&fake, json!({ "reply_to": "t-aaaaaa.1", "body": "too late" }))),
+        archived("agent_post", "t-aaaaaa")
     );
     assert_eq!(
         refused(alice.threads(&fake, json!({ "thread": "t-aaaaaa", "invite": ["dave"] }))),
-        "`agent_threads`: thread t-aaaaaa is archived: read it with agent_inbox, or start a new thread by posting \
-         with `subject`"
+        archived("agent_threads", "t-aaaaaa")
     );
+    assert_eq!(fake.arrivals(), 2, "nothing was posted into the archived thread");
 
     assert!(listed(&fake, &alice, json!({})).is_empty());
     assert_eq!(listed(&fake, &alice, json!({ "archived": true })), ["t-aaaaaa"]);
-    assert_eq!(
+}
+
+#[test]
+fn an_archived_thread_is_read_by_naming_it_and_can_be_left_but_not_joined() {
+    let (fake, alice, bob, carol) = two_threads();
+    alice
+        .threads(&fake, json!({ "thread": "t-aaaaaa", "archive": true }))
+        .expect("alice archives her thread");
+    carol
+        .threads(&fake, json!({ "thread": "t-aaaaab", "archive": true }))
+        .expect("carol archives her open thread");
+
+    assert!(
         bob.inbox(&fake, json!({}))
-            .expect("an archived thread stays readable")
+            .expect("a read over all threads")
             .messages
-            .len(),
-        1
+            .is_empty(),
+        "a read over all threads covers active threads only"
     );
-    bob.threads(&fake, json!({ "thread": "t-aaaaaa", "leave": true }))
+    let by_id = bob
+        .inbox(&fake, json!({ "id": "t-aaaaaa.1" }))
+        .expect("an archived message by id");
+    assert_eq!(by_id.messages[0].body, "first");
+    let named = bob
+        .inbox(&fake, json!({ "thread": "t-aaaaaa" }))
+        .expect("the archived thread, named");
+    assert_eq!(named.messages.len(), 1);
+    assert_eq!(named.read_to.len(), 1);
+
+    assert_eq!(
+        refused(alice.threads(&fake, json!({ "thread": "t-aaaaab", "join": true }))),
+        archived("agent_threads", "t-aaaaab")
+    );
+    for unchanged in [
+        json!({ "thread": "t-aaaaaa", "join": true }),
+        json!({ "thread": "t-aaaaaa", "invite": ["bob"] }),
+        json!({ "thread": "t-aaaaaa", "archive": true }),
+    ] {
+        let reply = alice.threads(&fake, unchanged).expect("a change already made succeeds");
+        assert!(reply.threads[0].archived);
+        assert_eq!(peers(&reply), ["bob"]);
+    }
+
+    let left = bob
+        .threads(&fake, json!({ "thread": "t-aaaaaa", "leave": true }))
         .expect("an archived thread can be left");
+    assert!(!left.threads[0].member);
+    assert!(left.threads[0].archived, "nothing reopens it");
 }
 
 #[test]
@@ -492,25 +541,34 @@ fn an_unknown_field_is_refused_naming_the_accepted_ones() {
 }
 
 #[test]
-fn as_lists_and_changes_the_threads_of_a_sub_identity_and_an_invalid_as_is_refused() {
+fn as_shares_the_principals_memberships_and_an_invalid_as_is_refused() {
     let (fake, alice, _bob, carol) = two_threads();
 
-    assert!(listed(&fake, &alice, json!({ "as": "worker" })).is_empty());
+    assert_eq!(listed(&fake, &alice, json!({ "as": "worker" })), ["t-aaaaaa"]);
 
     let joined = alice
         .threads(&fake, json!({ "thread": "t-aaaaab", "join": true, "as": "worker" }))
-        .expect("the sub-identity joins");
+        .expect("the sub-identity joins for its principal");
     assert!(joined.threads[0].member);
-    assert_eq!(listed(&fake, &alice, json!({ "as": "worker" })), ["t-aaaaab"]);
-    assert_eq!(listed(&fake, &alice, json!({})), ["t-aaaaaa"]);
+    assert_eq!(
+        listed(&fake, &alice, json!({ "as": "worker" })),
+        ["t-aaaaab", "t-aaaaaa"]
+    );
+    assert_eq!(listed(&fake, &alice, json!({})), ["t-aaaaab", "t-aaaaaa"]);
     assert_eq!(
         peers(
             &carol
                 .threads(&fake, json!({ "thread": "t-aaaaab" }))
                 .expect("described")
         ),
-        ["alice.worker"]
+        ["alice"],
+        "the member is the principal, whichever actor joined"
     );
+
+    alice
+        .threads(&fake, json!({ "thread": "t-aaaaab", "leave": true }))
+        .expect("the principal leaves for all its actors");
+    assert_eq!(listed(&fake, &alice, json!({ "as": "worker" })), ["t-aaaaaa"]);
 
     let refusal = refused(alice.threads(&fake, json!({ "as": "carol.x" })));
     assert!(

@@ -19,8 +19,8 @@ use rmcp::schemars;
 use serde::{Deserialize, Serialize};
 
 use crate::comms::v2::api::{
-    Actor, Cursor, InboxMessage, InboxReply, MessageId, PostReply, RepoKey, ThreadId, ThreadSummary, ThreadsReply,
-    WaitOutcome, inline_body,
+    Actor, Cursor, InboxMessage, InboxReply, MessageId, PostReply, Principal, RepoKey, ThreadId, ThreadSummary,
+    ThreadsReply, WaitOutcome,
 };
 use crate::mcp::strict::ToolArgs;
 
@@ -52,7 +52,7 @@ impl ToolArgs for AgentThreadsParams {
 #[derive(Debug, Default, Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AgentPostParams {
-    /// The message, at most 64 KiB.
+    /// The message, at most 16 KiB.
     pub body: String,
     /// Thread to post into, e.g. `t-abcdef`.
     pub thread: Option<String>,
@@ -81,6 +81,8 @@ pub struct AgentInboxParams {
     pub unread: Option<bool>,
     /// Return unread messages without marking them read.
     pub peek: Option<bool>,
+    /// For hooks: list unread messages not announced yet, without bodies; marks nothing read.
+    pub announce: Option<bool>,
     /// When nothing is unread, wait up to this many seconds (0-40) for a message.
     pub wait_secs: Option<u32>,
     /// Max messages (default 20, max 100).
@@ -173,42 +175,30 @@ pub struct AgentMessage {
     /// The message it replies to.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reply_to: Option<MessageId>,
-    /// The body, cut to 4 KB unless the message was read by `id`.
+    /// The body, cut to 4 KiB unless the message was read by `id`. Left out by an announcing
+    /// read, which returns front matter only.
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub body: String,
+    /// Size of the whole body, in bytes.
+    pub body_bytes: u64,
     /// Whether `body` was cut.
     #[serde(skip_serializing_if = "is_false")]
     pub truncated: bool,
 }
 
-impl AgentMessage {
-    /// Shape one message. Unless it was read `whole` (by id) its body is held to the inline limit
-    /// here as well: a store already returns it cut, and cutting again changes nothing, but a
-    /// reply must not depend on that.
-    fn from_reply(message: InboxMessage, whole: bool) -> Self {
-        let InboxMessage {
-            id,
-            subject,
-            from,
-            ts_micros,
-            reply_to,
-            mut body,
-            mut truncated,
-        } = message;
-        if !whole {
-            let kept = inline_body(&body).0.len();
-            if kept < body.len() {
-                body.truncate(kept);
-                truncated = true;
-            }
-        }
+impl From<InboxMessage> for AgentMessage {
+    /// The store's message as it is. The store cut the body and counted it against the response
+    /// budget; cutting or dropping here would lose what a marking read already marked.
+    fn from(message: InboxMessage) -> Self {
         Self {
-            id,
-            subject,
-            from,
-            ts_micros,
-            reply_to,
-            body,
-            truncated,
+            id: message.id,
+            subject: message.subject,
+            from: message.from,
+            ts_micros: message.ts_micros,
+            reply_to: message.reply_to,
+            body: message.body,
+            body_bytes: message.body_bytes,
+            truncated: message.truncated,
         }
     }
 }
@@ -221,7 +211,7 @@ pub struct AgentInboxResponse {
     /// The last message now read in each thread this read advanced.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub read_to: Vec<MessageId>,
-    /// Whether the limit or the 16 KB response budget left messages out. After a read that marks,
+    /// Whether the limit or the 16 KiB response budget left messages out. After a read that marks,
     /// call again; otherwise continue with `next_cursor`.
     pub more: bool,
     /// Pass back as `cursor` to continue a `peek` or `unread:false` read.
@@ -235,14 +225,10 @@ pub struct AgentInboxResponse {
 }
 
 impl AgentInboxResponse {
-    /// Shape the store's reply. `whole` says the read was by id, whose body is never cut.
-    pub(super) fn from_reply(reply: InboxReply, whole: bool, notices: Vec<String>) -> Self {
+    /// Shape the store's reply, with the tool layer's notices after the daemon's.
+    pub(super) fn from_reply(reply: InboxReply, notices: Vec<String>) -> Self {
         Self {
-            messages: reply
-                .messages
-                .into_iter()
-                .map(|message| AgentMessage::from_reply(message, whole))
-                .collect(),
+            messages: reply.messages.into_iter().map(AgentMessage::from).collect(),
             read_to: reply.read_to,
             more: reply.more,
             next_cursor: reply.next_cursor,
@@ -279,9 +265,9 @@ pub struct AgentThread {
     pub head: u64,
     /// Time of the last post, in microseconds since the unix epoch.
     pub last_activity_micros: i64,
-    /// The members other than the caller.
+    /// The members other than the caller's principal.
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub peers: Vec<Actor>,
+    pub peers: Vec<Principal>,
 }
 
 impl From<ThreadSummary> for AgentThread {

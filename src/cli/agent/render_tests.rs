@@ -71,6 +71,7 @@ fn inbox_text_names_the_message_replied_to_and_ends_the_body_once() {
             ts_micros: FAKE_EPOCH_MICROS,
             reply_to: Some(message_id("t-aaaaaa.1")),
             body: "two\nlines\n\n".to_string(),
+            body_bytes: 11,
             truncated: false,
         }],
         read_to: vec![message_id("t-aaaaaa.2")],

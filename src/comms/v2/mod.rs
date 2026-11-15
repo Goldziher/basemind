@@ -21,6 +21,8 @@ pub mod error;
 #[cfg(any(test, feature = "test-support"))]
 pub mod fake;
 pub mod fields;
+/// What the tools and the CLI do the same way: the session, the requests, the refusal wording.
+pub mod front;
 pub mod identity;
 pub mod ids;
 /// The rules every [`AgentOps`] implementation shares, as pure functions.

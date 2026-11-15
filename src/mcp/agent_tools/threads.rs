@@ -3,7 +3,7 @@
 use rmcp::ErrorData as McpError;
 
 use super::types::{AGENT_THREADS, AgentThreadsParams, AgentThreadsResponse};
-use super::{AgentSession, chosen_limit, refusal};
+use super::{AgentSession, caller, refusal};
 use crate::comms::v2::api::{AgentOps, CommsError, ThreadsCall, ThreadsFields};
 
 /// What an agent reads to decide whether `agent_threads` is the tool it wants.
@@ -28,7 +28,7 @@ pub fn run_agent_threads(
     session: &AgentSession<'_>,
     params: AgentThreadsParams,
 ) -> Result<AgentThreadsResponse, McpError> {
-    let caller = session.caller(AGENT_THREADS, params.as_.as_deref())?;
+    let caller = caller(session, AGENT_THREADS, params.as_.as_deref())?;
     let call = ThreadsCall::from_fields(ThreadsFields {
         query: params.query,
         path: params.path,
@@ -38,7 +38,7 @@ pub fn run_agent_threads(
         invite: params.invite,
         archive: params.archive.unwrap_or(false),
         archived: params.archived.unwrap_or(false),
-        limit: chosen_limit(params.limit),
+        limit: params.limit,
         cursor: params.cursor,
     })
     .map_err(refuse)?;
