@@ -313,12 +313,16 @@ pub fn resolve_paths() -> Result<CommsPaths, SingletonError> {
 }
 
 /// The socket path for a generation directory (see [`generation_dir`]). On Unix,
-/// `<comms_dir>/comms.sock`. On Windows, the named pipe [`pipe_name`] gives the directory.
+/// `<comms_dir>/comms.sock`. On Windows, the named pipe [`pipe_name`] gives the directory, resolved
+/// first so that every spelling of one directory, which is one `daemon.lock`, is one pipe.
 pub fn comms_socket_path(comms_dir: &Path) -> PathBuf {
     #[cfg(windows)]
     {
         let user = std::env::var("USERNAME").unwrap_or_else(|_| "default".to_string());
-        PathBuf::from(pipe_name(&user, comms_dir))
+        let resolved = std::fs::canonicalize(comms_dir)
+            .or_else(|_| std::path::absolute(comms_dir))
+            .unwrap_or_else(|_| comms_dir.to_path_buf());
+        PathBuf::from(pipe_name(&user, &resolved.to_string_lossy()))
     }
     #[cfg(not(windows))]
     {
@@ -326,21 +330,55 @@ pub fn comms_socket_path(comms_dir: &Path) -> PathBuf {
     }
 }
 
-/// Hex digits of the directory hash carried in a pipe name: 64 bits, enough to keep one user's
-/// comms directories apart.
+/// Hex digits of the hash carried in a pipe name: 64 bits, enough to keep one user's comms
+/// directories apart.
 #[cfg(any(windows, test))]
 const PIPE_HASH_HEX_LEN: usize = 16;
+/// Characters of the account name shown in a pipe name. The whole name is in the hash.
+#[cfg(any(windows, test))]
+const PIPE_USER_LEN: usize = 32;
 
 /// The named pipe of the daemon that owns `comms_dir`:
-/// `\\.\pipe\basemind-comms-<user>-<hash of the directory path>`. The path is the generation
-/// directory, so the generation is in the hash and two generations in one comms directory get two
-/// pipes. BLAKE3 rather than the standard library's hasher, whose output is not specified across
-/// toolchains: every binary of a generation must compute the same name. Releases up to 0.33 named
-/// their pipe from another hash of the unscoped directory; this binary never computes that name.
+/// `\\.\pipe\basemind-comms-<user>-<hash of the user and the directory's components>`. The path is
+/// the generation directory, so the generation is in the hash and two generations in one comms
+/// directory get two pipes. The hash covers the path's components, not its bytes: `C:\x\comms`,
+/// `C:\x\comms\` and `C:/x/comms` are one directory and give one name, with or without the
+/// `\\?\` prefix canonicalisation adds. BLAKE3 rather than the standard library's hasher, whose
+/// output is not specified across toolchains: every binary of a generation must compute the same
+/// name. The account name appears only as letters, digits, `.`, `_` and `-`, since `USERNAME` is
+/// free text and a backslash would end the pipe's name. Releases up to 0.33 named their pipe from
+/// another hash of the unscoped directory; this binary never computes that name.
 #[cfg(any(windows, test))]
-fn pipe_name(user: &str, comms_dir: &Path) -> String {
-    let digest = blake3::hash(comms_dir.as_os_str().as_encoded_bytes()).to_hex();
-    format!(r"\\.\pipe\basemind-comms-{user}-{}", &digest[..PIPE_HASH_HEX_LEN])
+fn pipe_name(user: &str, comms_dir: &str) -> String {
+    fn feed(hasher: &mut blake3::Hasher, part: &str) {
+        hasher.update(&(part.len() as u64).to_le_bytes());
+        hasher.update(part.as_bytes());
+    }
+    let unprefixed = comms_dir
+        .strip_prefix(r"\\?\UNC\")
+        .or_else(|| comms_dir.strip_prefix(r"\\?\"))
+        .unwrap_or(comms_dir);
+    let mut hasher = blake3::Hasher::new();
+    feed(&mut hasher, user);
+    for component in unprefixed
+        .split(['/', '\\'])
+        .filter(|part| !part.is_empty() && *part != ".")
+    {
+        feed(&mut hasher, component);
+    }
+    let digest = hasher.finalize().to_hex();
+    let shown: String = user
+        .chars()
+        .take(PIPE_USER_LEN)
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    format!(r"\\.\pipe\basemind-comms-{shown}-{}", &digest[..PIPE_HASH_HEX_LEN])
 }
 
 #[cfg(unix)]

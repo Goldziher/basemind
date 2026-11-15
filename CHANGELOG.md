@@ -263,7 +263,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   their own protocol generation only, and can no longer stop or force-terminate a 0.33 daemon.
   `doctor` reports how many daemons of other generations it counted. The ceiling on live daemons
   counts every generation's, from their registry records. On Windows the named pipe is named from a
-  BLAKE3 hash of the generation directory.
+  BLAKE3 hash of the account name and the generation directory's path components, so `C:\\x\\comms`,
+  `C:\\x\\comms\\` and `C:/x/comms` name one pipe, as they are one `daemon.lock`.
 - Within a generation, bringing up the daemon no longer signals one that answers. A daemon of the
   same or a newer release is never asked to stop: it is used, or, when it is newer and speaks another
   protocol, reported with what to update. An older one is asked to stop, and a `daemon_busy` refusal

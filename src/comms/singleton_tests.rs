@@ -23,37 +23,98 @@ fn the_pipe_name_is_stable_and_distinct_per_generation_directory() {
     const PIPE_NAME_MAX: usize = 256;
 
     assert_eq!(
-        pipe_name("alice", Path::new("pinned-dir")),
-        r"\\.\pipe\basemind-comms-alice-7c676306023f55ea",
+        pipe_name("alice", "pinned-dir"),
+        r"\\.\pipe\basemind-comms-alice-945729672699ae08",
         "every binary of a generation must compute the same name for a directory"
     );
 
-    let ours = generation_dir(Path::new("comms"));
-    let name = pipe_name("alice", &ours);
-    assert_eq!(name, pipe_name("alice", &generation_dir(Path::new("comms"))));
-    assert_ne!(
-        name,
-        pipe_name("alice", Path::new("comms")),
-        "not the unscoped directory's pipe"
-    );
-    assert_ne!(name, pipe_name("alice", &generation_dir(Path::new("other"))));
-    assert_ne!(name, pipe_name("bob", &ours));
+    let dir = |base: &str| generation_dir(Path::new(base)).to_string_lossy().into_owned();
+    let name = pipe_name("alice", &dir("comms"));
+    assert_eq!(name, pipe_name("alice", &dir("comms")));
+    assert_ne!(name, pipe_name("alice", "comms"), "not the unscoped directory's pipe");
+    assert_ne!(name, pipe_name("alice", &dir("other")));
+    assert_ne!(name, pipe_name("bob", &dir("comms")));
 
-    let deep = generation_dir(&Path::new("x").join("y".repeat(4096)));
+    let deep = dir(&format!("x/{}", "y".repeat(4096)));
     let longest = pipe_name(&"u".repeat(LONGEST_USERNAME), &deep);
     assert!(longest.len() <= PIPE_NAME_MAX, "{} bytes: {longest}", longest.len());
+}
+
+/// One directory has one `daemon.lock`, so however its path is spelt it must have one pipe: two
+/// names would let two clients each see no daemon and the second daemon exit on the lock.
+#[test]
+fn every_spelling_of_one_directory_gives_one_pipe_name() {
+    let name = pipe_name("alice", r"C:\x\comms\g1");
+    for spelling in [
+        r"C:\x\comms\g1\",
+        "C:/x/comms/g1",
+        "C:/x/comms/g1/",
+        r"C:\x\\comms\.\g1",
+        r"C:\x/comms\g1",
+        r"\\?\C:\x\comms\g1",
+    ] {
+        assert_eq!(pipe_name("alice", spelling), name, "{spelling}");
+    }
+    assert_eq!(
+        pipe_name("alice", r"\\?\UNC\server\share\comms"),
+        pipe_name("alice", r"\\server\share\comms"),
+        "a canonicalised network path is the same directory"
+    );
+
+    assert_ne!(pipe_name("alice", r"C:\x\comms\g2"), name, "another generation");
+    assert_ne!(
+        pipe_name("alice", r"C:\x\commsg1"),
+        name,
+        "components, not their concatenation"
+    );
+    assert_ne!(pipe_name("alice", r"C:\xcomms\g1"), name);
+    assert_ne!(pipe_name("alice", r"D:\x\comms\g1"), name);
+}
+
+/// `USERNAME` is free text. A backslash in it would end the pipe's name early, and two accounts
+/// must not share a pipe because their names look alike once made safe.
+#[test]
+fn the_account_name_is_made_safe_for_a_pipe_name_and_still_tells_accounts_apart() {
+    const PREFIX: &str = r"\\.\pipe\";
+    let odd = pipe_name(r"CORP\al ice", "comms");
+    let leaf = odd.strip_prefix(PREFIX).expect("a local pipe");
+    assert!(
+        leaf.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-')),
+        "{odd}"
+    );
+    assert!(leaf.starts_with("basemind-comms-CORP_al_ice-"), "{odd}");
+    assert_ne!(
+        odd,
+        pipe_name("CORP_al_ice", "comms"),
+        "the hash covers the name as given"
+    );
+
+    let long = pipe_name(&"é".repeat(300), "comms");
+    assert!(long.len() < 100, "{} bytes: {long}", long.len());
 }
 
 #[cfg(windows)]
 #[test]
 fn the_windows_endpoint_is_the_pipe_named_for_the_generation_directory() {
-    let user = std::env::var("USERNAME").unwrap_or_else(|_| "default".to_string());
     let one = generation_dir(Path::new(r"C:\one\comms"));
     let two = generation_dir(Path::new(r"C:\two\comms"));
-    assert_eq!(comms_socket_path(&one), PathBuf::from(pipe_name(&user, &one)));
     assert_eq!(comms_socket_path(&one), comms_socket_path(&one));
+    assert_eq!(
+        comms_socket_path(&one),
+        comms_socket_path(Path::new(r"C:/one/comms/g1/")),
+        "the same directory, spelt another way"
+    );
     assert_ne!(comms_socket_path(&one), comms_socket_path(&two));
     assert_ne!(comms_socket_path(&one), comms_socket_path(Path::new(r"C:\one\comms")));
+
+    let existing = tempfile::tempdir().expect("tempdir");
+    let spelt = PathBuf::from(format!("{}\\.\\", existing.path().display()));
+    assert_eq!(
+        comms_socket_path(existing.path()),
+        comms_socket_path(&spelt),
+        "a directory that exists is resolved before it is named"
+    );
 }
 
 #[cfg(unix)]
