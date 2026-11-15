@@ -293,6 +293,8 @@ fn strings<'a>(batch: &'a RecordBatch, name: &str) -> Result<&'a StringArray> {
         .with_context(|| format!("missing {name}"))
 }
 
+// Only the code lane reads `lane`, and that branch needs `code-search`. ~keep
+#[cfg_attr(not(feature = "code-search"), allow(unused_variables))]
 fn ordinals(batch: &RecordBatch, lane: SharedLane) -> Result<Vec<u32>> {
     #[cfg(feature = "code-search")]
     if matches!(lane, SharedLane::Code) {

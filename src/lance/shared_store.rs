@@ -235,7 +235,7 @@ fn decode_document(batch: &RecordBatch, out: &mut Vec<ContentHit<super::Document
     Ok(())
 }
 
-#[cfg(any(feature = "documents", feature = "code-search"))]
+#[cfg(feature = "code-search")]
 fn column<'a, T: 'static>(batch: &'a RecordBatch, name: &str) -> Result<&'a T> {
     batch
         .column_by_name(name)
