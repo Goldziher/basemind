@@ -630,8 +630,21 @@ fn find_files_returns_a_markdown_file() {
     });
 }
 
-/// `[documents.output] format = "toon"` used to switch the first `docs_search` page to TOON, which
-/// has no structured form to cut a page from: the page came back whole, unbudgeted and with no
+/// A `docs_search` test checks nothing without an embedding model, so being unable to load one is
+/// a failure, not a pass. Where no model can be loaded (an offline machine), setting
+/// `BASEMIND_TEST_ALLOW_NO_EMBEDDER` turns it into a reported skip.
+#[cfg(feature = "documents")]
+fn skip_without_embedder(what: &str) {
+    assert!(
+        std::env::var_os("BASEMIND_TEST_ALLOW_NO_EMBEDDER").is_some(),
+        "{what}. Nothing was checked. Set BASEMIND_TEST_ALLOW_NO_EMBEDDER=1 to skip this test where no \
+         embedding model can be loaded."
+    );
+    eprintln!("SKIP (BASEMIND_TEST_ALLOW_NO_EMBEDDER): {what}");
+}
+
+/// `[documents.output] format = "toon"` does not apply to `docs_search`: TOON has no structured
+/// form to cut a page from, so a page in it would come back whole, unbudgeted and with no
 /// `next_cursor`. The verb tools answer in JSON whatever that setting says.
 #[cfg(feature = "documents")]
 #[test]
@@ -684,7 +697,7 @@ fn docs_search_pages_as_json_when_the_config_asks_for_toon() {
             .expect("docs_search");
         let text = text_of(&result);
         if result.is_error == Some(true) {
-            eprintln!("SKIP: docs_search could not run here (no embedding model?): {text}");
+            skip_without_embedder(&format!("docs_search could not run (no embedding model?): {text}"));
             let _ = client.cancel().await;
             return;
         }
@@ -692,7 +705,7 @@ fn docs_search_pages_as_json_when_the_config_asks_for_toon() {
             .unwrap_or_else(|error| panic!("the page must be JSON, not TOON ({error}): {text}"));
         let hits = body["hits"].as_array().expect("hits");
         if hits.is_empty() {
-            eprintln!("SKIP: no document vectors in this environment: {body}");
+            skip_without_embedder(&format!("the scan produced no document vectors: {body}"));
             let _ = client.cancel().await;
             return;
         }

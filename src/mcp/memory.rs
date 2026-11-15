@@ -776,16 +776,25 @@ pub(super) async fn run_search_documents(
     )
 }
 
-/// Load the parent doc blob for each unique hit path through the document map (a document is not
-/// in the code file map), copy its keywords +
-/// entities onto every hit pointing at that path, and (optionally) drop hits
-/// whose parent fails an `entity_category` / `keywords_contains` filter.
+/// Keywords, entities and summary of one document.
+#[cfg(feature = "documents")]
+type DocMeta = (Vec<DocKeyword>, Vec<DocEntity>, Option<DocSummary>);
+
+/// Documents whose blobs are read under one hold of the store lock. A filtered search attaches
+/// metadata to up to [`FILTERED_FETCH_DEPTH`] hits; read in one go that is hundreds of blob reads
+/// with every writer queued behind them and no point at which a cancelled call stops.
+#[cfg(feature = "documents")]
+const DOC_METADATA_BATCH: usize = 16;
+
+/// Attach each hit's document metadata (keywords, entities, summary), looked up through the
+/// document map (a document is not in the code file map), and drop the hits whose document fails
+/// the `entity_category` / `keywords_contains` filter.
 ///
-/// We deliberately do this BEFORE the reranker so the cross-encoder only
-/// rescores survivors. Per-blob cost is bounded by the result-set size (one
-/// blob per distinct path); blobs are skipped silently when the path is
-/// no longer in the document index (e.g. file deleted between scan and
-/// query) — a missing blob is not an error.
+/// Runs BEFORE the reranker so the cross-encoder only rescores survivors. One blob is read per
+/// distinct path, [`DOC_METADATA_BATCH`] at a time: the store lock is taken for each batch and
+/// released after it, and every re-acquisition is a point where a cancelled call ends. A path no
+/// longer in the document index (deleted between scan and query) has no metadata, which is not an
+/// error.
 #[cfg(feature = "documents")]
 async fn attach_doc_metadata(
     state: &ServerState,
@@ -796,64 +805,87 @@ async fn attach_doc_metadata(
     if hits.is_empty() {
         return Ok(());
     }
-    let mut unique_paths: Vec<String> = Vec::with_capacity(hits.len());
+    let mut unique_paths: Vec<&str> = Vec::with_capacity(hits.len());
     {
         let mut seen: ahash::AHashSet<&str> = ahash::AHashSet::new();
-        for h in hits.iter() {
-            if seen.insert(h.path.as_str()) {
-                unique_paths.push(h.path.clone());
+        for hit in hits.iter() {
+            if seen.insert(hit.path.as_str()) {
+                unique_paths.push(hit.path.as_str());
             }
         }
     }
 
-    type DocMeta = (Vec<DocKeyword>, Vec<DocEntity>, Option<DocSummary>);
-    let meta: ahash::AHashMap<String, Arc<DocMeta>> = {
+    let mut meta: ahash::AHashMap<String, Arc<DocMeta>> = ahash::AHashMap::with_capacity(unique_paths.len());
+    for batch in unique_paths.chunks(DOC_METADATA_BATCH) {
         let store = state.shared.store.read().await;
-        super::index_route::blocking(|| {
-            unique_paths
-                .into_iter()
-                .filter_map(|path| {
-                    let entry = store.lookup_doc(path.as_str())?;
-                    match store.read_doc_by_hex(&entry.hash_hex) {
-                        Ok(doc) => doc.map(|doc| (path, Arc::new((doc.keywords, doc.entities, doc.summary)))),
-                        Err(error) => {
-                            tracing::warn!(path = %path, %error, "read doc blob for metadata attach failed");
-                            None
-                        }
-                    }
-                })
-                .collect()
-        })
-    };
+        meta.extend(super::index_route::blocking(|| read_doc_metadata(&store, batch)));
+    }
 
-    let cat_needle = entity_category.map(|s| s.to_lowercase());
-    let kw_needle = keywords_contains.map(|s| s.to_lowercase());
+    apply_doc_metadata(hits, &meta, entity_category, keywords_contains);
+    Ok(())
+}
+
+/// The metadata of each of `paths` that the document map still holds. Blocking: one blob read per
+/// path.
+#[cfg(feature = "documents")]
+fn read_doc_metadata(store: &crate::store::Store, paths: &[&str]) -> Vec<(String, Arc<DocMeta>)> {
+    paths
+        .iter()
+        .filter_map(|path| {
+            let entry = store.lookup_doc(path)?;
+            match store.read_doc_by_hex(&entry.hash_hex) {
+                Ok(doc) => doc.map(|doc| ((*path).to_string(), Arc::new((doc.keywords, doc.entities, doc.summary)))),
+                Err(error) => {
+                    tracing::warn!(path = %path, %error, "read doc blob for metadata attach failed");
+                    None
+                }
+            }
+        })
+        .collect()
+}
+
+/// Copy each hit's document metadata onto it, and keep only the hits whose document names an
+/// entity of a category containing `entity_category` and a keyword containing `keywords_contains`
+/// (each case-insensitive, each applied only when given). A document with no metadata fails every
+/// filter that is set.
+#[cfg(feature = "documents")]
+fn apply_doc_metadata(
+    hits: &mut Vec<DocumentSearchHit>,
+    meta: &ahash::AHashMap<String, Arc<DocMeta>>,
+    entity_category: Option<&str>,
+    keywords_contains: Option<&str>,
+) {
+    let cat_needle = entity_category.map(str::to_lowercase);
+    let kw_needle = keywords_contains.map(str::to_lowercase);
 
     hits.retain_mut(|hit| {
-        let meta_arc = meta.get(&hit.path).cloned();
+        let document = meta.get(&hit.path);
 
         if let Some(needle) = cat_needle.as_deref() {
-            let ents = meta_arc.as_ref().map(|m| m.1.as_slice()).unwrap_or(&[]);
-            if !ents.iter().any(|e| e.category.to_lowercase().contains(needle)) {
+            let entities = document.map(|m| m.1.as_slice()).unwrap_or(&[]);
+            if !entities.iter().any(|e| e.category.to_lowercase().contains(needle)) {
                 return false;
             }
         }
         if let Some(needle) = kw_needle.as_deref() {
-            let kws = meta_arc.as_ref().map(|m| m.0.as_slice()).unwrap_or(&[]);
-            if !kws.iter().any(|k| k.text.to_lowercase().contains(needle)) {
+            let keywords = document.map(|m| m.0.as_slice()).unwrap_or(&[]);
+            if !keywords.iter().any(|k| k.text.to_lowercase().contains(needle)) {
                 return false;
             }
         }
 
-        if let Some(m) = meta_arc {
+        if let Some(m) = document {
             hit.keywords = m.0.clone();
             hit.entities = m.1.clone();
             hit.summary = m.2.clone();
         }
         true
     });
-    Ok(())
 }
+
+#[cfg(all(test, feature = "documents"))]
+#[path = "memory_docs_tests.rs"]
+mod docs_tests;
 
 #[cfg(all(test, feature = "memory"))]
 mod embed_report_tests {

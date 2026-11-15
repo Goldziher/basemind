@@ -1790,11 +1790,22 @@ async fn summarizes_via_extractive_default() {
     let _ = service.cancel().await;
 }
 
+/// A `docs_search` test checks nothing without an embedding model, so being unable to load one is
+/// a failure, not a pass. Where no model can be loaded (an offline machine), setting
+/// `BASEMIND_TEST_ALLOW_NO_EMBEDDER` turns it into a reported skip.
+#[cfg(feature = "documents")]
+fn skip_without_embedder(what: &str) {
+    assert!(
+        std::env::var_os("BASEMIND_TEST_ALLOW_NO_EMBEDDER").is_some(),
+        "{what}. Nothing was checked. Set BASEMIND_TEST_ALLOW_NO_EMBEDDER=1 to skip this test where no \
+         embedding model can be loaded."
+    );
+    eprintln!("SKIP (BASEMIND_TEST_ALLOW_NO_EMBEDDER): {what}");
+}
+
 /// `docs_search` hits carry their document's keywords, and the `keywords` filter keeps the documents
-/// that have one, including a document ranked past `limit`.
-///
-/// The metadata was looked up in the code file map, where no document lives: every hit came back
-/// without keywords and any filter emptied the result.
+/// that have one, including a document ranked past `limit`. The metadata is looked up in the
+/// document map: a document is not in the code file map.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[cfg(feature = "documents")]
 async fn docs_search_attaches_keywords_and_filters_on_them() {
@@ -1842,17 +1853,17 @@ async fn docs_search_attaches_keywords_and_filters_on_them() {
         .await
         .expect("docs_search");
     if unfiltered.is_error == Some(true) {
-        eprintln!(
-            "SKIP: docs_search could not run here (no embedding model?): {}",
+        skip_without_embedder(&format!(
+            "docs_search could not run (no embedding model?): {}",
             error_text(&unfiltered)
-        );
+        ));
         let _ = service.cancel().await;
         return;
     }
     let body = decode_text(&unfiltered);
     let hits = body["hits"].as_array().expect("hits");
     if hits.is_empty() {
-        eprintln!("SKIP: no document vectors in this environment: {body}");
+        skip_without_embedder(&format!("the scan produced no document vectors: {body}"));
         let _ = service.cancel().await;
         return;
     }
