@@ -49,12 +49,14 @@ fn old_binaries() -> Vec<PathBuf> {
     let mut found: Vec<PathBuf> = entries
         .flatten()
         .filter(|entry| {
-            // 0.27 is the oldest CLI shape this test drives (`--root`, `--json`, `code files`).
+            // 0.27 is the oldest CLI shape this test drives (`--root`, `--json`, `code files`);
+            // from 0.33 a release already keeps prose and config out of the code map, so it has no
+            // old shape to upgrade from.
             let name = entry.file_name().to_string_lossy().into_owned();
             name.split('.')
                 .nth(1)
                 .and_then(|minor| minor.parse::<u32>().ok())
-                .is_some_and(|minor| minor >= 27)
+                .is_some_and(|minor| (27..33).contains(&minor))
                 && name.starts_with("0.")
         })
         .map(|entry| entry.path().join("basemind"))
