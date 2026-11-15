@@ -235,6 +235,7 @@ async fn grep_is_literal_unless_regex_is_set() {
     assert!(not_a_glob.contains("not a glob"), "{not_a_glob}");
 }
 
+#[cfg(unix)]
 const LINKED_RS: &str = "pub fn linked_needle() {}\n";
 
 /// A repository with `linked.rs` pointing at a file in a sibling directory, and that directory.
