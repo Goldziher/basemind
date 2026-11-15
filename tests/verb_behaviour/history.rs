@@ -139,6 +139,123 @@ async fn git_log_of_a_symbol_does_not_call_the_edge_of_its_window_an_introductio
     assert_eq!(churn["history"][0]["summary"], "round 15", "{churn}");
 }
 
+/// Every page of a symbol's history, following `next_cursor` until there is none.
+async fn whole_symbol_history(client: &Client, arguments: Value) -> (Vec<(String, String)>, usize) {
+    let mut changes = Vec::new();
+    let mut arguments = arguments;
+    let mut pages = 0;
+    loop {
+        pages += 1;
+        assert!(pages < 50, "the cursor must make progress");
+        let page = call(client, "git_log", arguments.clone()).await;
+        for entry in page["history"].as_array().expect("history") {
+            changes.push((
+                entry["change"].as_str().unwrap().to_string(),
+                entry["summary"].as_str().unwrap().to_string(),
+            ));
+        }
+        match page.get("next_cursor") {
+            Some(cursor) => {
+                assert!(
+                    !page["history"].as_array().unwrap().is_empty() || page["truncated_reason"] == "window",
+                    "an empty page that goes on says why: {page}"
+                );
+                arguments["cursor"] = cursor.clone();
+            }
+            None => {
+                assert!(
+                    page.get("truncated").is_none(),
+                    "the last page is the whole history: {page}"
+                );
+                return (changes, pages);
+            }
+        }
+    }
+}
+
+/// A window that ends before the history does hands back a cursor, so a change older than the
+/// first window, the introduction included, is a matter of following it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn git_log_of_a_symbol_pages_past_its_window_to_the_introduction() {
+    let (dir, client) = started_with(&[("src/steady.rs", STEADY_RS)]).await;
+    let root = dir.path();
+    for round in 1..=30 {
+        std::fs::write(
+            root.join("src/steady.rs"),
+            STEADY_RS.replace("    0\n", &format!("    {round}\n")),
+        )
+        .unwrap();
+        super::git(root, &["commit", "-qam", &format!("round {round}")]);
+    }
+
+    let first = call(
+        &client,
+        "git_log",
+        json!({ "path": "src/steady.rs", "symbol": "stable", "limit": 1 }),
+    )
+    .await;
+    assert_eq!(first["history"], json!([]), "{first}");
+    assert_eq!(first["commits_inspected"], 8, "{first}");
+    assert!(first["next_cursor"].is_string(), "31 commits touch the file: {first}");
+
+    let (stable, pages) = whole_symbol_history(
+        &client,
+        json!({ "path": "src/steady.rs", "symbol": "stable", "limit": 1 }),
+    )
+    .await;
+    assert_eq!(
+        stable,
+        [("introduced".to_string(), "init".to_string())],
+        "after {pages} pages"
+    );
+    assert_eq!(pages, 4, "31 commits in windows of 8");
+
+    let (churn, _) = whole_symbol_history(
+        &client,
+        json!({ "path": "src/steady.rs", "symbol": "churn", "limit": 3 }),
+    )
+    .await;
+    let mut expected: Vec<(String, String)> = (1..=30)
+        .rev()
+        .map(|round| ("modified".to_string(), format!("round {round}")))
+        .collect();
+    expected.push(("introduced".to_string(), "init".to_string()));
+    assert_eq!(churn, expected, "every change once, newest first, across the pages");
+}
+
+/// A function removed from the working tree still has a history. Only a name that no commit
+/// defines either is refused.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn git_log_of_a_symbol_the_working_tree_no_longer_has_reads_its_history() {
+    let (dir, client) = started_with(&[("src/steady.rs", STEADY_RS)]).await;
+    let root = dir.path();
+    std::fs::write(root.join("src/steady.rs"), "pub fn stable() -> u32 {\n    7\n}\n").unwrap();
+    super::git(root, &["commit", "-qam", "drop churn"]);
+    call(&client, "index_rescan", json!({ "paths": ["src/steady.rs"] })).await;
+    let outline = call(&client, "code_outline", json!({ "path": "src/steady.rs" })).await;
+    assert_eq!(outline["total"], 1, "the index no longer has `churn`: {outline}");
+
+    let (churn, _) = whole_symbol_history(&client, json!({ "path": "src/steady.rs", "symbol": "churn" })).await;
+    assert_eq!(
+        churn,
+        [
+            ("removed".to_string(), "drop churn".to_string()),
+            ("introduced".to_string(), "init".to_string())
+        ]
+    );
+
+    let never = call_err(
+        &client,
+        "git_log",
+        json!({ "path": "src/steady.rs", "symbol": "never_defined" }),
+    )
+    .await;
+    assert!(
+        never.contains("no symbol `never_defined` in `src/steady.rs`"),
+        "{never}"
+    );
+}
+
 /// `git_blame {symbol}` blames the lines the symbol has in the blamed revision. The span used to
 /// come from the working-tree outline, which is a different set of lines as soon as the file has
 /// changed above the symbol.

@@ -456,6 +456,11 @@ pub(super) fn run_blame_symbol(state: &ServerState, params: BlameSymbolParams) -
 
 /// The `symbol_history` operation: tree-sitter × git — the commits where a named symbol's
 /// body fingerprint actually changed (or where it was introduced / removed).
+///
+/// One call inspects a window of the commits touching the file, newest first, starting at the
+/// commit offset its cursor carries. A window that ends before the history does hands back a
+/// cursor to the commit after it, so every change back to the introduction is reachable however
+/// many commits lie in between; a page can then be short, or empty, and still not be the last.
 pub(super) fn run_symbol_history(state: &ServerState, params: SymbolHistoryParams) -> Result<CallToolResult, McpError> {
     let started = std::time::Instant::now();
     let repo = require_git_repo(state)?;
@@ -471,17 +476,23 @@ pub(super) fn run_symbol_history(state: &ServerState, params: SymbolHistoryParam
     // Which of the file's same-named definitions is meant. Line numbers differ at every revision,
     // so the choice is carried through history as "the n-th definition of that name in the file".
     // A file that is no longer indexed (deleted, renamed) has no outline to choose from and keeps
-    // the first.
+    // the first. So does a symbol the working tree no longer defines: its history is still there
+    // to read, and only a name no inspected commit defines either is a mistake in the call.
     let outline = state.shared.cache.load_full().get(&params.path).or_else(|| {
         let store = state.shared.store.try_read().ok()?;
         crate::query::file_outline(&store, &params.path)
             .ok()
             .map(std::sync::Arc::new)
     });
+    let mut absent_now: Option<McpError> = None;
     let occurrence = match outline {
         Some(l1) => {
             let source = indexed_source(state, &params.path);
-            pick_symbol(
+            let defined_now = l1
+                .symbols
+                .iter()
+                .any(|symbol| symbol.name == params.name && kind.is_none_or(|wanted| symbol.kind == wanted));
+            match pick_symbol(
                 "git_log",
                 &params.path,
                 None,
@@ -490,8 +501,14 @@ pub(super) fn run_symbol_history(state: &ServerState, params: SymbolHistoryParam
                 &params.name,
                 kind,
                 params.line,
-            )?
-            .occurrence
+            ) {
+                Ok(picked) => picked.occurrence,
+                Err(error) if !defined_now && params.line.is_none() => {
+                    absent_now = Some(error);
+                    0
+                }
+                Err(error) => return Err(error),
+            }
         }
         None => 0,
     };
@@ -499,7 +516,8 @@ pub(super) fn run_symbol_history(state: &ServerState, params: SymbolHistoryParam
     let head = head_sha(repo)?;
     let snapshot = head_snapshot_id(&head);
 
-    let skip = match params.cursor.as_ref() {
+    // The cursor is an offset into the commits touching the file, newest first.
+    let start = match params.cursor.as_ref() {
         Some(c) => {
             let (offset, snapshot_id) = c.decode_in_memory()?;
             if snapshot_id != snapshot {
@@ -518,24 +536,33 @@ pub(super) fn run_symbol_history(state: &ServerState, params: SymbolHistoryParam
                     elapsed_us: elapsed_us(started),
                 });
             }
-            offset as usize
+            usize::try_from(offset).unwrap_or(usize::MAX)
         }
         None => 0,
     };
 
-    let walk_depth = (skip.saturating_add(limit).saturating_add(1).saturating_mul(4)).min(LOG_WALK_MAX);
+    let window = limit.saturating_add(1).saturating_mul(4).min(LOG_WALK_MAX);
     // One commit past the window: it tells a used-up window from a whole history, and it is the
     // state the window's oldest commit is compared against.
-    let fetch = (walk_depth + 1) as u32;
-    let mut commits: Vec<CommitInfo> = match git_history_if_fresh(state, &head) {
-        Some(index) => index.commits_touching(&params.path, 0, fetch as usize),
-        None => state
-            .shared
-            .git_cache
-            .log(repo, &head, Some(&params.path), fetch, false)
-            .map_err(|e| McpError::internal_error(format!("log: {e}"), None))?
-            .as_ref()
-            .clone(),
+    let fetch = window + 1;
+    let indexed = git_history_if_fresh(state, &head)
+        .map(|index| index.commits_touching(&params.path, start, fetch))
+        .filter(|commits| !commits.is_empty());
+    let mut commits: Vec<CommitInfo> = match indexed {
+        Some(commits) => commits,
+        // Also the answer to an empty indexed lookup, which a failed forward returns as well.
+        None => {
+            let depth = u32::try_from(start.saturating_add(fetch)).unwrap_or(u32::MAX);
+            state
+                .shared
+                .git_cache
+                .log(repo, &head, Some(&params.path), depth, false)
+                .map_err(|e| McpError::internal_error(format!("log: {e}"), None))?
+                .iter()
+                .skip(start)
+                .cloned()
+                .collect()
+        }
     };
     let fingerprint_at = |sha: &str| -> Result<Option<Vec<u8>>, McpError> {
         let blob = repo
@@ -548,57 +575,64 @@ pub(super) fn run_symbol_history(state: &ServerState, params: SymbolHistoryParam
     };
     // Without the seed the oldest commit inspected would read as the symbol's introduction
     // whenever the symbol exists there.
-    let beyond_window = (commits.len() > walk_depth).then(|| commits.split_off(walk_depth));
+    let beyond_window = (commits.len() > window).then(|| commits.split_off(window));
     let window_exhausted = beyond_window.is_some();
     let seed = match beyond_window.as_deref().and_then(<[CommitInfo]>::first) {
         Some(older) => fingerprint_at(&older.sha)?,
         None => None,
     };
 
-    let chronological: Vec<CommitInfo> = commits.iter().cloned().rev().collect();
-
-    let mut history = Vec::new();
+    // Oldest first, each change tagged with its commit's offset in the newest-first list.
+    let mut history: Vec<(usize, SymbolHistoryEntry)> = Vec::new();
     let mut prev_existed = seed.is_some();
     let mut prev_fp: Option<Vec<u8>> = seed;
-    let mut inspected: u32 = 0;
-    for c in chronological {
-        inspected += 1;
+    let inspected = commits.len();
+    for (index, c) in commits.iter().enumerate().rev() {
         let fingerprint = fingerprint_at(&c.sha)?;
         let change = match (prev_existed, fingerprint.as_ref()) {
             (false, Some(_)) => Some("introduced"),
             (true, None) => Some("removed"),
-            (true, Some(curr)) => {
-                if prev_fp.as_deref() != Some(curr.as_slice()) {
-                    Some("modified")
-                } else {
-                    None
-                }
-            }
+            (true, Some(curr)) => (prev_fp.as_deref() != Some(curr.as_slice())).then_some("modified"),
             (false, None) => None,
         };
-        if let Some(kind_str) = change {
-            history.push(SymbolHistoryEntry {
-                sha: c.sha.clone(),
-                short_sha: c.short_sha.clone(),
-                summary: c.summary.clone(),
-                author: c.author.clone(),
-                author_time_unix: c.author_time_unix,
-                change: kind_str,
-            });
+        if let Some(change) = change {
+            history.push((
+                start + index,
+                SymbolHistoryEntry {
+                    sha: c.sha.clone(),
+                    short_sha: c.short_sha.clone(),
+                    summary: c.summary.clone(),
+                    author: c.author.clone(),
+                    author_time_unix: c.author_time_unix,
+                    change,
+                },
+            ));
         }
         prev_existed = fingerprint.is_some();
         prev_fp = fingerprint;
     }
     history.reverse();
 
-    let total_history = history.len();
-    let page: Vec<SymbolHistoryEntry> = history.into_iter().skip(skip).take(limit).collect();
+    if let Some(error) = absent_now
+        && start == 0
+        && history.is_empty()
+        && !window_exhausted
+    {
+        return Err(error);
+    }
+
+    let offsets: Vec<usize> = history.iter().map(|(offset, _)| *offset).collect();
+    let page: Vec<SymbolHistoryEntry> = history.into_iter().map(|(_, entry)| entry).take(limit).collect();
     let budget = super::budget::apply_budget(page, params.max_tokens);
     let (page, budgeted) = (budget.items, budget.budgeted);
-    let has_more = total_history > skip + page.len();
-    let next_cursor = has_more.then(|| super::cursor::Cursor::encode_in_memory((skip + page.len()) as u64, snapshot));
-
-    let truncated_reason = if window_exhausted {
+    // The next page starts at the first change this one left out, or past the window when the
+    // window held no more changes and the history goes on.
+    let next_offset = match offsets.get(page.len()) {
+        Some(left_out) => Some(*left_out),
+        None => window_exhausted.then_some(start + window),
+    };
+    let window_edge = window_exhausted && offsets.len() <= page.len();
+    let truncated_reason = if window_edge {
         Some("window")
     } else if repo.is_shallow() {
         Some("shallow_clone")
@@ -609,13 +643,13 @@ pub(super) fn run_symbol_history(state: &ServerState, params: SymbolHistoryParam
         path: params.path,
         name: params.name,
         kind: kind.map(|k| kind_to_str(k).to_string()),
-        commits_inspected: inspected,
+        commits_inspected: u32::try_from(inspected).unwrap_or(u32::MAX),
         history: page,
         hash_mode: hash_mode.as_str(),
         budgeted,
         truncated: truncated_reason.is_some(),
         truncated_reason,
-        next_cursor,
+        next_cursor: next_offset.map(|offset| super::cursor::Cursor::encode_in_memory(offset as u64, snapshot)),
         cursor_invalidated: false,
         elapsed_us: elapsed_us(started),
     })

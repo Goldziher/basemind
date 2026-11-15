@@ -598,12 +598,13 @@ pub(in crate::mcp) struct SymbolHistoryResponse {
     /// The history may reach further back than what is listed.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub truncated: bool,
-    /// `window`: older commits touch the file than the `commits_inspected` most recent ones, so
-    /// the symbol's earlier changes (and its introduction) are not listed; a larger `limit` widens
-    /// the window. `shallow_clone`: the clone holds no older history.
+    /// `window`: this page inspected `commits_inspected` commits touching the file and older ones
+    /// remain, so the symbol's earlier changes (and its introduction) are on later pages:
+    /// `next_cursor` continues with the next window, even from an empty page. `shallow_clone`: the
+    /// clone holds no older history.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub truncated_reason: Option<&'static str>,
-    /// Opaque cursor to pass back on the next call when more history entries are available.
+    /// Continues with older commits: the changes this page left out, or the next window.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<Cursor>,
     /// True when the caller passed a `cursor` minted against a different HEAD sha (HEAD
