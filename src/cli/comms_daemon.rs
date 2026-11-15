@@ -129,6 +129,9 @@ pub fn run() -> Result<()> {
             Err(error) => return Err(anyhow::anyhow!("acquire daemon lock: {error}")),
         };
 
+        // Held until this block returns: a daemon that is killed leaves the marker for the next.
+        let _hosting = crate::scan_evidence::HostingMarker::begin();
+
         let listener = match singleton::bind_listener(&paths.socket_path, singleton::probe_alive) {
             Ok(listener) => listener,
             Err(singleton::SingletonError::AlreadyRunning(p)) => {

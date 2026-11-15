@@ -79,8 +79,8 @@ fn note_unclean_scan(cache_dir: &Path) {
     }
 }
 
-/// Whether the next full scan of this workspace must validate each blob it would otherwise trust
-/// for merely existing.
+/// Whether the next scan of this workspace must be a full one that validates each blob it would
+/// otherwise trust for merely existing.
 pub fn blobs_need_verifying(cache_dir: &Path) -> bool {
     cache_dir.join(VERIFY_BLOBS_FILE).exists()
 }
@@ -88,6 +88,78 @@ pub fn blobs_need_verifying(cache_dir: &Path) -> bool {
 /// A full scan validated every blob it kept: withdraw the request.
 pub fn blobs_verified(cache_dir: &Path) {
     let _ = std::fs::remove_file(cache_dir.join(VERIFY_BLOBS_FILE));
+}
+
+/// Directory under the data home with one file per process that hosts workspaces, named by pid.
+const HOSTING_DIR: &str = "hosting";
+
+/// Set when this process found the marker of a host that never retracted it.
+static EARLIER_HOST_DIED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The claim of a process that hosts workspaces for others (the daemon): written when it starts
+/// hosting, removed when it stops cleanly. A scan's breadcrumb covers only the scan in flight; this
+/// covers everything else a host does between scans, and the scan that finished seconds before the
+/// power went. A marker whose process is gone means blobs written since may be torn, in any
+/// workspace of the shared store.
+#[derive(Debug)]
+pub struct HostingMarker {
+    path: PathBuf,
+}
+
+impl HostingMarker {
+    /// Begin hosting under the data home. `None` when the marker could not be written: evidence is
+    /// never a precondition for work.
+    #[cfg(any(unix, windows))]
+    pub fn begin() -> Option<Self> {
+        let (marker, earlier_died) = Self::begin_in(&cache_root().join(HOSTING_DIR));
+        if earlier_died {
+            EARLIER_HOST_DIED.store(true, std::sync::atomic::Ordering::Release);
+        }
+        marker
+    }
+
+    /// [`begin`](Self::begin) against an explicit directory. Also returns whether a marker of a
+    /// process that is no longer alive was found there (and removed: it is reported once).
+    #[cfg(any(unix, windows))]
+    pub fn begin_in(dir: &Path) -> (Option<Self>, bool) {
+        if std::fs::create_dir_all(dir).is_err() {
+            return (None, false);
+        }
+        let mut earlier_died = false;
+        for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+            let pid = entry.file_name().to_str().and_then(|name| name.parse::<u32>().ok());
+            if pid.is_some_and(|pid| pid != std::process::id() && !crate::daemon_lock::pid_is_live(pid)) {
+                earlier_died = true;
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+        let path = dir.join(std::process::id().to_string());
+        let marker = std::fs::write(&path, b"").is_ok().then_some(Self { path });
+        (marker, earlier_died)
+    }
+}
+
+impl Drop for HostingMarker {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+/// Called when a host opens a workspace: if an earlier host died without stopping, ask for this
+/// workspace's blobs to be verified by its next scan. Once per workspace per process, so a
+/// workspace evicted and reopened after its verifying scan is not verified again.
+pub fn workspace_opened_by_host(cache_dir: &Path) {
+    static ASKED: Mutex<Option<ahash::AHashSet<PathBuf>>> = Mutex::new(None);
+    if !EARLIER_HOST_DIED.load(std::sync::atomic::Ordering::Acquire) {
+        return;
+    }
+    let mut asked = ASKED.lock().unwrap_or_else(PoisonError::into_inner);
+    if asked
+        .get_or_insert_with(ahash::AHashSet::new)
+        .insert(cache_dir.to_path_buf())
+    {
+        let _ = std::fs::write(cache_dir.join(VERIFY_BLOBS_FILE), b"");
+    }
 }
 
 /// A live scan's breadcrumb. Hold it for the duration of the pass; dropping it retracts the claim.
@@ -544,5 +616,45 @@ mod tests {
     #[test]
     fn a_snapshot_can_be_logged_without_a_subscriber_installed() {
         log_memory_snapshot(Path::new("/repo"), Duration::from_secs(7));
+    }
+
+    /// A host that stopped cleanly leaves nothing; one that died leaves its marker, and the next
+    /// host to start finds it, once.
+    #[cfg(unix)]
+    #[test]
+    fn a_host_that_died_is_noticed_by_the_next_one_and_a_clean_stop_is_not() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (marker, earlier_died) = HostingMarker::begin_in(dir.path());
+        assert!(!earlier_died, "nothing hosted here before");
+        let own = dir.path().join(std::process::id().to_string());
+        assert!(own.exists());
+        drop(marker);
+        assert!(!own.exists(), "a clean stop retracts the marker");
+
+        // A pid no process has: what a host killed without warning leaves behind.
+        let dead = dir.path().join((u32::MAX - 11).to_string());
+        std::fs::write(&dead, b"").expect("plant");
+        let (_marker, earlier_died) = HostingMarker::begin_in(dir.path());
+        assert!(earlier_died, "the dead host's marker is found");
+        assert!(!dead.exists(), "and reported once");
+        let (_again, earlier_died) = HostingMarker::begin_in(dir.path());
+        assert!(!earlier_died);
+    }
+
+    /// After an earlier host died, each workspace a host opens is asked to verify its blobs, once.
+    #[test]
+    fn a_workspace_opened_after_a_dead_host_is_asked_to_verify_once() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        workspace_opened_by_host(dir.path());
+        assert!(!blobs_need_verifying(dir.path()), "no host died");
+
+        EARLIER_HOST_DIED.store(true, std::sync::atomic::Ordering::Release);
+        workspace_opened_by_host(dir.path());
+        assert!(blobs_need_verifying(dir.path()));
+
+        blobs_verified(dir.path());
+        workspace_opened_by_host(dir.path());
+        assert!(!blobs_need_verifying(dir.path()), "verified once, not on every reopen");
+        EARLIER_HOST_DIED.store(false, std::sync::atomic::Ordering::Release);
     }
 }

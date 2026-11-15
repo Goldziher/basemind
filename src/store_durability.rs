@@ -109,7 +109,7 @@ impl Store {
         self.index_rebuild_needed
             || self.index.rebuild_pending
             || (self.index.files.is_empty() && self.index.doc_files.is_empty())
-            || crate::scan_evidence::blobs_need_verifying(&self.basemind_dir)
+            || (self.layered_read.is_none() && crate::scan_evidence::blobs_need_verifying(&self.basemind_dir))
     }
 
     /// Open, for the scan about to write into this store, the index a read-only open left alone
