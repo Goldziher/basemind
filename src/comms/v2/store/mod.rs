@@ -57,7 +57,8 @@
 //! wrong and posts are stamped from the clock again, so a post made while the clock ran ahead
 //! holds nothing after it in the future. Timestamps therefore do not order messages: `seq` does
 //! within a thread and the post counter does across threads, and nothing reads a timestamp for
-//! order. The one index kept by time, `post_order`, is keyed by the stamp for that reason.
+//! order. The two indexes kept by time, `post_order` and `expiry`, serve the sweep alone, which
+//! needs records in the order they expire.
 //!
 //! A thread's last activity is the latest stamp of any post made to it and never moves back
 //! ([`rules::last_activity`]): a post stamped while the clock read behind expires early, alone,
