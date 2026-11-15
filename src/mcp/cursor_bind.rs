@@ -30,13 +30,20 @@ const SEPARATOR: char = '.';
 
 /// The arguments of a paginated verb tool.
 pub(super) trait Paged: ToolArgs + Serialize {
+    /// `(field, value)` for each string argument whose omission the tool reads as that value.
+    /// Passing the default explicitly selects the same list as leaving it out, so the two must
+    /// bind a cursor alike. Each entry mirrors the default applied in the tool's body.
+    const DEFAULTS: &'static [(&'static str, &'static str)] = &[];
+
     /// The `cursor` argument.
     fn cursor_mut(&mut self) -> &mut Option<Cursor>;
 }
 
 macro_rules! paged {
-    ($($params:ty),+ $(,)?) => {
+    ($($params:ty $(=> [$(($field:literal, $default:literal)),+ $(,)?])?),+ $(,)?) => {
         $(impl Paged for $params {
+            $(const DEFAULTS: &'static [(&'static str, &'static str)] = &[$(($field, $default)),+];)?
+
             fn cursor_mut(&mut self) -> &mut Option<Cursor> {
                 &mut self.cursor
             }
@@ -48,13 +55,13 @@ paged!(
     super::types_tools::CodeOutlineParams,
     super::types_tools::CodeSymbolsParams,
     super::types_tools::CodeGrepParams,
-    super::types_tools::CodeSearchParams,
-    super::types_tools::CodeRefsParams,
+    super::types_tools::CodeSearchParams => [("lane", "hybrid")],
+    super::types_tools::CodeRefsParams => [("relation", "callers"), ("match", "exact")],
     super::types_tools::FindFilesToolParams,
     super::types_tools::DocsSearchParams,
     super::types_tools::GitLogParams,
-    super::types_tools::GitBlameParams,
-    super::types_tools::MemorySearchToolParams,
+    super::types_tools::GitBlameParams => [("rev", "HEAD")],
+    super::types_tools::MemorySearchToolParams => [("visibility", "group")],
 );
 
 /// The error for a cursor that outlived the index or history it was cut from.
@@ -90,14 +97,20 @@ fn fnv1a(mut hash: u32, bytes: &[u8]) -> u32 {
 }
 
 /// Identity of the list a call pages through: the tool and every argument that selects it. An
-/// absent, `null` or `false` argument is the same query as one that omits it.
+/// absent, `null` or `false` argument, or one holding its default ([`Paged::DEFAULTS`]), is the
+/// same query as one that omits it.
 fn query_id<T: Paged>(params: &T) -> u32 {
     let mut hash = fnv1a(0x811c_9dc5, T::TOOL.as_bytes());
     let Ok(Value::Object(arguments)) = serde_json::to_value(params) else {
         return hash;
     };
     for (key, value) in &arguments {
-        if PAGING_KEYS.contains(&key.as_str()) || value.is_null() || *value == Value::Bool(false) {
+        let is_default = || {
+            T::DEFAULTS
+                .iter()
+                .any(|(field, default)| field == key && value.as_str() == Some(default))
+        };
+        if PAGING_KEYS.contains(&key.as_str()) || value.is_null() || *value == Value::Bool(false) || is_default() {
             continue;
         }
         hash = fnv1a(hash, &[0]);
@@ -204,6 +217,59 @@ mod tests {
     fn an_omitted_flag_and_a_false_one_are_the_same_query() {
         assert_eq!(query_id(&symbols("x", None)), query_id(&symbols("x", Some(false))));
         assert_ne!(query_id(&symbols("x", None)), query_id(&symbols("x", Some(true))));
+    }
+
+    /// The defaults are the ones the tool bodies apply: `Relation::parse`, `Matching::parse`, the
+    /// `code_search` lane, `Visibility::default` and the blame revision.
+    #[test]
+    fn an_omitted_argument_and_its_explicit_default_are_the_same_query() {
+        use crate::mcp::strict::parse;
+        use crate::mcp::types_tools::{CodeRefsParams, CodeSearchParams, GitBlameParams, MemorySearchToolParams};
+
+        fn id<T: Paged>(arguments: serde_json::Value) -> u32 {
+            query_id(&parse::<T>(arguments).expect("valid arguments"))
+        }
+
+        let refs = id::<CodeRefsParams>(json!({ "name": "x" }));
+        assert_eq!(
+            refs,
+            id::<CodeRefsParams>(json!({ "name": "x", "relation": "callers" }))
+        );
+        assert_eq!(refs, id::<CodeRefsParams>(json!({ "name": "x", "match": "exact" })));
+        assert_eq!(
+            refs,
+            id::<CodeRefsParams>(json!({ "name": "x", "relation": "callers", "match": "exact" }))
+        );
+        assert_ne!(refs, id::<CodeRefsParams>(json!({ "name": "x", "match": "substring" })));
+        assert_ne!(
+            refs,
+            id::<CodeRefsParams>(json!({ "name": "x", "relation": "importers" }))
+        );
+        assert_ne!(refs, id::<CodeRefsParams>(json!({ "name": "callers" })));
+
+        let search = id::<CodeSearchParams>(json!({ "query": "x" }));
+        assert_eq!(
+            search,
+            id::<CodeSearchParams>(json!({ "query": "x", "lane": "hybrid" }))
+        );
+        assert_ne!(
+            search,
+            id::<CodeSearchParams>(json!({ "query": "x", "lane": "keyword" }))
+        );
+
+        let notes = id::<MemorySearchToolParams>(json!({ "prefix": "a/" }));
+        assert_eq!(
+            notes,
+            id::<MemorySearchToolParams>(json!({ "prefix": "a/", "visibility": "group" }))
+        );
+        assert_ne!(
+            notes,
+            id::<MemorySearchToolParams>(json!({ "prefix": "a/", "visibility": "individual" }))
+        );
+
+        let blame = id::<GitBlameParams>(json!({ "path": "a.rs" }));
+        assert_eq!(blame, id::<GitBlameParams>(json!({ "path": "a.rs", "rev": "HEAD" })));
+        assert_ne!(blame, id::<GitBlameParams>(json!({ "path": "a.rs", "rev": "HEAD~1" })));
     }
 
     #[test]
