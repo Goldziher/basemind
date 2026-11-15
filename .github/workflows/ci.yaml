@@ -217,6 +217,13 @@ jobs:
       # ~keep on sys.path), so this also fails when the checked-in generated output is missing.
       - name: pytest
         run: uv run --no-project --with pytest --with mcp==1.28.1 python -m pytest pip-package-hermes/tests
+      # ~keep The plugin launcher and the session-start hook are shell scripts no cargo test reaches.
+      # ~keep The session-start tests skip themselves without `jq`, so its absence must fail the step.
+      - name: pytest (plugin launcher and session-start hook)
+        run: |
+          set -euo pipefail
+          command -v jq
+          uv run --no-project --with pytest python -m pytest -v tests/test_mcp_launch_prune.py tests/test_session_start_hook.py
       - name: Build and validate the wheel metadata
         run: |
           set -euo pipefail
