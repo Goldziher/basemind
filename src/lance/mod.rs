@@ -191,7 +191,8 @@ impl LanceStore {
     /// Open (or initialise) the lance store rooted at `dir`. If a pre-existing
     /// meta.json reports a different `(dim, embedding_model, schema_ver)` triple, the
     /// entire dir is wiped and rebuilt before the connection opens — unless its `schema_ver`
-    /// is newer than this binary's, which fails the open and leaves the dir untouched.
+    /// is newer than this binary's, which fails the open and leaves the dir untouched. A dir
+    /// with tables and no meta.json is emptied too.
     pub fn open(dir: &Path, dim: u16, embedding_model: &str) -> Result<Self> {
         std::fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
         let meta_path = dir.join(META_FILE);
@@ -201,6 +202,12 @@ impl LanceStore {
             schema_ver: MEMORY_SCHEMA_VER,
         };
         wipe_on_mismatch(dir, &meta_path, &expected)?;
+        // meta.json goes in before any table. Tables beside no meta.json have no known model: they
+        // are what an open that died before its meta write left, and are removed, not adopted.
+        if !meta_path.exists() {
+            remove_entries(dir, &meta_path, &remove_entry)?;
+            write_meta(&meta_path, &expected)?;
+        }
 
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -482,23 +489,33 @@ fn write_meta(meta_path: &Path, meta: &LanceMeta) -> Result<()> {
     std::fs::rename(&tmp, meta_path).with_context(|| format!("write {}", meta_path.display()))
 }
 
+/// The one field of `meta.json` every layout of it has had. Read on its own, so a file whose other
+/// fields this binary cannot parse still says which basemind wrote it.
+#[derive(Deserialize)]
+struct MetaVersion {
+    schema_ver: u32,
+}
+
 fn wipe_on_mismatch(dir: &Path, meta_path: &Path, expected: &LanceMeta) -> Result<()> {
     if !meta_path.exists() {
         return Ok(());
     }
     let bytes = std::fs::read(meta_path).with_context(|| format!("read {}", meta_path.display()))?;
-    // An unreadable meta.json says nothing about the tables beside it, which is a mismatch, not a
-    // reason to fail every open of a store that is only a cache.
+    // A newer store is refused before anything else is asked of its meta.json: a newer layout
+    // need not parse as this one, and a parse failure must not read as leave to wipe it.
+    if let Ok(MetaVersion { schema_ver }) = serde_json::from_slice(&bytes)
+        && schema_ver > expected.schema_ver
+    {
+        return Err(anyhow!(
+            "lance store at {} written by a newer basemind (schema {schema_ver}); this binary understands {} — upgrade basemind",
+            dir.display(),
+            expected.schema_ver
+        ));
+    }
+    // A meta.json with no readable version says nothing about the tables beside it, which is a
+    // mismatch, not a reason to fail every open of a store that is only a cache.
     match serde_json::from_slice::<LanceMeta>(&bytes) {
         Ok(actual) if actual == *expected => return Ok(()),
-        Ok(actual) if actual.schema_ver > expected.schema_ver => {
-            return Err(anyhow!(
-                "lance store at {} written by a newer basemind (schema {}); this binary understands {} — upgrade basemind",
-                dir.display(),
-                actual.schema_ver,
-                expected.schema_ver
-            ));
-        }
         Ok(actual) => tracing::warn!(
             old_dim = actual.dim,
             new_dim = expected.dim,
@@ -512,20 +529,28 @@ fn wipe_on_mismatch(dir: &Path, meta_path: &Path, expected: &LanceMeta) -> Resul
         Err(error) => tracing::warn!(%error, "lance meta.json is unreadable — wiping {}", dir.display()),
     }
     // meta.json goes last: while it is there a wipe that was cut short is seen and finished by the
-    // next open. Removed first, its absence would adopt the old tables under the new model.
+    // next open.
+    remove_entries(dir, meta_path, &remove_entry)?;
+    std::fs::remove_file(meta_path).with_context(|| format!("remove {}", meta_path.display()))
+}
+
+/// Remove every entry of `dir` but `keep`, through `remove`.
+fn remove_entries(dir: &Path, keep: &Path, remove: &dyn Fn(&Path) -> std::io::Result<()>) -> Result<()> {
     for entry in std::fs::read_dir(dir).with_context(|| format!("read_dir {}", dir.display()))? {
-        let entry = entry.context("entry")?;
-        let p = entry.path();
-        if p == meta_path {
-            continue;
-        }
-        if p.is_dir() {
-            std::fs::remove_dir_all(&p).with_context(|| format!("remove {}", p.display()))?;
-        } else {
-            std::fs::remove_file(&p).with_context(|| format!("remove {}", p.display()))?;
+        let path = entry.context("entry")?.path();
+        if path != keep {
+            remove(&path).with_context(|| format!("remove {}", path.display()))?;
         }
     }
-    std::fs::remove_file(meta_path).with_context(|| format!("remove {}", meta_path.display()))
+    Ok(())
+}
+
+fn remove_entry(path: &Path) -> std::io::Result<()> {
+    if path.is_dir() {
+        std::fs::remove_dir_all(path)
+    } else {
+        std::fs::remove_file(path)
+    }
 }
 
 async fn ensure_table(
