@@ -853,8 +853,8 @@ Linux, `~/Library/Application Support/basemind` on macOS, `%APPDATA%\basemind\da
 
 ```text
 comms/
-  g1/                 protocol generation 1 (RENDEZVOUS_GENERATION in src/comms/singleton.rs)
-    comms.sock        Unix socket; on Windows the pipe \\.\pipe\basemind-comms-<USER>-g1-<hash of this dir>
+  g1/                 protocol generation 1 (RENDEZVOUS_GENERATION in src/daemon_lock.rs)
+    comms.sock        Unix socket; on Windows the pipe \\.\pipe\basemind-comms-<USER>-<hash of this dir>
     daemon.lock       single-owner flock, held for the daemon's lifetime
     daemon.pid        the holder's record
     store.fjall/      threads, messages, agent roster
@@ -872,12 +872,35 @@ invisible to binaries already released into the current one; a new generation st
 comms store, and the previous generation's daemon runs until its own sessions end. Directories of
 other generations are not removed automatically.
 
+The machine registry of live daemons is scoped the same way: a daemon registers under
+`<data_home>/daemons/g1/`, where a release up to 0.33, which reads only the files directly in
+`daemons/`, does not see it. `comms stop --all` and `comms doctor` (`--probe` included) list and
+address the daemons of their own generation only. The ceiling on live daemons (`MAX_LIVE_DAEMONS`)
+counts every generation's, by reading their registry records and never by contacting them.
+
+Three things are not per generation, and bound what coexistence gives:
+
+- **The workspace stores.** The code index, memory notes, vectors and git history are keyed by
+  workspace or repository group and admit one process. When daemons of two generations want the
+  same workspace, the first holds it and the second serves no index, memory or git history for it
+  until the first exits.
+- **The plugin launcher of 0.33 and older.** It still kills every basemind process of another
+  version started from the plugin cache, on each of its own launches. Coexistence is complete only
+  once no such plugin is installed.
+- **The HTTP front-end's default port.** With `BASEMIND_ALLOW_HTTP`, each daemon prefers
+  `127.0.0.1:51786`; the second to start binds an OS-assigned port and records it in its own
+  `http.addr`. An address set with `BASEMIND_HTTP_ADDR` is never substituted.
+
 Inside one generation there is one daemon, and a client that finds a daemon from another build never
-signals one that answers: a newer daemon is used when it speaks the client's protocol and is
-otherwise reported (`update this basemind`); an older one is asked to stop and, if it refuses
-because it is serving other sessions, is used when the protocol matches and reported otherwise.
-SIGTERM and SIGKILL are reserved for a daemon that has stopped answering and that the generation's
-`daemon.pid` names. The full table is the module doc of `src/comms/singleton.rs`.
+signals one that answers. A daemon of the same or a newer release is never asked to stop: it is
+used, or, when it is newer and speaks another protocol, reported (`update this basemind`). An older
+one is asked to stop and, if it refuses because it is serving other sessions, is used when the
+protocol matches and reported otherwise; until it goes, clients of the newer build on another
+protocol have no daemon, and a `basemind serve` relay answers requests with that error while it
+retries with a growing back-off. A daemon that closed its socket gets the whole exit window to
+leave. SIGTERM and SIGKILL are reserved for a process still there after it, silent to `Stop` and
+`Ping`, that the generation's `daemon.pid` names at that moment. The full table is the module doc
+of `src/comms/singleton.rs`.
 
 ### Daemon lifecycle and resource containment
 
@@ -907,8 +930,8 @@ ceiling is real rather than merely configured — ships at `docs/systemd/basemin
 ### Request correlation, timeouts and the daemon log
 
 Every client request after `Hello` travels as a `Call { id, request }` and is answered by a
-`Reply { id, response }` (since protocol version 4; the current version is 5; `ensure_daemon` replaces an older daemon on its
-version check, and a skewed peer fails `Hello` with `proto_skew`). A client that abandons a request
+`Reply { id, response }` (since protocol version 4; the current version is 5; `ensure_daemon` asks
+an older daemon to stop on its version check, and a skewed peer fails `Hello` with `proto_skew`). A client that abandons a request
 mid-flight (a timeout, a cancelled tool call) therefore cannot mistake the late reply for the next
 request's answer: stale ids are discarded, and only a drop in the middle of writing a frame forces
 a reconnect. Bare requests (status probes, `Hello`) still get an uncorrelated `Response`.

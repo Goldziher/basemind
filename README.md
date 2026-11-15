@@ -583,7 +583,9 @@ lists the two commands that verify the ceiling is real rather than merely config
 The daemon can additionally serve MCP over streamable HTTP on loopback, but that front-end is
 **opt-in**: it binds only when `BASEMIND_ALLOW_HTTP` is truthy in the daemon's environment, and every
 request must then present the bearer token published as the second line of `<comms_dir>/http.addr`
-(mode `0600`; `<comms_dir>` is the generation directory, `comms/g1/` under the data directory). Plugin manifests and the CLI use the stdio transport and need none of this.
+(mode `0600`; `<comms_dir>` is the generation directory, `comms/g1/` under the data directory). The
+first line of that file is the bound address: the default port is `51786`, but a daemon that finds it
+in use binds another. Plugin manifests and the CLI use the stdio transport and need none of this.
 
 </details>
 
@@ -1199,8 +1201,8 @@ after handling it so each thread's inbox cursor advances independently.
 
 | Command | Purpose |
 |---|---|
-| `daemon` / `start` / `stop [--all]` / `status` | The broker daemon: run it, ensure it, stop it (`--all` stops every live daemon on the machine), or inspect pid / version / uptime. |
-| `doctor [--probe --clear-fatal]` | List every live daemon on the machine (pid / comms dir / version / uptime), pruning dead registry entries, and flag a pile-up over the ceiling (`BASEMIND_MAX_DAEMONS`, default 8). `--probe` also asks each daemon whether it can serve; `--clear-fatal` acknowledges a recorded fatal store error. |
+| `daemon` / `start` / `stop [--all]` / `status` | The broker daemon: run it, ensure it, stop it (`--all` stops every live daemon of this version's protocol generation on the machine), or inspect pid / version / uptime. |
+| `doctor [--probe --clear-fatal]` | List every live daemon of this version's protocol generation on the machine (pid / comms dir / version / uptime), pruning dead registry entries, and flag a pile-up over the ceiling (`BASEMIND_MAX_DAEMONS`, default 8). `--probe` also asks each daemon whether it can serve; `--clear-fatal` acknowledges a recorded fatal store error. |
 
 **Workspace (`basemind workspace`, `--features comms`)**
 

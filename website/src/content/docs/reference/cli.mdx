@@ -246,9 +246,9 @@ basemind comms doctor [--probe --clear-fatal]
 |---|---|
 | `daemon` | Run the broker loop in the foreground: bind the singleton socket, serve front-ends, block until shutdown. |
 | `start` | Ensure the daemon is running (spawn if needed); no-op when already alive. |
-| `stop [--all]` | Ask the running daemon to drain and stop. `--all` stops every live daemon registered on this machine, not just the current one. |
+| `stop [--all]` | Ask the running daemon to drain and stop. `--all` stops every live daemon of this version's protocol generation on this machine, not just the current one; a 0.33 daemon is stopped with the 0.33 binary. |
 | `status` | Report the daemon's pid / version / uptime / room + subscriber counts. |
-| `doctor [--probe --clear-fatal]` | List every live daemon on this machine (pid / comms dir / version / uptime), flag a pile-up over the ceiling, and prune dead registry entries. Reports process liveness only unless `--probe` is given, which also asks each daemon whether it can serve. `--clear-fatal` acknowledges and deletes the recorded fatal store error for this comms dir. |
+| `doctor [--probe --clear-fatal]` | List every live daemon of this version's protocol generation on this machine (pid / comms dir / version / uptime), flag a pile-up over the ceiling, and prune dead registry entries. Reports process liveness only unless `--probe` is given, which also asks each daemon whether it can serve. `--clear-fatal` acknowledges and deletes the recorded fatal store error for this comms dir. |
 
 ## Other commands
 

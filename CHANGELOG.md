@@ -234,21 +234,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Two installed basemind versions no longer kill each other's daemon. The daemon's socket (named pipe
   on Windows), lock, pidfile, log, `http.addr` and comms store moved from the comms directory into a
-  protocol-generation subdirectory, `comms/g1/`, and a binary only looks inside its own generation, so a 0.33
-  install and a newer one each keep their own daemon. `BASEMIND_COMMS_DIR` still names the comms
-  directory; the generation applies inside it. The comms store starts empty in the new generation,
-  and the files of the old layout are left in place. See
+  protocol-generation subdirectory, `comms/g1/`, and its record in the daemon registry moved from
+  `daemons/` to `daemons/g1/`. A binary only looks inside its own generation, so a 0.33 install and
+  a newer one each keep their own daemon and neither can reach the other's.
+  `BASEMIND_COMMS_DIR` still names the comms directory; the generation applies inside it, which
+  leaves a long override three bytes less of the Unix socket path limit. The comms store starts
+  empty in the new generation, and the files of the old layout, the old message store included,
+  are left in place. Limits: a 0.33 plugin launcher still kills other versions' processes started
+  from the plugin cache, so this is fully effective only once no 0.33 plugin is installed; and the
+  workspace index, memory and git-history stores are not per generation, so a second daemon cannot
+  serve a workspace the first one holds. See
   [`docs/UPGRADING.md`](docs/UPGRADING.md#running-two-basemind-versions-side-by-side).
-- Within a generation, bringing up the daemon no longer signals one that answers. A newer daemon is
-  used when it speaks this binary's protocol and is otherwise reported with what to update; an older
-  one is asked to stop, and a `daemon_busy` refusal is honoured instead of being followed by SIGTERM
-  and SIGKILL. Signals are sent only to a daemon that has stopped answering and that the generation's
-  `daemon.pid` names. `basemind comms stop` now reaches a daemon that speaks another protocol version.
+- `basemind comms stop --all` and `basemind comms doctor` (with `--probe` too) cover the daemons of
+  their own protocol generation only, and can no longer stop or force-terminate a 0.33 daemon.
+  `doctor` reports how many daemons of other generations it counted. The ceiling on live daemons
+  counts every generation's, from their registry records. On Windows the named pipe is named from a
+  BLAKE3 hash of the generation directory.
+- Within a generation, bringing up the daemon no longer signals one that answers. A daemon of the
+  same or a newer release is never asked to stop: it is used, or, when it is newer and speaks another
+  protocol, reported with what to update. An older one is asked to stop, and a `daemon_busy` refusal
+  is honoured instead of being followed by SIGTERM and SIGKILL; a store-error refusal is reported
+  with the failing store and the commands that reclaim the daemon. A daemon that closed its socket
+  gets the whole exit window to leave, so a second client arriving during a drain no longer signals
+  it. Signals are sent only to a process still there afterwards, silent to `Stop` and `Ping`, that
+  the generation's `daemon.pid` then names. `basemind comms stop` now reaches a daemon that speaks
+  another protocol version, waits the normal stop timeout for its answer and honours a refusal.
+- `basemind serve` no longer retries forever, silently, when it cannot get a daemon. A newer daemon
+  on another protocol ends the session: pending and following requests are answered with the reason
+  and the process exits non-zero. An older daemon that will not stop is logged at warn, retried with
+  a back-off growing to a minute and asked to stop at most once a minute; requests arriving
+  meanwhile are answered with the reason instead of left unread.
+- With `BASEMIND_ALLOW_HTTP`, a daemon that finds the default port `51786` in use (by the daemon of
+  another protocol generation, for one) binds an OS-assigned port and records it in `http.addr`
+  instead of running without its HTTP front-end. An address set with `BASEMIND_HTTP_ADDR` is still
+  bound as given or not at all.
 - The plugin launcher no longer stops other versions' processes. On every launch it sent SIGTERM and
   then SIGKILL to each `basemind` of a different cached version, including the `serve` and daemon of a
   session still open elsewhere, and deleted their binaries; that session's host then relaunched its
   own version, which did the same in return. It now stops nothing, and removes only the cached
-  version directories that no running process was started from.
+  version directories that are not in use: none a running process was started from (matched on the
+  whole command line, so a cache path with spaces counts, and on the resolved path), none an install
+  holds the lock for, none changed within the last minute, and none at all when the process list
+  cannot be read.
 - `find_files` (previously `code` modes `find` and `files`) no longer misses document-tier files
   (markdown, config, PDFs) on a long-lived server.
 - `index_status.cache_dir` reports basemind's cache directory. It reported the tree-sitter grammar

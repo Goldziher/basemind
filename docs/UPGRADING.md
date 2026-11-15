@@ -145,19 +145,57 @@ and `--rerank` / `--rerank-top-k` on code search. Every list command takes `--li
 
 The release after 0.33 moves the daemon's socket, lock, log and comms store from the comms directory
 (`comms/` under the per-user data directory, or `BASEMIND_COMMS_DIR`) into a protocol-generation
-subdirectory, `comms/g1/`. On Windows the named pipe's name gains `-g1` and changes with it.
+subdirectory, `comms/g1/`, and its record in the daemon registry from `daemons/` to `daemons/g1/`
+under the data directory. On Windows the named pipe is named from a hash of the generation
+directory, so its name changes too.
 
 - A 0.33 or older binary and a newer one no longer share a daemon. Each starts its own, and neither
-  stops the other's. Before this, every session start by one version stopped (and if needed killed)
-  the other version's daemon.
+  contacts or stops the other's. Before this, every session start by one version stopped (and if
+  needed killed) the other version's daemon.
+- **This is fully effective only once no 0.33 plugin is left.** The plugin launcher of 0.33 and
+  older still sends SIGTERM and SIGKILL to every basemind process of another version started from
+  the plugin cache (`~/.cache/basemind/bin/<version>/`), the new daemon and its sessions included,
+  each time one of its own sessions starts. No newer binary can prevent that; update or remove the
+  old plugin. A Homebrew, npm or pip install does not run that launcher.
+- **The workspace index, memory notes and git-history stores are not per generation.** They are
+  keyed by workspace and admit one daemon at a time. While the daemon of one generation holds a
+  workspace, the daemon of the other cannot serve its index, memory or git history; that lasts
+  until the first daemon lets go (it exits ten minutes after its last client). Two generations
+  side by side is a state to pass through during an upgrade, not one to work in on the same
+  repository.
 - The comms store is not carried over: threads, messages and the agent roster start empty in the new
   generation. Agents on a 0.33 binary and agents on a newer one do not see each other's threads.
-- The old daemon exits when its sessions end. Its files stay at the top of the comms directory; they
-  are small and nothing removes them. Delete them by hand once no 0.33 binary is in use.
-- A client that reads `http.addr` or `daemon.log` by path must look in `comms/g1/`.
+- The old daemon exits when its sessions end. Its files (`comms.sock`, `daemon.lock`, `daemon.pid`,
+  `daemon.log`, `http.addr` and the `store.fjall/` directory with its message history) stay at the
+  top of the comms directory and nothing removes them. Delete them by hand once no 0.33 binary is
+  in use.
+- `basemind comms stop --all` and `basemind comms doctor` (with or without `--probe`) now cover the
+  daemons of their own generation only. To stop or inspect a 0.33 daemon, use the 0.33 binary.
+  `doctor` says how many daemons of other generations it counted; all of them count toward the
+  ceiling of eight (`BASEMIND_MAX_DAEMONS`).
+- A client that reads `http.addr` or `daemon.log` by path must look in `comms/g1/`. With
+  `BASEMIND_ALLOW_HTTP`, the HTTP front-end still prefers `127.0.0.1:51786`, but the second daemon
+  to start finds it taken and binds a port the OS assigns: read the port from `http.addr` (or
+  `basemind daemon ensure`), never assume it. An address set with `BASEMIND_HTTP_ADDR` is not
+  substituted.
+- A long `BASEMIND_COMMS_DIR` has three fewer bytes to spare: the socket is now
+  `<dir>/g1/comms.sock`, and a Unix socket path is limited to 103 bytes on macOS and 107 on Linux.
+  A path over the limit fails with a message naming the variable.
 - Between versions that share a generation, a running daemon is never killed while it answers. A
-  newer daemon is used, or the older binary fails with `a newer basemind comms daemon ... is running`
-  and says to update. An older daemon is asked to stop and keeps running if it is serving sessions.
+  daemon of the same or a newer release is never asked to stop: it is used, or, when it is newer and
+  speaks another protocol, the older binary fails with `a newer basemind comms daemon ... is
+  running` and says to update. A `basemind serve` session that meets this on reconnect answers its
+  pending requests with that message and exits.
+- An older daemon is asked to stop and keeps running if it is serving sessions. When it also speaks
+  another protocol, sessions of the new version get no daemon until it goes: commands fail with
+  `a basemind comms daemon from another build ... refused to stop`, and a `basemind serve` session
+  answers each request with that error and retries with a growing back-off (it asks again at most
+  once a minute). Close the sessions of the old version (its daemon exits ten minutes after the
+  last one) or run `basemind comms stop`, which now reaches a daemon on another protocol version
+  and reports its refusal instead of killing it.
+- A daemon whose store is broken answers every request with a store error. A client that meets one
+  names the store directory and tells you to run `basemind comms doctor --probe` and
+  `basemind comms stop --all`.
 
 ## Upgrading from 0.28 to 0.29
 
@@ -197,7 +235,8 @@ The `shell` tool and the `basemind shell` commands (`spawn`, `send`, `capture`, 
 `broadcast`) were removed, with the `shells` cargo feature; they have no replacement. A `[shells]`
 table in `basemind.toml` is still accepted and ignored. Stop a shells daemon an older version left
 running before upgrading (`basemind shell kill` each session, or kill the process); this version
-still lists it in `basemind comms doctor` but cannot talk to it.
+cannot talk to it and, since it is registered by an older release, does not list it in
+`basemind comms doctor`.
 
 The `memory` modes `audit`, `mine`, `proposals`, `accept` and `reject` and their `basemind memory`
 commands were removed; they have no replacement. `put`, `get`, `list`, `search`, `delete` and
@@ -317,9 +356,11 @@ re-extraction, never correctness; the next sweep reclaims what is left.
 ## Per-version binaries
 
 The plugin launcher keeps one `~/.cache/basemind/bin/<version>/` per release. On every launch of the
-current one it removes the other version directories that no running process was started from. It
-does not stop processes of other versions: their sessions and daemons keep running, and a daemon
-exits on its own once idle. That cache is a few
+current one it removes the other version directories that are not in use: not one a running process
+was started from, not one an install holds the lock for, not one that changed within the last
+minute, and none at all when it cannot read the process list. It does not stop processes of other
+versions: their sessions and daemons keep running, and a daemon exits on its own once idle.
+That cache is a few
 tens of MB per version and is not touched by the above.
 
 ## Adding a new on-disk component (checklist)
