@@ -185,3 +185,45 @@ fn a_scan_that_sealed_no_journal_does_not_flush_the_memtables() {
         "the rows survive a reopen"
     );
 }
+
+/// Two installed basemind minors share one cache. In a flat blob directory each overwrote the
+/// other's blobs as "not current" while the other side's file map kept calling the files unchanged.
+/// A scan writes only inside its own schema's namespace.
+#[test]
+fn a_scan_never_overwrites_a_blob_another_basemind_version_wrote() {
+    use crate::extract::SCHEMA_VER;
+
+    init_isolated_cache();
+    let repo = one_file_repo();
+    let hash_hex = crate::hashing::hex(&crate::hashing::hash_bytes(b"pub fn alpha() -> u32 { 1 }\n"));
+    let blobs_root = crate::store_layout::global_blobs_root();
+    let name = format!("{hash_hex}.fm.msgpack");
+    let foreign = [
+        blobs_root.join(&name),
+        blobs_root.join(format!("v{}", SCHEMA_VER + 1)).join(&name),
+    ];
+    for path in &foreign {
+        std::fs::create_dir_all(path.parent().expect("parent")).expect("mkdir");
+        std::fs::write(path, b"another version's blob").expect("plant");
+    }
+
+    let mut store = Store::open(repo.path(), VIEW_WORKING).expect("open");
+    let report = full_scan(repo.path(), &mut store);
+
+    assert_eq!(report.stats.updated, 1);
+    for path in &foreign {
+        assert_eq!(
+            std::fs::read(path).expect("read"),
+            b"another version's blob",
+            "{} was overwritten",
+            path.display()
+        );
+    }
+    let own = store.blob_path_fm_hex(&hash_hex);
+    assert!(
+        own.starts_with(blobs_root.join(format!("v{SCHEMA_VER}"))),
+        "{}",
+        own.display()
+    );
+    assert!(store.read_l1_by_hex(&hash_hex).expect("read own blob").is_some());
+}

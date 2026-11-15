@@ -64,6 +64,7 @@ pub mod store_doc_tombstone;
 pub mod store_gc;
 pub mod store_gc_budget;
 pub(crate) mod store_gc_live;
+mod store_gc_namespaces;
 pub mod store_gc_protect;
 pub mod store_gc_workspace;
 mod store_hash_refs;

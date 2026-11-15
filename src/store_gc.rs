@@ -376,7 +376,16 @@ pub fn gc_global_blobs() -> Result<GcReport, GcError> {
         tracing::debug!("global blob sweep already running in another process; skipping");
         return Ok(GcReport::default());
     };
-    gc_global_blobs_in(&cache.join(WORKSPACES_DIR), &global_blobs_dir(), blob_gc_grace())
+    let mut report = gc_global_blobs_in(&cache.join(WORKSPACES_DIR), &global_blobs_dir(), blob_gc_grace())?;
+    let superseded = crate::store_gc_namespaces::sweep_superseded_namespaces(
+        &crate::store_layout::global_blobs_root(),
+        crate::extract::SCHEMA_VER,
+        blob_gc_grace(),
+    )?;
+    report.scanned += superseded.scanned;
+    report.removed += superseded.removed;
+    report.bytes_freed += superseded.bytes_freed;
+    Ok(report)
 }
 
 /// The cleanup a scan runs for itself when it displaced artifacts (see

@@ -137,10 +137,22 @@ pub fn memory_store_dir(root: &Path) -> PathBuf {
     repo_group_dir(root).join(MEMORY_STORE_DIR)
 }
 
-/// The GLOBAL content-addressed blob store: `cache_root()/cache/blobs/`. Shared across every
-/// workspace on the machine, so byte-identical files are extracted + embedded exactly once.
-pub fn global_blobs_dir() -> PathBuf {
+/// Root of the global blob store: `cache_root()/cache/blobs/`. Holds one namespace directory per
+/// blob schema; only [`global_blobs_dir`] is read or written by this binary.
+pub fn global_blobs_root() -> PathBuf {
     cache_root().join(CACHE_DIR).join(BLOBS_DIR)
+}
+
+/// The GLOBAL content-addressed blob store: `cache_root()/cache/blobs/v<SCHEMA_VER>/`. Shared
+/// across every workspace on the machine, so byte-identical files are extracted + embedded exactly
+/// once.
+///
+/// Namespaced by blob schema because two installed basemind minors share the cache: in one flat
+/// directory each would overwrite the other's blobs as "not current", and the other side's file map
+/// would go on calling those files unchanged. Other namespaces are never read, written or deleted
+/// here; [`crate::store_gc`] reaps the superseded ones.
+pub fn global_blobs_dir() -> PathBuf {
+    global_blobs_root().join(format!("v{}", crate::extract::SCHEMA_VER))
 }
 
 /// The `workspace.json` sidecar: the canonical worktree root a workspace cache dir was keyed from.

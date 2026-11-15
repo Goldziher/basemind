@@ -297,11 +297,33 @@ impl L1Cache {
     fn read_blob(&self, hash_hex: &str) -> Option<FileMapL1> {
         self.misses.fetch_add(1, Ordering::Relaxed);
         match crate::store_blob::read_l1_blob_in(&self.blobs_dir, hash_hex) {
+            Ok(Some(map)) => Some(map),
             Ok(None) => self
                 .fallback
                 .as_ref()
                 .and_then(|dir| crate::store_blob::read_l1_blob_in(dir, hash_hex).ok().flatten()),
-            result => result.ok().flatten(),
+            Err(error) => {
+                self.note_unreadable(hash_hex, &error);
+                None
+            }
+        }
+    }
+
+    /// Log why a blob the file map names could not be served. The caller's refusal says the same
+    /// to the agent (see `tool_contract::not_indexed`).
+    fn note_unreadable(&self, hash_hex: &str, error: &crate::store::StoreError) {
+        use crate::store::StoreError;
+        if matches!(
+            error,
+            StoreError::SchemaMismatch { .. } | StoreError::NewerSchema { .. }
+        ) {
+            tracing::warn!(
+                hash = hash_hex,
+                %error,
+                "blob was written by a different basemind version; run `basemind scan` with this one"
+            );
+        } else {
+            tracing::warn!(hash = hash_hex, %error, "blob for an indexed file could not be read");
         }
     }
 

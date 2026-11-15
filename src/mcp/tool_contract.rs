@@ -147,11 +147,11 @@ pub(super) fn indexed_file(
 /// that does not exist needs `find_files`.
 pub(super) fn not_indexed(state: &ServerState, tool: &str, path: &RelPath) -> McpError {
     // Judged on the store's file map: the in-RAM map is also empty before a lazy build.
-    let (empty, is_document) = match state.shared.store.try_read() {
+    let facts = match state.shared.store.try_read() {
         Ok(store) => index_facts(&store, path),
-        Err(_) => (false, false),
+        Err(_) => IndexFacts::default(),
     };
-    not_indexed_because(&state.shared.root, tool, path, empty, is_document)
+    not_indexed_because(&state.shared.root, tool, path, facts)
 }
 
 /// [`not_indexed`] for a body that already holds the store.
@@ -161,28 +161,65 @@ pub(super) fn not_indexed_in(
     tool: &str,
     path: &RelPath,
 ) -> McpError {
-    let (empty, is_document) = index_facts(store, path);
-    not_indexed_because(root, tool, path, empty, is_document)
+    not_indexed_because(root, tool, path, index_facts(store, path))
 }
 
-/// `(the index holds no file at all, path is an indexed document)`.
-fn index_facts(store: &crate::store::Store, path: &RelPath) -> (bool, bool) {
-    (
-        store.index.files.is_empty() && store.index.doc_files.is_empty(),
-        store.lookup_doc(path).is_some(),
-    )
+/// What the file map says about a path the code map could not serve.
+#[derive(Default)]
+struct IndexFacts {
+    /// The index holds no file at all.
+    empty: bool,
+    /// The path is an indexed document.
+    is_document: bool,
+    /// The path is in the file map, yet its extraction blob could not be served.
+    blob: Option<UnservedBlob>,
 }
 
-fn not_indexed_because(root: &std::path::Path, tool: &str, path: &RelPath, empty: bool, is_document: bool) -> McpError {
+/// Why the blob of a file the map lists could not be served.
+#[derive(PartialEq, Eq)]
+enum UnservedBlob {
+    /// Written under another blob schema, by another basemind version.
+    OtherVersion,
+    /// Absent, or damaged.
+    Lost,
+}
+
+fn index_facts(store: &crate::store::Store, path: &RelPath) -> IndexFacts {
+    use crate::store::StoreError;
+    let blob = store
+        .lookup(path)
+        .and_then(|entry| match store.read_l1_by_hex(&entry.hash_hex) {
+            Ok(Some(_)) => None,
+            Err(StoreError::SchemaMismatch { .. } | StoreError::NewerSchema { .. }) => Some(UnservedBlob::OtherVersion),
+            Ok(None) | Err(_) => Some(UnservedBlob::Lost),
+        });
+    IndexFacts {
+        empty: store.index.files.is_empty() && store.index.doc_files.is_empty(),
+        is_document: store.lookup_doc(path).is_some(),
+        blob,
+    }
+}
+
+fn not_indexed_because(root: &std::path::Path, tool: &str, path: &RelPath, facts: IndexFacts) -> McpError {
     let on_disk = crate::path::contained_file(root, path);
-    let message = if empty {
+    let message = if facts.empty {
         format!("`{tool}`: {EMPTY_INDEX_FIX}")
     } else if on_disk.is_err() {
         return outside_repository(tool, path);
-    } else if is_document {
+    } else if facts.is_document {
         format!(
             "`{tool}`: `{path}` is a document, not code, so it has no outline or symbols. Search it with \
              `docs_search`, or read a line span with `code_read`."
+        )
+    } else if facts.blob == Some(UnservedBlob::OtherVersion) {
+        format!(
+            "`{tool}`: `{path}` is indexed, but its cache entry was written by a different basemind version \
+             that this one cannot read. Run `index_rescan {{\"full\":true}}` to index it with this version."
+        )
+    } else if facts.blob == Some(UnservedBlob::Lost) {
+        format!(
+            "`{tool}`: `{path}` is indexed, but its cache entry is missing or damaged. Run \
+             `index_rescan {{\"paths\":[\"{path}\"]}}` to rebuild it and retry."
         )
     } else if on_disk.is_ok_and(|file| file.is_file()) {
         format!(

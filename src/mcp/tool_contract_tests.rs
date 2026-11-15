@@ -139,6 +139,44 @@ async fn a_file_that_is_not_indexed_says_what_to_do_about_it() {
     assert!(text_of(&unread).contains("find_files"));
 }
 
+/// A file the map lists whose blob another basemind version wrote is indexed, by a build this one
+/// cannot read. That is a different answer, with a different fix, from "not indexed".
+#[tokio::test]
+async fn a_blob_from_another_basemind_version_is_not_reported_as_not_indexed() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let source = "pub fn other_version_blob_fixture() {}\n";
+    std::fs::write(tmp.path().join("a.rs"), source).expect("a.rs");
+    std::fs::write(tmp.path().join("b.rs"), "pub fn beta() {}\n").expect("b.rs");
+    {
+        crate::store::init_isolated_cache();
+        let mut store = Store::open(tmp.path(), VIEW_WORKING).expect("open rw");
+        let config = ConfigV1::with_defaults();
+        scan(
+            tmp.path(),
+            &mut store,
+            &config,
+            ScanSource::WorkingTree,
+            EmbedMode::Inline,
+        )
+        .expect("scan");
+        let hash_hex = store.lookup("a.rs").expect("entry").hash_hex.clone();
+        let mut foreign = store.read_l1_by_hex(&hash_hex).expect("read").expect("blob");
+        foreign.schema_ver = crate::extract::SCHEMA_VER + 1;
+        store.overwrite_filemap_hex(&hash_hex, &foreign, None).expect("plant");
+    }
+    let store = Store::open_read_only(tmp.path(), VIEW_WORKING).expect("open ro");
+    let git_cache = Arc::new(GitCache::open(&store.basemind_dir, 16, false).expect("git cache"));
+    let config = Arc::new(ConfigV1::with_defaults());
+    let server = BasemindServer::new_oneshot(store, tmp.path().to_path_buf(), config, None, git_cache);
+
+    let refused = into_tool_result(server.code_outline_call(outline("a.rs")).await);
+
+    assert_eq!(refused.is_error, Some(true));
+    let text = text_of(&refused);
+    assert!(text.contains("written by a different basemind version"), "{text}");
+    assert!(!text.contains("is not indexed"), "{text}");
+}
+
 /// The three tools that report a symbol's position must agree on it: an outline span is what
 /// `code_read` returns and what `git_blame` blames.
 #[tokio::test]
