@@ -45,8 +45,10 @@ pub(super) fn open_index_for_writer(
         && (index_db.wiped_on_open() || (never_sealed && index_db.view().symbols_index_is_empty()));
     if index_rebuild_needed {
         index.files.clear();
+        index.rebuild_pending = true;
     }
-    Ok((index_db, index_rebuild_needed))
+    // An earlier process emptied the file map and died before its rebuild scan finished. ~keep
+    Ok((index_db, index_rebuild_needed || index.rebuild_pending))
 }
 
 impl Store {
@@ -60,12 +62,14 @@ impl Store {
     }
 
     /// Whether an incremental scan would be wrong for this store: a rebuild is pending, or the file
-    /// map lists nothing. The second case is the first after a process died between writing the
-    /// emptied file map and finishing the rebuild scan: the next open sees an empty map, so
-    /// [`Store::index_rebuild_needed`] is unset, and scanning only the given paths would leave the
-    /// rest of the tree unindexed.
+    /// map lists nothing. The pending rebuild is read from the file map itself
+    /// ([`Index::rebuild_pending`]), so it outlives a process that died between writing the emptied
+    /// map and finishing the rebuild scan, whatever else the map still lists: the rebuild empties
+    /// `files` only, and a store with documents would otherwise pass for scanned.
     pub fn needs_full_scan(&self) -> bool {
-        self.index_rebuild_needed || (self.index.files.is_empty() && self.index.doc_files.is_empty())
+        self.index_rebuild_needed
+            || self.index.rebuild_pending
+            || (self.index.files.is_empty() && self.index.doc_files.is_empty())
     }
 
     /// Whether the file map vouches for a scan generation the index never sealed (see
@@ -97,6 +101,7 @@ impl Store {
             db.clear_for_rebuild()?;
         }
         self.index.files.clear();
+        self.index.rebuild_pending = true;
         self.hash_refs = HashRefs::of(&self.index.files);
         self.index.generation = 0;
         self.flush()?;

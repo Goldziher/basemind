@@ -215,6 +215,10 @@ pub struct Index {
     /// schema bump.
     #[serde(default)]
     pub pending_vectors: crate::store_pending::PendingVectors,
+    /// Set when `files` was emptied so a full scan rebuilds the index, cleared by the full scan that
+    /// does. Survives a process that died in between. Additive, no schema bump.
+    #[serde(default)]
+    pub rebuild_pending: bool,
 }
 
 impl Index {
@@ -227,6 +231,7 @@ impl Index {
             doc_tombstones: AHashMap::new(),
             generation: 0,
             pending_vectors: crate::store_pending::PendingVectors::default(),
+            rebuild_pending: false,
         }
     }
 }

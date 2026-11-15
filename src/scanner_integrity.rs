@@ -28,7 +28,7 @@ pub(crate) fn preflight(store: &mut Store) -> Result<(), ScanError> {
 /// Whether an incremental scan must hand over to a full one: only a full pass can rebuild an index
 /// that is behind its file map (see [`preflight`]).
 pub(crate) fn needs_full_rebuild(store: &Store) -> Result<bool, ScanError> {
-    Ok(store.index_is_behind_file_map()?)
+    Ok(store.index_is_behind_file_map()? || store.index.rebuild_pending)
 }
 
 /// The free-space check alone, for the resolve pass: the file map is already durable by then, so a

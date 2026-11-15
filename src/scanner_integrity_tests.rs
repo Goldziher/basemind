@@ -258,3 +258,50 @@ fn the_pass_after_an_unclean_shutdown_rebuilds_a_torn_blob() {
     assert!(!crate::scan_evidence::blobs_need_verifying(&store.basemind_dir));
     assert_eq!(full_scan(root, &mut store).stats.skipped_unchanged, 1);
 }
+
+/// The rebuild empties `files` only. A process that died after writing that emptied file map left a
+/// store with no code files but its documents, which read as scanned, so an incremental scan
+/// indexed the given paths and nothing else. The pending rebuild is in the file map itself, and the
+/// incremental entry point honours it.
+#[test]
+fn a_rebuild_interrupted_after_the_emptied_file_map_is_finished_by_an_incremental_scan() {
+    init_isolated_cache();
+    let dir = one_file_repo();
+    let root = dir.path();
+    {
+        let mut store = Store::open(root, VIEW_WORKING).expect("open");
+        full_scan(root, &mut store);
+        // What the rebuild leaves on disk before its scan runs, in a store that also holds documents.
+        store.remove("alpha.rs");
+        store.index.rebuild_pending = true;
+        store.upsert_doc(
+            "notes.pdf",
+            crate::store::DocEntry {
+                hash_hex: "h".to_string(),
+                embedding_preset: String::new(),
+                size_bytes: 1,
+                mtime: 0,
+                embedded: false,
+                embed_attempted: false,
+                config_digest: String::new(),
+            },
+        );
+        store.flush().expect("flush");
+    }
+
+    let mut store = Store::open(root, VIEW_WORKING).expect("reopen");
+    assert!(
+        store.needs_full_scan(),
+        "documents in the map must not hide a pending rebuild"
+    );
+
+    crate::scanner::scan_paths(root, &mut store, &ConfigV1::with_defaults(), &[], EmbedMode::Deferred)
+        .expect("scan_paths");
+
+    assert!(store.lookup("alpha.rs").is_some(), "the whole tree is indexed again");
+    assert!(!store.index.rebuild_pending);
+    let on_disk = crate::store::read_index(&store.view_dir)
+        .expect("read")
+        .expect("file map");
+    assert!(!on_disk.rebuild_pending, "the finished rebuild is recorded on disk");
+}
