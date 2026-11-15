@@ -538,7 +538,9 @@ on-disk component, is in [UPGRADING.md](UPGRADING.md).
 ## Blob store and GC
 
 Extraction results live in a content-addressed blob store shared by every workspace on the machine
-(`<cache>/cache/blobs/`); a workspace's `files` (code lane) and `doc_files` (document lane) entries
+(`<cache>/cache/blobs/v<schema>/`, one namespace per blob schema, so two installed versions never read
+or overwrite each other's blobs; the sweep also removes un-namespaced blobs and older namespaces once
+past the grace period, and leaves a newer namespace alone); a workspace's `files` (code lane) and `doc_files` (document lane) entries
 reference blobs by hash. The sweep (`src/store_gc.rs`, `src/store_gc_live.rs`) is tier-aware: a `.doc`
 blob is live only if some workspace's `doc_files` references the hash, and `.fm` / `.chunk` / `.rref`
 blobs only if a `files` entry does. That matters when a path changes tier (a markdown file that used
@@ -1049,7 +1051,14 @@ Group memory (`visibility=group`, default, `owner=""`) is shared across agents i
 memory (`visibility=individual`, `owner=agent_id`) is private to one agent. Schema is guarded by
 `MEMORY_SCHEMA_VER` (derives from `RELEASE_MINOR`); a mismatch wipes and rebuilds.
 
-The Fjall half (`memory_by_key`) is stored once per repo group, not per
+The Fjall half (`memory_by_key`) is the truth for a note. Its vector row only makes the note findable
+by meaning: `memory_search` joins every hit against `memory_by_key`, drops a hit whose note is gone or
+was rewritten since the row was embedded, and answers from the note. The rows live beside the notes
+(`<cache>/cache/repos/<group>/memory.lance/`) and are rebuilt from them: the first search of a
+namespace in a process embeds every note without a current row, which is also what restores them
+after the table is wiped. A save or a delete is fsynced before it is acknowledged.
+
+The Fjall half is stored once per repo group, not per
 view: `<cache>/cache/repos/<group>/memory.fjall/`, where `<group>` is the blake3 of the canonical main
 worktree root (the parent of the git common dir), so every linked worktree of a clone shares it; a
 root outside git uses its own workspace key. The daemon stays the sole writer and holds one handle per

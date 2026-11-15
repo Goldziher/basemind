@@ -2,8 +2,8 @@
 
 basemind keeps its index in a machine-global cache (`BASEMIND_DATA_HOME`, default
 `~/.local/share/basemind`): per-workspace views, LanceDB tables and git history under
-`cache/workspaces/<key>/`, and one content-addressed blob store under `cache/blobs/` shared by every
-workspace. An upgrade never asks you to wipe it. This page says what happens to the old shape and what
+`cache/workspaces/<key>/`, and one content-addressed blob store under `cache/blobs/v<schema>/` shared
+by every workspace. An upgrade never asks you to wipe it. This page says what happens to the old shape and what
 is cleaned up.
 
 ## Upgrading to the verb tools (ADR-0018)
@@ -325,6 +325,10 @@ Also check scripts for these behaviour changes:
 | Symbol `signature` now ends at the grammar's body field instead of embedding the body | `EXTRACT_EPOCH` (see below): only files whose entry or blob predates the epoch are re-extracted, in the normal bounded scan | One parse per affected file, no wipe |
 | Release-minor schema bump (`0.28.x` to `0.29.x`) | `RELEASE_MINOR` mismatch: each view's `index.msgpack` and fjall index are reset on open and every file is re-extracted, overwriting stale blobs in place | Full re-extraction, by design |
 | `grep_bloom` index keyspace (per-file trigram bloom for `code_grep`) | A new keyspace, so `INDEX_SCHEMA_VER` is not bumped. An index without it opens with an empty `grep_bloom` and greps correctly at once (every file is a candidate); the next scan builds the rows from the bytes it reads, and an unchanged file with no row is read once to backfill it | One read per unchanged file, once; about 12.8 % of the indexed code bytes on disk |
+| Blob store namespaced by blob schema: `cache/blobs/v<schema>/` instead of `cache/blobs/` | Nothing is moved. The first scan re-extracts into the new namespace. The blob GC removes un-namespaced blobs and the namespaces of older schemas once a file is past the 6 hour grace period, and never touches the namespace of a newer schema, so two installed versions no longer overwrite each other's blobs | Full re-extraction, once |
+| Memory vectors live in `cache/repos/<group>/memory.lance/`, beside `memory.fjall`, instead of the workspace's `lance/` | Not migrated. The first `memory_search` by meaning in a namespace embeds every note that has no current vector row, from `memory.fjall`; the same pass restores the rows after a preset change or a release-minor bump wipes the table. The old `memory` table stays, unread, in the workspace's `lance/` | One embedding per note, once |
+| `index.msgpack` fields `pending_vectors` and `rebuild_pending` | Additive: a file map written before them reads as owing no vector rows and no rebuild | none |
+| `verify-blobs` marker in the workspace cache directory | Written when a scan is found to have died without finishing; the next full scan then decodes each blob instead of trusting it for existing, and removes the marker | One blob read per file, for that one scan |
 | Resident term index, name dictionaries, heap retag | In memory only. Nothing on disk, nothing to migrate | none |
 | `[resources] onnx_provider` defaults to `cpu` | Behaviour only: models load on the CPU provider instead of the platform default (CoreML on macOS). Set `onnx_provider = "auto"` to restore it. No on-disk change | none |
 | Daemon `IndexRead` forwarding | Wire protocol only | none |

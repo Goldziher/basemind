@@ -361,6 +361,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   backslash is matched as it is. Install locks and staging directories of other versions are
   removed only after ten minutes untouched, a staging directory only once the process installing
   into it is gone.
+- Storage soundness. The first scan after upgrading re-extracts every file once (see
+  [`docs/UPGRADING.md`](docs/UPGRADING.md)).
+  - The blob store is namespaced by blob schema (`cache/blobs/v<schema>/`): two installed versions
+    no longer overwrite each other's blobs, and a file whose blob another version wrote, or whose
+    blob is missing, says so instead of "not indexed".
+  - Vector rows a scan could not write (a killed process, a LanceDB error) stay recorded in the file
+    map and are written by the next scan. They were lost for good and search missed the file.
+  - After a scan that died without finishing, the next full scan validates blobs instead of trusting
+    them for existing, so a blob torn by a power loss is rebuilt.
+  - `memory_search` by meaning answers from the note itself and never from a stale or orphaned
+    vector row; the rows are rebuilt from the notes after an upgrade or a preset change, and are
+    shared by every worktree of a clone. `memory_save` is fsynced before it returns.
+  - A rebuild interrupted after its emptied file map was written is finished by the next scan,
+    incremental ones included; a deleted file whose index rows could not be removed stays in the
+    file map; a repository whose files define no symbols is no longer rescanned on every open.
+  - A damaged index database is replaced by the next writer open instead of failing every open, and
+    a read-only open no longer wipes an index of an older schema.
+  - The vector store's `meta.json` is written atomically and removed last in a wipe.
 - `find_files` (previously `code` modes `find` and `files`) no longer misses document-tier files
   (markdown, config, PDFs) on a long-lived server.
 - `index_status.cache_dir` reports basemind's cache directory. It reported the tree-sitter grammar
