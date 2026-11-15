@@ -41,10 +41,11 @@ exclude = [
 [lint.markdown.rumdl]
 disable = ["MD025", "MD013", "MD024", "MD033", "MD036", "MD041"]
 
-# The ADR log is docs/adr (the engine default) and its immutability manifest is adrlint.lock. The
-# records keep the Nygard section names (`## Decision`, `## Consequences`, `## Alternatives
-# considered`), so the three MADR rules that demand `## Decision Outcome`, `## Considered Options`
-# and a level-3 `### Consequences` are off; every other document, numbering and lock rule runs.
+# The ADR log is docs/adr (the engine default). No adrlint.lock is committed, so the immutability
+# rules (ADR50/ADR51) have nothing to enforce yet. The records keep the Nygard section names
+# (`## Decision`, `## Consequences`, `## Alternatives considered`), so the three MADR rules that
+# demand `## Decision Outcome`, `## Considered Options` and a level-3 `### Consequences` are off;
+# every other document and numbering rule runs.
 # MADR31 wants `*` bullets, which `poly fmt` rewrites to `-`; poly before 0.34 has it on by default.
 [lint.markdown.adrlint]
 enabled = true
