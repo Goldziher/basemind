@@ -1,5 +1,5 @@
 use super::*;
-use crate::comms::v2::api::{MAX_RECIPIENTS, MAX_THREAD_PATHS};
+use crate::comms::v2::api::{DEFAULT_LIMIT, MAX_RECIPIENTS, MAX_THREAD_PATHS, ReadKind};
 use crate::comms::v2::ids::{IdKind, InvalidId};
 
 fn thread(s: &str) -> ThreadId {
@@ -477,4 +477,28 @@ fn threads_call_refuses_listing_fields_beside_an_update_or_a_thread() {
             "{field} beside archive"
         );
     }
+}
+
+#[test]
+fn field_at_its_default_value_counts_as_left_out() {
+    let by_id = InboxCall::from_fields(InboxFields {
+        id: Some("t-abcdef.2".to_string()),
+        unread: Some(true),
+        peek: Some(false),
+        wait_secs: Some(0),
+        limit: Some(DEFAULT_LIMIT),
+        cursor: Some(String::new()),
+        ..InboxFields::default()
+    })
+    .expect("defaults beside id");
+    assert_eq!(by_id.body.kind(), Ok(ReadKind::ById));
+
+    let described = threads(ThreadsFields {
+        limit: Some(DEFAULT_LIMIT),
+        ..on_thread()
+    });
+    assert_eq!(
+        described,
+        Ok(ThreadsCall::Query(ThreadQuery::Describe(thread("t-abcdef"))))
+    );
 }

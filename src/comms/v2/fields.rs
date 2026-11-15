@@ -4,7 +4,8 @@
 //! into a request is done here and nowhere else, so every front end refuses the same
 //! combinations with the same words:
 //!
-//! - an empty string for an optional field is the field left out;
+//! - an empty string for an optional field, or a field passed with its default value, is the
+//!   field left out;
 //! - a field that does not apply to the call is refused, never ignored, because an ignored
 //!   field reads as a call that honoured it;
 //! - ids are parsed here, so a malformed one is refused with the value and its grammar.
@@ -13,7 +14,7 @@ use std::time::Duration;
 
 use super::api::{
     InboxBody, InboxSelect, Mark, PostTarget, ThreadAction, ThreadFilter, ThreadQuery, ThreadUpdate,
-    check_recipient_count, checked_wait, normalize_query, normalize_subject, normalize_thread_path,
+    check_recipient_count, checked_wait, given_limit, normalize_query, normalize_subject, normalize_thread_path,
     normalize_thread_paths,
 };
 use super::cursor::Cursor;
@@ -217,7 +218,7 @@ impl ThreadsCall {
             ("path", path.is_some()),
             ("cursor", cursor.is_some()),
             ("archived", fields.archived),
-            ("limit", fields.limit.is_some()),
+            ("limit", given_limit(fields.limit).is_some()),
         ]);
         let refuse_listing_fields = |with: &str| match listing_fields.first() {
             Some(field) => Err(CommsError::not_applicable(field, with)),

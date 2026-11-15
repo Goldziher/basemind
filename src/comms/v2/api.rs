@@ -255,6 +255,7 @@ impl ReadKind {
 impl InboxBody {
     /// Classify the read, refusing every field combination that would leave a field ignored: a
     /// cursor on a read that marks, and `unread`, `peek`, `notify`, `limit` or `cursor` beside `id`.
+    /// A field at its default value counts as left out.
     ///
     /// Every [`AgentOps::inbox`] calls this first, so a body that did not come through
     /// [`InboxCall::from_fields`] is held to the same rules.
@@ -262,7 +263,7 @@ impl InboxBody {
         if matches!(self.select, InboxSelect::Message(_)) {
             let extra = [
                 ("cursor", self.cursor.is_some()),
-                ("limit", self.limit.is_some()),
+                ("limit", given_limit(self.limit).is_some()),
                 ("unread", !self.unread),
                 ("peek", self.mark == Mark::Peek),
                 ("notify", self.mark == Mark::Notify),
@@ -527,6 +528,12 @@ pub trait AgentOps: Send + Sync {
     /// new. A store already keeps such a counter, because an inbox across threads is sorted by
     /// the store-wide order of posts.
     fn arrivals(&self) -> u64;
+}
+
+/// A request's `limit` as given: [`DEFAULT_LIMIT`] counts as left out, like every field passed
+/// with its default value, so it is not refused where a `limit` does not apply.
+pub fn given_limit(limit: Option<u32>) -> Option<u32> {
+    limit.filter(|limit| *limit != DEFAULT_LIMIT)
 }
 
 /// The page size a request's `limit` means.
