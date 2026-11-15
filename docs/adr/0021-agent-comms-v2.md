@@ -44,29 +44,37 @@ coordination model was settled. No ADR describes that model, and an audit found 
 1. `BASEMIND_AGENT_ID`, verbatim.
 2. The existing `comms.agent_id` config key.
 3. A derived id, `<host>-<repo>-<6 hex of blake3(canonical root)>`: a pure function with no pid,
-   clock or file. `<host>` is `BASEMIND_HOST` reduced to `[a-z0-9]`, else `agent`. `<repo>` is the
-   root directory's basename, lowercased, with every character outside `[a-z0-9-]` replaced by `-`,
-   cut to 24 bytes.
+   clock or file. `<host>` is `BASEMIND_HOST` lowercased, reduced to `[a-z0-9]` and cut to 16
+   bytes, or `agent` when that leaves nothing. `<repo>` is the root directory's basename,
+   lowercased, with every character outside `[a-z0-9-]` replaced by `-`, cut to 24 bytes. Both are
+   sanitised before they are cut, so both are ASCII.
 
 The plugin launcher and the plugin hooks set `BASEMIND_HOST` from one shared script, and a test
 asserts that the hook identity equals the `serve` identity. The `session-*`, persisted `agent-id`
 and generated `agent-*` tiers are removed, and so is the identity collision ledger (`CLAIMS_DIR`,
 `CLAIM_TTL`). Identity is trusted per operating-system user; there is no credential.
 
+An id from the environment or config that fails validation is not used. The resolver falls to the
+next tier and logs a warning, and the first agent-tool reply carries a `notice` naming the rejected
+value and the id in use.
+
 **Sub-identities.** A subagent passes `as: "<name>"` and acts as `<principal>.<name>`, so a session
 can only act as its own sub-identities. `<name>` matches `[a-z0-9_-]{1,32}`. `.` is reserved as the
-separator and rejected in a principal id from the environment or config. A composed id over the
-128-byte `MAX_ID_LEN` is refused.
+separator, so a principal id containing it fails validation. A composed id over the 128-byte
+`MAX_ID_LEN` is refused.
 
 The server cannot tell a subagent from its parent, because both use one MCP connection, so it cannot
-require `as`. In Claude Code the plugin's `PreToolUse` hook sees `agent_id` inside a subagent and
-injects `as` through `updatedInput` on the three agent tools when the caller did not set it. On
-other hosts the tool description is the only guard.
+require `as`. In Claude Code the plugin's `PreToolUse` hook, whose matcher is widened to the three
+agent tools, sees `agent_type` and `agent_id` inside a subagent. When the caller did not set `as`
+it injects `<agent_type>-<first 4 of agent_id>`, reduced to the sub-name grammar, through
+`updatedInput`. Such a name cannot be predicted, so an orchestrator that wants to address a
+subagent tells it to pass an explicit `as`. On other hosts the tool description is the only guard.
 
 **Shared identity.** Two sessions of one host in one checkout resolve to the same id and are not
-split. The daemon tracks live connections per principal; while more than one is live, `agent_inbox`
-and `agent_threads` replies carry a `notice` that another session shares the identity and that
-`BASEMIND_AGENT_ID` or `as` separates them.
+split. The daemon counts the live `serve` relay sessions per principal; one-shot CLI and hook
+connections do not count. While more than one is live, replies from all three tools carry a
+`notice` that another session shares the identity and that `BASEMIND_AGENT_ID` or `as` separates
+them.
 
 **Threads and messages.** A thread id is `t-<6 base32>`, checked for collision at creation and
 regenerated. A message id is `<thread>.<seq>`, so a reference is a point lookup. A thread is created
@@ -80,15 +88,22 @@ invitation-only. Its `paths` are repo-relative path prefixes, fixed at creation.
 a reverse `member_threads` index, replaces `thread_members`, `thread_subs`, `Thread.members` and the
 `cursors` keyspace. The creator and every `to` recipient are members from creation and start at
 sequence 0. `to` may name an agent that has never connected, since ids are deterministic; that agent
-finds the thread on its first `agent_inbox`. An agent that joins starts at the head, and an invited
-agent at the head as of the invitation.
+finds the thread on its first `agent_inbox`. The reply lists every recipient the store has never
+seen under `pending`, so a mistyped id is visible. An agent that joins starts at the head, and an
+invited agent at the head as of the invitation.
 
 Reading advances `read_seq` to the last message returned in the reply; there is no separate
 acknowledgement. A body over 4 KB is returned cut, with `truncated: true`, and counts as read (the
-full body comes from `id`). A message left out by the 16 KB response budget does not. The advance is
-stored with the request id and the delivered range, so a request replayed after a daemon restart
-returns the same range instead of an empty page. A call cancelled after the advance loses that
-page from the unread view; `unread: false` reads it again.
+full body comes from `id`). A message left out by the 16 KB response budget does not. A call
+cancelled after the advance loses that page from the unread view; `unread: false` reads it again.
+
+**Idempotency and replay.** No tool has an idempotency field. The relay stamps each `Post` and each
+`InboxRead` with its existing random per-request key (`relay-<key>`, `src/stdio_relay.rs`) and
+re-sends the same key on a replay. A `Post` into a thread dedupes on `(from, thread, key)` as today.
+A `Post` that creates a thread dedupes on `(from, key)`, so a replay returns the thread already
+created. `InboxRead` stores the delivered range against the key, so a replay returns the same range
+instead of an empty page. Dedupe entries and stored ranges live for the existing one-hour
+`IDEMPOTENCY_TTL`. A model that repeats a call sends a new request and makes a second message.
 
 **Authorization.** All rules live in `src/comms/authz.rs`:
 
@@ -110,13 +125,12 @@ page from the unread view; `unread: false` reads it again.
 
 `agent_inbox` returns bodies inline and marks what it returns as read unless `peek` is set.
 `agent_threads` with no arguments lists the caller's threads and the peers in them;
-`{thread, archive: true}` archives a thread the caller created. The three tools are not
-always-loaded: they stay deferred, outside `VERB_TOOLS`, under their own 5,000-byte ceiling with its
-own test. The 20,000-byte verb ceiling is unchanged.
+`{thread, archive: true}` archives a thread the caller created. A call carries at most one of
+`join`, `leave`, `invite` and `archive`; more than one is refused with an error naming the fields.
+The tool is not annotated read-only.
 
-`agent_post` has no idempotency field. The relay stamps every `Post` with a key derived from the
-JSON-RPC request id, so a transport replay is deduplicated; a model that repeats a call makes a
-second message.
+The three tools are not always-loaded: they stay deferred, outside `VERB_TOOLS`, under their own
+5,000-byte ceiling with its own test. The 20,000-byte verb ceiling is unchanged.
 
 **Removed.** `register`, `ack`, `remove_member`; the `workspace` tool; worktree claims and their
 release, everywhere. `cleanup` and `status`, and the read-only `workspaces`, `worktrees` and
@@ -128,14 +142,14 @@ forward-only numbered migration steps run at open. A store newer than the binary
 writing with a message that names the fix, and is never wiped.
 
 The legacy store is not imported. On first start the legacy `store.fjall` directory is renamed to
-`comms.legacy-<date>` inside the comms directory, basemind never deletes it, and a fresh store is
+`store.legacy-<date>` inside the comms directory, basemind never deletes it, and a fresh store is
 created. An import would carry little: most agent ids in it are per-process, messages older than
 three days are already deleted, and its threads carry no repository.
 
 **Retention.** Messages are kept 30 days (`MESSAGE_TTL`, three today) and at most 1000 per thread
-(`MAX_MESSAGES_PER_THREAD`, unchanged). A thread with no message for 30 days is archived
-(`THREAD_IDLE_TTL`, seven days today). An archived thread is removed when its last message expires;
-`THREAD_RETENTION_TTL` (14 days) is deleted.
+(`MAX_MESSAGES_PER_THREAD`, unchanged). A thread is removed when its last message has expired,
+archived or not. Archiving is explicit and creator-only; the idle auto-archive is removed, and with
+it `THREAD_IDLE_TTL` (seven days) and `THREAD_RETENTION_TTL` (14 days).
 
 **Wire.** `PROTO_VER` goes from 5 to 6: `Hello` gains the host and root, `Call` gains `sub` for the
 sub-identity, and `Post`, `InboxRead`, `ThreadQuery` and `ThreadUpdate` replace the twenty
@@ -145,7 +159,8 @@ daemon inside `InboxRead`. `RELAY_PROTO_VER` goes from 1 to 2.
 **Amendments to ADR-0013.** Protocol v4 becomes v6. The 40 s cap on `wait` becomes the upper bound
 of `wait_secs`, and an `InboxRead` that waits is exempt from the 10 s request bound. `InboxRead` is
 replayed after a daemon restart, against the stored delivered range. Post idempotency keeps its
-rules; the key is no longer a caller field.
+one-hour window; the key is always the relay's and never a caller field, and a thread-creating post
+dedupes on `(from, key)`.
 
 ## Consequences
 
@@ -154,6 +169,8 @@ rules; the key is no longer a caller field.
   messages are not carried over.
 - `src/mcp/mode.rs`, `src/mcp/lenient.rs` and `DOMAIN_TOOLS_BYTE_CEILING` are deleted, completing
   ADR-0020. A session pays nothing for the agent tools until a host loads them through tool search.
+  In a host that defers tools, discovery relies on the server instructions and the session-start
+  hook naming the three tools.
 - CLI parity (ADR-0014): the 18 `agents` rows and 5 `workspace` rows in
   `tests/cli_parity/capabilities.rs` are replaced by three injective tool rows, and the
   mode-to-subcommand bijection disappears with `domain_modes()`. The kept listings are CLI commands
