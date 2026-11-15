@@ -37,6 +37,7 @@ mod helpers_comms;
 mod helpers_documents;
 mod helpers_expand;
 mod helpers_files;
+mod helpers_filters;
 mod helpers_fingerprint;
 mod helpers_git;
 mod helpers_git_file;

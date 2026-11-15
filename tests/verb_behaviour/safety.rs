@@ -197,15 +197,15 @@ async fn code_grep_path_is_a_literal_substring_even_with_glob_characters() {
     .await;
     assert!(glob.contains("not a glob"), "{glob}");
 
-    let unmatched = call(
+    let unmatched = call_err(
         &client,
         "code_grep",
         json!({ "pattern": "file_outline", "path": "nowhere/" }),
     )
     .await;
-    assert_eq!(
-        unmatched["total_matches"], 0,
-        "a plain filter matching nothing is an empty result: {unmatched}"
+    assert!(
+        unmatched.contains("no indexed path contains `nowhere/`"),
+        "a plain filter matching no path is refused too: {unmatched}"
     );
 }
 
@@ -236,4 +236,82 @@ async fn code_refs_definition_finds_the_name_on_an_identifier_boundary() {
     assert_eq!(body["column"], 23, "`    return budget.pop(get)`: {body}");
     assert_eq!(body["definition"]["line"], 1, "{body}");
     assert_eq!(body["definition"]["name"], "get", "{body}");
+}
+
+/// A filter that selects no indexed file is a mistake in the call, not an empty answer: returned
+/// as a clean "no hits", a mistyped language or directory reads as "the code does not contain it".
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_filter_that_selects_no_file_is_refused_with_what_would_match() {
+    let (dir, client) = started().await;
+
+    let language = call_err(&client, "code_grep", json!({ "pattern": "fn", "language": "cobol" })).await;
+    assert!(language.contains("no indexed file has language `cobol`"), "{language}");
+    assert!(
+        language.contains("python, ruby, rust"),
+        "the languages that would match: {language}"
+    );
+
+    let path = call_err(&client, "code_grep", json!({ "pattern": "fn", "path": "no/such/dir/" })).await;
+    assert!(path.contains("no indexed path contains `no/such/dir/`"), "{path}");
+
+    let both = call_err(
+        &client,
+        "code_grep",
+        json!({ "pattern": "fn", "path": "src/", "language": "ruby" }),
+    )
+    .await;
+    assert!(
+        both.contains("no indexed `ruby` file has a path containing `src/`"),
+        "{both}"
+    );
+
+    let none = call(
+        &client,
+        "code_grep",
+        json!({ "pattern": "zzz_not_here", "path": "src/" }),
+    )
+    .await;
+    assert_eq!(none["total_matches"], 0, "files were searched and none matched: {none}");
+
+    for arguments in [
+        json!({ "language": "cobol" }),
+        json!({ "query": "outline", "language": "cobol" }),
+    ] {
+        let message = call_err(&client, "find_files", arguments).await;
+        assert!(message.contains("no indexed file has language `cobol`"), "{message}");
+    }
+    let prefix = call_err(&client, "find_files", json!({ "path_prefix": "nope/" })).await;
+    assert!(prefix.contains("no indexed path starts with `nope/`"), "{prefix}");
+    let unmatched = call(
+        &client,
+        "find_files",
+        json!({ "query": "zzzzqqqq", "path_prefix": "src/" }),
+    )
+    .await;
+    assert_eq!(unmatched["total"], 0, "{unmatched}");
+
+    let never = call_err(&client, "git_log", json!({ "path": "src/never_existed.rs" })).await;
+    assert!(never.contains("no commit touches `src/never_existed.rs`"), "{never}");
+    std::fs::write(dir.path().join("src/brand_new.rs"), "pub fn fresh() {}\n").unwrap();
+    let uncommitted = call(&client, "git_log", json!({ "path": "src/brand_new.rs" })).await;
+    assert_eq!(
+        uncommitted["commits"],
+        json!([]),
+        "a file with no history yet: {uncommitted}"
+    );
+}
+
+/// `limit: 0` asks for nothing and used to get it, with a cursor back to the same position.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_zero_limit_is_refused() {
+    let (_dir, client) = started().await;
+    for (tool, arguments) in [
+        ("code_outline", json!({ "path": "src/outline.rs", "limit": 0 })),
+        ("code_grep", json!({ "pattern": "fn", "limit": 0 })),
+        ("find_files", json!({ "limit": 0 })),
+        ("find_files", json!({ "query": "outline", "limit": 0 })),
+    ] {
+        let message = call_err(&client, tool, arguments).await;
+        assert!(message.contains("`limit` must be at least 1"), "{tool}: {message}");
+    }
 }

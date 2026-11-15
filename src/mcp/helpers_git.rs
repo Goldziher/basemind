@@ -390,6 +390,20 @@ fn run_touching(state: &ServerState, params: CommitsTouchingParams) -> Result<Ca
             .as_ref()
             .clone(),
     };
+    // No commit and no file: the path is wrong, which an empty history would not say.
+    if commits.is_empty()
+        && !repo.is_shallow()
+        && !crate::path::contained_file(repo.workdir(), &params.path).is_ok_and(|file| file.exists())
+    {
+        return Err(McpError::invalid_params(
+            format!(
+                "`git_log`: no commit touches `{0}` and no such file exists. `path` is a repo-relative file \
+                 path, or a directory when it ends with `/`; locate it with `find_files`.",
+                params.path
+            ),
+            None,
+        ));
+    }
     let page: Vec<CommitView> = commits
         .iter()
         .skip(skip)

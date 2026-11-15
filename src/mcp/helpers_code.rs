@@ -15,6 +15,7 @@ use super::helpers::{
     RefsSource, SEARCH_LIMIT_DEFAULT, SEARCH_LIMIT_MAX, elapsed_us, json_result, kind_to_str, run_find_callers,
     run_find_files, run_find_implementations, run_find_references, run_list_files, run_workspace_grep,
 };
+use super::helpers_filters::{PathFilter, reject_zero_limit, selects_no_file};
 use super::index_route::IndexRoute;
 use super::tool_contract::{budget, not_indexed};
 use super::types::{
@@ -43,15 +44,17 @@ pub(super) async fn code_grep(state: &ServerState, p: CodeGrepParams) -> Result<
             None,
         ));
     }
+    reject_zero_limit("code_grep", p.limit)?;
     let started = std::time::Instant::now();
     state.await_cache_ready().await;
-    // `path` is always a literal substring. Only a filter that looks like a glob AND matches no
-    // indexed path gets the hint, since an empty result would otherwise read as "no hits".
+    // `path` is always a literal substring. A filter that looks like a glob and matches no indexed
+    // path gets the glob hint; any other filter no file passes is refused below. Either would
+    // otherwise come back as an empty result that reads as "no hits".
+    let cache = state.shared.cache.load_full();
     if let Some(path) = p.path.as_deref()
         && path.contains(GLOB_WILDCARDS)
     {
         let finder = memchr::memmem::Finder::new(path.as_bytes());
-        let cache = state.shared.cache.load_full();
         if !cache.paths().any(|indexed| finder.find(indexed.as_bytes()).is_some()) {
             return Err(McpError::invalid_params(
                 format!(
@@ -63,6 +66,16 @@ pub(super) async fn code_grep(state: &ServerState, p: CodeGrepParams) -> Result<
             ));
         }
     }
+    if let Some(refusal) = selects_no_file(
+        "code_grep",
+        &cache,
+        false,
+        p.path.as_deref().map(PathFilter::Contains),
+        p.language.as_deref(),
+    ) {
+        return Err(refusal);
+    }
+    drop(cache);
     run_workspace_grep(
         state,
         WorkspaceGrepParams {
@@ -132,6 +145,17 @@ pub(super) async fn code_search(state: &ServerState, p: CodeSearchParams) -> Res
 
 /// `find_files`: fuzzy file-name search, or a plain listing when `query` is omitted.
 pub(super) async fn find_files(state: &ServerState, p: FindFilesToolParams) -> Result<CallToolResult, McpError> {
+    reject_zero_limit("find_files", p.limit)?;
+    state.await_cache_ready().await;
+    if let Some(refusal) = selects_no_file(
+        "find_files",
+        &state.shared.cache.load_full(),
+        true,
+        p.path_prefix.as_deref().map(PathFilter::Prefix),
+        p.language.as_deref(),
+    ) {
+        return Err(refusal);
+    }
     match p.query.filter(|query| !query.trim().is_empty()) {
         Some(query) => {
             run_find_files(
@@ -400,6 +424,8 @@ fn line_of(newlines: &[usize], offset: usize) -> u32 {
 /// flagged `stale` rather than silently reported against the wrong bytes.
 pub(super) async fn code_outline(state: &ServerState, p: CodeOutlineParams) -> Result<CallToolResult, McpError> {
     use std::sync::atomic::Ordering;
+
+    reject_zero_limit("code_outline", p.limit)?;
 
     let started = std::time::Instant::now();
     let generation = state.shared.cache_generation.load(Ordering::Relaxed);

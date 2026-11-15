@@ -312,7 +312,7 @@ fn rank_and_cut(scored: &mut Vec<(u32, FindFilesEntry)>) {
 
 /// Language label for a document-tier path: the grammar name when one resolves (`markdown`,
 /// `json`, `yaml` ...), else the lowercased extension (`pdf`, `docx`), else `document`.
-fn doc_language(path: &str) -> String {
+pub(super) fn doc_language(path: &str) -> String {
     if let Some(l) = crate::lang::detect(std::path::Path::new(path)) {
         return l.to_string();
     }
