@@ -1,3 +1,9 @@
+---
+status: superseded
+superseded-by: "0017"
+date: 2026-08-02
+---
+
 # ADR-0001: Unified typed code-graph model
 
 - **Status:** Superseded by ADR-0017 (2026-11-14)

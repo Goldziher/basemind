@@ -1,3 +1,9 @@
+---
+status: superseded
+superseded-by: "0017"
+date: 2026-08-02
+---
+
 # ADR-0004: Community detection and deterministic labels
 
 - **Status:** Superseded by ADR-0017 (2026-11-14)

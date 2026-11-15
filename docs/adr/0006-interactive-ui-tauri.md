@@ -1,3 +1,8 @@
+---
+status: withdrawn
+date: 2026-08-02
+---
+
 # ADR-0006: Interactive UI — Tauri desktop app
 
 - **Status:** Withdrawn (2026-10-03) — the unreleased front-end stack (`basemind-ui`,

@@ -1,3 +1,9 @@
+---
+status: superseded
+superseded-by: "0018"
+date: 2026-08-05
+---
+
 # ADR-0011: MCP tool-surface redesign — consolidation into nine domains
 
 - **Status:** Superseded by ADR-0018 (2026-11-14); domain count amended by ADR-0017

@@ -1,3 +1,8 @@
+---
+status: accepted
+date: 2026-10-09
+---
+
 # ADR-0013: Comms robustness: correlated requests, bounded waits, idempotent posts, relay replay
 
 - **Status:** Accepted

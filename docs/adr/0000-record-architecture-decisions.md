@@ -1,3 +1,8 @@
+---
+status: accepted
+date: 2026-08-02
+---
+
 # ADR-0000: Record architecture decisions
 
 - **Status:** Accepted

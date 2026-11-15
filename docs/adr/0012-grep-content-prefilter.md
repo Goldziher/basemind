@@ -1,3 +1,8 @@
+---
+status: accepted
+date: 2026-10-08
+---
+
 # ADR-0012: Per-file trigram bloom prefilter for `code grep`
 
 - **Status:** Accepted

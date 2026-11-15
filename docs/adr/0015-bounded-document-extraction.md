@@ -1,3 +1,8 @@
+---
+status: proposed
+date: 2026-10-11
+---
+
 # ADR-0015: Bound document extraction with a thread cap, tombstones and a phase budget
 
 - **Status:** Proposed

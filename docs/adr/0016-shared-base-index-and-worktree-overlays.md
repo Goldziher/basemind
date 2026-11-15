@@ -1,3 +1,8 @@
+---
+status: accepted
+date: 2026-10-18
+---
+
 # ADR-0016: Shared base index with per-worktree overlays
 
 - **Status:** Accepted

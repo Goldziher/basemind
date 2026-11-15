@@ -1,3 +1,8 @@
+---
+status: accepted
+date: 2026-08-02
+---
+
 # ADR-0010: Branch, integration & release strategy
 
 - **Status:** Accepted (adopted as the governing policy, 2026-08-04)

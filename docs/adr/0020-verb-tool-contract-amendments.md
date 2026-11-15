@@ -1,3 +1,9 @@
+---
+status: accepted
+date: 2026-11-15
+amends: ["0018"]
+---
+
 # ADR-0020: Verb-tool contract — no output schemas, always-load scope, kept domain tools
 
 - **Status:** Accepted

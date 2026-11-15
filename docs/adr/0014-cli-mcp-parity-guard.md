@@ -1,3 +1,8 @@
+---
+status: accepted
+date: 2026-10-09
+---
+
 # ADR-0014: Executable CLI/MCP parity guard
 
 - **Status:** Accepted; amended by ADR-0018 (2026-11-14)

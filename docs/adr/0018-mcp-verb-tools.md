@@ -1,3 +1,10 @@
+---
+status: accepted
+date: 2026-11-14
+supersedes: "0011"
+amends: ["0014"]
+---
+
 # ADR-0018: MCP surface — verb tools with exact schemas
 
 - **Status:** Accepted

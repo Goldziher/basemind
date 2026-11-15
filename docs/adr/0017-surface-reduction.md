@@ -1,3 +1,10 @@
+---
+status: accepted
+date: 2026-11-14
+supersedes: ["0001", "0002", "0003", "0004", "0005", "0007", "0008", "0009"]
+amends: ["0011"]
+---
+
 # ADR-0017: Surface reduction — remove graph, web, shell, token-saving and review queue
 
 - **Status:** Accepted
