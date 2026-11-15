@@ -433,4 +433,58 @@ mod tests {
         assert!(db.reclaim_journal_if_grown());
         await_journal_count(&db, 1);
     }
+
+    /// Only a database damaged on disk may be discarded and rebuilt: a lock held elsewhere, an I/O
+    /// error and a format version this fjall does not know leave data that is, or may be, good.
+    #[test]
+    fn only_a_database_damaged_on_disk_is_called_corrupt() {
+        use fjall::{Error, LsmError};
+
+        let io = || std::io::Error::other("the disk is full");
+        let undamaged = [
+            Error::Locked,
+            Error::Io(io()),
+            Error::InvalidVersion(None),
+            Error::Poisoned,
+            Error::Storage(LsmError::Io(io())),
+            Error::Storage(LsmError::InvalidVersion(9)),
+        ];
+        for error in undamaged {
+            let shown = format!("{error:?}");
+            assert!(
+                matches!(classify_open_error(error), IndexError::Fjall(_)),
+                "{shown} is no reason to discard the index"
+            );
+        }
+        let damaged = [
+            Error::InvalidTrailer,
+            Error::Unrecoverable,
+            Error::InvalidTag(("tag", 1)),
+            Error::Storage(LsmError::Unrecoverable),
+        ];
+        for error in damaged {
+            let shown = format!("{error:?}");
+            assert!(
+                matches!(classify_open_error(error), IndexError::Corrupt(_)),
+                "{shown} is damage"
+            );
+        }
+    }
+
+    /// A read-only open deletes nothing: an index set aside by an interrupted discard is the
+    /// business of the next writer open.
+    #[test]
+    fn a_read_only_open_leaves_a_discarded_index_for_the_writer_open_to_sweep() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let aside = dir.path().join(format!("{DISCARD_PREFIX}4242-0"));
+        std::fs::create_dir_all(&aside).expect("mkdir");
+        std::fs::write(aside.join("table"), b"rows").expect("write");
+        let memory_dir = dir.path().join("memory.fjall");
+
+        drop(IndexDb::open_tolerating_held_memory(dir.path(), &memory_dir).expect("read-only open"));
+        assert!(aside.exists(), "a read-only open deleted what a writer set aside");
+
+        drop(IndexDb::open_with_memory(dir.path(), &memory_dir).expect("writer open"));
+        assert!(!aside.exists(), "the writer open sweeps it");
+    }
 }

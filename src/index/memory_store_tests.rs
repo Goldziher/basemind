@@ -319,3 +319,31 @@ fn a_memory_store_of_a_newer_version_is_refused_and_left_intact() {
         .expect("notes keyspace");
     assert_eq!(value_of(&notes.get(b"k").unwrap().expect("note kept")), "kept");
 }
+
+/// A read-only open deletes, migrates and wipes nothing: rows an older build left in the view stay
+/// where they are, and the group store gains none, until a writer open folds them in.
+#[test]
+fn a_read_only_open_leaves_a_views_legacy_notes_for_the_writer_open_to_migrate() {
+    let tmp = tempfile::tempdir().unwrap();
+    let memory_dir = tmp.path().join("repos/g/memory.fjall");
+    let view = tmp.path().join("ws/views/working");
+    plant_legacy(&view, MEMORY_BY_KEY, &[("k", row("legacy", 5))]);
+
+    {
+        let read_only = IndexDb::open_tolerating_held_memory(&view, &memory_dir).unwrap();
+        assert!(
+            read_only.memory_by_key.get(b"k").unwrap().is_none(),
+            "a read-only open migrated a note"
+        );
+    }
+    assert!(
+        legacy_keyspace_exists(&view, MEMORY_BY_KEY),
+        "a read-only open dropped the view's keyspace"
+    );
+
+    let writer = IndexDb::open_with_memory(&view, &memory_dir).unwrap();
+    assert_eq!(
+        value_of(&writer.memory_by_key.get(b"k").unwrap().expect("migrated")),
+        "legacy"
+    );
+}

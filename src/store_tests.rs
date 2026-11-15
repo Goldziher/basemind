@@ -395,6 +395,10 @@ fn a_writer_open_rebuilds_a_damaged_index_and_a_read_only_open_leaves_it() {
     assert!(read_only.index_db.is_none(), "the damaged index is not served");
     assert_eq!(read_only.index.files.len(), 1, "and nothing was discarded");
     drop(read_only);
+    assert!(
+        damage_tables(&index_dir) > 0,
+        "the read-only open left the damaged database on disk"
+    );
 
     let store = Store::open(root, VIEW_WORKING).expect("the writer open replaces the damaged index");
     assert!(store.index_rebuild_needed, "and orders the rebuild");
