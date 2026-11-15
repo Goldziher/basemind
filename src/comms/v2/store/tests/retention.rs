@@ -241,6 +241,54 @@ fn sweep_removes_index_rows_it_cannot_decode_and_goes_on() {
 }
 
 #[test]
+fn sweep_out_of_budget_on_an_undecodable_message_index_row_removes_nothing() {
+    let harness = Harness::new();
+    start(&harness, "a", "topic", &[]);
+    let store = harness.store();
+    store
+        .ks
+        .post_order
+        .insert(0u64.to_be_bytes(), b"not an entry")
+        .expect("write");
+    harness.clock.advance(MESSAGE_TTL + Duration::from_secs(1));
+    let before = store.stored_rows();
+
+    let none = store.sweep_bounded(0).expect("sweep");
+    assert_eq!(
+        none,
+        SweepReport {
+            more: true,
+            ..SweepReport::default()
+        }
+    );
+    assert_eq!(
+        store.stored_rows(),
+        before,
+        "no row goes without budget, the bad one included"
+    );
+
+    let one = store.sweep_bounded(1).expect("sweep");
+    assert_eq!(
+        one,
+        SweepReport {
+            skipped_unreadable: 1,
+            more: true,
+            ..SweepReport::default()
+        }
+    );
+    let after = store.stored_rows();
+    assert_eq!(
+        (after[0], after[1], after[3]),
+        (1, 1, 1),
+        "the thread stays while its message does"
+    );
+
+    let rest = store.sweep().expect("sweep");
+    assert_eq!((rest.messages, rest.threads, rest.more), (1, 1, false));
+    assert_eq!(store.stored_rows(), only_seen(1));
+}
+
+#[test]
 fn expired_thread_is_swept_with_the_messages_stamped_ahead_of_its_last_post() {
     let harness = Harness::new();
     harness.clock.advance(AHEAD);

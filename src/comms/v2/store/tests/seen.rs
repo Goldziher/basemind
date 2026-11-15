@@ -51,7 +51,22 @@ fn seen_record_written_ahead_of_the_clock_is_rewritten_at_the_clock() {
         .threads_query(&caller("a"), ThreadQuery::default())
         .expect("threads");
 
-    assert_eq!(harness.store().recorded_seen("a"), Some(START_MICROS));
+    let store = harness.store();
+    assert_eq!(store.recorded_seen("a"), Some(START_MICROS));
+    let indexed_at = |recorded: i64| {
+        let key = keys::expiry(keys::Expiry::Seen, recorded, keys::seen(&caller("a").actor));
+        store.ks.expiry.contains_key(key).expect("read the expiry index")
+    };
+    assert!(indexed_at(START_MICROS));
+    assert!(
+        !indexed_at(START_MICROS + 3_600_000_000),
+        "the index entry of the record written ahead went with it"
+    );
+    assert_eq!(
+        store.stored_rows()[8..],
+        [1, 1 + 1],
+        "one seen row, its expiry entry and the thread's"
+    );
 }
 
 #[test]
