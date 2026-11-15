@@ -123,12 +123,12 @@ not started yet; it only makes both visible. `notified_seq` is the inbox hook's 
 (what it has already announced), kept in the store so the hook no longer keeps a file of its own.
 
 An agent is seen once any call it makes succeeds, a hook's read included. Being named in `to` or
-`invite` does not make it seen, and neither does a refused call. A seen record is dropped when the
-agent has made no call for 30 days (`SEEN_TTL`), after which it is `pending` again. An agent's first
-call writes its record at once; after that the record is rewritten at most once a day
-(`SEEN_REFRESH_INTERVAL`), so that a read does not write on every call, and is kept a day longer
-to make up for it. An agent is therefore never `pending` within 30 days of a call, and is
-`pending` again at most a day after that.
+`invite` does not make it seen, and neither does a refused call. An agent's first call writes its
+seen record at once; after that the record is rewritten at most once a day
+(`SEEN_REFRESH_INTERVAL`), so that a read does not write on every call. A record stops counting 31
+days after it was written (`SEEN_TTL` plus that day), and the agent is `pending` again. An agent is
+therefore never `pending` within 30 days of a call, and is `pending` again at most a day after
+that.
 
 Only an unread read marks. It advances `read_seq` to the last message returned in each thread, and
 `notified_seq` with it, so what was read is not announced afterwards; there is no separate
@@ -293,7 +293,7 @@ three days are already deleted, and its threads carry no repository.
 
 **Retention.** Messages are kept 30 days (`MESSAGE_TTL`, three today) and at most 1000 per thread
 (`MAX_MESSAGES_PER_THREAD`, unchanged). Messages expire one by one, and the unread count is of
-what is still stored. A thread expires with the last message posted to it, archived or not, and
+what has not expired. A thread expires with the last message posted to it, archived or not, and
 every message it still has goes with it.
 Archiving is by the creator, or automatic when the last member leaves; the idle auto-archive is
 removed, and with it `THREAD_IDLE_TTL` (seven days) and `THREAD_RETENTION_TTL` (14 days). Threads
