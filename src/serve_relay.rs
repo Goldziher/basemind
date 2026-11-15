@@ -8,7 +8,8 @@ use anyhow::{Context, Result};
 use basemind::comms::ids::AgentId;
 use basemind::comms::{identity, relay, singleton};
 
-use crate::stdio_relay::{self, RelayRefusal, StopPacing};
+use crate::relay_refusal::RelayRefusal;
+use crate::stdio_relay::{self, StopPacing};
 
 /// Keep the MCP host's stdio pipes alive across daemon replacement. The protocol-aware relay tracks
 /// initialization and in-flight request IDs, allowing it to reconnect without asking Codex or
@@ -88,6 +89,7 @@ async fn open_relay_connection(
     if !welcome.accepted {
         return Err(RelayRefusal::Declined {
             code: welcome.code.unwrap_or_else(|| "unspecified".to_string()),
+            detail: welcome.detail,
         }
         .into());
     }

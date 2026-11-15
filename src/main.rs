@@ -18,6 +18,8 @@ mod comms_stop;
 mod doctor_cli;
 mod lang_cli;
 #[cfg(all(feature = "comms", any(unix, windows)))]
+mod relay_refusal;
+#[cfg(all(feature = "comms", any(unix, windows)))]
 mod serve_relay;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 mod stdio_relay;

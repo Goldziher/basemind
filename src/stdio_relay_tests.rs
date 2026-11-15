@@ -742,6 +742,7 @@ fn stop_may_be_asked_until_one_is_sent_and_then_once_per_interval() {
 
 #[test]
 fn takeover_errors_decide_how_the_relay_reconnects() {
+    use crate::relay_refusal::RelayRefusal;
     use anyhow::Context as _;
     use basemind::comms::singleton::SingletonError;
 
@@ -831,6 +832,7 @@ fn takeover_errors_decide_how_the_relay_reconnects() {
     );
     let declined = refusal(RelayRefusal::Declined {
         code: "view_unsupported".to_string(),
+        detail: None,
     });
     assert_eq!(declined.failure(), ReconnectFailure::Fatal);
     assert!(declined.reason().contains("view_unsupported"), "{}", declined.reason());

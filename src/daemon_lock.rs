@@ -330,6 +330,34 @@ fn count_recorded_in(dir: &Path, kind: DaemonKind) -> usize {
         .count()
 }
 
+/// The registry record of the live daemon running as `pid`, whatever its generation or kind: the
+/// releases up to 0.33 record directly in the registry root, later ones in a `g<N>/` below it.
+/// Read-only. For naming the process that holds something this daemon wants; a pid alone does not
+/// say which basemind version it is.
+pub fn registered_daemon(pid: u32) -> Option<DaemonRecord> {
+    registered_daemon_in(&daemons_root(), pid)
+}
+
+/// [`registered_daemon`] over an explicit registry root.
+fn registered_daemon_in(root: &Path, pid: u32) -> Option<DaemonRecord> {
+    let recorded_in = |dir: &Path| {
+        std::fs::read_dir(dir)
+            .ok()?
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().and_then(|e| e.to_str()) == Some("pid"))
+            .filter_map(|path| read_record(&path))
+            .find(|record| record.pid == pid && pid_is_live(pid))
+    };
+    recorded_in(root).or_else(|| {
+        std::fs::read_dir(root)
+            .ok()?
+            .flatten()
+            .filter(|entry| entry.file_name().to_str().is_some_and(is_generation_name))
+            .find_map(|entry| recorded_in(&entry.path()))
+    })
+}
+
 /// What `<dir>/daemon.lock` says about a daemon in `dir`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LockState {
@@ -546,6 +574,38 @@ mod tests {
         assert!(pid_is_live(std::process::id()), "our own pid is live");
         // A pid well above any real one on a fresh machine reads as dead.
         assert!(!pid_is_live(0x7FFF_FFFE), "an absent pid is not live");
+    }
+
+    #[test]
+    fn a_live_daemon_is_found_by_pid_in_any_generation_and_a_dead_one_is_not() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let record = |pid: u32, version: &str| {
+            serde_json::json!({
+                "pid": pid, "kind": "comms", "dir": "/tmp/comms", "version": version, "started_unix": 0,
+            })
+            .to_string()
+        };
+        let me = std::process::id();
+        assert!(
+            registered_daemon_in(root.path(), me).is_none(),
+            "an empty registry names nobody"
+        );
+
+        std::fs::write(root.path().join("comms-dead.pid"), record(0x7FFF_FFFE, "0.33.0")).expect("write");
+        assert!(
+            registered_daemon_in(root.path(), 0x7FFF_FFFE).is_none(),
+            "a dead pid is nobody"
+        );
+
+        let other = root.path().join("g7");
+        std::fs::create_dir_all(&other).expect("mkdir generation");
+        std::fs::write(other.join("comms-x.pid"), record(me, "0.99.0")).expect("write");
+        let found = registered_daemon_in(root.path(), me).expect("a record in another generation");
+        assert_eq!(found.version, "0.99.0");
+
+        std::fs::write(root.path().join("comms-old.pid"), record(me, "0.33.0")).expect("write");
+        let found = registered_daemon_in(root.path(), me).expect("a record in the registry root");
+        assert_eq!(found.version, "0.33.0", "the pre-generation layout is read too");
     }
 
     #[test]

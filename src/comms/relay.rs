@@ -64,8 +64,30 @@ pub struct RelayWelcome {
     pub daemon_version: String,
     /// Whether the daemon accepted the relay session.
     pub accepted: bool,
-    /// A stable rejection token when `accepted` is `false`; `None` on acceptance.
+    /// A stable rejection token when `accepted` is `false`; `None` on acceptance. One of the
+    /// [`decline`] tokens; a client treats a token it does not know as a refusal that may clear.
     pub code: Option<String>,
+    /// What the token alone cannot say, for the person reading the refusal: who holds the
+    /// workspace, or why the root was refused. Absent on acceptance and from a daemon that has
+    /// nothing to add.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+/// The tokens a daemon declines a relay session with ([`RelayWelcome::code`]).
+pub mod decline {
+    /// The client speaks another relay protocol version.
+    pub const PROTO_SKEW: &str = "relay_proto_skew";
+    /// The session asked for a view the daemon does not host. The same on every retry.
+    pub const VIEW_UNSUPPORTED: &str = "view_unsupported";
+    /// The root is not a directory basemind indexes. The same on every retry.
+    pub const ROOT_REFUSED: &str = "root_refused";
+    /// The daemon accepted a `Stop` and is on its way out; its successor accepts the session.
+    pub const DAEMON_DRAINING: &str = "daemon_draining";
+    /// Another basemind process holds the workspace's index lock. Clears when that process lets go.
+    pub const WORKSPACE_LOCKED: &str = "workspace_locked";
+    /// The daemon could not set the workspace up for a reason it has no token for.
+    pub const HOST_BUILD_FAILED: &str = "host_build_failed";
 }
 
 /// Encode a relay handshake message to msgpack, using named fields to match the rest of the wire
@@ -184,10 +206,44 @@ mod tests {
             daemon_version: "0.22.6".to_string(),
             accepted: false,
             code: Some("relay_proto_skew".to_string()),
+            detail: None,
         };
         let bytes = encode(&welcome).expect("encode");
         let back: RelayWelcome = decode(&bytes).expect("decode");
         assert_eq!(welcome, back);
+    }
+
+    /// The welcome as a build without `detail` declares it. Both directions must decode: that
+    /// build's daemon answers this client, and that build's client reads this daemon's refusal.
+    #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+    struct WelcomeWithoutDetail {
+        relay_proto_ver: u32,
+        daemon_version: String,
+        accepted: bool,
+        code: Option<String>,
+    }
+
+    #[test]
+    fn a_welcome_decodes_across_builds_with_and_without_the_detail() {
+        let old = WelcomeWithoutDetail {
+            relay_proto_ver: RELAY_PROTO_VER,
+            daemon_version: "0.34.0".to_string(),
+            accepted: false,
+            code: Some(decline::HOST_BUILD_FAILED.to_string()),
+        };
+        let read: RelayWelcome = decode(&encode(&old).expect("encode")).expect("a welcome without detail");
+        assert_eq!(read.code.as_deref(), Some(decline::HOST_BUILD_FAILED));
+        assert_eq!(read.detail, None);
+
+        let new = RelayWelcome {
+            relay_proto_ver: RELAY_PROTO_VER,
+            daemon_version: "0.34.1".to_string(),
+            accepted: false,
+            code: Some(decline::WORKSPACE_LOCKED.to_string()),
+            detail: Some("pid 7".to_string()),
+        };
+        let read: WelcomeWithoutDetail = decode(&encode(&new).expect("encode")).expect("a welcome with detail");
+        assert_eq!(read.code.as_deref(), Some(decline::WORKSPACE_LOCKED));
     }
 
     #[test]
@@ -226,6 +282,7 @@ mod tests {
             daemon_version: "9.9.9".to_string(),
             accepted: true,
             code: None,
+            detail: None,
         };
 
         let server_hello = hello.clone();

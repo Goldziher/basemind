@@ -61,50 +61,9 @@ pub(crate) trait ReconnectError: std::fmt::Display {
 
 impl ReconnectError for &str {}
 
-/// The daemon answered the relay handshake and turned this session down.
-#[derive(Debug, thiserror::Error)]
-pub(crate) enum RelayRefusal {
-    /// The daemon and this binary speak different relay protocols.
-    #[error(
-        "the basemind daemon (v{daemon_version}) speaks relay protocol {daemon} and this basemind \
-         speaks {client}; {}",
-        if daemon > client {
-            "update this basemind, or stop that daemon with `basemind comms stop` once its sessions are done"
-        } else {
-            "the daemon is from an older build and is replaced once its sessions end; `basemind comms stop` \
-             stops it now"
-        }
-    )]
-    ProtoMismatch {
-        /// The relay protocol the daemon reported.
-        daemon: u32,
-        /// This binary's relay protocol.
-        client: u32,
-        /// The daemon's build version.
-        daemon_version: String,
-    },
-    /// The daemon declined for a reason of its own.
-    #[error("the basemind daemon declined this session: {code}")]
-    Declined {
-        /// The daemon's stable refusal token.
-        code: String,
-    },
-}
-
-impl RelayRefusal {
-    fn failure(&self) -> ReconnectFailure {
-        match self {
-            // A newer daemon comes back newer however often this binary retries.
-            Self::ProtoMismatch { daemon, client, .. } if daemon > client => ReconnectFailure::Fatal,
-            Self::ProtoMismatch { .. } => ReconnectFailure::Blocked,
-            // The daemon judged what this session asked for, which a retry repeats unchanged.
-            Self::Declined { .. } => ReconnectFailure::Fatal,
-        }
-    }
-}
-
 impl ReconnectError for anyhow::Error {
     fn failure(&self) -> ReconnectFailure {
+        use crate::relay_refusal::RelayRefusal;
         use basemind::comms::singleton::SingletonError;
         if let Some(refusal) = self.chain().find_map(|cause| cause.downcast_ref::<RelayRefusal>()) {
             return refusal.failure();

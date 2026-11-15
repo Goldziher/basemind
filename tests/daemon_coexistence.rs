@@ -255,7 +255,7 @@ impl Serve {
         let root = machine._tmp.path().join("workspace");
         std::fs::create_dir_all(&root).expect("mkdir workspace");
         // The config file is what marks a directory as a workspace root `serve` accepts.
-        std::fs::write(root.join("basemind.toml"), "").expect("write basemind.toml");
+        std::fs::write(root.join("basemind.toml"), "\"$schema\" = \"v1\"\n").expect("write basemind.toml");
         let log = machine._tmp.path().join("serve.stderr");
         let stderr = std::fs::File::create(&log).expect("create stderr log");
         let mut child = Command::new(BIN)
@@ -722,4 +722,117 @@ fn comms_cleanup_removes_only_idle_unlocked_rendezvous_of_other_generations() {
         "this generation is never removed"
     );
     drop(lock);
+}
+
+/// Hold `root`'s index lock from this process, as a basemind that is not this build's daemon does:
+/// the lock file locked, and the sidecar naming the holder. The registry record is the one a
+/// release up to 0.33 writes for its daemon, so the holder can be named by version.
+fn hold_index_lock(machine: &Machine, root: &Path, version: &str) -> std::fs::File {
+    use basemind::store::{CACHE_DIR, LOCK_FILE, LOCK_META_FILE, workspace_key};
+    use fs2::FileExt as _;
+
+    let dir = machine
+        .data_home
+        .join(CACHE_DIR)
+        .join("workspaces")
+        .join(workspace_key(root));
+    std::fs::create_dir_all(&dir).expect("mkdir workspace cache");
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(dir.join(LOCK_FILE))
+        .expect("open the index lock");
+    lock.try_lock_exclusive().expect("take the index lock");
+    let pid = std::process::id();
+    let meta = serde_json::json!({ "command": "basemind rescan", "pid": pid, "acquired_unix": 0 });
+    std::fs::write(dir.join(LOCK_META_FILE), meta.to_string()).expect("write the lock sidecar");
+    let record = serde_json::json!({
+        "pid": pid, "kind": "comms", "dir": machine.comms_dir, "version": version, "started_unix": 0,
+    });
+    let registry = machine.data_home.join("daemons");
+    std::fs::create_dir_all(&registry).expect("mkdir registry");
+    std::fs::write(registry.join("comms-other-version.pid"), record.to_string()).expect("write registry record");
+    lock
+}
+
+/// The upgrade case: a session of another basemind version is open in the repository, so that
+/// version's daemon holds the index lock when this build's session starts. The session must not
+/// end. The host is told who holds the index and what to do, and once the holder lets go the same
+/// `basemind serve` process connects and answers, with no restart by the host.
+#[test]
+fn serve_started_while_another_version_holds_the_index_waits_and_connects_when_it_is_released() {
+    const HELD_AT_LEAST: Duration = Duration::from_secs(8);
+    let machine = Machine::new();
+    let root = machine._tmp.path().join("workspace");
+    std::fs::create_dir_all(&root).expect("mkdir workspace");
+    let held = hold_index_lock(&machine, &root, "0.33.0");
+
+    let mut serve = Serve::start(&machine);
+    let started = std::time::Instant::now();
+    serve.initialize();
+
+    let answer = serve.answer(Duration::from_secs(120));
+    assert_eq!(answer["id"], 1, "{answer}");
+    let message = answer["error"]["message"].as_str().expect("an error message");
+    let holder = format!("the basemind v0.33.0 daemon, pid {}", std::process::id());
+    assert!(
+        message.contains("another basemind holds this workspace's index")
+            && message.contains(&holder)
+            && message.contains("Close that version's sessions; its daemon exits when idle"),
+        "the reason names the holder and the way out: {answer}"
+    );
+    assert_eq!(answer["error"]["data"]["retryable"], true, "{answer}");
+    assert!(
+        started.elapsed() >= HELD_AT_LEAST,
+        "initialize is held for the index to come free before it is refused: {:?}",
+        started.elapsed()
+    );
+    assert!(
+        serve.exits_within(Duration::from_secs(1)).is_none(),
+        "a locked workspace does not end the session"
+    );
+
+    drop(held);
+    let deadline = std::time::Instant::now() + Duration::from_secs(180);
+    let mut id = 1u64;
+    loop {
+        id += 1;
+        writeln!(
+            serve.stdin,
+            r#"{{"jsonrpc":"2.0","id":{id},"method":"initialize","params":{{"protocolVersion":"2025-03-26","capabilities":{{}},"clientInfo":{{"name":"test","version":"0"}}}}}}"#
+        )
+        .expect("write initialize");
+        serve.stdin.flush().expect("flush");
+        let answer = serve.answer(Duration::from_secs(120));
+        assert_eq!(answer["id"], id, "{answer}");
+        if answer.get("result").is_some() {
+            break;
+        }
+        assert_eq!(answer["error"]["data"]["retryable"], true, "{answer}");
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the relay must connect once the index is free: {answer}"
+        );
+        std::thread::sleep(Duration::from_secs(1));
+    }
+    writeln!(
+        serve.stdin,
+        r#"{{"jsonrpc":"2.0","method":"notifications/initialized"}}"#
+    )
+    .expect("write initialized");
+    writeln!(serve.stdin, r#"{{"jsonrpc":"2.0","id":9000,"method":"tools/list"}}"#).expect("write tools/list");
+    serve.stdin.flush().expect("flush");
+    let listed = serve.answer(Duration::from_secs(60));
+    assert_eq!(listed["id"], 9000, "{listed}");
+    assert!(
+        listed["result"]["tools"]
+            .as_array()
+            .is_some_and(|tools| !tools.is_empty()),
+        "the same process serves the session: {listed}"
+    );
+
+    drop(serve);
+    machine.run(&["comms", "stop"], &[]);
 }

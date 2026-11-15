@@ -79,6 +79,9 @@ pub mod model;
 pub mod protocol;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 pub mod relay;
+/// The token and detail the daemon declines a relay session with.
+#[cfg(all(feature = "comms", any(unix, windows)))]
+mod relay_decline;
 pub mod resolved_proto;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 pub mod scope;
