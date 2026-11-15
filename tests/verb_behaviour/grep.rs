@@ -72,3 +72,46 @@ async fn code_grep_counts_the_files_it_could_not_search() {
         "src/outline.rs is still searched: {body}"
     );
 }
+
+/// An indexed file swapped for a link out of the repository is not read into a hit.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn code_grep_does_not_follow_an_indexed_file_swapped_for_a_link_out_of_the_repository() {
+    let (dir, client) = started().await;
+    let root = dir.path();
+    let outside = tempfile::tempdir_in(root.parent().expect("parent")).expect("sibling tempdir");
+    std::fs::write(
+        outside.path().join("secret.txt"),
+        "SECRETTOKEN outside the repository\n",
+    )
+    .unwrap();
+    std::fs::remove_file(root.join("src/callers.rs")).unwrap();
+    std::os::unix::fs::symlink(outside.path().join("secret.txt"), root.join("src/callers.rs")).unwrap();
+
+    let body = call(&client, "code_grep", json!({ "pattern": "SECRETTOKEN" })).await;
+    assert_eq!(body["hits"], json!([]), "{body}");
+    assert_eq!(body["total_matches"], 0, "{body}");
+    assert!(!body.to_string().contains("outside the repository"), "{body}");
+    assert_eq!(body["skipped_files"], 1, "{body}");
+}
+
+/// A directory swapped for a link is caught where content is returned. The counting pass checks
+/// only whether the file itself is a link, so the match is counted, but its text never leaves.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn code_grep_returns_no_text_through_a_directory_swapped_for_a_link() {
+    let (dir, client) = started().await;
+    let root = dir.path();
+    let outside = tempfile::tempdir_in(root.parent().expect("parent")).expect("sibling tempdir");
+    std::fs::write(
+        outside.path().join("callers.rs"),
+        "SECRETTOKEN outside the repository\n",
+    )
+    .unwrap();
+    std::fs::remove_dir_all(root.join("src")).unwrap();
+    std::os::unix::fs::symlink(outside.path(), root.join("src")).unwrap();
+
+    let body = call(&client, "code_grep", json!({ "pattern": "SECRETTOKEN" })).await;
+    assert_eq!(body["hits"], json!([]), "{body}");
+    assert!(!body.to_string().contains("outside the repository"), "{body}");
+}

@@ -3,7 +3,6 @@
 
 use std::cell::RefCell;
 use std::io::Read;
-use std::path::Path;
 use std::sync::atomic::Ordering;
 
 use memchr::memmem::Finder;
@@ -16,6 +15,7 @@ use super::ServerState;
 use super::cursor::Cursor;
 use super::helpers::{SEARCH_LIMIT_DEFAULT, SEARCH_LIMIT_MAX};
 use super::helpers_grep_text::{annotate_symbols, clip_line, line_text};
+use super::tool_contract::IndexedFiles;
 use super::types::{GrepHit, GrepTruncation, WorkspaceGrepParams, WorkspaceGrepResponse};
 use crate::index::grep_bloom::GrepEntry;
 use crate::path::RelPath;
@@ -117,6 +117,7 @@ pub(super) async fn run_workspace_grep(
     let (scanned, byte_budget_hit) = apply_byte_budget(window);
 
     let root = state.shared.root.as_path();
+    let files = IndexedFiles::of(state);
     let paths: Vec<&RelPath> = scanned.iter().map(|(path, _)| *path).collect();
     let entries: Vec<GrepEntry> = scanned
         .iter()
@@ -137,7 +138,7 @@ pub(super) async fn run_workspace_grep(
     } else {
         None
     };
-    let (counts, skipped_files) = count_all(root, &paths, skip.as_deref(), &re, literal.as_ref(), skip_hits);
+    let (counts, skipped_files) = count_all(files, &paths, skip.as_deref(), &re, literal.as_ref(), skip_hits);
 
     let total_matches = counts.iter().fold(0u32, |acc, &c| acc.saturating_add(c));
     let total_files_matched = counts.iter().filter(|&&c| c > 0).count();
@@ -148,7 +149,7 @@ pub(super) async fn run_workspace_grep(
         super::freshness::matches_index(meta.into(), &root.join(path), bytes)
     };
     let (mut hits, hit_cursors) = materialize(
-        root,
+        files,
         &paths,
         &selected,
         &is_fresh,
@@ -251,7 +252,7 @@ fn apply_byte_budget<'a, 'b>(
 ///
 /// Also returns how many files could not be searched: opened and found unreadable or not UTF-8.
 fn count_all(
-    root: &Path,
+    files: IndexedFiles<'_>,
     scanned: &[&RelPath],
     skip: Option<&[bool]>,
     re: &Regex,
@@ -265,7 +266,7 @@ fn count_all(
             if skip.is_some_and(|s| s.get(i).copied().unwrap_or(false)) {
                 return Some(0);
             }
-            with_indexed_bytes(root, path, |bytes| count_matches(bytes, re, literal)).flatten()
+            with_indexed_bytes(files.swept_path(path), |bytes| count_matches(bytes, re, literal)).flatten()
         })
         .collect();
     let skipped = searched.iter().filter(|count| count.is_none()).count();
@@ -288,11 +289,12 @@ thread_local! {
 }
 
 /// Read an indexed file's raw bytes into the calling thread's reusable buffer and hand them to `f`.
-/// Unreadable files (deleted since the scan, permission denied) yield `None` and are skipped rather
-/// than failing the whole grep. UTF-8 validity is the closure's concern, so a file that cannot match
-/// is rejected on raw bytes without paying for validation.
-fn with_indexed_bytes<R>(root: &Path, path: &RelPath, f: impl FnOnce(&[u8]) -> R) -> Option<R> {
-    let abs = root.join(path);
+/// Unreadable files (deleted since the scan, permission denied) and a file that now leads out of
+/// the repository (`file` is `None`) yield `None` and are skipped rather than failing the whole
+/// grep. UTF-8 validity is the closure's concern, so a file that cannot match is rejected on raw
+/// bytes without paying for validation.
+fn with_indexed_bytes<R>(file: Option<std::path::PathBuf>, f: impl FnOnce(&[u8]) -> R) -> Option<R> {
+    let abs = file?;
     let read = |buf: &mut Vec<u8>| -> std::io::Result<()> {
         let mut file = std::fs::File::open(&abs)?;
         buf.clear();
@@ -367,6 +369,9 @@ fn select_hits(counts: &[u32], limit: usize, skip_files: usize, skip_hits: u32) 
     (selected, None)
 }
 
+/// Each file is resolved and must still lie inside the repository: a hit carries file content, and
+/// an indexed file can have been swapped for a link since the scan.
+///
 /// Re-read only the files that actually contribute to this page (at most `limit` of them, already
 /// warm in the page cache from the counting pass) and build their hits. Flattened in window order,
 /// so the page is deterministic and the cursors are monotonic.
@@ -377,7 +382,7 @@ fn select_hits(counts: &[u32], limit: usize, skip_files: usize, skip_hits: u32) 
 /// `is_fresh(file_idx, bytes)` says whether the bytes just read are the content the index holds
 /// for that file; only then may a hit be laid over the indexed outline.
 fn materialize(
-    root: &Path,
+    files: IndexedFiles<'_>,
     scanned: &[&RelPath],
     selected: &[Selection],
     is_fresh: &(dyn Fn(usize, &[u8]) -> bool + Sync),
@@ -389,7 +394,7 @@ fn materialize(
         .par_iter()
         .map(|sel| {
             let path = scanned[sel.file_idx];
-            with_indexed_bytes(root, path, |bytes| {
+            with_indexed_bytes(files.indexed_path(path), |bytes| {
                 let Ok(source) = std::str::from_utf8(bytes) else {
                     return Vec::new();
                 };
@@ -463,6 +468,8 @@ fn collect_hits(
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use super::*;
     use crate::index::view::IndexView;
 
@@ -692,7 +699,14 @@ mod tests {
             let re = Regex::new(pattern).expect("regex");
             let literal = (regex::escape(pattern) == pattern).then(|| Finder::new(pattern.as_bytes()).into_owned());
             for skip_hits in [0u32, 3] {
-                let (new_counts, _) = count_all(dir.path(), &refs, None, &re, literal.as_ref(), skip_hits);
+                let (new_counts, _) = count_all(
+                    IndexedFiles::contained(dir.path()),
+                    &refs,
+                    None,
+                    &re,
+                    literal.as_ref(),
+                    skip_hits,
+                );
                 let old_counts = reference::count(dir.path(), &refs, &re, literal.as_ref(), skip_hits);
                 assert_eq!(
                     new_counts, old_counts,
@@ -708,9 +722,24 @@ mod tests {
                         let (mut skip_files, mut skip_hits) = (0usize, skip_hits);
                         loop {
                             let window = &refs[skip_files.min(refs.len())..];
-                            let (counts, _) = count_all(dir.path(), window, None, &re, literal.as_ref(), skip_hits);
+                            let (counts, _) = count_all(
+                                IndexedFiles::contained(dir.path()),
+                                window,
+                                None,
+                                &re,
+                                literal.as_ref(),
+                                skip_hits,
+                            );
                             let (sel, resume) = select_hits(&counts, limit, skip_files, skip_hits);
-                            let new = materialize(dir.path(), window, &sel, &|_, _| true, &re, ctx, skip_files);
+                            let new = materialize(
+                                IndexedFiles::contained(dir.path()),
+                                window,
+                                &sel,
+                                &|_, _| true,
+                                &re,
+                                ctx,
+                                skip_files,
+                            );
                             let old_counts = reference::count(dir.path(), window, &re, literal.as_ref(), skip_hits);
                             assert_eq!(counts, old_counts);
                             let old = reference::materialize(dir.path(), window, &sel, &re, ctx, skip_files);
@@ -839,14 +868,29 @@ mod tests {
                 .map(|needle| db.view().grep_skip_verdicts(dir.path(), &entries, &needle));
             skipped_somewhere |= skip.as_ref().is_some_and(|s| s.iter().any(|&x| x));
             for skip_hits in [0u32, 2] {
-                let (filtered, _) = count_all(dir.path(), &refs, skip.as_deref(), &re, literal.as_ref(), skip_hits);
+                let (filtered, _) = count_all(
+                    IndexedFiles::contained(dir.path()),
+                    &refs,
+                    skip.as_deref(),
+                    &re,
+                    literal.as_ref(),
+                    skip_hits,
+                );
                 let oracle = reference::count(dir.path(), &refs, &re, literal.as_ref(), skip_hits);
                 assert_eq!(filtered, oracle, "counts diverge for {pattern:?} skip_hits={skip_hits}");
                 for limit in [7usize, 1000] {
                     let (sel_f, resume_f) = select_hits(&filtered, limit, 0, skip_hits);
                     let (sel_o, resume_o) = select_hits(&oracle, limit, 0, skip_hits);
                     assert_eq!(resume_f, resume_o, "cursor diverges for {pattern:?}");
-                    let hits_f = materialize(dir.path(), &refs, &sel_f, &|_, _| true, &re, true, 0);
+                    let hits_f = materialize(
+                        IndexedFiles::contained(dir.path()),
+                        &refs,
+                        &sel_f,
+                        &|_, _| true,
+                        &re,
+                        true,
+                        0,
+                    );
                     let hits_o = reference::materialize(dir.path(), &refs, &sel_o, &re, true, 0);
                     assert_eq!(hits_f.1, hits_o.1);
                     assert_eq!(
@@ -926,7 +970,7 @@ mod tests {
     fn the_read_buffer_does_not_retain_a_giant_files_capacity() {
         let dir = tempfile::tempdir().expect("tempdir");
         std::fs::write(dir.path().join("big.txt"), vec![b'a'; RETAINED_BUF_CAP * 3]).expect("write");
-        let len = with_indexed_bytes(dir.path(), &RelPath::from("big.txt"), <[u8]>::len);
+        let len = with_indexed_bytes(Some(dir.path().join("big.txt")), <[u8]>::len);
         assert_eq!(len, Some(RETAINED_BUF_CAP * 3));
         READ_BUF.with(|b| assert!(b.borrow().capacity() <= RETAINED_BUF_CAP, "scratch stays bounded"));
     }

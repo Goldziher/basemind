@@ -234,7 +234,7 @@ fn definition_location(
             name,
         });
     }
-    let abs = state.shared.root.join(def_path.to_path_buf());
+    let abs = super::tool_contract::IndexedFiles::of(state).indexed_path(&def_path)?;
     let def_source = std::fs::read(&abs).ok()?;
     let (line, column) = offset_to_line_col(&def_source, def_start);
     let name = identifier_at(&def_source, def_start);

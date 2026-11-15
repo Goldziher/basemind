@@ -113,15 +113,32 @@ impl<'a> IndexedFiles<'a> {
         if store.lookup(path).is_none() && store.lookup_doc(path).is_none() {
             return Err(Unreadable::NotIndexed);
         }
+        self.indexed_path(path).ok_or(Unreadable::Outside)
+    }
+
+    /// [`file`](Self::file) for a path the caller took from the index itself: where to read it,
+    /// or `None` when it now leads out of the repository.
+    pub(super) fn indexed_path(&self, path: &RelPath) -> Option<std::path::PathBuf> {
         if path.is_external() {
-            return Ok(path.to_path_buf());
+            return Some(path.to_path_buf());
         }
-        let file = if self.follow_symlinks {
-            crate::path::lexical_file(self.root, path)
+        if self.follow_symlinks {
+            crate::path::lexical_file(self.root, path).ok()
         } else {
-            crate::path::contained_file(self.root, path)
-        };
-        file.map_err(|_| Unreadable::Outside)
+            crate::path::contained_file(self.root, path).ok()
+        }
+    }
+
+    /// [`indexed_path`](Self::indexed_path) for a sweep over the whole corpus, at one `lstat` per
+    /// file instead of a path resolution: only a file that is itself a link is resolved. A
+    /// directory swapped for a link is caught by `indexed_path`, which gates every byte returned.
+    pub(super) fn swept_path(&self, path: &RelPath) -> Option<std::path::PathBuf> {
+        let joined = self.root.join(path);
+        match std::fs::symlink_metadata(&joined) {
+            Ok(metadata) if metadata.file_type().is_symlink() => self.indexed_path(path),
+            Ok(_) => Some(joined),
+            Err(_) => None,
+        }
     }
 }
 
