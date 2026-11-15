@@ -356,3 +356,75 @@ fn tables_without_a_meta_are_not_adopted() {
     let meta: LanceMeta = serde_json::from_slice(&std::fs::read(dir.path().join(META_FILE)).unwrap()).unwrap();
     assert_eq!(meta.embedding_model, "second");
 }
+
+/// Make `dir` refuse new and removed entries; returns false when the process is not stopped by
+/// permissions (running as root), in which case the caller has nothing to observe.
+#[cfg(unix)]
+fn lock_down(dir: &std::path::Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+    let enforced = std::fs::write(dir.join(".probe"), b"").is_err();
+    if !enforced {
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let _ = std::fs::remove_file(dir.join(".probe"));
+    }
+    enforced
+}
+
+#[cfg(unix)]
+fn unlock(dir: &std::path::Path) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+/// A wipe that cannot finish must leave `meta.json` in place: a next open that finds the mismatch
+/// finishes the wipe, while one that finds no meta adopts the tables the wipe left.
+#[cfg(unix)]
+#[test]
+fn a_wipe_that_fails_on_a_table_keeps_meta_json_for_the_next_open() {
+    let dir = tempfile::tempdir().unwrap();
+    let meta_path = dir.path().join(META_FILE);
+    let old = LanceMeta {
+        dim: 8,
+        embedding_model: "old".to_string(),
+        schema_ver: MEMORY_SCHEMA_VER,
+    };
+    std::fs::write(&meta_path, serde_json::to_vec(&old).unwrap()).unwrap();
+    let stuck = dir.path().join("stuck.lance");
+    std::fs::create_dir(&stuck).unwrap();
+    std::fs::write(stuck.join("fragment"), b"rows").unwrap();
+    if !lock_down(&stuck) {
+        return;
+    }
+    let expected = LanceMeta {
+        dim: 4,
+        embedding_model: "new".to_string(),
+        schema_ver: MEMORY_SCHEMA_VER,
+    };
+
+    let wiped = wipe_on_mismatch(dir.path(), &meta_path, &expected);
+
+    unlock(&stuck);
+    assert!(wiped.is_err(), "the table cannot be removed");
+    assert!(meta_path.exists(), "meta.json was removed before the tables");
+}
+
+/// `meta.json` is the first thing an open of a new store writes: an open that dies afterwards must
+/// leave the model recorded, so the tables it made are not adopted by another model's open.
+#[cfg(unix)]
+#[test]
+fn a_new_store_records_its_meta_json_before_it_creates_a_table() {
+    let dir = tempfile::tempdir().unwrap();
+    if !lock_down(dir.path()) {
+        return;
+    }
+
+    let opened = LanceStore::open(dir.path(), 4, "test");
+
+    unlock(dir.path());
+    let error = format!("{:#}", opened.err().expect("a read-only directory cannot be opened"));
+    assert!(
+        error.contains(META_FILE),
+        "the first write of an open is the meta: {error}"
+    );
+}
