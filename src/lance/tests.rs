@@ -218,3 +218,57 @@ fn memory_stamps_list_one_namespace() {
     assert_eq!(stamps.len(), 2);
     assert_eq!((stamps["a"], stamps["b"]), (3, 4));
 }
+
+/// A `meta.json` that cannot be parsed (a write cut short) is a mismatch: the store is a cache and
+/// is rebuilt, where a parse error used to fail every open.
+#[test]
+fn an_unreadable_meta_is_a_mismatch_not_an_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let meta_path = dir.path().join(META_FILE);
+    std::fs::write(&meta_path, br#"{"dim":38"#).unwrap();
+    let keep = sentinel(dir.path());
+    let expected = LanceMeta {
+        dim: 384,
+        embedding_model: "balanced".to_string(),
+        schema_ver: MEMORY_SCHEMA_VER,
+    };
+
+    wipe_on_mismatch(dir.path(), &meta_path, &expected).unwrap();
+
+    assert!(!keep.exists() && !meta_path.exists(), "the store is wiped");
+    drop(LanceStore::open(dir.path(), 4, "test").unwrap());
+    let reread: LanceMeta = serde_json::from_slice(&std::fs::read(&meta_path).unwrap()).unwrap();
+    assert_eq!(reread.dim, 4, "and the next open writes a whole meta.json");
+    assert!(!dir.path().join("meta.json.tmp").exists());
+}
+
+/// `meta.json` is removed last. While it is on disk a wipe that was cut short is seen and finished by
+/// the next open; removed first, the old tables would be adopted under the new model.
+#[cfg(unix)]
+#[test]
+fn a_wipe_that_cannot_finish_leaves_meta_in_place() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let meta_path = dir.path().join(META_FILE);
+    let on_disk = LanceMeta {
+        dim: 384,
+        embedding_model: "old".to_string(),
+        schema_ver: MEMORY_SCHEMA_VER,
+    };
+    std::fs::write(&meta_path, serde_json::to_vec(&on_disk).unwrap()).unwrap();
+    let table = dir.path().join("zz_documents.lance");
+    std::fs::create_dir(&table).unwrap();
+    std::fs::write(table.join("data"), b"rows").unwrap();
+    std::fs::set_permissions(&table, std::fs::Permissions::from_mode(0o555)).unwrap();
+    let expected = LanceMeta {
+        embedding_model: "new".to_string(),
+        ..on_disk
+    };
+
+    let wiped = wipe_on_mismatch(dir.path(), &meta_path, &expected);
+    std::fs::set_permissions(&table, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    assert!(wiped.is_err(), "the fixture must make the wipe fail part-way");
+    assert!(meta_path.exists(), "meta.json must outlive an unfinished wipe");
+}

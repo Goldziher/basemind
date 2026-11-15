@@ -219,8 +219,7 @@ impl LanceStore {
         })?;
 
         if !meta_path.exists() {
-            let body = serde_json::to_vec_pretty(&expected).context("serialize lance meta.json")?;
-            std::fs::write(&meta_path, body).with_context(|| format!("write {}", meta_path.display()))?;
+            write_meta(&meta_path, &expected)?;
         }
 
         Ok(Self {
@@ -472,43 +471,64 @@ impl LanceStore {
     }
 }
 
+/// Write `meta.json` through a sibling temp file and a rename, so a crash leaves the previous file
+/// or the whole new one, never a truncated file that fails every later open.
+fn write_meta(meta_path: &Path, meta: &LanceMeta) -> Result<()> {
+    use std::io::Write;
+
+    let body = serde_json::to_vec_pretty(meta).context("serialize lance meta.json")?;
+    let tmp = meta_path.with_extension("json.tmp");
+    let mut file = std::fs::File::create(&tmp).with_context(|| format!("create {}", tmp.display()))?;
+    file.write_all(&body)
+        .and_then(|()| file.sync_all())
+        .with_context(|| format!("write {}", tmp.display()))?;
+    std::fs::rename(&tmp, meta_path).with_context(|| format!("write {}", meta_path.display()))
+}
+
 fn wipe_on_mismatch(dir: &Path, meta_path: &Path, expected: &LanceMeta) -> Result<()> {
     if !meta_path.exists() {
         return Ok(());
     }
     let bytes = std::fs::read(meta_path).with_context(|| format!("read {}", meta_path.display()))?;
-    let actual: LanceMeta = serde_json::from_slice(&bytes).with_context(|| format!("parse {}", meta_path.display()))?;
-    if actual == *expected {
-        return Ok(());
+    // An unreadable meta.json says nothing about the tables beside it, which is a mismatch, not a
+    // reason to fail every open of a store that is only a cache.
+    match serde_json::from_slice::<LanceMeta>(&bytes) {
+        Ok(actual) if actual == *expected => return Ok(()),
+        Ok(actual) if actual.schema_ver > expected.schema_ver => {
+            return Err(anyhow!(
+                "lance store at {} written by a newer basemind (schema {}); this binary understands {} — upgrade basemind",
+                dir.display(),
+                actual.schema_ver,
+                expected.schema_ver
+            ));
+        }
+        Ok(actual) => tracing::warn!(
+            old_dim = actual.dim,
+            new_dim = expected.dim,
+            old_model = %actual.embedding_model,
+            new_model = %expected.embedding_model,
+            old_schema_ver = actual.schema_ver,
+            new_schema_ver = expected.schema_ver,
+            "lance store dim/model/schema mismatch — wiping {}",
+            dir.display()
+        ),
+        Err(error) => tracing::warn!(%error, "lance meta.json is unreadable — wiping {}", dir.display()),
     }
-    if actual.schema_ver > expected.schema_ver {
-        return Err(anyhow!(
-            "lance store at {} written by a newer basemind (schema {}); this binary understands {} — upgrade basemind",
-            dir.display(),
-            actual.schema_ver,
-            expected.schema_ver
-        ));
-    }
-    tracing::warn!(
-        old_dim = actual.dim,
-        new_dim = expected.dim,
-        old_model = %actual.embedding_model,
-        new_model = %expected.embedding_model,
-        old_schema_ver = actual.schema_ver,
-        new_schema_ver = expected.schema_ver,
-        "lance store dim/model/schema mismatch — wiping {}",
-        dir.display()
-    );
+    // meta.json goes last: while it is there a wipe that was cut short is seen and finished by the
+    // next open. Removed first, its absence would adopt the old tables under the new model.
     for entry in std::fs::read_dir(dir).with_context(|| format!("read_dir {}", dir.display()))? {
         let entry = entry.context("entry")?;
         let p = entry.path();
+        if p == meta_path {
+            continue;
+        }
         if p.is_dir() {
             std::fs::remove_dir_all(&p).with_context(|| format!("remove {}", p.display()))?;
         } else {
             std::fs::remove_file(&p).with_context(|| format!("remove {}", p.display()))?;
         }
     }
-    Ok(())
+    std::fs::remove_file(meta_path).with_context(|| format!("remove {}", meta_path.display()))
 }
 
 async fn ensure_table(
