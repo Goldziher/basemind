@@ -115,3 +115,56 @@ async fn code_grep_returns_no_text_through_a_directory_swapped_for_a_link() {
     assert_eq!(body["hits"], json!([]), "{body}");
     assert!(!body.to_string().contains("outside the repository"), "{body}");
 }
+
+/// `code_grep` covers code files. Filters that match only documents are answered with the tool
+/// that searches those, not with "no indexed path", which `find_files` would contradict.
+#[cfg(feature = "documents")]
+#[test]
+fn code_grep_says_when_its_filters_match_only_documents() {
+    let dir = super::fixture_with(&[]);
+    let root = dir.path();
+    std::fs::create_dir_all(root.join("docs")).unwrap();
+    std::fs::write(
+        root.join("docs/guide.md"),
+        "# Guide\n\nNotes about the harbour and how the harbour is run, long enough to index.\n",
+    )
+    .unwrap();
+    let mut cfg = basemind::config::default_for_root(root);
+    cfg.documents.enabled = true;
+    cfg.documents.embed = false;
+    let _ = basemind::lang::ensure_grammars().expect("grammar bootstrap");
+    {
+        let mut store = basemind::store::Store::open(root, basemind::store::VIEW_WORKING).expect("open store");
+        basemind::scanner::scan(
+            root,
+            &mut store,
+            &cfg,
+            basemind::scanner::ScanSource::WorkingTree,
+            basemind::scanner::EmbedMode::Inline,
+        )
+        .expect("scan");
+    }
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .expect("runtime");
+    runtime.block_on(async {
+        let client = super::serve(root).await;
+        let listed = call(&client, "find_files", json!({ "path_prefix": "docs/" })).await;
+        assert_eq!(listed["files"][0]["path"], "docs/guide.md", "{listed}");
+
+        for arguments in [
+            json!({ "pattern": "harbour", "path": "docs/" }),
+            json!({ "pattern": "harbour", "language": "markdown" }),
+        ] {
+            let refused = super::call_err(&client, "code_grep", arguments.clone()).await;
+            assert!(
+                refused.contains("match only documents (1 indexed, e.g. `docs/guide.md`)")
+                    && refused.contains("`docs_search`"),
+                "{arguments}: {refused}"
+            );
+        }
+        let _ = client.cancel().await;
+    });
+}

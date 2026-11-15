@@ -315,3 +315,43 @@ async fn a_zero_limit_is_refused() {
         assert!(message.contains("`limit` must be at least 1"), "{tool}: {message}");
     }
 }
+
+/// A refusal says what the index holds, which is only an answer once the index is whole. While a
+/// scan is unfinished the page comes back with its `notice`, so the caller retries instead of
+/// correcting a filter that was right.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_filter_refusal_waits_for_a_finished_index() {
+    let (dir, client) = started().await;
+    let refused = call_err(&client, "code_grep", json!({ "pattern": "fn", "language": "cobol" })).await;
+    assert!(refused.contains("no indexed file has language `cobol`"), "{refused}");
+
+    let cache = basemind::store::workspace_cache_dir(dir.path());
+    basemind::store::write_status_sidecar(&cache, 5, 5, &basemind::store::ScanHealth::resolving());
+
+    for (tool, arguments, total) in [
+        (
+            "code_grep",
+            json!({ "pattern": "fn", "language": "cobol" }),
+            "total_matches",
+        ),
+        (
+            "code_grep",
+            json!({ "pattern": "fn", "path": "no/such/dir/" }),
+            "total_matches",
+        ),
+        ("find_files", json!({ "language": "cobol" }), "total"),
+        ("find_files", json!({ "path_prefix": "nope/" }), "total"),
+        (
+            "find_files",
+            json!({ "query": "outline", "path_prefix": "nope/" }),
+            "total",
+        ),
+    ] {
+        let page = call(&client, tool, arguments.clone()).await;
+        assert_eq!(page[total], 0, "{tool} {arguments}: {page}");
+        assert_eq!(
+            page["notice"]["state"], "index_rebuilding",
+            "{tool} {arguments}: {page}"
+        );
+    }
+}

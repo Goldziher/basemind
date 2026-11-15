@@ -14,6 +14,7 @@ use rmcp::model::CallToolResult;
 use super::ServerState;
 use super::cursor::Cursor;
 use super::helpers::{SEARCH_LIMIT_DEFAULT, SEARCH_LIMIT_MAX};
+use super::helpers_filters::{Filters, PathFilter};
 use super::helpers_grep_text::{annotate_symbols, clip_line, line_text};
 use super::index_route::blocking;
 use super::tool_contract::IndexedFiles;
@@ -99,8 +100,11 @@ pub(super) async fn run_workspace_grep(
     let literal = (params.literal || regex::escape(&params.pattern) == params.pattern)
         .then(|| Finder::new(params.pattern.as_bytes()).into_owned());
 
-    let path_finder = params.path_contains.as_deref().map(|n| Finder::new(n.as_bytes()));
-    let lang_filter = params.language.as_deref();
+    let filters = Filters {
+        tool: "code_grep",
+        path: params.path_contains.as_deref().map(PathFilter::contains),
+        language: params.language.as_deref(),
+    };
 
     let cache = state.shared.cache.load_full();
 
@@ -109,10 +113,15 @@ pub(super) async fn run_workspace_grep(
     let candidates: Vec<(&RelPath, &super::l1_cache::FileMeta)> = cache
         .file_metas()
         .filter(|(path, meta)| {
-            path_finder.as_ref().is_none_or(|f| f.find(path.as_bytes()).is_some())
-                && lang_filter.is_none_or(|l| *meta.language == *l)
+            filters.path.as_ref().is_none_or(|f| f.matches(path.as_bytes()))
+                && filters.language.is_none_or(|l| *meta.language == *l)
         })
         .collect();
+    if candidates.is_empty()
+        && let Some(refusal) = super::helpers_files::grep_selects_no_file(state, &cache, &filters)
+    {
+        return Err(refusal);
+    }
 
     let window = candidates.get(skip_files.min(candidates.len())..).unwrap_or(&[]);
     let (scanned, byte_budget_hit) = apply_byte_budget(window);

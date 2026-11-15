@@ -11,6 +11,7 @@ use rmcp::ErrorData as McpError;
 use rmcp::model::CallToolResult;
 
 use super::ServerState;
+use super::helpers_filters::{Filters, PathFilter, Tally};
 use super::types::{
     FindFilesEntry, FindFilesParams, FindFilesResponse, ListFilesEntry, ListFilesParams, ListFilesResponse,
 };
@@ -69,15 +70,15 @@ pub(super) async fn run_list_files(state: &ServerState, params: ListFilesParams)
     let code = code_sorted
         .into_iter()
         .map(|(p, e)| (p, e.language.clone(), e.size_bytes));
-    let docs = state
-        .shared
-        .cache
-        .load_full()
-        .doc_paths
+    let doc_paths = std::sync::Arc::clone(&state.shared.cache.load().doc_paths);
+    let docs = doc_paths
         .iter()
         .map(|p| {
-            let language = p.as_str().map_or_else(|| "document".to_string(), doc_language);
-            (p.clone(), language, store.lookup_doc(p).map_or(0, |d| d.size_bytes))
+            (
+                p.clone(),
+                language_of_doc(p),
+                store.lookup_doc(p).map_or(0, |d| d.size_bytes),
+            )
         })
         .collect::<Vec<_>>();
     let docs = docs.iter().map(|(p, l, sz)| (p, l.clone(), *sz));
@@ -100,6 +101,26 @@ pub(super) async fn run_list_files(state: &ServerState, params: ListFilesParams)
                 language,
                 size_bytes,
             });
+        }
+    }
+    if total == 0 && skip == 0 {
+        let filters = Filters {
+            tool: "find_files",
+            path: params.path_prefix.as_deref().map(PathFilter::Prefix),
+            language: lang_filter,
+        };
+        let listed = || {
+            let mut tally = Tally::default();
+            for (path, entry) in store.index.files.iter() {
+                tally.see(&filters, path.as_bytes(), &entry.language);
+            }
+            for path in doc_paths.iter() {
+                tally.see(&filters, path.as_bytes(), &language_of_doc(path));
+            }
+            tally
+        };
+        if let Some(refusal) = selects_no_file(state, &filters, listed, None) {
+            return Err(refusal);
         }
     }
     let truncated = total > limit;
@@ -179,6 +200,8 @@ pub(super) async fn run_find_files(state: &ServerState, params: FindFilesParams)
     let mut utf32_buf: Vec<char> = Vec::new();
 
     let mut scored: Vec<(u32, FindFilesEntry)> = Vec::new();
+    // Whether any file passed the filters, whatever the query then made of its name.
+    let mut selected = false;
     // Language, size and path are all the fuzzy-file search needs, and all three live in the
     // symbol-free file view — so this whole scan reads no outline and touches no blob.
     for (p, meta) in cache.file_metas() {
@@ -193,6 +216,7 @@ pub(super) async fn run_find_files(state: &ServerState, params: FindFilesParams)
         if !prefix_ok {
             continue;
         }
+        selected = true;
         let haystack = Utf32Str::new(path_str, &mut utf32_buf);
         let Some(score) = pattern.score(haystack, &mut matcher) else {
             continue;
@@ -218,6 +242,7 @@ pub(super) async fn run_find_files(state: &ServerState, params: FindFilesParams)
         if lang_filter.is_some_and(|l| l != language) || prefix_filter.is_some_and(|pre| !path_str.starts_with(pre)) {
             continue;
         }
+        selected = true;
         let haystack = Utf32Str::new(path_str, &mut utf32_buf);
         let Some(score) = pattern.score(haystack, &mut matcher) else {
             continue;
@@ -231,6 +256,26 @@ pub(super) async fn run_find_files(state: &ServerState, params: FindFilesParams)
                 score,
             },
         ));
+    }
+    if !selected {
+        let filters = Filters {
+            tool: "find_files",
+            path: prefix_filter.map(PathFilter::Prefix),
+            language: lang_filter,
+        };
+        let listed = || {
+            let mut tally = Tally::default();
+            for (path, meta) in cache.file_metas() {
+                tally.see(&filters, path.as_bytes(), &meta.language);
+            }
+            for path in cache.doc_paths.iter() {
+                tally.see(&filters, path.as_bytes(), &language_of_doc(path));
+            }
+            tally
+        };
+        if let Some(refusal) = selects_no_file(state, &filters, listed, None) {
+            return Err(refusal);
+        }
     }
     rank_and_cut(&mut scored);
 
@@ -308,6 +353,51 @@ fn rank_and_cut(scored: &mut Vec<(u32, FindFilesEntry)>) {
         let keep = scored.partition_point(|(s, _)| *s >= floor);
         scored.truncate(keep);
     }
+}
+
+/// [`doc_language`] of an indexed document path; `document` for one that is not UTF-8.
+fn language_of_doc(path: &crate::path::RelPath) -> String {
+    path.as_str().map_or_else(|| "document".to_string(), doc_language)
+}
+
+/// The refusal for filters that selected none of the files a tool lists, or `None` when there is
+/// nothing to refuse: no filter, an empty index, or an index still being built, whose page carries
+/// the lifecycle `notice` instead. `listed` tallies the files the tool lists, from the source it
+/// lists them from; it runs only on this path, after the listing itself came back empty.
+pub(super) fn selects_no_file(
+    state: &ServerState,
+    filters: &Filters<'_>,
+    listed: impl FnOnce() -> Tally,
+    unlisted_documents: Option<&dyn Fn() -> Tally>,
+) -> Option<McpError> {
+    if filters.is_empty() || state.lifecycle_notice().is_some() {
+        return None;
+    }
+    let documents = unlisted_documents.map(|tally| tally());
+    filters.refusal(&listed(), documents.as_ref())
+}
+
+/// [`selects_no_file`] for `code_grep`, which searches the code map and not the document tier.
+pub(super) fn grep_selects_no_file(
+    state: &ServerState,
+    cache: &super::MapCache,
+    filters: &Filters<'_>,
+) -> Option<McpError> {
+    let listed = || {
+        let mut tally = Tally::default();
+        for (path, meta) in cache.file_metas() {
+            tally.see(filters, path.as_bytes(), &meta.language);
+        }
+        tally
+    };
+    let documents = || {
+        let mut tally = Tally::default();
+        for path in cache.doc_paths.iter() {
+            tally.see(filters, path.as_bytes(), &language_of_doc(path));
+        }
+        tally
+    };
+    selects_no_file(state, filters, listed, Some(&documents))
 }
 
 /// Language label for a document-tier path: the grammar name when one resolves (`markdown`,

@@ -15,7 +15,7 @@ use super::helpers::{
     RefsSource, SEARCH_LIMIT_DEFAULT, SEARCH_LIMIT_MAX, elapsed_us, json_result, kind_to_str, run_find_callers,
     run_find_files, run_find_implementations, run_find_references, run_list_files, run_workspace_grep,
 };
-use super::helpers_filters::{PathFilter, reject_zero_limit, selects_no_file};
+use super::helpers_filters::reject_zero_limit;
 use super::index_route::IndexRoute;
 use super::tool_contract::{budget, not_indexed};
 use super::types::{
@@ -32,10 +32,6 @@ const OUTLINE_LIMIT_DEFAULT: u32 = 500;
 /// Imports listed on the first `code_outline` page.
 const OUTLINE_IMPORTS_MAX: usize = 200;
 
-/// Wildcards that suggest a `path` filter was meant as a glob. `[` and `{` are not in the list:
-/// they occur in real paths (`app/[id]/page.tsx`).
-const GLOB_WILDCARDS: [char; 2] = ['*', '?'];
-
 /// `code_grep`: content search over every indexed code file.
 pub(super) async fn code_grep(state: &ServerState, p: CodeGrepParams) -> Result<CallToolResult, McpError> {
     if p.pattern.is_empty() {
@@ -47,35 +43,6 @@ pub(super) async fn code_grep(state: &ServerState, p: CodeGrepParams) -> Result<
     reject_zero_limit("code_grep", p.limit)?;
     let started = std::time::Instant::now();
     state.await_cache_ready().await;
-    // `path` is always a literal substring. A filter that looks like a glob and matches no indexed
-    // path gets the glob hint; any other filter no file passes is refused below. Either would
-    // otherwise come back as an empty result that reads as "no hits".
-    let cache = state.shared.cache.load_full();
-    if let Some(path) = p.path.as_deref()
-        && path.contains(GLOB_WILDCARDS)
-    {
-        let finder = memchr::memmem::Finder::new(path.as_bytes());
-        if !cache.paths().any(|indexed| finder.find(indexed.as_bytes()).is_some()) {
-            return Err(McpError::invalid_params(
-                format!(
-                    "`code_grep`: `path` is a substring of the repo-relative path, not a glob, and no indexed \
-                     path contains `{path}`. Pass a fragment such as `src/mcp/` or `.rs`; use `language` to \
-                     filter by language."
-                ),
-                None,
-            ));
-        }
-    }
-    if let Some(refusal) = selects_no_file(
-        "code_grep",
-        &cache,
-        false,
-        p.path.as_deref().map(PathFilter::Contains),
-        p.language.as_deref(),
-    ) {
-        return Err(refusal);
-    }
-    drop(cache);
     run_workspace_grep(
         state,
         WorkspaceGrepParams {
@@ -146,16 +113,6 @@ pub(super) async fn code_search(state: &ServerState, p: CodeSearchParams) -> Res
 /// `find_files`: fuzzy file-name search, or a plain listing when `query` is omitted.
 pub(super) async fn find_files(state: &ServerState, p: FindFilesToolParams) -> Result<CallToolResult, McpError> {
     reject_zero_limit("find_files", p.limit)?;
-    state.await_cache_ready().await;
-    if let Some(refusal) = selects_no_file(
-        "find_files",
-        &state.shared.cache.load_full(),
-        true,
-        p.path_prefix.as_deref().map(PathFilter::Prefix),
-        p.language.as_deref(),
-    ) {
-        return Err(refusal);
-    }
     match p.query.filter(|query| !query.trim().is_empty()) {
         Some(query) => {
             run_find_files(
