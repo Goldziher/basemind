@@ -68,13 +68,25 @@ pub fn post_timestamp(clock_micros: i64, last_micros: i64) -> i64 {
     clock_micros.max(last_micros.saturating_add(1))
 }
 
-/// Whether a message posted at `ts_micros` is past [`MESSAGE_TTL`] at `now_micros`. A thread
-/// expires with the last message posted to it, so the same test on its last activity decides
-/// the thread, and a thread that has expired hides every message of it, whatever their stamps.
+/// A thread's last activity once a post stamped `stamp_micros` is made to it, `previous_micros`
+/// being what it was: the later of the two, so it never moves back.
+///
+/// A post can be stamped behind the ones before it, when the clock was set back or reads behind
+/// for a while ([`post_timestamp`]). If the thread followed that stamp it would expire, with every
+/// message of it, as soon as the clock is right again. The price is the other direction: a thread
+/// posted to while the clock read ahead keeps that last activity until the clock passes it.
+pub fn last_activity(previous_micros: i64, stamp_micros: i64) -> i64 {
+    previous_micros.max(stamp_micros)
+}
+
+/// Whether a message posted at `ts_micros` is past [`MESSAGE_TTL`] at `now_micros`. The same
+/// test on a thread's [`last_activity`] decides the thread, and a thread that has expired hides
+/// every message of it. No message is stamped later than its thread's last activity, so none
+/// outlives its thread; one stamped earlier expires before it, alone.
 ///
 /// `now_micros` is the clock, never a timestamp the store issued. A message stamped ahead of
-/// the clock is no exception: in a thread that is still posted to, it expires when the clock
-/// passes its stamp by the retention, which is later than it would have with a correct stamp.
+/// the clock is no exception: it expires when the clock passes its stamp by the retention,
+/// which is later than it would have with a correct stamp, and so does its thread.
 pub fn message_expired(ts_micros: i64, now_micros: i64) -> bool {
     ts_micros <= now_micros.saturating_sub(ttl_micros(MESSAGE_TTL))
 }

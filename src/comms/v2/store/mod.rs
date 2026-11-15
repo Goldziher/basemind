@@ -59,10 +59,14 @@
 //! within a thread and the post counter does across threads, and nothing reads a timestamp for
 //! order. The one index kept by time, `post_order`, is keyed by the stamp for that reason.
 //!
-//! What was stamped ahead stays stamped ahead. Such a message expires when the clock passes its
-//! stamp by the retention, or with its thread, which follows the last post made to it. A clock
-//! more than a minute behind the previous stamp is logged at open and, at most every ten minutes,
-//! when a post is stamped.
+//! A thread's last activity is the latest stamp of any post made to it and never moves back
+//! ([`rules::last_activity`]): a post stamped while the clock read behind expires early, alone,
+//! and takes neither its thread nor the messages stamped before it. What was stamped ahead stays
+//! stamped ahead. Such a message expires when the clock passes its stamp by the retention, and
+//! its thread keeps that last activity until then: it is listed first and counts against the cap
+//! of its repository unless it is archived, whatever is posted to it afterwards. A clock more
+//! than a minute behind the previous stamp is logged at open and, at most every ten minutes, when
+//! a post is stamped.
 //!
 //! ## Retention
 //!

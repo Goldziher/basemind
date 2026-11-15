@@ -249,10 +249,10 @@ pub fn replay_entries_expire_by_the_clock_after_it_was_set_back(h: &impl Conform
     );
 }
 
-/// A post made while the clock ran far ahead is stamped ahead, and that is all: once the clock
-/// is corrected the next post is stamped from the clock again, its thread's last activity
-/// follows it, and both expire [`MESSAGE_TTL`] after the corrected time. The message stamped
-/// ahead goes with its thread.
+/// A post made while the clock ran far ahead is stamped ahead. Once the clock is corrected the
+/// next post is stamped from the clock again and expires [`MESSAGE_TTL`] after the corrected
+/// time, alone: its thread keeps the last activity it was given ahead, is listed first, and
+/// keeps the message stamped ahead.
 pub fn post_after_the_clock_was_corrected_is_stamped_and_expires_by_the_clock(h: &impl ConformanceHarness) {
     h.advance(AHEAD);
     let ahead = start(h, "a", "made ahead", &["b"]);
@@ -268,30 +268,81 @@ pub fn post_after_the_clock_was_corrected_is_stamped_and_expires_by_the_clock(h:
         "the posts after the correction are stamped from the clock: {stamps:?}"
     );
     let summary = describe(h, &who(h, "b"), &ahead.thread).expect("thread");
-    assert_eq!(summary.last_activity_micros, stamps[1]);
+    assert_eq!(
+        summary.last_activity_micros, stamps[0],
+        "last activity does not move back"
+    );
+    assert_eq!(
+        thread_ids(&list(h, "b")),
+        [ahead.thread.clone(), later.thread.clone()],
+        "the thread posted to while the clock ran ahead is listed first"
+    );
 
     h.advance(MESSAGE_TTL - SECOND);
     assert_eq!(read_as(h, "b", history()).expect("inbox").messages.len(), 3);
     assert_eq!(list(h, "b").threads.len(), 2);
 
     h.advance(2 * SECOND);
-    assert_eq!(read_as(h, "b", history()).expect("inbox").messages, Vec::new());
-    assert_eq!(thread_ids(&list(h, "b")), no_threads());
     assert_eq!(
-        read_as(h, "b", by_id(&ahead.id)).map(|reply| reply.messages),
-        Err(CommsError::MessageNotFound { id: ahead.id })
+        ids(&read_as(h, "b", history()).expect("inbox")),
+        std::slice::from_ref(&ahead.id)
     );
-    assert_eq!(h.thread_count(), 0);
+    assert_eq!(thread_ids(&list(h, "b")), std::slice::from_ref(&ahead.thread));
+    assert_eq!(
+        read_as(h, "b", by_id(&after.id)).map(|reply| reply.messages),
+        Err(CommsError::MessageNotFound { id: after.id })
+    );
+    assert_eq!(h.thread_count(), 1);
+    assert_eq!(bodies(&read_as(h, "b", by_id(&ahead.id)).expect("inbox")), ["first"]);
 }
 
-/// Threads made while the clock ran far ahead count against the cap once it is corrected, but
-/// not for good: each one posted to afterwards expires with that post.
-pub fn thread_cap_is_not_held_by_threads_posted_to_after_the_clock_was_corrected(h: &impl ConformanceHarness) {
-    h.advance(AHEAD);
-    let made_ahead: Vec<ThreadId> = (0..MAX_ACTIVE_THREADS_PER_REPO)
-        .map(|_| start(h, "a", "made ahead", &[]).thread)
+/// A post stamped while the clock read behind does not take its thread with it: the thread's
+/// last activity stays where the earlier post put it, so once the clock is right again the
+/// thread and that earlier message are still there, sweep or not, and only the message stamped
+/// behind has expired.
+pub fn post_stamped_while_the_clock_read_behind_expires_alone(h: &impl ConformanceHarness) {
+    let behind = MESSAGE_TTL + DAY;
+    let created = start(h, "a", "topic", &["b"]);
+    h.rewind(behind);
+    let stamped_behind = say(h, "a", &created.thread, "stamped behind").expect("post");
+    let whole = read_as(h, "b", history()).expect("inbox");
+    assert_eq!(ids(&whole), [created.id.clone(), stamped_behind.id.clone()]);
+    assert!(
+        whole.messages[1].ts_micros < whole.messages[0].ts_micros,
+        "the second post is stamped from the clock, which reads behind"
+    );
+    h.advance(behind);
+
+    h.sweep();
+
+    assert_eq!(thread_ids(&list(h, "b")), std::slice::from_ref(&created.thread));
+    let summary = describe(h, &who(h, "b"), &created.thread).expect("thread");
+    assert_eq!((summary.head, summary.unread), (2, 1));
+    assert_eq!(summary.last_activity_micros, whole.messages[0].ts_micros);
+    assert_eq!(
+        ids(&read_as(h, "b", history()).expect("inbox")),
+        std::slice::from_ref(&created.id)
+    );
+    assert_eq!(bodies(&read_as(h, "b", by_id(&created.id)).expect("inbox")), ["first"]);
+    assert_eq!(
+        read_as(h, "b", by_id(&stamped_behind.id)).map(|reply| reply.messages),
+        Err(CommsError::MessageNotFound { id: stamped_behind.id })
+    );
+    assert_eq!(h.thread_count(), 1);
+    say(h, "b", &created.thread, "still open").expect("the thread takes posts");
+}
+
+/// A clock that read ahead for a while holds no cap slot for the threads nobody posted to in
+/// that time: they expire [`MESSAGE_TTL`] after their own last post. The one posted to then
+/// stays, with the last activity that post gave it.
+pub fn thread_cap_is_not_held_by_threads_untouched_while_the_clock_read_ahead(h: &impl ConformanceHarness) {
+    let glitch = 20 * DAY;
+    let threads: Vec<ThreadId> = (0..MAX_ACTIVE_THREADS_PER_REPO)
+        .map(|_| start(h, "a", "made before", &[]).thread)
         .collect();
-    h.rewind(AHEAD);
+    h.advance(glitch);
+    say(h, "a", &threads[0], "while the clock read ahead").expect("post");
+    h.rewind(glitch);
     let one_more = || h.post(&who(h, "a"), new_thread(h, "one more", &[], &[], "first"));
     assert_eq!(
         one_more(),
@@ -301,14 +352,41 @@ pub fn thread_cap_is_not_held_by_threads_posted_to_after_the_clock_was_corrected
         })
     );
 
-    for thread in &made_ahead {
-        say(h, "a", thread, "after the correction").expect("post");
-    }
     h.advance(MESSAGE_TTL + SECOND);
 
-    let fresh = one_more().expect("the threads expired with their last post");
-    assert_eq!(thread_ids(&list(h, "a")), [fresh.thread]);
-    assert_eq!(h.thread_count(), 1);
+    let fresh = one_more().expect("the untouched threads expired with their own last post");
+    assert_eq!(thread_ids(&list(h, "a")), [fresh.thread, threads[0].clone()]);
+    assert_eq!(h.thread_count(), 2);
+}
+
+/// A thread created or posted to while the clock ran far ahead holds its cap slot once the
+/// clock is corrected, also after a post stamped from the corrected clock and that post's
+/// retention. Archiving it frees the slot.
+pub fn thread_touched_while_the_clock_read_ahead_holds_its_cap_slot_until_archived(h: &impl ConformanceHarness) {
+    h.advance(AHEAD);
+    let made_ahead: Vec<ThreadId> = (0..MAX_ACTIVE_THREADS_PER_REPO)
+        .map(|_| start(h, "a", "made ahead", &[]).thread)
+        .collect();
+    h.rewind(AHEAD);
+    let one_more = || h.post(&who(h, "a"), new_thread(h, "one more", &[], &[], "first"));
+    let capped = CommsError::ThreadCapReached {
+        repo: who(h, "a").repo,
+        cap: MAX_ACTIVE_THREADS_PER_REPO,
+    };
+    assert_eq!(one_more(), Err(capped.clone()));
+
+    say(h, "a", &made_ahead[0], "after the correction").expect("post");
+    h.advance(MESSAGE_TTL + SECOND);
+    assert_eq!(
+        one_more(),
+        Err(capped),
+        "a post after the correction does not put the thread back on the clock"
+    );
+    assert_eq!(h.thread_count(), MAX_ACTIVE_THREADS_PER_REPO);
+
+    change(h, &who(h, "a"), &made_ahead[0], ThreadAction::Archive).expect("archive");
+    one_more().expect("archiving freed a place under the cap");
+    assert_eq!(h.thread_count(), MAX_ACTIVE_THREADS_PER_REPO + 1);
 }
 
 /// Every message a paged read of `mode` returns to `b`, one message per page.

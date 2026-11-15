@@ -224,7 +224,7 @@ impl State {
         rules::check_writable(self.store_ver)
     }
 
-    /// The thread `id`, unless it has expired with the last message posted to it. Everything
+    /// The thread `id`, unless its last activity has expired. Everything
     /// but the draw of a new id goes through this and not through `threads`, which holds expired
     /// threads until [`State::sweep`] runs.
     fn kept_thread(&self, id: &ThreadId) -> Option<&ThreadState> {
@@ -315,7 +315,7 @@ impl State {
         let (now, order) = (self.now_micros, self.posts);
         let thread = self.thread_mut(&thread_id)?;
         thread.head += 1;
-        thread.last_activity_micros = ts_micros;
+        thread.last_activity_micros = rules::last_activity(thread.last_activity_micros, ts_micros);
         thread.messages.insert(
             thread.head,
             StoredMessage {

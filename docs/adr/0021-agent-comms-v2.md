@@ -148,8 +148,9 @@ taken to be the wrong one and posts are stamped from the clock again. Timestamps
 order messages: `seq` does within a thread and the post counter across threads, and read positions
 and cursors use nothing else. The previous timestamp is read for the next stamp and for a warning
 the store logs when the clock is more than a minute behind it, at open and when it stamps a post.
-Expiry never reads it: message, replay and seen expiry are judged against the clock as it reads,
-and a thread's last activity is the timestamp of the last post made to it.
+Expiry never reads it: message, replay and seen expiry are judged against the clock as it reads.
+A thread's last activity is the latest timestamp of any post made to it. It never moves back: a
+post stamped earlier than the thread's last activity leaves it where it is.
 
 A wrong clock is not detected, only survived. While the clock reads far ahead:
 
@@ -158,19 +159,29 @@ A wrong clock is not detected, only survived. While the clock reads far ahead:
 - threads hidden that way do not count against the cap of their repository, so the repository can
   hold more than 256 active threads once they are visible again. None is removed for it; new ones
   are refused until the count is under the cap;
-- a message posted then keeps its stamp. It expires when the clock passes the stamp by
-  `MESSAGE_TTL`, or earlier with its thread, which expires `MESSAGE_TTL` after the last post made
-  to it. One post after the correction therefore puts a thread back on the clock; a thread nobody
-  posts to again stays, and holds its place under the cap unless it is archived, until the clock
-  passes its stamp by `MESSAGE_TTL`;
+- a message posted then keeps its stamp and expires when the clock passes the stamp by
+  `MESSAGE_TTL`. Its thread keeps that stamp as its last activity, and a post after the
+  correction does not put the thread back on the clock: a thread created or posted to then is
+  listed first and holds its place under the cap, unless it is archived, until the clock passes
+  the stamp by `MESSAGE_TTL`. A thread nobody posted to in that time is not affected and expires
+  `MESSAGE_TTL` after its own last post;
 - seen records and replay entries written then live until the clock passes their own time: such
   an agent is not `pending` until 31 days past the stamp unless it calls again, which rewrites
   its record at the clock, and such a replay key answers with its first result until an hour past
   the stamp.
 
-A clock that ran behind is the mirror image: what was stamped then expires early by the
-difference. Neither can reorder messages, make a read position or a cursor skip or repeat one,
-issue a `seq` twice, or hold posts made after the correction in the future.
+A clock that ran behind is the mirror image for messages, seen records and replay entries: what
+was stamped then expires early by the difference. A thread is the exception, because its last
+activity does not move back: a message stamped behind expires early alone, and the thread and the
+messages stamped before it stay as long as they would have. If a thread's last activity followed
+the last post instead, one post stamped 31 days behind would expire the thread and every message
+in it as soon as the clock was right again.
+
+Neither can reorder messages, make a cursor skip or repeat one, issue a `seq` twice, or hold posts
+made after the correction in the future. Nor can a read position pass an unread message that a
+read would return. A message hidden as expired while the clock read ahead is not returned, though,
+and a read that marks in that time can advance past it: when the clock is corrected the message is
+back in the history and is not unread.
 
 A body
 over 4 KB is returned cut, with `truncated: true`, and counts as read (the full body comes from
@@ -234,8 +245,8 @@ are refused. Joining a thread one is already in changes nothing, archived or not
 A listing is ordered by last activity, newest first, and pages by an opaque cursor over
 `(last activity, thread id)` that is bound to the agent, its repository and the filter. A thread
 that receives a post between two pages moves ahead of the cursor and can be missing from the
-remaining pages; a new listing shows it first. A post that follows a clock correction can move
-its thread the other way, and that thread can then be listed on two pages.
+remaining pages; a new listing shows it first, unless another thread carries a last activity ahead
+of the clock. No post moves a thread the other way, so no thread is listed on two pages.
 
 **Tools.** Three tools under the ADR-0018 contract replace `agents`:
 
@@ -293,7 +304,7 @@ three days are already deleted, and its threads carry no repository.
 
 **Retention.** Messages are kept 30 days (`MESSAGE_TTL`, three today) and at most 1000 per thread
 (`MAX_MESSAGES_PER_THREAD`, unchanged). Messages expire one by one, and the unread count is of
-what has not expired. A thread expires with the last message posted to it, archived or not, and
+what has not expired. A thread expires `MESSAGE_TTL` after its last activity, archived or not, and
 every message it still has goes with it.
 Archiving is by the creator, or automatic when the last member leaves; the idle auto-archive is
 removed, and with it `THREAD_IDLE_TTL` (seven days) and `THREAD_RETENTION_TTL` (14 days). Threads

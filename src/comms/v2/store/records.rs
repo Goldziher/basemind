@@ -31,7 +31,8 @@ pub(super) struct ThreadRecord {
     pub creator: Actor,
     /// Sequence number of the newest message.
     pub head: u64,
-    /// Timestamp of the last message posted: the thread expires with it.
+    /// The latest timestamp of any message posted ([`rules::last_activity`]): the thread
+    /// expires by it. Not the newest message's timestamp when that one was stamped behind.
     pub last_activity_micros: i64,
     /// Who posted the newest message.
     pub head_from: Actor,
@@ -58,7 +59,7 @@ impl ThreadRecord {
             self.head_from = actor.clone();
         }
         self.head = seq;
-        self.last_activity_micros = ts_micros;
+        self.last_activity_micros = rules::last_activity(self.last_activity_micros, ts_micros);
         self
     }
 
@@ -162,7 +163,7 @@ impl<'a> Reader<'a> {
             .transpose()
     }
 
-    /// The thread `id`, unless it has expired with the last message posted to it.
+    /// The thread `id`, unless its last activity has expired.
     pub fn thread(&self, id: &ThreadId) -> Result<Option<ThreadRecord>, CommsError> {
         Ok(self
             .stored_thread(id)?

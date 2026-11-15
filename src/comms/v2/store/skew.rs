@@ -40,8 +40,11 @@ pub(super) fn warn(behind_micros: i64, when: &str) {
         behind_secs = behind_micros / 1_000_000,
         when,
         "comms: the clock reads behind the previous message's timestamp, so it was ahead when that message was \
-         posted or has been set back since; posts are stamped from the clock as it reads now. Messages stamped \
-         ahead of it expire late by the difference, and so does a thread nobody posts to again"
+         posted or has been set back since; posts are stamped from the clock as it reads now. If it was ahead, \
+         messages stamped then expire late by the difference, and a thread created or posted to then is listed \
+         first and counts against its repository's thread cap until the clock passes that time or the thread \
+         is archived. If it is behind now, messages stamped now expire early by the difference, without \
+         their threads"
     );
 }
 

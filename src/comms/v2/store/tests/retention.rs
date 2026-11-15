@@ -289,59 +289,85 @@ fn sweep_out_of_budget_on_an_undecodable_message_index_row_removes_nothing() {
 }
 
 #[test]
-fn expired_thread_is_swept_with_the_messages_stamped_ahead_of_its_last_post() {
+fn thread_made_while_the_clock_read_ahead_is_swept_once_the_clock_passes_its_last_activity() {
     let harness = Harness::new();
     harness.clock.advance(AHEAD);
     let ahead = start(&harness, "a", "made ahead", &["b"]);
     say(&harness, "a", &ahead.thread, "ahead too");
-    say(&harness, "a", &ahead.thread, "and this");
     harness.rewind(AHEAD);
     say(&harness, "a", &ahead.thread, "after the correction");
-    harness
-        .clock
-        .advance(MESSAGE_TTL + SEEN_TTL + SEEN_REFRESH_INTERVAL + Duration::from_secs(1));
+    harness.clock.advance(MESSAGE_TTL + Duration::from_secs(1));
     let store = harness.store();
 
-    let first = store.sweep_bounded(2).expect("sweep");
+    let report = store.sweep().expect("sweep");
     assert_eq!(
-        first,
+        report,
         SweepReport {
-            messages: 2,
-            more: true,
+            messages: 1,
             ..SweepReport::default()
         },
-        "the one message expired by its stamp, and one of the three stamped ahead"
+        "only the message stamped after the correction has expired"
     );
     let rows = store.stored_rows();
-    assert_eq!(
-        (rows[0], rows[1], rows[2], rows[3]),
-        (1, 2, 2, 2),
-        "the thread stays while a message of it does"
-    );
+    assert_eq!((rows[0], rows[1], rows[2], rows[3]), (1, 2, 2, 2));
 
-    let second = store.sweep_bounded(2).expect("sweep");
-    assert_eq!(
-        second,
-        SweepReport {
-            messages: 2,
-            threads: 1,
-            more: true,
-            ..SweepReport::default()
-        }
-    );
-    let third = store.sweep_bounded(2).expect("sweep");
-    assert_eq!(
-        third,
-        SweepReport {
-            seen: 1,
-            ..SweepReport::default()
-        }
-    );
+    harness.clock.advance(AHEAD);
+    let report = store.sweep().expect("sweep");
+    assert_eq!((report.messages, report.threads, report.more), (2, 1, false));
     assert_eq!(store.stored_rows(), only_seen(0));
 }
 
+/// Every thread entry of `expiry`, as `(time, thread)` in key order.
+fn thread_expiry_entries(store: &FjallAgents) -> Vec<(i64, ThreadId)> {
+    store
+        .ks
+        .expiry
+        .prefix(keys::expiry_prefix(keys::Expiry::Thread))
+        .map(|guard| {
+            let key = guard.key().expect("read");
+            let (ts_micros, payload) = keys::parse_expiry(&key).expect("expiry key");
+            (ts_micros, keys::parse_thread(payload).expect("thread of an expiry key"))
+        })
+        .collect()
+}
+
 #[test]
-fn message_stamped_ahead_stays_in_a_thread_that_is_still_posted_to() {
+fn post_stamped_no_later_than_the_last_activity_leaves_the_thread_expiry_entry_where_it_was() {
+    let day = Duration::from_secs(24 * 60 * 60);
+    let harness = Harness::new();
+    let created = start(&harness, "a", "topic", &["b"]);
+    harness.clock.advance(day);
+    let elsewhere = start(&harness, "a", "elsewhere", &["b"]);
+    let entries = [
+        (START_MICROS, created.thread.clone()),
+        (START_MICROS + rules::ttl_micros(day), elsewhere.thread),
+    ];
+    assert_eq!(thread_expiry_entries(harness.store()), entries);
+
+    harness.rewind(day);
+    say(&harness, "a", &created.thread, "stamped like the first");
+    assert_eq!(thread_expiry_entries(harness.store()), entries);
+
+    harness.rewind(day);
+    say(&harness, "a", &created.thread, "stamped behind");
+    assert_eq!(thread_expiry_entries(harness.store()), entries);
+
+    let reply = harness.inbox(&caller("b"), history()).expect("inbox");
+    let stamps: Vec<i64> = reply.messages.iter().map(|message| message.ts_micros).collect();
+    assert_eq!(
+        stamps,
+        [
+            START_MICROS,
+            START_MICROS + rules::ttl_micros(day),
+            START_MICROS,
+            START_MICROS - rules::ttl_micros(day)
+        ],
+        "the posts were stamped from the clock: alike, then behind"
+    );
+}
+
+#[test]
+fn message_stamped_ahead_stays_while_one_stamped_after_the_correction_is_swept() {
     let harness = Harness::new();
     harness.clock.advance(AHEAD);
     let ahead = start(&harness, "a", "made ahead", &["b"]);

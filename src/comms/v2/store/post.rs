@@ -157,16 +157,21 @@ fn into_thread(
     let (ts_micros, order) = txn.stamp_post(ks);
     let seq = record.head + 1;
     let thread_key = keys::thread(&id);
-    txn.batch.remove(
-        &ks.expiry,
-        keys::expiry(keys::Expiry::Thread, record.last_activity_micros, &thread_key),
-    );
-    txn.batch.insert(
-        &ks.expiry,
-        keys::expiry(keys::Expiry::Thread, ts_micros, &thread_key),
-        [],
-    );
+    let previous_activity = record.last_activity_micros;
     let record = record.posted(actor, seq, ts_micros);
+    // ~keep A post stamped no later than the thread's last activity leaves its expiry entry
+    // where it is. Removing and inserting one key in one batch would depend on their order.
+    if record.last_activity_micros != previous_activity {
+        txn.batch.remove(
+            &ks.expiry,
+            keys::expiry(keys::Expiry::Thread, previous_activity, &thread_key),
+        );
+        txn.batch.insert(
+            &ks.expiry,
+            keys::expiry(keys::Expiry::Thread, record.last_activity_micros, &thread_key),
+            [],
+        );
+    }
     txn.batch.insert(&ks.threads, thread_key, encode("a thread", &record)?);
     let meta = MessageMeta {
         from: actor.clone(),

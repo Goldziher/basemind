@@ -172,6 +172,14 @@ fn a_post_is_stamped_by_the_clock_again_once_it_reads_far_behind_the_last_stamp(
 }
 
 #[test]
+fn last_activity_of_a_thread_follows_a_later_stamp_and_never_an_earlier_one() {
+    assert_eq!(last_activity(1_000, 1_001), 1_001);
+    assert_eq!(last_activity(1_000, 1_000), 1_000);
+    assert_eq!(last_activity(1_000, 999), 1_000, "a post stamped behind");
+    assert_eq!(last_activity(1_000, i64::MIN), 1_000);
+}
+
+#[test]
 fn only_a_clock_more_than_the_threshold_behind_the_last_stamp_is_behind() {
     let minute = 60 * 1_000_000;
 

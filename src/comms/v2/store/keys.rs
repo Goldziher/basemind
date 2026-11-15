@@ -42,7 +42,7 @@ const REPLAY_INBOX: u8 = 2;
 /// range ordered by time.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Expiry {
-    /// A thread, at the timestamp of the last message posted to it. Payload: the `threads` key.
+    /// A thread, at its last activity. Payload: the `threads` key.
     Thread = 1,
     /// A replay entry, at the time it stops answering. Payload: the `replays` key.
     Replay = 2,

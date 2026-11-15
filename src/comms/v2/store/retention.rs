@@ -6,10 +6,11 @@
 //! expiry is judged by, which the sweep walks from the oldest entry until the first one still
 //! alive or until its budget is spent.
 //!
-//! A message goes when its own stamp has expired, and otherwise with its thread: a thread
-//! expires with the last post made to it, and a message stamped ahead of that post (see the
-//! module's "Time" section) would outlive it. The thread sweep therefore removes whatever
-//! messages a thread still has before it removes the thread.
+//! A message goes when its own stamp has expired. A thread expires by its last activity, which
+//! no stamp of its messages is later than (see the module's "Time" section), so by then the walk
+//! of `post_order` has reached every message of it that has an index row. The thread sweep
+//! removes whatever messages a thread still has before it removes the thread, which are those
+//! without one.
 //!
 //! An index row the sweep cannot decode (a `post_order` row, an `expiry` key) would sit at the
 //! head of its range and stop every later sweep there. Such a row is removed and counted
@@ -44,7 +45,7 @@ const CHANGE_SWEEP_INTERVAL_MICROS: i64 = 1_000_000;
 pub struct SweepReport {
     /// Messages past their retention, and those removed with their thread.
     pub messages: usize,
-    /// Threads whose last message expired, with their member rows.
+    /// Threads whose last activity expired, with their member rows.
     pub threads: usize,
     /// Replay entries past their hour.
     pub replays: usize,
@@ -240,8 +241,7 @@ fn sweep_threads(
 }
 
 /// Remove the messages an expired thread still has: those the walk of `post_order` did not
-/// reach, and those stamped ahead of the thread's last post, whose own stamp has not expired.
-/// Returns whether none is left, which is false when the budget ran out first.
+/// reach. Returns whether none is left, which is false when the budget ran out first.
 ///
 /// A message is staged already when its index row is there and sorts before where the walk
 /// stopped. One whose index row is gone (see the module doc) was never reached by the walk and
