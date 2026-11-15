@@ -5,6 +5,7 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use super::*;
+use crate::comms::v2::api::WaitOutcome;
 use crate::comms::v2::conformance::{Repo, default_caller, wait_then_read};
 
 mod conformance {

@@ -10,14 +10,12 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use super::api::{
-    Actor, AgentOps, COMMS_STORE_VER, Caller, CommsError, Cursor, InboxBody, InboxMessage, InboxReply, InboxSelect,
-    MAX_ACTIVE_THREADS_PER_REPO, MAX_MESSAGES_PER_THREAD, MESSAGE_TTL, MessageId, PostBody, PostReply, PostTarget,
-    REPLAY_TTL, ReadKind, ReplayKey, RepoKey, SEEN_TTL, ThreadAction, ThreadFilter, ThreadId, ThreadListing,
-    ThreadQuery, ThreadSummary, ThreadUpdate, ThreadsReply, WaitOutcome, check_body, check_recipient_count,
-    deliverable, effective_limit, inline_body, message_cost, new_thread_recipients, normalize_query, normalize_subject,
-    normalize_thread_path, normalize_thread_paths, path_selects, subject_matches,
+    Actor, AgentOps, COMMS_STORE_VER, Caller, CommsError, InboxBody, InboxMessage, InboxReply, InboxSelect,
+    MAX_MESSAGES_PER_THREAD, MessageId, PostBody, PostReply, PostTarget, ReadKind, ReplayKey, RepoKey, ThreadAction,
+    ThreadFilter, ThreadId, ThreadQuery, ThreadSummary, ThreadUpdate, ThreadsReply, check_body,
 };
 use super::conformance::ConformanceHarness;
+use super::rules::{self, Access, Change, Delivered, NewThread, Position, Selection};
 use crate::path::RelPath;
 
 /// Where the fake's clock starts, in microseconds since the unix epoch. Fixed, so timestamps in
@@ -63,23 +61,6 @@ struct StoredMessage {
     order: u64,
     reply_to: Option<MessageId>,
     body: String,
-}
-
-/// One row of the ADR's `members` table.
-#[derive(Clone, Copy)]
-struct Position {
-    read_seq: u64,
-    notified_seq: u64,
-}
-
-/// What a read that moved a position delivered, kept against its replay key. The range and not
-/// the bodies: a replay renders it again from the store, as stored, without a second
-/// authorization. A read that delivered nothing keeps nothing, so repeating it reads afresh.
-#[derive(Clone)]
-struct Delivered {
-    ids: Vec<MessageId>,
-    read_to: Vec<MessageId>,
-    more: bool,
 }
 
 impl Default for FakeAgents {
@@ -141,7 +122,7 @@ impl FakeAgents {
 impl ConformanceHarness for FakeAgents {
     fn advance(&self, by: Duration) {
         let mut state = self.lock();
-        state.now_micros = state.now_micros.saturating_add(ttl_micros(by));
+        state.now_micros = state.now_micros.saturating_add(rules::ttl_micros(by));
     }
 
     fn position(&self, thread: &ThreadId, actor: &Actor) -> Option<(u64, u64)> {
@@ -200,28 +181,25 @@ impl AgentOps for FakeAgents {
 
 impl State {
     /// Drop what retention no longer keeps: expired messages, threads left without one, replay
-    /// entries past their hour, and agents that made no call for [`SEEN_TTL`].
+    /// entries past their hour, and agents that made no call for
+    /// [`SEEN_TTL`](super::api::SEEN_TTL).
     fn expire(&mut self) {
         let now = self.now_micros;
-        let cutoff = now.saturating_sub(ttl_micros(MESSAGE_TTL));
         for thread in self.threads.values_mut() {
-            thread.messages.retain(|_, message| message.ts_micros > cutoff);
+            thread
+                .messages
+                .retain(|_, message| !rules::message_expired(message.ts_micros, now));
         }
         self.threads.retain(|_, thread| !thread.messages.is_empty());
-        self.post_replays.retain(|_, (expires, _)| *expires > now);
-        self.inbox_replays.retain(|_, (expires, _)| *expires > now);
-        let seen_cutoff = now.saturating_sub(ttl_micros(SEEN_TTL));
-        self.seen.retain(|_, last_call| *last_call > seen_cutoff);
+        self.post_replays
+            .retain(|_, (expires, _)| !rules::replay_expired(*expires, now));
+        self.inbox_replays
+            .retain(|_, (expires, _)| !rules::replay_expired(*expires, now));
+        self.seen.retain(|_, last_call| !rules::seen_expired(*last_call, now));
     }
 
     fn check_writable(&self) -> Result<(), CommsError> {
-        if self.store_ver > COMMS_STORE_VER {
-            return Err(CommsError::StoreNewer {
-                store: self.store_ver,
-                binary: COMMS_STORE_VER,
-            });
-        }
-        Ok(())
+        rules::check_writable(self.store_ver)
     }
 
     fn thread(&self, id: &ThreadId) -> Result<&ThreadState, CommsError> {
@@ -239,13 +217,8 @@ impl State {
     /// The `recipients` that have not made a call, the caller aside, in id order. Being named in a
     /// `to` or an `invite` does not make an agent seen.
     fn pending(&self, actor: &Actor, recipients: &[Actor]) -> Vec<Actor> {
-        let mut pending: Vec<Actor> = recipients
-            .iter()
-            .filter(|recipient| *recipient != actor && !self.seen.contains_key(*recipient))
-            .cloned()
-            .collect();
-        pending.sort();
-        pending.dedup();
+        let mut pending = rules::addressed(actor, recipients);
+        pending.retain(|recipient| !self.seen.contains_key(recipient));
         pending
     }
 
@@ -274,9 +247,9 @@ impl State {
                 if let Some(reply) = self.replayed_post(actor, None, key) {
                     return Ok(reply);
                 }
-                let recipients = new_thread_recipients(actor, &to)?;
-                let pending = self.pending(actor, &recipients);
-                let id = self.create_thread(caller, &subject, recipients, &paths)?;
+                let plan = NewThread::plan(actor, &subject, &to, &paths)?;
+                let pending = self.pending(actor, &plan.recipients);
+                let id = self.create_thread(caller, plan)?;
                 (id, None, true, pending)
             }
             PostTarget::Thread(id) => (id, None, false, Vec::new()),
@@ -286,20 +259,13 @@ impl State {
             if let Some(reply) = self.replayed_post(actor, Some(&thread_id), key) {
                 return Ok(reply);
             }
-            let thread = match (self.threads.get(&thread_id), &reply_to) {
-                (Some(thread), _) => thread,
-                (None, Some(message)) => return Err(CommsError::MessageNotFound { id: message.clone() }),
-                (None, None) => return Err(CommsError::ThreadNotFound { thread: thread_id }),
+            let thread = self.threads.get(&thread_id);
+            let access = thread.map(|thread| thread.access(caller));
+            let reply_target_stored = match (thread, &reply_to) {
+                (Some(thread), Some(message)) => thread.messages.contains_key(&message.seq()),
+                _ => true,
             };
-            if !thread.members.contains_key(actor) {
-                return Err(CommsError::NotMember { thread: thread_id });
-            }
-            if let Some(message) = reply_to.as_ref().filter(|id| !thread.messages.contains_key(&id.seq())) {
-                return Err(CommsError::MessageNotFound { id: message.clone() });
-            }
-            if thread.archived {
-                return Err(CommsError::ThreadArchived { thread: thread_id });
-            }
+            rules::authorize_post(&thread_id, access.as_ref(), reply_to.as_ref(), reply_target_stored)?;
         }
         self.now_micros = self.now_micros.saturating_add(1);
         self.posts += 1;
@@ -328,11 +294,10 @@ impl State {
             notices: Vec::new(),
         };
         if let Some(key) = key {
-            let expires = now.saturating_add(ttl_micros(REPLAY_TTL));
             let scope = (!created).then_some(thread_id);
             self.post_replays
                 .entry((actor.clone(), scope, key.clone()))
-                .or_insert((expires, reply.clone()));
+                .or_insert((rules::replay_expiry(now), reply.clone()));
         }
         Ok(reply)
     }
@@ -342,44 +307,27 @@ impl State {
         self.post_replays.get(&key).map(|(_, reply)| reply.clone())
     }
 
-    fn create_thread(
-        &mut self,
-        caller: &Caller,
-        subject: &str,
-        recipients: Vec<Actor>,
-        paths: &[RelPath],
-    ) -> Result<ThreadId, CommsError> {
-        let subject = normalize_subject(subject)?;
-        let paths = normalize_thread_paths(paths)?;
+    fn create_thread(&mut self, caller: &Caller, plan: NewThread) -> Result<ThreadId, CommsError> {
         let active = self
             .threads
             .values()
             .filter(|thread| thread.repo == caller.repo && !thread.archived)
             .count();
-        if active >= MAX_ACTIVE_THREADS_PER_REPO {
-            return Err(CommsError::ThreadCapReached {
-                repo: caller.repo.clone(),
-                cap: MAX_ACTIVE_THREADS_PER_REPO,
-            });
-        }
-        let start = Position {
-            read_seq: 0,
-            notified_seq: 0,
-        };
-        let open = recipients.is_empty();
-        let members = recipients
+        rules::check_thread_cap(&caller.repo, active)?;
+        let members = plan
+            .recipients
             .into_iter()
             .chain([caller.actor.clone()])
-            .map(|member| (member, start))
+            .map(|member| (member, Position::START))
             .collect();
         let id = self.fresh_thread_id();
         self.threads.insert(
             id.clone(),
             ThreadState {
-                subject,
+                subject: plan.subject,
                 repo: caller.repo.clone(),
-                paths,
-                open,
+                paths: plan.paths,
+                open: plan.open,
                 archived: false,
                 creator: caller.actor.clone(),
                 head: 0,
@@ -395,7 +343,12 @@ impl State {
         let kind = body.kind()?;
         let actor = &caller.actor;
         if let InboxSelect::Message(id) = &body.select {
-            return Ok(reply_with(vec![self.lookup(actor, id)?], Vec::new(), false, None));
+            return Ok(rules::inbox_reply(
+                vec![self.lookup(caller, id)?],
+                Vec::new(),
+                false,
+                None,
+            ));
         }
         let key = caller.replay_key.as_ref().filter(|_| kind.writes());
         if kind.writes() {
@@ -405,78 +358,54 @@ impl State {
                 return Ok(self.render_delivered(delivered.clone()));
             }
         }
-        let after = match (kind.paged(), &body.cursor) {
-            (Some(read), Some(cursor)) => Some(cursor.inbox_position(actor, body.thread(), read)?),
-            _ => None,
-        };
-        let mut candidates = self.candidates(actor, body.thread(), kind, after)?;
-        let costs = candidates.iter().map(|(_, message)| message_cost(message));
-        let count = deliverable(costs, effective_limit(body.limit));
-        let more = count < candidates.len();
-        candidates.truncate(count);
-        let next_cursor = match (kind.paged(), candidates.last()) {
-            (Some(read), Some((order, _))) if more => Some(Cursor::for_inbox(actor, body.thread(), read, *order)),
-            _ => None,
-        };
-        let messages: Vec<InboxMessage> = candidates.into_iter().map(|(_, message)| message).collect();
+        let after = rules::cursor_position(kind, body.cursor.as_ref(), actor, body.thread())?;
+        let candidates = self.candidates(caller, body.thread(), kind, after)?;
+        let (page, more) = rules::take_page(candidates.into_iter().map(Ok::<_, CommsError>), body.limit)?;
+        let next_cursor = rules::page_cursor(kind, &page, more, actor, body.thread());
+        let messages: Vec<InboxMessage> = page.into_iter().map(|(_, message)| message).collect();
         let read_to = self.mark(actor, kind, &messages);
-        if let Some(key) = key.filter(|_| !messages.is_empty()) {
-            let expires = self.now_micros.saturating_add(ttl_micros(REPLAY_TTL));
-            let delivered = Delivered {
-                ids: messages.iter().map(|message| message.id.clone()).collect(),
-                read_to: read_to.clone(),
-                more,
-            };
+        if let (Some(key), Some(delivered)) = (key, Delivered::of(&messages, &read_to, more)) {
+            let expires = rules::replay_expiry(self.now_micros);
             self.inbox_replays
                 .entry((actor.clone(), key.clone()))
                 .or_insert((expires, delivered));
         }
-        Ok(reply_with(messages, read_to, more, next_cursor))
+        Ok(rules::inbox_reply(messages, read_to, more, next_cursor))
     }
 
-    fn lookup(&self, actor: &Actor, id: &MessageId) -> Result<InboxMessage, CommsError> {
-        let not_found = || CommsError::MessageNotFound { id: id.clone() };
-        let thread = self.threads.get(id.thread()).ok_or_else(not_found)?;
-        if !thread.members.contains_key(actor) {
-            return Err(CommsError::NotMember {
-                thread: id.thread().clone(),
-            });
-        }
-        let message = thread.messages.get(&id.seq()).ok_or_else(not_found)?;
-        Ok(render(id.clone(), thread, message, true))
+    fn lookup(&self, caller: &Caller, id: &MessageId) -> Result<InboxMessage, CommsError> {
+        let thread = self.threads.get(id.thread());
+        let access = thread.map(|thread| thread.access(caller));
+        let message = thread.and_then(|thread| Some((thread, thread.messages.get(&id.seq())?)));
+        rules::authorize_lookup(id, access.as_ref(), message.is_some())?;
+        let (thread, message) = message.ok_or_else(|| CommsError::MessageNotFound { id: id.clone() })?;
+        Ok(thread.render(id.clone(), message, true))
     }
 
     /// The messages a read of `kind` could return, in store-wide post order.
     fn candidates(
         &self,
-        actor: &Actor,
+        caller: &Caller,
         only: Option<&ThreadId>,
         kind: ReadKind,
         after: Option<u64>,
     ) -> Result<Vec<(u64, InboxMessage)>, CommsError> {
-        if let Some(only) = only
-            && !self.thread(only)?.members.contains_key(actor)
-        {
-            return Err(CommsError::NotMember { thread: only.clone() });
+        let actor = &caller.actor;
+        if let Some(only) = only {
+            let access = self.threads.get(only).map(|thread| thread.access(caller));
+            rules::authorize_read(only, access.as_ref())?;
         }
-        let history = kind == ReadKind::History;
         let mut candidates = Vec::new();
         for (id, thread) in &self.threads {
             let selected = only.is_none_or(|only| only == id);
             let Some(position) = thread.members.get(actor).filter(|_| selected) else {
                 continue;
             };
-            let floor = match kind {
-                ReadKind::History | ReadKind::ById => 0,
-                ReadKind::Announcing => position.read_seq.max(position.notified_seq),
-                ReadKind::Marking | ReadKind::Peek => position.read_seq,
-            };
-            for (seq, message) in thread.messages.range(floor + 1..) {
-                let own = !history && message.from == *actor;
+            for (seq, message) in thread.messages.range(position.floor(kind) + 1..) {
                 let paged_out = after.is_some_and(|after| message.order <= after);
-                if !own && !paged_out {
+                if rules::is_candidate(kind, &message.from, actor) && !paged_out {
                     let id = MessageId::new(id.clone(), *seq)?;
-                    candidates.push((message.order, render(id, thread, message, false)));
+                    candidates.push((message.order, thread.render(id, message, false)));
                 }
             }
         }
@@ -485,21 +414,13 @@ impl State {
     }
 
     /// Move the positions a read of `kind` moves, to the last of `delivered` in each thread.
-    /// Returns the new read positions. `delivered` is a prefix of the unread messages, so nothing
-    /// unread is ever stepped over.
+    /// Returns the new read positions.
     fn mark(&mut self, actor: &Actor, kind: ReadKind, delivered: &[InboxMessage]) -> Vec<MessageId> {
         let mut read_to = Vec::new();
         if !kind.writes() {
             return read_to;
         }
-        let mut last_delivered: BTreeMap<&ThreadId, &MessageId> = BTreeMap::new();
-        for message in delivered {
-            let last = last_delivered.entry(message.id.thread()).or_insert(&message.id);
-            if message.id.seq() > last.seq() {
-                *last = &message.id;
-            }
-        }
-        for (thread_id, last) in last_delivered {
+        for (thread_id, last) in rules::last_delivered(delivered) {
             let position = self
                 .threads
                 .get_mut(thread_id)
@@ -507,10 +428,7 @@ impl State {
             let Some(position) = position else {
                 continue;
             };
-            let seq = last.seq();
-            position.notified_seq = position.notified_seq.max(seq);
-            if kind == ReadKind::Marking && seq > position.read_seq {
-                position.read_seq = seq;
+            if position.advance(kind, last.seq()) {
                 read_to.push(last.clone());
             }
         }
@@ -521,22 +439,19 @@ impl State {
     fn render_delivered(&self, delivered: Delivered) -> InboxReply {
         let messages = delivered
             .ids
-            .into_iter()
+            .iter()
             .filter_map(|id| {
                 let thread = self.threads.get(id.thread())?;
                 let message = thread.messages.get(&id.seq())?;
-                Some(render(id, thread, message, false))
+                Some(thread.render(id.clone(), message, false))
             })
             .collect();
-        reply_with(messages, delivered.read_to, delivered.more, None)
+        delivered.reply(messages)
     }
 
     fn describe(&self, caller: &Caller, id: &ThreadId) -> Result<ThreadsReply, CommsError> {
         let thread = self.thread(id)?;
-        let member = thread.members.contains_key(&caller.actor);
-        if !member && !(thread.open && thread.repo == caller.repo) {
-            return Err(CommsError::ThreadClosed { thread: id.clone() });
-        }
+        rules::authorize_describe(id, &thread.access(caller))?;
         Ok(ThreadsReply {
             threads: vec![summarize(id, thread, &caller.actor)],
             pending: Vec::new(),
@@ -546,60 +461,27 @@ impl State {
     }
 
     fn list(&self, caller: &Caller, filter: &ThreadFilter) -> Result<ThreadsReply, CommsError> {
-        let actor = &caller.actor;
-        let query = filter.query.as_deref().map(normalize_query).transpose()?;
-        let path = filter.path.as_ref().map(normalize_thread_path).transpose()?;
-        let listing = ThreadListing {
-            actor,
-            repo: &caller.repo,
-            query: query.as_deref(),
-            path: path.as_ref(),
-            archived: filter.archived,
-        };
-        let after = filter
-            .cursor
-            .as_ref()
-            .map(|cursor| cursor.threads_position(&listing))
-            .transpose()?;
-        let mut matching: Vec<(&ThreadId, &ThreadState)> = self
+        let selection = Selection::parse(filter)?;
+        let matching = self
             .threads
             .iter()
-            .filter(|(_, thread)| {
-                let visible = thread.members.contains_key(actor)
-                    || (filter.discovers() && thread.open && thread.repo == caller.repo);
-                let matches = query
-                    .as_deref()
-                    .is_none_or(|query| subject_matches(&thread.subject, query))
-                    && path.as_ref().is_none_or(|path| path_selects(path, &thread.paths));
-                visible && matches && (filter.archived || !thread.archived)
-            })
+            .filter(|(_, thread)| selection.selects(&thread.access(caller), &thread.subject, &thread.paths))
+            .map(|(id, thread)| (thread.last_activity_micros, id.clone(), thread))
             .collect();
-        matching.sort_by(|(id, thread), (other_id, other)| {
-            other
-                .last_activity_micros
-                .cmp(&thread.last_activity_micros)
-                .then_with(|| id.cmp(other_id))
-        });
-        if let Some((activity, after_id)) = &after {
-            matching.retain(|(id, thread)| {
-                thread.last_activity_micros < *activity || (thread.last_activity_micros == *activity && *id > after_id)
-            });
-        }
-        let limit = effective_limit(filter.limit);
-        let next_cursor = match matching.get(limit.saturating_sub(1)) {
-            Some((id, thread)) if matching.len() > limit => {
-                Some(Cursor::for_threads(&listing, thread.last_activity_micros, id))
-            }
-            _ => None,
-        };
+        let page = rules::listing_page(
+            matching,
+            &selection.listing(caller),
+            filter.cursor.as_ref(),
+            filter.limit,
+        )?;
         Ok(ThreadsReply {
-            threads: matching
+            threads: page
+                .rows
                 .into_iter()
-                .take(limit)
-                .map(|(id, thread)| summarize(id, thread, actor))
+                .map(|(id, thread)| summarize(&id, thread, &caller.actor))
                 .collect(),
             pending: Vec::new(),
-            next_cursor,
+            next_cursor: page.next_cursor,
             notices: Vec::new(),
         })
     }
@@ -612,82 +494,53 @@ impl State {
             ThreadAction::Join | ThreadAction::Leave | ThreadAction::Archive => Vec::new(),
         };
         let thread = self.thread_mut(id)?;
-        let member = thread.members.contains_key(actor);
-        let at_head = Position {
-            read_seq: thread.head,
-            notified_seq: thread.head,
-        };
-        match &update.action {
-            ThreadAction::Join if member => {}
-            ThreadAction::Join if !thread.open || thread.repo != caller.repo => {
-                return Err(CommsError::ThreadClosed { thread: id.clone() });
-            }
-            ThreadAction::Join if thread.archived => return Err(CommsError::ThreadArchived { thread: id.clone() }),
-            ThreadAction::Join => {
+        let at_head = Position::at_head(thread.head);
+        match rules::authorize_update(id, &update.action, &thread.access(caller))? {
+            Change::Nothing => {}
+            Change::Join => {
                 thread.members.insert(actor.clone(), at_head);
             }
-            ThreadAction::Leave | ThreadAction::Invite(_) if !member => {
-                return Err(CommsError::NotMember { thread: id.clone() });
-            }
-            ThreadAction::Leave => {
+            Change::Leave => {
                 thread.members.remove(actor);
                 if thread.members.is_empty() {
                     thread.archived = true;
                 }
             }
-            ThreadAction::Invite(invited) if invited.is_empty() => return Err(CommsError::EmptyInvite),
-            ThreadAction::Invite(invited) => {
-                check_recipient_count("invite", invited)?;
-                if thread.archived {
-                    return Err(CommsError::ThreadArchived { thread: id.clone() });
-                }
-                for agent in invited {
-                    thread.members.entry(agent.clone()).or_insert(at_head);
+            Change::Invite => {
+                if let ThreadAction::Invite(invited) = &update.action {
+                    for agent in invited {
+                        thread.members.entry(agent.clone()).or_insert(at_head);
+                    }
                 }
             }
-            ThreadAction::Archive if thread.creator != *actor => {
-                return Err(CommsError::NotCreator { thread: id.clone() });
-            }
-            ThreadAction::Archive => thread.archived = true,
+            Change::Archive => thread.archived = true,
         }
         Ok(pending)
     }
 }
 
-fn ttl_micros(ttl: Duration) -> i64 {
-    i64::try_from(ttl.as_micros()).unwrap_or(i64::MAX)
-}
-
-fn reply_with(
-    messages: Vec<InboxMessage>,
-    read_to: Vec<MessageId>,
-    more: bool,
-    next_cursor: Option<Cursor>,
-) -> InboxReply {
-    InboxReply {
-        messages,
-        read_to,
-        more,
-        next_cursor,
-        notices: Vec::new(),
-        wait: WaitOutcome::NotWaited,
+impl ThreadState {
+    /// The facts the rules decide on, for `caller`.
+    fn access(&self, caller: &Caller) -> Access {
+        Access {
+            member: self.members.contains_key(&caller.actor),
+            open: self.open,
+            same_repo: self.repo == caller.repo,
+            archived: self.archived,
+            creator: self.creator == caller.actor,
+        }
     }
-}
 
-fn render(id: MessageId, thread: &ThreadState, message: &StoredMessage, whole: bool) -> InboxMessage {
-    let (body, truncated) = if whole {
-        (message.body.as_str(), false)
-    } else {
-        inline_body(&message.body)
-    };
-    InboxMessage {
-        id,
-        subject: thread.subject.clone(),
-        from: message.from.clone(),
-        ts_micros: message.ts_micros,
-        reply_to: message.reply_to.clone(),
-        body: body.to_string(),
-        truncated,
+    fn render(&self, id: MessageId, message: &StoredMessage, whole: bool) -> InboxMessage {
+        rules::render(
+            id,
+            &self.subject,
+            &message.from,
+            message.ts_micros,
+            message.reply_to.clone(),
+            &message.body,
+            whole,
+        )
     }
 }
 

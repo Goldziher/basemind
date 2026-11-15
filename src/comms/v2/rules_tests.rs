@@ -1,0 +1,143 @@
+//! The shared rules, where a property is easier to state directly than through a store.
+
+use std::cell::Cell;
+
+use super::*;
+use crate::comms::v2::api::RESPONSE_BUDGET_BYTES;
+
+fn actor(name: &str) -> Actor {
+    Actor::parse(name).expect("actor")
+}
+
+fn thread(bits: u32) -> ThreadId {
+    ThreadId::from_bits(bits)
+}
+
+fn message(order: u64, body_len: usize) -> Result<(u64, InboxMessage), CommsError> {
+    let id = MessageId::new(thread(0), order).expect("message id");
+    Ok((
+        order,
+        render(id, "topic", &actor("a"), 0, None, &"x".repeat(body_len), true),
+    ))
+}
+
+const MEMBER: Access = Access {
+    member: true,
+    open: false,
+    same_repo: true,
+    archived: false,
+    creator: false,
+};
+
+#[test]
+fn take_page_pulls_one_candidate_past_the_limit_and_no_further() {
+    let pulled = Cell::new(0);
+    let candidates = (1..=50).map(|order| {
+        pulled.set(pulled.get() + 1);
+        message(order, 1)
+    });
+
+    let (page, more) = take_page(candidates, Some(3)).expect("page");
+
+    assert_eq!(page.len(), 3);
+    assert!(more);
+    assert_eq!(pulled.get(), 4);
+}
+
+#[test]
+fn take_page_stops_at_the_first_message_over_the_budget() {
+    let candidates = vec![message(1, 10), message(2, RESPONSE_BUDGET_BYTES), message(3, 1)];
+
+    let (page, more) = take_page(candidates.into_iter(), None).expect("page");
+
+    assert_eq!(page.iter().map(|(order, _)| *order).collect::<Vec<_>>(), [1]);
+    assert!(more);
+}
+
+#[test]
+fn take_page_reports_no_more_when_the_candidates_run_out() {
+    let (page, more) = take_page(vec![message(1, 1), message(2, 1)].into_iter(), Some(2)).expect("page");
+
+    assert_eq!(page.len(), 2);
+    assert!(!more);
+}
+
+#[test]
+fn take_page_returns_a_candidate_failure_instead_of_a_short_page() {
+    let failure = CommsError::Backend {
+        detail: "disk".to_string(),
+    };
+    let candidates = vec![message(1, 1), Err(failure.clone()), message(3, 1)];
+
+    assert_eq!(take_page(candidates.into_iter(), None), Err(failure));
+}
+
+#[test]
+fn post_refusals_come_in_one_order() {
+    let id = thread(7);
+    let target = MessageId::new(id.clone(), 9).expect("message id");
+    let outsider = Access {
+        member: false,
+        archived: true,
+        ..MEMBER
+    };
+    let archived = Access {
+        archived: true,
+        ..MEMBER
+    };
+
+    assert_eq!(
+        authorize_post(&id, None, None, true),
+        Err(CommsError::ThreadNotFound { thread: id.clone() })
+    );
+    assert_eq!(
+        authorize_post(&id, None, Some(&target), false),
+        Err(CommsError::MessageNotFound { id: target.clone() })
+    );
+    assert_eq!(
+        authorize_post(&id, Some(&outsider), Some(&target), false),
+        Err(CommsError::NotMember { thread: id.clone() })
+    );
+    assert_eq!(
+        authorize_post(&id, Some(&archived), Some(&target), false),
+        Err(CommsError::MessageNotFound { id: target.clone() })
+    );
+    assert_eq!(
+        authorize_post(&id, Some(&archived), Some(&target), true),
+        Err(CommsError::ThreadArchived { thread: id.clone() })
+    );
+    assert_eq!(authorize_post(&id, Some(&MEMBER), Some(&target), true), Ok(()));
+}
+
+#[test]
+fn only_a_marking_read_moves_read_seq_and_a_writing_read_never_moves_back() {
+    let mut position = Position {
+        read_seq: 2,
+        notified_seq: 5,
+    };
+
+    assert!(!position.advance(ReadKind::Peek, 9));
+    assert!(!position.advance(ReadKind::History, 9));
+    assert_eq!((position.read_seq, position.notified_seq), (2, 5));
+
+    assert!(!position.advance(ReadKind::Announcing, 4));
+    assert_eq!((position.read_seq, position.notified_seq), (2, 5));
+    assert_eq!(position.floor(ReadKind::Announcing), 5);
+    assert_eq!(position.floor(ReadKind::Marking), 2);
+
+    assert!(position.advance(ReadKind::Marking, 3));
+    assert_eq!((position.read_seq, position.notified_seq), (3, 5));
+    assert!(!position.advance(ReadKind::Marking, 3));
+}
+
+#[test]
+fn expiry_is_exclusive_of_the_last_microsecond_of_a_ttl() {
+    let ttl = ttl_micros(MESSAGE_TTL);
+
+    assert!(!message_expired(1, ttl));
+    assert!(message_expired(1, ttl + 1));
+    assert!(!seen_expired(1, ttl_micros(SEEN_TTL)));
+    assert!(seen_expired(1, ttl_micros(SEEN_TTL) + 1));
+    assert!(!replay_expired(replay_expiry(10), 10 + ttl_micros(REPLAY_TTL) - 1));
+    assert!(replay_expired(replay_expiry(10), 10 + ttl_micros(REPLAY_TTL)));
+}
