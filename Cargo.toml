@@ -249,11 +249,9 @@ mach2 = "0.7"
 [dev-dependencies]
 basemind = { path = ".", features = ["test-support"] }
 criterion = { version = "0.8", features = ["html_reports"] }
-insta = "1"
 proptest = "1"
 rmcp = { version = "3.10", features = ["client", "transport-async-rw", "transport-child-process"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "test-util"] }
-wiremock = "0.6"
 
 [lints]
 workspace = true
