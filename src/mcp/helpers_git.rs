@@ -45,7 +45,7 @@ pub(super) fn git_log(state: &ServerState, p: GitLogParams) -> Result<CallToolRe
         if p.limit.is_some() || p.cursor.is_some() {
             return Err(shape_error("`rev` shows one commit and takes no `limit` or `cursor`"));
         }
-        return run_show(state, &rev);
+        return run_show(state, &rev, max_tokens);
     }
     if let Some(symbol) = p.symbol {
         let Some(path) = p.path else {
@@ -66,6 +66,7 @@ pub(super) fn git_log(state: &ServerState, p: GitLogParams) -> Result<CallToolRe
                 limit: p.limit,
                 hash_mode: None,
                 cursor: p.cursor,
+                max_tokens,
             },
         );
     }

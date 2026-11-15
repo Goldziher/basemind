@@ -263,3 +263,59 @@ async fn code_read_lists_a_bounded_set_of_candidates_with_their_lines() {
     assert!(!large.contains("generated_40"), "the list is bounded: {large}");
     assert!(large.contains("and 60 more"), "{large}");
 }
+
+/// `max_tokens` bounds the file list of a single commit, and what it leaves out is counted.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn git_log_of_a_rev_holds_its_file_list_to_max_tokens() {
+    let (dir, client) = started().await;
+    let root = dir.path();
+    for index in 0..600 {
+        std::fs::write(root.join(format!("added_{index:03}.txt")), "x\n").unwrap();
+    }
+    git(root, &["add", "-A"]);
+    git(root, &["commit", "-qm", "six hundred files"]);
+
+    let shown = call(&client, "git_log", json!({ "rev": "HEAD", "max_tokens": 200 })).await;
+    let files = shown["files"].as_array().expect("files").len();
+    assert!((1..100).contains(&files), "200 tokens of file rows, not {files}");
+    assert_eq!(
+        shown["files_omitted"].as_u64(),
+        Some(600 - files as u64),
+        "the rest are counted"
+    );
+    assert_eq!(shown["commit"]["summary"], "six hundred files");
+
+    let whole = call(&client, "git_log", json!({ "rev": "HEAD", "max_tokens": 100000 })).await;
+    assert_eq!(whole["files"].as_array().expect("files").len(), 600);
+    assert!(whole.get("files_omitted").is_none());
+}
+
+/// `max_tokens` bounds a symbol's history like every other `git_log` list.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn git_log_of_a_symbol_honours_max_tokens() {
+    let (dir, client) = started().await;
+    let root = dir.path();
+    let source = std::fs::read_to_string(root.join("src/outline.rs")).unwrap();
+    for round in 2..=4 {
+        std::fs::write(
+            root.join("src/outline.rs"),
+            source.replace("    1\n", &format!("    {round}\n")),
+        )
+        .unwrap();
+        git(root, &["commit", "-qam", &format!("round {round}")]);
+    }
+
+    let arguments = json!({ "path": "src/outline.rs", "symbol": "file_outline" });
+    let whole = call(&client, "git_log", arguments.clone()).await;
+    assert_eq!(whole["history"].as_array().expect("history").len(), 4, "{whole}");
+
+    let mut bounded = arguments;
+    bounded["max_tokens"] = json!(1);
+    let first = call(&client, "git_log", bounded.clone()).await;
+    assert_eq!(first["history"].as_array().expect("history").len(), 1, "{first}");
+    assert_eq!(first["history"][0]["summary"], "round 4", "{first}");
+    assert_eq!(first["budgeted"], true, "{first}");
+    bounded["cursor"] = first["next_cursor"].clone();
+    let second = call(&client, "git_log", bounded).await;
+    assert_eq!(second["history"][0]["summary"], "round 3", "{second}");
+}

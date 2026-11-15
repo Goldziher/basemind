@@ -170,6 +170,9 @@ pub struct SymbolHistoryParams {
     /// useful when i18n string churn dominates).
     #[serde(default)]
     pub hash_mode: Option<String>,
+    /// Token budget for the returned history entries.
+    #[serde(default)]
+    pub max_tokens: Option<u32>,
     /// Resume token returned by the previous call's `next_cursor`. Cursors are scoped to
     /// the repo's HEAD sha at mint time; on HEAD movement the response carries
     /// `cursor_invalidated: true` and the caller must restart.
@@ -244,6 +247,9 @@ pub(in crate::mcp) struct GitCommitHit {
 pub(in crate::mcp) struct GitShowResponse {
     pub commit: GitCommitHit,
     pub files: Vec<CommitFileView>,
+    /// Changed files left out of `files` to fit `max_tokens`; raise it to list them.
+    #[serde(skip_serializing_if = "super::types::is_zero")]
+    pub files_omitted: usize,
     /// Server-side handler latency in microseconds. See [`crate::mcp::helpers::timing`].
     #[serde(default)]
     pub elapsed_us: u64,
@@ -564,6 +570,9 @@ pub(in crate::mcp) struct SymbolHistoryResponse {
     /// `"structural"`, or `"structural_loose"`. Clients can use this to confirm the mode
     /// they got matches the mode they asked for.
     pub hash_mode: &'static str,
+    /// Entries were dropped to fit `max_tokens`; `next_cursor` continues with them.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub budgeted: bool,
     /// The history may reach further back than what is listed.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub truncated: bool,

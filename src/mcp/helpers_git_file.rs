@@ -501,6 +501,7 @@ pub(super) fn run_symbol_history(state: &ServerState, params: SymbolHistoryParam
                     commits_inspected: 0,
                     history: Vec::new(),
                     hash_mode: hash_mode.as_str(),
+                    budgeted: false,
                     truncated: false,
                     truncated_reason: None,
                     next_cursor: None,
@@ -583,6 +584,8 @@ pub(super) fn run_symbol_history(state: &ServerState, params: SymbolHistoryParam
 
     let total_history = history.len();
     let page: Vec<SymbolHistoryEntry> = history.into_iter().skip(skip).take(limit).collect();
+    let budget = super::budget::apply_budget(page, params.max_tokens);
+    let (page, budgeted) = (budget.items, budget.budgeted);
     let has_more = total_history > skip + page.len();
     let next_cursor = has_more.then(|| super::cursor::Cursor::encode_in_memory((skip + page.len()) as u64, snapshot));
 
@@ -600,6 +603,7 @@ pub(super) fn run_symbol_history(state: &ServerState, params: SymbolHistoryParam
         commits_inspected: inspected,
         history: page,
         hash_mode: hash_mode.as_str(),
+        budgeted,
         truncated: truncated_reason.is_some(),
         truncated_reason,
         next_cursor,

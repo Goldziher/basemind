@@ -74,8 +74,8 @@ pub(super) fn resolve_body_chars(requested: Option<u32>) -> usize {
 }
 
 /// The `show` operation: one commit by sha or revision, with its whole message and its
-/// changed files.
-pub(super) fn run_show(state: &ServerState, sha: &str) -> Result<CallToolResult, McpError> {
+/// changed files. The file list is held to `max_tokens`, and what it leaves out is counted.
+pub(super) fn run_show(state: &ServerState, sha: &str, max_tokens: Option<u32>) -> Result<CallToolResult, McpError> {
     let started = std::time::Instant::now();
     let repo = require_git_repo(state)?;
     let full = repo
@@ -84,7 +84,7 @@ pub(super) fn run_show(state: &ServerState, sha: &str) -> Result<CallToolResult,
     let info = repo
         .commit_record(&full)
         .ok_or_else(|| McpError::invalid_params(format!("`git_log`: `{sha}` is not a commit"), None))?;
-    let files = info
+    let files: Vec<CommitFileView> = info
         .files
         .iter()
         .map(|(path, kind)| CommitFileView {
@@ -92,8 +92,11 @@ pub(super) fn run_show(state: &ServerState, sha: &str) -> Result<CallToolResult,
             change: kind.as_str(),
         })
         .collect();
+    let total = files.len();
+    let files = apply_budget(files, max_tokens).items;
     json_result(&GitShowResponse {
         commit: commit_to_hit(info, usize::MAX),
+        files_omitted: total - files.len(),
         files,
         elapsed_us: elapsed_us(started),
     })

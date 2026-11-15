@@ -722,6 +722,11 @@ pub struct WorkspaceGrepParams {
     pub cursor: Option<Cursor>,
 }
 
+/// `skip_serializing_if` for a count that is reported only when something was left out.
+pub(super) fn is_zero(count: &usize) -> bool {
+    *count == 0
+}
+
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct GrepHit {
     pub path: RelPath,
