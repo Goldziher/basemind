@@ -592,6 +592,42 @@ fn the_in_ram_call_scan_has_the_same_examined_keys_cap() {
     assert!(callees.iter().all(|callee| callee.ends_with("zap")), "{callees:?}");
     assert_eq!(pages, 302usize.div_ceil(100));
     assert!(!page.total_is_partial);
+
+    let zero = scan_calls_in_ram_examining(cache.calls_projection(), "zap", Matching::Exact, 10, None, 0);
+    assert!(zero.total_is_partial && zero.stopped_after.is_some());
+}
+
+/// A cap of zero would examine nothing and so have no key to resume from; it examines one.
+#[test]
+fn an_examined_keys_cap_of_zero_still_yields_a_resumable_page() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = IndexDb::open(dir.path()).unwrap();
+    let impls: Vec<(String, String)> = (0..3).map(|k| ("IteratorExt".to_string(), format!("Ty{k}"))).collect();
+    let mut writer = db.writer();
+    writer
+        .upsert_file(
+            &path(0),
+            &l1(&impls),
+            Some(&l2((0..3).map(|k| call("zapx", k)).collect())),
+        )
+        .unwrap();
+    writer.commit().unwrap();
+
+    let calls = scan_calls_examining(&db.view(), "zap", Matching::Exact, 10, None, 0).unwrap();
+    assert!(calls.total_is_partial && calls.stopped_after.is_some() && calls.next_cursor.is_some());
+    let impls = scan_impls_examining(
+        &db.view(),
+        "Iterator",
+        Matching::Exact,
+        None,
+        10,
+        None,
+        |_, _| true,
+        |_, _| (0, 0),
+        0,
+    )
+    .unwrap();
+    assert!(impls.total_is_partial && impls.stopped_after.is_some());
 }
 
 fn hit(callee: &str) -> ReferenceHit {

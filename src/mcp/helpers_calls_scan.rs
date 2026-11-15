@@ -158,6 +158,8 @@ pub(super) fn scan_calls_examining(
     cursor_after: Option<&[u8]>,
     examine_cap: usize,
 ) -> Result<CallScanPage, McpError> {
+    // A page that examined nothing has no key to resume from.
+    let examine_cap = examine_cap.max(1);
     let finder = memchr::memmem::Finder::new(name.as_bytes());
 
     let lower: Bound<Vec<u8>> = match cursor_after {
@@ -273,6 +275,7 @@ pub(super) fn scan_calls_in_ram_examining(
     cursor_after: Option<&[u8]>,
     examine_cap: usize,
 ) -> CallScanPage {
+    let examine_cap = examine_cap.max(1);
     let finder = memchr::memmem::Finder::new(name.as_bytes());
     let start = match cursor_after {
         Some(cursor) => index.entries.partition_point(|e| e.key.as_slice() <= cursor),

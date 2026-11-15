@@ -155,6 +155,7 @@ pub(super) fn scan_impls_examining(
     row_col: impl Fn(&RelPath, u32) -> (u32, u32),
     examine_cap: usize,
 ) -> Result<ImplScanPage, McpError> {
+    let examine_cap = examine_cap.max(1);
     let finder = memchr::memmem::Finder::new(trait_name.as_bytes());
     let lower: Bound<Vec<u8>> = match cursor_after {
         Some(k) => Bound::Excluded(k.to_vec()),
