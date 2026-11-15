@@ -18,7 +18,7 @@ Basemind is a single Rust crate that builds a CLI binary (`basemind`) and expose
 - `main.rs` — CLI entry (`scan`, `serve`).
 - `scanner.rs` — rayon-parallel file walker; orchestrates per-file extraction and writes blobs + index.
 - `scanner_docs.rs` — document-tier scan (PDF / Office / HTML → LanceDB) when `--features documents`.
-- `store.rs` — content-addressed msgpack blob store at `~/.local/share/basemind/blobs/<hash>.{l1,l2,l3}.msgpack`. Holds the `IndexDb` handle.
+- `store.rs` — content-addressed msgpack blob store at `~/.local/share/basemind/cache/blobs/v<schema>/<hash>.{fm,chunk,rref,doc}.msgpack`. Holds the `IndexDb` handle.
 - `index/` — Fjall-backed secondary index (`mod.rs`, `keys.rs`, `writer.rs`).
 - `extract/` — tree-sitter extraction tiers:
   - `l1.rs` — outlines (symbols, signatures, imports, docs).
@@ -57,8 +57,8 @@ Basemind is a single Rust crate that builds a CLI binary (`basemind`) and expose
 
 #### Global cache (`~/.local/share/basemind/`, created at scan time)
 
-- `blobs/<hash>.{l1,l2,l3}.msgpack` — content-addressed extraction blobs (dedup across files / views).
-- `views/<workspace_hash>/<view>/index.fjall/` — Fjall LSM tree (the secondary index over those blobs).
+- `cache/blobs/v<schema>/<hash>.{fm,chunk,rref,doc}.msgpack` — content-addressed extraction blobs (dedup across files / views), one namespace per blob schema so two installed versions never share a blob.
+- `cache/workspaces/<workspace_key>/views/<view>/index.fjall/` — Fjall LSM tree (the secondary index over those blobs), beside `index.msgpack` (the file map) and `pending-vectors.msgpack` (paths owed vector rows).
 
 #### Other
 

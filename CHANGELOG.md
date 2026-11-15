@@ -364,21 +364,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Storage soundness. The first scan after upgrading re-extracts every file once (see
   [`docs/UPGRADING.md`](docs/UPGRADING.md)).
   - The blob store is namespaced by blob schema (`cache/blobs/v<schema>/`): two installed versions
-    no longer overwrite each other's blobs, and a file whose blob another version wrote, or whose
-    blob is missing, says so instead of "not indexed".
-  - Vector rows a scan could not write (a killed process, a LanceDB error) stay recorded in the file
-    map and are written by the next scan. They were lost for good and search missed the file.
-  - After a scan that died without finishing, the next full scan validates blobs instead of trusting
-    them for existing, so a blob torn by a power loss is rebuilt.
-  - `memory_search` by meaning answers from the note itself and never from a stale or orphaned
-    vector row; the rows are rebuilt from the notes after an upgrade or a preset change, and are
-    shared by every worktree of a clone. `memory_save` is fsynced before it returns.
+    no longer overwrite each other's blobs. This ships with the 0.34 release-minor bump: the sweep
+    removes the un-namespaced blobs older builds wrote, so an older basemind left installed
+    re-extracts on its next scan. A file whose blob is missing or damaged says so instead of "not
+    indexed", and the `index_rescan` it names rebuilds the blob: a rescan of named paths
+    validates the blob of a named file it would otherwise skip as unchanged.
+  - `cache stats` measures the whole blob store (every namespace, and un-namespaced blobs), reports
+    the current namespace beside it (`blobs_current_bytes`), reports the memory vector stores
+    (`memory_vectors_bytes`) and finds the last sweep again (`last_gc`). `cache clear blobs` clears
+    the current namespace, older namespaces and un-namespaced blobs, and leaves a newer basemind's
+    namespace in place, naming it. The cache budget counts everything under `cache/blobs/`.
+  - Vector rows a scan could not write (a killed process, a LanceDB error) stay recorded in
+    `pending-vectors.msgpack` beside the file map and are written by a later scan, incremental
+    ones included. They were lost for good and search missed the file. A file no rows can come of
+    (its blob is gone or carries no vectors of the current model, or the embed policy or chunk cap
+    now excludes it) leaves that record instead of failing its batch on every scan.
+  - After an unclean shutdown the next scan of a workspace is a full one that validates the
+    combined blob and the document blob of each file instead of
+    trusting them for existing, so one torn by a power loss is rebuilt. Unclean means: a scan of
+    that workspace died without finishing, or a daemon died without stopping (then every
+    workspace the next daemon opens). A chunk sidecar's header, which states its length, is read
+    on every pass. Not covered: a power loss after a scan finished outside the daemon, the payload
+    of a chunk sidecar, and resolved-reference (`.rref`) blobs.
+  - `memory_search` by meaning answers from the note itself and never from a stale, orphaned or
+    duplicated vector row. The rows are rebuilt from the notes after an upgrade or for a new
+    embedding preset, a bounded number per call: while they are behind, the response carries a
+    `notice`. They are shared by every worktree of a clone, one store per embedding model, so two
+    worktrees with different presets no longer wipe each other's. `memory_save` is fsynced before
+    it returns.
+  - The memory-notes store has its own version. A store written by a newer basemind is refused
+    ("written by a newer basemind") and never wiped.
   - A rebuild interrupted after its emptied file map was written is finished by the next scan,
-    incremental ones included; a deleted file whose index rows could not be removed stays in the
-    file map; a repository whose files define no symbols is no longer rescanned on every open.
+    incremental ones included, and the blobs it re-indexes from stay pinned against the sweep
+    until it is done; a deleted file whose index rows could not be removed stays in the file map
+    without keeping the other removals out of it; a repository whose files define no symbols is
+    no longer rescanned on every open.
   - A damaged index database is replaced by the next writer open instead of failing every open, and
-    a read-only open no longer wipes an index of an older schema.
-  - The vector store's `meta.json` is written atomically and removed last in a wipe.
+    a read-only open no longer wipes an index of an older schema: `index_status` reports
+    `rescan_needed`, and a CLI query prints one line on stderr naming `basemind scan`.
+  - The blob sweep can no longer run during a scan the daemon started by itself (a hosted
+    rescan, the rebuild of a freshly opened workspace), and the sweep after a budget eviction
+    keeps the grace period while another process holds a workspace's writer lock.
+  - A workspace cache directory is renamed aside before it is deleted, and an opener that was
+    waiting on its lock no longer ends up holding the lock file of the deleted directory.
+  - The vector store's `meta.json` is written atomically, before any table, and removed last in a
+    wipe; one written by a newer basemind is refused even when this version cannot parse it.
+- The daemon protocol version is 6 (was 5): a search by meaning reads the notes of all its hits in
+  one request. A client and a daemon of different versions refuse each other at connect, as before.
 - `find_files` (previously `code` modes `find` and `files`) no longer misses document-tier files
   (markdown, config, PDFs) on a long-lived server.
 - `index_status.cache_dir` reports basemind's cache directory. It reported the tree-sitter grammar

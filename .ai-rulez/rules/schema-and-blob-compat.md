@@ -10,7 +10,7 @@ x-ai-rulez:
 
 # Schema + Blob Compatibility
 
-Basemind persists state in two serialized forms: msgpack blobs under `.basemind/blobs/<hash>.{l1,l2}.msgpack` (content-addressed) and the Fjall keyspace under `.basemind/views/<view>/index.fjall/`. Both have explicit schema versions; both auto-wipe and rebuild on version mismatch.
+Basemind persists state in two serialized forms: msgpack blobs under `<data dir>/cache/blobs/v<schema>/<hash>.{fm,chunk,rref,doc}.msgpack` (content-addressed, one namespace per blob schema) and the Fjall keyspace under `<data dir>/cache/workspaces/<key>/views/<view>/index.fjall/`. Both have explicit schema versions. An older index is wiped and rebuilt, a newer one is refused; blobs of another schema live in another namespace and are never read. The policy is ADR-0025.
 
 - Single source of truth: `RELEASE_MINOR` in `src/version.rs`. Both `INDEX_SCHEMA_VER` (`src/index/mod.rs`) and the blob `SCHEMA_VER` (`src/extract/mod.rs`) read from it. Bump = bump the constant in one file.
 - Bump cadence is bound to release versions, not commits:

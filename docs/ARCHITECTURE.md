@@ -1054,9 +1054,9 @@ memory (`visibility=individual`, `owner=agent_id`) is private to one agent. Sche
 The Fjall half (`memory_by_key`) is the truth for a note. Its vector row only makes the note findable
 by meaning: `memory_search` joins every hit against `memory_by_key`, drops a hit whose note is gone or
 was rewritten since the row was embedded, and answers from the note. The rows live beside the notes
-(`<cache>/cache/repos/<group>/memory.lance/`) and are rebuilt from them: the first search of a
-namespace in a process embeds every note without a current row, which is also what restores them
-after the table is wiped. A save or a delete is fsynced before it is acknowledged.
+(`<cache>/cache/repos/<group>/memory.lance/<model>-<dim>/`, one store per embedding model) and are
+rebuilt from them: a search embeds the notes without a current row and removes the rows without a
+note, a bounded number per call, which is also what fills a store after it is wiped or first opened. A save or a delete is fsynced before it is acknowledged.
 
 The Fjall half is stored once per repo group, not per
 view: `<cache>/cache/repos/<group>/memory.fjall/`, where `<group>` is the blake3 of the canonical main

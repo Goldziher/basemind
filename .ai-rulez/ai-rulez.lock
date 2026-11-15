@@ -4,7 +4,7 @@
 version = 1
 ai_rulez_version = '5.13.2'
 scope = 'all'
-tree = 'sha256:23124924c77817db0f4841571d42feba74a267dff6b6f58899d58529f37e2bfa'
+tree = 'sha256:d40d2dbe0a25914e7cdcd05ced0e48e5f63a5faf6c999c09253ce0e313d2ed06'
 
 [[served]]
 name = 'adr-workflow'
@@ -214,7 +214,7 @@ digest = 'sha256:8806192f4d7f4b53b2d4b40eaee75aee6ea6cf23fb78356cbad30ebc2228545
 kind = 'context'
 id = 'crate-layout'
 path = 'context/crate-layout.md'
-digest = 'sha256:dccef45030f47c796e90e7fbd15f65e29452e401d1f686fb079362a92229d6a5'
+digest = 'sha256:9520f56350a2d5a6a7c4dc9968abe0f857ad0400a2206ccd77d3db264676916e'
 
 [[item]]
 kind = 'context'
@@ -292,7 +292,7 @@ digest = 'sha256:96eca079872a6471bf1544074311004946435bfb055a3cb12aecc3d08457483
 kind = 'rule'
 id = 'schema-and-blob-compat'
 path = 'rules/schema-and-blob-compat.md'
-digest = 'sha256:39ce8a7906f7d573f170d74947b62baeb084eae776d17b05ef706f56af928295'
+digest = 'sha256:2e2e6421f96d245a5ededcdfd5df14bd6d494da7ceb2158ff61dfd7148737f4f'
 
 [[item]]
 kind = 'rule'
