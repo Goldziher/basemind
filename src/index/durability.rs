@@ -37,6 +37,27 @@ pub(super) fn rotate_memtables<'a>(keyspaces: impl IntoIterator<Item = &'a Keysp
     Ok(())
 }
 
+/// Tell a database that is damaged on disk from one that merely could not be opened right now. Only
+/// the first may be discarded: a lock held elsewhere, an I/O error (a full disk, a permission) and a
+/// format version this fjall does not know all leave data that is, or may be, perfectly good.
+pub(super) fn classify_open_error(error: fjall::Error) -> IndexError {
+    use fjall::{Error, LsmError};
+    let damaged = match &error {
+        Error::JournalRecovery(_)
+        | Error::Decompress(_)
+        | Error::InvalidTrailer
+        | Error::InvalidTag(_)
+        | Error::Unrecoverable => true,
+        Error::Storage(inner) => !matches!(inner, LsmError::Io(_) | LsmError::InvalidVersion(_)),
+        _ => false,
+    };
+    if damaged {
+        IndexError::Corrupt(error)
+    } else {
+        IndexError::Fjall(error)
+    }
+}
+
 impl IndexDb {
     /// The generation the last [`Self::seal_scan`] stamped; `0` for an index no scan has sealed.
     pub fn scan_generation(&self) -> Result<u64, IndexError> {

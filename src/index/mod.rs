@@ -297,6 +297,10 @@ pub enum IndexError {
          — upgrade basemind"
     )]
     NewerSchema { stored: u32, current: u32 },
+    /// The view's database is damaged and could not be opened. It is rebuildable cache: a writer
+    /// open discards it and rescans, a read-only open serves from blobs.
+    #[error("the code index is damaged ({0}); opening it for writing rebuilds it")]
+    Corrupt(#[source] fjall::Error),
     /// The file map vouches for a scan generation the index never sealed: the index lost the tail
     /// of its journal and must be rebuilt before it is sealed again (see [`durability`]).
     #[error(
@@ -517,7 +521,8 @@ impl IndexDb {
             .cache_size(cache_bytes)
             .worker_threads(FJALL_WORKER_THREADS)
             .max_journaling_size(journal_bytes)
-            .open()?;
+            .open()
+            .map_err(durability::classify_open_error)?;
         let (memory, memory_detached) = match memory_store::open_shared(memory_dir) {
             Ok(memory) => (memory, false),
             Err(IndexError::Fjall(fjall::Error::Locked)) if tolerate_held_memory => {

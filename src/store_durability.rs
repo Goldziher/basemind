@@ -21,7 +21,17 @@ pub(super) fn open_index_for_writer(
     view_dir: &Path,
     index: &mut Index,
 ) -> Result<(IndexDb, bool), StoreError> {
-    let mut index_db = open_index_with_retry(root, view_dir)?;
+    let mut index_db = match open_index_with_retry(root, view_dir) {
+        // A damaged database is rebuildable cache, and left in place it fails every open until
+        // someone clears the cache by hand. Only this open, which holds the writer lock, may
+        // replace it; the checks below then find an unsealed index and order the rebuild. ~keep
+        Err(crate::index::IndexError::Corrupt(error)) => {
+            tracing::warn!(view, %error, "code index is damaged; discarding it for a rebuild");
+            crate::index::durability::discard_index(view_dir)?;
+            open_index_with_retry(root, view_dir)?
+        }
+        opened => opened?,
+    };
     // The file map is fsynced only after the index sealed the same generation, so an index
     // stamped below it lost the tail of its journal. Which rows went is unknowable, so the whole
     // index is discarded and the empty-index rebuild below takes over. ~keep

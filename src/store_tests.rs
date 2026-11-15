@@ -339,3 +339,64 @@ fn a_sealed_index_without_symbols_is_not_rebuilt_on_every_open() {
     assert!(!store.index_rebuild_needed, "a sealed index is not a lost one");
     assert_eq!(store.index.files.len(), 1, "the file map must keep its files");
 }
+
+/// Overwrite every table file under `index_dir` with zeroes of the same length. Returns how many.
+fn damage_tables(index_dir: &std::path::Path) -> usize {
+    let mut damaged = 0;
+    let mut dirs = vec![index_dir.to_path_buf()];
+    while let Some(dir) = dirs.pop() {
+        for entry in std::fs::read_dir(&dir).expect("read_dir").flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                dirs.push(path);
+            } else if dir.file_name().is_some_and(|name| name == "tables") {
+                let len = std::fs::metadata(&path).expect("stat").len() as usize;
+                std::fs::write(&path, vec![0_u8; len]).expect("damage");
+                damaged += 1;
+            }
+        }
+    }
+    damaged
+}
+
+/// A damaged index database used to fail every open until the cache was cleared by hand. The writer
+/// open replaces it and orders a rebuild; a read-only open never discards anything.
+#[test]
+fn a_writer_open_rebuilds_a_damaged_index_and_a_read_only_open_leaves_it() {
+    init_isolated_cache();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    std::fs::write(root.join("a.rs"), b"pub fn damaged_index_fixture() {}\n").expect("write");
+    {
+        let mut store = Store::open(root, VIEW_WORKING).expect("open");
+        crate::scanner::scan(
+            root,
+            &mut store,
+            &crate::config::ConfigV1::with_defaults(),
+            crate::scanner::ScanSource::WorkingTree,
+            crate::scanner::EmbedMode::Deferred,
+        )
+        .expect("scan");
+        assert!(
+            store.index_db.as_ref().expect("index").reclaim_journal(),
+            "flush to tables"
+        );
+    }
+    let index_dir = workspace_cache_dir(root)
+        .join(VIEWS_DIR)
+        .join(VIEW_WORKING)
+        .join(crate::index::INDEX_DIR);
+    assert!(
+        damage_tables(&index_dir) > 0,
+        "the fixture must hold table files to damage"
+    );
+
+    let read_only = Store::open_read_only(root, VIEW_WORKING).expect("a read-only open degrades");
+    assert!(read_only.index_db.is_none(), "the damaged index is not served");
+    assert_eq!(read_only.index.files.len(), 1, "and nothing was discarded");
+    drop(read_only);
+
+    let store = Store::open(root, VIEW_WORKING).expect("the writer open replaces the damaged index");
+    assert!(store.index_rebuild_needed, "and orders the rebuild");
+    assert!(store.index.files.is_empty());
+}
