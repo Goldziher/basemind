@@ -93,6 +93,12 @@ impl FjallAgents {
     ) -> Result<Self, CommsError> {
         let dir = comms_dir.join(STORE_DIR);
         let untouched = |what: &str| format!("{what} the comms store at {} (left untouched)", dir.display());
+        let located = |error: CommsError| match error {
+            CommsError::Backend { detail } => CommsError::Backend {
+                detail: format!("{detail}, in {}", dir.display()),
+            },
+            other => other,
+        };
         std::fs::create_dir_all(&dir).map_err(|error| backend(untouched("create"), error))?;
         let db = Database::builder(&dir)
             .worker_threads(1)
@@ -114,7 +120,7 @@ impl FjallAgents {
         };
         let existing: Vec<&str> = KEYSPACES.into_iter().filter(|name| db.keyspace_exists(name)).collect();
         let on_disk = if db.keyspace_exists(META) {
-            stored_version(&keyspace(META)?)?
+            stored_version(&keyspace(META)?).map_err(located)?
         } else {
             None
         };
@@ -169,13 +175,13 @@ impl FjallAgents {
                 COMMS_STORE_VER
             }
         };
-        let version = migrate(&db, &ks, found, migrations)?;
+        let version = migrate(&db, &ks, found, migrations).map_err(located)?;
         let counter = |decoded: Result<Option<i64>, CommsError>| match decoded {
             Ok(value) => Ok(value),
             // ~keep Only writes use the counters, and a newer store takes none: its encoding of
             // them may have changed without that stopping this binary from reading the rest.
             Err(_) if newer => Ok(None),
-            Err(error) => Err(error),
+            Err(error) => Err(located(error)),
         };
         let posts = counter(
             read(META_POSTS)?

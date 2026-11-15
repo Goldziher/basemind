@@ -38,6 +38,11 @@ fn failing_step(ks: &Keyspaces, batch: &mut OwnedWriteBatch) -> Result<(), Comms
     })
 }
 
+/// The store's directory as an error message names it.
+fn store_dir(harness: &Harness) -> String {
+    harness.dir.path().join(STORE_DIR).display().to_string()
+}
+
 fn marker(harness: &Harness) -> Option<Vec<u8>> {
     harness
         .store()
@@ -240,6 +245,7 @@ fn older_store_without_a_migration_path_is_refused_and_left_as_it_was() {
 
     assert!(matches!(refused, CommsError::Backend { .. }), "{refused:?}");
     assert!(refused.to_string().contains("no migration"), "{refused}");
+    assert!(refused.to_string().contains(&store_dir(&harness)), "{refused}");
     let step = [Migration {
         from: COMMS_STORE_VER - 1,
         to: COMMS_STORE_VER,
@@ -250,6 +256,24 @@ fn older_store_without_a_migration_path_is_refused_and_left_as_it_was() {
         bodies(&harness.inbox(&caller("b"), InboxBody::default()).expect("inbox")),
         ["first"]
     );
+}
+
+#[test]
+fn unreadable_layout_version_or_counter_is_refused_naming_the_directory() {
+    for (key, what) in [(META_STORE_VER, "layout version"), (META_POSTS, "post counter")] {
+        let mut harness = Harness::new();
+        start(&harness, "a", "topic", &["b"]);
+        harness.store().ks.meta.insert(key, [1, 2, 3]).expect("write");
+
+        let refused = harness.reopen_migrating(&[]).expect_err("three bytes are no number");
+
+        assert!(matches!(refused, CommsError::Backend { .. }), "{refused:?}");
+        let message = refused.to_string();
+        assert!(
+            message.contains(what) && message.contains(&store_dir(&harness)),
+            "{message}"
+        );
+    }
 }
 
 #[test]

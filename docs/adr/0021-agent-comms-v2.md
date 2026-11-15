@@ -274,9 +274,9 @@ record included, and the hooks' read is refused because it writes `notified_seq`
 still works: a `peek`, history, a listing and a read by message id. What has expired is not
 returned there either.
 
-A store that cannot be opened, holds rows but no version, lacks a keyspace of its layout or has
-no migration path is a typed error (`CommsError::Backend`) that names the directory, and is left
-untouched: basemind never deletes, recreates or completes one, and creates keyspaces only where
+A store that cannot be opened, holds rows but no version, holds a version or a counter that cannot
+be read, lacks a keyspace of its layout or has no migration path is a typed error
+(`CommsError::Backend`) that names the directory, and is left untouched: basemind never deletes, recreates or completes one, and creates keyspaces only where
 there is no store. Opening does let Fjall recover its journal and compact, on a newer store too,
 which rewrites files but no key or value.
 
