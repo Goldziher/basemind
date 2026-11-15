@@ -7,7 +7,7 @@ description: Build or refresh the basemind index by running `basemind scan` via 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
 Content-Hash: blake3:0c5a70d31b91c510e7a3c3dc570275596a25679d0f84ab769b56172989fe0799
-Source-Hash: blake3:91dacec7ac994a2542c63e07bef3e4c9a3189e34526e0247f3f1003d7a3c1d97
+Source-Hash: blake3:825be3162bf88a07aeca0a195370815a66fb1c5f3d0cbc5fb39877f2924dd41e
 Schema-Version: v1
 -->
 

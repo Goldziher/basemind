@@ -8,6 +8,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -28,11 +29,13 @@ def alive(pid: int) -> bool:
 
 @unittest.skipIf(sys.platform == "win32", "the process scan is Unix-only")
 class OtherVersionsTests(unittest.TestCase):
+    CACHE_NAME = "cache"
+
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
-        self.cache = self.root / "cache"
+        self.cache = self.root / self.CACHE_NAME
         self.plugin = self.root / "plugin"
         (self.plugin / ".claude-plugin").mkdir(parents=True)
         (self.plugin / ".claude-plugin/plugin.json").write_text(json.dumps({"version": CURRENT}))
@@ -49,11 +52,14 @@ class OtherVersionsTests(unittest.TestCase):
         path.mkdir(parents=True, exist_ok=True)
         return path
 
-    def other_version_binary(self, version: str) -> Path:
+    def other_version_binary(self, version: str, *, installed_secs_ago: int = 3600) -> Path:
         """A long-running process whose argv[0] is a cached `basemind` of another version."""
-        binary = self.version_dir(version) / "basemind"
+        directory = self.version_dir(version)
+        binary = directory / "basemind"
         # A symlink, not a copy: macOS kills a copied system binary at exec.
         binary.symlink_to(shutil.which("sleep"))
+        installed = time.time() - installed_secs_ago
+        os.utime(directory, (installed, installed))
         return binary
 
     def session(self, binary: Path) -> subprocess.Popen:
@@ -80,13 +86,15 @@ class OtherVersionsTests(unittest.TestCase):
             with contextlib.suppress(ProcessLookupError):
                 os.kill(pid, signal.SIGKILL)
 
-    def launch(self) -> None:
+    def launch(self, *, cache: Path | None = None, path_prefix: Path | None = None) -> None:
         env = {
             **os.environ,
             "HOME": str(self.root),
-            "XDG_CACHE_HOME": str(self.cache),
+            "XDG_CACHE_HOME": str(cache or self.cache),
             "CLAUDE_PLUGIN_ROOT": str(self.plugin),
         }
+        if path_prefix is not None:
+            env["PATH"] = f"{path_prefix}{os.pathsep}{env['PATH']}"
         env.pop("BASEMIND_BIN", None)
         env.pop("BASEMIND_FORCE_VERSION", None)
         subprocess.run(
@@ -125,6 +133,43 @@ class OtherVersionsTests(unittest.TestCase):
 
         self.assertFalse(unused.exists(), "an unused version directory is removed")
         self.assertTrue(self.version_dir(CURRENT).is_dir())
+
+    def test_a_version_started_through_the_resolved_cache_path_is_kept(self) -> None:
+        link = self.root / "linked-cache"
+        link.symlink_to(self.cache, target_is_directory=True)
+        binary = self.other_version_binary(IN_USE)
+        self.daemon(binary.parent.resolve() / binary.name)
+
+        self.launch(cache=link)
+
+        self.assertTrue(binary.is_symlink(), "a process named by the physical path still counts as in use")
+
+    def test_nothing_is_pruned_when_the_process_list_cannot_be_read(self) -> None:
+        unused = self.other_version_binary(UNUSED).parent
+        broken = self.root / "broken-ps"
+        broken.mkdir()
+        (broken / "ps").write_text("#!/bin/sh\nexit 1\n")
+        (broken / "ps").chmod(0o755)
+
+        self.launch(path_prefix=broken)
+
+        self.assertTrue(unused.is_dir(), "without a process list every version counts as in use")
+
+    def test_a_version_being_installed_is_not_pruned(self) -> None:
+        locked = self.other_version_binary(UNUSED).parent
+        (locked.parent / f".lock-{UNUSED}").mkdir()
+        fresh = self.other_version_binary(IN_USE, installed_secs_ago=0).parent
+
+        self.launch()
+
+        self.assertTrue(locked.is_dir(), "a version whose install lock is held is left alone")
+        self.assertTrue(fresh.is_dir(), "a version installed a moment ago may not have started yet")
+
+
+class CachePathWithSpacesTests(OtherVersionsTests):
+    """The same contract when the cache directory's path contains spaces."""
+
+    CACHE_NAME = "cache with spaces"
 
 
 if __name__ == "__main__":

@@ -57,17 +57,36 @@ PARENT="$(dirname "$CACHE_ROOT")"
 binary_version() { "$1" --version 2>/dev/null | awk '{print $2}'; }
 have() { command -v "$1" >/dev/null 2>&1; }
 
-# Whether a running process was started from the cached version directory $1 (trailing slash ~keep
-# included). Matches argv[0], which is how every basemind process this launcher starts is named. ~keep
+# Whether a running process may have been started from the cached version directory $1 (trailing ~keep
+# slash included). Each process's whole argument string is matched by prefix, so a cache path with ~keep
+# spaces still matches, against the directory as given and as `pwd -P` resolves it. Answers yes ~keep
+# when the process list cannot be read: an unused directory costs disk, a deleted one in use costs ~keep
+# a session. ~keep
 version_in_use() {
-  have ps || return 1
-  ps -axo args= 2>/dev/null | awk -v dir="$1" 'index($1, dir) == 1 { found = 1 } END { exit !found }'
+  local dir="$1" physical listing
+  have ps || return 0
+  # -ww: BSD and macOS ps otherwise cut each line at the terminal width. ~keep
+  listing="$(ps -A -ww -o args= 2>/dev/null)" || return 0
+  [ -n "$listing" ] || return 0
+  physical="$(cd "$dir" 2>/dev/null && pwd -P)" || physical=""
+  [ -n "$physical" ] && physical="${physical%/}/"
+  printf '%s\n' "$listing" | awk -v dir="$dir" -v physical="$physical" '
+    index($0, dir) == 1 || (physical != "" && index($0, physical) == 1) { found = 1 }
+    END { exit !found }'
 }
 
-# Remove cached version directories other than the current one, except any a running process was ~keep
-# started from: another install, or a session opened before an update, may still be using that ~keep
-# version, and its daemon re-executes the binary. Nothing here stops a process of another version; ~keep
-# daemons of different versions coexist, and each exits on its own once idle. ~keep
+# Whether directory $1 changed within the last minute, or its age cannot be read. ~keep
+changed_recently() {
+  local recent
+  recent="$(find "$1" -maxdepth 0 -mmin -1 2>/dev/null)" || return 0
+  [ -n "$recent" ]
+}
+
+# Remove cached version directories other than the current one, except any that may be in use: one ~keep
+# a running process was started from (another install, or a session opened before an update, whose ~keep
+# daemon re-executes the binary), one an install holds the lock for, and one that changed within the ~keep
+# last minute, whose first process may not have started yet. Nothing here stops a process of another ~keep
+# version; daemons of different versions coexist, and each exits on its own once idle. ~keep
 prune_stale_versions() {
   [ -d "$PARENT" ] || return 0
   local entry base
@@ -76,7 +95,11 @@ prune_stale_versions() {
     base="$(basename "$entry")"
     [ "$base" = "$VERSION" ] && continue
     case "$base" in
-    [0-9]*) version_in_use "$entry" || rm -rf "$entry" 2>/dev/null || true ;;
+    [0-9]*)
+      [ -e "$PARENT/.lock-$base" ] && continue
+      changed_recently "$entry" && continue
+      version_in_use "$entry" || rm -rf "$entry" 2>/dev/null || true
+      ;;
     esac
   done
 }
