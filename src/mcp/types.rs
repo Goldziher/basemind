@@ -257,9 +257,13 @@ pub struct GotoDefinitionParams {
     pub line: u32,
     /// 0-based byte column of the reference within the line. Any byte inside the identifier
     /// resolves for span-aware engines (oxc JS/TS); the tree-sitter `locals` fallback matches
-    /// only the identifier's start byte. Defaults to 0 (line start).
+    /// only the identifier's start byte. `None` takes the first whole-identifier occurrence of
+    /// `name` on the line.
     #[serde(default)]
-    pub column: u32,
+    pub column: Option<u32>,
+    /// The referenced name, looked for on the line when `column` is absent.
+    #[serde(default)]
+    pub name: String,
 }
 
 pub(super) fn default_true() -> bool {

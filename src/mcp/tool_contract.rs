@@ -72,6 +72,8 @@ pub(super) struct IndexedFiles<'a> {
     /// `scan.follow_symlinks` as the scan applied it: the index then holds links whose targets are
     /// outside the root, by the operator's grant.
     follow_symlinks: bool,
+    /// `scan.max_file_bytes`: no indexed file is read whole past it.
+    pub max_file_bytes: u64,
 }
 
 /// Why [`IndexedFiles::file`] did not name a file to read.
@@ -88,6 +90,7 @@ impl<'a> IndexedFiles<'a> {
         Self {
             root: &state.shared.root,
             follow_symlinks: state.shared.config.scan.follow_symlinks,
+            max_file_bytes: state.shared.config.scan.max_file_bytes,
         }
     }
 
@@ -97,6 +100,7 @@ impl<'a> IndexedFiles<'a> {
         Self {
             root,
             follow_symlinks: false,
+            max_file_bytes: u64::MAX,
         }
     }
 

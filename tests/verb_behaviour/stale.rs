@@ -68,3 +68,84 @@ async fn an_edit_that_keeps_the_size_is_seen_by_every_tool_that_uses_indexed_off
         "the indexed spans name `b`, which the file no longer has: {grep}"
     );
 }
+
+fn prepend(path: &std::path::Path, text: &str) {
+    let source = std::fs::read_to_string(path).unwrap();
+    std::fs::write(path, format!("{text}{source}")).unwrap();
+}
+
+/// `code_refs` answers from indexed byte offsets: resolution edges, definition starts, a symbol's
+/// span. Laid over an edited file they name some other line, so the call is refused with the way
+/// to bring the index up to date.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn code_refs_refuses_positions_in_a_file_edited_after_the_scan() {
+    let (dir, client) = started().await;
+
+    let before = call(
+        &client,
+        "code_refs",
+        json!({ "name": "total", "relation": "definition", "path": "tools.py", "line": 3 }),
+    )
+    .await;
+    assert_eq!(before["definition"]["line"], 2, "{before}");
+
+    prepend(&dir.path().join("tools.py"), "# one\n# two\n");
+    let definition = call_err(
+        &client,
+        "code_refs",
+        json!({ "name": "total", "relation": "definition", "path": "tools.py", "line": 5 }),
+    )
+    .await;
+    assert!(
+        definition.contains("`tools.py` changed since it was indexed")
+            && definition.contains("index_rescan {\"paths\":[\"tools.py\"]}"),
+        "{definition}"
+    );
+    let with_column = call_err(
+        &client,
+        "code_refs",
+        json!({ "name": "total", "relation": "definition", "path": "tools.py", "line": 5, "column": 12 }),
+    )
+    .await;
+    assert_eq!(with_column, definition, "the column form is judged the same way");
+
+    prepend(&dir.path().join("src/outline.rs"), "// one\n// two\n");
+    let pinned = call_err(
+        &client,
+        "code_refs",
+        json!({ "name": "file_outline", "path": "src/outline.rs" }),
+    )
+    .await;
+    assert!(
+        pinned.contains("`src/outline.rs` changed since it was indexed") && pinned.contains("index_rescan"),
+        "{pinned}"
+    );
+
+    let unpinned = call(&client, "code_refs", json!({ "name": "file_outline" })).await;
+    assert_eq!(unpinned["total"], 2, "the name scan reads no file: {unpinned}");
+}
+
+#[cfg(feature = "code-intel-js")]
+const LIB_TS: &str = "export function helper(): number {\n  return 1;\n}\n";
+#[cfg(feature = "code-intel-js")]
+const USE_TS: &str = "import { helper } from './lib';\n\nexport const value = helper();\n";
+
+/// A cross-file edge lands on a byte offset in another file. That file is held to the same test as
+/// the one the reference is in.
+#[cfg(feature = "code-intel-js")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn code_refs_refuses_a_definition_in_another_file_edited_after_the_scan() {
+    let (dir, client) = started_with(&[("web/lib.ts", LIB_TS), ("web/use.ts", USE_TS)]).await;
+    let reference = json!({ "name": "helper", "relation": "definition", "path": "web/use.ts", "line": 3 });
+
+    let fresh = call(&client, "code_refs", reference.clone()).await;
+    assert_eq!(fresh["definition"]["path"], "web/lib.ts", "{fresh}");
+    assert_eq!(fresh["definition"]["line"], 1, "{fresh}");
+
+    prepend(&dir.path().join("web/lib.ts"), "// one\n// two\n");
+    let stale = call_err(&client, "code_refs", reference).await;
+    assert!(
+        stale.contains("`web/lib.ts` changed since it was indexed") && stale.contains("index_rescan"),
+        "{stale}"
+    );
+}

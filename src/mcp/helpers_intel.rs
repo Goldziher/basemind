@@ -20,37 +20,49 @@ use super::types::{DefinitionLocation, GotoDefinitionParams, GotoDefinitionRespo
 use crate::intel::model::ResolvedEdge;
 use crate::path::RelPath;
 
-/// Body of the `code` tool's `definition` mode. Resolves the reference at `path`:`line`:`column` to its
-/// definition, following a cross-file hop when the in-file binding is an import. Returns
+/// Body of `code_refs` relation `definition`. Resolves the reference at `path`:`line`:`column` to
+/// its definition, following a cross-file hop when the in-file binding is an import. Returns
 /// `definition: None` (not an error) when the position holds no resolved binding.
+///
+/// Resolution edges are byte offsets into the content that was indexed, so the file is read once,
+/// bounded, and must still be that content; the same holds for the file a cross-file edge lands in.
 pub(super) async fn run_goto_definition(
     state: &ServerState,
     params: GotoDefinitionParams,
 ) -> Result<CallToolResult, McpError> {
     let started = std::time::Instant::now();
+    let max_bytes = state.shared.config.scan.max_file_bytes;
     // The index is consulted before the file is read, so a path that is not indexed cannot be
     // probed for existence or contents through the errors below.
-    let file = {
+    let (file, entry) = {
         let store = state.shared.store.read().await;
-        if store.lookup(&params.path).is_none() {
+        let Some(entry) = store.lookup(&params.path).cloned() else {
             return Err(super::tool_contract::not_indexed_in(
                 &store,
                 &state.shared.root,
                 "code_refs",
                 &params.path,
             ));
-        }
-        super::tool_contract::indexed_file(state, &store, "code_refs", &params.path)?
+        };
+        (
+            super::tool_contract::indexed_file(state, &store, "code_refs", &params.path)?,
+            entry,
+        )
     };
-    let source = super::index_route::blocking(|| std::fs::read(file))
-        .map_err(|e| McpError::invalid_params(format!("`code_refs`: cannot read `{}`: {e}", params.path), None))?;
+    let source = super::index_route::blocking(|| {
+        super::freshness::load_fresh("code_refs", &params.path, &file, (&entry).into(), max_bytes)
+    })?;
+    let column = match params.column {
+        Some(column) => column,
+        None => column_of(&source, &params.path, params.line, &params.name)?,
+    };
 
-    let pos = line_col_to_offset(&source, params.line, params.column).ok_or_else(|| {
+    let pos = line_col_to_offset(&source, params.line, column).ok_or_else(|| {
         McpError::invalid_params(
             format!(
                 "`code_refs`: position {}:{} is out of range in `{}`",
                 params.line,
-                params.column + 1,
+                column + 1,
                 params.path
             ),
             None,
@@ -86,8 +98,10 @@ pub(super) async fn run_goto_definition(
         }
     };
 
-    let definition = resolved
-        .and_then(|(def_path, def_start)| definition_location(state, &params.path, &source, def_path, def_start));
+    let definition = match resolved {
+        Some((def_path, def_start)) => definition_location(state, &params.path, &source, def_path, def_start).await?,
+        None => None,
+    };
 
     let (line, column) = offset_to_line_col(&source, pos);
     let resolution = if definition.is_none() && !resolution_ran {
@@ -212,38 +226,68 @@ async fn resolve_definition(
     crate::query::definition_of(store, use_path, use_start)
 }
 
+/// The 0-based byte column where `name` first occurs as a whole identifier on `line` of `source`
+/// (`get` in `budget.pop(get)` is the argument, not the tail of `budget`).
+fn column_of(source: &[u8], path: &RelPath, line: u32, name: &str) -> Result<u32, McpError> {
+    let text = source
+        .split(|byte| *byte == b'\n')
+        .nth(line.saturating_sub(1) as usize)
+        .ok_or_else(|| McpError::invalid_params(format!("`code_refs`: `{path}` has no line {line}"), None))?;
+    let finder = memchr::memmem::Finder::new(name.as_bytes());
+    crate::textmatch::find_whole(text, &finder)
+        .map(|column| column as u32)
+        .ok_or_else(|| {
+            McpError::invalid_params(
+                format!(
+                    "`code_refs`: `{name}` does not occur on line {line} of `{path}`. Pass the 1-based `column` \
+                     of the reference, or the line it is on."
+                ),
+                None,
+            )
+        })
+}
+
 /// Build a [`DefinitionLocation`] for a resolved `(def_path, def_start)`. Reuses the already-read
 /// `query_source` when the definition is in the queried file; otherwise reads the target file (a
 /// cross-file definition). The identifier text is recovered from `def_start` since only the start
-/// byte is indexed for cross-file / `locals` edges. Returns `None` if a cross-file target can't be
-/// read (e.g. removed between scan and query).
-fn definition_location(
+/// byte is indexed for cross-file / `locals` edges.
+///
+/// `None` when a cross-file target is not an indexed file of this repository. A target that was
+/// edited or deleted since the scan is an error: `def_start` is an offset into the indexed bytes.
+async fn definition_location(
     state: &ServerState,
     query_path: &RelPath,
     query_source: &[u8],
     def_path: RelPath,
     def_start: u32,
-) -> Option<DefinitionLocation> {
-    if &def_path == query_path {
-        let (line, column) = offset_to_line_col(query_source, def_start);
-        let name = identifier_at(query_source, def_start);
-        return Some(DefinitionLocation {
-            path: def_path,
+) -> Result<Option<DefinitionLocation>, McpError> {
+    let located = |source: &[u8], path: RelPath| {
+        let (line, column) = offset_to_line_col(source, def_start);
+        DefinitionLocation {
+            name: identifier_at(source, def_start),
+            path,
             line,
             column: column + 1,
-            name,
-        });
+        }
+    };
+    if &def_path == query_path {
+        return Ok(Some(located(query_source, def_path)));
     }
-    let abs = super::tool_contract::IndexedFiles::of(state).indexed_path(&def_path)?;
-    let def_source = super::index_route::blocking(|| std::fs::read(&abs)).ok()?;
-    let (line, column) = offset_to_line_col(&def_source, def_start);
-    let name = identifier_at(&def_source, def_start);
-    Some(DefinitionLocation {
-        path: def_path,
-        line,
-        column: column + 1,
-        name,
-    })
+    let target = {
+        let store = state.shared.store.read().await;
+        store.lookup(&def_path).cloned().and_then(|entry| {
+            let file = super::tool_contract::IndexedFiles::of(state).indexed_path(&def_path)?;
+            Some((file, entry))
+        })
+    };
+    let Some((file, entry)) = target else {
+        return Ok(None);
+    };
+    let max_bytes = state.shared.config.scan.max_file_bytes;
+    let def_source = super::index_route::blocking(|| {
+        super::freshness::load_fresh("code_refs", &def_path, &file, (&entry).into(), max_bytes)
+    })?;
+    Ok(Some(located(&def_source, def_path)))
 }
 
 /// The intra-file edge whose use span contains `pos`. A zero-width span (`use_end == use_start`,

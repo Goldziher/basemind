@@ -196,20 +196,24 @@ pub(super) async fn run_find_callers(
     let kind_filter = params.kind.as_deref().map(parse_kind).transpose()?;
     // A pinned call that cannot be pinned is an error: answering with the unpinned name scan would
     // read as "these are the callers of the definition in that file".
-    let l1 = cache
-        .get(&params.path)
-        .ok_or_else(|| super::tool_contract::not_indexed_in(store, files.root, "code_refs", &params.path))?;
-    let source = files.file(store, &params.path).ok().and_then(|file| {
-        let entry = store.lookup(&params.path)?;
-        std::fs::read(&file)
-            .ok()
-            .filter(|bytes| super::freshness::matches_index(entry.into(), &file, bytes))
-    });
+    let not_indexed = || super::tool_contract::not_indexed_in(store, files.root, "code_refs", &params.path);
+    let l1 = cache.get(&params.path).ok_or_else(not_indexed)?;
+    let entry = store.lookup(&params.path).ok_or_else(not_indexed)?;
+    let file = files.file(store, &params.path).map_err(|refusal| match refusal {
+        super::tool_contract::Unreadable::NotIndexed => not_indexed(),
+        super::tool_contract::Unreadable::Outside => {
+            super::tool_contract::outside_repository("code_refs", &params.path)
+        }
+    })?;
+    // The outline's spans and the resolution facts below are offsets into the indexed bytes.
+    let source = super::index_route::blocking(|| {
+        super::freshness::load_fresh("code_refs", &params.path, &file, entry.into(), files.max_file_bytes)
+    })?;
     let symbol = super::helpers_pick::pick_symbol(
         "code_refs",
         &params.path,
         &l1.symbols,
-        source.as_deref(),
+        Some(&source),
         &params.name,
         kind_filter,
         params.line,
@@ -241,9 +245,9 @@ pub(super) async fn run_find_callers(
             store,
             &refs,
             route,
-            files,
             cache,
             &params.path,
+            &source,
             symbol,
             &params.name,
             limit,
@@ -335,11 +339,12 @@ fn index_by_start(calls: Vec<CallRef>) -> ahash::AHashMap<u32, CallSite> {
 /// live at once, and the size of each forwarded `CallsInFiles` request.
 const CALL_SITE_BATCH: usize = 128;
 
-/// Build the resolved refinement for the definition `symbol` in `def_path`. `None` when resolution
-/// has nothing to say about that definition (its facts do not name it, its file cannot be read, or
-/// the call sites could not be fetched): no hit is then marked either way. A definition resolution
-/// knows and found no use of yields an empty refinement, which marks every hit unproven. Cross-file uses come from the index via [`RefsSource`]: read locally when it is open,
-/// else forwarded to the machine daemon on a `daemon_writer` serve.
+/// Build the resolved refinement for the definition `symbol` in `def_path`, whose indexed bytes
+/// are `def_source`. `None` when resolution has nothing to say about that definition (its facts do
+/// not name it, or the call sites could not be fetched): no hit is then marked either way. A
+/// definition resolution knows and found no use of yields an empty refinement, which marks every
+/// hit unproven. Cross-file uses come from the index via [`RefsSource`]: read locally when it is
+/// open, else forwarded to the machine daemon on a `daemon_writer` serve.
 ///
 /// Offset alignment (verified empirically, see the unit test): the resolver records `def_start` as
 /// the definition *identifier* byte, which is NOT the L1 `Symbol.start_byte` (the definition *node*
@@ -357,22 +362,21 @@ async fn resolved_callers(
     store: &crate::store::Store,
     ref_source: &RefsSource<'_>,
     route: &IndexRoute,
-    files: super::tool_contract::IndexedFiles<'_>,
     cache: &MapCache,
     def_path: &crate::path::RelPath,
+    def_source: &[u8],
     symbol: &crate::extract::Symbol,
     name: &str,
     limit: usize,
 ) -> Option<ResolvedCallers> {
     let entry = store.lookup(def_path)?;
     let refs = store.read_resolved_by_hex(&entry.hash_hex).ok().flatten()?;
-    let def_source = std::fs::read(files.file(store, def_path).ok()?).ok()?;
 
     let mut def_starts: Vec<u32> = Vec::new();
     let push_candidate = |byte: u32, def_starts: &mut Vec<u32>| {
         if byte >= symbol.start_byte
             && byte < symbol.end_byte
-            && super::helpers_intel::identifier_at(&def_source, byte) == symbol.name.as_str()
+            && super::helpers_intel::identifier_at(def_source, byte) == symbol.name.as_str()
             && !def_starts.contains(&byte)
         {
             def_starts.push(byte);

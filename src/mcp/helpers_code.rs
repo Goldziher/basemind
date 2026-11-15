@@ -322,50 +322,18 @@ pub(super) async fn code_refs(state: &ServerState, p: CodeRefsParams) -> Result<
             }
             let column = match p.column {
                 Some(0) => return Err(shape_error("`column` is 1-based")),
-                Some(column) => column - 1,
-                None => column_of(state, &path, line, &p.name).await?,
+                Some(column) => Some(column - 1),
+                None => None,
             };
-            super::helpers_intel::run_goto_definition(state, GotoDefinitionParams { path, line, column }).await
+            let reference = GotoDefinitionParams {
+                path,
+                line,
+                column,
+                name: p.name,
+            };
+            super::helpers_intel::run_goto_definition(state, reference).await
         }
     }
-}
-
-/// The 0-based byte column where `name` first occurs as a whole identifier on `line` of `path`
-/// (`get` in `budget.pop(get)` is the argument, not the tail of `budget`).
-///
-/// The index is consulted before the file is read, so the two errors below cannot be used to probe
-/// a file that is not indexed.
-async fn column_of(state: &ServerState, path: &crate::path::RelPath, line: u32, name: &str) -> Result<u32, McpError> {
-    let file = {
-        let store = state.shared.store.read().await;
-        if store.lookup(path).is_none() {
-            return Err(super::tool_contract::not_indexed_in(
-                &store,
-                &state.shared.root,
-                "code_refs",
-                path,
-            ));
-        }
-        super::tool_contract::indexed_file(state, &store, "code_refs", path)?
-    };
-    let source =
-        super::index_route::blocking(|| std::fs::read(file)).map_err(|_| not_indexed(state, "code_refs", path))?;
-    let text = source
-        .split(|byte| *byte == b'\n')
-        .nth(line.saturating_sub(1) as usize)
-        .ok_or_else(|| McpError::invalid_params(format!("`code_refs`: `{path}` has no line {line}"), None))?;
-    let finder = memchr::memmem::Finder::new(name.as_bytes());
-    crate::textmatch::find_whole(text, &finder)
-        .map(|column| column as u32)
-        .ok_or_else(|| {
-            McpError::invalid_params(
-                format!(
-                    "`code_refs`: `{name}` does not occur on line {line} of `{path}`. Pass the 1-based `column` \
-                     of the reference, or the line it is on."
-                ),
-                None,
-            )
-        })
 }
 
 /// Body of the `callers` mode. Resolves where the resolved-reference join runs before handing the
