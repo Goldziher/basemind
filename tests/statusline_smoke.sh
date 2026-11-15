@@ -188,6 +188,10 @@ if [[ -z "$gc_bin" ]] && command -v cargo >/dev/null 2>&1; then
 fi
 
 if [[ -x "$gc_bin" ]]; then
+  # The binary under test is a different build from the one serving this machine. Without its own
+  # comms directory it takes over the live daemon's socket.
+  BASEMIND_COMMS_DIR="$(mktemp -d)"
+  export BASEMIND_COMMS_DIR
   gc_data="$(mktemp -d)"
   gc_repo="$(mktemp -d)"
   printf 'fn main() { println!("a"); }\n' >"$gc_repo/a.rs"
@@ -251,6 +255,8 @@ if [[ -x "$gc_bin" ]]; then
     printf '  FAIL unscanned repo should delegate to no-index hint; got: %q\n' "$gc_clean2" >&2
     fail=1
   fi
+  "$gc_bin" comms stop >/dev/null 2>&1 || true
+  unset BASEMIND_COMMS_DIR
 else
   printf '  skip global-cache-mode check (no basemind binary and no cargo to build one)\n'
 fi
