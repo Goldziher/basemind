@@ -423,7 +423,16 @@ mod tests {
             .write(true)
             .open(workspace_cache_dir(&main).join(LOCK_FILE))
             .expect("open main lock");
-        fs2::FileExt::try_lock_exclusive(&lock).expect("hold main lock as a daemon would");
+        // ~keep The fixture's own store releases this lock when its file handle closes, which a
+        // loaded machine can deliver a moment after `drop` returns.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while let Err(error) = fs2::FileExt::try_lock_exclusive(&lock) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "hold main lock as a daemon would: {error}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
 
         let store = Store::open(&wt, VIEW_WORKING).expect("open wt");
         assert!(
