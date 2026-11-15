@@ -280,3 +280,36 @@ async fn code_refs_importers_treat_a_hyphenated_package_as_another_package() {
     .await;
     assert_eq!(dom["paths"], json!(["web/dom.tsx"]), "{dom}");
 }
+
+/// `resolved: false` says resolution looked at a call site and did not bind it to the pinned
+/// definition. When resolution has no facts about that definition it looked at nothing, and the hits
+/// stay unannotated.
+#[cfg(feature = "code-intel-js")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn code_refs_leaves_hits_unannotated_when_resolution_knows_nothing_of_the_definition() {
+    let (_dir, client) = started_with(&[
+        (
+            "util.ts",
+            "export function target() { return 1; }\ntarget();\nfunction lonely() { return 2; }\n",
+        ),
+        ("other.ts", "function lonely() { return 3; }\nlonely();\n"),
+    ])
+    .await;
+
+    let proven = call(&client, "code_refs", json!({ "name": "target", "path": "util.ts" })).await;
+    assert_eq!(proven["resolved_total"], 1, "resolution covers util.ts: {proven}");
+    assert_eq!(proven["hits"][0]["resolved"], true, "{proven}");
+
+    let unknown = call(&client, "code_refs", json!({ "name": "lonely", "path": "util.ts" })).await;
+    let hits = unknown["hits"].as_array().expect("hits");
+    assert_eq!(hits.len(), 1, "the name scan still reports other.ts: {unknown}");
+    assert_eq!(hits[0]["path"], "other.ts", "{unknown}");
+    assert!(
+        hits[0].get("resolved").is_none(),
+        "nothing was proven or disproven about this site: {unknown}"
+    );
+    assert!(
+        unknown.get("resolved_total").is_none(),
+        "a count that was never computed must not be reported as 0: {unknown}"
+    );
+}

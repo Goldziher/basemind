@@ -21,6 +21,8 @@ mod freshness;
 mod helpers;
 mod helpers_admin;
 mod helpers_calls;
+#[cfg(test)]
+mod helpers_calls_resolved_tests;
 mod helpers_calls_scan;
 #[cfg(test)]
 pub(crate) use helpers_calls_scan::scan_calls_by_name;

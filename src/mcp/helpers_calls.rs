@@ -237,27 +237,26 @@ pub(super) async fn run_find_callers(
         .and_then(|entry| store.read_resolved_by_hex(&entry.hash_hex).ok().flatten())
         .is_some();
     let resolved = if resolution_ran {
-        Some(
-            resolved_callers(
-                store,
-                &refs,
-                route,
-                files,
-                cache,
-                &params.path,
-                symbol,
-                &params.name,
-                limit,
-            )
-            .await
-            .unwrap_or_default(),
+        resolved_callers(
+            store,
+            &refs,
+            route,
+            files,
+            cache,
+            &params.path,
+            symbol,
+            &params.name,
+            limit,
         )
+        .await
     } else {
         None
     };
     let resolved_total = resolved.as_ref().map(|r| r.total);
-    let resolution = if resolution_ran {
+    let resolution = if resolved.is_some() {
         None
+    } else if resolution_ran {
+        Some(super::helpers_intel::NO_DEFINITION_FACTS.to_string())
     } else {
         super::helpers_intel::resolution_gap(
             cache.language_of(&params.path),
@@ -289,11 +288,14 @@ pub(super) async fn run_find_callers(
 /// Deliberately NOT a complete caller set: it is everything resolution can *prove*, which is a
 /// subset of the truth whose gap resolution cannot measure. See [`run_find_callers`].
 #[derive(Default)]
-struct ResolvedCallers {
+pub(super) struct ResolvedCallers {
     /// `path` → proven call-site start bytes. Probed per name-scan hit to set `resolved`.
     /// A map-of-sets rather than a set of `(RelPath, u32)` so probing borrows the hit's path
     /// instead of cloning it per hit on the scan's inner loop.
-    sites: ahash::AHashMap<crate::path::RelPath, ahash::AHashSet<u32>>,
+    pub(super) sites: ahash::AHashMap<crate::path::RelPath, ahash::AHashSet<u32>>,
+    /// Files holding resolved uses that were past the probe cap: nothing is known about their call
+    /// sites, so hits there stay unannotated.
+    pub(super) unprobed: ahash::AHashSet<crate::path::RelPath>,
     /// Proven call sites the name scan structurally cannot reach: the callee identifier does not
     /// contain `name`, because the local binding was renamed at the import (`import { f as g }` →
     /// callee `g`). Carried with their `calls_by_callee` key so they merge into the scan's
@@ -333,8 +335,10 @@ fn index_by_start(calls: Vec<CallRef>) -> ahash::AHashMap<u32, CallSite> {
 /// live at once, and the size of each forwarded `CallsInFiles` request.
 const CALL_SITE_BATCH: usize = 128;
 
-/// Build the resolved refinement for the definition `symbol` in `def_path`, or `None` when nothing
-/// resolves. Cross-file uses come from the index via [`RefsSource`]: read locally when it is open,
+/// Build the resolved refinement for the definition `symbol` in `def_path`. `None` when resolution
+/// has nothing to say about that definition (its facts do not name it, its file cannot be read, or
+/// the call sites could not be fetched): no hit is then marked either way. A definition resolution
+/// knows and found no use of yields an empty refinement, which marks every hit unproven. Cross-file uses come from the index via [`RefsSource`]: read locally when it is open,
 /// else forwarded to the machine daemon on a `daemon_writer` serve.
 ///
 /// Offset alignment (verified empirically, see the unit test): the resolver records `def_start` as
@@ -394,7 +398,7 @@ async fn resolved_callers(
         }
     }
     if uses.is_empty() {
-        return None;
+        return Some(ResolvedCallers::default());
     }
 
     let probe_cap = limit.saturating_mul(8).max(2_000);
@@ -410,6 +414,12 @@ async fn resolved_callers(
     for group in uses.chunk_by(|a, b| a.0 == b.0) {
         runs.push((&group[0].0, group));
     }
+    let unprobed = runs
+        .get(probe_cap..)
+        .unwrap_or_default()
+        .iter()
+        .map(|(path, _)| (*path).clone())
+        .collect();
     runs.truncate(probe_cap);
     for batch in runs.chunks(CALL_SITE_BATCH) {
         let paths: Vec<crate::path::RelPath> = batch.iter().map(|(path, _)| (*path).clone()).collect();
@@ -439,10 +449,12 @@ async fn resolved_callers(
             }
         }
     }
-    if total == 0 {
-        return None;
-    }
-    Some(ResolvedCallers { sites, aliased, total })
+    Some(ResolvedCallers {
+        sites,
+        unprobed,
+        aliased,
+        total,
+    })
 }
 
 /// Fold the resolved refinement into the name-scan page: annotate each scan hit with whether
@@ -452,7 +464,7 @@ async fn resolved_callers(
 /// page stays a contiguous prefix of one key-ordered stream and the cursor contract is unchanged:
 /// `next_cursor` is the last key emitted, and the next call resumes strictly after it. Aliased hits
 /// already emitted (key <= cursor) are filtered out, so paging never duplicates them.
-fn merge_resolved(
+pub(super) fn merge_resolved(
     mut page: CallScanPage,
     resolved: Option<ResolvedCallers>,
     limit: usize,
@@ -463,6 +475,9 @@ fn merge_resolved(
     };
 
     for (hit, start) in page.hits.iter_mut().zip(page.hit_starts.iter()) {
+        if resolved.unprobed.contains(&hit.path) {
+            continue;
+        }
         let proven = resolved.sites.get(&hit.path).is_some_and(|s| s.contains(start));
         hit.resolved = Some(proven);
     }
