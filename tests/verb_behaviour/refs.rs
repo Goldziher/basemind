@@ -203,3 +203,46 @@ async fn a_supported_language_without_facts_is_not_reported_unsupported() {
         "{definition}"
     );
 }
+
+/// "No facts for this file" is only true of an index whose resolve pass finished. While the pass has
+/// not run (or died part-way) every file lacks facts, and the answer has to say that instead.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_index_whose_resolve_pass_did_not_finish_says_so() {
+    let (dir, client) = started_with(&[("plain.py", PLAIN_PY)]).await;
+    let definition = json!({ "name": "print", "relation": "definition", "path": "plain.py", "line": 1 });
+    let callers = json!({ "name": "helper", "path": "worker.rb" });
+
+    let finished = call(&client, "code_refs", callers.clone()).await;
+    assert_eq!(
+        finished["resolution"], "no resolution facts for this file",
+        "{finished}"
+    );
+
+    // The scan stamps the sidecar `resolving` before the pass and `complete` after it; this is the
+    // state a scan killed in between leaves behind.
+    let cache = basemind::store::workspace_cache_dir(dir.path());
+    assert!(
+        basemind::store::read_status_sidecar(&cache).is_some(),
+        "the scan wrote a sidecar"
+    );
+    basemind::store::write_status_sidecar(&cache, 5, 5, &basemind::store::ScanHealth::resolving());
+
+    for arguments in [definition, callers] {
+        let body = call(&client, "code_refs", arguments).await;
+        assert_eq!(
+            body["resolution"], "resolution has not run for this index; run `index_rescan`",
+            "{body}"
+        );
+    }
+
+    let rust = call(
+        &client,
+        "code_refs",
+        json!({ "name": "file_outline", "path": "src/outline.rs" }),
+    )
+    .await;
+    assert_eq!(
+        rust["resolution"], "unsupported for rust",
+        "a language without an engine: {rust}"
+    );
+}

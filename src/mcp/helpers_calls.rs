@@ -229,8 +229,8 @@ pub(super) async fn run_find_callers(
         .await?;
 
     // Resolution facts are a per-file blob the scan writes only for a file that produced some. No
-    // blob is not `resolved_total: 0`: either the language has no resolution engine or this file
-    // bound nothing, and `resolution` says which (see `helpers_intel::resolution_gap`).
+    // blob is not `resolved_total: 0`: the language has no resolution engine, the resolve pass did
+    // not finish, or this file bound nothing; `resolution` says which (`helpers_intel::resolution_gap`).
     let resolution_ran = store
         .lookup(&params.path)
         .and_then(|entry| store.read_resolved_by_hex(&entry.hash_hex).ok().flatten())
@@ -258,7 +258,10 @@ pub(super) async fn run_find_callers(
     let resolution = if resolution_ran {
         None
     } else {
-        super::helpers_intel::resolution_gap(cache.language_of(&params.path))
+        super::helpers_intel::resolution_gap(
+            cache.language_of(&params.path),
+            super::helpers_intel::resolve_pass_complete(store),
+        )
     };
 
     let page = merge_resolved(scan, resolved, limit, cursor_bytes.as_deref());

@@ -58,6 +58,7 @@ pub(super) async fn run_goto_definition(
     })?;
 
     let resolution_ran;
+    let pass_complete;
     let language: Option<String>;
     let resolved: Option<(RelPath, u32)> = {
         let store = state.shared.store.read().await;
@@ -70,6 +71,7 @@ pub(super) async fn run_goto_definition(
             None
         });
         resolution_ran = refs.is_some();
+        pass_complete = resolution_ran || resolve_pass_complete(&store);
         let intra_def = refs
             .as_ref()
             .and_then(|r| containing_edge(&r.intra, pos))
@@ -89,7 +91,7 @@ pub(super) async fn run_goto_definition(
 
     let (line, column) = offset_to_line_col(&source, pos);
     let resolution = if definition.is_none() && !resolution_ran {
-        resolution_gap(language.as_deref())
+        resolution_gap(language.as_deref(), pass_complete)
     } else {
         None
     };
@@ -104,11 +106,19 @@ pub(super) async fn run_goto_definition(
 }
 
 /// What to report when a file has no resolution blob. The scan writes one only for a file that
-/// produced facts, so its absence means either that the language has no resolution engine or that
-/// this file bound nothing; the two are different answers and are told apart by the language.
-pub(super) fn resolution_gap(language: Option<&str>) -> Option<String> {
+/// produced facts, so its absence means one of three things, each a different answer: the language
+/// has no resolution engine, the resolve pass has not finished for this index (`pass_complete` is
+/// false: every file lacks facts then), or the pass ran and this file bound nothing.
+pub(super) fn resolution_gap(language: Option<&str>, pass_complete: bool) -> Option<String> {
     match language {
-        Some(language) if crate::intel::resolve::supports(language) => Some(NO_RESOLUTION_FACTS.to_string()),
+        Some(language) if crate::intel::resolve::supports(language) => Some(
+            if pass_complete {
+                NO_RESOLUTION_FACTS
+            } else {
+                RESOLUTION_NOT_RUN
+            }
+            .to_string(),
+        ),
         Some(language) => Some(format!("unsupported for {language}")),
         None => Some("unsupported for this language".to_string()),
     }
@@ -116,6 +126,17 @@ pub(super) fn resolution_gap(language: Option<&str>) -> Option<String> {
 
 /// `resolution` value for a file of a supported language that produced no resolution facts.
 pub(super) const NO_RESOLUTION_FACTS: &str = "no resolution facts for this file";
+
+/// `resolution` value when the index's resolve pass did not run to completion.
+pub(super) const RESOLUTION_NOT_RUN: &str = "resolution has not run for this index; run `index_rescan`";
+
+/// Whether the last scan's resolve pass committed. The scan stamps `status.json` as resolving when
+/// it flushes the code map and as complete once the pass has committed every edge; a cancelled or
+/// aborted scan leaves it partial. A missing sidecar vouches for nothing either way and reads as
+/// complete, as it does for the boot-time rescan decision.
+pub(super) fn resolve_pass_complete(store: &crate::store::Store) -> bool {
+    crate::store::read_status_sidecar(&store.basemind_dir).is_none_or(|status| !status.is_degraded())
+}
 
 /// The definition the use at `(use_path, use_start)` binds to. A `daemon_writer` serve has no open
 /// index, so the cross-file hop (`refs_by_path`) forwards to the machine daemon — the sole fjall
