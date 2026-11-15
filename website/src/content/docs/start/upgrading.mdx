@@ -144,9 +144,12 @@ directory, so its name changes too.
   its cache, `~/.cache/basemind/bin/<version>/`, each time one of its own sessions starts, and
   deletes the other version directories there. The newer launcher installs under
   `~/.cache/basemind/versions/<version>/`, which the old launcher neither matches nor deletes, and
-  it never reads or prunes `bin/`. Launchers of 0.33 and older still do this to each other, and to
-  a newer binary only if it was put under `bin/` by hand; update or remove them. The newer launcher
-  leaves `bin/` alone, so delete it yourself once no 0.33 plugin is left. A Homebrew, npm or pip
+  it never installs into or launches from `bin/`. Launchers of 0.33 and older still do this to
+  each other, and to a newer binary only if it was put under `bin/` by hand; update or remove
+  them. The newer launcher reclaims `bin/` once it is abandoned: on each launch it removes a
+  version directory there that was installed more than 14 days ago (`BASEMIND_PRUNE_AFTER_DAYS`),
+  that no running process was started from and that no install holds the lock for. A 0.33 plugin
+  still in use after that downloads its version again on its next launch. A Homebrew, npm or pip
   install does not run a launcher.
 - **The workspace index, memory notes and git-history stores are not per generation.** They are
   keyed by workspace and admit one daemon at a time. While the daemon of one generation holds a
@@ -154,6 +157,17 @@ directory, so its name changes too.
   until the first daemon lets go (it exits ten minutes after its last client). Two generations
   side by side is a state to pass through during an upgrade, not one to work in on the same
   repository.
+- **What a session shows while another version holds the repository.** With a 0.33 session still
+  open in a repository, a session of the newer version started there keeps running and has no
+  tools yet. Ten seconds after its first request, that request and every later one is answered
+  with the retryable error `backend_unavailable: another basemind holds this workspace's index
+  (the basemind v0.33.0 daemon, pid 4242). Close that version's sessions; its daemon exits when
+  idle, and this session then connects by itself` (JSON-RPC code `-32003`). The parentheses name
+  the lock's holder: a daemon by the version it registered under, any other process by its
+  command (`` `basemind scan`, pid 4242 ``), and they are left out when the lock records nobody.
+  Closing the old version's sessions fixes it: that daemon exits ten minutes after its last
+  client, or at once on that version's `basemind comms stop`, and the waiting session connects on
+  its next retry, at most a minute later, without being restarted by the host.
 - The comms store is not carried over: threads, messages and the agent roster start empty in the new
   generation. Agents on a 0.33 binary and agents on a newer one do not see each other's threads.
 - The old daemon exits when its sessions end. Its files (`comms.sock`, `daemon.lock`, `daemon.pid`,
@@ -350,7 +364,10 @@ replaces `~/.cache`) and writes a `.last-used` marker into the directory of the 
 on every launch. On every launch of the current version it removes another version's directory
 only when all of these hold: nothing has launched that version for 14 days
 (`BASEMIND_PRUNE_AFTER_DAYS` changes the number), no running process was started from it, and no
-install holds its lock. It removes none when it cannot read the process list. Install locks and
+install holds its lock. It removes none when it cannot read the process list (on Git Bash, MSYS2
+and Cygwin that is `ps -W`, with the cache path converted by `cygpath`). A version directory left
+under `~/.cache/basemind/bin/` by a launcher up to 0.33 goes by the same rule, judged by the
+directory's own age since those launchers write no marker. Install locks and
 staging directories of other versions go only after ten minutes untouched, a staging directory
 only when the process installing into it is gone. It does not stop processes of other versions:
 their sessions and daemons keep running, and a daemon exits on its own once idle.

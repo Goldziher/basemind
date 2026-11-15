@@ -276,7 +276,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   another protocol version, waits the normal stop timeout for its answer and honours a refusal.
   On Windows every such exchange with a daemon is now bounded: the pipe read takes no timeout, so
   a daemon that accepted a connection and never answered could hang `comms stop` and daemon
-  bring-up for good.
+  bring-up for good. An exchange given up on leaves one thread blocked on the open pipe, and no
+  further one is started with that endpoint until it returns, so such a daemon holds one thread
+  and one handle however often it is probed. A pipe whose every instance is busy is a daemon at
+  work: the open is retried for a bounded time and the daemon counts as present, where it read as
+  silent and could end in `taskkill /F`.
   "Older" and "newer" follow semantic-version precedence, pre-release included: the daemon of
   `0.34.0-rc.1` makes way for `0.34.0` and is never preferred to it.
 - `basemind comms stop` and `comms stop --all` reclaim a daemon by the takeover's own steps: wait
@@ -287,21 +291,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   holds `daemon.lock`, or its socket still accepts) but that the pidfile does not identify now
   fails the command with how to find it, where `stop` printed `no live comms daemon` and exited
   0. `stop --all` stops the daemons in parallel, reports the ones it left running (`left_running`
-  with `--json`) and exits non-zero when there are any.
+  with `--json`) and the ones that refused (`refused`), and exits non-zero when there are any of
+  either, naming each with its reason, as a single `stop` does. A daemon is signalled only while
+  its generation's `daemon.lock` still reads held: one that died inside the exit window leaves a
+  pid the system may have given to another process, and a free lock now means nothing is
+  signalled. A `Stop` is refused while a relay session is still being set up, not only once it is
+  registered.
 - `basemind serve` no longer retries forever, silently, when it cannot get a daemon, and no longer
   exits before reading the host's `initialize` when it cannot get one at start. The first
   connection goes through the same path as a reconnect. A failure no retry can cure ends the
   session: a newer daemon on another protocol or relay protocol, a socket path too long to bind, a
-  session the daemon declines. Pending and following requests, `initialize` included, are answered
-  with the reason and the process exits non-zero without waiting for the host to close its pipe.
-  Anything else is retried. For ten seconds requests are held: those in flight that are safe to
-  replay are re-sent if a daemon arrives, as after a restart, and the host's pipe is left unread.
-  After that they are answered with the retryable reason while the retries go on, so a session
-  that started under a busy older daemon comes up by itself once that daemon leaves. An older
-  daemon that will not stop, the daemon ceiling and `BASEMIND_NO_AUTOSPAWN` with no daemon are
-  logged at warn and retried with a back-off growing to a minute; a daemon that is merely slow to
-  come back is logged at warn from the fourth failed attempt. An older daemon is asked to stop at
-  most once a minute.
+  view the daemon does not host, a root it refuses to index. Pending and following requests,
+  `initialize` included, are answered with the reason and the process exits non-zero without
+  waiting for the host to close its pipe. Anything else is retried. A request waits ten seconds,
+  counted from its arrival or from the loss of the daemon it was sent to: those in flight that are
+  safe to replay are re-sent if a daemon arrives, as after a restart, and those that arrived
+  meanwhile are forwarded. After that they are answered with the retryable reason while the
+  retries go on, so a session that started under a busy older daemon comes up by itself once that
+  daemon leaves. The host's pipe is read throughout, so `basemind serve` exits as soon as the host
+  closes it, also in the middle of a connection attempt. An older daemon that will not stop, the
+  daemon ceiling, `BASEMIND_NO_AUTOSPAWN` with no daemon and a session the daemon declines for now
+  are logged at warn and retried with a back-off growing to a minute; a daemon that is merely slow
+  to come back, or that declined because it is stopping, is retried within seconds and logged at
+  warn from the fourth failed attempt. An older daemon is asked to stop at most once a minute.
+- A workspace whose index another basemind holds no longer ends the session. The daemon declines
+  such a relay session with `workspace_locked` and the holder (the version of the daemon that
+  holds it, or the command the lock records), where it answered `host_build_failed` and
+  `basemind serve` exited on `initialize`. The session stays up, answers requests with `another
+  basemind holds this workspace's index (...). Close that version's sessions; its daemon exits
+  when idle, and this session then connects by itself`, and connects once the lock is free. A
+  refusal with a token this build does not know is retried the same way, never fatal. See
+  [`docs/UPGRADING.md`](docs/UPGRADING.md#running-two-basemind-versions-side-by-side).
 - With `BASEMIND_ALLOW_HTTP`, a daemon that finds the default port `51786` in use (by the daemon of
   another protocol generation, for one) binds an OS-assigned port and records it in `http.addr`
   instead of running without its HTTP front-end. An address set with `BASEMIND_HTTP_ADDR` is still
@@ -310,8 +330,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   then SIGKILL to each `basemind` of a different cached version, including the `serve` and daemon of a
   session still open elsewhere, and deleted their binaries; that session's host then relaunched its
   own version, which did the same in return. It now stops nothing. It installs under
-  `~/.cache/basemind/versions/<version>/` and never reads or prunes `bin/`, where the launchers up
-  to 0.33 kill and delete, so one of those left installed no longer reaches a newer version. It
+  `~/.cache/basemind/versions/<version>/` and never installs into or launches from `bin/`, where
+  the launchers up to 0.33 kill and delete, so one of those left installed no longer reaches a
+  newer version; a version left under `bin/` is removed by the same rule as below once it was
+  installed more than 14 days ago. On Git Bash, MSYS2 and Cygwin the running processes are read
+  from `ps -W` and compared as Windows paths, where the POSIX `ps` options failed and nothing was
+  ever pruned. It
   removes another cached version only when nothing has launched it for 14 days (each launch writes
   a `.last-used` marker; `BASEMIND_PRUNE_AFTER_DAYS` changes the number), no running process was
   started from it (matched on the whole command line, so a cache path with spaces counts, and on
