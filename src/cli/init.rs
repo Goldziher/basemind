@@ -75,8 +75,7 @@ pub(crate) const INIT_SCAFFOLD_TOML: &str = r##"# basemind configuration — htt
 # max_file_bytes = 2097152
 # Skip paths under any submodule root listed in .gitmodules.
 # skip_submodules = true
-# Run L2 extraction (calls + docs) inline with L1. Powers the `code` tool's references / callers
-# modes. Turning off roughly halves scan time on large repos but leaves reference search empty
+# Run L2 extraction (calls + docs) inline with L1. Powers `code_refs`. Turning off roughly halves scan time on large repos but leaves reference search empty
 # until an L2 pass.
 # eager_l2 = true
 # Absolute paths OUTSIDE the repo to also index (e.g. a Bazel external cache). Ignored unless the
@@ -101,8 +100,8 @@ pub(crate) const INIT_SCAFFOLD_TOML: &str = r##"# basemind configuration — htt
 
 [code_intel]
 # Precise, scope- and import-aware name resolution. On by default: JS/TS resolve via oxc, Python and
-# Java via the stack-graphs engine, so the `code` tool's references / callers / definition modes
-# distinguish a shadowed local from an import instead of matching by name. Set false to fall back to fast
+# Java via the stack-graphs engine, so `code_refs` (pinned callers and the definition relation)
+# distinguishes a shadowed local from an import instead of matching by name. Set false to fall back to fast
 # tree-sitter locals binding for every language. Applies to files (re)scanned after the change.
 # precise_resolution = true
 

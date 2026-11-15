@@ -1,6 +1,6 @@
 //! Opt-in "lean" MCP tool surface (W5 slice 3).
 //!
-//! basemind normally advertises its full ~45-tool surface; an agent pays for every tool's
+//! basemind normally advertises every tool it has; an agent pays for every tool's
 //! JSON schema on each session. When `BASEMIND_MCP_LEAN` is set to a truthy value, the server
 //! instead advertises just three wrapper tools and defers the real schemas until requested:
 //!

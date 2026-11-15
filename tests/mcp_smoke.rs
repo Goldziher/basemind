@@ -2404,7 +2404,7 @@ async fn lean_surface_is_opt_in_and_round_trips_through_invoke_tool() {
             "default surface must advertise the always-on `{verb}` tool: {full_names:?}"
         );
     }
-    for removed in ["code", "git", "memory", "admin", "graph"] {
+    for &removed in basemind::mcp::params::RETIRED_TOOLS {
         assert!(
             !full_names.contains(&removed),
             "the removed mode-dispatched `{removed}` tool must not be advertised: {full_names:?}"
@@ -3154,7 +3154,7 @@ async fn code_and_index_tools_reject_inexact_arguments() {
     let service = ().serve(transport).await.expect("rmcp handshake");
 
     let tools = service.list_all_tools().await.expect("list tools");
-    for removed in ["code", "admin"] {
+    for &removed in basemind::mcp::params::RETIRED_TOOLS {
         assert!(
             tools.iter().all(|t| t.name.as_ref() != removed),
             "the mode-dispatched `{removed}` tool must no longer be advertised"

@@ -2,7 +2,7 @@
 //!
 //! TOON is a compact tabular encoding of a uniform array-of-objects: a single header line
 //! naming the columns, then one comma-joined row per object. For the list responses basemind
-//! returns — `search_symbols`, `find_references`, `workspace_grep`, `list_files`, `outline` —
+//! returns — `code_symbols`, `code_refs`, `code_grep`, `find_files`, `code_outline` —
 //! this drops the per-row `"key":` repetition that dominates JSON's token cost.
 //!
 //! ## Why native (not `serde_toon`)

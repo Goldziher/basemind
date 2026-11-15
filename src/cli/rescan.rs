@@ -1,4 +1,4 @@
-//! Safe `rescan` plumbing shared by `basemind rescan` and `basemind admin rescan`.
+//! Safe plumbing for `basemind rescan`.
 //!
 //! Two concerns live here, both about not racing the machine daemon (the sole index writer):
 //!

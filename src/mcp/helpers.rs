@@ -122,8 +122,8 @@ pub(super) fn parse_kind(s: &str) -> Result<SymbolKind, McpError> {
 /// Every tool routes its response through here, so populating `structured_content` in one place
 /// gives the whole MCP surface typed output: `CallToolResult::structured` sets the parsed JSON on
 /// `structured_content` (for clients that consume typed results) and keeps a `to_string()` text
-/// block in `content` (for clients that only read text). The tool's `output_schema` is advertised
-/// separately on each `#[tool]` definition.
+/// block in `content` (for clients that only read text). No tool advertises an `output_schema`:
+/// one tool answers in several shapes, and `tests/mcp_smoke.rs` holds every verb tool to that.
 pub(super) fn json_result<T: Serialize>(value: &T) -> Result<CallToolResult, McpError> {
     let value =
         serde_json::to_value(value).map_err(|e| McpError::internal_error(format!("serialize response: {e}"), None))?;
@@ -549,8 +549,8 @@ pub(super) async fn scan_and_refresh(
         ));
     }
     // The last in-process full-tree walk that the CLI's own guard does not cover (issue #62). The
-    // tool-subcommand dispatcher never calls `guard_workspace_root`, so `basemind admin rescan`
-    // reaches `crate::scanner::scan` here — and so does the `admin` MCP tool in `rescan` mode, plus
+    // tool-subcommand dispatcher never calls `guard_workspace_root`, so `basemind rescan`
+    // reaches `crate::scanner::scan` here — and so does the `index_rescan` MCP tool, plus
     // the boot/watcher scans in `mcp::background`. Guarding at this single funnel covers all of
     // them; it does NOT cover the read-only store open that `cli::context::build_server` already
     // performed, so a refused root can still have had its cache directory created by that point.

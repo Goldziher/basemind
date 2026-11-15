@@ -179,7 +179,7 @@ async fn the_advertised_tools_are_exactly_the_verb_tools() {
     let mut advertised: Vec<String> = tools.iter().map(|tool| tool.name.to_string()).collect();
     advertised.sort();
 
-    for retired in ["code", "git", "memory", "admin", "workspace"] {
+    for &retired in basemind::mcp::params::RETIRED_TOOLS {
         assert!(
             !advertised.iter().any(|name| name == retired),
             "the mode-dispatched `{retired}` tool is still advertised: {advertised:?}"

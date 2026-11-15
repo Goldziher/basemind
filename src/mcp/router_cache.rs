@@ -3,7 +3,7 @@
 //! [`BasemindServer::assemble_router`] and [`BasemindServer::prompt_router`] take no arguments and
 //! depend only on compile-time feature flags — their output is identical for every server
 //! instance in this process, no matter which [`SharedReadStack`](super::SharedReadStack) it wraps.
-//! Every constructor used to call them fresh, which rebuilds the ~79-tool router from scratch:
+//! Every constructor used to call them fresh, which rebuilds the tool router from scratch:
 //! one `Arc::new` dispatch-closure allocation and one name validation per tool, then two `HashMap`
 //! inserts (primary + disabled-set) per tool as the per-area routers are `+`-combined. In
 //! stateless streamable-HTTP mode, [`BasemindServer::from_shared`] runs once per POST, so that

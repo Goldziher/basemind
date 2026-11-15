@@ -160,7 +160,7 @@ pub mod params {
     pub use super::types_tools::{
         CodeGrepParams, CodeOutlineParams, CodeReadParams, CodeRefsParams, CodeSearchParams, CodeSymbolsParams,
         DocsSearchParams, FindFilesToolParams, GitBlameParams, GitDiffParams, GitLogParams, IndexRescanParams,
-        IndexStatusParams, MemorySaveParams, MemorySearchToolParams, VERB_TOOLS,
+        IndexStatusParams, MemorySaveParams, MemorySearchToolParams, RETIRED_TOOLS, VERB_TOOLS,
     };
 }
 

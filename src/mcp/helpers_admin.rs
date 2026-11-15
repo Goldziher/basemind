@@ -191,7 +191,7 @@ fn config_stamp(state: &ServerState) -> String {
 /// because it is one of the few genuinely slow operations, emits MCP progress (when the client
 /// supplies a token); the summary counts are in the tool result.
 ///
-/// `peer` is `None` on the CLI path: a one-shot `basemind admin rescan` has no MCP peer to notify,
+/// `peer` is `None` on the CLI path: a one-shot `basemind rescan` has no MCP peer to notify,
 /// so the progress notifications are skipped while the scan itself is identical.
 async fn run_rescan(
     state: Arc<ServerState>,

@@ -41,8 +41,8 @@ impl LifecycleNotice {
             }),
             Lifecycle::BuildingIndex => Some(Self {
                 state: "building_index",
-                message: "Index is building for the first time. Results are incomplete — poll `status` \
-                          until `indexing` is false, then retry.",
+                message: "Index is building for the first time. Results are incomplete — call \
+                          `index_status {}` until `indexing` is false, then retry.",
                 retry: true,
             }),
             Lifecycle::Rescanning => Some(Self {
@@ -98,7 +98,8 @@ impl LifecycleNotice {
             state: "index_rebuilding",
             message: "index rebuilding — results incomplete. A full scan is rebuilding the symbol / \
                       reference index; an empty `references` / `callers` / `implementations` answer \
-                      does not mean there are none. Poll `status` until `degraded` clears, then retry.",
+                      does not mean there are none. Call `index_status {}` until `degraded` clears, then \
+                      retry.",
             retry: true,
         }
     }
