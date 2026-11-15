@@ -144,7 +144,7 @@ pub struct SharedEmbedder {
 
 impl SharedEmbedder {
     /// An embedder that reports `model` and `dim` and answers every text with `embed`.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "memory"))]
     pub(crate) fn fake(model: &str, dim: u16, embed: FakeEmbed) -> Self {
         let mut embedder = Self::load("fast", 1, 8).expect("the fast preset exists");
         embedder.dim = dim;
