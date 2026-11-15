@@ -129,7 +129,8 @@ enum Cmd {
         #[command(subcommand)]
         action: basemind::cli::agents::AgentsCmd,
     },
-    /// Machine-registry listings: workspaces / worktrees / branches (needs `--features comms`). Talks to the broker daemon directly, like `comms`.
+    /// Machine-registry listings: workspaces / worktrees / branches (needs `--features comms`).
+    /// Talks to the broker daemon directly, like `comms`.
     #[cfg(all(feature = "comms", any(unix, windows)))]
     Workspace {
         #[command(subcommand)]

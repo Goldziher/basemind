@@ -482,8 +482,8 @@ async fn concurrent_cold_rescans_open_the_workspace_once_and_all_succeed() {
 }
 
 /// Sustained multi-session stress against ONE daemon: many concurrent clients, each running its own
-/// interleaved loop of full rescans + registry reads, all funneled
-/// through the daemon's sole-writer workspace pool (the whole rearchitecture's promise — N sessions
+/// interleaved loop of full rescans + registry reads, all funneled through the daemon's
+/// sole-writer workspace pool (the whole rearchitecture's promise — N sessions
 /// on one repo all read AND write with no fjall lock downgrade). Asserts the daemon serves every
 /// request with no torn index, no deadlock, and no panic, then stays responsive and consistent
 /// afterward. `#[ignore]` (heavy); tune with `BASEMIND_STRESS_{CLIENTS,ITERS,FILES}`.
@@ -761,17 +761,17 @@ async fn registry_survives_a_daemon_restart() {
     let daemon = Daemon::start(&comms_dir);
     let socket = daemon.socket().to_path_buf();
 
-    let mut bob = connect(&socket, "agent-bob", &repo).await;
+    // ~keep Bob connects from another directory: a Hello from `repo` would register it again and
+    // the assertions below would hold with no snapshot at all.
+    let elsewhere = tmp.path().join("elsewhere");
+    std::fs::create_dir_all(&elsewhere).expect("create a second directory");
+    let mut bob = connect(&socket, "agent-bob", &elsewhere).await;
     let workspaces = bob.list_workspaces().await.expect("list workspaces after restart");
-    assert_eq!(
-        workspaces.len(),
-        1,
-        "the registered workspace survives the daemon restart"
-    );
-    assert_eq!(
-        workspaces[0].repo_id.as_deref(),
-        Some(repo_id.as_str()),
-        "the same repo id reloads from the snapshot"
+    assert!(
+        workspaces
+            .iter()
+            .any(|workspace| workspace.repo_id.as_deref() == Some(repo_id.as_str())),
+        "the workspace registered before the restart reloads from the snapshot: {workspaces:?}"
     );
 
     let worktrees = bob

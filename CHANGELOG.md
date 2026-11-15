@@ -157,7 +157,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **BREAKING: the `workspace` MCP tool and worktree claims.** Advisory worktree claims enforced nothing
   and nothing read them, so they are gone everywhere: the `workspace` tool (all five modes), the
   `basemind workspace claim` and `basemind workspace release` commands, the `claimed_by` field of a
-  worktree row, the daemon's `worktree_claim` / `worktree_release` requests, and the
+  worktree row (and the fourth, claimant column of the `basemind workspace worktrees` text output),
+  the daemon's `worktree_claim` / `worktree_release` requests, and the
   `worktree-coordination` capability of `basemind init`. The read-only listings stay as CLI commands
   with no MCP tool: `basemind workspace workspaces`, `worktrees <repo-id>` and `branches <repo-id>`.
   The comms protocol version is unchanged: a client older than this release that still sends a claim
