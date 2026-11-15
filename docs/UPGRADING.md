@@ -316,8 +316,10 @@ re-extraction, never correctness; the next sweep reclaims what is left.
 
 ## Per-version binaries
 
-The plugin launcher keeps one `~/.cache/basemind/bin/<version>/` per release, reaps processes of other
-versions and removes older version directories on every launch of the current one. That cache is a few
+The plugin launcher keeps one `~/.cache/basemind/bin/<version>/` per release. On every launch of the
+current one it removes the other version directories that no running process was started from. It
+does not stop processes of other versions: their sessions and daemons keep running, and a daemon
+exits on its own once idle. That cache is a few
 tens of MB per version and is not touched by the above.
 
 ## Adding a new on-disk component (checklist)

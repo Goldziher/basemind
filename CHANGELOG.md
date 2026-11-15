@@ -244,6 +244,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   one is asked to stop, and a `daemon_busy` refusal is honoured instead of being followed by SIGTERM
   and SIGKILL. Signals are sent only to a daemon that has stopped answering and that the generation's
   `daemon.pid` names. `basemind comms stop` now reaches a daemon that speaks another protocol version.
+- The plugin launcher no longer stops other versions' processes. On every launch it sent SIGTERM and
+  then SIGKILL to each `basemind` of a different cached version, including the `serve` and daemon of a
+  session still open elsewhere, and deleted their binaries; that session's host then relaunched its
+  own version, which did the same in return. It now stops nothing, and removes only the cached
+  version directories that no running process was started from.
 - `find_files` (previously `code` modes `find` and `files`) no longer misses document-tier files
   (markdown, config, PDFs) on a long-lived server.
 - `index_status.cache_dir` reports basemind's cache directory. It reported the tree-sitter grammar

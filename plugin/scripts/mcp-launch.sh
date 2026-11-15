@@ -57,6 +57,17 @@ PARENT="$(dirname "$CACHE_ROOT")"
 binary_version() { "$1" --version 2>/dev/null | awk '{print $2}'; }
 have() { command -v "$1" >/dev/null 2>&1; }
 
+# Whether a running process was started from the cached version directory $1 (trailing slash ~keep
+# included). Matches argv[0], which is how every basemind process this launcher starts is named. ~keep
+version_in_use() {
+  have ps || return 1
+  ps -axo args= 2>/dev/null | awk -v dir="$1" 'index($1, dir) == 1 { found = 1 } END { exit !found }'
+}
+
+# Remove cached version directories other than the current one, except any a running process was ~keep
+# started from: another install, or a session opened before an update, may still be using that ~keep
+# version, and its daemon re-executes the binary. Nothing here stops a process of another version; ~keep
+# daemons of different versions coexist, and each exits on its own once idle. ~keep
 prune_stale_versions() {
   [ -d "$PARENT" ] || return 0
   local entry base
@@ -65,39 +76,9 @@ prune_stale_versions() {
     base="$(basename "$entry")"
     [ "$base" = "$VERSION" ] && continue
     case "$base" in
-    [0-9]*) rm -rf "$entry" 2>/dev/null || true ;;
+    [0-9]*) version_in_use "$entry" || rm -rf "$entry" 2>/dev/null || true ;;
     esac
   done
-}
-
-# Terminate basemind processes (serve, comms/write/shell daemons — all the same binary) that ~keep
-# belong to a DIFFERENT cached version than the one we are about to exec, so a version update ~keep
-# converges the machine on a single generation instead of leaking orphans across sessions. Matches ~keep
-# by argv[0] under the cache bin root; keeps everything under keep_dir. Unix-only and strictly ~keep
-# best-effort — it never blocks or fails the launch (Windows has no reliable ps-based reap). ~keep
-reap_other_versions() {
-  local keep_dir="$1"
-  case "$(uname -s)" in
-  MINGW* | MSYS* | CYGWIN* | Windows_NT) return 0 ;;
-  esac
-  have ps || return 0
-  local pids
-  pids="$(ps -axo pid=,args= 2>/dev/null | awk -v root="$PARENT/" -v keep="$keep_dir/" -v me="$$" '
-		{ pid = $1; path = $2 }
-		pid == me { next }
-		index(path, root) == 1 && index(path, keep) != 1 { print pid }')"
-  [ -n "$pids" ] || return 0
-  log "reaping stale-version basemind processes: $(printf '%s' "$pids" | tr '\n' ' ')"
-  printf '%s\n' "$pids" | xargs kill -TERM 2>/dev/null || true
-  local waited=0 alive p
-  while [ "$waited" -lt 20 ]; do
-    alive=0
-    for p in $pids; do kill -0 "$p" 2>/dev/null && alive=1; done
-    [ "$alive" -eq 0 ] && break
-    sleep 0.1
-    waited=$((waited + 1))
-  done
-  printf '%s\n' "$pids" | xargs kill -KILL 2>/dev/null || true
 }
 
 # Remove leftover install lock/staging dirs from other versions (crashed or superseded installs). ~keep
@@ -181,7 +162,6 @@ if [ -n "${BASEMIND_BIN:-}" ] && [ -x "${BASEMIND_BIN}" ]; then
   exec "$BASEMIND_BIN" "$@"
 fi
 if [ -x "$MANAGED_BIN" ] && [ "$(binary_version "$MANAGED_BIN")" = "$VERSION" ]; then
-  reap_other_versions "$CACHE_ROOT"
   prune_stale_versions
   cleanup_stale_state
   exec "$MANAGED_BIN" "$@"
@@ -341,7 +321,6 @@ fallback_or_die() {
     log "v${VERSION} not yet downloadable; falling back to compatible cached basemind $(binary_version "$fb") at $fb — run \`/plugin update\` once the release completes"
     release_lock
     LOCK_HELD=""
-    reap_other_versions "$(dirname "$fb")"
     cleanup_stale_state
     exec "$fb" "${ARGS[@]}"
   fi
@@ -410,7 +389,6 @@ TMP=""
 release_lock
 LOCK_HELD=""
 
-reap_other_versions "$CACHE_ROOT"
 prune_stale_versions
 cleanup_stale_state
 
