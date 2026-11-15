@@ -352,6 +352,7 @@ fn cmd_comms_cleanup(json: bool, dry_run: bool, older_than_days: u64) -> Result<
             Verdict::Removed => "removed",
             Verdict::InUse => "kept (a daemon holds its lock)",
             Verdict::Recent => "kept (used too recently)",
+            Verdict::Skipped => "skipped (no daemon.lock, so not a rendezvous)",
             Verdict::Failed => "could not remove all of",
         };
         println!(

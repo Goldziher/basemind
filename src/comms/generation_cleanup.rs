@@ -3,9 +3,11 @@
 //! A protocol generation is retired by disuse: nothing deletes its directory while a binary of
 //! that generation may still start a daemon in it. [`sweep`] removes another generation's
 //! directory, or the files releases up to 0.33 keep directly in the comms directory, only when
-//! both hold: its `daemon.lock` can be taken, so no daemon is running there, and its newest file is
-//! older than the given age, so none has run there lately. It contacts and signals nothing — the
-//! lock and the file ages are the whole test — and never looks at this binary's own generation.
+//! both hold: its `daemon.lock` exists and this process takes it, so no daemon is running there,
+//! and its newest file is older than the given age, so none has run there lately. A directory
+//! without a `daemon.lock` is not treated as a rendezvous, and a lock that cannot be opened counts
+//! as held. It contacts and signals nothing — the lock and the file ages are the whole test — and
+//! never looks at this binary's own generation.
 
 use std::fs::File;
 use std::path::{Path, PathBuf};
@@ -52,6 +54,8 @@ pub enum Verdict {
     InUse,
     /// Its newest file is younger than the age limit.
     Recent,
+    /// It has no `daemon.lock`, so nothing shows it to be a rendezvous; left as it is.
+    Skipped,
     /// Removal was attempted and failed part-way.
     Failed,
 }
@@ -142,16 +146,19 @@ fn settle(
     }
     // The age test comes first so the lock is only ever tried on a rendezvous nothing has used
     // for a long time: a daemon starting at this instant would read a held lock as a running peer.
+    // Only a `daemon.lock` this process holds proves that no daemon runs here. Without the file
+    // there is nothing to hold: the directory may belong to a release that locks another way, or
+    // not be a rendezvous at all. A lock that cannot be opened may be held by anyone.
     let held = match File::options().read(true).write(true).open(lock_path) {
-        Ok(file) => match file.try_lock_exclusive() {
-            Ok(()) => Some(file),
-            Err(_) => {
-                finding.verdict = Verdict::InUse;
-                return finding;
-            }
-        },
-        // No lock file: no daemon ever locked here, or it is already partly removed.
-        Err(_) => None,
+        Ok(file) if file.try_lock_exclusive().is_ok() => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            finding.verdict = settle_unlocked(&finding.paths, dry_run);
+            return finding;
+        }
+        Ok(_) | Err(_) => {
+            finding.verdict = Verdict::InUse;
+            return finding;
+        }
     };
     finding.verdict = Verdict::Removed;
     if !dry_run {
@@ -172,6 +179,20 @@ fn settle(
         }
     }
     finding
+}
+
+/// The verdict on a rendezvous with no `daemon.lock`: an empty generation directory is removed,
+/// since removing an empty directory cannot lose anything; whatever else is there stays.
+fn settle_unlocked(paths: &[PathBuf], dry_run: bool) -> Verdict {
+    let [dir] = paths else {
+        return Verdict::Skipped;
+    };
+    let empty = std::fs::read_dir(dir).is_ok_and(|mut entries| entries.next().is_none());
+    if empty && (dry_run || std::fs::remove_dir(dir).is_ok()) {
+        Verdict::Removed
+    } else {
+        Verdict::Skipped
+    }
 }
 
 /// Add `path`'s size to `bytes` and raise `newest` to its latest modification, recursively.
@@ -217,126 +238,5 @@ fn remove_path(path: &Path) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    const DAY: Duration = Duration::from_secs(24 * 60 * 60);
-
-    fn generation(base: &Path, name: &str) -> PathBuf {
-        let dir = base.join(name);
-        std::fs::create_dir_all(dir.join("store.fjall")).expect("mkdir");
-        for file in ["daemon.lock", "daemon.pid", "daemon.log", "store.fjall/data"] {
-            std::fs::write(dir.join(file), b"12345").expect("write");
-        }
-        dir
-    }
-
-    fn pre_generation(base: &Path) {
-        std::fs::create_dir_all(base.join("store.fjall")).expect("mkdir");
-        for file in [
-            "comms.sock",
-            "daemon.lock",
-            "daemon.pid",
-            "http.addr",
-            "store.fjall/data",
-        ] {
-            std::fs::write(base.join(file), b"12345").expect("write");
-        }
-    }
-
-    fn other() -> String {
-        format!("g{}", RENDEZVOUS_GENERATION + 1)
-    }
-
-    /// Far enough ahead that everything written during the test is past the default age.
-    fn later() -> SystemTime {
-        SystemTime::now() + DEFAULT_MAX_AGE + DAY
-    }
-
-    #[test]
-    fn an_old_unlocked_generation_and_the_pre_generation_files_are_removed() {
-        let base = tempfile::tempdir().expect("tempdir");
-        let old = generation(base.path(), &other());
-        pre_generation(base.path());
-        std::fs::write(base.path().join("unrelated.txt"), b"keep").expect("write");
-
-        let findings = sweep(base.path(), DEFAULT_MAX_AGE, false, later());
-
-        assert_eq!(findings.len(), 2, "{findings:?}");
-        assert!(findings.iter().all(|f| f.verdict == Verdict::Removed), "{findings:?}");
-        assert_eq!(findings[0].rendezvous, Rendezvous::PreGeneration);
-        assert_eq!(findings[0].bytes, 25);
-        assert_eq!(findings[1].rendezvous, Rendezvous::Generation(other()));
-        assert_eq!(findings[1].bytes, 20);
-        assert!(!old.exists(), "the abandoned generation directory is gone");
-        let left: Vec<String> = std::fs::read_dir(base.path())
-            .expect("read base")
-            .flatten()
-            .map(|entry| entry.file_name().to_string_lossy().into_owned())
-            .collect();
-        assert_eq!(left, ["unrelated.txt"], "only the rendezvous files are removed");
-    }
-
-    #[test]
-    fn this_generation_is_never_removed_or_reported() {
-        let base = tempfile::tempdir().expect("tempdir");
-        let own = generation(base.path(), &format!("g{RENDEZVOUS_GENERATION}"));
-
-        let findings = sweep(base.path(), Duration::ZERO, false, later());
-
-        assert_eq!(findings, Vec::new());
-        assert!(own.join("store.fjall/data").exists());
-    }
-
-    #[test]
-    fn a_held_lock_spares_the_rendezvous() {
-        let base = tempfile::tempdir().expect("tempdir");
-        let busy = generation(base.path(), &other());
-        pre_generation(base.path());
-        let holders: Vec<File> = [busy.join("daemon.lock"), base.path().join("daemon.lock")]
-            .iter()
-            .map(|path| {
-                let file = File::options().read(true).write(true).open(path).expect("open lock");
-                file.try_lock_exclusive().expect("hold the daemon lock");
-                file
-            })
-            .collect();
-
-        let findings = sweep(base.path(), DEFAULT_MAX_AGE, false, later());
-
-        assert_eq!(findings.len(), 2);
-        assert!(findings.iter().all(|f| f.verdict == Verdict::InUse), "{findings:?}");
-        assert!(busy.join("store.fjall/data").exists());
-        assert!(base.path().join("store.fjall/data").exists());
-        assert!(base.path().join("comms.sock").exists());
-        drop(holders);
-    }
-
-    #[test]
-    fn a_recently_used_rendezvous_is_spared() {
-        let base = tempfile::tempdir().expect("tempdir");
-        let young = generation(base.path(), &other());
-        pre_generation(base.path());
-
-        let findings = sweep(base.path(), DEFAULT_MAX_AGE, false, SystemTime::now() + DAY);
-
-        assert_eq!(findings.len(), 2);
-        assert!(findings.iter().all(|f| f.verdict == Verdict::Recent), "{findings:?}");
-        assert!(young.join("daemon.pid").exists());
-        assert!(base.path().join("daemon.pid").exists());
-    }
-
-    #[test]
-    fn a_dry_run_reports_sizes_and_removes_nothing() {
-        let base = tempfile::tempdir().expect("tempdir");
-        let old = generation(base.path(), &other());
-
-        let findings = sweep(base.path(), DEFAULT_MAX_AGE, true, later());
-
-        assert_eq!(findings.len(), 1);
-        assert_eq!(findings[0].verdict, Verdict::Removed);
-        assert_eq!(findings[0].bytes, 20);
-        assert!(findings[0].idle_secs >= DEFAULT_MAX_AGE.as_secs());
-        assert!(old.join("store.fjall/data").exists(), "a dry run deletes nothing");
-    }
-}
+#[path = "generation_cleanup_tests.rs"]
+mod tests;
