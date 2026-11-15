@@ -1,381 +1,156 @@
-# ADR-0021: Agent comms v2 — stable identity, repository-open threads, three verb tools
+---
+status: accepted
+date: 2026-11-15
+amends: ["0013", "0020"]
+---
 
-- **Status:** Proposed
-- **Date:** 2026-11-15
+# ADR-0021: Agent comms v2 — stable identity, per-actor delivery, three deferred tools
+
 - **Deciders:** basemind maintainers
-- **Related:** amends ADR-0013; ADR-0014, ADR-0018, ADR-0020
+- **Related:** amends ADR-0013 (idempotency key, protocol version, bounded waits) and ADR-0020
+  (decisions 3 and 4); ADR-0014, ADR-0018, ADR-0024, ADR-0025, ADR-0026; normative detail in
+  [`../comms-v2.md`](../comms-v2.md)
 
 ## Context
 
-ADR-0020 kept `agents` (18 modes) and `workspace` (5 modes) as mode-dispatched tools until the
-coordination model was settled. No ADR describes that model, and an audit found it unsound as built:
+Agents working in one repository exchange messages through a daemon shared by every session of one
+operating-system user. ADR-0020 left that surface as the mode-dispatched `agents` tool (18 modes in
+`src/mcp/mode.rs`) until its model was settled. An audit of the code on `main` found:
 
-- **Identity churns.** `src/comms/identity.rs` has two resolvers. `resolve_session`, used by
-  `basemind serve`, mints `session-<pid>-<nanos>` for every MCP transport unless
-  `BASEMIND_AGENT_ID` or `comms.agent_id` is set. `resolve`, used by the CLI and therefore by
-  `hooks/inbox-notify` and `hooks/session-start`, returns the id persisted in the workspace cache
-  dir. A reconnect is a new agent, and the hooks read an inbox the MCP session never posts to or is
-  addressed in. One machine registered 42 `session-*` agents in about two hours; a single
-  maintenance pass pruned 319 abandoned agent ids.
-- **Authorization is partial.** In `src/comms/daemon_handlers.rs`, `on_post` checks that the thread
-  exists but checks membership only for a `reply_to` target; `on_history` takes no session at all;
-  `on_thread_join` admits any agent to any thread on the machine. `as_agent` accepts any valid id
-  (`src/mcp/helpers_comms.rs`, `resolve_comms_client`), so a session can act as any other agent.
-- **Membership has three copies.** The `thread_members` keyspace, its `thread_subs` mirror and
-  `Thread.members` are written separately (`src/comms/store.rs`) and read by different paths:
-  `on_thread_list` trusts `Thread.members`, `is_member` trusts `thread_members`.
-- **Scope does not scope.** `src/comms/scope.rs` matches a thread's path pattern against the
-  caller's working directory, not against the files the thread is about, and threads carry no
-  repository. The subject filter in `on_thread_list` is an unanchored substring of any length over
-  every thread on the machine.
-- **Message lookup scans.** Message ids are `<thread>:<agent>:<micros>:<n>`; resolving one
-  (`resolve_ids`, `resolve_message_reference`) iterates the whole `messages_by_thread` keyspace.
-- **Worktree claims are never released.** `Registry::claim_worktree` (`src/registry/mod.rs`) stores
-  a holder with no expiry and no heartbeat, and the holder is usually a `session-*` id that no
-  longer exists. All seven claims found on the audited machine were orphaned, and nothing reads
-  them.
-- **History is disposable.** `COMMS_SCHEMA_VER` is `RELEASE_MINOR`, so every minor release wipes the
-  store, and `MESSAGE_TTL` is three days.
+- **Identity is not stable.** `src/comms/identity.rs` has two resolvers. `resolve_session`, used by
+  `basemind serve`, generates a new id for every MCP connection unless `BASEMIND_AGENT_ID` or the
+  `comms.agent_id` config key is set. `resolve`, used by the CLI and so by the plugin hooks, returns
+  an id persisted in the workspace cache. A reconnect is a new agent, and the hooks read an inbox
+  the MCP session is never addressed in.
+- **Any id can be claimed.** `as_agent` accepts any well-formed id (`resolve_comms_client` in
+  `src/mcp/helpers_comms.rs`), and `on_post` in `src/comms/daemon_handlers.rs` checks membership
+  only for a `reply_to` target.
+- **History is disposable.** `COMMS_SCHEMA_VER` equals the release minor (`src/comms/mod.rs`) and an
+  older store is deleted on open (`src/comms/store.rs`). Messages live three days (`MESSAGE_TTL`).
+- **The tools are the only part in use.** ADR-0018 measured that all 650 basemind MCP calls in about
+  1,450 transcripts were agent messaging.
 
 ## Decision
 
-**Identity.** One resolver serves `serve`, the CLI and the hooks, with three tiers:
+The rules below are the decision. Field lists, limits, cursor and replay rules, the store layout and
+error shapes are in `docs/comms-v2.md`, which changes without a new ADR while it stays inside them.
 
-1. `BASEMIND_AGENT_ID`, verbatim.
-2. The existing `comms.agent_id` config key.
-3. A derived id, `<host>-<repo>-<6 hex of blake3(canonical root)>`: a pure function with no pid,
-   clock or file. `<host>` is `BASEMIND_HOST` lowercased, reduced to `[a-z0-9]` and cut to 16
-   bytes, or `agent` when that leaves nothing. `<repo>` is the root directory's basename,
-   lowercased, with every character outside `[a-z0-9-]` replaced by `-`, cut to 24 bytes. Both are
-   sanitised before they are cut, so both are ASCII. A root with no basename, such as `/`, has an
-   empty `<repo>`, and its id reads `<host>--<hash>`.
+1. **One identity resolver** for `serve`, the CLI and the hooks. `BASEMIND_AGENT_ID` is used verbatim
+   when it satisfies the id grammar, else `comms.agent_id` under the same test, else the derived id
+   `<host>-<repo>-<6 hex of blake3(root)>`. A rejected value falls to the next tier with a notice.
+   "Host" is the agent harness, read from `BASEMIND_HOST`, which the plugin launchers and hooks will
+   set (nothing sets it on `main`); unset, it is `agent`. The resolved id is the **principal**. A
+   call may pass `as: "<name>"` to act as the sub-identity `<principal>.<name>`. An **actor** is a
+   principal or one of its sub-identities.
+2. **One root.** Every entry point (serve, CLI, hooks) passes its working directory or `--root` to
+   the discovery function `serve` already uses to pick the workspace (`discover_root_with_basemind`
+   in `src/config/mod.rs`, on the canonicalised start). Identity is derived from the canonical
+   absolute root it returns, never from the directory as passed.
+3. **The principal is fixed per connection** by the client's `Hello`. The daemon derives the caller
+   from the connection and the call envelope; no tool field names the sender.
+4. **This prevents accidents, not impersonation.** Any process of the same operating-system user can
+   send any `Hello`. Invitation-only threads, repository scoping and creator-only archive are
+   conventions between cooperating agents. There is no per-agent token.
+5. **Membership belongs to the principal; the read position belongs to the actor.** A new actor
+   starts a thread at the highest read position any actor of its principal has reached there. With
+   none, it starts at 0 if the principal was a member from the thread's creation (creator or named
+   in `to`), and at the thread's head as of joining otherwise.
+6. **Own posts.** An actor's own posts are never unread for it. Posts by a sibling actor of the same
+   principal are unread like anyone else's, so a parent and a subagent that uses `as` can talk.
+7. **Reading marks read.** `agent_inbox` advances the actor's read position past what it returns;
+   `peek: true` reads without advancing. There is no `ack`. The hooks read in a third mode,
+   **announce**: it returns front matter only, for unread messages the actor has not been told
+   about, records that it told, and never marks read. In Claude Code the hooks also inject a
+   session-scoped `as`, so two sessions in one checkout do not consume each other's mail.
+8. **Three tools replace `agents`:** `agent_post`, `agent_inbox`, `agent_threads`. They stay deferred
+   under one schema ceiling of 5,000 bytes for the three together (`agents` alone is bounded at
+   8,000 today). The daemon owns the wait (`wait_secs`, 0 to 40); the store never blocks.
+9. **Retention is the sweep's job alone.** The sweep deletes messages older than 30 days by the wall
+   clock at sweep time, keeps at most 1,000 per thread, and removes threads idle for 30 days. No
+   read hides a record for its age. A timestamp is in microseconds, `max(clock, the thread's last
+   stamp + 1)`, and serves display and the sweep only; order is a per-thread `seq` and a store-wide
+   post counter.
+10. **Caps.** 256 active threads per repository; creating one at the cap archives the least recently
+    active instead of refusing. 256 members per thread. A body is at most 16 KiB; a listing returns
+    at most 4 KiB of a body within a 16 KiB response budget, and the whole body is read by id.
+11. **Archived threads** cannot be posted to or reopened. A read over all threads does not return
+    their messages; they stay readable by naming the thread until retention removes them.
+12. **Storage stays on Fjall**, in `agents.fjall` inside the protocol generation's comms directory
+    (ADR-0024), under its own `COMMS_STORE_VER`. Within a protocol generation, layout changes are
+    forward-only migrations, never a wipe. A new generation starts with an empty store; the previous
+    generation's store stays with that generation's daemon and is not imported. A store newer than
+    the binary opens for reading and refuses writes. A store that cannot be opened is left
+    untouched and reported. The legacy `store.fjall` of earlier releases is left untouched wherever
+    it is; cleanup removes it with its rendezvous once unused for 30 days (ADR-0024, rule 7).
+13. **A post is committed with Fjall's buffered persist**, not synced to disk per post.
+14. **Wire.** The comms protocol goes from 5 to 6 and the relay protocol from 1 to 2. This is not a
+    protocol generation change: within a generation a mismatch fails at `Hello`, and a newer client
+    may replace an older idle daemon under ADR-0024's rules.
+15. **Amendment of ADR-0013.** No tool has an `idempotency_key`: replay protection is keyed on the
+    random key the stdio relay generates per request and re-sends on a replay. "Protocol v4" is v6,
+    the 40-second cap on `wait` is the upper bound of `wait_secs`, and a waiting read is exempt
+    from the 10-second request bound.
+16. **Amendment of ADR-0020.** Decision 3 ends here: `agents` is removed, not kept. Decision 4
+    (`src/mcp/mode.rs` is trimmed, not deleted) lapses with it: the file goes with its last mode.
+17. **Not over HTTP.** The HTTP front-end takes `?agent=` on every request
+    (`src/comms/http_frontend.rs`), which contradicts rule 3.
+18. **CLI parity (ADR-0014).** `basemind agent` mirrors the three tools and adds `status` and
+    `cleanup`. A CLI call has no relay, so a CLI read that marks has no replay protection.
 
-The root is an absolute path, and `serve`, the CLI and the hooks take it from one shared discovery
-function. A relative root is refused with a typed error and is never completed from the working
-directory, which a hook does not share with its `serve`. The root is canonicalised with symlinks
-resolved. When that fails, because the path does not exist or cannot be read, its `.` and `..` are
-folded lexically and the result is hashed instead: a stable id, though not the canonical one when
-a symlink lies on the way.
+### Constraints left for the agent-launch ADR
 
-The plugin launcher and the plugin hooks set `BASEMIND_HOST` from one shared script, and a test
-asserts that the hook identity equals the `serve` identity. The `session-*`, persisted `agent-id`
-and generated `agent-*` tiers are removed, and so is the identity collision ledger (`CLAIMS_DIR`,
-`CLAIM_TTL`). Identity is trusted per operating-system user; there is no credential.
-
-An id from the environment or config that fails validation is not used. The resolver falls to the
-next tier and logs a warning, and the first agent-tool reply carries a notice naming the rejected
-value, cut to 160 bytes, and the id in use.
-
-**Sub-identities.** A subagent passes `as: "<name>"` and acts as `<principal>.<name>`, so a session
-can only act as its own sub-identities. `<name>` matches `[a-z0-9_-]{1,32}`. `.` is reserved as the
-separator, so a principal id containing it fails validation. A composed id over the 128-byte
-`MAX_ID_LEN` is refused.
-
-The server cannot tell a subagent from its parent, because both use one MCP connection, so it cannot
-require `as`. In Claude Code the plugin's `PreToolUse` hook, whose matcher is widened to the three
-agent tools, sees `agent_type` and `agent_id` inside a subagent. When the caller did not set `as`
-it injects `<agent_type>-<8 hex of blake3(agent_id)>` through `updatedInput`. The type is
-lowercased, reduced to the sub-name grammar and cut to 23 bytes, which is what the hash leaves of
-the 32; the hash is of the whole `agent_id`, because two ids may share their first bytes. Such a
-name cannot be predicted, so an orchestrator that wants to address a subagent tells it to pass an
-explicit `as`. On other hosts the tool description is the only guard.
-
-**Caller.** Who is calling is derived by the daemon and never read from a request. The principal
-comes from the session's `Hello`, the sub-identity from the `sub` of the `Call`, the repository from
-the session's root, and the replay key from the relay. A request body holds only what the client
-chose: the target and text of a post, the selection of a read, the filter or change of a thread
-call. A client therefore cannot post as another agent or from another repository, whatever it
-sends.
-
-**Shared identity.** Two sessions of one host in one checkout resolve to the same id and are not
-split. The daemon counts the live `serve` relay sessions per principal; one-shot CLI and hook
-connections do not count. While more than one is live, replies from all three tools carry a
-notice that another session shares the identity and that `BASEMIND_AGENT_ID` or `as` separates
-them.
-
-**Notices.** Every reply has `notices`, a list of sentences that are not about the request. The
-store produces none. The daemon appends the shared-identity notice, since only it counts sessions,
-and the tool layer appends the rejected-id notice, since only it knows what the resolver refused.
-
-**Threads and messages.** A thread id is `t-<6 base32>`, checked for collision at creation and
-drawn again, at most 64 times; a post that finds no free id in that many draws fails as a store
-error and stores nothing. A message id is `<thread>.<seq>`, so a reference is a point lookup. A
-thread is created by a post that names a `subject` and no `thread`; the subject is not a key, so
-two such posts make two threads. A thread belongs to one repository: the registry `RepoId` when
-there is one, else `path:<canonical root>`. Two clones of one remote share a `RepoId` and
-therefore share threads, by design. A thread is open to its repository unless created with `to`,
-which makes it invitation-only. Its `paths` are repo-relative path prefixes, fixed at creation.
-
-A subject is one line of at most 200 bytes and a body at most 64 KiB. `to` and `invite` name at most
-32 agents each (`MAX_RECIPIENTS`) and `paths` at most 16 prefixes (`MAX_THREAD_PATHS`). A value over
-a limit is refused, never cut, and so is a `to` that names only the creator, which would make a
-thread nobody else can reach. A thread has at most 256 members (`MAX_THREAD_MEMBERS`): a join, or
-an invitation of agents that are not members yet, is refused whole when it would pass that.
-
-**Membership and read position.** One table, `members(thread, agent, read_seq, notified_seq)`, with
-a reverse `member_threads` index, replaces `thread_members`, `thread_subs`, `Thread.members` and the
-`cursors` keyspace. The creator and every `to` recipient are members from creation and start at
-sequence 0. `to` may name an agent that has never connected, since ids are deterministic; that agent
-finds the thread on its first `agent_inbox`. The reply lists every recipient the store has not
-seen under `pending`, so a mistyped id is visible. An agent that joins starts at the head, and an
-invited agent at the head as of the invitation. `pending` cannot tell a typo from an agent that has
-not started yet; it only makes both visible. `notified_seq` is the inbox hook's high-water mark
-(what it has already announced), kept in the store so the hook no longer keeps a file of its own.
-
-An agent is seen once any call it makes succeeds, a hook's read included. Being named in `to` or
-`invite` does not make it seen, and neither does a refused call. An agent's first call writes its
-seen record at once; after that the record is rewritten at most once a day
-(`SEEN_REFRESH_INTERVAL`), so that a read does not write on every call. A record stops counting 31
-days after it was written (`SEEN_TTL` plus that day), and the agent is `pending` again. An agent is
-therefore never `pending` within 30 days of a call, and is `pending` again at most a day after
-that.
-
-Only an unread read marks. It advances `read_seq` to the last message returned in each thread, and
-`notified_seq` with it, so what was read is not announced afterwards; there is no separate
-acknowledgement. `unread: false` reads history and moves neither `read_seq` nor
-`notified_seq`, and `peek` moves nothing either. `read_seq` never advances across an unread message
-that was not returned: a reply is always the oldest unread messages, in order, and stops where the
-limit or the budget stops it.
-
-Messages come in the order they were posted to the store, across threads. The store therefore
-keeps one monotonic post counter, and that counter also orders an inbox that spans threads.
-
-A message's timestamp is the clock's reading. While the clock is not later than the previous
-message's timestamp and no more than a minute behind it (`CLOCK_BEHIND_TOLERANCE_MICROS`), the
-timestamp is one microsecond past the previous one instead, so a clock that stands still or steps
-back slightly does not stamp two posts alike. Once the clock reads more than a minute behind the
-previous timestamp, that timestamp is
-taken to be the wrong one and posts are stamped from the clock again. Timestamps therefore do not
-order messages: `seq` does within a thread and the post counter across threads, and read positions
-and cursors use nothing else. The previous timestamp is read for the next stamp and for a warning
-the store logs when the clock is more than a minute behind it, at open and when it stamps a post.
-Expiry never reads it: message, replay and seen expiry are judged against the clock as it reads.
-A thread's last activity is the latest timestamp of any post made to it. It never moves back: a
-post stamped earlier than the thread's last activity leaves it where it is.
-
-A wrong clock is not detected, only survived. While the clock reads far ahead:
-
-- everything older than its retention by that reading is hidden, and what a sweep reaches in that
-  time is deleted for good. What no sweep reached is visible again once the clock is corrected;
-- threads hidden that way do not count against the cap of their repository, so the repository can
-  hold more than 256 active threads once they are visible again. None is removed for it; new ones
-  are refused until the count is under the cap;
-- a message posted then keeps its stamp and expires when the clock passes the stamp by
-  `MESSAGE_TTL`. Its thread keeps that stamp as its last activity, and a post after the
-  correction does not put the thread back on the clock: a thread created or posted to then is
-  listed first and holds its place under the cap, unless it is archived, until the clock passes
-  the stamp by `MESSAGE_TTL`. A thread nobody posted to in that time is not affected and expires
-  `MESSAGE_TTL` after its own last post;
-- seen records and replay entries written then live until the clock passes their own time: such
-  an agent is not `pending` until 31 days past the stamp unless it calls again, which rewrites
-  its record at the clock, and such a replay key answers with its first result until an hour past
-  the stamp.
-
-A clock that ran behind is the mirror image for messages, seen records and replay entries: what
-was stamped then expires early by the difference. A thread is the exception, because its last
-activity does not move back: a message stamped behind expires early alone, and the thread and the
-messages stamped before it stay as long as they would have. If a thread's last activity followed
-the last post instead, one post stamped 31 days behind would expire the thread and every message
-in it as soon as the clock was right again.
-
-Neither can reorder messages, make a cursor skip or repeat one, issue a `seq` twice, or hold posts
-made after the correction in the future. Nor can a read position pass an unread message that a
-read would return. A message hidden as expired while the clock read ahead is not returned, though,
-and a read that marks in that time can advance past it: when the clock is corrected the message is
-back in the history and is not unread.
-
-A body
-over 4 KB is returned cut, with `truncated: true`, and counts as read (the full body comes from
-`id`). The 16 KB response budget counts, for each message, the bytes of its body as returned, its
-subject, its sender and its id. The first message is always returned, and delivery stops at the
-first one after it that does not fit, even when a later one would. What is left out stays unread
-and the reply says `more: true`. `limit` defaults to 20; a larger value than `MAX_LIMIT = 100` means
-100, and 0 means 1.
-
-An unread read that marks takes no `cursor`: the read position is its cursor, and passing one is
-refused naming the field. `peek` and `unread: false` reads page with `next_cursor`. A cursor is
-opaque and bound to the agent, the selection (every thread, or one) and the read mode; one that is
-malformed, or was issued to another agent or for another read, is refused as an invalid cursor.
-A call cancelled after the advance loses that page from the unread view; `unread: false` reads it
-again.
-
-**Idempotency and replay.** No tool has an idempotency field. The relay stamps each `Post` and each
-`InboxRead` with its existing random per-request key (`relay-<key>`, `src/stdio_relay.rs`) and
-re-sends the same key on a replay. A `Post` into a thread dedupes on `(from, thread, key)` as today.
-A `Post` that creates a thread dedupes on `(from, key)`, so a replay returns the thread already
-created. An `InboxRead` that moves a position stores the delivered range against the key, so a
-replay returns the same range, as stored, instead of an empty page; a read that moves nothing, an
-empty one included, stores nothing, because repeating it is harmless. Dedupe entries and stored
-ranges live for one hour (`REPLAY_TTL`), and the first write wins: a later call with the same key
-never replaces an entry that still answers. An entry past its hour no longer answers, whether or
-not it has been deleted yet, and the next call with its key replaces it.
-A model that repeats a call sends a new request and makes a second message. A CLI or hook
-call has no relay and no key, so it has no replay protection; the hooks therefore read without
-marking as read and advance only `notified_seq`.
-
-**Waiting.** The store's read never blocks. `wait_secs` belongs to the daemon: when a `peek` or a
-marking read finds nothing unread, the daemon waits for the store's post counter to change, looks
-again, and gives up after `wait_secs`. The caller's own posts move the counter and end no wait,
-because they are never unread to it. A read by id, a history read and the hooks' read do not wait,
-and `wait_secs` beside `id` or `unread: false` is refused.
-
-Two rules keep a wait from losing messages. The daemon checks that the client is still connected
-immediately before the marking read, so a waiter whose client is gone does not advance the read
-position. And it registers the replay key as in flight before it starts to wait, so a replay that
-arrives while the first attempt is still waiting joins it instead of starting a second read.
-
-**Authorization.** All rules live in `src/comms/v2/rules.rs`, as functions every store
-implementation calls:
-
-- reading and posting require membership;
-- joining requires an open thread in the caller's repository;
-- any member may invite, and may invite an agent of another repository: membership crosses
-  repositories by invitation only. No member can be removed by another;
-- only the creator may archive, whether or not it is still a member;
-- a thread is described (subject, paths, peers, no messages) to its members, and to any agent of
-  its repository while it is open;
-- a listing with no filter returns the caller's own threads, from every repository;
-- a listing with a `query` of at least three characters or a `path` returns the caller's own
-  threads plus open threads of the caller's repository, in both cases only those that match. With
-  both, a thread must match both. A `path` matches a thread when it is a prefix of one of the
-  thread's `paths`, or one of them is a prefix of it.
-
-An archived thread stays readable to its members and can be left; posting, joining and inviting
-are refused. Joining a thread one is already in changes nothing, archived or not. When the last member leaves, the thread is archived in the same step.
-
-A listing is ordered by last activity, newest first, and pages by an opaque cursor over
-`(last activity, thread id)` that is bound to the agent, its repository and the filter. A thread
-that receives a post between two pages moves ahead of the cursor and can be missing from the
-remaining pages; a new listing shows it first, unless another thread carries a last activity ahead
-of the clock. No post moves a thread the other way, so no thread is listed on two pages.
-
-**Tools.** Three tools under the ADR-0018 contract replace `agents`:
-
-| Tool | Fields |
-|---|---|
-| `agent_post` | `body`; one of `thread`, `reply_to`, `subject`; `to?`, `paths?`, `as?` |
-| `agent_inbox` | `thread?`, `id?`, `unread=true`, `peek=false`, `wait_secs` 0–40, `limit=20`, `cursor?`, `as?` |
-| `agent_threads` | `query?`, `path?`, `thread?`, `join?`, `leave?`, `invite?`, `archive?`, `archived?`, `limit`, `cursor?`, `as?` |
-
-`agent_inbox` returns bodies inline and marks what it returns as read unless `peek` is set.
-`agent_threads` with no arguments lists the caller's threads and the peers in them;
-`{thread, archive: true}` archives a thread the caller created. A call carries at most one of
-`join`, `leave`, `invite` and `archive`; more than one is refused with an error naming the fields.
-The tool is not annotated read-only.
-
-The fields are checked in one place, shared by the tools, the CLI and the hooks, and a field that
-does not apply to a call is refused, never ignored: `thread` beside `id`; `limit`, `cursor`, `peek`
-or `unread` beside `id`; a change without `thread`; `query`, `path`, `cursor`, `archived` or `limit`
-beside a change or beside a `thread` to describe. An empty string for an optional field is the
-field left out, and a field passed with its default value counts as left out too. `peek` beside
-`unread: false` is accepted, since both ask for nothing to be marked.
-
-The three tools are not always-loaded: they stay deferred, outside `VERB_TOOLS`, under their own
-5,000-byte ceiling with its own test. The 20,000-byte verb ceiling is unchanged.
-
-**Removed.** `register`, `ack`, `remove_member`; the `workspace` tool; worktree claims and their
-release, everywhere. `cleanup` and `status`, and the read-only `workspaces`, `worktrees` and
-`branches` listings, remain as CLI commands only.
-
-**Storage.** The store stays on Fjall, in `agents.fjall` inside the comms directory.
-`COMMS_STORE_VER = 1000` replaces `COMMS_SCHEMA_VER` and is no longer tied to `RELEASE_MINOR`, so
-a release does not wipe comms. Later shape changes are
-forward-only numbered migration steps run at open. A store newer than the binary is refused for
-writing with a message that names the fix, and is never wiped. Nothing is recorded on it, a seen
-record included, and the hooks' read is refused because it writes `notified_seq`. What only reads
-still works: a `peek`, history, a listing and a read by message id. What has expired is not
-returned there either.
-
-A store that cannot be opened, holds rows but no version, holds a version or a counter that cannot
-be read, lacks a keyspace of its layout or has no migration path is a typed error
-(`CommsError::Backend`) that names the directory, and is left untouched: basemind never deletes, recreates or completes one, and creates keyspaces only where
-there is no store. Opening does let Fjall recover its journal and compact, on a newer store too,
-which rewrites files but no key or value.
-
-A change is committed whole or not at all, and is handed to the operating system before the call
-returns. It is synced to disk on the daemon's periodic tick and at shutdown. A crash of the daemon
-therefore loses nothing; a loss of power can lose what was committed since the last sync. A `seq`
-lost that way is issued again to the next post in its thread.
-
-The legacy store is not imported. On first start the legacy `store.fjall` directory is renamed to
-`store.legacy-<date>` inside the comms directory (the UTC date, with `-2`, `-3` and so on appended
-when that name is taken), basemind never deletes it, and a fresh store is created. An import would
-carry little: most agent ids in it are per-process, messages older than
-three days are already deleted, and its threads carry no repository.
-
-**Retention.** Messages are kept 30 days (`MESSAGE_TTL`, three today) and at most 1000 per thread
-(`MAX_MESSAGES_PER_THREAD`, unchanged). Messages expire one by one, and the unread count is of
-what has not expired. A thread expires `MESSAGE_TTL` after its last activity, archived or not, and
-every message it still has goes with it.
-Archiving is by the creator, or automatic when the last member leaves; the idle auto-archive is
-removed, and with it `THREAD_IDLE_TTL` (seven days) and `THREAD_RETENTION_TTL` (14 days). Threads
-now stay active for up to 30 days, so the machine-wide `MAX_ACTIVE_THREADS = 256` becomes a cap per
-repository.
-
-Expiry is judged when a record is read, against the clock; deleting is a separate sweep with a
-budget, run after changes and on the daemon's tick. A record hidden as expired is therefore
-visible again if the clock goes back, unless a sweep already removed it. A thread can come back
-that way with fewer messages than its `head` counts, which a read or a cursor treats like
-messages the per-thread cap dropped.
-
-**Wire.** `PROTO_VER` goes from 5 to 6: `Hello` gains the host and root beside its existing
-`remote` and `cwd`, `Call` gains `sub` for the sub-identity, and `Post`, `InboxRead`, `ThreadQuery`
-and `ThreadUpdate` replace the twenty coordination requests and the two claim requests in
-`src/comms/protocol.rs`. The wait runs in the daemon, around the store's read, when `InboxRead`
-asks for one. `RELAY_PROTO_VER` goes from 1 to 2.
-
-A refusal travels as its `code`, its fields and its rendered `message`. A binary that does not
-know a code keeps the message and shows it, so a new refusal code does not need a `PROTO_VER` of
-its own.
-
-**Amendments to ADR-0013.** Protocol v4 becomes v6. The 40 s cap on `wait` becomes the upper bound
-of `wait_secs`, and an `InboxRead` that waits is exempt from the 10 s request bound. `InboxRead` is
-replayed after a daemon restart, against the stored delivered range. Post idempotency keeps its
-one-hour window; the key is always the relay's and never a caller field, and a thread-creating post
-dedupes on `(from, key)`.
+- A launched agent gets `BASEMIND_AGENT_ID` and `BASEMIND_HOST` from its launcher. Whether one whose
+  id fails the grammar should fail to start, where rule 1 falls through, is left to that ADR.
+- The id grammar expresses no parent/child relation; presence is a count of live sessions per
+  principal; a sandboxed harness may see another canonical root; a token needs a protocol bump.
 
 ## Consequences
 
-- Breaking change to the MCP tools, the CLI, the wire protocol and the store layout, taken in one
-  release with the hooks, skills and docs. No mode aliases are kept, and existing threads and
-  messages are not carried over.
-- `src/mcp/mode.rs`, `src/mcp/lenient.rs` and `DOMAIN_TOOLS_BYTE_CEILING` are deleted, completing
-  ADR-0020. A session pays nothing for the agent tools until a host loads them through tool search.
-  In a host that defers tools, discovery relies on the server instructions and the session-start
-  hook naming the three tools.
-- CLI parity (ADR-0014): the 18 `agents` rows and 5 `workspace` rows in
-  `tests/cli_parity/capabilities.rs` are replaced by three injective tool rows, and the
-  mode-to-subcommand bijection disappears with `domain_modes()`. The kept listings are CLI commands
-  with no MCP tool, which ADR-0018 allows.
-- Individual-tier memory is keyed by agent id (`src/mcp/memory.rs`), so it restarts empty under the
-  new ids. Most sessions lose nothing, because their `session-*` id already changed on every start.
-  Two sessions that share an identity now share individual-tier memory.
-- `agent_inbox` is a mutation. A response lost after the read leaves those messages read; a call
-  cancelled while it waits does not, because the daemon checks the connection before it reads.
-- A thread listing paged while threads receive posts can miss one; nothing unread is lost by it,
-  since the inbox does not depend on the listing.
-- After a loss of power a message id a client still holds can name a different message than it
-  did, because the `seq` it carries was issued again.
-- Two sessions sharing an identity share one read position and do not see each other's posts as
-  unread.
-- Outside Claude Code, a subagent that omits `as` acts as its principal and consumes the
-  principal's unread messages.
-- Any process of the same user can post as any agent. Cross-harness launch may add a credential in
-  its own ADR.
-- Nothing prevents two sessions from editing one worktree; coordination is by message only.
+- Breaking change to the MCP tools, the CLI, the wire protocol and the store, taken in release 0.35
+  with the hooks, skills and docs (ADR-0026). Existing threads and messages are not carried over.
+  The same holds at every later generation change, and agents on different generations cannot
+  message each other.
+- **Old and new binaries of one generation.** While a daemon of the new protocol runs, an older
+  client is refused at `Hello` and has no messaging. After a forward migration, older binaries of
+  the generation are read-only: no post, no marking read, and hook reads fail, until upgraded.
+- **Deferral.** Discovery depends on the session-start hook and the server instructions naming the
+  three tools; a harness with neither finds them only by tool search.
+- **Hosts without hooks.** Nothing injects `as`, so parent and subagent are one actor: they share
+  one read position and cannot message each other (rule 6). The tool descriptions tell subagents
+  to pass `as`.
+- **Mark-on-read is at-most-once**, except a relay replay within one hour, which returns the same
+  ranges. A reply lost without a replay (relay timeout, host cancel) leaves those messages read
+  and unshown; `unread: false` reads them from history.
+- **Backlog.** A principal whose sessions never mark read hands each new session everything
+  unread, bounded by retention.
+- **Actors accumulate:** one per subagent run and per session. An actor's positions are deleted
+  with its seen record, 30 to 31 days after its last call (the branch's `SEEN_TTL` plus its
+  one-day refresh interval), and a returning actor is first seen again.
+- **A wrong clock.** Ordering is unaffected. A forward glitch delays deletion only in threads
+  posted to during it. A sweep while the clock reads more than 30 days ahead deletes every message
+  and thread — total loss of the agent store's content — and that is accepted for 30-day chat on
+  a developer machine.
+- **Power loss** can lose the last posts, and their `seq` values are then issued again, so a held
+  message id can name a different message. A daemon crash loses nothing.
+- **Cap-archive.** A post at the thread cap can archive a thread its members still wanted. Only
+  the poster is told; the other members get no notice.
+- Two clones or worktrees of one repository share a repository id, and so threads and the cap.
 
 ## Alternatives considered
 
-- **Move the store to SQLite now** — rejected: `rusqlite` is not in `Cargo.lock`, an earlier
-  bundled SQLite pin blocked crates.io publishing, and the model change does not need a new engine.
-- **Split identities automatically per session** — rejected: an MCP server is not told which host
-  session or subagent is calling, so a split id cannot be stable across reconnects or shared with
-  the hooks. That is the churn this ADR removes.
-- **Keep an explicit `ack`** — rejected: it costs a second call per read, and agents that skip it
-  see the same messages again. `peek` covers the case of looking without consuming.
-- **Keep worktree claims with a TTL and heartbeat** — rejected: nothing reads claims, and a
-  heartbeat needs a live session identity that hosts do not provide.
-- **A per-agent token now** (a keyed hash of the id, verified on `Hello`) — rejected: every
-  process of the same user can read the secret, so it adds no boundary.
-- **A one-shot import of the legacy store** — rejected for the reasons under Storage; the renamed
-  directory keeps the data available.
+- **SQLite for the store** — rejected: no SQLite crate is linked today (`Cargo.lock` has none), it
+  adds a C build to every release target, and Fjall with its own version constant meets the need.
+- **Ack-based delivery** — rejected: a second call per read, and an agent that skips it sees the
+  same messages on every read. The price is the at-most-once delivery above.
+- **Per-session identities by default** — rejected: an MCP server is not told which host session is
+  calling, so such an id cannot be stable across reconnects or shared with the hooks.
+- **Every new actor starts at the head** — rejected: a worker started after its instructions were
+  posted would never see them, and `to` could not address an agent that has not started.
+- **Importing the legacy store, or carrying a store across generations** — rejected: legacy ids are
+  mostly per-connection and its threads carry no repository; retention bounds the loss to 30 days.
+- **Read-time expiry** (hide a record once the clock says it is too old) — rejected: a read would
+  then depend on the clock, and a clock briefly behind or ahead would hide or reveal records
+  between two reads; it needs a clock-tolerance rule that sweep-only retention does not.
+- **Syncing each post to disk** — rejected: one fsync per post under the daemon's single write gate
+  (ADR-0013), so every poster waits on the disk to guard against power loss only.
+- **A per-agent token now** — rejected: every process of the same user can read the secret.
