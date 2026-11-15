@@ -141,7 +141,8 @@ fn clamp_limit(limit: u32) -> usize {
 }
 
 fn call_page_to_wire(page: CallScanPage) -> WireCallScan {
-    let has_more = page.next_cursor.is_some();
+    let has_more = page.next_cursor.is_some() && page.stopped_after.is_none();
+    let resume_after = page.stopped_after;
     let hits = page
         .hits
         .into_iter()
@@ -160,12 +161,14 @@ fn call_page_to_wire(page: CallScanPage) -> WireCallScan {
         total: page.total,
         total_is_partial: page.total_is_partial,
         has_more,
+        resume_after,
         hits,
     }
 }
 
 /// Rebuild the scan page a writer session would have produced locally. The cursor is derived the
-/// same way the scan derives it: the last hit's key, present only when more matches remain.
+/// same way the scan derives it: the last hit's key when more matches remain, else the key a
+/// capped scan stopped after.
 pub(super) fn call_page_from_wire(wire: WireCallScan) -> CallScanPage {
     let mut hits = Vec::with_capacity(wire.hits.len());
     let mut hit_keys = Vec::with_capacity(wire.hits.len());
@@ -181,16 +184,18 @@ pub(super) fn call_page_from_wire(wire: WireCallScan) -> CallScanPage {
         hit_keys.push(hit.key);
         hit_starts.push(hit.start_byte);
     }
+    let stopped_after = if wire.has_more { None } else { wire.resume_after };
     let next_cursor = if wire.has_more {
         hit_keys.last().map(|key| Cursor::encode_fjall(key))
     } else {
-        None
+        stopped_after.as_deref().map(Cursor::encode_fjall)
     };
     CallScanPage {
         total: wire.total,
         total_is_partial: wire.total_is_partial,
         hits,
         next_cursor,
+        stopped_after,
         hit_keys,
         hit_starts,
     }
@@ -225,6 +230,7 @@ fn impl_page_to_wire(page: ImplScanPage) -> WireImplScan {
         total: page.total as u64,
         total_is_partial: page.total_is_partial,
         has_more: page.has_more,
+        resume_after: page.stopped_after,
         hits,
     }
 }
@@ -248,5 +254,6 @@ pub(super) fn impl_page_from_wire(wire: WireImplScan) -> ImplScanPage {
         hits,
         hit_keys,
         has_more: wire.has_more,
+        stopped_after: if wire.has_more { None } else { wire.resume_after },
     }
 }

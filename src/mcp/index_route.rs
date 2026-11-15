@@ -205,7 +205,8 @@ impl IndexRoute {
         {
             Some(Ok(IndexReadResult::CallScan(page))) => {
                 let mut page = super::index_read::call_page_from_wire(page);
-                // A daemon that predates `exact` ignores it and answers with substring hits.
+                // A daemon that predates `exact` ignores it and answers with substring hits. Only
+                // this page's share of them can be dropped here, so `retain` marks the total partial.
                 page.retain(|hit| matching.accepts_callee(&hit.callee, name));
                 return Ok(page);
             }

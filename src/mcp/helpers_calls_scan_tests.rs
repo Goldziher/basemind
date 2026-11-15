@@ -7,9 +7,10 @@ use crate::extract::{Call, FileMapL1, FileMapL2, Implementation};
 use crate::index::IndexDb;
 use crate::path::RelPath;
 
-use super::scan_calls_by_name;
-use crate::mcp::helpers_impls::scan_impls_fjall;
+use super::{CallScanPage, scan_calls_by_name, scan_calls_examining, scan_calls_in_ram_examining};
+use crate::mcp::helpers_impls::{scan_impls_examining, scan_impls_fjall};
 use crate::mcp::helpers_refs_match::Matching;
+use crate::mcp::types::ReferenceHit;
 
 /// Deterministic xorshift, so a failure reproduces.
 struct Rng(u64);
@@ -458,4 +459,196 @@ fn an_exact_impl_scan_is_not_starved_by_substring_only_traits() {
     assert_eq!(exact.total, 2);
     assert!(!exact.total_is_partial && !exact.has_more);
     assert!(scan(Matching::Substring).total_is_partial);
+}
+
+/// Keys the capped-scan fixtures below hold: 17,000 that only contain the name, then 3 that are it.
+const STARVING_KEYS: usize = 17_003;
+const EXAMINE_CAP: usize = 5_000;
+
+/// An exact scan rejects substring-only keys without counting them toward `scan_cap`, so it needs
+/// its own bound: it stops after examining `EXAMINE_CAP` keys, says the total is partial, and hands
+/// back a cursor that continues from the last key it looked at, so paging still reaches every hit.
+#[test]
+fn an_exact_call_scan_stops_at_the_examined_keys_cap_and_resumes() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = IndexDb::open(dir.path()).unwrap();
+    let mut calls: Vec<Call> = (0..17_000).map(|k| call("zapx", k)).collect();
+    calls.extend((0..3).map(|k| call("ns::zap", 20_000 + k)));
+    let mut writer = db.writer();
+    writer.upsert_file(&path(0), &l1(&[]), Some(&l2(calls))).unwrap();
+    writer.commit().unwrap();
+
+    for stage in ["walk", "dictionary"] {
+        let scan = |cursor: Option<&[u8]>, cap| {
+            scan_calls_examining(&db.view(), "zap", Matching::Exact, 10, cursor, cap).unwrap()
+        };
+        let first = scan(None, EXAMINE_CAP);
+        assert!(first.hits.is_empty(), "{stage}: no exact call among the first keys");
+        assert!(first.total_is_partial, "{stage}: the scan did not reach the end");
+        assert!(first.stopped_after.is_some() && first.next_cursor.is_some(), "{stage}");
+
+        let mut callees: Vec<String> = Vec::new();
+        let mut pages = 1;
+        let mut page = first;
+        while let Some(cursor) = page.next_cursor.take() {
+            let after = cursor.decode_fjall().unwrap();
+            page = scan(Some(&after), EXAMINE_CAP);
+            callees.extend(page.hits.iter().map(|hit| hit.callee.clone()));
+            pages += 1;
+            assert!(pages <= 10, "{stage}: paging must terminate");
+        }
+        assert_eq!(callees, ["ns::zap"; 3], "{stage}: every exact call is reached, once");
+        assert_eq!(pages, STARVING_KEYS.div_ceil(EXAMINE_CAP), "{stage}");
+        assert!(!page.total_is_partial, "{stage}: the last page ran to the end");
+
+        let whole = scan(None, STARVING_KEYS);
+        assert!(
+            !whole.total_is_partial && whole.next_cursor.is_none(),
+            "{stage}: a scan that ends exactly at the cap is complete"
+        );
+        assert_eq!(whole.total, 3, "{stage}");
+        build_dicts(&db);
+    }
+}
+
+#[test]
+fn an_exact_impl_scan_stops_at_the_examined_keys_cap_and_resumes() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = IndexDb::open(dir.path()).unwrap();
+    let mut impls: Vec<(String, String)> = (0..17_000)
+        .map(|k| ("IteratorExt".to_string(), format!("Ty{k}")))
+        .collect();
+    impls.extend((0..3).map(|k| ("std::iter::Iterator<Item = u8>".to_string(), format!("Exact{k}"))));
+    let mut writer = db.writer();
+    writer
+        .upsert_file(&path(0), &l1(&impls), Some(&l2(Vec::new())))
+        .unwrap();
+    writer.commit().unwrap();
+
+    let scan = |cursor: Option<&[u8]>| {
+        scan_impls_examining(
+            &db.view(),
+            "Iterator",
+            Matching::Exact,
+            None,
+            10,
+            cursor,
+            |_, _| true,
+            |_, _| (0, 0),
+            EXAMINE_CAP,
+        )
+        .unwrap()
+    };
+    let mut page = scan(None);
+    assert!(page.hits.is_empty() && page.total_is_partial && !page.has_more);
+    let mut types: Vec<String> = Vec::new();
+    let mut pages = 1;
+    while let Some(after) = page.stopped_after.take() {
+        page = scan(Some(&after));
+        types.extend(page.hits.iter().map(|hit| hit.impl_type.clone()));
+        pages += 1;
+        assert!(pages <= 10, "paging must terminate");
+    }
+    assert_eq!(types, ["Exact0", "Exact1", "Exact2"]);
+    assert_eq!(pages, STARVING_KEYS.div_ceil(EXAMINE_CAP));
+    assert!(!page.total_is_partial);
+}
+
+/// The in-RAM projection a read-only session scans has the same bound and the same cursor.
+#[test]
+fn the_in_ram_call_scan_has_the_same_examined_keys_cap() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let mut source = String::from("fn caller() {\n");
+    source.push_str(&"    zapx();\n".repeat(300));
+    source.push_str("    ns::zap();\n    ns::zap();\n}\n");
+    std::fs::write(root.join("a.rs"), source).unwrap();
+    let mut store = crate::store::Store::open(root, crate::store::VIEW_WORKING).unwrap();
+    crate::scanner::scan(
+        root,
+        &mut store,
+        &crate::config::ConfigV1::with_defaults(),
+        crate::scanner::ScanSource::WorkingTree,
+        crate::scanner::EmbedMode::Inline,
+    )
+    .unwrap();
+    let cache = crate::mcp::MapCache::build(&store, 0);
+    let scan = |cursor: Option<&[u8]>| {
+        scan_calls_in_ram_examining(cache.calls_projection(), "zap", Matching::Exact, 10, cursor, 100)
+    };
+
+    let mut page = scan(None);
+    assert!(page.total_is_partial && page.stopped_after.is_some());
+    let mut callees: Vec<String> = page.hits.iter().map(|hit| hit.callee.clone()).collect();
+    let mut pages = 1;
+    while let Some(cursor) = page.next_cursor.take() {
+        let after = cursor.decode_fjall().unwrap();
+        page = scan(Some(&after));
+        callees.extend(page.hits.iter().map(|hit| hit.callee.clone()));
+        pages += 1;
+        assert!(pages <= 10, "paging must terminate");
+    }
+    assert_eq!(callees.len(), 2, "both exact calls, once each: {callees:?}");
+    assert!(callees.iter().all(|callee| callee.ends_with("zap")), "{callees:?}");
+    assert_eq!(pages, 302usize.div_ceil(100));
+    assert!(!page.total_is_partial);
+}
+
+fn hit(callee: &str) -> ReferenceHit {
+    ReferenceHit {
+        path: path(0),
+        line: 1,
+        column: 0,
+        callee: callee.to_string(),
+        resolved: None,
+    }
+}
+
+/// A daemon that predates `exact` answers with substring hits. Dropping this page's share of them
+/// leaves a total that still counts the ones on later pages: an upper bound, and it must say so.
+#[test]
+fn dropping_hits_from_a_forwarded_page_marks_its_total_partial() {
+    let page = || {
+        CallScanPage::finish(
+            40,
+            false,
+            vec![hit("zap"), hit("zapx"), hit("ns::zap")],
+            vec![vec![1], vec![2], vec![3]],
+            vec![10, 20, 30],
+            true,
+            None,
+        )
+    };
+    let mut filtered = page();
+    filtered.retain(|hit| Matching::Exact.accepts_callee(&hit.callee, "zap"));
+    assert_eq!(filtered.hits.len(), 2);
+    assert_eq!(filtered.hit_keys, [vec![1], vec![3]]);
+    assert_eq!(filtered.hit_starts, [10, 30]);
+    assert_eq!(filtered.total, 39);
+    assert!(filtered.total_is_partial, "39 is an upper bound, not the count");
+
+    let mut untouched = page();
+    untouched.retain(|_| true);
+    assert_eq!(untouched.total, 40);
+    assert!(!untouched.total_is_partial, "nothing dropped, nothing to qualify");
+
+    let implementation = |trait_name: &str| crate::mcp::types_impls::ImplementationHit {
+        path: path(0),
+        trait_name: trait_name.to_string(),
+        impl_type: "Ty".to_string(),
+        start_row: 1,
+        start_col: 0,
+    };
+    let mut impls = crate::mcp::helpers_impls::ImplScanPage {
+        total: 9,
+        total_is_partial: false,
+        hits: vec![implementation("IteratorExt"), implementation("Iterator")],
+        hit_keys: vec![vec![1], vec![2]],
+        has_more: true,
+        stopped_after: None,
+    };
+    impls.retain(|hit| Matching::Exact.accepts_trait(&hit.trait_name, "Iterator"));
+    assert_eq!(impls.hit_keys, [vec![2]]);
+    assert_eq!(impls.total, 8);
+    assert!(impls.total_is_partial);
 }

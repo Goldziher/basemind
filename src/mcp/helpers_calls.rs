@@ -467,7 +467,11 @@ fn merge_resolved(
         return page;
     }
     let total = page.total.saturating_add(resolved.aliased.len() as u32);
-    let scan_had_more = page.next_cursor.is_some();
+    // A scan that stopped at its examined-keys cap has looked at nothing past `stop`: an aliased
+    // hit beyond it belongs to a later page, and the cursor must stay at `stop` for that page to
+    // continue the scan from there.
+    let stop = page.stopped_after.take();
+    let scan_had_more = page.next_cursor.is_some() && stop.is_none();
 
     let mut merged: Vec<(Vec<u8>, ReferenceHit, u32)> = Vec::with_capacity(page.hits.len() + resolved.aliased.len());
     for ((key, hit), start) in page
@@ -479,7 +483,9 @@ fn merge_resolved(
         merged.push((key, hit, start));
     }
     for (key, hit) in resolved.aliased {
-        if cursor_after.is_some_and(|cursor| key.as_slice() <= cursor) {
+        if cursor_after.is_some_and(|cursor| key.as_slice() <= cursor)
+            || stop.as_deref().is_some_and(|stop| key.as_slice() > stop)
+        {
             continue;
         }
         merged.push((key, hit, 0));
@@ -488,10 +494,11 @@ fn merge_resolved(
 
     let has_more = merged.len() > limit || scan_had_more;
     merged.truncate(limit);
+    let stopped_after = if has_more { None } else { stop };
     let next_cursor = if has_more {
         merged.last().map(|(key, _, _)| Cursor::encode_fjall(key))
     } else {
-        None
+        stopped_after.as_deref().map(Cursor::encode_fjall)
     };
     let (hit_keys, hits, hit_starts) = merged.into_iter().fold(
         (Vec::new(), Vec::new(), Vec::new()),
@@ -507,6 +514,7 @@ fn merge_resolved(
         total_is_partial: page.total_is_partial,
         hits,
         next_cursor,
+        stopped_after,
         hit_keys,
         hit_starts,
     }
@@ -892,6 +900,51 @@ mod tests {
             unproven,
             vec!["other.ts"],
             "the same-name site is surfaced as unproven, so a precision-seeking caller can filter it"
+        );
+    }
+
+    /// A scan that stopped at its examined-keys cap has seen nothing past the key it stopped
+    /// after. An aliased hit beyond that key waits for the page that gets there, and the cursor
+    /// stays on the stop key so that page continues the scan.
+    #[test]
+    fn merging_aliased_hits_keeps_a_capped_scan_s_resume_point() {
+        use super::{ResolvedCallers, merge_resolved};
+        use crate::mcp::types::ReferenceHit;
+
+        let hit = || ReferenceHit {
+            path: crate::path::RelPath::from("a.rs"),
+            line: 1,
+            column: 0,
+            callee: "g".to_string(),
+            resolved: Some(true),
+        };
+        let scan = scan_calls_in_ram(
+            &super::super::helpers_calls_scan::InRamCallIndex::empty(),
+            "f",
+            super::Matching::Exact,
+            10,
+            None,
+        );
+        let page = super::CallScanPage {
+            total_is_partial: true,
+            next_cursor: Some(super::Cursor::encode_fjall(&[5])),
+            stopped_after: Some(vec![5]),
+            ..scan
+        };
+        let resolved = ResolvedCallers {
+            aliased: vec![(vec![3], hit()), (vec![9], hit())],
+            ..ResolvedCallers::default()
+        };
+        let merged = merge_resolved(page, Some(resolved), 10, None);
+        assert_eq!(
+            merged.hit_keys,
+            [vec![3]],
+            "the hit past the stop key is not emitted yet"
+        );
+        assert_eq!(merged.stopped_after, Some(vec![5]));
+        assert_eq!(
+            merged.next_cursor.map(|cursor| cursor.0),
+            Some(super::Cursor::encode_fjall(&[5]).0)
         );
     }
 }

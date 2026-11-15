@@ -97,6 +97,10 @@ pub struct WireCallScan {
     pub total_is_partial: bool,
     /// Whether matches remain past this page. The cursor is the last hit's key.
     pub has_more: bool,
+    /// The last key examined, when the scan stopped at its examined-keys cap before filling the
+    /// page: the cursor to continue from. Absent from a daemon that predates the cap.
+    #[serde(default)]
+    pub resume_after: Option<Vec<u8>>,
     /// The page's hits, in key order.
     pub hits: Vec<WireCallHit>,
 }
@@ -140,6 +144,9 @@ pub struct WireImplScan {
     pub total_is_partial: bool,
     /// Whether matches remain past this page. The cursor is the last hit's key.
     pub has_more: bool,
+    /// [`WireCallScan::resume_after`] for the implementation scan.
+    #[serde(default)]
+    pub resume_after: Option<Vec<u8>>,
     /// The page's hits, in key order.
     pub hits: Vec<WireImplHit>,
 }

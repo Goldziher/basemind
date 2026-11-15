@@ -14,11 +14,21 @@ use super::helpers_refs_match::Matching;
 use super::types::ReferenceHit;
 use crate::index::view::Part;
 
+/// Keys one name scan examines before it stops, whether or not they matched. `scan_cap` counts only
+/// accepted hits, so without this an exact scan for a name that is also a common fragment (`get`)
+/// walks every key containing the fragment before it returns. A scan that stops here reports
+/// `total_is_partial` and resumes from the last key it examined.
+pub(crate) const SCAN_KEYS_EXAMINED_MAX: usize = 200_000;
+
 pub(crate) struct CallScanPage {
     pub total: u32,
     pub total_is_partial: bool,
     pub hits: Vec<ReferenceHit>,
     pub next_cursor: Option<Cursor>,
+    /// The last key examined, when the scan stopped at its examined-keys cap with room left on the
+    /// page. `next_cursor` then encodes this key instead of the last hit's, so the next page
+    /// continues the scan where it stopped.
+    pub stopped_after: Option<Vec<u8>>,
     /// Parallel to `hits`: the Fjall key for each emitted hit. Retained so a token budget can
     /// re-anchor `next_cursor` to the last KEPT hit, not the last scanned one.
     pub hit_keys: Vec<Vec<u8>>,
@@ -28,9 +38,38 @@ pub(crate) struct CallScanPage {
 }
 
 impl CallScanPage {
-    /// Drop the hits `keep` rejects, with their parallel entries. `total` shrinks by the same count,
-    /// so it stays a lower bound when the rejected hits were only this page's share.
-    #[cfg(all(feature = "comms", any(unix, windows)))]
+    /// Assemble a scan's page. The cursor is the last hit's key when matches remain past the page
+    /// (`has_more`), and otherwise the key the scan stopped after, if it stopped early.
+    fn finish(
+        total: u32,
+        total_is_partial: bool,
+        hits: Vec<ReferenceHit>,
+        hit_keys: Vec<Vec<u8>>,
+        hit_starts: Vec<u32>,
+        has_more: bool,
+        stopped_after: Option<Vec<u8>>,
+    ) -> Self {
+        let stopped_after = if has_more { None } else { stopped_after };
+        let next_cursor = if has_more {
+            hit_keys.last().map(|k| Cursor::encode_fjall(k))
+        } else {
+            stopped_after.as_deref().map(Cursor::encode_fjall)
+        };
+        Self {
+            total,
+            total_is_partial,
+            hits,
+            next_cursor,
+            stopped_after,
+            hit_keys,
+            hit_starts,
+        }
+    }
+
+    /// Drop the hits `keep` rejects, with their parallel entries. `total` shrinks by the same count
+    /// and becomes partial: it counted every hit the sender matched, of which only this page's
+    /// share could be tested, so what is left is an upper bound on the hits `keep` accepts.
+    #[cfg(any(test, all(feature = "comms", any(unix, windows))))]
     pub(super) fn retain(&mut self, keep: impl Fn(&ReferenceHit) -> bool) {
         let mut index = 0;
         while index < self.hits.len() {
@@ -42,6 +81,7 @@ impl CallScanPage {
             self.hit_keys.remove(index);
             self.hit_starts.remove(index);
             self.total = self.total.saturating_sub(1);
+            self.total_is_partial = true;
         }
     }
 }
@@ -93,6 +133,9 @@ pub(super) fn budget_call_page(page: CallScanPage, max_tokens: Option<u32>) -> B
 /// suffix test, so a common fragment (`get` inside `get_or_insert`) cannot use up the cap and hide
 /// the exact call sites that sort after it.
 ///
+/// Rejected keys still cost a parse and a test each, so the scan also stops once it has examined
+/// [`SCAN_KEYS_EXAMINED_MAX`] keys with more to go; see [`CallScanPage::stopped_after`].
+///
 /// When `cursor_after` is `Some`, the scan resumes from the key immediately following
 /// the cursor (exclusive). The cursor returned in [`CallScanPage::next_cursor`] is the
 /// last key emitted on this page — pass it back on the next call to advance.
@@ -102,6 +145,18 @@ pub(crate) fn scan_calls_by_name(
     matching: Matching,
     limit: usize,
     cursor_after: Option<&[u8]>,
+) -> Result<CallScanPage, McpError> {
+    scan_calls_examining(idx, name, matching, limit, cursor_after, SCAN_KEYS_EXAMINED_MAX)
+}
+
+/// [`scan_calls_by_name`] with the examined-keys cap as an argument, so a test can reach it.
+pub(super) fn scan_calls_examining(
+    idx: &dyn crate::index::view::IndexView,
+    name: &str,
+    matching: Matching,
+    limit: usize,
+    cursor_after: Option<&[u8]>,
+    examine_cap: usize,
 ) -> Result<CallScanPage, McpError> {
     let finder = memchr::memmem::Finder::new(name.as_bytes());
 
@@ -117,12 +172,22 @@ pub(crate) fn scan_calls_by_name(
     let scan_cap = limit.saturating_mul(8).max(2_000);
     let mut has_more = false;
     let mut matched: usize = 0;
-    for guard in idx.callee_keys_matching(name, cursor_after, lower) {
+    let mut last_examined: Option<crate::index::view::IndexBytes> = None;
+    let mut stopped_after: Option<Vec<u8>> = None;
+    for (examined, guard) in idx.callee_keys_matching(name, cursor_after, lower).enumerate() {
         let (k, _) = guard.map_err(|e| McpError::internal_error(format!("index iter: {e}"), None))?;
+        // Checked on the key that follows the cap, so a scan that ends exactly there is complete.
+        if examined >= examine_cap {
+            total_is_partial = true;
+            stopped_after = last_examined.take().map(|key| key.to_vec());
+            break;
+        }
         let Some((callee, rel, start)) = crate::index::keys::parse_call_by_callee(&k) else {
+            last_examined = Some(k);
             continue;
         };
         if finder.find(callee.as_bytes()).is_none() || !matching.accepts_callee(&callee, name) {
+            last_examined = Some(k);
             continue;
         }
         total += 1;
@@ -145,20 +210,17 @@ pub(crate) fn scan_calls_by_name(
             total_is_partial = true;
             break;
         }
+        last_examined = Some(k);
     }
-    let next_cursor = if has_more {
-        hit_keys.last().map(|k| Cursor::encode_fjall(k))
-    } else {
-        None
-    };
-    Ok(CallScanPage {
+    Ok(CallScanPage::finish(
         total,
         total_is_partial,
         hits,
-        next_cursor,
         hit_keys,
         hit_starts,
-    })
+        has_more,
+        stopped_after,
+    ))
 }
 
 /// Every call site in `path` from the Fjall `calls_by_path` keyspace, in start-byte order. The one
@@ -199,6 +261,18 @@ pub(super) fn scan_calls_in_ram(
     limit: usize,
     cursor_after: Option<&[u8]>,
 ) -> CallScanPage {
+    scan_calls_in_ram_examining(index, name, matching, limit, cursor_after, SCAN_KEYS_EXAMINED_MAX)
+}
+
+/// [`scan_calls_in_ram`] with the examined-keys cap as an argument, so a test can reach it.
+pub(super) fn scan_calls_in_ram_examining(
+    index: &InRamCallIndex,
+    name: &str,
+    matching: Matching,
+    limit: usize,
+    cursor_after: Option<&[u8]>,
+    examine_cap: usize,
+) -> CallScanPage {
     let finder = memchr::memmem::Finder::new(name.as_bytes());
     let start = match cursor_after {
         Some(cursor) => index.entries.partition_point(|e| e.key.as_slice() <= cursor),
@@ -212,7 +286,13 @@ pub(super) fn scan_calls_in_ram(
     let scan_cap = limit.saturating_mul(8).max(2_000);
     let mut has_more = false;
     let mut matched: usize = 0;
-    for entry in &index.entries[start..] {
+    let mut stopped_after: Option<Vec<u8>> = None;
+    for (examined, entry) in index.entries[start..].iter().enumerate() {
+        if examined >= examine_cap {
+            total_is_partial = true;
+            stopped_after = Some(index.entries[start + examined - 1].key.clone());
+            break;
+        }
         if finder.find(entry.callee.as_bytes()).is_none() || !matching.accepts_callee(&entry.callee, name) {
             continue;
         }
@@ -236,19 +316,15 @@ pub(super) fn scan_calls_in_ram(
             break;
         }
     }
-    let next_cursor = if has_more {
-        hit_keys.last().map(|k| Cursor::encode_fjall(k))
-    } else {
-        None
-    };
-    CallScanPage {
+    CallScanPage::finish(
         total,
         total_is_partial,
         hits,
-        next_cursor,
         hit_keys,
         hit_starts,
-    }
+        has_more,
+        stopped_after,
+    )
 }
 
 /// How many files one projection pass decodes before folding them into the views. Bounds the
@@ -369,6 +445,16 @@ impl InRamCallIndex {
             entries,
             by_path,
             capped,
+        }
+    }
+
+    /// A projection of no files.
+    #[cfg(test)]
+    pub(crate) fn empty() -> Self {
+        Self {
+            entries: Vec::new(),
+            by_path: ahash::AHashMap::new(),
+            capped: false,
         }
     }
 
