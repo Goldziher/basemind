@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
-use super::{Client, call, started};
+use super::{Client, call, started, started_with};
 
 /// Commit everything as `name <email>`.
 fn commit_as(root: &Path, name: &str, email: &str, message: &str) {
@@ -78,4 +78,63 @@ async fn git_log_matches_author_terms_against_the_author_only() {
     } else {
         eprintln!("NOTE: the git-history index did not catch up; only the live walk was exercised");
     }
+}
+
+const STEADY_RS: &str = "pub fn stable() -> u32 {\n    7\n}\n\npub fn churn() -> u32 {\n    0\n}\n";
+
+/// A symbol's history is read from a bounded window of the commits touching its file. The oldest
+/// commit of a window that was used up is where the walk stopped, not where the symbol appeared.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn git_log_of_a_symbol_does_not_call_the_edge_of_its_window_an_introduction() {
+    let (dir, client) = started_with(&[("src/steady.rs", STEADY_RS)]).await;
+    let root = dir.path();
+    for round in 1..=15 {
+        std::fs::write(
+            root.join("src/steady.rs"),
+            STEADY_RS.replace("    0\n", &format!("    {round}\n")),
+        )
+        .unwrap();
+        super::git(root, &["commit", "-qam", &format!("round {round}")]);
+    }
+
+    let windowed = call(
+        &client,
+        "git_log",
+        json!({ "path": "src/steady.rs", "symbol": "stable", "limit": 1 }),
+    )
+    .await;
+    assert_eq!(
+        windowed["history"],
+        json!([]),
+        "`stable` did not change in the 8 commits inspected: {windowed}"
+    );
+    assert_eq!(windowed["truncated"], true, "{windowed}");
+    assert_eq!(windowed["truncated_reason"], "window", "{windowed}");
+
+    let whole = call(
+        &client,
+        "git_log",
+        json!({ "path": "src/steady.rs", "symbol": "stable", "limit": 20 }),
+    )
+    .await;
+    let changes: Vec<(&str, &str)> = whole["history"]
+        .as_array()
+        .expect("history")
+        .iter()
+        .map(|entry| (entry["change"].as_str().unwrap(), entry["summary"].as_str().unwrap()))
+        .collect();
+    assert_eq!(changes, [("introduced", "init")], "{whole}");
+    assert!(
+        whole.get("truncated").is_none(),
+        "all 16 commits fit the window: {whole}"
+    );
+
+    let churn = call(
+        &client,
+        "git_log",
+        json!({ "path": "src/steady.rs", "symbol": "churn", "limit": 1 }),
+    )
+    .await;
+    assert_eq!(churn["history"][0]["change"], "modified", "{churn}");
+    assert_eq!(churn["history"][0]["summary"], "round 15", "{churn}");
 }

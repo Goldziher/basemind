@@ -564,8 +564,12 @@ pub(in crate::mcp) struct SymbolHistoryResponse {
     /// `"structural"`, or `"structural_loose"`. Clients can use this to confirm the mode
     /// they got matches the mode they asked for.
     pub hash_mode: &'static str,
+    /// The history may reach further back than what is listed.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub truncated: bool,
+    /// `window`: older commits touch the file than the `commits_inspected` most recent ones, so
+    /// the symbol's earlier changes (and its introduction) are not listed; a larger `limit` widens
+    /// the window. `shallow_clone`: the clone holds no older history.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub truncated_reason: Option<&'static str>,
     /// Opaque cursor to pass back on the next call when more history entries are available.

@@ -497,34 +497,47 @@ pub(super) fn run_symbol_history(state: &ServerState, params: SymbolHistoryParam
         None => 0,
     };
 
-    let walk_depth = (skip.saturating_add(limit).saturating_add(1).saturating_mul(4)).min(LOG_WALK_MAX) as u32;
-    let commits: Vec<CommitInfo> = match git_history_if_fresh(state, &head) {
-        Some(index) => index.commits_touching(&params.path, 0, walk_depth as usize),
+    let walk_depth = (skip.saturating_add(limit).saturating_add(1).saturating_mul(4)).min(LOG_WALK_MAX);
+    // One commit past the window: it tells a used-up window from a whole history, and it is the
+    // state the window's oldest commit is compared against.
+    let fetch = (walk_depth + 1) as u32;
+    let mut commits: Vec<CommitInfo> = match git_history_if_fresh(state, &head) {
+        Some(index) => index.commits_touching(&params.path, 0, fetch as usize),
         None => state
             .shared
             .git_cache
-            .log(repo, &head, Some(&params.path), walk_depth, false)
+            .log(repo, &head, Some(&params.path), fetch, false)
             .map_err(|e| McpError::internal_error(format!("log: {e}"), None))?
             .as_ref()
             .clone(),
+    };
+    let fingerprint_at = |sha: &str| -> Result<Option<Vec<u8>>, McpError> {
+        let blob = repo
+            .read_blob_at_rev_with_oid(sha, &params.path)
+            .map_err(|e| McpError::internal_error(format!("blob: {e}"), None))?;
+        Ok(blob.and_then(|(bytes, oid)| {
+            outline_entry_for_blob(&state.shared.outline_cache, oid, lang, bytes)
+                .and_then(|entry| symbol_fingerprint(&entry, &params.name, kind, occurrence, lang, hash_mode))
+        }))
+    };
+    // Without the seed the oldest commit inspected would read as the symbol's introduction
+    // whenever the symbol exists there.
+    let beyond_window = (commits.len() > walk_depth).then(|| commits.split_off(walk_depth));
+    let window_exhausted = beyond_window.is_some();
+    let seed = match beyond_window.as_deref().and_then(<[CommitInfo]>::first) {
+        Some(older) => fingerprint_at(&older.sha)?,
+        None => None,
     };
 
     let chronological: Vec<CommitInfo> = commits.iter().cloned().rev().collect();
 
     let mut history = Vec::new();
-    let mut prev_fp: Option<Vec<u8>> = None;
-    let mut prev_existed = false;
+    let mut prev_existed = seed.is_some();
+    let mut prev_fp: Option<Vec<u8>> = seed;
     let mut inspected: u32 = 0;
     for c in chronological {
         inspected += 1;
-        let blob = repo
-            .read_blob_at_rev_with_oid(&c.sha, &params.path)
-            .map_err(|e| McpError::internal_error(format!("blob: {e}"), None))?;
-        let fingerprint = match blob {
-            Some((bytes, oid)) => outline_entry_for_blob(&state.shared.outline_cache, oid, lang, bytes)
-                .and_then(|entry| symbol_fingerprint(&entry, &params.name, kind, occurrence, lang, hash_mode)),
-            None => None,
-        };
+        let fingerprint = fingerprint_at(&c.sha)?;
         let change = match (prev_existed, fingerprint.as_ref()) {
             (false, Some(_)) => Some("introduced"),
             (true, None) => Some("removed"),
@@ -557,7 +570,13 @@ pub(super) fn run_symbol_history(state: &ServerState, params: SymbolHistoryParam
     let has_more = total_history > skip + page.len();
     let next_cursor = has_more.then(|| super::cursor::Cursor::encode_in_memory((skip + page.len()) as u64, snapshot));
 
-    let truncated = repo.is_shallow();
+    let truncated_reason = if window_exhausted {
+        Some("window")
+    } else if repo.is_shallow() {
+        Some("shallow_clone")
+    } else {
+        None
+    };
     json_result(&SymbolHistoryResponse {
         path: params.path,
         name: params.name,
@@ -565,8 +584,8 @@ pub(super) fn run_symbol_history(state: &ServerState, params: SymbolHistoryParam
         commits_inspected: inspected,
         history: page,
         hash_mode: hash_mode.as_str(),
-        truncated,
-        truncated_reason: truncated.then_some("shallow_clone"),
+        truncated: truncated_reason.is_some(),
+        truncated_reason,
         next_cursor,
         cursor_invalidated: false,
         elapsed_us: elapsed_us(started),
