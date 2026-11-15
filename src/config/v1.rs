@@ -107,10 +107,10 @@ pub struct ScanConfig {
     #[serde(default = "ScanConfig::default_skip_submodules")]
     pub skip_submodules: bool,
     /// When true (default), the scanner runs L2 extraction (calls + docs) inline with L1.
-    /// L2 populates the `calls_by_callee` Fjall partition that drives `code_refs`. Flipping to `false` halves the scan budget on large
-    /// repos at the cost
-    /// of empty reference-search results until a foreground L2 pass is triggered (or the
-    /// existing on-demand `query::file_outline_l2` lazy path runs).
+    /// L2 populates the `calls_by_callee` Fjall partition that drives `code_refs`. Flipping to
+    /// `false` halves the scan budget on large repos at the cost of empty reference-search results
+    /// until a foreground L2 pass is triggered (or the existing on-demand
+    /// `query::file_outline_l2` lazy path runs).
     #[serde(default = "ScanConfig::default_eager_l2")]
     pub eager_l2: bool,
     /// Extra directories to index in addition to the repository root. Each entry is an

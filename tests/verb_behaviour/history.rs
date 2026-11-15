@@ -256,9 +256,8 @@ async fn git_log_of_a_symbol_the_working_tree_no_longer_has_reads_its_history() 
     );
 }
 
-/// `git_blame {symbol}` blames the lines the symbol has in the blamed revision. The span used to
-/// come from the working-tree outline, which is a different set of lines as soon as the file has
-/// changed above the symbol.
+/// `git_blame {symbol}` blames the lines the symbol has in the blamed revision. The working-tree
+/// outline names a different set of lines as soon as the file has changed above the symbol.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn git_blame_of_a_symbol_uses_its_span_at_the_blamed_revision() {
     let (dir, client) = started().await;

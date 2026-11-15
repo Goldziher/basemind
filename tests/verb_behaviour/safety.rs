@@ -40,7 +40,7 @@ async fn git_diff_refuses_a_symlink_that_leaves_the_repository() {
 }
 
 /// Between two revisions only blobs are read, and a tracked symlink's blob is its target path. The
-/// working-tree containment check has nothing to protect there and used to refuse the diff.
+/// working-tree containment check has nothing to protect there, so it is not applied.
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn git_diff_between_revisions_reads_a_tracked_symlink_as_git_stores_it() {

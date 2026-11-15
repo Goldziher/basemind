@@ -75,8 +75,8 @@ pub(crate) const INIT_SCAFFOLD_TOML: &str = r##"# basemind configuration — htt
 # max_file_bytes = 2097152
 # Skip paths under any submodule root listed in .gitmodules.
 # skip_submodules = true
-# Run L2 extraction (calls + docs) inline with L1. Powers `code_refs`. Turning off roughly halves scan time on large repos but leaves reference search empty
-# until an L2 pass.
+# Run L2 extraction (calls + docs) inline with L1. Powers `code_refs`. Turning off roughly halves
+# scan time on large repos but leaves reference search empty until an L2 pass.
 # eager_l2 = true
 # Absolute paths OUTSIDE the repo to also index (e.g. a Bazel external cache). Ignored unless the
 # operator sets BASEMIND_ALLOW_EXTRA_ROOTS in the environment (1 = any workspace, or a `:`-separated

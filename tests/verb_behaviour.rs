@@ -386,7 +386,7 @@ async fn code_refs_with_a_path_pins_the_definition_and_is_exact_too() {
     assert_eq!(pinned["total"], 2, "exact, like the unpinned scan: {pinned}");
 }
 
-/// Where a language has no scope / import resolution, `resolved_total: 0` used to read as "nothing
+/// Where a language has no scope / import resolution, a `resolved_total: 0` would read as "nothing
 /// binds to this definition". The response says resolution did not run, and tells a language with
 /// no resolution engine (rust) from a file of a supported one that bound nothing (the ruby fixture):
 /// the scan writes resolution facts only for a file that has some, so their absence alone does not

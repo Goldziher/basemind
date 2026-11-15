@@ -177,8 +177,8 @@ async fn git_blame_refuses_another_file_s_cursor() {
     .await;
 }
 
-/// A cursor issued before HEAD moved used to come back as an empty page flagged
-/// `cursor_invalidated`; a cursor issued before a rescan was an error. Both are the error now.
+/// A cursor issued before HEAD moved is an error, like one issued before a rescan: an empty page
+/// in its place would read as the end of the list.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_cursor_that_outlived_its_history_is_an_error() {
     let (dir, client) = started().await;
@@ -278,8 +278,8 @@ pub fn retry_upload() {}
 pub fn render_outline() {}
 ";
 
-/// The ranked tools share one cursor shape, so a `code_search` cursor used to be accepted by
-/// `docs_search`.
+/// The ranked tools share one cursor shape, so only the binding to the query keeps a
+/// `code_search` cursor out of `docs_search`.
 #[cfg(feature = "code-search")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn code_search_refuses_another_query_s_cursor() {
