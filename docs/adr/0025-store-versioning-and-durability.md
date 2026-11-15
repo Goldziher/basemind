@@ -10,27 +10,33 @@ date: 2026-11-15
 
 ## Context
 
-basemind keeps nine kinds of persistent state. Each grew its own version constant, its own rule for
+basemind keeps a dozen kinds of persistent state. Each grew its own version constant, its own rule for
 a version it does not recognise, and its own durability, and no record says which is right. Two
 facts make the differences matter: several basemind versions run against one cache at once
 (ADR-0024), and two of the stores hold data a user or agent wrote that nothing can regenerate.
 
 The table is the state of `main`. Paths are relative to the cache root
-(`<data dir>/cache/`, `src/store_layout.rs`) unless they start with `comms/`. "Minor" is
-`RELEASE_MINOR` in `src/version.rs`, 33 today. "Older" and "newer" compare the version on disk with
-the binary's.
+(`<data dir>/cache/`, `src/store_layout.rs`) unless they start with `comms/` or `<data dir>/`.
+"Minor" is `RELEASE_MINOR` in `src/version.rs`, 33 today. "Older" and "newer" compare the version on
+disk with the binary's. "Not verified" marks a cell the audit did not check in the code.
 
 | Store | Path, engine | Content | Version | Older / newer on disk | Durability of a write |
 |---|---|---|---|---|---|
 | File map | `workspaces/<ws>/views/<view>/index.msgpack`, msgpack | derived | `extract::SCHEMA_VER` = minor | rebuild / refused | temp file, fsync, rename, after the index seal |
 | Code index | `…/views/<view>/index.fjall`, Fjall | derived | `INDEX_SCHEMA_VER` = minor + 6 | wiped on open / refused | buffered; one synced commit per scan seal and one sync at scan end |
-| Blobs | `blobs/<content hash>.fm.msgpack`, compressed msgpack | derived | `extract::SCHEMA_VER`, in each blob | rebuild / refused | temp file, rename, no fsync |
+| Blobs | `blobs/<content hash>.<kind>.msgpack`, kinds `fm`, `chunk`, `rref`, `doc`; compressed msgpack | derived | `extract::SCHEMA_VER`, in each `fm` blob; other kinds not verified | rebuild / refused | temp file, rename, no fsync |
+| Base store (ADR-0016) | `repos/<group>/base/gen-<n>/`, sorted runs with a `base.json` manifest | derived | index and blob schema versions, in the manifest | a generation of any other version is not used | files and manifest synced |
 | Memory notes | `repos/<group>/memory.fjall`, Fjall | user-authored | none | no check | buffered, no sync |
 | Vectors | `workspaces/<ws>/lance/`, LanceDB | derived | `MEMORY_SCHEMA_VER` = minor, with dimension and model, in `meta.json` | directory wiped / refused | LanceDB's commit; not synced by basemind |
-| Git history | `git-history.fjall` in a workspace directory, Fjall | derived | `GIT_HISTORY_SCHEMA` = minor + 6 | wiped on open / refused | buffered, no sync |
-| Git cache | `git-cache/` in a workspace directory, msgpack files | derived | `GIT_CACHE_SCHEMA` = minor + 1 | recomputed and overwritten, in both directions | temp file, rename, no fsync |
+| Git history | `workspaces/<ws>/git-history.fjall`, Fjall | derived | `GIT_HISTORY_SCHEMA` = minor + 6 | wiped on open / refused | buffered, no sync |
+| Git cache | `workspaces/<ws>/git-cache/`, msgpack files | derived | `GIT_CACHE_SCHEMA` = minor + 1 | recomputed and overwritten, in both directions | temp file, rename, no fsync |
 | Agent store | `comms/store.fjall`, Fjall | user-authored | `COMMS_SCHEMA_VER` = minor | **wiped on open** / refused | buffered, no sync |
 | Status sidecar | `workspaces/<ws>/status.json`, JSON | derived | `STATUS_SIDECAR_SCHEMA_VER` = 1 | ignored, in both directions | temp file, rename, no fsync |
+| Registry snapshot | `<data dir>/registry/registry.msgpack`, msgpack | derived | `REGISTRY_SCHEMA_VER` = 1 | read as empty, then overwritten, in both directions | temp file, rename, no fsync |
+| Telemetry | `workspaces/<ws>/telemetry.jsonl`, JSON lines | log | none | no check | append, no fsync |
+
+Blob files with the pre-0.9 suffixes `l1` and `l2` are dead format, deleted on sight by the blob
+sweep (`src/store_gc.rs`).
 
 Three things in the table are defects, not variety. The agent store is user-authored and is erased
 by every minor release. Memory notes have no version, so no later binary can tell what layout it is
@@ -47,39 +53,50 @@ the file map (`src/store_durability.rs`).
 
 Every store is classified as derived or user-authored, and the class decides its rules.
 
-**(a) Derived stores** — file map, code index, blobs, vectors, git history, git cache, status
-sidecar:
+**(a) Derived stores** — file map, code index, blobs, base store, vectors, git history, git cache,
+status sidecar, registry snapshot:
 
-- The version is tied to the release minor, with a fixed offset where a store needs to change
-  between minors.
+- The version is tied to the release minor, with a fixed offset where a store needs one. **Every
+  minor release therefore discards these stores and rescans**, automatically, whether or not a
+  format changed. The status sidecar and the registry snapshot keep their own constant, because a
+  mismatch costs nothing: they are rewritten by the next scan or registration.
 - An **older** version on disk is discarded and rebuilt. It is never served.
 - A **newer** version on disk is never wiped and never overwritten by an older binary. The older
   binary refuses the store with an error that says it was written by a newer basemind.
-- Where two versions would otherwise write the same path, the path includes the schema version.
-  This applies to blobs.
+- **Blobs only: the path includes the schema version**, for every kind (`fm`, `chunk`, `rref`,
+  `doc`). Blobs are global: one directory shared by every workspace and every installed version,
+  written without a lock, so two versions meet in it constantly. The other derived stores are per
+  workspace or repository group and are opened under a lock; there the refusal above is enough.
 - No fsync is required beyond what clause (d) needs: a lost derived record is rebuilt.
 
 **(b) User-authored stores** — memory notes and agent messages:
 
 - Each has its own version constant, independent of the release.
 - Layout changes are forward-only migrations run at open. The store is never wiped by a version
-  difference, older or newer.
-- A newer store is not written by an older binary.
+  difference, older or newer. A protocol generation change (ADR-0024) is not a version difference:
+  the agent store of a new generation starts empty. Memory notes are not generation-scoped.
+- A newer store is not written by an older binary. For memory notes the older binary refuses to
+  open the store at all, the simplest rule; the agent store opens for reading (ADR-0021).
+- The memory-notes store has no version today. It gains one the first time a binary that has the
+  constant opens it; binaries older than that cannot see the version and are not held by this rule.
 - A write is synced to disk before the call returns where its loss cannot be recovered. That is
   the case for memory notes. Agent messages are the stated exception: ADR-0021 commits a post with
   buffered persist and accepts losing the last posts on power loss.
 
 **(c) A derived store built from a user-authored one** — the vector rows of memory notes:
 
-- After a wipe it is rebuilt from the user-authored store.
+- After a wipe it is rebuilt from the notes, lazily, by the first search by meaning that finds the
+  vector table missing or behind the notes.
 - It is never the source of a value returned to a caller. It supplies keys and ranks; the value is
   read from the user-authored record.
 
 **(d) Crash consistency.** The scan-generation seal is the contract between the code index and the
-file map: both carry the same generation, the index is synced first, and a file map that is ahead
-of its index is discarded together with that index. Vectors are covered by a pending set: the
-files whose vector rows are not yet committed are recorded durably before they are embedded and
-cleared after the commit, so an interrupted scan knows what to redo.
+file map: both carry the same scan generation, the index is synced first, and a file map that is
+ahead of its index is discarded together with that index. Vectors are covered by a pending set
+recorded in the file map: the files whose vector rows are not yet committed are written there
+before they are embedded and cleared after the commit, so an interrupted scan knows what to redo.
+
+Telemetry is a log, in neither class: unversioned, append-only, and safe to delete.
 
 Fixes are in progress on the branch `fix/storage-audit`. This record is the policy they are held
 to.
@@ -100,20 +117,22 @@ Code on `main` that does not meet the policy:
   directory is wiped, so after a minor upgrade notes exist but are not found by meaning until they
   are saved again.
 - **Blobs** — one path per content hash for every schema version, against (a).
-- **Git cache** — a payload of any other version is overwritten, including a newer one, against
-  (a). The cost is repeated recomputation while two minors alternate; no data is lost.
-- **Status sidecar** — an older binary's scan overwrites a newer sidecar, against (a). The sidecar
-  feeds the status line only.
+- **Git cache, status sidecar, registry snapshot** — a newer payload is overwritten by an older
+  binary, against (a). The cost is recomputation while two minors alternate; no data is lost.
 - **Vectors** — no pending set was found on `main`.
 
 Costs of the policy itself:
 
+- **A rescan at every minor release**, for every workspace, including minors that change no
+  format. Decoupling each derived version from the minor would avoid it and is not decided here.
 - Versioned blob paths mean two installed minors each keep a full set of blobs for the same files.
   Disk use for blobs doubles while both are in use, and garbage collection must know which schema
-  directories are still live.
-- A newer derived store makes an older binary fail for that workspace until the user upgrades or
-  removes the store. Refusing is chosen over rebuilding, because the newer binary would wipe the
-  rebuilt store in turn, and the two would rebuild in a loop.
+  versions are still live.
+- **Two versions alternating on one workspace:** once the newer has scanned it, the older refuses
+  that workspace until the user upgrades or removes the store. Refusing is chosen over rebuilding,
+  because the newer binary would wipe the rebuilt store in turn, and the two would rebuild in a
+  loop. The same holds for memory notes once a newer binary has migrated them.
+- Until the first search by meaning after a wipe, memory notes are found by key and prefix only.
 - Syncing every memory save adds one fsync per save.
 - Reading memory values from the user-authored record adds one Fjall lookup per search hit.
 - User-authored stores now need a migration for every layout change, and each migration needs a
