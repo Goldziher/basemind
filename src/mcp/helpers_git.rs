@@ -145,9 +145,6 @@ pub(super) fn git_blame(state: &ServerState, p: GitBlameParams) -> Result<CallTo
             None,
         )
     };
-    if p.limit == Some(0) {
-        return Err(shape_error("`limit` must be at least 1"));
-    }
     if p.line == Some(0) || p.end_line == Some(0) {
         return Err(shape_error("lines are 1-based"));
     }

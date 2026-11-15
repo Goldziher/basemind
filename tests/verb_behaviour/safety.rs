@@ -301,18 +301,50 @@ async fn a_filter_that_selects_no_file_is_refused_with_what_would_match() {
     );
 }
 
-/// `limit: 0` asks for nothing and used to get it, with a cursor back to the same position.
+/// `limit: 0` asks for an empty page, whose cursor (where one is issued) points back at the same
+/// position. Every tool that takes `limit` refuses it, in the same words.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_zero_limit_is_refused() {
+async fn a_zero_limit_is_refused_by_every_tool_that_pages() {
     let (_dir, client) = started().await;
     for (tool, arguments) in [
         ("code_outline", json!({ "path": "src/outline.rs", "limit": 0 })),
+        ("code_symbols", json!({ "name": "file_outline", "limit": 0 })),
         ("code_grep", json!({ "pattern": "fn", "limit": 0 })),
+        ("code_search", json!({ "query": "outline a file", "limit": 0 })),
+        ("code_refs", json!({ "name": "file_outline", "limit": 0 })),
+        (
+            "code_refs",
+            json!({ "name": "file_outline", "path": "src/outline.rs", "limit": 0 }),
+        ),
+        (
+            "code_refs",
+            json!({ "name": "Renderer", "relation": "implementations", "limit": 0 }),
+        ),
+        (
+            "code_refs",
+            json!({ "name": "outline", "relation": "importers", "limit": 0 }),
+        ),
         ("find_files", json!({ "limit": 0 })),
         ("find_files", json!({ "query": "outline", "limit": 0 })),
+        ("docs_search", json!({ "query": "outline", "limit": 0 })),
+        ("git_log", json!({ "limit": 0 })),
+        ("git_log", json!({ "path": "src/outline.rs", "limit": 0 })),
+        ("git_log", json!({ "path": "src/", "limit": 0 })),
+        ("git_log", json!({ "query": "init", "limit": 0 })),
+        (
+            "git_log",
+            json!({ "path": "src/outline.rs", "symbol": "file_outline", "limit": 0 }),
+        ),
+        ("git_blame", json!({ "path": "src/outline.rs", "limit": 0 })),
+        ("memory_search", json!({ "limit": 0 })),
+        ("memory_search", json!({ "query": "outline", "limit": 0 })),
     ] {
-        let message = call_err(&client, tool, arguments).await;
-        assert!(message.contains("`limit` must be at least 1"), "{tool}: {message}");
+        let message = call_err(&client, tool, arguments.clone()).await;
+        assert_eq!(
+            message,
+            format!("`{tool}`: `limit` must be at least 1; omit it for the default page size."),
+            "{arguments}"
+        );
     }
 }
 

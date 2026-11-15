@@ -15,7 +15,6 @@ use super::helpers::{
     RefsSource, SEARCH_LIMIT_DEFAULT, SEARCH_LIMIT_MAX, elapsed_us, json_result, kind_to_str, run_find_callers,
     run_find_files, run_find_implementations, run_find_references, run_list_files, run_workspace_grep,
 };
-use super::helpers_filters::reject_zero_limit;
 use super::index_route::IndexRoute;
 use super::tool_contract::{budget, not_indexed};
 use super::types::{
@@ -40,7 +39,6 @@ pub(super) async fn code_grep(state: &ServerState, p: CodeGrepParams) -> Result<
             None,
         ));
     }
-    reject_zero_limit("code_grep", p.limit)?;
     let started = std::time::Instant::now();
     state.await_cache_ready().await;
     run_workspace_grep(
@@ -112,7 +110,6 @@ pub(super) async fn code_search(state: &ServerState, p: CodeSearchParams) -> Res
 
 /// `find_files`: fuzzy file-name search, or a plain listing when `query` is omitted.
 pub(super) async fn find_files(state: &ServerState, p: FindFilesToolParams) -> Result<CallToolResult, McpError> {
-    reject_zero_limit("find_files", p.limit)?;
     match p.query.filter(|query| !query.trim().is_empty()) {
         Some(query) => {
             run_find_files(
@@ -351,8 +348,6 @@ fn line_of(newlines: &[usize], offset: usize) -> u32 {
 /// would end on the wrong lines.
 pub(super) async fn code_outline(state: &ServerState, p: CodeOutlineParams) -> Result<CallToolResult, McpError> {
     use std::sync::atomic::Ordering;
-
-    reject_zero_limit("code_outline", p.limit)?;
 
     let started = std::time::Instant::now();
     let generation = state.shared.cache_generation.load(Ordering::Relaxed);

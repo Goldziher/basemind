@@ -37,6 +37,9 @@ pub(super) trait Paged: ToolArgs + Serialize {
 
     /// The `cursor` argument.
     fn cursor_mut(&mut self) -> &mut Option<Cursor>;
+
+    /// The `limit` argument.
+    fn limit(&self) -> Option<u32>;
 }
 
 macro_rules! paged {
@@ -46,6 +49,10 @@ macro_rules! paged {
 
             fn cursor_mut(&mut self) -> &mut Option<Cursor> {
                 &mut self.cursor
+            }
+
+            fn limit(&self) -> Option<u32> {
+                self.limit
             }
         })+
     };
@@ -135,12 +142,16 @@ fn unbind(tool: &str, cursor: &Cursor, id: u32) -> Result<Cursor, McpError> {
 }
 
 /// Run a paginated tool body with its cursor bound to the query.
+///
+/// Every tool that takes `limit` pages through here, so this is also where `limit: 0` is refused,
+/// once and in the same words for all of them.
 pub(super) async fn bound<T, F, Fut>(mut params: T, body: F) -> Result<CallToolResult, McpError>
 where
     T: Paged,
     F: FnOnce(T) -> Fut,
     Fut: Future<Output = Result<CallToolResult, McpError>>,
 {
+    super::helpers_filters::reject_zero_limit(T::TOOL, params.limit())?;
     let id = query_id(&params);
     let slot = params.cursor_mut();
     if let Some(cursor) = slot.as_ref() {
@@ -286,12 +297,29 @@ mod tests {
             fn cursor_mut(&mut self) -> &mut Option<Cursor> {
                 &mut self.cursor
             }
+
+            fn limit(&self) -> Option<u32> {
+                None
+            }
         }
         let twin = Twin {
             path: "a.rs".into(),
             cursor: None,
         };
         assert_ne!(query_id(&twin), query_id(&outline("a.rs", None, None)));
+    }
+
+    #[tokio::test]
+    async fn a_zero_limit_is_refused_before_the_body_runs() {
+        let refused = bound(outline("a.rs", Some(0), None), |_| async {
+            panic!("the body must not run for an empty page")
+        })
+        .await
+        .expect_err("limit 0");
+        assert_eq!(
+            refused.message,
+            "`code_outline`: `limit` must be at least 1; omit it for the default page size."
+        );
     }
 
     #[tokio::test]
