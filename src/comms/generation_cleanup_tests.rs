@@ -313,7 +313,7 @@ fn the_pre_generation_store_is_moved_aside_before_anything_is_deleted() {
     assert_eq!(findings[0].verdict, Verdict::Failed);
     assert_eq!(
         left_in(base.path()),
-        [aside.clone()],
+        std::slice::from_ref(&aside),
         "the store is not left half-deleted under its own name, and the lock is gone with the rest"
     );
     set_mode(&base.path().join(aside).join("stuck"), 0o700);
