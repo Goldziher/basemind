@@ -22,6 +22,9 @@ point open, the branch does the following:
 - On an archived thread, a join by a member, an invitation that names only members and a second
   archive succeed and change nothing.
 - A replay key on an announcing read is ignored.
+- The announcing read is `--announce` on the CLI's `inbox` command. The unwired tool layer also
+  takes it as the `announce` field of `agent_inbox`, which the section on that tool leaves out.
+  Either is refused beside `id`, `peek`, `unread: false` and a `wait_secs` above 0.
 - A message in a reply carries `body_bytes`, the size of its whole body. In an announcing read
   `body` is empty.
 - The store puts the thread-cap notice into the reply of the post. The other notices are the
@@ -219,7 +222,7 @@ carries the message id, the thread id, `created`, `pending` and `notices`.
 
 **Announcing read.** A fourth read mode exists for the hooks and is not a field of the MCP tool. In
 the request body it is `mark: notify` (`Mark::Notify`, read kind `ReadKind::Announcing` on the
-branch); the hook asks for it through the CLI's `inbox` command, whose flag is not written yet. It:
+branch); the hook asks for it through the CLI's `inbox` command, with `--announce`. It:
 
 - returns front matter only (message id, thread, subject, sender, timestamp, body size), never a
   body, for unread messages above `max(read_seq, notified_seq)`, oldest first, at most `limit`;
