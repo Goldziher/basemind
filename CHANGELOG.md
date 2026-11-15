@@ -273,11 +273,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   it. Signals are sent only to a process still there afterwards, silent to `Stop` and `Ping`, that
   the generation's `daemon.pid` then names. `basemind comms stop` now reaches a daemon that speaks
   another protocol version, waits the normal stop timeout for its answer and honours a refusal.
-- `basemind serve` no longer retries forever, silently, when it cannot get a daemon. A newer daemon
-  on another protocol ends the session: pending and following requests are answered with the reason
-  and the process exits non-zero. An older daemon that will not stop is logged at warn, retried with
-  a back-off growing to a minute and asked to stop at most once a minute; requests arriving
-  meanwhile are answered with the reason instead of left unread.
+- `basemind serve` no longer retries forever, silently, when it cannot get a daemon, and no longer
+  exits before reading the host's `initialize` when it cannot get one at start. The first
+  connection goes through the same path as a reconnect. A failure no retry can cure ends the
+  session: a newer daemon on another protocol or relay protocol, a socket path too long to bind, a
+  session the daemon declines. Pending and following requests, `initialize` included, are answered
+  with the reason and the process exits non-zero without waiting for the host to close its pipe.
+  Anything else is retried. For ten seconds requests are held: those in flight that are safe to
+  replay are re-sent if a daemon arrives, as after a restart, and the host's pipe is left unread.
+  After that they are answered with the retryable reason while the retries go on, so a session
+  that started under a busy older daemon comes up by itself once that daemon leaves. An older
+  daemon that will not stop, the daemon ceiling and `BASEMIND_NO_AUTOSPAWN` with no daemon are
+  logged at warn and retried with a back-off growing to a minute; a daemon that is merely slow to
+  come back is logged at warn from the fourth failed attempt. An older daemon is asked to stop at
+  most once a minute.
 - With `BASEMIND_ALLOW_HTTP`, a daemon that finds the default port `51786` in use (by the daemon of
   another protocol generation, for one) binds an OS-assigned port and records it in `http.addr`
   instead of running without its HTTP front-end. An address set with `BASEMIND_HTTP_ADDR` is still

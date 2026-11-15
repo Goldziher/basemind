@@ -215,15 +215,183 @@ fn busy() -> CommsResponse {
 }
 
 fn status(pid: u32) -> CommsResponse {
+    status_of(pid, OLDER)
+}
+
+/// The `Status` of a daemon of release `version` on a protocol this binary does not speak.
+fn status_of(pid: u32, version: &str) -> CommsResponse {
     CommsResponse::Status(StatusReport {
         pid,
-        version: OLDER.to_string(),
+        version: version.to_string(),
         build_id: "scripted".to_string(),
         proto_ver: OTHER_PROTO,
         uptime_secs: 1,
         threads: 0,
         subscribers: 0,
     })
+}
+
+/// A `basemind serve` child and the host's ends of its pipes. Its stdout is read on a thread, so
+/// a relay that never answers fails the test instead of hanging it.
+struct Serve {
+    child: std::process::Child,
+    stdin: std::process::ChildStdin,
+    lines: std::sync::mpsc::Receiver<String>,
+    /// Where the child's stderr goes, to explain a failure.
+    log: PathBuf,
+}
+
+impl Serve {
+    fn start(machine: &Machine) -> Self {
+        use std::io::BufRead as _;
+        use std::process::Stdio;
+
+        let root = machine._tmp.path().join("workspace");
+        std::fs::create_dir_all(&root).expect("mkdir workspace");
+        // The config file is what marks a directory as a workspace root `serve` accepts.
+        std::fs::write(root.join("basemind.toml"), "").expect("write basemind.toml");
+        let log = machine._tmp.path().join("serve.stderr");
+        let stderr = std::fs::File::create(&log).expect("create stderr log");
+        let mut child = Command::new(BIN)
+            .arg("--root")
+            .arg(&root)
+            .arg("serve")
+            .env("BASEMIND_COMMS_DIR", &machine.comms_dir)
+            .env("BASEMIND_DATA_HOME", &machine.data_home)
+            .env_remove(NO_AUTOSPAWN_ENV)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(stderr)
+            .spawn()
+            .expect("spawn basemind serve");
+        let stdout = child.stdout.take().expect("piped stdout");
+        let stdin = child.stdin.take().expect("piped stdin");
+        let (send, lines) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            for line in std::io::BufReader::new(stdout).lines().map_while(Result::ok) {
+                if send.send(line).is_err() {
+                    break;
+                }
+            }
+        });
+        Self {
+            child,
+            stdin,
+            lines,
+            log,
+        }
+    }
+
+    fn initialize(&mut self) {
+        let request = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#;
+        writeln!(self.stdin, "{request}").expect("write initialize");
+        self.stdin.flush().expect("flush");
+    }
+
+    /// The next line the relay writes to the host.
+    fn answer(&self, within: Duration) -> serde_json::Value {
+        let line = self.lines.recv_timeout(within).unwrap_or_else(|error| {
+            let stderr = std::fs::read_to_string(&self.log).unwrap_or_default();
+            panic!("basemind serve must answer the host ({error}); its stderr:\n{stderr}")
+        });
+        serde_json::from_str(&line).expect("the relay writes JSON lines")
+    }
+
+    /// The exit status once the process ends by itself, the host's pipe still open; `None` if it
+    /// is still running after `limit`.
+    fn exits_within(&mut self, limit: Duration) -> Option<std::process::ExitStatus> {
+        let deadline = std::time::Instant::now() + limit;
+        loop {
+            if let Some(status) = self.child.try_wait().expect("poll basemind serve") {
+                return Some(status);
+            }
+            if std::time::Instant::now() >= deadline {
+                return None;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+}
+
+impl Drop for Serve {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+/// The main upgrade path through the binary: a session of an older install starts while a newer
+/// daemon it cannot talk to holds the generation. The host's `initialize` must be read and
+/// answered with the reason, and the process must then end without the host closing its pipe.
+#[test]
+fn serve_started_under_a_newer_daemon_answers_initialize_and_exits_by_itself() {
+    let machine = Machine::new();
+    let stand_in = StandIn::spawn();
+    machine.record_daemon(stand_in.0);
+    let pid = stand_in.0;
+    let daemon = Scripted::serve(&machine.socket(), move |request| match request {
+        CommsRequest::Status => Some(status_of(pid, "999.0.0")),
+        CommsRequest::Ping => Some(CommsResponse::Pong),
+        _ => None,
+    });
+
+    let mut serve = Serve::start(&machine);
+    serve.initialize();
+
+    let answer = serve.answer(Duration::from_secs(60));
+    assert_eq!(answer["id"], 1, "{answer}");
+    let message = answer["error"]["message"].as_str().expect("an error message");
+    assert!(message.contains("update this basemind"), "{answer}");
+    assert_eq!(answer["error"]["data"]["retryable"], false, "{answer}");
+    let status = serve
+        .exits_within(Duration::from_secs(30))
+        .expect("a session that can never start ends, with the host's pipe still open");
+    assert!(!status.success(), "and reports failure");
+    assert_eq!(daemon.asked(), ["status"], "a newer daemon is not asked to stop");
+    assert!(stand_in.alive(), "nor signalled");
+}
+
+/// The same start under an older daemon that is busy: nothing can be done yet, and something can
+/// later. The host is told why after the hold window, and the relay stays up to retry.
+#[test]
+fn serve_started_under_an_older_daemon_that_will_not_stop_says_so_and_keeps_running() {
+    /// The relay's hold window, less the slack of timing it from outside the process.
+    const HELD_AT_LEAST: Duration = Duration::from_secs(8);
+    let machine = Machine::new();
+    let stand_in = StandIn::spawn();
+    machine.record_daemon(stand_in.0);
+    let pid = stand_in.0;
+    let daemon = Scripted::serve(&machine.socket(), move |request| match request {
+        CommsRequest::Status => Some(status(pid)),
+        CommsRequest::Stop => Some(busy()),
+        CommsRequest::Ping => Some(CommsResponse::Pong),
+        _ => None,
+    });
+
+    let mut serve = Serve::start(&machine);
+    let started = std::time::Instant::now();
+    serve.initialize();
+
+    let answer = serve.answer(Duration::from_secs(90));
+    assert_eq!(answer["id"], 1, "{answer}");
+    let message = answer["error"]["message"].as_str().expect("an error message");
+    assert!(
+        message.contains("is still running and did not stop") && message.contains("basemind comms stop"),
+        "the reason of the latest attempt, with the way out: {answer}"
+    );
+    assert_eq!(answer["error"]["data"]["retryable"], true, "{answer}");
+    assert!(
+        started.elapsed() >= HELD_AT_LEAST,
+        "initialize is held for the daemon to become reachable before it is refused: {:?}",
+        started.elapsed()
+    );
+    assert!(
+        serve.exits_within(Duration::from_secs(1)).is_none(),
+        "the relay keeps running and retrying"
+    );
+    let stops = daemon.asked().iter().filter(|asked| **asked == "stop").count();
+    assert_eq!(stops, 1, "the daemon is asked to stop once, not on every retry");
+    assert!(stand_in.alive());
 }
 
 fn text(bytes: &[u8]) -> String {

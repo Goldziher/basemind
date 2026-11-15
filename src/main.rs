@@ -16,6 +16,8 @@ mod comms_cli;
 mod doctor_cli;
 mod lang_cli;
 #[cfg(all(feature = "comms", any(unix, windows)))]
+mod serve_relay;
+#[cfg(all(feature = "comms", any(unix, windows)))]
 mod stdio_relay;
 
 #[derive(Parser, Debug)]
@@ -822,7 +824,7 @@ fn cmd_serve(root: &std::path::Path, view: &str) -> Result<()> {
     {
         // No in-process fallback: relaying is the only path. If it fails the client sees a clear
         // error rather than silently degrading to a fragile pipe-bound server.
-        try_serve_relay(root, view).context(
+        serve_relay::try_serve_relay(root, view).context(
             "relay to the basemind daemon failed; run `basemind daemon ensure` to check the daemon, \
              then retry",
         )
@@ -834,121 +836,5 @@ fn cmd_serve(root: &std::path::Path, view: &str) -> Result<()> {
             "`basemind serve` needs the comms daemon to host the MCP server; rebuild with \
              `--features comms` (the stdio MCP server is served by relaying to that daemon)."
         )
-    }
-}
-
-/// Keep the MCP host's stdio pipes alive across daemon replacement. The protocol-aware relay tracks
-/// initialization and in-flight request IDs, allowing it to reconnect without asking Codex or
-/// Claude to recreate the MCP process.
-#[cfg(all(feature = "comms", any(unix, windows)))]
-fn try_serve_relay(root: &std::path::Path, view: &str) -> Result<()> {
-    use basemind::comms::identity;
-
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .context("build tokio runtime")?;
-
-    runtime.block_on(async move {
-        let agent = identity::mcp_session_agent_id(root);
-        let canonical_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
-        let view = view.to_owned();
-        let mut stop_pacing = stdio_relay::StopPacing::default();
-        let ask = stop_pacing.may_ask();
-        let stream = open_relay_connection(canonical_root.clone(), view.clone(), agent.clone(), ask).await?;
-
-        tracing::info!(
-            pid = std::process::id(),
-            view = %view,
-            root = %canonical_root.display(),
-            "basemind serve: persistent relay connected"
-        );
-        stdio_relay::run(tokio::io::stdin(), tokio::io::stdout(), stream, move || {
-            let ask = stop_pacing.may_ask();
-            open_relay_connection(canonical_root.clone(), view.clone(), agent.clone(), ask)
-        })
-        .await
-        .context("run persistent daemon relay")
-    })
-}
-
-#[cfg(all(feature = "comms", unix))]
-type RelayStream = tokio::net::UnixStream;
-
-#[cfg(all(feature = "comms", windows))]
-type RelayStream = tokio::net::windows::named_pipe::NamedPipeClient;
-
-/// Connect a relay to the daemon, bringing one up if needed. `ask_stop` says whether this attempt
-/// may ask an older daemon to make way (see `stdio_relay::StopPacing`).
-#[cfg(all(feature = "comms", any(unix, windows)))]
-async fn open_relay_connection(
-    root: PathBuf,
-    view: String,
-    agent: basemind::comms::ids::AgentId,
-    ask_stop: bool,
-) -> Result<RelayStream> {
-    use basemind::comms::{relay, singleton};
-
-    let paths = singleton::resolve_paths().context("resolve comms paths")?;
-    if ask_stop {
-        singleton::ensure_daemon(&paths).await
-    } else {
-        singleton::ensure_daemon_without_stop(&paths).await
-    }
-    .context("ensure daemon")?;
-    let mut stream = relay_connect_stream(&paths.socket_path)
-        .await
-        .context("connect to daemon socket")?;
-    let hello = relay::RelayHello {
-        relay_proto_ver: relay::RELAY_PROTO_VER,
-        root,
-        view,
-        agent,
-    };
-    let welcome = relay::client_handshake(&mut stream, &hello)
-        .await
-        .context("relay handshake")?;
-    if welcome.relay_proto_ver != relay::RELAY_PROTO_VER {
-        anyhow::bail!(
-            "daemon relay-proto {} != client {}",
-            welcome.relay_proto_ver,
-            relay::RELAY_PROTO_VER
-        );
-    }
-    if !welcome.accepted {
-        anyhow::bail!("daemon declined relay: {:?}", welcome.code);
-    }
-    Ok(stream)
-}
-
-/// Dial the daemon's relay endpoint: a Unix-domain socket on unix.
-#[cfg(all(feature = "comms", unix))]
-async fn relay_connect_stream(socket_path: &std::path::Path) -> std::io::Result<tokio::net::UnixStream> {
-    tokio::net::UnixStream::connect(socket_path).await
-}
-
-/// Dial the daemon's relay endpoint: a named pipe on Windows, retrying while the pipe is busy.
-#[cfg(all(feature = "comms", windows))]
-async fn relay_connect_stream(
-    socket_path: &std::path::Path,
-) -> std::io::Result<tokio::net::windows::named_pipe::NamedPipeClient> {
-    use tokio::net::windows::named_pipe::ClientOptions;
-
-    const ERROR_PIPE_BUSY: i32 = 231;
-    const RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_millis(50);
-    const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
-
-    let deadline = std::time::Instant::now() + CONNECT_TIMEOUT;
-    loop {
-        match ClientOptions::new().open(socket_path) {
-            Ok(client) => return Ok(client),
-            Err(e) if e.raw_os_error() == Some(ERROR_PIPE_BUSY) => {
-                if std::time::Instant::now() >= deadline {
-                    return Err(e);
-                }
-                tokio::time::sleep(RETRY_INTERVAL).await;
-            }
-            Err(source) => return Err(source),
-        }
     }
 }

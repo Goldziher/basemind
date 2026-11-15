@@ -899,8 +899,9 @@ signals one that answers. A daemon of the same or a newer release is never asked
 used, or, when it is newer and speaks another protocol, reported (`update this basemind`). An older
 one is asked to stop and, if it refuses because it is serving other sessions, is used when the
 protocol matches and reported otherwise; until it goes, clients of the newer build on another
-protocol have no daemon, and a `basemind serve` relay answers requests with that error while it
-retries with a growing back-off. A daemon that closed its socket gets the whole exit window to
+protocol have no daemon, and a `basemind serve` relay, at session start as after a restart, holds
+requests for ten seconds and then answers them with that error while it retries with a growing
+back-off. A daemon that closed its socket gets the whole exit window to
 leave. SIGTERM and SIGKILL are reserved for a process still there after it, silent to `Stop` and
 `Ping`, that the generation's `daemon.pid` names at that moment. The full table is the module doc
 of `src/comms/singleton.rs`.
