@@ -367,3 +367,54 @@ async fn git_status_lists_are_bounded_with_a_count_of_the_rest() {
     assert!(clean.get("omitted").is_none(), "{clean}");
     assert_eq!(clean["is_clean"], true, "{clean}");
 }
+
+/// A read over the size cap ends at the end of a line and reports the line it really ends on.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn code_read_cuts_an_oversized_read_at_a_line_and_reports_where() {
+    let mut big = String::from("pub fn enormous() {\n");
+    for index in 0..4_000 {
+        let _ = writeln!(big, "    let caf\u{e9}_{index:04} = \"{}\";", "\u{e9}".repeat(20));
+    }
+    big.push_str("}\n");
+    let (_dir, client) = started_with(&[("src/big.rs", big.as_str())]).await;
+    let lines: Vec<&str> = big.lines().collect();
+
+    for arguments in [
+        json!({ "path": "src/big.rs", "line": 1, "end_line": 4002 }),
+        json!({ "path": "src/big.rs", "symbol": "enormous" }),
+    ] {
+        let read = call(&client, "code_read", arguments).await;
+        assert_eq!(read["truncated"], true, "{}", read["bytes"]);
+        assert_eq!(
+            read["bytes"].as_u64(),
+            Some(big.len() as u64 - 1),
+            "the whole span's size"
+        );
+        let body = read["body"].as_str().expect("body");
+        assert!(body.len() <= 128 * 1024, "{} bytes", body.len());
+        assert!(!body.contains('\u{fffd}'), "no character was cut in half");
+        let returned: Vec<&str> = body.lines().collect();
+        assert!(returned.len() > 1_000, "{} lines", returned.len());
+        assert_eq!(returned, lines[..returned.len()], "whole lines only");
+        assert_eq!(read["line"], 1);
+        assert_eq!(
+            read["end_line"].as_u64(),
+            Some(returned.len() as u64),
+            "the last line returned, not the last line asked for"
+        );
+    }
+
+    let small = call(
+        &client,
+        "code_read",
+        json!({ "path": "src/big.rs", "line": 4001, "end_line": 9999 }),
+    )
+    .await;
+    assert_eq!(small["body"], format!("{}\n}}", lines[4000]), "{small}");
+    assert_eq!(small["end_line"], 4002, "{small}");
+    assert_eq!(small["total_lines"], 4002, "{small}");
+    assert!(
+        small.get("truncated").is_none() || small["truncated"] == false,
+        "{small}"
+    );
+}

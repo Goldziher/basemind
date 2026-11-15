@@ -202,7 +202,7 @@ pub(super) struct ExpandResponse {
     pub kind: String,
     /// 1-based first line of the symbol.
     pub line: u32,
-    /// 1-based last line of the symbol, inclusive (derived from the working-tree file).
+    /// 1-based last line of the returned body, inclusive: the symbol's last line unless `truncated`.
     pub end_line: u32,
     /// Raw source text of the symbol body (`file_bytes[start_byte..end_byte]`).
     pub body: String,
@@ -222,7 +222,7 @@ pub(super) struct ReadSpanResponse {
     pub path: String,
     /// 1-based first line returned.
     pub line: u32,
-    /// 1-based last line returned, inclusive (clamped to the file).
+    /// 1-based last line returned, inclusive: clamped to the file, and to what fits when `truncated`.
     pub end_line: u32,
     pub total_lines: u32,
     pub body: String,

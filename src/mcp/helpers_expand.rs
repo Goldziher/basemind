@@ -14,8 +14,8 @@ use crate::query;
 
 /// Maximum body size returned in a single read (128 KiB).
 ///
-/// Symbols and spans larger than this are truncated at the boundary and `truncated: true` is set in
-/// the response. Chosen to comfortably cover any hand-written function while bounding the response
+/// Symbols and spans larger than this are cut after the last whole line that fits; the response
+/// then says `truncated: true` and its `end_line` is the last line returned. Chosen to comfortably cover any hand-written function while bounding the response
 /// against generated code or minified JS.
 const EXPAND_BODY_CAP: usize = 128 * 1024;
 
@@ -67,36 +67,123 @@ async fn read_span(
     }
     state.await_cache_ready().await;
     let file = indexed_file(state, &*state.shared.store.read().await, "code_read", path)?;
-    let bytes = std::fs::read(file).map_err(|_| not_indexed(state, "code_read", path))?;
-    let newlines: Vec<usize> = memchr::memchr_iter(b'\n', &bytes).collect();
-    let total_lines = newlines.len() as u32 + u32::from(bytes.last().is_some_and(|byte| *byte != b'\n'));
+    let span = read_lines(&file, line, end_line).map_err(|_| not_indexed(state, "code_read", path))?;
+    let total_lines = span.total_lines;
     if line > total_lines.max(1) {
         return Err(McpError::invalid_params(
             format!("`code_read`: `{path}` has {total_lines} lines; line {line} is out of range"),
             None,
         ));
     }
-    let start = if line == 1 { 0 } else { newlines[line as usize - 2] + 1 };
-    let last = end_line.min(total_lines.max(1));
-    let end = newlines.get(last as usize - 1).copied().unwrap_or(bytes.len());
-    let raw = bytes.get(start..end).unwrap_or(&[]);
-    let (body, truncated) = cap_body(raw);
+    let (body, truncated, last) = cap_body(&span.head, span.bytes, line);
     json_result(&ReadSpanResponse {
         path: path.to_string(),
         line,
         end_line: last,
         total_lines,
         body,
-        bytes: raw.len(),
+        bytes: span.bytes,
         truncated,
     })
 }
 
-/// `raw` as text, cut at [`EXPAND_BODY_CAP`].
-fn cap_body(raw: &[u8]) -> (String, bool) {
-    let truncated = raw.len() > EXPAND_BODY_CAP;
-    let kept = if truncated { &raw[..EXPAND_BODY_CAP] } else { raw };
-    (String::from_utf8_lossy(kept).into_owned(), truncated)
+/// Lines `line..=end_line` of a file, as [`read_lines`] found them.
+struct LineSpan {
+    /// The span's leading bytes: all of it, or one byte more than [`EXPAND_BODY_CAP`].
+    head: Vec<u8>,
+    /// Byte length of the whole span, without the last line's terminator.
+    bytes: usize,
+    total_lines: u32,
+}
+
+/// Stream `file` once, keeping the head of lines `line..=end_line` and counting every line.
+///
+/// A response carries at most [`EXPAND_BODY_CAP`] bytes of the span, so the file is never held
+/// whole: ten lines out of a generated file of any size cost its IO and a few kilobytes of RAM.
+fn read_lines(file: &std::path::Path, line: u32, end_line: u32) -> std::io::Result<LineSpan> {
+    use std::io::Read;
+
+    let mut reader = std::fs::File::open(file)?;
+    let mut chunk = vec![0u8; 64 * 1024];
+    let mut head: Vec<u8> = Vec::new();
+    let (mut bytes, mut current, mut newlines) = (0usize, 1u32, 0u32);
+    let mut last_byte = None;
+    loop {
+        let read = reader.read(&mut chunk)?;
+        if read == 0 {
+            break;
+        }
+        let mut rest = &chunk[..read];
+        last_byte = rest.last().copied();
+        while !rest.is_empty() {
+            let (piece, ends_line) = match memchr::memchr(b'\n', rest) {
+                Some(newline) => (&rest[..=newline], true),
+                None => (rest, false),
+            };
+            if (line..=end_line).contains(&current) {
+                bytes += piece.len();
+                let room = (EXPAND_BODY_CAP + 1).saturating_sub(head.len());
+                head.extend_from_slice(&piece[..piece.len().min(room)]);
+            }
+            if ends_line {
+                current = current.saturating_add(1);
+                newlines += 1;
+            }
+            rest = &rest[piece.len()..];
+        }
+    }
+    let total_lines = newlines + u32::from(last_byte.is_some_and(|byte| byte != b'\n'));
+    // The last line's terminator is not part of the span: one line is read as `text`, not `text\n`.
+    let last = end_line.min(total_lines.max(1));
+    if bytes > 0 && last <= newlines {
+        bytes -= 1;
+        head.truncate(bytes.min(head.len()));
+    }
+    Ok(LineSpan {
+        head,
+        bytes,
+        total_lines,
+    })
+}
+
+/// `head`, the leading bytes of a span of `bytes` bytes that starts on `line`, as a response body.
+///
+/// A span over [`EXPAND_BODY_CAP`] is cut after the last whole line that fits, so the body never
+/// ends in a line fragment or half a character; one line longer than the cap is cut at a character
+/// boundary. Returns the body, whether it was cut, and the 1-based line it ends on.
+fn cap_body(head: &[u8], bytes: usize, line: u32) -> (String, bool, u32) {
+    let truncated = bytes > EXPAND_BODY_CAP;
+    let kept = if truncated {
+        let window = &head[..EXPAND_BODY_CAP.min(head.len())];
+        match memchr::memrchr(b'\n', window) {
+            Some(newline) => &window[..newline],
+            None => {
+                let mut end = window.len();
+                while end > 0 && head.get(end).is_some_and(|byte| byte & 0xC0 == 0x80) {
+                    end -= 1;
+                }
+                &window[..end]
+            }
+        }
+    } else {
+        head
+    };
+    let last_line = line + memchr::memchr_iter(b'\n', kept).count() as u32;
+    (String::from_utf8_lossy(kept).into_owned(), truncated, last_line)
+}
+
+/// The whole of `file`, for a symbol read, refused past `max_bytes`.
+///
+/// The scan indexes no file over `scan.max_file_bytes`, so a larger one has outgrown its index
+/// entry and would be parsed afresh at whatever size it has reached.
+fn read_bounded(file: &std::path::Path, max_bytes: u64) -> std::io::Result<Option<Vec<u8>>> {
+    use std::io::Read;
+
+    let mut bytes = Vec::new();
+    std::fs::File::open(file)?
+        .take(max_bytes.saturating_add(1))
+        .read_to_end(&mut bytes)?;
+    Ok((bytes.len() as u64 <= max_bytes).then_some(bytes))
 }
 
 /// Resolve one symbol by `(path, name[, kind][, line])` and return its raw source body. The outline
@@ -120,8 +207,19 @@ async fn run_expand(state: &ServerState, params: ExpandParams) -> Result<CallToo
         let entry = store.lookup(&params.path).cloned();
         (l1, entry, indexed_file(state, &store, "code_read", &params.path)?)
     };
-    let file_bytes = std::fs::read(&file)
-        .map_err(|e| McpError::invalid_params(format!("`code_read`: read {}: {e}", params.path), None))?;
+    let max_bytes = state.shared.config.scan.max_file_bytes;
+    let file_bytes = read_bounded(&file, max_bytes)
+        .map_err(|e| McpError::invalid_params(format!("`code_read`: read {}: {e}", params.path), None))?
+        .ok_or_else(|| {
+            McpError::invalid_params(
+                format!(
+                    "`code_read`: `{}` is now over {max_bytes} bytes (`scan.max_file_bytes`), too large to \
+                     locate a symbol in. Read a line span with `line` and `end_line` instead.",
+                    params.path
+                ),
+                None,
+            )
+        })?;
     // The indexed spans locate a symbol only in the bytes that were indexed. In an edited file the
     // symbol is found by parsing what is there now, never by cutting at the old offsets.
     let stale = !entry
@@ -166,20 +264,15 @@ async fn run_expand(state: &ServerState, params: ExpandParams) -> Result<CallToo
     let end = (symbol.end_byte as usize).min(file_bytes.len());
     let raw = file_bytes.get(start..end).unwrap_or(&[]);
 
-    let end_row = {
-        let slice_for_count = file_bytes.get(..end).unwrap_or(&[]);
-        slice_for_count.iter().filter(|&&b| b == b'\n').count() as u32
-    };
-
     let full_bytes = raw.len();
-    let (body, truncated) = cap_body(raw);
+    let (body, truncated, end_line) = cap_body(raw, full_bytes, symbol.start_row + 1);
 
     let response = ExpandResponse {
         path: params.path.to_string(),
         name: symbol.name.clone(),
         kind: kind_to_str(symbol.kind).to_string(),
         line: symbol.start_row + 1,
-        end_line: (end_row + 1).max(symbol.start_row + 1),
+        end_line,
         body,
         bytes: full_bytes,
         truncated,
@@ -187,4 +280,74 @@ async fn run_expand(state: &ServerState, params: ExpandParams) -> Result<CallToo
     };
 
     json_result(&response)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn span_of(contents: &[u8], line: u32, end_line: u32) -> (Vec<u8>, usize, u32) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("f.txt");
+        std::fs::write(&file, contents).expect("write");
+        let span = read_lines(&file, line, end_line).expect("read");
+        (span.head, span.bytes, span.total_lines)
+    }
+
+    #[test]
+    fn a_span_excludes_its_last_terminator_and_counts_every_line() {
+        assert_eq!(span_of(b"one\ntwo\nthree\n", 2, 2), (b"two".to_vec(), 3, 3));
+        assert_eq!(
+            span_of(b"one\ntwo\nthree\n", 1, 3),
+            (b"one\ntwo\nthree".to_vec(), 13, 3)
+        );
+        assert_eq!(span_of(b"one\ntwo\nthree", 3, 9), (b"three".to_vec(), 5, 3));
+        assert_eq!(span_of(b"one\n\nthree\n", 2, 2), (Vec::new(), 0, 3));
+        assert_eq!(span_of(b"", 1, 1), (Vec::new(), 0, 0));
+        assert_eq!(span_of(b"one\n", 5, 6), (Vec::new(), 0, 1));
+    }
+
+    #[test]
+    fn a_span_longer_than_the_cap_keeps_only_its_head() {
+        let line = "x".repeat(99) + "\n";
+        let contents = line.repeat(3_000);
+        let (head, bytes, total_lines) = span_of(contents.as_bytes(), 1, 3_000);
+        assert_eq!(head.len(), EXPAND_BODY_CAP + 1);
+        assert_eq!(bytes, contents.len() - 1);
+        assert_eq!(total_lines, 3_000);
+
+        let (body, truncated, last_line) = cap_body(&head, bytes, 1);
+        assert!(truncated);
+        assert_eq!(
+            body.len(),
+            (EXPAND_BODY_CAP / 100) * 100 - 1,
+            "whole lines, no trailing newline"
+        );
+        assert_eq!(last_line as usize, EXPAND_BODY_CAP / 100);
+    }
+
+    #[test]
+    fn one_line_longer_than_the_cap_is_cut_at_a_character_boundary() {
+        let contents = "é".repeat(EXPAND_BODY_CAP);
+        let (head, bytes, _) = span_of(contents.as_bytes(), 1, 1);
+        let (body, truncated, last_line) = cap_body(&head, bytes, 7);
+        assert!(truncated);
+        assert_eq!(body.len(), EXPAND_BODY_CAP);
+        assert!(body.chars().all(|c| c == 'é'));
+        assert_eq!(last_line, 7);
+
+        let shifted = format!("a{contents}");
+        let (head, bytes, _) = span_of(shifted.as_bytes(), 1, 1);
+        let (body, _, _) = cap_body(&head, bytes, 1);
+        assert_eq!(body.len(), EXPAND_BODY_CAP - 1, "the cap falls inside a character");
+    }
+
+    #[test]
+    fn a_whole_file_read_is_refused_past_its_bound() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("f.txt");
+        std::fs::write(&file, b"12345").expect("write");
+        assert_eq!(read_bounded(&file, 5).expect("read"), Some(b"12345".to_vec()));
+        assert_eq!(read_bounded(&file, 4).expect("read"), None);
+    }
 }
