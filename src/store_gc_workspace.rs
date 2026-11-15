@@ -18,7 +18,7 @@
 //!
 //! | Workspace dir | Action |
 //! |---|---|
-//! | marker present, recorded root missing | reap (`remove_dir_all`) |
+//! | marker present, recorded root missing | reap (renamed aside, then deleted) |
 //! | marker present, recorded root exists | keep |
 //! | marker **absent**, holds index or other state | **keep** — unverifiable; it self-heals on next open |
 //! | marker **absent**, only stale disposable leftovers | reap — see [`DISPOSABLE_LEFTOVERS`] |
@@ -104,6 +104,7 @@ fn reap_orphaned_workspaces_at(workspaces_dir: &Path, now: SystemTime) -> Result
     if !workspaces_dir.exists() {
         return Ok(report);
     }
+    crate::store_lock::purge_reaped(workspaces_dir);
     let entries = std::fs::read_dir(workspaces_dir).map_err(|source| GcError::Io {
         path: workspaces_dir.to_path_buf(),
         source,
@@ -157,7 +158,7 @@ fn reap_orphaned_workspaces_at(workspaces_dir: &Path, now: SystemTime) -> Result
             continue;
         };
         let bytes = dir_size(&workspace_dir)?;
-        std::fs::remove_dir_all(&workspace_dir).map_err(|source| GcError::Io {
+        crate::store_lock::remove_dir_under_lock(&workspace_dir).map_err(|source| GcError::Io {
             path: workspace_dir.clone(),
             source,
         })?;
@@ -268,7 +269,7 @@ fn reap_markerless(workspace_dir: &Path, report: &mut ReapReport) -> Result<(), 
         return Ok(());
     }
     let bytes = dir_size(workspace_dir)?;
-    std::fs::remove_dir_all(workspace_dir).map_err(|source| GcError::Io {
+    crate::store_lock::remove_dir_under_lock(workspace_dir).map_err(|source| GcError::Io {
         path: workspace_dir.to_path_buf(),
         source,
     })?;

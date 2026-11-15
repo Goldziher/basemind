@@ -203,7 +203,15 @@ async fn stop_is_refused_while_a_forwarded_rescan_is_running() {
     let (_dir, broker) = temp_broker();
     let (tx, _rx) = mpsc::channel(8);
     let ws = tempfile::tempdir().expect("workspace");
-    let sweep = broker.blob_gc_lock.write().await;
+    let gate = broker.workspaces.blob_gc_gate();
+    let (release, released) = std::sync::mpsc::channel::<()>();
+    let (held, holding) = std::sync::mpsc::channel::<()>();
+    let sweep = std::thread::spawn(move || {
+        let _sweeping = gate.try_sweep(Duration::ZERO).expect("nothing is scanning");
+        held.send(()).expect("signal the sweep holds the gate");
+        let _ = released.recv();
+    });
+    holding.recv().expect("the sweep holds the gate");
     let mut scanning = Session::default();
     let rescan = broker.handle(
         CommsRequest::Rescan {
@@ -231,7 +239,8 @@ async fn stop_is_refused_while_a_forwarded_rescan_is_running() {
     );
     assert!(!broker.scan_cancel.is_cancelled());
 
-    drop(sweep);
+    drop(release);
+    sweep.join().expect("the sweep thread");
     rescan.await;
     assert_eq!(
         broker.handle(CommsRequest::Stop, &mut stopping, &tx).await,

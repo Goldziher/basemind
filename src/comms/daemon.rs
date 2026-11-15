@@ -26,7 +26,6 @@ use std::time::{Duration, Instant};
 
 use ahash::AHashMap;
 use tokio::sync::Mutex;
-use tokio::sync::RwLock;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
 
@@ -206,13 +205,6 @@ pub struct Broker {
     /// Test hook: milliseconds the NEXT store call sleeps for on its blocking thread, then resets.
     #[cfg(test)]
     pub(super) store_delay_ms: Arc<AtomicU64>,
-    /// Serializes destructive global blob GC against in-flight rescans. Rescans take the READ side
-    /// (many workspaces rescan concurrently); the GC sweep takes the WRITE side. A rescan writes new
-    /// content-addressed blobs BEFORE its `index.msgpack` (which `collect_referenced_hashes` reads)
-    /// is rewritten, so a GC that reference-counts mid-rescan would see those fresh blobs as orphans
-    /// and reap them — a first-ever scan (no prior index) could lose ALL its blobs. This lock keeps
-    /// the two mutually exclusive without blocking concurrent rescans of different workspaces.
-    blob_gc_lock: RwLock<()>,
     /// The accept-loop shutdown signal, installed by the daemon entry point after it builds the
     /// `watch` channel. `begin_drain` fires it so a `Stop` RPC (or any drain) actually breaks the
     /// front-end accept loop — not just notifies connected sinks. Absent in tests that drive the
@@ -301,7 +293,6 @@ impl Broker {
             store_write_gate: Arc::new(std::sync::Mutex::new(())),
             #[cfg(test)]
             store_delay_ms: Arc::new(AtomicU64::new(0)),
-            blob_gc_lock: RwLock::new(()),
             shutdown: std::sync::OnceLock::new(),
             comms_dir: std::sync::OnceLock::new(),
             fatal_store: AtomicBool::new(false),
@@ -672,8 +663,9 @@ impl Broker {
     }
 
     /// Reap orphaned workspace cache dirs, then reference-count the machine-global blob store across
-    /// every *surviving* workspace and reap orphan blobs — both under the WRITE side of
-    /// [`Broker::blob_gc_lock`], so no rescan is writing blobs mid-sweep. Only the daemon calls this:
+    /// every *surviving* workspace and reap orphan blobs — both holding the workspace pool's blob-GC
+    /// gate exclusively (see [`super::blob_gc_gate`]), so no scan the daemon runs is writing blobs
+    /// mid-sweep. Only the daemon calls this:
     /// it alone sees every workspace, the precondition for a safe cross-workspace sweep.
     ///
     /// The workspace reap runs FIRST and inside the same guard on purpose. A workspace whose worktree
@@ -689,7 +681,7 @@ impl Broker {
     }
 
     /// [`Broker::run_blob_gc`] with an explicit bound on how long the sweep waits for the
-    /// blob-GC write lock. The wait must be bounded: a runaway rescan holds the read side for
+    /// blob-GC gate. The wait must be bounded: a runaway rescan holds the shared side for
     /// its whole (potentially unbounded) duration, and an unbounded `write().await` here is how
     /// the maintenance loop silently parked forever while the cache grew to 116 GB. On timeout
     /// the cycle returns [`GcError::Starved`](crate::store_gc::GcError::Starved) — skipped and
@@ -699,12 +691,14 @@ impl Broker {
         lock_timeout: std::time::Duration,
     ) -> Result<crate::store_gc::GcReport, crate::store_gc::GcError> {
         let _working = self.begin_work();
-        let Ok(_sweep_guard) = tokio::time::timeout(lock_timeout, self.blob_gc_lock.write()).await else {
-            let error = crate::store_gc::GcError::Starved(lock_timeout);
-            crate::store_gc::persist_gc_error(&error);
-            return Err(error);
-        };
-        let result = match tokio::task::spawn_blocking(crate::store_gc::reap_gc_and_enforce_budget).await {
+        let gate = self.workspaces.blob_gc_gate();
+        let swept = tokio::task::spawn_blocking(move || {
+            let Some(_sweeping) = gate.try_sweep(lock_timeout) else {
+                return Err(crate::store_gc::GcError::Starved(lock_timeout));
+            };
+            crate::store_gc::reap_gc_and_enforce_budget()
+        });
+        let result = match swept.await {
             Ok(result) => result,
             Err(join) => Err(crate::store_gc::GcError::Join(join.to_string())),
         };

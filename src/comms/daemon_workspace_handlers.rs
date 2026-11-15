@@ -35,7 +35,6 @@ impl Broker {
             }
             self.begin_work()
         };
-        let _rescan_guard = self.blob_gc_lock.read().await;
         let pool = Arc::clone(&self.workspaces);
         let cancel = self.scan_cancel.clone();
         let started = Instant::now();

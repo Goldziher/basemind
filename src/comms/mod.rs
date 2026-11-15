@@ -11,6 +11,8 @@ pub mod identity;
 pub mod ids;
 
 #[cfg(all(feature = "comms", any(unix, windows)))]
+pub(crate) mod blob_gc_gate;
+#[cfg(all(feature = "comms", any(unix, windows)))]
 pub mod client;
 /// Second `impl CommsClient` block: the daemon-forwarding rescan / memory /
 /// resolved-refs / git-history RPCs, split out of `client.rs` for the line cap.

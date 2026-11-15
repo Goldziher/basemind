@@ -316,6 +316,8 @@ pub(crate) struct WorkspacePool {
     /// so the daemon reclaims the orphaned blobs promptly instead of waiting out the maintenance
     /// interval. A stored permit coalesces any number of passes into one wake-up.
     cleanup_signal: std::sync::Arc<tokio::sync::Notify>,
+    /// Held shared by every scan this pool runs, exclusively by the blob sweep.
+    blob_gc: std::sync::Arc<super::blob_gc_gate::BlobGcGate>,
 }
 
 impl WorkspacePool {
@@ -327,7 +329,13 @@ impl WorkspacePool {
             cap: cap.max(1),
             scan_cancel: ScanCancel::new(),
             cleanup_signal: std::sync::Arc::new(tokio::sync::Notify::new()),
+            blob_gc: std::sync::Arc::default(),
         }
+    }
+
+    /// The gate the blob sweep must hold exclusively (see [`super::blob_gc_gate`]).
+    pub(crate) fn blob_gc_gate(&self) -> std::sync::Arc<super::blob_gc_gate::BlobGcGate> {
+        std::sync::Arc::clone(&self.blob_gc)
     }
 
     /// The signal raised after a pass that displaced artifacts; the daemon's cleanup task waits on it.
@@ -372,6 +380,8 @@ impl WorkspacePool {
         embed: bool,
         cancel: &ScanCancel,
     ) -> Result<(ScanStats, bool), WorkspacePoolError> {
+        // Taken here, not by the callers: every way into a scan passes through this function.
+        let _scanning = self.blob_gc.scanning();
         let entry = self.get_or_open(root)?;
         entry.touch();
         let _busy = entry.begin_busy();
