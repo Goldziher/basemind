@@ -5,7 +5,7 @@ use std::fmt::Write as _;
 
 use serde_json::json;
 
-use super::{call, call_err, git, started, started_with};
+use super::{call, call_err, git, names, started, started_with};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn git_blame_validates_its_span_and_limit() {
@@ -318,4 +318,52 @@ async fn git_log_of_a_symbol_honours_max_tokens() {
     bounded["cursor"] = first["next_cursor"].clone();
     let second = call(&client, "git_log", bounded).await;
     assert_eq!(second["history"][0]["summary"], "round 3", "{second}");
+}
+
+/// A structural diff is asked for what changed. The unchanged symbols are a count, not a list as
+/// long as the file's outline.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn git_diff_structural_counts_the_unchanged_symbols() {
+    let (dir, client) = started().await;
+    let path = dir.path().join("src/outline.rs");
+    let source = std::fs::read_to_string(&path).unwrap();
+    std::fs::write(&path, format!("{source}\npub fn brand_new() {{}}\n")).unwrap();
+    call(&client, "index_rescan", json!({ "paths": ["src/outline.rs"] })).await;
+
+    let outline = call(&client, "code_outline", json!({ "path": "src/outline.rs" })).await;
+    let diff = call(
+        &client,
+        "git_diff",
+        json!({ "path": "src/outline.rs", "structural": true }),
+    )
+    .await;
+    assert_eq!(names(&diff["added"]), ["brand_new"], "{diff}");
+    assert_eq!(
+        diff["common"].as_u64(),
+        Some(outline["total"].as_u64().unwrap() - 1),
+        "{diff}"
+    );
+}
+
+/// The working-tree status lists a bounded number of paths per bucket and counts the rest.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn git_status_lists_are_bounded_with_a_count_of_the_rest() {
+    let (dir, client) = started().await;
+    let root = dir.path();
+    for index in 0..600 {
+        std::fs::write(root.join(format!("untracked_{index:03}.txt")), "x\n").unwrap();
+    }
+
+    let status = call(&client, "git_diff", json!({})).await;
+    let listed = status["untracked"].as_array().expect("untracked").len();
+    assert_eq!(listed, 200, "{}", status["omitted"]);
+    assert_eq!(status["omitted"], 400, "600 untracked files in all");
+    assert_eq!(status["is_clean"], false);
+
+    for index in 0..600 {
+        std::fs::remove_file(root.join(format!("untracked_{index:03}.txt"))).unwrap();
+    }
+    let clean = call(&client, "git_diff", json!({})).await;
+    assert!(clean.get("omitted").is_none(), "{clean}");
+    assert_eq!(clean["is_clean"], true, "{clean}");
 }

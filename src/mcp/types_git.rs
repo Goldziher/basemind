@@ -287,6 +287,9 @@ pub(in crate::mcp) struct WorkingTreeStatusView {
     pub staged_deleted: Vec<RelPath>,
     pub modified: Vec<RelPath>,
     pub untracked: Vec<RelPath>,
+    /// Paths left out because a list above was cut at its cap, over all five lists.
+    #[serde(skip_serializing_if = "super::types::is_zero")]
+    pub omitted: usize,
     pub is_clean: bool,
     /// Server-side handler latency in microseconds — the tool body's own execution (git walk /
     /// index lookup + response construction), excluding MCP transport, argument deserialization,
@@ -366,7 +369,9 @@ pub(in crate::mcp) struct DiffOutlineResponse {
     pub rev: String,
     pub added: Vec<DiffSymbolView>,
     pub removed: Vec<DiffSymbolView>,
-    pub common: Vec<DiffSymbolView>,
+    /// How many symbols both sides have. A count: the list is the file's outline, which
+    /// `code_outline` returns.
+    pub common: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
     /// Server-side handler latency in microseconds — the tool body's own execution (git walk /

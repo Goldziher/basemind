@@ -249,6 +249,10 @@ pub(super) fn reject_external_path(path: &RelPath) -> Result<(), McpError> {
     Ok(())
 }
 
+/// Paths listed per status bucket. A checkout with an unignored build directory has tens of
+/// thousands of untracked files, and the status is asked for to see what changed, not to list them.
+const STATUS_PATHS_MAX: usize = 200;
+
 /// The `status` operation: the working tree's staged / unstaged / untracked buckets.
 fn run_status(state: &ServerState) -> Result<CallToolResult, McpError> {
     let started = std::time::Instant::now();
@@ -261,12 +265,26 @@ fn run_status(state: &ServerState) -> Result<CallToolResult, McpError> {
         && s.staged_deleted.is_empty()
         && s.modified.is_empty()
         && s.untracked.is_empty();
+    let mut omitted = 0;
+    let mut capped = |mut paths: Vec<RelPath>| {
+        omitted += paths.len().saturating_sub(STATUS_PATHS_MAX);
+        paths.truncate(STATUS_PATHS_MAX);
+        paths
+    };
+    let (staged_added, staged_modified, staged_deleted, modified, untracked) = (
+        capped(s.staged_added),
+        capped(s.staged_modified),
+        capped(s.staged_deleted),
+        capped(s.modified),
+        capped(s.untracked),
+    );
     json_result(&WorkingTreeStatusView {
-        staged_added: s.staged_added,
-        staged_modified: s.staged_modified,
-        staged_deleted: s.staged_deleted,
-        modified: s.modified,
-        untracked: s.untracked,
+        staged_added,
+        staged_modified,
+        staged_deleted,
+        modified,
+        untracked,
+        omitted,
         is_clean,
         elapsed_us: elapsed_us(started),
     })

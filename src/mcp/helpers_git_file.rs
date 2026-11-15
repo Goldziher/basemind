@@ -241,15 +241,7 @@ pub(super) async fn run_diff_outline(
                     kind: k.to_string(),
                 })
                 .collect();
-            let common = h
-                .iter()
-                .filter(|p| ts.contains(*p))
-                .cloned()
-                .map(|(n, k)| DiffSymbolView {
-                    name: n,
-                    kind: k.to_string(),
-                })
-                .collect();
+            let common = h.iter().filter(|p| ts.contains(*p)).count();
             (added, removed, common, None)
         }
         (Some(h), None) => (
@@ -260,7 +252,7 @@ pub(super) async fn run_diff_outline(
                 })
                 .collect(),
             Vec::new(),
-            Vec::new(),
+            0,
             Some(format!("path absent at {rev_spec}; entire file treated as added")),
         ),
         (None, Some(t)) => (
@@ -271,7 +263,7 @@ pub(super) async fn run_diff_outline(
                     kind: k.to_string(),
                 })
                 .collect(),
-            Vec::new(),
+            0,
             Some("path not indexed in the current view; entire file treated as removed".to_string()),
         ),
         (None, None) => {
