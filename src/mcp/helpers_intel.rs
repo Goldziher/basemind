@@ -128,7 +128,8 @@ pub(super) fn resolution_gap(language: Option<&str>, pass_complete: bool) -> Opt
 pub(super) const NO_RESOLUTION_FACTS: &str = "no resolution facts for this file";
 
 /// `resolution` value when the index's resolve pass did not run to completion.
-pub(super) const RESOLUTION_NOT_RUN: &str = "resolution has not run for this index; run `index_rescan`";
+pub(super) const RESOLUTION_NOT_RUN: &str =
+    "resolution has not finished for this index; a running scan will complete it, otherwise run `index_rescan`";
 
 /// Whether the last scan's resolve pass committed. The scan stamps `status.json` as resolving when
 /// it flushes the code map and as complete once the pass has committed every edge; a cancelled or

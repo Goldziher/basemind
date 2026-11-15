@@ -230,7 +230,9 @@ async fn an_index_whose_resolve_pass_did_not_finish_says_so() {
     for arguments in [definition, callers] {
         let body = call(&client, "code_refs", arguments).await;
         assert_eq!(
-            body["resolution"], "resolution has not run for this index; run `index_rescan`",
+            body["resolution"],
+            "resolution has not finished for this index; a running scan will complete it, otherwise run \
+             `index_rescan`",
             "{body}"
         );
     }

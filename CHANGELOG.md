@@ -96,8 +96,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `git_blame` and `git_log` with `symbol` take the same `line`. `resolution` tells a language without
     resolution (`unsupported for <language>`) from a file that bound nothing
     (`no resolution facts for this file`) and from an index whose resolve pass did not finish
-    (``resolution has not run for this index; run `index_rescan` ``). An exact scan stops after
-    examining 200,000 index keys, sets `total_is_partial` and returns a `next_cursor` that continues it.
+    (``resolution has not finished for this index; a running scan will complete it, otherwise run
+    `index_rescan` ``). An exact scan stops after examining 200,000 index keys, sets `total_is_partial`
+    and returns a `next_cursor` that continues it.
   - Every list takes `limit` and `cursor`, returns `next_cursor`, and honours a default `max_tokens` budget
     of 6000, setting `budgeted` when it trims.
   - A failure the caller can fix is a tool result with `isError: true` that names the fix, not a JSON-RPC
