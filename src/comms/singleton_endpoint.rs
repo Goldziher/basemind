@@ -4,6 +4,10 @@
 //! On Unix every read and write takes a timeout. A Windows pipe opened as a file takes none, so
 //! there an exchange runs on a thread of its own under [`bounded`], and the caller gives up on it
 //! at the limit.
+//!
+//! A pipe whose every instance is serving another client refuses the open with `ERROR_PIPE_BUSY`.
+//! That is a daemon at work, the opposite of a silent one: the open is retried for a bounded time,
+//! and a pipe still busy at the end counts as present.
 
 use std::path::Path;
 use std::time::Duration;
@@ -17,11 +21,9 @@ pub(super) fn exchange(socket_path: &Path, body: Vec<u8>, timeout: Duration) -> 
     {
         let endpoint = socket_path.to_path_buf();
         bounded(timeout, move || {
-            let stream = std::fs::OpenOptions::new()
-                .read(true)
-                .write(true)
-                .open(&endpoint)
-                .ok()?;
+            let Pipe::Open(stream) = open_pipe(&endpoint, timeout / 2) else {
+                return None;
+            };
             converse(stream, &body)
         })
     }
@@ -77,6 +79,40 @@ pub(super) fn bounded<T: Send + 'static>(
     result.recv_timeout(limit).ok().flatten()
 }
 
+/// What opening the daemon's pipe found.
+#[cfg(windows)]
+enum Pipe {
+    /// A free instance, connected.
+    Open(std::fs::File),
+    /// The pipe exists and every instance of it stayed busy for the whole wait: a daemon is
+    /// there, serving other clients.
+    Busy,
+    /// No such pipe, or it cannot be opened.
+    Absent,
+}
+
+/// Open the daemon's pipe, retrying for up to `wait` while every instance is busy.
+#[cfg(windows)]
+fn open_pipe(socket_path: &Path, wait: Duration) -> Pipe {
+    /// Every instance of the pipe is serving a client, which takes a server.
+    const ERROR_PIPE_BUSY: i32 = 231;
+    const RETRY_INTERVAL: Duration = Duration::from_millis(50);
+
+    let deadline = std::time::Instant::now() + wait;
+    loop {
+        match std::fs::OpenOptions::new().read(true).write(true).open(socket_path) {
+            Ok(pipe) => return Pipe::Open(pipe),
+            Err(error) if error.raw_os_error() == Some(ERROR_PIPE_BUSY) => {
+                if std::time::Instant::now() >= deadline {
+                    return Pipe::Busy;
+                }
+                std::thread::sleep(RETRY_INTERVAL);
+            }
+            Err(_) => return Pipe::Absent,
+        }
+    }
+}
+
 /// Whether anything accepts a connection at the endpoint: a daemon that is serving, or one that
 /// has stopped answering but not yet closed its listener. Sends nothing.
 pub(crate) fn endpoint_accepts(socket_path: &Path) -> bool {
@@ -86,12 +122,7 @@ pub(crate) fn endpoint_accepts(socket_path: &Path) -> bool {
     }
     #[cfg(windows)]
     {
-        /// Every instance of the pipe is serving a client, which takes a server.
-        const ERROR_PIPE_BUSY: i32 = 231;
-        match std::fs::OpenOptions::new().read(true).write(true).open(socket_path) {
-            Ok(_) => true,
-            Err(error) => error.raw_os_error() == Some(ERROR_PIPE_BUSY),
-        }
+        !matches!(open_pipe(socket_path, Duration::ZERO), Pipe::Absent)
     }
     #[cfg(not(any(unix, windows)))]
     {
@@ -131,9 +162,10 @@ pub(super) fn probe_once(socket_path: &Path) -> bool {
 /// One connect+ping attempt against the Windows named pipe. See [`probe_alive`](super::probe_alive)
 /// for the retrying wrapper. A `\\.\pipe\...` path opens as an ordinary [`std::fs::File`], so the
 /// SAME framed `Ping` the Unix probe sends goes over it (u32-be length prefix + msgpack), and any
-/// 4-byte response prefix read back means alive. A transient busy/not-found at open time means
-/// not alive (the caller treats that as "reclaimable"). The read has no timeout of its own, so
-/// the attempt runs under [`bounded`]: a daemon that accepts and never answers is not alive.
+/// 4-byte response prefix read back means alive. The read has no timeout of its own, so the
+/// attempt runs under [`bounded`]: a daemon that accepts and never answers is not alive. A pipe
+/// that is not there is not alive either. One whose every instance stays busy is: something is
+/// serving those clients.
 #[cfg(windows)]
 pub(super) fn probe_once(socket_path: &Path) -> bool {
     use std::io::{Read, Write};
@@ -141,11 +173,11 @@ pub(super) fn probe_once(socket_path: &Path) -> bool {
     const PING_TIMEOUT: Duration = Duration::from_millis(500);
     let endpoint = socket_path.to_path_buf();
     bounded(PING_TIMEOUT, move || {
-        let mut stream = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(&endpoint)
-            .ok()?;
+        let mut stream = match open_pipe(&endpoint, PING_TIMEOUT / 2) {
+            Pipe::Open(stream) => stream,
+            Pipe::Busy => return Some(()),
+            Pipe::Absent => return None,
+        };
         let body = rmp_serde::to_vec_named(&super::super::protocol::CommsRequest::Ping).ok()?;
         let len = u32::try_from(body.len()).ok()?;
         stream.write_all(&len.to_be_bytes()).ok()?;
