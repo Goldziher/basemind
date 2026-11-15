@@ -187,14 +187,18 @@ impl ConformanceHarness for Harness {
         self.store().force_store_version(version);
     }
 
-    /// Threads physically stored once the sweep has nothing left to remove, so every scenario
-    /// that counts threads also proves that expired ones are deleted, not only hidden.
-    fn thread_count(&self) -> usize {
+    fn sweep(&self) {
         let store = self.store();
         if store.check_writable().is_ok() {
             while store.sweep().expect("sweep").more {}
         }
-        store.ks.threads.len().expect("count threads")
+    }
+
+    /// Threads physically stored once the sweep has nothing left to remove, so every scenario
+    /// that counts threads also proves that expired ones are deleted, not only hidden.
+    fn thread_count(&self) -> usize {
+        ConformanceHarness::sweep(self);
+        self.store().ks.threads.len().expect("count threads")
     }
 }
 

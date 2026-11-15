@@ -275,6 +275,12 @@ removed, and with it `THREAD_IDLE_TTL` (seven days) and `THREAD_RETENTION_TTL` (
 now stay active for up to 30 days, so the machine-wide `MAX_ACTIVE_THREADS = 256` becomes a cap per
 repository.
 
+Expiry is judged when a record is read, against the clock; deleting is a separate sweep with a
+budget, run after changes and on the daemon's tick. A record hidden as expired is therefore
+visible again if the clock goes back, unless a sweep already removed it. A thread can come back
+that way with fewer messages than its `head` counts, which a read or a cursor treats like
+messages the per-thread cap dropped.
+
 **Wire.** `PROTO_VER` goes from 5 to 6: `Hello` gains the host and root beside its existing
 `remote` and `cwd`, `Call` gains `sub` for the sub-identity, and `Post`, `InboxRead`, `ThreadQuery`
 and `ThreadUpdate` replace the twenty coordination requests and the two claim requests in

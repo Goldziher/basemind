@@ -52,7 +52,17 @@ pub trait ConformanceHarness: AgentOps {
 
     /// Move the store's clock back, the way a clock that ran ahead is corrected. Expiry must
     /// follow the clock as it reads afterwards, and timestamps must go on increasing.
+    ///
+    /// A record hidden as expired may become visible again when the clock goes back, unless a
+    /// sweep already removed it. An implementation may sweep on any call that succeeds, so a
+    /// scenario that asserts on what is visible again makes only refused calls, or calls
+    /// [`ConformanceHarness::sweep`] itself, between moving the clock forward and back.
     fn rewind(&self, by: Duration);
+
+    /// Remove everything that has expired at the clock's reading, the way an implementation's
+    /// retention does in its own time. Nothing a call returns may change with it while the
+    /// clock stands; what it removed stays removed when the clock goes back.
+    fn sweep(&self);
 
     /// `(read_seq, notified_seq)` of `actor` in `thread`; `None` when it is not a member.
     fn position(&self, thread: &ThreadId, actor: &Actor) -> Option<(u64, u64)>;
@@ -60,7 +70,8 @@ pub trait ConformanceHarness: AgentOps {
     /// Make the store report layout version `version`, as if another binary had written it.
     fn set_store_version(&self, version: u32);
 
-    /// Number of threads the store holds once retention has run, archived ones included.
+    /// Number of threads the store holds after a [`ConformanceHarness::sweep`], archived ones
+    /// included.
     fn thread_count(&self) -> usize;
 
     /// The caller a scenario's agent `name` is, working in `repo`, without a replay key.
@@ -254,6 +265,8 @@ macro_rules! conformance_tests {
             nothing_is_recorded_on_a_newer_store,
             expired_messages_are_not_returned_on_a_newer_store,
             expiry_follows_the_clock_after_it_was_set_back,
+            expired_records_are_visible_again_when_the_clock_goes_back_before_a_sweep,
+            swept_records_stay_removed_when_the_clock_goes_back,
         );
     };
     (@emit $harness:expr; $($scenario:ident),+ $(,)?) => {

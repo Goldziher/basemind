@@ -30,7 +30,7 @@ pub struct FakeAgents {
 struct State {
     /// What the clock reads: what everything that expires is judged against.
     now_micros: i64,
-    /// The newest timestamp given to a message, which the next one must be later than.
+    /// The timestamp of the previous post, which [`rules::post_timestamp`] stamps the next from.
     last_ts: i64,
     /// Posts stored so far: the store-wide post order, and what [`AgentOps::arrivals`] reports.
     posts: u64,
@@ -102,9 +102,19 @@ impl FakeAgents {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Run one operation: against the store as retention left it, recording the caller as seen
-    /// when it succeeds and its record is due. A store newer than the binary is neither swept nor
-    /// written to; what has expired there is left out by the reads themselves.
+    /// Remove everything that has expired at the clock's reading, as a store's sweep does once
+    /// it has nothing left to remove. No call does this by itself: what has expired is left out
+    /// by the reads, so it is back when the clock is, unless this ran in between. A store newer
+    /// than the binary is not swept.
+    pub fn sweep(&self) {
+        let mut state = self.lock();
+        if state.check_writable().is_ok() {
+            state.sweep();
+        }
+    }
+
+    /// Run one operation, recording the caller as seen when it succeeds and its record is due.
+    /// A store newer than the binary is not written to.
     fn call<T>(
         &self,
         caller: &Caller,
@@ -112,9 +122,6 @@ impl FakeAgents {
     ) -> Result<T, CommsError> {
         let mut state = self.lock();
         let writable = state.check_writable().is_ok();
-        if writable {
-            state.expire();
-        }
         let result = operation(&mut state);
         if writable && result.is_ok() {
             let now = state.now_micros;
@@ -140,7 +147,7 @@ impl ConformanceHarness for FakeAgents {
 
     fn position(&self, thread: &ThreadId, actor: &Actor) -> Option<(u64, u64)> {
         let state = self.lock();
-        let position = state.threads.get(thread)?.members.get(actor)?;
+        let position = state.kept_thread(thread)?.members.get(actor)?;
         Some((position.read_seq, position.notified_seq))
     }
 
@@ -148,12 +155,13 @@ impl ConformanceHarness for FakeAgents {
         self.lock().store_ver = version;
     }
 
+    fn sweep(&self) {
+        FakeAgents::sweep(self);
+    }
+
     fn thread_count(&self) -> usize {
-        let mut state = self.lock();
-        if state.check_writable().is_ok() {
-            state.expire();
-        }
-        state.threads.len()
+        FakeAgents::sweep(self);
+        self.lock().threads.len()
     }
 }
 
@@ -193,16 +201,18 @@ impl AgentOps for FakeAgents {
 }
 
 impl State {
-    /// Drop what retention no longer keeps: expired messages, threads left without one, replay
-    /// entries past their hour, and seen records that expired ([`rules::seen_expired`]).
-    fn expire(&mut self) {
+    /// Drop what retention no longer keeps: expired threads with every message of theirs,
+    /// expired messages of the threads that stay, replay entries past their hour, and seen
+    /// records that expired ([`rules::seen_expired`]).
+    fn sweep(&mut self) {
         let now = self.now_micros;
+        self.threads
+            .retain(|_, thread| !rules::message_expired(thread.last_activity_micros, now));
         for thread in self.threads.values_mut() {
             thread
                 .messages
                 .retain(|_, message| !rules::message_expired(message.ts_micros, now));
         }
-        self.threads.retain(|_, thread| !thread.messages.is_empty());
         self.post_replays
             .retain(|_, (expires, _)| !rules::replay_expired(*expires, now));
         self.inbox_replays
@@ -214,13 +224,21 @@ impl State {
         rules::check_writable(self.store_ver)
     }
 
-    /// The thread `id`, unless it has expired with its newest message. Reads go through this
-    /// and not through `threads`, so they are right on a store that [`State::expire`] is not
-    /// run on.
+    /// The thread `id`, unless it has expired with the last message posted to it. Everything
+    /// but the draw of a new id goes through this and not through `threads`, which holds expired
+    /// threads until [`State::sweep`] runs.
     fn kept_thread(&self, id: &ThreadId) -> Option<&ThreadState> {
         self.threads
             .get(id)
             .filter(|thread| !rules::message_expired(thread.last_activity_micros, self.now_micros))
+    }
+
+    /// Message `seq` of `thread`, unless it has expired.
+    fn kept_message<'a>(&self, thread: &'a ThreadState, seq: u64) -> Option<&'a StoredMessage> {
+        thread
+            .messages
+            .get(&seq)
+            .filter(|message| !rules::message_expired(message.ts_micros, self.now_micros))
     }
 
     fn thread(&self, id: &ThreadId) -> Result<&ThreadState, CommsError> {
@@ -229,6 +247,7 @@ impl State {
     }
 
     fn thread_mut(&mut self, id: &ThreadId) -> Result<&mut ThreadState, CommsError> {
+        self.thread(id)?;
         self.threads
             .get_mut(id)
             .ok_or_else(|| CommsError::ThreadNotFound { thread: id.clone() })
@@ -238,7 +257,10 @@ impl State {
     /// `to` or an `invite` does not make an agent seen.
     fn pending(&self, actor: &Actor, recipients: &[Actor]) -> Vec<Actor> {
         let mut pending = rules::addressed(actor, recipients);
-        pending.retain(|recipient| !self.seen.contains_key(recipient));
+        pending.retain(|recipient| {
+            let last_call = self.seen.get(recipient);
+            last_call.is_none_or(|last_call| rules::seen_expired(*last_call, self.now_micros))
+        });
         pending
     }
 
@@ -279,10 +301,10 @@ impl State {
             if let Some(reply) = self.replayed_post(actor, Some(&thread_id), key) {
                 return Ok(reply);
             }
-            let thread = self.threads.get(&thread_id);
+            let thread = self.kept_thread(&thread_id);
             let access = thread.map(|thread| thread.access(caller));
             let reply_target_stored = match (thread, &reply_to) {
-                (Some(thread), Some(message)) => thread.messages.contains_key(&message.seq()),
+                (Some(thread), Some(message)) => self.kept_message(thread, message.seq()).is_some(),
                 _ => true,
             };
             rules::authorize_post(&thread_id, access.as_ref(), reply_to.as_ref(), reply_target_stored)?;
@@ -304,8 +326,8 @@ impl State {
                 body,
             },
         );
-        while thread.messages.len() as u64 > MAX_MESSAGES_PER_THREAD {
-            thread.messages.pop_first();
+        if let Some(evicted) = thread.head.checked_sub(MAX_MESSAGES_PER_THREAD) {
+            thread.messages.remove(&evicted);
         }
         let reply = PostReply {
             id: MessageId::new(thread_id.clone(), thread.head)?,
@@ -316,23 +338,27 @@ impl State {
         };
         if let Some(key) = key {
             let scope = (!created).then_some(thread_id);
-            self.post_replays
-                .entry((actor.clone(), scope, key.clone()))
-                .or_insert((rules::replay_expiry(now), reply.clone()));
+            self.post_replays.insert(
+                (actor.clone(), scope, key.clone()),
+                (rules::replay_expiry(now), reply.clone()),
+            );
         }
         Ok(reply)
     }
 
     fn replayed_post(&self, actor: &Actor, thread: Option<&ThreadId>, key: Option<&ReplayKey>) -> Option<PostReply> {
         let key = (actor.clone(), thread.cloned(), key?.clone());
-        self.post_replays.get(&key).map(|(_, reply)| reply.clone())
+        let (expires, reply) = self.post_replays.get(&key)?;
+        (!rules::replay_expired(*expires, self.now_micros)).then(|| reply.clone())
     }
 
     fn create_thread(&mut self, caller: &Caller, plan: NewThread) -> Result<ThreadId, CommsError> {
+        let now = self.now_micros;
         let active = self
             .threads
             .values()
             .filter(|thread| thread.repo == caller.repo && !thread.archived)
+            .filter(|thread| !rules::message_expired(thread.last_activity_micros, now))
             .count();
         rules::check_thread_cap(&caller.repo, active)?;
         let members = plan
@@ -374,7 +400,9 @@ impl State {
         let key = caller.replay_key.as_ref().filter(|_| kind.writes());
         if kind.writes() {
             self.check_writable()?;
-            let replayed = key.and_then(|key| self.inbox_replays.get(&(actor.clone(), key.clone())));
+            let replayed = key
+                .and_then(|key| self.inbox_replays.get(&(actor.clone(), key.clone())))
+                .filter(|(expires, _)| !rules::replay_expired(*expires, self.now_micros));
             if let Some((_, delivered)) = replayed {
                 return Ok(self.render_delivered(delivered.clone()));
             }
@@ -388,20 +416,15 @@ impl State {
         if let (Some(key), Some(delivered)) = (key, Delivered::of(&messages, &read_to, more)) {
             let expires = rules::replay_expiry(self.now_micros);
             self.inbox_replays
-                .entry((actor.clone(), key.clone()))
-                .or_insert((expires, delivered));
+                .insert((actor.clone(), key.clone()), (expires, delivered));
         }
         Ok(rules::inbox_reply(messages, read_to, more, next_cursor))
     }
 
     fn lookup(&self, caller: &Caller, id: &MessageId) -> Result<InboxMessage, CommsError> {
-        let now = self.now_micros;
         let thread = self.kept_thread(id.thread());
         let access = thread.map(|thread| thread.access(caller));
-        let message = thread.and_then(|thread| {
-            let message = thread.messages.get(&id.seq())?;
-            (!rules::message_expired(message.ts_micros, now)).then_some((thread, message))
-        });
+        let message = thread.and_then(|thread| Some((thread, self.kept_message(thread, id.seq())?)));
         rules::authorize_lookup(id, access.as_ref(), message.is_some())?;
         let (thread, message) = message.ok_or_else(|| CommsError::MessageNotFound { id: id.clone() })?;
         Ok(thread.render(id.clone(), message, true))
@@ -468,8 +491,8 @@ impl State {
             .ids
             .iter()
             .filter_map(|id| {
-                let thread = self.threads.get(id.thread())?;
-                let message = thread.messages.get(&id.seq())?;
+                let thread = self.kept_thread(id.thread())?;
+                let message = self.kept_message(thread, id.seq())?;
                 Some(thread.render(id.clone(), message, false))
             })
             .collect();

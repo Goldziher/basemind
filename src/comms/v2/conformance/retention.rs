@@ -11,6 +11,8 @@ use super::{
     peek, read, read_as, say, start, thread_ids, who,
 };
 
+const SECOND: Duration = Duration::from_secs(1);
+
 const DAY: Duration = Duration::from_secs(24 * 60 * 60);
 
 fn no_threads() -> Vec<ThreadId> {
@@ -271,5 +273,53 @@ pub fn expiry_follows_the_clock_after_it_was_set_back(h: &impl ConformanceHarnes
     assert_eq!(read_as(h, "b", history()).expect("inbox").messages.len(), 3);
     h.advance(2 * second);
     assert_eq!(read_as(h, "b", history()).expect("inbox").messages, Vec::new());
+    assert_eq!(h.thread_count(), 0);
+}
+
+/// What is hidden as expired is visible again when the clock goes back, as long as no sweep
+/// removed it. Only refused calls are made while it is hidden, because a call that succeeds may
+/// sweep (see [`ConformanceHarness::rewind`]).
+pub fn expired_records_are_visible_again_when_the_clock_goes_back_before_a_sweep(h: &impl ConformanceHarness) {
+    let created = start(h, "a", "topic", &["b"]);
+    let second = say(h, "a", &created.thread, "second").expect("post");
+    let past = MESSAGE_TTL + SECOND;
+    let gone = CommsError::ThreadNotFound {
+        thread: created.thread.clone(),
+    };
+
+    h.advance(past);
+    assert_eq!(describe(h, &who(h, "b"), &created.thread), Err(gone.clone()));
+    assert_eq!(
+        read_as(h, "b", by_id(&created.id)).map(|reply| reply.messages),
+        Err(CommsError::MessageNotFound { id: created.id.clone() })
+    );
+    assert_eq!(say(h, "a", &created.thread, "late"), Err(gone));
+
+    h.rewind(past);
+    assert_eq!(thread_ids(&list(h, "b")), std::slice::from_ref(&created.thread));
+    let summary = describe(h, &who(h, "b"), &created.thread).expect("thread");
+    assert_eq!((summary.head, summary.unread), (2, 2));
+    assert_eq!(ids(&read(h, "b")), [created.id, second.id]);
+    assert_eq!(h.position(&created.thread, &agent(h, "b")), Some((2, 2)));
+}
+
+/// What a sweep removed stays removed when the clock goes back.
+pub fn swept_records_stay_removed_when_the_clock_goes_back(h: &impl ConformanceHarness) {
+    let created = start(h, "a", "topic", &["b"]);
+    let past = MESSAGE_TTL + SECOND;
+
+    h.advance(past);
+    h.sweep();
+    h.rewind(past);
+
+    assert_eq!(thread_ids(&list(h, "b")), no_threads());
+    assert_eq!(
+        read_as(h, "b", by_id(&created.id)).map(|reply| reply.messages),
+        Err(CommsError::MessageNotFound { id: created.id })
+    );
+    assert_eq!(
+        say(h, "a", &created.thread, "late"),
+        Err(CommsError::ThreadNotFound { thread: created.thread })
+    );
     assert_eq!(h.thread_count(), 0);
 }
