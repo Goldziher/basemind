@@ -48,6 +48,7 @@ impl MemoryDb {
             .worker_threads(FJALL_WORKER_THREADS)
             .max_journaling_size(FJALL_MAX_JOURNAL_BYTES)
             .open()?;
+        check_version(&db)?;
         let memory_by_key = open_keyspace(&db, MEMORY_BY_KEY)?;
         Ok(Self {
             db,
@@ -66,10 +67,46 @@ impl MemoryDb {
         Ok(self.db.persist(PersistMode::SyncAll)?)
     }
 
-    /// Names of the keyspaces this database holds.
+    /// Names of the keyspaces this database holds, the one for its version aside: that one is not
+    /// sized by the index table.
     #[cfg(test)]
     pub(crate) fn keyspace_names(&self) -> Vec<String> {
-        self.db.list_keyspace_names().iter().map(ToString::to_string).collect()
+        self.db
+            .list_keyspace_names()
+            .iter()
+            .map(ToString::to_string)
+            .filter(|name| name != STORE_META)
+            .collect()
+    }
+}
+
+/// Layout version of the memory-notes store, independent of the release: the notes are
+/// user-authored, so no release may discard them. A layout change raises this and adds a forward
+/// migration to [`check_version`]; nothing ever wipes the store.
+pub(crate) const MEMORY_STORE_VER: u32 = 1;
+const STORE_META: &str = "store_meta";
+const STORE_VER_KEY: &[u8] = b"store_ver";
+
+/// Hold the store to its version. A store with none was written before the version existed and
+/// has the layout of version 1: it is stamped. A newer one is refused untouched.
+fn check_version(db: &Database) -> Result<(), IndexError> {
+    // Not one of the index's keyspaces, so not sized by their table: it holds one small key.
+    let meta = db.keyspace(STORE_META, || super::index_keyspace_options(super::MEMTABLE_COLD_BYTES))?;
+    let stored = meta
+        .get(STORE_VER_KEY)?
+        .and_then(|bytes| <[u8; 4]>::try_from(bytes.as_ref()).ok())
+        .map(u32::from_be_bytes);
+    match stored {
+        Some(stored) if stored > MEMORY_STORE_VER => Err(IndexError::NewerMemoryStore {
+            stored,
+            current: MEMORY_STORE_VER,
+        }),
+        Some(stored) if stored == MEMORY_STORE_VER => Ok(()),
+        // An older layout is migrated forward here, one step per version, before the stamp.
+        _ => {
+            meta.insert(STORE_VER_KEY, MEMORY_STORE_VER.to_be_bytes())?;
+            Ok(db.persist(PersistMode::SyncAll)?)
+        }
     }
 }
 

@@ -297,6 +297,13 @@ pub enum IndexError {
          — upgrade basemind"
     )]
     NewerSchema { stored: u32, current: u32 },
+    /// The memory-notes store carries a version newer than this binary's. It is user-authored: never
+    /// wiped, never written by a binary that does not know its layout.
+    #[error(
+        "memory store written by a newer basemind (version {stored}); this binary understands {current} \
+         — upgrade basemind"
+    )]
+    NewerMemoryStore { stored: u32, current: u32 },
     /// The view's database is damaged and could not be opened. It is rebuildable cache: a writer
     /// open discards it and rescans, a read-only open serves from blobs.
     #[error("the code index is damaged ({0}); opening it for writing rebuilds it")]

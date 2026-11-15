@@ -241,3 +241,81 @@ fn linked_worktrees_share_a_group_and_non_git_roots_use_their_workspace_key() {
     std::fs::create_dir_all(&plain).unwrap();
     assert_eq!(repo_group_key(&plain), workspace_key(&plain));
 }
+
+fn stored_version(memory_dir: &Path) -> Option<u32> {
+    let raw = Database::builder(memory_dir).open().expect("open through fjall");
+    let meta = raw
+        .keyspace(STORE_META, KeyspaceCreateOptions::default)
+        .expect("meta keyspace");
+    meta.get(STORE_VER_KEY)
+        .unwrap()
+        .map(|bytes| u32::from_be_bytes(bytes.as_ref().try_into().expect("four bytes")))
+}
+
+fn stamp_version(memory_dir: &Path, version: u32) {
+    let raw = Database::builder(memory_dir).open().expect("open through fjall");
+    let meta = raw
+        .keyspace(STORE_META, KeyspaceCreateOptions::default)
+        .expect("meta keyspace");
+    meta.insert(STORE_VER_KEY, version.to_be_bytes()).expect("stamp");
+    raw.persist(PersistMode::SyncAll).expect("persist");
+}
+
+/// A store written before the version existed gains one at its first open, and keeps its notes.
+#[test]
+fn an_unversioned_memory_store_is_stamped_on_open_and_keeps_its_notes() {
+    let tmp = tempfile::tempdir().unwrap();
+    let memory_dir = tmp.path().join("repos/g/memory.fjall");
+    std::fs::create_dir_all(&memory_dir).unwrap();
+    {
+        let old = Database::builder(&memory_dir).open().expect("open old store");
+        let notes = old
+            .keyspace(MEMORY_BY_KEY, KeyspaceCreateOptions::default)
+            .expect("notes keyspace");
+        notes.insert(b"k".to_vec(), row("kept", 5)).expect("plant note");
+        old.persist(PersistMode::SyncAll).expect("persist");
+    }
+    assert_eq!(stored_version(&memory_dir), None);
+
+    let db = IndexDb::open_with_memory(&tmp.path().join("ws/views/working"), &memory_dir).unwrap();
+    assert_eq!(value_of(&db.memory_by_key.get(b"k").unwrap().unwrap()), "kept");
+    drop(db);
+
+    assert_eq!(stored_version(&memory_dir), Some(MEMORY_STORE_VER));
+}
+
+/// A store a newer basemind wrote is refused, by name, and nothing in it is touched: an older
+/// binary does not know the layout it would be writing into.
+#[test]
+fn a_memory_store_of_a_newer_version_is_refused_and_left_intact() {
+    let tmp = tempfile::tempdir().unwrap();
+    let memory_dir = tmp.path().join("repos/g/memory.fjall");
+    let view_dir = tmp.path().join("ws/views/working");
+    {
+        let db = IndexDb::open_with_memory(&view_dir, &memory_dir).unwrap();
+        db.memory_by_key.insert(b"k".to_vec(), row("kept", 5)).unwrap();
+        db._memory.db.persist(PersistMode::SyncAll).unwrap();
+    }
+    stamp_version(&memory_dir, MEMORY_STORE_VER + 1);
+
+    let refused = IndexDb::open_with_memory(&view_dir, &memory_dir)
+        .err()
+        .expect("a newer store is refused");
+
+    assert!(
+        matches!(refused, IndexError::NewerMemoryStore { stored, current }
+            if stored == MEMORY_STORE_VER + 1 && current == MEMORY_STORE_VER),
+        "{refused}"
+    );
+    assert!(refused.to_string().contains("written by a newer basemind"), "{refused}");
+    assert_eq!(
+        stored_version(&memory_dir),
+        Some(MEMORY_STORE_VER + 1),
+        "the stamp is not lowered"
+    );
+    let raw = Database::builder(&memory_dir).open().expect("open through fjall");
+    let notes = raw
+        .keyspace(MEMORY_BY_KEY, KeyspaceCreateOptions::default)
+        .expect("notes keyspace");
+    assert_eq!(value_of(&notes.get(b"k").unwrap().expect("note kept")), "kept");
+}
