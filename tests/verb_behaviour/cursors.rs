@@ -295,7 +295,10 @@ async fn code_search_refuses_another_query_s_cursor() {
         )
         .await
         .expect("code_search");
-    let body: Value = serde_json::from_str(&super::text_of(&first)).unwrap_or(Value::Null);
+    let text = super::text_of(&first);
+    assert_ne!(first.is_error, Some(true), "the keyword lane needs no model: {text}");
+    let body: Value =
+        serde_json::from_str(&text).unwrap_or_else(|error| panic!("code_search: non-JSON payload ({error}): {text}"));
     let Some(cursor) = body.get("next_cursor").filter(|cursor| cursor.is_string()).cloned() else {
         eprintln!("SKIP: the keyword lane returned no second page in this environment: {body}");
         return;
@@ -314,4 +317,34 @@ async fn code_search_refuses_another_query_s_cursor() {
         let docs = call_err(&client, "docs_search", json!({ "query": "outline", "cursor": cursor })).await;
         assert!(docs.contains("belongs to a different query"), "{docs}");
     }
+}
+
+/// `[documents.output] format = "toon"` reaches `code_search` through the same response formatter
+/// as `docs_search`. TOON has no structured form to cut a page from, so a verb tool that honoured
+/// it returned one unpaged block. The keyword lane needs no embedding model, so this runs everywhere.
+#[cfg(feature = "code-search")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn code_search_pages_as_json_when_the_config_asks_for_toon() {
+    let dir = super::fixture_with(&[("src/notes.rs", NOTES_RS)]);
+    std::fs::write(
+        dir.path().join("basemind.toml"),
+        "\"$schema\" = \"v1\"\n\n[documents.output]\nformat = \"toon\"\n",
+    )
+    .unwrap();
+    super::scan(dir.path());
+    let client = super::serve(dir.path()).await;
+
+    let arguments = json!({ "query": "outline", "lane": "keyword", "limit": 1 });
+    let first = super::call(&client, "code_search", arguments.clone()).await;
+    let first_hits = first["hits"].as_array().expect("hits");
+    assert_eq!(first_hits.len(), 1, "`limit` is honoured on the first page: {first}");
+    let cursor = first["next_cursor"].clone();
+    assert!(cursor.is_string(), "several chunks mention `outline`: {first}");
+
+    let mut paged = arguments;
+    paged["cursor"] = cursor;
+    let second = super::call(&client, "code_search", paged).await;
+    let second_hits = second["hits"].as_array().expect("hits");
+    assert_eq!(second_hits.len(), 1, "{second}");
+    assert_ne!(first_hits[0], second_hits[0], "the cursor advances: {second}");
 }
