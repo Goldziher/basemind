@@ -323,7 +323,11 @@ async fn read_json(reader: &mut BufReader<tokio::io::DuplexStream>) -> Value {
 enum Step {
     Backend(tokio::io::DuplexStream),
     Fail(ReconnectFailure, &'static str),
+    /// The attempt never completes, as one waiting on a daemon that neither answers nor goes.
+    Hang,
 }
+
+type Attempt = std::pin::Pin<Box<dyn Future<Output = Result<tokio::io::DuplexStream, Refusal>> + Send>>;
 
 /// The relay under test with the host's ends of its pipes, a script of connect attempts and the
 /// time of each attempt made so far.
@@ -351,11 +355,13 @@ impl Session {
                     .lock()
                     .expect("attempts lock")
                     .push(tokio::time::Instant::now());
-                std::future::ready(match steps.pop_front() {
-                    Some(Step::Backend(stream)) => Ok(stream),
-                    Some(Step::Fail(failure, reason)) => Err(Refusal(failure, reason)),
-                    None => Err(Refusal(then.0, then.1)),
-                })
+                let attempt: Attempt = match steps.pop_front() {
+                    Some(Step::Backend(stream)) => Box::pin(std::future::ready(Ok(stream))),
+                    Some(Step::Fail(failure, reason)) => Box::pin(std::future::ready(Err(Refusal(failure, reason)))),
+                    Some(Step::Hang) => Box::pin(std::future::pending()),
+                    None => Box::pin(std::future::ready(Err(Refusal(then.0, then.1)))),
+                };
+                attempt
             },
             None,
         ));
@@ -577,6 +583,83 @@ async fn a_backend_that_stays_away_answers_requests_after_the_hold_window() {
         gaps.iter().all(|gap| *gap <= MAX_RECONNECT_DELAY),
         "a restarting backend is retried at the short back-off: {gaps:?}"
     );
+}
+
+/// One connection attempt can outlast the hold window by itself: a takeover waits out a daemon's
+/// exit and then a spawn. The request is answered when its window ends all the same, not when the
+/// attempt finally fails.
+#[tokio::test(start_paused = true)]
+async fn a_request_is_answered_when_its_hold_window_ends_though_the_first_attempt_is_still_running() {
+    let mut session = Session::start(vec![Step::Hang], (ReconnectFailure::Fatal, "unreachable step"));
+    session.send(initialize_line()).await;
+
+    let refused = session.read().await;
+    assert_eq!(refused["id"], serde_json::json!(1));
+    assert_eq!(refused["error"]["code"], BACKEND_UNAVAILABLE_CODE, "{refused}");
+    assert_eq!(refused["error"]["data"]["retryable"], true);
+    assert!(
+        refused["error"]["message"]
+            .as_str()
+            .expect("message")
+            .contains(NOT_REACHED_YET),
+        "{refused}"
+    );
+    let waited = session.elapsed();
+    assert!(
+        waited >= HOLD_WINDOW && waited < HOLD_WINDOW + Duration::from_secs(1),
+        "the window runs from the request's arrival: {waited:?}"
+    );
+    assert_eq!(session.attempt_count(), 1, "the first attempt is still the only one");
+
+    session.send(request_line(2)).await;
+    let next = session.read().await;
+    assert_eq!(next["id"], serde_json::json!(2));
+    assert!(
+        session.elapsed() < HOLD_WINDOW + Duration::from_secs(1),
+        "once the window has ended a request is answered as it arrives"
+    );
+}
+
+/// A request that arrives long after the backend went still gets its own window: the daemon may be
+/// seconds from reachable, and when the earlier failures began says nothing about that.
+#[tokio::test(start_paused = true)]
+async fn the_hold_window_of_a_request_starts_when_it_arrives() {
+    const QUIET: Duration = Duration::from_secs(30);
+    let mut session = Session::start(Vec::new(), (ReconnectFailure::Transient, REFUSED));
+    tokio::time::sleep(QUIET).await;
+    assert!(session.attempt_count() > 1, "attempts were failing all along");
+    session.send(request_line(3)).await;
+
+    let refused = session.read().await;
+    assert_eq!(refused["id"], serde_json::json!(3));
+    assert!(
+        refused["error"]["message"].as_str().expect("message").contains(REFUSED),
+        "{refused}"
+    );
+    let waited = session.elapsed();
+    assert!(
+        waited >= QUIET + HOLD_WINDOW && waited < QUIET + HOLD_WINDOW + Duration::from_secs(1),
+        "held for the window from its arrival: {waited:?}"
+    );
+}
+
+/// The host going away must end `basemind serve` at once, whatever the relay is in the middle of:
+/// an attempt that has not returned, or the wait before the next one.
+#[tokio::test(start_paused = true)]
+async fn the_relay_ends_when_the_host_closes_its_pipe_during_an_attempt_or_between_attempts() {
+    for steps in [vec![Step::Hang], blocked(1, WONT_STOP)] {
+        let mut session = Session::start(steps, (ReconnectFailure::Blocked, WONT_STOP));
+        session.send(request_line(8)).await;
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        let Session { to_relay, relay, .. } = session;
+        drop(to_relay);
+
+        let ended = tokio::time::timeout(Duration::from_secs(1), relay)
+            .await
+            .expect("the relay ends within a second of the host closing its pipe")
+            .expect("relay join");
+        assert!(ended.is_ok(), "a host that closed its pipe is not an error: {ended:?}");
+    }
 }
 
 /// ADR-0013's relay replay holds while a daemon is in the way: a replayable request in flight

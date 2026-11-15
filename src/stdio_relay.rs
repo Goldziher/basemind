@@ -22,10 +22,14 @@ const FATAL_ANSWER_WINDOW: Duration = Duration::from_secs(1);
 /// How long a host that has sent nothing yet is given to send its first request after a fatal
 /// failure. A session that cannot start still owes `initialize` the reason.
 const FATAL_FIRST_REQUEST_WINDOW: Duration = Duration::from_secs(10);
-/// How long requests wait for a backend that keeps failing to come back: the ones held for replay
-/// stay held and the host's pipe stays unread, so everything goes through if a backend arrives.
-/// Past it, held and arriving requests are answered with the reason while the retries go on.
+/// How long a request waits for a backend that is not there. It runs from the moment the oldest
+/// request began to wait, whether it arrived with no backend connected or was in flight when the
+/// backend went, and not from the first failed attempt: one attempt alone can outlast it. Until it
+/// ends everything waiting is kept and goes through if a backend arrives. Past it, waiting and
+/// arriving requests are answered with the reason while the retries go on.
 const HOLD_WINDOW: Duration = Duration::from_secs(10);
+/// The reason given when the window ends before any connection attempt has failed.
+const NOT_REACHED_YET: &str = "the basemind daemon has not become reachable yet; still trying";
 /// Failed attempts in a row after which a restarting backend is reported at warn, and how often
 /// after that.
 const TRANSIENT_WARN_AFTER: u32 = 4;
@@ -237,6 +241,9 @@ struct SessionState {
     abandoned: std::collections::VecDeque<String>,
     /// Whether the host has sent anything yet.
     heard_from_host: bool,
+    /// Host frames read while no backend was connected, in arrival order, each without its
+    /// newline. They are forwarded when a backend arrives, or answered when the hold window ends.
+    held: std::collections::VecDeque<String>,
 }
 
 impl SessionState {
@@ -426,10 +433,31 @@ fn unavailable_error(id: &Value, reason: &str, retryable: bool) -> String {
 }
 
 impl SessionState {
-    /// Fail every request still waiting for a backend, the ones held for replay included, with
-    /// `reason`; `fatal` says no backend will ever come, which makes the errors final. An
-    /// `initialize` still in flight is answered too and then forgotten, so a later backend is not
-    /// asked to answer a request the host has already been given an error for.
+    /// Keep a host frame that arrived with no backend connected. Returns whether it is a request,
+    /// which the host expects an answer to.
+    fn hold_client(&mut self, line: String) -> bool {
+        self.heard_from_host = true;
+        let is_request = serde_json::from_str::<Value>(&line)
+            .is_ok_and(|message| message.get("method").is_some() && message.get("id").is_some_and(|id| !id.is_null()));
+        self.held.push_back(line);
+        is_request
+    }
+
+    /// The frames kept by [`Self::hold_client`], oldest first.
+    fn take_held(&mut self) -> Vec<String> {
+        self.held.drain(..).collect()
+    }
+
+    /// Whether the host is waiting on something only a backend can answer.
+    fn awaits_backend(&self) -> bool {
+        !self.pending.is_empty() || !self.held.is_empty() || (self.initialize_id.is_some() && !self.initialize_complete)
+    }
+
+    /// Fail every request still waiting for a backend, the ones held for replay and the ones that
+    /// arrived with no backend included, with `reason`; `fatal` says no backend will ever come,
+    /// which makes the errors final. An `initialize` still in flight is answered too and then
+    /// forgotten, so a later backend is not asked to answer a request the host has already been
+    /// given an error for.
     fn drain_unavailable_errors(&mut self, reason: &str, fatal: bool) -> Vec<String> {
         self.replay.clear();
         self.started.clear();
@@ -443,7 +471,11 @@ impl SessionState {
                 ids.push(id);
             }
         }
-        ids.iter().map(|id| unavailable_error(id, reason, !fatal)).collect()
+        let mut errors: Vec<String> = ids.iter().map(|id| unavailable_error(id, reason, !fatal)).collect();
+        for line in self.take_held() {
+            errors.extend(self.refuse_client(&line, reason, !fatal));
+        }
+        errors
     }
 
     /// The answer to a host frame that arrives while no backend is connected: an error for a
@@ -515,7 +547,12 @@ where
                 return Err(io::Error::other(reason));
             }
         };
-        for line in state.take_replays() {
+        let mut lines = state.take_replays();
+        for mut held in state.take_held() {
+            held.push('\n');
+            lines.push(state.observe_client(&held));
+        }
+        for line in lines {
             // A write failure here just means the replacement died too; the read half sees EOF and
             // the loop reconnects, failing the (now already replayed) requests.
             if stream.write_all(line.as_bytes()).await.is_err() {
@@ -597,16 +634,26 @@ enum Reconnected<S> {
         initialize_response: Option<String>,
         buffered: Vec<String>,
     },
-    /// The host closed its end while the relay was waiting to retry.
+    /// The host closed its end while the relay was connecting or waiting to retry.
     HostClosed,
     /// A failure no retry can cure, with the reason to give the host.
     Fatal(String),
 }
 
-/// Obtain a backend, retrying for as long as a retry can help. For [`HOLD_WINDOW`] after the first
-/// failure nothing is answered: the requests held for replay stay held and the host's pipe is left
-/// unread, so a backend that arrives in time gets all of it. After that the held requests and
-/// every request that arrives are answered with the reason for the latest failure.
+/// What becomes of host requests while no backend is connected.
+struct Hold {
+    /// When the oldest waiting request stops waiting; `None` while nothing waits.
+    until: Option<tokio::time::Instant>,
+    /// Set once the window has ended: from then on a request is answered as it arrives.
+    refusing: bool,
+    /// Why the latest attempt failed, as the host is told.
+    reason: String,
+}
+
+/// Obtain a backend, retrying for as long as a retry can help. The host's pipe is read throughout,
+/// during an attempt as well as between attempts, so the relay ends as soon as the host closes it
+/// and a request's [`HOLD_WINDOW`] runs from its arrival. Only the replay of MCP initialization on
+/// a fresh connection, bounded by [`REPLAY_TIMEOUT`] per frame, goes unwatched.
 async fn reconnect_and_replay<R, W, S, C, F, E>(
     reconnect: &mut C,
     state: &mut SessionState,
@@ -622,10 +669,19 @@ where
     E: ReconnectError,
 {
     let mut delay = INITIAL_RECONNECT_DELAY;
-    let mut hold_until = None;
     let mut transient_failures = 0u32;
+    let mut hold = Hold {
+        until: state
+            .awaits_backend()
+            .then(|| tokio::time::Instant::now() + HOLD_WINDOW),
+        refusing: false,
+        reason: NOT_REACHED_YET.to_owned(),
+    };
     loop {
-        let (reason, cap) = match reconnect().await {
+        let Some(attempt) = watching_host(reconnect(), input, output, state, &mut hold).await? else {
+            return Ok(Reconnected::HostClosed);
+        };
+        let (reason, cap) = match attempt {
             Ok(mut stream) => match replay_initialization(&mut stream, state).await {
                 Ok((initialize_response, buffered)) => {
                     state.initialize_complete |= initialize_response.is_some();
@@ -664,16 +720,59 @@ where
                 }
             },
         };
-        let wake = tokio::time::Instant::now() + delay;
-        let hold_until = *hold_until.get_or_insert_with(|| tokio::time::Instant::now() + HOLD_WINDOW);
-        tokio::time::sleep_until(wake.min(hold_until)).await;
-        if wake >= hold_until {
-            write_lines(output, state.drain_unavailable_errors(&reason, false)).await?;
-            if !refuse_until(input, output, state, wake, &reason, true, None).await? {
-                return Ok(Reconnected::HostClosed);
-            }
+        hold.reason = reason;
+        if watching_host(tokio::time::sleep(delay), input, output, state, &mut hold)
+            .await?
+            .is_none()
+        {
+            return Ok(Reconnected::HostClosed);
         }
         delay = delay.saturating_mul(2).min(cap);
+    }
+}
+
+/// Run `work` with no backend connected while still serving the host's pipe. A frame that arrives
+/// is kept, and starts the hold window if nothing was waiting; when the window ends everything
+/// waiting is answered with the latest reason, and later requests are answered as they arrive.
+/// Returns `None`, dropping `work`, when the host closes its end.
+async fn watching_host<T, R, W>(
+    work: impl Future<Output = T>,
+    input: &mut Lines<BufReader<R>>,
+    output: &mut W,
+    state: &mut SessionState,
+    hold: &mut Hold,
+) -> io::Result<Option<T>>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    tokio::pin!(work);
+    loop {
+        let window_end = hold.until.filter(|_| !hold.refusing);
+        tokio::select! {
+            done = &mut work => return Ok(Some(done)),
+            read = input.next_line() => {
+                let Some(line) = read? else {
+                    return Ok(None);
+                };
+                if hold.refusing {
+                    if let Some(error) = state.refuse_client(&line, &hold.reason, true) {
+                        write_lines(output, vec![error]).await?;
+                    }
+                } else if state.hold_client(line) {
+                    hold.until.get_or_insert_with(|| tokio::time::Instant::now() + HOLD_WINDOW);
+                }
+            }
+            () = async {
+                match window_end {
+                    Some(at) => tokio::time::sleep_until(at).await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                hold.refusing = true;
+                write_lines(output, state.drain_unavailable_errors(&hold.reason, false)).await?;
+            }
+        }
     }
 }
 
