@@ -1,5 +1,5 @@
-//! RAII refcount guards over [`Broker`]: one per connected front-end link, one per client-less
-//! work unit. Split out of `daemon.rs` to keep that file under the module-size cap; the invariants
+//! RAII refcount guards over [`Broker`]: one per connected front-end link, one per relay session
+//! and per relay handshake, one per client-less work unit. Split out of `daemon.rs` to keep that file under the module-size cap; the invariants
 //! they enforce live on [`Broker::register_link`] and [`Broker::begin_work`].
 
 use std::sync::Arc;
@@ -33,6 +33,20 @@ impl Drop for RelayGuard {
     fn drop(&mut self) {
         self.broker
             .relay_count
+            .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// RAII marker for a relay link between its accept and the end of its handshake; see
+/// [`Broker::begin_relay_handshake`].
+pub struct HandshakeGuard {
+    pub(super) broker: Arc<Broker>,
+}
+
+impl Drop for HandshakeGuard {
+    fn drop(&mut self) {
+        self.broker
+            .relay_handshakes
             .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
     }
 }

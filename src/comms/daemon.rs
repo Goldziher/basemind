@@ -234,6 +234,9 @@ pub struct Broker {
     pub(super) subscriber_count: AtomicUsize,
     link_count: AtomicUsize,
     pub(super) relay_count: AtomicUsize,
+    /// Relay links whose handshake has begun and not yet ended in a registered session or a
+    /// refusal. A `Stop` is refused while any is open; see [`Broker::begin_relay_handshake`].
+    pub(super) relay_handshakes: AtomicUsize,
     /// Latches true the first time any link connects. Drives the bootstrap reaper: a daemon that
     /// stays `false` past [`BOOTSTRAP_TIMEOUT`] was spawned and abandoned (nobody ever dialed it) and
     /// self-terminates. Never reset — once a session has used the daemon, the idle window governs.
@@ -306,6 +309,7 @@ impl Broker {
             subscriber_count: AtomicUsize::new(0),
             link_count: AtomicUsize::new(0),
             relay_count: AtomicUsize::new(0),
+            relay_handshakes: AtomicUsize::new(0),
             ever_linked: AtomicBool::new(false),
             work_inflight: AtomicUsize::new(0),
             last_activity_ms: AtomicU64::new(0),
@@ -403,6 +407,7 @@ impl Broker {
         use super::relay;
         use tokio::io::AsyncReadExt as _;
 
+        let handshake = self.begin_relay_handshake();
         self.mark_active().await;
         let mut magic = [0u8; relay::RELAY_MAGIC.len()];
         if let Err(error) = stream.read_exact(&mut magic).await {
@@ -427,12 +432,12 @@ impl Broker {
             daemon_version: daemon_version.clone(),
             accepted: false,
             code: Some(code.to_string()),
+            detail,
         };
 
         if hello.relay_proto_ver != relay::RELAY_PROTO_VER {
             let _ = relay::write_welcome(&mut stream, &decline(relay::decline::PROTO_SKEW, None)).await;
             return;
-            detail,
         }
         if hello.view != crate::store::VIEW_WORKING {
             let _ = relay::write_welcome(&mut stream, &decline(relay::decline::VIEW_UNSUPPORTED, None)).await;
@@ -451,7 +456,7 @@ impl Broker {
             Ok(shared) => shared,
             Err(error) => {
                 tracing::warn!(%error, root = %hello.root.display(), "relay: hosting read stack failed");
-                let (code, detail) = super::relay_decline::of_build_failure(&anyhow::Error::new(error));
+                let (code, detail) = super::relay_decline::of_build_failure(&error);
                 let _ = relay::write_welcome(&mut stream, &decline(code, detail)).await;
                 return;
             }
@@ -460,7 +465,7 @@ impl Broker {
             Ok(guard) => guard,
             Err(error) => {
                 tracing::warn!(%error, "relay: connection accounting failed");
-                let (code, detail) = super::relay_decline::of_build_failure(&error);
+                let (code, detail) = super::relay_decline::of_build_failure(&anyhow::Error::new(error));
                 let _ = relay::write_welcome(&mut stream, &decline(code, detail)).await;
                 return;
             }
@@ -469,19 +474,20 @@ impl Broker {
             let _ = relay::write_welcome(&mut stream, &decline(relay::decline::DAEMON_DRAINING, None)).await;
             return;
         };
+        drop(handshake);
 
         let welcome = relay::RelayWelcome {
             relay_proto_ver: relay::RELAY_PROTO_VER,
             daemon_version,
             accepted: true,
             code: None,
+            detail: None,
         };
         if let Err(error) = relay::write_welcome(&mut stream, &welcome).await {
             tracing::warn!(%error, "relay: sending welcome failed");
             return;
         }
 
-            detail: None,
         let agent = hello.agent.to_string();
         tracing::info!(agent = %agent, root = %hello.root.display(), "relay: hosting rmcp session");
         let server = crate::mcp::BasemindServer::from_shared(shared, agent, Arc::clone(&self.heavy_admission));

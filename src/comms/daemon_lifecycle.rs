@@ -6,6 +6,7 @@ use std::sync::atomic::Ordering;
 use tokio::sync::mpsc;
 
 use super::daemon::{Broker, LifecycleState, RelayGuard};
+use super::daemon_guards::HandshakeGuard;
 use super::daemon_http::HttpActivityGuard;
 use super::protocol::{CommsNotification, CommsOut, CommsResponse};
 
@@ -18,6 +19,16 @@ impl Broker {
         }
         self.relay_count.fetch_add(1, Ordering::SeqCst);
         Some(RelayGuard { broker: self.clone() })
+    }
+
+    /// Count a relay link as being set up, from its accept until the guard drops: when its session
+    /// is registered by [`Broker::try_register_relay`], or when it is turned down. Setting a
+    /// session up opens the workspace and can take seconds, during which the link is not yet a
+    /// relay; without this count a `Stop` arriving then is accepted, and the session it was about
+    /// to serve finds its daemon gone. Take the guard before the handshake's first await.
+    pub fn begin_relay_handshake(self: &Arc<Self>) -> HandshakeGuard {
+        self.relay_handshakes.fetch_add(1, Ordering::SeqCst);
+        HandshakeGuard { broker: self.clone() }
     }
 
     /// Pin an accepted HTTP connection unless shutdown has already started.
@@ -33,7 +44,7 @@ impl Broker {
     pub(super) async fn on_stop(&self) -> CommsResponse {
         let sinks: Vec<mpsc::Sender<CommsOut>> = {
             let mut registry = self.registry.lock().await;
-            let relays = self.relay_count.load(Ordering::SeqCst);
+            let relays = self.relay_count.load(Ordering::SeqCst) + self.relay_handshakes.load(Ordering::SeqCst);
             let subscriptions = self.subscriber_count.load(Ordering::SeqCst);
             let http = self.http_inflight.load(Ordering::SeqCst);
             let work = self.work_inflight.load(Ordering::SeqCst);
