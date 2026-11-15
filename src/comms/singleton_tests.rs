@@ -53,6 +53,8 @@ fn version_is_older_orders_pre_releases_by_semver_precedence() {
 /// at the limit even though the call it started is still blocked.
 #[test]
 fn bounded_gives_up_on_work_that_never_returns_and_passes_on_what_returns_in_time() {
+    use endpoint::bounded;
+
     const LIMIT: Duration = Duration::from_millis(100);
     const PROMPT: Duration = Duration::from_secs(5);
     let (release, blocked) = std::sync::mpsc::channel::<()>();
