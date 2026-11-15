@@ -15,6 +15,7 @@ use super::ServerState;
 use super::cursor::Cursor;
 use super::helpers::{SEARCH_LIMIT_DEFAULT, SEARCH_LIMIT_MAX};
 use super::helpers_grep_text::{annotate_symbols, clip_line, line_text};
+use super::index_route::blocking;
 use super::tool_contract::IndexedFiles;
 use super::types::{GrepHit, GrepTruncation, WorkspaceGrepParams, WorkspaceGrepResponse};
 use crate::index::grep_bloom::GrepEntry;
@@ -138,7 +139,8 @@ pub(super) async fn run_workspace_grep(
     } else {
         None
     };
-    let (counts, skipped_files) = count_all(files, &paths, skip.as_deref(), &re, literal.as_ref(), skip_hits);
+    let (counts, skipped_files) =
+        blocking(|| count_all(files, &paths, skip.as_deref(), &re, literal.as_ref(), skip_hits));
 
     let total_matches = counts.iter().fold(0u32, |acc, &c| acc.saturating_add(c));
     let total_files_matched = counts.iter().filter(|&&c| c > 0).count();
@@ -148,15 +150,17 @@ pub(super) async fn run_workspace_grep(
         let (path, meta) = scanned[file_idx];
         super::freshness::matches_index(meta.into(), &root.join(path), bytes)
     };
-    let (mut hits, hit_cursors) = materialize(
-        files,
-        &paths,
-        &selected,
-        &is_fresh,
-        &re,
-        params.include_context,
-        skip_files,
-    );
+    let (mut hits, hit_cursors) = blocking(|| {
+        materialize(
+            files,
+            &paths,
+            &selected,
+            &is_fresh,
+            &re,
+            params.include_context,
+            skip_files,
+        )
+    });
     annotate_symbols(&cache, &mut hits);
 
     let (truncated, truncation_reason, next_cursor) = match (limit_resume, byte_budget_hit) {

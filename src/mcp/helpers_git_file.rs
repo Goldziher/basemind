@@ -183,11 +183,9 @@ pub(super) fn detect_lang(state: &ServerState, path: impl AsRef<std::ffi::OsStr>
 }
 
 /// The `diff_outline` operation: which symbols the served view has that `rev` does not, and
-/// vice versa — "what did this branch add" without reading source.
-pub(super) async fn run_diff_outline(
-    state: &ServerState,
-    params: DiffOutlineParams,
-) -> Result<CallToolResult, McpError> {
+/// vice versa — "what did this branch add" without reading source. Synchronous: the caller waits for
+/// the code map first, then runs this off the reactor.
+pub(super) fn run_diff_outline(state: &ServerState, params: DiffOutlineParams) -> Result<CallToolResult, McpError> {
     let started = std::time::Instant::now();
     let repo = require_git_repo(state)?;
     let rev_spec = params.rev.as_deref().unwrap_or("HEAD");
@@ -195,7 +193,6 @@ pub(super) async fn run_diff_outline(
         .resolve_rev(rev_spec)
         .map_err(|e| McpError::invalid_params(format!("resolve_rev({rev_spec}): {e}"), None))?;
 
-    state.await_cache_ready().await;
     let cache = state.shared.cache.load_full();
     let here = cache.get(&params.path).map(|l1| {
         l1.symbols
@@ -347,10 +344,7 @@ pub(super) fn run_blame(state: &ServerState, params: BlameFileParams) -> Result<
 ///
 /// The span is the symbol's in the blamed revision's own blob. The working-tree outline describes
 /// other lines as soon as the file differs from that revision above the symbol.
-pub(super) async fn run_blame_symbol(
-    state: &ServerState,
-    params: BlameSymbolParams,
-) -> Result<CallToolResult, McpError> {
+pub(super) fn run_blame_symbol(state: &ServerState, params: BlameSymbolParams) -> Result<CallToolResult, McpError> {
     let started = std::time::Instant::now();
     let repo = require_git_repo(state)?;
     reject_external_path(&params.path)?;

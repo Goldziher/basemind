@@ -42,7 +42,7 @@ pub(super) async fn run_goto_definition(
         }
         super::tool_contract::indexed_file(state, &store, "code_refs", &params.path)?
     };
-    let source = std::fs::read(file)
+    let source = super::index_route::blocking(|| std::fs::read(file))
         .map_err(|e| McpError::invalid_params(format!("`code_refs`: cannot read `{}`: {e}", params.path), None))?;
 
     let pos = line_col_to_offset(&source, params.line, params.column).ok_or_else(|| {
@@ -235,7 +235,7 @@ fn definition_location(
         });
     }
     let abs = super::tool_contract::IndexedFiles::of(state).indexed_path(&def_path)?;
-    let def_source = std::fs::read(&abs).ok()?;
+    let def_source = super::index_route::blocking(|| std::fs::read(&abs)).ok()?;
     let (line, column) = offset_to_line_col(&def_source, def_start);
     let name = identifier_at(&def_source, def_start);
     Some(DefinitionLocation {

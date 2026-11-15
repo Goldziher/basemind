@@ -7,6 +7,7 @@ use super::ServerState;
 use super::freshness::matches_index;
 use super::helpers::{json_result, kind_to_str, parse_kind};
 use super::helpers_pick::pick_symbol;
+use super::index_route::blocking;
 use super::tool_contract::{indexed_file, not_indexed, not_indexed_in};
 use super::types_code::{ExpandParams, ExpandResponse, ReadSpanResponse};
 use super::types_tools::CodeReadParams;
@@ -67,7 +68,7 @@ async fn read_span(
     }
     state.await_cache_ready().await;
     let file = indexed_file(state, &*state.shared.store.read().await, "code_read", path)?;
-    let span = read_lines(&file, line, end_line).map_err(|_| not_indexed(state, "code_read", path))?;
+    let span = blocking(|| read_lines(&file, line, end_line)).map_err(|_| not_indexed(state, "code_read", path))?;
     let total_lines = span.total_lines;
     if line > total_lines.max(1) {
         return Err(McpError::invalid_params(
@@ -208,7 +209,7 @@ async fn run_expand(state: &ServerState, params: ExpandParams) -> Result<CallToo
         (l1, entry, indexed_file(state, &store, "code_read", &params.path)?)
     };
     let max_bytes = state.shared.config.scan.max_file_bytes;
-    let file_bytes = read_bounded(&file, max_bytes)
+    let file_bytes = blocking(|| read_bounded(&file, max_bytes))
         .map_err(|e| McpError::invalid_params(format!("`code_read`: read {}: {e}", params.path), None))?
         .ok_or_else(|| {
             McpError::invalid_params(
@@ -222,9 +223,11 @@ async fn run_expand(state: &ServerState, params: ExpandParams) -> Result<CallToo
         })?;
     // The indexed spans locate a symbol only in the bytes that were indexed. In an edited file the
     // symbol is found by parsing what is there now, never by cutting at the old offsets.
-    let stale = !entry
-        .as_ref()
-        .is_some_and(|entry| matches_index(entry.into(), &file, &file_bytes));
+    let stale = !blocking(|| {
+        entry
+            .as_ref()
+            .is_some_and(|entry| matches_index(entry.into(), &file, &file_bytes))
+    });
     let l1 = if stale {
         let language = super::helpers_git_file::detect_lang(state, &params.path).ok_or_else(|| {
             McpError::invalid_params(
@@ -236,7 +239,7 @@ async fn run_expand(state: &ServerState, params: ExpandParams) -> Result<CallToo
                 None,
             )
         })?;
-        crate::extract::l1::extract_l1(language, &file_bytes).map_err(|error| {
+        blocking(|| crate::extract::l1::extract_l1(language, &file_bytes)).map_err(|error| {
             McpError::invalid_params(
                 format!(
                     "`code_read`: `{0}` changed since it was indexed and could not be parsed ({error}). Read a \

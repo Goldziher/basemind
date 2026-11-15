@@ -91,84 +91,88 @@ pub(super) async fn run_search_symbols(
     let want = skip.saturating_add(limit);
     let cache = state.shared.cache.load_full();
 
-    let mut literal: [Vec<Candidate<'_>>; 3] = [Vec::new(), Vec::new(), Vec::new()];
-    let mut literal_total = 0usize;
-    for (path, terms) in cache.terms().iter() {
-        for symbol in terms.matching_symbols(&finder, kind) {
-            let rank = literal_rank(terms.name(symbol), needle);
-            literal_total += 1;
-            if literal[rank].len() < want {
-                literal[rank].push(Candidate {
-                    path,
-                    symbol,
-                    matched: LITERAL_RANKS[rank],
-                });
-            }
-        }
-    }
-
-    let mut total_is_partial = false;
-    let mut fuzzy: Vec<(u32, Candidate<'_>)> = Vec::new();
-    if params.fuzzy {
-        let pattern = Pattern::parse(&params.needle, CaseMatching::Ignore, Normalization::Smart);
-        let mut matcher = Matcher::new(Config::DEFAULT);
-        let mut utf32: Vec<char> = Vec::new();
-        'sweep: for (path, terms) in cache.terms().iter() {
-            for (symbol, name, symbol_kind) in terms.symbols() {
-                if kind.is_some_and(|k| symbol_kind != k) || finder.find(name).is_some() {
-                    continue;
-                }
-                let Ok(name) = std::str::from_utf8(name) else {
-                    continue;
-                };
-                let Some(score) = pattern.score(Utf32Str::new(name, &mut utf32), &mut matcher) else {
-                    continue;
-                };
-                if fuzzy.len() >= FUZZY_CANDIDATES_MAX {
-                    total_is_partial = true;
-                    break 'sweep;
-                }
-                fuzzy.push((
-                    score,
-                    Candidate {
+    // The sweep walks every symbol name of the corpus: off the reactor.
+    let (page, total, total_is_partial) = super::index_route::blocking(|| {
+        let mut literal: [Vec<Candidate<'_>>; 3] = [Vec::new(), Vec::new(), Vec::new()];
+        let mut literal_total = 0usize;
+        for (path, terms) in cache.terms().iter() {
+            for symbol in terms.matching_symbols(&finder, kind) {
+                let rank = literal_rank(terms.name(symbol), needle);
+                literal_total += 1;
+                if literal[rank].len() < want {
+                    literal[rank].push(Candidate {
                         path,
                         symbol,
-                        matched: FUZZY,
-                    },
-                ));
+                        matched: LITERAL_RANKS[rank],
+                    });
+                }
             }
         }
-        // Best score first; the sweep order (path, then outline position) breaks ties stably.
-        fuzzy.sort_by_key(|candidate| std::cmp::Reverse(candidate.0));
-        if let Some(&(top, _)) = fuzzy.first() {
-            let floor = (u64::from(top) * u64::from(FUZZY_SCORE_FLOOR_PCT) / 100) as u32;
-            let keep = fuzzy.partition_point(|(score, _)| *score >= floor);
-            fuzzy.truncate(keep);
-        }
-    }
-    let total = literal_total + fuzzy.len();
 
-    let cache_ref = &cache;
-    let page: Vec<SearchHitView> = literal
-        .into_iter()
-        .flatten()
-        .chain(fuzzy.into_iter().map(|(_, candidate)| candidate))
-        .skip(skip)
-        .take(limit)
-        .filter_map(|candidate| {
-            let l1 = cache_ref.get(candidate.path)?;
-            let symbol = l1.symbols.get(candidate.symbol)?;
-            Some(SearchHitView {
-                path: candidate.path.clone(),
-                name: symbol.name.clone(),
-                kind: kind_to_str(symbol.kind),
-                line: symbol.start_row + 1,
-                column: symbol.start_col + 1,
-                signature: symbol.signature.clone(),
-                matched: candidate.matched,
+        let mut total_is_partial = false;
+        let mut fuzzy: Vec<(u32, Candidate<'_>)> = Vec::new();
+        if params.fuzzy {
+            let pattern = Pattern::parse(&params.needle, CaseMatching::Ignore, Normalization::Smart);
+            let mut matcher = Matcher::new(Config::DEFAULT);
+            let mut utf32: Vec<char> = Vec::new();
+            'sweep: for (path, terms) in cache.terms().iter() {
+                for (symbol, name, symbol_kind) in terms.symbols() {
+                    if kind.is_some_and(|k| symbol_kind != k) || finder.find(name).is_some() {
+                        continue;
+                    }
+                    let Ok(name) = std::str::from_utf8(name) else {
+                        continue;
+                    };
+                    let Some(score) = pattern.score(Utf32Str::new(name, &mut utf32), &mut matcher) else {
+                        continue;
+                    };
+                    if fuzzy.len() >= FUZZY_CANDIDATES_MAX {
+                        total_is_partial = true;
+                        break 'sweep;
+                    }
+                    fuzzy.push((
+                        score,
+                        Candidate {
+                            path,
+                            symbol,
+                            matched: FUZZY,
+                        },
+                    ));
+                }
+            }
+            // Best score first; the sweep order (path, then outline position) breaks ties stably.
+            fuzzy.sort_by_key(|candidate| std::cmp::Reverse(candidate.0));
+            if let Some(&(top, _)) = fuzzy.first() {
+                let floor = (u64::from(top) * u64::from(FUZZY_SCORE_FLOOR_PCT) / 100) as u32;
+                let keep = fuzzy.partition_point(|(score, _)| *score >= floor);
+                fuzzy.truncate(keep);
+            }
+        }
+        let total = literal_total + fuzzy.len();
+
+        let cache_ref = &cache;
+        let page: Vec<SearchHitView> = literal
+            .into_iter()
+            .flatten()
+            .chain(fuzzy.into_iter().map(|(_, candidate)| candidate))
+            .skip(skip)
+            .take(limit)
+            .filter_map(|candidate| {
+                let l1 = cache_ref.get(candidate.path)?;
+                let symbol = l1.symbols.get(candidate.symbol)?;
+                Some(SearchHitView {
+                    path: candidate.path.clone(),
+                    name: symbol.name.clone(),
+                    kind: kind_to_str(symbol.kind),
+                    line: symbol.start_row + 1,
+                    column: symbol.start_col + 1,
+                    signature: symbol.signature.clone(),
+                    matched: candidate.matched,
+                })
             })
-        })
-        .collect();
+            .collect();
+        (page, total, total_is_partial)
+    });
 
     let budget = super::budget::apply_budget(page, params.max_tokens);
     let results = budget.items;

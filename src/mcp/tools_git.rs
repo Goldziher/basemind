@@ -10,6 +10,7 @@ use rmcp::tool;
 use super::BasemindServer;
 use super::cursor_bind::bound;
 use super::helpers_git;
+use super::index_route::blocking;
 use super::strict::Strict;
 use super::types::{FindCommitsByPathParams, HotFilesParams};
 use super::types_tools::{GitBlameParams, GitDiffParams, GitLogParams};
@@ -85,7 +86,7 @@ impl BasemindServer {
             &self.state,
             "git_log",
             p,
-            bound(p, |p| async { helpers_git::git_log(&self.state, p) }).await
+            bound(p, |p| async { blocking(|| helpers_git::git_log(&self.state, p)) }).await
         )
     }
 
@@ -95,7 +96,7 @@ impl BasemindServer {
             &self.state,
             "git_blame",
             p,
-            bound(p, |p| helpers_git::git_blame(&self.state, p)).await
+            bound(p, |p| async { blocking(|| helpers_git::git_blame(&self.state, p)) }).await
         )
     }
 

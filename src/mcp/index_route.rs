@@ -191,7 +191,7 @@ impl IndexRoute {
         cursor_after: Option<&[u8]>,
     ) -> Result<CallScanPage, McpError> {
         if let Self::Local(idx) = self {
-            return scan_calls_by_name(&**idx, name, matching, limit, cursor_after);
+            return blocking(|| scan_calls_by_name(&**idx, name, matching, limit, cursor_after));
         }
         #[cfg(all(feature = "comms", any(unix, windows)))]
         match self

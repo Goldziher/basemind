@@ -15,6 +15,7 @@ use super::helpers::{
     head_snapshot_id, json_result, require_git_repo,
 };
 use super::helpers_git_show::{budget_commits, commit_to_hit, resolve_body_chars, run_show};
+use super::index_route::blocking;
 use super::tool_contract::budget;
 use super::types::{
     BlameFileParams, BlameSymbolParams, CommitView, CommitsTouchingParams, CommitsTouchingResponse, DiffFileParams,
@@ -133,7 +134,7 @@ pub(super) fn git_log(state: &ServerState, p: GitLogParams) -> Result<CallToolRe
 }
 
 /// `git_blame`: who last changed each line of a file, a line span, or one symbol.
-pub(super) async fn git_blame(state: &ServerState, p: GitBlameParams) -> Result<CallToolResult, McpError> {
+pub(super) fn git_blame(state: &ServerState, p: GitBlameParams) -> Result<CallToolResult, McpError> {
     let shape_error = |problem: &str| {
         McpError::invalid_params(
             format!(
@@ -171,7 +172,6 @@ pub(super) async fn git_blame(state: &ServerState, p: GitBlameParams) -> Result<
                     max_tokens,
                 },
             )
-            .await
         }
         None => {
             let (line_start, line_end) = match (p.line, p.end_line) {
@@ -213,7 +213,7 @@ pub(super) async fn git_diff(state: &ServerState, p: GitDiffParams) -> Result<Ca
         if p.from.is_some() || p.to.is_some() || structural {
             return Err(shape_error("a diff needs the `path` of one file"));
         }
-        return run_status(state);
+        return blocking(|| run_status(state));
     };
     if structural {
         if p.to.is_some() {
@@ -221,16 +221,19 @@ pub(super) async fn git_diff(state: &ServerState, p: GitDiffParams) -> Result<Ca
                 "a structural diff compares `from` against the indexed working tree and takes no `to`",
             ));
         }
-        return super::helpers_git_file::run_diff_outline(state, DiffOutlineParams { path, rev: p.from }).await;
+        state.await_cache_ready().await;
+        return blocking(|| super::helpers_git_file::run_diff_outline(state, DiffOutlineParams { path, rev: p.from }));
     }
-    super::helpers_git_file::run_diff(
-        state,
-        DiffFileParams {
-            rev_old: p.from.unwrap_or_else(|| "HEAD".to_string()),
-            rev_new: p.to,
-            path,
-        },
-    )
+    blocking(|| {
+        super::helpers_git_file::run_diff(
+            state,
+            DiffFileParams {
+                rev_old: p.from.unwrap_or_else(|| "HEAD".to_string()),
+                rev_new: p.to,
+                path,
+            },
+        )
+    })
 }
 
 /// Reject a path that lives outside the repository (a `scan.extra_roots` file, keyed by its

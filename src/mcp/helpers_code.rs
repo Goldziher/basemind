@@ -348,7 +348,8 @@ async fn column_of(state: &ServerState, path: &crate::path::RelPath, line: u32, 
         }
         super::tool_contract::indexed_file(state, &store, "code_refs", path)?
     };
-    let source = std::fs::read(file).map_err(|_| not_indexed(state, "code_refs", path))?;
+    let source =
+        super::index_route::blocking(|| std::fs::read(file)).map_err(|_| not_indexed(state, "code_refs", path))?;
     let text = source
         .split(|byte| *byte == b'\n')
         .nth(line.saturating_sub(1) as usize)
@@ -467,11 +468,14 @@ pub(super) async fn code_outline(state: &ServerState, p: CodeOutlineParams) -> R
             store.lookup(&p.path).cloned(),
         )
     };
-    let source = file.as_ref().and_then(|file| std::fs::read(file).ok());
-    let stale = match (&file, &source, &entry) {
-        (Some(file), Some(bytes), Some(entry)) => !super::freshness::matches_index(entry.into(), file, bytes),
-        _ => true,
-    };
+    let (source, stale) = super::index_route::blocking(|| {
+        let source = file.as_ref().and_then(|file| std::fs::read(file).ok());
+        let stale = match (&file, &source, &entry) {
+            (Some(file), Some(bytes), Some(entry)) => !super::freshness::matches_index(entry.into(), file, bytes),
+            _ => true,
+        };
+        (source, stale)
+    });
     let newlines: Vec<usize> = source
         .as_deref()
         .map(|bytes| memchr::memchr_iter(b'\n', bytes).collect())
