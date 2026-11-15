@@ -283,6 +283,7 @@ pub fn table() -> Vec<Row> {
         cli_only("comms stop", BROKER),
         cli_only("comms status", BROKER),
         cli_only("comms doctor", BROKER),
+        cli_only("comms cleanup", BROKER),
         cli_only(
             "daemon ensure",
             "prints the daemon's streamable-HTTP MCP URL for HTTP-native clients",

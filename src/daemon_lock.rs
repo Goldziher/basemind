@@ -170,8 +170,9 @@ fn generation_registry_in(root: &Path) -> PathBuf {
     root.join(format!("g{RENDEZVOUS_GENERATION}"))
 }
 
-/// Whether `name` names a generation's registry directory: `g` followed by decimal digits.
-fn is_generation_registry_name(name: &str) -> bool {
+/// Whether `name` names a generation's directory, in the registry or in a comms directory: `g`
+/// followed by decimal digits.
+pub(crate) fn is_generation_name(name: &str) -> bool {
     name.strip_prefix('g')
         .is_some_and(|digits| !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit()))
 }
@@ -305,7 +306,7 @@ fn count_other_generations_in(root: &Path, kind: DaemonKind) -> usize {
     let mut count = count_recorded_in(root, kind);
     for entry in entries.flatten() {
         let path = entry.path();
-        let named_generation = entry.file_name().to_str().is_some_and(is_generation_registry_name);
+        let named_generation = entry.file_name().to_str().is_some_and(is_generation_name);
         if named_generation && path != own && path.is_dir() {
             count += count_recorded_in(&path, kind);
         }

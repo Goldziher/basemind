@@ -57,6 +57,8 @@ pub mod frontend_named_pipe;
 pub mod frontend_uds;
 /// The daemon's git-history half: the pool of open per-repo indexes + the forwarded-op handler.
 #[cfg(all(feature = "comms", any(unix, windows)))]
+pub mod generation_cleanup;
+#[cfg(all(feature = "comms", any(unix, windows)))]
 pub(crate) mod git_history_ops;
 /// The opt-in gate and bearer-token auth guarding [`http_frontend`].
 #[cfg(all(feature = "comms", any(unix, windows)))]

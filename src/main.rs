@@ -186,6 +186,16 @@ enum CommsLifecycleCmd {
         #[arg(long)]
         clear_fatal: bool,
     },
+    /// Remove rendezvous directories no daemon uses: other protocol generations' and the files
+    /// releases up to 0.33 left in the comms directory, when unlocked and idle for 30 days.
+    Cleanup {
+        /// List what would be removed, with sizes, and remove nothing.
+        #[arg(long)]
+        dry_run: bool,
+        /// Idle days after which an unlocked rendezvous is removed.
+        #[arg(long, value_name = "DAYS", default_value_t = 30)]
+        older_than: u64,
+    },
 }
 
 #[derive(clap::Args, Debug)]

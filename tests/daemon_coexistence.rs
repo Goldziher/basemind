@@ -404,3 +404,59 @@ fn a_client_forbidden_to_spawn_does_not_ask_an_older_daemon_to_stop() {
     assert_eq!(daemon.asked(), ["status", "stop"]);
     assert!(stand_in.alive());
 }
+
+/// `comms cleanup` through the binary: a dry run removes nothing, a real run removes the idle
+/// rendezvous of other generations and of the pre-generation layout, a held lock spares one, and
+/// this generation's directory is left alone whatever its age.
+#[test]
+fn comms_cleanup_removes_only_idle_unlocked_rendezvous_of_other_generations() {
+    use fs2::FileExt as _;
+
+    let machine = Machine::new();
+    let fill = |dir: &Path| {
+        std::fs::create_dir_all(dir.join("store.fjall")).expect("mkdir");
+        for name in ["daemon.lock", "daemon.pid", "store.fjall/data"] {
+            std::fs::write(dir.join(name), b"x").expect("write");
+        }
+    };
+    let idle = machine.comms_dir.join(format!("g{}", RENDEZVOUS_GENERATION + 1));
+    let busy = machine.comms_dir.join(format!("g{}", RENDEZVOUS_GENERATION + 2));
+    for dir in [&idle, &busy, &machine.generation, &machine.comms_dir] {
+        fill(dir);
+    }
+    std::fs::write(machine.comms_dir.join("comms.sock"), b"").expect("write");
+    let lock = std::fs::File::options()
+        .read(true)
+        .write(true)
+        .open(busy.join("daemon.lock"))
+        .expect("open lock");
+    lock.try_lock_exclusive().expect("hold the busy generation's lock");
+
+    let dry = machine.run(&["comms", "cleanup", "--dry-run", "--older-than", "0"], &[]);
+    assert!(dry.status.success(), "{}", text(&dry.stderr));
+    assert!(text(&dry.stdout).contains("would remove"), "{}", text(&dry.stdout));
+    assert!(idle.join("store.fjall/data").exists(), "a dry run removes nothing");
+
+    let young = machine.run(&["comms", "cleanup"], &[]);
+    assert!(young.status.success(), "{}", text(&young.stderr));
+    assert!(
+        idle.exists(),
+        "a rendezvous used today is younger than the default 30 days"
+    );
+
+    let out = machine.run(&["comms", "cleanup", "--older-than", "0"], &[]);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    assert!(!idle.exists(), "{}", text(&out.stdout));
+    assert!(!machine.comms_dir.join("comms.sock").exists());
+    assert!(!machine.comms_dir.join("store.fjall").exists());
+    assert!(!machine.comms_dir.join("daemon.lock").exists());
+    assert!(
+        busy.join("store.fjall/data").exists(),
+        "a held lock spares the directory"
+    );
+    assert!(
+        machine.generation.join("store.fjall/data").exists(),
+        "this generation is never removed"
+    );
+    drop(lock);
+}

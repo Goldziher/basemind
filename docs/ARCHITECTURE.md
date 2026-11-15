@@ -869,8 +869,11 @@ generation; it only names where a daemon and its clients meet. A protocol-versio
 generation is reported, not resolved by a new directory. `<comms_dir>` elsewhere in
 this document means the generation directory. The generation is bumped only when a release must stay
 invisible to binaries already released into the current one; a new generation starts with an empty
-comms store, and the previous generation's daemon runs until its own sessions end. Directories of
-other generations are not removed automatically.
+comms store, and the previous generation's daemon runs until its own sessions end. Generations are
+retired by disuse: `basemind comms cleanup` (`src/comms/generation_cleanup.rs`) removes another
+generation's directory, or the unscoped files of releases up to 0.33, when its `daemon.lock` is free
+and its newest file is older than 30 days. It reads the lock and file ages only, never this binary's
+own generation, and runs only when asked.
 
 The machine registry of live daemons is scoped the same way: a daemon registers under
 `<data_home>/daemons/g1/`, where a release up to 0.33, which reads only the files directly in

@@ -230,20 +230,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   which `full` does not include, so the Homebrew, npm, pip and GitHub release binaries no longer contain
   it. Tesseract OCR is unchanged.
 
+### Added
+
+- `basemind comms cleanup [--dry-run] [--older-than <days>]` removes the rendezvous files no daemon
+  uses any more: the directories of other protocol generations under the comms directory, and the
+  files releases up to 0.33 keep directly in it (`comms.sock`, `daemon.lock`, `daemon.pid`,
+  `store.fjall/`, `daemon.log`, `http.addr`, `last-fatal.json`). A rendezvous goes only when its
+  `daemon.lock` can be taken and its newest file is older than 30 days. The command reads locks and
+  file ages only, never contacts or signals a daemon, and never touches the generation of the
+  binary that runs it (ADR-0024 rule 7).
+
 ### Fixed
 
-- Two installed basemind versions no longer kill each other's daemon. The daemon's socket (named pipe
-  on Windows), lock, pidfile, log, `http.addr` and comms store moved from the comms directory into a
-  protocol-generation subdirectory, `comms/g1/`, and its record in the daemon registry moved from
-  `daemons/` to `daemons/g1/`. A binary only looks inside its own generation, so a 0.33 install and
-  a newer one each keep their own daemon and neither can reach the other's.
-  `BASEMIND_COMMS_DIR` still names the comms directory; the generation applies inside it, which
-  leaves a long override three bytes less of the Unix socket path limit. The comms store starts
-  empty in the new generation, and the files of the old layout, the old message store included,
-  are left in place. Limits: a 0.33 plugin launcher still kills other versions' processes started
-  from the plugin cache, so this is fully effective only once no 0.33 plugin is installed; and the
-  workspace index, memory and git-history stores are not per generation, so a second daemon cannot
-  serve a workspace the first one holds. See
+- Two installed basemind versions no longer kill each other's daemon. The daemon's socket (named
+  pipe on Windows), lock, pidfile, log, `http.addr` and comms store moved from the comms directory
+  into a protocol-generation subdirectory, `comms/g1/`, and its record in the daemon registry moved
+  from `daemons/` to `daemons/g1/`. A binary only looks inside its own generation, so a 0.33 install
+  and a newer one each keep their own daemon and neither can reach the other's. `BASEMIND_COMMS_DIR`
+  still names the comms directory; the generation applies inside it, which leaves a long override
+  three bytes less of the Unix socket path limit. The comms store starts empty in the new
+  generation, and the files of the old layout, the old message store included, stay until
+  `basemind comms cleanup` removes them. Limits: a 0.33 plugin launcher still kills other versions'
+  processes started from the plugin cache, so this is fully effective only once no 0.33 plugin is
+  installed;
+  and the workspace index, memory and git-history stores are not per generation, so a second daemon
+  cannot serve a workspace the first one holds. See
   [`docs/UPGRADING.md`](docs/UPGRADING.md#running-two-basemind-versions-side-by-side).
 - `basemind comms stop --all` and `basemind comms doctor` (with `--probe` too) cover the daemons of
   their own protocol generation only, and can no longer stop or force-terminate a 0.33 daemon.

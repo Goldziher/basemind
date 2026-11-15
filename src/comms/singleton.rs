@@ -280,17 +280,23 @@ pub fn generation_dir(comms_base: &Path) -> PathBuf {
     comms_base.join(format!("g{RENDEZVOUS_GENERATION}"))
 }
 
+/// The comms directory itself, which holds one subdirectory per generation: the [`COMMS_DIR_ENV`]
+/// override when set, else `comms/` under the per-user data directory. Creates nothing.
+pub fn comms_base_dir() -> Result<PathBuf, SingletonError> {
+    match std::env::var_os(COMMS_DIR_ENV) {
+        Some(dir) if !dir.is_empty() => Ok(PathBuf::from(dir)),
+        _ => {
+            let dirs = ProjectDirs::from("", "", "basemind").ok_or(SingletonError::NoDataDir)?;
+            Ok(dirs.data_dir().join(COMMS_SUBDIR))
+        }
+    }
+}
+
 /// Resolve the per-user comms paths: this generation's directory under
 /// `directories::ProjectDirs::from("", "", "basemind")`, or under the [`COMMS_DIR_ENV`] override
 /// when set. Creates the directories (mode 0700 on Unix) as a side effect.
 pub fn resolve_paths() -> Result<CommsPaths, SingletonError> {
-    let comms_base = match std::env::var_os(COMMS_DIR_ENV) {
-        Some(dir) if !dir.is_empty() => PathBuf::from(dir),
-        _ => {
-            let dirs = ProjectDirs::from("", "", "basemind").ok_or(SingletonError::NoDataDir)?;
-            dirs.data_dir().join(COMMS_SUBDIR)
-        }
-    };
+    let comms_base = comms_base_dir()?;
     let comms_dir = generation_dir(&comms_base);
     std::fs::create_dir_all(&comms_dir).map_err(|source| SingletonError::Io {
         path: comms_dir.clone(),

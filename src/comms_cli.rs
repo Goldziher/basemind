@@ -217,6 +217,7 @@ pub(crate) fn cmd_comms(action: crate::CommsLifecycleCmd, json: bool) -> Result<
         crate::CommsLifecycleCmd::Stop { all: false } => cmd_comms_lifecycle_rpc(CommsRpc::Stop, json),
         crate::CommsLifecycleCmd::Status => cmd_comms_lifecycle_rpc(CommsRpc::Status, json),
         crate::CommsLifecycleCmd::Doctor { probe, clear_fatal } => cmd_comms_doctor(json, probe, clear_fatal),
+        crate::CommsLifecycleCmd::Cleanup { dry_run, older_than } => cmd_comms_cleanup(json, dry_run, older_than),
     }
 }
 
@@ -322,6 +323,47 @@ fn cmd_comms_start() -> Result<()> {
             .map_err(|e| anyhow::anyhow!("ensure comms daemon: {e}"))
     })?;
     println!("comms daemon is running ({})", socket_path.display());
+    Ok(())
+}
+
+/// `basemind comms cleanup`: remove the rendezvous of other protocol generations, and of releases
+/// up to 0.33, that no daemon holds and nothing has used for `older_than_days`. Reads locks and
+/// file ages only; this generation's directory is never a candidate.
+#[cfg(all(feature = "comms", any(unix, windows)))]
+fn cmd_comms_cleanup(json: bool, dry_run: bool, older_than_days: u64) -> Result<()> {
+    use basemind::comms::generation_cleanup::{self, Rendezvous, Verdict};
+    const DAY_SECS: u64 = 24 * 60 * 60;
+
+    let base = basemind::comms::singleton::comms_base_dir().context("resolve the comms directory")?;
+    let max_age = std::time::Duration::from_secs(older_than_days.saturating_mul(DAY_SECS));
+    let findings = generation_cleanup::sweep(&base, max_age, dry_run, std::time::SystemTime::now());
+    if json {
+        println!("{}", serde_json::json!({ "dry_run": dry_run, "rendezvous": findings }));
+    } else if findings.is_empty() {
+        println!("nothing to clean up in {}", base.display());
+    }
+    for finding in findings.iter().filter(|_| !json) {
+        let name = match &finding.rendezvous {
+            Rendezvous::Generation(name) => base.join(name).display().to_string(),
+            Rendezvous::PreGeneration => format!("{} (files of releases up to 0.33)", base.display()),
+        };
+        let outcome = match finding.verdict {
+            Verdict::Removed if dry_run => "would remove",
+            Verdict::Removed => "removed",
+            Verdict::InUse => "kept (a daemon holds its lock)",
+            Verdict::Recent => "kept (used too recently)",
+            Verdict::Failed => "could not remove all of",
+        };
+        println!(
+            "{outcome}: {name} — {} bytes, idle {} days",
+            finding.bytes,
+            finding.idle_secs / DAY_SECS
+        );
+    }
+    anyhow::ensure!(
+        findings.iter().all(|finding| finding.verdict != Verdict::Failed),
+        "some files could not be removed"
+    );
     Ok(())
 }
 
