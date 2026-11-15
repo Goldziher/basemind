@@ -50,9 +50,21 @@ else
   [ -n "$VERSION" ] || die "could not read version from $MANIFEST"
 fi
 
-CACHE_ROOT="${XDG_CACHE_HOME:-$HOME/.cache}/basemind/bin/$VERSION"
+# Cached versions live under versions/. Launchers up to 0.33 keep theirs under the sibling bin/, ~keep
+# where each of them stops every process started from another version's directory and deletes ~keep
+# that directory. Nothing here reads, writes or prunes bin/, so those launchers and this one never ~keep
+# see each other's versions. ~keep
+PARENT="${XDG_CACHE_HOME:-$HOME/.cache}/basemind/versions"
+CACHE_ROOT="$PARENT/$VERSION"
 MANAGED_BIN="$CACHE_ROOT/$BINARY_NAME"
-PARENT="$(dirname "$CACHE_ROOT")"
+
+# Days a cached version must go unused before it may be pruned. ~keep
+PRUNE_AFTER_DAYS="${BASEMIND_PRUNE_AFTER_DAYS:-14}"
+case "$PRUNE_AFTER_DAYS" in
+'' | *[!0-9]*) PRUNE_AFTER_DAYS=14 ;;
+esac
+# Minutes an install lock or staging directory must sit untouched before it counts as abandoned. ~keep
+STALE_INSTALL_MINUTES=10
 
 binary_version() { "$1" --version 2>/dev/null | awk '{print $2}'; }
 have() { command -v "$1" >/dev/null 2>&1; }
@@ -75,18 +87,33 @@ version_in_use() {
     END { exit !found }'
 }
 
-# Whether directory $1 changed within the last minute, or its age cannot be read. ~keep
-changed_recently() {
-  local recent
-  recent="$(find "$1" -maxdepth 0 -mmin -1 2>/dev/null)" || return 0
-  [ -n "$recent" ]
+# Whether $1 was last modified more than $2 minutes ago. No when its age cannot be read. ~keep
+older_than_minutes() {
+  local old
+  old="$(find "$1" -maxdepth 0 -mmin "+$2" 2>/dev/null)" || return 1
+  [ -n "$old" ]
 }
 
-# Remove cached version directories other than the current one, except any that may be in use: one ~keep
-# a running process was started from (another install, or a session opened before an update, whose ~keep
-# daemon re-executes the binary), one an install holds the lock for, and one that changed within the ~keep
-# last minute, whose first process may not have started yet. Nothing here stops a process of another ~keep
-# version; daemons of different versions coexist, and each exits on its own once idle. ~keep
+# Record that the cached version in directory $1 is being launched now. A launcher is a shell until ~keep
+# it execs, so the process list cannot show that it is about to start that version; the marker can. ~keep
+mark_used() {
+  [ -d "$1" ] || return 0
+  touch "$1/.last-used" 2>/dev/null || true
+}
+
+# Whether the cached version directory $1 (trailing slash included) was last launched more than ~keep
+# PRUNE_AFTER_DAYS ago, by its marker, or by its own age when it has none. ~keep
+unused_long_enough() {
+  local marker="$1.last-used"
+  [ -e "$marker" ] || marker="$1"
+  older_than_minutes "$marker" "$((PRUNE_AFTER_DAYS * 1440))"
+}
+
+# Remove cached version directories other than the current one, but only those nothing has ~keep
+# launched for PRUNE_AFTER_DAYS and no running process was started from (another install, or a ~keep
+# session opened before an update, whose daemon re-executes the binary), and never one an install ~keep
+# holds the lock for. Nothing here stops a process of another version; daemons of different ~keep
+# versions coexist, and each exits on its own once idle. ~keep
 prune_stale_versions() {
   [ -d "$PARENT" ] || return 0
   local entry base
@@ -97,21 +124,33 @@ prune_stale_versions() {
     case "$base" in
     [0-9]*)
       [ -e "$PARENT/.lock-$base" ] && continue
-      changed_recently "$entry" && continue
+      unused_long_enough "$entry" || continue
       version_in_use "$entry" || rm -rf "$entry" 2>/dev/null || true
       ;;
     esac
   done
 }
 
-# Remove leftover install lock/staging dirs from other versions (crashed or superseded installs). ~keep
-# The lock for VERSION is preserved — a concurrent session may be holding it to install right now. ~keep
+# Remove install lock and staging directories a crashed install left behind. Another version's ~keep
+# install may be running right now, so an entry goes only once it has sat untouched for ~keep
+# STALE_INSTALL_MINUTES, and a staging directory only when the process named in it is gone too. ~keep
+# The lock for VERSION is never removed here: its waiters break it themselves. ~keep
 cleanup_stale_state() {
   [ -d "$PARENT" ] || return 0
-  local entry
+  local entry pid
   for entry in "$PARENT"/.lock-* "$PARENT"/.staging-*; do
     [ -e "$entry" ] || continue
     [ "$entry" = "$PARENT/.lock-$VERSION" ] && continue
+    older_than_minutes "$entry" "$STALE_INSTALL_MINUTES" || continue
+    case "${entry##*/}" in
+    .staging-*)
+      pid="${entry##*-}"
+      case "$pid" in
+      '' | *[!0-9]*) ;;
+      *) kill -0 "$pid" 2>/dev/null && continue ;;
+      esac
+      ;;
+    esac
     rm -rf "$entry" 2>/dev/null || true
   done
 }
@@ -185,6 +224,7 @@ if [ -n "${BASEMIND_BIN:-}" ] && [ -x "${BASEMIND_BIN}" ]; then
   exec "$BASEMIND_BIN" "$@"
 fi
 if [ -x "$MANAGED_BIN" ] && [ "$(binary_version "$MANAGED_BIN")" = "$VERSION" ]; then
+  mark_used "$CACHE_ROOT"
   prune_stale_versions
   cleanup_stale_state
   exec "$MANAGED_BIN" "$@"
@@ -344,6 +384,7 @@ fallback_or_die() {
     log "v${VERSION} not yet downloadable; falling back to compatible cached basemind $(binary_version "$fb") at $fb — run \`/plugin update\` once the release completes"
     release_lock
     LOCK_HELD=""
+    mark_used "$(dirname "$fb")"
     cleanup_stale_state
     exec "$fb" "${ARGS[@]}"
   fi
@@ -353,6 +394,7 @@ fallback_or_die() {
 LOCK_HELD=""
 waited=0
 while ! mkdir "$LOCK" 2>/dev/null; do
+  mark_used "$CACHE_ROOT"
   try_exec "$MANAGED_BIN" "$@"
   sleep 0.2
   waited=$((waited + 1))
@@ -363,6 +405,7 @@ while ! mkdir "$LOCK" 2>/dev/null; do
 done
 LOCK_HELD=1
 
+mark_used "$CACHE_ROOT"
 try_exec "$MANAGED_BIN" "$@"
 
 TMP="$(mktemp -d)"
@@ -405,6 +448,7 @@ chmod +x "$STAGING/$BINARY_NAME"
 [ -e "$CACHE_ROOT" ] && rm -rf "$CACHE_ROOT"
 mv "$STAGING" "$CACHE_ROOT"
 STAGING=""
+mark_used "$CACHE_ROOT"
 log "installed basemind $VERSION to $CACHE_ROOT"
 
 rm -rf "$TMP"

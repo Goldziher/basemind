@@ -46,7 +46,7 @@ use it first: a bare `basemind` from `PATH` can be a different version over the 
 
 1. The plugin launcher, which installs and execs the version-matched binary:
    `${CLAUDE_PLUGIN_ROOT}/scripts/mcp-launch.sh scan` (in other hosts, `scripts/mcp-launch.sh` in the
-   plugin directory). Its binary is cached at `${XDG_CACHE_HOME:-~/.cache}/basemind/bin/<version>/basemind`.
+   plugin directory). Its binary is cached at `${XDG_CACHE_HOME:-~/.cache}/basemind/versions/<version>/basemind`.
 2. Fallback when no plugin launcher exists: `basemind` on `PATH`.
 3. A dev build: `cargo build --release` then `./target/release/basemind scan`.
 

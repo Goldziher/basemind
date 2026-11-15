@@ -8,7 +8,7 @@ name: bm-init
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
 Content-Hash: blake3:345f725ea99cb95587f8f9093dab0b338cdb3e0bd8a9f1823e7c615b6a912b13
-Source-Hash: blake3:825be3162bf88a07aeca0a195370815a66fb1c5f3d0cbc5fb39877f2924dd41e
+Source-Hash: blake3:396781d98442fd3fb0c81f7a7233876359763f6d872a2136aa218ed688e0767d
 Schema-Version: v1
 -->
 

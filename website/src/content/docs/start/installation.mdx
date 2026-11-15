@@ -234,7 +234,7 @@ recognition. Add `documents-ocr` (raster images and scanned PDFs) and `documents
 ### Using a local build with the plugin
 
 The plugin launcher (`scripts/mcp-launch.sh`) normally downloads the release binary that matches the
-plugin manifest into `~/.cache/basemind/bin/<version>/` and verifies its checksum. To run a binary you
+plugin manifest into `~/.cache/basemind/versions/<version>/` and verifies its checksum. To run a binary you
 built yourself, point `BASEMIND_BIN` at it in the environment your client starts the server from:
 
 <Code code={`cargo build --release --features full\nexport BASEMIND_BIN="$PWD/target/release/basemind"`} lang="bash" />

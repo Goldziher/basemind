@@ -139,11 +139,15 @@ directory, so its name changes too.
 - A 0.33 or older binary and a newer one no longer share a daemon. Each starts its own, and neither
   contacts or stops the other's. Before this, every session start by one version stopped (and if
   needed killed) the other version's daemon.
-- **This is fully effective only once no 0.33 plugin is left.** The plugin launcher of 0.33 and
-  older still sends SIGTERM and SIGKILL to every basemind process of another version started from
-  the plugin cache (`~/.cache/basemind/bin/<version>/`), the new daemon and its sessions included,
-  each time one of its own sessions starts. No newer binary can prevent that; update or remove the
-  old plugin. A Homebrew, npm or pip install does not run that launcher.
+- **A 0.33 plugin left installed does not reach the newer version.** The plugin launcher of 0.33
+  and older sends SIGTERM and SIGKILL to every basemind process of another version started from
+  its cache, `~/.cache/basemind/bin/<version>/`, each time one of its own sessions starts, and
+  deletes the other version directories there. The newer launcher installs under
+  `~/.cache/basemind/versions/<version>/`, which the old launcher neither matches nor deletes, and
+  it never reads or prunes `bin/`. Launchers of 0.33 and older still do this to each other, and to
+  a newer binary only if it was put under `bin/` by hand; update or remove them. The newer launcher
+  leaves `bin/` alone, so delete it yourself once no 0.33 plugin is left. A Homebrew, npm or pip
+  install does not run a launcher.
 - **The workspace index, memory notes and git-history stores are not per generation.** They are
   keyed by workspace and admit one daemon at a time. While the daemon of one generation holds a
   workspace, the daemon of the other cannot serve its index, memory or git history; that lasts
@@ -338,10 +342,14 @@ forth costs re-extraction, never correctness, and the next sweep reclaims what i
 
 ## Plugin binaries
 
-The plugin launcher keeps one `~/.cache/basemind/bin/<version>/` per release. On every launch of the
-current one it removes the other version directories that are not in use: not one a running process
-was started from, not one an install holds the lock for, not one that changed within the last
-minute, and none at all when it cannot read the process list. It does not stop processes of other
-versions: their sessions and daemons keep running, and a daemon exits on its own once idle.
+The plugin launcher keeps one `~/.cache/basemind/versions/<version>/` per release (`XDG_CACHE_HOME`
+replaces `~/.cache`) and writes a `.last-used` marker into the directory of the version it starts,
+on every launch. On every launch of the current version it removes another version's directory
+only when all of these hold: nothing has launched that version for 14 days
+(`BASEMIND_PRUNE_AFTER_DAYS` changes the number), no running process was started from it, and no
+install holds its lock. It removes none when it cannot read the process list. Install locks and
+staging directories of other versions go only after ten minutes untouched, a staging directory
+only when the process installing into it is gone. It does not stop processes of other versions:
+their sessions and daemons keep running, and a daemon exits on its own once idle.
 That cache
 is a few tens of MB per version and is not touched by the migration above.

@@ -250,11 +250,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   still names the comms directory; the generation applies inside it, which leaves a long override
   three bytes less of the Unix socket path limit. The comms store starts empty in the new
   generation, and the files of the old layout, the old message store included, stay until
-  `basemind comms cleanup` removes them. Limits: a 0.33 plugin launcher still kills other versions'
-  processes started from the plugin cache, so this is fully effective only once no 0.33 plugin is
-  installed;
-  and the workspace index, memory and git-history stores are not per generation, so a second daemon
-  cannot serve a workspace the first one holds. See
+  `basemind comms cleanup` removes them. Limit: the workspace index, memory and git-history stores
+  are not per generation, so a second daemon cannot serve a workspace the first one holds. See
   [`docs/UPGRADING.md`](docs/UPGRADING.md#running-two-basemind-versions-side-by-side).
 - `basemind comms stop --all` and `basemind comms doctor` (with `--probe` too) cover the daemons of
   their own protocol generation only, and can no longer stop or force-terminate a 0.33 daemon.
@@ -282,11 +279,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The plugin launcher no longer stops other versions' processes. On every launch it sent SIGTERM and
   then SIGKILL to each `basemind` of a different cached version, including the `serve` and daemon of a
   session still open elsewhere, and deleted their binaries; that session's host then relaunched its
-  own version, which did the same in return. It now stops nothing, and removes only the cached
-  version directories that are not in use: none a running process was started from (matched on the
-  whole command line, so a cache path with spaces counts, and on the resolved path), none an install
-  holds the lock for, none changed within the last minute, and none at all when the process list
-  cannot be read.
+  own version, which did the same in return. It now stops nothing. It installs under
+  `~/.cache/basemind/versions/<version>/` and never reads or prunes `bin/`, where the launchers up
+  to 0.33 kill and delete, so one of those left installed no longer reaches a newer version. It
+  removes another cached version only when nothing has launched it for 14 days (each launch writes
+  a `.last-used` marker; `BASEMIND_PRUNE_AFTER_DAYS` changes the number), no running process was
+  started from it (matched on the whole command line, so a cache path with spaces counts, and on
+  the resolved path) and no install holds its lock, and none at all when the process list cannot
+  be read. Install locks and staging directories of other versions are removed only after ten
+  minutes untouched, a staging directory only once the process installing into it is gone.
 - `find_files` (previously `code` modes `find` and `files`) no longer misses document-tier files
   (markdown, config, PDFs) on a long-lived server.
 - `index_status.cache_dir` reports basemind's cache directory. It reported the tree-sitter grammar

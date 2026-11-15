@@ -1,8 +1,9 @@
 //! Upgrade path: an index built by an OLDER released binary, opened by this build against the SAME
 //! data home.
 //!
-//! The old binary comes from the plugin launcher's per-version cache
-//! (`$XDG_CACHE_HOME|~/.cache/basemind/bin/<version>/basemind`) or from `BASEMIND_UPGRADE_FROM_BIN`.
+//! The old binary comes from the per-version cache of the plugin launchers up to 0.33
+//! (`$XDG_CACHE_HOME|~/.cache/basemind/bin/<version>/basemind`; later launchers install under
+//! `versions/`, which holds no release this test drives) or from `BASEMIND_UPGRADE_FROM_BIN`.
 //! When none is present the test checks nothing and says so in a `SKIP:` line on stderr that the
 //! harness does not capture; a `BASEMIND_UPGRADE_FROM_BIN` that names no file fails it. It is a
 //! developer / release-gate check, not a hermetic one. Per old binary it asserts that:
