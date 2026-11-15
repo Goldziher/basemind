@@ -583,7 +583,7 @@ lists the two commands that verify the ceiling is real rather than merely config
 The daemon can additionally serve MCP over streamable HTTP on loopback, but that front-end is
 **opt-in**: it binds only when `BASEMIND_ALLOW_HTTP` is truthy in the daemon's environment, and every
 request must then present the bearer token published as the second line of `<comms_dir>/http.addr`
-(mode `0600`). Plugin manifests and the CLI use the stdio transport and need none of this.
+(mode `0600`; `<comms_dir>` is the generation directory, `comms/g1/` under the data directory). Plugin manifests and the CLI use the stdio transport and need none of this.
 
 </details>
 

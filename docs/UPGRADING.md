@@ -141,6 +141,21 @@ and `--rerank` / `--rerank-top-k` on code search. Every list command takes `--li
 - **Annotations are exact per tool.** Everything is read-only except `memory_save` and
   `index_rescan`, so a host that gates on read-only can allow the rest. No tool is destructive.
 
+## Running two basemind versions side by side
+
+The release after 0.33 moves the daemon's socket, lock, log and comms store from the comms directory
+(`comms/` under the per-user data directory, or `BASEMIND_COMMS_DIR`) into a protocol-generation
+subdirectory, `comms/g1/`. On Windows the named pipe's name gains `-g1` and changes with it.
+
+- A 0.33 or older binary and a newer one no longer share a daemon. Each starts its own, and neither
+  stops the other's. Before this, every session start by one version stopped (and if needed killed)
+  the other version's daemon.
+- The comms store is not carried over: threads, messages and the agent roster start empty in the new
+  generation. Agents on a 0.33 binary and agents on a newer one do not see each other's threads.
+- The old daemon exits when its sessions end. Its files stay at the top of the comms directory; they
+  are small and nothing removes them. Delete them by hand once no 0.33 binary is in use.
+- A client that reads `http.addr` or `daemon.log` by path must look in `comms/g1/`.
+
 ## Upgrading from 0.28 to 0.29
 
 0.29 bumps the release minor, so the first scan rebuilds the index, and it reshapes the CLI.

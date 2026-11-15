@@ -21,7 +21,7 @@ use std::time::{Duration, Instant};
 
 use basemind::comms::client::{CommsClient, WaitReason};
 use basemind::comms::ids::AgentId;
-use basemind::comms::singleton::{CommsPaths, comms_socket_path, probe_alive};
+use basemind::comms::singleton::{CommsPaths, comms_socket_path, generation_dir, probe_alive};
 
 const BIN: &str = env!("CARGO_BIN_EXE_basemind");
 
@@ -34,7 +34,7 @@ struct Daemon {
 
 impl Daemon {
     fn start(comms_dir: &Path) -> Self {
-        let socket = comms_socket_path(comms_dir);
+        let socket = comms_socket_path(&generation_dir(comms_dir));
         let child = Command::new(BIN)
             .args(["comms", "daemon"])
             .env("BASEMIND_COMMS_DIR", comms_dir)
@@ -246,8 +246,8 @@ async fn client_recovers_when_daemon_dies_mid_session() {
 
     let mut daemon = Daemon::start(&comms_dir);
     let paths = CommsPaths {
-        comms_dir: comms_dir.clone(),
-        socket_path: comms_socket_path(&comms_dir),
+        comms_dir: generation_dir(&comms_dir),
+        socket_path: comms_socket_path(&generation_dir(&comms_dir)),
     };
     let spawn_dir = comms_dir.clone();
     let mut client = CommsClient::connect_with_respawn(
@@ -747,7 +747,7 @@ async fn daemon_answers_ping_while_the_store_is_still_opening() {
     const OPEN_DELAY: Duration = Duration::from_secs(8);
     let tmp = tempfile::tempdir().expect("tempdir");
     let comms_dir = tmp.path().join("comms");
-    let socket = comms_socket_path(&comms_dir);
+    let socket = comms_socket_path(&generation_dir(&comms_dir));
     let child = Command::new(BIN)
         .args(["comms", "daemon"])
         .env("BASEMIND_COMMS_DIR", &comms_dir)

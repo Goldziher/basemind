@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
-use basemind::comms::singleton::{comms_socket_path, probe_alive};
+use basemind::comms::singleton::{comms_socket_path, generation_dir, probe_alive};
 use tempfile::TempDir;
 
 const BIN: &str = env!("CARGO_BIN_EXE_basemind");
@@ -105,7 +105,7 @@ impl Daemon {
             .spawn()
             .expect("spawn daemon");
         let daemon = Self { child, comms_dir };
-        let socket = comms_socket_path(&daemon.comms_dir);
+        let socket = comms_socket_path(&generation_dir(&daemon.comms_dir));
         let deadline = Instant::now() + Duration::from_secs(180);
         while Instant::now() < deadline {
             if probe_alive(&socket) {

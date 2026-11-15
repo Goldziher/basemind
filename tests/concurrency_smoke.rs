@@ -523,11 +523,7 @@ fn symbol_names(body: &Value) -> Vec<String> {
 /// `tests/git_history_daemon.rs`.
 #[cfg(all(feature = "comms", any(unix, windows)))]
 fn comms_paths() -> basemind::comms::singleton::CommsPaths {
-    let comms_dir = std::path::PathBuf::from(std::env::var("BASEMIND_COMMS_DIR").expect("isolated comms dir"));
-    basemind::comms::singleton::CommsPaths {
-        socket_path: basemind::comms::singleton::comms_socket_path(&comms_dir),
-        comms_dir,
-    }
+    basemind::comms::singleton::resolve_paths().expect("resolve the isolated comms paths")
 }
 
 /// Bring up a REAL `basemind comms daemon` and wait for it to answer.

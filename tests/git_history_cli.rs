@@ -130,7 +130,7 @@ mod with_daemon {
 
     use basemind::comms::client::CommsClient;
     use basemind::comms::ids::AgentId;
-    use basemind::comms::singleton::{CommsPaths, comms_socket_path, probe_alive};
+    use basemind::comms::singleton::{CommsPaths, probe_alive};
     use basemind::git_history::GitHistoryIndex;
     use basemind::git_history::proto::{GitHistoryOp, GitHistoryReply};
 
@@ -158,11 +158,7 @@ mod with_daemon {
     }
 
     fn comms_paths() -> CommsPaths {
-        let comms_dir = std::path::PathBuf::from(std::env::var("BASEMIND_COMMS_DIR").expect("isolated comms dir"));
-        CommsPaths {
-            socket_path: comms_socket_path(&comms_dir),
-            comms_dir,
-        }
+        basemind::comms::singleton::resolve_paths().expect("resolve the isolated comms paths")
     }
 
     /// Bring up a REAL `basemind comms daemon` on this process's isolated socket. Never use

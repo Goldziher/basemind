@@ -23,7 +23,7 @@ use std::time::Duration;
 
 use basemind::comms::client::CommsClient;
 use basemind::comms::ids::AgentId;
-use basemind::comms::singleton::{CommsPaths, comms_socket_path, probe_alive};
+use basemind::comms::singleton::{CommsPaths, probe_alive};
 use basemind::git_history::proto::{GitHistoryOp, GitHistoryReply, SyncOutcome};
 use rmcp::ServiceExt;
 use tempfile::TempDir;
@@ -92,11 +92,7 @@ async fn spawn_server(root: &Path) -> rmcp::service::RunningService<rmcp::RoleCl
 /// The isolated comms dir `init_isolated_cache` pointed this process — and every child it spawns —
 /// at, so the daemon, its socket, and every index stay in a per-process tempdir.
 fn comms_paths() -> CommsPaths {
-    let comms_dir = std::path::PathBuf::from(std::env::var("BASEMIND_COMMS_DIR").expect("isolated comms dir"));
-    CommsPaths {
-        socket_path: comms_socket_path(&comms_dir),
-        comms_dir,
-    }
+    basemind::comms::singleton::resolve_paths().expect("resolve the isolated comms paths")
 }
 
 /// Bring up a REAL `basemind comms daemon` and wait for it to answer.

@@ -10,6 +10,15 @@
 //! if a live daemon answers a ping, we back off; if nothing answers, the socket is an orphan
 //! from a crashed daemon and we unlink + rebind. This probe-before-unlink keeps two daemons
 //! from racing into a split brain.
+//!
+//! ## Protocol generations
+//!
+//! Everything a daemon owns — socket (or named pipe), `daemon.lock`, `daemon.pid`, `store.fjall/`,
+//! `daemon.log`, `http.addr` — lives in a per-generation subdirectory of the comms directory, named
+//! by [`RENDEZVOUS_GENERATION`]. A binary only ever looks inside its own generation, so two installed
+//! releases of different generations each run their own daemon and cannot see, stop or signal the
+//! other's. Releases up to 0.33 predate this and use the comms directory itself; that unscoped
+//! layout is their generation, and this binary never opens it.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -18,8 +27,36 @@ use directories::ProjectDirs;
 
 use super::protocol::{CommsOut, CommsRequest, CommsResponse, PROTO_VER, StatusReport};
 
-/// Subdirectory under the user data dir holding the comms socket + store.
+/// Subdirectory under the user data dir holding the comms generations.
 const COMMS_SUBDIR: &str = "comms";
+
+/// The protocol generation: which subdirectory of the comms directory ([`generation_dir`]) this
+/// binary's daemon and clients meet in. Binaries of different generations never contact each
+/// other, so each keeps its own daemon alive for as long as its own sessions need it.
+///
+/// Deliberately not `PROTO_VER`, which changes far more often. A generation bump is not free: the
+/// new generation starts with an empty comms store (threads, messages and the agent roster do not
+/// carry over) and one more daemon runs until the old sessions end.
+///
+/// Unrelated to the scan generation and to the index's base generations: this one only names where
+/// a daemon and its clients meet.
+///
+/// Bump it, by one, only when a release must stay invisible to binaries ALREADY RELEASED into the
+/// current generation, because they would mishandle its daemon or its files and cannot be patched:
+///
+/// - a released binary's takeover rule would stop or signal this release's daemon (the reason
+///   generation 1 exists: every release up to 0.33 kills any daemon whose version or protocol
+///   differs from its own);
+/// - the bring-up exchange they rely on changes shape: the length-prefixed msgpack framing, the
+///   `Ping` / `Status` / `Stop` requests, or the `pid` / `version` / `proto_ver` fields of
+///   `StatusReport`;
+/// - the meaning of `daemon.lock` / `daemon.pid`, or of the socket bind as a lock, changes;
+/// - the store changes on disk in a way its schema version does not announce, so an older binary
+///   would open it instead of failing with `NewerSchema`.
+///
+/// Do not bump it for a `PROTO_VER` bump, a new request or response variant, or a store schema
+/// bump: the first two are refused at the handshake and the third is versioned in the store.
+pub const RENDEZVOUS_GENERATION: u32 = 1;
 /// The Unix socket file name within [`COMMS_SUBDIR`]. Unused on Windows, where the endpoint is
 /// a named pipe resolved by [`comms_socket_path`] rather than a file under `comms_dir`.
 #[cfg(not(windows))]
@@ -50,7 +87,7 @@ const TAKEOVER_TERM_GRACE: Duration = Duration::from_secs(5);
 /// Resolved per-user comms paths.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CommsPaths {
-    /// The `<data_dir>/comms/` directory holding the store and socket.
+    /// This generation's directory (`<data_dir>/comms/g<N>/`) holding the store, lock and socket.
     pub comms_dir: PathBuf,
     /// The Unix socket path (Unix) — clients connect here.
     pub socket_path: PathBuf,
@@ -166,34 +203,55 @@ pub enum SpawnPolicy {
     Explicit,
 }
 
-/// Environment override for the comms data directory. When set, it is used verbatim as the
-/// `comms_dir` instead of the per-user `directories::ProjectDirs` location. Intended for tests,
-/// CI, and users who want the broker's socket + store in a custom (e.g. sandboxed) location.
+/// Environment override for the comms directory. When set, it replaces the per-user
+/// `directories::ProjectDirs` location. Intended for tests, CI, and users who want the broker's
+/// socket + store in a custom (e.g. sandboxed) location.
+///
+/// The override names the comms directory, not a generation: [`RENDEZVOUS_GENERATION`] applies inside
+/// it exactly as it does inside the default location, so two binaries of different generations
+/// pointed at one override still do not meet.
 pub const COMMS_DIR_ENV: &str = "BASEMIND_COMMS_DIR";
 
-/// Resolve the per-user comms paths via `directories::ProjectDirs::from("", "", "basemind")`,
-/// or the [`COMMS_DIR_ENV`] override when set. Creates the dir (mode 0700 on Unix) as a side effect.
+/// This binary's generation directory inside a comms directory: `<comms_base>/g<N>`. The one place
+/// the generation enters a path — the socket, lock, pidfile, store and log are all derived from the
+/// directory this returns, and on Windows the pipe name carries its `g<N>` and a hash of it.
+pub fn generation_dir(comms_base: &Path) -> PathBuf {
+    comms_base.join(format!("g{RENDEZVOUS_GENERATION}"))
+}
+
+/// Resolve the per-user comms paths: this generation's directory under
+/// `directories::ProjectDirs::from("", "", "basemind")`, or under the [`COMMS_DIR_ENV`] override
+/// when set. Creates the directories (mode 0700 on Unix) as a side effect.
 pub fn resolve_paths() -> Result<CommsPaths, SingletonError> {
-    let comms_dir = match std::env::var_os(COMMS_DIR_ENV) {
+    let comms_base = match std::env::var_os(COMMS_DIR_ENV) {
         Some(dir) if !dir.is_empty() => PathBuf::from(dir),
         _ => {
             let dirs = ProjectDirs::from("", "", "basemind").ok_or(SingletonError::NoDataDir)?;
             dirs.data_dir().join(COMMS_SUBDIR)
         }
     };
+    let comms_dir = generation_dir(&comms_base);
     std::fs::create_dir_all(&comms_dir).map_err(|source| SingletonError::Io {
         path: comms_dir.clone(),
         source,
     })?;
     #[cfg(unix)]
-    set_mode(&comms_dir, OWNER_ONLY_DIR)?;
+    {
+        set_mode(&comms_base, OWNER_ONLY_DIR)?;
+        set_mode(&comms_dir, OWNER_ONLY_DIR)?;
+    }
 
     let socket_path = comms_socket_path(&comms_dir);
     Ok(CommsPaths { comms_dir, socket_path })
 }
 
-/// The socket path for a resolved comms dir. On Windows, a named-pipe path; on Unix,
-/// `<comms_dir>/comms.sock`.
+/// The socket path for a generation directory (see [`generation_dir`]). On Unix,
+/// `<comms_dir>/comms.sock`. On Windows, the named pipe
+/// `\\.\pipe\basemind-comms-<USERNAME>-g<N>-<hash of the directory>`.
+///
+/// A directory not named `g<N>` gets the pipe name without that segment, which is the name releases
+/// up to 0.33 gave it. `comms stop --all` and `comms doctor` address every registered daemon by its
+/// own directory, so they must still compute an older daemon's pipe exactly.
 pub fn comms_socket_path(comms_dir: &Path) -> PathBuf {
     #[cfg(windows)]
     {
@@ -202,12 +260,25 @@ pub fn comms_socket_path(comms_dir: &Path) -> PathBuf {
         let mut hasher = std::hash::DefaultHasher::new();
         comms_dir.hash(&mut hasher);
         let dir_hash = hasher.finish();
-        PathBuf::from(format!(r"\\.\pipe\basemind-comms-{user}-{dir_hash:016x}"))
+        let generation = comms_dir
+            .file_name()
+            .and_then(|name| name.to_str())
+            .filter(|name| is_generation_dir_name(name))
+            .map(|name| format!("-{name}"))
+            .unwrap_or_default();
+        PathBuf::from(format!(r"\\.\pipe\basemind-comms-{user}{generation}-{dir_hash:016x}"))
     }
     #[cfg(not(windows))]
     {
         comms_dir.join(SOCKET_FILE)
     }
+}
+
+/// Whether `name` is a generation directory's name: `g` followed by decimal digits.
+#[cfg(any(windows, test))]
+fn is_generation_dir_name(name: &str) -> bool {
+    name.strip_prefix('g')
+        .is_some_and(|digits| !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit()))
 }
 
 #[cfg(unix)]
@@ -676,6 +747,17 @@ mod tests {
         assert!(!version_is_older("1.0.0", "0.10.0"));
         assert!(!version_is_older("0.10.0-rc.1", "0.10.0"));
         assert!(version_is_older("0.9.0-rc.2", "0.10.0"));
+    }
+
+    #[test]
+    fn only_a_generation_directory_name_enters_the_pipe_name() {
+        let ours = generation_dir(Path::new("comms"));
+        let name = ours.file_name().and_then(|name| name.to_str()).expect("utf-8 name");
+        assert_eq!(name, format!("g{RENDEZVOUS_GENERATION}"));
+        assert!(is_generation_dir_name(name));
+        for other in ["comms", "g", "gx", "g1x", "G1", "1"] {
+            assert!(!is_generation_dir_name(other), "{other}");
+        }
     }
 
     #[cfg(unix)]

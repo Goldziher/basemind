@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
-use basemind::comms::singleton::{comms_socket_path, probe_alive};
+use basemind::comms::singleton::{comms_socket_path, generation_dir, probe_alive};
 
 const BIN: &str = env!("CARGO_BIN_EXE_basemind");
 
@@ -60,7 +60,7 @@ impl ReapingDaemon {
     }
 
     fn is_alive(&self) -> bool {
-        probe_alive(&comms_socket_path(&self.comms_dir))
+        probe_alive(&comms_socket_path(&generation_dir(&self.comms_dir)))
     }
 }
 

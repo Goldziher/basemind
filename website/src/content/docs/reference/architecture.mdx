@@ -295,6 +295,8 @@ The broker protocol (version 4) correlates every request after the handshake wit
 
 Why a daemon? Content-addressed blobs and a single Fjall writer are the key wins: all repos/worktrees on one machine share blob deduplication, and N sessions can read concurrently from a single index without downgrade-to-read-only issues. The daemon is the sole Fjall writer and enforces this via socket-bind-as-lock (singleton enforcement).
 
+The daemon's socket, lock, log and comms store live in a protocol-generation subdirectory of the comms directory (`comms/g1/`). A basemind binary only looks inside its own protocol generation, so two installed releases of different generations each run their own daemon instead of replacing each other's. Releases up to 0.33 use the comms directory itself.
+
 <Aside>
 The architecture trades off simplicity for performance: content-addressed blobs enable deduplication, the inverted index gives instant lookups, and the git-history index makes history queries microsecond-fast. At the same time, incremental scanning and a split memory substrate support multi-agent coordination without blocking.
 </Aside>

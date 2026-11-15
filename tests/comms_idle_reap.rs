@@ -26,7 +26,7 @@ use std::time::{Duration, Instant};
 use basemind::comms::client::CommsClient;
 use basemind::comms::daemon::{IDLE_REAP_AFTER_ENV, IDLE_REAP_CHECK_EVERY_ENV};
 use basemind::comms::ids::AgentId;
-use basemind::comms::singleton::{CommsPaths, comms_socket_path, probe_alive};
+use basemind::comms::singleton::{CommsPaths, comms_socket_path, generation_dir, probe_alive};
 
 const BIN: &str = env!("CARGO_BIN_EXE_basemind");
 
@@ -61,7 +61,7 @@ impl Daemon {
             .expect("spawn comms daemon");
         let daemon = Self {
             child,
-            socket: comms_socket_path(comms_dir),
+            socket: comms_socket_path(&generation_dir(comms_dir)),
         };
         // A cold daemon opens its fjall store (many F_FULLFSYNC calls) before it accepts, which stalls for tens of seconds when the disk is contended, so wait generously.
         let deadline = Instant::now() + Duration::from_secs(180);
@@ -101,8 +101,8 @@ impl Drop for Daemon {
 
 fn paths_for(comms_dir: &Path) -> CommsPaths {
     CommsPaths {
-        comms_dir: comms_dir.to_path_buf(),
-        socket_path: comms_socket_path(comms_dir),
+        comms_dir: generation_dir(comms_dir),
+        socket_path: comms_socket_path(&generation_dir(comms_dir)),
     }
 }
 

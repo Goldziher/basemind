@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 use basemind::comms::client::CommsClient;
 use basemind::comms::http_frontend;
 use basemind::comms::ids::AgentId;
-use basemind::comms::singleton::{CommsPaths, comms_socket_path, probe_alive};
+use basemind::comms::singleton::{CommsPaths, comms_socket_path, generation_dir, probe_alive};
 use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -40,7 +40,7 @@ impl Daemon {
     }
 
     fn start_with_layering(comms_dir: &Path, layered: bool) -> Self {
-        let socket = comms_socket_path(comms_dir);
+        let socket = comms_socket_path(&generation_dir(comms_dir));
         let child = Command::new(BIN)
             .args(["comms", "daemon"])
             .env("BASEMIND_COMMS_DIR", comms_dir)
@@ -280,10 +280,11 @@ async fn concurrent_cold_hosted_agents_calls_use_the_running_daemon() {
     let mut observer = connect(&socket, "hosted-observer-before", &repo).await;
     let daemon_pid = observer.status().await.expect("status before hosted calls").pid;
     drop(observer);
-    let addr = http_frontend::await_http_ready(&comms_dir, Duration::from_secs(10))
+    let addr = http_frontend::await_http_ready(&generation_dir(&comms_dir), Duration::from_secs(10))
         .await
         .expect("daemon-hosted MCP transport ready");
-    let token = http_frontend::published_token(&comms_dir).expect("the daemon publishes its bearer token");
+    let token =
+        http_frontend::published_token(&generation_dir(&comms_dir)).expect("the daemon publishes its bearer token");
 
     let worker_count = std::thread::available_parallelism().map_or(1, usize::from);
     let identities_per_tool = worker_count
@@ -373,10 +374,11 @@ async fn hosted_keyword_search_reads_the_daemon_index_without_self_forwarding() 
     let mut observer = connect(&socket, "hosted-search-observer-before", &repo).await;
     let daemon_pid = observer.status().await.expect("status before hosted search").pid;
     drop(observer);
-    let addr = http_frontend::await_http_ready(&comms_dir, Duration::from_secs(10))
+    let addr = http_frontend::await_http_ready(&generation_dir(&comms_dir), Duration::from_secs(10))
         .await
         .expect("daemon-hosted MCP transport ready");
-    let token = http_frontend::published_token(&comms_dir).expect("the daemon publishes its bearer token");
+    let token =
+        http_frontend::published_token(&generation_dir(&comms_dir)).expect("the daemon publishes its bearer token");
 
     let response = tokio::time::timeout(
         HOSTED_CALL_BOUND,
@@ -588,7 +590,7 @@ fn comms_stop_terminates_the_daemon_without_an_external_kill() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let comms_dir = tmp.path().join("comms");
     std::fs::create_dir_all(&comms_dir).expect("mkdir comms");
-    let socket = comms_socket_path(&comms_dir);
+    let socket = comms_socket_path(&generation_dir(&comms_dir));
 
     let mut child = Command::new(BIN)
         .args(["comms", "daemon"])
@@ -666,7 +668,7 @@ async fn sigterm_mid_scan_exits_within_grace_and_index_reopens_cleanly() {
     let repo = tmp.path().join("repo");
     init_heavy_git_repo(&repo, HEAVY_FILES, HEAVY_FNS_PER_FILE);
 
-    let socket = comms_socket_path(&comms_dir);
+    let socket = comms_socket_path(&generation_dir(&comms_dir));
     let mut child = Command::new(BIN)
         .args(["comms", "daemon"])
         .env("BASEMIND_COMMS_DIR", &comms_dir)
@@ -795,7 +797,7 @@ async fn registry_survives_a_daemon_restart() {
 async fn should_converge_on_one_live_daemon_when_two_processes_race_a_cold_bind() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let comms_dir = tmp.path().join("comms");
-    let socket = comms_socket_path(&comms_dir);
+    let socket = comms_socket_path(&generation_dir(&comms_dir));
 
     let spawn_one = || {
         Command::new(BIN)
@@ -955,7 +957,7 @@ async fn should_reflect_branch_creation_and_worktree_add_remove_on_fresh_connect
 async fn should_self_terminate_when_its_socket_is_reclaimed_by_another_daemon() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let comms_dir = tmp.path().join("comms");
-    let socket = comms_socket_path(&comms_dir);
+    let socket = comms_socket_path(&generation_dir(&comms_dir));
 
     let mut child_a = Command::new(BIN)
         .args(["comms", "daemon"])
@@ -1371,10 +1373,11 @@ async fn daemon_backed_references_and_implementations_equal_the_writer_session()
     drop(client);
 
     // Daemon-hosted shape: the real MCP tool, paginated.
-    let addr = http_frontend::await_http_ready(&comms_dir, Duration::from_secs(10))
+    let addr = http_frontend::await_http_ready(&generation_dir(&comms_dir), Duration::from_secs(10))
         .await
         .expect("daemon-hosted MCP transport ready");
-    let token = http_frontend::published_token(&comms_dir).expect("the daemon publishes its bearer token");
+    let token =
+        http_frontend::published_token(&generation_dir(&comms_dir)).expect("the daemon publishes its bearer token");
     let (total, hits) = hosted_paginated(&addr, &token, &repo, json!({"name": "get_arg", "limit": 40})).await;
     assert_eq!(
         total, truth_refs["total"],
@@ -1460,10 +1463,10 @@ async fn daemon_hosts_cold_layered_files_and_symbols_without_standalone_fjall() 
     assert!(!working.join("index.fjall").exists());
 
     let _daemon = Daemon::start_with_layering(&comms, true);
-    let addr = http_frontend::await_http_ready(&comms, Duration::from_secs(15))
+    let addr = http_frontend::await_http_ready(&generation_dir(&comms), Duration::from_secs(15))
         .await
         .unwrap();
-    let token = http_frontend::published_token(&comms).unwrap();
+    let token = http_frontend::published_token(&generation_dir(&comms)).unwrap();
     for (id, tool, args, expected) in [
         (1, "find_files", json!({"query":"cold.rs"}), "cold.rs"),
         (6, "code_symbols", json!({"name":"alpha"}), "alpha"),
@@ -1532,4 +1535,165 @@ async fn daemon_hosts_cold_layered_files_and_symbols_without_standalone_fjall() 
         }
     }
     assert!(!working.join("index.fjall").exists());
+}
+
+/// Two installed releases must not fight over one daemon. A release up to 0.33 keeps its daemon at
+/// the top of the comms directory and stops, then kills, any daemon whose version or protocol is not
+/// its own; this binary did the same to it, so every session start severed the other install's
+/// sessions. Here a stand-in for that daemon holds the unscoped socket and reports 0.33.0 /
+/// protocol 4, naming a real process as its pid. Bringing this binary's daemon up in the same comms
+/// directory must leave it uncontacted and that process alive, with both daemons serving.
+///
+/// Against the unscoped layout this fails three ways: `comms start` reads the stand-in's `Status`
+/// (a contact), kills the pid it reports, and never binds a socket of its own.
+#[cfg(unix)]
+#[test]
+fn a_daemon_of_this_generation_starts_beside_a_pre_generation_daemon_and_leaves_it_alone() {
+    use std::io::{Read, Write};
+    use std::os::unix::net::{UnixListener, UnixStream};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    use basemind::comms::protocol::{CommsOut, CommsRequest, CommsResponse, PROTO_VER, StatusReport};
+    use basemind::daemon_lock::pid_is_live;
+
+    const RELEASED_VERSION: &str = "0.33.0";
+    const RELEASED_PROTO: u32 = 4;
+
+    /// Kills the stand-in process and stops this generation's daemon however the test ends.
+    struct Cleanup<'a> {
+        pid: u32,
+        comms_dir: &'a Path,
+    }
+    impl Drop for Cleanup<'_> {
+        fn drop(&mut self) {
+            let _ = Command::new("kill").args(["-9", &self.pid.to_string()]).output();
+            let _ = Command::new(BIN)
+                .args(["comms", "stop"])
+                .env("BASEMIND_COMMS_DIR", self.comms_dir)
+                .env("BASEMIND_DATA_HOME", self.comms_dir)
+                .output();
+        }
+    }
+
+    fn ask_status(socket: &Path) -> Option<StatusReport> {
+        let mut stream = UnixStream::connect(socket).ok()?;
+        stream.set_read_timeout(Some(Duration::from_secs(5))).ok()?;
+        let body = rmp_serde::to_vec_named(&CommsRequest::Status).ok()?;
+        stream.write_all(&u32::try_from(body.len()).ok()?.to_be_bytes()).ok()?;
+        stream.write_all(&body).ok()?;
+        let mut prefix = [0u8; 4];
+        stream.read_exact(&mut prefix).ok()?;
+        let mut reply = vec![0u8; u32::from_be_bytes(prefix) as usize];
+        stream.read_exact(&mut reply).ok()?;
+        match rmp_serde::from_slice::<CommsOut>(&reply).ok()? {
+            CommsOut::Response(CommsResponse::Status(report)) => Some(report),
+            _ => None,
+        }
+    }
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let comms_dir = tmp.path().join("comms");
+    std::fs::create_dir_all(&comms_dir).expect("mkdir comms");
+
+    // Started through a shell that exits at once, so it is reparented to init and a kill would ~keep
+    // make it disappear rather than linger as this test's zombie, which still reads as live. ~keep
+    let spawned = Command::new("sh")
+        .args(["-c", "sleep 300 >/dev/null 2>&1 & echo $!"])
+        .output()
+        .expect("spawn the released daemon's stand-in process");
+    let released_pid: u32 = String::from_utf8_lossy(&spawned.stdout)
+        .trim()
+        .parse()
+        .expect("stand-in pid");
+    let _cleanup = Cleanup {
+        pid: released_pid,
+        comms_dir: &comms_dir,
+    };
+    assert!(pid_is_live(released_pid), "the stand-in process must be running");
+
+    let released_socket = comms_dir.join("comms.sock");
+    let listener = UnixListener::bind(&released_socket).expect("bind the pre-generation socket");
+    listener.set_nonblocking(true).expect("nonblocking");
+    let contacts = Arc::new(AtomicUsize::new(0));
+    let done = Arc::new(AtomicBool::new(false));
+    let (counted, stop) = (contacts.clone(), done.clone());
+    let released_daemon = std::thread::spawn(move || {
+        while !stop.load(Ordering::SeqCst) {
+            let Ok((mut stream, _)) = listener.accept() else {
+                std::thread::sleep(Duration::from_millis(5));
+                continue;
+            };
+            counted.fetch_add(1, Ordering::SeqCst);
+            stream.set_nonblocking(false).expect("blocking");
+            let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+            let mut prefix = [0u8; 4];
+            if stream.read_exact(&mut prefix).is_err() {
+                continue;
+            }
+            let mut request = vec![0u8; u32::from_be_bytes(prefix) as usize];
+            if stream.read_exact(&mut request).is_err() {
+                continue;
+            }
+            let reply = rmp_serde::to_vec_named(&CommsOut::Response(CommsResponse::Status(StatusReport {
+                pid: released_pid,
+                version: RELEASED_VERSION.to_string(),
+                build_id: String::new(),
+                proto_ver: RELEASED_PROTO,
+                uptime_secs: 60,
+                threads: 1,
+                subscribers: 1,
+            })))
+            .expect("encode status");
+            let _ = stream.write_all(&u32::try_from(reply.len()).expect("len fits").to_be_bytes());
+            let _ = stream.write_all(&reply);
+        }
+    });
+
+    let start = Command::new(BIN)
+        .args(["comms", "start"])
+        .env("BASEMIND_COMMS_DIR", &comms_dir)
+        .env("BASEMIND_DATA_HOME", &comms_dir)
+        .output()
+        .expect("run comms start");
+    assert!(
+        start.status.success(),
+        "comms start failed beside a pre-generation daemon: {}",
+        String::from_utf8_lossy(&start.stderr)
+    );
+
+    let ours = comms_socket_path(&generation_dir(&comms_dir));
+    assert_ne!(ours, released_socket, "the two generations must not share an endpoint");
+    // `comms start` returns once the daemon answers `Ping`; `Status` waits for the store, whose ~keep
+    // cold open stalls for tens of seconds on a contended disk. ~keep
+    let ready_by = Instant::now() + Duration::from_secs(180);
+    let ours_report = loop {
+        if let Some(report) = ask_status(&ours) {
+            break report;
+        }
+        assert!(
+            Instant::now() < ready_by,
+            "this generation's daemon must answer on its own socket"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    assert_eq!(ours_report.proto_ver, PROTO_VER);
+    assert_ne!(ours_report.pid, released_pid);
+
+    assert_eq!(
+        contacts.load(Ordering::SeqCst),
+        0,
+        "the pre-generation daemon must not be contacted at all"
+    );
+    assert!(
+        pid_is_live(released_pid),
+        "the pre-generation daemon's process must not be signalled"
+    );
+    let released_report = ask_status(&released_socket).expect("the pre-generation daemon still serves its socket");
+    assert_eq!(released_report.version, RELEASED_VERSION);
+    assert_eq!(released_report.proto_ver, RELEASED_PROTO);
+    assert!(pid_is_live(ours_report.pid), "both daemons end up alive");
+
+    done.store(true, Ordering::SeqCst);
+    released_daemon.join().expect("released daemon thread");
 }

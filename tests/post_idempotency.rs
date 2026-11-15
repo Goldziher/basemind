@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use basemind::comms::client::CommsClient;
 use basemind::comms::ids::AgentId;
-use basemind::comms::singleton::{CommsPaths, comms_socket_path, probe_alive};
+use basemind::comms::singleton::{CommsPaths, comms_socket_path, generation_dir, probe_alive};
 
 const BIN: &str = env!("CARGO_BIN_EXE_basemind");
 
@@ -21,7 +21,7 @@ struct Daemon {
 
 impl Daemon {
     fn start(comms_dir: &Path) -> Self {
-        let socket = comms_socket_path(comms_dir);
+        let socket = comms_socket_path(&generation_dir(comms_dir));
         let child = Command::new(BIN)
             .args(["comms", "daemon"])
             .env("BASEMIND_COMMS_DIR", comms_dir)
@@ -76,7 +76,7 @@ async fn keyed_post_is_stored_once_across_a_daemon_kill_and_retry() {
     let dir = tempfile::tempdir().expect("tempdir");
     let comms_dir = dir.path().join("comms");
     std::fs::create_dir_all(&comms_dir).expect("comms dir");
-    let socket = comms_socket_path(&comms_dir);
+    let socket = comms_socket_path(&generation_dir(&comms_dir));
 
     let first = Daemon::start(&comms_dir);
     let mut client = connect(&socket, dir.path()).await;

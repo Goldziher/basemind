@@ -232,6 +232,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Two installed basemind versions no longer kill each other's daemon. The daemon's socket (named pipe
+  on Windows), lock, pidfile, log, `http.addr` and comms store moved from the comms directory into a
+  protocol-generation subdirectory, `comms/g1/`, and a binary only looks inside its own generation, so a 0.33
+  install and a newer one each keep their own daemon. `BASEMIND_COMMS_DIR` still names the comms
+  directory; the generation applies inside it. The comms store starts empty in the new generation,
+  and the files of the old layout are left in place. See
+  [`docs/UPGRADING.md`](docs/UPGRADING.md#running-two-basemind-versions-side-by-side).
 - `find_files` (previously `code` modes `find` and `files`) no longer misses document-tier files
   (markdown, config, PDFs) on a long-lived server.
 - `index_status.cache_dir` reports basemind's cache directory. It reported the tree-sitter grammar

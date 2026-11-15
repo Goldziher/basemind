@@ -845,6 +845,33 @@ sessions on the same repo to read concurrently without downgrade-to-read-only ra
 a singleton enforced by socket-bind-as-lock (a Unix domain socket whose successful bind IS the lock);
 stale sockets are reclaimed probe-before-unlink. It auto-starts on first need and stops on explicit `comms stop`.
 
+#### Comms directory layout and protocol generations
+
+The comms directory is `comms/` under the per-user data directory (`~/.local/share/basemind` on
+Linux, `~/Library/Application Support/basemind` on macOS, `%APPDATA%\basemind\data` on Windows), or
+`BASEMIND_COMMS_DIR`. Everything a daemon owns lives in a protocol-generation subdirectory of it:
+
+```text
+comms/
+  g1/                 protocol generation 1 (RENDEZVOUS_GENERATION in src/comms/singleton.rs)
+    comms.sock        Unix socket; on Windows the pipe \\.\pipe\basemind-comms-<USER>-g1-<hash of this dir>
+    daemon.lock       single-owner flock, held for the daemon's lifetime
+    daemon.pid        the holder's record
+    store.fjall/      threads, messages, agent roster
+    daemon.log  http.addr  last-fatal.json
+  comms.sock ...      releases up to 0.33: the same files, unscoped
+```
+
+A binary only looks inside its own protocol generation, so two installed releases of different
+generations each run their own daemon and never contact, stop or signal the other's. The protocol
+generation is not the comms protocol version (`PROTO_VER`), the scan generation or an index base
+generation; it only names where a daemon and its clients meet. A protocol-version mismatch inside one
+generation is reported, not resolved by a new directory. `<comms_dir>` elsewhere in
+this document means the generation directory. The generation is bumped only when a release must stay
+invisible to binaries already released into the current one; a new generation starts with an empty
+comms store, and the previous generation's daemon runs until its own sessions end. Directories of
+other generations are not removed automatically.
+
 ### Daemon lifecycle and resource containment
 
 The daemon is spawned detached with `setsid(2)`, in its own comms dir (never an inherited cwd — a

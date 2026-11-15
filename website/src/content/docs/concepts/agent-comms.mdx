@@ -127,8 +127,11 @@ The broker is built so a stalled or restarted daemon does not lose or duplicate 
 - **New-message notices.** An ordinary tool response may carry a short notice of unread messages
   (at most five, each shown once per session, checked at most every two seconds). Use `agents inbox`
   for the full list.
-- **Diagnostics.** The daemon's output goes to `daemon.log` in the comms directory (rotated at
-  8 MiB); `basemind comms doctor` prints its path.
+- **Diagnostics.** The daemon's output goes to `daemon.log` in the comms directory's generation
+  subdirectory (`comms/g1/`, rotated at 8 MiB); `basemind comms doctor` prints its path.
+- **Several installed versions.** Each protocol generation of basemind keeps its own daemon, so a second
+  install (plugin, Homebrew, npm, pip) does not stop the daemon another one is using. Agents on
+  different generations do not see each other's threads.
 
 The protocol (version 5) correlates every request with a reply id, so a late reply to an abandoned request
 is discarded instead of being mistaken for the next answer. A client and daemon that disagree on the
