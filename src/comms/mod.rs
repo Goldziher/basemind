@@ -88,6 +88,7 @@ pub mod store;
 pub mod store_health;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 pub mod transport;
+pub mod v2;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 pub mod workspace_pool;
 
