@@ -25,23 +25,14 @@ pub(super) async fn index_status(state: &ServerState) -> Result<CallToolResult, 
     run_status(state).await
 }
 
-/// `index_rescan`: re-index changed files, the given paths, or the whole workspace.
+/// `index_rescan`: re-index the given paths, or the whole workspace when none is given.
 pub(super) async fn index_rescan(
     state: Arc<ServerState>,
     p: IndexRescanParams,
     progress: Progress<'_>,
 ) -> Result<CallToolResult, McpError> {
     let (peer, token) = progress.map_or((None, None), |(peer, token)| (Some(peer), token));
-    run_rescan(
-        state,
-        super::types::RescanParams {
-            paths: p.paths,
-            full: p.full.unwrap_or(false),
-        },
-        peer,
-        token,
-    )
-    .await
+    run_rescan(state, super::types::RescanParams { paths: p.paths }, peer, token).await
 }
 
 /// Body of `index_status`: index health for the served view — file counts, per-language
@@ -200,7 +191,7 @@ async fn run_rescan(
     progress_token: Option<rmcp::model::ProgressToken>,
 ) -> Result<CallToolResult, McpError> {
     let started = std::time::Instant::now();
-    let scoped_paths: Option<Vec<std::path::PathBuf>> = match params.paths.filter(|_| !params.full) {
+    let scoped_paths: Option<Vec<std::path::PathBuf>> = match params.paths {
         None => None,
         Some(requested) => {
             let mut out = Vec::with_capacity(requested.len());

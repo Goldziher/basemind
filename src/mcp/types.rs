@@ -84,7 +84,7 @@ impl LifecycleNotice {
         Self {
             state: "empty_index",
             message: "The index is empty: nothing has been scanned for this workspace, so this result \
-                      says nothing about the code. Run `index_rescan {\"full\":true}` (or `basemind scan` \
+                      says nothing about the code. Run `index_rescan {}` (or `basemind scan` \
                       in a shell) and retry.",
             retry: true,
         }
@@ -851,11 +851,6 @@ pub struct RescanParams {
     /// the full repo is walked. Paths are forward-slash with no leading `/`.
     #[serde(default)]
     pub paths: Option<Vec<String>>,
-    /// Force a complete working-tree re-index even when `paths` is supplied (full wins).
-    /// Use when the index is stale or reports "no indexed files" and a scoped rescan won't
-    /// rebuild it.
-    #[serde(default)]
-    pub full: bool,
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]

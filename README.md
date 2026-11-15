@@ -1167,7 +1167,7 @@ degrading to a truncated in-memory view.
 | `eval --tasks <file> [--out --report --markdown --baseline --tolerance --cost-tolerance --min-recall --warmup --mode]` | Score retrieval quality and token savings against gold from a JSONL task file; `--baseline` gates regressions. See [`benchmarks/eval/`](benchmarks/eval/README.md). |
 | `tokens --stdin` | Count tokens in stdin with the real o200k tokenizer (needs the `tokenizer` feature). |
 
-Index commands live at the top level: `status` (`index_status`), `rescan [paths] [--full]`
+Index commands live at the top level: `status` (`index_status`), `rescan [paths]`
 (`index_rescan`) and `cache stats|gc|clear` (CLI only).
 
 **Cache (`basemind cache`)**
@@ -1217,7 +1217,7 @@ after handling it so each thread's inbox cursor advances independently.
 | Command | Purpose |
 |---|---|
 | `scan [--staged \| --rev <REV>] [--no-git-history] [--rebuild-git-history]` | Full scan, or index the git index / one revision. Ctrl-C stops it cleanly. |
-| `rescan [<path>…] [--full] [--no-git-history] [--rebuild-git-history]` | Update the given paths, or the whole tree. Routed through the daemon when one runs. |
+| `rescan [<path>…] [--no-git-history] [--rebuild-git-history]` | Update the given paths, or with none the whole tree. Routed through the daemon when one runs. |
 | `status` | Index health for this workspace: file counts, languages, scan age. |
 | `doctor` | Check root, config, index, grammars, pre-commit hook and daemon; exits 1 on a failed check. |
 | `completions <shell>` / `man` | Print a shell completion script (`bash`, `zsh`, `fish`, `elvish`, `powershell`) / the man page (roff) to stdout. |

@@ -1036,20 +1036,20 @@ async fn mcp_server_exercises_representative_tools() {
     let scanned = body.get("scanned").and_then(Value::as_u64).expect("scanned");
     assert!(scanned > 0, "rescan should walk at least the fixture files");
 
-    let body = decode_text(
-        &service
-            .call_tool(call_params(
-                "index_rescan",
-                json!({ "full": true, "paths": ["does-not-exist.rs"] }),
-            ))
-            .await
-            .expect("rescan full"),
-    );
-    let scanned_full = body.get("scanned").and_then(Value::as_u64).expect("scanned (full)");
+    // `full` did nothing `{}` does not do, and silently discarded `paths` beside it. It is not an
+    // argument: a call that passes it is told so instead of being run as something else.
+    let refused = service
+        .call_tool(call_params(
+            "index_rescan",
+            json!({ "full": true, "paths": ["does-not-exist.rs"] }),
+        ))
+        .await
+        .expect("a tool result");
+    assert_eq!(refused.is_error, Some(true), "{refused:?}");
+    let message = error_text(&refused);
     assert!(
-        scanned_full > 0,
-        "rescan {{full:true}} must force a full working-tree scan even with a paths scope, \
-         got scanned={scanned_full}"
+        message.contains("full") && message.contains("paths"),
+        "the refusal names the unknown field and the accepted one: {message}"
     );
 
     let body = decode_text(

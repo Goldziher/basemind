@@ -256,7 +256,7 @@ basemind comms cleanup [--dry-run --older-than <days>]
 
 ```bash
 basemind scan [--staged | --rev <REV>] [--no-git-history --rebuild-git-history] [--documents-*]
-basemind rescan [PATH...] [--full --no-git-history --rebuild-git-history]
+basemind rescan [PATH...] [--no-git-history --rebuild-git-history]
 basemind watch
 basemind serve
 basemind status
@@ -276,7 +276,7 @@ basemind statusline
 | Command | Purpose |
 |---|---|
 | `scan [--staged \| --rev <REV>] [--no-git-history --rebuild-git-history]` | Full index of the project. `--staged` indexes the git index instead of the working tree; `--rev` indexes a revision into a separate `rev-<sha7>` view. The `--documents-*` flags override the matching `[documents]` keys for this run (each also has a `BASEMIND_DOCUMENTS_*` env var). The `--llm-*` flags and `BASEMIND_LLM_*` variables are deprecated: still accepted, and ignored. Ctrl-C stops the scan cleanly. |
-| `rescan [PATH...] [--full --no-git-history --rebuild-git-history]` | Update one or more paths incrementally, or the whole tree with `--full`. When the daemon is running the rescan is forwarded to it (the daemon is the sole index writer); otherwise it runs in-process under the workspace writer lock. Ctrl-C stops it cleanly. The summary (also when forwarded to the daemon) reports `docs_degraded` and `doc_timeouts` when non-zero. |
+| `rescan [PATH...] [--no-git-history --rebuild-git-history]` | Update one or more paths incrementally, or the whole tree when no path is given. When the daemon is running the rescan is forwarded to it (the daemon is the sole index writer); otherwise it runs in-process under the workspace writer lock. Ctrl-C stops it cleanly. The summary (also when forwarded to the daemon) reports `docs_degraded` and `doc_timeouts` when non-zero. |
 | `watch` | Long-running watcher; keeps the code map current as files change (no server). |
 | `serve` | Ensure the daemon is up and relay this process's stdio to it as the MCP server. The daemon keeps the index fresh. |
 | `status` | Index health and repo identity for this workspace (`index_status`): file counts per language, scan state, cache directory, branch and HEAD. |

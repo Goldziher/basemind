@@ -180,18 +180,18 @@ fn git_search_finds_commit_by_author() {
 }
 
 #[test]
-fn rescan_full_reindexes_new_file() {
+fn rescan_without_paths_reindexes_a_new_file() {
     let dir = build_and_scan();
     let root = dir.path();
     std::fs::write(root.join("d.rs"), b"pub fn delta() {}\n").unwrap();
 
-    let (stdout, ok) = run(root, &["rescan", "--full", "--quiet"]);
-    assert!(ok, "rescan --full exited non-zero; stdout: {stdout}");
+    let (stdout, ok) = run(root, &["rescan", "--quiet"]);
+    assert!(ok, "rescan exited non-zero; stdout: {stdout}");
 
     let search = assert_json_fields(root, &["code", "symbols", "delta"], &["total", "results"]);
-    assert_eq!(search["total"], 1, "rescan --full must index the new symbol");
+    assert_eq!(search["total"], 1, "a rescan with no path must index the new symbol");
     let status = assert_json_fields(root, &["status"], &["file_count"]);
-    assert_eq!(status["file_count"], 3, "rescan --full must index the new file");
+    assert_eq!(status["file_count"], 3, "a rescan with no path must index the new file");
 }
 
 #[test]

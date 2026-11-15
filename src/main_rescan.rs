@@ -7,7 +7,7 @@ pub(super) fn cmd_rescan(
     no_color: bool,
 ) -> Result<()> {
     let root = &guard_workspace_root(root)?;
-    let full = args.full || args.paths.is_empty();
+    let full = args.paths.is_empty();
     // ~keep Validate before touching any lock or daemon, so a bad path is a clean exit 2.
     let abs = if full {
         Vec::new()

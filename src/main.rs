@@ -236,14 +236,10 @@ struct ScanArgs {
 
 #[derive(clap::Args, Debug)]
 struct RescanArgs {
-    /// Repo-relative paths to re-index incrementally. When omitted (or with `--full`),
-    /// the entire working tree is re-indexed. Paths are forward-slash with no leading `/`.
+    /// Repo-relative paths to re-index incrementally. When omitted the entire working tree is
+    /// re-indexed, skipping unchanged files. Paths are forward-slash with no leading `/`.
     #[arg(value_name = "PATH")]
     paths: Vec<String>,
-    /// Force a full working-tree re-index even when paths are supplied. Use to rebuild a
-    /// stale or empty index from scratch.
-    #[arg(long)]
-    full: bool,
     /// Skip building the git-history index after the rescan (overrides config).
     #[arg(long)]
     no_git_history: bool,

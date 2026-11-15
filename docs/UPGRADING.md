@@ -54,7 +54,7 @@ needs no tool-search round trip, so call them directly. `tools/list` for them is
 | `git` `diff` | `git_diff {path, from, to}` |
 | `git` `diff_outline` | `git_diff {path, structural: true}` |
 | `admin` `status`, `repo` | `index_status {}` |
-| `admin` `rescan` | `index_rescan {paths?, full?}` |
+| `admin` `rescan` | `index_rescan {paths?}` (`full` is gone: `{}` is the whole workspace) |
 | `admin` `cache_stats` / `gc` / `cache_clear` | CLI only: `basemind cache stats\|gc\|clear` |
 | `admin` `telemetry` | CLI only: `basemind admin telemetry` |
 | `workspace` `workspaces` / `worktrees` / `branches` | CLI only: `basemind workspace workspaces\|worktrees\|branches` |

@@ -340,7 +340,7 @@ fn cold_dirty_scan_publishes_delta_without_standalone_fjall() {
     }
     let full = basemind(&comms)
         .env("BASEMIND_INDEX_LAYERED", "1")
-        .args(["--root", root.to_str().unwrap(), "rescan", "--full", "--no-git-history"])
+        .args(["--root", root.to_str().unwrap(), "rescan", "--no-git-history"])
         .output()
         .unwrap();
     assert!(full.status.success(), "{}", String::from_utf8_lossy(&full.stderr));

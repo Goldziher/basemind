@@ -303,7 +303,7 @@ pub(super) fn feature_missing(tool: &str, feature: &str) -> McpError {
 
 /// What to do about an index with no files in it.
 pub(crate) const EMPTY_INDEX_FIX: &str = "the index is empty: nothing has been scanned for this workspace. Run \
-     `index_rescan {\"full\":true}` (or `basemind scan` in a shell) and retry.";
+     `index_rescan {}` (or `basemind scan` in a shell) and retry.";
 
 /// Finish the assembled router: mark every verb tool always-loaded and strip schema keywords that
 /// cost bytes on every session without telling a model anything.
@@ -403,6 +403,15 @@ mod tests {
                 }
             })
         );
+    }
+
+    #[test]
+    fn an_empty_index_is_fixed_by_a_call_the_tool_accepts() {
+        let notice = crate::mcp::types::LifecycleNotice::empty_index();
+        for text in [EMPTY_INDEX_FIX, notice.message] {
+            assert!(text.contains("`index_rescan {}`"), "{text}");
+            assert!(!text.contains("full"), "`index_rescan` takes no such argument: {text}");
+        }
     }
 
     #[test]
