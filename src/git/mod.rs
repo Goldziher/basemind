@@ -787,36 +787,6 @@ impl Repo {
         })
     }
 
-    /// Content-level hunks for `path` between `rev_old` and `rev_new`. `None` when the path is
-    /// absent at both sides; an identical or binary file yields no hunks.
-    pub fn diff_file(
-        &self,
-        rev_old: &str,
-        rev_new: &str,
-        path: impl AsRef<Path>,
-    ) -> Result<Option<FileDiff>, GitError> {
-        let path_ref = path.as_ref();
-        let old_bytes = self.read_blob_at_rev(rev_old, path_ref)?;
-        let new_bytes = self.read_blob_at_rev(rev_new, path_ref)?;
-        Ok(FileDiff::between(old_bytes, new_bytes))
-    }
-
-    /// Content-level hunks for `path` between `rev_old` and the file as it is in the working tree
-    /// (staged or not). Same return shape as [`diff_file`](Self::diff_file).
-    ///
-    /// The working-tree side is read from disk, so a path that leaves the repository (absolute,
-    /// `..`, or a symlink pointing outside) is [`GitError::OutsideRepo`], never read.
-    pub fn diff_file_worktree(&self, rev_old: &str, path: impl AsRef<Path>) -> Result<Option<FileDiff>, GitError> {
-        let path_ref = path.as_ref();
-        let rel = crate::path::RelPath::from(path_ref);
-        let on_disk =
-            crate::path::contained_file(self.workdir(), &rel).map_err(|_| GitError::OutsideRepo(rel.clone()))?;
-        Ok(FileDiff::against_file(
-            self.read_blob_at_rev(rev_old, path_ref)?,
-            &on_disk,
-        ))
-    }
-
     /// Diff the commit at `commit_sha` against its first parent. Returns the per-file
     /// (path, change-kind) list. **No caching** — call through `GitCache::commit_files`
     /// in hot paths. Public so the cache layer can drive it.
