@@ -131,7 +131,9 @@ The broker is built so a stalled or restarted daemon does not lose or duplicate 
   subdirectory (`comms/g1/`, rotated at 8 MiB); `basemind comms doctor` prints its path.
 - **Several installed versions.** Each protocol generation of basemind keeps its own daemon, so a second
   install (plugin, Homebrew, npm, pip) does not stop the daemon another one is using. Agents on
-  different generations do not see each other's threads.
+  different generations do not see each other's threads. Within a generation a daemon that is
+  serving sessions is never killed by another version: the newer one is used, or the command fails
+  with a message saying which basemind to update.
 
 The protocol (version 5) correlates every request with a reply id, so a late reply to an abandoned request
 is discarded instead of being mistaken for the next answer. A client and daemon that disagree on the

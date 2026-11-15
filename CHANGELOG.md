@@ -239,6 +239,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   directory; the generation applies inside it. The comms store starts empty in the new generation,
   and the files of the old layout are left in place. See
   [`docs/UPGRADING.md`](docs/UPGRADING.md#running-two-basemind-versions-side-by-side).
+- Within a generation, bringing up the daemon no longer signals one that answers. A newer daemon is
+  used when it speaks this binary's protocol and is otherwise reported with what to update; an older
+  one is asked to stop, and a `daemon_busy` refusal is honoured instead of being followed by SIGTERM
+  and SIGKILL. Signals are sent only to a daemon that has stopped answering and that the generation's
+  `daemon.pid` names. `basemind comms stop` now reaches a daemon that speaks another protocol version.
 - `find_files` (previously `code` modes `find` and `files`) no longer misses document-tier files
   (markdown, config, PDFs) on a long-lived server.
 - `index_status.cache_dir` reports basemind's cache directory. It reported the tree-sitter grammar

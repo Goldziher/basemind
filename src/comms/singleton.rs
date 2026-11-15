@@ -19,6 +19,31 @@
 //! releases of different generations each run their own daemon and cannot see, stop or signal the
 //! other's. Releases up to 0.33 predate this and use the comms directory itself; that unscoped
 //! layout is their generation, and this binary never opens it.
+//!
+//! ## Takeover within a generation
+//!
+//! One generation holds exactly one daemon. A client that finds one running reads its `Status`
+//! and decides ([`ensure_daemon`]):
+//!
+//! | Running daemon is | same protocol | different protocol |
+//! |---|---|---|
+//! | newer than this binary | use it | fail with `NewerDaemon`; it is not asked to stop |
+//! | the same version | use it | ask it to stop |
+//! | older than this binary | ask it to stop | ask it to stop |
+//!
+//! "Ask it to stop" sends `Stop` and then follows the daemon's answer:
+//!
+//! | Answer to `Stop` | Result |
+//! |---|---|
+//! | accepted | wait for it to exit, then spawn this binary's daemon |
+//! | refused (`daemon_busy`, or any other error) | never signalled: use it when the protocol matches, else fail with `BusyPredecessor` |
+//! | none, but it still answers `Ping` | never signalled: fail with `StalePredecessor` |
+//! | none, and `Ping` goes unanswered too | SIGTERM then SIGKILL, only when `daemon.pid` in this generation names the pid it reported; then spawn |
+//!
+//! A daemon that does not answer `Status` at all is not classified: if it answers `Ping` it is
+//! used, and the handshake reports what is wrong with it; if it does not, one is spawned, and the
+//! spawned daemon defers to whoever holds `daemon.lock`. With `BASEMIND_NO_AUTOSPAWN` set, nothing
+//! is ever asked to stop, because nothing could replace it.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -34,9 +59,10 @@ const COMMS_SUBDIR: &str = "comms";
 /// binary's daemon and clients meet in. Binaries of different generations never contact each
 /// other, so each keeps its own daemon alive for as long as its own sessions need it.
 ///
-/// Deliberately not `PROTO_VER`, which changes far more often. A generation bump is not free: the
-/// new generation starts with an empty comms store (threads, messages and the agent roster do not
-/// carry over) and one more daemon runs until the old sessions end.
+/// Deliberately not `PROTO_VER`. A protocol bump is survivable inside a generation: mismatched
+/// peers refuse each other by the takeover table without anyone being signalled. A generation bump
+/// is not free — the new generation starts with an empty comms store (threads, messages and the
+/// agent roster do not carry over) and one more daemon runs until the old sessions end.
 ///
 /// Unrelated to the scan generation and to the index's base generations: this one only names where
 /// a daemon and its clients meet.
@@ -78,12 +104,6 @@ const SUN_PATH_MAX: usize = if cfg!(target_os = "linux") { 107 } else { 103 };
 const SPAWN_READY_TIMEOUT: Duration = Duration::from_secs(30);
 /// Poll interval while waiting for a spawned daemon.
 const SPAWN_POLL_INTERVAL: Duration = Duration::from_millis(50);
-/// How long to wait for a previous / incompatible daemon to release the socket after we ask it to
-/// stop, before giving up and surfacing a clear error.
-const TAKEOVER_DRAIN_TIMEOUT: Duration = Duration::from_secs(3);
-/// How long a predecessor that ignored `Stop` gets to exit on SIGTERM before it is killed.
-const TAKEOVER_TERM_GRACE: Duration = Duration::from_secs(5);
-
 /// Resolved per-user comms paths.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CommsPaths {
@@ -130,6 +150,43 @@ pub enum SingletonError {
         len: usize,
         /// The platform's limit.
         limit: usize,
+    },
+    /// A newer daemon holds this generation and speaks a protocol this binary does not. It is
+    /// never stopped from here: the newer install owns the daemon, and replacing it with an older
+    /// one would sever its sessions only for them to take it back.
+    #[error(
+        "a newer basemind comms daemon (v{version}, pid {pid}, protocol {daemon_proto}) is running \
+         and this basemind (v{ours}, protocol {our_proto}) cannot talk to it; update this basemind, \
+         or stop that daemon with `basemind comms stop` once its sessions are done"
+    )]
+    NewerDaemon {
+        /// The running daemon's build version.
+        version: String,
+        /// The running daemon's process id.
+        pid: u32,
+        /// The protocol version the daemon reported.
+        daemon_proto: u32,
+        /// This binary's version.
+        ours: String,
+        /// This binary's protocol version.
+        our_proto: u32,
+    },
+    /// A daemon this binary cannot use answered `Stop` with a refusal. It is left running — the
+    /// refusal protects the sessions attached to it — and the caller is told why.
+    #[error(
+        "a basemind comms daemon from another build (v{version}, pid {pid}) refused to stop \
+         [{code}]: {message}. It was left running; close the sessions using it (it exits once \
+         idle) or run `basemind comms stop`, then retry"
+    )]
+    BusyPredecessor {
+        /// The running daemon's build version.
+        version: String,
+        /// The running daemon's process id.
+        pid: u32,
+        /// The daemon's stable refusal token (`daemon_busy`, …).
+        code: String,
+        /// The daemon's rendered refusal.
+        message: String,
     },
     /// A previous / incompatible daemon held the socket and would not stop, so we could not take
     /// over. Surfaced instead of silently talking to an incompatible daemon (which is how the
@@ -465,14 +522,9 @@ pub async fn ensure_daemon_with_policy(
     Err(SingletonError::SpawnTimeout)
 }
 
-/// Ensure a healthy, current daemon is running, taking over from a previous one on the way.
-///
-/// On load this reaps the kind of stale process that used to pile up: if the socket is held by a
-/// daemon from an OLDER build (or one speaking a different protocol version), we ask it to stop and
-/// spawn a fresh daemon in its place — converging the singleton on the newest binary. A daemon at
-/// our version (or newer) is reused as-is, so concurrent same-version sessions still share one
-/// broker. If the predecessor will not yield the socket, we error out clearly
-/// ([`SingletonError::StalePredecessor`]) rather than silently talking to an incompatible daemon.
+/// Ensure a daemon this binary can use is running in its generation, replacing one from another
+/// build only when that daemon agrees to go. The rules are the decision table in the module doc; in
+/// short, a daemon that answers is never signalled, and a newer one is never even asked to stop.
 pub async fn ensure_daemon(paths: &CommsPaths) -> Result<(), SingletonError> {
     ensure_daemon_with_spawn_policy(paths, SpawnPolicy::Auto).await
 }
@@ -485,52 +537,12 @@ pub async fn ensure_daemon_explicit(paths: &CommsPaths) -> Result<(), SingletonE
 }
 
 async fn ensure_daemon_with_spawn_policy(paths: &CommsPaths, policy: SpawnPolicy) -> Result<(), SingletonError> {
-    if let Some(report) = off_worker(|| daemon_status(&paths.socket_path)) {
-        let ours = env!("CARGO_PKG_VERSION");
-        let compatible = report.proto_ver == PROTO_VER && !version_is_older(&report.version, ours);
-        if compatible {
-            return Ok(());
-        }
-        // Never stop a daemon we are then forbidden to replace. Under connect-only the takeover
-        // would leave the operator with no daemon at all — strictly worse than an old one, whose
-        // skew the handshake reports precisely.
-        if policy == SpawnPolicy::Auto && autospawn_disabled() {
-            tracing::warn!(
-                daemon_version = %report.version,
-                daemon_pid = report.pid,
-                ours,
-                env = NO_AUTOSPAWN_ENV,
-                "comms: a previous/incompatible daemon holds the socket, but auto-spawn is disabled; using it as-is"
-            );
-            return Ok(());
-        }
-        tracing::warn!(
-            daemon_version = %report.version,
-            daemon_pid = report.pid,
-            ours,
-            "comms: a previous/incompatible daemon holds the socket; taking over"
-        );
-        request_stop(&paths.socket_path);
-        let deadline = std::time::Instant::now() + TAKEOVER_DRAIN_TIMEOUT;
-        while std::time::Instant::now() < deadline {
-            if !off_worker(|| probe_alive(&paths.socket_path)) {
-                break;
-            }
-            tokio::time::sleep(SPAWN_POLL_INTERVAL).await;
-        }
-        // A predecessor that ignores `Stop` (busy store, held-open clients, a build that predates
-        // the drain) would otherwise wedge every new session until an operator kills it by hand.
-        // Escalate by pid: SIGTERM drains cleanly, SIGKILL is the last resort.
-        if off_worker(|| probe_alive(&paths.socket_path)) {
-            let pid = report.pid;
-            off_worker(|| force_terminate(pid, TAKEOVER_TERM_GRACE));
-        }
-        if off_worker(|| probe_alive(&paths.socket_path)) {
-            return Err(SingletonError::StalePredecessor {
-                version: report.version,
-                pid: report.pid,
-            });
-        }
+    let ours = takeover::Ours {
+        version: env!("CARGO_PKG_VERSION"),
+        proto_ver: PROTO_VER,
+    };
+    if takeover::settle_existing(paths, policy, ours, takeover::Timings::PRODUCTION).await? == takeover::Existing::Use {
+        return Ok(());
     }
     // No compatible daemon answered — we are about to spawn one. Enforce the machine ceiling for the
     // comms family first so a runaway (each isolated comms dir spawning its own detached daemon) is
@@ -569,6 +581,10 @@ fn daemon_status(socket_path: &Path) -> Option<StatusReport> {
         _ => None,
     }
 }
+
+/// What to do about a daemon that is already running in this generation.
+#[path = "singleton_takeover.rs"]
+mod takeover;
 
 /// Serviceability probing + forced reclaim. See [`singleton_probe`](probe) for why these are not
 /// the same question as [`probe_alive`].

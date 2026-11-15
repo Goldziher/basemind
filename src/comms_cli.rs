@@ -360,6 +360,18 @@ fn cmd_comms_lifecycle_rpc(rpc: CommsRpc, json: bool) -> Result<()> {
                     // one exception is `store_error`: that daemon answered only to say it cannot
                     // serve, which is the wedge the pid escalation exists for. ~keep
                     Ok(Err(error)) => {
+                        // A daemon from another build fails the handshake before `Stop` is ever
+                        // sent, yet stopping it is what the takeover errors tell the operator to
+                        // do. Ask without the handshake; its answer is honoured the same way. ~keep
+                        if matches!(error, basemind::comms::client::CommsClientError::ProtoSkew { .. }) {
+                            return match singleton::request_stop_classified(&paths.socket_path) {
+                                singleton::StopOutcome::Accepted => Ok(StopVerdict::Accepted),
+                                singleton::StopOutcome::Refused { code, message } if code != "store_error" => {
+                                    Err(anyhow::anyhow!("stop: daemon refused [{code}]: {message}"))
+                                }
+                                _ => Ok(StopVerdict::Reclaimable),
+                            };
+                        }
                         if !is_broken_store_error(&error) {
                             return Err(anyhow::anyhow!("stop: {error}"));
                         }

@@ -171,6 +171,14 @@ fn read_record(path: &Path) -> Option<DaemonRecord> {
     serde_json::from_slice(&std::fs::read(path).ok()?).ok()
 }
 
+/// The live daemon `<dir>/daemon.pid` names, if any. Only the lock holder writes that file, so a
+/// record naming a live pid is the daemon that owns `dir` (or, after a crash and pid reuse, an
+/// unrelated process — which is why a caller about to signal must also match the pid against what
+/// the daemon reported about itself).
+pub fn recorded_holder(dir: &Path) -> Option<DaemonRecord> {
+    read_record(&dir.join(DAEMON_PID_FILE)).filter(|record| pid_is_live(record.pid))
+}
+
 /// Every live daemon registered on this machine (under the resolved data home), of any kind, with
 /// the pidfiles of any that have died pruned as a side effect. Best-effort: an unreadable registry
 /// dir yields empty. Powers `comms doctor`.

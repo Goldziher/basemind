@@ -142,6 +142,9 @@ subdirectory, `comms/g1/`. On Windows the named pipe's name gains `-g1` and chan
 - The old daemon exits when its sessions end. Its files stay at the top of the comms directory; they
   are small and nothing removes them. Delete them by hand once no 0.33 binary is in use.
 - A client that reads `http.addr` or `daemon.log` by path must look in `comms/g1/`.
+- Between versions that share a generation, a running daemon is never killed while it answers. A
+  newer daemon is used, or the older binary fails with `a newer basemind comms daemon ... is running`
+  and says to update. An older daemon is asked to stop and keeps running if it is serving sessions.
 
 ## Upgrading from 0.28 to 0.29
 

@@ -872,6 +872,13 @@ invisible to binaries already released into the current one; a new generation st
 comms store, and the previous generation's daemon runs until its own sessions end. Directories of
 other generations are not removed automatically.
 
+Inside one generation there is one daemon, and a client that finds a daemon from another build never
+signals one that answers: a newer daemon is used when it speaks the client's protocol and is
+otherwise reported (`update this basemind`); an older one is asked to stop and, if it refuses
+because it is serving other sessions, is used when the protocol matches and reported otherwise.
+SIGTERM and SIGKILL are reserved for a daemon that has stopped answering and that the generation's
+`daemon.pid` names. The full table is the module doc of `src/comms/singleton.rs`.
+
 ### Daemon lifecycle and resource containment
 
 The daemon is spawned detached with `setsid(2)`, in its own comms dir (never an inherited cwd — a
