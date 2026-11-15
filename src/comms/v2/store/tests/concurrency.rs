@@ -19,8 +19,8 @@ const OBSERVERS: usize = 3;
 const THREADS_PER_OBSERVER: usize = 2;
 const OBSERVER_ROUNDS: usize = 25;
 /// Threads that have expired when the others start. Their messages alone are more than the one
-/// small sweep the first change runs can remove, so the sweeping thread has every thread row
-/// left to remove while the others run.
+/// small sweep the first change runs can remove, so expired rows are left to remove while the
+/// others run, by the sweeping thread and by the sweeps the others' changes run.
 const EXPIRED_THREADS: usize = 40;
 
 /// Records one concurrent sweep removes at most, small enough that sweeping takes many rounds.
@@ -179,17 +179,7 @@ fn concurrent_posts_reads_creations_leaves_and_sweeps_lose_and_skip_nothing() {
             }
         });
         let marking_read = move |name: &str| harness.inbox(&caller(name), InboxBody::default()).expect("inbox");
-        scope.spawn(move || {
-            let mut threads = 0;
-            loop {
-                let report = harness.store().sweep_bounded(SWEEP_STEP).expect("sweep");
-                threads += report.threads;
-                if !report.more {
-                    break;
-                }
-            }
-            assert_eq!(threads, EXPIRED_THREADS, "the sweep ran beside the other threads");
-        });
+        scope.spawn(move || while harness.store().sweep_bounded(SWEEP_STEP).expect("sweep").more {});
         for name in observers
             .iter()
             .flat_map(|name| std::iter::repeat_n(name, THREADS_PER_OBSERVER))
@@ -297,13 +287,52 @@ fn concurrent_posts_reads_creations_leaves_and_sweeps_lose_and_skip_nothing() {
     }
     assert!(!reader.thread(&shared.thread).expect("read").expect("thread").archived);
 
-    let rows = store.stored_rows();
+    let ks = &store.ks;
+    let rows = |keyspace: &Keyspace| keyspace.len().expect("count rows");
     let callers = ["old", "a"].len() + POSTERS + LEAVERS + CREATORS + OBSERVERS;
-    assert_eq!(rows[8], callers, "one seen record for each agent that made a call");
-    assert_eq!(rows[0], stored.len(), "a thread row for each thread with messages");
     assert_eq!(
-        rows[9],
-        rows[0] + rows[8] + rows[7],
+        rows(&ks.seen),
+        callers,
+        "one seen record for each agent that made a call"
+    );
+    assert_eq!(
+        rows(&ks.threads),
+        stored.len(),
+        "a thread row for each thread with messages"
+    );
+    assert_eq!(
+        rows(&ks.repo_threads),
+        rows(&ks.threads),
+        "one repository entry for each thread"
+    );
+    assert_eq!(
+        rows(&ks.messages),
+        in_post_order.len(),
+        "the messages counted are all there are"
+    );
+    assert_eq!(rows(&ks.bodies), rows(&ks.messages), "one body for each message");
+    assert_eq!(
+        rows(&ks.post_order),
+        rows(&ks.messages),
+        "one index row for each message"
+    );
+    let memberships: usize = stored
+        .keys()
+        .map(|thread| reader.members(thread).expect("members").len())
+        .sum();
+    assert_eq!(
+        rows(&ks.members),
+        memberships,
+        "member rows of the stored threads and of no other"
+    );
+    assert_eq!(
+        rows(&ks.member_threads),
+        rows(&ks.members),
+        "one thread entry for each member row"
+    );
+    assert_eq!(
+        rows(&ks.expiry),
+        rows(&ks.threads) + rows(&ks.seen) + rows(&ks.replays),
         "one expiry entry for each thread, seen record and replay entry"
     );
 }
