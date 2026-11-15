@@ -139,3 +139,49 @@ fn preflight_persists_the_emptied_file_map_of_an_index_it_rebuilds_in_place() {
     assert_eq!(on_disk.generation, db.scan_generation().expect("read"));
     assert_eq!(on_disk.generation, 1, "the emptied index starts a new count");
 }
+
+fn rotations(db: &IndexDb) -> u32 {
+    db.fault.rotations.load(std::sync::atomic::Ordering::Acquire)
+}
+
+/// Neither a full scan nor an incremental batch of a small index flushes its memtables: there is no
+/// sealed journal to release, and the flush would only delay the scan. What they wrote survives a
+/// reopen.
+#[test]
+fn a_scan_that_sealed_no_journal_does_not_flush_the_memtables() {
+    init_isolated_cache();
+    let dir = one_file_repo();
+    let root = dir.path();
+    let mut store = Store::open(root, VIEW_WORKING).expect("open");
+
+    full_scan(root, &mut store);
+    let db = store.index_db.clone().expect("index");
+    assert_eq!(rotations(&db), 0);
+    assert!(!db.has_unsynced_tail());
+
+    let alpha = root.join("alpha.rs");
+    std::fs::write(&alpha, b"pub fn alpha() -> u32 { 2 }\n").expect("rewrite");
+    let report = crate::scanner::scan_paths(
+        root,
+        &mut store,
+        &ConfigV1::with_defaults(),
+        &[alpha],
+        EmbedMode::Deferred,
+    )
+    .expect("incremental scan");
+    assert_eq!(report.stats.updated, 1);
+    assert_eq!(rotations(&db), 0);
+
+    drop(db);
+    drop(store);
+    let store = Store::open(root, VIEW_WORKING).expect("reopen");
+    assert_eq!(
+        store
+            .index_view()
+            .expect("index")
+            .symbols_by_name_lookup("alpha", 4)
+            .len(),
+        1,
+        "the rows survive a reopen"
+    );
+}

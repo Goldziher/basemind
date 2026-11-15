@@ -123,6 +123,17 @@ pub(crate) fn sync_index_tail(store: &Store) -> bool {
         .is_ok()
 }
 
+/// The last index step of a scan: [`sync_index_tail`], then release the sealed index journals now
+/// that every row is durable. A failed reclaim only logs: the rows are already durable in the
+/// journal. Runs for full and incremental scans alike, and costs nothing unless fjall holds a sealed
+/// journal (see [`IndexDb::reclaim_journal_if_grown`]).
+pub(crate) fn finish_index_writes(store: &Store) {
+    sync_index_tail(store);
+    if let Some(db) = store.index_db.as_ref() {
+        db.reclaim_journal_if_grown();
+    }
+}
+
 #[cfg(test)]
 #[path = "scanner_integrity_tests.rs"]
 mod tests;

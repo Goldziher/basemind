@@ -53,6 +53,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A bulk index build no longer leaves hundreds of MB of sealed Fjall journal on disk. A sealed journal is
+  deleted only once every keyspace it covers has flushed, and lightly written keyspaces such as `meta` never
+  did, so each 64 MiB journal lived forever. A scan (full or incremental) now flushes every index keyspace
+  after its durability sync whenever Fjall holds a sealed journal, and logs a warning instead of failing when
+  the flush errors. Scanning 5,256 source files left 4 journals (268 MB, 320 MB index) and now leaves the
+  active one (24 MB, 79 MB index); the scan was not slower. An index too small to seal a journal is
+  unchanged: Fjall cannot shrink its active journal (about 13 MB of the 15 MB index of this repository's
+  `src` and `tests`), and flushing it would only slow the scan.
 - A crash or power loss can no longer leave files permanently missing from the code index. Index writes
   reached the OS but were not fsynced, while the file map (`index.msgpack`) was, so after an unclean shutdown
   the file map could record a file as indexed and unchanged whose index rows never reached the disk, and

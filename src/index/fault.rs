@@ -25,6 +25,12 @@ pub struct IndexFault {
     /// so nothing else can exercise what a scan does with the files of a lost batch.
     #[cfg(test)]
     injected_commit_failures: std::sync::atomic::AtomicU32,
+    /// Memtable rotations [`IndexDb::reclaim_journal`] started, and the number of upcoming ones to
+    /// fail, so a test can tell a skipped rotation from one that ran and fault a rotation.
+    #[cfg(test)]
+    pub(crate) rotations: std::sync::atomic::AtomicU32,
+    #[cfg(test)]
+    pub(crate) injected_rotate_failures: std::sync::atomic::AtomicU32,
 }
 
 impl IndexFault {

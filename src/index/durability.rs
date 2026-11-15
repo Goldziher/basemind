@@ -13,7 +13,7 @@
 use std::path::Path;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use fjall::PersistMode;
+use fjall::{Keyspace, PersistMode};
 
 use super::view::Part;
 use super::{INDEX_DIR, INDEX_SCHEMA_VER, IndexDb, IndexError, META_SCHEMA_VER};
@@ -21,6 +21,21 @@ use super::{INDEX_DIR, INDEX_SCHEMA_VER, IndexDb, IndexError, META_SCHEMA_VER};
 const META_SCAN_GENERATION: &[u8] = b"scan_generation";
 /// Name prefix of an index directory renamed aside by [`discard_dir`] and not yet deleted.
 pub(crate) const DISCARD_PREFIX: &str = "index.fjall.discard-";
+
+/// Sealed journals fjall keeps only until every keyspace they cover has flushed. `meta` and the
+/// other lightly written keyspaces never fill a memtable on their own, so without a flush of every
+/// keyspace one straggler keeps each sealed journal (64 MiB preallocated) alive for good.
+const RECLAIM_SEALED_JOURNALS: usize = 1;
+
+/// Flush the active memtable of each of `keyspaces` to disk and wait for it. Stops at the first
+/// error. A journal is deleted once every keyspace it covers has flushed past it, so this releases
+/// the sealed ones.
+pub(super) fn rotate_memtables<'a>(keyspaces: impl IntoIterator<Item = &'a Keyspace>) -> Result<(), IndexError> {
+    for keyspace in keyspaces {
+        keyspace.rotate_memtable_and_wait()?;
+    }
+    Ok(())
+}
 
 impl IndexDb {
     /// The generation the last [`Self::seal_scan`] stamped; `0` for an index no scan has sealed.
@@ -80,6 +95,45 @@ impl IndexDb {
         synced?;
         self.synced_seqno.store(seqno, Ordering::Release);
         Ok(true)
+    }
+
+    /// Flush every keyspace so the sealed journals can be deleted. Call after [`Self::seal_scan`] and
+    /// [`Self::sync_tail`]: the rows are already durable in the journal, so a failure here costs disk
+    /// space only and is logged, not returned. Returns whether the flush completed.
+    ///
+    /// Waits for every flush, so it belongs at the end of a scan, never in the per-file loop. It
+    /// cannot shrink the ACTIVE journal: fjall seals that one only at a memtable flush after it
+    /// passes 64 MB, so an index that never wrote that much keeps its one journal however it is
+    /// flushed, and flushing it only writes segments sooner.
+    pub fn reclaim_journal(&self) -> bool {
+        #[cfg(test)]
+        {
+            self.fault.rotations.fetch_add(1, Ordering::AcqRel);
+            if self
+                .fault
+                .injected_rotate_failures
+                .try_update(Ordering::AcqRel, Ordering::Acquire, |left| left.checked_sub(1))
+                .is_ok()
+            {
+                tracing::warn!("index journal reclaim failed: injected");
+                return false;
+            }
+        }
+        let keyspaces = Part::ALL
+            .into_iter()
+            .map(|part| self.keyspace(part))
+            .chain(std::iter::once(&self.embeddings));
+        rotate_memtables(keyspaces)
+            .inspect_err(|error| tracing::warn!(%error, "index journal reclaim failed; the journal stays on disk"))
+            .is_ok()
+    }
+
+    /// [`Self::reclaim_journal`], but only once fjall holds a sealed journal, i.e. the index has
+    /// written past a journal's worth (64 MB) since the last flush: the case a straggler keyspace
+    /// keeps alive. Reads fjall's in-memory journal count, so a scan or a watcher batch that has not
+    /// costs nothing; a flush of a small index would only add segments and delay the scan.
+    pub fn reclaim_journal_if_grown(&self) -> bool {
+        self.db.journal_count() > RECLAIM_SEALED_JOURNALS && self.reclaim_journal()
     }
 
     #[cfg(test)]
@@ -252,5 +306,87 @@ mod tests {
             "a fresh index took its place"
         );
         assert_eq!(discarded_siblings(dir.path()), Vec::<String>::new());
+    }
+
+    fn journal_files(dir: &Path) -> usize {
+        std::fs::read_dir(dir.join(INDEX_DIR))
+            .expect("read index dir")
+            .flatten()
+            .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "jnl"))
+            .count()
+    }
+
+    /// Writes past one journal's worth into one keyspace so fjall seals the journal, leaving `meta`
+    /// unflushed: the straggler that keeps a sealed journal alive.
+    fn seal_a_journal_with_a_straggler(db: &IndexDb) {
+        let rows = db.keyspace(Part::SymbolsByPath);
+        let mut state = 0x9E37_79B9_7F4A_7C15_u64;
+        for row in 0..70u32 {
+            // Incompressible, or the journal's LZ4 shrinks 70 MB of writes below the seal threshold.
+            let value: Vec<u8> = (0..1_024 * 1_024)
+                .map(|_| {
+                    state = state.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+                    (state >> 56) as u8
+                })
+                .collect();
+            rows.insert(row.to_be_bytes(), &value).expect("insert");
+        }
+        rows.rotate_memtable_and_wait().expect("flush the written keyspace");
+    }
+
+    #[test]
+    fn reclaim_journal_deletes_a_sealed_journal_a_straggler_keyspace_was_holding() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = IndexDb::open(dir.path()).expect("open");
+        seal_a_journal_with_a_straggler(&db);
+        assert_eq!(
+            db.db.journal_count(),
+            2,
+            "meta never flushed, so the sealed journal stays"
+        );
+        assert_eq!(journal_files(dir.path()), 2);
+
+        assert!(db.reclaim_journal());
+        assert_eq!(db.db.journal_count(), 1, "only the active journal is left");
+        assert_eq!(journal_files(dir.path()), 1);
+        drop(db);
+
+        let reopened = IndexDb::open(dir.path()).expect("reopen");
+        assert_eq!(reopened.keyspace(Part::SymbolsByPath).iter().count(), 70);
+        assert_eq!(reopened.scan_generation().expect("read"), 0);
+    }
+
+    #[test]
+    fn reclaim_journal_if_grown_leaves_a_small_journal_alone() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = IndexDb::open(dir.path()).expect("open");
+        db.seal_scan(0).expect("seal");
+        assert!(!db.reclaim_journal_if_grown(), "no sealed journal, no flush");
+        assert_eq!(db.fault.rotations.load(Ordering::Acquire), 0);
+
+        seal_a_journal_with_a_straggler(&db);
+        assert!(db.reclaim_journal_if_grown());
+        assert_eq!(db.fault.rotations.load(Ordering::Acquire), 1);
+        assert_eq!(db.db.journal_count(), 1);
+    }
+
+    /// The rows are durable before the flush runs, so a flush that fails costs disk space, not data.
+    #[test]
+    fn a_failed_reclaim_keeps_every_row_and_the_next_one_succeeds() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = IndexDb::open(dir.path()).expect("open");
+        seal_a_journal_with_a_straggler(&db);
+        db.fault.injected_rotate_failures.store(1, Ordering::Release);
+
+        assert!(
+            !db.reclaim_journal_if_grown(),
+            "the injected failure is reported, not raised"
+        );
+        assert_eq!(db.db.journal_count(), 2, "nothing was flushed");
+        assert!(db.fatal_fault().is_none(), "a failed flush latches nothing");
+        assert_eq!(db.keyspace(Part::SymbolsByPath).iter().count(), 70);
+
+        assert!(db.reclaim_journal_if_grown());
+        assert_eq!(db.db.journal_count(), 1);
     }
 }

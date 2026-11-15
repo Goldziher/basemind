@@ -574,7 +574,9 @@ impl IndexDb {
         meta.insert(META_SCHEMA_VER, INDEX_SCHEMA_VER.to_be_bytes())?;
 
         if db.journal_disk_space().unwrap_or(0) > JOURNAL_FLUSH_ON_OPEN_BYTES {
-            for keyspace in [
+            // Best-effort: the flush only spares the NEXT open a replay. On a full or read-only disk
+            // it fails, and that must not make the workspace unopenable.
+            if let Err(error) = durability::rotate_memtables([
                 &symbols_by_path,
                 &symbols_by_name,
                 &calls_by_path,
@@ -592,13 +594,8 @@ impl IndexDb {
                 &grep_bloom,
                 &embeddings,
                 &meta,
-            ] {
-                // Best-effort: the flush only spares the NEXT open a replay. On a full or read-only disk
-                // it fails, and that must not make the workspace unopenable.
-                if let Err(error) = keyspace.rotate_memtable_and_wait() {
-                    tracing::warn!(%error, "index journal flush on open failed; continuing with the replayed journal");
-                    break;
-                }
+            ]) {
+                tracing::warn!(%error, "index journal flush on open failed; continuing with the replayed journal");
             }
         }
 

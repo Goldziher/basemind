@@ -642,7 +642,7 @@ pub fn scan_with_observer(
     {
         tracing::debug!(%error, "shared Lance snapshot publication failed");
     }
-    crate::scanner_integrity::sync_index_tail(store);
+    crate::scanner_integrity::finish_index_writes(store);
     phase_peaks.sample_now();
     report.phase_peaks = phase_peaks.snapshot();
     Ok(report)
@@ -950,7 +950,7 @@ pub fn scan_paths_with_observer(
     run_optional_lane(crate::scanner_lanes::LANE_LANCE_MAINTENANCE, || {
         maintain_lance_if_open(store)
     });
-    crate::scanner_integrity::sync_index_tail(store);
+    crate::scanner_integrity::finish_index_writes(store);
     Ok(report)
 }
 
