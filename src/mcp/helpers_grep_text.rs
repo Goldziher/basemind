@@ -59,7 +59,7 @@ pub(super) fn annotate_symbols(cache: &super::MapCache, hits: &mut [GrepHit]) {
         let Some((_, Some(l1))) = current.as_ref() else {
             continue;
         };
-        if !hit.source_fresh {
+        if hit.stale {
             continue;
         }
         hit.symbol = l1

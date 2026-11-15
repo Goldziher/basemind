@@ -284,8 +284,8 @@ pub(super) struct OutlineResponse {
     /// True when the token budget dropped trailing symbols; page them with `next_cursor`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub budgeted: bool,
-    /// The working-tree file no longer matches the indexed content (or is gone), so line spans may
-    /// be off until `index_rescan`.
+    /// The file changed since it was indexed, so this outline was extracted from the file as it is
+    /// now; the other tools describe the indexed content until `index_rescan`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub stale: bool,
     pub symbols: Vec<OutlineSymbol>,
@@ -754,9 +754,10 @@ pub(super) struct GrepHit {
     /// Byte offset of the match in the file; used to find `symbol`, not part of the response.
     #[serde(skip)]
     pub start_byte: u32,
-    /// Size of the file the hit was read from; `symbol` is set only when the index agrees.
-    #[serde(skip)]
-    pub source_fresh: bool,
+    /// The file changed since it was indexed. The hit is from the file as it is now, and `symbol`
+    /// is left out: the indexed outline describes other bytes until `index_rescan`.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub stale: bool,
 }
 
 /// The symbol a grep hit sits in.

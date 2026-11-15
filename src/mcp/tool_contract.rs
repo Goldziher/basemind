@@ -156,6 +156,11 @@ impl<'a> Sweep<'a> {
         }
     }
 
+    /// `scan.max_file_bytes` of the swept index.
+    pub(super) fn max_file_bytes(&self) -> u64 {
+        self.files.max_file_bytes
+    }
+
     /// Where to read `path`, or `None` when it is gone or now leads out of the repository.
     pub(super) fn path(&self, path: &RelPath) -> Option<std::path::PathBuf> {
         if path.is_external() || self.files.follow_symlinks {

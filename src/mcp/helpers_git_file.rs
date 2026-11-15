@@ -141,9 +141,10 @@ fn indexed_source(state: &ServerState, path: &crate::path::RelPath) -> Option<Ve
             store.lookup(path)?.clone(),
         )
     };
-    std::fs::read(&file)
+    super::freshness::load(&file, (&entry).into(), state.shared.config.scan.max_file_bytes)
         .ok()
-        .filter(|bytes| super::freshness::matches_index((&entry).into(), &file, bytes))
+        .filter(|live| live.fresh)
+        .map(|live| live.bytes)
 }
 
 /// Clamp a 1-based inclusive blame span to the file as it is at `rev`, or explain why it does not

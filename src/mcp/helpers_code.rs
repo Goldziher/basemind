@@ -346,8 +346,9 @@ fn line_of(newlines: &[usize], offset: usize) -> u32 {
 /// `code_outline`: one file's symbols with their 1-based line spans, plus its imports.
 ///
 /// `end_line` is not in the index (a symbol records its byte span and start row), so it is derived
-/// from the working-tree file. When that file no longer matches what was indexed the spans are
-/// flagged `stale` rather than silently reported against the wrong bytes.
+/// from the working-tree file. When that file no longer holds the indexed content the outline is
+/// extracted from the file as it is and flagged `stale`: the indexed spans laid over other bytes
+/// would end on the wrong lines.
 pub(super) async fn code_outline(state: &ServerState, p: CodeOutlineParams) -> Result<CallToolResult, McpError> {
     use std::sync::atomic::Ordering;
 
@@ -384,27 +385,29 @@ pub(super) async fn code_outline(state: &ServerState, p: CodeOutlineParams) -> R
     };
     let limit = p.limit.unwrap_or(OUTLINE_LIMIT_DEFAULT).min(SEARCH_LIMIT_MAX) as usize;
 
-    // The outline is already in hand, so a file that can no longer be read (deleted, or replaced by
-    // a link out of the repository since the scan) costs only the derived `end_line`s: `stale`.
+    let max_bytes = state.shared.config.scan.max_file_bytes;
     let (file, entry) = {
         let store = state.shared.store.read().await;
+        let entry = store
+            .lookup(&p.path)
+            .cloned()
+            .ok_or_else(|| super::tool_contract::not_indexed_in(&store, &state.shared.root, "code_outline", &p.path))?;
         (
-            super::tool_contract::indexed_file(state, &store, "code_outline", &p.path).ok(),
-            store.lookup(&p.path).cloned(),
+            super::tool_contract::indexed_file(state, &store, "code_outline", &p.path)?,
+            entry,
         )
     };
-    let (source, stale) = super::index_route::blocking(|| {
-        let source = file.as_ref().and_then(|file| std::fs::read(file).ok());
-        let stale = match (&file, &source, &entry) {
-            (Some(file), Some(bytes), Some(entry)) => !super::freshness::matches_index(entry.into(), file, bytes),
-            _ => true,
+    let (l1, source, stale) = super::index_route::blocking(|| {
+        let live = super::freshness::load(&file, (&entry).into(), max_bytes)
+            .map_err(|reason| super::freshness::unloadable("code_outline", &p.path, reason, max_bytes))?;
+        let l1 = if live.fresh {
+            l1
+        } else {
+            std::sync::Arc::new(super::freshness::reparse(state, "code_outline", &p.path, &live.bytes)?)
         };
-        (source, stale)
-    });
-    let newlines: Vec<usize> = source
-        .as_deref()
-        .map(|bytes| memchr::memchr_iter(b'\n', bytes).collect())
-        .unwrap_or_default();
+        Ok::<_, McpError>((l1, live.bytes, !live.fresh))
+    })?;
+    let newlines: Vec<usize> = memchr::memchr_iter(b'\n', &source).collect();
 
     let total = l1.symbols.len();
     let page: Vec<OutlineSymbol> = l1
@@ -414,10 +417,7 @@ pub(super) async fn code_outline(state: &ServerState, p: CodeOutlineParams) -> R
         .take(limit)
         .map(|symbol| {
             let line = symbol.start_row + 1;
-            let end_line = match source.as_deref() {
-                Some(bytes) => line_of(&newlines, (symbol.end_byte as usize).min(bytes.len())).max(line),
-                None => line,
-            };
+            let end_line = line_of(&newlines, (symbol.end_byte as usize).min(source.len())).max(line);
             OutlineSymbol {
                 name: symbol.name.clone(),
                 kind: kind_to_str(symbol.kind),

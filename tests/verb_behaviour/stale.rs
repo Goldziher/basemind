@@ -149,3 +149,129 @@ async fn code_refs_refuses_a_definition_in_another_file_edited_after_the_scan() 
         "{stale}"
     );
 }
+
+/// An edited file is described as it is: the outline is extracted from the bytes on disk, so its
+/// lines are the ones `code_read` returns, and a grep hit in it says the index is behind.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_edited_file_is_outlined_and_read_as_it_is_and_flagged_stale() {
+    let (dir, client) = started().await;
+    prepend(&dir.path().join("src/outline.rs"), "// one\n// two\n");
+
+    let outline = call(&client, "code_outline", json!({ "path": "src/outline.rs" })).await;
+    assert_eq!(outline["stale"], true, "{outline}");
+    let symbol = outline["symbols"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|symbol| symbol["name"] == "file_outline_l2")
+        .expect("file_outline_l2");
+    assert_eq!(
+        (symbol["line"].as_u64(), symbol["end_line"].as_u64()),
+        (Some(9), Some(11)),
+        "two lines further down than the index has it: {outline}"
+    );
+    let read = call(
+        &client,
+        "code_read",
+        json!({ "path": "src/outline.rs", "symbol": "file_outline_l2" }),
+    )
+    .await;
+    assert_eq!(
+        (read["line"].clone(), read["end_line"].clone(), read["stale"].clone()),
+        (symbol["line"].clone(), symbol["end_line"].clone(), json!(true)),
+        "{read}"
+    );
+
+    let grep = call(&client, "code_grep", json!({ "pattern": "file_outline() +" })).await;
+    let hit = &grep["hits"][0];
+    assert_eq!(hit["line"], 21, "{grep}");
+    assert_eq!(hit["stale"], true, "{grep}");
+    assert!(hit.get("symbol").is_none(), "{grep}");
+    let fresh = call(&client, "code_grep", json!({ "pattern": "def helper" })).await;
+    assert!(fresh["hits"][0].get("stale").is_none(), "{fresh}");
+}
+
+/// A file deleted after the scan is still in the index. Every tool that needs its content says so
+/// in the same words and names the call that fixes it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_file_deleted_after_the_scan_gets_one_answer_naming_index_rescan() {
+    let (dir, client) = started().await;
+    std::fs::remove_file(dir.path().join("src/outline.rs")).unwrap();
+
+    for (tool, arguments) in [
+        ("code_outline", json!({ "path": "src/outline.rs" })),
+        (
+            "code_read",
+            json!({ "path": "src/outline.rs", "symbol": "file_outline" }),
+        ),
+        (
+            "code_read",
+            json!({ "path": "src/outline.rs", "line": 1, "end_line": 3 }),
+        ),
+        ("code_refs", json!({ "name": "file_outline", "path": "src/outline.rs" })),
+        (
+            "code_refs",
+            json!({ "name": "file_outline", "relation": "definition", "path": "src/outline.rs", "line": 19 }),
+        ),
+    ] {
+        let message = call_err(&client, tool, arguments.clone()).await;
+        assert_eq!(
+            message,
+            format!(
+                "`{tool}`: `src/outline.rs` is in the index but can no longer be read: it was deleted or moved \
+                 after the scan. Run `index_rescan {{\"paths\":[\"src/outline.rs\"]}}` to bring the index up to date."
+            ),
+            "{tool} {arguments}"
+        );
+    }
+
+    let grep = call(&client, "code_grep", json!({ "pattern": "file_outline" })).await;
+    assert_eq!(grep["skipped_files"], 1, "{grep}");
+    assert_eq!(grep["total_files_matched"], 1, "src/callers.rs: {grep}");
+}
+
+/// The scan indexes no file over `scan.max_file_bytes`. One that has grown past it since is not
+/// held whole by any tool; a line span is still streamed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_file_grown_past_the_scan_limit_is_not_read_whole() {
+    let (dir, client) = started_with(&[(
+        "basemind.toml",
+        "\"$schema\" = \"v1\"\n\n[scan]\nmax_file_bytes = 4096\n",
+    )])
+    .await;
+    let path = dir.path().join("src/outline.rs");
+    let source = std::fs::read_to_string(&path).unwrap();
+    std::fs::write(
+        &path,
+        format!("{source}{}", "// padding to outgrow the limit\n".repeat(200)),
+    )
+    .unwrap();
+
+    for (tool, arguments) in [
+        ("code_outline", json!({ "path": "src/outline.rs" })),
+        (
+            "code_read",
+            json!({ "path": "src/outline.rs", "symbol": "file_outline" }),
+        ),
+        ("code_refs", json!({ "name": "file_outline", "path": "src/outline.rs" })),
+    ] {
+        let message = call_err(&client, tool, arguments.clone()).await;
+        assert!(
+            message.contains("has grown past 4096 bytes (`scan.max_file_bytes`)") && message.contains("index_rescan"),
+            "{tool} {arguments}: {message}"
+        );
+    }
+    let span = call(
+        &client,
+        "code_read",
+        json!({ "path": "src/outline.rs", "line": 3, "end_line": 5 }),
+    )
+    .await;
+    assert_eq!(span["body"], "pub fn file_outline() -> u32 {\n    1\n}", "{span}");
+    let grep = call(&client, "code_grep", json!({ "pattern": "padding to outgrow" })).await;
+    assert_eq!(
+        (grep["total_matches"].as_u64(), grep["skipped_files"].as_u64()),
+        (Some(0), Some(1)),
+        "{grep}"
+    );
+}

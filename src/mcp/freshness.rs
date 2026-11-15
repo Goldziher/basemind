@@ -129,6 +129,28 @@ pub(super) fn unloadable(tool: &str, path: &RelPath, reason: Unloadable, max_byt
     McpError::invalid_params(message, None)
 }
 
+/// The outline of `bytes`, the current content of an indexed file that was edited after the scan.
+/// Blocking: a tree-sitter parse.
+pub(super) fn reparse(
+    state: &super::ServerState,
+    tool: &str,
+    path: &RelPath,
+    bytes: &[u8],
+) -> Result<crate::extract::FileMapL1, McpError> {
+    let cannot = |why: String| {
+        McpError::invalid_params(
+            format!(
+                "`{tool}`: `{path}` changed since it was indexed and {why}. Read a line span with `code_read`, \
+                 or run `index_rescan {{\"paths\":[\"{path}\"]}}`."
+            ),
+            None,
+        )
+    };
+    let language = super::helpers_git_file::detect_lang(state, path)
+        .ok_or_else(|| cannot("is no longer in a supported language".to_string()))?;
+    crate::extract::l1::extract_l1(language, bytes).map_err(|error| cannot(format!("could not be parsed ({error})")))
+}
+
 /// The error for a tool that needs the indexed positions of a file edited after the scan.
 pub(super) fn edited(tool: &str, path: &RelPath) -> McpError {
     McpError::invalid_params(

@@ -338,21 +338,22 @@ async fn a_followed_symlink_the_scan_indexed_is_readable_by_every_tool() {
     assert!(!text_of(&refused).contains("linked_needle"), "{}", text_of(&refused));
 }
 
-/// Without the grant, an indexed file replaced by a link out of the repository is not read. Its
-/// outline is in the index all the same, so `code_outline` answers from it and flags the spans
-/// stale instead of failing.
+/// Without the grant, an indexed file replaced by a link out of the repository is not read by any
+/// tool. `code_outline` derives its line spans from the file, so it refuses like `code_read`.
 #[cfg(unix)]
 #[tokio::test]
-async fn an_indexed_file_replaced_by_an_outside_link_is_outlined_but_not_read() {
+async fn an_indexed_file_replaced_by_an_outside_link_is_neither_outlined_nor_read() {
     let (tmp, root) = repo_with_outside_link();
     std::fs::write(root.join("linked.rs"), "pub fn indexed_before() {}\n").expect("linked.rs");
     let server = server(&root, true);
     std::fs::remove_file(root.join("linked.rs")).expect("remove");
     std::os::unix::fs::symlink(tmp.path().join("outside/linked.rs"), root.join("linked.rs")).expect("symlink");
 
-    let outlined = json_of(&into_tool_result(server.code_outline_call(outline("linked.rs")).await));
-    assert_eq!(outlined["symbols"][0]["name"], "indexed_before", "{outlined}");
-    assert_eq!(outlined["stale"], true, "{outlined}");
+    let outlined = into_tool_result(server.code_outline_call(outline("linked.rs")).await);
+    assert_eq!(outlined.is_error, Some(true));
+    let text = text_of(&outlined);
+    assert!(text.contains("outside this repository"), "{text}");
+    assert!(!text.contains("linked_needle"), "{text}");
 
     for arguments in [
         serde_json::json!({ "path": "linked.rs", "line": 1 }),

@@ -4,11 +4,11 @@ use rmcp::ErrorData as McpError;
 use rmcp::model::CallToolResult;
 
 use super::ServerState;
-use super::freshness::matches_index;
+use super::freshness::{self, Unloadable};
 use super::helpers::{json_result, kind_to_str, parse_kind};
 use super::helpers_pick::pick_symbol;
 use super::index_route::blocking;
-use super::tool_contract::{indexed_file, not_indexed, not_indexed_in};
+use super::tool_contract::{indexed_file, not_indexed_in};
 use super::types_code::{ExpandParams, ExpandResponse, ReadSpanResponse};
 use super::types_tools::CodeReadParams;
 use crate::query;
@@ -68,7 +68,8 @@ async fn read_span(
     }
     state.await_cache_ready().await;
     let file = indexed_file(state, &*state.shared.store.read().await, "code_read", path)?;
-    let span = blocking(|| read_lines(&file, line, end_line)).map_err(|_| not_indexed(state, "code_read", path))?;
+    let span = blocking(|| read_lines(&file, line, end_line))
+        .map_err(|_| freshness::unloadable("code_read", path, Unloadable::Gone, 0))?;
     let total_lines = span.total_lines;
     if line > total_lines.max(1) {
         return Err(McpError::invalid_params(
@@ -173,20 +174,6 @@ fn cap_body(head: &[u8], bytes: usize, line: u32) -> (String, bool, u32) {
     (String::from_utf8_lossy(kept).into_owned(), truncated, last_line)
 }
 
-/// The whole of `file`, for a symbol read, refused past `max_bytes`.
-///
-/// The scan indexes no file over `scan.max_file_bytes`, so a larger one has outgrown its index
-/// entry and would be parsed afresh at whatever size it has reached.
-fn read_bounded(file: &std::path::Path, max_bytes: u64) -> std::io::Result<Option<Vec<u8>>> {
-    use std::io::Read;
-
-    let mut bytes = Vec::new();
-    std::fs::File::open(file)?
-        .take(max_bytes.saturating_add(1))
-        .read_to_end(&mut bytes)?;
-    Ok((bytes.len() as u64 <= max_bytes).then_some(bytes))
-}
-
 /// Resolve one symbol by `(path, name[, kind][, line])` and return its raw source body. The outline
 /// is the indexed one while the file still holds the indexed content, else a fresh parse of the
 /// file as it is now.
@@ -203,55 +190,24 @@ async fn run_expand(state: &ServerState, params: ExpandParams) -> Result<CallToo
 
     let (indexed, entry, file) = {
         let store = state.shared.store.read().await;
-        let l1 = query::file_outline(&store, &params.path)
-            .map_err(|_| not_indexed_in(&store, &state.shared.root, "code_read", &params.path))?;
-        let entry = store.lookup(&params.path).cloned();
+        let not_indexed = || not_indexed_in(&store, &state.shared.root, "code_read", &params.path);
+        let l1 = query::file_outline(&store, &params.path).map_err(|_| not_indexed())?;
+        let entry = store.lookup(&params.path).cloned().ok_or_else(not_indexed)?;
         (l1, entry, indexed_file(state, &store, "code_read", &params.path)?)
     };
     let max_bytes = state.shared.config.scan.max_file_bytes;
-    let file_bytes = blocking(|| read_bounded(&file, max_bytes))
-        .map_err(|e| McpError::invalid_params(format!("`code_read`: read {}: {e}", params.path), None))?
-        .ok_or_else(|| {
-            McpError::invalid_params(
-                format!(
-                    "`code_read`: `{}` is now over {max_bytes} bytes (`scan.max_file_bytes`), too large to \
-                     locate a symbol in. Read a line span with `line` and `end_line` instead.",
-                    params.path
-                ),
-                None,
-            )
-        })?;
     // The indexed spans locate a symbol only in the bytes that were indexed. In an edited file the
     // symbol is found by parsing what is there now, never by cutting at the old offsets.
-    let stale = !blocking(|| {
-        entry
-            .as_ref()
-            .is_some_and(|entry| matches_index(entry.into(), &file, &file_bytes))
-    });
-    let l1 = if stale {
-        let language = super::helpers_git_file::detect_lang(state, &params.path).ok_or_else(|| {
-            McpError::invalid_params(
-                format!(
-                    "`code_read`: `{0}` changed since it was indexed and is no longer a supported language. Read \
-                     a line span instead, or run `index_rescan {{\"paths\":[\"{0}\"]}}`.",
-                    params.path
-                ),
-                None,
-            )
-        })?;
-        blocking(|| crate::extract::l1::extract_l1(language, &file_bytes)).map_err(|error| {
-            McpError::invalid_params(
-                format!(
-                    "`code_read`: `{0}` changed since it was indexed and could not be parsed ({error}). Read a \
-                     line span instead, or run `index_rescan {{\"paths\":[\"{0}\"]}}`.",
-                    params.path
-                ),
-                None,
-            )
-        })?
-    } else {
-        indexed
-    };
+    let (file_bytes, stale, l1) = blocking(|| {
+        let live = freshness::load(&file, (&entry).into(), max_bytes)
+            .map_err(|reason| freshness::unloadable("code_read", &params.path, reason, max_bytes))?;
+        let l1 = if live.fresh {
+            indexed
+        } else {
+            freshness::reparse(state, "code_read", &params.path, &live.bytes)?
+        };
+        Ok::<_, McpError>((live.bytes, !live.fresh, l1))
+    })?;
     let symbol = pick_symbol(
         "code_read",
         &params.path,
@@ -343,14 +299,5 @@ mod tests {
         let (head, bytes, _) = span_of(shifted.as_bytes(), 1, 1);
         let (body, _, _) = cap_body(&head, bytes, 1);
         assert_eq!(body.len(), EXPAND_BODY_CAP - 1, "the cap falls inside a character");
-    }
-
-    #[test]
-    fn a_whole_file_read_is_refused_past_its_bound() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let file = dir.path().join("f.txt");
-        std::fs::write(&file, b"12345").expect("write");
-        assert_eq!(read_bounded(&file, 5).expect("read"), Some(b"12345".to_vec()));
-        assert_eq!(read_bounded(&file, 4).expect("read"), None);
     }
 }
