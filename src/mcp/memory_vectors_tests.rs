@@ -517,3 +517,27 @@ async fn a_save_and_a_delete_work_on_a_multi_thread_runtime() {
     assert!(hit_keys(&search_json(&state, "a saved note", 10).await).is_empty());
     assert!(rows_of(&state).await.stamps.is_empty());
 }
+
+/// `blocking` is what keeps a save's and a delete's fsync off the reactor. With one worker thread,
+/// a task spawned beside the blocked one can only run if the worker hands its runtime over first;
+/// run inline, the call would hold the only worker for as long as it waits for that task.
+#[test]
+fn blocking_work_does_not_hold_the_only_worker_of_a_multi_thread_runtime() {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .enable_all()
+        .build()
+        .unwrap();
+    let ran_beside = runtime.block_on(async {
+        tokio::spawn(async {
+            let (ran, saw_it) = std::sync::mpsc::channel();
+            tokio::spawn(async move {
+                let _ = ran.send(());
+            });
+            crate::mcp::index_route::blocking(|| saw_it.recv_timeout(Duration::from_secs(10)).is_ok())
+        })
+        .await
+        .unwrap()
+    });
+    assert!(ran_beside, "a task beside the blocking call never ran");
+}
