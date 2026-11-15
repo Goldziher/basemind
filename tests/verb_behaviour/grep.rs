@@ -95,11 +95,12 @@ async fn code_grep_does_not_follow_an_indexed_file_swapped_for_a_link_out_of_the
     assert_eq!(body["skipped_files"], 1, "{body}");
 }
 
-/// A directory swapped for a link is caught where content is returned. The counting pass checks
-/// only whether the file itself is a link, so the match is counted, but its text never leaves.
+/// A directory swapped for a link leads out of the repository just as a swapped file does. Nothing
+/// under it is opened, in the counting pass either: a match count over a file outside the
+/// repository answers "does it contain this pattern", one anchored pattern at a time.
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn code_grep_returns_no_text_through_a_directory_swapped_for_a_link() {
+async fn code_grep_does_not_count_matches_through_a_directory_swapped_for_a_link() {
     let (dir, client) = started().await;
     let root = dir.path();
     let outside = tempfile::tempdir_in(root.parent().expect("parent")).expect("sibling tempdir");
@@ -111,9 +112,24 @@ async fn code_grep_returns_no_text_through_a_directory_swapped_for_a_link() {
     std::fs::remove_dir_all(root.join("src")).unwrap();
     std::os::unix::fs::symlink(outside.path(), root.join("src")).unwrap();
 
-    let body = call(&client, "code_grep", json!({ "pattern": "SECRETTOKEN" })).await;
-    assert_eq!(body["hits"], json!([]), "{body}");
-    assert!(!body.to_string().contains("outside the repository"), "{body}");
+    for pattern in ["SECRETTOKEN", "^SECRET", "outside"] {
+        let body = call(&client, "code_grep", json!({ "pattern": pattern, "regex": true })).await;
+        assert_eq!(body["hits"], json!([]), "{body}");
+        assert_eq!(body["total_matches"], 0, "{pattern}: {body}");
+        assert_eq!(body["total_files_matched"], 0, "{pattern}: {body}");
+        assert!(body.get("next_cursor").is_none(), "{pattern}: {body}");
+        assert_eq!(
+            body["skipped_files"], 2,
+            "both indexed files under `src/` are reported as not searched: {body}"
+        );
+        assert!(!body.to_string().contains("outside the repository"), "{body}");
+    }
+
+    let elsewhere = call(&client, "code_grep", json!({ "pattern": "def run" })).await;
+    assert_eq!(
+        elsewhere["total_matches"], 2,
+        "files outside the swapped directory: {elsewhere}"
+    );
 }
 
 /// `code_grep` covers code files. Filters that match only documents are answered with the tool

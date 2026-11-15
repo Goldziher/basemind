@@ -17,7 +17,7 @@ use super::helpers::{SEARCH_LIMIT_DEFAULT, SEARCH_LIMIT_MAX};
 use super::helpers_filters::{Filters, PathFilter};
 use super::helpers_grep_text::{annotate_symbols, clip_line, line_text};
 use super::index_route::blocking;
-use super::tool_contract::IndexedFiles;
+use super::tool_contract::{IndexedFiles, Sweep};
 use super::types::{GrepHit, GrepTruncation, WorkspaceGrepParams, WorkspaceGrepResponse};
 use crate::index::grep_bloom::GrepEntry;
 use crate::path::RelPath;
@@ -148,8 +148,10 @@ pub(super) async fn run_workspace_grep(
     } else {
         None
     };
-    let (counts, skipped_files) =
-        blocking(|| count_all(files, &paths, skip.as_deref(), &re, literal.as_ref(), skip_hits));
+    let (counts, skipped_files) = blocking(|| {
+        let sweep = Sweep::new(files);
+        count_all(&sweep, &paths, skip.as_deref(), &re, literal.as_ref(), skip_hits)
+    });
 
     let total_matches = counts.iter().fold(0u32, |acc, &c| acc.saturating_add(c));
     let total_files_matched = counts.iter().filter(|&&c| c > 0).count();
@@ -263,9 +265,10 @@ fn apply_byte_budget<'a, 'b>(
 /// `skip_hits` discounts the matches the caller already consumed inside the file it resumed in, so
 /// the totals mean "matches remaining from the cursor position", not "matches in the repo".
 ///
-/// Also returns how many files could not be searched: opened and found unreadable or not UTF-8.
+/// Also returns how many files could not be searched: gone, leading out of the repository, or
+/// opened and found unreadable or not UTF-8.
 fn count_all(
-    files: IndexedFiles<'_>,
+    sweep: &Sweep<'_>,
     scanned: &[&RelPath],
     skip: Option<&[bool]>,
     re: &Regex,
@@ -279,7 +282,7 @@ fn count_all(
             if skip.is_some_and(|s| s.get(i).copied().unwrap_or(false)) {
                 return Some(0);
             }
-            with_indexed_bytes(files.swept_path(path), |bytes| count_matches(bytes, re, literal)).flatten()
+            with_indexed_bytes(sweep.path(path), |bytes| count_matches(bytes, re, literal)).flatten()
         })
         .collect();
     let skipped = searched.iter().filter(|count| count.is_none()).count();
@@ -713,7 +716,7 @@ mod tests {
             let literal = (regex::escape(pattern) == pattern).then(|| Finder::new(pattern.as_bytes()).into_owned());
             for skip_hits in [0u32, 3] {
                 let (new_counts, _) = count_all(
-                    IndexedFiles::contained(dir.path()),
+                    &Sweep::new(IndexedFiles::contained(dir.path())),
                     &refs,
                     None,
                     &re,
@@ -736,7 +739,7 @@ mod tests {
                         loop {
                             let window = &refs[skip_files.min(refs.len())..];
                             let (counts, _) = count_all(
-                                IndexedFiles::contained(dir.path()),
+                                &Sweep::new(IndexedFiles::contained(dir.path())),
                                 window,
                                 None,
                                 &re,
@@ -882,7 +885,7 @@ mod tests {
             skipped_somewhere |= skip.as_ref().is_some_and(|s| s.iter().any(|&x| x));
             for skip_hits in [0u32, 2] {
                 let (filtered, _) = count_all(
-                    IndexedFiles::contained(dir.path()),
+                    &Sweep::new(IndexedFiles::contained(dir.path())),
                     &refs,
                     skip.as_deref(),
                     &re,

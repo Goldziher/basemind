@@ -132,17 +132,64 @@ impl<'a> IndexedFiles<'a> {
             crate::path::contained_file(self.root, path).ok()
         }
     }
+}
 
-    /// [`indexed_path`](Self::indexed_path) for a sweep over the whole corpus, at one `lstat` per
-    /// file instead of a path resolution: only a file that is itself a link is resolved. A
-    /// directory swapped for a link is caught by `indexed_path`, which gates every byte returned.
-    pub(super) fn swept_path(&self, path: &RelPath) -> Option<std::path::PathBuf> {
-        let joined = self.root.join(path);
+/// [`IndexedFiles::indexed_path`] for a sweep over the whole corpus.
+///
+/// Resolving every path would cost a `realpath` per file. A file leaves the repository through a
+/// link in one of two places: one of its directories, or the file itself. Each distinct directory
+/// is resolved once per sweep and remembered, and the file costs one `lstat`.
+pub(super) struct Sweep<'a> {
+    files: IndexedFiles<'a>,
+    /// The resolved root; `None` when it cannot be resolved, and nothing is then inside it.
+    root: Option<std::path::PathBuf>,
+    /// Directory, as joined to the root → whether it resolves to a place inside the root.
+    directories: std::sync::RwLock<ahash::AHashMap<std::path::PathBuf, bool>>,
+}
+
+impl<'a> Sweep<'a> {
+    pub(super) fn new(files: IndexedFiles<'a>) -> Self {
+        Self {
+            files,
+            root: files.root.canonicalize().ok(),
+            directories: std::sync::RwLock::default(),
+        }
+    }
+
+    /// Where to read `path`, or `None` when it is gone or now leads out of the repository.
+    pub(super) fn path(&self, path: &RelPath) -> Option<std::path::PathBuf> {
+        if path.is_external() || self.files.follow_symlinks {
+            return self.files.indexed_path(path);
+        }
+        let joined = crate::path::lexical_file(self.files.root, path).ok()?;
+        if !self.directory_is_inside(joined.parent()?) {
+            return None;
+        }
         match std::fs::symlink_metadata(&joined) {
-            Ok(metadata) if metadata.file_type().is_symlink() => self.indexed_path(path),
+            Ok(metadata) if metadata.file_type().is_symlink() => self.files.indexed_path(path),
             Ok(_) => Some(joined),
             Err(_) => None,
         }
+    }
+
+    fn directory_is_inside(&self, directory: &std::path::Path) -> bool {
+        if let Some(inside) = self
+            .directories
+            .read()
+            .ok()
+            .and_then(|known| known.get(directory).copied())
+        {
+            return inside;
+        }
+        let inside = self.root.as_deref().is_some_and(|root| {
+            directory
+                .canonicalize()
+                .is_ok_and(|resolved| resolved.starts_with(root))
+        });
+        if let Ok(mut known) = self.directories.write() {
+            known.insert(directory.to_path_buf(), inside);
+        }
+        inside
     }
 }
 
@@ -362,5 +409,45 @@ mod tests {
             other => panic!("expected text content, got {other:?}"),
         };
         assert_eq!(text, "run `index_rescan`");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_sweep_reads_nothing_through_a_directory_or_a_file_that_links_out_of_the_root() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().join("repo");
+        let outside = dir.path().join("outside");
+        std::fs::create_dir_all(root.join("src/deep")).expect("mkdir");
+        std::fs::create_dir_all(&outside).expect("mkdir");
+        std::fs::write(root.join("src/deep/a.rs"), b"a").expect("write");
+        std::fs::write(outside.join("b.rs"), b"b").expect("write");
+        std::fs::write(outside.join("secret.rs"), b"s").expect("write");
+        std::os::unix::fs::symlink(&outside, root.join("linked")).expect("link directory");
+        std::os::unix::fs::symlink(outside.join("secret.rs"), root.join("src/leaf.rs")).expect("link file");
+        std::os::unix::fs::symlink(root.join("src/deep/a.rs"), root.join("src/inside.rs")).expect("link inside");
+
+        let sweep = Sweep::new(IndexedFiles::contained(&root));
+        assert_eq!(
+            sweep.path(&RelPath::from("src/deep/a.rs")),
+            Some(root.join("src/deep/a.rs"))
+        );
+        assert_eq!(sweep.path(&RelPath::from("linked/b.rs")), None, "a linked directory");
+        assert_eq!(sweep.path(&RelPath::from("linked/absent.rs")), None);
+        assert_eq!(sweep.path(&RelPath::from("src/leaf.rs")), None, "a linked file");
+        assert!(
+            sweep.path(&RelPath::from("src/inside.rs")).is_some(),
+            "a link that stays inside"
+        );
+        assert_eq!(
+            sweep.path(&RelPath::from("src/gone.rs")),
+            None,
+            "deleted since the scan"
+        );
+        assert_eq!(sweep.path(&RelPath::from("gone/a.rs")), None, "its directory is gone");
+
+        let known = sweep.directories.read().expect("lock");
+        assert_eq!(known.len(), 4, "each distinct directory is resolved once: {known:?}");
+        assert_eq!(known.get(&root.join("linked")), Some(&false));
+        assert_eq!(known.get(&root.join("src/deep")), Some(&true));
     }
 }
