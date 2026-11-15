@@ -95,4 +95,39 @@ mod tests {
         let stats = scan.join().unwrap().expect("the scan runs once the sweep is done");
         assert_eq!(stats.updated, 1);
     }
+
+    /// A scan holds the gate for as long as it runs, whichever way it was started: while a hosted
+    /// rescan is in progress a sweep must find the gate taken. The check watches the running scan
+    /// instead of timing a sweep against it, so a scan that never takes the gate fails the test
+    /// whatever the machine's speed.
+    #[test]
+    fn a_hosted_rescan_holds_the_gate_while_it_runs() {
+        use crate::mcp::HostBackend;
+
+        crate::store::init_isolated_cache();
+        let root = tempfile::tempdir().unwrap();
+        let status = std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(root.path())
+            .status()
+            .unwrap();
+        assert!(status.success());
+        std::fs::write(root.path().join("a.rs"), "pub fn a() {}\n").unwrap();
+        let pool = std::sync::Arc::new(crate::comms::workspace_pool::WorkspacePool::new(2));
+        let gate = pool.blob_gc_gate();
+
+        let scan = {
+            let (pool, root) = (std::sync::Arc::clone(&pool), root.path().to_path_buf());
+            std::thread::spawn(move || pool.host_rescan(&root, None, true, false))
+        };
+        let mut gate_taken = false;
+        while !gate_taken && !scan.is_finished() {
+            gate_taken = gate.try_sweep(Duration::ZERO).is_none();
+            std::thread::yield_now();
+        }
+        let stats = scan.join().unwrap().expect("the scan runs");
+
+        assert_eq!(stats.updated, 1);
+        assert!(gate_taken, "the scan ran without holding the blob-GC gate");
+    }
 }

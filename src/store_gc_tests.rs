@@ -698,3 +698,39 @@ fn the_blob_store_sweep_reaps_the_current_namespace_and_the_superseded_ones() {
     assert!(newer.exists(), "a newer namespace is never touched");
     assert!(report.removed >= 3, "{report:?}");
 }
+
+/// The sweep the daemon and the CLI run over the machine-global store is the whole-store sweep:
+/// an aged blob of an older namespace and an aged un-namespaced one go, a newer namespace stays.
+#[test]
+fn the_machine_global_sweep_reaps_what_older_builds_left() {
+    crate::store::init_isolated_cache();
+    let root = crate::store_layout::global_blobs_root();
+    let aged = |path: &PathBuf| {
+        let week = Duration::from_secs(7 * 24 * 60 * 60);
+        fs::File::options()
+            .write(true)
+            .open(path)
+            .and_then(|file| file.set_modified(std::time::SystemTime::now() - week))
+            .expect("age the blob");
+    };
+    let older = plant_blob(&root.join("v1"), 'f');
+    let flat = plant_blob(&root, 'g');
+    let newer = plant_blob(&root.join("v65001"), 'h');
+    aged(&older);
+    aged(&flat);
+    aged(&newer);
+
+    // A sweep another test is running holds the machine-wide lock and makes this call a no-op.
+    let mut attempts = 0;
+    while (older.exists() || flat.exists()) && attempts < 100 {
+        gc_global_blobs().expect("sweep");
+        attempts += 1;
+        if older.exists() || flat.exists() {
+            std::thread::yield_now();
+        }
+    }
+
+    assert!(!older.exists(), "an older namespace is swept by the global sweep");
+    assert!(!flat.exists(), "so is an un-namespaced blob");
+    assert!(newer.exists(), "a newer namespace is not touched");
+}
