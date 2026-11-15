@@ -315,7 +315,7 @@ fn random_thread_ids_stay_inside_the_id_space() {
 }
 
 #[test]
-fn timestamps_never_go_back_when_the_clock_does() {
+fn timestamps_keep_rising_when_the_clock_steps_back_less_than_the_tolerance() {
     let harness = Harness::new();
     let created = start(&harness, "a", "topic", &["b"]);
     harness.clock.0.store(START_MICROS - 5_000_000, Ordering::SeqCst);

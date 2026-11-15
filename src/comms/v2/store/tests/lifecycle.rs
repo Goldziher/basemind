@@ -260,7 +260,11 @@ fn older_store_without_a_migration_path_is_refused_and_left_as_it_was() {
 
 #[test]
 fn unreadable_layout_version_or_counter_is_refused_naming_the_directory() {
-    for (key, what) in [(META_STORE_VER, "layout version"), (META_POSTS, "post counter")] {
+    for (key, what) in [
+        (META_STORE_VER, "layout version"),
+        (META_POSTS, "post counter"),
+        (META_LAST_TS, "timestamp"),
+    ] {
         let mut harness = Harness::new();
         start(&harness, "a", "topic", &["b"]);
         harness.store().ks.meta.insert(key, [1, 2, 3]).expect("write");
