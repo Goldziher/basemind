@@ -1,6 +1,7 @@
 """Gold for `dependents`: an imported module -> every file importing it.
 
-basemind's `code dependents MODULE` is a substring match over the raw text of each import
+basemind's `code_refs` with `relation: "importers"` (CLI `code dependents MODULE`) is a
+substring match over the raw text of each import
 statement (`from collections import (\\n OrderedDict,\\n ...)` matches `collections` and
 `OrderedDict`). The gold is every Python file with an `import` / `from ... import` whose
 statement source contains MODULE.
@@ -55,7 +56,7 @@ def main() -> None:
             {
                 "id": f"dependents-{len(tasks):04d}",
                 "mode": "dependents",
-                "args": {"module": module},
+                "args": {"name": module, "relation": "importers"},
                 "gold": gold,
                 "scoring": "set",
                 "baseline": {

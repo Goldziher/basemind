@@ -1,7 +1,7 @@
 ---
 type: Playbook
 title: Mcp Tool Checklist
-description: End-to-end checklist for adding a mode to one of basemind's MCP domains
+description: End-to-end checklist for adding a tool, or an argument on an existing tool, to basemind's MCP surface
 x-ai-rulez:
   kind: skill
   id: mcp-tool-checklist
@@ -13,76 +13,135 @@ x-ai-rulez:
 
 Use this when extending basemind's MCP surface. Skipping a step leaves the tool half-wired.
 
-**The surface is six domain tools, not one tool per verb.** Adding a capability means adding a
-**mode** to an existing domain — `code`, `git`, `memory`, `agents`, `workspace`,
-`admin`. Adding another top-level tool is a surface change that needs its own ADR, not a
-checklist step: every extra name competes for the same keyword search in hosts that defer tools, and
-GH #50 showed one bad schema takes the whole registry down with it.
+**The surface is one tool per job** (ADR-0018): fifteen verb tools, each with its own exact schema
+and no `mode` argument. Decide first whether the capability is an **argument on an existing tool**
+(the same question, narrowed: `git_log` took `symbol` and `rev` instead of becoming three tools) or
+a **new tool** (a question no existing tool asks). A new tool ships only if the eval harness
+(`src/eval/`, `basemind admin eval`) shows it beats the `rg`/`git` baseline on correctness or
+tokens, because every tool is always loaded and costs bytes in every session.
 
-Each domain owns a `types_<domain>.rs` / `tools_<domain>.rs` / `helpers_<domain>.rs` trio. Every
-file stays under the **1000-line cap** enforced by `tests/max_lines.rs` — split into
-`helpers_<domain>_<area>.rs` rather than raising it.
+`agents` and `workspace` (`--features comms`) are still mode-dispatched until their own redesign;
+see the last section.
+
+Every file stays under the **1000-line cap** enforced by `tests/max_lines.rs` — split a helper into
+`helpers_<area>.rs` rather than raising it.
 
 ## Steps
 
-1. **`src/mcp/mode.rs`** — add the variant to that domain's `define_mode!` block: the Rust name, the
-   wire spelling, and a short meaning. The macro generates the enum, `ALL_MODES`, `parse()`,
-   `telemetry_key()`, and a **flat** `{"type":"string","enum":[…]}` schema. Never
-   `#[derive(JsonSchema)]` on a doc-commented enum — that emits `oneOf`, the construct that silently
-   dropped the entire registry in GH #50. Drop the domain prefix the old flat name carried
-   (`search_symbols` → `code` mode `symbols`); keep it only where the bare word would be ambiguous.
+1. **`src/mcp/types_tools.rs`** — add the params struct and its `tool_args!` entry:
 
-2. **`src/mcp/types_<domain>.rs`** — add any new parameter as an **optional sibling** on the
-   domain's flat `<Domain>Params` struct (`Option<T>` + `#[serde(default)]`). Never a nested struct
-   or a schema union: `tests/mcp_schema_wire.rs` forbids `$ref` / `$defs` / `oneOf` / `anyOf` /
-   `allOf`, and schemars emits `$ref` for nested types. Paths are `RelPath`, never `String`. Limits
-   default to 100 and cap at 1000.
+   ```rust
+   /// Arguments of `code_outline`.
+   #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
+   #[serde(deny_unknown_fields)]
+   pub struct CodeOutlineParams {
+       /// Repo-relative file path.
+       pub path: RelPath,
+       /// Max symbols (default 500).
+       #[serde(default)]
+       pub limit: Option<u32>,
+   }
+   ```
 
-3. **`src/mcp/helpers_<domain>.rs`** — add the dispatch arm in `run_<domain>`, and add the mode's
-   accepted fields to the per-mode **allow-list**. The allow-list is inverted deliberately: with a
-   dozen modes and dozens of sibling fields, an explicit per-mode *reject* list is where a newly
-   added field silently becomes accept-everywhere. Use `require_field` for anything the mode cannot
-   run without, so the error names the exact `mode`/field pair. A field belonging to another mode
-   must be **rejected, not ignored** — an ignored parameter reads to an agent as a successful call
-   that honoured it. Apply `scan_cap = limit * 8` when iterating an index range.
+   `tool_args! { …, CodeOutlineParams => "code_outline" }` implements `ToolArgs` (the name quoted
+   in argument errors) and adds the tool to `VERB_TOOLS`. Required fields are plain types; a field
+   is `Option<T>` + `#[serde(default)]` only when the tool runs without it. Keep the struct flat:
+   `tests/mcp_schema_wire.rs` forbids `$ref` / `$defs` / `oneOf` / `anyOf` / `allOf`, schemars
+   emits `$ref` for a nested type, and one such construct silently drops the entire registry
+   (GH #50). A closed set of strings is `Option<String>` with
+   `#[schemars(extend("enum" = [...]))]`, parsed in the body. `RelPath` for an indexed path.
+   A list takes `limit`, `cursor: Option<Cursor>` and `max_tokens`. Field docs are one clause:
+   they are the schema descriptions an agent reads every session.
 
-4. **`src/cli/<domain>.rs`** — add the matching clap subcommand. **Parity is a strict bijection and
-   it is enforced**: `tests/cli_parity/` walks `mode::domain_modes()` and fails if any advertised
-   mode has no resolving `basemind <domain> <mode> --help`. The CLI uses real subcommands, not
-   `--mode`, so each gets its own `--help` and argument validation.
+2. **`src/mcp/tools.rs` / `tools_git.rs` / `tools_memory.rs` / `tools_admin.rs`** — add the shim:
 
-5. **`tests/cli_parity/capabilities.rs`** — add the `(tool, Some("mode"), "cli path")` row. Keyed on the pair, not
-   the tool name: keyed on names alone the test would verify the tool names and silently stop covering
-   the modes beneath them.
+   ```rust
+   #[tool(
+       title = "Outline a file",
+       description = "Use to see what a file contains before, or instead of, reading it: … \
+       Example: {\"path\":\"src/store.rs\"}",
+       annotations(
+           read_only_hint = true,
+           destructive_hint = false,
+           idempotent_hint = true,
+           open_world_hint = false
+       )
+   )]
+   pub(crate) async fn code_outline(
+       &self,
+       Parameters(args): Parameters<Strict<CodeOutlineParams>>,
+   ) -> Result<CallToolResult, McpError> {
+       self.answer(args, |p| self.code_outline_call(p)).await
+   }
+   ```
 
-6. **`tests/mcp_smoke.rs`** — add an assertion to that domain's per-mode coverage test, and to its
-   `<domain>_tool_validates_every_mode_before_running_it` test: the mode appears in the advertised
-   inputSchema, a foreign field is refused, and a missing required field names the pair. Derive the
-   asserted wording from a real run; do not guess it.
+   `Strict<T>` (`src/mcp/strict.rs`) rejects an unknown argument with a did-you-mean and the
+   accepted list; `answer` (`src/mcp/tool_contract.rs`) reports that, and any `McpError` the body
+   returns, as an `isError` tool result. Beside the router block add the `<tool>_call` method both
+   the shim and the CLI run, wrapping the helper in
+   `crate::instrument_tool!(&self.state, "code_outline", p, …)`: the telemetry key is the tool name.
+   Set all four annotations to what this tool does; a tool that writes sets
+   `read_only_hint = false`. `finalize_router` adds `_meta["anthropic/alwaysLoad"]` to every tool,
+   so do not set it per tool.
 
-7. **`tests/harden.rs`** — add the mode to the per-repo sweep loop. If a canonical canary exists
-   (`code` mode `references("spawn")` on tokio), assert a lower bound (`>=`), never equality —
-   upstream repos churn.
+3. **`src/mcp/helpers_*.rs`** — write the body. Return `McpError::invalid_params` with text that
+   names the fix for anything the caller can correct; use `tool_contract::not_indexed` for a path
+   the code map cannot serve and `tool_contract::feature_missing` for a compiled-out feature.
+   Check shapes the schema cannot state ("exactly one of `symbol` or `line`") here and quote the
+   accepted shapes in the error. Default the budget with `tool_contract::budget(p.max_tokens)`.
+   Positions in a response are 1-based.
 
-8. **`README.md`** — extend the domain's row. One line, ≤ 120 chars (markdownlint cap).
+4. **`src/cli/`** — add the clap subcommand in the matching group (`code.rs`, `git.rs`,
+   `memory.rs`, `admin.rs`) and call the same `<tool>_call`. Every MCP tool has a CLI command.
+   The CLI may add shorthands that pre-set arguments (`git status` is `git diff` with none).
 
-## Two costs consolidation imposes — do not try to "fix" them locally
+5. **`tests/cli_parity/capabilities.rs`** — add `tool("code_outline", "code outline")`. A
+   shorthand is a `shorthand(tool, cli, reason)` row; a command with no MCP tool is
+   `cli_only(cli, reason)`. The coverage test prints the exact row to add or delete.
 
-- **No `output_schema`** on a domain whose modes return different shapes. SEP-2106 allows exactly
-  one per tool, and expressing a union means nested structs → `$ref` → dropped registry. Document
-  the per-mode shapes in the description instead.
-- **Annotations are the union of the domain's modes**, and the union resolves toward the side
-  effect. If any mode writes or launches something, the whole tool advertises
-  `read_only_hint: false` — a client that auto-approves read-only tools must not be able to trigger
-  it. See ADR-0011.
+6. **`tests/mcp_schema_wire.rs`** — add `("code_outline", &["path"])` to `REQUIRED` (and bump the
+   array length). The same file holds the 20,000-byte ceiling for the verb tools in `tools/list`
+   (`VERB_TOOLS_BYTE_CEILING`) and the 4,096-character ceiling for the server instructions. If a
+   new tool pushes past either, shorten a description; never raise the ceiling.
 
-## The description is a retrieval surface
+7. **`tests/mcp_smoke.rs`** — add an end-to-end call against the synthetic fixture asserting a
+   structural field, and add the tool to its `*_tools_reject_inexact_arguments` test: an unknown
+   argument names the field it most likely meant and the accepted set, a missing required field is
+   named, and a meaningless shape names the shapes that have meaning. Derive the asserted wording
+   from a real run; do not guess it.
 
-Hosts defer MCP tools and surface them by keyword search, so with this few names the description **is**
-how an agent finds the tool. It must carry the words someone actually types — "grep", "who calls
-this", "find the definition", "read this instead of opening the file" — alongside the honest
-contract: substring vs exact matching, scope-aware vs name-only resolution, and what is capped.
-Server instructions are truncated at 2048 chars (`tests/mcp_schema_wire.rs`), so budget accordingly.
+8. **`tests/harden.rs`** — add the tool to `KNOWN_TOOLS` and call it in `drive_tools`. If a
+   canonical canary exists (`code_refs("spawn")` on tokio), assert a lower bound (`>=`), never
+   equality — upstream repos churn.
+
+9. **`README.md`** — add the tool's row. One line, ≤ 120 chars.
+
+Also update `src/mcp/server_handler.rs` instructions when an agent needs to know the tool exists,
+`src/mcp/tasks.rs` `SLOW_CALLS` when it routinely runs for seconds, and `src/mcp/savings.rs` when
+it has a measured shell baseline.
+
+## Constraints not to "fix" locally
+
+- **No `output_schema`.** The response structs nest, nested structs emit `$ref`, and inlining them
+  puts `tools/list` over its ceiling. `tests/mcp_smoke.rs` asserts the absence on every verb tool.
+- **Exact annotations per tool.** A host that auto-approves read-only tools must be able to allow
+  `git_log` without allowing `index_rescan`.
+- **No aliases.** One spelling per argument; a retired name is rejected like any unknown field.
+
+## The description
+
+It opens with "Use …" and the question the tool answers in the words an agent would type ("instead
+of `rg`/`grep`", "where is X defined", "who last changed this"), states the contract (literal vs
+regex, exact vs substring, name-only vs resolved, what is cut or capped), and ends with exactly one `Example: {…}`
+call that is valid for the schema. Keep it to a few sentences: the byte ceiling is shared.
+
+## Adding a mode to `agents` or `workspace`
+
+Add the variant to the tool's `define_mode!` block in `src/mcp/mode.rs`, any new parameter as an
+optional sibling field on its flat params struct (`types_comms.rs` / `types_registry.rs`), the
+dispatch arm plus the `reject_unsupported` field list in the helper, the CLI subcommand, and a
+`pair(tool, mode, cli)` row in `tests/cli_parity/capabilities.rs`. Never
+`#[derive(JsonSchema)]` on a doc-commented enum: it emits `oneOf`.
 
 ## Verification
 
@@ -92,6 +151,8 @@ Server instructions are truncated at 2048 chars (`tests/mcp_schema_wire.rs`), so
 - `poly lint .` — clean. If its `uncomment` lint flags a genuine why-comment, add `~keep` inside the
   comment (every line of a multi-line block) rather than deleting the explanation.
 - `cargo test --test max_lines` — no file over the cap.
-- `cargo test --test mcp_schema_wire` — no forbidden schema construct; instructions under the ceiling.
+- `cargo test --test mcp_schema_wire` — no forbidden schema construct; `REQUIRED` lists every verb
+  tool; byte and instruction ceilings hold.
+- `cargo test --test cli_parity` — every tool has its CLI command and every row resolves.
 - `BASEMIND_HARDEN_NO_BUILD=1 cargo test --release --test harden -- --ignored --nocapture` — 8/8
   green; new canary passes.

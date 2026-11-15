@@ -12,20 +12,104 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **BREAKING: the MCP tools are one per job.** The mode-dispatched `code`, `git`, `memory` and `admin`
+  tools are replaced by 15 tools with exact schemas (ADR-0018, superseding ADR-0011): `code_outline`,
+  `code_symbols`, `code_read`, `code_grep`, `code_search`, `code_refs`, `find_files`, `docs_search`,
+  `git_log`, `git_blame`, `git_diff`, `memory_save`, `memory_search`, `index_status` and `index_rescan`.
+  There are no aliases: the old tool names and the `mode` argument are gone. `agents` and `workspace` are
+  unchanged. The plugin's skills, commands, hooks and rules are updated in the same release.
+  [`docs/UPGRADING.md`](docs/UPGRADING.md) lists the renamed arguments and CLI flags.
+
+  <!-- markdownlint-disable MD013 -->
+
+  | Old tool and mode | New tool |
+  |---|---|
+  | `code` `outline` | `code_outline {path}` |
+  | `code` `symbols` | `code_symbols {name}` |
+  | `code` `expand` | `code_read {path, symbol}` |
+  | `code` `grep` | `code_grep {pattern}` (literal; add `regex: true` for a regex) |
+  | `code` `semantic` | `code_search {query}` |
+  | `code` `chunk` | `code_read {path, line, end_line}` on the hit's span (CLI keeps `basemind code chunk`) |
+  | `code` `references` | `code_refs {name}` |
+  | `code` `callers` | `code_refs {name, path}` |
+  | `code` `implementations` | `code_refs {name, relation: "implementations"}` |
+  | `code` `dependents` | `code_refs {name, relation: "importers"}` |
+  | `code` `definition` | `code_refs {name, relation: "definition", path, line}` |
+  | `code` `find` | `find_files {query}` |
+  | `code` `files` | `find_files {}` |
+  | `memory` `documents` | `docs_search {query}` |
+  | `memory` `put` | `memory_save {key, value}` |
+  | `memory` `get` | `memory_search {key}` |
+  | `memory` `list` | `memory_search {prefix}` or `memory_search {}` |
+  | `memory` `search` | `memory_search {query}` |
+  | `memory` `delete` | CLI only: `basemind memory delete <key>` |
+  | `git` `recent` | `git_log {}` |
+  | `git` `touching` | `git_log {path}` |
+  | `git` `by_path` | `git_log {path: "dir/"}`; an arbitrary regex is CLI only: `basemind git by-path` |
+  | `git` `search` | `git_log {query}` / `git_log {author}` |
+  | `git` `show` | `git_log {rev}` |
+  | `git` `symbol_history` | `git_log {path, symbol}` |
+  | `git` `churn` | CLI only: `basemind git churn` |
+  | `git` `blame` | `git_blame {path, line, end_line}` |
+  | `git` `blame_symbol` | `git_blame {path, symbol}` |
+  | `git` `status` | `git_diff {}` |
+  | `git` `diff` | `git_diff {path, from, to}` |
+  | `git` `diff_outline` | `git_diff {path, structural: true}` |
+  | `admin` `status`, `repo` | `index_status {}` |
+  | `admin` `rescan` | `index_rescan {paths?, full?}` |
+  | `admin` `cache_stats` / `gc` / `cache_clear` | CLI only: `basemind cache stats\|gc\|clear` |
+  | `admin` `telemetry` | CLI only: `basemind admin telemetry` |
+
+  <!-- markdownlint-enable MD013 -->
+
+  Contract changes:
+
+  - The tools are always loaded (`_meta["anthropic/alwaysLoad"]: true`), so a host that defers MCP tools
+    needs no tool-search round trip. `tools/list` for them is about 17 KB (about 4.2k tokens), down from
+    about 25 KB (about 6.3k tokens) for the four tools they replace; a test enforces a 20,000-byte ceiling.
+  - Required arguments are required in the schema, and an unknown argument is rejected with a did-you-mean
+    suggestion and the accepted list. The hidden aliases (`q`, `needle`, `token_budget`) and the `format`
+    argument (`"toon"`) are gone.
+  - `code_grep` treats `pattern` as literal text unless `regex: true`; `path` replaces `path_contains` and
+    `context` (default off) replaces `include_context`.
+  - Every position is 1-based: `line`, `end_line` and `column`, in arguments and responses. The 0-based
+    `start_row` is gone.
+  - `code_refs` matches the whole identifier; `match: "substring"` restores the previous matching.
+  - Every list takes `limit` and `cursor`, returns `next_cursor`, and honours a default `max_tokens` budget
+    of 6000, setting `budgeted` when it trims.
+  - A failure the caller can fix is a tool result with `isError: true` that names the fix, not a JSON-RPC
+    error; an empty index is reported with a `notice` (`state: "empty_index"`).
+  - Results are inline. `index_rescan`, `code_search` and `docs_search` become a server-side Task only when
+    still running after 3 s.
+  - `git_diff` with no arguments returns the working-tree status, and with only `path` diffs that file's
+    working tree against HEAD; `from` / `to` replace `rev_old` / `rev_new`. `git_blame` takes `line` /
+    `end_line` in place of `line_start` / `line_end`.
+  - `docs_search` takes `entity` and `keywords` in place of `entity_category` and `keywords_contains`.
+  - Annotations are exact per tool: everything is read-only except `memory_save` and `index_rescan`, and
+    nothing is destructive.
+  - Telemetry keys are the tool names.
+  - CLI: `code read`, `code search`, `code refs`, `git log` and a path-less `git diff` mirror the tools, and
+    the previous commands remain as shorthands. `code grep` is literal unless `--regex`; `code expand <path>
+    <name>` is `code read <path> --symbol <name>`; `git diff <path> <old> <new>` is `git diff <path> --from
+    <old> --to <new>`; `code definition` takes `<path> <line> <name>`. The flags `--format`, `--l2`,
+    `--path-contains`, `--no-context`, `--line-start` / `--line-end`, `--field`, `--body-chars`,
+    `--hash-mode`, `--no-embed` and `--no-files` are removed. CLI parity is now "every MCP tool has a
+    command" (ADR-0014 as amended): churn, changed-path regex search, chunk fetch, memory deletion, cache
+    maintenance and telemetry are CLI only.
 - **The `documents` cargo feature is split into tiers.** `documents` is now document search over local
   files without OCR or named-entity recognition: PDF (text layer), Office formats, spreadsheets, email,
   HTML, XML (SVG text is read as XML), Markdown/MDX and Jupyter notebooks, with chunking, language
   detection, quality scoring, keywords, extractive summaries, the cross-encoder reranker and embeddings.
   `documents-ocr` adds Tesseract OCR for raster images and PDFs with no text layer, `documents-ner` adds
-  ONNX named-entity recognition (`[documents.ner]` and the `entity_category` filter), and
+  ONNX named-entity recognition (`[documents.ner]` and the `docs_search` `entity` filter), and
   `documents-ocr-paddle` adds PaddleOCR as an optional fallback stage. `full` is now `documents`,
   `documents-ocr`, `documents-ner`, `memory`, `code-search`, `comms` and `code-intel`, so the
   published binaries keep OCR and NER. A source build that used `--features documents` needs
   `--features "documents documents-ocr documents-ner"` (or `full`) to keep both. Without `documents-ocr`,
   raster images are not indexed as documents and a PDF with no text layer is indexed with no text, with a
   warning that names the file and the feature. Without
-  `documents-ner`, `[documents.ner] enabled = true` logs a warning and has no effect, and a document
-  search with `entity_category` returns an error naming the feature instead of an empty result. `memory`
+  `documents-ner`, `[documents.ner] enabled = true` logs a warning and has no effect, and a `docs_search`
+  call with `entity` returns an error naming the feature instead of an empty result. `memory`
   no longer compiles keyword extraction or NER code, which it never used.
   A build with both tiers keeps its cached documents. A build missing a tier stamps its documents as
   such, so its first scan extracts every document again, and so does the first scan after switching
@@ -41,15 +125,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `basemind delta`, `basemind checkpoint` and `basemind detect-waste`. The plugin no longer ships the
   `compress-output` and `read-cache` PostToolUse hooks, so `BASEMIND_COMPRESS_OUTPUT` and
   `BASEMIND_DELTA_READS` have no effect; snapshots the `read-cache` hook left under
-  `${XDG_CACHE_HOME:-~/.cache}/basemind/read-cache/` can be deleted. `code` mode `expand`, the search guard
-  (`BASEMIND_GUARD`) and every other `admin` mode are unchanged.
+  `${XDG_CACHE_HOME:-~/.cache}/basemind/read-cache/` can be deleted. Reading a symbol's body (now `code_read`) and the
+  search guard (`BASEMIND_GUARD`) are unaffected.
 - **Web ingestion.** The `web` MCP tool (`scrape`, `crawl`, `map`), the `basemind web` CLI group and the
   `crawl` cargo feature are gone, along with the `crawlberg` dependency; `full` no longer includes `crawl`,
   so `--features crawl` now fails the build. A `[crawl]` table in `basemind.toml` is still accepted and
   ignored (`basemind init` used to write an empty one, and no longer does); one with keys in it logs a
   warning. `BASEMIND_ALLOW_PRIVATE_HOSTS` and `BASEMIND_DAEMON_MAX_CRAWL_PAGES` / `_DEPTH` / `_BODY_BYTES`
   have no effect. Pages already ingested stay in the document store under their `web:<host>` scope and are
-  still searchable with `memory` mode `documents` and `scope: "web:<host>"`, but are never refreshed.
+  still searchable with `docs_search` and `scope: "web:<host>"`, but are never refreshed.
 - **Agent shells.** The `shell` MCP tool (`spawn`, `send`, `capture`, `kill`, `list`, `broadcast`), the
   `basemind shell` CLI group and the `shells` cargo feature are gone, along with the `rmux` git dependencies;
   `full` no longer includes `shells`, so `--features shells` now fails the build. A `[shells]` table in
@@ -58,7 +142,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   still listed by `basemind comms doctor` for one more release, but this version cannot stop it.
 - **Memory audit, mining and proposals.** The `memory` modes `audit`, `mine`, `proposals`, `accept` and
   `reject` are gone from the MCP tool, together with the matching `basemind memory` commands; a rescan no
-  longer audits stored notes. `put`, `get`, `list`, `search`, `delete` and `documents` are unchanged. Stored
+  longer audits stored notes. Saving, reading, listing and searching notes and document search are kept
+  (see Changed for their new tool names). Stored
   notes keep their `verified`, `last_verified` and `importance` fields, which nothing updates any more. The
   `memory_archive` and `proposals` keyspaces an older version wrote stay in the repo's `memory.fjall`
   untouched and are never opened. The comms protocol version goes from 4 to 5 because the `governance`
@@ -66,9 +151,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that disagree fail the handshake with `proto_skew`.
 - **The code graph.** The `graph` MCP tool (`calls`, `neighbors`, `path`, `subgraph`, `communities`, `map`,
   `export`, `display`, `open`) and the `basemind graph` CLI group are gone, along with the
-  `basemind://repo/map` resource and the daemon's `/ui` page. The surface is now six domain tools: `code`,
-  `git`, `memory`, `admin`, `agents` and `workspace`. `code` modes `callers`, `references`,
-  `implementations`, `dependents` and `definition` never used the graph and are unchanged. The daemon's
+  `basemind://repo/map` resource and the daemon's `/ui` page. The caller, call-site, implementation, importer and
+  definition lookups (now `code_refs`) never used the graph and keep working. The daemon's
   HTTP front-end serves `/mcp` only and no longer accepts the bearer token as `?token=`; send it as
   `Authorization: Bearer <token>`. Document-to-code links are no longer produced or stored: a
   `doc_links.lance` table an older version wrote is never opened again and is reclaimed with the rest of a
@@ -102,6 +186,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `find_files` (previously `code` modes `find` and `files`) no longer misses document-tier files
+  (markdown, config, PDFs) on a long-lived server.
+- `index_status.cache_dir` reports basemind's cache directory. It reported the tree-sitter grammar
+  directory.
+- Fast calls are no longer returned as background tasks. A call that took 6 to 27 ms was answered with a
+  pollable task handle because eligibility was decided by tool name alone; a Task is now created only for a
+  call still running after 3 s.
+- Unknown arguments are no longer silently dropped. A `grep` call carrying an unsupported `glob` key ran
+  unscoped and reported success; it is now an error that lists the accepted arguments.
+- Caller lookups no longer count call sites of longer names: callers of `open` included every call to
+  `open_store`, because the name was matched as a substring.
 - A bulk index build no longer leaves hundreds of MB of sealed Fjall journal on disk. A sealed journal is
   deleted only once every keyspace it covers has flushed, and lightly written keyspaces such as `meta` never
   did, so each 64 MiB journal lived forever. A scan (full or incremental) now flushes every index keyspace
@@ -146,7 +241,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `telemetry.jsonl`, `.lock` or `.lock.meta`, nothing in it was modified for 7 days and no process holds its
   lock; one with a view, a subdirectory or any other file is kept as before. Resolving the persisted CLI
   identity now refreshes `agent-id`'s mtime (at most daily), so an identity still in use is not reaped.
-  `admin` mode `gc` and `cache gc --dry-run` report the candidates as `markerless_workspaces_reapable` and
+  `cache gc --dry-run` reports the candidates as `markerless_workspaces_reapable` and
   `markerless_workspace_bytes_reapable`.
 
 ## [0.33.0] - 2026-11-14

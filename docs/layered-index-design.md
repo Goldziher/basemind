@@ -266,7 +266,7 @@ A `proptest` that, for a fixture repo:
 2. Builds a **base + overlay** index of worktree *i* on the same content.
 3. Applies random edits — modify / add / delete / rename / duplicate / barrel file / `tsconfig` /
    Python package layout — across three worktrees, rescanning the layered index.
-4. Asserts, for **every** `code` / `git` mode: identical result rows, identical `total`, and
+4. Asserts, for **every** code and git tool: identical result rows, identical `total`, and
    identical cursors across a full pagination walk, versus a fresh standalone index of the same content.
 
 This is the gate that must be green before `layered` can default to `true` (A8).

@@ -38,13 +38,17 @@ Rules for honest numbers:
 
 Every generator takes `--repo`, `--seed`, `--n`, `--exclude GLOB` (repeatable), `--ext`, `--max-bytes`, `--out`.
 
+`mode` below is the eval task kind (the task file's `mode` field), not an MCP argument. Each maps to one
+tool: `symbols` to `code_symbols`, `outline` to `code_outline`, `references` / `callers` / `dependents` to
+`code_refs`, `grep` to `code_grep`, `find` to `find_files`, `git_search` to `git_log`, `docs` to `docs_search`.
+
 | generator | mode(s) | gold |
 |---|---|---|
 | `gen_symbols.py` | `symbols` | every def / class / simple assignment target (any depth) whose name contains the query, as `path:line` |
 | `gen_outline.py` | `outline` | `path:line` of every module- and class-level def, class and assignment (never function locals) |
 | `gen_references.py` | `references`, `callers` | `path:line` of every `ast.Call` whose callee identifier is the name, cross-checked with `git grep -n -w` |
 | `gen_dependents.py` | `dependents` | files whose import statement text contains the module string |
-| `gen_grep.py` | `grep` | `git grep -n -E` lines with the same path/language filters |
+| `gen_grep.py` | `grep` | `git grep -n -E` lines with the same path/language filters (tasks set `regex: true`) |
 | `gen_find.py` | `find` | the source path of a basename / typo / consonant-skeleton query (ranked) |
 | `gen_git_search.py` | `git_search` | shas of all commits whose message tokens contain the query's rare subject tokens (ranked) |
 | `gen_docs.py` | `docs` | the markdown file holding a sentence that names backticked code (ranked) |
@@ -52,7 +56,7 @@ Every generator takes `--repo`, `--seed`, `--n`, `--exclude GLOB` (repeatable), 
 Each generator's docstring states the exact basemind semantics its gold encodes, measured against
 the real tools (for example: `references` counts call sites only and reports the line where the
 call expression starts; `dependents` is a substring match on the whole import statement;
-`git search` is a tokenized AND, not a regex). A generator skips candidates it cannot make exact,
+`git_log` with `query` is a tokenized AND, not a regex). A generator skips candidates it cannot make exact,
 for instance names that also occur in other languages' files (`--no-cross-language-check` disables that).
 
 **Pyrefly.** `pyrefly` 1.x has no find-references command (its CLI is `check`, `infer`, `coverage`, `lsp`, ...). Scope-resolved
@@ -70,7 +74,11 @@ One JSON object per line (blank lines and `#` lines are skipped; ids are unique)
 ```
 
 - `mode`: `symbols`, `outline`, `references`, `callers`, `grep`, `find`, `dependents`, `git_search`, `docs`.
-- `args`: the tool's arguments without `mode` (`name`, `pattern`, `path`, `query`, `module`, `language`, `limit`, ...).
+- `args`: the arguments of the tool the mode maps to, exactly as the MCP tool takes them; an unknown argument fails
+  the task. `symbols`: `{name, limit}`. `outline`: `{path}`. `references`: `{name, limit}`. `callers`:
+  `{path, name, limit}`. `dependents`: `{name, relation: "importers"}`. `grep`: `{pattern, regex: true, language,
+  path, limit}` (`pattern` is literal text without `regex`; `path` is a path substring). `find`: `{query, limit}`.
+  `git_search`: `{query, limit}`. `docs`: `{query}`.
 - `gold`: expected items. `path` or `path:line`; see the item table below. Gold with any `path:line` entry is scored at line level.
 - `scoring`: `set` (order-insensitive) or `ranked`. `k` is the rank cut-off (default 10). `line_slack` tolerates off-by-n lines.
 - `baseline` (optional): what an agent would do without basemind. `grep` is one shell command or a list, run with `sh -c`
@@ -105,9 +113,10 @@ files in `read` with the same tokenizer, and records `baseline_tokens / basemind
 gold must be non-empty; otherwise the task is listed as withheld. A cheap wrong answer is not a saving.
 
 Per mode the report gives the credited distribution (median and p90 of the ratio and of tokens saved) and compares the
-median ratio with what `src/mcp/savings.rs` would assume for the same response (its fixed per-mode multiplier, calibrated
-from this eval: `outline` 1.2x, `symbols` 25x, `references` / `implementations` 1.2x, `docs` 2.5x; 1x, i.e. no saving, for
-`callers`, `dependents`, `find`, `files`, `grep` and `git search`; see the constants in that file). A mode whose measured median
+median ratio with what `src/mcp/savings.rs` would assume for the same response (its fixed per-tool multiplier, keyed by
+tool name and calibrated from this eval: `code_outline` 1.2x, `code_symbols` 25x, `docs_search` 2.5x; 1x, i.e. no
+saving, for `code_refs` (which serves `references`, `callers` and `dependents`), `find_files`, `code_grep` and
+`git_log`; see the constants in that file). A mode whose measured median
 deviates by more than 25% is flagged `DEVIATES`. The harness only reports; it does not change `savings.rs`, so re-run it
 and update the constants when a response shape changes. A mode whose median is below 1 claims no saving there.
 

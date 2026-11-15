@@ -55,13 +55,13 @@ use it first: a bare `basemind` from `PATH` can be a different version over the 
 - The scan writes the content-addressed blob store + Fjall inverted index into the machine-global
   cache (never inside the repo). Seconds for small repos; ~22 s for an ~80k-file TypeScript monorepo.
 - The code map holds code only. Markdown, JSON, YAML, TOML, XML, CSV, INI and similar prose/config/data
-  files go to the document tier instead (chunked, searchable with `memory` mode `documents`; they
-  never appear in `symbols`, `outline` or `grep`; `files` and `find` list them). Anything that is neither code nor an
+  files go to the document tier instead (chunked, searchable with `docs_search`; they never appear
+  in `code_symbols`, `code_outline` or `code_grep`; `find_files` lists them). Anything that is neither code nor an
   extractable document is **skipped**, not counted as a failure. Existing indexes migrate on the
   next scan, which also reclaims stale blobs (`cleanup: reclaimed N orphaned blob(s)`).
 - If a `basemind serve` MCP server is already running for this repo it holds the store lock, so a
   CLI `scan` will fail with a lock error. Use `basemind rescan [path…]` (the CLI forwards to the running daemon) or
-  `admin { mode: "rescan" }` over MCP instead; the lock error exits with code 3.
+  `index_rescan {}` over MCP instead; the lock error exits with code 3.
 - **Indexing directories outside the repo** — set `scan.extra_roots` in the repo-root `basemind.toml`
   to a list of absolute paths (e.g. a Bazel external repo cache) to index them alongside the repo.
   This needs `BASEMIND_ALLOW_EXTRA_ROOTS` in the environment that launches basemind (`1`, or a
@@ -71,7 +71,7 @@ use it first: a bare `basemind` from `PATH` can be a different version over the 
   refused either way.
   Their files are keyed by absolute path (so results for them are absolute, not repo-relative) and
   are (re-)indexed on a full `scan` only — the live watcher does not track them. Git tools (blame)
-  don't apply to external files; the code map (symbols / references / outlines) and document search
+  don't apply to external files; the code map (symbols / usages / outlines) and document search
   do.
 - Credential and key files (`.env*`, `.aws/`, `.ssh/`, `.npmrc`, `*.pem`, `*.key`, ...) are never
   indexed. `[scan] floor_allow` opts a class back in (`.env.*` also matches `.env.example`), but a

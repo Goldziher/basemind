@@ -1,6 +1,6 @@
 """Gold for `find`: a mutated file name -> the file it was derived from.
 
-`code find` is fuzzy file lookup (fzf/fd-style). Each task samples a real tracked file whose stem is
+`find_files` (CLI `code find`) is fuzzy file lookup (fzf/fd-style). Each task samples a real tracked file whose stem is
 unique in the repo and queries it in one of three mutated forms:
 
   basename  the exact file name (`widget.py`)

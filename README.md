@@ -28,7 +28,7 @@ git history & blame · shared memory · agent-to-agent comms
 
 <!-- markdownlint-disable MD013 -->
 <p align="center"><img src="docs/media/mcp-demo.gif" alt="An agent answering from a file outline and its call sites in a live Claude Code session" width="820"></p>
-<p align="center"><em>An agent reasoning from structure — <code>code</code> modes <code>outline</code> and <code>references</code> in a live session, statusline tracking tokens saved.</em></p>
+<p align="center"><em>An agent reasoning from structure — a file outline and a call-site lookup in a live session, statusline tracking tokens saved.</em></p>
 <!-- markdownlint-enable MD013 -->
 
 <div align="center"><sub><a href="#demos">More demos ↓</a></sub></div>
@@ -44,14 +44,35 @@ about your code costs a small fraction of the tokens it takes to read the source
 
 | Capability | What it does | Key tools |
 |---|---|---|
-| **Code intelligence** | Read the code map instead of opening files: a file's structure (`outline`), find a definition by name (`symbols`), regex content search (`grep`), enumerate or fuzzy-find files (`files` · `find`, documents included), resolve a reference position to the definition it binds to (`definition` — **scope- and import-aware**, JS/TS via oxc, Python & Java via in-tree [stack-graphs](#how-it-works)), every call site of a name (`references`, name-only) or of one specific definition (`callers`), implementors of a trait / interface / base class (`implementations`), the reverse import lookup (`dependents`), one symbol's raw body (`expand`), and search by meaning over indexed chunks (`semantic` → `chunk`, needs `--features code-search`). Layered over [300+ languages](#how-it-works). | `code` (`outline` · `symbols` · `grep` · `files` · `find` · `definition` · `references` · `callers` · `implementations` · `dependents` · `expand` · `semantic` · `chunk`) |
-| **Git intelligence** | Ask what changed recently, who last touched a function or a line, where the churn is, when a symbol's body actually changed, how a file's structure differs across commits, and full-text search commit authors + messages at full branch depth. | `git` (`status` · `recent` · `touching` · `by_path` · `churn` · `diff` · `diff_outline` · `blame` · `blame_symbol` · `symbol_history` · `search` · `show`) |
-| **Memory & documents** | A per-repo memory agents write to and search by meaning — clones of the same repo share it, unrelated repos stay separate — plus semantic search over PDFs, Office files, HTML, email, and images (OCR included in the published binaries, no extra setup; a source build needs the `documents-ocr` Cargo feature). | `memory` (`put` · `get` · `list` · `search` · `delete` · `documents`) |
+| **Code intelligence** | Read the code map instead of opening files: what a file contains (`code_outline`), where a name is defined (`code_symbols`), one symbol's body or an exact line span (`code_read`), text search, literal by default (`code_grep`), search by meaning over indexed chunks (`code_search`, needs `--features code-search`), and usages (`code_refs`): call sites of a name, callers of one definition, implementors of a trait / interface / base class, importers of a module, and go-to-definition (**scope- and import-aware**, JS/TS via oxc, Python & Java via in-tree [stack-graphs](#how-it-works)). `find_files` locates or lists files, documents included. Layered over [300+ languages](#how-it-works). | `code_outline` · `code_symbols` · `code_read` · `code_grep` · `code_search` · `code_refs` · `find_files` |
+| **Git intelligence** | Ask what changed recently, which commits touched a file, which commit mentions a phrase (full-text over messages and authors at full branch depth), when a symbol's body changed, who last touched a line or a function, and how a file differs between revisions or from the working tree, as text hunks or as symbols added and removed. | `git_log` · `git_blame` · `git_diff` |
+| **Memory & documents** | A per-repo memory agents write to and search by meaning — clones of the same repo share it, unrelated repos stay separate — plus semantic search over PDFs, Office files, HTML, email, and images (OCR included in the published binaries, no extra setup; a source build needs the `documents-ocr` Cargo feature). | `memory_save` · `memory_search` · `docs_search` |
 | **Agent comms** | Threads addressed by subject, path-glob, and members; scope discovery; inbox delivery; lifecycle status; and dry-run/apply retention cleanup. | `agents` (`register` · `list` · `thread_start` · `thread_list` · `join` · `leave` · `members` · `add_member` · `remove_member` · `archive` · `post` · `history` · `message` · `inbox` · `ack` · `wait` · `cleanup` · `status`) |
-| **Admin** | Refresh the index after edits, check index health and repo identity, see what's been queried and how many tokens were saved, and inspect or clean the on-disk cache. | `admin` (`status` · `repo` · `rescan` · `cache_stats` · `gc` · `cache_clear` · `telemetry`) |
+| **Index** | Check index health and repo identity, and refresh the index after edits. Telemetry and cache maintenance are CLI commands (`basemind admin telemetry`, `basemind cache stats\|gc\|clear`). | `index_status` · `index_rescan` |
 | **Machine registry** | Machine-wide repo/worktree/branch coordination, backed by the daemon's always-on registry. Advisory claims let agent sessions avoid colliding on the same worktree. | `workspace` (`workspaces` · `worktrees` · `branches` · `claim` · `release`) |
 
 <!-- markdownlint-enable MD013 -->
+
+The code, git, memory, document and index rows are 15 tools, one per job, each with its own exact
+schema; there is no `mode` argument. They are always loaded (`_meta["anthropic/alwaysLoad"]`), so a host that defers MCP tools
+needs no tool-search round trip: call them directly. Their `tools/list` entry is about 17 KB (about
+4.2k tokens). `agents` and `workspace` (`comms` builds) still take a `mode`. An unknown argument is
+rejected with a did-you-mean suggestion, every line number is 1-based, and a failure the caller can
+fix comes back as an `isError` result that names the fix. Arguments, examples and the mapping from
+the previous `code` / `git` / `memory` / `admin` tools: the
+[MCP tool reference](https://basemind.ai/reference/mcp-tools/) and
+[`docs/UPGRADING.md`](docs/UPGRADING.md).
+
+```text
+code_outline {"path":"src/store.rs"}
+code_symbols {"name":"parse_config","kind":"function"}
+code_read    {"path":"src/store.rs","symbol":"open"}
+code_grep    {"pattern":"cache_root(","path":"src/"}
+code_refs    {"name":"open_store","path":"src/store.rs"}
+git_log      {"path":"src/store.rs","limit":5}
+git_diff     {"path":"src/store.rs","from":"HEAD~1","to":"HEAD"}
+docs_search  {"query":"how releases are versioned"}
+```
 
 ---
 
@@ -188,10 +209,10 @@ hermes plugins enable basemind
 ```
 
 Restart Hermes. The plugin registers ten skills, six slash commands, scoped comms notifications,
-and `basemind_call`, which bridges the local MCP server's domains and returns JSON text.
+and `basemind_call`, which bridges the local MCP server's tools and returns JSON text.
 The binary must be on `PATH`. Comms notifications are
 best-effort. You can also configure `mcp_servers.basemind` with `command: basemind` and
-`args: [serve]` for direct domain tools.
+`args: [serve]` for direct access to the tools.
 
 PyPI version 0.29.3 predates the skill-registration fix and MCP bridge. Use the source wheel above
 until a newer release includes these changes; reinstalling that published version will not add them.
@@ -294,7 +315,7 @@ The standalone program, for scripts, headless runs, and CI. [Install it](#instal
 ```bash
 basemind scan                          # index the project once
 basemind code symbols "parseQuery"     # find a definition by name
-basemind code references "processFile" # find everywhere it's called
+basemind code refs "processFile"       # find everywhere it's called
 basemind git blame src/main.rs         # who last changed each line
 basemind watch                         # keep the index fresh as files change
 ```
@@ -424,14 +445,17 @@ worktrees of it) all read and write concurrently instead of one falling back rea
 
 Navigation is **scope- and import-aware** for JavaScript/TypeScript, **Python, and Java**: basemind
 resolves each use to the definition it actually binds to, so a shadowed local isn't confused with an
-import and `code` mode `definition` lands on the right target (including across files for imports). Every
+import and `code_refs` with `relation: "definition"` lands on the right target (including across files
+for imports). Every
 other language still gets fast tree-sitter scope binding. Precise Python/Java resolution runs GitHub
 stack-graphs-style `.tsg` name-binding rules via an in-tree engine (`crates/`), with no per-language
 LSP server.
 
-Resolution **refines, but never shrinks, a result set.** `code` mode `callers` reports every call site
-whose callee matches the name — the same sound floor mode `references` uses — and marks each hit `resolved`
-when resolution proved it binds to that definition (`resolved_total` counts them). It deliberately
+Resolution **refines, but never shrinks, a result set.** `code_refs` with a `path` (callers of the
+definition in that file) reports every call site whose callee is exactly that name — the same sound
+floor a `code_refs` call without `path` uses — and marks each hit `resolved` when resolution proved
+it binds to that definition (`resolved_total` counts them). Matching is on the whole identifier, so
+`open` no longer counts `open_store`; pass `match: "substring"` for the looser match. It deliberately
 does *not* return only the resolved subset: resolution cannot see through a module-object import
 (`from pkg import mod` then `mod.f()`) or an unresolvable path alias, so filtering to it would drop
 real callers and report the remainder as complete. Filter on `resolved` when you want precision; trust
@@ -439,10 +463,10 @@ real callers and report the remainder as complete. Filter on `resolved` when you
 
 The code map is **code only**. Prose, data and config files — Markdown, reStructuredText, AsciiDoc,
 vimdoc, CSV, JSON, YAML, TOML, INI, XML, `.properties`, `.env`, diffs, `.gitignore`/`.gitattributes`
-and Fluent — go to the document tier instead: they are chunked and searched as text with `memory`
-mode `documents` (gated by `[documents] include` / `exclude`), and no longer show up as symbols in
-`code` modes `outline`, `symbols` and `grep`. `files` and `find` still cover them, labelled by
-grammar name or extension. An existing index migrates on its next scan. A build
+and Fluent — go to the document tier instead: they are chunked and searched as text with
+`docs_search` (gated by `[documents] include` / `exclude`), and no longer show up in `code_outline`,
+`code_symbols` and `code_grep`. `find_files` still covers them, labelled by grammar name or
+extension. An existing index migrates on its next scan. A build
 without the `documents` feature keeps the old behaviour, where those files are outlined as code.
 
 ```mermaid
@@ -539,8 +563,8 @@ A single background daemon per machine is the sole writer to that cache and host
 `basemind serve` is a thin stdio relay that ensures the daemon is up and pumps bytes to it, so N
 sessions on the same repo — or on different worktrees of it — share one read stack per workspace
 and all read and write concurrently instead of a second session silently falling back to a stale,
-read-only view. The daemon holds the single-writer index, so `references`, `callers` and
-`implementations` run inside it and return complete results with no per-session copy. The daemon
+read-only view. The daemon holds the single-writer index, so `code_refs` lookups (call sites,
+callers, implementations) run inside it and return complete results with no per-session copy. The daemon
 also keeps a cheap, always-on registry of repos, worktrees, and branches (`workspace` modes
 `workspaces` / `worktrees` / `branches`), and modes `claim` / `release` give agent sessions an
 advisory way to avoid colliding on the same worktree.
@@ -632,7 +656,7 @@ instead of nudge.
 each answer against gold generated from your repository (precision/recall, hit@k, MRR, nDCG),
 records latency and response tokens, and compares the token cost with the grep-and-read baseline
 an agent would otherwise pay. Savings only count when basemind's answer was actually correct, and
-the report flags any mode whose measured ratio deviates from the dashboard's fixed multiplier.
+the report flags any eval mode whose measured ratio deviates from the dashboard's fixed multiplier.
 `--baseline <report.json>` turns it into a regression gate. Gold generators and the workflow are in
 [`benchmarks/eval/`](benchmarks/eval/README.md); measured savings, including the cases where `grep` is
 cheaper for a single narrow hit, are in [`benchmarks/README.md`](benchmarks/README.md#measured-results).
@@ -673,24 +697,26 @@ even on a very large repository (next section).
 
 Measured with the built-in harness (`basemind admin eval --warmup`, see
 [Measure it on your own repo](#token-saving)) on a 74k-file, ~350 MB monorepo checkout, 60 tasks per
-mode, in-process (no transport or process start-up). Gold is generated from the repository itself;
-[`benchmarks/eval/README.md`](benchmarks/eval/README.md) states what each mode's gold encodes.
+eval mode, in-process (no transport or process start-up). Gold is generated from the repository
+itself; [`benchmarks/eval/README.md`](benchmarks/eval/README.md) states what each mode's gold encodes.
+Rows are eval modes, with the tool each one calls. The numbers predate the tool rename; the lookups
+behind them are unchanged.
 
-| `code` / `git` / `memory` mode | p50 | p95 | precision | recall |
+| Eval mode (tool) | p50 | p95 | precision | recall |
 |---|---|---|---|---|
-| `outline` | 1.0 ms | 2.2 ms | 1.00 | 1.00 |
-| `references` | 1.4 ms | 6.0 ms | 0.81 | 1.00 |
-| `symbols` | 3.7 ms | 5.3 ms | 0.97 | 1.00 |
-| `dependents` | 4.0 ms | 5.6 ms | 0.84 | 1.00 |
-| `callers` | 4.6 ms | 10.4 ms | 0.87 | 1.00 |
-| `find` (ranked, hit@1 0.72) | 6.6 ms | 9.0 ms | 0.29 | 0.75 |
-| `git` `search` (ranked, hit@1 1.00) | 55 ms | 96 ms | 1.00 | 0.91 |
-| `memory` `documents` (hit@1 0.48, hit@5 0.63) | 106 ms | 260 ms | 0.18 | 0.63 |
-| `grep` (15 tasks, trigram prefilter) | ~130 ms | 190–270 ms | 0.91 | 1.00 |
+| `outline` (`code_outline`) | 1.0 ms | 2.2 ms | 1.00 | 1.00 |
+| `references` (`code_refs`) | 1.4 ms | 6.0 ms | 0.81 | 1.00 |
+| `symbols` (`code_symbols`) | 3.7 ms | 5.3 ms | 0.97 | 1.00 |
+| `dependents` (`code_refs`, `relation: "importers"`) | 4.0 ms | 5.6 ms | 0.84 | 1.00 |
+| `callers` (`code_refs` with `path`) | 4.6 ms | 10.4 ms | 0.87 | 1.00 |
+| `find` (`find_files`; ranked, hit@1 0.72) | 6.6 ms | 9.0 ms | 0.29 | 0.75 |
+| `git_search` (`git_log` with `query`; ranked, hit@1 1.00) | 55 ms | 96 ms | 1.00 | 0.91 |
+| `docs` (`docs_search`; hit@1 0.48, hit@5 0.63) | 106 ms | 260 ms | 0.18 | 0.63 |
+| `grep` (`code_grep` with `regex: true`; 15 tasks, trigram prefilter) | ~130 ms | 190–270 ms | 0.91 | 1.00 |
 
-`symbols` and `dependents` answer from a resident term index, and `references`, `callers` and
-`implementations` from a resident dictionary of distinct callee and trait names, which is why they
-sit in the millisecond range instead of walking every call site. `grep` skips files a per-file
+`code_symbols` and the importer lookup answer from a resident term index, and call-site, caller and
+implementation lookups from a resident dictionary of distinct callee and trait names, which is why
+they sit in the millisecond range instead of walking every call site. `code_grep` skips files a per-file
 trigram bloom filter proves cannot match (index cost ≈ 12.8 % of the indexed code bytes; results are
 identical to the full sweep, which took 3.6–7.8 s p50 on the same tasks; see
 [ADR-0012](docs/adr/0012-grep-content-prefilter.md)). Set `BASEMIND_GREP_BLOOM=0` to force the full
@@ -702,10 +728,10 @@ sweep. Numbers vary with hardware and load; rerun the harness on your repository
 <summary><strong>Git history queries</strong></summary>
 
 basemind precomputes a per-repo git-history index (path → commit posting lists, stored newest-first)
-so the history modes — `touching`, `recent`, `churn`, `by_path`, and `symbol_history`'s commit walk
-— are posting-list lookups. Warm in-process query latency on the same M4:
+so the history lookups — `git_log` with no filter, with `path`, and the commit walk behind `path` +
+`symbol`, plus the CLI's `git churn` and `git by-path` — are posting-list lookups. Warm in-process query latency on the same M4:
 
-| Repo | Commits | `git` `touching` | `git` `recent` | index build | index size |
+| Repo | Commits | `git_log {path}` | `git_log {}` | index build | index size |
 |---|---|---|---|---|---|
 | django | 2 000 | 39 µs | 15 µs | 0.5 s | 1.7 MB (6 % of `.git`) |
 | tokio | 3 984 | 37 µs | 13 µs | 0.9 s | 2.1 MB (12 %) |
@@ -726,11 +752,11 @@ when history is rewritten (filter-repo / rebase / force-push). Reproduce with
 <details>
 <summary><strong>Measuring query latency (<code>elapsed_us</code>)</strong></summary>
 
-Every latency-relevant mode — all of `code`, all of `git`, the `admin` read modes, and
-the document / memory search modes — reports its own latency as **`elapsed_us`** on its response.
+Every latency-relevant tool — the code, git, document and memory lookups and `index_status` —
+reports its own latency as **`elapsed_us`** on its response.
 Don't wrap the CLI in `time`; ask basemind.
 
-Resolution is **microseconds** on purpose: an indexed `git` mode `touching` is ~37 µs, so
+Resolution is **microseconds** on purpose: an indexed `git_log` with `path` is ~37 µs, so
 millisecond granularity would round the hot path to `0`.
 
 **What `elapsed_us` includes** — the tool body's own execution: index and store lookups, git walks,
@@ -738,8 +764,7 @@ ranking, and building the response.
 
 **What it excludes** — MCP / JSON-RPC transport (which the server cannot observe), argument
 deserialization, and serialization of the response itself. Excluding encoding keeps the number
-comparable across `format: "json"` and `format: "toon"` and across result-set sizes: it reports
-*query* cost, not *encoding* cost.
+comparable across result-set sizes: it reports *query* cost, not *encoding* cost.
 
 **The one caveat, stated plainly:** most read tools begin by awaiting the in-RAM code map, and the
 git tools lazily build their history index on first use. Both waits happen *inside* the measured
@@ -761,7 +786,7 @@ $ basemind code symbols run_workspace_grep --limit 1 --json
   "startup_us": 957887     # everything else a `time` wrapper would have charged to it
 }
 
-$ basemind code references parse_kind --limit 3
+$ basemind code refs parse_kind --limit 3
 ...
 (6.5 ms query · 852.9 ms startup)    # stderr: stdout carries only the answer
 ```
@@ -1072,13 +1097,13 @@ files that became eligible from the cached blobs, without re-embedding.
 <details>
 <summary><strong>Full command list</strong> — code · git · memory · admin · cache · agents · workspace</summary>
 
-Every MCP tool mode maps to a CLI command, or is declared CLI-only / MCP-only with a reason (enforced
-by `tests/cli_parity/`). Add `--json` for
+Every MCP tool has a CLI command (enforced by `tests/cli_parity/`); the CLI also keeps shorthands
+and administrative commands that have no MCP tool. Add `--json` for
 machine-readable output (the same response types the MCP tools return, including `agents` and
 `workspace`). Human output prints source bodies, diffs and exports in full; only table cells are cut
 (to 200 characters, with a note on stderr), and the timing line goes to stderr. List commands take
-`--cursor` (resume from a previous `next_cursor`) and `--max-tokens`; `code semantic` also takes
-`--rerank-top-k`; `--format toon` returns compact TOON tables.
+`--limit`, `--cursor` (resume from a previous `next_cursor`) and `--max-tokens`. Line and column
+arguments are 1-based.
 
 <!-- markdownlint-disable MD013 -->
 
@@ -1101,52 +1126,49 @@ degrading to a truncated in-memory view.
 
 | Command | Purpose |
 |---|---|
-| `outline <path> [--l2]` | A file's structure: symbols, lines, signatures. `--l2` adds calls + docs. |
-| `symbols <name> [--kind]` | Find a definition by name, optionally filtered by kind. |
-| `grep <pattern> [--language --path-contains]` | Pattern search with filters. |
-| `files [--path-contains --language]` | List indexed files. |
-| `find <fragment>` | Locate a file by a fuzzy fragment of its name or path (fzf/fd-style). |
-| `definition <path> <line> [--column]` | Resolve a reference position to its scope-resolved definition. |
-| `references <name>` | Find everywhere a name is called. |
-| `callers <path> <name> [--kind]` | Find callers of one specific definition. |
-| `implementations <trait>` | Types that implement or inherit from a name. |
-| `dependents <module>` | What imports a given module. |
-| `expand <path> <name> [--kind]` | A symbol's raw source body (the inverse of an outline entry). |
-| `semantic <query> [--limit --lane --rerank --format]` | Search code by meaning; returns pointers. Needs `--features code-search`. |
-| `chunk <path> [--chunk-id --byte-start]` | Fetch one code chunk's source body (the `semantic` fetch half). |
+| `outline <path>` | A file's structure: symbols, 1-based lines, signatures, imports (`code_outline`). |
+| `symbols <name> [--kind]` | Find a definition by name, optionally filtered by kind (`code_symbols`). |
+| `read <path> --symbol <name> [--kind]` / `read <path> --line <n> [--end-line <m>]` | One symbol's source body, or an inclusive line span (`code_read`; alias `expand`). |
+| `grep <pattern> [--regex --path --language --context]` | Text search; the pattern is literal unless `--regex`. `--path` is a substring of the repo-relative path (`code_grep`). |
+| `search <query> [--lane hybrid\|semantic\|keyword]` | Search code by meaning; returns pointers. Needs `--features code-search` (`code_search`; alias `semantic`). |
+| `refs <name> [--relation --path --line --column]` | Usages of a name: call sites by default, or `--relation implementations\|importers\|definition` (`code_refs`; alias `references`). |
+| `callers <path> <name>` | Shorthand for `refs <name> --path <path>`: callers of one specific definition. |
+| `implementations <name>` | Shorthand for `refs <name> --relation implementations`. |
+| `dependents <module>` | Shorthand for `refs <module> --relation importers`. |
+| `definition <path> <line> <name> [--column]` | Shorthand for `refs <name> --relation definition`: the definition a reference binds to. |
+| `find [query] [--path-prefix --language]` / `files [--path-prefix --language]` | Locate a file by a fuzzy fragment of its name or path, or list indexed files (`find_files`). |
+| `chunk <path> [--chunk-id --byte-start]` | Fetch one code chunk's source body (CLI only). |
 
 **Git (`basemind git`)**
 
 | Command | Purpose |
 |---|---|
-| `status` | What's staged and unstaged right now. |
-| `recent [--limit] [--no-files]` | Recent commits with their files (a recency window, not a search). |
-| `search <pattern> [--field author\|message\|all] [--limit]` | Full-text search over commit history at full branch depth. |
-| `touching <path>` / `by-path <pattern>` | Commits for a path or a changed-path regex. |
-| `churn [--window --top-k]` | The most frequently changed files. |
-| `diff <path> <old> <new>` / `diff-outline <path> [--rev]` | File or structure diff across commits. |
-| `blame <path>` / `blame-symbol <path> <name>` | Who last changed each line / a symbol. |
-| `symbol-history <path> <name>` | When a symbol's body changed over time. |
-
+| `log [--path --query --author --symbol --rev]` | Commit history: recent commits, commits touching a path, full-text search, a symbol's history, or one commit in full (`git_log`). |
+| `blame <path> [--line --end-line --symbol --rev]` | Who last changed a file, a line span, or one symbol (`git_blame`). |
+| `diff [path] [--from --to --structural]` | No path: working-tree status. A path alone: its working-tree diff against HEAD. `--from`/`--to`: between revisions. `--structural`: symbols added and removed (`git_diff`). |
+| `status` / `recent` / `touching <path>` / `search <query> [--author]` / `show <rev>` | Shorthands for `diff` with no arguments and for `log` with one filter. |
+| `symbol-history <path> <name>` / `blame-symbol <path> <name> [--rev]` / `diff-outline <path> [--rev]` | Shorthands for `log --path --symbol`, `blame --symbol` and `diff --structural`. |
+| `churn [--window --top-k]` | The most frequently changed files (CLI only). |
+| `by-path <regex> [--window]` | Commits whose changed paths match a regex (CLI only). |
 **Memory (`basemind memory`)**
 
 | Command | Purpose |
 |---|---|
-| `put <key> <value>` / `get <key>` / `delete <key>` | Store, retrieve, or remove a value. |
-| `list [--prefix]` | List keys, optionally by prefix. |
-| `search <query>` | Search stored values by meaning. |
-| `documents <query>` | Search indexed PDFs / Office / HTML / images by meaning. |
-
+| `put <key> <value> [--tag]... [--individual]` | Store a note (`memory_save`). |
+| `get <key>` / `list [--prefix --tag]` / `search <query> [--tag]` | Read one note, list by key prefix, or search by meaning (`memory_search`). |
+| `delete <key>` | Remove a note (CLI only). |
+| `documents <query> [--mime-type --keywords --entity --scope]` | Search indexed PDFs / Office / HTML / images by meaning (`docs_search`). |
 **Admin (`basemind admin`)**
 
 | Command | Purpose |
 |---|---|
-| `repo` | Git identity (branch, HEAD, origin). Index health is the top-level `basemind status`. |
+| `repo` | Same payload as the top-level `basemind status` (`index_status`): index health plus branch and HEAD. |
 | `telemetry [--window --tool]` | What's been queried and how many tokens were saved. `--window` is one of `today`, `1h`, `24h`, `all`. |
 | `eval --tasks <file> [--out --report --markdown --baseline --tolerance --cost-tolerance --min-recall --warmup --mode]` | Score retrieval quality and token savings against gold from a JSONL task file; `--baseline` gates regressions. See [`benchmarks/eval/`](benchmarks/eval/README.md). |
 | `tokens --stdin` | Count tokens in stdin with the real o200k tokenizer (needs the `tokenizer` feature). |
 
-The other `admin` verbs live at the top level: `status`, `rescan` and `cache stats|gc|clear`.
+Index commands live at the top level: `status` (`index_status`), `rescan [paths] [--full]`
+(`index_rescan`) and `cache stats|gc|clear` (CLI only).
 
 **Cache (`basemind cache`)**
 

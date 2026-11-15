@@ -3,7 +3,8 @@
 #
 # Fires for the codebase-search tools and for Bash (matcher "Grep|Glob|Bash" in hooks.json)
 # and steers the agent toward basemind's indexed tools, which return paths + line numbers
-# instead of file bodies. For Bash it only reacts to a code search or history lookup
+# instead of file bodies. Every suggestion is a callable tool with its arguments: the tools are
+# always loaded, so the agent can issue the call as written. For Bash it only reacts to a code search or history lookup
 # (rg, grep, git log/blame/show, find -name); every other command proceeds silently.
 # Three modes via the BASEMIND_GUARD env var:
 #
@@ -43,19 +44,19 @@ classify_bash() {
   local cmd="$1" lead='(^|;|&&|\|\|)[[:space:]]*(sudo[[:space:]]+)?'
   if printf '%s' "${cmd}" | grep -Eq "${lead}(rg|grep|egrep|fgrep|ag|ack)([[:space:]]|\$)"; then
     bash_kind="search"
-    bash_alt="the basemind code tool: mode=grep (indexed regex over code content), mode=symbols (definitions), mode=references or mode=callers (usages); markdown, config and data files: memory mode=documents"
+    bash_alt='basemind code_grep {"pattern":"…"} (literal text in indexed code; add "regex":true for a regex and "path":"src/" to scope it), code_symbols {"name":"…"} for a definition or code_refs {"name":"…"} for usages; markdown, config and data files: docs_search {"query":"…"}'
   elif printf '%s' "${cmd}" | grep -Eq "${lead}git([[:space:]]+-C[[:space:]]+[^[:space:]]+)?[[:space:]]+blame([[:space:]]|\$)"; then
     bash_kind="blame"
-    bash_alt="the basemind git tool: mode=blame (per line) or mode=blame_symbol (per symbol)"
+    bash_alt='basemind git_blame {"path":"…"} (add "line" and "end_line" for a span, or "symbol" for one symbol)'
   elif printf '%s' "${cmd}" | grep -Eq "${lead}git([[:space:]]+-C[[:space:]]+[^[:space:]]+)?[[:space:]]+log([[:space:]]|\$)"; then
     bash_kind="log"
-    bash_alt="the basemind git tool: mode=recent (recent commits), mode=touching (commits for a path), mode=search (commit messages and authors) or mode=symbol_history"
+    bash_alt='basemind git_log {} (recent commits), git_log {"path":"…"} (commits touching a file), git_log {"query":"…"} (commit messages; "author" searches authors) or git_log {"path":"…","symbol":"…"} (one symbol)'
   elif printf '%s' "${cmd}" | grep -Eq "${lead}git([[:space:]]+-C[[:space:]]+[^[:space:]]+)?[[:space:]]+show([[:space:]]|\$)"; then
     bash_kind="show"
-    bash_alt="the basemind git tool: mode=show (one commit) or mode=diff / mode=diff_outline (changes between revisions)"
+    bash_alt='basemind git_log {"rev":"…"} (one commit in full) or git_diff {"path":"…","from":"…","to":"…"} (one file between revisions)'
   elif printf '%s' "${cmd}" | grep -Eq "${lead}find[[:space:]].*-(i?name|i?path|i?regex)([[:space:]]|\$)"; then
     bash_kind="find"
-    bash_alt="the basemind code tool: mode=find (fuzzy path search) or mode=files (indexed paths with language / path filters)"
+    bash_alt='basemind find_files {"query":"…"} (fuzzy file name or path; omit "query" and pass "path_prefix" or "language" to list)'
   fi
 }
 
@@ -72,10 +73,19 @@ Bash)
   [ "${MODE}" = "redirect" ] && MODE="nudge"
   ;;
 Grep)
-  alt="basemind: code mode=symbols (definitions), code mode=references / mode=callers (call sites), or code mode=grep (indexed regex over code content; markdown/config/data files: memory mode=documents)"
+  # The Grep tool's pattern is a regex, so the suggested call carries it verbatim with regex on.
+  grep_call='code_grep {"pattern":"…","regex":true}'
+  grep_pattern="$(printf '%s' "${input}" | jq -r '.tool_input.pattern // empty' 2>/dev/null || true)"
+  if [ -n "${grep_pattern}" ]; then
+    grep_args="$(jq -cn --arg p "${grep_pattern}" '{pattern:$p,regex:true}' 2>/dev/null || true)"
+    if [ -n "${grep_args}" ]; then
+      grep_call="code_grep ${grep_args}"
+    fi
+  fi
+  alt="basemind ${grep_call} (indexed code), code_symbols {\"name\":\"…\"} for a definition or code_refs {\"name\":\"…\"} for usages; markdown, config and data files: docs_search {\"query\":\"…\"}"
   ;;
 Glob)
-  alt="basemind: code mode=files (indexed code paths, with language / path filters), or code mode=find (fuzzy path search)"
+  alt='basemind find_files {"query":"…"} (fuzzy file name or path; omit "query" and pass "path_prefix" or "language" to list)'
   ;;
 *)
   exit 0
@@ -93,8 +103,8 @@ emit_deny() {
 
 if [ "${MODE}" = "redirect" ]; then
   emit_deny "Use ${alt} instead of ${tool} for codebase navigation — it answers from the index \
-(paths + line numbers, a fraction of the tokens). Set BASEMIND_GUARD=nudge to make this advisory, \
-or BASEMIND_GUARD=off to disable."
+(paths + line numbers, a fraction of the tokens) and is already loaded, so call it directly. Set \
+BASEMIND_GUARD=nudge to make this advisory, or BASEMIND_GUARD=off to disable."
   exit 0
 fi
 
@@ -115,6 +125,7 @@ fi
 : >"${marker}" 2>/dev/null || true
 
 emit_allow "basemind is indexed for this repo. Instead of this ${tool} call, use ${alt} — it returns \
-paths + line numbers without reading file bodies, at a fraction of the tokens. Proceeding with \
-${tool} for now. (BASEMIND_GUARD=off silences this; =redirect enforces it.)"
+paths + line numbers without reading file bodies, at a fraction of the tokens, and is already \
+loaded, so call it directly. Proceeding with ${tool} for now. (BASEMIND_GUARD=off silences this; \
+=redirect enforces it.)"
 exit 0

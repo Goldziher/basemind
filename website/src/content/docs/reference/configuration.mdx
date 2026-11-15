@@ -214,13 +214,13 @@ document_models = "code_only"
 | `embed_batch_size` | integer | `32` | Number of chunks the embedder submits to ONNX per batch. Larger batches amortize per-call overhead at the cost of a higher transient memory spike; lower it to shrink that spike. |
 | `max_concurrent_documents` | integer | `0` | Upper bound on documents extracted concurrently. `0` (auto) leaves dispatch unbounded. Documents beyond the bound wait for a free slot before they are read, so a burst of large files cannot all be held in memory at once. The daemon clamps the value (see `BASEMIND_DAEMON_MAX_CONCURRENT_DOCUMENTS`). |
 | `max_footprint_mb` | integer, `"auto"` or `"off"` | `0` | Advisory memory ceiling in mebibytes. A positive integer is an explicit ceiling; `0` or `"auto"` derives one (75% of an enforced cgroup limit, else 50% of machine RAM, floored at 512 MiB); `"off"` disables it. Workers park at the document-extraction and code-chunk embedding admit points while the process is over the ceiling. Document extraction then runs one document at a time (an otherwise idle process is admitted immediately), and a document whose own estimated working set exceeds the ceiling is skipped, counted as too large, with a warning naming the estimate and the limit. The ceiling shapes peak memory rather than enforcing a hard limit. The daemon clamps it (see `BASEMIND_DAEMON_MAX_FOOTPRINT_MB`). |
-| `max_map_cache_mb` | integer | `256` | Byte budget in MiB for the MCP read stack's decoded-outline cache, per workspace; `0` is unbounded. A miss costs one blob read and never changes an answer. `references`, `callers` and `implementations` from a daemon-backed session are forwarded to the daemon and hold no projection in the session, so this budget only bounds the last-resort in-RAM call/implementation projection used when no daemon is reachable (the `projections_capped` notice appears only then). The daemon clamps it (see `BASEMIND_DAEMON_MAX_MAP_CACHE_MB`). |
+| `max_map_cache_mb` | integer | `256` | Byte budget in MiB for the MCP read stack's decoded-outline cache, per workspace; `0` is unbounded. A miss costs one blob read and never changes an answer. `code_refs` scans from a daemon-backed session are forwarded to the daemon and hold no projection in the session, so this budget only bounds the last-resort in-RAM call/implementation projection used when no daemon is reachable (the `projections_capped` notice appears only then). The daemon clamps it (see `BASEMIND_DAEMON_MAX_MAP_CACHE_MB`). |
 | `document_models` | enum | `full` | Which model families run during document extraction. `full` runs every configured post-processor the build has (OCR needs the `documents-ocr` feature, NER needs `documents-ner`). `code_only` keeps embeddings but forces keyword extraction, NER, and summarization off and disables OCR. `none` also drops embeddings — documents are still extracted for text + metadata (keyword search) but never routed to any model. `[documents].enabled = false` remains the zero-cost total short-circuit. |
 | `onnx_provider` | enum | `cpu` | ONNX Runtime execution provider for every model basemind loads (embeddings, reranker, NER): `cpu`, `auto`, `coreml`, `cuda` or `tensorrt`. The default is `cpu` because the platform default on macOS (CoreML) compiled a graph per input shape and measured 7.6 GB resident for one tiny document against 0.8 GB on CPU (and 3x slower), which let a document-heavy scan reach tens of GB. `auto` restores the platform default (CoreML on macOS, CUDA on a GPU-enabled Linux build). |
 
 ### `[code_search]` Section
 
-Semantic + keyword search over source chunks (`code` modes `semantic` / `chunk`). Requires
+Semantic + keyword search over source chunks (`code_search`). Requires
 `--features code-search`.
 
 ```toml
@@ -258,7 +258,7 @@ default_visibility = "group"
 |---|---|---|---|
 | `enabled` | bool | `true` | Reserved: the `memory` cargo feature alone decides whether memory is available. |
 | `scope_strategy` | enum | `git_remote_with_fallback` | Reserved. Intended: `git_remote_with_fallback` shares memory across clones of the same remote; `workdir_only` keeps each clone separate. |
-| `default_visibility` | enum | `group` | Reserved. Intended: default tier when a `memory` tool call omits `visibility` (`group` shared, `individual` private to the calling agent). |
+| `default_visibility` | enum | `group` | Reserved. Intended: default tier when a `memory_save` / `memory_search` call omits `visibility` (`group` shared, `individual` private to the calling agent). |
 
 All three `[memory]` keys parse but currently have no effect (see [Reserved keys](#reserved-keys)).
 
@@ -391,7 +391,7 @@ falls back to the default.
 (size and modification time, plus a content hash for very recent edits) and logs `config changed;
 reloaded`. A file that no longer parses keeps the last good config and logs a warning. A hosted read
 stack with live sessions keeps its config until they reconnect, and `scan_threads` is fixed for the
-process lifetime (the daemon logs that a restart is required). `admin status` reports `config_stamp`
+process lifetime (the daemon logs that a restart is required). `index_status` reports `config_stamp`
 (`<bytes>B@<unix seconds>`) to spot an edit. The file watcher rebuilds its include/exclude filter on
 the same change.
 
@@ -443,14 +443,14 @@ Read directly rather than mapped from a config key:
 |---|---|
 | `BASEMIND_NO_SEED` | Any non-empty value other than `0` stops a new linked-worktree view from being seeded from a sibling worktree's index. |
 | `BASEMIND_DATA_HOME` | Overrides the global cache root. |
-| `BASEMIND_GREP_BLOOM` | `0` disables the per-file trigram bloom prefilter of `code grep` and forces the full sweep. Anything else (or unset) leaves it on. See [Performance](/reference/performance/#code-grep). |
+| `BASEMIND_GREP_BLOOM` | `0` disables the per-file trigram bloom prefilter of `code_grep` and forces the full sweep. Anything else (or unset) leaves it on. See [Performance](/reference/performance/#code-grep). |
 | `BASEMIND_BLOB_GC_GRACE_SECS` | Whole seconds a blob must age before the sweep (`basemind cache gc`, post-migration cleanup, the daemon's hourly sweep) may reclaim it. Default `21600` (6 h); `0` reclaims every unreferenced blob at once. |
 | `BASEMIND_GH_INDEX` | `0` disables the git-history index (the history tools then walk git directly); `scan` / `rescan --no-git-history` does the same per run. |
 | `BASEMIND_GIT_DISCOVER_PARENTS` | Restores indexing an ancestor repository's history for a workspace root that is only a subdirectory of it. |
-| `BASEMIND_BLAME_MAX_BYTES` / `BASEMIND_BLAME_MAX_LINES` | Size limits past which `git blame` refuses a file (defaults 1 MiB and 5000 lines). |
+| `BASEMIND_BLAME_MAX_BYTES` / `BASEMIND_BLAME_MAX_LINES` | Size limits past which `git_blame` refuses a file (defaults 1 MiB and 5000 lines). |
 | `BASEMIND_PARSE_TIMEOUT_MS` | Hard ceiling on one tree-sitter parse, in milliseconds (default 5000). |
 | `BASEMIND_GRAMMAR_OFFLINE` | Any non-empty value other than `0` stops basemind downloading tree-sitter grammars. |
-| `BASEMIND_MCP_LEAN` | Advertises three lean wrapper tools in `tools/list` instead of the domain tools. |
+| `BASEMIND_MCP_LEAN` | Advertises three lean wrapper tools in `tools/list` instead of the full tool list. |
 | `BASEMIND_COMMS_DIR` | Overrides the comms directory (singleton socket, `daemon.log`, `http.addr`). Keep the path short: a Unix socket path has a length limit. |
 | `BASEMIND_HTTP_ADDR` | `host:port` for the opt-in HTTP front-end (default `127.0.0.1:51786`; needs `BASEMIND_ALLOW_HTTP`). |
 | `BASEMIND_COMMS_REQUEST_TIMEOUT_SECS` | Seconds a coordination request waits for the broker's reply (default 10). Forwarded work is exempt. |
@@ -467,8 +467,8 @@ Daemon-side knobs that are not config keys (`BASEMIND_WARM_READ_STACKS`, `BASEMI
 The `documents.*` overrides are CLI flags and environment variables only; the MCP tools
 do not accept them (they used to inflate every session's tool schema). Set those keys in
 `basemind.toml`. The per-call knobs MCP does expose are the ones that change a single query:
-`memory` mode `documents` takes `format`, `max_tokens`, `mime_type`, `scope`, `entity_category`
-(needs the `documents-ner` feature) and `keywords_contains`, and `code` mode `semantic` takes `lane`, `rerank`, `rerank_preset` and `rerank_top_k`.
+`docs_search` takes `max_tokens`, `mime_type`, `scope`, `entity` (needs the `documents-ner`
+feature) and `keywords`, and `code_search` takes `lane`.
 
 ## Cargo Features
 
@@ -481,19 +481,19 @@ ONNX Runtime). Opt into the rest:
 |---|---|---|
 | `documents` | Document search over local files (xberg): PDF (text layer), Office formats, spreadsheets, email, HTML, XML (SVG text is read as XML), Markdown/MDX and Jupyter notebooks, with chunking, language detection, quality scoring, keywords (YAKE/RAKE), extractive (TextRank) summaries, the cross-encoder reranker and embeddings. No OCR, no NER. | yes |
 | `documents-ocr` | `documents` plus Tesseract OCR: raster images and scanned PDFs (no text layer). Runs implicitly, no configuration. | yes |
-| `documents-ner` | `documents` plus ONNX named-entity recognition (GLiNER): `[documents.ner]` and the `entity_category` document-search filter. | yes |
+| `documents-ner` | `documents` plus ONNX named-entity recognition (GLiNER): `[documents.ner]` and the `docs_search` `entity` filter. | yes |
 | `documents-ocr-paddle` | `documents-ocr` plus PaddleOCR as an optional fallback stage. Source builds only; not in the published binaries. | no |
-| `memory` | LanceDB-backed shared memory (`memory` tool). | yes |
-| `code-search` | Hybrid code search — vector + BM25 + exact-symbol lanes (`code` tool modes `semantic`, `chunk`). | yes |
+| `memory` | LanceDB-backed shared memory (`memory_save`, `memory_search`). | yes |
+| `code-search` | Hybrid code search — vector + BM25 + exact-symbol lanes (`code_search`). | yes |
 | `comms` | Agent-to-agent comms — threads, per-agent inbox, DMs (`agents` + `workspace` tools; Unix domain sockets + Windows named pipes). | yes |
-| `code-intel` | Scope- and import-resolved JS/TS `code` tool modes `references` / `definition` (oxc). | yes |
+| `code-intel` | Scope- and import-resolved JS/TS `code_refs` resolution (oxc). | yes |
 | `full` | `documents` + `documents-ocr` + `documents-ner` + `memory` + `code-search` + `comms` + `code-intel`. | — |
 
 `--features documents` alone no longer includes OCR or NER. A source build that wants both uses
 `--features "documents documents-ocr documents-ner"` (or `full`). Without `documents-ocr`, raster
 images are not indexed as documents and a PDF with no text layer is indexed with no text, with a
-warning naming the file and the feature. Without `documents-ner`, a document search with
-`entity_category` returns an error naming the feature. Archive extraction, LLM-backed summarization
+warning naming the file and the feature. Without `documents-ner`, a `docs_search` call with
+`entity` returns an error naming the feature. Archive extraction, LLM-backed summarization
 and HEIC/HEIF, SQLite, WordPerfect, HWP/HWPX and Apple iWork extraction are not in any build.
 
 ### Installation Examples

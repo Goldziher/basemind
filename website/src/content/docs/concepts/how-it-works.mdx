@@ -44,7 +44,7 @@ Each tool call resolves to a lookup in the index, not a re-read of the project. 
 bounded rather than proportional to the repo: decoded outlines live in an LRU cache capped by
 `[resources] max_map_cache_mb`, symbol and import names in a compact resident term index, and
 callee and trait names in small resident dictionaries, with the rest read from the on-disk index
-on demand. `references`, `callers` and `implementations` are scanned inside the daemon, so a
+on demand. `code_refs` lookups are scanned inside the daemon, so a
 session holds no copy of the call index. See [Memory and resources](/reference/memory/).
 
 ## Re-scans
@@ -55,11 +55,11 @@ unchanged. This means keeping the index fresh as you work costs far less than th
 ## Index lifecycle and freshness
 
 `basemind serve` answers the MCP handshake immediately and warms the code map into memory in the
-background, so a client never blocks waiting for a large repo to load. `admin status` reports
+background, so a client never blocks waiting for a large repo to load. `index_status` reports
 `warming` (still loading) and, once done, `warm_ms`; a first-time index build similarly reports
 `indexing` / `index_build_ms`.
 
-While the server isn't fully ready, `admin status` and every code-map read tool may carry a
+While the server isn't fully ready, `index_status` and every code-map read tool may carry a
 `notice` object — `{ state, message, retry }` — instead of (or alongside) their normal result:
 
 | `state` | Meaning | `retry` |
@@ -67,16 +67,17 @@ While the server isn't fully ready, `admin status` and every code-map read tool 
 | `warming_up` | Loading an existing index into memory. | `true` |
 | `building_index` | Indexing from scratch (no index for this workspace yet). | `true` |
 | `rescanning` | Incremental rescan after a file change; results are usable but may be stale. | `false` |
+| `empty_index` | Nothing is indexed yet: run `index_rescan` or `basemind scan`. | — |
 
 Treat an empty or partial result carrying a `notice` as "retry shortly," not "no matches" — poll
-`admin status` (or just retry the call) until the notice clears.
+`index_status` (or just retry the call) until the notice clears.
 
 ## Code versus documents
 
 The code map holds code only. Prose, data and configuration files (Markdown, reStructuredText,
 AsciiDoc, JSON, YAML, TOML, XML, CSV, INI, `.env`, diffs and the like) are routed to the document
-tier instead: chunked, embedded and searched as text with `memory documents`, never listed as
-symbols. That keeps `code outline`, `code symbols` and `code grep` free of README headings and
+tier instead: chunked, embedded and searched as text with `docs_search`, never listed as
+symbols. That keeps `code_outline`, `code_symbols` and `code_grep` free of README headings and
 config keys. `[documents] include` / `exclude` and `mime_allowlist` decide which of those files are
 indexed; with the `documents` feature compiled out they fall back to the code map.
 
@@ -86,11 +87,11 @@ Markdown notes and Obsidian vaults are therefore searched by meaning and by keyw
 
 Search and memory (semantic search over documents and stored notes) are powered by
 [LanceDB](https://github.com/lancedb/lancedb), an in-process vector database. When you call
-`memory documents`, basemind compares your query against the embeddings of every document chunk
+`docs_search`, basemind compares your query against the embeddings of every document chunk
 and returns the closest matches by meaning, not just by keywords.
 
-The shared memory store works the same way: agents can write notes with `memory put`, and other
-agents search that memory with `memory search` using semantic similarity.
+The shared memory store works the same way: agents can write notes with `memory_save`, and other
+agents search that memory with `memory_search` using semantic similarity.
 
 ```mermaid
 flowchart LR

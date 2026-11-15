@@ -12,78 +12,104 @@ x-ai-rulez:
 
 `basemind serve` exposes a stdio MCP server (`rmcp`). The live contract is `tests/mcp_smoke.rs` — read it before changing any tool's response shape.
 
-The surface is **six domain tools**, each one `#[tool]` dispatching on a required,
-non-defaulted `mode` — never a distinct tool per verb. The same six names are the CLI groups
-(`basemind <domain> <mode>`), enforced as a strict bijection by `tests/cli_parity/`. Read
-`src/mcp/mode.rs` for the authoritative wire spellings before writing about any mode; never infer
-one from prose.
+The surface is **one tool per job** (ADR-0018): fifteen verb tools, each with its own exact
+schema and no `mode` argument. `src/mcp/types_tools.rs` is the authoritative list of tools
+(`VERB_TOOLS`) and of every argument; read it before writing about a tool, never infer an argument
+from prose. A `comms` build adds two tools that are still mode-dispatched, `agents` and
+`workspace`, until their own redesign.
 
-## Domains
+## Verb tools
 
-| Tool / CLI group | `mode` values | Gate |
+| Tool | Arguments (required first; `?` = optional) | Job |
 |---|---|---|
-| `code` | outline, symbols, grep, files, find, definition, references, callers, implementations, dependents, expand, semantic, chunk | always |
-| `git` | status, recent, touching, by_path, churn, diff, diff_outline, blame, blame_symbol, symbol_history, search, show | always |
-| `memory` | put, get, list, search, delete, documents | always¹ |
-| `admin` | status, repo, rescan, cache_stats, gc, cache_clear, telemetry | always |
-| `agents` | register, list, thread_start, thread_list, join, leave, members, add_member, remove_member, archive, post, history, message, inbox, ack, wait | `comms` |
-| `workspace` | workspaces, worktrees, branches, claim, release | `comms` |
+| `code_outline` | `path`, `limit?`, `cursor?`, `max_tokens?` | a file's symbols (kind, signature, 1-based `line` / `end_line`) and imports |
+| `code_symbols` | `name`, `kind?`, `fuzzy?`, `limit?`, `cursor?`, `max_tokens?` | find a definition by name; ranked exact, prefix, substring, then (with `fuzzy`) fuzzy subsequence; each row carries `match` |
+| `code_read` | `path`, then `symbol?` (+ `kind?`) or `line?` + `end_line?` | one symbol's body, or a 1-based inclusive line span; cut at 128 KiB |
+| `code_grep` | `pattern`, `regex?`, `path?`, `language?`, `context?`, `limit?`, `cursor?`, `max_tokens?` | text search over indexed code; literal unless `regex`; `path` is a substring, a glob is rejected; a hit is the full line `text` (cut at 400 bytes) plus the enclosing `symbol` |
+| `code_search` | `query`, `lane?`, `limit?`, `cursor?`, `max_tokens?` | search code by meaning; returns pointers, not bodies; reports `lanes_ran` and `lanes_unavailable` (lane + reason) |
+| `code_refs` | `name`, `relation?`, `path?`, `line?`, `column?`, `match?`, `limit?`, `cursor?`, `max_tokens?` | usages: call sites of a name, callers of one definition (`path`: returns `definition` and `resolved_total` + per-hit `resolved`, or `resolution: "unsupported for <language>"`), `implementations`, `importers`, or the `definition` a reference binds to; `match` is `exact` (default: the identifier is the name, or a qualified path ending in it) or `substring` |
+| `find_files` | `query?`, `path_prefix?`, `language?`, `limit?`, `cursor?`, `max_tokens?` | fuzzy file-name search, or a listing without `query`; code and documents |
+| `docs_search` | `query`, `mime_type?`, `keywords?`, `entity?`, `scope?`, `limit?`, `cursor?`, `max_tokens?` | semantic search over indexed documents |
+| `git_log` | `path?`, `query?`, `author?`, `symbol?`, `rev?`, `limit?`, `cursor?`, `max_tokens?` | recent commits, a path's history, a commit search, a symbol's history, or one commit |
+| `git_blame` | `path`, `line?` + `end_line?`, `symbol?`, `rev?`, `limit?`, `cursor?` | per-line authorship of a file, a span, or one symbol |
+| `git_diff` | `path?`, `from?`, `to?`, `structural?` | no arguments: working-tree status; `path`: that file's diff (`from` defaults to HEAD, `to` to the working tree); `structural`: symbols added and removed since `from`, no `to` |
+| `memory_save` | `key`, `value`, `tags?`, `visibility?` | write a durable note |
+| `memory_search` | `query?` or `key?` or `prefix?`, `tag?`, `visibility?`, `limit?`, `cursor?` | recall notes by meaning, by key, or by key prefix |
+| `index_status` | none | index health and repository identity (files per language, scan state, `cache_dir` for this workspace, `grammar_dir`, branch, HEAD) |
+| `index_rescan` | `paths?`, `full?` | re-index changed files, the given paths, or everything |
 
-¹ Advertised always, body-gated on the `memory` / `documents` features.
+`code_search` needs the `code-search` Cargo feature, `docs_search` needs `documents`, and
+`memory_save` / `memory_search` need `memory`. All four are advertised in every build; a build
+without the feature answers with an `isError` result naming it. The git tools require
+`basemind serve` inside a git repository.
 
-### `code` — code-map lookups
+Off the MCP surface and reachable only from the CLI: `git churn`, `git by-path <regex>`,
+`code chunk`, `memory delete`, `cache stats|gc|clear`, `admin telemetry`.
 
-`outline` (a file's structure — read instead of the file), `symbols` (find a definition by name
-substring), `grep` (pattern search, filtered by language/path), `files` (enumerate indexed
-paths), `find` (fuzzy filename/path search), `definition` (resolve a reference position to its
-scope-resolved definition), `references` (every call site of a name — no scope resolution;
-`Foo::bar()` and `bar()` both match `name="bar"`), `callers` (callers of one specific definition,
-disambiguated by path — resolves the definition first, then runs the same name-based scan as
-`references`), `implementations` (types implementing/inheriting a trait or base class),
-`dependents` (heuristic reverse-lookup via imports), `expand` (a symbol's raw source body),
-`semantic` (search by meaning, needs `--features code-search`), `chunk` (fetch one code chunk's
-body — the `semantic` fetch half).
+## Contract of every verb tool
 
-### `git` — git history (requires `basemind serve` inside a git repo)
+- **Exact arguments.** Each params struct is `deny_unknown_fields` and deserialized through
+  `Strict<T>` (`src/mcp/strict.rs`): an argument the tool does not take is refused with a
+  did-you-mean and the accepted list, never silently dropped. A field is optional only when the
+  tool runs without it. "Exactly one of" constraints cannot be stated in the flat schema subset
+  and are checked in the body.
+- **Paths and positions.** `path` is a `RelPath` (repo-relative, forward slashes); do not accept an
+  arbitrary `String` path. `line`, `end_line` and `column` are 1-based.
+- **Lists.** Every list takes `limit` and `cursor` and returns `next_cursor`. A list is trimmed to
+  a default budget of 6000 tokens (`DEFAULT_MAX_TOKENS`) and then sets `budgeted`. Index scans
+  stay bounded by a scan cap and report `total_is_partial`.
+- **Failures are results.** `BasemindServer::answer` (`src/mcp/tool_contract.rs`) turns an `McpError`
+  returned by a tool body into a tool result with `isError: true` whose text names the fix. JSON-RPC
+  errors are left to the protocol layer.
+- **Notices.** An empty index is never a plain empty result: the response carries a `notice`
+  (`empty_index`, `warming_up`, `building_index`, `rescanning`).
+- **Inline results.** A server-side Task is used only for a call still running after the threshold
+  (`tasks::SLOW_CALLS`: `index_rescan`, `code_search`, `docs_search`).
+- **Always loaded.** `finalize_router` stamps `_meta["anthropic/alwaysLoad"]: true` on every tool,
+  so a host that defers MCP tools still loads the schemas at session start.
+- **Descriptions.** Each opens with "Use …", states the contract, and ends with one
+  `Example: {…}` call. Field docs are one clause each.
+- **Annotations are exact per tool.** Everything is read-only except `memory_save` and
+  `index_rescan`; nothing is destructive.
+- **No `output_schema`.** The response structs nest, schemars emits nested structs as `$ref` into
+  `$defs` (the construct that dropped the whole registry in GH #50), and inlining them would break
+  the byte ceiling. `tests/mcp_smoke.rs` asserts the absence.
+- **Byte ceiling.** The verb tools serialize to at most 20,000 bytes in `tools/list`, and the server
+  instructions to at most 4,096 characters (`tests/mcp_schema_wire.rs`). Shorten a description;
+  never raise the ceiling.
+- **Telemetry keys are the tool names.** `src/mcp/savings.rs` maps the keys older binaries wrote
+  (`code:outline`) onto them.
 
-`status` (staged/unstaged summary), `recent` (recent commits with paths + summaries), `touching`
-(commits that modified a path), `by_path` (path-filtered commit log), `churn` (churn-ranked
-files), `diff` / `diff_outline` (file and outline diffs across revisions), `blame` /
-`blame_symbol` (per-line and per-symbol blame), `symbol_history` (cross-commit history of a
-symbol's structural hash), `search` (full-text search over commit messages and authors).
+## Layout
 
-### `memory` — shared memory and documents
+- `src/mcp/types_tools.rs` — one params struct per tool, plus the `tool_args!` table that binds
+  each struct to its tool name and builds `VERB_TOOLS`.
+- `src/mcp/tools.rs` (code tools and `find_files`), `tools_git.rs`, `tools_memory.rs`
+  (`docs_search`, `memory_save`, `memory_search`), `tools_admin.rs` (`index_status`,
+  `index_rescan`) — one thin `#[tool]` shim per tool, and beside it the `<tool>_call` method that
+  both the shim and the CLI run.
+- `src/mcp/helpers_*.rs` — the bodies.
+- `src/cli/` — every MCP tool has a CLI command that calls the same `<tool>_call`
+  (`tests/cli_parity/` enforces it; the mapping is injective, and the CLI may keep shorthands and
+  CLI-only administrative commands, each a row in `tests/cli_parity/capabilities.rs`).
 
-`put` / `get` / `list` / `search` / `delete` (a per-repo memory agents write to and search by
-meaning), `documents` (semantic search over indexed PDFs / Office / HTML instead of opening
-them).
+## Mode-dispatched tools (`--features comms`)
 
-### `admin` — server + cache administration
+`agents` and `workspace` each dispatch on a required `mode`. Their vocabulary lives in
+`src/mcp/mode.rs` (`define_mode!`), with per-mode fields as optional siblings validated by
+`reject_unsupported`.
 
-`status` (index health) / `repo` (repository identity and layout), `rescan` (re-index changed
-files, or the whole workspace), `cache_stats` / `gc` / `cache_clear` (the machine-global cache),
-`telemetry` (usage + token-savings summary).
-
-### `agents` (`--features comms`)
+### `agents`
 
 `register` / `list` (identity card, roster), `thread_start` / `thread_list` (open / discover
 threads addressed by subject, path-glob, and/or members), `join` / `leave` / `members` (explicit
 membership — no auto-join), `add_member` / `remove_member` / `archive` (creator/admin-only
 thread management), `post` (send a message), `history` / `inbox` (front-matter only — subject /
 from / id), `message` (read one body by id — the only path to a body), `ack` (clear read
-messages), `wait` (block until a peer posts or the timeout elapses).
+messages), `wait` (block until a peer posts or the timeout elapses), `cleanup` (preview or apply
+stale-record retention), `status` (active and stale agent counts).
 
-### `workspace` (`--features comms`)
+### `workspace`
 
 `workspaces` / `worktrees` / `branches` (the daemon's machine-wide registry), `claim` / `release`
 (advisory worktree claims so sessions don't collide).
-
-## Contract rules
-
-- All paths are `RelPath` (byte-precise, repo-relative). Do not accept arbitrary `String` paths.
-- Responses are `JsonSchema`-derived and stable; new fields are additive with `#[serde(default)]`.
-- Lists are capped (`limit`, default 100, max 1000). Index scans use `scan_cap = limit * 8` to bound work on common names.
-- Mode descriptions are the routing surface for agents; state semantics (substring vs prefix, scope-aware vs name-only) explicitly.
-- Each domain owns a `types_<domain>.rs` / `tools_<domain>.rs` / `helpers_<domain>.rs` trio (`code`'s live in the base `types.rs`/`tools.rs`/`helpers_code.rs`; `agents` in the `*_comms.rs` files; `workspace` in the `*_registry.rs` files — filenames predate the CLI/tool rename). `tools.rs` and the `tools_<area>.rs` siblings contain `#[tool]` shims only, one per domain, dispatching on `mode`.
-- No `output_schema` on any of the domain tools — every domain's modes return different response shapes, and SEP-2106 allows exactly one schema per tool. Per-mode shapes are documented in the description instead.
-- Annotations coarsen to the union of a domain's modes, resolving toward the side effect (e.g. `admin` advertises `destructive_hint` because `cache_clear` is one of its modes). See ADR-0011.

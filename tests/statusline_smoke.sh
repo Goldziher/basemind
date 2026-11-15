@@ -19,8 +19,12 @@ done
 : >"$FIXTURE/.basemind/views/working/index.msgpack"
 
 now_us="$(($(date +%s) * 1000000))"
-printf '{"ts_micros": %d, "tool": "outline", "est_tokens_saved": 500}\n' "$now_us" \
-  >"$FIXTURE/.basemind/telemetry.jsonl"
+# One row per bucket under the tool-name keys, plus rows an older binary wrote (`domain:mode` keys
+# and a bare pre-consolidation name) so a telemetry log that spans an upgrade still buckets.
+for tool in code_outline code_grep index_status git_log docs_search memory_search \
+  code:outline git:recent memory:documents memory:get outline; do
+  printf '{"ts_micros": %d, "tool": "%s", "est_tokens_saved": 500}\n' "$now_us" "$tool"
+done >"$FIXTURE/.basemind/telemetry.jsonl"
 
 payload="$(printf '{"workspace":{"current_dir":"%s"}}' "$FIXTURE")"
 output="$(printf '%s' "$payload" | "$STATUSLINE")"
@@ -51,6 +55,26 @@ assert_contains '◆' 'brand glyph ◆ present'
 assert_contains 'basemind' 'name present'
 assert_contains '●' 'liveness dot present'
 assert_contains '7' 'file count 7 from blob fixture'
+
+if command -v jq >/dev/null 2>&1; then
+  # The per-bucket segment is rendered in the full tier only; pin it instead of relying on the width.
+  plain="$(printf '%s' "$payload" | BASEMIND_STATUSLINE=full "$STATUSLINE" | sed $'s/\033\\[[0-9;]*m//g')"
+  assert_plain_contains() {
+    if [[ "$plain" == *"$1"* ]]; then
+      printf '  ok  %s\n' "$2"
+    else
+      printf '  FAIL %s — expected %q in: %s\n' "$2" "$1" "$plain" >&2
+      fail=1
+    fi
+  }
+  assert_plain_contains '11 calls' 'every telemetry row counted'
+  assert_plain_contains '5 srch' 'code_*, index_* and legacy code rows bucket as searches'
+  assert_plain_contains '2 git' 'git_log and legacy git:recent bucket as git'
+  assert_plain_contains '2 docs' 'docs_search and legacy memory:documents bucket as docs'
+  assert_plain_contains '2 mem' 'memory_search and legacy memory:get bucket as mem'
+else
+  printf '  skip telemetry bucket assertions (jq unavailable)\n'
+fi
 
 plugin_version=""
 if command -v jq >/dev/null 2>&1; then

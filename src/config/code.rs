@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use super::RerankerConfig;
 
-/// `[code_search]` table. Chunk + embed source code for the `code` tool's `semantic` mode.
+/// `[code_search]` table. Chunk + embed source code for the `code_search` tool.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CodeSearchConfig {

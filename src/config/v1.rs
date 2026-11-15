@@ -32,7 +32,7 @@ pub struct ConfigV1 {
     /// profile. Bounds basemind's footprint on constrained machines.
     #[serde(default)]
     pub resources: ResourcesConfig,
-    /// Semantic code-search tier: chunk + embed source for the `code` tool's `semantic` mode.
+    /// Semantic code-search tier: chunk + embed source for the `code_search` tool.
     /// Inert unless the `code-search` cargo feature is compiled in.
     #[serde(default)]
     pub code_search: CodeSearchConfig,
@@ -221,8 +221,8 @@ pub struct CodeIntelConfig {
     /// Master switch for precise, scope- and import-aware name resolution. When `true` (default),
     /// languages with a precise engine resolve references to their true definitions — JS/TS via oxc
     /// (`code-intel-js`), Python/Java via the stack-graphs `.tsg` engine (`code-intel-stack`) — so
-    /// `code` modes `references` / `callers` / `definition` distinguish a shadowed local from an
-    /// import instead of matching by name. Set to `false` to fall back to fast tree-sitter `locals`
+    /// `code_refs` (pinned callers and the `definition` relation) distinguishes a shadowed local
+    /// from an import instead of matching by name. Set to `false` to fall back to fast tree-sitter `locals`
     /// scope binding for every language (the precise engines are skipped). Inert for languages with
     /// no precise engine regardless. Takes effect on files (re)analyzed after the change; run a full
     /// `basemind scan` to apply it to an already-indexed repo.

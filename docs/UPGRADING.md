@@ -6,6 +6,139 @@ basemind keeps its index in a machine-global cache (`BASEMIND_DATA_HOME`, defaul
 workspace. An upgrade never asks you to wipe it. This page says what happens to the old shape and what
 is cleaned up.
 
+## Upgrading to the verb tools (ADR-0018)
+
+The release after 0.33 replaces the mode-dispatched MCP tools `code`, `git`, `memory` and `admin`
+with 15 tools, one per job ([ADR-0018](adr/0018-mcp-verb-tools.md)). The change is breaking and has
+no aliases: a call to an old tool name fails, and no tool takes a `mode` argument any more. `agents`
+and `workspace` are unchanged. The plugin's skills, commands, hooks and rules ship in the same
+release and the plugin downloads the matching binary, so update both together.
+
+The tools are always loaded (`_meta["anthropic/alwaysLoad"]: true`): a host that defers MCP tools
+needs no tool-search round trip, so call them directly. `tools/list` for them is about 17 KB (about
+4.2k tokens), down from about 25 KB (about 6.3k tokens) for the four tools they replace.
+
+### Tool mapping
+
+| Old tool and mode | New tool |
+| --- | --- |
+| `code` `outline` | `code_outline {path}` |
+| `code` `symbols` | `code_symbols {name}` |
+| `code` `expand` | `code_read {path, symbol}` |
+| `code` `grep` | `code_grep {pattern}` (literal; add `regex: true` for a regex) |
+| `code` `semantic` | `code_search {query}` |
+| `code` `chunk` | `code_read {path, line, end_line}` on the hit's span (CLI keeps `basemind code chunk`) |
+| `code` `references` | `code_refs {name}` |
+| `code` `callers` | `code_refs {name, path}` |
+| `code` `implementations` | `code_refs {name, relation: "implementations"}` |
+| `code` `dependents` | `code_refs {name, relation: "importers"}` |
+| `code` `definition` | `code_refs {name, relation: "definition", path, line}` |
+| `code` `find` | `find_files {query}` |
+| `code` `files` | `find_files {}` |
+| `memory` `documents` | `docs_search {query}` |
+| `memory` `put` | `memory_save {key, value}` |
+| `memory` `get` | `memory_search {key}` |
+| `memory` `list` | `memory_search {prefix}` or `memory_search {}` |
+| `memory` `search` | `memory_search {query}` |
+| `memory` `delete` | CLI only: `basemind memory delete <key>` |
+| `git` `recent` | `git_log {}` |
+| `git` `touching` | `git_log {path}` |
+| `git` `by_path` | `git_log {path: "dir/"}`; an arbitrary regex is CLI only: `basemind git by-path` |
+| `git` `search` | `git_log {query}` / `git_log {author}` |
+| `git` `show` | `git_log {rev}` |
+| `git` `symbol_history` | `git_log {path, symbol}` |
+| `git` `churn` | CLI only: `basemind git churn` |
+| `git` `blame` | `git_blame {path, line, end_line}` |
+| `git` `blame_symbol` | `git_blame {path, symbol}` |
+| `git` `status` | `git_diff {}` |
+| `git` `diff` | `git_diff {path, from, to}` |
+| `git` `diff_outline` | `git_diff {path, structural: true}` |
+| `admin` `status`, `repo` | `index_status {}` |
+| `admin` `rescan` | `index_rescan {paths?, full?}` |
+| `admin` `cache_stats` / `gc` / `cache_clear` | CLI only: `basemind cache stats\|gc\|clear` |
+| `admin` `telemetry` | CLI only: `basemind admin telemetry` |
+
+### Renamed arguments
+
+| Old | New | Where |
+| --- | --- | --- |
+| `path_contains` | `path` | `code_grep` (still a substring of the repo-relative path; a glob is rejected) |
+| `path_contains` | `path_prefix` | `find_files` (now a prefix) |
+| `include_context` | `context` | `code_grep` (default off) |
+| `line_start` / `line_end` | `line` / `end_line` | `git_blame` |
+| `rev_old` / `rev_new` | `from` / `to` | `git_diff` |
+| `entity_category` | `entity` | `docs_search` |
+| `keywords_contains` | `keywords` | `docs_search` |
+| `start_row` (responses) | `line` / `end_line` | every tool that reports a position |
+
+### Removed arguments
+
+- `mode`, on all 15 tools.
+- `format` (`"toon"`): responses are JSON.
+- The undocumented aliases (`q`, `needle`, `token_budget` and similar). Only the names in a tool's
+  schema are accepted.
+- `field` on commit search: pass `query` for messages or `author` for authors to `git_log`.
+
+### CLI changes
+
+The group names are unchanged, and every MCP tool has a command. `--json` still prints the tool's
+JSON.
+
+| Before | Now |
+| --- | --- |
+| `code expand <path> <name>` | `code read <path> --symbol <name>` (`expand` stays as an alias of `read`), or `code read <path> --line <n> --end-line <m>` |
+| `code grep <regex>` | `code grep <pattern>` is literal; add `--regex` |
+| `code grep --path-contains <s>` | `code grep --path <s>` |
+| `code files --path-contains <s>` | `code files --path-prefix <s>` / `code find [query] --path-prefix <s>` |
+| `code references <name>` | `code refs <name>` (`references` stays as an alias) |
+| `code semantic <query>` | `code search <query>` (`semantic` stays as an alias) |
+| `code definition <path> <line> [--column]` | `code definition <path> <line> <name> [--column]` |
+| `git blame <path> --line-start <a> --line-end <b>` | `git blame <path> --line <a> --end-line <b>` |
+| `git diff <path> <old> <new>` | `git diff <path> --from <old> --to <new>` |
+| `git search <query> --field author` | `git search <query> --author <name>` |
+| `status`, `rescan`, `cache stats\|gc\|clear` | unchanged |
+
+New commands mirror the tools: `code read`, `code search`, `code refs`, `git log` and a `git diff`
+that takes no path for the working-tree status. The previous commands remain as shorthands (`code
+callers`, `implementations`, `dependents`, `definition`, `find`, `files`; `git status`, `recent`,
+`touching`, `search`, `show`, `symbol-history`, `blame-symbol`, `diff-outline`).
+
+Removed flags: `--format` (including `--format toon`), `--l2`, `--path-contains`, `--no-context`,
+`--line-start` / `--line-end`, `--field`, `--body-chars`, `--hash-mode`, `--no-embed`, `--no-files`,
+and `--rerank` / `--rerank-top-k` on code search. Every list command takes `--limit`, `--cursor` and
+`--max-tokens`.
+
+### Behaviour changes
+
+- **`code_grep` is literal by default.** The pattern is plain text unless `regex: true` (`--regex`).
+  A script that passed a regex must add the flag, or it searches for the regex source text.
+- **Lines are 1-based everywhere**, in arguments and in responses (`line`, `end_line`, `column`).
+  Outline, symbol and caller positions were 0-based `start_row` values before; subtract nothing when
+  feeding a `line` to `code_read` or `git_blame`.
+- **`code_refs` matches the whole identifier.** `open` no longer returns call sites of `open_store`.
+  Pass `match: "substring"` for the previous behaviour.
+- **Unknown arguments are rejected.** They used to be dropped, so a misspelled filter ran unfiltered
+  and reported success. The error names the closest accepted argument and lists all of them.
+- **Errors are tool results.** A failure the caller can fix comes back with `isError: true` and text
+  naming the fix (a path that is not indexed, an empty index, a compiled-out feature) instead of a
+  JSON-RPC error. An empty index is reported with a `notice` (`state: "empty_index"`), never as a
+  plain empty list.
+- **Default token budget.** Every list honours a default `max_tokens` of 6000 and sets `budgeted`
+  when it trims; page with `next_cursor`, or raise `max_tokens`.
+- **`git_diff` reads the working tree.** With no arguments it returns the status (staged, modified,
+  untracked); with only `path` it diffs that file's working-tree content against HEAD. `to` defaults
+  to the working tree and `from` to HEAD.
+- **`find_files` lists documents.** Markdown, config and other document-tier files are returned
+  together with code files, including on a long-lived server.
+- **`index_status.cache_dir`** is basemind's cache directory. It used to report the tree-sitter
+  grammar directory.
+- **Results are inline.** A call is answered directly; `index_rescan`, `code_search` and
+  `docs_search` become a server-side Task only when still running after 3 s. Fast calls are no longer
+  returned as background tasks.
+- **Telemetry keys are the tool names** (`code_grep`, not `code:grep`).
+- **Annotations are exact per tool.** Everything is read-only except `memory_save` and
+  `index_rescan`, so a host that gates on read-only can allow the rest. No tool is destructive.
+
 ## Upgrading from 0.28 to 0.29
 
 0.29 bumps the release minor, so the first scan rebuilds the index, and it reshapes the CLI.
@@ -37,7 +170,8 @@ afterwards, together with `admin compress` and `compress-output`; they have no r
 The `web` tool and the `basemind web` commands (`scrape`, `crawl`, `map`) were removed, with the
 `crawl` cargo feature; they have no replacement. A `[crawl]` table in `basemind.toml` is still
 accepted and ignored. Pages already ingested stay searchable under their `web:<host>` scope
-(`memory documents --scope web:<host>`) and are no longer refreshed.
+(`docs_search` with `scope: "web:<host>"`, or `memory documents --scope web:<host>`) and are no
+longer refreshed.
 
 The `shell` tool and the `basemind shell` commands (`spawn`, `send`, `capture`, `kill`, `list`,
 `broadcast`) were removed, with the `shells` cargo feature; they have no replacement. A `[shells]`
@@ -47,7 +181,8 @@ still lists it in `basemind comms doctor` but cannot talk to it.
 
 The `memory` modes `audit`, `mine`, `proposals`, `accept` and `reject` and their `basemind memory`
 commands were removed; they have no replacement. `put`, `get`, `list`, `search`, `delete` and
-`documents` are unchanged, and stored notes keep every field, including the verdict and importance
+`documents` were kept (and are now `memory_save`, `memory_search` and `docs_search`, see above), and
+stored notes keep every field, including the verdict and importance
 an audit wrote, which nothing updates any more. Archived notes and pending proposals stay on disk in
 the repo's `memory.fjall` and are never read. The comms protocol version is now 5: the first
 upgraded session replaces a running older daemon, and a client and daemon that still disagree fail
@@ -55,9 +190,9 @@ the handshake with `proto_skew`.
 
 The `graph` tool and the `basemind graph` commands (`calls`, `neighbors`, `path`, `subgraph`,
 `communities`, `map`, `export`, `display`, `open`) were removed, with the `basemind://repo/map`
-resource and the daemon's `/ui` page; they have no replacement. `code` modes `callers`,
-`references`, `implementations`, `dependents` and `definition` are unchanged and answer the
-who-calls-what questions. The daemon's HTTP front-end now serves `/mcp` only and takes the bearer
+resource and the daemon's `/ui` page; they have no replacement. The caller, call-site,
+implementation, importer and definition lookups (now `code_refs`) answer the who-calls-what
+questions. The daemon's HTTP front-end now serves `/mcp` only and takes the bearer
 token in the `Authorization` header only: `?token=` is refused.
 
 The `documents` cargo feature was split into tiers. `documents` is document search without OCR or
@@ -92,7 +227,6 @@ Also check scripts for these behaviour changes:
   interrupted. `scan` and `rescan` exit `3` (not `0`) when another process holds the lock.
 - The timing footer is on stderr; stdout carries only the answer. Human output no longer truncates
   values to 200 characters.
-- `--format` on `code semantic` and `memory documents` takes only `json` or `toon`.
 - `agents` and `workspace` `--json` now use the MCP response shapes.
 - MCP logging is gone, and the `memory` tool no longer accepts the `documents.*` / `llm.*` override fields.
 
@@ -103,7 +237,7 @@ Also check scripts for these behaviour changes:
 | Prose, data and config files (markdown, json, yaml, toml, xml, csv, ini, ...) left the code map for the document tier | The next scan, full or incremental, notices a path indexed in the other tier, purges its code-map rows (file map, fjall `files` / calls / implementations / resolved / bm25 entries, code-search chunks) and indexes it as a document | Documents are chunked, and embedded when `[documents] embed` is on |
 | Symbol `signature` now ends at the grammar's body field instead of embedding the body | `EXTRACT_EPOCH` (see below): only files whose entry or blob predates the epoch are re-extracted, in the normal bounded scan | One parse per affected file, no wipe |
 | Release-minor schema bump (`0.28.x` to `0.29.x`) | `RELEASE_MINOR` mismatch: each view's `index.msgpack` and fjall index are reset on open and every file is re-extracted, overwriting stale blobs in place | Full re-extraction, by design |
-| `grep_bloom` index keyspace (per-file trigram bloom for `code grep`) | A new keyspace, so `INDEX_SCHEMA_VER` is not bumped. An index without it opens with an empty `grep_bloom` and greps correctly at once (every file is a candidate); the next scan builds the rows from the bytes it reads, and an unchanged file with no row is read once to backfill it | One read per unchanged file, once; about 12.8 % of the indexed code bytes on disk |
+| `grep_bloom` index keyspace (per-file trigram bloom for `code_grep`) | A new keyspace, so `INDEX_SCHEMA_VER` is not bumped. An index without it opens with an empty `grep_bloom` and greps correctly at once (every file is a candidate); the next scan builds the rows from the bytes it reads, and an unchanged file with no row is read once to backfill it | One read per unchanged file, once; about 12.8 % of the indexed code bytes on disk |
 | Resident term index, name dictionaries, heap retag | In memory only. Nothing on disk, nothing to migrate | none |
 | `[resources] onnx_provider` defaults to `cpu` | Behaviour only: models load on the CPU provider instead of the platform default (CoreML on macOS). Set `onnx_provider = "auto"` to restore it. No on-disk change | none |
 | Daemon `IndexRead` forwarding | Wire protocol only | none |
@@ -142,8 +276,7 @@ as its live `.doc` blob.
   sweep itself and prints `cleanup: reclaimed N orphaned blob(s), B bytes`. In the daemon the same
   condition triggers a sweep one minute later. The hourly daemon sweep and `basemind cache gc` run it
   too; `cache gc` used to be a report-only no-op.
-- The result is recorded in `gc-state.json` and shown as `last_gc` by `cache stats` / `admin
-  cache_stats`; `orphan_blob_count` there is tier-aware and drops to `0` after the sweep.
+- The result is recorded in `gc-state.json` and shown as `last_gc` by `cache stats`; `orphan_blob_count` there is tier-aware and drops to `0` after the sweep.
 
 A second scan after the upgrade is a no-op: nothing is migrated, refreshed or reclaimed, and the blob
 set stops changing.

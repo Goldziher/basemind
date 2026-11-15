@@ -5,19 +5,20 @@ description: Find source code by meaning, term, or exact symbol — hybrid RRF f
 
 import { Aside, Badge, Card, CardGrid } from '@astrojs/starlight/components';
 
-`code` mode `semantic` (`basemind code semantic` on the CLI) finds code by meaning,
+`code_search` (`basemind code search` on the CLI) finds code by meaning,
 full-text term, or exact symbol match. Three lanes fuse results via Reciprocal Rank Fusion
 (RRF): vector (semantic), BM25 (keyword), and exact symbol. Optional cross-encoder
-reranking re-scores the fused results. Returns code pointers; fetch bodies with `code chunk`.
+reranking, set in `basemind.toml`, re-scores the fused results. Returns code pointers (path,
+`line` / `end_line`, symbol); read a hit with `code_read`.
 
 <Badge text="--features code-search" /> or `--features full`
 
 ## Lanes
 
 <Aside type="note">
-`hybrid` / `semantic` / `keyword` are retrieval lanes selected via the `lane` parameter of
-`code semantic`, not separate MCP modes or CLI subcommands — `code semantic` is the one
-mode that covers all three.
+`hybrid` / `semantic` / `keyword` are retrieval lanes selected via the `lane` argument of
+`code_search` (`--lane` on the CLI), not separate tools. The response reports `lanes_ran` and
+`lanes_unavailable`, with the reason a lane did not run.
 </Aside>
 
 ### `hybrid` (default)
@@ -36,11 +37,9 @@ embeddings).
 
 ```json
 {
-  "mode": "semantic",
-  "query": "spawn background task",
+  "query": "retry a failed upload with backoff",
   "lane": "hybrid",
-  "limit": 10,
-  "rerank": true
+  "limit": 10
 }
 ```
 
@@ -56,7 +55,6 @@ when you want "code that means this" regardless of naming.
 
 ```json
 {
-  "mode": "semantic",
   "query": "spawn background task",
   "lane": "semantic",
   "limit": 20
@@ -72,28 +70,28 @@ Full-text search over code.
 
 ```json
 {
-  "mode": "semantic",
   "query": "spawn",
   "lane": "keyword",
   "limit": 50
 }
 ```
 
-## Fetching results
+## Reading results
 
-`code semantic` returns **pointers** with chunk ID, path, byte span, and a snippet. Fetch
-the full source body with `code chunk`:
+`code_search` returns **pointers**: path, 1-based `line` / `end_line` and the enclosing symbol.
+Read the body with `code_read` on the hit's span:
 
 ```json
 {
-  "mode": "chunk",
   "path": "src/scanner.rs",
-  "chunk_id": "abc123"
+  "line": 120,
+  "end_line": 160
 }
 ```
 
-Two-call pattern mirrors `code symbols` → `code expand`: cheap search returns pointers,
-then fetch only what you need.
+The two-call pattern mirrors `code_symbols` then `code_read`: a cheap search returns pointers,
+then you read only what you need. The CLI also keeps `basemind code chunk <path> --chunk-id <id>`,
+which fetches one chunk body by id.
 
 ## Configuration
 
@@ -112,21 +110,21 @@ preset = "bge-reranker-base"
 
 ## Discipline
 
-- **Use `code semantic` for queries about what code does.** "Find code that spawns
+- **Use `code_search` for queries about what code does.** "Find code that spawns
   a background task" → semantic search.
 - **Use the `keyword` lane for term search.** "Find the word `spawn`" → faster, no embeddings.
 - **Use the `hybrid` lane when you want all signals.** Symbol matches win for exact names,
   semantic search wins for meaning, BM25 wins for terminology.
-- **Fetch with `code chunk` only what you need.** Search returns pointers; don't waste
+- **Read with `code_read` only what you need.** Search returns pointers; don't waste
   tokens re-reading the whole file.
-- **Enable `rerank` if latency allows.** Cross-encoder reranking improves top-1 relevance
-  but adds ~50–100 ms per query.
+- **Enable the reranker if latency allows** (`[code_search.reranker] enabled = true`).
+  Cross-encoder reranking improves top-1 relevance but adds ~50–100 ms per query.
 
 <Aside type="note">
 - Chunks are derived from cached extraction (symbols, calls, docs) plus source bytes.
 - Content-addressed cache (`<hash>.chunk.msgpack`) deduplicates across identical files.
 - Results are paginated; use `next_cursor` → `cursor` for additional pages.
-- Capped by `limit` (default 10, max 100).
+- Capped by `limit` (default 10) and a `max_tokens` budget (default 6000).
 </Aside>
 
 ## See also

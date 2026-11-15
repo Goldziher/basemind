@@ -11,16 +11,21 @@ references, callers, implementations), semantic + keyword code search, git histo
 blame at symbol resolution, full-text + semantic document search over PDFs, Office files, HTML and email (with OCR and
 cross-encoder reranking), shared per-repo memory, and an agent-to-agent comms
 broker. Every tool returns paths, line numbers, and signatures — not file bodies — so a structural
-answer costs a fraction of the tokens of reading source. The operating rule for agents: **basemind
-first, shell/grep/git fallback.**
+answer costs a fraction of the tokens of reading source. The MCP surface is one tool per job with an
+exact schema and no `mode` argument: `code_outline`, `code_symbols`, `code_read`, `code_grep`,
+`code_search`, `code_refs`, `find_files`, `docs_search`, `git_log`, `git_blame`, `git_diff`,
+`memory_save`, `memory_search`, `index_status`, `index_rescan`. The tools are always loaded, so call
+them directly; unknown arguments are rejected, lines are 1-based, and a fixable failure is an
+`isError` result that names the fix. The operating rule for agents: **basemind first,
+shell/grep/git fallback.**
 
 ## Documentation
 
 - [Documentation site](https://basemind.ai): Guides, capability deep-dives, MCP tool + CLI reference, architecture, and performance.
 - [How it works](https://basemind.ai/concepts/how-it-works/): One scan, then instant answers held in memory.
 - [Token economy](https://basemind.ai/concepts/token-economy/): Why structural answers cost a fraction of the tokens of reading files.
-- [MCP tool reference](https://basemind.ai/reference/mcp-tools/): Every tool, its parameters, and matching semantics.
-- [CLI reference](https://basemind.ai/reference/cli/): The scriptable CLI, at parity with the MCP tools: top-level `status`, `rescan`, `cache`, `doctor`, `completions`, documented exit codes (0 ok, 1 error, 2 usage, 3 busy, 4 daemon unreachable, 130 interrupted), and `--format json|toon`.
+- [MCP tool reference](https://basemind.ai/reference/mcp-tools/): Every tool, its arguments, an example call, the shared contract, and the mapping from the previous `code` / `git` / `memory` / `admin` tools.
+- [CLI reference](https://basemind.ai/reference/cli/): The scriptable CLI, a command for every MCP tool plus shorthands and administrative commands: top-level `status`, `rescan`, `cache`, `doctor`, `completions`, documented exit codes (0 ok, 1 error, 2 usage, 3 busy, 4 daemon unreachable, 130 interrupted), and `--json`.
 - MCP resources: `basemind://status`, `basemind://outline/{path}`, `basemind://memory/{key}`.
 - [Installation](https://basemind.ai/start/installation/): Plugin, MCP server, and standalone CLI setup.
 - [Configuration](https://basemind.ai/reference/configuration/): `basemind.toml` (repo root or `.config/`), scan and document scoping, per-grammar `[languages]` overrides, the credential exclude floor, operator trust grants (`BASEMIND_ALLOW_*`), daemon caps (`BASEMIND_DAEMON_MAX_*`), feature flags, and layered overrides.
@@ -32,11 +37,11 @@ first, shell/grep/git fallback.**
 
 ## Capabilities
 
-- [Code intelligence](https://basemind.ai/capabilities/code-intelligence/): Find where code is defined and used — symbol search, file outlines, references, callers, implementations, dependents, go-to-definition, fuzzy path search, indexed regex (one `code` tool: modes `outline`, `symbols`, `grep`, `files`, `find`, `definition`, `references`, `callers`, `implementations`, `dependents`, `expand`). The code map is code only: Markdown, JSON, YAML, TOML and other prose/data/config files are document-tier content, searched with `memory` mode `documents` (`files` and `find` list documents too; `outline`, `grep` and `symbols` do not).
-- [Semantic code search](https://basemind.ai/capabilities/code-search/): Search code by meaning, term, or symbol over indexed chunks — hybrid RRF fusion, vector KNN, or BM25, with optional reranking (`code` modes `semantic` and `chunk`; requires `--features code-search`).
-- [Git intelligence](https://basemind.ai/capabilities/git-intelligence/): Recent commits, commits touching a path, per-line and per-symbol blame, structural diffs across revisions, churn ranking, symbol history, and full-text search over commit authors + messages (one `git` tool: modes `status`, `recent`, `touching`, `by_path`, `blame`, `blame_symbol`, `diff`, `diff_outline`, `churn`, `symbol_history`, `search`, `show`).
-- [Document search](https://basemind.ai/capabilities/document-search/): Semantic + full-text search over PDFs, Office, HTML, email, and images (OCR), with reranking, keyword and named-entity filters, and per-document summaries (`memory` mode `documents`). OCR and named-entity recognition are the `documents-ocr` and `documents-ner` Cargo features; the published binaries include both.
-- [Shared memory](https://basemind.ai/concepts/memory/): Per-repo key/value + semantic memory that agents read and write, shared across clones of the same repo (one `memory` tool: modes `put`, `get`, `list`, `search`, `delete`, plus `documents`).
+- [Code intelligence](https://basemind.ai/capabilities/code-intelligence/): Find where code is defined and used — file outlines (`code_outline`), symbol search (`code_symbols`), a symbol's body or a line span (`code_read`), text search, literal unless `regex: true` (`code_grep`), and usages (`code_refs`: call sites, callers of one definition, implementations, importers, go-to-definition), plus fuzzy file search and listing (`find_files`). The code map is code only: Markdown, JSON, YAML, TOML and other prose/data/config files are document-tier content, searched with `docs_search` (`find_files` lists documents too; `code_outline`, `code_grep` and `code_symbols` do not).
+- [Semantic code search](https://basemind.ai/capabilities/code-search/): Search code by meaning, term, or symbol over indexed chunks — hybrid RRF fusion, vector KNN, or BM25 (`code_search` with `lane`; read a hit with `code_read`; requires `--features code-search`).
+- [Git intelligence](https://basemind.ai/capabilities/git-intelligence/): Recent commits, commits touching a path, full-text search over commit messages and authors, symbol history and one commit in full (`git_log`); per-line and per-symbol blame (`git_blame`); working-tree status, text diffs and structural diffs across revisions (`git_diff`). Churn ranking is CLI only (`basemind git churn`).
+- [Document search](https://basemind.ai/capabilities/document-search/): Semantic + full-text search over PDFs, Office, HTML, email, and images (OCR), with reranking, keyword and named-entity filters, and per-document summaries (`docs_search`). OCR and named-entity recognition are the `documents-ocr` and `documents-ner` Cargo features; the published binaries include both.
+- [Shared memory](https://basemind.ai/concepts/memory/): Per-repo key/value + semantic memory that agents read and write, shared across clones of the same repo (`memory_save`, `memory_search`; deletion is CLI only: `basemind memory delete`).
 - [Agent comms](https://basemind.ai/concepts/agent-comms/): Coordinate with other agents via explicit threads (per-repo, path-scoped, or subject-based), a per-agent inbox, and two-tier messages. Advisory worktree claims for collision detection (one `agents` tool: modes `register`, `list`, `thread_start`, `thread_list`, `join`, `leave`, `members`, `add_member`, `remove_member`, `archive`, `post` (with an optional `idempotency_key` for safe retries), `history`, `message`, `inbox`, `ack`, `wait`, `cleanup`, `status`; plus the `workspace` tool's `workspaces` / `worktrees` / `branches` / `claim` / `release` modes).
 
 ## Skills
@@ -46,7 +51,7 @@ first, shell/grep/git fallback.**
 - [basemind-git-history](https://github.com/Goldziher/basemind/blob/main/skills/basemind-git-history/SKILL.md): Git intelligence over the index.
 - [basemind-documents](https://github.com/Goldziher/basemind/blob/main/skills/basemind-documents/SKILL.md): Document RAG.
 - [basemind-comms](https://github.com/Goldziher/basemind/blob/main/skills/basemind-comms/SKILL.md): Agent coordination via explicit threads.
-- [basemind-cli](https://github.com/Goldziher/basemind/blob/main/skills/basemind-cli/SKILL.md): The scriptable CLI surface, at parity with the MCP tools.
+- [basemind-cli](https://github.com/Goldziher/basemind/blob/main/skills/basemind-cli/SKILL.md): The scriptable CLI surface: a command for every MCP tool.
 - [basemind-scan](https://github.com/Goldziher/basemind/blob/main/skills/basemind-scan/SKILL.md): Build or refresh the index with `basemind scan`.
 - [basemind-doctor](https://github.com/Goldziher/basemind/blob/main/skills/basemind-doctor/SKILL.md): Diagnose and recover basemind when it isn't working.
 - [basemind-stats](https://github.com/Goldziher/basemind/blob/main/skills/basemind-stats/SKILL.md): Session usage dashboard and estimated tokens saved.

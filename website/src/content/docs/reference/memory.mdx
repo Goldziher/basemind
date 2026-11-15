@@ -66,13 +66,13 @@ The daemon is the only process that opens the index. A session answers from:
 
 - an LRU cache of decoded outlines, capped at `max_map_cache_mb` per workspace (default 256 MiB);
   a miss costs one blob read and never changes an answer;
-- a resident term index of symbol names and import strings behind `symbols` and `dependents`,
+- a resident term index of symbol names and import strings behind `code_symbols` and `code_refs` importers,
   built in the background when a full cache is published;
-- small resident dictionaries of the distinct callee and trait names behind `references`,
-  `callers` and `implementations` (a few MB at monorepo scale), so a substring query range-scans
+- small resident dictionaries of the distinct callee and trait names behind `code_refs`
+  call-site and implementation lookups (a few MB at monorepo scale), so a substring query range-scans
   only the matching names instead of walking every call site.
 
-`references`, `callers` and `implementations` from a daemon-backed session are forwarded to the
+`code_refs` scans from a daemon-backed session are forwarded to the
 daemon, which runs the same scan as a writer session. The session holds no copy of the call index and the
 results and totals are complete. Only when no daemon is reachable does a session build an in-RAM
 projection, charged against `max_map_cache_mb` and flagged with a `projections_capped` notice if it
@@ -121,7 +121,7 @@ Machine-global daemon knobs read from the environment rather than from `basemind
 | `BASEMIND_INDEX_CACHE_BYTES` | Overrides the computed Fjall block cache size, in bytes. | computed |
 | `BASEMIND_MAX_DAEMONS` | Ceiling on concurrently live daemons before a spawn is refused. | 8 |
 | `BASEMIND_NO_AUTOSPAWN` | Stops any process from spawning the daemon, so a service manager can own it inside a cgroup `MemoryMax`. | unset |
-| `BASEMIND_GREP_BLOOM` | `0` disables the `code grep` bloom prefilter and forces a full sweep. | on |
+| `BASEMIND_GREP_BLOOM` | `0` disables the `code_grep` bloom prefilter and forces a full sweep. | on |
 | `BASEMIND_BLOB_GC_GRACE_SECS` | Age in seconds a blob must reach before the sweep may reclaim it. `0` reclaims every unreferenced blob at once. | 21600 (6 h) |
 
 Run the daemon under systemd with a memory limit if you want a hard bound: auto-spawn from a shell
@@ -130,6 +130,6 @@ service. Set `BASEMIND_NO_AUTOSPAWN` and start `basemind comms daemon` from the 
 
 ## Measuring
 
-`basemind cache stats` (or `admin` mode `cache_stats`) reports on-disk size per component, blob
+`basemind cache stats` reports on-disk size per component, blob
 accounting including orphans, and process RAM. `basemind status` reports index health.
 The scan summary prints counts of documents skipped as too large.

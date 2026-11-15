@@ -61,8 +61,8 @@ One JSON object per line; blank lines and `#` lines are skipped and ids must be 
 
 | Field | Meaning |
 |---|---|
-| `mode` | `symbols`, `outline`, `references`, `callers`, `grep`, `find`, `dependents`, `git_search` or `docs`. |
-| `args` | The tool's arguments without `mode` (`name`, `pattern`, `path`, `query`, `module`, `language`, `limit`, ...). |
+| `mode` | The task kind: `symbols`, `outline`, `references`, `callers`, `grep`, `find`, `dependents`, `git_search` or `docs`. It selects the tool: `code_symbols`, `code_outline`, `code_refs` (`references`, `callers`, `dependents`), `code_grep`, `find_files`, `git_log`, `docs_search`. |
+| `args` | That tool's own arguments, validated exactly (`name`, `pattern`, `regex`, `path`, `query`, `relation`, `language`, `limit`, ...). A `grep` task with a regex needs `"regex": true`; a `dependents` task is `{"name": <module>, "relation": "importers"}`. |
 | `gold` | Expected items: `path` or `path:line`. Gold with any `path:line` entry is scored at line level. |
 | `scoring` | `set` (order-insensitive) or `ranked`. |
 | `k` | Rank cut-off for ranked tasks (default 10). |

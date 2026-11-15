@@ -20,13 +20,13 @@ Navigation is **scope- and import-aware** for JavaScript/TypeScript (via oxc) an
 server. Every other language still gets fast tree-sitter scope binding.
 
 This resolves each use to the definition it actually binds to: a shadowed local isn't
-confused with an import, and `code definition` lands on the right target — including across
+confused with an import, and `code_refs` with `relation: "definition"` lands on the right target — including across
 files, for Python dotted/relative imports and for JS/TS module resolution (Node resolution
 plus tsconfig `paths` aliases via `oxc_resolver`).
 
 <Aside type="note">
-Resolution **refines but never shrinks** a result set. `code callers` reports every call site
-whose callee matches the name — the same sound floor `code references` uses — and marks each
+Resolution **refines but never shrinks** a result set. `code_refs` with a `path` reports every call
+site whose callee matches the name, the same sound floor a call without `path` uses, and marks each
 hit `resolved` when resolution proved the binding (`resolved_total` counts them). It does
 **not** filter down to only the resolved subset: resolution can't see through a module-object
 import (`from pkg import mod` then `mod.f()`) or an unresolvable alias, so filtering would drop
@@ -42,112 +42,143 @@ Toggle with `[code_intel] precise_resolution` in `basemind.toml` (default `true`
 
 ## Core tools
 
-All of the following are modes of the `code` MCP tool (`basemind code <mode>` on the CLI).
+Each job is its own MCP tool with an exact schema; the CLI commands are under `basemind code`.
+Every line and column is 1-based. See the [MCP tools reference](/reference/mcp-tools/) for all
+arguments.
 
-### `code outline`
+### `code_outline`
 
-Get a file's complete structure: symbols, signatures, line numbers, and doc comments. Add
-`l2: true` to include call sites and embedded documentation.
+Get a file's structure: every symbol with its kind, signature and 1-based `line` / `end_line`, plus
+the file's imports.
 
 ```json
 {
-  "path": "src/scanner.rs",
-  "l2": true
+  "path": "src/store.rs"
 }
 ```
 
 Returns a table of contents you can scan in seconds instead of reading a thousand-line file.
-Once you have the exact span, read only that range.
+Feed a span to `code_read`. Code files only.
 
-### `code symbols`
+### `code_symbols`
 
-Find symbols by **substring** across all indexed files. Optionally filter by `kind`
-(function, class, type, etc.).
+Find where a symbol is defined, by name, across all indexed files. Results are ranked: exact name,
+then prefix, then substring, then (with `fuzzy: true`) fuzzy subsequence. Matching is
+case-sensitive. Optionally filter by `kind` (function, method, struct, enum, class, interface,
+trait, type, const, module, macro).
 
 ```json
 {
-  "name": "process_file",
+  "name": "parse_config",
   "kind": "function"
 }
 ```
 
-Returns `path:line:column` and signature for each match. No scope resolution — a substring
-match is exact.
+Returns path, line and signature for each match.
 
-### `code references`
+### `code_read`
 
-Find all call sites of any callee whose identifier matches `name`. **No scope resolution**
-— `Foo::bar()` and `bar()` both match `name="bar"`.
+Read one symbol's source body, or an exact line span, instead of the whole file. Pass `symbol`, or
+`line` with `end_line`; not both. Bodies over 128 KiB are cut and flagged `truncated`.
 
 ```json
 {
-  "name": "spawn",
-  "limit": 50
+  "path": "src/store.rs",
+  "symbol": "open"
 }
 ```
 
-Backed by an indexed call-site table, returns tens of thousands of hits capped by `limit`
-(default 100, max 1000). From a daemon-backed session (the standard deployment) the scan runs in
-the daemon against the same index, so `total` and cursors are complete and identical to what a
-writer session sees; only when no daemon is reachable does a session fall back to an in-RAM
-projection capped by `[resources] max_map_cache_mb`, flagged with a `projections_capped` notice.
-
-### `code callers`
-
-Find callers of a **specific definition** (path + name + optional kind). First resolves
-the definition, then returns all callers of that exact symbol.
-
 ```json
 {
-  "path": "src/scanner.rs",
-  "name": "process_file",
-  "kind": "function"
+  "path": "src/store.rs",
+  "line": 120,
+  "end_line": 160
 }
 ```
 
-Combines definition resolution with the same name-based scan as `code references`, so
-results are disambiguated by location.
+### `code_refs`
 
-### `code definition`
+One tool answers "what calls X", "what implements X", "what imports X" and "which definition does
+this reference bind to". `relation` picks the question (default `callers`).
 
-Resolve a `path:line:column` reference to its actual definition. Intra-file resolution
-via tree-sitter `locals` across 80+ languages; JavaScript/TypeScript, Python, and Java
-additionally get precise, scope- and import-aware resolution — including cross-file — via
-oxc (JS/TS) or the in-tree stack-graphs engine (Python/Java). See
-[Precise, scope- and import-aware resolution](#precise-scope--and-import-aware-resolution)
-above.
+Call sites of a name. The identifier is matched exactly, with no scope resolution: `Foo::bar()` and
+`bar()` both match `name: "bar"`, and `bar_baz()` does not. Pass `match: "substring"` to match
+longer names too.
 
 ```json
 {
+  "name": "open_store"
+}
+```
+
+Callers of one definition. `path` pins the definition in that file; each hit is marked `resolved`
+when resolution proved the binding.
+
+```json
+{
+  "name": "open_store",
+  "path": "src/store.rs"
+}
+```
+
+Types that implement or inherit from a name: Rust `impl` blocks, Python `class` inheritance,
+TypeScript/JavaScript class declarations.
+
+```json
+{
+  "name": "Drawable",
+  "relation": "implementations"
+}
+```
+
+Files importing a module (a heuristic reverse lookup over import statements).
+
+```json
+{
+  "name": "tokio::sync",
+  "relation": "importers"
+}
+```
+
+Go-to-definition: resolve the reference `name` at `path`:`line` to the definition it binds to.
+`column` (1-based) is optional and defaults to where `name` occurs on the line. Intra-file
+resolution uses tree-sitter `locals` across 80+ languages; JavaScript/TypeScript, Python and Java
+additionally get precise, scope- and import-aware resolution, including cross-file. See
+[Precise, scope- and import-aware resolution](#precise-scope--and-import-aware-resolution) above.
+
+```json
+{
+  "name": "open_store",
+  "relation": "definition",
   "path": "src/main.rs",
-  "line": 42,
-  "column": 10
+  "line": 42
 }
 ```
 
-### `code implementations`
+Call-site lookups are backed by an indexed call-site table and capped by `limit` (default 100).
+From a daemon-backed session (the standard deployment) the scan runs in the daemon against the same
+index, so `total` and cursors are complete and identical to what a writer session sees; only when no
+daemon is reachable does a session fall back to an in-RAM projection capped by
+`[resources] max_map_cache_mb`, flagged with a `projections_capped` notice.
 
-Types that implement or inherit from a given name. Rust `impl` blocks, Python `class`
-inheritance, TypeScript/JavaScript class declarations.
+### `code_grep`
+
+Text search over the contents of indexed code files. `pattern` is literal text unless `regex: true`
+(Rust `regex` syntax). `path` is a substring of the repo-relative path; a glob is rejected. Each
+hit has the path, line, the full line `text` and the enclosing `symbol` (`name`, `kind`);
+`context: true` adds one line before and after.
 
 ```json
 {
-  "trait_name": "Iterator"
+  "pattern": "cache_root(",
+  "path": "src/"
 }
 ```
 
-### `code grep`
-
-Pattern search (Rust `regex` syntax) over the contents of indexed code files. Returns capped,
-structured hits with path, line, and matching text, plus one line of context either side
-(`include_context: false` drops it). `total_matches` and `total_files_matched` are exact for
-the scanned window.
-
 ```json
 {
-  "pattern": "TODO:.*urgent",
-  "language": "rust",
-  "path_contains": "src"
+  "pattern": "fn \\w+_call",
+  "regex": true
 }
 ```
 
@@ -155,72 +186,49 @@ The scanner keeps a small per-file trigram bloom filter (about 12.8 % of the ind
 bytes). A grep skips every file whose filter proves it cannot contain a literal the pattern
 requires, so on a 74k-file monorepo the 15 benchmark patterns dropped from several seconds to
 about 130 ms p50 with identical results (ADR-0012). A file is skipped only when its size and
-mtime still match the scan, so edited, added or deleted files are still searched. Patterns with
-no required 3-byte literal (`.*`, `(?i)k`) sweep every file. Set `BASEMIND_GREP_BLOOM=0` to force
-the full sweep. An existing index gains its filters on the next scan; no wipe is needed.
+mtime still match the scan, so edited, added or deleted files are still searched. Regex patterns
+with no required 3-byte literal (`.*`, `(?i)k`) sweep every file. Set `BASEMIND_GREP_BLOOM=0` to
+force the full sweep. An existing index gains its filters on the next scan; no wipe is needed.
 
-`grep` covers code only. Prose, data and config files (Markdown, JSON, YAML, TOML, ...) live in
-the document tier: search them with `memory` mode `documents`.
+`code_grep` covers code only. Prose, data and config files (Markdown, JSON, YAML, TOML, ...) live in
+the document tier: search them with `docs_search`.
 
-## Supporting tools
+### `find_files`
 
-### `code expand`
-
-Fetch a symbol's raw source body (the inverse of an `outline` entry). Use this after an
-outline tells you the exact function to fetch.
+Locate a file by a fuzzy fragment of its name or path, or list indexed files when `query` is
+omitted. Filter by `language` or `path_prefix`. Covers code and documents (markdown, config, PDFs).
 
 ```json
 {
-  "path": "src/scanner.rs",
-  "name": "process_file"
+  "query": "readme"
 }
 ```
 
-### `code files`
+### `index_status`
 
-Enumerate all indexed files. Filter by `language` or `path_contains`.
-
-```json
-{
-  "language": "rust",
-  "path_contains": "src/extract"
-}
-```
-
-### `code dependents`
-
-What imports or references a given module. Heuristic reverse-lookup via import statements.
-
-```json
-{
-  "module": "src/store"
-}
-```
-
-### `admin status` / `admin repo`
-
-Overview of the indexed repo: file count by language, current branch, HEAD commit, origin
-URL, on-disk cache size, and index build time.
+Index health and repo identity: file counts per language, scan and degraded state, the cache
+directory, and the repository's branch and HEAD. Call it when a result is unexpectedly empty or
+says "not indexed".
 
 ## Discipline
 
-- **`code outline` a file before you open it.** A 1000-line file becomes a 30-line table of
-  contents. Then read only the exact span you need.
-- **`code symbols` instead of grep for a definition.** Returns indexed symbol names and
+- **`code_outline` a file before you open it.** A 1000-line file becomes a 30-line table of
+  contents. Then `code_read` only the symbol or span you need.
+- **`code_symbols` instead of grep for a definition.** Returns indexed symbol names and
   positions, skipping comment/string noise.
-- **`code references` / `code callers` instead of grepping call sites.** Indexed call
-  edges, not text matches.
-- **`code grep` instead of shelling out to ripgrep** when you genuinely need regex —
-  it searches the indexed code files and returns capped, structured results.
+- **`code_refs` instead of grepping call sites.** Indexed call edges, not text matches.
+- **`code_grep` instead of shelling out to ripgrep.** It searches the indexed code files and
+  returns capped, structured hits with the enclosing symbol.
 - **Do not re-read a file basemind already mapped.** If the outline answered the question,
   stop.
-- **`admin rescan` after you edit code**, not a server reconnect. Pass `paths: [...]` to limit
+- **`index_rescan` after you edit code**, not a server reconnect. Pass `paths: [...]` to limit
   it.
 
 <Aside type="note">
-Lists are capped (`limit`: default 100, max 1000 for `symbols` / `grep` / `references` /
-`callers` / `implementations`; default 200, max 5000 for `files` / `find`). Index scanners use
-`scan_cap = limit * 8` (at least 2000) to bound work on common names.
+Lists are capped by `limit` (default 100 for `code_symbols` / `code_grep` / `code_refs`, 500 for
+`code_outline`, 200 for `find_files`) and trimmed to `max_tokens` (default 6000); a trimmed
+response sets `budgeted` and returns `next_cursor`. Index scanners use `scan_cap = limit * 8` (at
+least 2000) to bound work on common names.
 </Aside>
 
 ## See also

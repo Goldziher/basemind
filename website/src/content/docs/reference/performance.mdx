@@ -40,7 +40,7 @@ basemind precomputes a per-repo git-history index — posting lists mapping path
 
 Warm, in-process query latency on the same M4:
 
-| Repo | Commits | `git touching` | `git recent` | index build | index size |
+| Repo | Commits | `git_log` with `path` | `git_log` recent | index build | index size |
 |---|---|---|---|---|---|
 | django | 2 000 | 39 µs | 15 µs | 0.5 s | 1.7 MB (6 % of `.git`) |
 | tokio | 3 984 | 37 µs | 13 µs | 0.9 s | 2.1 MB (12 %) |
@@ -67,9 +67,9 @@ With the daemon holding the index (in-process p50 on a 74k-file monorepo, see be
 
 - **Outline**: about **1 ms**
 - **Symbols, references, callers, dependents**: **1-5 ms**
-- **`code grep`**: low hundreds of ms with the bloom prefilter, several seconds without
-- **Git history** (`git` modes `touching`, `recent`): **tens of µs** (posting-list lookup)
-- **Git commit search** (`git` mode `search`): **~55 ms**
+- **`code_grep`**: low hundreds of ms with the bloom prefilter, several seconds without
+- **Git history** (`git_log` recent and by `path`): **tens of µs** (posting-list lookup)
+- **Git commit search** (`git_log` with `query`): **~55 ms**
 - **Document search**: **~100 ms**
 
 These are in-process figures. They exclude MCP transport and process start-up, so an MCP client
@@ -98,7 +98,7 @@ same comparison), and an unchanged rescan at 1.06-1.14 GB (1.15 GB without). Ful
 
 ### Code grep
 
-`code grep` is a full-corpus scan, so its cost used to be the time to open every indexed file. A
+`code_grep` is a full-corpus scan, so its cost used to be the time to open every indexed file. A
 per-file trigram bloom filter (a new `grep_bloom` index keyspace, about 12.8 % of the indexed code
 bytes, built from bytes the scan already reads) lets a grep skip every file that provably cannot contain
 a literal the pattern requires. On 15 benchmark patterns over 38,265 Python files (216 MB) of that
@@ -159,18 +159,17 @@ cargo test --release --test harden -- --ignored --nocapture
 It runs:
 
 - Full scan on each repo
-- Every `code` mode (symbol search, `references`, `callers`, etc.)
-- Representative `git` modes (`blame`, `recent`, `touching`)
+- Every code tool (`code_symbols`, `code_refs`, `code_grep`, etc.)
+- The git tools (`git_log`, `git_blame`, `git_diff`)
 - Git-history index build and query latency measurements
 
 Per-repo metrics land in `/tmp/basemind-harden-*.log`. The harness asserts canaries:
 
-- `tokio`: `references("spawn")` ≥ 50, `find("src")` ≥ 100, `grep("fn spawn")` ≥ 20,
-  `implementations("Future")` ≥ 20, `calls("spawn", callers, depth=2)` ≥ 5 nodes,
-  `map(module)` ≥ 5 nodes and ≥ 1 import edge
-- `django`: `references("get")` ≥ 50, `git search("fixed", message)` ≥ 20 commits,
-  `git touching("django/db/models/query.py")` ≥ 10 commits, author search ≥ 1 hit
-- `react`: `symbols("useState")` > 0
+- `tokio`: `code_refs("spawn")` ≥ 50, `find_files("src")` ≥ 100, `code_grep("fn spawn")` ≥ 20,
+  `code_refs("Future", implementations)` ≥ 20, `code_search("spawn a task")` ≥ 1
+- `django`: `code_refs("get")` ≥ 50, `git_log(query="fixed")` ≥ 20 commits,
+  `git_log(path="django/db/models/query.py")` ≥ 10 commits, author search ≥ 1 hit
+- `react`: `code_symbols("useState")` > 0
 - `ripgrep-shallow`: shallow-clone signal surfaces (`any_truncated == true`)
 
 Every threshold sits well below the `limit` its capture call passes, so a canary can never be

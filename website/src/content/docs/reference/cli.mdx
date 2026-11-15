@@ -5,124 +5,144 @@ description: Complete command list for the basemind command-line interface.
 
 import { Aside } from '@astrojs/starlight/components';
 
-The CLI mirrors the MCP surface exactly: **six domains**, each a real clap subcommand group
-(`basemind <domain> <mode>`). `tests/cli_parity/` enforces it: every MCP mode maps to a CLI command
-with the same parameters and the same answer, and any command with no MCP counterpart is declared
-CLI-only with a reason. Some MCP modes live at the top level rather than under their domain
-(`status`, `rescan`, `cache`). Multi-word mode names are kebab-cased on the CLI (`by_path` → `by-path`) but
-keep their snake_case spelling on the wire (MCP mode name, `--json` field names). Add `--json` to
-any tool subcommand for machine-readable output.
+Every MCP tool has a CLI command that builds the same arguments and prints the same answer;
+`tests/cli_parity/` enforces it. The CLI also keeps shorthands (`code callers`, `git recent`, ...) and
+administrative commands with no MCP tool (`git churn`, `git by-path`, `code chunk`, `memory delete`,
+`cache`, `admin telemetry`), each declared CLI-only. Add `--json` to any tool subcommand to print the
+tool's JSON.
 
-Flags with a closed set of values (`--direction`, `--edges`, `--algorithm`, `--granularity`, `--format`,
-`--lane`, `--level`, `--window`, `--field`, `--hash-mode`, shell
-names) are validated by clap: a typo fails with exit code 2 and the valid choices listed, and the
-[completions](#other-commands) offer them. The MCP parameters carry the same values as free strings.
+| MCP tool | CLI command |
+|---|---|
+| `code_outline` | `code outline` |
+| `code_symbols` | `code symbols` |
+| `code_read` | `code read` (alias `expand`) |
+| `code_grep` | `code grep` |
+| `code_search` | `code search` (alias `semantic`) |
+| `code_refs` | `code refs` (alias `references`); shorthands `callers`, `implementations`, `dependents`, `definition` |
+| `find_files` | `code find`; `code files` lists |
+| `docs_search` | `memory documents` |
+| `git_log` | `git log`; shorthands `recent`, `touching`, `search`, `show`, `symbol-history` |
+| `git_blame` | `git blame`; shorthand `blame-symbol` |
+| `git_diff` | `git diff`; shorthands `status`, `diff-outline` |
+| `memory_save` | `memory put` |
+| `memory_search` | `memory search`, `memory get`, `memory list` |
+| `index_status` | `status` (`admin repo` prints the same payload) |
+| `index_rescan` | `rescan` |
 
-Commands that return lists share a set of paging and budget flags where their MCP mode takes them:
+Flags with a closed set of values (`--relation`, `--lane`, `--match`, `--window`) are validated by
+clap: a typo fails with exit code 2 and the valid choices listed, and the
+[completions](#other-commands) offer them.
 
-| Flag | Commands | Effect |
-|---|---|---|
-| `--cursor <TOKEN>` | `code symbols/grep/files/find/references/callers/implementations`, `git recent/search/touching/by-path/blame/blame-symbol/symbol-history`, `memory list`, `agents history/inbox/wait` | Resume from the previous page's `next_cursor`. |
-| `--max-tokens <N>` | `code outline/symbols/grep/files/find/references/callers/implementations/semantic`, `memory documents` | Token budget for the returned list; the overflow is dropped and the response is flagged `budgeted`. |
-| `--format json\|toon` | `code outline/symbols/grep/files/find/references/semantic`, `memory documents` | Response encoding. `toon` is a compact tabular form, printed as-is in human mode; `--json` always prints JSON. |
-| `--rerank-top-k <N>` | `code semantic` | How many fused hits the cross-encoder reranks (default from config). |
+Every list command takes the paging and budget flags its tool takes:
 
-| Domain | Gate |
+| Flag | Effect |
+|---|---|
+| `--limit <N>` | Maximum entries. |
+| `--cursor <TOKEN>` | Resume from the previous page's `next_cursor`. |
+| `--max-tokens <N>` | Token budget for the returned list (default 6000); the overflow is dropped and the response is flagged `budgeted`. |
+
+`--format`, `--l2`, `--path-contains`, `--no-context`, `--line-start` / `--line-end`, `--field`,
+`--body-chars`, `--hash-mode`, `--no-embed` and `--no-files` no longer exist; see
+[Upgrading](/start/upgrading/).
+
+| Group | Gate |
 |---|---|
 | `code`, `git`, `memory`, `admin` | always available |
 | `agents`, `workspace` | `--features comms` |
 
-A default `cargo install basemind` build exposes 5 domains; `--features comms` adds `agents` +
-`workspace` (7). Prebuilt downloads (Homebrew, npm, pip, GitHub releases) ship the full 7-domain
-build.
+Prebuilt downloads (Homebrew, npm, pip, GitHub releases) ship the build with `comms`.
 
-## `code` — code-map lookups
+## `code` — code lookups
 
 ```bash
-basemind code outline <path> [--l2 --max-tokens --format]
-basemind code symbols <name> [--kind --limit --cursor --max-tokens --format]
-basemind code grep <pattern> [--language --path-contains --limit --no-context --cursor --max-tokens --format]
-basemind code files [--path-contains --language --limit --cursor --max-tokens --format]
-basemind code find <query> [--path-prefix --language --limit --cursor --max-tokens --format]
-basemind code definition <path> <line> [--column]
-basemind code references <name> [--limit --cursor --max-tokens --format]
-basemind code callers <path> <name> [--kind --limit --cursor --max-tokens]
-basemind code implementations <trait-name> [--language --limit --cursor --max-tokens]
-basemind code dependents <module>
-basemind code expand <path> <name> [--kind]
-basemind code semantic <query> [--limit --lane --rerank --rerank-preset --rerank-top-k --max-tokens --format]
+basemind code outline <path> [--limit --cursor --max-tokens]
+basemind code symbols <name> [--kind --fuzzy --limit --cursor --max-tokens]
+basemind code read <path> [--symbol <name> [--kind] | --line <n> [--end-line <m>]]
+basemind code grep <pattern> [--regex --path --language --context --limit --cursor --max-tokens]
+basemind code search <query> [--lane --limit --cursor --max-tokens]
+basemind code refs <name> [--relation --path --line --column --match --limit --cursor --max-tokens]
+basemind code callers <path> <name> [--limit --cursor --max-tokens]
+basemind code implementations <name> [--limit --cursor --max-tokens]
+basemind code dependents <module> [--limit --cursor]
+basemind code definition <path> <line> <name> [--column]
+basemind code find [query] [--path-prefix --language --limit --cursor --max-tokens]
+basemind code files [--path-prefix --language --limit --cursor --max-tokens]
 basemind code chunk <path> [--chunk-id --byte-start]
 ```
 
 | Command | Purpose |
 |---|---|
-| `outline <path> [--l2]` | A file's structure: symbols, lines, signatures. `--l2` adds calls + docs. Read this instead of the file. Code files only; documents are searched with `memory documents`. |
-| `symbols <name> [--kind --limit]` | Find a definition by name (case-sensitive substring) across every indexed file. |
-| `grep <pattern> [--language --path-contains --limit --no-context]` | Regex content search, filtered by language/path. `--no-context` suppresses the 1-line before/after context. |
-| `files [--path-contains --language --limit]` | Enumerate indexed files, code and documents alike. |
-| `find <query> [--path-prefix --language --limit]` | Fuzzy filename/path search (fzf/fd-style), ranked by score. Covers documents as well as code. |
-| `definition <path> <line> [--column]` | Resolve a reference position to the definition it binds to (scope-resolved). |
-| `references <name> [--limit]` | Every call site of a name — no scope resolution. |
-| `callers <path> <name> [--kind --limit]` | Callers of one specific definition, disambiguated by path. |
-| `implementations <trait-name> [--language --limit]` | Types implementing/inheriting a trait, interface, or base class. |
-| `dependents <module>` | Files whose imports mention a module (heuristic). |
-| `expand <path> <name> [--kind]` | One symbol's raw source body — the inverse of an outline entry. |
-| `semantic <query> [--limit --lane --rerank --rerank-preset --rerank-top-k --max-tokens --format]` | Search code by meaning; returns pointers, fetch bodies with `chunk`. Needs `--features code-search`. |
-| `chunk <path> [--chunk-id --byte-start]` | Fetch one code chunk's source body. Needs `--features code-search`. |
+| `outline <path>` | A file's structure: symbols with kind, signature and 1-based lines, plus imports. Read this instead of the file. Code files only; documents are searched with `memory documents`. |
+| `symbols <name> [--kind --fuzzy]` | Find a definition by name across every indexed file. Ranked: exact, prefix, substring, then (with `--fuzzy`) fuzzy subsequence. |
+| `read <path> --symbol <name> [--kind]` / `read <path> --line <n> [--end-line <m>]` | One symbol's source body, or a 1-based inclusive line span. Alias `expand`. |
+| `grep <pattern> [--regex --path --language --context]` | Text search over the indexed code. The pattern is literal unless `--regex`. `--path` is a substring of the repo-relative path, not a glob. `--context` adds one line before and after each hit. |
+| `search <query> [--lane hybrid\|semantic\|keyword]` | Search code by meaning; returns pointers, read a hit with `code read`. Alias `semantic`. Needs `--features code-search`. |
+| `refs <name> [--relation callers\|implementations\|importers\|definition --path --line --column --match exact\|substring]` | Usages of a name. Without `--path`, every call site of the exact identifier; with `--path`, callers of the definition in that file. Alias `references`. |
+| `callers <path> <name>` | Shorthand for `refs <name> --path <path>`. |
+| `implementations <name>` | Shorthand for `refs <name> --relation implementations`. |
+| `dependents <module>` | Shorthand for `refs <module> --relation importers`. |
+| `definition <path> <line> <name> [--column]` | Shorthand for `refs <name> --relation definition --path <path> --line <line>`: the definition the reference binds to. |
+| `find [query] [--path-prefix --language]` | Fuzzy file-name or path search, ranked by score; a listing when the query is omitted. Covers documents as well as code. |
+| `files [--path-prefix --language]` | List indexed files, code and documents alike. |
+| `chunk <path> [--chunk-id --byte-start]` | Fetch one code-search chunk body. CLI only. Needs `--features code-search`. |
 
 ## `git` — git history
 
 Requires running inside a git repository.
 
 ```bash
+basemind git log [--path --query --author --symbol --rev --limit --cursor --max-tokens]
+basemind git blame <path> [--line --end-line --symbol --rev --limit --cursor]
+basemind git diff [path] [--from --to --structural]
 basemind git status
-basemind git recent [--limit --no-files --cursor]
-basemind git touching <path> [--limit --cursor]
-basemind git by-path <pattern> [--window --limit --cursor]
-basemind git churn [--window --top-k]
-basemind git diff <path> <rev-old> <rev-new>
+basemind git recent [--limit --cursor --max-tokens]
+basemind git touching <path> [--limit --cursor --max-tokens]
+basemind git search <query> [--author --limit --cursor --max-tokens]
+basemind git show <rev>
+basemind git symbol-history <path> <name> [--limit --cursor]
+basemind git blame-symbol <path> <name> [--rev --limit --cursor]
 basemind git diff-outline <path> [--rev]
-basemind git blame <path> [--line-start --line-end --rev --limit --cursor]
-basemind git blame-symbol <path> <name> [--kind --rev --limit --cursor]
-basemind git symbol-history <path> <name> [--kind --limit --hash-mode --cursor]
-basemind git search <pattern> [--field --limit --cursor]
+basemind git churn [--window --top-k]
+basemind git by-path <pattern> [--window --limit --cursor --max-tokens]
 ```
 
 | Command | Purpose |
 |---|---|
-| `status` | Staged / unstaged / untracked working-tree status. |
-| `recent [--limit --no-files]` | Recent commits with paths + summaries (a recency window, not a search). `--no-files` omits the per-file change list. |
-| `touching <path> [--limit]` | Commits that modified a given path. |
-| `by-path <pattern> [--window --limit]` | Path-filtered commit log (regex over changed paths). |
-| `churn [--window --top-k]` | Churn-ranked files in a recent commit window. |
-| `diff <path> <rev-old> <rev-new>` | File content diff between two revisions. |
-| `diff-outline <path> [--rev]` | Which symbols a file gained, lost, or changed between revisions. |
-| `blame <path> [--line-start --line-end --rev --limit]` | Per-line blame for a file. |
-| `blame-symbol <path> <name> [--kind --rev --limit]` | Blame clamped to one symbol, resolved to its line span. |
-| `symbol-history <path> <name> [--kind --limit --hash-mode]` | Commits where a symbol's structural hash actually changed. |
-| `search <pattern> [--field --limit]` | Full-text search over commit messages/authors at full branch depth. `--field` is `author`, `message`, or `all` (default). |
+| `log [--path --query --author --symbol --rev]` | No flags: recent commits. `--path`: commits touching a file, or a directory when it ends with `/`. `--query` / `--author`: full-text search. `--path` with `--symbol`: when that symbol's body changed. `--rev`: that one commit in full. |
+| `blame <path> [--line --end-line --symbol --rev]` | Who last changed a file, a 1-based line span, or one symbol. |
+| `diff [path] [--from --to --structural]` | No arguments: working-tree status. A path alone: that file's working-tree diff against HEAD. `--from` / `--to`: diff between revisions. `--structural`: symbols added and removed instead of text hunks. |
+| `status` | Shorthand for `diff` with no arguments. |
+| `recent` | Shorthand for `log` with no filter. |
+| `touching <path>` | Shorthand for `log --path <path>`. |
+| `search <query> [--author]` | Shorthand for `log --query <query>`. |
+| `show <rev>` | Shorthand for `log --rev <rev>`. |
+| `symbol-history <path> <name>` | Shorthand for `log --path <path> --symbol <name>`. |
+| `blame-symbol <path> <name> [--rev]` | Shorthand for `blame <path> --symbol <name>`. |
+| `diff-outline <path> [--rev]` | Shorthand for `diff <path> --structural --from <rev>`. |
+| `churn [--window --top-k]` | Top files by commit count over a recent window. CLI only. |
+| `by-path <pattern> [--window]` | Commits whose changed paths match a regex. CLI only. |
 
 ## `memory` — shared memory and documents
 
 ```bash
-basemind memory put <key> <value> [--tag --no-embed --individual]
+basemind memory put <key> <value> [--tag <t>]... [--individual]
+basemind memory search <query> [--limit --tag --individual]
 basemind memory get <key> [--individual]
 basemind memory list [--prefix --tag --limit --individual --cursor]
-basemind memory search <query> [--limit --tag --individual]
 basemind memory delete <key> [--individual]
-basemind memory documents <query> [--limit --mime-type --scope --max-tokens --format]
+basemind memory documents <query> [--mime-type --keywords --entity --scope --limit --cursor --max-tokens]
 ```
 
 | Command | Purpose |
 |---|---|
-| `put <key> <value> [--tag --no-embed --individual]` | Write a durable note. `--individual` uses the per-agent tier instead of shared (group). |
-| `get <key> [--individual]` | Read one memory entry by key. |
-| `list [--prefix --tag --limit --individual]` | Enumerate memory entries, newest first. |
-| `search <query> [--limit --tag --individual]` | Semantic search across stored memory. |
-| `delete <key> [--individual]` | Remove a memory entry by key. |
-| `documents <query> [--limit --mime-type --scope]` | Semantic search over indexed PDFs / Office / HTML instead of opening them. |
+| `put <key> <value> [--tag --individual]` | Write a durable note (`memory_save`). `--individual` uses the per-agent tier instead of shared (group). |
+| `search <query> [--limit --tag --individual]` | Search stored notes by meaning. |
+| `get <key> [--individual]` | Read one note by key. |
+| `list [--prefix --tag --limit --individual]` | List notes, optionally by key prefix or tag. |
+| `delete <key> [--individual]` | Remove a note by key. CLI only. |
+| `documents <query> [--mime-type --keywords --entity --scope]` | Semantic search over indexed documents (`docs_search`) instead of opening them. |
 
-## `admin` — server administration
+## `admin` — administration
 
 ```bash
 basemind admin repo
@@ -131,13 +151,13 @@ basemind admin tokens --stdin
 basemind admin eval --tasks <FILE> [--out --report --markdown --baseline --tolerance --cost-tolerance --min-recall --warmup --mode]
 ```
 
-The rest of the `admin` verbs live at the top level: `status`, `rescan` and `cache stats|gc|clear`
+`status`, `rescan` and `cache stats|gc|clear` live at the top level
 (see [Other commands](#other-commands)).
 
 | Command | Purpose |
 |---|---|
-| `repo` | Repository identity: workdir, branch, HEAD sha. |
-| `telemetry [--window --tool]` | Aggregate recorded tool calls into a usage and token-savings summary. |
+| `repo` | The same payload as `status`: index health plus repository branch and HEAD sha. |
+| `telemetry [--window --tool]` | Aggregate recorded tool calls into a usage and token-savings summary. CLI only. |
 | `tokens --stdin` | Count tokens in stdin with the o200k tokenizer and print just the integer (needs the `tokenizer` feature, which `documents` includes). CLI-only; no `--json` envelope. |
 | `eval --tasks <FILE> [...]` | Score retrieval quality, latency and token savings over a JSONL task file. CLI-only; see [Evaluation](/reference/evaluation/). |
 
@@ -262,14 +282,14 @@ basemind statusline
 | `rescan [PATH...] [--full --no-git-history --rebuild-git-history]` | Update one or more paths incrementally, or the whole tree with `--full`. When the daemon is running the rescan is forwarded to it (the daemon is the sole index writer); otherwise it runs in-process under the workspace writer lock. Ctrl-C stops it cleanly. The summary (also when forwarded to the daemon) reports `docs_degraded` and `doc_timeouts` when non-zero. |
 | `watch` | Long-running watcher; keeps the code map current as files change (no server). |
 | `serve` | Ensure the daemon is up and relay this process's stdio to it as the MCP server. The daemon keeps the index fresh. |
-| `status` | Index health for this workspace: file counts, languages, scan age. |
+| `status` | Index health and repo identity for this workspace (`index_status`): file counts per language, scan state, cache directory, branch and HEAD. |
 | `doctor` | Check root, config, index, grammars, pre-commit hook and daemon; exits 1 when a check fails. |
 | `completions <shell>` | Print a shell completion script to stdout. |
 | `man` | Print the man page (roff) to stdout. |
 | `init [--yes --with --without --rules-target --settings-target --config-dir --no-rules --no-usage-rules --no-setup-notes --print]` | Re-runnable onboarding: write `basemind.toml`, select capabilities, inject usage rules into a gitignored local rules file by default, optionally auto-approve basemind's tools in Claude Code settings. See [Get started](/start/installation/#get-started). |
 | `lang list\|install\|clean` | Manage downloaded tree-sitter grammars. `install` also fetches every grammar marked `preload = true` under `[languages.<name>]`. |
 | `hook install [--force]` | Add a git pre-commit hook that runs `basemind scan --staged`. Honours `core.hooksPath`, works in linked worktrees, never blocks a commit, and refuses to replace a hook basemind did not write unless `--force` (the old one is kept as `pre-commit.bak`). |
-| `cache stats`, `cache gc [--dry-run]`, `cache clear [--component --yes]` | Offline path directly against the machine-global cache. `gc` runs the real cross-workspace reference-counted sweep (blobs younger than six hours are kept; `BASEMIND_BLOB_GC_GRACE_SECS` overrides) and prints what it removed. `clear` is the only way to clear `views`/`all`, which the MCP `admin` `cache_clear` mode refuses because they back the live index. `gc --dry-run` only counts blobs and deletes nothing. `--component` is `blobs`, `views`, `lance`, `git-cache` (default), `telemetry`, `all`, or `views:<name>` for one view. Everything except `git-cache` is destructive: it prompts on a terminal and requires `--yes` otherwise (exit 2). `clear` exits 3 while a writer holds the workspace lock, and for `blobs` while the daemon runs; `blobs` is the machine-global extraction store shared by every workspace. |
+| `cache stats`, `cache gc [--dry-run]`, `cache clear [--component --yes]` | Offline path directly against the machine-global cache. `gc` runs the real cross-workspace reference-counted sweep (blobs younger than six hours are kept; `BASEMIND_BLOB_GC_GRACE_SECS` overrides) and prints what it removed. The `cache` commands have no MCP tool. `gc --dry-run` only counts blobs and deletes nothing. `--component` is `blobs`, `views`, `lance`, `git-cache` (default), `telemetry`, `all`, or `views:<name>` for one view. Everything except `git-cache` is destructive: it prompts on a terminal and requires `--yes` otherwise (exit 2). `clear` exits 3 while a writer holds the workspace lock, and for `blobs` while the daemon runs; `blobs` is the machine-global extraction store shared by every workspace. |
 | `daemon ensure` | Ensure the daemon's streamable-HTTP MCP transport is up; idempotent. Needs `--features comms`. |
 | `statusline` | Print a one-line summary of the daemon's hot workspaces, for a shell statusline. Silent and exits 0 when no daemon is running. |
 
@@ -291,7 +311,7 @@ tool's own latency) and other diagnostics go to **stderr**, so stdout stays pipe
 
 When the comms daemon is running it is the sole index writer, so the one-shot tool subcommands open
 the store without the index and forward index-dependent work to the daemon: `memory`, `code
-references` / `callers`, the `code grep` trigram prefilter, and `rescan`. Without a daemon they read
+refs`, the `code grep` trigram prefilter, and `rescan`. Without a daemon they read
 the index directly and read-only.
 
 <Aside type="note">

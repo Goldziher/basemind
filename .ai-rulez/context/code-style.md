@@ -14,7 +14,7 @@ Project-specific conventions baked into context so they ship into every AI tool'
 
 ## Module layout
 
-- One concern per file. When `src/mcp/tools.rs` approached the 1000-line cap, the bodies were extracted to `helpers.rs` and then sliced again by area (`helpers_documents.rs`, `helpers_calls.rs`, `helpers_grep.rs`, `helpers_impls.rs`). Match that shape when adding a new tool area.
+- One concern per file. When `src/mcp/tools.rs` approached the 1000-line cap, the bodies were extracted to `helpers.rs` and then sliced again by area (`helpers_documents.rs`, `helpers_calls.rs`, `helpers_grep.rs`, `helpers_impls.rs`). Match that shape when adding a new tool area: a verb tool is a params struct in `types_tools.rs`, a thin shim in `tools*.rs`, and a body in `helpers_*.rs`.
 - 1000-line cap on `src/**/*.rs` enforced by the `rust-max-lines` poly check. Refactor by extracting helpers or types, never by lifting the cap.
 - Tests sit in `tests/<area>_smoke.rs` files (one per area) plus the integration harness at `tests/harden.rs`.
 

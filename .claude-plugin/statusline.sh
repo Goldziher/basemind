@@ -215,9 +215,9 @@ build_basemind_line() {
       read -r calls saved code git docs mem web <<<"$(tail -n 2000 "$tel_file" 2>/dev/null |
         jq -rs --argjson cut "$midnight_us" '
             def bucket:
-              if   (.=="memory:documents") then "docs"
-              elif (startswith("git:")) then "git"
-              elif (startswith("memory:")) then "mem"
+              if   (.=="docs_search" or .=="memory:documents") then "docs"
+              elif (startswith("git_") or startswith("git:")) then "git"
+              elif (startswith("memory_") or startswith("memory:")) then "mem"
               elif (startswith("web:")) then "web"
               else "code" end;
             map(select(.ts_micros >= $cut))

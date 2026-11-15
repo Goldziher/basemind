@@ -108,7 +108,7 @@ src/
 │   ├── mod.rs              — Fjall-backed secondary index; INDEX_SCHEMA_VER; refs_by_def /
 │   │                         refs_by_path (code-intelligence reverse index)
 │   ├── keys.rs             — length-prefixed composite key encodings
-│   ├── grep_bloom.rs       — per-file trigram bloom rows: the `code grep` candidate prefilter
+│   ├── grep_bloom.rs       — per-file trigram bloom rows: the `code_grep` candidate prefilter
 │   │                         (ADR-0012)
 │   ├── name_dict.rs        — resident dictionary of distinct callee / trait names behind
 │   │                         `references` / `callers` / `implementations`
@@ -160,37 +160,52 @@ src/
 │   ├── overrides.rs        — DocumentsCliOverrides — backs the clap flags
 │   ├── layered.rs          — merge_layers (Mcp > Cli > Env > File > Default)
 │   └── source.rs           — ConfigSource + ProvenanceMap ledger
-├── mcp/                    — MCP server: six domain tools (code, git, memory,
-│                             agents, workspace, admin), each one #[tool] dispatching
-│                             on a required `mode` — see "MCP surface" below
+├── mcp/                    — MCP server: 15 tools, one per job, each with its own exact
+│                             schema (ADR-0018), plus the mode-dispatched `agents` and
+│                             `workspace` tools in `comms` builds — see "MCP surface" below
 │   ├── mod.rs, state.rs    — server bootstrap; shared ServerState
-│   ├── mode.rs             — define_mode!: the mode enums, wire spellings, telemetry_key(),
-│   │                         and domain_modes() (what tests/cli_parity/ walks)
-│   ├── tools.rs            — the `code` tool shim (#[tool], thin wrapper; 1000-line cap)
-│   ├── tools_<area>.rs     — one shim per remaining domain: admin, comms (→ `agents`),
-│   │                         git, memory, registry (→ `workspace`) — filenames
-│   │                         predate the tool/CLI rename
-│   ├── term_index.rs       — resident term index (symbol names + import strings) behind the
-│   │                         `symbols` / `dependents` substring sweeps
-│   ├── index_route.rs      — where a references/callers/implementations read runs: local index,
+│   ├── types_tools.rs      — wire arguments: one deny_unknown_fields struct per tool, and
+│   │                         VERB_TOOLS, the tool names in declaration order
+│   ├── strict.rs           — Strict<T>: exact argument validation; an unknown or malformed
+│   │                         argument becomes an isError result naming the closest accepted
+│   │                         field and the accepted set
+│   ├── tool_contract.rs    — the contract every tool shares: answer(), isError results that
+│   │                         name the fix (not indexed, empty index, feature compiled out),
+│   │                         the default max_tokens budget, the alwaysLoad meta and schema
+│   │                         compaction applied to every advertised definition
+│   ├── mode.rs             — define_mode!: the `mode` vocabulary and per-mode field
+│   │                         validator of `agents` and `workspace` only
+│   ├── tools.rs            — #[tool] shims of code_outline, code_symbols, code_read,
+│   │                         code_grep, code_search, code_refs, find_files (thin wrappers;
+│   │                         1000-line cap)
+│   ├── tools_<area>.rs     — the remaining shims: git (git_log, git_blame, git_diff),
+│   │                         memory (docs_search, memory_save, memory_search), admin
+│   │                         (index_status, index_rescan), comms (→ `agents`), registry
+│   │                         (→ `workspace`)
+│   ├── tasks.rs            — Tasks extension: results are inline; index_rescan, code_search
+│   │                         and docs_search become a task only if still running after 3 s
+│   ├── term_index.rs       — resident term index (symbol names + import strings) behind
+│   │                         `code_symbols` and the `code_refs` importer lookup
+│   ├── index_route.rs      — where a `code_refs` call-site/caller/implementation read runs: local index,
 │   │                         daemon-hosted (in-process), forwarded to the daemon, or in-RAM fallback
 │   ├── index_read.rs       — daemon-side executor for the forwarded index reads (`IndexRead`)
 │   ├── l1_cache.rs         — byte-budgeted read-through cache of decoded outlines (max_map_cache_mb)
 │   ├── helpers.rs          — tool bodies; shared scan / decode helpers
-│   ├── helpers_<area>.rs   — the run_<mode> dispatch bodies, area-sliced: admin,
-│   │                         calls, calls_scan, code, code_search (feature code-search),
-│   │                         comms, documents, expand, files, fingerprint,
-│   │                         git, git_file,
-│   │                         grep, impls, intel (definition mode body), memory,
-│   │                         registry, telemetry
-│   ├── memory.rs           — search_documents + memory_* bodies behind the `memory` domain
-│   ├── types.rs, types_<area>.rs — one flat <Domain>Params per domain (optional sibling
-│   │                         fields per mode) + response structs, mirroring the
-│   │                         tools_/helpers_ area split
+│   ├── helpers_<area>.rs   — the tool bodies, area-sliced: admin (index_status,
+│   │                         index_rescan), calls, calls_scan, code, code_search (feature
+│   │                         code-search), comms, documents, expand (code_read), files,
+│   │                         fingerprint, git, git_file, git_show, grep, impls, intel (the
+│   │                         code_refs definition body), memory, page (offset paging for
+│   │                         the ranked code_search / docs_search), registry, telemetry
+│   ├── memory.rs           — search_documents + memory_* bodies behind docs_search,
+│   │                         memory_save and memory_search
+│   ├── types.rs, types_<area>.rs — internal request shapes and response structs of the
+│   │                         bodies (code, documents, git, impls, memory, comms, registry);
+│   │                         the wire arguments are in types_tools.rs
 │   ├── cursor.rs           — cursor encoding for paginated tools
-│   ├── savings.rs          — token-savings heuristics, keyed by the domain:mode telemetry_key()
-│   │                         plus the bare pre-consolidation tool-name spellings
-│   ├── telemetry.rs        — per-call telemetry.jsonl writer
+│   ├── savings.rs          — token-savings heuristics, keyed by tool name (rows recorded
+│   │                         under the old domain:mode keys are mapped to it)
+│   ├── telemetry.rs        — per-call telemetry.jsonl writer; the key is the tool name
 │   └── budget.rs, toon.rs, lean.rs, lenient.rs, notifications.rs,
 │       completions.rs, prompts.rs, tokens.rs, background.rs, daemon_forward.rs,
 │       map_fingerprint.rs, identity.rs — response budgeting, TOON/lean output
@@ -215,9 +230,10 @@ src/
 ├── search/                 — BM25 / exact / RRF keyword search over code chunks
 │                             (feature code-search)
 ├── registry/                — daemon-side worktree/branch claim registry
-├── cli/                     — CLI subcommand groups, 1:1 with the six MCP domains: admin,
-│                             agents (daemon-agent verbs), code, git, memory,
-│                             registry (the `workspace` group);
+├── cli/                     — CLI subcommand groups: admin, agents (daemon-agent verbs),
+│                             code, git, memory, registry (the `workspace` group). Every
+│                             MCP tool has a command; shorthands and administrative
+│                             commands have no tool;
 │                             comms_daemon.rs is `basemind comms` — daemon lifecycle only
 │                             (daemon/start/stop/status/doctor)
 │                             choices.rs holds the clap value enums, exit.rs the exit-code
@@ -282,7 +298,7 @@ Key invariants:
   runs inside `scanner_lanes::run_optional_lane` (`catch_unwind`-wrapped), so a
   panic or hang in one lane degrades only that lane (e.g. "no resolved refs")
   and never costs the code map itself. Source: `src/scanner_lanes.rs`.
-- **Code-only code map** — `symbols`, `outline`, `grep` and the reference tools see code only.
+- **Code-only code map** — `code_symbols`, `code_outline`, `code_grep` and `code_refs` see code only.
   Markdown, rst, asciidoc, vimdoc, csv, json, yaml, toml, ini, xml, properties, dotenv, diff,
   gitignore/gitattributes and fluent files are chunked and searched as documents (gated by
   `[documents] include` / `exclude` and the MIME allowlist). A path that changes tier is moved on the
@@ -311,7 +327,7 @@ Key invariants:
 
 ## Code intelligence (precise resolution)
 
-basemind's default navigation (`code` modes `references` / `callers`) is a name-based scan over
+basemind's default navigation (`code_refs`) is a name-based scan over
 the tree-sitter code map: fast and complete, but it can't tell a shadowed local from an import
 or a same-named symbol in another scope. The `intel` tier (`src/intel/`) adds a second,
 precision layer: per-ecosystem engines that run their own parser, resolve scope and imports
@@ -365,18 +381,19 @@ oxc/stack-graphs engines are skipped and every language falls back to `locals`.
 
 ### The honest contract: name scan is the floor, resolution only annotates
 
-`code` mode `callers` never narrows to "only the resolved subset" — it reports every call site
-mode `references` would (the same name-based, no-scope scan), so the two agree on `total` for an
-unambiguous name; that set is the answer to "what calls this?" and is complete unless truncated.
-Resolution *annotates* each hit with `resolved: Option<bool>` (`true` = proven to bind to this
-definition) and reports `resolved_total` on the response — mode `references` itself carries no
-`resolved` annotation, since it never resolves a definition to check against. `resolved: false`
+`code_refs` with a `path` (callers of the definition in that file) never narrows to "only the
+resolved subset" — it reports every call site the same call without `path` would (the same
+name-based, no-scope scan), so the two agree on `total` for an unambiguous name; that set is the
+answer to "what calls this?" and is complete unless truncated. Resolution *annotates* each hit with
+`resolved: Option<bool>` (`true` = proven to bind to this definition) and reports `resolved_total`
+on the response — a call without `path` carries no `resolved` annotation, since it never resolves a
+definition to check against. `resolved: false`
 is not evidence a hit isn't a real caller — resolution can't see through a module-object import
 (`from pkg import mod` then `mod.f()`) or an unresolvable path alias — so a caller wanting
 completeness should trust `total`, not `resolved_total`; a caller wanting precision filters on
-`resolved`. `code` mode `definition`
+`resolved`. `code_refs` with `relation: "definition"`
 (`src/mcp/helpers_intel.rs`) is the direct read surface over this tier: it resolves a
-`path:line:column` position to its definition, following one cross-file hop when the in-file
+`path:line:column` position (1-based) to its definition, following one cross-file hop when the in-file
 binding is an import, and returns no `definition` (not an error) when the position holds no
 resolved binding.
 
@@ -402,18 +419,18 @@ process per directory, so the daemon holds it and sessions reach it through the 
 | `symbols_by_path` | Per-file outline lookups. |
 | `symbols_by_name` | `name`-prefix range scans for symbol search. |
 | `calls_by_path` | Per-file call lookups. |
-| `calls_by_callee` | `callee`-prefix range scans — drives `code` mode `references`. |
-| `imports_by_module` | `module`-prefix range scans — drives `code` mode `dependents`. |
+| `calls_by_callee` | `callee`-prefix range scans — drives the `code_refs` call-site lookup. |
+| `imports_by_module` | `module`-prefix range scans — drives `code_refs` with `relation: "importers"`. |
 | `imports_by_path` | Per-file import lookups. |
-| `implementations_by_trait` | `trait`-prefix range scans — drives `code` mode `implementations`. |
+| `implementations_by_trait` | `trait`-prefix range scans — drives `code_refs` with `relation: "implementations"`. |
 | `implementations_by_path` | Per-file implementation lookups. |
-| `refs_by_def` | Scope/import-resolved reference edges keyed by defining site — backs the `resolved` annotation on `code` mode `callers` and the cross-file hop in mode `definition`. |
+| `refs_by_def` | Scope/import-resolved reference edges keyed by defining site — backs the `resolved` annotation on `code_refs` caller hits and the cross-file hop of `relation: "definition"`. |
 | `refs_by_path` | `refs_by_def` companion keyed by the USE file — O(prefix) delete on re-resolve. |
 | `import_targets` | Stitch result per import binding (importer + binding offset → definition), plus one reserved probe-manifest row per importer; O(prefix) delete on re-stitch. |
 | `importers_by_probe` | Probed path hash → importers whose resolution consulted it; the affected-importer lookup of the incremental re-stitch. |
 | `code_bm25_postings` | Code-search BM25 keyword postings (feature `code-search`). |
 | `code_bm25_by_path` | Per-file companion of `code_bm25_postings` — O(prefix) delete on re-index. |
-| `grep_bloom` | One trigram bloom filter per indexed file, keyed by path, with the `(size, mtime_ns)` it was built under; the `code grep` prefilter ([ADR-0012](adr/0012-grep-content-prefilter.md)). |
+| `grep_bloom` | One trigram bloom filter per indexed file, keyed by path, with the `(size, mtime_ns)` it was built under; the `code_grep` prefilter ([ADR-0012](adr/0012-grep-content-prefilter.md)). |
 | `embeddings` | Reserved for in-Fjall vector index; LanceDB owns the live vectors. |
 
 The user-authored keyspaces are NOT in the per-view database. They live in a per-repo-group Fjall
@@ -421,7 +438,7 @@ database at `<cache>/cache/repos/<group>/memory.fjall/` (see [Split memory](#spl
 
 | Keyspace (in `memory.fjall`) | Purpose |
 |---|---|
-| `memory_by_key` | Agent memory (`memory` modes `put` / `get`); LanceDB owns the embeddings. |
+| `memory_by_key` | Agent memory (`memory_save` / `memory_search`); LanceDB owns the embeddings. |
 
 A store written before the audit and mining features were removed also holds `memory_archive` and
 `proposals`. They are never opened and never deleted.
@@ -448,8 +465,9 @@ on open drops the whole `index.fjall/` directory and the next scan rebuilds it.
 
 ### Index reads and resident lookup structures
 
-`references`, `callers` and `implementations` are *substring* matches over `calls_by_callee` and
-`implementations_by_trait`, whose keys are length-prefixed, so a prefix scan cannot serve them and the
+The `code_refs` call-site, caller and implementation lookups scan `calls_by_callee` and
+`implementations_by_trait` with a *substring* filter (the tool then keeps exact identifier matches
+unless `match: "substring"`). The keys are length-prefixed, so a prefix scan cannot serve them and the
 naive shape walks every key. Two resident structures keep the common queries in the millisecond range
 without changing a single result:
 
@@ -460,7 +478,8 @@ without changing a single result:
   before staging its key, so the dictionary is a superset and a stale name costs one empty range scan.
   The first query after the index opens still walks the partition while a background pass builds it,
   and a needle matching over 5 % of the distinct names goes back to the walk.
-- **Term index** (`src/mcp/term_index.rs`). `symbols` and `dependents` search only names and import
+- **Term index** (`src/mcp/term_index.rs`). `code_symbols` and the `code_refs` importer lookup search
+  only names and import
   strings, held per file with no spans or signatures; a hit fetches its span and signature from the
   outline cache by `(path, symbol index)`, so only the returned page is decoded. It is built in the
   background when a full cache is published and patched, not rebuilt, by an incremental rescan.
@@ -474,14 +493,14 @@ forwards an `IndexRead` request over the socket; the daemon runs the same scan f
 `src/mcp/index_read.rs`, so results, totals and cursors equal a writer's and the session holds no
 projection), or `InRam` (nothing reachable: a lazily built, byte-budgeted projection of the blobs that
 can be truncated and says so with a `projections_capped` notice). A failed forward degrades to
-`InRam` rather than erroring. The same request type carries the `code grep` bloom lookup
+`InRam` rather than erroring. The same request type carries the `code_grep` bloom lookup
 (`IndexReadQuery::GrepBloom`, at most 16,384 paths per request).
 
 ### Grep prefilter
 
-`code grep` is a sweep over every indexed file that passes the language/path filters. A per-file
+`code_grep` is a sweep over every indexed file that passes the language/path filters. A per-file
 trigram bloom (`grep_bloom`: size/8 bytes clamped to 64 B–256 KiB, two hash positions per trigram,
-about 12.8 % of the indexed code bytes) lets it skip files that cannot match: the regex's
+about 12.8 % of the indexed code bytes) lets it skip files that cannot match: the pattern's
 required literals (`regex-syntax`'s literal extractor, prefix and suffix sets, each at least 3 bytes)
 are tested against the bloom, and a file is skipped only if its row rejects them AND a `stat` still
 shows the `(size, mtime_ns)` the row was built under. The real regex still runs on every candidate, so
@@ -527,8 +546,8 @@ to be code-mapped keeps its content hash, so its dead code-lane blobs would othe
 live `.doc` blob forever). The sweep is reference-counted against every workspace on the machine, keeps
 blobs younger than 6 hours (`BASEMIND_BLOB_GC_GRACE_SECS`), and is serialised by `cache/gc.lock`. It
 runs after any scan that migrated, refreshed or reset something (the daemon does so a minute later),
-hourly in the daemon, and on `basemind cache gc`; the MCP `admin` mode `gc` is a non-destructive report
-because a session cannot sweep without racing its own rescans. The size-budget enforcer and the last
+hourly in the daemon, and on `basemind cache gc`. There is no MCP tool for it: a session cannot sweep
+without racing its own rescans. The size-budget enforcer and the last
 sweep's health (`gc-state.json`, shown as `last_gc` by `cache stats`) are in `src/store_gc_budget.rs`.
 Budget eviction never touches a locked, most-recently-used or recently built workspace (even over
 budget, which is reported instead); the rules live in `src/store_gc_protect.rs`.
@@ -540,42 +559,67 @@ relays a client's stdio to it, and HTTP-native clients dial the daemon's streama
 directly (opt-in via `BASEMIND_ALLOW_HTTP`, bearer token in `<comms_dir>/http.addr`). The live
 contract is `tests/mcp_smoke.rs`.
 
-The surface is **six domain tools**, each dispatching on a required, non-defaulted `mode` — not
-one tool per verb (ADR-0011). The same six names are the CLI groups, checked per
-`(domain, mode)` by `tests/cli_parity/` (see [ADR-0014](adr/0014-cli-mcp-parity-guard.md)). `src/mcp/mode.rs` (`define_mode!`) is the
-single source of the wire spellings, the CLI parity table, and the telemetry keys.
+The surface is **one tool per job**, each with its own exact schema
+([ADR-0018](adr/0018-mcp-verb-tools.md), which supersedes ADR-0011). There is no `mode` argument.
+`src/mcp/types_tools.rs` is the single source of the tool names (`VERB_TOOLS`) and their arguments.
 
-| Tool / CLI group | `mode` values | Gate |
+| Area | Tools | Gate |
 |---|---|---|
-| `code` | outline, symbols, grep, files, find, definition, references, callers, implementations, dependents, expand, semantic, chunk | always |
-| `git` | status, recent, touching, by_path, churn, diff, diff_outline, blame, blame_symbol, symbol_history, search | always |
-| `memory` | put, get, list, search, delete, documents | always¹ |
-| `admin` | status, repo, rescan, cache_stats, gc, cache_clear, telemetry | always |
-| `agents` | register, list, thread_start, thread_list, join, leave, members, add_member, remove_member, archive, post, history, message, inbox, ack, wait | `comms` |
-| `workspace` | workspaces, worktrees, branches, claim, release | `comms` |
+| Code | `code_outline`, `code_symbols`, `code_read`, `code_grep`, `code_search`², `code_refs`, `find_files` | always |
+| Documents | `docs_search` | always¹ |
+| Git | `git_log`, `git_blame`, `git_diff` | always |
+| Memory | `memory_save`, `memory_search` | always¹ |
+| Index | `index_status`, `index_rescan` | always |
+| Agents | `agents` (mode-dispatched: register, list, thread_start, thread_list, join, leave, members, add_member, remove_member, archive, post, history, message, inbox, ack, wait, cleanup, status) | `comms` |
+| Registry | `workspace` (mode-dispatched: workspaces, worktrees, branches, claim, release) | `comms` |
 
-¹ Advertised always, body-gated on the `memory` / `documents` features.
+¹ Advertised always, body-gated on the `memory` / `documents` features: a build without the feature
+answers with an `isError` result naming it.
+² Body-gated on `code-search` the same way.
 
-Conventions:
+`agents` and `workspace` keep the ADR-0011 domain shape until their own redesign; `src/mcp/mode.rs`
+holds their `mode` vocabulary and nothing else. Churn, changed-path regex search, chunk fetch, memory
+deletion, cache maintenance and telemetry are CLI commands with no tool.
 
-- All paths are `RelPath` (byte-precise, repo-relative). No arbitrary `String`
-  paths.
-- Responses are `JsonSchema`-derived and stable; new fields are additive with
-  `#[serde(default)]`.
-- Lists are capped (`limit`, default 100, max 1000). Index scans use
-  `scan_cap = limit * 8` to bound work on common names.
-- Mode descriptions are the routing surface for agents — hosts defer MCP tools and surface
-  them by keyword search, so the description carries the retrieval vocabulary; semantics
-  (substring vs prefix, scope-aware vs name-only) are stated honestly.
-- Tool bodies live in `src/mcp/helpers*.rs`, area-sliced (`helpers_calls.rs`,
-  `helpers_documents.rs`, `helpers_grep.rs`, `helpers_impls.rs`,
-  `helpers_intel.rs`, and more — see [Source layout](#source-layout));
-  `tools.rs` and the `tools_<area>.rs` siblings contain `#[tool]` shims only, one per domain.
-- No `output_schema` on any of the six tools (each domain's modes return different response
-  shapes; SEP-2106 allows one per tool). Annotations coarsen to the union of a domain's modes,
-  resolving toward the side effect (e.g. `admin` advertises `destructive_hint` because `cache_clear` is
-  one of its modes, while `code` and `git` keep `read_only_hint: true` since none of their modes
-  write). See [ADR-0011](adr/0011-mcp-tool-surface-redesign.md).
+Contract of the 15 tools (`src/mcp/tool_contract.rs`, `src/mcp/strict.rs`):
+
+- **Exact arguments.** Each tool has its own `deny_unknown_fields` struct with required fields
+  required in the schema. Arguments are deserialized through `Strict<T>`, which never fails at the
+  protocol layer: an unknown key is answered with a did-you-mean suggestion and the accepted list, not
+  dropped. "Exactly one of" constraints cannot be stated in the flat schema subset hosts accept
+  (`tests/mcp_schema_wire.rs` forbids `$ref` / `$defs` / `oneOf` / `anyOf` / `allOf`) and are checked
+  in the tool body.
+- **Positions.** `path` is a `RelPath` (byte-precise, repo-relative, forward slashes). `line`,
+  `end_line` and `column` are 1-based in arguments and responses.
+- **Lists.** Every list takes `limit` and `cursor` and returns `next_cursor`. A default `max_tokens`
+  budget of 6000 applies; a trimmed list sets `budgeted`. Index scans use `scan_cap = limit * 8` to
+  bound work on common names. The ranked tools (`code_search`, `docs_search`) page by offset over a
+  larger top-k (`src/mcp/helpers_page.rs`).
+- **Errors.** A failure the caller can fix is a tool result with `isError: true` whose text names the
+  fix: a path that is not indexed says whether it is a document (use `docs_search`) or needs
+  `index_rescan`; an empty index says to run `index_rescan` or `basemind scan`; a compiled-out
+  feature names the Cargo feature. An empty index is never a plain empty result: responses carry a
+  `notice` with `state: "empty_index"`.
+- **Inline results.** Every call is answered inline. For a client that declared the Tasks extension,
+  `index_rescan`, `code_search` and `docs_search` run on their own task and are handed to the task
+  manager only when still running after 3 s (`TASK_THRESHOLD` in `src/mcp/tasks.rs`); until then the
+  answer is an ordinary `tools/call` result.
+- **Always loaded.** Every definition carries `_meta["anthropic/alwaysLoad"]: true`, so a host that
+  defers MCP tools loads the schemas at session start and no tool-search round trip is needed.
+- **Annotations.** Exact per tool: everything is read-only except `memory_save` and `index_rescan`,
+  and nothing is destructive. No `output_schema`.
+- **Size.** `tools/list` for the 15 tools is about 17 KB (about 4.2k tokens), down from about 25 KB
+  (about 6.3k tokens) for the four domain tools they replace. `tests/mcp_schema_wire.rs` enforces a
+  20,000-byte ceiling; a description that pushes past it is shortened, the ceiling is not raised.
+- **Descriptions.** Each description says when to use the tool and carries one example call; field
+  descriptions are kept to a clause because every session pays for them.
+- **Telemetry.** The telemetry key of a call is the tool name.
+- **CLI parity.** Every MCP tool has a CLI command, checked by `tests/cli_parity/`
+  ([ADR-0014](adr/0014-cli-mcp-parity-guard.md), amended by ADR-0018); the CLI also has shorthands and
+  administrative commands with no tool.
+- **Layout.** Tool bodies live in `src/mcp/helpers*.rs`, area-sliced (see
+  [Source layout](#source-layout)); `tools.rs` and the `tools_<area>.rs` siblings contain `#[tool]`
+  shims only.
 
 ## Git layer
 
@@ -594,9 +638,9 @@ Drop the disk cache with `basemind cache clear`.
 ### Git-history index
 
 A separate, per-workspace Fjall store at `git-history.fjall/` in the workspace cache directory — distinct from the
-`git-cache/` blame/log tier above. It turns the `git` tool's history modes (`touching`, `recent`,
-`by_path`, `churn`, the `symbol_history` commit walk, and full-text `search`) from live history
-walks into posting-list lookups. Source:
+`git-cache/` blame/log tier above. It turns `git_log` (recent commits, commits touching a path, the
+commit walk behind `path` + `symbol`, and full-text `query` / `author` search) and the CLI's
+`git churn` and `git by-path` from live history walks into posting-list lookups. Source:
 `src/git_history/{mod,builder,reader,fts,keys,encoding,proto,remote}.rs`.
 
 - It is repo-global (identical across the working/staged/rev views) and carries its own
@@ -736,18 +780,19 @@ cargo test --release --test harden -- --ignored --nocapture
 
 It clones 8 upstream repos under `/tmp/basemind-harden/` (`ripgrep`, `tokio`,
 `typescript`, `react`, `django`, `requests`, `gin`, plus a shallow `ripgrep`
-variant), runs `basemind scan` on each, then sweeps every `code` mode plus
-a representative subset of `git` modes. Canary assertions catch regressions:
+variant), runs `basemind scan` on each, then sweeps the code tools plus
+a representative subset of `git_log` / `git_blame` / `git_diff` calls. Canary assertions catch
+regressions:
 
-- **tokio**: `references("spawn")` ≥ 50 · `find("src")` ≥ 100 · `grep("fn spawn")` ≥ 20 ·
-  `implementations("Future")` ≥ 20
-- **django**: `references("get")` ≥ 50 · `git search("fixed", message)` ≥ 20 commits ·
-  `git touching("django/db/models/query.py")` ≥ 10 commits · author search ≥ 1 hit
-- **react**: `symbols("useState")` > 0
+- **tokio**: `code_refs {name: "spawn"}` ≥ 50 · `find_files {query: "src"}` ≥ 100 ·
+  `code_grep {pattern: "fn spawn"}` ≥ 20 · `code_refs {name: "Future", relation: "implementations"}` ≥ 20
+- **django**: `code_refs {name: "get"}` ≥ 50 · `git_log {query: "fixed"}` ≥ 20 commits ·
+  `git_log {path: "django/db/models/query.py"}` ≥ 10 commits · `git_log {author: …}` ≥ 1 hit
+- **react**: `code_symbols {name: "useState"}` > 0
 - **ripgrep-shallow**: `any_truncated == true` (shallow-clone signal surfaces)
 
 Every threshold sits well below the `limit` the capture call passes (react captures at `limit: 20`,
-django `references` at `limit: 200`), so a canary can never be satisfied merely by hitting the cap —
+django `code_refs` at `limit: 200`), so a canary can never be satisfied merely by hitting the cap —
 and never fails because upstream churn moved a count.
 
 Per-repo metrics land at `/tmp/basemind-harden-*.log`.
@@ -872,7 +917,7 @@ once (5 s replay timeout), but only when re-sending is safe:
 
 - the read methods `ping`, `tools/list`, `resources/list`, `resources/read`,
   `resources/templates/list`, `prompts/list`, `prompts/get` and `completion/complete`;
-- every `code` and `git` call;
+- every call to a read-only code or git tool;
 - `agents` modes `list`, `thread_list`, `members`, `history`, `message`, `inbox`, `ack`, `wait` and
   `status`;
 - `agents` `post`, which the relay stamps with a `relay-` key when the caller gave none.

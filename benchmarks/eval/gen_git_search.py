@@ -1,10 +1,10 @@
 """Gold for `git_search`: words from a recent commit subject -> the commits containing all of them.
 
-basemind's `git search` tokenizes (lowercase, split on non-alphanumerics) and ANDs the query tokens
+basemind's `git_log` with `query` (CLI `git search`) tokenizes (lowercase, split on non-alphanumerics) and ANDs the query tokens
 over commit messages. For each sampled recent commit the query is its `--tokens` rarest subject
 tokens (rarest over the scanned history, so the query is near-unique), and the gold is EVERY
 commit in the scanned window whose message tokens contain all of them, computed with the same
-tokenization. `search` returns commits, not files, so gold items are commit shas; the files the
+tokenization. It returns commits, not files, so gold items are commit shas; the files the
 origin commit changed (`git diff-tree`) ride along in `meta.files` for downstream analysis (the
 harness ignores unknown task fields).
 
@@ -97,7 +97,7 @@ def main() -> None:
             {
                 "id": f"git_search-{len(tasks):04d}",
                 "mode": "git_search",
-                "args": {"query": " ".join(chosen), "field": "message", "limit": 100},
+                "args": {"query": " ".join(chosen), "limit": 100},
                 "gold": gold,
                 "scoring": "ranked",
                 "k": 10,

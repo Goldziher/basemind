@@ -24,7 +24,7 @@ def capture(prefix: list[Path | str], cache: Path, tier: str, query: str, route:
         "RUST_LOG": "basemind::mcp::memory=debug,basemind::mcp::helpers_code_search=debug",
         "NO_COLOR": "1",
     }
-    command = ["code", "semantic", "--lane", "semantic"] if tier == "code" else ["memory", "documents"]
+    command = ["code", "search", "--lane", "semantic"] if tier == "code" else ["memory", "documents"]
     process = subprocess.run(
         [*prefix, *command, "--limit", "10", "--", query],
         env=env,

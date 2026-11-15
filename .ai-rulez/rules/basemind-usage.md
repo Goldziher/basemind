@@ -10,39 +10,33 @@ x-ai-rulez:
 
 # basemind usage
 
-## basemind — prefer it over grep / read / git
+## Basemind
 
-basemind is this repo's indexed context layer. Prefer it BEFORE grep, before reading files to find structure, and before naked `git` — it's the default, not a preference. basemind returns paths, lines, and signatures at a fraction of the tokens of reading source. The index lives in a machine-global cache (`~/.local/share/basemind/`, override `BASEMIND_DATA_HOME`), keyed by workspace and served by a background daemon — nothing is written into the repo, and any number of sessions read and write concurrently.
+**Use Basemind first for every capability listed below.** Make the Basemind MCP call before using a shell command, file read, or another search tool for the same question. Use the result to narrow any follow-up reads to the paths and lines you need.
 
-### Routing
+The Basemind tools are always loaded: call them directly, there is no tool search to run first. Arguments are exact (an unknown argument is rejected, not ignored), paths are repository-relative, and `line` / `end_line` are 1-based.
 
-Every capability lives behind one of six domain tools, dispatched by a required `mode`: `code`,
-`git`, `memory`, `admin`, `agents`, `workspace`. The CLI mirrors the same
-six groups (`basemind <domain> <mode>`).
-
-| Reach for | Instead of |
+| Task | First call |
 |---|---|
-| `code` modes `symbols` / `references` / `callers` / `grep` | `grep` / `rg` / opening files to find a symbol |
-| `code` mode `outline` | reading whole files to learn their shape |
-| `code` mode `find` (fuzzy path search) | `find` / `fd` / `ls -R` to locate a file by name |
-| `git` modes `recent` / `blame_symbol` / `touching` / `diff` | `git log` / `git blame` / `git diff` |
-| `agents` modes `post` / `inbox` / `thread_list` | assuming you're the only agent in the repo |
-| `workspace` modes `workspaces` / `worktrees` / `claim` | editing a worktree another session may already own |
-| `memory` mode `documents` | manually reading PDFs / docs |
-| `code` mode `semantic` | keyword-only guessing at where a concept lives |
+| Where is X defined | `code_symbols {"name":"parse_config"}` |
+| What calls / implements / imports X | `code_refs {"name":"parse_config"}` (add `"relation":"implementations"` or `"importers"`) |
+| Find a string, identifier or comment | `code_grep {"pattern":"cache_root("}` (literal; add `"regex":true` for a regex) |
+| Read one function or a line span | `code_read {"path":"src/store.rs","symbol":"open"}` |
+| See what a code file contains without opening it | `code_outline {"path":"src/store.rs"}` |
+| Recent commits, a file's history, or a commit search | `git_log {}` / `git_log {"path":"src/store.rs"}` / `git_log {"query":"fix race"}` |
+| Who last changed a symbol or line span | `git_blame {"path":"src/store.rs","symbol":"open"}` |
+| Working-tree status, or a file's diff | `git_diff {}` / `git_diff {"path":"src/store.rs"}` |
+| Find a file by a fragment of its name or path | `find_files {"query":"readme"}` |
+| Check the inbox, discover threads, or post to other agents | `agents {"mode":"inbox"}` / `{"mode":"thread_list"}` / `{"mode":"post", …}` |
+| Inspect worktrees and advisory claims before editing | `workspace {"mode":"worktrees"}` / `{"mode":"claim", …}` |
+| Search documents (PDFs, Office, markdown, config and data files; the code tools cover code only) | `docs_search {"query":"how releases are versioned"}` |
+| Find code by what it does, then read the hit | `code_search {"query":"retry a failed upload with backoff"}` |
 
-The code map is code-only; markdown, JSON, YAML, TOML and other prose/config/data files are a separate
-document tier (search them with `memory` mode `documents`; `code` modes `files` and `find` list them,
-`outline`/`grep`/`symbols` do not). MCP resources `basemind://status`,
-`basemind://outline/{path}` and `basemind://memory/{key}` expose the same data as `admin` `status`,
-`code` `outline` and `memory` `get`.
+When a result is unexpectedly empty call `index_status {}`; after edits call `index_rescan {}`.
 
-### Red flags — stop and re-route
+Use a fallback when the capability is unavailable, the index is stale, or the input is outside its coverage. An empty indexed result only describes the indexed scope. For an exhaustive search, verify uncovered paths with an exact file search.
 
-- About to `grep` / `rg`? → `code grep`.
-- About to open a file just to find a symbol? → `code outline` / `code symbols`.
-- About to `git log` / `git blame`? → `git recent` / `git blame_symbol`.
-- Already mapped a file with basemind? Don't re-read it.
+Use `docs_search` for semantic questions about notebooks and other indexed documents. For an exact literal in a notebook, search the file text directly.
 
 ### Setup & maintenance
 

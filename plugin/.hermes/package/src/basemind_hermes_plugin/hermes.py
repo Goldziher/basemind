@@ -1,6 +1,6 @@
 # AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-# Content-Hash: blake3:3bb7e5655c6176efd559d2d12930274f563a357e07be5e7ecf41354465a27b76
-# Source-Hash: blake3:7ed9416a6577f30723b1881e657b978a919914f876e0f1fd64d7732dfda8e8c7
+# Content-Hash: blake3:1d5bb7eccafd88d8dda62243a05cd36bc4d34d957a90a4b06ca30094e4a364a8
+# Source-Hash: blake3:cedfa4bf6ba470275f00d362ebb8180f60f5812f1912dd7ea32768d91fd82ba9
 # Schema-Version: v1
 
 """Hermes Agent plugin registration for basemind.
@@ -41,17 +41,21 @@ _SKILLS_DIR = _PKG_DIR / "skills"
 _COMMANDS_DIR = _PKG_DIR / "commands"
 
 _DISCIPLINE = (
-    "basemind is available over MCP in this session — a tree-sitter code map + git context. "
-    "Its surface is six domain tools — code, git, memory, admin, agents, and workspace "
-    "— each dispatched by a required mode. "
+    "basemind is available over MCP in this session: a tree-sitter code map, git history, "
+    "document search and shared memory. Each job is its own tool with an exact schema; an unknown "
+    "argument is rejected and line numbers are 1-based. "
     "Prefer it over grep/read for structural and historical questions: its tools return paths, "
     "line numbers, and signatures, not file bodies, so they cost a fraction of the tokens of "
-    "reading source. Default workflow: use code mode outline before opening a file (then read only "
-    "the span you need); code mode symbols instead of grep for a definition; code modes references "
-    "and callers instead of grepping call sites; code mode grep instead of shelling out to ripgrep; "
-    "memory mode documents for markdown, config, data and PDF files (the code map holds code only); "
-    "admin mode rescan after edits instead of reconnecting. Do not re-read a file basemind already "
-    "mapped."
+    'reading source. Default workflow: code_outline {"path":"src/store.rs"} before opening a file, '
+    'then code_read {"path":"src/store.rs","symbol":"open"} for only the body you need; '
+    'code_symbols {"name":"open_store"} instead of grep for a definition; '
+    'code_refs {"name":"open_store"} instead of grepping call sites; '
+    'code_grep {"pattern":"cache_root("} instead of shelling out to ripgrep; '
+    'find_files {"query":"readme"} to locate a file; git_log {}, git_blame {"path":"src/store.rs"} '
+    "and git_diff {} instead of git log, blame, status and diff; "
+    'docs_search {"query":"how releases are versioned"} for markdown, config, data and PDF files '
+    "(the code tools cover code only); index_rescan {} after edits instead of reconnecting. "
+    "Do not re-read a file basemind already mapped."
 )
 
 _COMMS_TOOLS = (
@@ -297,7 +301,25 @@ def _read_int(path: Path) -> int:
 PLUGIN_NAME = "basemind"
 CLI_COMMAND = "basemind"
 SERVER_ARGUMENTS = ["serve"]
-TOOL_NAMES = ["code", "git", "memory", "admin", "agents", "workspace"]
+TOOL_NAMES = [
+    "code_outline",
+    "code_symbols",
+    "code_read",
+    "code_grep",
+    "code_search",
+    "code_refs",
+    "find_files",
+    "docs_search",
+    "git_log",
+    "git_blame",
+    "git_diff",
+    "memory_save",
+    "memory_search",
+    "index_status",
+    "index_rescan",
+    "agents",
+    "workspace",
+]
 DISCOVERY_TOOL = "list_tools"
 REQUEST_TIMEOUT_SECONDS = 300
 

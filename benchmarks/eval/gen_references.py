@@ -1,6 +1,6 @@
 """Gold for `references` and `callers`: a callee name -> every Python call site of it.
 
-basemind's `code references NAME` is name-only and call-site-only: `NAME(...)` and `x.NAME(...)`
+basemind's `code_refs` (CLI `code refs NAME`) is name-only and call-site-only: `NAME(...)` and `x.NAME(...)`
 count, a bare `NAME` (decorator without parentheses, argument, assignment) does not. It reports
 the line on which the call expression STARTS. The gold is every `ast.Call` whose callee
 identifier is NAME at that line, cross-checked against `git grep -n -w`: a call is kept only if
@@ -8,7 +8,7 @@ the word occurs on a line of the callee expression in the HEAD tree (drops nothi
 consistent tree; it guards against parse/line disagreements and is counted in the summary).
 
 `--mode callers` additionally restricts to names defined exactly once in the repo and passes that
-definition's path, matching how `code callers PATH NAME` is used. `--mode both` emits both kinds.
+definition's path (`code_refs` with `name` and `path`; CLI `code callers PATH NAME`). `--mode both` emits both kinds.
 
 Pyrefly note: `pyrefly` 1.x exposes no find-references CLI (only `check`, `infer`, `lsp`, ...);
 scope-resolved references would need a `textDocument/references` request to `pyrefly lsp`, which

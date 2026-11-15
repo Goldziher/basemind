@@ -41,7 +41,7 @@ src/utils.rs:89:1 parseQuery (type alias)`} lang="text" />
 
 3. **See what calls a function**
 
-   <Code code={`basemind code references "processFile"`} lang="bash" />
+   <Code code={`basemind code refs "processFile"`} lang="bash" />
 
    Output:
 
@@ -81,7 +81,7 @@ src/extract.rs:57:20 processFile`} lang="text" />
   and caller lookups on a 74k-file monorepo (in-process, p50; smaller repos are
   faster). Git history lookups in **tens of microseconds**.
   See [Performance](/reference/performance/).
-- **Outline before you read**: Use `code` (`mode: outline`) to see a file's
+- **Outline before you read**: Use `code_outline` to see a file's
   structure (symbols, signatures, line numbers, imports) without opening it.
 
   <Code code={`basemind code outline src/parser.rs`} lang="bash" />
@@ -111,19 +111,19 @@ src/extract.rs:57:20 processFile`} lang="text" />
 ## Using the plugin or MCP server
 
 If you're using the plugin or MCP server instead of the CLI, you're already
-indexed once you run `/bm-scan` or call `admin` with `mode: rescan`. From
+indexed once you run `/bm-scan` or call `index_rescan`. From
 there, use the tools in the chat:
 
-- **Find a definition**: Call `code` with `mode: symbols` and a name.
-- **Find references**: Call `code` with `mode: references` and a name.
-- **Browse before reading**: Call `code` with `mode: outline` on a file path.
-- **Check git history**: Call `git` with `mode: blame_symbol`, `mode: recent`,
-  or `mode: touching`.
+- **Find a definition**: Call `code_symbols` with a `name`.
+- **Find references**: Call `code_refs` with a `name`.
+- **Browse before reading**: Call `code_outline` with a `path`.
+- **Check git history**: Call `git_blame` with a `path` and `symbol`, or `git_log`
+  (no arguments for recent commits, `path` for one file).
 
 All the same queries, just over the MCP surface instead of the CLI.
 
 <Aside>
 After re-indexing, both the CLI (`basemind code ...` / `basemind git ...`) and
-the MCP tools have the fresh index. No server restart needed — use `admin`
-with `mode: rescan` (or `basemind rescan`) to update in-process.
+the MCP tools have the fresh index. No server restart needed — use `index_rescan`
+(or `basemind rescan`) to update in-process.
 </Aside>

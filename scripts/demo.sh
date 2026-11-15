@@ -48,9 +48,9 @@ pe() {
 }
 
 pe "basemind scan --quiet"
-pe "basemind code outline src/scanner.rs --l2"
+pe "basemind code outline src/scanner.rs"
 pe "basemind code symbols scan --limit 10"
-pe "basemind code references record_call --limit 8"
+pe "basemind code refs record_call --limit 8"
 pe "basemind code callers src/main.rs cmd_scan --limit 8"
 pe "basemind git recent --limit 5"
 pe "basemind git blame-symbol src/main.rs cmd_scan"

@@ -9,14 +9,18 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:0342ba178d9ca8a7dd9c503ffba03b9fac721d9b17cf09ffa3f735c9fb77105e
-Source-Hash: blake3:7ed9416a6577f30723b1881e657b978a919914f876e0f1fd64d7732dfda8e8c7
+Content-Hash: blake3:f7680692895035abd9d4c9ebfb25d675d32d848d713e059aa5ce0355a5bcaf30
+Source-Hash: blake3:cedfa4bf6ba470275f00d362ebb8180f60f5812f1912dd7ea32768d91fd82ba9
 Schema-Version: v1
 -->
 
 # basemind-stats — on-demand usage dashboard
 
-Call `admin` mode `telemetry` and render the result as a markdown report.
+Run `basemind admin telemetry --json` and render the result as a markdown report. The usage summary
+is a CLI command, not an MCP tool; it reads the same telemetry log the server writes, with or
+without a running server. Launch it through the plugin's version-matched binary,
+`${CLAUDE_PLUGIN_ROOT}/scripts/mcp-launch.sh admin telemetry --json` (bare `basemind` from `PATH`
+when no plugin launcher exists).
 
 ## When to use
 
@@ -25,16 +29,15 @@ stats", or invokes `/bm-stats` directly. This skill is strictly user-invoked —
 
 ## How to run
 
-1. Call `admin { "mode": "telemetry", "window": "today" }` (the default). If the
-   user asks for a specific range, map it to one of `"today"`, `"1h"`, `"24h"`,
-   `"all"`.
+1. Run `basemind admin telemetry --window today --json` (`today` is the default). If the
+   user asks for a specific range, map it to one of `today`, `1h`, `24h`, `all`.
 2. Render a markdown block in this shape:
 
    ```text
    ## basemind activity (today)
-   - **N tool calls** ; top operations: code:outline (18), code:symbols (12), …
+   - **N tool calls** ; top tools: code_outline (18), code_symbols (12), …
    - **~K tokens saved** vs grep + Read baseline
-   - recent: code:outline (4ms, 312B), code:symbols (2ms, 180B), …
+   - recent: code_outline (4ms, 312B), code_symbols (2ms, 180B), …
    ```
 
 3. If `total_calls` is 0, say so plainly ("no basemind activity in the window yet").
@@ -59,4 +62,6 @@ response and call out which tools fall into which bucket. The estimator lives in
 - Don't auto-display the dashboard at the start of every conversation. This skill
   is strictly user-invoked.
 - Don't pad missing data. If `recent` is empty, say so; don't invent example rows.
+- Rows are keyed by tool name (`code_grep`, `git_log`). A log written by an older version also
+  holds `code:outline`-style keys; report them as they appear.
 - Don't claim a token-savings number without the disclosure sentence.

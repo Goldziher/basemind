@@ -7,8 +7,8 @@ name: bm-stats
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:9170d332232c6e1164112568af98a74567cb8fbf6b12dd4a7f1d8382582b9f9c
-Source-Hash: blake3:7ed9416a6577f30723b1881e657b978a919914f876e0f1fd64d7732dfda8e8c7
+Content-Hash: blake3:647686ffcb7a122d5f75c01acd89868c2a88a87a879d99d70086031abd79259b
+Source-Hash: blake3:cedfa4bf6ba470275f00d362ebb8180f60f5812f1912dd7ea32768d91fd82ba9
 Schema-Version: v1
 -->
 
@@ -26,24 +26,22 @@ RAM usage.
 
 Invoke `/bm-stats` (default window `today`) or `/bm-stats <today|1h|24h|all>`. Window: $ARGUMENTS
 
-1. **Resource footprint.** MCP `admin { mode: "cache_stats" }`, or CLI `basemind cache stats` (add `--json` to
-   parse). Report: `total_bytes` (matches `du`), the per-component breakdown (blobs / views /
+1. **Resource footprint.** CLI `basemind cache stats` (add `--json` to parse). Report: `total_bytes` (matches `du`), the per-component breakdown (blobs / views /
    git-history / lance / git-cache / telemetry / other), and process RAM (`rss_bytes` +
    `peak_rss_bytes`). If `blob_accounting_ok` is `false`, note that orphan accounting was skipped
    (stale/unreadable index — re-scan to restore it); the sizes are still accurate.
 
-2. **Activity.** MCP `admin { mode: "telemetry", window: "…" }`, or CLI
-   `basemind admin telemetry --window <today|1h|24h|all>`
-   (add `--json`). Report call count, the per-tool histogram, and estimated tokens saved for the
+2. **Activity.** CLI `basemind admin telemetry --window <today|1h|24h|all>` (add `--json`). Report call count, the per-tool histogram, and estimated tokens saved for the
    window.
 
 3. **Render** both sections as a compact markdown dashboard.
 
 ## Notes
 
-- Prefer MCP when connected, but don't depend on it — the CLI reads the same data with no server.
-  If an `admin` mode isn't available, run its CLI equivalent instead of giving up.
-- If neither MCP nor CLI is reachable, say so plainly and point at `/bm-doctor`.
+- Both are CLI commands with no MCP tool; they read the same data with or without a running
+  server. Run them through the plugin launcher, `${CLAUDE_PLUGIN_ROOT}/scripts/mcp-launch.sh <args>`
+  (bare `basemind` from `PATH` when no plugin launcher exists).
+- If the CLI is not reachable, say so plainly and point at `/bm-doctor`.
 - Always end with a one-sentence disclosure that the savings number is heuristic: tools without a
   realistic baseline (memory, document search, git wrappers) report 0 saved.
 

@@ -152,13 +152,16 @@ class GeneratorTests(unittest.TestCase):
         self.assertEqual((task["mode"], task["args"]["path"]), ("callers", "pkg/widget.py"))
 
     def test_dependents_match_import_statement_text(self) -> None:
-        tasks = {t["args"]["module"]: t for t in self.run_gen("dependents")}
+        tasks = {t["args"]["name"]: t for t in self.run_gen("dependents")}
+        self.assertEqual({t["args"]["relation"] for t in tasks.values()}, {"importers"})
         self.assertEqual(tasks["pkg.widget"]["gold"], ["pkg/use.py"])
 
     def test_grep_gold_equals_git_grep_with_the_same_filters(self) -> None:
         tasks = self.run_gen("grep", "--language", "python")
         self.assertTrue(tasks)
         for t in tasks:
+            self.assertIs(t["args"]["regex"], True)
+            self.assertNotIn("path_contains", t["args"])
             out = subprocess.run(
                 [
                     "git",

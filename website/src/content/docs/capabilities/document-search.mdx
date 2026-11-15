@@ -14,23 +14,23 @@ feature and entity filtering needs `documents-ner` (both in `full`)
 
 ## Requirements
 
-- The `memory` MCP tool's `documents` mode needs a build with `--features documents` (or
-  `full`). The other `memory` modes (`put`, `get`, `list`, `search`, `delete`) are
-  gated on the separate `--features memory` (also in `full`). Without the relevant feature
-  the tool is advertised but the mode's body returns an error.
+- `docs_search` needs a build with `--features documents` (or `full`). `memory_save` and
+  `memory_search` are gated on the separate `--features memory` (also in `full`). Without the
+  relevant feature the tool is advertised but returns an `isError` result naming the Cargo
+  feature.
 - OCR and named-entity recognition are separate Cargo features, `documents-ocr` and
   `documents-ner`. The published binaries (Homebrew, npm, pip, GitHub releases) are built with
   `full` and have both. A source build with `--features documents` alone has neither: raster
   images are not indexed as documents, a PDF with no text layer is indexed with no text and logs a
   warning naming the file and `documents-ocr`, `[documents.ner] enabled = true` logs a warning
-  and has no effect, and a search with `entity_category` returns an error naming `documents-ner`.
+  and has no effect, and a `docs_search` call with `entity` returns an error naming `documents-ner`.
 - Archives (`.zip`, `.tar`, `.7z`, `.gz`) are never extracted.
 - Documents must be scanned first: `basemind scan` with the documents feature extracts
   and embeds them into the global cache.
 
 ## Core tool
 
-### `memory` mode `documents`
+### `docs_search`
 
 Semantic search across PDFs, Office, HTML, email, and images (OCR). Returns
 chunk-level hits with path, matched text, byte span, vector distance, and — when enabled
@@ -39,20 +39,19 @@ at scan time — cross-encoder rerank score, named entities, and document summar
 
 ```json
 {
-  "mode": "documents",
-  "query": "how is the index schema versioned",
+  "query": "how releases are versioned",
   "limit": 10,
-  "entity_category": "PERSON",
-  "keywords_contains": "release"
+  "entity": "PERSON",
+  "keywords": "release"
 }
 ```
 
 Filter results by:
 
-- **`entity_category`** — narrow to documents mentioning entities like `PERSON`, `LOCATION`,
+- **`entity`** — narrow to documents mentioning entities like `PERSON`, `LOCATION`,
   `ORGANIZATION` (NER-extracted at scan time). Needs a build with `documents-ner`; without it
   the call returns an error instead of an empty result.
-- **`keywords_contains`** — narrow to documents with a matching keyword (extracted at scan
+- **`keywords`** — narrow to documents with a matching keyword (extracted at scan
   time).
 - **`mime_type`** — filter by file type, e.g. `"application/pdf"` or `"text/html"`.
 
@@ -71,7 +70,7 @@ Each hit carries:
 
 Web ingestion (the `web` tool and `basemind web`) was removed. Pages an older version scraped or
 crawled stay in the document store under the scope `web:<host>` and are no longer refreshed.
-`documents` searches this repository's scope by default, so pass `scope: "web:<host>"`
+`docs_search` searches this repository's scope by default, so pass `scope: "web:<host>"`
 (`--scope web:<host>` on the CLI) to search them.
 
 ## Shared memory
@@ -79,41 +78,36 @@ crawled stay in the document store under the scope `web:<host>` and are no longe
 Store key–value pairs that persist across sessions and are queryable by any agent on the
 same repo (determined by normalized git origin URL). Unrelated repos keep separate memory.
 
-### `memory` mode `put`
+### `memory_save`
 
-Store a value. CLI: `basemind memory put`.
-
-```json
-{
-  "mode": "put",
-  "key": "architecture_notes",
-  "value": "The scanner uses rayon parallel iteration..."
-}
-```
-
-### `memory` mode `get` / `list`
-
-Retrieve a value by exact key or list keys by prefix. CLI: `basemind memory get` /
-`basemind memory list`.
+Store a note. Saving an existing `key` replaces it. CLI: `basemind memory put`.
 
 ```json
 {
-  "mode": "get",
-  "key": "architecture"
+  "key": "decision/auth-tokens",
+  "value": "Tokens rotate every 24h.",
+  "tags": ["auth"]
 }
 ```
 
-### `memory` mode `search`
+### `memory_search`
 
-Semantic search over stored values. CLI: `basemind memory search`.
+Recall notes. `query` searches by meaning, `key` reads one note, `prefix` lists by key prefix, and
+no arguments lists everything. CLI: `basemind memory search` / `get` / `list`.
 
 ```json
 {
-  "mode": "search",
-  "query": "how is parallelism managed",
-  "limit": 5
+  "query": "token rotation"
 }
 ```
+
+```json
+{
+  "key": "decision/auth-tokens"
+}
+```
+
+Deleting a note is CLI only: `basemind memory delete <key>`.
 
 ## Configuration
 
@@ -134,11 +128,11 @@ enabled = true  # cross-encoder reranking for document chunks
 
 ## Discipline
 
-- **Use `memory` mode `documents` instead of opening PDFs/Office/HTML by hand.** Semantic
+- **Use `docs_search` instead of opening PDFs/Office/HTML by hand.** Semantic
   search finds passages about a topic without keyword matching.
-- **Use `memory` modes `put` / `search` for agent-generated insights.** Store findings that
+- **Use `memory_save` / `memory_search` for agent-generated insights.** Store findings that
   you want to recall in future sessions.
-- **Filter by `entity_category` or `mime_type` when the query is too broad.** Narrow results
+- **Filter by `entity` or `mime_type` when the query is too broad.** Narrow results
   to a document class.
 
 <Aside type="note">

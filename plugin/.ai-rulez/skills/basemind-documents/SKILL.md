@@ -17,71 +17,79 @@ x-ai-rulez:
       repository: https://github.com/Goldziher/basemind
 ---
 
-# basemind-documents — document RAG
+# basemind-documents — document search and memory
 
 basemind extracts PDFs, Office files, spreadsheets, email, HTML and notebooks (and, in a build with
 OCR, raster images and scanned PDFs) into a LanceDB vector
-store and answers meaning-based queries with cross-encoder reranking. For exact matches in text files such as Jupyter
-notebooks, use a literal or regex file search. Semantic results cannot establish that a string is absent.
+store and answers meaning-based queries with cross-encoder reranking. For exact matches in text
+files such as Jupyter notebooks, use a literal or regex file search. Semantic results cannot
+establish that a string is absent.
 
-**basemind first, open-the-file fallback.** Prefer `memory` mode `documents` over opening PDFs/Office/HTML
-by hand. For source code use `basemind-code-search` instead —
-this skill is for prose and documents.
+Prefer `docs_search` over opening PDFs/Office/HTML by hand. The tools are always loaded: call them
+directly, no tool search needed. For source code use `basemind-code-search` instead; this skill is
+for prose and documents.
 
 ## Requirements
 
-- `memory` mode `documents` needs a build with `--features documents` (or `full`); the other memory
-  modes need `--features memory`.
-  Without them the tools dispatch but return an MCP error.
+- `docs_search` needs a build with `--features documents` (or `full`); `memory_save` and
+  `memory_search` need `--features memory`. Without the feature the tool answers with an error
+  result naming it. The release binary includes both.
 - OCR and entity filtering depend on the binary's build: OCR is the `documents-ocr` Cargo feature
   and named-entity recognition is `documents-ner`. The published binary has both. On a build
   without OCR, images are not indexed and a scanned PDF (no text layer) is indexed with no text; on
-  a build without NER, an `entity_category` filter returns an error, not an empty result.
+  a build without NER, an `entity` filter returns an error, not an empty result.
 - Archives (`.zip`, `.tar`, ...) are never extracted, so their contents are not searchable.
 - Documents must be scanned first: `basemind scan` with the documents feature extracts and embeds
   them into the machine-global cache (Linux `~/.local/share/basemind/`, macOS
-  `~/Library/Application Support/basemind/`; override `BASEMIND_DATA_HOME`). See the `basemind-scan` skill.
+  `~/Library/Application Support/basemind/`; override `BASEMIND_DATA_HOME`). See the
+  `basemind-scan` skill.
 
 ## Tool routing
 
-| Question | MCP tool | CLI |
+| Question | MCP call | CLI |
 |---|---|---|
-| "Semantic search over PDFs/Office/HTML docs?" | `memory { mode: "documents", query: "…" }` | `basemind memory documents "query"` |
-| "Search Jupyter notebooks by meaning?" | `memory { mode: "documents", query: "…", mime_type: "application/x-ipynb+json" }` | `basemind memory documents "…" --mime-type application/x-ipynb+json` |
-| "Narrow to docs mentioning an entity?" (needs a build with `documents-ner`) | `memory { mode: "documents", query: "…", entity_category: "…" }` | *(MCP only)* |
-| "Narrow to docs with a keyword?" | `memory { mode: "documents", query: "…", keywords_contains: "…" }` | *(MCP only)* |
-| "Filter by file type?" | `memory { mode: "documents", query: "…", mime_type: "application/pdf" }` | `basemind memory documents "…" --mime-type application/pdf` |
-| "Recall something the agent stored earlier?" | `memory` mode `get`, `list`, or `search` | `basemind memory get "key"` / `list` / `search "q"` |
-| "Remember this for future sessions?" | `memory { mode: "put", key, value }` | `basemind memory put "key" "value"` |
+| "Search the docs by meaning?" | `docs_search {"query":"how releases are versioned"}` | `basemind memory documents "how releases are versioned"` |
+| "Search Jupyter notebooks by meaning?" | `docs_search {"query":"…","mime_type":"application/x-ipynb+json"}` | `basemind memory documents "…" --mime-type application/x-ipynb+json` |
+| "Filter by file type?" | `docs_search {"query":"…","mime_type":"application/pdf"}` | `basemind memory documents "…" --mime-type application/pdf` |
+| "Narrow to docs naming an entity category?" (needs a build with `documents-ner`) | `docs_search {"query":"…","entity":"PERSON"}` | `basemind memory documents "…" --entity PERSON` |
+| "Narrow to docs with a keyword?" | `docs_search {"query":"…","keywords":"rate limit"}` | `basemind memory documents "…" --keywords "rate limit"` |
+| "Remember this for future sessions?" | `memory_save {"key":"decision/auth-tokens","value":"Tokens rotate every 24h.","tags":["auth"]}` | `basemind memory put decision/auth-tokens "Tokens rotate every 24h." --tag auth` |
+| "Recall a note by meaning?" | `memory_search {"query":"token rotation"}` | `basemind memory search "token rotation"` |
+| "Read one note by key?" | `memory_search {"key":"decision/auth-tokens"}` | `basemind memory get decision/auth-tokens` |
+| "List notes under a key prefix?" | `memory_search {"prefix":"decision/"}` | `basemind memory list --prefix decision/` |
+| "Delete a note?" | CLI only | `basemind memory delete decision/auth-tokens` |
 
 ## What a hit carries
 
-`memory` mode `documents` returns chunk-level hits with `path`, `chunk_idx`, the matched `text`, byte span,
-vector `distance`, and — when enabled at scan time — a cross-encoder `rerank_score` in `[0,1]`, the
-parent document's `keywords` and named `entities` (NER, only from a build with `documents-ner`), and
-a document-level `summary`. Use
-`entity_category` / `keywords_contains` to constrain to documents whose parent carries a matching
-entity or keyword (AND-combined when both are set).
+`docs_search` returns chunk-level hits with `path`, `chunk_idx`, the matched `text`, byte span,
+vector `distance`, and, when enabled at scan time, a cross-encoder `rerank_score` in `[0,1]`, the
+parent document's `keywords` and named `entities` (NER, only from a build with `documents-ner`),
+and a document-level `summary`. `entity` and `keywords` constrain to documents whose parent
+carries a matching entity category or keyword (AND-combined when both are set).
 
 ## Examples
 
 ```text
-memory { mode: "documents", query: "how is the index schema versioned", limit: 5 }
+docs_search {"query":"how is the index schema versioned","limit":5}
 → docs/architecture.pdf#chunk3  rerank 0.91  "INDEX_SCHEMA_VER reads from RELEASE_MINOR…"
   README.md#chunk12             rerank 0.74  "…wipe-on-mismatch rebuilds from source…"
 
-memory { mode: "documents", query: "rate limiting", mime_type: "text/html" }
+docs_search {"query":"rate limiting","mime_type":"text/html"}
 → docs/site/limits.html#chunk1  rerank 0.88  "requests are capped at …"
 ```
 
 ## Notes
 
-- `memory` mode `documents` searches this repo's scope by default. Web ingestion was removed: pages
-  an older version scraped or crawled stay in the store under `web:<host>` and are no longer
-  refreshed; pass `scope: "web:<host>"` to search them.
+- `docs_search` searches this repo's scope by default. Web ingestion was removed: pages an older
+  version scraped or crawled stay in the store under `web:<host>` and are no longer refreshed; pass
+  `"scope":"web:<host>"` to search them.
+- `memory_search` takes one selector: `query` (by meaning, ranked, no `cursor`), `key` (one note)
+  or `prefix` (list by key prefix); with none it lists everything. `tag` filters a search or a
+  list. Saving an existing `key` replaces the note.
 - Memory is scoped by the normalised git `origin` URL, so clones of the same repo share stored
-  entries and unrelated repos do not.
-- Lists are capped (`limit`, default 100, max 1000); use `next_cursor` → `cursor` to page.
+  entries and unrelated repos do not. `"visibility":"individual"` keeps a note to this agent.
+- `docs_search` returns 10 hits by default; lists take `limit` and page with `next_cursor` ->
+  `cursor`. An argument a tool does not take is rejected with a did-you-mean and the accepted list.
 
 For code structure see `basemind-code-search`; for git history see `basemind-git-history`; for agent
 coordination see `basemind-comms`.

@@ -11,7 +11,7 @@ x-ai-rulez:
 # TDD + poly Workflow
 
 - Practice red-green-refactor. Write a failing test first when the change is observable from the public API or MCP surface.
-- The unit-test bar is the harness in `tests/harden.rs` plus the smoke contract in `tests/mcp_smoke.rs`. New MCP tools need a smoke assertion and (when sensible) a harden canary.
+- The unit-test bar is the harness in `tests/harden.rs` plus the smoke contract in `tests/mcp_smoke.rs`. A new MCP tool needs a smoke assertion (a working call plus its argument refusals), a `REQUIRED` entry in `tests/mcp_schema_wire.rs`, a `tests/cli_parity/capabilities.rs` row and (when sensible) a harden canary.
 - Before every commit, run the local check triad:
   - `cargo fmt`
   - `cargo clippy --workspace --all-targets --tests -- -D warnings`

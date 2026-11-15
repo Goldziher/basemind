@@ -6,8 +6,8 @@ name: bm
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:2cd1fe898f11e04013f2b22d82853ad9bf27b45b3725bd55a7ac1e05e9aca741
-Source-Hash: blake3:7ed9416a6577f30723b1881e657b978a919914f876e0f1fd64d7732dfda8e8c7
+Content-Hash: blake3:5b7e95344c19c1efbb1164813559745920a36effe1d1d82953c3d9c0f8cd2a47
+Source-Hash: blake3:cedfa4bf6ba470275f00d362ebb8180f60f5812f1912dd7ea32768d91fd82ba9
 Schema-Version: v1
 -->
 
@@ -33,19 +33,25 @@ Route the question to the tool that answers it directly:
 
 | Example question | Tool |
 |---|---|
-| "Where is X defined?" | `code` mode `symbols` |
-| "What calls X?" | `code` mode `references` (any name) or `callers` (specific definition) |
-| "What's the shape of this file?" | `code` mode `outline` (add `l2: true`) |
-| "What changed recently?" | `git` mode `recent`, `touching`, or `symbol_history` |
-| "Who last touched this?" | `git` mode `blame` or `blame_symbol` |
-| "Where's the churn?" | `git` mode `churn` |
-| "Search PDFs/docs in the repo by meaning?" | `memory` mode `documents` |
-| "Recall something remembered earlier?" | `memory` mode `get`, `list`, or `search` |
-| "Remember this for later sessions?" | `memory` mode `put` (delete with `delete`) |
-| "Refresh the index after editing code?" | `admin` mode `rescan` (`paths` limits scope) |
+| "Where is X defined?" | `code_symbols {"name":"MapCache"}` |
+| "What calls X?" | `code_refs {"name":"process_file"}`; add `"path"` to pin one definition |
+| "What's the shape of this file?" | `code_outline {"path":"src/scanner.rs"}` |
+| "Show me that function" | `code_read {"path":"src/scanner.rs","symbol":"process_file"}` |
+| "Where does this string appear?" | `code_grep {"pattern":"cache_root("}` (add `"regex":true` for a regex) |
+| "Which file is named like X?" | `find_files {"query":"readme"}` |
+| "What changed recently?" | `git_log {}`; `{"path":"src/scanner.rs"}` for one file; add `"symbol"` for one symbol |
+| "Who last touched this?" | `git_blame {"path":"src/scanner.rs"}`; add `"symbol"` or `"line"` + `"end_line"` |
+| "What's dirty, or what changed between revisions?" | `git_diff {}` / `git_diff {"path":"src/scanner.rs","from":"HEAD~1","to":"HEAD"}` |
+| "Where's the churn?" | CLI only: `basemind git churn` |
+| "Search PDFs/docs in the repo by meaning?" | `docs_search {"query":"how releases are versioned"}` |
+| "Recall something remembered earlier?" | `memory_search {"query":"token rotation"}`, or `{"key":"…"}` / `{"prefix":"…"}` |
+| "Remember this for later sessions?" | `memory_save {"key":"decision/x","value":"…"}` (delete: `basemind memory delete <key>`) |
+| "Refresh the index after editing code?" | `index_rescan {"paths":["src/scanner.rs"]}` |
 
 ## Notes
 
+- The tools are always loaded: call them directly, no tool search needed. An unknown argument is
+  rejected, and line numbers are 1-based.
 - Answer with paths, line numbers, and signatures — read whole files only after a tool has
   located the exact span you need.
 

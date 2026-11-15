@@ -1,9 +1,11 @@
 """Gold for `grep`: a regex + path filter -> the `git grep -n -E` lines with the same filters.
 
-Each task pairs a pattern with the filters basemind's `code grep` takes (`language`,
-`path_contains`), and the gold is `git grep -n -E PATTERN HEAD -- PATHSPEC` with the equivalent
-pathspec: `language: python` <-> `*.py`, `path_contains: D` <-> `*D*`. Patterns are kept to the
-subset where POSIX ERE and the Rust regex engine agree (literals and an escaped `\\(`).
+Each task pairs a pattern with the filters `code_grep` takes (`language`, `path`) and sets
+`regex: true`, because `code_grep` reads `pattern` as literal text otherwise. The gold is
+`git grep -n -E PATTERN HEAD -- PATHSPEC` with the equivalent pathspec: `language: python` <->
+`*.py`, `path: D` <-> `*D*` (`path` is a substring of the repo-relative path, not a glob).
+Patterns are kept to the subset where POSIX ERE and the Rust regex engine agree (literals and an
+escaped `\\(`).
 """
 
 import argparse
@@ -35,7 +37,7 @@ def main() -> None:
     p.add_argument(
         "--with-path-filter",
         action="store_true",
-        help="also emit tasks restricted by path_contains",
+        help="also emit tasks restricted by the `path` substring filter",
     )
     a = p.parse_args()
 
@@ -61,13 +63,13 @@ def main() -> None:
         if len(tasks) >= a.n:
             break
         pat = templates[len(tasks) % len(templates)].format(w=w)
-        args: dict = {"pattern": pat, "language": language, "limit": 1000}
+        args: dict = {"pattern": pat, "regex": True, "language": language, "limit": 1000}
         if a.with_path_filter and len(tasks) % 2 == 1 and dirs:
             sub = rng.choice(dirs)
-            args["path_contains"] = sub
+            args["path"] = sub
         hits = c.git_grep_lines(repo, "-E", "-e", pat, pathspec=pathspec)
-        if "path_contains" in args:  # git pathspecs OR together, so intersect the directory filter here
-            hits = [(path, ln) for path, ln in hits if args["path_contains"] in path]
+        if "path" in args:  # git pathspecs OR together, so intersect the directory filter here
+            hits = [(path, ln) for path, ln in hits if args["path"] in path]
         if not hits or len(hits) > a.max_gold:
             continue
         cmd = "git grep -n -E " + c.shell_quote(pat) + " -- " + " ".join(c.shell_quote(s) for s in pathspec)

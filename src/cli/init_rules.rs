@@ -16,21 +16,21 @@ use std::fmt::Write as _;
 /// rendered rules block. Order here is the display order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Capability {
-    /// `code` modes `symbols` / `references` / `callers` / `grep` — code navigation.
+    /// `code_symbols` / `code_refs` / `code_grep` / `code_read` — code navigation.
     CodeSearchNavigation,
-    /// `code` mode `outline` — file structure without opening source.
+    /// `code_outline` — file structure without opening source.
     CodeMappingArchitecture,
-    /// `git` modes `recent` / `blame_symbol` / `touching` — git history without shelling out.
+    /// `git_log` / `git_blame` / `git_diff` — git history without shelling out.
     GitHistory,
-    /// `code` mode `find` — fuzzy fzf/fd-style filename / path search.
+    /// `find_files` — fuzzy fzf/fd-style filename / path search.
     FileFinding,
     /// `agents` modes `post` / `inbox` — multi-agent thread coordination.
     AgentComms,
     /// `workspace` modes — daemon registry + worktree coordination.
     WorktreeCoordination,
-    /// `memory` mode `documents` — RAG over PDFs / Office / HTML / markdown / config.
+    /// `docs_search` — RAG over PDFs / Office / HTML / markdown / config.
     DocumentsRag,
-    /// Semantic (vector) code search over the same index.
+    /// `code_search` — semantic (vector) code search over the same index.
     SemanticSearch,
 }
 
@@ -64,9 +64,9 @@ impl Capability {
     /// Human label shown in the interactive prompt.
     pub fn label(self) -> &'static str {
         match self {
-            Capability::CodeSearchNavigation => "Code search & navigation (symbols, references, callers, grep)",
+            Capability::CodeSearchNavigation => "Code search & navigation (symbols, usages, grep, reading a symbol)",
             Capability::CodeMappingArchitecture => "Code mapping & architecture (file outlines)",
-            Capability::GitHistory => "Git history (recent changes, blame, commits-touching)",
+            Capability::GitHistory => "Git history (log, blame, diff)",
             Capability::FileFinding => "File finding (fuzzy fzf/fd-style filename & path search)",
             Capability::AgentComms => "Agent comms (multi-agent threads + inbox)",
             Capability::WorktreeCoordination => {
@@ -82,41 +82,63 @@ impl Capability {
         Capability::ALL.into_iter().find(|c| c.slug() == slug)
     }
 
-    /// The routing-table row: `(Basemind tool, task)`.
-    fn routing_row(self) -> (&'static str, &'static str) {
+    /// The routing rows: `(task, example call)`, one per tool the capability covers. Each call is
+    /// complete and valid as written, so an agent can adapt it instead of guessing arguments.
+    fn routing_rows(self) -> &'static [(&'static str, &'static str)] {
         match self {
-            Capability::CodeSearchNavigation => (
-                "`code` modes `symbols` / `definition` / `references` / `callers` / `implementations` / `grep`",
-                "Find definitions, references, callers, implementations, or exact text in indexed code",
-            ),
-            Capability::CodeMappingArchitecture => (
-                "`code` mode `outline` (code files only)",
-                "Inspect a file's structure without opening it",
-            ),
-            Capability::GitHistory => (
-                "`git` modes `recent` / `blame_symbol` / `touching` / `diff`",
-                "Inspect history, blame, or diffs",
-            ),
-            Capability::FileFinding => (
-                "`code` mode `find` (fuzzy path search)",
-                "Find files by name or path fragment",
-            ),
-            Capability::AgentComms => (
-                "`agents` (modes `post` / `inbox` / `thread_list`)",
-                "Discover threads, check the inbox, or coordinate with agents",
-            ),
-            Capability::WorktreeCoordination => (
-                "`workspace` (modes `workspaces` / `worktrees` / `claim`)",
-                "Inspect worktrees and check advisory claims before editing",
-            ),
-            Capability::DocumentsRag => (
-                "`memory` mode `documents` (PDFs, Office, markdown, config and data files; the code map holds code only)",
-                "Search indexed documents",
-            ),
-            Capability::SemanticSearch => (
-                "`code` mode `semantic` (then `chunk`)",
-                "Find code by concept and retrieve the relevant chunk",
-            ),
+            Capability::CodeSearchNavigation => &[
+                ("Where is X defined", r#"`code_symbols {"name":"parse_config"}`"#),
+                (
+                    "What calls / implements / imports X",
+                    r#"`code_refs {"name":"parse_config"}` (add `"relation":"implementations"` or `"importers"`)"#,
+                ),
+                (
+                    "Find a string, identifier or comment",
+                    r#"`code_grep {"pattern":"cache_root("}` (literal; add `"regex":true` for a regex)"#,
+                ),
+                (
+                    "Read one function or a line span",
+                    r#"`code_read {"path":"src/store.rs","symbol":"open"}`"#,
+                ),
+            ],
+            Capability::CodeMappingArchitecture => &[(
+                "See what a code file contains without opening it",
+                r#"`code_outline {"path":"src/store.rs"}`"#,
+            )],
+            Capability::GitHistory => &[
+                (
+                    "Recent commits, a file's history, or a commit search",
+                    r#"`git_log {}` / `git_log {"path":"src/store.rs"}` / `git_log {"query":"fix race"}`"#,
+                ),
+                (
+                    "Who last changed a symbol or line span",
+                    r#"`git_blame {"path":"src/store.rs","symbol":"open"}`"#,
+                ),
+                (
+                    "Working-tree status, or a file's diff",
+                    r#"`git_diff {}` / `git_diff {"path":"src/store.rs"}`"#,
+                ),
+            ],
+            Capability::FileFinding => &[(
+                "Find a file by a fragment of its name or path",
+                r#"`find_files {"query":"readme"}`"#,
+            )],
+            Capability::AgentComms => &[(
+                "Check the inbox, discover threads, or post to other agents",
+                r#"`agents {"mode":"inbox"}` / `{"mode":"thread_list"}` / `{"mode":"post", …}`"#,
+            )],
+            Capability::WorktreeCoordination => &[(
+                "Inspect worktrees and advisory claims before editing",
+                r#"`workspace {"mode":"worktrees"}` / `{"mode":"claim", …}`"#,
+            )],
+            Capability::DocumentsRag => &[(
+                "Search documents (PDFs, Office, markdown, config and data files; the code tools cover code only)",
+                r#"`docs_search {"query":"how releases are versioned"}`"#,
+            )],
+            Capability::SemanticSearch => &[(
+                "Find code by what it does, then read the hit",
+                r#"`code_search {"query":"retry a failed upload with backoff"}`"#,
+            )],
         }
     }
 }
@@ -153,14 +175,22 @@ fn render_usage_rules(out: &mut String, caps: &[Capability]) {
          before using a shell command, file read, or another search tool for the same question. \
          Use the result to narrow any follow-up reads to the paths and lines you need.\n\n",
     );
-    out.push_str("| First call | Task |\n|---|---|\n");
+    out.push_str(
+        "The Basemind tools are always loaded: call them directly, there is no tool search to run \
+         first. Arguments are exact (an unknown argument is rejected, not ignored), paths are \
+         repository-relative, and `line` / `end_line` are 1-based.\n\n",
+    );
+    out.push_str("| Task | First call |\n|---|---|\n");
     for cap in &Capability::ALL {
         if caps.contains(cap) {
-            let (tool, task) = cap.routing_row();
-            let _ = writeln!(out, "| {tool} | {task} |");
+            for (task, call) in cap.routing_rows() {
+                let _ = writeln!(out, "| {task} | {call} |");
+            }
         }
     }
-    out.push('\n');
+    out.push_str(
+        "\nWhen a result is unexpectedly empty call `index_status {}`; after edits call `index_rescan {}`.\n\n",
+    );
 
     out.push_str(
         "Use a fallback when the capability is unavailable, the index is stale, or the input is \
@@ -169,7 +199,7 @@ fn render_usage_rules(out: &mut String, caps: &[Capability]) {
     );
     if caps.contains(&Capability::DocumentsRag) {
         out.push_str(
-            "Use `memory` mode `documents` for semantic questions about notebooks and other \
+            "Use `docs_search` for semantic questions about notebooks and other \
              indexed documents. For an exact literal in a notebook, search the file text directly.\n\n",
         );
     }
@@ -241,12 +271,63 @@ mod tests {
         let only_git = vec![Capability::GitHistory];
         let body = render_block_body(&only_git, sections);
         assert!(body.contains("Use Basemind first for every capability listed below"));
-        assert!(body.contains("`git` modes `recent`"), "git row present");
+        assert!(body.contains("`git_log {}`"), "git row present");
         assert!(!body.contains("exact literal in a notebook"));
         assert!(
-            !body.contains("`implementations` / `grep`"),
-            "code-search row absent when unselected"
+            !body.contains("code_symbols"),
+            "code-search rows absent when unselected"
         );
+    }
+
+    /// Every capability contributes at least one complete example call, the block says the tools
+    /// are always loaded, and nothing describes the retired mode-dispatched surface.
+    #[test]
+    fn every_capability_has_an_example_call_and_no_retired_tool_is_named() {
+        let body = render_block_body(
+            &all(),
+            BlockSections {
+                usage_rules: true,
+                setup_notes: false,
+            },
+        );
+        assert!(body.contains("always loaded"), "{body}");
+        for cap in Capability::ALL {
+            let rows = cap.routing_rows();
+            assert!(!rows.is_empty(), "{cap:?} has no example call");
+            for (_, call) in rows {
+                assert!(
+                    call.contains('{') && call.contains('}'),
+                    "{cap:?} row has no call: {call}"
+                );
+                assert!(body.contains(call), "{cap:?} row missing from the block");
+            }
+        }
+        for tool in [
+            "code_outline",
+            "code_symbols",
+            "code_read",
+            "code_grep",
+            "code_search",
+            "code_refs",
+            "find_files",
+            "docs_search",
+            "git_log",
+            "git_blame",
+            "git_diff",
+            "index_status",
+            "index_rescan",
+        ] {
+            assert!(body.contains(tool), "the block never names `{tool}`");
+        }
+        for retired in [
+            "`code` mode",
+            "`git` mode",
+            "`memory` mode",
+            "`admin` mode",
+            "blame_symbol",
+        ] {
+            assert!(!body.contains(retired), "the block still names `{retired}`");
+        }
     }
 
     #[test]

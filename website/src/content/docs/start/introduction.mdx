@@ -48,15 +48,15 @@ guessing. Once it knows what changed yesterday, it stops reading git logs.
 
 basemind is built on one discipline: **prefer structure over content**.
 
-- **`code` (`mode: outline`) a file before you open it.** Read only the exact span
-  you need from the outline, not the whole file.
-- **`code` (`mode: symbols`) instead of grep.** It matches on indexed symbol names
+- **`code_outline` a file before you open it.** Then `code_read` only the symbol or span
+  you need, not the whole file.
+- **`code_symbols` instead of grep.** It matches on indexed symbol names
   and returns `path:line`, skipping comment and test noise.
-- **`code` (`mode: references` / `mode: callers`) instead of grepping call sites.**
+- **`code_refs` instead of grepping call sites.**
   Indexed call edges, not text matches.
-- **`git` (`mode: recent` / `mode: blame_symbol` / `mode: diff_outline`) instead of
-  `git log` / `git blame`.** History at symbol resolution, in tens of microseconds.
-- **`admin` (`mode: rescan`) after you edit code**, not a server reconnect.
+- **`git_log`, `git_blame` and `git_diff` instead of
+  `git log` / `git blame` / `git diff`.** History at symbol resolution, in tens of microseconds.
+- **`index_rescan` after you edit code**, not a server reconnect.
   Optionally limit it to the files you touched.
 - **Do not re-read a file basemind already mapped.** If the outline answered the
   question, stop.

@@ -76,7 +76,7 @@ BASEMIND_BIN=./target/release/basemind ./benchmarks/run.sh benchmarks/tasks.exam
 
 The `documents` tier is meant to represent basemind's document/prose-search surface as
 compared to a `grep`/`cat` baseline. The "correct" command for real semantic search is
-`basemind memory documents <query>`, but that mode is gated behind the `documents` Cargo
+`basemind memory documents <query>` (the `docs_search` tool), but it is gated behind the `documents` Cargo
 feature, which pulls in `xberg`'s ONNX runtime (`ort`) for embeddings/reranking/NER. Building
 that feature downloads prebuilt ONNX binaries over HTTPS from `cdn.pyke.io` at compile time,
 and in this environment that download fails inside `cargo build` with `invalid peer
@@ -86,7 +86,7 @@ egress, not a real network outage). That made `--features documents` (and `code-
 which also touches `ort` via reranking) unbuildable here.
 
 Given that, `benchmarks/tasks.example.yaml`'s `documents`-tier tasks use `basemind code grep
---path-contains <file>` (full-text, structured content search) against a single source file's
+--path <file>` (full-text, structured content search) against a single source file's
 doc comments instead of true semantic search (markdown is document-tier now, so `code grep`
 cannot see it) — it only needs the `tokenizer` feature, so it actually runs
 in this environment. If you have a binary built with `--features documents` in an environment
@@ -118,7 +118,8 @@ Two things worth knowing when writing your own tasks:
   `\( -path './target' -o -path './.git' \) -prune -o ... -print` for `find` (plain
   `-not -path './target/*'` filters *output*, not traversal, and is still slow). The example
   tasks all do this.
-- `basemind code grep --path-contains <substring>` matches any indexed path containing that
+- `basemind code grep <pattern> --path <substring>` reads the pattern as literal text (add
+  `--regex` for a regex) and matches any indexed path containing that
   substring — if the same filename is vendored under multiple plugin directories (this repo
   ships several copies of `commands/bm-init.md`, for instance), pick a search pattern that
   only occurs in the file you actually mean, not just a path fragment that happens to be
@@ -208,11 +209,17 @@ How to read it: the ratio only compares answer size with the baseline's. A defin
 (`symbols`) replaces a grep plus file reads and is close to the 25x that `src/mcp/savings.rs` credits it; a
 single narrow hit (`outline` of a small file, `references`, `callers`, `dependents`, `find`) can be
 *cheaper* with `grep`, because basemind's structured response carries per-call overhead. That is why
-`savings.rs` claims no saving (1x) for `callers`, `dependents`, `find`, `files`, `grep` and `git_search`,
-credits `outline` and `references` only 1.2x and `docs` 2.5x, and why the harness flags every mode whose
+`savings.rs` claimed no saving (1x) for `callers`, `dependents`, `find`, `files`, `grep` and `git_search`,
+credited `outline` and `references` only 1.2x and `docs` 2.5x, and why the harness flags every mode whose
 measured median deviates from those multipliers by more than 25% (`outline`, `dependents`, `grep`,
 `find`, `git_search` and `docs` here) and `basemind admin telemetry` savings are estimates. The latency columns are
 the point of the resident term index, name dictionaries and grep prefilter: the same `symbols`,
 `dependents` and `grep` tasks took seconds before them (`symbols` and `dependents` p50 4.1 s and 4.6 s on
 the previous implementation; `grep` 3.6-7.8 s). Rerun the workflow in
 [`eval/README.md`](eval/README.md) on your own repository before relying on any of these.
+
+The table predates the per-job MCP tools (ADR-0018). Its rows are eval task modes, which are unchanged, and
+the last column is the multiplier `savings.rs` used at the time. `savings.rs` is now keyed by tool name:
+`references`, `callers` and `dependents` all run `code_refs`, which claims 1x; `code_outline` stays at 1.2x,
+`code_symbols` at 25x and `docs_search` at 2.5x. Generated `grep` tasks now set `regex: true`, because
+`code_grep` reads a pattern as literal text by default.

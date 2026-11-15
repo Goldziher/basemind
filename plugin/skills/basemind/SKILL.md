@@ -9,191 +9,197 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:28e9b102ec74e237da494e02b4b06d4d4879f454cc42473924045aef4c7ceec2
-Source-Hash: blake3:7ed9416a6577f30723b1881e657b978a919914f876e0f1fd64d7732dfda8e8c7
+Content-Hash: blake3:271c7163d9b8bca059a113f3b0fd13be70c1445b43d0ea4b7fb2b0848bf5df86
+Source-Hash: blake3:cedfa4bf6ba470275f00d362ebb8180f60f5812f1912dd7ea32768d91fd82ba9
 Schema-Version: v1
 -->
 
 # basemind — the indexed context layer
 
-basemind is the full context layer for this repository, served over MCP. It pre-indexes the
-repo into a content-addressed blob store + Fjall inverted index (and, when enabled, a LanceDB
-vector store) so structural, historical, and semantic questions resolve in milliseconds —
-without you reading whole files.
+basemind is the context layer for this repository, served over MCP. It pre-indexes the repo into a
+content-addressed blob store + Fjall inverted index (and, when enabled, a LanceDB vector store) so
+structural, historical, and semantic questions resolve in milliseconds without reading whole files.
+
+Each job is its own tool with an exact schema. The tools are always loaded: call them directly, no
+tool search needed.
 
 ## Capabilities
 
-- **Code map across 300+ languages** — tree-sitter outlines, symbol search, references,
-  callers, implementations, dependents. It holds **code only**: markdown, JSON,
-  YAML, TOML, XML, CSV, INI and similar files are documents, searched with `memory` mode `documents`.
-- **Full-text + symbol search** — `code` modes `grep` and `symbols`.
-- **Git intelligence** — history, blame, and structural diffs at symbol resolution, plus churn.
-- **Document RAG** — PDFs, Office, HTML, email, images (OCR, when the build has `documents-ocr`),
-  markdown and config/data files → semantic search with cross-encoder reranking (`memory` mode `documents`).
-- **Shared memory** — per-repo, scope-keyed key-value + semantic memory across sessions.
+- **Code map across 300+ languages**: tree-sitter outlines, symbol search, call sites, callers,
+  implementations, importers. It holds **code only**: markdown, JSON, YAML, TOML, XML, CSV, INI and
+  similar files are documents, searched with `docs_search`.
+- **Text and meaning search over code**: `code_grep` (literal or regex) and `code_search`.
+- **Git history**: log, blame, and diffs at symbol resolution.
+- **Document search**: PDFs, Office, HTML, email, images (OCR, when the build has `documents-ocr`),
+  markdown and config/data files, with cross-encoder reranking (`docs_search`).
+- **Shared memory**: per-repo notes that persist across sessions (`memory_save`, `memory_search`).
 
 ## Dedicated per-capability skills
 
-This umbrella skill covers the whole surface. For focused workflows, reach for the dedicated skills:
+This umbrella skill covers the whole surface. For focused workflows:
 
-- **`basemind-code-search`** — outlines, symbol search, references, callers, implementations.
-- **`basemind-git-history`** — history, blame, structural diffs, churn.
-- **`basemind-documents`** — document RAG (`memory` mode `documents`), memory.
-- **`basemind-comms`** — coordinating with other agents in the same repo over the broker.
-- **`basemind-cli`** — the same surface driven headlessly from the CLI.
+- **`basemind-code-search`**: outlines, symbol search, usages, grep, search by meaning.
+- **`basemind-git-history`**: log, blame, diffs.
+- **`basemind-documents`**: document search and memory.
+- **`basemind-comms`**: coordinating with other agents in the same repo over the broker.
+- **`basemind-cli`**: the same surface driven headlessly from the CLI.
 
 ## When to reach for it (instead of `grep` / `read_file`)
 
-Use basemind for:
-
-- **Locating a symbol**: "where is `Foo` defined?", "find the constructor for `Bar`", "show me every type ending in `Service`".
-- **Following callers**: "what calls `process_file`?", "who depends on this module?".
+- **Locating a symbol**: "where is `Foo` defined?", "find the constructor for `Bar`".
+- **Following callers**: "what calls `process_file`?", "what imports this module?".
 - **Mapping a file's shape** before reading it: which symbols, in what order, with what signatures.
-- **Walking recent history**: "what changed in this file in the last 20 commits?", "when did this symbol last change?".
+- **Walking recent history**: "what changed in this file in the last 20 commits?", "when did this
+  symbol last change?".
 - **Blame and ownership**: "who last touched this function?", "what commit introduced this line?".
-- **Diffing across revisions**: "what symbols did this branch add?", "show the hunks for `foo.rs` between HEAD~5 and HEAD".
+- **Diffing across revisions**: "what symbols did this branch add?", "show the hunks for `foo.rs`
+  between HEAD~5 and HEAD".
 
-If you are about to open more than two or three files just to learn structure, stop
-and use basemind first. The tools return paths + line numbers; you only `read_file`
-once you know exactly which span you need.
+If you are about to open more than two or three files just to learn structure, stop and use
+basemind first. The tools return paths and line numbers; read source only once you know the span.
 
-## Context economy — the operating discipline
+## Context economy
 
-basemind tools return **paths, line numbers, and signatures — not file bodies**, so a
-structural answer costs a fraction of the tokens of reading source. Treat that as the
-default workflow, not an optimization:
+basemind tools return **paths, 1-based line numbers, and signatures, not file bodies**, so a
+structural answer costs a fraction of the tokens of reading source.
 
-- **Use `code` mode `outline` before you open a file.** Read the whole file only when you have already
-  identified the exact span you need from the outline; then `read_file` that range, not the file.
-- **Use `code` mode `symbols` instead of `grep`/`rg` for a definition.** It matches indexed symbol
-  names and returns `path:line`, skipping the comment/string/test-name noise grep drowns you in.
-- **Use `code` modes `references` / `callers` instead of grepping call sites.** Indexed call edges,
-  not text matches.
-- **Use `code` mode `grep` instead of shelling out to ripgrep** when you genuinely need regex over
-  code content — it sweeps every indexed file (a trigram filter skips files that cannot match) and
-  returns capped, structured hits with an exact `total_matches`.
-- **Use `admin` mode `rescan` after you edit code**, not a server reconnect. Pass `paths: [...]` to limit it to
-  the files you touched.
-- MCP resources are available for hosts that attach them: `basemind://status`,
-  `basemind://outline/{path}` and `basemind://memory/{key}` (same data as `admin` `status`,
-  `code` `outline`, `memory` `get`).
+- **`code_outline` before you open a file.** Then `code_read` the one symbol or line span you need
+  instead of the whole file.
+- **`code_symbols` instead of `grep`/`rg` for a definition.** It matches indexed symbol names and
+  skips the comment, string and test-name noise.
+- **`code_refs` instead of grepping call sites.** Indexed call edges, not text matches.
+- **`code_grep` instead of shelling out to ripgrep.** The pattern is literal text unless you pass
+  `"regex":true`; every hit carries the full line and the enclosing symbol.
+- **`index_rescan` after you edit code**, not a server reconnect. Pass `paths` to limit it to the
+  files you touched.
 - **Do not re-read a file basemind already mapped.** If the outline answered the question, stop.
 
-Rule of thumb: if a question is about _where_, _what calls_, _what shape_, _who changed_, or
-_what's indexed_, a basemind tool answers it cheaper than reading files. Reach for `read_file`
-only to see the actual implementation of a span you have already located.
-
-**basemind first, shell/grep/git fallback.** Prefer basemind over reading files, over `grep`/`rg`,
-and over naked `git`: use it for code parsing (outlines, references, callers), git history / blame /
-diffs, and document extraction / RAG / keyword + entity (NER) / summary (`memory` mode `documents`).
 Drop to raw shell, grep, or git only when no basemind tool covers the question.
 
-## Tool routing (copy this into your mental model)
+## Tool routing
 
-| Question | Tool |
+| Question | Call |
 |---|---|
-| "Where is X defined?" | `code { mode: "symbols", name: X }` (substring; optional `kind`) |
-| "Jump to the definition of X used here?" | `code { mode: "definition", path, line, column? }` |
-| "What's the shape of file F?" | `code { mode: "outline", path: F, l2?: true }` |
-| "What calls X?" (any name) | `code { mode: "references", name: X }` |
-| "What calls this specific definition?" | `code { mode: "callers", path: F, name: X }` |
-| "What implements / extends / inherits from X?" | `code { mode: "implementations", trait_name: X }` |
-| "What imports module M?" | `code { mode: "dependents", module: M }` |
-| "Which file is named like X?" | `code { mode: "find", query: X }` (fuzzy; not `find`/`ls -R`) |
-| "Show me this one symbol's body" | `code { mode: "expand", path: F, name: X }` |
-| "Find code by meaning, not spelling" | `code { mode: "semantic", query }` then `code { mode: "chunk", path, chunk_id }` |
-| "What code files are indexed?" | `code { mode: "files" }` |
-| "What changed recently?" | `git` modes `recent`, `touching`, or `by_path` |
-| "When did symbol X last change?" | `git { mode: "symbol_history", path: F, name: X }` |
-| "Who wrote this line / symbol?" | `git` mode `blame` or `blame_symbol` |
-| "Where's the churn?" | `git { mode: "churn" }` |
-| "What's dirty in the working tree?" | `git { mode: "status" }` |
-| "What's HEAD / branch?" | `admin { mode: "repo" }` |
-| "Show diff between revs for file F" | `git` mode `diff` or `diff_outline` |
-| "What's indexed?" | `admin { mode: "status" }` |
-| "Search PDFs / Office docs / markdown / config / data files?" | `memory { mode: "documents", query }` |
-| "Recall something the agent stored earlier?" | `memory` mode `get`, `list`, or `search` |
-| "Remember this for future sessions?" | `memory { mode: "put", key, value }` |
-| "Refresh the index after editing code?" | `admin { mode: "rescan", paths?: […] }` |
-| "Fetch next page of results?" | Pass `next_cursor` from prior response as `cursor` |
-| "How much has basemind helped today?" | `admin { mode: "telemetry", window: "today" }` |
+| "What's the shape of file F?" | `code_outline {"path":"src/store.rs"}` |
+| "Where is X defined?" | `code_symbols {"name":"parse_config","kind":"function"}` |
+| "I only half remember the name" | `code_symbols {"name":"prsconf","fuzzy":true}` |
+| "Show me this one symbol's body" | `code_read {"path":"src/store.rs","symbol":"open"}` |
+| "Show me these lines" | `code_read {"path":"src/store.rs","line":120,"end_line":160}` |
+| "Where does this string appear?" | `code_grep {"pattern":"cache_root(","path":"src/"}` |
+| "Regex over code?" | `code_grep {"pattern":"fn \\w+_call","regex":true}` |
+| "Find code by meaning, not spelling" | `code_search {"query":"retry a failed upload with backoff"}` |
+| "What calls X?" (any definition of the name) | `code_refs {"name":"open_store"}` |
+| "What calls anything named like X?" | `code_refs {"name":"open_","match":"substring"}` |
+| "What calls this specific definition?" | `code_refs {"name":"open_store","path":"src/store.rs"}` |
+| "What implements / extends X?" | `code_refs {"name":"Drawable","relation":"implementations"}` |
+| "What imports module M?" | `code_refs {"name":"tokio::sync","relation":"importers"}` |
+| "Which definition does this reference bind to?" | `code_refs {"name":"open_store","relation":"definition","path":"src/main.rs","line":42}` |
+| "Which file is named like X?" | `find_files {"query":"readme"}` |
+| "What files are indexed under a directory?" | `find_files {"path_prefix":"src/mcp/"}` |
+| "What changed recently?" | `git_log {}` |
+| "Which commits touched file F?" | `git_log {"path":"src/store.rs","limit":5}` |
+| "Which commit mentions X?" | `git_log {"query":"fix race"}` |
+| "When did symbol X change?" | `git_log {"path":"src/store.rs","symbol":"open"}` |
+| "Show one commit" | `git_log {"rev":"HEAD~1"}` |
+| "Who wrote this symbol?" | `git_blame {"path":"src/store.rs","symbol":"open"}` |
+| "What's dirty in the working tree?" | `git_diff {}` |
+| "What did I change in file F?" | `git_diff {"path":"src/store.rs"}` |
+| "Diff file F between revisions" | `git_diff {"path":"src/store.rs","from":"HEAD~1","to":"HEAD"}` |
+| "Search PDFs / markdown / config / data files" | `docs_search {"query":"how releases are versioned"}` |
+| "Remember this for future sessions" | `memory_save {"key":"decision/auth-tokens","value":"Tokens rotate every 24h.","tags":["auth"]}` |
+| "Recall something stored earlier" | `memory_search {"query":"token rotation"}` |
+| "What's indexed? What's HEAD / branch?" | `index_status {}` |
+| "Refresh the index after editing code" | `index_rescan {"paths":["src/store.rs"]}` |
+| "Fetch the next page" | pass the response's `next_cursor` back as `cursor` |
+
+Churn ranking, regex path filters over history, deleting a note, cache administration and the usage
+summary are CLI only: `basemind git churn`, `basemind git by-path <regex>`,
+`basemind memory delete <key>`, `basemind cache stats|gc|clear`, `basemind admin telemetry`.
 
 ## Setup (one-time per repo)
 
 basemind needs an index before it can answer queries. The index lives in a machine-global cache
 (Linux `~/.local/share/basemind/`, macOS `~/Library/Application Support/basemind/`; override
-`BASEMIND_DATA_HOME`), keyed by workspace — never inside your repo. From the repo root:
+`BASEMIND_DATA_HOME`), keyed by workspace, never inside your repo. From the repo root:
 
 ```sh
 basemind scan
 ```
 
-This walks the tree, parses with tree-sitter, and writes a content-addressed blob
-store + Fjall inverted index into the machine-global cache. A few seconds for small repos,
-~22 s for an ~80k-file TypeScript monorepo.
+This walks the tree, parses with tree-sitter, and writes a content-addressed blob store + Fjall
+inverted index into the machine-global cache. A few seconds for small repos, ~22 s for an ~80k-file
+TypeScript monorepo.
 
-The MCP server is launched by the host (`basemind serve` — wired up in
-`.claude-plugin/plugin.json` for you). You do not start it manually.
+The MCP server is launched by the host (`basemind serve`, wired up in `.claude-plugin/plugin.json`
+for you). You do not start it manually.
 
-Re-run `basemind scan` after large changes, or run `basemind watch` to keep the index fresh on file save.
-
-If a tool returns "no indexed files", that means `basemind scan` hasn't been run in this repo yet.
+Re-run `basemind scan` after large changes, or run `basemind watch` to keep the index fresh on file
+save. A tool that reports an empty index says so in its result: run `index_rescan {"full":true}` or
+`basemind scan`.
 
 ## Examples
 
 ### Locating a symbol
 
 ```text
-code { mode: "symbols", name: "MapCache" }
-→ src/mcp/mod.rs:79:1 MapCache (struct)
-  src/mcp/mod.rs:88:1 MapCache (impl)
+code_symbols {"name":"MapCache"}
+→ src/mcp/mod.rs:79 MapCache (struct)
+  src/mcp/mod.rs:88 MapCache (impl)
 ```
 
-Now you know exactly where to read.
-
-### Following references
+### Following call sites
 
 ```text
-code { mode: "references", name: "process_file" }
-→ src/scanner.rs:142:9 process_file
-  src/scanner.rs:201:13 process_file
+code_refs {"name":"process_file"}
+→ src/scanner.rs:142 process_file
+  src/scanner.rs:201 process_file
+```
+
+### Outline a file, then read one body
+
+```text
+code_outline {"path":"src/mcp/tools.rs"}
+→ 31 code_outline (function)
+  52 code_symbols (function)
   ...
-```
 
-No need to grep — the index already knows.
-
-### Outline a file before reading
-
-```text
-code { mode: "outline", path: "src/mcp/tools.rs" }
-→ 21 code router (function)
-   112 code helper (function)
-   ...
+code_read {"path":"src/mcp/tools.rs","symbol":"code_outline"}
 ```
 
 A 1000-line file becomes a 30-line table of contents.
 
 ## Notes
 
-- All paths are repository-relative with forward-slash separators.
-- Lists are capped (`limit`: `symbols`/`grep`/`references`/`callers`/`implementations` default 100,
-  max 1000; `files`/`find` 200, max 5000). Index scanners stop at `scan_cap = limit * 8` (min 2000)
-  and set `total_is_partial`. `max_tokens` budgets a list; `format: "toon"` compacts it.
-- `symbols` is a case-sensitive substring over names. `references` is a name-only substring: `name:
-  "bar"` matches `Foo::bar()` and `bar()` alike, and it is complete (the fast floor). For one
-  specific definition use `callers` (scope-resolved, marks proven hits `resolved`).
-- Cursors from `references`/`callers`/`implementations` survive rescans; `symbols`/`grep`/`files`/
-  `find` cursors do not (`cursor_invalidated`: restart the query).
-- `outline`/`grep`/`symbols` do not see markdown or config/data files (`outline` on one errors
-  "file not indexed"); `files` and `find` list documents too. Search their contents with `memory`
-  mode `documents`, or Read the file.
-- Git tools require `basemind serve` to be running inside a git repository. Outside a git repo they return a clear error.
-- `memory` modes require basemind to be built with
-  `--features full` (or the individual `documents` / `memory` flags). Without them the
-  tools dispatch but return an MCP error.
-  Memory is scoped by the normalised `origin` remote URL (`git@github.com:Foo/bar.git` and
-  `https://github.com/Foo/bar/` collapse to the same scope key) — clones of the same repo
-  share memory; unrelated repos do not see each other's entries.
-- `memory` mode `documents` searches this repo's scope by default. Pages an older version ingested
-  from the web stay in the `documents` LanceDB table under scope `web:<host>` and are no longer
-  refreshed; pass `scope: "web:<host>"` to search one host's pages.
+- All paths are repository-relative with forward-slash separators. `line`, `end_line` and `column`
+  are 1-based; `end_line` is inclusive.
+- An argument a tool does not take is rejected with a did-you-mean and the accepted list, never
+  silently ignored. A failure the caller can fix is a tool result with `isError` that names the fix.
+- Every list takes `limit` and `cursor` and returns `next_cursor`. A list is trimmed to a default
+  budget of 6000 tokens and then sets `budgeted`: raise `max_tokens` or follow `next_cursor`.
+  Defaults: `code_symbols` / `code_grep` / `code_refs` 100, `find_files` 200, `code_outline` 500
+  symbols, `code_search` / `docs_search` 10, `git_log` 20.
+- `code_symbols` ranks the exact name first, then prefix, then substring; `"fuzzy":true` adds fuzzy
+  subsequence matches last. Each row says which with `match`, and `total` counts the whole corpus.
+- `code_refs {"name":"bar"}` matches the identifier exactly, with no scope resolution: `Foo::bar()`
+  and `bar()` are calls to `bar`, `bar_baz()` is not. `"match":"substring"` widens it. Add `path` to
+  pin one definition: the response names that `definition` and marks the hits it proves `resolved`
+  (`resolved_total`), or says `resolution: "unsupported for <language>"` and marks none.
+- `code_search` reports which retrieval lanes ran (`lanes_ran`) and which could not, with the
+  reason (`lanes_unavailable`).
+- `code_grep`'s `path` is a substring of the repo-relative path; a glob is rejected.
+- `code_outline`, `code_symbols` and `code_grep` cover code only. A markdown or config/data file is
+  a document: `find_files` lists it, `docs_search` searches its contents, `code_read` with a line
+  span reads it.
+- A `notice` field means the result is incomplete and says why (empty index, scan in progress).
+- The git tools require `basemind serve` to be running inside a git repository.
+- `code_search` needs the `code-search` Cargo feature, `docs_search` needs `documents`, and the
+  memory tools need `memory` (all in `--features full` and in the release binary). Without the
+  feature the tool answers with an error naming it.
+- Memory is scoped by the normalised `origin` remote URL (`git@github.com:Foo/bar.git` and
+  `https://github.com/Foo/bar/` collapse to the same scope key): clones of the same repo share
+  memory; unrelated repos do not see each other's entries.
+- `docs_search` searches this repo's scope by default. Pages an older version ingested from the web
+  stay under scope `web:<host>` and are no longer refreshed; pass `"scope":"web:<host>"` to search
+  one host's pages.
+- MCP resources are available for hosts that attach them: `basemind://status`,
+  `basemind://outline/{path}` and `basemind://memory/{key}`.

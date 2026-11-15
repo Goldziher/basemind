@@ -25,24 +25,22 @@ RAM usage.
 
 Invoke `/bm-stats` (default window `today`) or `/bm-stats <today|1h|24h|all>`. Window: $ARGUMENTS
 
-1. **Resource footprint.** MCP `admin { mode: "cache_stats" }`, or CLI `basemind cache stats` (add `--json` to
-   parse). Report: `total_bytes` (matches `du`), the per-component breakdown (blobs / views /
+1. **Resource footprint.** CLI `basemind cache stats` (add `--json` to parse). Report: `total_bytes` (matches `du`), the per-component breakdown (blobs / views /
    git-history / lance / git-cache / telemetry / other), and process RAM (`rss_bytes` +
    `peak_rss_bytes`). If `blob_accounting_ok` is `false`, note that orphan accounting was skipped
    (stale/unreadable index — re-scan to restore it); the sizes are still accurate.
 
-2. **Activity.** MCP `admin { mode: "telemetry", window: "…" }`, or CLI
-   `basemind admin telemetry --window <today|1h|24h|all>`
-   (add `--json`). Report call count, the per-tool histogram, and estimated tokens saved for the
+2. **Activity.** CLI `basemind admin telemetry --window <today|1h|24h|all>` (add `--json`). Report call count, the per-tool histogram, and estimated tokens saved for the
    window.
 
 3. **Render** both sections as a compact markdown dashboard.
 
 ## Notes
 
-- Prefer MCP when connected, but don't depend on it — the CLI reads the same data with no server.
-  If an `admin` mode isn't available, run its CLI equivalent instead of giving up.
-- If neither MCP nor CLI is reachable, say so plainly and point at `/bm-doctor`.
+- Both are CLI commands with no MCP tool; they read the same data with or without a running
+  server. Run them through the plugin launcher, `${CLAUDE_PLUGIN_ROOT}/scripts/mcp-launch.sh <args>`
+  (bare `basemind` from `PATH` when no plugin launcher exists).
+- If the CLI is not reachable, say so plainly and point at `/bm-doctor`.
 - Always end with a one-sentence disclosure that the savings number is heuristic: tools without a
   realistic baseline (memory, document search, git wrappers) report 0 saved.
 

@@ -20,86 +20,108 @@ x-ai-rulez:
 # basemind-code-search — navigate code without reading it
 
 basemind pre-indexes the repo into a tree-sitter code map across 300+ languages. The map holds
-**code only**. Jupyter notebooks (`.ipynb`), Markdown, JSON, YAML, TOML, XML, CSV, INI and `.env` files
-are documents. `files` and `find` can list them. Use `memory` mode `documents` for semantic queries
-(see `basemind-documents`) and a literal or regex file search for exact matches outside the code map.
+**code only**. Jupyter notebooks (`.ipynb`), Markdown, JSON, YAML, TOML, XML, CSV, INI and `.env`
+files are documents: `find_files` lists them, `docs_search` searches them by meaning (see
+`basemind-documents`), and a literal or regex file search finds exact matches outside the code map.
 
-Structural questions — where a symbol lives, what calls it, what shape a file has — resolve from the index in
-milliseconds and return **paths, line numbers, and signatures, not file bodies**. That is a fraction
-of the tokens of reading source, so it is the default, not an optimization.
+Structural questions (where a symbol lives, what calls it, what shape a file has) resolve from the
+index in milliseconds and return **paths, 1-based line numbers, and signatures, not file bodies**.
 
-**basemind first, grep/read fallback.** If a question is about _where_, _what calls_, _what shape_,
-or _what implements_, a basemind tool answers it cheaper than `grep`/`rg` or opening files. Drop to
-raw shell only when no tool covers the question.
+The tools are always loaded: call them directly, no tool search needed. Drop to raw shell only when
+no tool covers the question.
 
 ## The discipline
 
-- **Use `code` mode `outline` before you open a file.** A 1000-line file becomes a 30-line table of contents.
-  Read the actual source only once you have the exact span, then read _that range_, not the file.
-- **Use `code` mode `symbols` instead of `grep` for a definition.** It matches indexed symbol names and
-  returns `path:line`, skipping the comment/string/test-name noise grep drowns you in.
-- **Use `code` modes `references` / `callers` instead of grepping call sites.** Indexed call edges, not
-  text matches.
-- **Use `code` mode `grep` instead of shelling out to ripgrep** when you genuinely need regex over
-  code content — it sweeps every indexed file (a trigram filter skips files that cannot match) and
-  returns capped, structured hits with an exact `total_matches`.
+- **`code_outline` before you open a file.** A 1000-line file becomes a 30-line table of contents.
+  Then `code_read` the one symbol or line span you need, not the file.
+- **`code_symbols` instead of `grep` for a definition.** It matches indexed symbol names and skips
+  the comment, string and test-name noise.
+- **`code_refs` instead of grepping call sites.** Indexed call edges, not text matches.
+- **`code_grep` instead of shelling out to ripgrep.** It sweeps every indexed code file (a trigram
+  filter skips files that cannot match) and returns each hit's full line and enclosing symbol.
 - **Do not re-read a file basemind already mapped.** If the outline answered the question, stop.
-- **Use `admin` mode `rescan` after you edit code**, not a server reconnect. Pass `paths: [...]` to limit it.
+- **`index_rescan` after you edit code**, not a server reconnect. Pass `paths` to limit it.
 
 ## Tool routing
 
-| Question | MCP tool | CLI |
+| Question | MCP call | CLI |
 |---|---|---|
-| "Where is X defined?" | `code { mode: "symbols", name: "X" }` (substring, optional `kind`) | `basemind code symbols "X"` |
-| "Jump to the definition of X used here?" | `code { mode: "definition", path: F, line }` (scope-aware) | `basemind code definition F line [--column]` |
-| "What's the shape of file F?" | `code { mode: "outline", path: F }` (add `l2: true`) | `basemind code outline F [--l2]` |
-| "What calls X?" (any name) | `code { mode: "references", name: "X" }` | `basemind code references "X"` |
-| "What calls this specific definition?" | `code { mode: "callers", path: F, name }` | `basemind code callers F name [--kind]` |
-| "What implements / extends / inherits X?" | `code { mode: "implementations", trait_name: "X" }` | `basemind code implementations "X"` |
-| "What imports module M?" | `code { mode: "dependents", module: "M" }` | `basemind code dependents "M"` |
-| "What code files are indexed?" | `code { mode: "files" }` (filter by language/path) | `basemind code files [--language --path-contains]` |
-| "Which file is named like X?" | `code { mode: "find", query: "X" }` (fuzzy) | `basemind code find "X"` |
-| "Show one symbol's body" | `code { mode: "expand", path: F, name }` | `basemind code expand F name` |
-| "Find code by meaning?" | `code { mode: "semantic", query }`, then `code { mode: "chunk", path, chunk_id }` | `basemind code semantic "q"` |
-| "Regex over indexed code contents?" | `code { mode: "grep", pattern: "…" }` | `basemind code grep "pattern" [--language --path-contains]` |
-| "What's indexed?" | `admin { mode: "status" }` | `basemind status` |
-| "Refresh the index after editing?" | `admin { mode: "rescan", paths: […] }` | `basemind rescan [path…]` |
-| "Fetch the next page?" | pass `next_cursor` from the prior response as `cursor` | — |
+| "What's the shape of file F?" | `code_outline {"path":"src/store.rs"}` | `basemind code outline src/store.rs` |
+| "Where is X defined?" | `code_symbols {"name":"parse_config","kind":"function"}` | `basemind code symbols parse_config --kind function` |
+| "I only half remember the name" | `code_symbols {"name":"prsconf","fuzzy":true}` | `basemind code symbols prsconf --fuzzy` |
+| "Show one symbol's body" | `code_read {"path":"src/store.rs","symbol":"open"}` | `basemind code read src/store.rs --symbol open` |
+| "Show these lines" | `code_read {"path":"src/store.rs","line":120,"end_line":160}` | `basemind code read src/store.rs --line 120 --end-line 160` |
+| "Where does this text appear?" | `code_grep {"pattern":"cache_root(","path":"src/"}` | `basemind code grep 'cache_root(' --path src/` |
+| "Regex over code?" | `code_grep {"pattern":"fn \\w+_call","regex":true}` | `basemind code grep 'fn \w+_call' --regex` |
+| "Find code by meaning?" | `code_search {"query":"retry a failed upload with backoff"}` | `basemind code search "retry a failed upload with backoff"` |
+| "What calls X?" (any definition of the name) | `code_refs {"name":"open_store"}` | `basemind code refs open_store` |
+| "What calls anything named like X?" | `code_refs {"name":"open_","match":"substring"}` | `basemind code refs open_ --match substring` |
+| "What calls this specific definition?" | `code_refs {"name":"open_store","path":"src/store.rs"}` | `basemind code callers src/store.rs open_store` |
+| "What implements / extends / inherits X?" | `code_refs {"name":"Drawable","relation":"implementations"}` | `basemind code implementations Drawable` |
+| "What imports module M?" | `code_refs {"name":"tokio::sync","relation":"importers"}` | `basemind code dependents tokio::sync` |
+| "Which definition does this reference bind to?" | `code_refs {"name":"open_store","relation":"definition","path":"src/main.rs","line":42}` | `basemind code definition src/main.rs 42 open_store` |
+| "Which file is named like X?" | `find_files {"query":"readme"}` | `basemind code find readme` |
+| "What files are indexed under a directory?" | `find_files {"path_prefix":"src/mcp/"}` | `basemind code files --path-prefix src/mcp/` |
+| "What's indexed?" | `index_status {}` | `basemind status` |
+| "Refresh the index after editing?" | `index_rescan {"paths":["src/store.rs"]}` | `basemind rescan src/store.rs` |
+| "Fetch the next page?" | pass the response's `next_cursor` back as `cursor` | `--cursor <next_cursor>` |
 
 ## Examples
 
 ```text
-code { mode: "symbols", name: "MapCache" }
-→ src/mcp/mod.rs:79:1 MapCache (struct)
-  src/mcp/mod.rs:88:1 MapCache (impl)
+code_symbols {"name":"MapCache"}
+→ src/mcp/mod.rs:79 MapCache (struct)
+  src/mcp/mod.rs:88 MapCache (impl)
 
-code { mode: "references", name: "process_file" }
-→ src/scanner.rs:142:9 process_file
-  src/scanner.rs:201:13 process_file
+code_refs {"name":"process_file"}
+→ src/scanner.rs:142 process_file
+  src/scanner.rs:201 process_file
 
-code { mode: "outline", path: "src/mcp/tools.rs" }
-→ 21 code router (function)
-  112 code helper (function)
+code_outline {"path":"src/mcp/tools.rs"}
+→ 31 code_outline (function)
+  52 code_symbols (function)
 ```
 
 ## Notes
 
-- `symbols` is a case-sensitive **substring** over names. `references` is name-only: `name: "bar"`
-  matches `Foo::bar()` and `bar()` alike, with no scope resolution, but it is the fast, complete
-  floor. For one specific definition use `callers` (scope-resolved: hits it proves are marked
-  `resolved`; trust `total` for completeness before a refactor). `dependents` is a substring over
-  recorded imports and is unpaged.
-- Lists are capped (`limit`: `symbols`/`grep`/`references`/`callers`/`implementations` default 100,
-  max 1000; `files`/`find` 200, max 5000; `semantic` 10, max 100). Scanners stop at
-  `scan_cap = limit * 8` (min 2000) and set `total_is_partial`; `grep` never caps files, so its
-  `total_matches` is exact. `max_tokens` budgets a list, `format: "toon"` compacts it.
-- Cursors from `references`/`callers`/`implementations` survive rescans; `symbols`/`grep`/`files`/
-  `find` cursors do not (`cursor_invalidated`: restart the query).
-- A `notice` (`warming_up`, `building_index`, `rescanning`) means results may be incomplete or a
-  moment stale; a `projections_capped` notice appears only when no daemon was reachable.
+- An argument a tool does not take is rejected with a did-you-mean and the accepted list. A failure
+  the caller can fix is a tool result with `isError` naming the fix: a path that is a document
+  points at `docs_search`, a file that exists but is not indexed at `index_rescan`, a missing file
+  at `find_files`.
+- `path` is repo-relative with forward slashes. `line`, `end_line` and `column` are 1-based.
+- `code_read` takes `symbol` (add `kind` when several share the name) or `line` with `end_line`,
+  not both. Bodies over 128 KiB are cut and flagged `truncated`.
+- `code_outline` omits `imports` when the file has none.
+- `code_grep`: `pattern` is literal text unless `"regex":true`. `path` is a substring of the
+  repo-relative path, and a glob is rejected. A hit is `path`, `line`, `column`, `text` (the full
+  matching line, cut at 400 bytes) and `symbol` (`name`, `kind` of the innermost enclosing symbol);
+  `"context":true` adds `context_before` / `context_after`. The response echoes `pattern` and
+  `regex`. It never caps files, so `total_matches` is exact.
+- `code_symbols` ranks the exact name first, then prefix, then substring; `"fuzzy":true` adds fuzzy
+  subsequence matches last. A row is `path`, `name`, `kind`, `line`, `column`, `signature` and
+  `match` (`exact`, `prefix`, `substring` or `fuzzy`); `total` counts the whole corpus.
+- `code_refs {"name":"bar"}` matches the identifier exactly, with no scope resolution: `Foo::bar()`
+  and `bar()` are calls to `bar`, `bar_baz()` is not. `"match":"substring"` widens it, and the
+  response echoes `match`. Add `path` for one specific definition: the response carries that
+  `definition` (`path`, `name`, `kind`, `line`, `column`) and either `resolved_total` with a
+  `resolved` flag per hit, or `resolution: "unsupported for <language>"` with no flags.
+  `relation:"importers"` is a substring match over recorded imports and takes no `match`.
+  `relation:"definition"` needs `path` and `line` and returns the reference's `path`, `line`,
+  `column` plus the `definition` it binds to (or a `resolution` note), all 1-based.
+- `code_search` returns pointers (path, `line` / `end_line`, symbol), not bodies; read a hit with
+  `code_read`. `lane` picks `hybrid` (default), `semantic` or `keyword`. The response lists
+  `lanes_ran` (`vector`, `keyword`, `exact`) and `lanes_unavailable` (`lane`, `reason`), so a hybrid
+  search that ran without embeddings says so. It needs the `code-search` Cargo feature.
+- Every list takes `limit` and `cursor` and returns `next_cursor`. Defaults: `code_symbols` /
+  `code_grep` / `code_refs` 100, `find_files` 200, `code_outline` 500 symbols, `code_search` 10.
+  A list is trimmed to a default budget of 6000 tokens and then sets `budgeted`: raise `max_tokens`
+  or follow `next_cursor`. Index scanners stop at a scan cap and set `total_is_partial`.
+- A cursor from before a rescan may be refused (`cursor_invalidated`): restart the query.
+- A `notice` (`empty_index`, `warming_up`, `building_index`, `rescanning`) means results may be
+  incomplete or a moment stale.
 - Needs an index in the machine-global cache (Linux `~/.local/share/basemind/`, macOS
-  `~/Library/Application Support/basemind/`; override `BASEMIND_DATA_HOME`) — run `basemind scan`
-  first (see the `basemind-scan` skill). "No indexed files" means the scan hasn't run in this repo yet.
+  `~/Library/Application Support/basemind/`; override `BASEMIND_DATA_HOME`). Run `basemind scan`
+  first (see the `basemind-scan` skill).
 
-For git history / blame / diffs see `basemind-git-history`; for document RAG and semantic search see
+For git history, blame and diffs see `basemind-git-history`; for document search see
 `basemind-documents`; for agent coordination see `basemind-comms`.

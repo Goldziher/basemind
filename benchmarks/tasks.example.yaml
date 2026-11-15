@@ -14,7 +14,7 @@ tasks:
   - name: callers_of_count_tokens
     tier: code_search
     description: "Find every caller of count_tokens (the o200k tokenizer entry point)"
-    basemind: "code references count_tokens"
+    basemind: "code refs count_tokens"
     baseline: "grep -rn 'count_tokens(' --include=*.rs --exclude-dir=target --exclude-dir=.git ."
 
   - name: outline_init_cli
@@ -38,11 +38,11 @@ tasks:
   - name: bm_init_doc_settings_mention
     tier: documents
     description: "Find where the daemon's early-accept loop is described in its doc comments"
-    basemind: "code grep EarlyAccept --path-contains src/comms/frontend_uds.rs"
+    basemind: "code grep EarlyAccept --path src/comms/frontend_uds.rs"
     baseline: "grep -n EarlyAccept src/comms/frontend_uds.rs"
 
   - name: readme_performance_section
     tier: documents
     description: "Find where the idempotency key is documented in the comms protocol comments"
-    basemind: "code grep idempotency --path-contains src/comms/protocol.rs"
+    basemind: "code grep idempotency --path src/comms/protocol.rs"
     baseline: "grep -n idempotency src/comms/protocol.rs"

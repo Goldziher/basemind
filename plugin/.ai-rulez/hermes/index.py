@@ -36,17 +36,21 @@ _SKILLS_DIR = _PKG_DIR / "skills"
 _COMMANDS_DIR = _PKG_DIR / "commands"
 
 _DISCIPLINE = (
-    "basemind is available over MCP in this session — a tree-sitter code map + git context. "
-    "Its surface is six domain tools — code, git, memory, admin, agents, and workspace "
-    "— each dispatched by a required mode. "
+    "basemind is available over MCP in this session: a tree-sitter code map, git history, "
+    "document search and shared memory. Each job is its own tool with an exact schema; an unknown "
+    "argument is rejected and line numbers are 1-based. "
     "Prefer it over grep/read for structural and historical questions: its tools return paths, "
     "line numbers, and signatures, not file bodies, so they cost a fraction of the tokens of "
-    "reading source. Default workflow: use code mode outline before opening a file (then read only "
-    "the span you need); code mode symbols instead of grep for a definition; code modes references "
-    "and callers instead of grepping call sites; code mode grep instead of shelling out to ripgrep; "
-    "memory mode documents for markdown, config, data and PDF files (the code map holds code only); "
-    "admin mode rescan after edits instead of reconnecting. Do not re-read a file basemind already "
-    "mapped."
+    'reading source. Default workflow: code_outline {"path":"src/store.rs"} before opening a file, '
+    'then code_read {"path":"src/store.rs","symbol":"open"} for only the body you need; '
+    'code_symbols {"name":"open_store"} instead of grep for a definition; '
+    'code_refs {"name":"open_store"} instead of grepping call sites; '
+    'code_grep {"pattern":"cache_root("} instead of shelling out to ripgrep; '
+    'find_files {"query":"readme"} to locate a file; git_log {}, git_blame {"path":"src/store.rs"} '
+    "and git_diff {} instead of git log, blame, status and diff; "
+    'docs_search {"query":"how releases are versioned"} for markdown, config, data and PDF files '
+    "(the code tools cover code only); index_rescan {} after edits instead of reconnecting. "
+    "Do not re-read a file basemind already mapped."
 )
 
 _COMMS_TOOLS = (
@@ -292,7 +296,25 @@ def _read_int(path: Path) -> int:
 PLUGIN_NAME = "basemind"
 CLI_COMMAND = "basemind"
 SERVER_ARGUMENTS = ["serve"]
-TOOL_NAMES = ["code", "git", "memory", "admin", "agents", "workspace"]
+TOOL_NAMES = [
+    "code_outline",
+    "code_symbols",
+    "code_read",
+    "code_grep",
+    "code_search",
+    "code_refs",
+    "find_files",
+    "docs_search",
+    "git_log",
+    "git_blame",
+    "git_diff",
+    "memory_save",
+    "memory_search",
+    "index_status",
+    "index_rescan",
+    "agents",
+    "workspace",
+]
 DISCOVERY_TOOL = "list_tools"
 REQUEST_TIMEOUT_SECONDS = 300
 
