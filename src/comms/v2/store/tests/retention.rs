@@ -480,3 +480,84 @@ fn message_whose_index_row_names_nothing_readable_is_swept_with_its_thread() {
     );
     assert_eq!(store.stored_rows(), only_seen(1));
 }
+
+#[test]
+fn sweep_removes_a_message_row_it_cannot_decode_with_its_thread() {
+    let harness = Harness::new();
+    let created = start(&harness, "a", "topic", &[]);
+    say(&harness, "a", &created.thread, "second");
+    let store = harness.store();
+    store
+        .ks
+        .messages
+        .insert(keys::message(&created.thread, 1), b"not a message")
+        .expect("write");
+    harness.clock.advance(MESSAGE_TTL + Duration::from_secs(1));
+
+    let first = store.sweep_bounded(2).expect("sweep");
+    assert_eq!(
+        first,
+        SweepReport {
+            messages: 1,
+            stale: 1,
+            more: true,
+            ..SweepReport::default()
+        },
+        "the index row of the unreadable message goes alone, and the readable message"
+    );
+    let rows = store.stored_rows();
+    assert_eq!((rows[0], rows[1], rows[2], rows[3]), (1, 1, 1, 0));
+
+    let rest = store.sweep().expect("sweep");
+    assert_eq!(
+        rest,
+        SweepReport {
+            threads: 1,
+            skipped_unreadable: 1,
+            ..SweepReport::default()
+        }
+    );
+    assert_eq!(store.stored_rows(), only_seen(1));
+}
+
+#[test]
+fn sweep_goes_on_past_a_thread_row_and_a_member_key_it_cannot_decode() {
+    let harness = Harness::new();
+    let broken = start(&harness, "a", "broken", &[]);
+    let whole = start(&harness, "a", "whole", &["b"]);
+    let store = harness.store();
+    store
+        .ks
+        .threads
+        .insert(keys::thread(&broken.thread), b"not a thread")
+        .expect("write");
+    let mut no_agent = keys::thread(&whole.thread).to_vec();
+    no_agent.extend_from_slice(&[0xff, 0xfe]);
+    store.ks.members.insert(no_agent, []).expect("write");
+    harness.clock.advance(MESSAGE_TTL + Duration::from_secs(1));
+
+    let report = store.sweep().expect("sweep");
+
+    assert_eq!(
+        report,
+        SweepReport {
+            messages: 2,
+            threads: 1,
+            skipped_unreadable: 2,
+            ..SweepReport::default()
+        }
+    );
+    let rows = store.stored_rows();
+    assert_eq!(
+        (rows[0], rows[4], rows[5], rows[6]),
+        (1, 1, 1, 1),
+        "the thread that does not decode stays with its member and its index entries"
+    );
+    assert_eq!((rows[1], rows[2], rows[3]), (0, 0, 0), "its message went by its stamp");
+    assert_eq!(
+        thread_expiry_entries(store),
+        Vec::new(),
+        "and no sweep comes back to it"
+    );
+    assert_eq!(store.sweep(), Ok(SweepReport::default()));
+}

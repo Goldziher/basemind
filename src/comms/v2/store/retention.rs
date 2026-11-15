@@ -12,22 +12,34 @@
 //! removes whatever messages a thread still has before it removes the thread, which are those
 //! without one.
 //!
-//! An index row the sweep cannot decode (a `post_order` row, an `expiry` key) would sit at the
-//! head of its range and stop every later sweep there. Such a row is removed and counted
-//! instead, and the sweep goes on. Nothing says what such a row named, so it may have been a
-//! record that is still alive. That record stays stored and is read until it expires like any
-//! other, but no sweep finds it through this index again: a message goes when its thread does or
-//! when the thread's cap pushes it out, and a thread, replay entry or seen record stays until it
-//! is next written, which gives it a new index row.
+//! A row the sweep cannot decode would stop every later sweep where it sits, and fail the
+//! batch that holds what the sweep had staged before it. For the rows below the sweep removes
+//! what it can, counts it and goes on:
 //!
-//! A `post_order` row is believed only when the message it names is stored with the row's stamp
-//! and post position. One that names no message, or another one, is stale: it is removed alone
-//! and counted, and the message is left to its own row.
+//! - An index row (a `post_order` row, an `expiry` key) is removed alone. Nothing says what it
+//!   named, so it may have been a record that is still alive. That record stays stored and is
+//!   read until it expires like any other, but no sweep finds it through this index again: a
+//!   message goes when its thread does or when the thread's cap pushes it out, and a thread,
+//!   replay entry or seen record stays until it is next written, which gives it a new index
+//!   row.
+//! - A `post_order` row is believed only when the message it names is stored with the row's
+//!   stamp and post position. One that names no message, another one, or one that does not
+//!   decode is stale: it is removed alone and counted, and the message is left to its own row
+//!   or to its thread.
+//! - In an expired thread, a `messages` row that does not decode is removed with its body, and
+//!   a `members` key that does not is removed without a `member_threads` entry, which it would
+//!   have named.
+//! - An expired thread whose `threads` row does not decode loses its `expiry` entry and stays
+//!   stored with its messages and members: the row is what says which `repo_threads` entry is
+//!   its own. No sweep comes back to it.
+//!
+//! A replay entry or a seen record that does not decode is not handled: it fails the sweep,
+//! and every sweep after it, with [`CommsError::Backend`].
 
 use fjall::{Keyspace, OwnedWriteBatch, UserKey};
 use serde::de::IgnoredAny;
 
-use super::records::{MessageMeta, Reader, backend, decode, decode_i64};
+use super::records::{MessageMeta, Reader, ThreadRecord, backend, decode, decode_i64};
 use super::{FjallAgents, Writer, keys};
 use crate::comms::v2::api::{CommsError, ThreadId};
 use crate::comms::v2::rules;
@@ -55,7 +67,8 @@ pub struct SweepReport {
     pub replays: usize,
     /// Seen records that expired ([`rules::seen_expired`]).
     pub seen: usize,
-    /// Index rows that could not be decoded and were removed without the record they named.
+    /// Rows that could not be decoded and were removed: index rows, without the record they
+    /// named, and the message and member rows of an expired thread.
     pub skipped_unreadable: usize,
     /// `post_order` rows removed alone because the message they named is gone, or is not the
     /// one stamped and posted where the row says.
@@ -132,15 +145,15 @@ impl FjallAgents {
             tracing::warn!(
                 unreadable = report.skipped_unreadable,
                 stale = report.stale,
-                "comms: the sweep removed index rows it could not decode or that named no stored message; the \
-                 records they named are not swept"
+                "comms: the sweep removed rows it could not decode and index rows that named no stored message; \
+                 a record whose index row went is not swept"
             );
         }
         Ok(report)
     }
 }
 
-/// Stage the removal of an index row that does not decode, and count it against the budget.
+/// Stage the removal of a row that does not decode, and count it against the budget.
 fn skip_unreadable(
     batch: &mut OwnedWriteBatch,
     index: &Keyspace,
@@ -237,27 +250,52 @@ fn sweep_threads(
         if !rules::message_expired(last_activity, reader.now) || !budget.allows() {
             break;
         }
-        let record = reader
-            .stored_thread(&id)?
-            .filter(|record| record.last_activity_micros == last_activity);
+        let record = match reader.get(&ks.threads, keys::thread(&id))? {
+            Some(bytes) => {
+                let Ok(record) = decode::<ThreadRecord>("a thread", &bytes) else {
+                    skip_unreadable(batch, &ks.expiry, &key, budget, report);
+                    continue;
+                };
+                Some(record).filter(|record| record.last_activity_micros == last_activity)
+            }
+            None => None,
+        };
         if let Some(record) = record {
             if !sweep_thread_messages(reader, batch, budget, report, &id, swept)? {
                 break;
             }
-            let members = reader.members(&id)?;
-            for member in &members {
-                batch.remove(&ks.members, keys::member(&id, member));
-                batch.remove(&ks.member_threads, keys::member_thread(member, &id));
-            }
+            let members = sweep_members(reader, batch, report, &id)?;
             batch.remove(&ks.repo_threads, keys::repo_thread(&record.repo, record.archived, &id));
             batch.remove(&ks.threads, keys::thread(&id));
-            budget.spend(members.len());
+            budget.spend(members);
             report.threads += 1;
         }
         batch.remove(&ks.expiry, key);
         budget.spend(1);
     }
     Ok(())
+}
+
+/// Remove the member rows of an expired thread, and say how many. A key that names no agent is
+/// removed and counted as unreadable; the `member_threads` entry it stood for cannot be told.
+fn sweep_members(
+    reader: &Reader<'_>,
+    batch: &mut OwnedWriteBatch,
+    report: &mut SweepReport,
+    thread: &ThreadId,
+) -> Result<usize, CommsError> {
+    let ks = reader.ks;
+    let mut members = 0;
+    for guard in reader.prefix(&ks.members, keys::thread(thread)) {
+        let key = guard.key().map_err(|error| backend("read the comms store", error))?;
+        match keys::parse_member(&key) {
+            Some(member) => batch.remove(&ks.member_threads, keys::member_thread(&member, thread)),
+            None => report.skipped_unreadable += 1,
+        }
+        batch.remove(&ks.members, key);
+        members += 1;
+    }
+    Ok(members)
 }
 
 /// Remove the messages an expired thread still has: those the walk of `post_order` did not
@@ -281,7 +319,14 @@ fn sweep_thread_messages(
         let (key, value) = guard
             .into_inner()
             .map_err(|error| backend("read the comms store", error))?;
-        let meta: MessageMeta = decode("a message", &value)?;
+        let Ok(meta) = decode::<MessageMeta>("a message", &value) else {
+            if !budget.allows() {
+                return Ok(false);
+            }
+            batch.remove(&ks.bodies, key.clone());
+            skip_unreadable(batch, &ks.messages, &key, budget, report);
+            continue;
+        };
         let order_key = keys::order(meta.ts_micros, meta.order);
         let staged = swept.covers(&order_key)
             && reader
