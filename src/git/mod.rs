@@ -811,9 +811,10 @@ impl Repo {
         let rel = crate::path::RelPath::from(path_ref);
         let on_disk =
             crate::path::contained_file(self.workdir(), &rel).map_err(|_| GitError::OutsideRepo(rel.clone()))?;
-        let old_bytes = self.read_blob_at_rev(rev_old, path_ref)?;
-        let new_bytes = std::fs::read(on_disk).ok();
-        Ok(FileDiff::between(old_bytes, new_bytes))
+        Ok(FileDiff::against_file(
+            self.read_blob_at_rev(rev_old, path_ref)?,
+            &on_disk,
+        ))
     }
 
     /// Diff the commit at `commit_sha` against its first parent. Returns the per-file

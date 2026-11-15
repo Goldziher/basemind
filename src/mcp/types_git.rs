@@ -524,7 +524,11 @@ pub(in crate::mcp) struct DiffFileResponse {
     /// True for a binary file, which has no text hunks.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub binary: bool,
-    /// True when `hunks` was cut at the hunk or byte cap; `total_hunks` is the full count.
+    /// True when a side is over the diff size ceiling: the file was not compared and has no hunks.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub too_large: bool,
+    /// True when `hunks` was cut at the hunk or byte cap, or the one hunk returned had its text
+    /// clipped to the byte cap; `total_hunks` is the full count.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub truncated: bool,
     #[serde(skip_serializing_if = "Option::is_none")]

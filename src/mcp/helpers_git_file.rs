@@ -66,29 +66,11 @@ pub(super) fn run_diff(state: &ServerState, params: DiffFileParams) -> Result<Ca
         old_exists: false,
         new_exists: false,
         binary: false,
+        too_large: false,
     });
     let total_hunks = diff.hunks.len();
-    let mut text_bytes = 0usize;
-    let hunks: Vec<HunkView> = diff
-        .hunks
-        .into_iter()
-        .take(DIFF_HUNKS_MAX)
-        .take_while(|hunk| {
-            // The first hunk is always returned, so an oversized one is not an empty answer.
-            let fits = text_bytes == 0 || text_bytes + hunk.text.len() <= DIFF_TEXT_MAX;
-            text_bytes += hunk.text.len();
-            fits
-        })
-        .map(|h| HunkView {
-            kind: h.kind.as_str(),
-            old_line_start: h.old_line_start,
-            old_line_count: h.old_line_count,
-            new_line_start: h.new_line_start,
-            new_line_count: h.new_line_count,
-            text: h.text,
-        })
-        .collect();
-    let truncated = hunks.len() < total_hunks;
+    let (hunks, clipped) = capped_hunks(diff.hunks);
+    let truncated = clipped || hunks.len() < total_hunks;
     json_result(&DiffFileResponse {
         path: params.path,
         from: old_sha,
@@ -96,11 +78,48 @@ pub(super) fn run_diff(state: &ServerState, params: DiffFileParams) -> Result<Ca
         present_at_from: diff.old_exists,
         present_at_to: diff.new_exists,
         binary: diff.binary,
+        too_large: diff.too_large,
         truncated,
         total_hunks: truncated.then_some(total_hunks),
         hunks,
         elapsed_us: elapsed_us(started),
     })
+}
+
+/// The leading hunks that fit [`DIFF_HUNKS_MAX`] and [`DIFF_TEXT_MAX`], and whether the first one
+/// had its text clipped. The first hunk is always returned, so an oversized one is not an empty
+/// answer; it is cut to the byte cap instead, because a new or rewritten file is ONE hunk holding
+/// the whole file.
+fn capped_hunks(hunks: Vec<crate::git::Hunk>) -> (Vec<HunkView>, bool) {
+    let mut views: Vec<HunkView> = Vec::with_capacity(hunks.len().min(DIFF_HUNKS_MAX));
+    let mut text_bytes = 0usize;
+    let mut clipped = false;
+    for mut hunk in hunks.into_iter().take(DIFF_HUNKS_MAX) {
+        if text_bytes + hunk.text.len() > DIFF_TEXT_MAX {
+            if !views.is_empty() {
+                break;
+            }
+            let mut cut = DIFF_TEXT_MAX;
+            while !hunk.text.is_char_boundary(cut) {
+                cut -= 1;
+            }
+            hunk.text.truncate(cut);
+            clipped = true;
+        }
+        text_bytes += hunk.text.len();
+        views.push(HunkView {
+            kind: hunk.kind.as_str(),
+            old_line_start: hunk.old_line_start,
+            old_line_count: hunk.old_line_count,
+            new_line_start: hunk.new_line_start,
+            new_line_count: hunk.new_line_count,
+            text: hunk.text,
+        });
+        if clipped {
+            break;
+        }
+    }
+    (views, clipped)
 }
 
 /// The working-tree bytes of an indexed file, when they are still the bytes that were indexed (the

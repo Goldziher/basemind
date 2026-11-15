@@ -107,6 +107,60 @@ async fn git_diff_caps_a_huge_diff_and_says_so() {
     assert!(small.get("truncated").is_none(), "{small}");
 }
 
+/// The byte cap bounds a single hunk too. A new file is one hunk holding the whole file, which used
+/// to be returned in full however large it was.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn git_diff_clips_one_oversized_hunk_and_says_so() {
+    let (dir, client) = started().await;
+    let mut added = String::new();
+    for line in 0..12_000 {
+        let _ = writeln!(added, "é line {line} of a generated file");
+    }
+    assert!(added.len() > 300 * 1024, "{} bytes", added.len());
+    std::fs::write(dir.path().join("generated.txt"), &added).unwrap();
+
+    let diff = call(&client, "git_diff", json!({ "path": "generated.txt" })).await;
+    let hunks = diff["hunks"].as_array().expect("hunks");
+    assert_eq!(hunks.len(), 1, "a new file is one hunk");
+    let text = hunks[0]["text"].as_str().expect("text");
+    assert!(text.len() <= 128 * 1024, "{} bytes of hunk text", text.len());
+    assert!(
+        text.len() > 100 * 1024,
+        "the cap is used, not undershot: {}",
+        text.len()
+    );
+    assert_eq!(diff["truncated"], true, "a clipped hunk is a truncated diff");
+    assert_eq!(diff["total_hunks"], 1);
+}
+
+/// A file over the per-side ceiling is not diffed at all, and the response says why it has no hunks.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn git_diff_reports_a_file_too_large_to_diff() {
+    let (dir, client) = started().await;
+    let line = "a line of an enormous generated file\n";
+    let huge = line.repeat(5 * 1024 * 1024 / line.len());
+    std::fs::write(dir.path().join("huge.txt"), &huge).unwrap();
+
+    let worktree = call(&client, "git_diff", json!({ "path": "huge.txt" })).await;
+    assert_eq!(worktree["too_large"], true, "{}", worktree["truncated"]);
+    assert_eq!(worktree["hunks"], json!([]));
+    assert_eq!(worktree["present_at_to"], true);
+
+    git(dir.path(), &["add", "-A"]);
+    git(dir.path(), &["commit", "-qm", "huge"]);
+    let committed = call(
+        &client,
+        "git_diff",
+        json!({ "path": "huge.txt", "from": "HEAD~1", "to": "HEAD" }),
+    )
+    .await;
+    assert_eq!(committed["too_large"], true, "{}", committed["truncated"]);
+    assert_eq!(committed["hunks"], json!([]));
+
+    let small = call(&client, "git_diff", json!({ "path": "src/outline.rs" })).await;
+    assert!(small.get("too_large").is_none(), "{small}");
+}
+
 /// A directory history inspects a bounded window of recent commits. A window that was used up is
 /// reported, so "no more commits" is not mistaken for the whole history.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
