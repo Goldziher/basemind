@@ -105,51 +105,6 @@ fn plain_dir_registers_without_repo() {
 }
 
 #[test]
-fn claim_is_exclusive_and_release_frees_it() {
-    crate::store::init_isolated_cache();
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let main = tmp.path().join("main");
-    init_repo(&main);
-
-    let mut registry = Registry::open(&tmp.path().join("registry")).expect("open registry");
-    let key = registry.register_workspace(&main).expect("register");
-    let repo_id = registry.get_workspace(&key).expect("row").repo_id.expect("repo id");
-
-    assert!(
-        registry.claim_worktree(&repo_id, "(main)", "agent-a").expect("claim a"),
-        "first claim by agent-a succeeds"
-    );
-    assert!(
-        !registry.claim_worktree(&repo_id, "(main)", "agent-b").expect("claim b"),
-        "agent-b cannot claim a worktree agent-a holds"
-    );
-    assert!(
-        registry
-            .claim_worktree(&repo_id, "(main)", "agent-a")
-            .expect("reclaim a"),
-        "agent-a re-claiming its own worktree is idempotent"
-    );
-    assert!(
-        !registry
-            .release_worktree(&repo_id, "(main)", "agent-b")
-            .expect("release b"),
-        "agent-b cannot release agent-a's claim"
-    );
-    assert!(
-        registry
-            .release_worktree(&repo_id, "(main)", "agent-a")
-            .expect("release a"),
-        "agent-a releases its own claim"
-    );
-    assert!(
-        registry
-            .claim_worktree(&repo_id, "(main)", "agent-b")
-            .expect("claim b after release"),
-        "agent-b can claim once freed"
-    );
-}
-
-#[test]
 fn prune_missing_drops_a_deleted_worktree() {
     crate::store::init_isolated_cache();
     let tmp = tempfile::tempdir().expect("tempdir");
@@ -266,4 +221,59 @@ fn reopen_sees_persisted_rows() {
     assert_eq!(reopened.workspaces().len(), 1, "workspace persisted across reopen");
     assert_eq!(reopened.worktrees(&repo_id).len(), 1, "main worktree persisted");
     assert!(reopened.get_repo(&repo_id).is_some(), "repo row persisted");
+}
+
+/// A snapshot written before worktree claims were removed carries a `claimed_by` key on every
+/// worktree row. It must still load — the key is ignored — rather than read as an empty registry.
+#[test]
+fn snapshot_with_a_retired_claim_field_still_loads() {
+    #[derive(Serialize)]
+    struct OldWorktree {
+        repo_id: String,
+        name: String,
+        path: PathBuf,
+        head_sha: Option<String>,
+        branch: Option<String>,
+        detached: bool,
+        claimed_by: Option<String>,
+        last_seen: i64,
+    }
+    #[derive(Serialize)]
+    struct OldSnapshot {
+        schema_ver: u16,
+        workspaces: Vec<WorkspaceRecord>,
+        repos: Vec<RepoRecord>,
+        worktrees: Vec<OldWorktree>,
+        branches: Vec<BranchRecord>,
+    }
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let registry_dir = tmp.path().join("registry");
+    std::fs::create_dir_all(&registry_dir).expect("mkdir registry");
+    let old = OldSnapshot {
+        schema_ver: REGISTRY_SCHEMA_VER,
+        workspaces: Vec::new(),
+        repos: Vec::new(),
+        worktrees: vec![OldWorktree {
+            repo_id: "path:/repo".to_string(),
+            name: "(main)".to_string(),
+            path: PathBuf::from("/repo"),
+            head_sha: None,
+            branch: Some("main".to_string()),
+            detached: false,
+            claimed_by: Some("agent-a".to_string()),
+            last_seen: 1,
+        }],
+        branches: Vec::new(),
+    };
+    std::fs::write(
+        registry_dir.join(SNAPSHOT_FILE),
+        rmp_serde::to_vec_named(&old).expect("encode old snapshot"),
+    )
+    .expect("write old snapshot");
+
+    let registry = Registry::open(&registry_dir).expect("open registry");
+    let worktrees = registry.worktrees(&"path:/repo".to_string());
+    assert_eq!(worktrees.len(), 1, "the pre-removal worktree row survives the upgrade");
+    assert_eq!(worktrees[0].branch.as_deref(), Some("main"));
 }

@@ -1,9 +1,9 @@
 //! The live MCP surface: every advertised tool's input schema, parsed.
 //!
 //! A verb tool has an exact schema of its own (ADR-0018), so the fields it accepts and requires are
-//! read straight from it. The two domain tools that are still mode-dispatched (`agents`,
-//! `workspace`) publish one flat schema for all their modes, which cannot say which field belongs to
-//! which mode; their parameters are compared domain-wide.
+//! read straight from it. The one domain tool that is still mode-dispatched (`agents`) publishes one
+//! flat schema for all its modes, which cannot say which field belongs to which mode; its
+//! parameters are compared domain-wide.
 
 use std::collections::{BTreeMap, BTreeSet};
 

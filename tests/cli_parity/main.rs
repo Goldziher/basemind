@@ -5,8 +5,8 @@
 //! a bijection: the CLI may also carry shorthands for one shape of a tool and administrative
 //! commands with no MCP tool. The guard enforces it:
 //!
-//! 1. **Coverage** (`capabilities.rs`): one checked-in table maps each MCP tool (and, for the two
-//!    domain tools that are still mode-dispatched, each `mode`) to the one CLI command that is its
+//! 1. **Coverage** (`capabilities.rs`): one checked-in table maps each MCP tool (and, for the one
+//!    domain tool that is still mode-dispatched, each `mode`) to the one CLI command that is its
 //!    counterpart, and classifies every other CLI command as a `shorthand` of a tool or as
 //!    `cli_only` with a required reason. The test enumerates the live MCP surface (tool schemas)
 //!    and the live command tree (the built binary's `-h` output) and fails on any uncovered tool or

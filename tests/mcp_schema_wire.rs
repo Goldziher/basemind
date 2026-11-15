@@ -71,14 +71,14 @@ const INSTRUCTIONS_CEILING: usize = 4096;
 /// ceiling raised.
 const VERB_TOOLS_BYTE_CEILING: usize = 20_000;
 
-/// Ceiling for the two mode-dispatched domain tools a `comms` build still adds (`agents`,
-/// `workspace`). They predate ADR-0018 and are replaced by their own verb tools in later work; until
-/// then this only stops them growing.
+/// Ceiling for the mode-dispatched domain tool a `comms` build still adds (`agents`). It predates
+/// ADR-0018 and is replaced by its own verb tools in later work; until then this only stops it
+/// growing.
 #[cfg(feature = "comms")]
-const DOMAIN_TOOLS_BYTE_CEILING: usize = 11_200;
+const DOMAIN_TOOLS_BYTE_CEILING: usize = 8_000;
 
 /// The mode-dispatched domain tools still advertised by a `comms` build.
-const DOMAIN_TOOLS: [&str; 2] = ["agents", "workspace"];
+const DOMAIN_TOOLS: [&str; 1] = ["agents"];
 
 /// Fields each verb tool cannot run without. Everything else in its schema must be optional.
 const REQUIRED: [(&str, &[&str]); 15] = [
@@ -171,7 +171,7 @@ async fn every_tool_has_a_title() {
     assert!(untitled.is_empty(), "tools without a title: {untitled:?}");
 }
 
-/// The advertised surface is exactly the ADR-0018 verb tools (plus the two domain tools a `comms`
+/// The advertised surface is exactly the ADR-0018 verb tools (plus the one domain tool a `comms`
 /// build still carries). In particular none of the replaced domain tools is left behind.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_advertised_tools_are_exactly_the_verb_tools() {
@@ -179,7 +179,7 @@ async fn the_advertised_tools_are_exactly_the_verb_tools() {
     let mut advertised: Vec<String> = tools.iter().map(|tool| tool.name.to_string()).collect();
     advertised.sort();
 
-    for retired in ["code", "git", "memory", "admin"] {
+    for retired in ["code", "git", "memory", "admin", "workspace"] {
         assert!(
             !advertised.iter().any(|name| name == retired),
             "the mode-dispatched `{retired}` tool is still advertised: {advertised:?}"
@@ -200,7 +200,7 @@ async fn the_advertised_tools_are_exactly_the_verb_tools() {
 
 /// A host that defers MCP tools loads only their names until a tool-search round trip; this marker
 /// keeps the schema loaded from the start of the session. It is spent on the verb tools only: the
-/// two mode-dispatched domain tools stay deferred, so their 11 KB is not paid on every session.
+/// mode-dispatched domain tool stays deferred, so its bytes are not paid on every session.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn only_the_verb_tools_are_marked_always_load() {
     let (_dir, tools, _) = list_tools().await;
@@ -231,7 +231,7 @@ async fn only_the_verb_tools_are_marked_always_load() {
         assert_eq!(
             tools.len() - verbs.len(),
             DOMAIN_TOOLS.len(),
-            "a comms build advertises both domain tools, so the deferred branch above ran"
+            "a comms build advertises the domain tool, so the deferred branch above ran"
         );
     }
 }
@@ -268,7 +268,7 @@ async fn tools_list_stays_under_the_byte_ceiling() {
         let domain_bytes = size(&domains);
         assert!(
             domain_bytes <= DOMAIN_TOOLS_BYTE_CEILING,
-            "`agents` + `workspace` serialize to {domain_bytes} bytes, over {DOMAIN_TOOLS_BYTE_CEILING}"
+            "`agents` serializes to {domain_bytes} bytes, over {DOMAIN_TOOLS_BYTE_CEILING}"
         );
     }
 }

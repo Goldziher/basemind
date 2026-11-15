@@ -46,8 +46,6 @@ mod helpers_memory;
 mod helpers_page;
 mod helpers_pick;
 mod helpers_refs_match;
-#[cfg(all(feature = "comms", any(unix, windows)))]
-mod helpers_registry;
 mod helpers_symbols;
 mod helpers_telemetry;
 #[cfg(all(feature = "comms", any(unix, windows)))]
@@ -92,8 +90,6 @@ mod tools_admin;
 mod tools_comms;
 mod tools_git;
 mod tools_memory;
-#[cfg(all(feature = "comms", any(unix, windows)))]
-mod tools_registry;
 pub(crate) mod toon;
 mod types;
 mod types_code;
@@ -103,8 +99,6 @@ mod types_documents;
 mod types_git;
 mod types_impls;
 pub(crate) mod types_memory;
-#[cfg(all(feature = "comms", any(unix, windows)))]
-pub(crate) mod types_registry;
 mod types_tools;
 
 use std::path::PathBuf;
@@ -430,7 +424,6 @@ impl BasemindServer {
         #[cfg(all(feature = "comms", any(unix, windows)))]
         {
             router += Self::tool_router_comms();
-            router += Self::tool_router_registry();
         }
         tool_contract::finalize_router(router)
     }

@@ -23,7 +23,11 @@ use super::model::{AgentCard, MessageMeta, Thread};
 /// [`CommsOut::Reply`]), so a skewed peer fails the Hello check with a clear error and the daemon
 /// takeover in `ensure_daemon` replaces an older daemon; bumped 4→5 when the `governance`
 /// request and response variants were removed, so a client that could still send one is refused
-/// at Hello instead of failing to decode mid-session.
+/// at Hello instead of failing to decode mid-session. The `worktree_claim` / `worktree_release`
+/// requests were removed WITHOUT a bump: only a deliberate claim from an older client can send one,
+/// the daemon fails to decode the frame and drops that one link, and the client reports a closed
+/// connection and reconnects. Nothing else on the wire changed, so refusing every older client at
+/// Hello would cost more than the one call it protects.
 pub const PROTO_VER: u32 = 5;
 
 /// A request from a client to the broker. `method` selects the variant; `params` are the
@@ -339,24 +343,6 @@ pub enum CommsRequest {
         /// The repo id whose branches to list.
         repo_id: String,
     },
-    /// Advisory-claim a worktree for a claimant. Returns whether the claim is now held by them.
-    WorktreeClaim {
-        /// The owning repo id.
-        repo_id: String,
-        /// The worktree name (`"(main)"` or the linked-worktree directory name).
-        name: String,
-        /// The claimant id (an agent/session id) taking the advisory claim.
-        claimant: String,
-    },
-    /// Release an advisory worktree claim held by `claimant`.
-    WorktreeRelease {
-        /// The owning repo id.
-        repo_id: String,
-        /// The worktree name whose claim to release.
-        name: String,
-        /// The claimant id releasing its own claim.
-        claimant: String,
-    },
     /// Liveness probe. The daemon replies [`CommsResponse::Pong`].
     Ping,
     /// Ask the daemon to drain and stop. Used by `basemind comms stop`.
@@ -415,8 +401,6 @@ impl CommsRequest {
             Self::WorkspacesList { .. } => "workspaces_list",
             Self::WorktreesList { .. } => "worktrees_list",
             Self::BranchesList { .. } => "branches_list",
-            Self::WorktreeClaim { .. } => "worktree_claim",
-            Self::WorktreeRelease { .. } => "worktree_release",
             Self::Ping => "ping",
             Self::Stop => "stop",
             Self::Status => "status",
@@ -561,12 +545,6 @@ pub enum CommsResponse {
         /// The branch rows, sorted by name.
         branches: Vec<crate::registry::BranchRecord>,
     },
-    /// Reply to [`CommsRequest::WorktreeClaim`] / [`CommsRequest::WorktreeRelease`]: the outcome.
-    ClaimOutcome {
-        /// For a claim: `true` when the claim is now held by the claimant. For a release: `true`
-        /// when a claim by the claimant was cleared. `false` otherwise (unknown or held by another).
-        held: bool,
-    },
     /// A request failed. `code` is a stable machine token; `message` is human detail.
     Error {
         /// Stable error token (e.g. `proto_skew`, `unknown_thread`, `not_creator`).
@@ -685,6 +663,55 @@ pub enum CommsOut {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A client older than the removal of worktree claims can still send one. The frame must fail
+    /// to decode as an error the link loop turns into a dropped connection — never a panic, and
+    /// never a silent match against some other variant.
+    #[test]
+    fn a_retired_worktree_claim_request_is_a_decode_error() {
+        #[derive(Serialize)]
+        struct Params {
+            repo_id: &'static str,
+            name: &'static str,
+            claimant: &'static str,
+        }
+        #[derive(Serialize)]
+        struct Frame {
+            method: &'static str,
+            params: Params,
+        }
+        for method in ["worktree_claim", "worktree_release"] {
+            let bytes = rmp_serde::to_vec_named(&Frame {
+                method,
+                params: Params {
+                    repo_id: "path:/repo",
+                    name: "(main)",
+                    claimant: "agent-a",
+                },
+            })
+            .expect("encode");
+            let error = rmp_serde::from_slice::<CommsRequest>(&bytes).expect_err("a retired method must not decode");
+            assert!(
+                error.to_string().contains(method),
+                "the error names the method: {error}"
+            );
+        }
+        let live = rmp_serde::to_vec_named(&Frame {
+            method: "worktrees_list",
+            params: Params {
+                repo_id: "path:/repo",
+                name: "(main)",
+                claimant: "agent-a",
+            },
+        })
+        .expect("encode");
+        assert_eq!(
+            rmp_serde::from_slice::<CommsRequest>(&live).expect("a live method decodes from the same frame shape"),
+            CommsRequest::WorktreesList {
+                repo_id: "path:/repo".to_string()
+            }
+        );
+    }
 
     #[test]
     fn request_round_trips_through_msgpack() {

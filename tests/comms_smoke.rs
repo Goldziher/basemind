@@ -499,10 +499,10 @@ async fn rescan_rpc_indexes_a_workspace_and_reports_it_hot() {
 }
 
 /// Connecting a client with a git-repo cwd auto-registers it in the daemon's machine registry, so
-/// `list_workspaces` / `list_worktrees` surface the repo, and a two-claimant worktree race resolves
-/// to exactly one holder. The daemon's registry is isolated to the tempdir via `BASEMIND_DATA_HOME`.
+/// `list_workspaces` / `list_worktrees` / `list_branches` surface the repo. The daemon's registry is
+/// isolated to the tempdir via `BASEMIND_DATA_HOME`.
 #[tokio::test(flavor = "multi_thread")]
-async fn machine_registry_auto_registers_and_worktree_claim_is_exclusive() {
+async fn machine_registry_auto_registers_a_connecting_repo() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let comms_dir = tmp.path().join("comms");
     let repo = tmp.path().join("repo");
@@ -526,50 +526,10 @@ async fn machine_registry_auto_registers_and_worktree_claim_is_exclusive() {
     let worktrees = alice.list_worktrees(repo_id.clone()).await.expect("list worktrees");
     assert_eq!(worktrees.len(), 1, "one (main) worktree");
     assert_eq!(worktrees[0].name, "(main)", "the main worktree name");
-    assert_eq!(worktrees[0].claimed_by, None, "unclaimed at first");
 
     let branches = alice.list_branches(repo_id.clone()).await.expect("list branches");
     assert_eq!(branches.len(), 1, "one local branch");
     assert_eq!(branches[0].name, "main", "the main branch");
-
-    let mut bob = connect(&socket, "agent-bob", &repo).await;
-    let a_won = alice
-        .claim_worktree(repo_id.clone(), "(main)".to_string(), "agent-alice".to_string())
-        .await
-        .expect("alice claim");
-    let b_won = bob
-        .claim_worktree(repo_id.clone(), "(main)".to_string(), "agent-bob".to_string())
-        .await
-        .expect("bob claim");
-    assert!(a_won, "alice's first claim wins");
-    assert!(!b_won, "bob cannot claim a worktree alice holds");
-
-    let worktrees = alice
-        .list_worktrees(repo_id.clone())
-        .await
-        .expect("list worktrees after claim");
-    assert_eq!(
-        worktrees[0].claimed_by.as_deref(),
-        Some("agent-alice"),
-        "the (main) worktree is claimed by alice"
-    );
-
-    let released = alice
-        .release_worktree(repo_id.clone(), "(main)".to_string(), "agent-alice".to_string())
-        .await
-        .expect("alice release");
-    assert!(released, "alice releases her own claim");
-    let b_won_now = bob
-        .claim_worktree(repo_id.clone(), "(main)".to_string(), "agent-bob".to_string())
-        .await
-        .expect("bob claim after release");
-    assert!(b_won_now, "bob claims once the worktree is freed");
-
-    let unknown = bob
-        .claim_worktree(repo_id.clone(), "no-such-worktree".to_string(), "agent-bob".to_string())
-        .await
-        .expect("claim of unknown worktree returns Ok(false)");
-    assert!(!unknown, "an unknown worktree cannot be claimed");
 }
 
 /// `inbox_wait` against a REAL detached daemon (not the in-process/UDS-in-test-process setups used

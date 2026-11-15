@@ -217,9 +217,9 @@ pub(crate) const EMPTY_INDEX_FIX: &str = "the index is empty: nothing has been s
 /// Finish the assembled router: mark every verb tool always-loaded and strip schema keywords that
 /// cost bytes on every session without telling a model anything.
 ///
-/// The marker goes on the verb tools only. `agents` and `workspace` are still mode-dispatched
-/// domain tools (11 KB between them) and stay deferred, so a session that never coordinates with
-/// another agent does not pay for them. Applied to the router rather than per
+/// The marker goes on the verb tools only. `agents` is still a mode-dispatched domain tool and
+/// stays deferred, so a session that never coordinates with another agent does not pay for it.
+/// Applied to the router rather than per
 /// `#[tool(meta = …)]` so a verb tool added later cannot forget the marker;
 /// `tests/mcp_schema_wire.rs` asserts both halves.
 pub(super) fn finalize_router(mut router: ToolRouter<BasemindServer>) -> ToolRouter<BasemindServer> {

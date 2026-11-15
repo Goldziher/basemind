@@ -26,8 +26,6 @@ pub enum Capability {
     FileFinding,
     /// `agents` modes `post` / `inbox` — multi-agent thread coordination.
     AgentComms,
-    /// `workspace` modes — daemon registry + worktree coordination.
-    WorktreeCoordination,
     /// `docs_search` — RAG over PDFs / Office / HTML / markdown / config.
     DocumentsRag,
     /// `code_search` — semantic (vector) code search over the same index.
@@ -36,13 +34,12 @@ pub enum Capability {
 
 impl Capability {
     /// Every capability, in display order. The canonical selection universe.
-    pub const ALL: [Capability; 8] = [
+    pub const ALL: [Capability; 7] = [
         Capability::CodeSearchNavigation,
         Capability::CodeMappingArchitecture,
         Capability::GitHistory,
         Capability::FileFinding,
         Capability::AgentComms,
-        Capability::WorktreeCoordination,
         Capability::DocumentsRag,
         Capability::SemanticSearch,
     ];
@@ -55,7 +52,6 @@ impl Capability {
             Capability::GitHistory => "git-history",
             Capability::FileFinding => "file-finding",
             Capability::AgentComms => "agent-comms",
-            Capability::WorktreeCoordination => "worktree-coordination",
             Capability::DocumentsRag => "documents-rag",
             Capability::SemanticSearch => "semantic-search",
         }
@@ -69,9 +65,6 @@ impl Capability {
             Capability::GitHistory => "Git history (log, blame, diff)",
             Capability::FileFinding => "File finding (fuzzy fzf/fd-style filename & path search)",
             Capability::AgentComms => "Agent comms (multi-agent threads + inbox)",
-            Capability::WorktreeCoordination => {
-                "Worktree coordination (daemon registry: workspaces, worktrees, advisory claims)"
-            }
             Capability::DocumentsRag => "Documents & RAG (PDF / Office / HTML search)",
             Capability::SemanticSearch => "Semantic (vector) code search",
         }
@@ -126,10 +119,6 @@ impl Capability {
             Capability::AgentComms => &[(
                 "Check the inbox, discover threads, or post to other agents",
                 r#"`agents {"mode":"inbox"}` / `{"mode":"thread_list"}` / `{"mode":"post", …}`"#,
-            )],
-            Capability::WorktreeCoordination => &[(
-                "Inspect worktrees and advisory claims before editing",
-                r#"`workspace {"mode":"worktrees"}` / `{"mode":"claim", …}`"#,
             )],
             Capability::DocumentsRag => &[(
                 "Search documents (PDFs, Office, markdown, config and data files; the code tools cover code only)",
@@ -324,6 +313,7 @@ mod tests {
             "`git` mode",
             "`memory` mode",
             "`admin` mode",
+            "`workspace`",
             "blame_symbol",
         ] {
             assert!(!body.contains(retired), "the block still names `{retired}`");

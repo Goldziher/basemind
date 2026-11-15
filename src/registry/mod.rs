@@ -97,8 +97,6 @@ pub struct WorktreeRecord {
     pub branch: Option<String>,
     /// True when HEAD is detached.
     pub detached: bool,
-    /// Advisory claimant (an agent/session id) currently holding this worktree, if any.
-    pub claimed_by: Option<String>,
     /// Unix micros of the last refresh.
     pub last_seen: i64,
 }
@@ -272,9 +270,9 @@ impl Registry {
         self.refresh_from_root(&main_root)
     }
 
-    /// Enumerate `repository`'s worktrees + local branches and upsert the repo/worktree/branch rows,
-    /// preserving any existing advisory `claimed_by`. Rows for this repo that are no longer present
-    /// upstream are pruned so a removed worktree or deleted branch does not linger.
+    /// Enumerate `repository`'s worktrees + local branches and upsert the repo/worktree/branch rows.
+    /// Rows for this repo that are no longer present upstream are pruned so a removed worktree or
+    /// deleted branch does not linger.
     fn populate_git(&mut self, repository: &git::Repo, repo_id: &RepoId, now: i64) -> Result<(), RegistryError> {
         let worktrees = repository.list_worktrees()?;
         let branches = repository.list_local_branches()?;
@@ -287,10 +285,8 @@ impl Registry {
             .retain(|_, record| record.repo_id != *repo_id || seen_branches.contains(&record.name));
 
         for worktree in &worktrees {
-            let composite = composite_key(repo_id, &worktree.name);
-            let claimed_by = self.worktrees.get(&composite).and_then(|r| r.claimed_by.clone());
             self.worktrees.insert(
-                composite,
+                composite_key(repo_id, &worktree.name),
                 WorktreeRecord {
                     repo_id: repo_id.clone(),
                     name: worktree.name.clone(),
@@ -298,7 +294,6 @@ impl Registry {
                     head_sha: worktree.head_sha.clone(),
                     branch: worktree.branch.clone(),
                     detached: worktree.detached,
-                    claimed_by,
                     last_seen: now,
                 },
             );
@@ -370,42 +365,6 @@ impl Registry {
     /// Look up one repo by id.
     pub fn get_repo(&self, repo_id: &str) -> Option<RepoRecord> {
         self.repos.get(repo_id).cloned()
-    }
-
-    /// Advisory-claim a worktree for `claimant`. Returns `true` when the claim is now held by
-    /// `claimant` (freshly taken, or already theirs), `false` when another claimant holds it. Unknown
-    /// `(repo_id, name)` returns `false`.
-    pub fn claim_worktree(&mut self, repo_id: &RepoId, name: &str, claimant: &str) -> Result<bool, RegistryError> {
-        let composite = composite_key(repo_id, name);
-        let record = match self.worktrees.get_mut(&composite) {
-            Some(record) => record,
-            None => return Ok(false),
-        };
-        match &record.claimed_by {
-            Some(holder) if holder != claimant => Ok(false),
-            _ => {
-                record.claimed_by = Some(claimant.to_string());
-                self.persist()?;
-                Ok(true)
-            }
-        }
-    }
-
-    /// Release a worktree claim held by `claimant`. Returns `true` when a claim by `claimant` was
-    /// cleared, `false` when the worktree is unknown or held by someone else / no one.
-    pub fn release_worktree(&mut self, repo_id: &RepoId, name: &str, claimant: &str) -> Result<bool, RegistryError> {
-        let composite = composite_key(repo_id, name);
-        let record = match self.worktrees.get_mut(&composite) {
-            Some(record) => record,
-            None => return Ok(false),
-        };
-        if record.claimed_by.as_deref() == Some(claimant) {
-            record.claimed_by = None;
-            self.persist()?;
-            Ok(true)
-        } else {
-            Ok(false)
-        }
     }
 
     /// Drop rows whose on-disk path no longer exists: worktrees + workspaces whose checkout/root is

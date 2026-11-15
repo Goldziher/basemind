@@ -3,8 +3,8 @@
 //!
 //! # Keying
 //!
-//! Every row is one line keyed by plain strings: the MCP tool name (plus its `mode`, for the two
-//! domain tools that are still mode-dispatched) and the CLI command path as typed after `basemind`.
+//! Every row is one line keyed by plain strings: the MCP tool name (plus its `mode`, for the one
+//! domain tool that is still mode-dispatched) and the CLI command path as typed after `basemind`.
 //! Renaming or moving a CLI command is a one-line edit to the `cli` string of its row; adding a
 //! command or tool means adding one row. The coverage test (`main.rs`) fails with the exact row to
 //! add or delete.
@@ -136,7 +136,9 @@ const fn mcp_only(tool: &'static str, mode: &'static str, reason: &'static str) 
 const LIFECYCLE: &str = "process/index lifecycle, not a query an agent issues over MCP";
 const CACHE_ADMIN: &str = "machine-global cache administration; kept off the agent surface (ADR-0018) and run offline";
 #[cfg(all(feature = "comms", any(unix, windows)))]
-const BROKER: &str = "comms-broker daemon lifecycle; the MCP surface reaches the broker through `agents`/`workspace`";
+const BROKER: &str = "comms-broker daemon lifecycle; the MCP surface reaches the broker through `agents`";
+#[cfg(all(feature = "comms", any(unix, windows)))]
+const REGISTRY: &str = "read-only listing of the daemon's machine registry; the registry has no MCP tool";
 
 pub fn table() -> Vec<Row> {
     #[allow(unused_mut)]
@@ -273,11 +275,9 @@ pub fn table() -> Vec<Row> {
         pair("agents", "wait", "agents wait"),
         pair("agents", "cleanup", "agents cleanup"),
         pair("agents", "status", "agents status"),
-        pair("workspace", "workspaces", "workspace workspaces"),
-        pair("workspace", "worktrees", "workspace worktrees"),
-        pair("workspace", "branches", "workspace branches"),
-        pair("workspace", "claim", "workspace claim"),
-        pair("workspace", "release", "workspace release"),
+        cli_only("workspace workspaces", REGISTRY),
+        cli_only("workspace worktrees", REGISTRY),
+        cli_only("workspace branches", REGISTRY),
         cli_only("comms daemon", BROKER),
         cli_only("comms start", BROKER),
         cli_only("comms stop", BROKER),

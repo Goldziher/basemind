@@ -2315,10 +2315,10 @@ async fn lean_surface_is_opt_in_and_round_trips_through_invoke_tool() {
     let full = spawn_serve(root, None).await;
     let full_tools = full.list_all_tools().await.expect("list tools (full)");
     let full_names: Vec<&str> = full_tools.iter().map(|t| t.name.as_ref()).collect();
-    // The surface is the verb tools plus `agents` and `workspace` under `comms`. Hosts load every
+    // The surface is the verb tools plus `agents` under `comms`. Hosts load every
     // schema on every session, so a count that creeps up is a regression, not growth: asserted as
     // a ceiling plus the always-on names, rather than a floor that any addition would satisfy.
-    let ceiling = basemind::mcp::params::VERB_TOOLS.len() + 2;
+    let ceiling = basemind::mcp::params::VERB_TOOLS.len() + 1;
     assert!(
         full_tools.len() <= ceiling,
         "the surface must stay at {ceiling} tools or fewer, got {}: {full_names:?}",
@@ -3047,152 +3047,6 @@ async fn find_callers_never_reports_a_resolution_limited_subset_as_complete() {
         resolved_total <= reference_total,
         "resolved_total is a LOWER BOUND on the truth — it may never exceed total: {callers}"
     );
-    let _ = service.cancel().await;
-}
-
-/// Per-mode contract for the consolidated `workspace` tool.
-///
-/// The five modes' bodies all talk to the comms broker daemon, which a hermetic smoke run has no
-/// business spawning — so what is asserted here is the layer that runs BEFORE the daemon round-trip
-/// and is exactly the layer consolidation introduced: `mode` is required, every mode is advertised,
-/// a field belonging to another mode is rejected rather than ignored, and a mode that needs
-/// `repo_id` / `name` names the missing pair instead of failing anonymously downstream.
-///
-/// A refusal reaches the caller two ways — `Lenient` renders a parameter-shape failure as an
-/// `is_error` result, while a helper-level rejection is a `-32602` — so [`refusal`] normalizes both
-/// to the message text and every assertion is made on the wording an agent actually reads.
-#[cfg(all(feature = "comms", any(unix, windows)))]
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn workspace_tool_validates_every_mode_before_touching_the_registry() {
-    /// The refusal text of a call that must not have succeeded, whichever way it was refused.
-    fn refusal(result: Result<CallToolResult, rmcp::service::ServiceError>, context: &str) -> String {
-        match result {
-            Err(error) => error.to_string(),
-            Ok(result) => {
-                assert_eq!(result.is_error, Some(true), "{context} must be refused: {result:?}");
-                result
-                    .content
-                    .iter()
-                    .filter_map(|c| c.as_text().map(|t| t.text.clone()))
-                    .collect::<Vec<_>>()
-                    .join(" ")
-            }
-        }
-    }
-
-    let dir = build_repo();
-    let root = dir.path();
-
-    let transport = basemind::mcp::serve_in_memory(root, "working")
-        .await
-        .expect("in-memory serve");
-    let service = ().serve(transport).await.expect("rmcp handshake");
-
-    let tools = service.list_all_tools().await.expect("list tools");
-    let workspace = tools
-        .iter()
-        .find(|t| t.name == "workspace")
-        .expect("the `workspace` domain tool must be advertised under --features comms");
-    let schema = serde_json::to_string(&workspace.input_schema).expect("serialize inputSchema");
-    for mode in ["workspaces", "worktrees", "branches", "claim", "release"] {
-        assert!(
-            schema.contains(&format!("\"{mode}\"")),
-            "`workspace` inputSchema must advertise mode `{mode}`: {schema}"
-        );
-    }
-
-    // `mode` is required: an omitted mode errors, it never silently picks an operation.
-    let message = refusal(
-        service.call_tool(call_params("workspace", json!({}))).await,
-        "an omitted mode",
-    );
-    assert!(
-        message.contains("missing field `mode`"),
-        "an omitted mode must name the field: {message}"
-    );
-
-    let message = refusal(
-        service
-            .call_tool(call_params("workspace", json!({ "mode": "worktree" })))
-            .await,
-        "an unknown mode",
-    );
-    assert!(
-        message.contains("worktrees") && message.contains("claim"),
-        "an unknown mode must list the accepted set: {message}"
-    );
-
-    // mode `workspaces` takes neither `repo_id` nor `name` — a stray field is rejected, not ignored.
-    let message = refusal(
-        service
-            .call_tool(call_params(
-                "workspace",
-                json!({ "mode": "workspaces", "repo_id": "path:/nowhere" }),
-            ))
-            .await,
-        "mode `workspaces` with a stray `repo_id`",
-    );
-    assert!(
-        message.contains("mode `workspaces` does not accept") && message.contains("`repo_id`"),
-        "mode `workspaces` must name the field it rejected: {message}"
-    );
-
-    // modes `worktrees` / `branches` require `repo_id` and reject `name`.
-    for mode in ["worktrees", "branches"] {
-        let message = refusal(
-            service
-                .call_tool(call_params("workspace", json!({ "mode": mode })))
-                .await,
-            "a repo_id-less list mode",
-        );
-        assert!(
-            message.contains(&format!("mode=\"{mode}\" requires `repo_id`")),
-            "mode `{mode}` must name the missing `repo_id`: {message}"
-        );
-
-        let message = refusal(
-            service
-                .call_tool(call_params(
-                    "workspace",
-                    json!({ "mode": mode, "repo_id": "path:/nowhere", "name": "(main)" }),
-                ))
-                .await,
-            "a list mode given `name`",
-        );
-        assert!(
-            message.contains("`name`"),
-            "mode `{mode}` must reject `name` rather than ignore it: {message}"
-        );
-    }
-
-    // modes `claim` / `release` require both `repo_id` and `name`.
-    for mode in ["claim", "release"] {
-        let message = refusal(
-            service
-                .call_tool(call_params("workspace", json!({ "mode": mode, "name": "(main)" })))
-                .await,
-            "a repo_id-less claim/release",
-        );
-        assert!(
-            message.contains(&format!("mode=\"{mode}\" requires `repo_id`")),
-            "mode `{mode}` must name the missing `repo_id`: {message}"
-        );
-
-        let message = refusal(
-            service
-                .call_tool(call_params(
-                    "workspace",
-                    json!({ "mode": mode, "repo_id": "path:/nowhere" }),
-                ))
-                .await,
-            "a name-less claim/release",
-        );
-        assert!(
-            message.contains(&format!("mode=\"{mode}\" requires `name`")),
-            "mode `{mode}` must name the missing `name`: {message}"
-        );
-    }
-
     let _ = service.cancel().await;
 }
 

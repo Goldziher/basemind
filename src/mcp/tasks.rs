@@ -82,7 +82,7 @@ pub(super) async fn run_until_cancelled<T>(
 /// with a deadline; a fast one is still answered inline.
 ///
 /// Entries are keyed the way telemetry is: a bare tool name matches every call of that tool, and a
-/// `domain:mode` key matches one mode of a mode-dispatched domain tool (`agents`, `workspace`).
+/// `domain:mode` key matches one mode of the mode-dispatched domain tool (`agents`).
 pub(super) const SLOW_CALLS: &[&str] = &["index_rescan", "code_search", "docs_search"];
 
 /// Whether this call is one of the [`SLOW_CALLS`] eligible for task offload.

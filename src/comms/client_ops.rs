@@ -561,47 +561,4 @@ impl CommsClient {
             other => Err(self.shape_err(other, "list_branches")),
         }
     }
-
-    /// Advisory-claim a worktree for `claimant`. Returns `true` when the claim is now held by
-    /// `claimant` (freshly taken or already theirs), `false` when another claimant holds it or the
-    /// worktree is unknown.
-    pub async fn claim_worktree(
-        &mut self,
-        repo_id: String,
-        name: String,
-        claimant: String,
-    ) -> Result<bool, CommsClientError> {
-        match self
-            .request(CommsRequest::WorktreeClaim {
-                repo_id,
-                name,
-                claimant,
-            })
-            .await?
-        {
-            CommsResponse::ClaimOutcome { held } => Ok(held),
-            other => Err(self.shape_err(other, "claim_worktree")),
-        }
-    }
-
-    /// Release an advisory worktree claim held by `claimant`. Returns `true` when a claim by
-    /// `claimant` was cleared, `false` otherwise.
-    pub async fn release_worktree(
-        &mut self,
-        repo_id: String,
-        name: String,
-        claimant: String,
-    ) -> Result<bool, CommsClientError> {
-        match self
-            .request(CommsRequest::WorktreeRelease {
-                repo_id,
-                name,
-                claimant,
-            })
-            .await?
-        {
-            CommsResponse::ClaimOutcome { held } => Ok(held),
-            other => Err(self.shape_err(other, "release_worktree")),
-        }
-    }
 }

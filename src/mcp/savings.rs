@@ -150,21 +150,8 @@ pub fn estimate_from_text(tool: &str, _corpus_bytes: u64, resp_text: &str) -> Sa
 
         "docs_search" => (scaled(actual, DOCUMENT_READ_PCT), "grep_plus_document_read"),
 
-        "code_grep"
-        | "code_read"
-        | "code_search"
-        | "git_log"
-        | "git_blame"
-        | "git_diff"
-        | "memory_save"
-        | "memory_search"
-        | "index_status"
-        | "index_rescan"
-        | "workspace:workspaces"
-        | "workspace:worktrees"
-        | "workspace:branches"
-        | "workspace:claim"
-        | "workspace:release" => (actual, "no_baseline"),
+        "code_grep" | "code_read" | "code_search" | "git_log" | "git_blame" | "git_diff" | "memory_save"
+        | "memory_search" | "index_status" | "index_rescan" => (actual, "no_baseline"),
 
         _ => (actual, "unclassified"),
     };
@@ -239,7 +226,6 @@ mod tests {
             "memory_save",
             "index_status",
             "index_rescan",
-            "workspace:worktrees",
             "git_log",
             "git_diff",
             "git_blame",

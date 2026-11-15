@@ -877,16 +877,6 @@ impl Broker {
             CommsRequest::WorkspacesList => Ok(self.on_workspaces_list().await),
             CommsRequest::WorktreesList { repo_id } => Ok(self.on_worktrees_list(repo_id).await),
             CommsRequest::BranchesList { repo_id } => Ok(self.on_branches_list(repo_id).await),
-            CommsRequest::WorktreeClaim {
-                repo_id,
-                name,
-                claimant,
-            } => Ok(self.on_worktree_claim(repo_id, name, claimant).await),
-            CommsRequest::WorktreeRelease {
-                repo_id,
-                name,
-                claimant,
-            } => Ok(self.on_worktree_release(repo_id, name, claimant).await),
             CommsRequest::Ping => Ok(CommsResponse::Pong),
             CommsRequest::Status => self.on_status().await,
             CommsRequest::Stop => Ok(self.on_stop().await),
@@ -914,10 +904,6 @@ mod workspace_handlers;
 
 #[path = "daemon_store_blocking.rs"]
 mod store_blocking;
-
-#[path = "daemon_response.rs"]
-mod response;
-use response::registry_error;
 
 #[path = "daemon_threads.rs"]
 pub(super) mod threads;

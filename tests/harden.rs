@@ -125,12 +125,12 @@ async fn connect(repo_root: &Path) -> ServiceHandle {
     ().serve(transport).await.expect("rmcp handshake with basemind serve")
 }
 
-/// Every tool the harness may call: the verb tools plus the two mode-dispatched comms tools.
+/// Every tool the harness may call: the verb tools plus the mode-dispatched comms tool.
 ///
-/// A fixed list rather than the server's advertised one, because `agents` / `workspace` are
-/// cfg-gated: under a default-feature build they are absent, and the harness calls them
-/// deliberately so it can record them as skipped. ~keep
-const KNOWN_TOOLS: [&str; 17] = [
+/// A fixed list rather than the server's advertised one, because `agents` is cfg-gated: under a
+/// default-feature build it is absent, and the harness calls it deliberately so it can record it
+/// as skipped. ~keep
+const KNOWN_TOOLS: [&str; 16] = [
     "code_outline",
     "code_symbols",
     "code_read",
@@ -147,7 +147,6 @@ const KNOWN_TOOLS: [&str; 17] = [
     "index_status",
     "index_rescan",
     "agents",
-    "workspace",
 ];
 
 /// Tools whose retrieval stack is feature-gated. Gated off, they answer with an `isError` result

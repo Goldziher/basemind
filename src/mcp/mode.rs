@@ -1,10 +1,9 @@
-//! The `mode` vocabulary of the two domain tools that are still mode-dispatched: `agents` and
-//! `workspace`.
+//! The `mode` vocabulary of the one domain tool that is still mode-dispatched: `agents`.
 //!
 //! ADR-0018 replaced the mode-dispatched `code`, `git`, `memory` and `admin` domains with one tool
 //! per job (`src/mcp/types_tools.rs`). The agent-coordination surface keeps its domain shape until
-//! its own redesign lands, so this file now carries only what those two tools need: the enum
-//! macro, their vocabularies, and the per-mode field validator.
+//! its own redesign lands, so this file now carries only what that tool needs: the enum macro, its
+//! vocabulary, and the per-mode field validator.
 //!
 //! # Why the schema is hand-written
 //!
@@ -28,12 +27,12 @@ use rmcp::ErrorData as McpError;
 ///
 /// ```ignore
 /// define_mode! {
-///     /// What the `workspace` tool should do.
-///     pub enum WorkspaceMode {
-///         domain: "workspace",
-///         summary: "Registry operation to run.",
-///         Claim   => "claim",   "take an advisory claim on a worktree";
-///         Release => "release", "drop a claim";
+///     /// What the `agents` tool should do.
+///     pub enum AgentsMode {
+///         domain: "agents",
+///         summary: "Coordination operation to run.",
+///         Post  => "post",  "send a message to a thread";
+///         Inbox => "inbox", "unread messages across your joined threads";
 ///     }
 /// }
 /// ```
@@ -152,19 +151,6 @@ macro_rules! define_mode {
 // changes the spelling of a mode. Which domains are *advertised* is gated, in `domain_modes`. ~keep
 
 define_mode! {
-    /// Which workspace / worktree registry operation the `workspace` tool should run.
-    pub enum WorkspaceMode {
-        domain: "workspace",
-        summary: "Workspace registry operation to run.",
-        Workspaces => "workspaces", "every repository the machine daemon has indexed";
-        Worktrees => "worktrees", "git worktrees of this repository, with their branches and claims";
-        Branches => "branches", "branches known to this repository";
-        Claim => "claim", "take ownership of a worktree so another session does not edit it";
-        Release => "release", "give up a worktree claim this session holds";
-    }
-}
-
-define_mode! {
     /// Which multi-agent coordination operation the `agents` tool should run.
     pub enum AgentsMode {
         domain: "agents",
@@ -220,14 +206,12 @@ pub fn reject_unsupported(domain: &str, mode: &str, present: &[(&str, bool)]) ->
 /// Every mode-dispatched domain this build advertises, paired with the modes it accepts.
 ///
 /// Feature-gated exactly like the router's sub-router merges, so the list can never name a domain
-/// the server does not serve. `tests/cli_parity/` walks it so every `agents` / `workspace` mode
-/// keeps a CLI command.
+/// the server does not serve. `tests/cli_parity/` walks it so every `agents` mode keeps a CLI
+/// command.
 pub fn domain_modes() -> Vec<(&'static str, &'static [&'static str])> {
     vec![
         #[cfg(all(feature = "comms", any(unix, windows)))]
         (AgentsMode::DOMAIN, AgentsMode::ALL_MODES),
-        #[cfg(all(feature = "comms", any(unix, windows)))]
-        (WorkspaceMode::DOMAIN, WorkspaceMode::ALL_MODES),
     ]
 }
 

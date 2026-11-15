@@ -1,7 +1,7 @@
 //! Layer 2: parameter parity between a CLI command and the MCP tool it runs.
 //!
 //! For each `pair` row the MCP side is what the tool's own schema accepts and requires (exact per
-//! verb tool; domain-wide for the two mode-dispatched domain tools, whose flat schema cannot
+//! verb tool; domain-wide for the one mode-dispatched domain tool, whose flat schema cannot
 //! attribute a field to a mode) and the CLI side is the command's non-global arguments. A
 //! `shorthand` is checked one way: each of its arguments must be a field of its tool. Names are
 //! compared after snake-casing. Every difference is a [`Violation`] that must be covered by a

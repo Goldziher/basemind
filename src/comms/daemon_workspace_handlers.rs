@@ -89,17 +89,6 @@ impl Broker {
         }
     }
 
-    /// Advisory-claim a worktree. An unknown `(repo_id, name)` returns `held = false`.
-    pub(super) async fn on_worktree_claim(&self, repo_id: String, name: String, claimant: String) -> CommsResponse {
-        match self
-            .registry_blocking(move |registry| registry.claim_worktree(&repo_id, &name, &claimant))
-            .await
-        {
-            Ok(held) => CommsResponse::ClaimOutcome { held },
-            Err(error) => registry_error(error),
-        }
-    }
-
     /// Drop machine-registry rows whose on-disk path is gone, returning how many were removed.
     ///
     /// The registry is append-only by construction: a row is written when a workspace registers and
@@ -114,17 +103,6 @@ impl Broker {
                 tracing::warn!(%error, "comms: machine registry prune failed");
                 0
             }
-        }
-    }
-
-    /// Release an advisory worktree claim held by `claimant`.
-    pub(super) async fn on_worktree_release(&self, repo_id: String, name: String, claimant: String) -> CommsResponse {
-        match self
-            .registry_blocking(move |registry| registry.release_worktree(&repo_id, &name, &claimant))
-            .await
-        {
-            Ok(held) => CommsResponse::ClaimOutcome { held },
-            Err(error) => registry_error(error),
         }
     }
 }

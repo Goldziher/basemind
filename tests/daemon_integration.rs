@@ -3,15 +3,12 @@
 //! The scattered comms/concurrency smokes already pin the in-session guarantees — two `serve`
 //! sessions on one repo both read AND write through the daemon (`concurrency_smoke::
 //! daemon_writer_serve_forwards_rescan_and_sees_fresh_symbols`), the machine registry
-//! auto-registers a Hello cwd and a two-claimant race resolves to one winner
-//! (`comms_smoke::machine_registry_auto_registers_and_worktree_claim_is_exclusive`), and the
-//! blob GC reclaims only orphans (`schema_bump::schema_bump_refreshes_blobs_in_place_and_gc_
+//! auto-registers a Hello cwd (`comms_smoke::machine_registry_auto_registers_a_connecting_repo`),
+//! and the blob GC reclaims only orphans (`schema_bump::schema_bump_refreshes_blobs_in_place_and_gc_
 //! reclaims_only_orphans`). What none of them exercise is **durability across the daemon's own
-//! lifecycle**: the registry is an atomic msgpack snapshot, so a repo registration and an advisory
-//! worktree claim must survive the daemon exiting and a fresh daemon reloading the same
-//! `BASEMIND_DATA_HOME` — and the reload must not clobber a live claim when a new session's Hello
-//! re-enumerates the repo (`populate_git` preserves `claimed_by`). This test pins that path end to
-//! end against a real detached daemon.
+//! lifecycle**: the registry is an atomic msgpack snapshot, so a repo registration must survive the
+//! daemon exiting and a fresh daemon reloading the same `BASEMIND_DATA_HOME`. This test pins that
+//! path end to end against a real detached daemon.
 
 #![cfg(feature = "comms")]
 
@@ -138,7 +135,7 @@ async fn hosted_tool_call(
     tool: &str,
     arguments: Value,
 ) -> Value {
-    // Only the mode-dispatched tools (`agents`, `workspace`) carry a `mode`.
+    // Only the mode-dispatched tool (`agents`) carries a `mode`.
     let call = match arguments["mode"].as_str() {
         Some(mode) => format!("{tool}/{mode}"),
         None => tool.to_string(),
@@ -267,7 +264,7 @@ fn stress_knob(var: &str, default: usize) -> usize {
 /// broker. They must not enter the singleton ensure/probe path from inside the daemon, which can
 /// stall concurrent cold identities until `SpawnTimeout` while each request waits for a contender.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn concurrent_cold_hosted_agents_and_workspace_calls_use_the_running_daemon() {
+async fn concurrent_cold_hosted_agents_calls_use_the_running_daemon() {
     const MIN_IDENTITIES_PER_TOOL: usize = 8;
     const MAX_IDENTITIES_PER_TOOL: usize = 32;
     const IDENTITIES_PER_WORKER: usize = 2;
@@ -294,11 +291,11 @@ async fn concurrent_cold_hosted_agents_and_workspace_calls_use_the_running_daemo
         .clamp(MIN_IDENTITIES_PER_TOOL, MAX_IDENTITIES_PER_TOOL);
     let mut calls = tokio::task::JoinSet::new();
     for index in 0..identities_per_tool {
-        for (tool, mode) in [("agents", "inbox"), ("workspace", "workspaces")] {
+        for (tool, mode) in [("agents", "inbox"), ("agents", "thread_list")] {
             let addr = addr.clone();
             let token = token.clone();
             let repo = repo.clone();
-            let agent = format!("hosted-{tool}-{index}");
+            let agent = format!("hosted-{mode}-{index}");
             calls.spawn(async move {
                 let response = hosted_tool_call(&addr, &token, &repo, &agent, index, tool, json!({"mode": mode})).await;
                 (agent, tool, mode, response)
@@ -485,7 +482,7 @@ async fn concurrent_cold_rescans_open_the_workspace_once_and_all_succeed() {
 }
 
 /// Sustained multi-session stress against ONE daemon: many concurrent clients, each running its own
-/// interleaved loop of full rescans + registry reads + advisory claim/release churn, all funneled
+/// interleaved loop of full rescans + registry reads, all funneled
 /// through the daemon's sole-writer workspace pool (the whole rearchitecture's promise — N sessions
 /// on one repo all read AND write with no fjall lock downgrade). Asserts the daemon serves every
 /// request with no torn index, no deadlock, and no panic, then stays responsive and consistent
@@ -532,11 +529,10 @@ async fn stress_many_concurrent_sessions_read_and_write_through_one_daemon() {
                 if workspaces.is_empty() {
                     return Err(format!("{agent}: registry lost the workspace mid-storm"));
                 }
-                let name = format!("wt-{c}");
-                let _ = client
-                    .claim_worktree(repo_id.clone(), name.clone(), agent.clone())
-                    .await;
-                let _ = client.release_worktree(repo_id.clone(), name, agent.clone()).await;
+                client
+                    .list_worktrees(repo_id.clone())
+                    .await
+                    .map_err(|e| format!("{agent} list_worktrees: {e}"))?;
             }
             Ok::<(), String>(())
         }));
@@ -742,11 +738,10 @@ async fn sigterm_mid_scan_exits_within_grace_and_index_reopens_cleanly() {
     daemon.stop();
 }
 
-/// The machine registry and an advisory worktree claim are a durable msgpack snapshot: both must
-/// survive the daemon exiting and a fresh daemon reloading the same `BASEMIND_DATA_HOME`, and the
-/// reload must not clobber the live claim when a new session's Hello re-enumerates the repo.
+/// The machine registry is a durable msgpack snapshot: it must survive the daemon exiting and a
+/// fresh daemon reloading the same `BASEMIND_DATA_HOME`.
 #[tokio::test(flavor = "multi_thread")]
-async fn registry_and_worktree_claim_survive_a_daemon_restart() {
+async fn registry_survives_a_daemon_restart() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let comms_dir = tmp.path().join("comms");
     let repo = tmp.path().join("repo");
@@ -759,12 +754,6 @@ async fn registry_and_worktree_claim_survive_a_daemon_restart() {
     let workspaces = alice.list_workspaces().await.expect("list workspaces");
     assert_eq!(workspaces.len(), 1, "Hello cwd auto-registers exactly one workspace");
     let repo_id = workspaces[0].repo_id.clone().expect("a git workspace has a repo id");
-
-    let claimed = alice
-        .claim_worktree(repo_id.clone(), "(main)".to_string(), "agent-alice".to_string())
-        .await
-        .expect("alice claim");
-    assert!(claimed, "alice takes the previously-unclaimed (main) worktree");
 
     drop(alice);
     daemon.stop();
@@ -789,35 +778,10 @@ async fn registry_and_worktree_claim_survive_a_daemon_restart() {
         .list_worktrees(repo_id.clone())
         .await
         .expect("list worktrees after restart");
-    let main = worktrees
-        .iter()
-        .find(|w| w.name == "(main)")
-        .expect("(main) worktree present after restart");
-    assert_eq!(
-        main.claimed_by.as_deref(),
-        Some("agent-alice"),
-        "populate_git preserves the reloaded claim when Hello re-enumerates the repo"
-    );
-
-    let bob_won = bob
-        .claim_worktree(repo_id.clone(), "(main)".to_string(), "agent-bob".to_string())
-        .await
-        .expect("bob claim after restart");
     assert!(
-        !bob_won,
-        "the surviving claim blocks a second claimant across the restart"
+        worktrees.iter().any(|w| w.name == "(main)"),
+        "(main) worktree present after restart"
     );
-
-    let released = bob
-        .release_worktree(repo_id.clone(), "(main)".to_string(), "agent-alice".to_string())
-        .await
-        .expect("release alice's surviving claim");
-    assert!(released, "the reloaded claim is releasable by its original holder");
-    let bob_won = bob
-        .claim_worktree(repo_id.clone(), "(main)".to_string(), "agent-bob".to_string())
-        .await
-        .expect("bob claim after release");
-    assert!(bob_won, "with the claim released, the worktree is claimable again");
 
     drop(bob);
     daemon.stop();

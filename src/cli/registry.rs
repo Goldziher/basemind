@@ -1,9 +1,6 @@
-//! `basemind workspace` — the CLI half of the `workspace` domain.
+//! `basemind workspace` — read-only listings of the daemon's machine registry.
 //!
-//! Real clap subcommands rather than a `--mode` flag, so each operation keeps its own `--help` and
-//! its own argument validation; they map one-to-one onto the MCP `workspace` tool's
-//! [`WorkspaceMode`](crate::mcp::mode::WorkspaceMode) values, which is what `tests/cli_parity/`
-//! asserts.
+//! CLI only: the registry has no MCP tool.
 //!
 //! The registry lives in the always-on comms broker daemon (its sole writer). Like the
 //! [`agents`](super::agents) group — and unlike the code-map / memory CLI groups — these
@@ -11,8 +8,7 @@
 //! building a full [`BasemindServer`](crate::mcp::BasemindServer), so they take no repo index lock
 //! and cannot clash with a running `basemind serve`.
 //!
-//! `--json` emits the structured response for every mode. Worktree claims are ADVISORY: they record
-//! intent in the registry but enforce nothing.
+//! `--json` emits the structured response for every listing.
 
 #![cfg(all(feature = "comms", any(unix, windows)))]
 
@@ -25,13 +21,9 @@ use clap::Subcommand;
 use crate::cli::render::render_json;
 use crate::comms::client::{CommsClient, scope_context_for};
 use crate::comms::ids::AgentId;
-use crate::mcp::types_registry::{
-    BranchDto, BranchesResponse, WorkspaceDto, WorkspacesResponse, WorktreeClaimResponse, WorktreeDto,
-    WorktreesResponse,
-};
+use crate::registry::{BranchRecord, WorkspaceKind, WorkspaceRecord, WorktreeRecord};
 
-/// The `workspace` domain's CLI subcommands, one per MCP mode; they talk to the broker daemon
-/// directly.
+/// The `workspace` listings; they talk to the broker daemon directly.
 #[derive(Subcommand, Debug)]
 pub enum WorkspaceCmd {
     /// List every registered workspace in the machine registry (git + plain).
@@ -53,26 +45,6 @@ pub enum WorkspaceCmd {
         /// The repo id whose branches to list.
         repo_id: String,
         /// Act as this sub-identity instead of the CLI's default agent id.
-        #[arg(long)]
-        as_agent: Option<String>,
-    },
-    /// Advisory-claim a worktree for this agent (a coordination hint; enforces nothing).
-    Claim {
-        /// The owning repo id.
-        repo_id: String,
-        /// The worktree name (`(main)` or the linked-worktree directory name).
-        name: String,
-        /// Claim as this sub-identity instead of the CLI's default agent id.
-        #[arg(long)]
-        as_agent: Option<String>,
-    },
-    /// Release YOUR advisory claim on a worktree.
-    Release {
-        /// The owning repo id.
-        repo_id: String,
-        /// The worktree name whose claim to release.
-        name: String,
-        /// Release as this sub-identity instead of the CLI's default agent id.
         #[arg(long)]
         as_agent: Option<String>,
     },
@@ -109,7 +81,7 @@ pub fn run(root: &Path, json: bool, cmd: WorkspaceCmd) -> Result<()> {
     })
 }
 
-/// Run the mode: resolve the identity, connect, call the client method, and render to `out`.
+/// Run the listing: resolve the identity, connect, call the client method, and render to `out`.
 async fn dispatch(root: &Path, json: bool, cmd: WorkspaceCmd, out: &mut impl Write) -> Result<()> {
     match cmd {
         WorkspaceCmd::Workspaces { as_agent } => {
@@ -131,16 +103,11 @@ async fn dispatch(root: &Path, json: bool, cmd: WorkspaceCmd, out: &mut impl Wri
                 writeln!(out, "no workspaces")?;
             } else {
                 for w in &workspaces {
-                    let kind = if w.kind == crate::registry::WorkspaceKind::Git {
-                        "git"
-                    } else {
-                        "plain"
-                    };
                     writeln!(
                         out,
                         "{}\t{}\t{}\t{}",
                         w.key,
-                        kind,
+                        kind_label(w.kind),
                         w.root.display(),
                         w.repo_id.as_deref().unwrap_or("-")
                     )?;
@@ -170,11 +137,10 @@ async fn dispatch(root: &Path, json: bool, cmd: WorkspaceCmd, out: &mut impl Wri
                 for w in &worktrees {
                     writeln!(
                         out,
-                        "{}\t{}\t{}\t{}",
+                        "{}\t{}\t{}",
                         w.name,
                         w.path.display(),
-                        w.branch.as_deref().unwrap_or("-"),
-                        w.claimed_by.as_deref().unwrap_or("-")
+                        w.branch.as_deref().unwrap_or("-")
                     )?;
                 }
             }
@@ -204,34 +170,6 @@ async fn dispatch(root: &Path, json: bool, cmd: WorkspaceCmd, out: &mut impl Wri
                 }
             }
         }
-        WorkspaceCmd::Claim {
-            repo_id,
-            name,
-            as_agent,
-        } => {
-            let mut client = connect_as(root, as_agent).await?;
-            let claimant = client.agent().as_str().to_string();
-            let (repo_label, name_label) = (repo_id.clone(), name.clone());
-            let held = client
-                .claim_worktree(repo_id, name, claimant.clone())
-                .await
-                .map_err(|e| anyhow::anyhow!("claim worktree: {e}"))?;
-            render_claim(json, out, &repo_label, &name_label, &claimant, held, "claimed")?;
-        }
-        WorkspaceCmd::Release {
-            repo_id,
-            name,
-            as_agent,
-        } => {
-            let mut client = connect_as(root, as_agent).await?;
-            let claimant = client.agent().as_str().to_string();
-            let (repo_label, name_label) = (repo_id.clone(), name.clone());
-            let held = client
-                .release_worktree(repo_id, name, claimant.clone())
-                .await
-                .map_err(|e| anyhow::anyhow!("release worktree: {e}"))?;
-            render_claim(json, out, &repo_label, &name_label, &claimant, held, "released")?;
-        }
     }
     Ok(())
 }
@@ -241,34 +179,134 @@ fn render_response(value: &impl serde::Serialize, out: &mut impl Write) -> Resul
     render_json(&serde_json::to_value(value)?, out)
 }
 
-/// Render a claim / release outcome, honoring `--json`. `held` reflects whether the claim is now
-/// held (claim) or was cleared (release) by `claimant`; `verb` is the human label.
-#[allow(clippy::too_many_arguments)]
-fn render_claim(
-    json: bool,
-    out: &mut impl Write,
-    repo_id: &str,
-    name: &str,
-    claimant: &str,
-    held: bool,
-    verb: &str,
-) -> Result<()> {
-    if json {
-        render_response(
-            &WorktreeClaimResponse {
-                repo_id: repo_id.to_string(),
-                name: name.to_string(),
-                claimant: claimant.to_string(),
-                held,
-            },
-            out,
-        )?;
-    } else if held {
-        writeln!(out, "{verb} {name} in {repo_id} (as {claimant})")?;
-    } else {
-        writeln!(out, "not {verb}: {name} in {repo_id} (held by another or unknown)")?;
+/// The wire spelling of a workspace kind, shared by the text and JSON renderings.
+fn kind_label(kind: WorkspaceKind) -> &'static str {
+    match kind {
+        WorkspaceKind::Git => "git",
+        WorkspaceKind::Plain => "plain",
     }
-    Ok(())
+}
+
+/// One workspace row in a `workspaces --json` response.
+#[derive(Debug, serde::Serialize)]
+struct WorkspaceDto {
+    /// Stable workspace key (blake3 of the canonical root); also the cache-dir identity.
+    key: String,
+    /// `"git"` or `"plain"`.
+    kind: &'static str,
+    /// Canonical workspace root.
+    root: String,
+    /// Owning repo id, absent for a plain workspace.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    repo_id: Option<String>,
+    /// Main-worktree root of the owning clone, absent for a plain workspace.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    main_worktree: Option<String>,
+    /// Unix micros of the last register/refresh.
+    last_seen: i64,
+}
+
+impl From<&WorkspaceRecord> for WorkspaceDto {
+    fn from(record: &WorkspaceRecord) -> Self {
+        Self {
+            key: record.key.clone(),
+            kind: kind_label(record.kind),
+            root: record.root.display().to_string(),
+            repo_id: record.repo_id.clone(),
+            main_worktree: record.main_worktree.as_ref().map(|p| p.display().to_string()),
+            last_seen: record.last_seen,
+        }
+    }
+}
+
+/// `workspaces --json`.
+#[derive(Debug, serde::Serialize)]
+struct WorkspacesResponse {
+    /// Number of workspaces returned.
+    total: usize,
+    /// The workspace rows, sorted by key.
+    workspaces: Vec<WorkspaceDto>,
+}
+
+/// One worktree row in a `worktrees --json` response.
+#[derive(Debug, serde::Serialize)]
+struct WorktreeDto {
+    /// Owning repo id.
+    repo_id: String,
+    /// `"(main)"` or the linked-worktree directory name.
+    name: String,
+    /// Absolute, canonical checkout root.
+    path: String,
+    /// Head commit sha, absent on an unborn HEAD.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    head_sha: Option<String>,
+    /// Checked-out branch, absent when detached or unresolvable.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    branch: Option<String>,
+    /// True when HEAD is detached.
+    detached: bool,
+    /// Unix micros of the last refresh.
+    last_seen: i64,
+}
+
+impl From<&WorktreeRecord> for WorktreeDto {
+    fn from(record: &WorktreeRecord) -> Self {
+        Self {
+            repo_id: record.repo_id.clone(),
+            name: record.name.clone(),
+            path: record.path.display().to_string(),
+            head_sha: record.head_sha.clone(),
+            branch: record.branch.clone(),
+            detached: record.detached,
+            last_seen: record.last_seen,
+        }
+    }
+}
+
+/// `worktrees --json`.
+#[derive(Debug, serde::Serialize)]
+struct WorktreesResponse {
+    /// The repo id queried.
+    repo_id: String,
+    /// Number of worktrees returned.
+    total: usize,
+    /// The worktree rows, sorted by name.
+    worktrees: Vec<WorktreeDto>,
+}
+
+/// One branch row in a `branches --json` response.
+#[derive(Debug, serde::Serialize)]
+struct BranchDto {
+    /// Owning repo id.
+    repo_id: String,
+    /// Short branch name (`refs/heads/` stripped).
+    name: String,
+    /// 40-hex head commit sha.
+    head_sha: String,
+    /// Unix micros of the last refresh.
+    last_seen: i64,
+}
+
+impl From<&BranchRecord> for BranchDto {
+    fn from(record: &BranchRecord) -> Self {
+        Self {
+            repo_id: record.repo_id.clone(),
+            name: record.name.clone(),
+            head_sha: record.head_sha.clone(),
+            last_seen: record.last_seen,
+        }
+    }
+}
+
+/// `branches --json`.
+#[derive(Debug, serde::Serialize)]
+struct BranchesResponse {
+    /// The repo id queried.
+    repo_id: String,
+    /// Number of branches returned.
+    total: usize,
+    /// The branch rows, sorted by name.
+    branches: Vec<BranchDto>,
 }
 
 #[cfg(test)]
@@ -276,15 +314,27 @@ mod tests {
     use super::*;
 
     #[test]
-    fn claim_json_matches_the_mcp_response_and_is_pretty() {
-        let mut buf = Vec::new();
-        render_claim(true, &mut buf, "repo", "wt", "alice", true, "claimed").expect("render");
-        let text = String::from_utf8(buf).expect("utf8");
-        assert!(text.contains("\n  \"held\": true"), "uniform pretty JSON: {text}");
-        let value: serde_json::Value = serde_json::from_str(&text).expect("json");
+    fn worktree_json_carries_no_claim_field() {
+        let record = WorktreeRecord {
+            repo_id: "repo".to_string(),
+            name: "(main)".to_string(),
+            path: std::path::PathBuf::from("/tmp/repo"),
+            head_sha: None,
+            branch: Some("main".to_string()),
+            detached: false,
+            last_seen: 7,
+        };
+        let value = serde_json::to_value(WorktreeDto::from(&record)).expect("serialize");
         assert_eq!(
             value,
-            serde_json::json!({"repo_id": "repo", "name": "wt", "claimant": "alice", "held": true})
+            serde_json::json!({
+                "repo_id": "repo",
+                "name": "(main)",
+                "path": "/tmp/repo",
+                "branch": "main",
+                "detached": false,
+                "last_seen": 7
+            })
         );
     }
 }
