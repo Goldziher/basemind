@@ -41,6 +41,16 @@ exclude = [
 [lint.markdown.rumdl]
 disable = ["MD025", "MD013", "MD024", "MD033", "MD036", "MD041"]
 
+# The ADR log is docs/adr (the engine default) and its immutability manifest is adrlint.lock. The
+# records keep the Nygard section names (`## Decision`, `## Consequences`, `## Alternatives
+# considered`), so the three MADR rules that demand `## Decision Outcome`, `## Considered Options`
+# and a level-3 `### Consequences` are off; every other document, numbering and lock rule runs.
+# MADR31 wants `*` bullets, which `poly fmt` rewrites to `-`; poly before 0.34 has it on by default.
+[lint.markdown.adrlint]
+enabled = true
+start = 0
+ignore = ["MADR01c", "MADR01d", "MADR06", "MADR31"]
+
 # The quality tier's budgets are tuned to this repo's reality: the MCP/CLI
 # handlers are long by construction, most ships in vendored tree-sitter crates,
 # and the test suite exercises monoliths end-to-end. The remaining flags (>500
@@ -179,6 +189,10 @@ extend_exclude = ["tests/fixtures/**"]
 "tests/fixtures/**" = ["ANN", "C416", "RET504", "PERF203"]
 # CHANGELOG.md accumulates release notes without bound; length is intentional.
 "CHANGELOG.md" = ["file-too-long"]
+# The template shares number 0000 with the first record. adrlint reports a duplicate number on
+# every file that carries it, so exactly this pair is exempt; a third 0000 file is still reported.
+"docs/adr/0000-record-architecture-decisions.md" = ["MADR43"]
+"docs/adr/0000-template.md" = ["MADR43"]
 
 [hooks]
 stages = ["pre-commit"]
