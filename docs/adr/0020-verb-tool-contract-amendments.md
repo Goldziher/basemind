@@ -6,7 +6,7 @@ amends: ["0018"]
 
 # ADR-0020: Verb-tool contract — no output schemas, always-load scope, kept domain tools
 
-- **Status:** Accepted
+- **Status:** Accepted; amended by ADR-0021 and ADR-0022 (2026-11-15)
 - **Date:** 2026-11-15
 - **Deciders:** basemind maintainers
 - **Related:** amends ADR-0018; ADR-0014

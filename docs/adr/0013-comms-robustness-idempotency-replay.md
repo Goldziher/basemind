@@ -5,7 +5,7 @@ date: 2026-10-09
 
 # ADR-0013: Comms robustness: correlated requests, bounded waits, idempotent posts, relay replay
 
-- **Status:** Accepted
+- **Status:** Accepted; amended by ADR-0021 and ADR-0024 (2026-11-15)
 - **Date:** 2026-10-09
 - **Deciders:** basemind maintainers
 - **Related:** ADR-0011

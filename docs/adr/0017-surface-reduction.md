@@ -7,7 +7,7 @@ amends: ["0011"]
 
 # ADR-0017: Surface reduction — remove graph, web, shell, token-saving and review queue
 
-- **Status:** Accepted
+- **Status:** Accepted; amended by ADR-0022 (2026-11-15)
 - **Date:** 2026-11-14
 - **Deciders:** basemind maintainers
 - **Related:** supersedes ADR-0001, ADR-0002, ADR-0003, ADR-0004, ADR-0005, ADR-0007, ADR-0008,

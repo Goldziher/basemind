@@ -7,7 +7,7 @@ amends: ["0014"]
 
 # ADR-0018: MCP surface — verb tools with exact schemas
 
-- **Status:** Accepted
+- **Status:** Accepted; amended by ADR-0020 and ADR-0022 (2026-11-15)
 - **Date:** 2026-11-14
 - **Deciders:** basemind maintainers
 - **Related:** supersedes ADR-0011; amends ADR-0014; ADR-0017

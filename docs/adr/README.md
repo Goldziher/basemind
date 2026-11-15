@@ -96,14 +96,14 @@ them.
 | [0010](0010-branch-integration-release-strategy.md) | Branch, integration & release strategy | Superseded by ADR-0026 |
 | [0011](0011-mcp-tool-surface-redesign.md) | MCP tool-surface redesign — consolidation into nine domains | Superseded by ADR-0018 |
 | [0012](0012-grep-content-prefilter.md) | Per-file trigram bloom prefilter for `code grep` | Accepted |
-| [0013](0013-comms-robustness-idempotency-replay.md) | Comms robustness: correlated requests, bounded waits, idempotent posts, relay replay | Accepted (amended by ADR-0021) |
-| [0014](0014-cli-mcp-parity-guard.md) | Executable CLI/MCP parity guard | Accepted (amended by ADR-0018) |
+| [0013](0013-comms-robustness-idempotency-replay.md) | Comms robustness: correlated requests, bounded waits, idempotent posts, relay replay | Accepted (amended by ADR-0021, ADR-0024) |
+| [0014](0014-cli-mcp-parity-guard.md) | Executable CLI/MCP parity guard | Accepted (amended by ADR-0018, ADR-0023) |
 | [0015](0015-bounded-document-extraction.md) | Bound document extraction with a thread cap, tombstones and a phase budget | Proposed |
 | [0016](0016-shared-base-index-and-worktree-overlays.md) | Shared base index with per-worktree overlays | Accepted |
 | [0017](0017-surface-reduction.md) | Surface reduction — remove graph, web, shell, token-saving and review queue | Accepted (amended by ADR-0022) |
 | [0018](0018-mcp-verb-tools.md) | MCP surface — verb tools with exact schemas | Accepted (amended by ADR-0020, ADR-0022) |
 | [0019](0019-library-crate-layering.md) | Library crate layering | Superseded by ADR-0023 |
-| [0020](0020-verb-tool-contract-amendments.md) | Verb-tool contract — no output schemas, always-load scope, kept domain tools | Accepted (amended by ADR-0022) |
+| [0020](0020-verb-tool-contract-amendments.md) | Verb-tool contract — no output schemas, always-load scope, kept domain tools | Accepted (amended by ADR-0021, ADR-0022) |
 | [0021](0021-agent-comms-v2.md) | Agent comms v2 — stable identity, per-actor delivery, three deferred tools | Accepted |
 | [0022](0022-surface-adr-amendments.md) | Surface ADR amendments — as-built facts and a measurable value gate | Accepted |
 | [0023](0023-library-crate-layering-revised.md) | Library crate layering, revised | Accepted |
