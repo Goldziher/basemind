@@ -66,7 +66,7 @@ separator, so a principal id containing it fails validation. A composed id over 
 The server cannot tell a subagent from its parent, because both use one MCP connection, so it cannot
 require `as`. In Claude Code the plugin's `PreToolUse` hook, whose matcher is widened to the three
 agent tools, sees `agent_type` and `agent_id` inside a subagent. When the caller did not set `as`
-it injects `<agent_type>-<first 4 of agent_id>`, reduced to the sub-name grammar, through
+it injects `<agent_type>-<first 8 of agent_id>`, reduced to the sub-name grammar, through
 `updatedInput`. Such a name cannot be predicted, so an orchestrator that wants to address a
 subagent tells it to pass an explicit `as`. On other hosts the tool description is the only guard.
 
@@ -90,7 +90,9 @@ a reverse `member_threads` index, replaces `thread_members`, `thread_subs`, `Thr
 sequence 0. `to` may name an agent that has never connected, since ids are deterministic; that agent
 finds the thread on its first `agent_inbox`. The reply lists every recipient the store has never
 seen under `pending`, so a mistyped id is visible. An agent that joins starts at the head, and an
-invited agent at the head as of the invitation.
+invited agent at the head as of the invitation. `pending` cannot tell a typo from an agent that has
+not started yet; it only makes both visible. `notified_seq` is the inbox hook's high-water mark
+(what it has already announced), kept in the store so the hook no longer keeps a file of its own.
 
 Reading advances `read_seq` to the last message returned in the reply; there is no separate
 acknowledgement. A body over 4 KB is returned cut, with `truncated: true`, and counts as read (the
@@ -104,6 +106,8 @@ A `Post` that creates a thread dedupes on `(from, key)`, so a replay returns the
 created. `InboxRead` stores the delivered range against the key, so a replay returns the same range
 instead of an empty page. Dedupe entries and stored ranges live for the existing one-hour
 `IDEMPOTENCY_TTL`. A model that repeats a call sends a new request and makes a second message.
+A CLI or hook call has no relay and no key, so it has no replay protection; the hooks therefore
+always read with `peek` and advance only `notified_seq`.
 
 **Authorization.** All rules live in `src/comms/authz.rs`:
 
@@ -149,9 +153,10 @@ three days are already deleted, and its threads carry no repository.
 **Retention.** Messages are kept 30 days (`MESSAGE_TTL`, three today) and at most 1000 per thread
 (`MAX_MESSAGES_PER_THREAD`, unchanged). A thread is removed when its last message has expired,
 archived or not. Archiving is explicit and creator-only; the idle auto-archive is removed, and with
-it `THREAD_IDLE_TTL` (seven days) and `THREAD_RETENTION_TTL` (14 days).
+it `THREAD_IDLE_TTL` (seven days) and `THREAD_RETENTION_TTL` (14 days). Threads now stay active
+for up to 30 days, so the machine-wide `MAX_ACTIVE_THREADS = 256` becomes a cap per repository.
 
-**Wire.** `PROTO_VER` goes from 5 to 6: `Hello` gains the host and root, `Call` gains `sub` for the
+**Wire.** `PROTO_VER` goes from 5 to 6: `Hello` gains the host and root beside its existing `remote` and `cwd`, `Call` gains `sub` for the
 sub-identity, and `Post`, `InboxRead`, `ThreadQuery` and `ThreadUpdate` replace the twenty
 coordination requests and the two claim requests in `src/comms/protocol.rs`. The wait runs in the
 daemon inside `InboxRead`. `RELAY_PROTO_VER` goes from 1 to 2.
