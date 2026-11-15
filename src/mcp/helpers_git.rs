@@ -174,8 +174,9 @@ pub(super) async fn git_blame(state: &ServerState, p: GitBlameParams) -> Result<
 }
 
 /// The argument shapes `git_diff` accepts, quoted in every shape error.
-const DIFF_SHAPES: &str = "accepted shapes: {} (working-tree status), {path, from, to} (text diff of a file between \
-     two revisions), {path, structural:true} with optional `from` (symbols added / removed since `from`, default HEAD)";
+const DIFF_SHAPES: &str = "accepted shapes: {} (working-tree status), {path} (that file's working-tree diff against \
+     HEAD), {path, from?, to?} (text diff; `from` defaults to HEAD, `to` to the working tree), \
+     {path, structural:true} with optional `from` (symbols added / removed since `from`, default HEAD)";
 
 /// `git_diff`: the working-tree status, a file's text diff, or its symbol-level diff.
 pub(super) async fn git_diff(state: &ServerState, p: GitDiffParams) -> Result<CallToolResult, McpError> {
@@ -195,12 +196,14 @@ pub(super) async fn git_diff(state: &ServerState, p: GitDiffParams) -> Result<Ca
         }
         return super::helpers_git_file::run_diff_outline(state, DiffOutlineParams { path, rev: p.from }).await;
     }
-    match (p.from, p.to) {
-        (Some(rev_old), Some(rev_new)) => {
-            super::helpers_git_file::run_diff(state, DiffFileParams { rev_old, rev_new, path })
-        }
-        _ => Err(shape_error("a text diff needs both `from` and `to`")),
-    }
+    super::helpers_git_file::run_diff(
+        state,
+        DiffFileParams {
+            rev_old: p.from.unwrap_or_else(|| "HEAD".to_string()),
+            rev_new: p.to,
+            path,
+        },
+    )
 }
 
 /// Reject a path that lives outside the repository (a `scan.extra_roots` file, keyed by its

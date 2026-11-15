@@ -10,19 +10,16 @@
 use rmcp::ErrorData as McpError;
 use rmcp::model::CallToolResult;
 
-use super::MapCache;
 use super::ServerState;
 use super::helpers::{
-    RefsSource, SEARCH_LIMIT_DEFAULT, SEARCH_LIMIT_MAX, elapsed_us, json_result, kind_to_str, parse_kind,
-    run_find_callers, run_find_files, run_find_implementations, run_find_references, run_list_files,
-    run_workspace_grep,
+    RefsSource, SEARCH_LIMIT_DEFAULT, SEARCH_LIMIT_MAX, elapsed_us, json_result, kind_to_str, run_find_callers,
+    run_find_files, run_find_implementations, run_find_references, run_list_files, run_workspace_grep,
 };
 use super::index_route::IndexRoute;
 use super::tool_contract::{budget, not_indexed};
 use super::types::{
     DependentsResponse, FindCallersParams, FindFilesParams, FindReferencesParams, GotoDefinitionParams,
-    ListFilesParams, OutlineResponse, OutlineSymbol, SearchHitView, SearchResponse, SearchSymbolsParams,
-    WorkspaceGrepParams,
+    ListFilesParams, OutlineResponse, OutlineSymbol, SearchSymbolsParams, WorkspaceGrepParams,
 };
 use super::types_impls::FindImplementationsParams;
 use super::types_tools::{
@@ -74,11 +71,12 @@ pub(super) async fn code_grep(state: &ServerState, p: CodeGrepParams) -> Result<
 /// `code_symbols`: find definitions by name.
 pub(super) async fn code_symbols(state: &ServerState, p: CodeSymbolsParams) -> Result<CallToolResult, McpError> {
     let started = std::time::Instant::now();
-    run_search_symbols(
+    super::helpers_symbols::run_search_symbols(
         state,
         SearchSymbolsParams {
             needle: p.name,
             kind: p.kind,
+            fuzzy: p.fuzzy.unwrap_or(false),
             limit: p.limit,
             max_tokens: budget(p.max_tokens),
             format: None,
@@ -190,6 +188,8 @@ const REFS_SHAPES: &str = "accepted shapes: {name} (call sites of a name), {name
 /// reference binds to.
 pub(super) async fn code_refs(state: &ServerState, p: CodeRefsParams) -> Result<CallToolResult, McpError> {
     let relation = Relation::parse(p.relation.as_deref())?;
+    let substring = super::helpers_refs_match::Matching::parse(p.match_mode.as_deref())?
+        == super::helpers_refs_match::Matching::Substring;
     let started = std::time::Instant::now();
     let shape_error = |problem: &str| McpError::invalid_params(format!("`code_refs`: {problem}; {REFS_SHAPES}"), None);
     if relation != Relation::Definition && (p.line.is_some() || p.column.is_some()) {
@@ -201,6 +201,7 @@ pub(super) async fn code_refs(state: &ServerState, p: CodeRefsParams) -> Result<
                 let callers = FindCallersParams {
                     path,
                     name: p.name,
+                    substring,
                     kind: None,
                     limit: p.limit,
                     max_tokens: budget(p.max_tokens),
@@ -216,6 +217,7 @@ pub(super) async fn code_refs(state: &ServerState, p: CodeRefsParams) -> Result<
                     &route,
                     FindReferencesParams {
                         name: p.name,
+                        substring,
                         limit: p.limit,
                         max_tokens: budget(p.max_tokens),
                         format: None,
@@ -239,6 +241,7 @@ pub(super) async fn code_refs(state: &ServerState, p: CodeRefsParams) -> Result<
                 &route,
                 FindImplementationsParams {
                     trait_name: p.name,
+                    substring,
                     language: None,
                     limit: p.limit,
                     max_tokens: budget(p.max_tokens),
@@ -254,15 +257,21 @@ pub(super) async fn code_refs(state: &ServerState, p: CodeRefsParams) -> Result<
             if p.path.is_some() {
                 return Err(shape_error("`path` does not apply to relation `importers`"));
             }
+            if p.match_mode.is_some() {
+                return Err(shape_error(
+                    "relation `importers` matches `name` against import paths and takes no `match`",
+                ));
+            }
             run_dependents(state, p.name, p.limit, p.cursor, budget(p.max_tokens), started).await
         }
         Relation::Definition => {
             let (Some(path), Some(line)) = (p.path, p.line) else {
                 return Err(shape_error("relation `definition` needs `path` and `line`"));
             };
-            if p.limit.is_some() || p.cursor.is_some() || p.max_tokens.is_some() {
+            if p.limit.is_some() || p.cursor.is_some() || p.max_tokens.is_some() || p.match_mode.is_some() {
                 return Err(shape_error(
-                    "relation `definition` returns one location and takes no `limit`, `cursor` or `max_tokens`",
+                    "relation `definition` returns one location and takes no `match`, `limit`, `cursor` or \
+                     `max_tokens`",
                 ));
             }
             let column = match p.column {
@@ -441,153 +450,6 @@ pub(super) async fn code_outline(state: &ServerState, p: CodeOutlineParams) -> R
         notice: state.lifecycle_notice(),
         elapsed_us: elapsed_us(started),
     })
-}
-
-fn search_hit(path: &crate::path::RelPath, sym: &crate::extract::Symbol) -> SearchHitView {
-    SearchHitView {
-        path: path.clone(),
-        name: sym.name.clone(),
-        kind: kind_to_str(sym.kind),
-        start_row: sym.start_row,
-        start_col: sym.start_col,
-        signature: sym.signature.clone(),
-    }
-}
-
-/// Decode `path`'s outline once and project the symbols at `page` into `results`.
-fn push_hits(cache: &MapCache, path: &crate::path::RelPath, page: &[usize], results: &mut Vec<SearchHitView>) {
-    if page.is_empty() {
-        return;
-    }
-    if let Some(l1) = cache.get(path) {
-        results.extend(
-            page.iter()
-                .filter_map(|&i| l1.symbols.get(i))
-                .map(|s| search_hit(path, s)),
-        );
-    }
-}
-
-/// Body of the `symbols` mode: a case-sensitive substring sweep of every indexed symbol name in the
-/// in-RAM map, bounded by [`search_max_total`](super::tools::search_max_total).
-async fn run_search_symbols(
-    state: &ServerState,
-    params: SearchSymbolsParams,
-    started: std::time::Instant,
-) -> Result<CallToolResult, McpError> {
-    use std::sync::atomic::Ordering;
-
-    state.await_cache_ready().await;
-    let format = super::toon::ResponseFormat::parse(params.format.as_deref());
-    let kind = params.kind.as_deref().map(parse_kind).transpose()?;
-    let limit = params.limit.unwrap_or(SEARCH_LIMIT_DEFAULT).min(SEARCH_LIMIT_MAX) as usize;
-    let generation = state.shared.cache_generation.load(Ordering::Relaxed);
-
-    let empty = |cursor_invalidated: bool| SearchResponse {
-        total: 0,
-        total_is_partial: false,
-        truncated: false,
-        budgeted: false,
-        results: Vec::new(),
-        next_cursor: None,
-        cursor_invalidated,
-        notice: state.lifecycle_notice(),
-        elapsed_us: elapsed_us(started),
-    };
-
-    let skip = match params.cursor.as_ref() {
-        Some(c) => {
-            let (offset, snapshot_id) = c.decode_in_memory()?;
-            if snapshot_id != generation {
-                return super::toon::format_result(&empty(true), format);
-            }
-            offset as usize
-        }
-        None => 0,
-    };
-
-    if params.needle.is_empty() {
-        return super::toon::format_result(&empty(false), format);
-    }
-    let finder = memchr::memmem::Finder::new(params.needle.as_bytes());
-    let max_total = super::tools::search_max_total(limit);
-    let mut results: Vec<SearchHitView> = Vec::with_capacity(limit);
-    let mut total: usize = 0;
-    let mut seen: usize = 0;
-    let mut total_is_partial = false;
-    let cache = state.shared.cache.load_full();
-    // Swept over the resident term index (names only); only the returned page is decoded, via the
-    // L1 cache. Needles holding the blob separator can't be answered from it and stream instead.
-    if finder.needle().contains(&0) {
-        cache.for_each_while(|path, l1| {
-            for sym in &l1.symbols {
-                if finder.find(sym.name.as_bytes()).is_none() || kind.is_some_and(|k| sym.kind != k) {
-                    continue;
-                }
-                if seen < skip {
-                    seen += 1;
-                    continue;
-                }
-                seen += 1;
-                total += 1;
-                if results.len() < limit {
-                    results.push(search_hit(path, sym));
-                }
-                if total >= max_total {
-                    total_is_partial = true;
-                    return false;
-                }
-            }
-            true
-        });
-    } else {
-        'sweep: for (path, terms) in cache.terms().iter() {
-            let mut page: Vec<usize> = Vec::new();
-            for idx in terms.matching_symbols(&finder, kind) {
-                if seen < skip {
-                    seen += 1;
-                    continue;
-                }
-                seen += 1;
-                total += 1;
-                if results.len() + page.len() < limit {
-                    page.push(idx);
-                }
-                if total >= max_total {
-                    total_is_partial = true;
-                    push_hits(&cache, path, &page, &mut results);
-                    break 'sweep;
-                }
-            }
-            push_hits(&cache, path, &page, &mut results);
-        }
-    }
-    let truncated = total > limit || total_is_partial;
-    let budget = super::budget::apply_budget(results, params.max_tokens);
-    let results = budget.items;
-    let budgeted = budget.budgeted;
-    let next_cursor = if total > results.len() {
-        Some(super::cursor::Cursor::encode_in_memory(
-            (skip + results.len()) as u64,
-            generation,
-        ))
-    } else {
-        None
-    };
-    super::toon::format_result(
-        &SearchResponse {
-            total,
-            total_is_partial,
-            truncated,
-            budgeted,
-            results,
-            next_cursor,
-            cursor_invalidated: false,
-            notice: state.lifecycle_notice(),
-            elapsed_us: elapsed_us(started),
-        },
-        format,
-    )
 }
 
 /// Body of `code_refs` relation `importers`: a heuristic reverse lookup over every file's imports.

@@ -9,7 +9,8 @@
 //! resident in `state.cache` while the new one is built beside it, so each rebuild transiently
 //! DOUBLES resident memory. That is the sawtooth in serve's RSS.
 //!
-//! The fingerprint closes it: if every `(path, content-hash)` pair is unchanged, the L1/L2 blobs
+//! The fingerprint closes it: if every `(path, content-hash)` pair is unchanged, in the code map and
+//! in the document tier alike, the L1/L2 blobs
 //! behind the map are byte-identical, so any map built from the new store would be identical to the
 //! one already in hand. Reusing it is not an approximation — it is the same map.
 
@@ -28,6 +29,9 @@ const HASHER_SEEDS: [u64; 4] = [
     0xa409_3822_299f_31d0,
     0x082e_fa98_ec4e_6c89,
 ];
+
+/// Domain separator for document-tier entries in the fold.
+const DOC_TIER_SALT: u64 = 0x646f_635f_7469_6572;
 
 /// Fingerprint the indexed file set: a hash over every `(path, content-hash)` pair.
 ///
@@ -54,10 +58,28 @@ pub(crate) fn index_fingerprint(store: &Store) -> u64 {
             hasher.finish()
         })
         .fold(FINGERPRINT_SEED, |acc, entry_hash| acc ^ entry_hash);
+    // The map also carries the document tier's paths, and a scan lands documents after code: a
+    // fingerprint over code alone would keep a map whose document list is stale. Documents are
+    // salted so a path can never cancel against the same path in the code map.
+    let folded = store
+        .index
+        .doc_files
+        .iter()
+        .map(|(path, entry)| {
+            let mut hasher = state.build_hasher();
+            DOC_TIER_SALT.hash(&mut hasher);
+            path.hash(&mut hasher);
+            entry.hash_hex.hash(&mut hasher);
+            hasher.finish()
+        })
+        .fold(folded, |acc, entry_hash| acc ^ entry_hash);
 
     let mut hasher = state.build_hasher();
     folded.hash(&mut hasher);
     store.index.files.len().hash(&mut hasher);
+    if !store.index.doc_files.is_empty() {
+        store.index.doc_files.len().hash(&mut hasher);
+    }
     hasher.finish()
 }
 
@@ -102,6 +124,51 @@ mod tests {
         assert_ne!(
             first, 0,
             "a populated index must never fingerprint to the empty-cache sentinel"
+        );
+    }
+
+    fn doc_entry(hash: &str) -> crate::store::DocEntry {
+        crate::store::DocEntry {
+            config_digest: String::new(),
+            hash_hex: hash.to_string(),
+            embedding_preset: "balanced".to_string(),
+            size_bytes: 1,
+            mtime: 0,
+            embedded: false,
+            embed_attempted: false,
+        }
+    }
+
+    /// The map carries the document tier's paths (`doc_paths`, what `find_files` lists), and a scan
+    /// indexes documents after code. A fingerprint over code alone called the map "unchanged" when
+    /// only documents had landed, so a long-lived server skipped the refresh and never listed them.
+    #[test]
+    fn fingerprint_changes_when_the_document_tier_changes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        fs::write(root.join("a.rs"), b"pub fn alpha() {}\n").unwrap();
+        let mut store = scan(root);
+        let code_only = index_fingerprint(&store);
+
+        store.upsert_doc("README.md", doc_entry("aa"));
+        let with_doc = index_fingerprint(&store);
+        assert_ne!(
+            code_only, with_doc,
+            "a document entering the index must invalidate the map"
+        );
+
+        store.upsert_doc("README.md", doc_entry("bb"));
+        assert_ne!(
+            with_doc,
+            index_fingerprint(&store),
+            "a re-indexed document must invalidate it too"
+        );
+
+        store.remove_doc("README.md");
+        assert_eq!(
+            code_only,
+            index_fingerprint(&store),
+            "removing it restores the code-only fingerprint"
         );
     }
 

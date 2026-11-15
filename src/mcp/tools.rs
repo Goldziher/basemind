@@ -50,7 +50,8 @@ impl BasemindServer {
     #[tool(
         title = "Find a definition",
         description = "Use for \"where is X defined\": finds functions, types, constants and other \
-        symbols by name across the repository and returns path, line and signature. \
+        symbols by name across the repository and returns path, line and signature. Ranked: the \
+        exact name first, then prefix, then substring, then (with `fuzzy`) fuzzy matches. \
         Example: {\"name\":\"parse_config\",\"kind\":\"function\"}",
         annotations(
             read_only_hint = true,
@@ -89,8 +90,8 @@ impl BasemindServer {
     #[tool(
         title = "Search code text",
         description = "Use instead of `rg`/`grep` to find a string, identifier or comment in the \
-        indexed code. `pattern` is literal text unless `regex` is true. Code files only: search \
-        documents with `docs_search`. \
+        indexed code. `pattern` is literal text unless `regex` is true. Each hit is the full line \
+        plus the symbol it sits in. Code files only: search documents with `docs_search`. \
         Example: {\"pattern\":\"cache_root(\",\"path\":\"src/\"}",
         annotations(
             read_only_hint = true,
@@ -110,7 +111,7 @@ impl BasemindServer {
         title = "Search code by meaning",
         description = "Use when you know what the code does but not what it is called: searches \
         code chunks by meaning and returns pointers (path, `line`/`end_line`, symbol), not bodies. \
-        Read a hit with `code_read`. \
+        `lanes_unavailable` says when a lane could not run. Read a hit with `code_read`. \
         Example: {\"query\":\"retry a failed upload with backoff\"}",
         annotations(
             read_only_hint = true,
@@ -129,8 +130,8 @@ impl BasemindServer {
     #[tool(
         title = "Find usages",
         description = "Use for \"what calls X\", \"what implements X\", \"what imports X\" and \
-        \"which definition does this reference bind to\". `relation` picks the question; `path` \
-        pins the definition in that file and marks each hit `resolved`. \
+        \"which definition does this reference bind to\". `relation` picks the question; the name \
+        is matched exactly; `path` pins the definition in that file and marks each hit `resolved`. \
         Example: {\"name\":\"open_store\",\"path\":\"src/store.rs\"}",
         annotations(
             read_only_hint = true,
@@ -268,14 +269,6 @@ pub(super) fn effective_list_limit(requested: Option<u32>) -> (usize, bool) {
     (asked.min(LIST_LIMIT_MAX) as usize, clamped)
 }
 
-/// The `code_symbols` scan cap: matches walked are bounded by this so a common needle
-/// never scans the whole corpus. When the cap is reached, `total` is a lower bound, not the
-/// global match count — the response sets `total_is_partial` so callers don't mistake it for
-/// a true total (bug #16).
-pub(super) fn search_max_total(limit: usize) -> usize {
-    limit.saturating_mul(64).max(2_000)
-}
-
 /// Count content-addressed blobs in the GLOBAL blob store by tallying `.fm.msgpack` files
 /// (one combined L1 + L2 filemap per indexed content hash; the `.doc` sibling shares the same
 /// stem so it is not double-counted). A single directory read — cheaper than
@@ -337,42 +330,6 @@ mod tests {
         let (limit, clamped) = effective_list_limit(None);
         assert_eq!(limit, LIST_LIMIT_DEFAULT as usize);
         assert!(!clamped);
-    }
-
-    #[test]
-    fn search_total_partial_when_cap_reached() {
-        let limit = 10usize;
-        let cap = search_max_total(limit);
-        let matches_available = cap + 500;
-        let mut total = 0usize;
-        let mut partial = false;
-        for _ in 0..matches_available {
-            total += 1;
-            if total >= cap {
-                partial = true;
-                break;
-            }
-        }
-        assert_eq!(total, cap, "total saturates at the scan cap, not the true match count");
-        assert!(partial, "hitting the cap must mark total as partial (bug #16)");
-    }
-
-    #[test]
-    fn search_total_exact_when_under_cap() {
-        let limit = 10usize;
-        let cap = search_max_total(limit);
-        let matches_available = 5usize;
-        let mut total = 0usize;
-        let mut partial = false;
-        for _ in 0..matches_available {
-            total += 1;
-            if total >= cap {
-                partial = true;
-                break;
-            }
-        }
-        assert_eq!(total, matches_available, "total is exact below the cap");
-        assert!(!partial, "a query under the cap reports an exact, complete total");
     }
 
     #[test]

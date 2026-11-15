@@ -155,6 +155,7 @@ async fn corpus_tool_builds_the_map_on_demand_and_sees_every_file() {
     let params = CodeSymbolsParams {
         name: "_marker".to_string(),
         kind: None,
+        fuzzy: None,
         limit: None,
         cursor: None,
         max_tokens: None,

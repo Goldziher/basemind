@@ -12,6 +12,9 @@ use crate::path::RelPath;
 pub struct FindImplementationsParams {
     /// The trait / interface / base-class name to find implementations of.
     pub trait_name: String,
+    /// Match trait names containing `trait_name` instead of only the trait of that name.
+    #[serde(default)]
+    pub substring: bool,
     /// Optional language filter (e.g. "rust", "typescript"). When set, only matches
     /// from files in that language are returned.
     #[serde(default)]
@@ -33,6 +36,9 @@ pub struct FindImplementationsParams {
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub struct FindImplementationsResponse {
     pub trait_name: String,
+    /// How the name was matched against trait names: `exact` or `substring`.
+    #[serde(rename = "match")]
+    pub matching: &'static str,
     pub total: usize,
     /// True when `total` was capped by `scan_cap` and more matches exist on disk.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
@@ -63,8 +69,10 @@ pub struct ImplementationHit {
     pub path: RelPath,
     pub trait_name: String,
     pub impl_type: String,
-    /// 1-based row of the `impl`/`class`/`extends` declaration.
+    /// 1-based row of the `impl`/`class`/`extends` declaration, written as `line`.
+    #[serde(rename = "line")]
     pub start_row: u32,
-    /// 0-based byte column from the start of the line.
+    /// Byte column from the start of the line: 0-based here, written as the 1-based `column`.
+    #[serde(rename = "column", serialize_with = "super::types::one_based")]
     pub start_col: u32,
 }

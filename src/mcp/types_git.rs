@@ -138,8 +138,11 @@ pub struct HotFilesParams {
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct DiffFileParams {
+    /// Old revision.
     pub rev_old: String,
-    pub rev_new: String,
+    /// New revision; `None` compares against the working tree.
+    pub rev_new: Option<String>,
+    /// Repository-relative path.
     pub path: RelPath,
 }
 
@@ -359,8 +362,13 @@ pub(in crate::mcp) struct DiffOutlineResponse {
 pub(in crate::mcp) struct BlameHunkView {
     pub commit_sha: String,
     pub short_sha: String,
+    /// 1-based first line of the hunk in the blamed file.
+    #[serde(rename = "line")]
     pub start_line: u32,
-    pub len: u32,
+    /// 1-based last line of the hunk, inclusive.
+    pub end_line: u32,
+    /// 1-based line the hunk starts at in the commit that introduced it.
+    #[serde(rename = "source_line")]
     pub source_start_line: u32,
     pub author: String,
     pub author_time_unix: i64,
@@ -397,7 +405,11 @@ pub(in crate::mcp) struct BlameSymbolResponse {
     pub suspect_sha: String,
     pub name: String,
     pub kind: String,
+    /// 1-based first line of the symbol, as `code_outline` reports it.
+    #[serde(rename = "line")]
     pub line_start: u32,
+    /// 1-based last line of the symbol, inclusive.
+    #[serde(rename = "end_line")]
     pub line_end: u32,
     pub hunks: Vec<BlameHunkView>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
@@ -478,10 +490,12 @@ pub(in crate::mcp) struct HunkView {
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(in crate::mcp) struct DiffFileResponse {
     pub path: RelPath,
-    pub rev_old: String,
-    pub rev_new: String,
-    pub present_at_old: bool,
-    pub present_at_new: bool,
+    /// Full sha of the old side.
+    pub from: String,
+    /// Full sha of the new side, or `working tree`.
+    pub to: String,
+    pub present_at_from: bool,
+    pub present_at_to: bool,
     pub hunks: Vec<HunkView>,
     /// Server-side handler latency in microseconds — the tool body's own execution (git walk /
     /// index lookup + response construction), excluding MCP transport, argument deserialization,

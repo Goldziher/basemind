@@ -40,15 +40,17 @@ pub(super) async fn run_find_implementations(
 ) -> Result<CallToolResult, McpError> {
     let limit = params.limit.unwrap_or(SEARCH_LIMIT_DEFAULT).min(SEARCH_LIMIT_MAX) as usize;
     let cursor_bytes = params.cursor.as_ref().map(|c| c.decode_fjall()).transpose()?;
-    let page = route
-        .scan_impls(
-            cache,
-            &params.trait_name,
-            params.language.as_deref(),
-            limit,
-            cursor_bytes.as_deref(),
-        )
-        .await?;
+    let matching = super::helpers_refs_match::Matching::from_substring(params.substring);
+    let page = super::helpers_refs_match::scan_impls(
+        route,
+        cache,
+        &params.trait_name,
+        matching,
+        params.language.as_deref(),
+        limit,
+        cursor_bytes.as_deref(),
+    )
+    .await?;
     let ImplScanPage {
         total,
         total_is_partial,
@@ -72,6 +74,7 @@ pub(super) async fn run_find_implementations(
 
     json_result(&FindImplementationsResponse {
         trait_name: params.trait_name,
+        matching: matching.as_str(),
         total,
         total_is_partial,
         budgeted,

@@ -15,7 +15,7 @@ use crate::mcp::BasemindServer;
 use crate::mcp::cursor::Cursor;
 use crate::mcp::params::*;
 
-use super::choices::{RefsRelation, SearchLane};
+use super::choices::{RefsMatch, RefsRelation, SearchLane};
 use super::render::{Emit, emit};
 use super::{resolve_path, run_tool};
 
@@ -40,6 +40,9 @@ pub enum CodeCmd {
         name: String,
         #[arg(long)]
         kind: Option<String>,
+        /// Also match the name as a fuzzy subsequence, ranked last.
+        #[arg(long)]
+        fuzzy: bool,
         #[arg(long)]
         limit: Option<u32>,
         /// Resume token: pass the previous page's `next_cursor`.
@@ -125,6 +128,9 @@ pub enum CodeCmd {
         /// `definition` only: 1-based column (default: where the name occurs on the line).
         #[arg(long)]
         column: Option<u32>,
+        /// Name matching (default exact).
+        #[arg(long = "match", value_enum)]
+        match_mode: Option<RefsMatch>,
         #[arg(long)]
         limit: Option<u32>,
         /// Resume token: pass the previous page's `next_cursor`.
@@ -249,6 +255,7 @@ pub async fn run(server: &BasemindServer, cmd: CodeCmd, opts: &Emit, out: &mut i
         CodeCmd::Symbols {
             name,
             kind,
+            fuzzy,
             limit,
             cursor,
             max_tokens,
@@ -258,6 +265,7 @@ pub async fn run(server: &BasemindServer, cmd: CodeCmd, opts: &Emit, out: &mut i
                 .code_symbols_call(CodeSymbolsParams {
                     name,
                     kind,
+                    fuzzy: fuzzy.then_some(true),
                     limit,
                     cursor: cursor.map(Cursor),
                     max_tokens,
@@ -330,6 +338,7 @@ pub async fn run(server: &BasemindServer, cmd: CodeCmd, opts: &Emit, out: &mut i
             path,
             line,
             column,
+            match_mode,
             limit,
             cursor,
             max_tokens,
@@ -340,6 +349,7 @@ pub async fn run(server: &BasemindServer, cmd: CodeCmd, opts: &Emit, out: &mut i
                 path: path.map(|path| resolve_path(server, &path)),
                 line,
                 column,
+                match_mode: match_mode.map(|matching| matching.as_str().to_string()),
                 limit,
                 cursor: cursor.map(Cursor),
                 max_tokens,
@@ -465,6 +475,7 @@ fn refs(name: String, relation: RefsRelation) -> CodeRefsParams {
         path: None,
         line: None,
         column: None,
+        match_mode: None,
         limit: None,
         cursor: None,
         max_tokens: None,

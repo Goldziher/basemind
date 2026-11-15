@@ -30,30 +30,31 @@ pub(super) async fn run_goto_definition(
     let started = std::time::Instant::now();
     let abs = state.shared.root.join(params.path.to_path_buf());
     let source = std::fs::read(&abs)
-        .map_err(|e| McpError::invalid_params(format!("goto_definition: read {}: {e}", params.path), None))?;
+        .map_err(|e| McpError::invalid_params(format!("`code_refs`: cannot read `{}`: {e}", params.path), None))?;
 
     let pos = line_col_to_offset(&source, params.line, params.column).ok_or_else(|| {
         McpError::invalid_params(
             format!(
-                "goto_definition: position {}:{} is out of range in {}",
-                params.line, params.column, params.path
+                "`code_refs`: position {}:{} is out of range in `{}`",
+                params.line,
+                params.column + 1,
+                params.path
             ),
             None,
         )
     })?;
 
+    let resolution_ran;
     let resolved: Option<(RelPath, u32)> = {
         let store = state.shared.store.read().await;
         let Some(entry) = store.lookup(&params.path) else {
-            return Err(McpError::invalid_params(
-                format!("goto_definition: {} is not indexed", params.path),
-                None,
-            ));
+            return Err(super::tool_contract::not_indexed(state, "code_refs", &params.path));
         };
         let refs = store.read_resolved_by_hex(&entry.hash_hex).unwrap_or_else(|error| {
             tracing::debug!(path = %params.path, %error, "goto_definition: resolution blob unreadable — treating as no in-file edge");
             None
         });
+        resolution_ran = refs.is_some();
         let intra_def = refs
             .as_ref()
             .and_then(|r| containing_edge(&r.intra, pos))
@@ -72,11 +73,16 @@ pub(super) async fn run_goto_definition(
         .and_then(|(def_path, def_start)| definition_location(state, &params.path, &source, def_path, def_start));
 
     let (line, column) = offset_to_line_col(&source, pos);
+    let resolution = (definition.is_none() && !resolution_ran).then(|| {
+        let language = state.shared.cache.load().language_of(&params.path).map(str::to_owned);
+        format!("unsupported for {}", language.as_deref().unwrap_or("this language"))
+    });
     json_result(&GotoDefinitionResponse {
         path: params.path,
         line,
-        column,
+        column: column + 1,
         definition,
+        resolution,
         elapsed_us: super::helpers::elapsed_us(started),
     })
 }
@@ -168,7 +174,7 @@ fn definition_location(
         return Some(DefinitionLocation {
             path: def_path,
             line,
-            column,
+            column: column + 1,
             name,
         });
     }
@@ -179,7 +185,7 @@ fn definition_location(
     Some(DefinitionLocation {
         path: def_path,
         line,
-        column,
+        column: column + 1,
         name,
     })
 }

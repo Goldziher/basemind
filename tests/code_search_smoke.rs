@@ -438,6 +438,28 @@ fn search_code_hybrid_ranks_exact_symbol_first() {
         top.get("vector_rank").is_none(),
         "no vector lane under embed=false, so vector_rank must be absent: {top}"
     );
+
+    // The caller asked for a hybrid search and got a lexical one. That used to be silent: the
+    // response must name the lanes that ran and say why the vector lane did not.
+    let ran: Vec<&str> = value["lanes_ran"]
+        .as_array()
+        .expect("lanes_ran is always reported")
+        .iter()
+        .filter_map(|lane| lane.as_str())
+        .collect();
+    assert_eq!(ran, ["keyword", "exact"], "{value}");
+    let unavailable = value["lanes_unavailable"]
+        .as_array()
+        .expect("an unavailable lane is reported");
+    assert_eq!(unavailable.len(), 1, "{value}");
+    assert_eq!(unavailable[0]["lane"], "vector", "{value}");
+    assert!(
+        unavailable[0]["reason"]
+            .as_str()
+            .is_some_and(|reason| reason.contains("embed = true") && reason.contains("index_rescan")),
+        "the reason names the fix: {value}"
+    );
+    assert!(top.get("line").is_some() && top.get("end_line").is_some(), "{top}");
 }
 
 /// A READER session — one holding no `IndexDb`, because another process owns fjall's exclusive

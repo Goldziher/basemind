@@ -804,8 +804,8 @@ async fn mcp_server_exercises_representative_tools() {
     assert!(
         grep_hits
             .iter()
-            .all(|h| h.get("line_num").and_then(Value::as_u64).unwrap_or(0) >= 1),
-        "every grep hit must carry a 1-based line_num"
+            .all(|h| h.get("line").and_then(Value::as_u64).unwrap_or(0) >= 1),
+        "every grep hit must carry a 1-based line"
     );
     let total_matches = body
         .get("total_matches")
@@ -1068,8 +1068,8 @@ async fn mcp_server_exercises_representative_tools() {
     );
     assert!(
         hits.iter()
-            .all(|h| h.get("start_row").and_then(Value::as_u64).unwrap_or(0) >= 1),
-        "every code_refs implementations hit must carry a 1-based start_row"
+            .all(|h| h.get("line").and_then(Value::as_u64).unwrap_or(0) >= 1),
+        "every code_refs implementations hit must carry a 1-based line"
     );
 
     let body = decode_text(
@@ -1146,7 +1146,10 @@ async fn mcp_server_exercises_representative_tools() {
 
     let body = decode_text(
         &service
-            .call_tool(call_params("code_refs", json!({ "name": "lph", "limit": 100 })))
+            .call_tool(call_params(
+                "code_refs",
+                json!({ "name": "lph", "match": "substring", "limit": 100 }),
+            ))
             .await
             .expect("code_refs(substring)"),
     );
@@ -1166,7 +1169,7 @@ async fn mcp_server_exercises_representative_tools() {
         &service
             .call_tool(call_params(
                 "code_refs",
-                json!({ "relation": "implementations", "name": "raw", "limit": 100 }),
+                json!({ "relation": "implementations", "name": "raw", "match": "substring", "limit": 100 }),
             ))
             .await
             .expect("code_refs implementations(substring)"),
@@ -1517,7 +1520,7 @@ async fn git_blame_paginates_by_start_line() {
     assert_eq!(p1_hunks.len(), 1, "git_blame limit=1 → 1 hunk: {page1}");
     let p1_start: Vec<u64> = p1_hunks
         .iter()
-        .filter_map(|h| h.get("start_line").and_then(Value::as_u64))
+        .filter_map(|h| h.get("line").and_then(Value::as_u64))
         .collect();
     let cursor1 = page1
         .get("next_cursor")
@@ -1540,11 +1543,21 @@ async fn git_blame_paginates_by_start_line() {
     assert!(!p2_hunks.is_empty(), "git_blame page2 must have ≥ 1 hunk: {page2}");
     let p2_start: Vec<u64> = p2_hunks
         .iter()
-        .filter_map(|h| h.get("start_line").and_then(Value::as_u64))
+        .filter_map(|h| h.get("line").and_then(Value::as_u64))
         .collect();
+    assert_eq!(
+        p1_start.len(),
+        p1_hunks.len(),
+        "every page1 hunk carries a `line`: {page1}"
+    );
+    assert_eq!(
+        p2_start.len(),
+        p2_hunks.len(),
+        "every page2 hunk carries a `line`: {page2}"
+    );
     assert!(
         p2_start.iter().all(|s| !p1_start.contains(s)),
-        "git_blame pages must not overlap by start_line: {p1_start:?} vs {p2_start:?}"
+        "git_blame pages must not overlap by line: {p1_start:?} vs {p2_start:?}"
     );
     let _ = service.cancel().await;
 }
@@ -1570,7 +1583,7 @@ async fn git_blame_symbol_paginates_by_start_line() {
     assert_eq!(p1_hunks.len(), 1, "git_blame symbol limit=1 → 1 hunk: {page1}");
     let p1_start = p1_hunks
         .iter()
-        .filter_map(|h| h.get("start_line").and_then(Value::as_u64))
+        .filter_map(|h| h.get("line").and_then(Value::as_u64))
         .next()
         .expect("git_blame symbol page1 start_line");
     assert!(
@@ -2901,7 +2914,7 @@ async fn paging_a_grep_one_hit_at_a_time_reconstructs_the_whole_result() {
     let _ = service.cancel().await;
 }
 
-/// `(path, line_num)` of every hit in a grep response, in response order.
+/// `(path, line)` of every hit in a grep response, in response order.
 fn grep_keys(body: &Value) -> Vec<(String, u64)> {
     body.get("hits")
         .and_then(Value::as_array)
@@ -2910,7 +2923,7 @@ fn grep_keys(body: &Value) -> Vec<(String, u64)> {
         .map(|h| {
             (
                 h.get("path").and_then(Value::as_str).unwrap_or_default().to_string(),
-                h.get("line_num").and_then(Value::as_u64).unwrap_or_default(),
+                h.get("line").and_then(Value::as_u64).unwrap_or_default(),
             )
         })
         .collect()

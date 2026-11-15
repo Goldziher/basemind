@@ -12,6 +12,7 @@ use super::cursor::Cursor;
 use super::helpers::{SEARCH_LIMIT_DEFAULT, SEARCH_LIMIT_MAX, json_result, kind_to_str, parse_kind};
 pub(crate) use super::helpers_calls_scan::InRamCallIndex;
 use super::helpers_calls_scan::{CallRef, CallScanPage, budget_call_page};
+use super::helpers_refs_match::{Matching, scan_calls};
 use super::index_route::IndexRoute;
 use super::types::ReferenceHit;
 use crate::index::view::Part;
@@ -130,15 +131,15 @@ pub(super) async fn run_find_references(
     let format = super::toon::ResponseFormat::parse(params.format.as_deref());
     let limit = params.limit.unwrap_or(SEARCH_LIMIT_DEFAULT).min(SEARCH_LIMIT_MAX) as usize;
     let cursor_bytes = params.cursor.as_ref().map(|c| c.decode_fjall()).transpose()?;
-    let scan = route
-        .scan_calls(cache, &params.name, limit, cursor_bytes.as_deref())
-        .await?;
+    let matching = Matching::from_substring(params.substring);
+    let scan = scan_calls(route, cache, &params.name, matching, limit, cursor_bytes.as_deref()).await?;
     let total = scan.total;
     let total_is_partial = scan.total_is_partial;
     let budgeted = budget_call_page(scan, params.max_tokens);
     super::toon::format_result(
         &FindReferencesResponse {
             name: params.name,
+            matching: matching.as_str(),
             total,
             total_is_partial,
             budgeted: budgeted.budgeted,
@@ -201,20 +202,37 @@ pub(super) async fn run_find_callers(
         path: params.path.clone(),
         name: sym.name.clone(),
         kind: kind_to_str(sym.kind),
-        start_row: sym.start_row,
-        start_col: sym.start_col,
+        line: sym.start_row + 1,
+        column: sym.start_col + 1,
     });
 
     let cursor_bytes = params.cursor.as_ref().map(|c| c.decode_fjall()).transpose()?;
-    let scan = route
-        .scan_calls(cache, &params.name, limit, cursor_bytes.as_deref())
-        .await?;
+    let matching = Matching::from_substring(params.substring);
+    let scan = scan_calls(route, cache, &params.name, matching, limit, cursor_bytes.as_deref()).await?;
 
+    // Resolution facts are a per-file blob the scan writes for languages it can resolve. No blob
+    // means resolution never ran for this file, which is a different answer from "ran and proved
+    // nothing": it is reported as such instead of as `resolved_total: 0`.
+    let resolution_ran = symbol.is_some()
+        && store
+            .lookup(&params.path)
+            .and_then(|entry| store.read_resolved_by_hex(&entry.hash_hex).ok().flatten())
+            .is_some();
     let resolved = match symbol.as_ref() {
-        Some(sym) => resolved_callers(store, &refs, route, root, cache, &params.path, sym, &params.name, limit).await,
-        None => None,
+        Some(sym) if resolution_ran => Some(
+            resolved_callers(store, &refs, route, root, cache, &params.path, sym, &params.name, limit)
+                .await
+                .unwrap_or_default(),
+        ),
+        _ => None,
     };
-    let resolved_total = resolved.as_ref().map_or(0, |r| r.total);
+    let resolved_total = resolved.as_ref().map(|r| r.total);
+    let resolution = (symbol.is_some() && !resolution_ran).then(|| {
+        format!(
+            "unsupported for {}",
+            cache.language_of(&params.path).unwrap_or("this language")
+        )
+    });
 
     let page = merge_resolved(scan, resolved, limit, cursor_bytes.as_deref());
     let total = page.total;
@@ -222,6 +240,8 @@ pub(super) async fn run_find_callers(
     let budgeted = budget_call_page(page, params.max_tokens);
     json_result(&FindCallersResponse {
         definition,
+        matching: matching.as_str(),
+        resolution,
         resolved_total,
         total,
         total_is_partial,
@@ -237,6 +257,7 @@ pub(super) async fn run_find_callers(
 ///
 /// Deliberately NOT a complete caller set: it is everything resolution can *prove*, which is a
 /// subset of the truth whose gap resolution cannot measure. See [`run_find_callers`].
+#[derive(Default)]
 struct ResolvedCallers {
     /// `path` → proven call-site start bytes. Probed per name-scan hit to set `resolved`.
     /// A map-of-sets rather than a set of `(RelPath, u32)` so probing borrows the hit's path
@@ -557,6 +578,7 @@ mod tests {
                 .block_on(super::run_find_references(
                     &local_route(&store),
                     FindReferencesParams {
+                        substring: false,
                         name: "target".to_string(),
                         limit: Some(500),
                         max_tokens: None,
@@ -584,6 +606,7 @@ mod tests {
                     root,
                     &cache,
                     FindCallersParams {
+                        substring: false,
                         path: RelPath::from("pkg/mod.py".as_bytes()),
                         name: "target".to_string(),
                         kind: None,
@@ -669,6 +692,7 @@ mod tests {
                     root,
                     &cache,
                     FindCallersParams {
+                        substring: false,
                         path: RelPath::from("util.ts".as_bytes()),
                         name: "target".to_string(),
                         kind: None,
@@ -794,6 +818,7 @@ mod tests {
                     root,
                     &cache,
                     FindCallersParams {
+                        substring: false,
                         path: def_path.clone(),
                         name: "target".to_string(),
                         kind: None,

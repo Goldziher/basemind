@@ -112,6 +112,9 @@ pub struct SearchSymbolsParams {
     /// trait, type, const, module, macro.
     #[serde(default)]
     pub kind: Option<String>,
+    /// Also match names the needle is a fuzzy subsequence of, ranked below every literal match.
+    #[serde(default)]
+    pub fuzzy: bool,
     /// Cap the number of results returned. Default 100, max 1000.
     #[serde(default)]
     pub limit: Option<u32>,
@@ -195,6 +198,9 @@ pub struct FindReferencesParams {
     /// resolution; both `Foo::bar()` and `bar()` register as callee `"bar"`. Use with
     /// caution on common names like `new` or `get`.
     pub name: String,
+    /// Match callee identifiers containing `name` instead of only those equal to it.
+    #[serde(default)]
+    pub substring: bool,
     /// Cap on results returned. Default 100, max 1000.
     #[serde(default)]
     pub limit: Option<u32>,
@@ -219,6 +225,9 @@ pub struct FindCallersParams {
     pub path: RelPath,
     /// Name of the definition.
     pub name: String,
+    /// Match callee identifiers containing `name` instead of only those equal to it.
+    #[serde(default)]
+    pub substring: bool,
     /// Optional kind filter for resolving the definition (function/method/class/...).
     #[serde(default)]
     pub kind: Option<String>,
@@ -302,19 +311,23 @@ pub(super) struct SearchHitView {
     pub path: RelPath,
     pub name: String,
     pub kind: &'static str,
-    pub start_row: u32,
-    pub start_col: u32,
+    /// 1-based line of the definition.
+    pub line: u32,
+    /// 1-based column of the definition.
+    pub column: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub signature: Option<String>,
+    /// How the name matched: `exact`, `prefix`, `substring` or `fuzzy`. Rows are ranked in that
+    /// order.
+    #[serde(rename = "match")]
+    pub matched: &'static str,
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct SearchResponse {
-    /// Matches scanned up to the per-call cap (`limit * 64`, min 2000) — NOT the global
-    /// corpus total. When the cap is hit this is a lower bound; see `total_is_partial`.
+    /// Matching symbols in the corpus, across every page.
     pub total: usize,
-    /// True when the scan stopped at the cap, so `total` is a lower bound rather than the
-    /// exact number of matching symbols in the corpus (bug #16).
+    /// True when a fuzzy sweep stopped at its candidate cap, so `total` is a lower bound.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub total_is_partial: bool,
     pub truncated: bool,
@@ -494,7 +507,11 @@ pub(super) struct StatusResponse {
     pub notice: Option<LifecycleNotice>,
     pub total_size_bytes: u64,
     pub languages: BTreeMap<String, usize>,
+    /// basemind's cache directory for this workspace: its index views, git cache and telemetry.
     pub cache_dir: String,
+    /// The tree-sitter grammar cache, which the language pack owns and other tools share.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grammar_dir: Option<String>,
     pub schema_version: u16,
     pub root: String,
     /// Forward-slash worktree roots of every submodule declared in `.gitmodules`. Always
@@ -523,26 +540,25 @@ pub(super) struct StatusResponse {
     pub elapsed_us: u64,
 }
 
+/// Serialize a 0-based row or column as the 1-based position every tool reports.
+///
+/// The index stores tree-sitter's 0-based points; converting where a response is written keeps
+/// every internal consumer (the scan pages, the daemon wire types) on one convention.
+pub(crate) fn one_based<S: serde::Serializer>(value: &u32, serializer: S) -> Result<S::Ok, S::Error> {
+    serializer.serialize_u32(value.saturating_add(1))
+}
+
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(crate) struct ReferenceHit {
     pub path: RelPath,
-    /// 1-based.
+    /// 1-based line of the call site.
     pub line: u32,
-    /// 0-based byte column from the start of the line.
+    /// Byte column of the call site: 0-based here, written 1-based.
+    #[serde(serialize_with = "one_based")]
     pub column: u32,
-    /// The exact callee identifier the index captured.
     pub callee: String,
-    /// `find_callers` only. `true` when scope/import resolution PROVED this call site binds to the
-    /// definition being asked about; `false` when it could not.
-    ///
-    /// `false` is NOT evidence that the site isn't a caller. Resolution has blind spots it cannot
-    /// detect (a module-object import — `from pkg import mod` then `mod.f()` — binds a module, not
-    /// `f`, so the cross-file join has no export to bind; likewise unresolvable path aliases), and
-    /// every caller behind one lands here. It means exactly: "a call to this name that resolution
-    /// could not tie to this definition — it is either a real caller through an import form the
-    /// resolver does not model, or a call to a different, same-named symbol."
-    ///
-    /// Absent on `find_references`, which is name-only by contract.
+    /// With a pinned definition: whether scope / import resolution proved this site binds to it.
+    /// Absent when no definition was pinned or the language has no resolution.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolved: Option<bool>,
 }
@@ -550,6 +566,9 @@ pub(crate) struct ReferenceHit {
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct FindReferencesResponse {
     pub name: String,
+    /// How `name` was matched against callee identifiers: `exact` or `substring`.
+    #[serde(rename = "match")]
+    pub matching: &'static str,
     pub total: u32,
     /// True when `total` was capped at `limit` and more matches exist on disk.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
@@ -576,39 +595,28 @@ pub(super) struct FindReferencesResponse {
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct FindCallersResponse {
-    /// Echo of the definition we resolved before scanning for callers.
+    /// The definition the callers were pinned to; `null` when `path` defines no such symbol.
     pub definition: Option<DefinitionView>,
-    /// How many of the `total` reported call sites scope/import resolution PROVED bind to this
-    /// definition. A LOWER BOUND on the true caller count, never the answer to "what calls this?" —
-    /// `total` is. `resolved_total < total` is the normal case, not a warning sign: it means the
-    /// rest are call sites of this name that resolution could not bind (see `ReferenceHit::resolved`).
-    ///
-    /// Resolution cannot prove a negative, so it is never used to DROP a hit. A resolution-limited
-    /// subset is never reported as if it were the complete set — that made `find_callers` answer
-    /// "2 callers" for a symbol with 172, with no truncation flag, which is worse than an error.
-    pub resolved_total: u32,
-    /// Every call site whose callee identifier matches `name` — the same sound floor
-    /// `find_references` reports, so the two agree on an unambiguous name. Complete unless
-    /// `total_is_partial`.
+    /// How `name` was matched against callee identifiers: `exact` or `substring`.
+    #[serde(rename = "match")]
+    pub matching: &'static str,
+    /// Why no hit is marked `resolved`, when scope / import resolution could not run for the
+    /// definition's language: `unsupported for <language>`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolution: Option<String>,
+    /// Hits proven to bind to `definition`. Absent, not 0, when resolution did not run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_total: Option<u32>,
     pub total: u32,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub total_is_partial: bool,
-    /// True when a `max_tokens` budget dropped trailing `hits`. Page the rest with `next_cursor`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub budgeted: bool,
     pub hits: Vec<ReferenceHit>,
-    /// Opaque cursor to pass back on the next call when more results are available.
-    /// Stable across rescans.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<Cursor>,
-    /// Lifecycle notice when the server isn't fully ready (warming/building/rescanning); absent when
-    /// ready. Lets a caller tell "index still loading — retry" from a genuine empty result.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notice: Option<LifecycleNotice>,
-    /// Server-side handler latency in microseconds — the tool body's own execution (index / store
-    /// lookup + response construction), excluding MCP transport, argument deserialization, and
-    /// response serialization. A first call against a cold server also includes index warm-up;
-    /// such responses carry a `notice`. See [`crate::mcp::helpers::timing`] for the full contract.
     #[serde(default)]
     pub elapsed_us: u64,
 }
@@ -618,8 +626,10 @@ pub(super) struct DefinitionView {
     pub path: RelPath,
     pub name: String,
     pub kind: &'static str,
-    pub start_row: u32,
-    pub start_col: u32,
+    /// 1-based line of the definition.
+    pub line: u32,
+    /// 1-based column of the definition.
+    pub column: u32,
 }
 
 /// A resolved definition site returned by `goto_definition`.
@@ -650,6 +660,10 @@ pub(super) struct GotoDefinitionResponse {
     /// resolution + index lookup + response construction), excluding MCP transport, argument
     /// deserialization, and response serialization. A first call against a cold server also
     /// includes index warm-up. See [`crate::mcp::helpers::timing`] for the full contract.
+    /// Why there is no `definition`, when the file's language has no scope resolution:
+    /// `unsupported for <language>`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolution: Option<String>,
     #[serde(default)]
     pub elapsed_us: u64,
 }
@@ -695,17 +709,30 @@ pub struct WorkspaceGrepParams {
 pub(super) struct GrepHit {
     pub path: RelPath,
     /// 1-based line number of the match.
-    pub line_num: u32,
-    /// 0-based byte column within the line.
+    pub line: u32,
+    /// 1-based byte column of the match within the line.
     pub column: u32,
-    /// The exact matched substring from the source.
-    pub matched_text: String,
-    /// The line immediately before the match, when `include_context` is true and line > 1.
+    /// The whole matching line (cut at 400 bytes), so the hit can be read without opening the file.
+    pub text: String,
+    /// The innermost symbol whose span holds the match; absent outside every symbol.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub symbol: Option<GrepSymbol>,
+    /// The line immediately before the match, when context was requested and line > 1.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context_before: Option<String>,
-    /// The line immediately after the match, when `include_context` is true and line < EOF.
+    /// The line immediately after the match, when context was requested and line < EOF.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context_after: Option<String>,
+    /// Byte offset of the match in the file; used to find `symbol`, not part of the response.
+    #[serde(skip)]
+    pub start_byte: u32,
+}
+
+/// The symbol a grep hit sits in.
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub(super) struct GrepSymbol {
+    pub name: String,
+    pub kind: &'static str,
 }
 
 /// Why a `workspace_grep` result was cut short. Present only when `truncated` is true — a grep that
@@ -725,6 +752,8 @@ pub(super) enum GrepTruncation {
 pub(super) struct WorkspaceGrepResponse {
     /// Echoed pattern from the request.
     pub pattern: String,
+    /// Whether `pattern` was compiled as a regex; false means it was matched as literal text.
+    pub regex: bool,
     /// Number of files that had at least one match. Exact: every candidate file is scanned.
     pub total_files_matched: usize,
     /// Exact hit count across the whole scanned corpus — not just the returned page. Exceeds

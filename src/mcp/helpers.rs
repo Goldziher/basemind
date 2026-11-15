@@ -356,7 +356,7 @@ pub(super) fn blame_hunk_view(h: &crate::git::BlameHunk) -> BlameHunkView {
         commit_sha: h.commit_sha.clone(),
         short_sha: h.short_sha.clone(),
         start_line: h.start_line,
-        len: h.len,
+        end_line: h.start_line + h.len.saturating_sub(1),
         source_start_line: h.source_start_line,
         author: h.author.clone(),
         author_time_unix: h.author_time_unix,

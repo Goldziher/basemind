@@ -416,8 +416,8 @@ async fn hosted_keyword_search_reads_the_daemon_index_without_self_forwarding() 
     let result: Value = serde_json::from_str(result_text)
         .unwrap_or_else(|error| panic!("hosted keyword tool payload is not JSON ({error}): {result_text}"));
     assert!(
-        result.get("degraded_lanes").is_none() || result["degraded_lanes"].as_array().is_some_and(Vec::is_empty),
-        "hosted keyword search must not report degraded lanes: {result}"
+        result.get("lanes_unavailable").is_none(),
+        "hosted keyword search must not report an unavailable lane: {result}"
     );
     let hits = result["hits"]
         .as_array()
@@ -1384,7 +1384,8 @@ async fn daemon_backed_references_and_implementations_equal_the_writer_session()
     let forwarded: Vec<(String, u64, u64)> = page
         .hits
         .iter()
-        .map(|hit| (hit.path.to_string(), u64::from(hit.line), u64::from(hit.column)))
+        // The wire page carries the index's 0-based column; a tool response writes it 1-based.
+        .map(|hit| (hit.path.to_string(), u64::from(hit.line), u64::from(hit.column) + 1))
         .collect();
     let truth: Vec<(String, u64, u64)> = truth_refs["hits"]
         .as_array()

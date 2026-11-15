@@ -589,6 +589,7 @@ async fn code_response(shared: &std::sync::Arc<crate::mcp::SharedReadStack>, que
                 .code_symbols_call(crate::mcp::params::CodeSymbolsParams {
                     name: "alpha".to_string(),
                     kind: None,
+                    fuzzy: None,
                     limit: None,
                     cursor: None,
                     max_tokens: None,

@@ -178,7 +178,7 @@ async fn python_local_shadow_resolves_to_local_not_module_x() {
     );
     assert_eq!(
         def_field(&body, "column").as_u64(),
-        Some(4),
+        Some(5),
         "shadow x column must be 4: {body}"
     );
     assert_eq!(
@@ -207,7 +207,7 @@ async fn python_per_function_params_resolve_to_distinct_definitions() {
     );
     assert_eq!(
         def_field(&first, "column").as_u64(),
-        Some(16),
+        Some(17),
         "first_param's x column must be 16: {first}"
     );
 
@@ -219,7 +219,7 @@ async fn python_per_function_params_resolve_to_distinct_definitions() {
     );
     assert_eq!(
         def_field(&second, "column").as_u64(),
-        Some(17),
+        Some(18),
         "second_param's x column must be 17: {second}"
     );
 
@@ -263,7 +263,7 @@ async fn python_comprehension_variable_resolves_to_its_own_binding_not_outer_sco
     );
     assert_eq!(
         def_field(&comprehension_x, "column").as_u64(),
-        Some(20),
+        Some(21),
         "comprehension x must resolve to column 20 (the `x` in `for x in range(3)`): {comprehension_x}"
     );
     assert_eq!(
@@ -281,7 +281,7 @@ async fn python_comprehension_variable_resolves_to_its_own_binding_not_outer_sco
     );
     assert_eq!(
         def_field(&outer_x, "column").as_u64(),
-        Some(20),
+        Some(21),
         "KNOWN GAP: spec requires column 4 (the outer x) — got the comprehension binding's column \
          instead: {outer_x}"
     );
@@ -328,9 +328,9 @@ async fn python_cross_file_find_callers_resolves_real_call_site_not_self_referen
         "def path: {body}"
     );
     assert_eq!(
-        def.get("start_row").and_then(Value::as_u64),
-        Some(3),
-        "def start_row (0-based): {body}"
+        def.get("line").and_then(Value::as_u64),
+        Some(4),
+        "def line (1-based): {body}"
     );
 
     let hits = body.get("hits").and_then(Value::as_array).expect("hits");
@@ -338,7 +338,7 @@ async fn python_cross_file_find_callers_resolves_real_call_site_not_self_referen
         hits.iter()
             .any(|h| h.get("path").and_then(Value::as_str) == Some("app.py")
                 && h.get("line").and_then(Value::as_u64) == Some(26)
-                && h.get("column").and_then(Value::as_u64) == Some(11)
+                && h.get("column").and_then(Value::as_u64) == Some(12)
                 && h.get("resolved").and_then(Value::as_bool) == Some(true)),
         "the real f() call site app.py:26:11 must be a resolved caller: {body}"
     );
@@ -369,7 +369,7 @@ async fn python_cross_file_find_callers_resolves_real_call_site_not_self_referen
     );
     assert_eq!(
         def_field(&goto_body, "column").as_u64(),
-        Some(4),
+        Some(5),
         "resolved span lands on the `f` identifier (column 4), not the `def` keyword: {goto_body}"
     );
     assert_eq!(
@@ -404,7 +404,7 @@ async fn java_field_vs_local_resolve_correctly() {
     );
     assert_eq!(
         def_field(&local, "column").as_u64(),
-        Some(12),
+        Some(13),
         "local value column: {local}"
     );
 
@@ -416,7 +416,7 @@ async fn java_field_vs_local_resolve_correctly() {
     );
     assert_eq!(
         def_field(&field, "column").as_u64(),
-        Some(16),
+        Some(17),
         "field value column: {field}"
     );
 
@@ -439,7 +439,7 @@ async fn java_per_method_params_resolve_to_distinct_definitions() {
     );
     assert_eq!(
         def_field(&first, "column").as_u64(),
-        Some(30),
+        Some(31),
         "firstParam's value column: {first}"
     );
 
@@ -451,7 +451,7 @@ async fn java_per_method_params_resolve_to_distinct_definitions() {
     );
     assert_eq!(
         def_field(&second, "column").as_u64(),
-        Some(31),
+        Some(32),
         "secondParam's value column: {second}"
     );
 
@@ -555,14 +555,14 @@ async fn java_cross_file_find_callers_distinguishes_imported_method_from_decoy()
         "def path: {foo_body}"
     );
     assert_eq!(
-        foo_def.get("start_row").and_then(Value::as_u64),
-        Some(3),
-        "def start_row (0-based): {foo_body}"
+        foo_def.get("line").and_then(Value::as_u64),
+        Some(4),
+        "def line (1-based): {foo_body}"
     );
     assert_eq!(
-        foo_def.get("start_col").and_then(Value::as_u64),
-        Some(4),
-        "def start_col (0-based): {foo_body}"
+        foo_def.get("column").and_then(Value::as_u64),
+        Some(5),
+        "def column (1-based): {foo_body}"
     );
     let foo_hits = foo_body.get("hits").and_then(Value::as_array).expect("hits");
     assert_eq!(
@@ -582,7 +582,7 @@ async fn java_cross_file_find_callers_distinguishes_imported_method_from_decoy()
     );
     assert_eq!(
         foo_hits[0].get("column").and_then(Value::as_u64),
-        Some(24),
+        Some(25),
         "call site column (Java's tags-fallback call.range captures the byte after the \
          identifier, at the opening `(` — see the spec's Java column-quirk note): {foo_body}"
     );
@@ -595,9 +595,9 @@ async fn java_cross_file_find_callers_distinguishes_imported_method_from_decoy()
     );
     let app_def = app_body.get("definition").expect("definition echoed");
     assert_eq!(
-        app_def.get("start_row").and_then(Value::as_u64),
-        Some(26),
-        "decoy definition must resolve to App.java's own greet() at 0-based row 26 (line 27): {app_body}"
+        app_def.get("line").and_then(Value::as_u64),
+        Some(27),
+        "decoy definition must resolve to App.java's own greet() at line 27: {app_body}"
     );
     let app_hits = app_body.get("hits").and_then(Value::as_array).expect("hits");
     assert_eq!(
@@ -619,7 +619,7 @@ async fn java_cross_file_find_callers_distinguishes_imported_method_from_decoy()
     );
     assert_eq!(
         app_hits[0].get("column").and_then(Value::as_u64),
-        Some(24),
+        Some(25),
         "conflated hit column: {app_body}"
     );
 

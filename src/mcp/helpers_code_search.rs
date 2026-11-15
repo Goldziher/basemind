@@ -13,7 +13,9 @@ use rmcp::model::CallToolResult;
 use super::ServerState;
 use super::helpers::{elapsed_us, json_result};
 use super::memory::{embed_query, lance_store};
-use super::types_code::{CodeSearchHit, GetChunkParams, GetChunkResponse, SearchCodeParams, SearchCodeResponse};
+use super::types_code::{
+    CodeSearchHit, GetChunkParams, GetChunkResponse, LaneUnavailable, SearchCodeParams, SearchCodeResponse,
+};
 use crate::search::bm25::bm25_search;
 use crate::search::exact::exact_lane_chunk_ids;
 use crate::search::rrf::{
@@ -65,12 +67,12 @@ pub(super) async fn run_search_code(state: &ServerState, params: SearchCodeParam
     } else if mode.eq_ignore_ascii_case("semantic") {
         (
             semantic_hits(state, &params.query, fetch_n).await?,
-            LaneReport::default(),
+            LaneReport::ran_only("vector"),
         )
     } else if mode.eq_ignore_ascii_case("keyword") {
         (
             keyword_hits(state, &params.query, fetch_n).await?,
-            LaneReport::default(),
+            LaneReport::ran_only("keyword"),
         )
     } else {
         return Err(McpError::invalid_request(
@@ -91,8 +93,8 @@ pub(super) async fn run_search_code(state: &ServerState, params: SearchCodeParam
             query: params.query,
             budgeted: budget.budgeted,
             hits: budget.items,
-            degraded_lanes: report.lanes,
-            degraded_reason: report.reason,
+            lanes_ran: report.ran,
+            lanes_unavailable: report.unavailable,
             elapsed_us: elapsed_us(__body),
         },
         want_toon,
@@ -121,6 +123,7 @@ async fn hybrid_hits(
         match semantic_hits(state, query, fuse_limit).await {
             Ok(hits) => {
                 vector_ran = true;
+                report.ran.push("vector");
                 hits.into_iter().map(|h| h.chunk_id).collect()
             }
             Err(error) => {
@@ -130,12 +133,19 @@ async fn hybrid_hits(
             }
         }
     } else {
+        // Not a failure, but the caller asked for a hybrid search and is getting a lexical one: a
+        // result that silently lacks the vector lane reads as "nothing similar exists".
+        report.unavailable.push(LaneUnavailable {
+            lane: "vector",
+            reason: "embeddings are off: set `[code_search] embed = true` and run `index_rescan`".to_string(),
+        });
         Vec::new()
     };
 
     let lanes = fjall_lanes(state, query, fuse_limit, true).await?;
-    if let Some(reason) = &lanes.degraded {
-        report.degrade(&["keyword", "exact"], reason.clone());
+    match &lanes.degraded {
+        Some(reason) => report.degrade(&["keyword", "exact"], reason.clone()),
+        None => report.ran.extend(["keyword", "exact"]),
     }
 
     // A degraded-lane notice attached to an EMPTY hit list is still a success response, and a
@@ -187,15 +197,29 @@ async fn hybrid_hits(
 /// result from a complete one. Empty means every lane the config asked for ran.
 #[derive(Default)]
 struct LaneReport {
-    lanes: Vec<String>,
+    /// Lanes that produced a ranking (possibly empty) for this query.
+    ran: Vec<&'static str>,
+    /// Lanes that did not run, each with its own reason.
+    unavailable: Vec<LaneUnavailable>,
     reason: Option<String>,
 }
 
 impl LaneReport {
+    /// The report of a single-lane query, whose one lane either ran or failed the call.
+    fn ran_only(lane: &'static str) -> Self {
+        Self {
+            ran: vec![lane],
+            ..Self::default()
+        }
+    }
+
     /// Record `lanes` as degraded. Reasons accumulate, because more than one lane can fail for
     /// different causes in the same query and collapsing them would hide one.
-    fn degrade(&mut self, lanes: &[&str], reason: String) {
-        self.lanes.extend(lanes.iter().map(|l| (*l).to_string()));
+    fn degrade(&mut self, lanes: &[&'static str], reason: String) {
+        self.unavailable.extend(lanes.iter().map(|lane| LaneUnavailable {
+            lane,
+            reason: reason.clone(),
+        }));
         self.reason = Some(match self.reason.take() {
             Some(existing) => format!("{existing}; {reason}"),
             None => reason,

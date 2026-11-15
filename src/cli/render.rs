@@ -460,7 +460,7 @@ mod tests {
             "total_matches": 101,
             "truncated": true,
             "truncation_reason": "limit",
-            "hits": [{"path": "a.rs", "line_num": 1, "column": 0, "matched_text": "OptimizationStatus"}],
+            "hits": [{"path": "a.rs", "line": 1, "column": 1, "text": "OptimizationStatus"}],
         }));
         assert!(
             out.contains("TRUNCATED"),
@@ -478,7 +478,7 @@ mod tests {
             "pattern": "OptimizationStatus",
             "total_matches": 1,
             "truncated": false,
-            "hits": [{"path": "a.rs", "line_num": 1, "column": 0, "matched_text": "OptimizationStatus"}],
+            "hits": [{"path": "a.rs", "line": 1, "column": 1, "text": "OptimizationStatus"}],
         }));
         assert!(!out.contains("TRUNCATED"), "a complete result must not cry wolf: {out}");
     }

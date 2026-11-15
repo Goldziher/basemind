@@ -58,8 +58,9 @@ impl BasemindServer {
     #[tool(
         title = "Diff and status",
         description = "Use instead of `git status`/`git diff`. No arguments returns the working-tree \
-        status (staged, modified, untracked); `path` with `from` and `to` diffs one file between \
-        revisions; `structural` lists the symbols added and removed instead of text hunks. \
+        status (staged, modified, untracked); `path` alone diffs that file's working tree against \
+        HEAD; `from`/`to` pick revisions; `structural` lists the symbols added and removed instead \
+        of text hunks. \
         Example: {\"path\":\"src/store.rs\",\"from\":\"HEAD~1\",\"to\":\"HEAD\"}",
         annotations(
             read_only_hint = true,

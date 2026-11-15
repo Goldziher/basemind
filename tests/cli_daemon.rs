@@ -217,7 +217,7 @@ fn live_daemon_serves_rescan_memory_and_blocks_destructive_commands() {
     assert_eq!(code(&rescan), 0, "{}", text(&rescan));
     assert!(text(&rescan).contains("via daemon"), "{}", text(&rescan));
 
-    // `memory` mode exists only in a binary built with the `memory` feature.
+    // Memory commands work only in a binary built with the `memory` feature.
     if cfg!(feature = "memory") {
         let put = env.run(&["memory", "put", "k1", "forwarded value"]);
         assert_eq!(code(&put), 0, "memory put must forward, not fail: {}", text(&put));

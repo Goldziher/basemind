@@ -806,6 +806,26 @@ impl Repo {
         Ok(Some((hunks, old_exists, new_exists)))
     }
 
+    /// Content-level hunks for `path` between `rev_old` and the file as it is in the working tree
+    /// (staged or not). Same return shape as [`diff_file`](Self::diff_file): `None` when the path is
+    /// absent on both sides.
+    pub fn diff_file_worktree(
+        &self,
+        rev_old: &str,
+        path: impl AsRef<Path>,
+    ) -> Result<Option<(Vec<Hunk>, bool, bool)>, GitError> {
+        let path_ref = path.as_ref();
+        let old_bytes = self.read_blob_at_rev(rev_old, path_ref)?;
+        let new_bytes = std::fs::read(self.workdir().join(path_ref)).ok();
+        if old_bytes.is_none() && new_bytes.is_none() {
+            return Ok(None);
+        }
+        let old_exists = old_bytes.is_some();
+        let new_exists = new_bytes.is_some();
+        let hunks = compute_hunks(&old_bytes.unwrap_or_default(), &new_bytes.unwrap_or_default());
+        Ok(Some((hunks, old_exists, new_exists)))
+    }
+
     /// Diff the commit at `commit_sha` against its first parent. Returns the per-file
     /// (path, change-kind) list. **No caching** — call through `GitCache::commit_files`
     /// in hot paths. Public so the cache layer can drive it.

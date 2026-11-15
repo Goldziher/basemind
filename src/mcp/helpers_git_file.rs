@@ -22,19 +22,31 @@ use super::types::{
 };
 use crate::git::CommitInfo;
 
-/// The `diff` operation: content hunks for one path between two revisions.
+/// What the old side of a text diff is compared against.
+const WORKING_TREE: &str = "working tree";
+
+/// The `diff` operation: content hunks for one path between `rev_old` and either another revision
+/// or, when `rev_new` is `None`, the file as it is in the working tree.
 pub(super) fn run_diff(state: &ServerState, params: DiffFileParams) -> Result<CallToolResult, McpError> {
     let started = std::time::Instant::now();
     let repo = require_git_repo(state)?;
-    let old_sha = repo
-        .resolve_rev(&params.rev_old)
-        .map_err(|e| McpError::invalid_params(format!("resolve_rev({}): {e}", params.rev_old), None))?;
-    let new_sha = repo
-        .resolve_rev(&params.rev_new)
-        .map_err(|e| McpError::invalid_params(format!("resolve_rev({}): {e}", params.rev_new), None))?;
-    let result = repo
-        .diff_file(&old_sha, &new_sha, &params.path)
-        .map_err(|e| McpError::internal_error(format!("diff: {e}"), None))?;
+    reject_external_path(&params.path)?;
+    let resolve = |rev: &str| {
+        repo.resolve_rev(rev)
+            .map_err(|e| McpError::invalid_params(format!("`git_diff`: cannot resolve revision `{rev}`: {e}"), None))
+    };
+    let old_sha = resolve(&params.rev_old)?;
+    let (result, to) = match params.rev_new.as_deref() {
+        Some(rev_new) => {
+            let new_sha = resolve(rev_new)?;
+            (repo.diff_file(&old_sha, &new_sha, &params.path), new_sha)
+        }
+        None => (
+            repo.diff_file_worktree(&old_sha, &params.path),
+            WORKING_TREE.to_string(),
+        ),
+    };
+    let result = result.map_err(|e| McpError::internal_error(format!("`git_diff`: {e}"), None))?;
     let (hunks, present_old, present_new) = result.unwrap_or((Vec::new(), false, false));
     let hunks = hunks
         .into_iter()
@@ -49,10 +61,10 @@ pub(super) fn run_diff(state: &ServerState, params: DiffFileParams) -> Result<Ca
         .collect();
     json_result(&DiffFileResponse {
         path: params.path,
-        rev_old: old_sha,
-        rev_new: new_sha,
-        present_at_old: present_old,
-        present_at_new: present_new,
+        from: old_sha,
+        to,
+        present_at_from: present_old,
+        present_at_to: present_new,
         hunks,
         elapsed_us: elapsed_us(started),
     })
@@ -195,7 +207,7 @@ pub(super) fn run_blame(state: &ServerState, params: BlameFileParams) -> Result<
         (None, None) => None,
         _ => {
             return Err(McpError::invalid_params(
-                "line_start and line_end must be provided together",
+                "`git_blame`: `line` and `end_line` must be provided together",
                 None,
             ));
         }

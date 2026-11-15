@@ -40,8 +40,10 @@ mod helpers_intel;
 mod helpers_memory;
 #[cfg(any(feature = "code-search", feature = "documents", test))]
 mod helpers_page;
+mod helpers_refs_match;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 mod helpers_registry;
+mod helpers_symbols;
 mod helpers_telemetry;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 mod host;

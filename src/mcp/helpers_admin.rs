@@ -88,9 +88,8 @@ async fn run_status(state: &ServerState) -> Result<CallToolResult, McpError> {
                 notice,
                 total_size_bytes: 0,
                 languages: BTreeMap::new(),
-                cache_dir: crate::lang::grammar_cache_dir()
-                    .map(|p| p.display().to_string())
-                    .unwrap_or_else(|| "(unresolved)".to_string()),
+                cache_dir: cache_dir(state),
+                grammar_dir: grammar_dir(),
                 schema_version: crate::extract::SCHEMA_VER,
                 root: state.shared.root.display().to_string(),
                 submodules: state
@@ -114,9 +113,6 @@ async fn run_status(state: &ServerState) -> Result<CallToolResult, McpError> {
         total_size = total_size.saturating_add(entry.size_bytes);
     }
     let by_lang: BTreeMap<String, usize> = by_lang_ref.into_iter().map(|(k, v)| (k.to_string(), v)).collect();
-    let cache_dir = crate::lang::grammar_cache_dir()
-        .map(|p| p.display().to_string())
-        .unwrap_or_else(|| "(unresolved)".to_string());
     let submodules = state
         .shared
         .repo
@@ -143,7 +139,8 @@ async fn run_status(state: &ServerState) -> Result<CallToolResult, McpError> {
         notice,
         total_size_bytes: total_size,
         languages: by_lang,
-        cache_dir,
+        cache_dir: cache_dir(state),
+        grammar_dir: grammar_dir(),
         schema_version: crate::extract::SCHEMA_VER,
         root: state.shared.root.display().to_string(),
         submodules,
@@ -153,6 +150,18 @@ async fn run_status(state: &ServerState) -> Result<CallToolResult, McpError> {
         head_short_sha: identity.head_short_sha,
         elapsed_us: elapsed_us(body),
     })
+}
+
+/// Where basemind keeps this workspace's index, views and caches.
+fn cache_dir(state: &ServerState) -> String {
+    crate::store::workspace_cache_dir(&state.shared.root)
+        .display()
+        .to_string()
+}
+
+/// Where the tree-sitter grammars are cached; shared with every other user of the language pack.
+fn grammar_dir() -> Option<String> {
+    crate::lang::grammar_cache_dir().map(|dir| dir.display().to_string())
 }
 
 /// Branch and HEAD of the served repository; all `None` outside a git repository.

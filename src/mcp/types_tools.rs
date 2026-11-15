@@ -72,6 +72,9 @@ pub struct CodeSymbolsParams {
     /// function, method, struct, enum, class, interface, trait, type, const, module, macro.
     #[serde(default)]
     pub kind: Option<String>,
+    /// Also match the name as a fuzzy subsequence, ranked last.
+    #[serde(default)]
+    pub fuzzy: Option<bool>,
     /// Max hits (default 100).
     #[serde(default)]
     pub limit: Option<u32>,
@@ -172,6 +175,10 @@ pub struct CodeRefsParams {
     /// `definition` only: 1-based column (default: where `name` occurs on the line).
     #[serde(default)]
     pub column: Option<u32>,
+    /// Name matching (default `exact`).
+    #[serde(default, rename = "match")]
+    #[schemars(extend("enum" = ["exact", "substring"]))]
+    pub match_mode: Option<String>,
     /// Max hits (default 100).
     #[serde(default)]
     pub limit: Option<u32>,

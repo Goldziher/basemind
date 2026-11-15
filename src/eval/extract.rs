@@ -43,8 +43,7 @@ fn located(entries: &[Value], line: impl Fn(&Value) -> Option<u32>) -> Vec<Item>
 /// Items for `mode` from response `body`; `args` supplies the file for `outline`.
 pub fn extract_items(mode: EvalMode, args: &Value, body: &Value) -> Vec<Item> {
     match mode {
-        // `start_row` is 0-based; gold lines are 1-based like every editor and `git grep -n`.
-        EvalMode::Symbols => located(array(body, "results"), |e| u(e, "start_row").map(|r| r + 1)),
+        EvalMode::Symbols => located(array(body, "results"), |e| u(e, "line")),
         EvalMode::Outline => {
             let path = s(body, "path").or_else(|| s(args, "path")).unwrap_or_default();
             array(body, "symbols")
@@ -56,7 +55,7 @@ pub fn extract_items(mode: EvalMode, args: &Value, body: &Value) -> Vec<Item> {
                 .collect()
         }
         EvalMode::References | EvalMode::Callers => located(array(body, "hits"), |e| u(e, "line")),
-        EvalMode::Grep => located(array(body, "hits"), |e| u(e, "line_num")),
+        EvalMode::Grep => located(array(body, "hits"), |e| u(e, "line")),
         EvalMode::Find => located(array(body, "files"), |_| None),
         EvalMode::Dependents => array(body, "paths")
             .iter()
@@ -86,7 +85,7 @@ mod tests {
         let sym = extract_items(
             EvalMode::Symbols,
             &Value::Null,
-            &json!({"results":[{"path":"a.py","name":"f","start_row":0},{"path":"b.py","start_row":9}]}),
+            &json!({"results":[{"path":"a.py","name":"f","line":1},{"path":"b.py","line":10}]}),
         );
         assert_eq!(
             sym[0],
@@ -116,11 +115,7 @@ mod tests {
             &json!({"hits":[{"path":"x","line":7}]}),
         );
         assert_eq!(refs[0].line, Some(7));
-        let grep = extract_items(
-            EvalMode::Grep,
-            &Value::Null,
-            &json!({"hits":[{"path":"x","line_num":3}]}),
-        );
+        let grep = extract_items(EvalMode::Grep, &Value::Null, &json!({"hits":[{"path":"x","line":3}]}));
         assert_eq!(grep[0].line, Some(3));
         let find = extract_items(
             EvalMode::Find,

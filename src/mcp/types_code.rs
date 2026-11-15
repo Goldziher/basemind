@@ -73,7 +73,11 @@ pub(crate) struct CodeSearchHit {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub kind: String,
     pub lang: String,
+    /// 1-based first line of the chunk.
+    #[serde(rename = "line", alias = "line_start")]
     pub line_start: u32,
+    /// 1-based last line of the chunk, inclusive.
+    #[serde(rename = "end_line", alias = "line_end")]
     pub line_end: u32,
     pub byte_start: u32,
     pub byte_end: u32,
@@ -104,24 +108,30 @@ pub(crate) struct CodeSearchHit {
     pub exact_rank: Option<u32>,
 }
 
+/// A retrieval lane that did not run for a query, and why.
 #[cfg(feature = "code-search")]
-#[derive(Debug, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
+pub(crate) struct LaneUnavailable {
+    pub lane: &'static str,
+    pub reason: String,
+}
+
+#[cfg(feature = "code-search")]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(crate) struct SearchCodeResponse {
     pub query: String,
     /// True when a `max_tokens` budget dropped trailing `hits`. No cursor — raise `max_tokens`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub budgeted: bool,
     pub hits: Vec<CodeSearchHit>,
-    /// Lanes that did NOT run for this query — `"keyword"` and/or `"exact"`. Non-empty means `hits`
-    /// is a PARTIAL result from the lanes that did run, not the whole picture; an empty list means
-    /// every requested lane ran. Machine-readable on purpose: a caller must be able to tell
-    /// "searched and found nothing" from "could not search", which a prose-only notice does not
-    /// allow. When NO lane runs the call is an error instead, so this is never a labelled `[]`.
+    /// Lanes that produced a ranking for this query: `vector`, `keyword`, `exact`.
+    pub lanes_ran: Vec<&'static str>,
+    /// Lanes that did NOT run, each with why. Non-empty means `hits` is a PARTIAL result from the
+    /// lanes that did run: a caller must be able to tell "searched and found nothing" from "could
+    /// not search". When NO lane runs the call is an error instead, so this is never a labelled
+    /// `[]`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub degraded_lanes: Vec<String>,
-    /// Why `degraded_lanes` could not run, in one human-readable clause.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub degraded_reason: Option<String>,
+    pub lanes_unavailable: Vec<LaneUnavailable>,
     /// Server-side handler latency in microseconds — the tool body's own execution (index / vector
     /// search + response construction), excluding MCP transport, argument
     /// deserialization, and response serialization. A first call against a cold server also

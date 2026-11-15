@@ -24,6 +24,11 @@ macro_rules! choice_enum {
 }
 
 choice_enum! {
+    /// `code refs` name matching.
+    RefsMatch { Exact => "exact", Substring => "substring" }
+}
+
+choice_enum! {
     /// `code search` retrieval lane.
     SearchLane { Hybrid => "hybrid", Semantic => "semantic", Keyword => "keyword" }
 }

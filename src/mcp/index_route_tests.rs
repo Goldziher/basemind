@@ -227,6 +227,7 @@ fn references_page(
         &block_on(super::helpers::run_find_references(
             route,
             FindReferencesParams {
+                substring: true,
                 name: name.to_string(),
                 limit: Some(limit),
                 max_tokens,
@@ -324,6 +325,7 @@ fn forwarded_routes_never_build_the_in_ram_projection() {
         &block_on(super::helpers::run_find_implementations(
             &fx.host,
             FindImplementationsParams {
+                substring: true,
                 trait_name: "Tr".to_string(),
                 language: None,
                 limit: Some(100),
@@ -360,6 +362,7 @@ fn implementations_are_identical_on_every_route_including_language_filter_and_cu
                     &block_on(super::helpers::run_find_implementations(
                         route,
                         FindImplementationsParams {
+                            substring: true,
                             trait_name: trait_name.to_string(),
                             language: language.map(str::to_string),
                             limit: Some(limit),
@@ -392,6 +395,7 @@ fn implementations_are_identical_on_every_route_including_language_filter_and_cu
             &block_on(super::helpers::run_find_implementations(
                 &fx.host,
                 FindImplementationsParams {
+                    substring: true,
                     trait_name: "Tr".to_string(),
                     language: None,
                     limit: Some(500),
@@ -411,7 +415,7 @@ fn implementations_are_identical_on_every_route_including_language_filter_and_cu
         hit_count(&all)
     );
     assert!(
-        all[0]["hits"][0]["start_row"].as_u64().unwrap_or(0) > 0,
+        all[0]["hits"][0]["line"].as_u64().unwrap_or(0) > 0,
         "the forwarded page carries the impl's position: {}",
         all[0]["hits"][0]
     );
@@ -431,6 +435,7 @@ fn callers_scan_and_file_batches_are_identical_on_every_route() {
                     &fx.root,
                     &fx.cache,
                     FindCallersParams {
+                        substring: true,
                         path: def.clone(),
                         name: "driver_0".to_string(),
                         kind: None,

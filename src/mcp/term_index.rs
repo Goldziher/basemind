@@ -82,6 +82,24 @@ impl FileTerms {
         })
     }
 
+    /// The name of symbol `idx` (outline order); empty when out of range.
+    pub(crate) fn name(&self, idx: usize) -> &[u8] {
+        let Some(&end) = self.name_ends.get(idx) else {
+            return &[];
+        };
+        let start = if idx == 0 {
+            0
+        } else {
+            self.name_ends[idx - 1] as usize + 1
+        };
+        &self.names[start..end as usize]
+    }
+
+    /// Every symbol's `(index, name, kind)`, in outline order.
+    pub(crate) fn symbols(&self) -> impl Iterator<Item = (usize, &[u8], SymbolKind)> + '_ {
+        (0..self.name_ends.len()).map(|idx| (idx, self.name(idx), self.kinds[idx]))
+    }
+
     /// Whether any import's module or raw text contains the needle.
     pub(crate) fn mentions_import(&self, finder: &memchr::memmem::Finder<'_>) -> bool {
         !self.imports.is_empty() && finder.find(&self.imports).is_some()
