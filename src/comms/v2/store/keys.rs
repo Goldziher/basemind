@@ -6,7 +6,7 @@
 //! short: a thread id is its 30 bits as a `u32`, fixed-width and therefore never prefixed, and a
 //! variable-length component in last position is written bare.
 
-use crate::comms::v2::api::{Actor, ReplayKey, RepoKey, ThreadId};
+use crate::comms::v2::api::{Actor, Principal, ReplayKey, RepoKey, ThreadId};
 
 /// Bytes of an encoded thread id.
 const THREAD_LEN: usize = 4;
@@ -29,14 +29,17 @@ const STATE_ACTIVE: u8 = 0;
 /// `repo_threads` state byte of an archived thread.
 const STATE_ARCHIVED: u8 = 1;
 
-/// `replays` tag of a post that created a thread: scoped to the agent.
+/// `replays` tag of a post that created a thread: scoped to the actor.
 const REPLAY_NEW_THREAD: u8 = 0;
 
-/// `replays` tag of a post into a thread: scoped to the agent and the thread.
+/// `replays` tag of a post into a thread: scoped to the actor and the thread.
 const REPLAY_POST: u8 = 1;
 
-/// `replays` tag of an inbox read: scoped to the agent.
+/// `replays` tag of a marking inbox read: scoped to the actor.
 const REPLAY_INBOX: u8 = 2;
+
+/// `replays` tag of a `leave`: scoped to the actor and the thread.
+const REPLAY_LEAVE: u8 = 3;
 
 /// Which records an `expiry` entry is for. The tag leads the key, so each kind is one contiguous
 /// range ordered by time.
@@ -44,10 +47,13 @@ const REPLAY_INBOX: u8 = 2;
 pub(super) enum Expiry {
     /// A thread, at its last activity. Payload: the `threads` key.
     Thread = 1,
-    /// A replay entry, at the time it stops answering. Payload: the `replays` key.
+    /// A replay entry, at the time it was written. Payload: the `replays` key.
     Replay = 2,
-    /// A seen record, at the time of the agent's last call. Payload: the `seen` key.
+    /// A seen record, at the time it was written. Payload: the `seen` key.
     Seen = 3,
+    /// A thread that has had more posts than a thread keeps messages, at time zero: where the
+    /// sweep drops the oldest. Payload: the `threads` key.
+    OverCap = 4,
 }
 
 fn timestamp(ts_micros: i64) -> [u8; U64_LEN] {
@@ -103,9 +109,10 @@ pub(super) fn parse_message_seq(key: &[u8]) -> Option<u64> {
 }
 
 /// `post_order`: `ts:u64 ‖ order:u64`, a message's stamp and then its store-wide post position.
-/// The stamp leads because stamps do not follow post positions once a clock was corrected
-/// ([`post_timestamp`](crate::comms::v2::rules::post_timestamp)), and a sweep needs the messages
-/// in the order they expire; the post position only keeps two messages stamped alike apart.
+/// The stamp leads because a sweep needs the messages oldest stamp first, and stamps follow post
+/// positions only inside one thread
+/// ([`post_timestamp`](crate::comms::v2::rules::post_timestamp)); the post position keeps two
+/// messages stamped alike apart.
 pub(super) fn order(ts_micros: i64, order: u64) -> [u8; ORDER_KEY_LEN] {
     let mut key = [0; ORDER_KEY_LEN];
     key[..U64_LEN].copy_from_slice(&timestamp(ts_micros));
@@ -136,30 +143,52 @@ pub(super) fn parse_order_row(key: &[u8], value: &[u8]) -> Option<OrderEntry> {
     })
 }
 
-/// `members`: `thread:u32 ‖ agent`. The thread's prefix is [`thread`].
-pub(super) fn member(thread_id: &ThreadId, actor: &Actor) -> Vec<u8> {
-    let mut key = Vec::with_capacity(THREAD_LEN + actor.as_str().len());
+/// `thread:u32 ‖ id`: a `members` or `positions` key, and the prefix of the `positions` keys of
+/// a principal's actors. The thread's prefix is [`thread`].
+fn in_thread(thread_id: &ThreadId, id: &str) -> Vec<u8> {
+    let mut key = Vec::with_capacity(THREAD_LEN + id.len());
     key.extend_from_slice(&thread(thread_id));
-    key.extend_from_slice(actor.as_str().as_bytes());
+    key.extend_from_slice(id.as_bytes());
     key
 }
 
-/// The agent of a `members` key.
-pub(super) fn parse_member(key: &[u8]) -> Option<Actor> {
-    let agent = std::str::from_utf8(key.get(THREAD_LEN..)?).ok()?;
-    Actor::parse(agent).ok()
+/// `members`: `thread:u32 ‖ principal`.
+pub(super) fn member(thread_id: &ThreadId, principal: &Principal) -> Vec<u8> {
+    in_thread(thread_id, principal.as_str())
 }
 
-/// Prefix of every `member_threads` key of `actor`: `u16:len ‖ agent`.
-pub(super) fn member_threads_prefix(actor: &Actor) -> Vec<u8> {
-    let mut key = Vec::with_capacity(2 + actor.as_str().len() + THREAD_LEN);
-    write_len_prefixed(&mut key, actor.as_str().as_bytes());
+/// The principal of a `members` key.
+pub(super) fn parse_member(key: &[u8]) -> Option<Principal> {
+    Principal::parse(std::str::from_utf8(key.get(THREAD_LEN..)?).ok()?).ok()
+}
+
+/// `positions`: `thread:u32 ‖ actor`.
+pub(super) fn position(thread_id: &ThreadId, actor: &Actor) -> Vec<u8> {
+    in_thread(thread_id, actor.as_str())
+}
+
+/// Prefix of the `positions` keys of the actors of `principal` in a thread. A longer principal
+/// that starts with this one shares it.
+pub(super) fn positions_prefix(thread_id: &ThreadId, principal: &str) -> Vec<u8> {
+    in_thread(thread_id, principal)
+}
+
+/// The actor of a `positions` key.
+pub(super) fn parse_position(key: &[u8]) -> Option<Actor> {
+    Actor::parse(std::str::from_utf8(key.get(THREAD_LEN..)?).ok()?).ok()
+}
+
+/// Prefix of the `member_threads` keys of a principal, or the `actor_threads` keys of an actor:
+/// `u16:len ‖ id`.
+pub(super) fn threads_of_prefix(owner: &str) -> Vec<u8> {
+    let mut key = Vec::with_capacity(2 + owner.len() + THREAD_LEN);
+    write_len_prefixed(&mut key, owner.as_bytes());
     key
 }
 
-/// `member_threads`: `u16:len ‖ agent ‖ thread:u32`.
-pub(super) fn member_thread(actor: &Actor, thread_id: &ThreadId) -> Vec<u8> {
-    let mut key = member_threads_prefix(actor);
+/// `member_threads` and `actor_threads`: `u16:len ‖ id ‖ thread:u32`.
+pub(super) fn thread_of(owner: &str, thread_id: &ThreadId) -> Vec<u8> {
+    let mut key = threads_of_prefix(owner);
     key.extend_from_slice(&thread(thread_id));
     key
 }
@@ -179,7 +208,7 @@ pub(super) fn repo_thread(repo: &RepoKey, archived: bool, thread_id: &ThreadId) 
     key
 }
 
-/// The thread of a `member_threads` or `repo_threads` key: its last four bytes.
+/// The thread of a `member_threads`, `actor_threads` or `repo_threads` key: its last four bytes.
 pub(super) fn parse_trailing_thread(key: &[u8]) -> Option<ThreadId> {
     parse_thread(key.get(key.len().checked_sub(THREAD_LEN)?..)?)
 }
@@ -205,9 +234,14 @@ pub(super) fn replay_post(actor: &Actor, thread_id: &ThreadId, key: &ReplayKey) 
     replay(REPLAY_POST, actor, Some(thread_id), key)
 }
 
-/// `replays`, for an inbox read: `2 ‖ u16:len ‖ agent ‖ key`.
+/// `replays`, for a marking inbox read: `2 ‖ u16:len ‖ agent ‖ key`.
 pub(super) fn replay_inbox(actor: &Actor, key: &ReplayKey) -> Vec<u8> {
     replay(REPLAY_INBOX, actor, None, key)
+}
+
+/// `replays`, for a `leave`: `3 ‖ u16:len ‖ agent ‖ thread:u32 ‖ key`.
+pub(super) fn replay_leave(actor: &Actor, thread_id: &ThreadId, key: &ReplayKey) -> Vec<u8> {
+    replay(REPLAY_LEAVE, actor, Some(thread_id), key)
 }
 
 /// `seen`: the agent id.
@@ -220,13 +254,18 @@ pub(super) fn expiry_prefix(kind: Expiry) -> [u8; 1] {
     [kind as u8]
 }
 
-/// `expiry`: `kind:u8 ‖ ts:u64 ‖ payload`, the payload being the key of the record that expires.
+/// `expiry`: `kind:u8 ‖ ts:u64 ‖ payload`, the payload being the key of the record the entry is for.
 pub(super) fn expiry(kind: Expiry, ts_micros: i64, payload: &[u8]) -> Vec<u8> {
     let mut key = Vec::with_capacity(1 + U64_LEN + payload.len());
     key.push(kind as u8);
     key.extend_from_slice(&timestamp(ts_micros));
     key.extend_from_slice(payload);
     key
+}
+
+/// The `expiry` entry that marks a thread as over its message cap.
+pub(super) fn over_cap(thread_id: &ThreadId) -> Vec<u8> {
+    expiry(Expiry::OverCap, 0, &thread(thread_id))
 }
 
 /// The time and the payload of an `expiry` key.

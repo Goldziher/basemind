@@ -13,13 +13,18 @@
 //! Scenarios take every thread id, message id and cursor from a reply, compare timestamps only
 //! with each other, and move time only through [`ConformanceHarness::advance`] and
 //! [`ConformanceHarness::rewind`], so they hold for a store with random ids and a real layout.
+//!
+//! Only a sweep removes a record, and an implementation may run one after any call that changed
+//! something. A scenario therefore calls [`ConformanceHarness::sweep`] before it asserts that a
+//! record is gone, and asserts that an old record is still there only on the first call after
+//! it moved the clock.
 
 use std::time::{Duration, Instant};
 
 use super::api::{
     Actor, AgentOps, Caller, CommsError, InboxBody, InboxReply, InboxSelect, MESSAGE_TTL, Mark, MessageId, PostBody,
-    PostReply, PostTarget, ReadKind, RepoKey, ThreadAction, ThreadFilter, ThreadId, ThreadQuery, ThreadSummary,
-    ThreadUpdate, ThreadsReply, WaitOutcome,
+    PostReply, PostTarget, Principal, ReadKind, RepoKey, ThreadAction, ThreadFilter, ThreadId, ThreadQuery,
+    ThreadSummary, ThreadUpdate, ThreadsReply, WaitOutcome,
 };
 use crate::path::RelPath;
 
@@ -46,38 +51,30 @@ pub enum Repo {
 /// holds. `Self` must be a fresh, empty store at
 /// [`COMMS_STORE_VER`](super::api::COMMS_STORE_VER) each time a scenario starts.
 pub trait ConformanceHarness: AgentOps {
-    /// Move the store's clock forward. Message, replay and seen expiry must follow this clock,
-    /// by the next operation at the latest.
+    /// Move the store's clock forward: what posts are stamped from and a sweep judges age by.
     fn advance(&self, by: Duration);
 
-    /// Move the store's clock back, the way a clock that ran ahead is corrected. Expiry must
-    /// follow the clock as it reads afterwards, and so must the timestamp of the next post once
-    /// the clock reads more than a minute behind the previous one.
-    ///
-    /// A record hidden as expired may become visible again when the clock goes back, unless a
-    /// sweep already removed it. An implementation may sweep on any call that succeeds, so a
-    /// scenario that asserts on what is visible again makes only refused calls, or calls
-    /// [`ConformanceHarness::sweep`] itself, between moving the clock forward and back.
+    /// Move the store's clock back, the way a clock that ran ahead is corrected.
     fn rewind(&self, by: Duration);
 
-    /// Remove everything that has expired at the clock's reading, the way an implementation's
-    /// retention does in its own time. Nothing a call returns may change with it while the
-    /// clock stands; what it removed stays removed when the clock goes back.
+    /// Run the implementation's sweep until it has nothing left to remove at the clock's
+    /// reading. Does nothing on a store newer than the binary.
     fn sweep(&self);
 
-    /// `(read_seq, notified_seq)` of `actor` in `thread`; `None` when it is not a member.
+    /// `(read_seq, notified_seq)` of `actor` in `thread`: its marks, or where it starts when it
+    /// has none yet. `None` when its principal is not a member.
     fn position(&self, thread: &ThreadId, actor: &Actor) -> Option<(u64, u64)>;
 
     /// Make the store report layout version `version`, as if another binary had written it.
     fn set_store_version(&self, version: u32);
 
-    /// Number of threads the store holds after a [`ConformanceHarness::sweep`], archived ones
-    /// included.
+    /// Number of threads the store holds, archived ones included.
     fn thread_count(&self) -> usize;
 
     /// The caller a scenario's agent `name` is, working in `repo`, without a replay key.
     ///
-    /// Scenarios use short lowercase names (`a`, `b`, ...) and one sub-identity, `a.helper`.
+    /// Scenarios use short lowercase names (`a`, `b`, ...) and sub-identities of them, such as
+    /// `b.helper`.
     /// Distinct names must give distinct actors, the same name the same actor in both
     /// repositories, and the two repositories distinct keys. The default satisfies that.
     fn caller(&self, name: &str, repo: Repo) -> Caller {
@@ -190,12 +187,15 @@ macro_rules! conformance_tests {
             pending_lists_only_recipients_that_made_no_call,
             being_named_in_to_does_not_make_an_agent_seen,
             failed_call_does_not_make_an_agent_seen,
-            seen_record_lasts_thirty_days_from_the_last_call_and_at_most_a_day_more,
+            seen_record_is_swept_thirty_to_thirty_one_days_after_the_last_call,
             agent_that_keeps_calling_stays_seen,
+            marks_go_with_the_seen_record_and_a_returning_actor_starts_again,
             posting_requires_membership,
-            sub_identity_is_a_different_member_than_its_principal,
+            sub_identity_acts_in_the_threads_of_its_principal,
+            naming_a_sub_identity_makes_its_principal_the_member,
             reply_goes_into_the_thread_of_the_message_it_answers,
             invalid_posts_are_refused_before_anything_is_stored,
+            body_is_capped_at_sixteen_kibibytes,
             recipients_and_paths_are_capped,
             to_naming_only_the_creator_is_refused,
             replayed_post_into_a_thread_returns_the_first_reply,
@@ -207,8 +207,10 @@ macro_rules! conformance_tests {
             recipient_that_never_connected_finds_the_thread_on_its_first_inbox,
             reading_advances_read_seq_to_the_last_message_returned,
             peek_returns_messages_without_moving_any_position,
-            notify_announces_once_and_leaves_messages_unread,
+            notify_announces_front_matter_once_and_leaves_messages_unread,
             own_posts_are_never_unread,
+            posts_of_a_sibling_actor_are_unread,
+            new_actor_starts_where_its_principal_has_read_to,
             history_read_returns_everything_and_moves_no_position,
             inbox_spans_threads_in_post_order,
             thread_selection_reads_one_thread_only,
@@ -243,7 +245,7 @@ macro_rules! conformance_tests {
             thread_paths_are_stored_normalised_and_bad_ones_are_refused,
             describing_one_thread_needs_membership_or_an_open_thread_here,
             archived_threads_are_listed_only_on_request,
-            listing_is_ordered_by_last_activity_newest_first,
+            listing_is_ordered_by_the_newest_post_newest_first,
             thread_listing_pages_by_cursor,
             joining_an_open_thread_of_the_callers_repository_starts_at_the_head,
             joining_again_keeps_the_read_position,
@@ -255,24 +257,19 @@ macro_rules! conformance_tests {
             only_the_creator_may_archive,
             creator_who_left_may_still_archive,
             last_member_leaving_archives_the_thread,
-            archived_thread_is_readable_but_closed_to_posts_joins_and_invitations,
-            active_threads_are_capped_per_repository,
+            membership_changes_are_idempotent_under_replay,
+            archived_thread_is_read_by_naming_it_and_closed_to_posts_joins_and_invitations,
+            creating_a_thread_at_the_cap_archives_the_least_recently_active,
             members_are_capped_per_thread,
-            oldest_messages_are_dropped_past_the_per_thread_cap,
-            thread_is_removed_when_its_last_message_expires,
-            messages_expire_one_by_one_inside_a_live_thread,
-            archived_thread_expires_like_any_other,
+            sweep_drops_messages_outside_the_newest_of_their_thread,
+            record_past_its_retention_is_returned_until_a_sweep_removes_it,
+            sweep_removes_old_messages_inside_a_live_thread,
+            cursor_pages_history_after_a_sweep_removed_the_oldest_messages,
+            archived_thread_is_swept_like_any_other,
+            forward_clock_jump_pins_only_the_threads_posted_to_meanwhile,
+            sweep_under_a_clock_far_ahead_removes_everything_for_good,
             store_newer_than_the_binary_is_refused_for_writing_only,
-            nothing_is_recorded_on_a_newer_store,
-            expired_messages_are_not_returned_on_a_newer_store,
-            replay_entries_expire_by_the_clock_after_it_was_set_back,
-            post_after_the_clock_was_corrected_is_stamped_and_expires_by_the_clock,
-            post_stamped_while_the_clock_read_behind_expires_alone,
-            thread_cap_is_not_held_by_threads_untouched_while_the_clock_read_ahead,
-            thread_touched_while_the_clock_read_ahead_holds_its_cap_slot_until_archived,
-            cursor_pages_across_a_message_stamped_ahead_and_a_swept_one,
-            expired_records_are_visible_again_when_the_clock_goes_back_before_a_sweep,
-            swept_records_stay_removed_when_the_clock_goes_back,
+            nothing_is_recorded_or_swept_on_a_newer_store,
         );
     };
     (@emit $harness:expr; $($scenario:ident),+ $(,)?) => {
@@ -306,6 +303,11 @@ fn agent<H: ConformanceHarness>(harness: &H, name: &str) -> Actor {
 
 fn agents<H: ConformanceHarness>(harness: &H, names: &[&str]) -> Vec<Actor> {
     names.iter().map(|name| agent(harness, name)).collect()
+}
+
+/// The principals of the agents `names`: what a thread lists as its members.
+fn principals<H: ConformanceHarness>(harness: &H, names: &[&str]) -> Vec<Principal> {
+    names.iter().map(|name| agent(harness, name).principal_id()).collect()
 }
 
 fn new_thread<H: ConformanceHarness>(harness: &H, subject: &str, to: &[&str], paths: &[&str], body: &str) -> PostBody {
@@ -442,13 +444,14 @@ fn tick<H: ConformanceHarness>(harness: &H) {
     harness.advance(Duration::from_secs(1));
 }
 
-/// The id of a thread that existed and has expired: an id the store does not hold, taken from a
+/// The id of a thread that existed and was swept: an id the store does not hold, taken from a
 /// reply rather than invented. It moves the clock past [`MESSAGE_TTL`], so scenarios call it
 /// before anything else.
 #[track_caller]
 fn gone_thread<H: ConformanceHarness>(harness: &H) -> PostReply {
     let gone = start(harness, "ghost", "short-lived", &[]);
     harness.advance(MESSAGE_TTL + Duration::from_secs(1));
-    assert_eq!(harness.thread_count(), 0, "a thread past its retention is removed");
+    harness.sweep();
+    assert_eq!(harness.thread_count(), 0, "a sweep removes a thread past its retention");
     gone
 }

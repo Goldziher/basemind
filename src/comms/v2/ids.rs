@@ -376,6 +376,11 @@ impl Actor {
         &self.id.as_str()[..self.principal_len]
     }
 
+    /// The principal as an id of its own: what is a member of a thread, for all its actors.
+    pub fn principal_id(&self) -> Principal {
+        Principal(self.principal().to_string())
+    }
+
     /// The sub-identity name, when the actor is one.
     pub fn sub(&self) -> Option<&str> {
         self.id.as_str().get(self.principal_len + ID_SEPARATOR.len_utf8()..)

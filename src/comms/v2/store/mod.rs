@@ -7,40 +7,34 @@
 //!
 //! ## Layout
 //!
-//! One Fjall database in `<comms dir>/agents.fjall`. The legacy `store.fjall` of earlier
-//! releases is not read, renamed or imported.
+//! One Fjall database in `<dir>/agents.fjall`, `<dir>` being the directory the caller passes:
+//! the protocol generation's (ADR-0024).
 //!
 //! | Keyspace | Key | Value | Serves |
 //! |---|---|---|---|
-//! | `meta` | `store_ver`, `posts`, `last_ts` | `u32`, `u64`, `i64` | layout version; post counter (arrivals); the previous post's timestamp |
+//! | `meta` | `store_ver`, `posts` | `u32`, `u64` | layout version; post counter (arrivals, store-wide post order) |
 //! | `threads` | `thread:u32` | `ThreadRecord` | a thread by id |
 //! | `messages` | `thread:u32 ‖ seq:u64` | `MessageMeta` | a message by id; a thread's messages in order |
 //! | `bodies` | `thread:u32 ‖ seq:u64` | UTF-8 body | the text of a message that is returned |
-//! | `post_order` | `ts:u64 ‖ order:u64` | `thread:u32 ‖ seq:u64` | messages by timestamp, then post position: the order they expire in |
-//! | `members` | `thread:u32 ‖ agent` | `Position` | membership, `read_seq`, `notified_seq`; a thread's members |
-//! | `member_threads` | `u16:len ‖ agent ‖ thread:u32` | empty | the threads an agent is in |
-//! | `repo_threads` | `u16:len ‖ repo ‖ state:u8 ‖ thread:u32` | empty | discovery, and the active-thread cap of a repository |
-//! | `replays` | `tag:u8 ‖ u16:len ‖ agent ‖ [thread:u32] ‖ key` | `Replay<PostReply>` or `Replay<Delivered>` | the first result of a relayed request |
-//! | `seen` | `agent` | `i64`: a call of the agent, its last one or up to a day before it | whether a recipient is `pending` |
-//! | `expiry` | `kind:u8 ‖ ts:u64 ‖ record key` | empty | threads, replay entries and seen records in the order they expire |
+//! | `post_order` | `ts:u64 ‖ order:u64` | `thread:u32 ‖ seq:u64` | messages by timestamp, for the sweep |
+//! | `members` | `thread:u32 ‖ principal` | `u64` | membership, and where the member's actors start reading |
+//! | `member_threads` | `u16:len ‖ principal ‖ thread:u32` | empty | the threads a principal is in |
+//! | `positions` | `thread:u32 ‖ actor` | `Position` | an actor's `read_seq` and `notified_seq` in a thread |
+//! | `actor_threads` | `u16:len ‖ actor ‖ thread:u32` | empty | the threads an actor has marks in |
+//! | `repo_threads` | `u16:len ‖ repo ‖ state:u8 ‖ thread:u32` | empty | discovery, and the active threads of a repository |
+//! | `replays` | `tag:u8 ‖ u16:len ‖ actor ‖ [thread:u32] ‖ key` | `Replay<_>` | the first result of a relayed request |
+//! | `seen` | `actor` | `i64`: when the record was written | whether a recipient is `pending` |
+//! | `expiry` | `kind:u8 ‖ ts:u64 ‖ record key` | empty | what the sweep visits: threads, replay entries and seen records by time, and threads over their message cap |
 //!
 //! A thread id is drawn at random and drawn again while it is taken, 64 times at most
 //! (`MAX_THREAD_ID_DRAWS`), after which the post fails as a [`CommsError::Backend`] and stores
 //! nothing.
 //!
-//! A message id is `<thread>.<seq>`, so reading one is a point lookup in `messages`. The
-//! `threads` row carries the head, the last activity and the newest message not posted by the
-//! head's author, which is enough to tell whether a member has anything unread without reading
-//! a message.
+//! ## Reading and writing
 //!
-//! ## Writing
-//!
-//! One writer at a time: every change takes the writer lock, reads a snapshot, stages all of its
-//! rows (the caller's seen record included, when it is due) in one Fjall batch and commits it, so
-//! a change is whole or absent. Reads that change nothing run on a snapshot without the lock. They
-//! take it afterwards only when the caller's seen record has to be written, which is on its first
-//! call and then once per [`SEEN_REFRESH_INTERVAL`](crate::comms::v2::api::SEEN_REFRESH_INTERVAL);
-//! every other read writes nothing at all.
+//! One call at a time: every operation, a read included, takes the one lock, reads a snapshot,
+//! stages its rows (the caller's seen record included, when it is due) in one Fjall batch and
+//! commits it, so a change is whole or absent. An operation that stages nothing commits nothing.
 //!
 //! A commit is handed to the operating system before the call returns and is not synced: it
 //! survives a crash of the process, not a loss of power. [`FjallAgents::flush`] syncs, and is for
@@ -48,35 +42,12 @@
 //! flush can be lost with the machine, messages included, and a sequence number lost that way is
 //! issued again to the next post in its thread.
 //!
-//! ## Time
+//! ## Time and retention
 //!
-//! Everything that expires is judged against the [`Clock`] as it reads now, never against a
-//! timestamp the store issued. A message is stamped [`rules::post_timestamp`]: the clock, or one
-//! microsecond past the previous stamp while the clock is not later and no more than a minute
-//! behind it. Once the clock reads further behind, the previous stamp is the one taken to be
-//! wrong and posts are stamped from the clock again, so a post made while the clock ran ahead
-//! holds nothing after it in the future. Timestamps therefore do not order messages: `seq` does
-//! within a thread and the post counter does across threads, and nothing reads a timestamp for
-//! order. The two indexes kept by time, `post_order` and `expiry`, serve the sweep alone, which
-//! needs records in the order they expire.
-//!
-//! A thread's last activity is the latest stamp of any post made to it and never moves back
-//! ([`rules::last_activity`]): a post stamped while the clock read behind expires early, alone,
-//! and takes neither its thread nor the messages stamped before it. What was stamped ahead stays
-//! stamped ahead. Such a message expires when the clock passes its stamp by the retention, and
-//! its thread keeps that last activity until then: it is listed first and counts against the cap
-//! of its repository unless it is archived, whatever is posted to it afterwards. A clock more
-//! than a minute behind the previous stamp is logged at open and, at most every ten minutes, when
-//! a post is stamped.
-//!
-//! ## Retention
-//!
-//! Expiry is decided when a record is read, by comparing its time with the clock, so it holds
-//! from the next operation whether or not anything was deleted, and a record hidden as expired
-//! is visible again if the clock goes back before a sweep removed it. Deleting is
-//! [`FjallAgents::sweep`], which walks `post_order` and `expiry` from their oldest entry and
-//! stops at the first one still alive or at its budget; changes run a small one after
-//! committing.
+//! A message is stamped [`rules::post_timestamp`]: the clock, or one microsecond past the newest
+//! message of its thread. Timestamps are shown and read by the sweep; order within a thread is
+//! `seq` and across threads the post counter. Nothing but [`FjallAgents::sweep`] removes a
+//! record, and no read hides one for its age (see the `retention` module).
 //!
 //! ## Versions
 //!
@@ -96,9 +67,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use fjall::{Database, Keyspace, OwnedWriteBatch, PersistMode};
 
 use self::records::{Reader, backend};
-use self::skew::SkewLog;
 use super::api::{
-    Actor, AgentOps, Caller, CommsError, InboxBody, InboxReply, PostBody, PostReply, ThreadId, ThreadQuery,
+    Actor, AgentOps, Caller, CommsError, InboxBody, InboxReply, PostBody, PostReply, Principal, ThreadId, ThreadQuery,
     ThreadUpdate, ThreadsReply, check_body,
 };
 use super::rules::{self, Position};
@@ -109,12 +79,11 @@ mod open;
 mod post;
 mod records;
 mod retention;
-mod skew;
 mod threads;
 
 pub use retention::{SWEEP_BUDGET, SweepReport};
 
-/// Name of the store's directory inside the comms directory.
+/// Name of the store's directory inside the directory it is opened in.
 pub const STORE_DIR: &str = "agents.fjall";
 
 /// `meta` key of the layout version.
@@ -122,9 +91,6 @@ const META_STORE_VER: &[u8] = b"store_ver";
 
 /// `meta` key of the post counter.
 const META_POSTS: &[u8] = b"posts";
-
-/// `meta` key of the timestamp of the previous post.
-const META_LAST_TS: &[u8] = b"last_ts";
 
 /// Draws after which a new thread id is given up on. Ids are 30 random bits and a store holds a
 /// few thousand threads, so a second draw is already rare.
@@ -135,8 +101,8 @@ const THREAD_ID_BYTES: usize = 4;
 
 /// Where the store takes the time from, in microseconds since the unix epoch.
 pub trait Clock: Send + Sync {
-    /// The current time. It may stand still or go back: expiry is judged against this reading
-    /// alone, and a message is stamped as [`rules::post_timestamp`] says.
+    /// The current time. It may stand still or go back: a post is stamped as
+    /// [`rules::post_timestamp`] says, and a sweep judges age against this reading alone.
     fn now_micros(&self) -> i64;
 }
 
@@ -173,7 +139,7 @@ impl ThreadIds for RandomThreadIds {
 
 /// What a store is opened with beside its directory.
 pub struct StoreOptions {
-    /// The clock retention and timestamps follow.
+    /// The clock timestamps and the sweep follow.
     pub clock: Arc<dyn Clock>,
     /// The source of new thread ids.
     pub thread_ids: Box<dyn ThreadIds>,
@@ -198,23 +164,21 @@ pub(super) struct Keyspaces {
     post_order: Keyspace,
     members: Keyspace,
     member_threads: Keyspace,
+    positions: Keyspace,
+    actor_threads: Keyspace,
     repo_threads: Keyspace,
     replays: Keyspace,
     seen: Keyspace,
     expiry: Keyspace,
 }
 
-/// What only the one writer touches.
+/// What only the call holding the lock touches.
 struct Writer {
     /// Posts stored so far: the store-wide post order.
     posts: u64,
-    /// The timestamp of the previous post.
-    last_ts: i64,
     thread_ids: Box<dyn ThreadIds>,
-    /// When an operation last ran its sweep.
+    /// When a change last ran its sweep.
     swept_at: i64,
-    /// When a clock behind the previous timestamp was last reported.
-    skew: SkewLog,
 }
 
 /// Agent coordination with ADR-0021 semantics, kept in a Fjall database.
@@ -223,39 +187,36 @@ pub struct FjallAgents {
     ks: Keyspaces,
     clock: Arc<dyn Clock>,
     writer: Mutex<Writer>,
-    /// Mirror of the persisted post counter, for [`AgentOps::arrivals`].
+    /// Mirror of the persisted post counter, so [`AgentOps::arrivals`] takes no lock.
     arrivals: AtomicU64,
     store_ver: AtomicU32,
 }
 
-/// One change being staged: the batch it commits, and the instant it happens at.
+/// One operation's change being staged: the batch it commits, and the instant it happens at.
 struct Txn<'a> {
     writer: &'a mut Writer,
     batch: OwnedWriteBatch,
-    /// What the clock read when the change began: the instant expiry is judged at, a replay
-    /// entry starts at and a seen record is written at. Never a message's timestamp.
+    /// What the clock read when the operation began.
     now: i64,
-    /// The timestamp of the message this change posts, when it posts one.
-    stamped: Option<i64>,
+    /// Whether the change stores a post, which takes the next place in the post order.
+    posted: bool,
 }
 
 impl Txn<'_> {
-    /// Take the next timestamp and post position, and stage both counters. The timestamp is the
-    /// message's own and does not move the instant the change is judged at.
-    fn stamp_post(&mut self, ks: &Keyspaces) -> (i64, u64) {
-        let ts_micros = rules::post_timestamp(self.now, self.writer.last_ts);
+    /// Take the timestamp and the post position of a post into a thread whose newest message is
+    /// stamped `thread_last_micros`, and stage the counter.
+    fn stamp_post(&mut self, ks: &Keyspaces, thread_last_micros: Option<i64>) -> (i64, u64) {
         let order = self.writer.posts + 1;
         self.batch.insert(&ks.meta, META_POSTS, order.to_be_bytes());
-        self.batch.insert(&ks.meta, META_LAST_TS, ts_micros.to_be_bytes());
-        self.stamped = Some(ts_micros);
-        (ts_micros, order)
+        self.posted = true;
+        (rules::post_timestamp(self.now, thread_last_micros), order)
     }
 
     /// A thread id the store does not hold.
     fn fresh_thread_id(&mut self, reader: &Reader<'_>) -> Result<ThreadId, CommsError> {
         for _ in 0..MAX_THREAD_ID_DRAWS {
             let id = ThreadId::from_bits(self.writer.thread_ids.draw()? % ThreadId::SPACE);
-            if reader.stored_thread(&id)?.is_none() {
+            if reader.thread(&id)?.is_none() {
                 return Ok(id);
             }
         }
@@ -264,20 +225,15 @@ impl Txn<'_> {
         })
     }
 
-    /// Stage `actor`'s membership of `thread` at `position`.
-    fn add_member(
-        &mut self,
-        ks: &Keyspaces,
-        thread: &ThreadId,
-        actor: &Actor,
-        position: Position,
-    ) -> Result<(), CommsError> {
-        self.set_position(ks, thread, actor, position)?;
+    /// Stage `principal`'s membership of `thread`, its actors starting after message `start`.
+    fn add_member(&mut self, ks: &Keyspaces, thread: &ThreadId, principal: &Principal, start: u64) {
         self.batch
-            .insert(&ks.member_threads, keys::member_thread(actor, thread), []);
-        Ok(())
+            .insert(&ks.members, keys::member(thread, principal), start.to_be_bytes());
+        self.batch
+            .insert(&ks.member_threads, keys::thread_of(principal.as_str(), thread), []);
     }
 
+    /// Stage `actor`'s marks in `thread`.
     fn set_position(
         &mut self,
         ks: &Keyspaces,
@@ -285,39 +241,46 @@ impl Txn<'_> {
         actor: &Actor,
         position: Position,
     ) -> Result<(), CommsError> {
-        let row = records::encode("a member row", &position)?;
-        self.batch.insert(&ks.members, keys::member(thread, actor), row);
+        let row = records::encode("a position", &position)?;
+        self.batch.insert(&ks.positions, keys::position(thread, actor), row);
+        self.batch
+            .insert(&ks.actor_threads, keys::thread_of(actor.as_str(), thread), []);
         Ok(())
     }
 
-    /// Stage a replay entry for `key`, replacing an expired one.
-    fn remember<T: serde::Serialize>(&mut self, reader: &Reader<'_>, key: Vec<u8>, value: T) -> Result<(), CommsError> {
-        if let Some(expired) = reader.stored_replay::<serde::de::IgnoredAny>(&key)? {
-            self.batch.remove(
-                &reader.ks.expiry,
-                keys::expiry(keys::Expiry::Replay, expired.expires_micros, &key),
-            );
-        }
+    /// Stage the archiving of a thread: its row, and its place in the repository's index, which
+    /// keeps active and archived threads apart.
+    fn archive(&mut self, ks: &Keyspaces, id: &ThreadId, record: &mut records::ThreadRecord) -> Result<(), CommsError> {
+        record.archived = true;
+        self.batch
+            .insert(&ks.threads, keys::thread(id), records::encode("a thread", record)?);
+        self.batch
+            .remove(&ks.repo_threads, keys::repo_thread(&record.repo, false, id));
+        self.batch
+            .insert(&ks.repo_threads, keys::repo_thread(&record.repo, true, id), []);
+        Ok(())
+    }
+
+    /// Stage the first result of a relayed request under `key`. The first write for a key wins:
+    /// callers look the key up before they do the work.
+    fn remember<T: serde::Serialize>(&mut self, ks: &Keyspaces, key: Vec<u8>, value: T) -> Result<(), CommsError> {
         let entry = records::Replay {
-            expires_micros: rules::replay_expiry(self.now),
+            written_micros: self.now,
             value,
         };
-        self.batch.insert(
-            &reader.ks.expiry,
-            keys::expiry(keys::Expiry::Replay, entry.expires_micros, &key),
-            [],
-        );
         self.batch
-            .insert(&reader.ks.replays, key, records::encode("a replay entry", &entry)?);
+            .insert(&ks.expiry, keys::expiry(keys::Expiry::Replay, self.now, &key), []);
+        self.batch
+            .insert(&ks.replays, key, records::encode("a replay entry", &entry)?);
         Ok(())
     }
 
-    /// Stage `actor`'s seen record at this change's instant, unless the one stored is recent
-    /// enough to stand (see [`rules::seen_record_is_current`]).
+    /// Stage `actor`'s seen record at this operation's instant when it is due
+    /// ([`rules::seen_due`]).
     fn touch_seen(&mut self, reader: &Reader<'_>, actor: &Actor) -> Result<(), CommsError> {
         let key = keys::seen(actor);
-        let previous = reader.stored_seen(actor)?;
-        if rules::seen_record_is_current(previous, self.now) {
+        let previous = reader.seen(actor)?;
+        if !rules::seen_due(previous, self.now) {
             return Ok(());
         }
         if let Some(previous) = previous {
@@ -332,10 +295,10 @@ impl Txn<'_> {
 }
 
 impl FjallAgents {
-    /// Open the store in `comms_dir`, creating it at the current version when the directory is
-    /// new, with the system clock and random thread ids.
-    pub fn open(comms_dir: &Path) -> Result<Self, CommsError> {
-        Self::open_with(comms_dir, StoreOptions::default())
+    /// Open the store in `dir`, creating it at the current version when the directory is new,
+    /// with the system clock and random thread ids.
+    pub fn open(dir: &Path) -> Result<Self, CommsError> {
+        Self::open_with(dir, StoreOptions::default())
     }
 
     /// The layout version found on disk. Above
@@ -363,70 +326,47 @@ impl FjallAgents {
         rules::check_writable(self.store_version())
     }
 
-    fn reader(&self, now: i64) -> Reader<'_> {
-        Reader::new(&self.ks, self.db.snapshot(), now)
-    }
-
-    /// Run a change under the writer lock and commit it with the caller's seen record. `change`
-    /// reads from a snapshot taken under the lock, so it sees every earlier change and no later
-    /// one; when it fails nothing is written.
-    fn write<T>(
+    /// Run one operation under the lock and commit what it staged, with the caller's seen record
+    /// when that is due. `operation` reads from a snapshot taken under the lock, so it sees
+    /// every earlier call and no later one; when it fails nothing is written. An operation that
+    /// `writes` is refused on a store newer than the binary, where nothing is recorded for any
+    /// call, seen included.
+    fn call<T>(
         &self,
         caller: &Caller,
-        change: impl FnOnce(&mut Txn<'_>, &Reader<'_>) -> Result<T, CommsError>,
+        writes: bool,
+        operation: impl FnOnce(&mut Txn<'_>, &Reader<'_>) -> Result<T, CommsError>,
     ) -> Result<T, CommsError> {
         let mut writer = self.lock();
+        let writable = self.check_writable();
+        if writes {
+            writable.clone()?;
+        }
         let now = self.clock.now_micros();
-        let reader = self.reader(now);
+        let reader = Reader::new(&self.ks, self.db.snapshot());
         let mut txn = Txn {
             writer: &mut writer,
             batch: self.db.batch(),
             now,
-            stamped: None,
+            posted: false,
         };
-        let value = change(&mut txn, &reader)?;
-        txn.touch_seen(&reader, &caller.actor)?;
-        let Txn { batch, stamped, .. } = txn;
+        let value = operation(&mut txn, &reader)?;
+        if writable.is_ok() {
+            txn.touch_seen(&reader, &caller.actor)?;
+        }
+        let Txn { batch, posted, .. } = txn;
+        drop(reader);
+        if batch.is_empty() {
+            return Ok(value);
+        }
         batch
             .commit()
             .map_err(|error| backend("write to the comms store", error))?;
-        if let Some(ts_micros) = stamped {
-            let previous = writer.last_ts;
-            if let Some(behind_micros) = writer.skew.due(now, previous) {
-                skew::warn(behind_micros, "stamping a post");
-            }
+        if posted {
             writer.posts += 1;
-            writer.last_ts = ts_micros;
             self.arrivals.store(writer.posts, Ordering::Release);
         }
-        drop(reader);
         self.sweep_after_change(&mut writer, now);
-        Ok(value)
-    }
-
-    /// Run a read that changes nothing on a snapshot, then record the caller as seen when its
-    /// record is due. Whether it is due is read from the same snapshot, so a read by a caller
-    /// seen within the refresh interval takes no lock, writes nothing and runs no sweep. On a
-    /// store newer than the binary nothing is recorded. The read has succeeded by then, so a
-    /// failure to record is logged and the reply still returned.
-    fn read<T>(
-        &self,
-        caller: &Caller,
-        read: impl FnOnce(&Reader<'_>) -> Result<T, CommsError>,
-    ) -> Result<T, CommsError> {
-        let reader = self.reader(self.clock.now_micros());
-        let value = read(&reader)?;
-        let recorded = match reader.stored_seen(&caller.actor) {
-            Ok(recorded) => rules::seen_record_is_current(recorded, reader.now),
-            Err(_) => false,
-        };
-        drop(reader);
-        if !recorded
-            && self.check_writable().is_ok()
-            && let Err(error) = self.write(caller, |_, _| Ok(()))
-        {
-            tracing::warn!(%error, agent = %caller.actor, "comms: recording a caller as seen failed");
-        }
         Ok(value)
     }
 }
@@ -434,31 +374,27 @@ impl FjallAgents {
 impl AgentOps for FjallAgents {
     fn post(&self, caller: &Caller, body: PostBody) -> Result<PostReply, CommsError> {
         check_body(&body.body)?;
-        self.check_writable()?;
-        self.write(caller, |txn, reader| post::post(txn, reader, caller, body))
+        self.call(caller, true, |txn, reader| post::post(txn, reader, caller, body))
     }
 
     fn inbox(&self, caller: &Caller, body: InboxBody) -> Result<InboxReply, CommsError> {
         let kind = body.kind()?;
-        if !kind.writes() {
-            return self.read(caller, |reader| inbox::read(reader, caller, &body, kind));
-        }
-        self.check_writable()?;
-        self.write(caller, |txn, reader| {
-            inbox::read_and_mark(txn, reader, caller, &body, kind)
+        self.call(caller, kind.writes(), |txn, reader| {
+            inbox::read(txn, reader, caller, &body, kind)
         })
     }
 
     fn threads_query(&self, caller: &Caller, query: ThreadQuery) -> Result<ThreadsReply, CommsError> {
-        self.read(caller, |reader| match &query {
+        self.call(caller, false, |_, reader| match &query {
             ThreadQuery::Describe(id) => threads::describe(reader, caller, id),
             ThreadQuery::List(filter) => threads::list(reader, caller, filter),
         })
     }
 
     fn threads_update(&self, caller: &Caller, update: ThreadUpdate) -> Result<ThreadsReply, CommsError> {
-        self.check_writable()?;
-        self.write(caller, |txn, reader| threads::update(txn, reader, caller, &update))
+        self.call(caller, true, |txn, reader| {
+            threads::update(txn, reader, caller, &update)
+        })
     }
 
     fn arrivals(&self) -> u64 {

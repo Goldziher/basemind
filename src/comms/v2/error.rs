@@ -8,7 +8,7 @@
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::{Map, Value};
 
-use super::ids::{InvalidId, MessageId, RepoKey, ThreadId, bounded_echo};
+use super::ids::{InvalidId, MessageId, ThreadId, bounded_echo};
 use crate::path::RelPath;
 
 /// Wire key of the variant tag.
@@ -32,7 +32,7 @@ pub enum CommsError {
         /// The id that was looked up.
         thread: ThreadId,
     },
-    /// No message has this id: never posted, or expired.
+    /// No message has this id: never posted, or removed by retention.
     #[error("message {id} not found: it was never posted or has expired; read the thread with agent_inbox `thread`")]
     MessageNotFound {
         /// The id that was looked up.
@@ -63,8 +63,10 @@ pub enum CommsError {
         /// The thread the caller did not create.
         thread: ThreadId,
     },
-    /// The thread is archived: readable, but closed to posts, joins and invitations.
-    #[error("thread {thread} is archived: read it with agent_inbox, or start a new thread by posting with `subject`")]
+    /// The thread is archived: readable by naming it, but closed to posts, joins and invitations.
+    #[error(
+        "thread {thread} is archived: read it with agent_inbox `thread`, or start a new thread by posting with `subject`"
+    )]
     ThreadArchived {
         /// The archived thread.
         thread: ThreadId,
@@ -116,17 +118,6 @@ pub enum CommsError {
     QueryTooShort {
         /// The minimum length, in characters.
         min: usize,
-    },
-    /// The repository already holds
-    /// [`MAX_ACTIVE_THREADS_PER_REPO`](super::api::MAX_ACTIVE_THREADS_PER_REPO) active threads.
-    #[error(
-        "repository {repo} already has {cap} active threads: post into an existing one, or archive one you created"
-    )]
-    ThreadCapReached {
-        /// The repository at its cap.
-        repo: RepoKey,
-        /// The cap.
-        cap: usize,
     },
     /// The thread already holds [`MAX_THREAD_MEMBERS`](super::api::MAX_THREAD_MEMBERS) members, or
     /// the invitation would take it past that.

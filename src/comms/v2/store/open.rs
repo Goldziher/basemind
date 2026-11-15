@@ -19,16 +19,14 @@ use std::sync::atomic::{AtomicU32, AtomicU64};
 
 use fjall::{Database, Keyspace, KeyspaceCreateOptions, OwnedWriteBatch, PersistMode};
 
-use super::records::{backend, corrupt, decode_i64, decode_u64};
-use super::skew::{self, SkewLog};
-use super::{FjallAgents, Keyspaces, META_LAST_TS, META_POSTS, META_STORE_VER, STORE_DIR, StoreOptions, Writer};
+use super::records::{backend, corrupt, decode_u64};
+use super::{FjallAgents, Keyspaces, META_POSTS, META_STORE_VER, STORE_DIR, StoreOptions, Writer};
 use crate::comms::v2::api::{COMMS_STORE_VER, CommsError};
-use crate::comms::v2::rules;
 
 /// Block cache of the store, in bytes. Coordination traffic is small and recent.
 const CACHE_BYTES: u64 = 16 * 1024 * 1024;
 
-/// Memtable ceiling of each keyspace, in bytes: fjall's 64 MiB default times eleven keyspaces
+/// Memtable ceiling of each keyspace, in bytes: fjall's 64 MiB default times every keyspace
 /// would let an idle daemon hold far more than the data is worth.
 const MEMTABLE_BYTES: u64 = 4 * 1024 * 1024;
 
@@ -40,7 +38,7 @@ const META: &str = "meta";
 
 /// Every keyspace of this layout. A store that lacks one is not opened, since asking Fjall for
 /// a keyspace creates it and a store is never completed behind its writer's back.
-const KEYSPACES: [&str; 11] = [
+const KEYSPACES: [&str; 13] = [
     META,
     "threads",
     "messages",
@@ -48,6 +46,8 @@ const KEYSPACES: [&str; 11] = [
     "post_order",
     "members",
     "member_threads",
+    "positions",
+    "actor_threads",
     "repo_threads",
     "replays",
     "seen",
@@ -74,24 +74,25 @@ pub(super) struct Migration {
 const MIGRATIONS: &[Migration] = &[];
 
 impl FjallAgents {
-    /// Open the store in `comms_dir` with `options`, creating it at [`COMMS_STORE_VER`] when the
-    /// directory holds no store.
+    /// Open the store in `dir` with `options`, creating it at [`COMMS_STORE_VER`] when the
+    /// directory holds no store. The store's own directory is [`STORE_DIR`] inside `dir`, which
+    /// the daemon makes the protocol generation's directory (ADR-0024).
     ///
     /// An older store is migrated first. A newer one opens and refuses writes. A store that
     /// cannot be opened, has rows but no version, lacks a keyspace of its layout, or has no
     /// migration path is a [`CommsError::Backend`] and is left as it was found: this function
     /// never deletes, renames, recreates or completes one. Opening does let Fjall recover its
     /// journal and compact, on a newer store too, which rewrites files but no key or value.
-    pub fn open_with(comms_dir: &Path, options: StoreOptions) -> Result<Self, CommsError> {
-        Self::open_migrating(comms_dir, options, MIGRATIONS)
+    pub fn open_with(dir: &Path, options: StoreOptions) -> Result<Self, CommsError> {
+        Self::open_migrating(dir, options, MIGRATIONS)
     }
 
     pub(super) fn open_migrating(
-        comms_dir: &Path,
+        dir: &Path,
         options: StoreOptions,
         migrations: &[Migration],
     ) -> Result<Self, CommsError> {
-        let dir = comms_dir.join(STORE_DIR);
+        let dir = dir.join(STORE_DIR);
         let untouched = |what: &str| format!("{what} the comms store at {} (left untouched)", dir.display());
         let located = |error: CommsError| match error {
             CommsError::Backend { detail } => CommsError::Backend {
@@ -155,6 +156,8 @@ impl FjallAgents {
             post_order: keyspace("post_order")?,
             members: keyspace("members")?,
             member_threads: keyspace("member_threads")?,
+            positions: keyspace("positions")?,
+            actor_threads: keyspace("actor_threads")?,
             repo_threads: keyspace("repo_threads")?,
             replays: keyspace("replays")?,
             seen: keyspace("seen")?,
@@ -176,38 +179,22 @@ impl FjallAgents {
             }
         };
         let version = migrate(&db, &ks, found, migrations).map_err(located)?;
-        let counter = |decoded: Result<Option<i64>, CommsError>| match decoded {
-            Ok(value) => Ok(value),
-            // ~keep Only writes use the counters, and a newer store takes none: its encoding of
-            // them may have changed without that stopping this binary from reading the rest.
-            Err(_) if newer => Ok(None),
-            Err(error) => Err(located(error)),
+        let posts = match read(META_POSTS)?.map(|bytes| decode_u64("post counter", &bytes)) {
+            None => 0,
+            Some(Ok(posts)) => posts,
+            // ~keep Only writes use the counter, and a newer store takes none: its encoding of
+            // it may have changed without that stopping this binary from reading the rest.
+            Some(Err(_)) if newer => 0,
+            Some(Err(error)) => return Err(located(error)),
         };
-        let posts = counter(
-            read(META_POSTS)?
-                .map(|bytes| decode_u64("post counter", &bytes).map(|posts| posts as i64))
-                .transpose(),
-        )?
-        .unwrap_or(0) as u64;
-        let last_ts = counter(
-            read(META_LAST_TS)?
-                .map(|bytes| decode_i64("timestamp", &bytes))
-                .transpose(),
-        )?
-        .unwrap_or(i64::MIN);
-        if let Some(behind_micros) = rules::clock_behind(options.clock.now_micros(), last_ts) {
-            skew::warn(behind_micros, "opening the store");
-        }
         Ok(Self {
             db,
             ks,
             clock: options.clock,
             writer: Mutex::new(Writer {
                 posts,
-                last_ts,
                 thread_ids: options.thread_ids,
                 swept_at: i64::MIN,
-                skew: SkewLog::default(),
             }),
             arrivals: AtomicU64::new(posts),
             store_ver: AtomicU32::new(version),

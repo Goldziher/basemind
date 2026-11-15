@@ -79,6 +79,7 @@ fn timestamps_start_at_the_fake_epoch_and_a_post_does_not_move_the_clock() {
                 ts_micros: FAKE_EPOCH_MICROS,
                 reply_to: None,
                 body: "first".to_string(),
+                body_bytes: 5,
                 truncated: false,
             }],
             read_to: vec![message("t-aaaaaa.1")],
@@ -104,7 +105,7 @@ fn timestamps_start_at_the_fake_epoch_and_a_post_does_not_move_the_clock() {
                 unread: 0,
                 head: 1,
                 last_activity_micros: FAKE_EPOCH_MICROS,
-                peers: vec![caller("b").actor],
+                peers: vec![caller("b").actor.principal_id()],
             }],
             pending: Vec::new(),
             next_cursor: None,
@@ -114,14 +115,22 @@ fn timestamps_start_at_the_fake_epoch_and_a_post_does_not_move_the_clock() {
 }
 
 #[test]
-fn posts_within_one_clock_reading_are_a_microsecond_apart() {
+fn posts_into_one_thread_within_one_clock_reading_are_a_microsecond_apart() {
     let fake = FakeAgents::new();
-    start(&fake, "a", "one", &["b"]);
-    start(&fake, "a", "two", &["b"]);
+    let created = start(&fake, "a", "one", &["b"]);
+    let say = || {
+        let body = PostBody {
+            target: PostTarget::Thread(created.thread.clone()),
+            body: "more".to_string(),
+        };
+        fake.post(&caller("a"), body).expect("post");
+    };
+    say();
+    start(&fake, "a", "another thread", &["b"]);
     fake.advance(Duration::from_micros(1));
-    start(&fake, "a", "three", &["b"]);
+    say();
     fake.advance(Duration::from_micros(5));
-    start(&fake, "a", "four", &["b"]);
+    say();
 
     let reply = fake.inbox(&caller("b"), InboxBody::default()).expect("inbox");
 
@@ -130,7 +139,7 @@ fn posts_within_one_clock_reading_are_a_microsecond_apart() {
         .iter()
         .map(|message| message.ts_micros - FAKE_EPOCH_MICROS)
         .collect();
-    assert_eq!(offsets, [0, 1, 2, 6]);
+    assert_eq!(offsets, [0, 1, 0, 2, 6], "the floor is the thread's last stamp");
 }
 
 #[test]

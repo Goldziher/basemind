@@ -45,26 +45,27 @@ pub const MAX_LIMIT: u32 = 100;
 /// How long a message is kept.
 pub const MESSAGE_TTL: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 
-/// How long an agent stays "seen" without making a call, at the least. After it, a post naming
-/// the agent lists it under `pending` again, within [`SEEN_REFRESH_INTERVAL`].
+/// How long an actor stays "seen" after its last call, at the least. A sweep removes its seen
+/// record, and its marks in every thread with it, within [`SEEN_REFRESH_INTERVAL`] after that.
 pub const SEEN_TTL: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 
-/// How old a seen record may grow before a call by its agent rewrites it, so that a read does not
-/// write on every call. A record therefore trails the agent's last call by up to this much, and
-/// is kept this much longer than [`SEEN_TTL`] to make up for it: an agent is never `pending`
-/// within [`SEEN_TTL`] of a call, and is again at most this long after.
+/// How old a seen record grows before a call by its actor rewrites it, so that a read does not
+/// write on every call. A record therefore trails the actor's last call by up to this much, and
+/// is kept this much longer than [`SEEN_TTL`] to make up for it.
 pub const SEEN_REFRESH_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 
-/// Messages kept per thread; the oldest are dropped past it.
+/// Messages kept per thread; a sweep drops the oldest past it.
 pub const MAX_MESSAGES_PER_THREAD: u64 = 1_000;
 
-/// Active (not archived) threads one repository may hold.
+/// Active (not archived) threads one repository holds. Creating one more archives the least
+/// recently active.
 pub const MAX_ACTIVE_THREADS_PER_REPO: usize = 256;
 
 /// Most agents one `to` or one `invite` may name.
 pub const MAX_RECIPIENTS: usize = 32;
 
-/// Most members one thread may have. A join or an invitation that would pass it is refused whole.
+/// Most members, which are principals, one thread may have. A join or an invitation that would
+/// pass it is refused whole.
 pub const MAX_THREAD_MEMBERS: usize = 256;
 
 /// Most path prefixes a thread may be about.
@@ -73,7 +74,8 @@ pub const MAX_THREAD_PATHS: usize = 16;
 /// Shortest discovery query, in characters, so a query cannot enumerate every subject.
 pub const MIN_QUERY_CHARS: usize = 3;
 
-/// How long a replay key keeps returning its first result.
+/// How long a replay key keeps returning its first result, at the least: a sweep removes the
+/// entry after it.
 pub const REPLAY_TTL: Duration = Duration::from_secs(60 * 60);
 
 /// Version of the comms store layout. Not tied to the release, so an upgrade keeps history.
@@ -81,7 +83,7 @@ pub const COMMS_STORE_VER: u32 = 1000;
 
 /// Largest body a post may carry, in bytes. What is returned inline is bounded separately by
 /// [`MAX_INLINE_BODY_BYTES`].
-pub const MAX_POST_BODY_BYTES: usize = 64 * 1024;
+pub const MAX_POST_BODY_BYTES: usize = 16 * 1024;
 
 /// Longest thread subject, in bytes: a subject is a one-line topic.
 pub const MAX_SUBJECT_BYTES: usize = 200;
@@ -170,7 +172,8 @@ pub enum Mark {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum InboxSelect {
-    /// Every thread the caller is a member of, in every repository.
+    /// Every active thread the caller's principal is a member of, in every repository. An
+    /// archived thread is read by naming it.
     #[default]
     All,
     /// One thread.
@@ -316,14 +319,6 @@ pub struct ThreadFilter {
     pub cursor: Option<Cursor>,
 }
 
-impl ThreadFilter {
-    /// Whether the filter narrows by subject or path. Only then does a listing reach beyond the
-    /// caller's own threads, to the open threads of its repository.
-    pub fn discovers(&self) -> bool {
-        self.query.is_some() || self.path.is_some()
-    }
-}
-
 /// `agent_threads` without an update.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -347,12 +342,13 @@ impl Default for ThreadQuery {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ThreadAction {
-    /// Become a member, reading from the head.
+    /// Make the caller's principal a member, its actors reading from the head.
     Join,
-    /// Stop being a member. The last member to leave archives the thread.
+    /// End the membership of the caller's principal. The last member to leave archives the
+    /// thread.
     Leave,
-    /// Make these agents members, each reading from the head as of now. At most
-    /// [`MAX_RECIPIENTS`], from any repository.
+    /// Make the principals of these agents members, their actors reading from the head as of
+    /// now. At most [`MAX_RECIPIENTS`], from any repository.
     Invite(Vec<Actor>),
     /// Close the thread to posts, joins and invitations. Creator only, member or not.
     Archive,
@@ -380,8 +376,9 @@ pub struct PostReply {
     /// Recipients the store has not seen make a call: not yet started, long idle, or mistyped.
     #[serde(default)]
     pub pending: Vec<Actor>,
-    /// Things the agent should know that are not about this request. Appended by the daemon and
-    /// the tool layer; an [`AgentOps`] implementation leaves it empty.
+    /// Things the agent should know that are not about this request. An [`AgentOps`]
+    /// implementation puts [`cap_archive_notice`] here and nothing else; the daemon and the tool
+    /// layer append theirs.
     #[serde(default)]
     pub notices: Vec<String>,
 }
@@ -400,8 +397,13 @@ pub struct InboxMessage {
     /// The message it replies to, when it is a reply.
     #[serde(default)]
     pub reply_to: Option<MessageId>,
-    /// The body, cut to [`MAX_INLINE_BODY_BYTES`] unless the message was read by id.
+    /// The body: cut to [`MAX_INLINE_BODY_BYTES`] unless the message was read by id, and empty
+    /// in an announcing read, which returns front matter only.
+    #[serde(default)]
     pub body: String,
+    /// Size of the whole body, in bytes.
+    #[serde(default)]
+    pub body_bytes: u64,
     /// Whether `body` was cut. The message still counts as read; the rest is read by id.
     #[serde(default)]
     pub truncated: bool,
@@ -463,21 +465,20 @@ pub struct ThreadSummary {
     /// Whether it is archived.
     #[serde(default)]
     pub archived: bool,
-    /// Who created it, and may archive it.
+    /// Who created it. Any actor of the same principal may archive it.
     pub creator: Actor,
-    /// Whether the caller is a member.
+    /// Whether the caller's principal is a member.
     pub member: bool,
-    /// Stored messages from other agents the caller has not read. Zero for a non-member.
+    /// Stored messages from other actors the caller has not read. Zero for a non-member.
     #[serde(default)]
     pub unread: u64,
     /// Sequence number of the newest message.
     pub head: u64,
-    /// The latest timestamp of any message posted, in microseconds since the unix epoch. It
-    /// never moves back, so it is not the newest message's when that one was stamped behind.
+    /// The newest message's timestamp, in microseconds since the unix epoch.
     pub last_activity_micros: i64,
-    /// The members other than the caller.
+    /// The members other than the caller's principal.
     #[serde(default)]
-    pub peers: Vec<Actor>,
+    pub peers: Vec<Principal>,
 }
 
 /// Reply to a thread query or update.
@@ -504,12 +505,15 @@ pub struct ThreadsReply {
 /// inbox's `wait_secs`, is the daemon's, built on [`AgentOps::arrivals`]. `Send + Sync`, because
 /// the daemon serves every session from one instance.
 ///
-/// Every operation takes the [`Caller`] the daemon derived. An agent counts as seen once any of
+/// Every operation takes the [`Caller`] the daemon derived. An actor counts as seen once any of
 /// these returns `Ok` for it; nothing is recorded, seen included, on a store newer than the
-/// binary. No operation fills `notices`.
+/// binary. No operation fills `notices`, except a post with [`cap_archive_notice`].
+///
+/// No operation removes a record or hides one for its age: that is an implementation's sweep.
 pub trait AgentOps: Send + Sync {
     /// Post a message. Requires membership, except that a [`PostTarget::NewThread`] creates the
-    /// thread with the caller and every `to` recipient as members at read position 0.
+    /// thread with the principals of the caller and of every `to` recipient as members, their
+    /// actors reading from the start.
     fn post(&self, caller: &Caller, body: PostBody) -> Result<PostReply, CommsError>;
 
     /// Read messages from the caller's threads without waiting. What the read moves is decided by
@@ -616,9 +620,10 @@ pub fn check_recipient_count(field: &str, recipients: &[Actor]) -> Result<(), Co
     Ok(())
 }
 
-/// The members a new thread gets beside its `creator`: `to` without duplicates and without the
-/// creator, in id order. Refused over [`MAX_RECIPIENTS`], and when `to` names only the creator,
-/// which would make an invitation-only thread nobody else can reach.
+/// The actors a new thread is addressed to beside its `creator`: `to` without duplicates and
+/// without the creator, in id order. Their principals become members. Refused over
+/// [`MAX_RECIPIENTS`], and when `to` names only the creator, which would make an invitation-only
+/// thread no other actor was told about.
 pub fn new_thread_recipients(creator: &Actor, to: &[Actor]) -> Result<Vec<Actor>, CommsError> {
     check_recipient_count("to", to)?;
     let mut others: Vec<Actor> = to.iter().filter(|recipient| *recipient != creator).cloned().collect();
@@ -707,12 +712,26 @@ pub fn path_selects(path: &RelPath, thread_paths: &[RelPath]) -> bool {
         .any(|thread_path| is_path_prefix(path, thread_path) || is_path_prefix(thread_path, path))
 }
 
-/// The notice the daemon appends to every agent-tool reply while more than one live session
-/// shares `principal`.
-pub fn shared_identity_notice(principal: &str, sessions: usize) -> String {
+/// The notice the daemon appends to an agent-tool reply while `sessions` live `serve` sessions
+/// share the caller's principal. `None` when there is one session, and when the call carries
+/// `as`: such a caller has already separated itself.
+pub fn shared_identity_notice(caller: &Actor, sessions: usize) -> Option<String> {
+    if sessions < 2 || caller.sub().is_some() {
+        return None;
+    }
+    Some(format!(
+        "{sessions} live sessions share the identity {}: they share one inbox and read position. \
+         Set BASEMIND_AGENT_ID in one of them, or pass `as`, to separate them.",
+        caller.principal()
+    ))
+}
+
+/// The notice a creating post carries when it archived `thread` to stay within
+/// [`MAX_ACTIVE_THREADS_PER_REPO`]. Only the poster is told.
+pub fn cap_archive_notice(thread: &ThreadId) -> String {
     format!(
-        "{sessions} live sessions share the identity {principal}: they share one inbox and read position. \
-         Set BASEMIND_AGENT_ID in one of them, or pass `as`, to separate them."
+        "this repository was at its limit of {MAX_ACTIVE_THREADS_PER_REPO} active threads, so the least recently \
+         active one, {thread}, was archived: it stays readable with agent_inbox `thread` and takes no more posts."
     )
 }
 

@@ -55,14 +55,9 @@ fn threads_cursor_round_trips_activity_and_id() {
         path: None,
         archived: false,
     };
-    for (activity, id) in [
-        (1_700_000_000_000_001, thread("t-abcdef")),
-        (0, thread("t-aaaaaa")),
-        (i64::MAX, thread("t-777777")),
-        (-5, thread("t-aaaaab")),
-    ] {
-        let cursor = Cursor::for_threads(&listing, activity, &id);
-        assert_eq!(cursor.threads_position(&listing), Ok((activity, id)));
+    for order in [0, 1, 1_700_000_000_000_001, u64::MAX] {
+        let cursor = Cursor::for_threads(&listing, order);
+        assert_eq!(cursor.threads_position(&listing), Ok(order));
     }
 }
 
@@ -78,7 +73,7 @@ fn threads_cursor_is_refused_for_another_listing() {
         path: None,
         archived: false,
     };
-    let cursor = Cursor::for_threads(&listing, 9, &thread("t-abcdef"));
+    let cursor = Cursor::for_threads(&listing, 9);
 
     for foreign in [
         ThreadListing { actor: &b, ..listing },
@@ -119,7 +114,7 @@ fn absent_and_empty_selections_are_different_lists() {
         query: Some(""),
         ..unfiltered
     };
-    let cursor = Cursor::for_threads(&unfiltered, 9, &thread("t-abcdef"));
+    let cursor = Cursor::for_threads(&unfiltered, 9);
 
     assert!(is_invalid(cursor.threads_position(&empty_query)));
 }
@@ -148,23 +143,6 @@ fn malformed_cursor_is_refused_with_a_bounded_echo() {
         panic!("an oversized cursor is refused");
     };
     assert_eq!(cursor.len(), 160);
-}
-
-#[test]
-fn threads_cursor_with_a_thread_outside_the_id_space_is_refused() {
-    let (a, home) = (actor("a"), repo("github.com/acme/app"));
-    let listing = ThreadListing {
-        actor: &a,
-        repo: &home,
-        query: None,
-        path: None,
-        archived: false,
-    };
-    let good = Cursor::for_threads(&listing, 9, &thread("t-777777"));
-    let text = good.as_str();
-    let outside = format!("{}ffffffff", &text[..text.len() - 8]);
-
-    assert!(is_invalid(Cursor::from_wire(outside).threads_position(&listing)));
 }
 
 #[test]

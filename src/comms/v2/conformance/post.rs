@@ -3,12 +3,12 @@
 use std::time::Duration;
 
 use super::super::api::{
-    Actor, CommsError, InboxBody, MAX_RECIPIENTS, MAX_THREAD_PATHS, MessageId, PostBody, PostTarget, REPLAY_TTL,
-    ReplayKey, SEEN_REFRESH_INTERVAL, SEEN_TTL, ThreadAction,
+    Actor, CommsError, InboxBody, MAX_POST_BODY_BYTES, MAX_RECIPIENTS, MAX_THREAD_PATHS, MessageId, PostBody,
+    PostTarget, REPLAY_TTL, ReplayKey, SEEN_REFRESH_INTERVAL, SEEN_TTL, ThreadAction,
 };
 use super::{
-    ConformanceHarness, agent, agents, bodies, by_id, change, gone_thread, ids, into, list, new_thread, notify, read,
-    say, start, who,
+    ConformanceHarness, agent, agents, bodies, by_id, change, describe, gone_thread, ids, into, list, new_thread,
+    notify, principals, read, say, start, who,
 };
 
 fn key(text: &str) -> ReplayKey {
@@ -98,38 +98,60 @@ pub fn failed_call_does_not_make_an_agent_seen(h: &impl ConformanceHarness) {
     assert_eq!(start(h, "a", "two", &["b"]).pending, Vec::<Actor>::new());
 }
 
-/// An agent is seen for [`SEEN_TTL`] from its last call, whether or not that call rewrote its
-/// record, and for at most [`SEEN_REFRESH_INTERVAL`] longer: a record is rewritten only once it
-/// is that old, so that a call need not write, and is kept that much longer to make up for it.
-pub fn seen_record_lasts_thirty_days_from_the_last_call_and_at_most_a_day_more(h: &impl ConformanceHarness) {
+/// A seen record is written on an actor's first call and rewritten once it is a day old, and a
+/// sweep removes it 31 days after it was written: the actor is seen for at least
+/// [`SEEN_TTL`] after its last call and at most [`SEEN_REFRESH_INTERVAL`] longer.
+pub fn seen_record_is_swept_thirty_to_thirty_one_days_after_the_last_call(h: &impl ConformanceHarness) {
     let second = Duration::from_secs(1);
     read(h, "b");
     h.advance(SEEN_REFRESH_INTERVAL - second);
     read(h, "b");
-    h.advance(SEEN_TTL - second);
-    assert_eq!(start(h, "a", "one", &["b"]).pending, Vec::<Actor>::new());
+    h.advance(SEEN_TTL);
+    h.sweep();
+    assert_eq!(
+        start(h, "a", "one", &["b"]).pending,
+        Vec::<Actor>::new(),
+        "thirty days after its last call, which did not rewrite the record"
+    );
     h.advance(2 * second);
+    h.sweep();
     assert_eq!(start(h, "a", "two", &["b"]).pending, agents(h, &["b"]));
-
-    read(h, "b");
-    h.advance(SEEN_TTL + second);
-    assert_eq!(start(h, "a", "three", &["b"]).pending, Vec::<Actor>::new());
-    h.advance(SEEN_REFRESH_INTERVAL);
-    assert_eq!(start(h, "a", "four", &["b"]).pending, agents(h, &["b"]));
 }
 
-/// The first successful call records an agent at once, and a record a day old is rewritten by
-/// the next call, so an agent that keeps calling stays seen however long it does.
+/// A record a day old is rewritten by the next call, so an actor that keeps calling stays seen
+/// however long it does.
 pub fn agent_that_keeps_calling_stays_seen(h: &impl ConformanceHarness) {
     read(h, "b");
-    assert_eq!(start(h, "a", "one", &["b"]).pending, Vec::<Actor>::new());
-
     for _ in 0..3 {
         h.advance(SEEN_TTL / 2);
         read(h, "b");
     }
     h.advance(SEEN_TTL - Duration::from_secs(1));
-    assert_eq!(start(h, "a", "two", &["b"]).pending, Vec::<Actor>::new());
+    h.sweep();
+    assert_eq!(start(h, "a", "one", &["b"]).pending, Vec::<Actor>::new());
+}
+
+/// An actor's marks are removed with its seen record. When it calls again it is first seen
+/// again and starts by the rule of a new actor.
+pub fn marks_go_with_the_seen_record_and_a_returning_actor_starts_again(h: &impl ConformanceHarness) {
+    let created = start(h, "a", "topic", &["b"]);
+    let helper = agent(h, "b.helper");
+    assert_eq!(bodies(&read(h, "b.helper")), ["first"]);
+    h.advance(SEEN_TTL - Duration::from_secs(1));
+    say(h, "a", &created.thread, "second").expect("post");
+    assert_eq!(h.position(&created.thread, &helper), Some((1, 1)));
+
+    h.advance(SEEN_REFRESH_INTERVAL + Duration::from_secs(2));
+    h.sweep();
+
+    assert_eq!(h.position(&created.thread, &helper), Some((0, 0)));
+    assert_eq!(
+        h.post(&who(h, "a"), new_thread(h, "again", &["b.helper"], &[], "first"))
+            .expect("thread created")
+            .pending,
+        [helper]
+    );
+    assert_eq!(bodies(&read(h, "b.helper")), ["second", "first"]);
 }
 
 /// Posting into a thread, directly or as a reply, requires membership.
@@ -143,14 +165,45 @@ pub fn posting_requires_membership(h: &impl ConformanceHarness) {
     assert_eq!(h.post(&who(h, "c"), reply_to(&created.id, "hi")), Err(not_member));
 }
 
-/// `a.helper` is not `a`: membership is per composed id.
-pub fn sub_identity_is_a_different_member_than_its_principal(h: &impl ConformanceHarness) {
+/// Membership is the principal's: a sub-identity posts into, reads and is described the threads
+/// its principal is a member of, and may archive what its principal created.
+pub fn sub_identity_acts_in_the_threads_of_its_principal(h: &impl ConformanceHarness) {
     let created = start(h, "a", "topic", &["b"]);
 
+    say(h, "b.helper", &created.thread, "from the helper").expect("a sub-identity of a member");
+    assert_eq!(bodies(&read(h, "a")), ["from the helper"]);
+    let summary = describe(h, &who(h, "b.helper"), &created.thread).expect("thread");
+    assert!(summary.member);
+    assert_eq!(summary.peers, principals(h, &["a"]));
     assert_eq!(
-        say(h, "a.helper", &created.thread, "hi"),
-        Err(CommsError::NotMember { thread: created.thread })
+        say(h, "c.helper", &created.thread, "hi"),
+        Err(CommsError::NotMember {
+            thread: created.thread.clone()
+        })
     );
+    let archived = change(h, &who(h, "a.helper"), &created.thread, ThreadAction::Archive).expect("archive");
+    assert!(archived.threads[0].archived);
+}
+
+/// A sub-identity named in `to` or `invite` makes its principal the member, and is itself what
+/// `pending` lists.
+pub fn naming_a_sub_identity_makes_its_principal_the_member(h: &impl ConformanceHarness) {
+    let created = h
+        .post(&who(h, "a"), new_thread(h, "topic", &["b.helper"], &[], "first"))
+        .expect("thread created");
+    assert_eq!(created.pending, agents(h, &["b.helper"]));
+    assert_eq!(list(h, "a").threads[0].peers, principals(h, &["b"]));
+    assert_eq!(bodies(&read(h, "b")), ["first"]);
+
+    let invited = change(
+        h,
+        &who(h, "a"),
+        &created.thread,
+        ThreadAction::Invite(agents(h, &["c.helper", "c", "b.other"])),
+    )
+    .expect("invite");
+    assert_eq!(invited.pending, agents(h, &["b.other", "c", "c.helper"]));
+    assert_eq!(invited.threads[0].peers, principals(h, &["b", "c"]));
 }
 
 /// A reply lands in the thread of the message it answers and records which one.
@@ -192,6 +245,27 @@ pub fn invalid_posts_are_refused_before_anything_is_stored(h: &impl ConformanceH
     ));
     assert_eq!(h.thread_count(), 0);
     assert_eq!(h.arrivals(), before);
+}
+
+/// A body of [`MAX_POST_BODY_BYTES`] is stored and read back whole by id; one byte more is
+/// refused, not cut.
+pub fn body_is_capped_at_sixteen_kibibytes(h: &impl ConformanceHarness) {
+    assert_eq!(MAX_POST_BODY_BYTES, 16 * 1024);
+    let largest = "x".repeat(MAX_POST_BODY_BYTES);
+    let created = h
+        .post(&who(h, "a"), new_thread(h, "topic", &["b"], &[], &largest))
+        .expect("a body at the limit");
+
+    let whole = h.inbox(&who(h, "b"), by_id(&created.id)).expect("inbox");
+    assert_eq!(whole.messages[0].body.len(), MAX_POST_BODY_BYTES);
+    assert_eq!(whole.messages[0].body_bytes, MAX_POST_BODY_BYTES as u64);
+    assert_eq!(
+        say(h, "a", &created.thread, &format!("{largest}x")),
+        Err(CommsError::BodyTooLarge {
+            len: MAX_POST_BODY_BYTES + 1,
+            max: MAX_POST_BODY_BYTES,
+        })
+    );
 }
 
 /// `to`, `invite` and `paths` have a cap each, and one over is refused, not cut.
@@ -246,11 +320,12 @@ pub fn to_naming_only_the_creator_is_refused(h: &impl ConformanceHarness) {
     let with_self = h
         .post(&who(h, "a"), new_thread(h, "pair", &["a", "b"], &[], "first"))
         .expect("thread created");
-    assert_eq!(list(h, "a").threads[0].peers, agents(h, &["b"]));
+    assert_eq!(list(h, "a").threads[0].peers, principals(h, &["b"]));
     assert_eq!(h.position(&with_self.thread, &agent(h, "a")), Some((0, 0)));
 }
 
-/// A replayed post returns its first reply and stores nothing, for [`REPLAY_TTL`], per agent.
+/// A replayed post returns its first reply and stores nothing, per agent, until a sweep removes
+/// the entry once it is [`REPLAY_TTL`] old.
 pub fn replayed_post_into_a_thread_returns_the_first_reply(h: &impl ConformanceHarness) {
     let created = start(h, "a", "topic", &["b"]);
     let a = who(h, "a").with_replay_key(key("relay-1"));
@@ -266,6 +341,8 @@ pub fn replayed_post_into_a_thread_returns_the_first_reply(h: &impl ConformanceH
     assert_eq!(h.post(&b, into(&created.thread, "mine")).expect("post").id.seq(), 3);
 
     h.advance(REPLAY_TTL + Duration::from_secs(1));
+    assert_eq!(h.post(&a, into(&created.thread, "second")), Ok(first));
+    h.sweep();
     assert_eq!(h.post(&a, into(&created.thread, "second")).expect("post").id.seq(), 4);
 }
 

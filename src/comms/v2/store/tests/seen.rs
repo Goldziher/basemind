@@ -1,12 +1,6 @@
-//! When a call writes the caller's seen record, and that a read which need not write takes no
-//! writer lock and runs no sweep.
-
-use std::sync::mpsc;
+//! When a call writes the caller's seen record.
 
 use super::*;
-
-/// How long a read may take before it is held to be waiting for the writer lock.
-const LOCK_FREE_WITHIN: Duration = Duration::from_secs(10);
 
 #[test]
 fn first_call_records_the_caller_and_later_calls_rewrite_the_record_once_a_day() {
@@ -33,107 +27,22 @@ fn first_call_records_the_caller_and_later_calls_rewrite_the_record_once_a_day()
         store.recorded_seen("b"),
         Some(first_call + rules::ttl_micros(SEEN_REFRESH_INTERVAL))
     );
-    assert_eq!(
-        store.stored_rows()[8..],
-        [2, 2 + 1],
-        "one seen row and one expiry entry each"
-    );
-}
-
-#[test]
-fn seen_record_written_ahead_of_the_clock_is_rewritten_at_the_clock() {
-    let harness = Harness::new();
-    harness.clock.advance(Duration::from_secs(3600));
-    start(&harness, "a", "topic", &["b"]);
-    harness.rewind(Duration::from_secs(3600));
-
-    harness
-        .threads_query(&caller("a"), ThreadQuery::default())
-        .expect("threads");
-
-    let store = harness.store();
-    assert_eq!(store.recorded_seen("a"), Some(START_MICROS));
-    let indexed_at = |recorded: i64| {
-        let key = keys::expiry(keys::Expiry::Seen, recorded, keys::seen(&caller("a").actor));
-        store.ks.expiry.contains_key(key).expect("read the expiry index")
-    };
-    assert!(indexed_at(START_MICROS));
-    assert!(
-        !indexed_at(START_MICROS + 3_600_000_000),
-        "the index entry of the record written ahead went with it"
-    );
-    assert_eq!(
-        store.stored_rows()[8..],
-        [1, 1 + 1],
-        "one seen row, its expiry entry and the thread's"
-    );
-}
-
-#[test]
-fn read_by_a_caller_seen_within_the_interval_writes_nothing_and_runs_no_sweep() {
-    let harness = Harness::new();
-    let created = start(&harness, "a", "topic", &["b"]);
-    harness
-        .post(&keyed("a", "relay-1"), into(&created.thread, "second"))
-        .expect("post");
-    harness.inbox(&caller("b"), peek()).expect("b's first call");
-    harness.clock.advance(REPLAY_TTL + Duration::from_secs(1));
-    let store = harness.store();
     let rows = store.stored_rows();
-    assert_eq!(rows[7], 1, "an expired replay entry a sweep would remove");
-
-    harness.inbox(&caller("b"), peek()).expect("peek");
-    harness.inbox(&caller("b"), history()).expect("history");
-    harness
-        .inbox(
-            &caller("b"),
-            InboxBody {
-                select: InboxSelect::Message(created.id.clone()),
-                ..InboxBody::default()
-            },
-        )
-        .expect("by id");
-    harness
-        .threads_query(&caller("b"), ThreadQuery::default())
-        .expect("list");
-    harness
-        .threads_query(&caller("b"), ThreadQuery::Describe(created.thread.clone()))
-        .expect("describe");
-
-    assert_eq!(store.stored_rows(), rows, "no row was written and none was swept");
-    assert_eq!(store.recorded_seen("b"), Some(START_MICROS));
-
-    harness.clock.advance(SEEN_REFRESH_INTERVAL);
-    harness.inbox(&caller("b"), peek()).expect("peek");
-    assert_eq!(
-        store.stored_rows()[7],
-        0,
-        "the read that rewrote the record swept as a change does"
-    );
+    assert_eq!(rows[10], 2, "one seen row each");
+    assert_eq!(rows[11], 2 + 1, "one expiry entry each, and the thread's");
 }
 
 #[test]
-fn read_by_a_caller_seen_within_the_interval_takes_no_writer_lock() {
+fn failed_call_and_a_call_on_a_newer_store_record_nothing() {
     let harness = Harness::new();
     let created = start(&harness, "a", "topic", &["b"]);
-    harness.inbox(&caller("b"), peek()).expect("b's first call");
-    harness.clock.advance(SEEN_REFRESH_INTERVAL - Duration::from_secs(1));
-    let (done, finished) = mpsc::channel();
+    let before = harness.store().stored_rows();
 
-    let writer = harness.store().lock();
-    let replies = std::thread::scope(|scope| {
-        let (harness, thread) = (&harness, &created.thread);
-        scope.spawn(move || {
-            let peeked = harness.inbox(&caller("b"), peek());
-            let listed = harness.threads_query(&caller("b"), ThreadQuery::Describe(thread.clone()));
-            done.send((peeked, listed)).expect("the test is listening");
-        });
-        let replies = finished.recv_timeout(LOCK_FREE_WITHIN);
-        drop(writer);
-        replies
-    });
+    harness
+        .post(&caller("c"), into(&created.thread, "refused"))
+        .expect_err("not a member");
+    harness.store().force_store_version(COMMS_STORE_VER + 1);
+    harness.inbox(&caller("b"), peek()).expect("inbox");
 
-    let (peeked, listed) = replies.expect("the reads returned while the writer lock was held");
-    assert_eq!(bodies(&peeked.expect("peek")), ["first"]);
-    assert_eq!(listed.expect("describe").threads[0].unread, 1);
+    assert_eq!(harness.store().stored_rows(), before);
 }

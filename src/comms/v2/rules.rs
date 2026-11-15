@@ -1,26 +1,29 @@
 //! The decisions of ADR-0021 that do not depend on how a store keeps its data.
 //!
 //! Every [`AgentOps`](super::api::AgentOps) implementation answers the same questions: may this
-//! caller post here, where does this read start, what does it move, which threads does a listing
-//! show, has this record expired. They are answered once, here, as pure functions over facts the
-//! implementation looks up, so the in-memory reference and a store-backed implementation cannot
-//! drift apart on a rule. What stays with an implementation is only how it finds the facts and how
-//! it writes the outcome.
+//! caller post here, where does this actor start reading, what does a read move, which threads
+//! does a listing show, what does a sweep remove. They are answered once, here, as pure functions
+//! over facts the implementation looks up, so the in-memory reference and a store-backed
+//! implementation cannot drift apart on a rule. What stays with an implementation is only how it
+//! finds the facts and how it writes the outcome.
 
-use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
 use super::api::{
-    Actor, COMMS_STORE_VER, Caller, CommsError, Cursor, InboxMessage, InboxReply, MAX_ACTIVE_THREADS_PER_REPO,
-    MAX_RECIPIENTS, MAX_THREAD_MEMBERS, MESSAGE_TTL, MessageId, REPLAY_TTL, ReadKind, RepoKey, SEEN_REFRESH_INTERVAL,
-    SEEN_TTL, ThreadAction, ThreadFilter, ThreadId, ThreadListing, WaitOutcome, check_recipient_count, deliverable,
-    effective_limit, inline_body, message_cost, new_thread_recipients, normalize_query, normalize_subject,
-    normalize_thread_path, normalize_thread_paths, path_selects, subject_matches,
+    Actor, COMMS_STORE_VER, Caller, CommsError, Cursor, InboxMessage, InboxReply, MAX_RECIPIENTS, MAX_THREAD_MEMBERS,
+    MessageId, Principal, ReadKind, RepoKey, SEEN_REFRESH_INTERVAL, SEEN_TTL, ThreadAction, ThreadFilter, ThreadId,
+    ThreadListing, WaitOutcome, check_recipient_count, deliverable, effective_limit, inline_body, message_cost,
+    new_thread_recipients, normalize_query, normalize_subject, normalize_thread_path, normalize_thread_paths,
+    path_selects, subject_matches,
 };
 use crate::path::RelPath;
+
+/// How long a seen record is kept after it was written: [`SEEN_TTL`], plus the
+/// [`SEEN_REFRESH_INTERVAL`] a record may trail its actor's last call by.
+pub const SEEN_RETENTION: Duration = Duration::from_secs(SEEN_TTL.as_secs() + SEEN_REFRESH_INTERVAL.as_secs());
 
 /// `ttl` in microseconds, the unit every timestamp of the store is in.
 pub fn ttl_micros(ttl: Duration) -> i64 {
@@ -38,111 +41,48 @@ pub fn check_writable(store_ver: u32) -> Result<(), CommsError> {
     Ok(())
 }
 
-/// How far behind the previous stamp the clock may read, in microseconds, before a post is
-/// stamped from the clock again and the difference is reported. Far above what a burst of posts
-/// within one clock reading adds, which is one microsecond per post.
-pub const CLOCK_BEHIND_TOLERANCE_MICROS: i64 = 60 * 1_000_000;
-
-/// By how much `clock_micros` reads behind `last_micros`, the previous stamp, when that is more
-/// than [`CLOCK_BEHIND_TOLERANCE_MICROS`]: the clock was ahead when that stamp was issued, or
-/// has gone back since. A clock that is ahead cannot be told from a store nobody posted to for a
-/// while, so only this direction is ever noticed.
-pub fn clock_behind(clock_micros: i64, last_micros: i64) -> Option<i64> {
-    let behind = last_micros.saturating_sub(clock_micros);
-    (behind > CLOCK_BEHIND_TOLERANCE_MICROS).then_some(behind)
-}
-
-/// The timestamp of a post made when the clock reads `clock_micros` and the previous post was
-/// stamped `last_micros`.
-///
-/// It is the clock's reading. While the clock is not later than the previous stamp, and no more
-/// than [`CLOCK_BEHIND_TOLERANCE_MICROS`] behind it, it is one microsecond past that stamp
-/// instead, so a clock that stands still or steps back a little does not stamp two posts alike.
-/// Once the clock reads further behind ([`clock_behind`]) the previous stamp is taken to be the
-/// wrong one and the clock is followed again: one post stamped while the clock ran ahead holds no
-/// later post in the future. Timestamps therefore do not order posts; the store-wide post
-/// position does.
-pub fn post_timestamp(clock_micros: i64, last_micros: i64) -> i64 {
-    if clock_behind(clock_micros, last_micros).is_some() {
-        return clock_micros;
+/// The timestamp of a post made when the clock reads `clock_micros` into a thread whose newest
+/// message is stamped `thread_last_micros` (`None` for the post that creates the thread): the
+/// clock, or one microsecond past the thread's last stamp when the clock is not later. Stamps
+/// therefore rise with `seq` inside a thread and say nothing about order across threads.
+pub fn post_timestamp(clock_micros: i64, thread_last_micros: Option<i64>) -> i64 {
+    match thread_last_micros {
+        Some(last) => clock_micros.max(last.saturating_add(1)),
+        None => clock_micros,
     }
-    clock_micros.max(last_micros.saturating_add(1))
 }
 
-/// A thread's last activity once a post stamped `stamp_micros` is made to it, `previous_micros`
-/// being what it was: the later of the two, so it never moves back.
-///
-/// A post can be stamped behind the ones before it, when the clock was set back or reads behind
-/// for a while ([`post_timestamp`]). If the thread followed that stamp it would expire, with every
-/// message of it, as soon as the clock is right again. The price is the other direction: a thread
-/// posted to while the clock read ahead keeps that last activity until the clock passes it.
-pub fn last_activity(previous_micros: i64, stamp_micros: i64) -> i64 {
-    previous_micros.max(stamp_micros)
+/// Whether a record stamped or written at `ts_micros` is more than `age` old at `now_micros`.
+/// Only a sweep asks: no read hides a record for its age.
+pub fn older_than(ts_micros: i64, now_micros: i64, age: Duration) -> bool {
+    now_micros.saturating_sub(ts_micros) > ttl_micros(age)
 }
 
-/// Whether a message posted at `ts_micros` is past [`MESSAGE_TTL`] at `now_micros`. The same
-/// test on a thread's [`last_activity`] decides the thread, and a thread that has expired hides
-/// every message of it. No message is stamped later than its thread's last activity, so none
-/// outlives its thread; one stamped earlier expires before it, alone.
-///
-/// `now_micros` is the clock, never a timestamp the store issued. A message stamped ahead of
-/// the clock is no exception: it expires when the clock passes its stamp by the retention,
-/// which is later than it would have with a correct stamp, and so does its thread.
-pub fn message_expired(ts_micros: i64, now_micros: i64) -> bool {
-    ts_micros <= now_micros.saturating_sub(ttl_micros(MESSAGE_TTL))
+/// Whether a successful call at `now_micros` writes the caller's seen record, last written at
+/// `recorded_micros`: on its first call, and then once the record is [`SEEN_REFRESH_INTERVAL`] old.
+pub fn seen_due(recorded_micros: Option<i64>, now_micros: i64) -> bool {
+    recorded_micros.is_none_or(|recorded| now_micros.saturating_sub(recorded) >= ttl_micros(SEEN_REFRESH_INTERVAL))
 }
 
-/// Whether the seen record written at `recorded_micros` no longer makes its agent seen.
-///
-/// A record is rewritten only once it is [`SEEN_REFRESH_INTERVAL`] old (see
-/// [`seen_record_is_current`]), so the agent's last call may be that much later than the record
-/// says. The record is kept that much longer than [`SEEN_TTL`]: an agent is never reported
-/// `pending` within [`SEEN_TTL`] of a call, and is reported at most one interval late.
-pub fn seen_expired(recorded_micros: i64, now_micros: i64) -> bool {
-    let kept = ttl_micros(SEEN_TTL).saturating_add(ttl_micros(SEEN_REFRESH_INTERVAL));
-    recorded_micros <= now_micros.saturating_sub(kept)
-}
-
-/// Whether a successful call at `now_micros` may leave the caller's seen record, last written at
-/// `recorded_micros`, as it is. It may not when there is none, which is what records an agent on
-/// its first call, when the record is [`SEEN_REFRESH_INTERVAL`] old, or when it was written
-/// ahead of the clock.
-pub fn seen_record_is_current(recorded_micros: Option<i64>, now_micros: i64) -> bool {
-    recorded_micros
-        .is_some_and(|recorded| (0..ttl_micros(SEEN_REFRESH_INTERVAL)).contains(&now_micros.saturating_sub(recorded)))
-}
-
-/// When a replay entry written at `now_micros` stops answering for its key.
-pub fn replay_expiry(now_micros: i64) -> i64 {
-    now_micros.saturating_add(ttl_micros(REPLAY_TTL))
-}
-
-/// Whether a replay entry that expires at `expires_micros` no longer answers.
-pub fn replay_expired(expires_micros: i64, now_micros: i64) -> bool {
-    expires_micros <= now_micros
-}
-
-/// One row of the ADR's `members` table.
+/// An actor's two marks in one thread.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Position {
     /// Sequence number of the last message read.
     pub read_seq: u64,
-    /// Sequence number of the last message the inbox hook announced.
+    /// Sequence number of the last message an announcing read told the actor about.
     pub notified_seq: u64,
 }
 
 impl Position {
-    /// Where the creator and every `to` recipient start: nothing read, nothing announced.
-    pub const START: Self = Self {
-        read_seq: 0,
-        notified_seq: 0,
-    };
-
-    /// Where an agent that joins or is invited starts: what was said before is history.
-    pub fn at_head(head: u64) -> Self {
+    /// Where an actor without marks in a thread starts: at the highest `read_seq` any actor of
+    /// its principal has reached there (`sibling_read_seq`), and with none at the principal's
+    /// `member_start`, which is 0 for a member from the thread's creation and the head as of
+    /// joining otherwise.
+    pub fn start(sibling_read_seq: Option<u64>, member_start: u64) -> Self {
+        let seq = sibling_read_seq.unwrap_or(member_start);
         Self {
-            read_seq: head,
-            notified_seq: head,
+            read_seq: seq,
+            notified_seq: seq,
         }
     }
 
@@ -171,10 +111,11 @@ impl Position {
     }
 }
 
-/// What the rules need to know about a thread and the caller's relation to it.
+/// What the rules need to know about a thread and the caller's relation to it. Membership and
+/// the creator's right are the principal's: a sub-identity has both through its principal.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Access {
-    /// Whether the caller is a member.
+    /// Whether the caller's principal is a member.
     pub member: bool,
     /// Whether the thread is open to its repository.
     pub open: bool,
@@ -182,12 +123,25 @@ pub struct Access {
     pub same_repo: bool,
     /// Whether the thread is archived.
     pub archived: bool,
-    /// Whether the caller created the thread.
+    /// Whether the caller's principal created the thread.
     pub creator: bool,
 }
 
+impl Access {
+    /// The access of `caller` to a thread of `repo` created by `creator`.
+    pub fn of(caller: &Caller, repo: &RepoKey, creator: &Actor, open: bool, archived: bool, member: bool) -> Self {
+        Self {
+            member,
+            open,
+            same_repo: *repo == caller.repo,
+            archived,
+            creator: creator.principal() == caller.actor.principal(),
+        }
+    }
+}
+
 /// The `recipients` a reply may list under `pending`: without the caller and without duplicates,
-/// in id order. The implementation keeps those it has not seen make a call.
+/// in id order. The implementation keeps those that have no seen record.
 pub fn addressed(actor: &Actor, recipients: &[Actor]) -> Vec<Actor> {
     let mut addressed: Vec<Actor> = recipients
         .iter()
@@ -199,6 +153,15 @@ pub fn addressed(actor: &Actor, recipients: &[Actor]) -> Vec<Actor> {
     addressed
 }
 
+/// The principals of `actors`, without duplicates, in id order: who becomes a member when these
+/// actors are named in `to` or `invite`.
+pub fn principals<'a>(actors: impl IntoIterator<Item = &'a Actor>) -> Vec<Principal> {
+    let mut principals: Vec<Principal> = actors.into_iter().map(Actor::principal_id).collect();
+    principals.sort();
+    principals.dedup();
+    principals
+}
+
 /// A thread about to be created, with everything a caller chose checked and normalised.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NewThread {
@@ -206,8 +169,10 @@ pub struct NewThread {
     pub subject: String,
     /// The paths as stored.
     pub paths: Vec<RelPath>,
-    /// The members beside the creator.
+    /// The actors named in `to`, the creator aside: whom the reply may list under `pending`.
     pub recipients: Vec<Actor>,
+    /// The members from creation: the principals of the creator and of every recipient.
+    pub members: Vec<Principal>,
     /// Whether the thread is open to its repository: it is unless it was created with `to`.
     pub open: bool,
 }
@@ -223,6 +188,7 @@ impl NewThread {
             subject,
             paths,
             open: recipients.is_empty(),
+            members: principals(recipients.iter().chain([creator])),
             recipients,
         })
     }
@@ -235,21 +201,10 @@ const _: () = assert!(MAX_RECIPIENTS < MAX_THREAD_MEMBERS);
 /// Refuse a change that would leave `thread`, which has `members` members, with `adding` more
 /// than [`MAX_THREAD_MEMBERS`] allows.
 fn check_member_cap(thread: &ThreadId, members: usize, adding: usize) -> Result<(), CommsError> {
-    if adding > 0 && members.saturating_add(adding) > MAX_THREAD_MEMBERS {
+    if members.saturating_add(adding) > MAX_THREAD_MEMBERS {
         return Err(CommsError::MemberCapReached {
             thread: thread.clone(),
             cap: MAX_THREAD_MEMBERS,
-        });
-    }
-    Ok(())
-}
-
-/// Refuse a new thread in a repository that already holds `active` active threads.
-pub fn check_thread_cap(repo: &RepoKey, active: usize) -> Result<(), CommsError> {
-    if active >= MAX_ACTIVE_THREADS_PER_REPO {
-        return Err(CommsError::ThreadCapReached {
-            repo: repo.clone(),
-            cap: MAX_ACTIVE_THREADS_PER_REPO,
         });
     }
     Ok(())
@@ -318,32 +273,33 @@ pub fn authorize_describe(thread: &ThreadId, access: &Access) -> Result<(), Comm
 }
 
 /// What an authorized [`ThreadAction`] does to the thread.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Change {
-    /// Nothing: the caller joined a thread it is already in.
+    /// Nothing: the change is already made. The caller joined a thread it is in, invited only
+    /// members, or archived an archived thread; a replayed request ends here too.
     Nothing,
-    /// The caller becomes a member at the head.
+    /// The caller's principal becomes a member, starting at the head.
     Join,
-    /// The caller stops being a member; the thread is archived when nobody is left.
+    /// The caller's principal stops being a member and its actors lose their marks; the thread
+    /// is archived when nobody is left.
     Leave,
-    /// Every invited agent that is not a member becomes one at the head.
-    Invite,
+    /// These principals, none of them a member yet, become members starting at the head.
+    Invite(Vec<Principal>),
     /// The thread is archived.
     Archive,
 }
 
 /// Whether the caller may apply `action` to `thread`, and what doing so changes.
 ///
-/// `members` is how many members the thread has and `is_member` tells whether an agent is one:
-/// a join, or an invitation of agents that are not members yet, is refused whole when it would
-/// take the thread past [`MAX_THREAD_MEMBERS`]. Inviting only agents that are already members
-/// adds nobody and is not refused for the cap.
+/// `members` is how many members the thread has and `is_member` tells whether a principal is
+/// one: a join, or an invitation of principals that are not members yet, is refused whole when
+/// it would take the thread past [`MAX_THREAD_MEMBERS`].
 pub fn authorize_update(
     thread: &ThreadId,
     action: &ThreadAction,
     access: &Access,
     members: usize,
-    is_member: impl Fn(&Actor) -> bool,
+    is_member: impl Fn(&Principal) -> bool,
 ) -> Result<Change, CommsError> {
     let id = thread;
     let thread = || id.clone();
@@ -362,22 +318,26 @@ pub fn authorize_update(
         ThreadAction::Invite(invited) if invited.is_empty() => Err(CommsError::EmptyInvite),
         ThreadAction::Invite(invited) => {
             check_recipient_count("invite", invited)?;
+            let mut adding = principals(invited);
+            adding.retain(|principal| !is_member(principal));
+            if adding.is_empty() {
+                return Ok(Change::Nothing);
+            }
             if access.archived {
                 return Err(CommsError::ThreadArchived { thread: thread() });
             }
-            let mut adding: Vec<&Actor> = invited.iter().filter(|agent| !is_member(agent)).collect();
-            adding.sort();
-            adding.dedup();
             check_member_cap(id, members, adding.len())?;
-            Ok(Change::Invite)
+            Ok(Change::Invite(adding))
         }
         ThreadAction::Archive if !access.creator => Err(CommsError::NotCreator { thread: thread() }),
+        ThreadAction::Archive if access.archived => Ok(Change::Nothing),
         ThreadAction::Archive => Ok(Change::Archive),
     }
 }
 
 /// Whether a stored message from `from` is one a read of `kind` by `actor` returns: history
-/// returns everything, every other read only what other agents posted.
+/// returns everything, every other read only what another actor posted. A sibling actor of the
+/// same principal is another actor.
 pub fn is_candidate(kind: ReadKind, from: &Actor, actor: &Actor) -> bool {
     kind == ReadKind::History || from != actor
 }
@@ -395,8 +355,29 @@ pub fn cursor_position(
     }
 }
 
-/// One message as an inbox reply carries it. `whole` is a read by id, which is the way to a body
-/// longer than what is returned inline.
+/// How much of a body a read of some kind returns.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BodyForm {
+    /// Cut to what a listing returns.
+    Inline,
+    /// Whole: a read by id.
+    Whole,
+    /// None: an announcing read returns front matter only.
+    FrontMatter,
+}
+
+impl BodyForm {
+    /// The form a read of `kind` returns bodies in.
+    pub fn of(kind: ReadKind) -> Self {
+        match kind {
+            ReadKind::ById => Self::Whole,
+            ReadKind::Announcing => Self::FrontMatter,
+            ReadKind::Marking | ReadKind::Peek | ReadKind::History => Self::Inline,
+        }
+    }
+}
+
+/// One message as an inbox reply carries it, its body in `form`.
 pub fn render(
     id: MessageId,
     subject: &str,
@@ -404,16 +385,21 @@ pub fn render(
     ts_micros: i64,
     reply_to: Option<MessageId>,
     body: &str,
-    whole: bool,
+    form: BodyForm,
 ) -> InboxMessage {
-    let (body, truncated) = if whole { (body, false) } else { inline_body(body) };
+    let (returned, truncated) = match form {
+        BodyForm::Inline => inline_body(body),
+        BodyForm::Whole => (body, false),
+        BodyForm::FrontMatter => ("", false),
+    };
     InboxMessage {
         id,
         subject: subject.to_string(),
         from: from.clone(),
         ts_micros,
         reply_to,
-        body: body.to_string(),
+        body: returned.to_string(),
+        body_bytes: body.len() as u64,
         truncated,
     }
 }
@@ -464,15 +450,13 @@ pub fn page_cursor(
     }
 }
 
-/// The last message of `delivered` in each thread: where a read that moves a position moves it
-/// to. `delivered` is a prefix of the unread messages, so nothing unread is ever stepped over.
-pub fn last_delivered(delivered: &[InboxMessage]) -> BTreeMap<&ThreadId, &MessageId> {
-    let mut last_delivered: BTreeMap<&ThreadId, &MessageId> = BTreeMap::new();
+/// The highest sequence number of `delivered` in each thread: where a read that moves a mark
+/// moves it to. `delivered` is a prefix of the unread messages, so nothing unread is stepped over.
+pub fn last_delivered(delivered: &[InboxMessage]) -> BTreeMap<&ThreadId, u64> {
+    let mut last_delivered: BTreeMap<&ThreadId, u64> = BTreeMap::new();
     for message in delivered {
-        let last = last_delivered.entry(message.id.thread()).or_insert(&message.id);
-        if message.id.seq() > last.seq() {
-            *last = &message.id;
-        }
+        let last = last_delivered.entry(message.id.thread()).or_default();
+        *last = (*last).max(message.id.seq());
     }
     last_delivered
 }
@@ -494,35 +478,46 @@ pub fn inbox_reply(
     }
 }
 
-/// What a read that moved a position delivered, kept against its replay key. The range and not
-/// the bodies: a replay renders it again from the store, as stored, without a second
-/// authorization. A read that delivered nothing keeps nothing, so repeating it reads afresh.
+/// The messages of one thread a marking read delivered: every message of another actor with a
+/// sequence number above `after`, up to `to`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeliveredRange {
+    /// The thread.
+    pub thread: ThreadId,
+    /// The actor's `read_seq` before the read.
+    pub after: u64,
+    /// The actor's `read_seq` after it.
+    pub to: u64,
+}
+
+/// What a marking read delivered, kept against its replay key: one range per thread and not the
+/// bodies, so a replay renders them again from the store. A read that moved nothing keeps
+/// nothing, so repeating it reads afresh.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Delivered {
-    /// The messages delivered, in the order they were returned.
-    pub ids: Vec<MessageId>,
-    /// The read positions the first delivery reported.
-    pub read_to: Vec<MessageId>,
+    /// The ranges delivered, in thread order.
+    pub ranges: Vec<DeliveredRange>,
     /// Whether the first delivery left messages out.
     pub more: bool,
 }
 
 impl Delivered {
-    /// What to keep for a read that delivered `messages`; `None` when it delivered nothing.
-    pub fn of(messages: &[InboxMessage], read_to: &[MessageId], more: bool) -> Option<Self> {
-        if messages.is_empty() {
-            return None;
-        }
-        Some(Self {
-            ids: messages.iter().map(|message| message.id.clone()).collect(),
-            read_to: read_to.to_vec(),
-            more,
-        })
+    /// What to keep for a read that delivered `ranges`; `None` when it delivered nothing.
+    pub fn of(ranges: Vec<DeliveredRange>, more: bool) -> Option<Self> {
+        (!ranges.is_empty()).then_some(Self { ranges, more })
     }
 
-    /// The reply of a replay, given the delivered messages that are still stored.
-    pub fn reply(self, still_stored: Vec<InboxMessage>) -> InboxReply {
-        inbox_reply(still_stored, self.read_to, self.more, None)
+    /// The reply of a replay, given the messages of the ranges that are still stored, as
+    /// `(post position, message)` in any order.
+    pub fn reply(self, mut still_stored: Vec<(u64, InboxMessage)>) -> Result<InboxReply, CommsError> {
+        still_stored.sort_by_key(|(order, _)| *order);
+        let messages = still_stored.into_iter().map(|(_, message)| message).collect();
+        let read_to = self
+            .ranges
+            .into_iter()
+            .map(|range| MessageId::new(range.thread, range.to))
+            .collect::<Result<_, _>>()?;
+        Ok(inbox_reply(messages, read_to, self.more, None))
     }
 }
 
@@ -579,41 +574,35 @@ impl Selection {
     }
 }
 
-/// The order of a thread listing: last activity, newest first, then thread id.
-pub fn listing_order(activity: i64, id: &ThreadId, other_activity: i64, other_id: &ThreadId) -> Ordering {
-    other_activity.cmp(&activity).then_with(|| id.cmp(other_id))
-}
-
 /// One page of a thread listing.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ListingPage<T> {
-    /// The page's threads in listing order, each with the payload it was given with.
-    pub rows: Vec<(ThreadId, T)>,
+    /// The page's rows in listing order.
+    pub rows: Vec<T>,
     /// The cursor that continues the listing, when threads were left out.
     pub next_cursor: Option<Cursor>,
 }
 
 /// Cut one page from `matching`, which is every thread the listing selects, in any order, as
-/// `(last activity, id, payload)`.
+/// `(store-wide position of its newest post, payload)`. A listing is ordered by that position,
+/// newest first; no two threads share one.
 pub fn listing_page<T>(
-    mut matching: Vec<(i64, ThreadId, T)>,
+    mut matching: Vec<(u64, T)>,
     listing: &ThreadListing<'_>,
     cursor: Option<&Cursor>,
     limit: Option<u32>,
 ) -> Result<ListingPage<T>, CommsError> {
     let after = cursor.map(|cursor| cursor.threads_position(listing)).transpose()?;
-    matching.sort_by(|(activity, id, _), (other_activity, other_id, _)| {
-        listing_order(*activity, id, *other_activity, other_id)
-    });
-    if let Some((after_activity, after_id)) = &after {
-        matching.retain(|(activity, id, _)| activity < after_activity || (activity == after_activity && id > after_id));
+    matching.sort_by_key(|(order, _)| std::cmp::Reverse(*order));
+    if let Some(after) = after {
+        matching.retain(|(order, _)| *order < after);
     }
     let limit = effective_limit(limit);
     let next_cursor = match matching.get(limit.saturating_sub(1)) {
-        Some((activity, id, _)) if matching.len() > limit => Some(Cursor::for_threads(listing, *activity, id)),
+        Some((order, _)) if matching.len() > limit => Some(Cursor::for_threads(listing, *order)),
         _ => None,
     };
-    let rows = matching.into_iter().take(limit).map(|(_, id, row)| (id, row)).collect();
+    let rows = matching.into_iter().take(limit).map(|(_, row)| row).collect();
     Ok(ListingPage { rows, next_cursor })
 }
 

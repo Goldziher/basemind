@@ -127,51 +127,6 @@ fn flush_returns_ok_and_leaves_the_store_readable_after_a_reopen() {
 }
 
 #[test]
-fn replay_and_seen_expiry_follow_the_clock_across_a_reopen() {
-    let mut harness = Harness::new();
-    let created = start(&harness, "a", "topic", &["b"]);
-    let first = harness
-        .post(&keyed("a", "relay-1"), into(&created.thread, "second"))
-        .expect("post");
-    harness.inbox(&caller("b"), InboxBody::default()).expect("inbox");
-
-    harness.reopen();
-    harness.clock.advance(REPLAY_TTL + Duration::from_secs(1));
-    let again = harness
-        .post(&keyed("a", "relay-1"), into(&created.thread, "second"))
-        .expect("post");
-    assert_eq!(again.id.seq(), first.id.seq() + 1);
-
-    harness.reopen();
-    harness.clock.advance(SEEN_TTL + SEEN_REFRESH_INTERVAL - REPLAY_TTL);
-    assert_eq!(start(&harness, "a", "late", &["b"]).pending, [caller("b").actor]);
-}
-
-#[test]
-fn post_after_the_clock_was_corrected_is_stamped_from_the_clock_across_a_reopen() {
-    let ahead_by = Duration::from_secs(5 * 365 * 24 * 60 * 60);
-    let mut harness = Harness::new();
-    harness.clock.advance(ahead_by);
-    let created = start(&harness, "a", "made ahead", &["b"]);
-    harness.rewind(ahead_by);
-
-    harness.reopen();
-    say(&harness, "a", &created.thread, "after the correction");
-    say(&harness, "a", &created.thread, "and again");
-
-    let reply = harness.inbox(&caller("b"), InboxBody::default()).expect("inbox");
-    let times: Vec<i64> = reply.messages.iter().map(|message| message.ts_micros).collect();
-    assert_eq!(
-        times,
-        [
-            START_MICROS + rules::ttl_micros(ahead_by),
-            START_MICROS,
-            START_MICROS + 1
-        ]
-    );
-}
-
-#[test]
 fn older_store_is_migrated_step_by_step_and_keeps_its_data() {
     let mut harness = Harness::new();
     let created = start(&harness, "a", "topic", &["b"]);
@@ -260,11 +215,7 @@ fn older_store_without_a_migration_path_is_refused_and_left_as_it_was() {
 
 #[test]
 fn unreadable_layout_version_or_counter_is_refused_naming_the_directory() {
-    for (key, what) in [
-        (META_STORE_VER, "layout version"),
-        (META_POSTS, "post counter"),
-        (META_LAST_TS, "timestamp"),
-    ] {
+    for (key, what) in [(META_STORE_VER, "layout version"), (META_POSTS, "post counter")] {
         let mut harness = Harness::new();
         start(&harness, "a", "topic", &["b"]);
         harness.store().ks.meta.insert(key, [1, 2, 3]).expect("write");
@@ -324,10 +275,10 @@ fn newer_store_opens_for_reading_refuses_writes_and_is_never_changed() {
     );
 
     harness.clock.advance(MESSAGE_TTL + Duration::from_secs(1));
-    assert_eq!(harness.inbox(&caller("b"), peek()).expect("inbox").messages, Vec::new());
+    assert_eq!(bodies(&harness.inbox(&caller("b"), peek()).expect("inbox")), ["first"]);
     harness.reopen();
     assert_eq!(harness.store().store_version(), COMMS_STORE_VER + 3);
-    assert_eq!(harness.store().stored_rows(), rows, "not even expired rows are removed");
+    assert_eq!(harness.store().stored_rows(), rows, "nothing is removed or recorded");
 }
 
 #[test]

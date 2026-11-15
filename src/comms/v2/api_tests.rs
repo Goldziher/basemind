@@ -33,6 +33,7 @@ fn inbox_message(id: &str, subject: &str, from: &str, body: &str) -> InboxMessag
         ts_micros: 1_700_000_000_000_002,
         reply_to: None,
         body: body.to_string(),
+        body_bytes: body.len() as u64,
         truncated: false,
     }
 }
@@ -53,7 +54,8 @@ fn limits_are_the_adr_values() {
     assert_eq!(MIN_QUERY_CHARS, 3);
     assert_eq!(REPLAY_TTL.as_secs(), 3600);
     assert_eq!(COMMS_STORE_VER, 1000);
-    assert_eq!(MAX_POST_BODY_BYTES, 65_536);
+    assert_eq!(MAX_POST_BODY_BYTES, 16_384);
+    assert_eq!(MAX_THREAD_MEMBERS, 256);
     assert_eq!(MAX_SUBJECT_BYTES, 200);
 }
 
@@ -319,8 +321,8 @@ fn body_must_be_non_blank_and_bounded() {
     assert_eq!(
         check_body(&"b".repeat(MAX_POST_BODY_BYTES + 1)),
         Err(CommsError::BodyTooLarge {
-            len: 65_537,
-            max: 65_536,
+            len: 16_385,
+            max: 16_384,
         })
     );
 }
@@ -368,13 +370,25 @@ fn recipients_are_capped_at_thirty_two() {
 
 #[test]
 fn shared_identity_notice_names_the_principal_and_the_fix() {
-    let notice = shared_identity_notice("host-repo-1a2b3c", 2);
+    let notice = shared_identity_notice(&actor("host-repo-1a2b3c"), 2).expect("two sessions, no `as`");
     assert!(
         notice.starts_with("2 live sessions share the identity host-repo-1a2b3c"),
         "{notice}"
     );
     assert!(notice.contains("BASEMIND_AGENT_ID"), "{notice}");
     assert!(notice.contains("`as`"), "{notice}");
+}
+
+#[test]
+fn shared_identity_notice_is_left_out_for_one_session_and_for_a_call_with_as() {
+    assert_eq!(shared_identity_notice(&actor("host-repo-1a2b3c"), 1), None);
+    assert_eq!(shared_identity_notice(&actor("host-repo-1a2b3c.helper"), 5), None);
+}
+
+#[test]
+fn cap_archive_notice_names_the_archived_thread() {
+    let notice = cap_archive_notice(&thread("t-abcdef"));
+    assert!(notice.contains("t-abcdef") && notice.contains("archived"), "{notice}");
 }
 
 #[test]
@@ -504,7 +518,7 @@ fn replies_round_trip_through_msgpack() {
         read_to: vec![message("t-abcdef.2")],
         more: true,
         next_cursor: Some(Cursor::for_inbox(&actor("a"), None, PagedRead::Peek, 7)),
-        notices: vec![shared_identity_notice("a", 2)],
+        notices: shared_identity_notice(&actor("a"), 2).into_iter().collect(),
         wait: WaitOutcome::Arrived,
     };
     assert_eq!(through_msgpack(&inbox), inbox);
@@ -531,7 +545,7 @@ fn replies_round_trip_through_msgpack() {
             unread: 3,
             head: 9,
             last_activity_micros: 1_700_000_000_000_009,
-            peers: actors(&["b"]),
+            peers: vec![actor("b").principal_id()],
         }],
         pending: Vec::new(),
         next_cursor: None,

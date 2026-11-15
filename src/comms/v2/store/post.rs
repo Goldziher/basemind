@@ -3,10 +3,10 @@
 use super::records::{MessageMeta, Reader, ThreadRecord, encode};
 use super::{Txn, keys};
 use crate::comms::v2::api::{
-    Actor, Caller, CommsError, MAX_ACTIVE_THREADS_PER_REPO, MAX_MESSAGES_PER_THREAD, MessageId, PostBody, PostReply,
-    PostTarget, RepoKey, ThreadId,
+    Caller, CommsError, MAX_ACTIVE_THREADS_PER_REPO, MAX_MESSAGES_PER_THREAD, MessageId, PostBody, PostReply,
+    PostTarget, RepoKey, ThreadId, cap_archive_notice,
 };
-use crate::comms::v2::rules::{self, NewThread, Position};
+use crate::comms::v2::rules::{self, NewThread};
 
 /// Store one post. A relayed request that was stored before returns its first reply instead.
 pub(super) fn post(
@@ -17,57 +17,56 @@ pub(super) fn post(
 ) -> Result<PostReply, CommsError> {
     let PostBody { target, body } = post;
     let actor = &caller.actor;
-    let (replay_key, reply) = match target {
+    let key = caller.replay_key.as_ref();
+    let (thread, reply_to) = match target {
         PostTarget::NewThread { subject, to, paths } => {
-            let replay_key = caller
-                .replay_key
-                .as_ref()
-                .map(|key| keys::replay_new_thread(actor, key));
-            if let Some(reply) = replayed(reader, replay_key.as_deref())? {
+            let replay_key = key.map(|key| keys::replay_new_thread(actor, key));
+            if let Some(reply) = reader.replay(replay_key.as_deref())? {
                 return Ok(reply);
             }
             let plan = NewThread::plan(actor, &subject, &to, &paths)?;
-            let pending = reader.pending(actor, &plan.recipients)?;
-            rules::check_thread_cap(&caller.repo, active_threads(reader, &caller.repo)?)?;
-            let id = txn.fresh_thread_id(reader)?;
-            (replay_key, create(txn, reader, caller, id, plan, pending, &body)?)
+            let reply = create(txn, reader, caller, plan, &body)?;
+            if let Some(replay_key) = replay_key {
+                txn.remember(reader.ks, replay_key, &reply)?;
+            }
+            return Ok(reply);
         }
-        PostTarget::Thread(thread) => into_thread(txn, reader, caller, thread, None, &body)?,
-        PostTarget::ReplyTo(message) => {
-            into_thread(txn, reader, caller, message.thread().clone(), Some(message), &body)?
-        }
+        PostTarget::Thread(thread) => (thread, None),
+        PostTarget::ReplyTo(message) => (message.thread().clone(), Some(message)),
     };
+    let replay_key = key.map(|key| keys::replay_post(actor, &thread, key));
+    if let Some(reply) = reader.replay(replay_key.as_deref())? {
+        return Ok(reply);
+    }
+    let reply = into_thread(txn, reader, caller, thread, reply_to, &body)?;
     if let Some(replay_key) = replay_key {
-        txn.remember(reader, replay_key, &reply)?;
+        txn.remember(reader.ks, replay_key, &reply)?;
     }
     Ok(reply)
 }
 
-fn replayed(reader: &Reader<'_>, replay_key: Option<&[u8]>) -> Result<Option<PostReply>, CommsError> {
-    match replay_key {
-        Some(key) => reader.replay(key),
-        None => Ok(None),
+/// Make room for a new thread in `repo` when it is at its cap, by staging the archiving of the
+/// active thread whose newest post is the oldest. Returns the notice that says so.
+fn archive_for_cap(txn: &mut Txn<'_>, reader: &Reader<'_>, repo: &RepoKey) -> Result<Option<String>, CommsError> {
+    let active = reader.repo_threads(repo, false)?;
+    if active.len() < MAX_ACTIVE_THREADS_PER_REPO {
+        return Ok(None);
     }
-}
-
-/// Active threads of `repo` that have not expired, counted no further than the cap. Their index
-/// entries are counted first, and the threads themselves are read only when those alone would
-/// reach the cap, since an entry outlives its thread until a sweep.
-fn active_threads(reader: &Reader<'_>, repo: &RepoKey) -> Result<usize, CommsError> {
-    let indexed = reader.repo_threads(repo, false)?;
-    if indexed.len() < MAX_ACTIVE_THREADS_PER_REPO {
-        return Ok(indexed.len());
-    }
-    let mut active = 0;
-    for id in &indexed {
-        if reader.thread(id)?.is_some() {
-            active += 1;
-            if active == MAX_ACTIVE_THREADS_PER_REPO {
-                break;
-            }
+    let mut oldest: Option<(ThreadId, ThreadRecord)> = None;
+    for id in active {
+        if let Some(record) = reader.thread(&id)?
+            && oldest
+                .as_ref()
+                .is_none_or(|(_, oldest)| record.last_order < oldest.last_order)
+        {
+            oldest = Some((id, record));
         }
     }
-    Ok(active)
+    let Some((id, mut record)) = oldest else {
+        return Ok(None);
+    };
+    txn.archive(reader.ks, &id, &mut record)?;
+    Ok(Some(cap_archive_notice(&id)))
 }
 
 /// Stage a new thread and its first message.
@@ -75,16 +74,17 @@ fn create(
     txn: &mut Txn<'_>,
     reader: &Reader<'_>,
     caller: &Caller,
-    id: ThreadId,
     plan: NewThread,
-    pending: Vec<Actor>,
     body: &str,
 ) -> Result<PostReply, CommsError> {
     let ks = reader.ks;
     let actor = &caller.actor;
-    let (ts_micros, order) = txn.stamp_post(ks);
-    for member in plan.recipients.iter().chain([actor]) {
-        txn.add_member(ks, &id, member, Position::START)?;
+    let pending = reader.pending(actor, &plan.recipients)?;
+    let notices = archive_for_cap(txn, reader, &caller.repo)?.into_iter().collect();
+    let id = txn.fresh_thread_id(reader)?;
+    let (ts_micros, order) = txn.stamp_post(ks, None);
+    for member in &plan.members {
+        txn.add_member(ks, &id, member, 0);
     }
     let record = ThreadRecord {
         subject: plan.subject,
@@ -95,8 +95,7 @@ fn create(
         creator: actor.clone(),
         head: 1,
         last_activity_micros: ts_micros,
-        head_from: actor.clone(),
-        prev_other_seq: 0,
+        last_order: order,
     };
     let thread_key = keys::thread(&id);
     txn.batch
@@ -119,12 +118,11 @@ fn create(
         thread: id,
         created: true,
         pending,
-        notices: Vec::new(),
+        notices,
     })
 }
 
-/// Stage a message into an existing thread. Returns the replay key the reply is to be kept
-/// under, when the request was relayed.
+/// Stage a message into an existing thread.
 fn into_thread(
     txn: &mut Txn<'_>,
     reader: &Reader<'_>,
@@ -132,17 +130,13 @@ fn into_thread(
     id: ThreadId,
     reply_to: Option<MessageId>,
     body: &str,
-) -> Result<(Option<Vec<u8>>, PostReply), CommsError> {
+) -> Result<PostReply, CommsError> {
     let ks = reader.ks;
     let actor = &caller.actor;
-    let replay_key = caller.replay_key.as_ref().map(|key| keys::replay_post(actor, &id, key));
-    if let Some(reply) = replayed(reader, replay_key.as_deref())? {
-        return Ok((None, reply));
-    }
     let record = reader.thread(&id)?;
     let (access, reply_target_stored) = match &record {
         Some(record) => {
-            let member = reader.position(&id, actor)?.is_some();
+            let member = reader.member(&id, &actor.principal_id())?.is_some();
             let stored = match &reply_to {
                 Some(message) => reader.meta(&id, message.seq())?.is_some(),
                 None => true,
@@ -152,26 +146,26 @@ fn into_thread(
         None => (None, true),
     };
     rules::authorize_post(&id, access.as_ref(), reply_to.as_ref(), reply_target_stored)?;
-    let record = record.ok_or_else(|| CommsError::ThreadNotFound { thread: id.clone() })?;
+    let mut record = record.ok_or_else(|| CommsError::ThreadNotFound { thread: id.clone() })?;
 
-    let (ts_micros, order) = txn.stamp_post(ks);
+    let (ts_micros, order) = txn.stamp_post(ks, Some(record.last_activity_micros));
     let seq = record.head + 1;
     let thread_key = keys::thread(&id);
-    let previous_activity = record.last_activity_micros;
-    let record = record.posted(actor, seq, ts_micros);
-    // ~keep A post stamped no later than the thread's last activity leaves its expiry entry
-    // where it is. Removing and inserting one key in one batch would depend on their order.
-    if record.last_activity_micros != previous_activity {
-        txn.batch.remove(
-            &ks.expiry,
-            keys::expiry(keys::Expiry::Thread, previous_activity, &thread_key),
-        );
-        txn.batch.insert(
-            &ks.expiry,
-            keys::expiry(keys::Expiry::Thread, record.last_activity_micros, &thread_key),
-            [],
-        );
+    txn.batch.remove(
+        &ks.expiry,
+        keys::expiry(keys::Expiry::Thread, record.last_activity_micros, &thread_key),
+    );
+    txn.batch.insert(
+        &ks.expiry,
+        keys::expiry(keys::Expiry::Thread, ts_micros, &thread_key),
+        [],
+    );
+    if seq > MAX_MESSAGES_PER_THREAD {
+        txn.batch.insert(&ks.expiry, keys::over_cap(&id), []);
     }
+    record.head = seq;
+    record.last_activity_micros = ts_micros;
+    record.last_order = order;
     txn.batch.insert(&ks.threads, thread_key, encode("a thread", &record)?);
     let meta = MessageMeta {
         from: actor.clone(),
@@ -180,17 +174,13 @@ fn into_thread(
         reply_to: reply_to.map(|message| message.seq()),
     };
     stage_message(txn, reader, &id, seq, &meta, body)?;
-    if let Some(evicted) = seq.checked_sub(MAX_MESSAGES_PER_THREAD).filter(|seq| *seq > 0) {
-        evict(txn, reader, &id, evicted)?;
-    }
-    let reply = PostReply {
+    Ok(PostReply {
         id: MessageId::new(id.clone(), seq)?,
         thread: id,
         created: false,
         pending: Vec::new(),
         notices: Vec::new(),
-    };
-    Ok((replay_key, reply))
+    })
 }
 
 fn stage_message(
@@ -207,20 +197,5 @@ fn stage_message(
     txn.batch.insert(&ks.bodies, key, body.as_bytes());
     txn.batch
         .insert(&ks.post_order, keys::order(meta.ts_micros, meta.order), key);
-    Ok(())
-}
-
-/// Stage the removal of the message a thread's cap pushes out: the one exactly the cap behind
-/// the new head, when it is still stored. Every older one went the same way or was swept.
-fn evict(txn: &mut Txn<'_>, reader: &Reader<'_>, thread: &ThreadId, seq: u64) -> Result<(), CommsError> {
-    let ks = reader.ks;
-    let Some(meta) = reader.stored_meta(thread, seq)? else {
-        return Ok(());
-    };
-    let key = keys::message(thread, seq);
-    txn.batch.remove(&ks.messages, key);
-    txn.batch.remove(&ks.bodies, key);
-    txn.batch
-        .remove(&ks.post_order, keys::order(meta.ts_micros, meta.order));
     Ok(())
 }

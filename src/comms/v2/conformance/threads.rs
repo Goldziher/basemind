@@ -1,12 +1,12 @@
 //! Threads: listing, discovery, membership, archiving and the per-repository cap.
 
 use super::super::api::{
-    Actor, CommsError, Cursor, InboxBody, MAX_ACTIVE_THREADS_PER_REPO, MAX_RECIPIENTS, MAX_THREAD_MEMBERS,
-    ThreadAction, ThreadFilter, ThreadId, ThreadQuery, ThreadSummary,
+    Actor, CommsError, Cursor, InboxBody, MAX_ACTIVE_THREADS_PER_REPO, MAX_RECIPIENTS, MAX_THREAD_MEMBERS, Principal,
+    ReplayKey, ThreadAction, ThreadFilter, ThreadId, ThreadQuery, ThreadSummary, cap_archive_notice,
 };
 use super::{
-    ConformanceHarness, agent, agents, bodies, change, describe, elsewhere, find, gone_thread, history, into, list,
-    new_thread, only, read, read_as, say, start, thread_ids, tick, who,
+    ConformanceHarness, agent, agents, bodies, by_id, change, describe, elsewhere, find, gone_thread, history, into,
+    list, new_thread, only, principals, read, read_as, say, start, thread_ids, tick, who,
 };
 use crate::path::RelPath;
 
@@ -57,10 +57,10 @@ pub fn no_arguments_lists_the_callers_threads_and_their_peers(h: &impl Conforman
     assert!(summary.member);
     assert_eq!(summary.unread, 0);
     assert_eq!(summary.head, 1);
-    assert_eq!(summary.peers, agents(h, &["b"]));
+    assert_eq!(summary.peers, principals(h, &["b"]));
 
     let inbox = read(h, "b");
-    assert!(summary.last_activity_micros >= inbox.messages[0].ts_micros);
+    assert_eq!(summary.last_activity_micros, inbox.messages[0].ts_micros);
 }
 
 /// `unread` counts the messages of others past the read position.
@@ -91,7 +91,7 @@ pub fn query_discovers_open_threads_of_the_callers_repository_only(h: &impl Conf
     assert!(!found.threads[0].member);
     assert!(found.threads[0].open);
     assert_eq!(found.threads[0].unread, 0);
-    assert_eq!(found.threads[0].peers, agents(h, &["c"]));
+    assert_eq!(found.threads[0].peers, principals(h, &["c"]));
     assert!(matches!(
         find(h, &who(h, "d"), by_query("mi")),
         Err(CommsError::QueryTooShort { .. })
@@ -203,7 +203,7 @@ pub fn describing_one_thread_needs_membership_or_an_open_thread_here(h: &impl Co
     );
     let seen_from_outside = describe(h, &who(h, "d"), &open.thread).expect("an open thread of this repository");
     assert_eq!(seen_from_outside.subject, "public");
-    assert_eq!(seen_from_outside.peers, agents(h, &["a"]));
+    assert_eq!(seen_from_outside.peers, principals(h, &["a"]));
     assert!(!seen_from_outside.member);
     assert_eq!(seen_from_outside.unread, 0);
     assert_eq!(
@@ -232,12 +232,13 @@ pub fn archived_threads_are_listed_only_on_request(h: &impl ConformanceHarness) 
     );
 }
 
-/// A listing is ordered by last activity, newest first; a post moves its thread to the front.
-pub fn listing_is_ordered_by_last_activity_newest_first(h: &impl ConformanceHarness) {
+/// A listing is ordered by the store-wide position of each thread's newest post, newest first,
+/// whatever the clock read: a post moves its thread to the front.
+pub fn listing_is_ordered_by_the_newest_post_newest_first(h: &impl ConformanceHarness) {
     let one = start(h, "a", "one", &[]);
     tick(h);
     let two = start(h, "a", "two", &[]);
-    tick(h);
+    h.rewind(std::time::Duration::from_secs(60));
     let three = start(h, "a", "three", &[]);
 
     let listed = list(h, "a");
@@ -245,10 +246,8 @@ pub fn listing_is_ordered_by_last_activity_newest_first(h: &impl ConformanceHarn
         thread_ids(&listed),
         [three.thread.clone(), two.thread.clone(), one.thread.clone()]
     );
-    assert!(listed.threads[0].last_activity_micros > listed.threads[1].last_activity_micros);
-    assert!(listed.threads[1].last_activity_micros > listed.threads[2].last_activity_micros);
+    assert!(listed.threads[0].last_activity_micros < listed.threads[1].last_activity_micros);
 
-    tick(h);
     say(h, "a", &one.thread, "again").expect("post");
     assert_eq!(thread_ids(&list(h, "a")), [one.thread, three.thread, two.thread]);
 }
@@ -301,6 +300,7 @@ pub fn joining_an_open_thread_of_the_callers_repository_starts_at_the_head(h: &i
     assert!(joined.threads[0].member);
     assert_eq!(joined.threads[0].unread, 0);
     assert_eq!(h.position(&created.thread, &agent(h, "c")), Some((2, 2)));
+    assert_eq!(h.position(&created.thread, &agent(h, "c.helper")), Some((2, 2)));
     say(h, "a", &created.thread, "third").expect("post");
     assert_eq!(bodies(&read(h, "c")), ["third"]);
 }
@@ -354,7 +354,7 @@ pub fn any_member_may_invite_and_the_invited_start_at_the_head(h: &impl Conforma
     .expect("invite");
 
     assert_eq!(invited.pending, agents(h, &["c"]));
-    assert_eq!(invited.threads[0].peers, agents(h, &["a", "c"]));
+    assert_eq!(invited.threads[0].peers, principals(h, &["a", "c"]));
     assert_eq!(h.position(&created.thread, &agent(h, "c")), Some((2, 2)));
     assert_eq!(h.position(&created.thread, &agent(h, "b")), Some((0, 0)));
     say(h, "a", &created.thread, "third").expect("post");
@@ -416,14 +416,17 @@ pub fn invitation_crosses_repositories(h: &impl ConformanceHarness) {
     assert_eq!(thread_ids(&unseen), no_threads());
 }
 
-/// Leaving ends membership: no posting, no second leave, no position.
+/// Leaving ends the principal's membership, for all its actors: no posting, no second leave,
+/// no position.
 pub fn leaving_ends_membership(h: &impl ConformanceHarness) {
     let created = start(h, "a", "topic", &["b"]);
     let not_member = CommsError::NotMember {
         thread: created.thread.clone(),
     };
+    read(h, "b.helper");
 
     let left = change(h, &who(h, "b"), &created.thread, ThreadAction::Leave).expect("leave");
+    assert_eq!(h.position(&created.thread, &agent(h, "b.helper")), None);
 
     assert!(!left.threads[0].member);
     assert!(!left.threads[0].archived);
@@ -476,7 +479,7 @@ pub fn last_member_leaving_archives_the_thread(h: &impl ConformanceHarness) {
 
     let last = change(h, &who(h, "b"), &created.thread, ThreadAction::Leave).expect("leave");
     assert!(last.threads[0].archived);
-    assert_eq!(last.threads[0].peers, Vec::<Actor>::new());
+    assert_eq!(last.threads[0].peers, Vec::<Principal>::new());
 
     let open = start(h, "c", "open", &[]);
     change(h, &who(h, "c"), &open.thread, ThreadAction::Leave).expect("leave");
@@ -487,11 +490,66 @@ pub fn last_member_leaving_archives_the_thread(h: &impl ConformanceHarness) {
     assert_eq!(h.thread_count(), 2);
 }
 
-/// An archived thread can be read and left, and nothing else.
-pub fn archived_thread_is_readable_but_closed_to_posts_joins_and_invitations(h: &impl ConformanceHarness) {
+/// `join`, `invite` and `archive` made again find the change made and succeed; a relayed
+/// `leave` returns its first reply when it is replayed, where a new `leave` is refused.
+pub fn membership_changes_are_idempotent_under_replay(h: &impl ConformanceHarness) {
+    let created = start(h, "a", "topic", &[]);
+    let key = |text: &str| ReplayKey::parse(text).expect("replay key");
+    let (a, c) = (who(h, "a"), who(h, "c"));
+
+    let joined = change(
+        h,
+        &c.clone().with_replay_key(key("r1")),
+        &created.thread,
+        ThreadAction::Join,
+    );
+    assert_eq!(
+        change(
+            h,
+            &c.clone().with_replay_key(key("r1")),
+            &created.thread,
+            ThreadAction::Join
+        ),
+        joined
+    );
+    let invite = || ThreadAction::Invite(agents(h, &["d"]));
+    let invited = change(h, &a.clone().with_replay_key(key("r2")), &created.thread, invite()).expect("invite");
+    let again = change(h, &a.clone().with_replay_key(key("r2")), &created.thread, invite()).expect("invite");
+    assert_eq!(again, invited);
+
+    let leaving = c.clone().with_replay_key(key("r3"));
+    let left = change(h, &leaving, &created.thread, ThreadAction::Leave).expect("leave");
+    assert!(!left.threads[0].member);
+    assert_eq!(change(h, &leaving, &created.thread, ThreadAction::Leave), Ok(left));
+    assert_eq!(
+        change(h, &c.with_replay_key(key("r4")), &created.thread, ThreadAction::Leave),
+        Err(CommsError::NotMember {
+            thread: created.thread.clone()
+        })
+    );
+
+    let archived = change(
+        h,
+        &a.clone().with_replay_key(key("r5")),
+        &created.thread,
+        ThreadAction::Archive,
+    );
+    assert_eq!(
+        change(h, &a.with_replay_key(key("r5")), &created.thread, ThreadAction::Archive),
+        archived
+    );
+    assert_eq!(
+        describe(h, &who(h, "a"), &created.thread).expect("thread").peers,
+        principals(h, &["d"])
+    );
+}
+
+/// An archived thread can be left and read by naming it or one of its messages, and nothing
+/// else: a read over all threads does not return its messages, and nothing reopens it.
+pub fn archived_thread_is_read_by_naming_it_and_closed_to_posts_joins_and_invitations(h: &impl ConformanceHarness) {
     let created = start(h, "a", "topic", &[]);
     change(h, &who(h, "b"), &created.thread, ThreadAction::Join).expect("join");
-    say(h, "a", &created.thread, "second").expect("post");
+    let second = say(h, "a", &created.thread, "second").expect("post");
     change(h, &who(h, "a"), &created.thread, ThreadAction::Archive).expect("archive");
     let archived = CommsError::ThreadArchived {
         thread: created.thread.clone(),
@@ -512,7 +570,13 @@ pub fn archived_thread_is_readable_but_closed_to_posts_joins_and_invitations(h: 
         Err(archived)
     );
 
-    assert_eq!(bodies(&read(h, "b")), ["second"]);
+    assert_eq!(bodies(&read(h, "b")), Vec::<&str>::new());
+    assert_eq!(bodies(&read_as(h, "b", history()).expect("inbox")), Vec::<&str>::new());
+    assert_eq!(bodies(&read_as(h, "b", by_id(&second.id)).expect("inbox")), ["second"]);
+    assert_eq!(
+        bodies(&read_as(h, "b", only(&created.thread)).expect("inbox")),
+        ["second"]
+    );
     let whole = read_as(
         h,
         "b",
@@ -532,27 +596,37 @@ pub fn archived_thread_is_readable_but_closed_to_posts_joins_and_invitations(h: 
     assert!(!left.threads[0].member);
 }
 
-/// A repository holds at most [`MAX_ACTIVE_THREADS_PER_REPO`] active threads. Another repository
-/// has its own count, and archiving frees a place.
-pub fn active_threads_are_capped_per_repository(h: &impl ConformanceHarness) {
-    let first = start(h, "a", "topic", &[]);
-    for _ in 1..MAX_ACTIVE_THREADS_PER_REPO {
-        start(h, "a", "topic", &[]);
+/// A repository holds [`MAX_ACTIVE_THREADS_PER_REPO`] active threads. Creating one more archives
+/// the one whose newest post is the oldest and tells the poster, and only the poster. Another
+/// repository has its own count.
+pub fn creating_a_thread_at_the_cap_archives_the_least_recently_active(h: &impl ConformanceHarness) {
+    let first = start(h, "a", "topic", &["b"]);
+    let second = start(h, "a", "topic", &["b"]);
+    for _ in 2..MAX_ACTIVE_THREADS_PER_REPO {
+        assert_eq!(start(h, "a", "topic", &[]).notices, Vec::<String>::new());
     }
-
-    assert_eq!(
-        h.post(&who(h, "a"), new_thread(h, "one too many", &[], &[], "first")),
-        Err(CommsError::ThreadCapReached {
-            repo: who(h, "a").repo,
-            cap: MAX_ACTIVE_THREADS_PER_REPO,
-        })
-    );
+    say(h, "a", &first.thread, "still in use").expect("post");
     h.post(&elsewhere(h, "a"), new_thread(h, "topic", &[], &[], "first"))
         .expect("another repository has room");
 
-    change(h, &who(h, "a"), &first.thread, ThreadAction::Archive).expect("archive");
-    start(h, "a", "room again", &[]);
+    let over = start(h, "a", "one more", &[]);
+
+    assert!(over.created);
+    assert_eq!(over.notices, [cap_archive_notice(&second.thread)]);
+    let archived = |thread: &ThreadId| describe(h, &who(h, "a"), thread).expect("thread").archived;
+    assert!(archived(&second.thread));
+    assert!(!archived(&first.thread));
+    assert!(!archived(&over.thread));
     assert_eq!(h.thread_count(), MAX_ACTIVE_THREADS_PER_REPO + 2);
+    assert_eq!(
+        bodies(&read(h, "b")),
+        ["first", "still in use"],
+        "no notice, and no mail of it"
+    );
+    assert_eq!(
+        say(h, "b", &second.thread, "late"),
+        Err(CommsError::ThreadArchived { thread: second.thread })
+    );
 }
 
 /// A thread holds at most [`MAX_THREAD_MEMBERS`] members. A join or an invitation that would

@@ -13,10 +13,8 @@ use serde::{Deserialize, Serialize};
 
 use super::Keyspaces;
 use super::keys;
-use crate::comms::v2::api::{
-    Actor, Caller, CommsError, InboxMessage, MAX_MESSAGES_PER_THREAD, MessageId, RepoKey, ThreadId,
-};
-use crate::comms::v2::rules::{self, Access, Position};
+use crate::comms::v2::api::{Actor, Caller, CommsError, InboxMessage, MessageId, Principal, RepoKey, ThreadId};
+use crate::comms::v2::rules::{self, Access, BodyForm, Position};
 use crate::path::RelPath;
 
 /// Bytes of a raw `i64` or `u64` value.
@@ -33,56 +31,17 @@ pub(super) struct ThreadRecord {
     pub creator: Actor,
     /// Sequence number of the newest message.
     pub head: u64,
-    /// The latest timestamp of any message posted ([`rules::last_activity`]): the thread
-    /// expires by it. Not the newest message's timestamp when that one was stamped behind.
+    /// Timestamp of the newest message: the thread's last activity, which the next post is
+    /// stamped after and the sweep removes the thread by.
     pub last_activity_micros: i64,
-    /// Who posted the newest message.
-    pub head_from: Actor,
-    /// Sequence number of the newest message not posted by `head_from`, or 0. With `head` it
-    /// gives, for any agent, the newest message from somebody else without reading a message.
-    pub prev_other_seq: u64,
+    /// Position of the newest message in the store-wide post order: what listings sort by.
+    pub last_order: u64,
 }
 
 impl ThreadRecord {
-    /// Sequence number of the newest message `actor` did not post, or 0: nothing past it can be
-    /// unread to `actor`.
-    pub fn newest_from_others(&self, actor: &Actor) -> u64 {
-        if self.head_from == *actor {
-            self.prev_other_seq
-        } else {
-            self.head
-        }
-    }
-
-    /// Where a walk of the thread's messages from sequence number `first` may start instead:
-    /// `first`, or the oldest sequence number the thread's cap has not pushed out when that is
-    /// later. Every post removes the message exactly [`MAX_MESSAGES_PER_THREAD`] behind it, so
-    /// nothing is stored below `head - MAX_MESSAGES_PER_THREAD + 1`, and a range that starts
-    /// lower only walks the tombstones of what was there.
-    pub fn first_stored(&self, first: u64) -> u64 {
-        first.max(self.head.saturating_sub(MAX_MESSAGES_PER_THREAD) + 1)
-    }
-
-    /// The record after `actor` posts message `seq` at `ts_micros`.
-    pub fn posted(mut self, actor: &Actor, seq: u64, ts_micros: i64) -> Self {
-        if self.head_from != *actor {
-            self.prev_other_seq = self.head;
-            self.head_from = actor.clone();
-        }
-        self.head = seq;
-        self.last_activity_micros = rules::last_activity(self.last_activity_micros, ts_micros);
-        self
-    }
-
     /// The facts the rules decide on, for `caller`.
     pub fn access(&self, caller: &Caller, member: bool) -> Access {
-        Access {
-            member,
-            open: self.open,
-            same_repo: self.repo == caller.repo,
-            archived: self.archived,
-            creator: self.creator == caller.actor,
-        }
+        Access::of(caller, &self.repo, &self.creator, self.open, self.archived, member)
     }
 }
 
@@ -99,10 +58,10 @@ pub(super) struct MessageMeta {
     pub reply_to: Option<u64>,
 }
 
-/// One row of `replays`: the first result of a request, and when it stops answering.
+/// One row of `replays`: the first result of a request, and when it was stored.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(super) struct Replay<T> {
-    pub expires_micros: i64,
+    pub written_micros: i64,
     pub value: T,
 }
 
@@ -139,23 +98,15 @@ pub(super) fn decode_u64(what: &str, bytes: &[u8]) -> Result<u64, CommsError> {
     Ok(u64::from_be_bytes(bytes))
 }
 
-/// One consistent view of the store at one instant of its clock.
-///
-/// Retention is applied here, on every read, by comparing a record's time with `now`: an expired
-/// thread, message, replay entry or seen record is not returned whether or not a sweep has removed
-/// it yet. The methods named `stored_*` are the exception and return what is physically there,
-/// for the writes that must replace or remove it.
+/// One consistent view of the store. It returns what is stored: nothing is left out for its age.
 pub(super) struct Reader<'a> {
     pub ks: &'a Keyspaces,
     snapshot: Snapshot,
-    /// The instant retention is judged at: what the clock read, in microseconds since the unix
-    /// epoch. Never a timestamp the store issued.
-    pub now: i64,
 }
 
 impl<'a> Reader<'a> {
-    pub fn new(ks: &'a Keyspaces, snapshot: Snapshot, now: i64) -> Self {
-        Self { ks, snapshot, now }
+    pub fn new(ks: &'a Keyspaces, snapshot: Snapshot) -> Self {
+        Self { ks, snapshot }
     }
 
     pub fn get(&self, keyspace: &Keyspace, key: impl AsRef<[u8]>) -> Result<Option<UserValue>, CommsError> {
@@ -164,91 +115,101 @@ impl<'a> Reader<'a> {
             .map_err(|error| backend("read the comms store", error))
     }
 
-    pub fn prefix(&self, keyspace: &Keyspace, prefix: impl AsRef<[u8]>) -> fjall::Iter {
-        self.snapshot.prefix(keyspace, prefix)
+    /// The keys of `keyspace` that start with `prefix`.
+    pub fn keys(
+        &self,
+        keyspace: &Keyspace,
+        prefix: &[u8],
+    ) -> impl Iterator<Item = Result<fjall::UserKey, CommsError>> + use<> {
+        self.snapshot
+            .prefix(keyspace, prefix)
+            .map(|guard| guard.key().map_err(|error| backend("read the comms store", error)))
     }
 
-    pub fn stored_thread(&self, id: &ThreadId) -> Result<Option<ThreadRecord>, CommsError> {
+    /// The rows of `keyspace` whose keys start with `prefix`.
+    pub fn rows(
+        &self,
+        keyspace: &Keyspace,
+        prefix: &[u8],
+    ) -> impl Iterator<Item = Result<(fjall::UserKey, UserValue), CommsError>> + use<> {
+        self.snapshot.prefix(keyspace, prefix).map(|guard| {
+            guard
+                .into_inner()
+                .map_err(|error| backend("read the comms store", error))
+        })
+    }
+
+    pub fn thread(&self, id: &ThreadId) -> Result<Option<ThreadRecord>, CommsError> {
         self.get(&self.ks.threads, keys::thread(id))?
             .map(|bytes| decode("a thread", &bytes))
             .transpose()
     }
 
-    /// The thread `id`, unless its last activity has expired.
-    pub fn thread(&self, id: &ThreadId) -> Result<Option<ThreadRecord>, CommsError> {
-        Ok(self
-            .stored_thread(id)?
-            .filter(|thread| !rules::message_expired(thread.last_activity_micros, self.now)))
-    }
-
-    pub fn position(&self, thread: &ThreadId, actor: &Actor) -> Result<Option<Position>, CommsError> {
-        self.get(&self.ks.members, keys::member(thread, actor))?
-            .map(|bytes| decode("a member row", &bytes))
+    /// Where the actors of `principal` start reading `thread`, when it is a member.
+    pub fn member(&self, thread: &ThreadId, principal: &Principal) -> Result<Option<u64>, CommsError> {
+        self.get(&self.ks.members, keys::member(thread, principal))?
+            .map(|bytes| decode_u64("member row", &bytes))
             .transpose()
     }
 
-    pub fn stored_meta(&self, thread: &ThreadId, seq: u64) -> Result<Option<MessageMeta>, CommsError> {
+    /// The marks of every actor of `principal` in `thread`.
+    pub fn positions(&self, thread: &ThreadId, principal: &str) -> Result<Vec<(Actor, Position)>, CommsError> {
+        let mut positions = Vec::new();
+        for row in self.rows(&self.ks.positions, &keys::positions_prefix(thread, principal)) {
+            let (key, value) = row?;
+            let actor = keys::parse_position(&key).ok_or_else(|| corrupt("position key"))?;
+            // ~keep The prefix also matches a longer principal that starts with this one.
+            if actor.principal() == principal {
+                positions.push((actor, decode("a position", &value)?));
+            }
+        }
+        Ok(positions)
+    }
+
+    /// Where `actor` stands in `thread`, and whether those are marks it has stored or where it
+    /// starts ([`Position::start`]). `None` when its principal is not a member.
+    pub fn position(&self, thread: &ThreadId, actor: &Actor) -> Result<Option<(Position, bool)>, CommsError> {
+        let Some(member_start) = self.member(thread, &actor.principal_id())? else {
+            return Ok(None);
+        };
+        let positions = self.positions(thread, actor.principal())?;
+        if let Some((_, own)) = positions.iter().find(|(sibling, _)| sibling == actor) {
+            return Ok(Some((*own, true)));
+        }
+        let sibling_read_seq = positions.iter().map(|(_, position)| position.read_seq).max();
+        Ok(Some((Position::start(sibling_read_seq, member_start), false)))
+    }
+
+    pub fn meta(&self, thread: &ThreadId, seq: u64) -> Result<Option<MessageMeta>, CommsError> {
         self.get(&self.ks.messages, keys::message(thread, seq))?
             .map(|bytes| decode("a message", &bytes))
             .transpose()
     }
 
-    /// The first message of `thread` physically stored with a sequence number in `seqs`.
-    pub fn stored_meta_from(
-        &self,
-        thread: &ThreadId,
-        seqs: RangeInclusive<u64>,
-    ) -> Result<Option<(u64, MessageMeta)>, CommsError> {
-        let range = keys::message(thread, *seqs.start())..=keys::message(thread, *seqs.end());
-        let Some(guard) = self.snapshot.range(&self.ks.messages, range).next() else {
-            return Ok(None);
-        };
-        let (key, value) = guard
-            .into_inner()
-            .map_err(|error| backend("read the comms store", error))?;
-        let seq = keys::parse_message_seq(&key).ok_or_else(|| corrupt("message key"))?;
-        Ok(Some((seq, decode("a message", &value)?)))
-    }
-
-    /// Message `seq` of `thread`, unless it has expired.
-    pub fn meta(&self, thread: &ThreadId, seq: u64) -> Result<Option<MessageMeta>, CommsError> {
-        Ok(self
-            .stored_meta(thread, seq)?
-            .filter(|meta| !rules::message_expired(meta.ts_micros, self.now)))
-    }
-
-    /// The unexpired messages of `thread` with a sequence number in `seqs`, oldest first.
+    /// The messages of `thread` with a sequence number in `seqs`, oldest first.
     pub fn metas(
         &self,
         thread: &ThreadId,
         seqs: RangeInclusive<u64>,
     ) -> impl Iterator<Item = Result<(u64, MessageMeta), CommsError>> + use<> {
         let range = keys::message(thread, *seqs.start())..=keys::message(thread, *seqs.end());
-        let now = self.now;
-        self.snapshot.range(&self.ks.messages, range).filter_map(move |guard| {
-            let decoded = guard
+        self.snapshot.range(&self.ks.messages, range).map(move |guard| {
+            let (key, value) = guard
                 .into_inner()
-                .map_err(|error| backend("read the comms store", error))
-                .and_then(|(key, value)| {
-                    let seq = keys::parse_message_seq(&key).ok_or_else(|| corrupt("message key"))?;
-                    Ok((seq, decode::<MessageMeta>("a message", &value)?))
-                });
-            match decoded {
-                Ok((_, meta)) if rules::message_expired(meta.ts_micros, now) => None,
-                other => Some(other),
-            }
+                .map_err(|error| backend("read the comms store", error))?;
+            let seq = keys::parse_message_seq(&key).ok_or_else(|| corrupt("message key"))?;
+            Ok((seq, decode::<MessageMeta>("a message", &value)?))
         })
     }
 
-    /// The reply form of message `seq` of `thread`. `None` when its body is gone, which a
-    /// concurrent sweep cannot cause within one view.
+    /// The reply form of message `seq` of `thread`, its body in `form`.
     pub fn render(
         &self,
         thread: &ThreadId,
         record: &ThreadRecord,
         seq: u64,
         meta: &MessageMeta,
-        whole: bool,
+        form: BodyForm,
     ) -> Result<InboxMessage, CommsError> {
         let body = self
             .get(&self.ks.bodies, keys::message(thread, seq))?
@@ -265,73 +226,57 @@ impl<'a> Reader<'a> {
             meta.ts_micros,
             reply_to,
             body,
-            whole,
+            form,
         ))
     }
 
     /// The members of `thread`, in id order.
-    pub fn members(&self, thread: &ThreadId) -> Result<Vec<Actor>, CommsError> {
-        let mut members = Vec::new();
-        for guard in self.prefix(&self.ks.members, keys::thread(thread)) {
-            let key = guard.key().map_err(|error| backend("read the comms store", error))?;
-            members.push(keys::parse_member(&key).ok_or_else(|| corrupt("member key"))?);
-        }
-        members.sort();
-        Ok(members)
+    pub fn members(&self, thread: &ThreadId) -> Result<Vec<Principal>, CommsError> {
+        self.keys(&self.ks.members, &keys::thread(thread))
+            .map(|key| keys::parse_member(&key?).ok_or_else(|| corrupt("member key")))
+            .collect()
     }
 
-    /// The threads `actor` has a member row in, expired ones included.
-    pub fn member_threads(&self, actor: &Actor) -> Result<Vec<ThreadId>, CommsError> {
-        self.trailing_threads(&self.ks.member_threads, keys::member_threads_prefix(actor))
+    /// The threads `principal` is a member of.
+    pub fn member_threads(&self, principal: &str) -> Result<Vec<ThreadId>, CommsError> {
+        self.trailing_threads(&self.ks.member_threads, keys::threads_of_prefix(principal))
     }
 
-    /// The threads of `repo` in one state, expired ones included.
+    /// The threads of `repo` in one state.
     pub fn repo_threads(&self, repo: &RepoKey, archived: bool) -> Result<Vec<ThreadId>, CommsError> {
         self.trailing_threads(&self.ks.repo_threads, keys::repo_threads_prefix(repo, archived))
     }
 
     fn trailing_threads(&self, keyspace: &Keyspace, prefix: Vec<u8>) -> Result<Vec<ThreadId>, CommsError> {
-        let mut threads = Vec::new();
-        for guard in self.prefix(keyspace, prefix) {
-            let key = guard.key().map_err(|error| backend("read the comms store", error))?;
-            threads.push(keys::parse_trailing_thread(&key).ok_or_else(|| corrupt("thread index key"))?);
-        }
-        Ok(threads)
+        self.keys(keyspace, &prefix)
+            .map(|key| keys::parse_trailing_thread(&key?).ok_or_else(|| corrupt("thread index key")))
+            .collect()
     }
 
-    pub fn stored_seen(&self, actor: &Actor) -> Result<Option<i64>, CommsError> {
+    /// When `actor`'s seen record was written, when it has one.
+    pub fn seen(&self, actor: &Actor) -> Result<Option<i64>, CommsError> {
         self.get(&self.ks.seen, keys::seen(actor))?
             .map(|bytes| decode_i64("seen record", &bytes))
             .transpose()
     }
 
-    /// Whether `actor` still counts as seen: its record has not expired
-    /// ([`rules::seen_expired`]).
-    pub fn seen(&self, actor: &Actor) -> Result<bool, CommsError> {
+    /// The first result stored under `key`, until a sweep removes it.
+    pub fn replay<T: DeserializeOwned>(&self, key: Option<&[u8]>) -> Result<Option<T>, CommsError> {
+        let Some(key) = key else {
+            return Ok(None);
+        };
         Ok(self
-            .stored_seen(actor)?
-            .is_some_and(|last_call| !rules::seen_expired(last_call, self.now)))
-    }
-
-    pub fn stored_replay<T: DeserializeOwned>(&self, key: &[u8]) -> Result<Option<Replay<T>>, CommsError> {
-        self.get(&self.ks.replays, key)?
-            .map(|bytes| decode("a replay entry", &bytes))
-            .transpose()
-    }
-
-    /// The first result stored under `key`, while it still answers.
-    pub fn replay<T: DeserializeOwned>(&self, key: &[u8]) -> Result<Option<T>, CommsError> {
-        Ok(self
-            .stored_replay(key)?
-            .filter(|replay: &Replay<T>| !rules::replay_expired(replay.expires_micros, self.now))
+            .get(&self.ks.replays, key)?
+            .map(|bytes| decode::<Replay<T>>("a replay entry", &bytes))
+            .transpose()?
             .map(|replay| replay.value))
     }
 
-    /// The `recipients` that have not made a call, the caller aside, in id order.
+    /// The `recipients` without a seen record, the caller aside, in id order.
     pub fn pending(&self, actor: &Actor, recipients: &[Actor]) -> Result<Vec<Actor>, CommsError> {
         let mut pending = Vec::new();
         for recipient in rules::addressed(actor, recipients) {
-            if !self.seen(&recipient)? {
+            if self.seen(&recipient)?.is_none() {
                 pending.push(recipient);
             }
         }

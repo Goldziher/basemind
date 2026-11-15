@@ -29,9 +29,6 @@ const BINDING_DIGITS: usize = 16;
 /// Hex digits of a 64-bit position.
 const U64_DIGITS: usize = 16;
 
-/// Hex digits of the 30 bits of a thread id.
-const THREAD_BITS_DIGITS: usize = 8;
-
 /// Start value of FNV-1a (64 bit).
 const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
 
@@ -106,30 +103,22 @@ impl Cursor {
         parse_hex(rest).ok_or_else(invalid)
     }
 
-    /// The cursor after the thread `id` whose last activity is `activity_micros`, for `listing`.
-    pub fn for_threads(listing: &ThreadListing<'_>, activity_micros: i64, id: &ThreadId) -> Self {
+    /// The cursor after the thread whose newest post is at store-wide post position `order`,
+    /// for `listing`.
+    pub fn for_threads(listing: &ThreadListing<'_>, order: u64) -> Self {
         let binding = listing.binding();
-        // Bit-preserving: the position is compared for equality after a round trip, never ordered
-        // in its encoded form.
-        let activity = activity_micros as u64;
-        Self(format!("{THREADS_TAG}{binding:016x}{activity:016x}{:08x}", id.bits()))
+        Self(format!("{THREADS_TAG}{binding:016x}{order:016x}"))
     }
 
-    /// The `(last activity, thread id)` this cursor resumes after, when it was issued for
-    /// `listing`. Refused with [`CommsError::InvalidCursor`] otherwise.
-    pub fn threads_position(&self, listing: &ThreadListing<'_>) -> Result<(i64, ThreadId), CommsError> {
+    /// The post position this cursor resumes after, when it was issued for `listing`. Refused
+    /// with [`CommsError::InvalidCursor`] otherwise.
+    pub fn threads_position(&self, listing: &ThreadListing<'_>) -> Result<u64, CommsError> {
         let invalid = || CommsError::invalid_cursor(&self.0);
         let rest = self.bound_rest(THREADS_TAG, listing.binding())?;
-        if rest.len() != U64_DIGITS + THREAD_BITS_DIGITS {
+        if rest.len() != U64_DIGITS {
             return Err(invalid());
         }
-        let (activity, bits) = rest.split_at(U64_DIGITS);
-        let activity = parse_hex(activity).ok_or_else(invalid)?;
-        let bits = parse_hex(bits)
-            .and_then(|bits| u32::try_from(bits).ok())
-            .filter(|bits| *bits < ThreadId::SPACE)
-            .ok_or_else(invalid)?;
-        Ok((activity as i64, ThreadId::from_bits(bits)))
+        parse_hex(rest).ok_or_else(invalid)
     }
 
     /// What follows the tag and the list identity, when both are the expected ones.

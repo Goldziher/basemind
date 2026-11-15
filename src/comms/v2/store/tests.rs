@@ -1,5 +1,5 @@
 //! The store against the conformance suite, and what is true of the store only: what survives a
-//! reopen, how versions are handled, concurrency, when a call writes and the bounded sweep.
+//! reopen, how versions are handled, concurrent posts, when a call writes and the bounded sweep.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
@@ -10,8 +10,8 @@ use tempfile::TempDir;
 use super::open::Migration;
 use super::*;
 use crate::comms::v2::api::{
-    COMMS_STORE_VER, InboxSelect, MESSAGE_TTL, Mark, MessageId, PostTarget, REPLAY_TTL, ReplayKey,
-    SEEN_REFRESH_INTERVAL, SEEN_TTL, ThreadAction,
+    COMMS_STORE_VER, MESSAGE_TTL, Mark, PostTarget, REPLAY_TTL, ReplayKey, SEEN_REFRESH_INTERVAL, SEEN_TTL,
+    ThreadAction,
 };
 use crate::comms::v2::conformance::{ConformanceHarness, Repo, default_caller};
 
@@ -118,15 +118,17 @@ impl FjallAgents {
         self.store_ver.store(version, Ordering::Release);
     }
 
-    /// When `name`'s seen record was last written, as stored.
-    fn recorded_seen(&self, name: &str) -> Option<i64> {
-        self.reader(self.clock.now_micros())
-            .stored_seen(&caller(name).actor)
-            .expect("seen record")
+    fn reader(&self) -> Reader<'_> {
+        Reader::new(&self.ks, self.db.snapshot())
     }
 
-    /// Rows physically in each keyspace but `meta`, in the order of the module's table.
-    fn stored_rows(&self) -> [usize; 10] {
+    /// When `name`'s seen record was last written.
+    fn recorded_seen(&self, name: &str) -> Option<i64> {
+        self.reader().seen(&caller(name).actor).expect("seen record")
+    }
+
+    /// Rows in each keyspace but `meta`, in the order of the module's table.
+    fn stored_rows(&self) -> [usize; 12] {
         let ks = &self.ks;
         [
             &ks.threads,
@@ -135,6 +137,8 @@ impl FjallAgents {
             &ks.post_order,
             &ks.members,
             &ks.member_threads,
+            &ks.positions,
+            &ks.actor_threads,
             &ks.repo_threads,
             &ks.replays,
             &ks.seen,
@@ -176,10 +180,7 @@ impl ConformanceHarness for Harness {
     }
 
     fn position(&self, thread: &ThreadId, actor: &Actor) -> Option<(u64, u64)> {
-        let store = self.store();
-        let reader = store.reader(store.clock.now_micros());
-        reader.thread(thread).expect("thread")?;
-        let position = reader.position(thread, actor).expect("member row")?;
+        let (position, _) = self.store().reader().position(thread, actor).expect("position")?;
         Some((position.read_seq, position.notified_seq))
     }
 
@@ -194,10 +195,7 @@ impl ConformanceHarness for Harness {
         }
     }
 
-    /// Threads physically stored once the sweep has nothing left to remove, so every scenario
-    /// that counts threads also proves that expired ones are deleted, not only hidden.
     fn thread_count(&self) -> usize {
-        ConformanceHarness::sweep(self);
         self.store().ks.threads.len().expect("count threads")
     }
 }
@@ -312,167 +310,4 @@ fn random_thread_ids_stay_inside_the_id_space() {
             .len(),
         2
     );
-}
-
-#[test]
-fn timestamps_keep_rising_when_the_clock_steps_back_less_than_the_tolerance() {
-    let harness = Harness::new();
-    let created = start(&harness, "a", "topic", &["b"]);
-    harness.clock.0.store(START_MICROS - 5_000_000, Ordering::SeqCst);
-    say(&harness, "a", &created.thread, "second");
-    say(&harness, "a", &created.thread, "third");
-
-    let reply = harness.inbox(&caller("b"), InboxBody::default()).expect("inbox");
-
-    let times: Vec<i64> = reply.messages.iter().map(|message| message.ts_micros).collect();
-    assert_eq!(times, [START_MICROS, START_MICROS + 1, START_MICROS + 2]);
-}
-
-#[test]
-fn history_pages_by_cursor_through_a_thread_that_dropped_its_oldest_messages() {
-    use crate::comms::v2::api::MAX_MESSAGES_PER_THREAD;
-    let harness = Harness::new();
-    let created = start(&harness, "a", "topic", &["b"]);
-    let elsewhere = start(&harness, "a", "elsewhere", &["b"]);
-    for n in 0..MAX_MESSAGES_PER_THREAD + 4 {
-        say(&harness, "a", &created.thread, &format!("m{n}"));
-    }
-    say(&harness, "a", &elsewhere.thread, "last");
-
-    let mut ids: Vec<MessageId> = Vec::new();
-    let mut cursor = None;
-    loop {
-        let page = harness
-            .inbox(
-                &caller("b"),
-                InboxBody {
-                    limit: Some(100),
-                    cursor: cursor.take(),
-                    ..history()
-                },
-            )
-            .expect("inbox");
-        ids.extend(page.messages.into_iter().map(|message| message.id));
-        cursor = page.next_cursor;
-        if cursor.is_none() {
-            break;
-        }
-    }
-
-    let mut expected = vec![elsewhere.id.clone()];
-    expected
-        .extend((6..=MAX_MESSAGES_PER_THREAD + 5).map(|seq| MessageId::new(created.thread.clone(), seq).expect("id")));
-    expected.push(MessageId::new(elsewhere.thread, 2).expect("id"));
-    assert_eq!(ids, expected);
-}
-
-#[test]
-fn reads_of_a_thread_far_past_its_cap_start_at_the_oldest_message_still_stored() {
-    use crate::comms::v2::api::MAX_MESSAGES_PER_THREAD;
-    let harness = Harness::new();
-    let created = start(&harness, "a", "topic", &["b", "c"]);
-    let early = say(&harness, "a", &created.thread, "early");
-    let marked = harness.inbox(&caller("c"), InboxBody::default()).expect("inbox");
-    assert_eq!(marked.read_to, [early.id]);
-    for n in 0..MAX_MESSAGES_PER_THREAD + 300 {
-        say(&harness, "a", &created.thread, &format!("m{n}"));
-    }
-    let head = MAX_MESSAGES_PER_THREAD + 302;
-    let oldest = head - MAX_MESSAGES_PER_THREAD + 1;
-    let id = |seq: u64| MessageId::new(created.thread.clone(), seq).expect("id");
-
-    let store = harness.store();
-    let reader = store.reader(store.clock.now_micros());
-    let record = reader.thread(&created.thread).expect("read").expect("thread");
-    assert_eq!(record.head, head);
-    assert_eq!(
-        (record.first_stored(1), record.first_stored(oldest + 5)),
-        (oldest, oldest + 5)
-    );
-    assert!(reader.stored_meta(&created.thread, oldest).expect("read").is_some());
-    assert!(reader.stored_meta(&created.thread, oldest - 1).expect("read").is_none());
-    drop(reader);
-
-    for (name, position) in [("b", 0), ("c", 2)] {
-        let summary = &harness
-            .threads_query(&caller(name), ThreadQuery::Describe(created.thread.clone()))
-            .expect("describe")
-            .threads[0];
-        assert_eq!(
-            (summary.head, summary.unread),
-            (head, MAX_MESSAGES_PER_THREAD),
-            "{name}"
-        );
-        let peeked = harness
-            .inbox(
-                &caller(name),
-                InboxBody {
-                    limit: Some(2),
-                    ..peek()
-                },
-            )
-            .expect("peek");
-        let ids: Vec<MessageId> = peeked.messages.into_iter().map(|message| message.id).collect();
-        assert_eq!(ids, [id(oldest), id(oldest + 1)], "{name}");
-        let page_two = harness
-            .inbox(
-                &caller(name),
-                InboxBody {
-                    limit: Some(2),
-                    cursor: peeked.next_cursor,
-                    ..peek()
-                },
-            )
-            .expect("peek");
-        let ids: Vec<MessageId> = page_two.messages.into_iter().map(|message| message.id).collect();
-        assert_eq!(ids, [id(oldest + 2), id(oldest + 3)], "{name}");
-        assert_eq!(
-            harness.position(&created.thread, &caller(name).actor),
-            Some((position, position)),
-            "{name}"
-        );
-    }
-
-    let read = harness
-        .inbox(
-            &caller("c"),
-            InboxBody {
-                limit: Some(1),
-                ..InboxBody::default()
-            },
-        )
-        .expect("inbox");
-    assert_eq!(read.read_to, [id(oldest)]);
-    let summary = &harness
-        .threads_query(&caller("c"), ThreadQuery::Describe(created.thread.clone()))
-        .expect("describe")
-        .threads[0];
-    assert_eq!(summary.unread, MAX_MESSAGES_PER_THREAD - 1);
-}
-
-#[test]
-fn thread_row_tracks_the_newest_message_of_everyone_but_its_author() {
-    let (a, b, c) = (caller("a").actor, caller("b").actor, caller("c").actor);
-    let harness = Harness::new();
-    let created = start(&harness, "a", "topic", &["b", "c"]);
-    let newest = |actors: [&Actor; 3]| {
-        let store = harness.store();
-        let record = store
-            .reader(store.clock.now_micros())
-            .thread(&created.thread)
-            .expect("read")
-            .expect("thread");
-        actors.map(|actor| record.newest_from_others(actor))
-    };
-
-    assert_eq!(newest([&a, &b, &c]), [0, 1, 1]);
-    say(&harness, "a", &created.thread, "2");
-    assert_eq!(newest([&a, &b, &c]), [0, 2, 2]);
-    say(&harness, "b", &created.thread, "3");
-    assert_eq!(newest([&a, &b, &c]), [3, 2, 3]);
-    say(&harness, "c", &created.thread, "4");
-    say(&harness, "c", &created.thread, "5");
-    assert_eq!(newest([&a, &b, &c]), [5, 5, 3]);
-    say(&harness, "a", &created.thread, "6");
-    assert_eq!(newest([&a, &b, &c]), [5, 6, 6]);
 }

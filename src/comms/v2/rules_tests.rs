@@ -3,7 +3,7 @@
 use std::cell::Cell;
 
 use super::*;
-use crate::comms::v2::api::RESPONSE_BUDGET_BYTES;
+use crate::comms::v2::api::{MESSAGE_TTL, RESPONSE_BUDGET_BYTES};
 
 fn actor(name: &str) -> Actor {
     Actor::parse(name).expect("actor")
@@ -17,7 +17,15 @@ fn message(order: u64, body_len: usize) -> Result<(u64, InboxMessage), CommsErro
     let id = MessageId::new(thread(0), order).expect("message id");
     Ok((
         order,
-        render(id, "topic", &actor("a"), 0, None, &"x".repeat(body_len), true),
+        render(
+            id,
+            "topic",
+            &actor("a"),
+            0,
+            None,
+            &"x".repeat(body_len),
+            BodyForm::Whole,
+        ),
     ))
 }
 
@@ -131,82 +139,54 @@ fn only_a_marking_read_moves_read_seq_and_a_writing_read_never_moves_back() {
 }
 
 #[test]
-fn expiry_is_exclusive_of_the_last_microsecond_of_a_ttl() {
+fn a_new_actor_starts_at_its_principals_read_position_or_the_members_start() {
+    let at = |seq| Position {
+        read_seq: seq,
+        notified_seq: seq,
+    };
+
+    assert_eq!(Position::start(None, 0), at(0), "a member from creation");
+    assert_eq!(Position::start(None, 7), at(7), "the head as of joining");
+    assert_eq!(Position::start(Some(3), 7), at(3), "a sibling actor has read");
+}
+
+#[test]
+fn a_record_is_old_once_it_is_more_than_its_retention_old() {
     let ttl = ttl_micros(MESSAGE_TTL);
 
-    assert!(!message_expired(1, ttl));
-    assert!(message_expired(1, ttl + 1));
-    let seen_kept = ttl_micros(SEEN_TTL) + ttl_micros(SEEN_REFRESH_INTERVAL);
-    assert!(!seen_expired(1, seen_kept));
-    assert!(seen_expired(1, seen_kept + 1));
-    assert!(!replay_expired(replay_expiry(10), 10 + ttl_micros(REPLAY_TTL) - 1));
-    assert!(replay_expired(replay_expiry(10), 10 + ttl_micros(REPLAY_TTL)));
-}
-
-#[test]
-fn a_post_is_stamped_by_the_clock_unless_that_would_not_be_later_than_the_last_stamp() {
-    assert_eq!(post_timestamp(500, i64::MIN), 500, "the first post");
-    assert_eq!(post_timestamp(500, 499), 500);
-    assert_eq!(post_timestamp(500, 500), 501, "the clock stood still");
-    assert_eq!(post_timestamp(500, 9_000), 9_001, "the clock went back a little");
+    assert!(!older_than(1, 1 + ttl, MESSAGE_TTL));
+    assert!(older_than(1, 2 + ttl, MESSAGE_TTL));
+    assert!(
+        !older_than(i64::MAX, i64::MIN, MESSAGE_TTL),
+        "stamped ahead of the clock"
+    );
     assert_eq!(
-        post_timestamp(500, 500 + CLOCK_BEHIND_TOLERANCE_MICROS),
-        501 + CLOCK_BEHIND_TOLERANCE_MICROS,
-        "the most the clock may be behind"
+        ttl_micros(SEEN_RETENTION),
+        ttl_micros(SEEN_TTL) + ttl_micros(SEEN_REFRESH_INTERVAL)
     );
 }
 
 #[test]
-fn a_post_is_stamped_by_the_clock_again_once_it_reads_far_behind_the_last_stamp() {
-    let five_years = 5 * 365 * 24 * 60 * 60 * 1_000_000_i64;
-
-    assert_eq!(post_timestamp(500, 501 + CLOCK_BEHIND_TOLERANCE_MICROS), 500);
-    assert_eq!(post_timestamp(500, 500 + five_years), 500);
-    assert_eq!(post_timestamp(500, i64::MAX), 500);
-    assert_eq!(post_timestamp(i64::MIN, i64::MAX), i64::MIN);
+fn a_post_is_stamped_by_the_clock_unless_that_is_not_later_than_its_threads_last_stamp() {
+    assert_eq!(post_timestamp(500, None), 500, "the post that creates the thread");
+    assert_eq!(post_timestamp(500, Some(499)), 500);
+    assert_eq!(post_timestamp(500, Some(500)), 501, "the clock stood still");
     assert_eq!(
-        post_timestamp(501, post_timestamp(500, 500 + five_years)),
-        501,
-        "the corrected stamp is the one the next post follows"
+        post_timestamp(500, Some(9_000_000_000)),
+        9_000_000_001,
+        "the clock went back"
     );
+    assert_eq!(post_timestamp(500, Some(i64::MAX)), i64::MAX);
 }
 
 #[test]
-fn last_activity_of_a_thread_follows_a_later_stamp_and_never_an_earlier_one() {
-    assert_eq!(last_activity(1_000, 1_001), 1_001);
-    assert_eq!(last_activity(1_000, 1_000), 1_000);
-    assert_eq!(last_activity(1_000, 999), 1_000, "a post stamped behind");
-    assert_eq!(last_activity(1_000, i64::MIN), 1_000);
-}
-
-#[test]
-fn only_a_clock_more_than_the_tolerance_behind_the_last_stamp_is_behind() {
-    let minute = 60 * 1_000_000;
-
-    assert_eq!(clock_behind(1_000, 1_000), None);
-    assert_eq!(clock_behind(1_000, 1_000 + CLOCK_BEHIND_TOLERANCE_MICROS), None);
-    assert_eq!(
-        clock_behind(1_000, 1_001 + CLOCK_BEHIND_TOLERANCE_MICROS),
-        Some(CLOCK_BEHIND_TOLERANCE_MICROS + 1)
-    );
-    assert_eq!(clock_behind(1_000 + 400 * minute, 1_000), None, "an idle store");
-    assert_eq!(clock_behind(1_000, i64::MIN), None, "a store without a post");
-    assert_eq!(clock_behind(i64::MIN, i64::MAX), Some(i64::MAX));
-}
-
-#[test]
-fn a_seen_record_stands_for_a_day_and_never_when_it_is_ahead_of_the_clock() {
+fn a_seen_record_is_written_on_the_first_call_and_again_once_it_is_a_day_old() {
     let day = ttl_micros(SEEN_REFRESH_INTERVAL);
 
-    assert!(!seen_record_is_current(None, 1_000), "a first call is recorded");
-    assert!(seen_record_is_current(Some(1_000), 1_000));
-    assert!(seen_record_is_current(Some(1_000), 1_000 + day - 1));
-    assert!(!seen_record_is_current(Some(1_000), 1_000 + day));
-    assert!(
-        !seen_record_is_current(Some(1_001), 1_000),
-        "written ahead of the clock"
-    );
-    assert!(!seen_record_is_current(Some(i64::MAX), i64::MIN));
+    assert!(seen_due(None, 1_000), "a first call is recorded");
+    assert!(!seen_due(Some(1_000), 1_000));
+    assert!(!seen_due(Some(1_000), 1_000 + day - 1));
+    assert!(seen_due(Some(1_000), 1_000 + day));
 }
 
 #[test]
@@ -218,8 +198,9 @@ fn joins_and_invitations_stop_at_the_member_cap() {
         thread: id.clone(),
         cap: MAX_THREAD_MEMBERS,
     });
-    let members = [actor("a"), actor("b")];
-    let is_member = |agent: &Actor| members.contains(agent);
+    let members = [actor("a").principal_id(), actor("b").principal_id()];
+    let is_member = |principal: &Principal| members.contains(principal);
+    let adding = |names: &[&str]| Change::Invite(names.iter().map(|name| actor(name).principal_id()).collect());
     let invite = |names: &[&str]| ThreadAction::Invite(names.iter().map(|name| actor(name)).collect());
     let cap = MAX_THREAD_MEMBERS;
 
@@ -238,20 +219,20 @@ fn joins_and_invitations_stop_at_the_member_cap() {
     );
     assert_eq!(
         authorize_update(&id, &invite(&["c", "d"]), &MEMBER, cap - 2, is_member),
-        Ok(Change::Invite)
+        Ok(adding(&["c", "d"]))
     );
     assert_eq!(
         authorize_update(&id, &invite(&["c", "d"]), &MEMBER, cap - 1, is_member),
         full
     );
     assert_eq!(
-        authorize_update(&id, &invite(&["c", "c", "a", "b"]), &MEMBER, cap - 1, is_member),
-        Ok(Change::Invite),
-        "an agent named twice and the members named are not counted"
+        authorize_update(&id, &invite(&["c", "c.helper", "a", "b"]), &MEMBER, cap - 1, is_member),
+        Ok(adding(&["c"])),
+        "a principal named twice and the members named are not counted"
     );
     assert_eq!(
-        authorize_update(&id, &invite(&["a", "b"]), &MEMBER, cap, is_member),
-        Ok(Change::Invite)
+        authorize_update(&id, &invite(&["a", "b.helper"]), &MEMBER, cap, is_member),
+        Ok(Change::Nothing)
     );
     assert_eq!(
         authorize_update(&id, &ThreadAction::Leave, &MEMBER, cap, is_member),

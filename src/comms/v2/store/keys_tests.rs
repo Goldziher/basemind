@@ -63,22 +63,27 @@ fn post_order_keys_sort_by_stamp_before_post_position() {
 #[test]
 fn member_key_names_its_agent_and_starts_with_its_thread() {
     let (id, agent) = (thread_id(3), actor("host-repo-abc123.helper"));
-    let key = member(&id, &agent);
+    let key = position(&id, &agent);
 
     assert!(key.starts_with(&thread(&id)));
     assert!(!key.starts_with(&thread(&thread_id(4))));
-    assert_eq!(parse_member(&key), Some(agent));
+    assert_eq!(parse_position(&key), Some(agent.clone()));
+    assert!(key.starts_with(&positions_prefix(&id, agent.principal())));
+    assert_eq!(
+        parse_member(&member(&id, &agent.principal_id())),
+        Some(agent.principal_id())
+    );
 }
 
 #[test]
 fn member_threads_prefix_of_an_agent_excludes_agents_it_is_a_prefix_of() {
     let id = thread_id(3);
-    let prefix = member_threads_prefix(&actor("a"));
+    let prefix = threads_of_prefix("a");
 
-    assert!(member_thread(&actor("a"), &id).starts_with(&prefix));
-    assert!(!member_thread(&actor("ab"), &id).starts_with(&prefix));
-    assert!(!member_thread(&actor("a.helper"), &id).starts_with(&prefix));
-    assert_eq!(parse_trailing_thread(&member_thread(&actor("a"), &id)), Some(id));
+    assert!(thread_of("a", &id).starts_with(&prefix));
+    assert!(!thread_of("ab", &id).starts_with(&prefix));
+    assert!(!thread_of("a.helper", &id).starts_with(&prefix));
+    assert_eq!(parse_trailing_thread(&thread_of("a", &id)), Some(id));
 }
 
 #[test]
@@ -104,6 +109,7 @@ fn replay_keys_differ_by_kind_agent_thread_and_key() {
         replay_new_thread(&a, &key),
         replay_inbox(&a, &key),
         replay_post(&a, &id, &key),
+        replay_leave(&a, &id, &key),
         replay_post(&a, &thread_id(6), &key),
         replay_post(&a, &id, &other_key),
         replay_post(&actor("b"), &id, &key),

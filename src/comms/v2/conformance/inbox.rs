@@ -39,6 +39,7 @@ pub fn recipient_that_never_connected_finds_the_thread_on_its_first_inbox(h: &im
     assert_eq!(message.from, agent(h, "a"));
     assert_eq!(message.reply_to, None);
     assert_eq!(message.body, "first");
+    assert_eq!(message.body_bytes, 5);
     assert!(!message.truncated);
     assert_eq!(reply.read_to, [created.id]);
     assert!(!reply.more);
@@ -77,18 +78,41 @@ pub fn peek_returns_messages_without_moving_any_position(h: &impl ConformanceHar
     assert_eq!(h.position(&created.thread, &agent(h, "b")), Some((0, 0)));
 }
 
-/// The hooks' read announces each message once and leaves it unread for the tool.
-pub fn notify_announces_once_and_leaves_messages_unread(h: &impl ConformanceHarness) {
+/// The hooks' read returns front matter only, for what the actor has not been told about, moves
+/// only `notified_seq` and leaves the messages unread for the tool.
+pub fn notify_announces_front_matter_once_and_leaves_messages_unread(h: &impl ConformanceHarness) {
     let created = start(h, "a", "topic", &["b"]);
+    say(h, "a", &created.thread, "second").expect("post");
+    let one = |body: InboxBody| InboxBody { limit: Some(1), ..body };
 
-    let announced = read_as(h, "b", notify()).expect("inbox");
+    let announced = read_as(h, "b", one(notify())).expect("inbox");
     assert_eq!(ids(&announced), std::slice::from_ref(&created.id));
+    let message = &announced.messages[0];
+    assert_eq!((message.body.as_str(), message.body_bytes), ("", 5));
+    assert_eq!((message.subject.as_str(), &message.from), ("topic", &agent(h, "a")));
+    assert!(!message.truncated);
+    assert!(announced.more);
     assert_eq!(announced.read_to, no_ids());
+    assert_eq!(announced.next_cursor, None);
     assert_eq!(h.position(&created.thread, &agent(h, "b")), Some((0, 1)));
 
+    assert_eq!(bodies(&read_as(h, "b", notify()).expect("inbox")), [""]);
     assert_eq!(read_as(h, "b", notify()).expect("inbox").messages, no_messages());
-    assert_eq!(ids(&read(h, "b")), [created.id]);
-    assert_eq!(h.position(&created.thread, &agent(h, "b")), Some((1, 1)));
+    assert_eq!(h.position(&created.thread, &agent(h, "b")), Some((0, 2)));
+    assert_eq!(bodies(&read(h, "b")), ["first", "second"]);
+    assert_eq!(h.position(&created.thread, &agent(h, "b")), Some((2, 2)));
+    assert_eq!(
+        read_as(
+            h,
+            "b",
+            InboxBody {
+                unread: false,
+                ..notify()
+            }
+        )
+        .map(|reply| reply.messages),
+        Err(CommsError::not_applicable("unread", "notify"))
+    );
 }
 
 /// An agent's own posts are not unread to it, in the inbox or in the count.
@@ -98,6 +122,39 @@ pub fn own_posts_are_never_unread(h: &impl ConformanceHarness) {
     assert_eq!(read(h, "a").messages, no_messages());
     assert_eq!(h.position(&created.thread, &agent(h, "a")), Some((0, 0)));
     assert_eq!(list(h, "a").threads[0].unread, 0);
+}
+
+/// A post by a sibling actor of the same principal is unread like anyone else's, so a parent
+/// and a subagent that passes `as` can talk; each one's own posts stay read for it.
+pub fn posts_of_a_sibling_actor_are_unread(h: &impl ConformanceHarness) {
+    let created = start(h, "a", "topic", &["b"]);
+    say(h, "b", &created.thread, "from the parent").expect("post");
+    say(h, "b.helper", &created.thread, "from the helper").expect("post");
+
+    assert_eq!(list(h, "b").threads[0].unread, 2);
+    assert_eq!(bodies(&read(h, "b")), ["first", "from the helper"]);
+    assert_eq!(bodies(&read(h, "b.helper")), Vec::<&str>::new());
+    say(h, "b", &created.thread, "again").expect("post");
+    assert_eq!(bodies(&read(h, "b.helper")), ["again"]);
+}
+
+/// An actor without marks in a thread starts at the highest read position any actor of its
+/// principal has reached there. Once it has read, its marks are its own.
+pub fn new_actor_starts_where_its_principal_has_read_to(h: &impl ConformanceHarness) {
+    let created = start(h, "a", "topic", &["b"]);
+    say(h, "a", &created.thread, "second").expect("post");
+    let (b, helper) = (agent(h, "b"), agent(h, "b.helper"));
+    assert_eq!(h.position(&created.thread, &helper), Some((0, 0)));
+
+    read(h, "b");
+    assert_eq!(h.position(&created.thread, &helper), Some((2, 2)));
+    assert_eq!(read(h, "b.helper").messages, no_messages());
+    say(h, "a", &created.thread, "third").expect("post");
+    assert_eq!(bodies(&read(h, "b")), ["third"]);
+
+    assert_eq!(h.position(&created.thread, &helper), Some((2, 2)), "its own marks now");
+    assert_eq!(bodies(&read(h, "b.helper")), ["third"]);
+    assert_eq!(h.position(&created.thread, &b), Some((3, 3)));
 }
 
 /// `unread: false` returns read, unread and own messages, oldest first, and moves neither
@@ -526,6 +583,7 @@ pub fn replayed_inbox_read_returns_the_range_first_delivered(h: &impl Conformanc
     assert_eq!(h.inbox(&keyed, InboxBody::default()).expect("inbox"), first);
 
     h.advance(REPLAY_TTL + Duration::from_secs(1));
+    h.sweep();
     assert_eq!(
         h.inbox(&keyed, InboxBody::default()).expect("inbox").messages,
         no_messages()
