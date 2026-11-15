@@ -25,7 +25,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer};
 
 /// The arguments of one verb tool: the wire name the error messages cite.
-pub(crate) trait ToolArgs: DeserializeOwned + JsonSchema {
+pub(crate) trait ToolArgs: DeserializeOwned + JsonSchema + 'static {
     /// The MCP tool name, e.g. `code_grep`.
     const TOOL: &'static str;
 }
@@ -126,7 +126,7 @@ impl<'de, T: ToolArgs> Deserialize<'de> for Strict<T> {
 pub(crate) fn parse<T: ToolArgs>(value: serde_json::Value) -> Result<T, String> {
     use serde_json::Value;
 
-    let fields = Fields::of::<T>();
+    let fields = Fields::cached::<T>();
     let mut arguments = match value {
         Value::Object(arguments) => arguments,
         Value::Null => serde_json::Map::new(),
@@ -155,7 +155,47 @@ pub(crate) fn parse<T: ToolArgs>(value: serde_json::Value) -> Result<T, String> 
     if !problems.is_empty() {
         return Err(fields.message::<T>(&problems));
     }
-    serde_json::from_value::<T>(Value::Object(arguments)).map_err(|error| fields.message::<T>(&[error.to_string()]))
+    // A string field may hold an object only if it is a path (`{"bytes": […]}`), which the schema
+    // cannot tell from any other string. Kept aside so a refusal can still name the field.
+    let objects: Vec<String> = arguments
+        .iter()
+        .filter(|(key, value)| value.is_object() && fields.is_text(key))
+        .map(|(key, _)| key.clone())
+        .collect();
+    let aside = (!objects.is_empty()).then(|| arguments.clone());
+    serde_json::from_value::<T>(Value::Object(arguments)).map_err(|error| {
+        let misplaced = aside.map(|arguments| misplaced_objects::<T>(&arguments, &objects));
+        match misplaced {
+            Some(problems) if !problems.is_empty() => fields.message::<T>(&problems),
+            _ => fields.message::<T>(&[error.to_string()]),
+        }
+    })
+}
+
+/// Which of the string fields `objects` hold an object they cannot take, each as a problem naming
+/// the field. serde's own error for this names the value (`invalid type: map, expected a string`),
+/// not the field, so each candidate is tested by parsing again with the others set to a string.
+fn misplaced_objects<T: ToolArgs>(
+    arguments: &serde_json::Map<String, serde_json::Value>,
+    objects: &[String],
+) -> Vec<String> {
+    use serde_json::Value;
+
+    let parses_keeping = |kept: Option<&String>| {
+        let mut probe = arguments.clone();
+        for key in objects.iter().filter(|key| Some(*key) != kept) {
+            probe.insert(key.clone(), Value::String(String::new()));
+        }
+        serde_json::from_value::<T>(Value::Object(probe)).is_ok()
+    };
+    if !parses_keeping(None) {
+        return Vec::new();
+    }
+    objects
+        .iter()
+        .filter(|key| !parses_keeping(Some(key)))
+        .map(|key| format!("`{key}` must be a string (got {})", shown(&arguments[key.as_str()])))
+        .collect()
 }
 
 fn unknown_field(key: &str, accepted: &[&str]) -> String {
@@ -195,7 +235,8 @@ enum Kind {
     Text {
         one_of: Vec<String>,
     },
-    Array,
+    /// An array whose elements are each of the one kind.
+    Array(Box<Kind>),
     /// A shape this check does not model; serde decides.
     Other,
 }
@@ -227,7 +268,7 @@ impl Kind {
                 .unwrap_or_default();
             Self::Text { one_of }
         } else if is("array") {
-            Self::Array
+            Self::Array(Box::new(schema.get("items").map_or(Self::Other, Self::of)))
         } else {
             Self::Other
         }
@@ -244,7 +285,7 @@ impl Kind {
         match self {
             Self::Integer { max } => {
                 let parsed = match &*value {
-                    Value::Number(number) => number.as_u64(),
+                    Value::Number(number) => number.as_u64().or_else(|| integral(number.as_f64()?)),
                     Value::String(text) => text.trim().parse::<u64>().ok(),
                     _ => None,
                 };
@@ -293,10 +334,29 @@ impl Kind {
                 Value::Object(_) => None,
                 _ => Some(format!("`{key}` must be a string (got {})", shown(value))),
             },
-            Self::Array => (!value.is_array()).then(|| format!("`{key}` must be an array (got {})", shown(value))),
+            Self::Array(item) => {
+                let Value::Array(elements) = value else {
+                    return Some(format!("`{key}` must be an array (got {})", shown(value)));
+                };
+                elements.iter_mut().enumerate().find_map(|(index, element)| {
+                    let name = format!("{key}[{index}]");
+                    // An element is never a path, so an object in a list of strings is refused here.
+                    if matches!(**item, Self::Text { .. }) && element.is_object() {
+                        return Some(format!("`{name}` must be a string (got {})", shown(element)));
+                    }
+                    item.check(&name, element, true)
+                })
+            }
             Self::Other => None,
         }
     }
+}
+
+/// `number` as an unsigned integer when it is one written as a float (`10.0`), which some clients
+/// send for every JSON number. Above 2^53 a float no longer names one integer.
+fn integral(number: f64) -> Option<u64> {
+    const EXACT_MAX: f64 = 9_007_199_254_740_992.0;
+    (number.fract() == 0.0 && (0.0..=EXACT_MAX).contains(&number)).then_some(number as u64)
 }
 
 /// The accepted arguments of one tool, read off its schema.
@@ -307,6 +367,31 @@ struct Fields {
 }
 
 impl Fields {
+    /// The table for `T`, built from its schema once per process: generating a schema allocates a
+    /// few kilobytes of JSON, and every tool call needs the same answer.
+    fn cached<T: ToolArgs>() -> std::sync::Arc<Self> {
+        use std::any::TypeId;
+        use std::sync::{Arc, LazyLock, RwLock};
+
+        static TABLES: LazyLock<RwLock<ahash::AHashMap<TypeId, Arc<Fields>>>> = LazyLock::new(RwLock::default);
+        let id = TypeId::of::<T>();
+        if let Some(fields) = TABLES.read().ok().and_then(|tables| tables.get(&id).cloned()) {
+            return fields;
+        }
+        let fields = Arc::new(Self::of::<T>());
+        match TABLES.write() {
+            Ok(mut tables) => Arc::clone(tables.entry(id).or_insert(fields)),
+            Err(_) => fields,
+        }
+    }
+
+    /// Whether `key` is a field that takes a string.
+    fn is_text(&self, key: &str) -> bool {
+        self.kinds
+            .iter()
+            .any(|(name, kind)| name == key && matches!(kind, Kind::Text { .. }))
+    }
+
     fn of<T: JsonSchema>() -> Self {
         let schema = schemars::schema_for!(T);
         let object = schema.as_object();
@@ -585,5 +670,73 @@ mod tests {
         assert_eq!(levenshtein("pattern", "pattern"), 0);
         assert_eq!(levenshtein("patern", "pattern"), 1);
         assert_eq!(levenshtein("", "abc"), 3);
+    }
+
+    #[test]
+    fn an_object_in_a_string_field_names_the_field() {
+        use crate::mcp::types_tools::{CodeReadParams, CodeRefsParams};
+
+        let message = error(json!({ "pattern": { "bytes": [120] } }));
+        assert!(message.contains("`pattern` must be a string"), "{message}");
+        assert!(!message.contains("invalid type"), "{message}");
+
+        let both = error(json!({ "pattern": { "a": 1 }, "language": {}, "path": "src/" }));
+        assert!(both.contains("`pattern` must be a string"), "{both}");
+        assert!(both.contains("`language` must be a string"), "{both}");
+
+        let path = parse::<CodeReadParams>(json!({ "path": { "bytes": [97, 46, 114, 115] }, "line": 1 }))
+            .expect("a path may arrive as raw bytes");
+        assert_eq!(path.path.as_str(), Some("a.rs"));
+
+        let mixed = match parse::<CodeRefsParams>(json!({ "name": {}, "path": { "bytes": [97] } })) {
+            Ok(_) => panic!("expected a rejection"),
+            Err(message) => message,
+        };
+        assert!(mixed.contains("`name` must be a string"), "{mixed}");
+        assert!(!mixed.contains("`path` must be a string"), "{mixed}");
+    }
+
+    #[test]
+    fn a_wrong_typed_array_element_names_the_field_and_its_index() {
+        use crate::mcp::types_tools::MemorySaveParams;
+
+        let save = |tags: serde_json::Value| match parse::<MemorySaveParams>(
+            json!({ "key": "k", "value": "v", "tags": tags }),
+        ) {
+            Ok(_) => panic!("expected a rejection"),
+            Err(message) => message,
+        };
+        let number = save(json!(["a", 7]));
+        assert!(number.contains("`tags[1]` must be a string (got 7)"), "{number}");
+        let object = save(json!([{ "bytes": [97] }]));
+        assert!(object.contains("`tags[0]` must be a string"), "{object}");
+        let null = save(json!(["a", null]));
+        assert!(null.contains("`tags[1]`"), "{null}");
+        assert!(save(json!("a")).contains("`tags` must be an array"));
+
+        let fine = parse::<MemorySaveParams>(json!({ "key": "k", "value": "v", "tags": ["a", "b"] })).expect("valid");
+        assert_eq!(fine.tags.as_deref(), Some(&["a".to_string(), "b".to_string()][..]));
+    }
+
+    #[test]
+    fn an_integral_float_is_an_integer() {
+        let params = parse::<CodeGrepParams>(json!({ "pattern": "x", "limit": 10.0 })).expect("10.0 is 10");
+        assert_eq!(params.limit, Some(10));
+        let fraction = error(json!({ "pattern": "x", "limit": 10.5 }));
+        assert!(fraction.contains("`limit` must be an integer"), "{fraction}");
+        let negative = error(json!({ "pattern": "x", "limit": -1.0 }));
+        assert!(negative.contains("`limit` must be an integer"), "{negative}");
+        let huge = error(json!({ "pattern": "x", "limit": 1e12 }));
+        assert!(huge.contains("`limit` is too large"), "{huge}");
+    }
+
+    #[test]
+    fn the_field_table_of_a_tool_is_built_once() {
+        let first = Fields::cached::<CodeGrepParams>();
+        let again = Fields::cached::<CodeGrepParams>();
+        assert!(std::sync::Arc::ptr_eq(&first, &again));
+        assert!(first.is_text("pattern") && !first.is_text("limit"));
+        let other = Fields::cached::<crate::mcp::types_tools::CodeOutlineParams>();
+        assert!(!std::sync::Arc::ptr_eq(&first, &other));
     }
 }
