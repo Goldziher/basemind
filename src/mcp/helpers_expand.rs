@@ -16,8 +16,9 @@ use crate::query;
 /// Maximum body size returned in a single read (128 KiB).
 ///
 /// Symbols and spans larger than this are cut after the last whole line that fits; the response
-/// then says `truncated: true` and its `end_line` is the last line returned. Chosen to comfortably cover any hand-written function while bounding the response
-/// against generated code or minified JS.
+/// then says `truncated: true` and its `end_line` is the last line returned. Chosen to comfortably
+/// cover any hand-written function while bounding the response against generated code or minified
+/// JS.
 const EXPAND_BODY_CAP: usize = 128 * 1024;
 
 /// `truncated_reason` of a body cut at [`EXPAND_BODY_CAP`].
@@ -162,7 +163,10 @@ fn cap_body(head: &[u8], bytes: usize, line: u32) -> (String, bool, u32) {
     let truncated = bytes > EXPAND_BODY_CAP;
     let kept = if truncated {
         let window = &head[..EXPAND_BODY_CAP.min(head.len())];
+        // The byte after the window decides whether its last line is whole.
+        let ends_a_line = head.get(window.len()) == Some(&b'\n');
         match memchr::memrchr(b'\n', window) {
+            _ if ends_a_line => window,
             Some(newline) => &window[..newline],
             None => {
                 let mut end = window.len();
@@ -291,6 +295,28 @@ mod tests {
             "whole lines, no trailing newline"
         );
         assert_eq!(last_line as usize, EXPAND_BODY_CAP / 100);
+    }
+
+    /// The cap can fall exactly between a line and its terminator. That line fits and is kept.
+    #[test]
+    fn a_line_that_ends_exactly_at_the_cap_is_kept() {
+        let contents = "y".repeat(128) + "\n" + &("x".repeat(127) + "\n").repeat(1_100);
+        assert_eq!(
+            contents.as_bytes()[EXPAND_BODY_CAP],
+            b'\n',
+            "a terminator sits right after the cap"
+        );
+
+        let (head, bytes, _) = span_of(contents.as_bytes(), 1, u32::MAX);
+        let (body, truncated, last_line) = cap_body(&head, bytes, 1);
+        assert!(truncated);
+        assert_eq!(body.len(), EXPAND_BODY_CAP, "the whole window is whole lines");
+        assert!(
+            body.ends_with(&"x".repeat(127)),
+            "the last fitting line is there in full"
+        );
+        assert_eq!(last_line, 1_024);
+        assert_eq!(body.lines().count(), 1_024);
     }
 
     #[test]
