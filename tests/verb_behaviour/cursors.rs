@@ -299,10 +299,8 @@ async fn code_search_refuses_another_query_s_cursor() {
     assert_ne!(first.is_error, Some(true), "the keyword lane needs no model: {text}");
     let body: Value =
         serde_json::from_str(&text).unwrap_or_else(|error| panic!("code_search: non-JSON payload ({error}): {text}"));
-    let Some(cursor) = body.get("next_cursor").filter(|cursor| cursor.is_string()).cloned() else {
-        eprintln!("SKIP: the keyword lane returned no second page in this environment: {body}");
-        return;
-    };
+    let cursor = body["next_cursor"].clone();
+    assert!(cursor.is_string(), "several chunks mention `outline`: {body}");
 
     let other = call_err(
         &client,
