@@ -266,8 +266,19 @@ enabled = true
 [tools.shellcheck]
 enabled = true
 
+# Scoped to what the smoke test exercises: the statusline script, the plugin manifest it reads
+# the version from, and the sources of `basemind statusline` and the status.json sidecar. It may
+# build the binary, so it shares the cargo exclusion set.
 [hooks.pre-commit.scripts.statusline_smoke]
 run = "bash tests/statusline_smoke.sh"
+glob = [
+  ".claude-plugin/plugin.json",
+  ".claude-plugin/statusline.sh",
+  "src/comms_cli.rs",
+  "src/store_layout.rs",
+  "tests/statusline_smoke.sh",
+]
+serial = "cargo"
 
 [hooks.pre-commit.scripts.sync_plugin_skills]
 run = "python3 scripts/sync_legacy_plugin_exports.py --check"
