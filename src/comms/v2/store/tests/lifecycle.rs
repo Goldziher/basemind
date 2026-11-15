@@ -1,4 +1,4 @@
-//! What survives a reopen, how layout versions are handled, and the legacy store.
+//! What survives a reopen and how layout versions are handled.
 
 use std::fs;
 
@@ -363,81 +363,6 @@ fn store_with_rows_but_no_version_is_refused_and_left_in_place() {
         .keyspace("threads", fjall::KeyspaceCreateOptions::default)
         .expect("keyspace");
     assert_eq!(threads.len().expect("count"), rows[0]);
-}
-
-#[test]
-fn legacy_store_is_renamed_with_the_date_and_its_contents() {
-    let dir = tempfile::tempdir().expect("temporary directory");
-    let legacy = dir.path().join(LEGACY_STORE_DIR);
-    fs::create_dir(&legacy).expect("create");
-    fs::write(legacy.join("journal"), b"v1 data").expect("write");
-
-    let retired = retire_legacy_store(dir.path(), START_MICROS).expect("retire");
-
-    let expected = dir.path().join("store.legacy-2026-01-01");
-    assert_eq!(retired.as_deref(), Some(expected.as_path()));
-    assert!(!legacy.exists());
-    assert_eq!(fs::read(expected.join("journal")).expect("read"), b"v1 data");
-}
-
-#[test]
-fn retiring_twice_does_nothing_the_second_time() {
-    let dir = tempfile::tempdir().expect("temporary directory");
-    fs::create_dir(dir.path().join(LEGACY_STORE_DIR)).expect("create");
-
-    assert!(retire_legacy_store(dir.path(), START_MICROS).expect("retire").is_some());
-    assert_eq!(retire_legacy_store(dir.path(), START_MICROS), Ok(None));
-    assert_eq!(fs::read_dir(dir.path()).expect("list").count(), 1);
-}
-
-#[test]
-fn retiring_into_a_taken_name_picks_the_next_one_and_overwrites_nothing() {
-    let dir = tempfile::tempdir().expect("temporary directory");
-    let legacy = dir.path().join(LEGACY_STORE_DIR);
-    for generation in ["one", "two", "three"] {
-        fs::create_dir(&legacy).expect("create");
-        fs::write(legacy.join("generation"), generation).expect("write");
-        retire_legacy_store(dir.path(), START_MICROS).expect("retire");
-    }
-
-    let read = |name: &str| fs::read_to_string(dir.path().join(name).join("generation")).expect("read");
-    assert_eq!(read("store.legacy-2026-01-01"), "one");
-    assert_eq!(read("store.legacy-2026-01-01-2"), "two");
-    assert_eq!(read("store.legacy-2026-01-01-3"), "three");
-}
-
-#[test]
-fn retiring_leaves_the_v2_store_alone() {
-    let harness = Harness::new();
-    start(&harness, "a", "topic", &["b"]);
-
-    assert_eq!(retire_legacy_store(harness.dir.path(), START_MICROS), Ok(None));
-    assert_eq!(
-        bodies(&harness.inbox(&caller("b"), InboxBody::default()).expect("inbox")),
-        ["first"]
-    );
-}
-
-#[test]
-fn legacy_date_is_the_utc_calendar_date() {
-    let dir = tempfile::tempdir().expect("temporary directory");
-    let day = 24 * 60 * 60 * 1_000_000_i64;
-    let cases = [
-        (0, "store.legacy-1970-01-01"),
-        (day - 1, "store.legacy-1970-01-01-2"),
-        (59 * day, "store.legacy-1970-03-01"),
-        (START_MICROS + 58 * day, "store.legacy-2026-02-28"),
-        (START_MICROS + (365 + 365 + 59) * day, "store.legacy-2028-02-29"),
-        (START_MICROS + 365 * day - 1, "store.legacy-2026-12-31"),
-    ];
-
-    for (now_micros, expected) in cases {
-        fs::create_dir(dir.path().join(LEGACY_STORE_DIR)).expect("create");
-        let retired = retire_legacy_store(dir.path(), now_micros)
-            .expect("retire")
-            .expect("renamed");
-        assert_eq!(retired.file_name().and_then(|name| name.to_str()), Some(expected));
-    }
 }
 
 #[test]

@@ -7,8 +7,8 @@
 //!
 //! ## Layout
 //!
-//! One Fjall database in `<comms dir>/agents.fjall`, a directory of its own beside the legacy
-//! `store.fjall` (see [`retire_legacy_store`]).
+//! One Fjall database in `<comms dir>/agents.fjall`. The legacy `store.fjall` of earlier
+//! releases is not read, renamed or imported.
 //!
 //! | Keyspace | Key | Value | Serves |
 //! |---|---|---|---|
@@ -105,7 +105,6 @@ use super::rules::{self, Position};
 
 mod inbox;
 mod keys;
-mod legacy;
 mod open;
 mod post;
 mod records;
@@ -113,7 +112,6 @@ mod retention;
 mod skew;
 mod threads;
 
-pub use legacy::{LEGACY_STORE_DIR, retire_legacy_store};
 pub use retention::{SWEEP_BUDGET, SweepReport};
 
 /// Name of the store's directory inside the comms directory.
