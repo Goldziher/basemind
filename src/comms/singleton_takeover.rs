@@ -7,6 +7,7 @@
 use std::time::{Duration, Instant};
 
 use super::super::protocol::StatusReport;
+use super::super::store::STORE_DIR;
 use super::probe::{StopOutcome, force_terminate, request_stop_classified};
 use super::{
     CommsPaths, NO_AUTOSPAWN_ENV, SPAWN_POLL_INTERVAL, SingletonError, SpawnPolicy, autospawn_disabled, daemon_status,
@@ -14,12 +15,15 @@ use super::{
 };
 use crate::daemon_lock::{self, DaemonKind};
 
+/// The store error token: the one `Stop` refusal that reports a fault rather than a decision.
+const STORE_ERROR: &str = "store_error";
+
 /// The waits a takeover is allowed. Injected so the tests do not sit through production graces.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct Timings {
     /// How long a daemon asked to stop has to stop answering `Ping`.
     pub(super) drain: Duration,
-    /// How long a daemon that accepted `Stop` and closed its socket has to exit on its own.
+    /// How long a daemon that closed its socket has to exit on its own.
     pub(super) exit: Duration,
     /// How long a silent daemon gets on SIGTERM before SIGKILL.
     pub(super) term_grace: Duration,
@@ -44,6 +48,17 @@ pub(super) struct Ours {
     pub(super) proto_ver: u32,
 }
 
+/// Whether a call may ask an older daemon to stop.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Takeover {
+    /// Ask an older daemon to stop so this binary's can replace it.
+    Ask,
+    /// Contact nothing but `Status`: for a caller that retries after its `Stop` was turned down,
+    /// so the daemon is not sent another `Stop` on every attempt. An older daemon is used when it
+    /// speaks this binary's protocol and reported as [`SingletonError::StalePredecessor`] otherwise.
+    Wait,
+}
+
 /// What the caller should do once the running daemon, if any, has been dealt with.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Existing {
@@ -65,14 +80,14 @@ enum Verdict {
 
 fn classify(report: &StatusReport, ours: Ours) -> Verdict {
     let same_proto = report.proto_ver == ours.proto_ver;
-    if version_is_older(ours.version, &report.version) {
-        if same_proto { Verdict::Use } else { Verdict::RefuseNewer }
-    } else if version_is_older(&report.version, ours.version) {
+    if version_is_older(&report.version, ours.version) {
         Verdict::Replace { usable: same_proto }
-    } else if same_proto {
+    } else if same_proto || !version_is_older(ours.version, &report.version) {
+        // The same release on another protocol does not occur between releases; the handshake
+        // reports it rather than this binary stopping a daemon that is not older than itself.
         Verdict::Use
     } else {
-        Verdict::Replace { usable: false }
+        Verdict::RefuseNewer
     }
 }
 
@@ -80,6 +95,7 @@ fn classify(report: &StatusReport, ours: Ours) -> Verdict {
 pub(super) async fn settle_existing(
     paths: &CommsPaths,
     policy: SpawnPolicy,
+    takeover: Takeover,
     ours: Ours,
     timings: Timings,
 ) -> Result<Existing, SingletonError> {
@@ -113,13 +129,24 @@ pub(super) async fn settle_existing(
         );
         return Ok(Existing::Use);
     }
+    if takeover == Takeover::Wait {
+        return if usable { Ok(Existing::Use) } else { Err(stale(report)) };
+    }
     tracing::info!(
         daemon_version = %report.version,
         daemon_pid = report.pid,
         ours = ours.version,
         "comms: a daemon from another build holds the socket; asking it to stop"
     );
-    let accepted = match off_worker(|| request_stop_classified(socket)) {
+    match off_worker(|| request_stop_classified(socket)) {
+        StopOutcome::Refused { code, message } if code == STORE_ERROR => {
+            return Err(SingletonError::FailingPredecessor {
+                version: report.version,
+                pid: report.pid,
+                store: paths.comms_dir.join(STORE_DIR),
+                message,
+            });
+        }
         StopOutcome::Refused { code, message } if usable => {
             tracing::info!(
                 daemon_version = %report.version,
@@ -138,33 +165,38 @@ pub(super) async fn settle_existing(
                 message,
             });
         }
-        StopOutcome::Accepted => true,
-        StopOutcome::Unreachable => false,
-    };
+        StopOutcome::Accepted | StopOutcome::Unreachable => {}
+    }
     if !wait_until(timings.drain, || !off_worker(|| probe_alive(socket))).await {
         return Err(stale(report));
     }
-    reclaim_silent(paths, report, accepted, timings).await
+    reclaim_silent(paths, report, timings).await
 }
 
-/// The socket has gone quiet. Wait out a drain in progress, then signal the process — but only the
-/// one this generation's pidfile names, and only if it is the pid the daemon itself reported. A pid
-/// taken from the wire alone could be anything: an in-process test broker reports its host.
+/// The socket has gone quiet. A daemon that closed its socket is usually on its way out — draining
+/// after this client's `Stop`, after another client's, or on its own idle exit — so it gets the
+/// whole exit window whether or not it answered this `Stop`. Only a process still there at the end
+/// of the window is signalled, and only if the endpoint is still silent then and this generation's
+/// pidfile, read at that moment, names the pid the daemon itself reported. A pid taken from the wire
+/// alone could be anything: an in-process test broker reports its host.
 async fn reclaim_silent(
     paths: &CommsPaths,
     report: StatusReport,
-    accepted: bool,
     timings: Timings,
 ) -> Result<Existing, SingletonError> {
     let pid = report.pid;
-    let recorded = daemon_lock::recorded_holder(&paths.comms_dir)
-        .is_some_and(|holder| holder.pid == pid && holder.kind == DaemonKind::Comms);
-    if !recorded {
+    if wait_until(timings.exit, || !daemon_lock::pid_is_live(pid)).await {
         return Ok(Existing::Spawn);
     }
-    let exit_grace = if accepted { timings.exit } else { Duration::ZERO };
-    if wait_until(exit_grace, || !daemon_lock::pid_is_live(pid)).await {
-        return Ok(Existing::Spawn);
+    if off_worker(|| probe_alive(&paths.socket_path)) {
+        return Err(stale(report));
+    }
+    let named = daemon_lock::recorded_holder(&paths.comms_dir)
+        .is_some_and(|holder| holder.pid == pid && holder.kind == DaemonKind::Comms);
+    if !named {
+        // Alive, silent and not the recorded holder: it may not be signalled, and a daemon spawned
+        // now would only exit on the lock that process may still hold.
+        return Err(stale(report));
     }
     tracing::warn!(
         daemon_version = %report.version,

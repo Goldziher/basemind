@@ -42,7 +42,7 @@ pub use idempotency::{IDEMPOTENCY_TTL, MAX_IDEMPOTENCY_KEY_BYTES, PostOutcome, v
 
 const META_SCHEMA_VER: &[u8] = b"schema_ver";
 const META_LAST_MAINTENANCE: &[u8] = b"last_maintenance_micros";
-const STORE_DIR: &str = "store.fjall";
+pub(super) const STORE_DIR: &str = "store.fjall";
 const LOCK_FILE: &str = ".lock";
 
 /// Default retention for thread messages. The daemon's periodic prune sweep deletes any message

@@ -47,9 +47,37 @@ impl StandIn {
         Self(pid)
     }
 
+    /// A stand-in that writes `signalled` when it receives SIGTERM and exits by itself, unsignalled,
+    /// once `release` exists: a daemon finishing its drain.
+    fn spawn_leaving_when(release: &Path, signalled: &Path) -> Self {
+        let script = r#"(trap 'echo term > "$2"; exit 0' TERM; while [ ! -e "$1" ]; do sleep 0.05; done) >/dev/null 2>&1 &
+echo $!"#;
+        let out = std::process::Command::new("sh")
+            .args(["-c", script, "sh"])
+            .arg(release)
+            .arg(signalled)
+            .output()
+            .expect("spawn stand-in");
+        let pid = String::from_utf8_lossy(&out.stdout)
+            .trim()
+            .parse()
+            .expect("stand-in pid");
+        assert!(pid_is_live(pid), "the stand-in must be running before the test starts");
+        Self(pid)
+    }
+
     fn alive(&self) -> bool {
         pid_is_live(self.0)
     }
+}
+
+/// Create `path` after `delay`, from another thread.
+fn create_after(path: &Path, delay: Duration) -> std::thread::JoinHandle<()> {
+    let path = path.to_path_buf();
+    std::thread::spawn(move || {
+        std::thread::sleep(delay);
+        std::fs::write(path, b"").expect("create file");
+    })
 }
 
 impl Drop for StandIn {
@@ -149,21 +177,33 @@ fn busy() -> CommsResponse {
     }
 }
 
+fn store_error() -> CommsResponse {
+    CommsResponse::Error {
+        code: "store_error".to_string(),
+        message: "fjall error: Poisoned".to_string(),
+    }
+}
+
+/// Write `dir`'s `daemon.pid` naming `pid`, as the lock holder would have.
+fn record_holder(dir: &Path, pid: u32) {
+    let record = DaemonRecord {
+        pid,
+        kind: DaemonKind::Comms,
+        dir: dir.to_path_buf(),
+        version: OLDER.to_string(),
+        started_unix: 0,
+    };
+    std::fs::write(
+        dir.join("daemon.pid"),
+        serde_json::to_vec(&record).expect("encode record"),
+    )
+    .expect("write pidfile");
+}
+
 /// A generation dir whose `daemon.pid` names `recorded_pid`, as the lock holder would have written.
 fn generation(dir: &Path, recorded_pid: Option<u32>) -> CommsPaths {
     if let Some(pid) = recorded_pid {
-        let record = DaemonRecord {
-            pid,
-            kind: DaemonKind::Comms,
-            dir: dir.to_path_buf(),
-            version: OLDER.to_string(),
-            started_unix: 0,
-        };
-        std::fs::write(
-            dir.join("daemon.pid"),
-            serde_json::to_vec(&record).expect("encode record"),
-        )
-        .expect("write pidfile");
+        record_holder(dir, pid);
     }
     CommsPaths {
         comms_dir: dir.to_path_buf(),
@@ -172,8 +212,18 @@ fn generation(dir: &Path, recorded_pid: Option<u32>) -> CommsPaths {
 }
 
 async fn settle(paths: &CommsPaths) -> Result<Existing, SingletonError> {
-    settle_existing(paths, SpawnPolicy::Explicit, OURS, FAST).await
+    settle_existing(paths, SpawnPolicy::Explicit, Takeover::Ask, OURS, FAST).await
 }
+
+/// An exit window long enough that a stand-in leaving by itself is seen to leave within it.
+const PATIENT: Timings = Timings {
+    drain: Duration::from_millis(300),
+    exit: Duration::from_secs(20),
+    term_grace: Duration::from_secs(2),
+};
+/// How long after the test starts the draining stand-in leaves: well past the moment a client that
+/// did not wait would have signalled it.
+const LEAVES_AFTER: Duration = Duration::from_millis(1500);
 
 fn report(version: &str, proto_ver: u32) -> StatusReport {
     match status(1, version, proto_ver) {
@@ -183,14 +233,11 @@ fn report(version: &str, proto_ver: u32) -> StatusReport {
 }
 
 #[test]
-fn the_table_never_replaces_a_newer_daemon_and_uses_any_it_can_talk_to() {
+fn the_table_asks_only_an_older_daemon_to_stop() {
     assert_eq!(classify(&report(NEWER, PROTO_VER), OURS), Verdict::Use);
     assert_eq!(classify(&report(NEWER, OTHER_PROTO), OURS), Verdict::RefuseNewer);
     assert_eq!(classify(&report(OURS.version, PROTO_VER), OURS), Verdict::Use);
-    assert_eq!(
-        classify(&report(OURS.version, OTHER_PROTO), OURS),
-        Verdict::Replace { usable: false }
-    );
+    assert_eq!(classify(&report(OURS.version, OTHER_PROTO), OURS), Verdict::Use);
     assert_eq!(
         classify(&report(OLDER, PROTO_VER), OURS),
         Verdict::Replace { usable: true }
@@ -333,7 +380,7 @@ async fn a_silent_daemon_is_signalled_when_this_generations_pidfile_names_it() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_silent_daemon_is_not_signalled_on_the_strength_of_its_reported_pid_alone() {
+async fn a_silent_daemon_the_pidfile_does_not_name_is_reported_not_signalled_or_spawned_over() {
     let unrecorded = tempfile::tempdir().expect("tempdir");
     let elsewhere = tempfile::tempdir().expect("tempdir");
     let stand_in = StandIn::spawn();
@@ -350,11 +397,182 @@ async fn a_silent_daemon_is_not_signalled_on_the_strength_of_its_reported_pid_al
             _ => None,
         });
 
-        assert_eq!(settle(&paths).await.expect("nothing to reclaim"), Existing::Spawn);
+        let error = settle(&paths)
+            .await
+            .expect_err("a live process may still hold the lock");
+
+        assert!(
+            matches!(error, SingletonError::StalePredecessor { pid: reported, .. } if reported == pid),
+            "pidfile {recorded:?}: {error}"
+        );
         assert!(
             stand_in.alive(),
             "pidfile {recorded:?}: an unrecorded pid must not be signalled"
         );
         assert!(bystander.alive(), "the recorded pid is not the one that was reported");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_daemon_of_the_same_release_on_another_protocol_is_not_asked_to_stop() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let stand_in = StandIn::spawn();
+    let paths = generation(dir.path(), Some(stand_in.0));
+    let pid = stand_in.0;
+    let daemon = Scripted::serve(&paths.socket_path, move |request| match request {
+        CommsRequest::Status => Some(status(pid, OURS.version, OTHER_PROTO)),
+        _ => Some(CommsResponse::Ok),
+    });
+
+    assert_eq!(settle(&paths).await.expect("left to the handshake"), Existing::Use);
+    assert_eq!(daemon.asked(), ["status"], "it must not be asked to stop");
+    assert!(stand_in.alive());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_daemon_that_accepts_stop_and_exits_is_not_signalled() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (release, signalled) = (dir.path().join("release"), dir.path().join("signalled"));
+    let stand_in = StandIn::spawn_leaving_when(&release, &signalled);
+    let paths = generation(dir.path(), Some(stand_in.0));
+    let pid = stand_in.0;
+    let daemon = Scripted::serve(&paths.socket_path, move |request| match request {
+        CommsRequest::Status => Some(status(pid, OLDER, OTHER_PROTO)),
+        CommsRequest::Stop => Some(CommsResponse::Ok),
+        _ => None,
+    });
+    let leaving = create_after(&release, LEAVES_AFTER);
+
+    let settled = settle_existing(&paths, SpawnPolicy::Explicit, Takeover::Ask, OURS, PATIENT).await;
+
+    leaving.join().expect("release thread");
+    assert_eq!(settled.expect("it left"), Existing::Spawn);
+    assert_eq!(daemon.asked(), ["status", "stop"]);
+    assert!(!stand_in.alive(), "the daemon exited");
+    assert!(
+        !signalled.exists(),
+        "a daemon that exits after accepting Stop is not signalled"
+    );
+}
+
+/// The second client of a takeover: another client's `Stop` was already accepted (or the daemon is
+/// leaving on its idle timer), so this one finds the socket closed and gets no answer at all.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_daemon_draining_for_another_client_gets_the_exit_window_before_any_signal() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (release, signalled) = (dir.path().join("release"), dir.path().join("signalled"));
+    let stand_in = StandIn::spawn_leaving_when(&release, &signalled);
+    let paths = generation(dir.path(), Some(stand_in.0));
+    let pid = stand_in.0;
+    let _daemon = Scripted::serve(&paths.socket_path, move |request| match request {
+        CommsRequest::Status => Some(status(pid, OLDER, OTHER_PROTO)),
+        _ => None,
+    });
+    let leaving = create_after(&release, LEAVES_AFTER);
+
+    let settled = settle_existing(&paths, SpawnPolicy::Explicit, Takeover::Ask, OURS, PATIENT).await;
+
+    leaving.join().expect("release thread");
+    assert_eq!(settled.expect("it left by itself"), Existing::Spawn);
+    assert!(!stand_in.alive(), "the daemon exited");
+    assert!(
+        !signalled.exists(),
+        "a draining daemon must not be signalled inside its exit window"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_pidfile_is_read_again_at_the_end_of_the_exit_window() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let stand_in = StandIn::spawn();
+    let successor = StandIn::spawn();
+    let paths = generation(dir.path(), Some(stand_in.0));
+    let pid = stand_in.0;
+    let _daemon = Scripted::serve(&paths.socket_path, move |request| match request {
+        CommsRequest::Status => Some(status(pid, OLDER, OTHER_PROTO)),
+        _ => None,
+    });
+    let timings = Timings {
+        exit: Duration::from_secs(2),
+        ..FAST
+    };
+    let (comms_dir, successor_pid) = (dir.path().to_path_buf(), successor.0);
+    let handover = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(100));
+        record_holder(&comms_dir, successor_pid);
+    });
+
+    let error = settle_existing(&paths, SpawnPolicy::Explicit, Takeover::Ask, OURS, timings)
+        .await
+        .expect_err("the reported pid no longer holds this generation");
+
+    handover.join().expect("handover thread");
+    assert!(matches!(error, SingletonError::StalePredecessor { .. }), "{error}");
+    assert!(
+        stand_in.alive(),
+        "a pid the pidfile stopped naming must not be signalled"
+    );
+    assert!(successor.alive());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_daemon_refusing_with_a_store_error_is_reported_with_its_store_and_the_way_out() {
+    for proto_ver in [PROTO_VER, OTHER_PROTO] {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let stand_in = StandIn::spawn();
+        let paths = generation(dir.path(), Some(stand_in.0));
+        let pid = stand_in.0;
+        let _daemon = Scripted::serve(&paths.socket_path, move |request| match request {
+            CommsRequest::Status => Some(status(pid, OLDER, proto_ver)),
+            CommsRequest::Stop => Some(store_error()),
+            CommsRequest::Ping => Some(CommsResponse::Pong),
+            _ => None,
+        });
+
+        let error = settle(&paths)
+            .await
+            .expect_err("a daemon with a broken store cannot be used");
+
+        assert!(
+            matches!(&error, SingletonError::FailingPredecessor { pid: reported, .. } if *reported == pid),
+            "{error}"
+        );
+        let message = error.to_string();
+        let store = dir.path().join("store.fjall");
+        assert!(message.contains(&store.display().to_string()), "{message}");
+        assert!(message.contains("Poisoned"), "{message}");
+        assert!(message.contains("basemind comms stop --all"), "{message}");
+        assert!(message.contains("basemind comms doctor --probe"), "{message}");
+        assert!(
+            !message.contains("idle"),
+            "a broken store does not clear when sessions end: {message}"
+        );
+        assert!(stand_in.alive(), "a daemon that answered must not be signalled");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_caller_that_already_asked_does_not_send_stop_again() {
+    for (proto_ver, usable) in [(PROTO_VER, true), (OTHER_PROTO, false)] {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let stand_in = StandIn::spawn();
+        let paths = generation(dir.path(), Some(stand_in.0));
+        let pid = stand_in.0;
+        let daemon = Scripted::serve(&paths.socket_path, move |request| match request {
+            CommsRequest::Status => Some(status(pid, OLDER, proto_ver)),
+            CommsRequest::Ping => Some(CommsResponse::Pong),
+            _ => Some(CommsResponse::Ok),
+        });
+
+        let settled = settle_existing(&paths, SpawnPolicy::Explicit, Takeover::Wait, OURS, FAST).await;
+
+        if usable {
+            assert_eq!(settled.expect("an older daemon on our protocol is used"), Existing::Use);
+        } else {
+            let error = settled.expect_err("an older daemon on another protocol is still in the way");
+            assert!(matches!(error, SingletonError::StalePredecessor { .. }), "{error}");
+        }
+        assert_eq!(daemon.asked(), ["status"], "nothing but Status may be sent");
+        assert!(stand_in.alive());
     }
 }

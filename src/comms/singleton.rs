@@ -30,17 +30,25 @@
 //! | Running daemon is | same protocol | different protocol |
 //! |---|---|---|
 //! | newer than this binary | use it | fail with `NewerDaemon`; it is not asked to stop |
-//! | the same version | use it | ask it to stop |
+//! | the same version | use it | use it; no two releases differ this way, and `Hello` reports the mismatch |
 //! | older than this binary | ask it to stop | ask it to stop |
 //!
-//! "Ask it to stop" sends `Stop` and then follows the daemon's answer:
+//! A daemon of the same or a newer release is therefore never asked to stop. "Ask it to stop" sends
+//! `Stop` and then follows the daemon's answer:
 //!
 //! | Answer to `Stop` | Result |
 //! |---|---|
 //! | accepted | wait for it to exit, then spawn this binary's daemon |
+//! | refused with `store_error` | never signalled: fail with `FailingPredecessor`, which names the store |
 //! | refused (`daemon_busy`, or any other error) | never signalled: use it when the protocol matches, else fail with `BusyPredecessor` |
 //! | none, but it still answers `Ping` | never signalled: fail with `StalePredecessor` |
-//! | none, and `Ping` goes unanswered too | SIGTERM then SIGKILL, only when `daemon.pid` in this generation names the pid it reported; then spawn |
+//! | none, and `Ping` goes unanswered too | wait the exit window as for an accepted `Stop` |
+//!
+//! A daemon whose socket has gone quiet has the whole exit window to leave by itself, because it is
+//! usually draining for someone else: another client's `Stop`, or its own idle exit. If its process
+//! is still there afterwards and the socket is still silent, it gets SIGTERM then SIGKILL — but only
+//! when `daemon.pid` in this generation, read at that moment, names the pid it reported. Otherwise
+//! the call fails with `StalePredecessor`.
 //!
 //! A daemon that does not answer `Status` at all is not classified: if it answers `Ping` it is
 //! used, and the handshake reports what is wrong with it; if it does not, one is spawned, and the
@@ -162,6 +170,26 @@ pub enum SingletonError {
         /// The daemon's stable refusal token (`daemon_busy`, …).
         code: String,
         /// The daemon's rendered refusal.
+        message: String,
+    },
+    /// A daemon from an older build answered `Stop` with a store error: it holds this generation but
+    /// cannot serve from its store, and no session ending will change that. It is left running —
+    /// it answered — and the caller is told which store failed and how to reclaim the daemon.
+    #[error(
+        "a basemind comms daemon from another build (v{version}, pid {pid}) cannot serve: its \
+         store at {} failed with: {message}. It was left running and will not recover by itself; \
+         run `basemind comms doctor --probe` to confirm, then `basemind comms stop --all` to \
+         reclaim it, and retry",
+        store.display()
+    )]
+    FailingPredecessor {
+        /// The running daemon's build version.
+        version: String,
+        /// The running daemon's process id.
+        pid: u32,
+        /// The comms store the daemon could not use.
+        store: PathBuf,
+        /// The daemon's rendered store error.
         message: String,
     },
     /// A previous / incompatible daemon held the socket and would not stop, so we could not take
@@ -507,12 +535,24 @@ pub async fn ensure_daemon_explicit(paths: &CommsPaths) -> Result<(), SingletonE
     ensure_daemon_with_spawn_policy(paths, SpawnPolicy::Explicit).await
 }
 
+/// [`ensure_daemon`] for a caller retrying after an older daemon would not make way: the daemon is
+/// not sent another `Stop`. It is used if it speaks this binary's protocol and reported as
+/// [`SingletonError::StalePredecessor`] otherwise; once it has gone, this spawns as usual.
+pub async fn ensure_daemon_without_stop(paths: &CommsPaths) -> Result<(), SingletonError> {
+    ensure_daemon_as(paths, SpawnPolicy::Auto, Takeover::Wait).await
+}
+
 async fn ensure_daemon_with_spawn_policy(paths: &CommsPaths, policy: SpawnPolicy) -> Result<(), SingletonError> {
+    ensure_daemon_as(paths, policy, Takeover::Ask).await
+}
+
+async fn ensure_daemon_as(paths: &CommsPaths, policy: SpawnPolicy, takeover: Takeover) -> Result<(), SingletonError> {
     let ours = takeover::Ours {
         version: env!("CARGO_PKG_VERSION"),
         proto_ver: PROTO_VER,
     };
-    if takeover::settle_existing(paths, policy, ours, takeover::Timings::PRODUCTION).await? == takeover::Existing::Use {
+    let settled = takeover::settle_existing(paths, policy, takeover, ours, takeover::Timings::PRODUCTION).await?;
+    if settled == takeover::Existing::Use {
         return Ok(());
     }
     // No compatible daemon answered — we are about to spawn one. Enforce the machine ceiling for the
@@ -557,6 +597,7 @@ fn daemon_status(socket_path: &Path) -> Option<StatusReport> {
 /// What to do about a daemon that is already running in this generation.
 #[path = "singleton_takeover.rs"]
 mod takeover;
+use takeover::Takeover;
 
 /// Serviceability probing + forced reclaim. See [`singleton_probe`](probe) for why these are not
 /// the same question as [`probe_alive`].
