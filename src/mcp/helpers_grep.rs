@@ -34,8 +34,8 @@ const GREP_BYTE_BUDGET: u64 = 2 * 1024 * 1024 * 1024;
 /// Body of the `code` tool's `grep` mode.
 ///
 /// Scans every indexed file that passes the `path_contains` / `language` filters — the full corpus,
-/// in parallel — reads each as UTF-8 (non-UTF-8 and unreadable files are skipped), and applies the
-/// compiled regex. `limit` caps returned HITS, never files scanned, so `total_matches` and
+/// in parallel — reads each as UTF-8 (non-UTF-8 and unreadable files are skipped and counted in
+/// `skipped_files`), and applies the compiled regex. `limit` caps returned HITS, never files scanned, so `total_matches` and
 /// `total_files_matched` are exact for the scanned window. Supports in-memory pagination via
 /// `cursor` / `next_cursor` on the same `encode_in_memory(offset, generation)` scheme as
 /// `list_files`.
@@ -63,6 +63,7 @@ pub(super) async fn run_workspace_grep(
                         budgeted: false,
                         hits: Vec::new(),
                         next_cursor: None,
+                        skipped_files: 0,
                         cursor_invalidated: true,
                         notice: state.lifecycle_notice(),
                         elapsed_us: super::helpers::elapsed_us(started),
@@ -136,7 +137,7 @@ pub(super) async fn run_workspace_grep(
     } else {
         None
     };
-    let counts = count_all(root, &paths, skip.as_deref(), &re, literal.as_ref(), skip_hits);
+    let (counts, skipped_files) = count_all(root, &paths, skip.as_deref(), &re, literal.as_ref(), skip_hits);
 
     let total_matches = counts.iter().fold(0u32, |acc, &c| acc.saturating_add(c));
     let total_files_matched = counts.iter().filter(|&&c| c > 0).count();
@@ -196,6 +197,7 @@ pub(super) async fn run_workspace_grep(
             budgeted,
             hits,
             next_cursor,
+            skipped_files,
             cursor_invalidated: false,
             notice: state.lifecycle_notice(),
             elapsed_us: super::helpers::elapsed_us(started),
@@ -246,6 +248,8 @@ fn apply_byte_budget<'a, 'b>(
 ///
 /// `skip_hits` discounts the matches the caller already consumed inside the file it resumed in, so
 /// the totals mean "matches remaining from the cursor position", not "matches in the repo".
+///
+/// Also returns how many files could not be searched: opened and found unreadable or not UTF-8.
 fn count_all(
     root: &Path,
     scanned: &[&RelPath],
@@ -253,21 +257,23 @@ fn count_all(
     re: &Regex,
     literal: Option<&Finder<'static>>,
     skip_hits: u32,
-) -> Vec<u32> {
-    let mut counts: Vec<u32> = scanned
+) -> (Vec<u32>, usize) {
+    let searched: Vec<Option<u32>> = scanned
         .par_iter()
         .enumerate()
         .map(|(i, path)| {
             if skip.is_some_and(|s| s.get(i).copied().unwrap_or(false)) {
-                return 0;
+                return Some(0);
             }
-            with_indexed_bytes(root, path, |bytes| count_matches(bytes, re, literal)).unwrap_or(0)
+            with_indexed_bytes(root, path, |bytes| count_matches(bytes, re, literal)).flatten()
         })
         .collect();
+    let skipped = searched.iter().filter(|count| count.is_none()).count();
+    let mut counts: Vec<u32> = searched.into_iter().map(Option::unwrap_or_default).collect();
     if let Some(first) = counts.first_mut() {
         *first = first.saturating_sub(skip_hits);
     }
-    counts
+    (counts, skipped)
 }
 
 /// Largest read buffer a worker thread keeps between files. A bigger file still reads fine — its
@@ -312,17 +318,16 @@ fn with_indexed_bytes<R>(root: &Path, path: &RelPath, f: impl FnOnce(&[u8]) -> R
     })
 }
 
-/// Matches of `re` in a file's bytes; non-UTF-8 files count zero (they were never greppable).
-fn count_matches(bytes: &[u8], re: &Regex, literal: Option<&Finder<'static>>) -> u32 {
+/// Matches of `re` in a file's bytes, or `None` for a file that is not UTF-8 and so cannot be
+/// searched. A file the literal prefilter rules out is a zero whatever its encoding.
+fn count_matches(bytes: &[u8], re: &Regex, literal: Option<&Finder<'static>>) -> Option<u32> {
     if let Some(finder) = literal
         && finder.find(bytes).is_none()
     {
-        return 0;
+        return Some(0);
     }
-    let Ok(source) = std::str::from_utf8(bytes) else {
-        return 0;
-    };
-    re.find_iter(source).count().min(u32::MAX as usize) as u32
+    let source = std::str::from_utf8(bytes).ok()?;
+    Some(re.find_iter(source).count().min(u32::MAX as usize) as u32)
 }
 
 /// One file's contribution to the page: its index in the scanned window, how many of its matches the
@@ -512,13 +517,18 @@ mod tests {
         let re = Regex::new("needle").expect("regex");
         let finder = Finder::new("needle".as_bytes()).into_owned();
         let source = b"needle\nhay\nneedle needle\n";
-        assert_eq!(count_matches(source, &re, None), 3);
-        assert_eq!(count_matches(source, &re, Some(&finder)), 3);
-        assert_eq!(count_matches(b"hay only", &re, Some(&finder)), 0);
+        assert_eq!(count_matches(source, &re, None), Some(3));
+        assert_eq!(count_matches(source, &re, Some(&finder)), Some(3));
+        assert_eq!(count_matches(b"hay only", &re, Some(&finder)), Some(0));
         assert_eq!(
             count_matches(b"needle \xff", &re, Some(&finder)),
-            0,
-            "non-UTF-8 is never greppable"
+            None,
+            "non-UTF-8 cannot be searched, and is reported as such"
+        );
+        assert_eq!(
+            count_matches(b"hay \xff", &re, Some(&finder)),
+            Some(0),
+            "a file without the literal cannot match, whatever its encoding"
         );
     }
 
@@ -682,7 +692,7 @@ mod tests {
             let re = Regex::new(pattern).expect("regex");
             let literal = (regex::escape(pattern) == pattern).then(|| Finder::new(pattern.as_bytes()).into_owned());
             for skip_hits in [0u32, 3] {
-                let new_counts = count_all(dir.path(), &refs, None, &re, literal.as_ref(), skip_hits);
+                let (new_counts, _) = count_all(dir.path(), &refs, None, &re, literal.as_ref(), skip_hits);
                 let old_counts = reference::count(dir.path(), &refs, &re, literal.as_ref(), skip_hits);
                 assert_eq!(
                     new_counts, old_counts,
@@ -698,7 +708,7 @@ mod tests {
                         let (mut skip_files, mut skip_hits) = (0usize, skip_hits);
                         loop {
                             let window = &refs[skip_files.min(refs.len())..];
-                            let counts = count_all(dir.path(), window, None, &re, literal.as_ref(), skip_hits);
+                            let (counts, _) = count_all(dir.path(), window, None, &re, literal.as_ref(), skip_hits);
                             let (sel, resume) = select_hits(&counts, limit, skip_files, skip_hits);
                             let new = materialize(dir.path(), window, &sel, &|_, _| true, &re, ctx, skip_files);
                             let old_counts = reference::count(dir.path(), window, &re, literal.as_ref(), skip_hits);
@@ -829,7 +839,7 @@ mod tests {
                 .map(|needle| db.view().grep_skip_verdicts(dir.path(), &entries, &needle));
             skipped_somewhere |= skip.as_ref().is_some_and(|s| s.iter().any(|&x| x));
             for skip_hits in [0u32, 2] {
-                let filtered = count_all(dir.path(), &refs, skip.as_deref(), &re, literal.as_ref(), skip_hits);
+                let (filtered, _) = count_all(dir.path(), &refs, skip.as_deref(), &re, literal.as_ref(), skip_hits);
                 let oracle = reference::count(dir.path(), &refs, &re, literal.as_ref(), skip_hits);
                 assert_eq!(filtered, oracle, "counts diverge for {pattern:?} skip_hits={skip_hits}");
                 for limit in [7usize, 1000] {

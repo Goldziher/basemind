@@ -798,6 +798,9 @@ pub(super) struct WorkspaceGrepResponse {
     /// Opaque cursor to pass back on the next call when more results are available.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<Cursor>,
+    /// Files this call opened and could not search: unreadable, or not UTF-8 text.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub skipped_files: usize,
     /// True when the caller passed a `cursor` minted against a different in-RAM snapshot
     /// (a rescan happened between calls). The caller must restart pagination from the top.
     #[serde(skip_serializing_if = "std::ops::Not::not")]

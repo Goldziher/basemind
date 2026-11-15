@@ -2,7 +2,7 @@
 
 use serde_json::json;
 
-use super::{call, started_with};
+use super::{call, started, started_with};
 
 /// `^` and `$` anchor at every line, as in any grep. Anchored to the file instead, `^pub fn ` could
 /// match once per file at most and only on its first line.
@@ -47,5 +47,28 @@ async fn code_grep_regex_anchors_match_at_every_line() {
     assert_eq!(
         ends["total_matches"], 2,
         "`$` matches before a CRLF terminator too: {ends}"
+    );
+}
+
+/// A file `code_grep` could not search is counted, so "no hits" is not read as "not there".
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn code_grep_counts_the_files_it_could_not_search() {
+    let (dir, client) = started().await;
+    let clean = call(&client, "code_grep", json!({ "pattern": "file_outline" })).await;
+    assert!(clean.get("skipped_files").is_none(), "{clean}");
+
+    std::fs::write(dir.path().join("src/callers.rs"), b"file_outline \xff\xfe not text\n").unwrap();
+    std::fs::remove_file(dir.path().join("worker.rb")).unwrap();
+
+    let body = call(
+        &client,
+        "code_grep",
+        json!({ "pattern": "file_outline|helper", "regex": true }),
+    )
+    .await;
+    assert_eq!(body["skipped_files"], 2, "one is not UTF-8, one is gone: {body}");
+    assert_eq!(
+        body["total_files_matched"], 1,
+        "src/outline.rs is still searched: {body}"
     );
 }
