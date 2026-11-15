@@ -143,6 +143,30 @@ fn replay_and_seen_expiry_follow_the_clock_across_a_reopen() {
 }
 
 #[test]
+fn post_after_the_clock_was_corrected_is_stamped_from_the_clock_across_a_reopen() {
+    let ahead_by = Duration::from_secs(5 * 365 * 24 * 60 * 60);
+    let mut harness = Harness::new();
+    harness.clock.advance(ahead_by);
+    let created = start(&harness, "a", "made ahead", &["b"]);
+    harness.rewind(ahead_by);
+
+    harness.reopen();
+    say(&harness, "a", &created.thread, "after the correction");
+    say(&harness, "a", &created.thread, "and again");
+
+    let reply = harness.inbox(&caller("b"), InboxBody::default()).expect("inbox");
+    let times: Vec<i64> = reply.messages.iter().map(|message| message.ts_micros).collect();
+    assert_eq!(
+        times,
+        [
+            START_MICROS + rules::ttl_micros(ahead_by),
+            START_MICROS,
+            START_MICROS + 1
+        ]
+    );
+}
+
+#[test]
 fn older_store_is_migrated_step_by_step_and_keeps_its_data() {
     let mut harness = Harness::new();
     let created = start(&harness, "a", "topic", &["b"]);

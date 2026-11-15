@@ -31,7 +31,7 @@ pub(super) struct ThreadRecord {
     pub creator: Actor,
     /// Sequence number of the newest message.
     pub head: u64,
-    /// Time of the newest message: the thread expires with it.
+    /// Timestamp of the last message posted: the thread expires with it.
     pub last_activity_micros: i64,
     /// Who posted the newest message.
     pub head_from: Actor,
@@ -162,7 +162,7 @@ impl<'a> Reader<'a> {
             .transpose()
     }
 
-    /// The thread `id`, unless it has expired with its newest message.
+    /// The thread `id`, unless it has expired with the last message posted to it.
     pub fn thread(&self, id: &ThreadId) -> Result<Option<ThreadRecord>, CommsError> {
         Ok(self
             .stored_thread(id)?
@@ -179,6 +179,23 @@ impl<'a> Reader<'a> {
         self.get(&self.ks.messages, keys::message(thread, seq))?
             .map(|bytes| decode("a message", &bytes))
             .transpose()
+    }
+
+    /// The first message of `thread` physically stored with a sequence number in `seqs`.
+    pub fn stored_meta_from(
+        &self,
+        thread: &ThreadId,
+        seqs: RangeInclusive<u64>,
+    ) -> Result<Option<(u64, MessageMeta)>, CommsError> {
+        let range = keys::message(thread, *seqs.start())..=keys::message(thread, *seqs.end());
+        let Some(guard) = self.snapshot.range(&self.ks.messages, range).next() else {
+            return Ok(None);
+        };
+        let (key, value) = guard
+            .into_inner()
+            .map_err(|error| backend("read the comms store", error))?;
+        let seq = keys::parse_message_seq(&key).ok_or_else(|| corrupt("message key"))?;
+        Ok(Some((seq, decode("a message", &value)?)))
     }
 
     /// Message `seq` of `thread`, unless it has expired.

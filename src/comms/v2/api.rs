@@ -471,7 +471,7 @@ pub struct ThreadSummary {
     pub unread: u64,
     /// Sequence number of the newest message.
     pub head: u64,
-    /// Time of the newest message in microseconds since the unix epoch.
+    /// Timestamp of the last message posted, in microseconds since the unix epoch.
     pub last_activity_micros: i64,
     /// The members other than the caller.
     #[serde(default)]

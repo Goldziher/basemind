@@ -38,23 +38,43 @@ pub fn check_writable(store_ver: u32) -> Result<(), CommsError> {
     Ok(())
 }
 
-/// The timestamp of a post made when the clock reads `clock_micros` and the newest timestamp
-/// issued so far is `last_micros`: the clock's, unless that is not later than the previous one.
+/// How far behind the previous stamp the clock may read, in microseconds, before a post is
+/// stamped from the clock again and the difference is reported. Far above what a burst of posts
+/// within one clock reading adds, which is one microsecond per post.
+pub const SKEW_WARN_MICROS: i64 = 60 * 1_000_000;
+
+/// By how much `clock_micros` reads behind `last_micros`, the previous stamp, when that is more
+/// than [`SKEW_WARN_MICROS`]: the clock was ahead when that stamp was issued, or has gone back
+/// since. A clock that is ahead cannot be told from a store nobody posted to for a while, so
+/// only this direction is ever noticed.
+pub fn clock_behind(clock_micros: i64, last_micros: i64) -> Option<i64> {
+    let behind = last_micros.saturating_sub(clock_micros);
+    (behind > SKEW_WARN_MICROS).then_some(behind)
+}
+
+/// The timestamp of a post made when the clock reads `clock_micros` and the previous post was
+/// stamped `last_micros`.
 ///
-/// Timestamps therefore strictly increase in post order whatever the clock does. This is the
-/// only place the previous timestamp is consulted: everything that expires is judged against
-/// the clock alone, so a post stamped while the clock was ahead cannot hold the store's time in
-/// the future once the clock is corrected.
+/// It is the clock's reading. While the clock is not later than the previous stamp, and no more
+/// than [`SKEW_WARN_MICROS`] behind it, it is one microsecond past that stamp instead, so a
+/// clock that stands still or steps back a little does not stamp two posts alike. Once the clock
+/// reads further behind ([`clock_behind`]) the previous stamp is taken to be the wrong one and
+/// the clock is followed again: one post stamped while the clock ran ahead holds no later post
+/// in the future. Timestamps therefore do not order posts; the store-wide post position does.
 pub fn post_timestamp(clock_micros: i64, last_micros: i64) -> i64 {
+    if clock_behind(clock_micros, last_micros).is_some() {
+        return clock_micros;
+    }
     clock_micros.max(last_micros.saturating_add(1))
 }
 
 /// Whether a message posted at `ts_micros` is past [`MESSAGE_TTL`] at `now_micros`. A thread
-/// expires with its newest message, so the same test on its last activity decides the thread.
+/// expires with the last message posted to it, so the same test on its last activity decides
+/// the thread, and a thread that has expired hides every message of it, whatever their stamps.
 ///
 /// `now_micros` is the clock, never a timestamp the store issued. A message stamped ahead of
-/// the clock (see [`post_timestamp`]) is no exception: it expires when the clock passes its
-/// stamp by the retention, which is later than it would have with a correct stamp.
+/// the clock is no exception: in a thread that is still posted to, it expires when the clock
+/// passes its stamp by the retention, which is later than it would have with a correct stamp.
 pub fn message_expired(ts_micros: i64, now_micros: i64) -> bool {
     ts_micros <= now_micros.saturating_sub(ttl_micros(MESSAGE_TTL))
 }

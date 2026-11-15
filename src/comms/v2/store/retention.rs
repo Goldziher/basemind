@@ -2,26 +2,34 @@
 //!
 //! Nothing depends on this for correctness: an expired record is already invisible to every
 //! read. A sweep only gives the space back. It never scans: each kind of record has an index in
-//! the order it expires (`post_order` for messages, `expiry` for the rest), which the sweep
-//! walks from the oldest entry until the first one still alive or until its budget is spent.
+//! the order it expires (`post_order` for messages, `expiry` for the rest), keyed by the time
+//! expiry is judged by, which the sweep walks from the oldest entry until the first one still
+//! alive or until its budget is spent.
 //!
-//! An index row the sweep cannot decode (a `post_order` value, an `expiry` key) would sit at the
+//! A message goes when its own stamp has expired, and otherwise with its thread: a thread
+//! expires with the last post made to it, and a message stamped ahead of that post (see the
+//! module's "Time" section) would outlive it. The thread sweep therefore removes whatever
+//! messages a thread still has before it removes the thread.
+//!
+//! An index row the sweep cannot decode (a `post_order` row, an `expiry` key) would sit at the
 //! head of its range and stop every later sweep there. Such a row is removed and counted
-//! instead, and the sweep goes on. What it named is then no longer found by a sweep. It stays
-//! stored and, being expired, hidden from every read: a message until a post takes its key
-//! again, a thread, replay entry or seen record until it is next written, which gives it a new
-//! index row.
+//! instead, and the sweep goes on. Nothing says what such a row named, so it may have been a
+//! record that is still alive. That record stays stored and is read until it expires like any
+//! other, but no sweep finds it through this index again: a message goes when its thread does or
+//! when the thread's cap pushes it out, and a thread, replay entry or seen record stays until it
+//! is next written, which gives it a new index row.
 
-use fjall::{Keyspace, OwnedWriteBatch};
+use fjall::{Keyspace, OwnedWriteBatch, UserKey};
 use serde::de::IgnoredAny;
 
-use super::records::{Reader, backend, decode_i64};
+use super::records::{MessageMeta, Reader, backend, decode, decode_i64};
 use super::{FjallAgents, Writer, keys};
-use crate::comms::v2::api::CommsError;
+use crate::comms::v2::api::{CommsError, ThreadId};
 use crate::comms::v2::rules;
 
 /// Records one [`FjallAgents::sweep`] removes at most. A thread counts once for itself and once
-/// per member, and is removed whole, so a sweep can pass the budget by one thread's members.
+/// per member, and is removed whole, so a sweep can pass the budget by one thread and its
+/// members.
 pub const SWEEP_BUDGET: usize = 1024;
 
 /// Records the sweep after a change removes at most: enough to keep up with ordinary traffic,
@@ -34,7 +42,7 @@ const CHANGE_SWEEP_INTERVAL_MICROS: i64 = 1_000_000;
 /// What one sweep removed.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SweepReport {
-    /// Messages past their retention.
+    /// Messages past their retention, and those removed with their thread.
     pub messages: usize,
     /// Threads whose last message expired, with their member rows.
     pub threads: usize,
@@ -104,8 +112,8 @@ impl FjallAgents {
             exhausted: false,
         };
         let mut report = SweepReport::default();
-        let oldest_message = sweep_messages(&reader, &mut batch, &mut budget, &mut report)?;
-        sweep_threads(&reader, &mut batch, &mut budget, &mut report, oldest_message)?;
+        let swept = sweep_messages(&reader, &mut batch, &mut budget, &mut report)?;
+        sweep_threads(&reader, &mut batch, &mut budget, &mut report, &swept)?;
         sweep_replays(&reader, &mut batch, &mut budget, &mut report)?;
         sweep_seen(&reader, &mut batch, &mut budget, &mut report)?;
         report.more = budget.exhausted;
@@ -135,29 +143,39 @@ fn skip_unreadable(
     report.skipped_unreadable += 1;
 }
 
-/// Remove expired messages, oldest first. Returns the timestamp of the oldest message left in
-/// the store, or `i64::MAX` when none is; `i64::MIN`, which lets no thread go, when the budget
-/// ran out on a row that could not be decoded.
+/// How far one walk of `post_order` got: the key of the first row it left, or `None` when it
+/// left none. Every message whose row sorts before that key is staged for removal in the batch,
+/// which the snapshot the sweep reads from does not show.
+struct Swept(Option<UserKey>);
+
+impl Swept {
+    /// Whether the message with this `post_order` key is already staged for removal.
+    fn covers(&self, order_key: &[u8]) -> bool {
+        self.0.as_ref().is_none_or(|first_left| order_key < &first_left[..])
+    }
+}
+
+/// Remove messages whose own stamp has expired, oldest stamp first, and say how far that got.
 fn sweep_messages(
     reader: &Reader<'_>,
     batch: &mut OwnedWriteBatch,
     budget: &mut Budget,
     report: &mut SweepReport,
-) -> Result<i64, CommsError> {
+) -> Result<Swept, CommsError> {
     let ks = reader.ks;
     for guard in reader.prefix(&ks.post_order, []) {
         let (key, value) = guard
             .into_inner()
             .map_err(|error| backend("read the comms store", error))?;
-        let Some(entry) = keys::parse_order_entry(&value) else {
+        let Some(entry) = keys::parse_order_row(&key, &value) else {
             if !budget.allows() {
-                return Ok(i64::MIN);
+                return Ok(Swept(Some(key)));
             }
             skip_unreadable(batch, &ks.post_order, &key, budget, report);
             continue;
         };
         if !rules::message_expired(entry.ts_micros, reader.now) || !budget.allows() {
-            return Ok(entry.ts_micros);
+            return Ok(Swept(Some(key)));
         }
         let message = keys::message(&entry.thread, entry.seq);
         batch.remove(&ks.messages, message);
@@ -166,20 +184,20 @@ fn sweep_messages(
         budget.spend(1);
         report.messages += 1;
     }
-    Ok(i64::MAX)
+    Ok(Swept(None))
 }
 
-/// Remove expired threads with their member rows and index entries.
+/// Remove expired threads with their messages, member rows and index entries.
 ///
-/// A thread goes only once every message of it is gone, which `oldest_message` proves: a thread
-/// is as old as its newest message, and messages are removed oldest first. That order is what
-/// keeps a thread id from being drawn again while rows of its previous owner remain.
+/// A thread goes only in the batch that leaves no message of it behind. That is what keeps a
+/// thread id from being drawn again while rows of its previous owner remain. A thread the budget
+/// does not cover whole loses the messages it does cover and stays for the next sweep.
 fn sweep_threads(
     reader: &Reader<'_>,
     batch: &mut OwnedWriteBatch,
     budget: &mut Budget,
     report: &mut SweepReport,
-    oldest_message: i64,
+    swept: &Swept,
 ) -> Result<(), CommsError> {
     let ks = reader.ks;
     for guard in reader.prefix(&ks.expiry, keys::expiry_prefix(keys::Expiry::Thread)) {
@@ -195,17 +213,16 @@ fn sweep_threads(
             skip_unreadable(batch, &ks.expiry, &key, budget, report);
             continue;
         };
-        if !rules::message_expired(last_activity, reader.now) {
-            break;
-        }
-        if last_activity >= oldest_message || !budget.allows() {
-            budget.exhausted = true;
+        if !rules::message_expired(last_activity, reader.now) || !budget.allows() {
             break;
         }
         let record = reader
             .stored_thread(&id)?
             .filter(|record| record.last_activity_micros == last_activity);
         if let Some(record) = record {
+            if !sweep_thread_messages(reader, batch, budget, report, &id, swept)? {
+                break;
+            }
             let members = reader.members(&id)?;
             for member in &members {
                 batch.remove(&ks.members, keys::member(&id, member));
@@ -220,6 +237,44 @@ fn sweep_threads(
         budget.spend(1);
     }
     Ok(())
+}
+
+/// Remove the messages an expired thread still has: those the walk of `post_order` did not
+/// reach, and those stamped ahead of the thread's last post, whose own stamp has not expired.
+/// Returns whether none is left, which is false when the budget ran out first.
+///
+/// A message is staged already when its index row is there and sorts before where the walk
+/// stopped. One whose index row is gone (see the module doc) was never reached by the walk and
+/// is removed here. Reading is bounded with the budget too: a message is either staged already,
+/// and a sweep stages no more than its budget, or costs the budget one.
+fn sweep_thread_messages(
+    reader: &Reader<'_>,
+    batch: &mut OwnedWriteBatch,
+    budget: &mut Budget,
+    report: &mut SweepReport,
+    thread: &ThreadId,
+    swept: &Swept,
+) -> Result<bool, CommsError> {
+    let ks = reader.ks;
+    for guard in reader.prefix(&ks.messages, keys::thread(thread)) {
+        let (key, value) = guard
+            .into_inner()
+            .map_err(|error| backend("read the comms store", error))?;
+        let meta: MessageMeta = decode("a message", &value)?;
+        let order_key = keys::order(meta.ts_micros, meta.order);
+        if swept.covers(&order_key) && reader.get(&ks.post_order, order_key)?.is_some() {
+            continue;
+        }
+        if !budget.allows() {
+            return Ok(false);
+        }
+        batch.remove(&ks.messages, key.clone());
+        batch.remove(&ks.bodies, key);
+        batch.remove(&ks.post_order, order_key);
+        budget.spend(1);
+        report.messages += 1;
+    }
+    Ok(true)
 }
 
 /// Remove replay entries that no longer answer.

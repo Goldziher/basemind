@@ -205,19 +205,19 @@ impl Scan {
 }
 
 /// The first sequence number in `first..=last` whose message was posted after post position
-/// `after`, or `last + 1`. Post positions grow with sequence numbers, so this is a binary search;
-/// a message no longer stored is older than any that is.
+/// `after`, or `last + 1`. Post positions grow with sequence numbers, so this is a binary search.
+///
+/// A sequence number may have no message: the thread's cap or a sweep removed it, and a sweep
+/// removes by timestamp, which need not be oldest first. A probe that finds none therefore
+/// decides by the next message that is stored, and cuts the search above itself when the range
+/// holds none.
 fn first_past(reader: &Reader<'_>, thread: &ThreadId, first: u64, last: u64, after: u64) -> Result<u64, CommsError> {
     let (mut low, mut high) = (first, last + 1);
     while low < high {
         let middle = low + (high - low) / 2;
-        let past = reader
-            .stored_meta(thread, middle)?
-            .is_some_and(|meta| meta.order > after);
-        if past {
-            high = middle;
-        } else {
-            low = middle + 1;
+        match reader.stored_meta_from(thread, middle..=high - 1)? {
+            Some((seq, meta)) if meta.order <= after => low = seq + 1,
+            Some(_) | None => high = middle,
         }
     }
     Ok(low)

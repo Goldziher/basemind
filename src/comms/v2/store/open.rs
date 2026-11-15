@@ -23,6 +23,7 @@ use super::records::{backend, corrupt, decode_i64, decode_u64};
 use super::skew::{self, SkewLog};
 use super::{FjallAgents, Keyspaces, META_LAST_TS, META_POSTS, META_STORE_VER, STORE_DIR, StoreOptions, Writer};
 use crate::comms::v2::api::{COMMS_STORE_VER, CommsError};
+use crate::comms::v2::rules;
 
 /// Block cache of the store, in bytes. Coordination traffic is small and recent.
 const CACHE_BYTES: u64 = 16 * 1024 * 1024;
@@ -183,7 +184,7 @@ impl FjallAgents {
                 .transpose(),
         )?
         .unwrap_or(i64::MIN);
-        if let Some(behind_micros) = skew::clock_behind(options.clock.now_micros(), last_ts) {
+        if let Some(behind_micros) = rules::clock_behind(options.clock.now_micros(), last_ts) {
             skew::warn(behind_micros, "opening the store");
         }
         Ok(Self {

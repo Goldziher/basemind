@@ -51,7 +51,8 @@ pub trait ConformanceHarness: AgentOps {
     fn advance(&self, by: Duration);
 
     /// Move the store's clock back, the way a clock that ran ahead is corrected. Expiry must
-    /// follow the clock as it reads afterwards, and timestamps must go on increasing.
+    /// follow the clock as it reads afterwards, and so must the timestamp of the next post once
+    /// the clock reads more than a minute behind the previous one.
     ///
     /// A record hidden as expired may become visible again when the clock goes back, unless a
     /// sweep already removed it. An implementation may sweep on any call that succeeds, so a
@@ -264,7 +265,10 @@ macro_rules! conformance_tests {
             store_newer_than_the_binary_is_refused_for_writing_only,
             nothing_is_recorded_on_a_newer_store,
             expired_messages_are_not_returned_on_a_newer_store,
-            expiry_follows_the_clock_after_it_was_set_back,
+            replay_entries_expire_by_the_clock_after_it_was_set_back,
+            post_after_the_clock_was_corrected_is_stamped_and_expires_by_the_clock,
+            thread_cap_is_not_held_by_threads_posted_to_after_the_clock_was_corrected,
+            cursor_pages_across_a_message_stamped_ahead_and_a_swept_one,
             expired_records_are_visible_again_when_the_clock_goes_back_before_a_sweep,
             swept_records_stay_removed_when_the_clock_goes_back,
         );

@@ -3,17 +3,20 @@
 use std::time::Duration;
 
 use super::super::api::{
-    Actor, COMMS_STORE_VER, CommsError, InboxBody, MAX_MESSAGES_PER_THREAD, MESSAGE_TTL, REPLAY_TTL, ReplayKey,
-    ThreadAction, ThreadFilter, ThreadId,
+    Actor, COMMS_STORE_VER, CommsError, InboxBody, MAX_ACTIVE_THREADS_PER_REPO, MAX_MESSAGES_PER_THREAD, MESSAGE_TTL,
+    MessageId, REPLAY_TTL, ReplayKey, ThreadAction, ThreadFilter, ThreadId,
 };
 use super::{
-    ConformanceHarness, agent, agents, bodies, by_id, change, describe, find, history, ids, into, list, notify, only,
-    peek, read, read_as, say, start, thread_ids, who,
+    ConformanceHarness, agent, agents, bodies, by_id, change, describe, find, history, ids, into, list, new_thread,
+    notify, only, peek, read, read_as, say, start, thread_ids, who,
 };
 
 const SECOND: Duration = Duration::from_secs(1);
 
 const DAY: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// How far ahead a wrong clock reads in the scenarios about one: five years.
+const AHEAD: Duration = Duration::from_secs(5 * 365 * 24 * 60 * 60);
 
 fn no_threads() -> Vec<ThreadId> {
     Vec::new()
@@ -219,17 +222,13 @@ pub fn expired_messages_are_not_returned_on_a_newer_store(h: &impl ConformanceHa
     );
 }
 
-/// A post made while the clock ran ahead is stamped ahead, and so is every post after it until
-/// the clock catches up, because timestamps never go back. That is all it changes: once the
-/// clock is corrected, replay entries and messages expire by the clock again, and a message
-/// stamped ahead expires when the clock passes its stamp by the retention.
-pub fn expiry_follows_the_clock_after_it_was_set_back(h: &impl ConformanceHarness) {
-    let ahead_by = 2 * DAY;
-    let second = Duration::from_secs(1);
+/// A replay entry written after the clock was set back expires an hour later by the clock, not
+/// by the stamp of a post made while it ran ahead.
+pub fn replay_entries_expire_by_the_clock_after_it_was_set_back(h: &impl ConformanceHarness) {
     let created = start(h, "a", "topic", &["b"]);
-    h.advance(ahead_by);
-    let ahead = say(h, "a", &created.thread, "stamped ahead").expect("post");
-    h.rewind(ahead_by);
+    h.advance(2 * DAY);
+    say(h, "a", &created.thread, "stamped ahead").expect("post");
+    h.rewind(2 * DAY);
 
     let relayed = who(h, "a").with_replay_key(ReplayKey::parse("relay-1").expect("replay key"));
     let first = h
@@ -239,7 +238,7 @@ pub fn expiry_follows_the_clock_after_it_was_set_back(h: &impl ConformanceHarnes
         h.post(&relayed, into(&created.thread, "after the correction")),
         Ok(first.clone())
     );
-    h.advance(REPLAY_TTL + second);
+    h.advance(REPLAY_TTL + SECOND);
     let again = h
         .post(&relayed, into(&created.thread, "after the correction"))
         .expect("post");
@@ -248,32 +247,119 @@ pub fn expiry_follows_the_clock_after_it_was_set_back(h: &impl ConformanceHarnes
         first.id.seq() + 1,
         "the replay entry expired by the clock"
     );
+}
+
+/// A post made while the clock ran far ahead is stamped ahead, and that is all: once the clock
+/// is corrected the next post is stamped from the clock again, its thread's last activity
+/// follows it, and both expire [`MESSAGE_TTL`] after the corrected time. The message stamped
+/// ahead goes with its thread.
+pub fn post_after_the_clock_was_corrected_is_stamped_and_expires_by_the_clock(h: &impl ConformanceHarness) {
+    h.advance(AHEAD);
+    let ahead = start(h, "a", "made ahead", &["b"]);
+    h.rewind(AHEAD);
+    let after = say(h, "a", &ahead.thread, "after the correction").expect("post");
+    let later = start(h, "a", "later", &["b"]);
 
     let whole = read_as(h, "b", history()).expect("inbox");
-    assert_eq!(whole.messages.len(), 4);
+    assert_eq!(ids(&whole), [ahead.id.clone(), after.id.clone(), later.id.clone()]);
+    let stamps: Vec<i64> = whole.messages.iter().map(|message| message.ts_micros).collect();
     assert!(
-        whole
-            .messages
-            .windows(2)
-            .all(|pair| pair[0].ts_micros < pair[1].ts_micros),
-        "timestamps increase in post order"
+        stamps[1] < stamps[2] && stamps[2] < stamps[0],
+        "the posts after the correction are stamped from the clock: {stamps:?}"
     );
+    let summary = describe(h, &who(h, "b"), &ahead.thread).expect("thread");
+    assert_eq!(summary.last_activity_micros, stamps[1]);
 
-    h.advance(MESSAGE_TTL - REPLAY_TTL);
-    assert_eq!(
-        read_as(h, "b", by_id(&created.id)).map(|reply| reply.messages),
-        Err(CommsError::MessageNotFound { id: created.id })
-    );
-    assert_eq!(
-        ids(&read_as(h, "b", history()).expect("inbox")),
-        [ahead.id, first.id, again.id]
-    );
-
-    h.advance(ahead_by - 2 * second);
+    h.advance(MESSAGE_TTL - SECOND);
     assert_eq!(read_as(h, "b", history()).expect("inbox").messages.len(), 3);
-    h.advance(2 * second);
+    assert_eq!(list(h, "b").threads.len(), 2);
+
+    h.advance(2 * SECOND);
     assert_eq!(read_as(h, "b", history()).expect("inbox").messages, Vec::new());
+    assert_eq!(thread_ids(&list(h, "b")), no_threads());
+    assert_eq!(
+        read_as(h, "b", by_id(&ahead.id)).map(|reply| reply.messages),
+        Err(CommsError::MessageNotFound { id: ahead.id })
+    );
     assert_eq!(h.thread_count(), 0);
+}
+
+/// Threads made while the clock ran far ahead count against the cap once it is corrected, but
+/// not for good: each one posted to afterwards expires with that post.
+pub fn thread_cap_is_not_held_by_threads_posted_to_after_the_clock_was_corrected(h: &impl ConformanceHarness) {
+    h.advance(AHEAD);
+    let made_ahead: Vec<ThreadId> = (0..MAX_ACTIVE_THREADS_PER_REPO)
+        .map(|_| start(h, "a", "made ahead", &[]).thread)
+        .collect();
+    h.rewind(AHEAD);
+    let one_more = || h.post(&who(h, "a"), new_thread(h, "one more", &[], &[], "first"));
+    assert_eq!(
+        one_more(),
+        Err(CommsError::ThreadCapReached {
+            repo: who(h, "a").repo,
+            cap: MAX_ACTIVE_THREADS_PER_REPO,
+        })
+    );
+
+    for thread in &made_ahead {
+        say(h, "a", thread, "after the correction").expect("post");
+    }
+    h.advance(MESSAGE_TTL + SECOND);
+
+    let fresh = one_more().expect("the threads expired with their last post");
+    assert_eq!(thread_ids(&list(h, "a")), [fresh.thread]);
+    assert_eq!(h.thread_count(), 1);
+}
+
+/// Every message a paged read of `mode` returns to `b`, one message per page.
+#[track_caller]
+fn page_through(h: &impl ConformanceHarness, mode: fn() -> InboxBody, at_most: usize) -> Vec<MessageId> {
+    let mut seen = Vec::new();
+    let mut cursor = None;
+    for _ in 0..at_most {
+        let body = InboxBody {
+            limit: Some(1),
+            cursor: cursor.take(),
+            ..mode()
+        };
+        let page = read_as(h, "b", body).expect("inbox");
+        seen.extend(ids(&page));
+        cursor = page.next_cursor;
+        if cursor.is_none() {
+            return seen;
+        }
+    }
+    panic!("the read still pages after {at_most} pages: {seen:?}");
+}
+
+/// A cursor follows the order messages were posted in, whatever their stamps: it neither skips
+/// nor repeats one across a message stamped ahead of the clock, nor around one a sweep removed
+/// from the middle of a thread while an older message stamped ahead stays.
+pub fn cursor_pages_across_a_message_stamped_ahead_and_a_swept_one(h: &impl ConformanceHarness) {
+    h.advance(AHEAD);
+    let before = start(h, "a", "before", &["b"]);
+    let ahead = start(h, "a", "topic", &["b"]);
+    h.rewind(AHEAD);
+    let second = say(h, "a", &ahead.thread, "second").expect("post");
+    h.advance(DAY);
+    let other = start(h, "a", "other", &["b"]);
+    let third = say(h, "a", &ahead.thread, "third").expect("post");
+
+    let posted = [
+        before.id.clone(),
+        ahead.id.clone(),
+        second.id,
+        other.id.clone(),
+        third.id.clone(),
+    ];
+    assert_eq!(page_through(h, history, 6), posted);
+    assert_eq!(page_through(h, peek, 6), posted);
+
+    h.advance(MESSAGE_TTL - DAY / 2);
+    h.sweep();
+    let kept = [before.id, ahead.id, other.id, third.id];
+    assert_eq!(page_through(h, history, 5), kept);
+    assert_eq!(page_through(h, peek, 5), kept);
 }
 
 /// What is hidden as expired is visible again when the clock goes back, as long as no sweep

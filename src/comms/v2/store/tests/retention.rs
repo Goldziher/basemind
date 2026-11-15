@@ -2,6 +2,9 @@
 
 use super::*;
 
+/// How far ahead a wrong clock reads in the tests about one: five years.
+const AHEAD: Duration = Duration::from_secs(5 * 365 * 24 * 60 * 60);
+
 /// Rows of every keyspace when the store holds nothing but the seen records of `agents`
 /// callers: one `seen` row and one `expiry` entry each.
 fn only_seen(agents: usize) -> [usize; 10] {
@@ -235,4 +238,99 @@ fn sweep_removes_index_rows_it_cannot_decode_and_goes_on() {
     );
     assert_eq!(store.stored_rows(), only_seen(0));
     assert_eq!(store.sweep(), Ok(SweepReport::default()));
+}
+
+#[test]
+fn expired_thread_is_swept_with_the_messages_stamped_ahead_of_its_last_post() {
+    let harness = Harness::new();
+    harness.clock.advance(AHEAD);
+    let ahead = start(&harness, "a", "made ahead", &["b"]);
+    say(&harness, "a", &ahead.thread, "ahead too");
+    say(&harness, "a", &ahead.thread, "and this");
+    harness.rewind(AHEAD);
+    say(&harness, "a", &ahead.thread, "after the correction");
+    harness
+        .clock
+        .advance(MESSAGE_TTL + SEEN_TTL + SEEN_REFRESH_INTERVAL + Duration::from_secs(1));
+    let store = harness.store();
+
+    let first = store.sweep_bounded(2).expect("sweep");
+    assert_eq!(
+        first,
+        SweepReport {
+            messages: 2,
+            more: true,
+            ..SweepReport::default()
+        },
+        "the one message expired by its stamp, and one of the three stamped ahead"
+    );
+    let rows = store.stored_rows();
+    assert_eq!(
+        (rows[0], rows[1], rows[2], rows[3]),
+        (1, 2, 2, 2),
+        "the thread stays while a message of it does"
+    );
+
+    let second = store.sweep_bounded(2).expect("sweep");
+    assert_eq!(
+        second,
+        SweepReport {
+            messages: 2,
+            threads: 1,
+            more: true,
+            ..SweepReport::default()
+        }
+    );
+    let third = store.sweep_bounded(2).expect("sweep");
+    assert_eq!(
+        third,
+        SweepReport {
+            seen: 1,
+            ..SweepReport::default()
+        }
+    );
+    assert_eq!(store.stored_rows(), only_seen(0));
+}
+
+#[test]
+fn message_stamped_ahead_stays_in_a_thread_that_is_still_posted_to() {
+    let harness = Harness::new();
+    harness.clock.advance(AHEAD);
+    let ahead = start(&harness, "a", "made ahead", &["b"]);
+    harness.rewind(AHEAD);
+    say(&harness, "a", &ahead.thread, "after the correction");
+    harness.clock.advance(MESSAGE_TTL - Duration::from_secs(1));
+    say(&harness, "a", &ahead.thread, "keeps the thread");
+    harness.clock.advance(Duration::from_secs(2));
+
+    let report = harness.store().sweep().expect("sweep");
+
+    assert_eq!((report.messages, report.threads, report.more), (1, 0, false));
+    assert_eq!(
+        bodies(&harness.inbox(&caller("b"), history()).expect("inbox")),
+        ["first", "keeps the thread"]
+    );
+}
+
+#[test]
+fn message_whose_index_row_is_gone_is_swept_with_its_thread() {
+    let harness = Harness::new();
+    let created = start(&harness, "a", "topic", &[]);
+    say(&harness, "a", &created.thread, "second");
+    let store = harness.store();
+    let oldest = store
+        .ks
+        .post_order
+        .iter()
+        .next()
+        .expect("an index row")
+        .key()
+        .expect("read");
+    store.ks.post_order.remove(oldest).expect("remove");
+    harness.clock.advance(MESSAGE_TTL + Duration::from_secs(1));
+
+    let report = store.sweep().expect("sweep");
+
+    assert_eq!((report.messages, report.threads, report.more), (2, 1, false));
+    assert_eq!(store.stored_rows(), only_seen(1));
 }

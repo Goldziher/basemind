@@ -148,8 +148,42 @@ fn a_post_is_stamped_by_the_clock_unless_that_would_not_be_later_than_the_last_s
     assert_eq!(post_timestamp(500, i64::MIN), 500, "the first post");
     assert_eq!(post_timestamp(500, 499), 500);
     assert_eq!(post_timestamp(500, 500), 501, "the clock stood still");
-    assert_eq!(post_timestamp(500, 9_000), 9_001, "the clock went back");
-    assert_eq!(post_timestamp(500, i64::MAX), i64::MAX);
+    assert_eq!(post_timestamp(500, 9_000), 9_001, "the clock went back a little");
+    assert_eq!(
+        post_timestamp(500, 500 + SKEW_WARN_MICROS),
+        501 + SKEW_WARN_MICROS,
+        "the most the clock may be behind"
+    );
+}
+
+#[test]
+fn a_post_is_stamped_by_the_clock_again_once_it_reads_far_behind_the_last_stamp() {
+    let five_years = 5 * 365 * 24 * 60 * 60 * 1_000_000_i64;
+
+    assert_eq!(post_timestamp(500, 501 + SKEW_WARN_MICROS), 500);
+    assert_eq!(post_timestamp(500, 500 + five_years), 500);
+    assert_eq!(post_timestamp(500, i64::MAX), 500);
+    assert_eq!(post_timestamp(i64::MIN, i64::MAX), i64::MIN);
+    assert_eq!(
+        post_timestamp(501, post_timestamp(500, 500 + five_years)),
+        501,
+        "the corrected stamp is the one the next post follows"
+    );
+}
+
+#[test]
+fn only_a_clock_more_than_the_threshold_behind_the_last_stamp_is_behind() {
+    let minute = 60 * 1_000_000;
+
+    assert_eq!(clock_behind(1_000, 1_000), None);
+    assert_eq!(clock_behind(1_000, 1_000 + SKEW_WARN_MICROS), None);
+    assert_eq!(
+        clock_behind(1_000, 1_001 + SKEW_WARN_MICROS),
+        Some(SKEW_WARN_MICROS + 1)
+    );
+    assert_eq!(clock_behind(1_000 + 400 * minute, 1_000), None, "an idle store");
+    assert_eq!(clock_behind(1_000, i64::MIN), None, "a store without a post");
+    assert_eq!(clock_behind(i64::MIN, i64::MAX), Some(i64::MAX));
 }
 
 #[test]

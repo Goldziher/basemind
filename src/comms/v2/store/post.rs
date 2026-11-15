@@ -200,16 +200,13 @@ fn stage_message(
     let key = keys::message(thread, seq);
     txn.batch.insert(&ks.messages, key, encode("a message", meta)?);
     txn.batch.insert(&ks.bodies, key, body.as_bytes());
-    txn.batch.insert(
-        &ks.post_order,
-        keys::order(meta.order),
-        keys::order_entry(thread, seq, meta.ts_micros),
-    );
+    txn.batch
+        .insert(&ks.post_order, keys::order(meta.ts_micros, meta.order), key);
     Ok(())
 }
 
-/// Stage the removal of the message a thread's cap pushes out. Stored sequence numbers are
-/// contiguous up to the head, so the one to go is always exactly the cap behind the new head.
+/// Stage the removal of the message a thread's cap pushes out: the one exactly the cap behind
+/// the new head, when it is still stored. Every older one went the same way or was swept.
 fn evict(txn: &mut Txn<'_>, reader: &Reader<'_>, thread: &ThreadId, seq: u64) -> Result<(), CommsError> {
     let ks = reader.ks;
     let Some(meta) = reader.stored_meta(thread, seq)? else {
@@ -218,6 +215,7 @@ fn evict(txn: &mut Txn<'_>, reader: &Reader<'_>, thread: &ThreadId, seq: u64) ->
     let key = keys::message(thread, seq);
     txn.batch.remove(&ks.messages, key);
     txn.batch.remove(&ks.bodies, key);
-    txn.batch.remove(&ks.post_order, keys::order(meta.order));
+    txn.batch
+        .remove(&ks.post_order, keys::order(meta.ts_micros, meta.order));
     Ok(())
 }

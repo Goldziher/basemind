@@ -12,11 +12,11 @@
 //!
 //! | Keyspace | Key | Value | Serves |
 //! |---|---|---|---|
-//! | `meta` | `store_ver`, `posts`, `last_ts` | `u32`, `u64`, `i64` | layout version; post counter (arrivals); newest timestamp issued |
+//! | `meta` | `store_ver`, `posts`, `last_ts` | `u32`, `u64`, `i64` | layout version; post counter (arrivals); the previous post's timestamp |
 //! | `threads` | `thread:u32` | `ThreadRecord` | a thread by id |
 //! | `messages` | `thread:u32 ‖ seq:u64` | `MessageMeta` | a message by id; a thread's messages in order |
 //! | `bodies` | `thread:u32 ‖ seq:u64` | UTF-8 body | the text of a message that is returned |
-//! | `post_order` | `order:u64` | `thread:u32 ‖ seq:u64 ‖ ts:u64` | messages in the order they were posted, which is the order they expire in |
+//! | `post_order` | `ts:u64 ‖ order:u64` | `thread:u32 ‖ seq:u64` | messages by timestamp, then post position: the order they expire in |
 //! | `members` | `thread:u32 ‖ agent` | `Position` | membership, `read_seq`, `notified_seq`; a thread's members |
 //! | `member_threads` | `u16:len ‖ agent ‖ thread:u32` | empty | the threads an agent is in |
 //! | `repo_threads` | `u16:len ‖ repo ‖ state:u8 ‖ thread:u32` | empty | discovery, and the active-thread cap of a repository |
@@ -50,20 +50,25 @@
 //!
 //! ## Time
 //!
-//! Two times, kept apart. Everything that expires is judged against the [`Clock`] as it reads
-//! now. A message is stamped [`rules::post_timestamp`]: the clock, or one microsecond past the
-//! previous stamp when the clock is not later, so stamps strictly increase in post order. The
-//! previous stamp is used for nothing else. If it were also the store's "now", one post made
-//! while the clock was ahead would hold the store in the future for as long as the clock took to
-//! catch up, with nothing expiring. Instead only what was stamped ahead is late: such a message,
-//! and those posted after it until the clock catches up, expire when the clock passes their
-//! stamp by the retention. A clock that reads more than a minute behind the newest stamp is
-//! logged at open and, at most every ten minutes, when a post is stamped.
+//! Everything that expires is judged against the [`Clock`] as it reads now, never against a
+//! timestamp the store issued. A message is stamped [`rules::post_timestamp`]: the clock, or one
+//! microsecond past the previous stamp while the clock is not later and no more than a minute
+//! behind it. Once the clock reads further behind, the previous stamp is the one taken to be
+//! wrong and posts are stamped from the clock again, so a post made while the clock ran ahead
+//! holds nothing after it in the future. Timestamps therefore do not order messages: `seq` does
+//! within a thread and the post counter does across threads, and nothing reads a timestamp for
+//! order. The one index kept by time, `post_order`, is keyed by the stamp for that reason.
+//!
+//! What was stamped ahead stays stamped ahead. Such a message expires when the clock passes its
+//! stamp by the retention, or with its thread, which follows the last post made to it. A clock
+//! more than a minute behind the previous stamp is logged at open and, at most every ten minutes,
+//! when a post is stamped.
 //!
 //! ## Retention
 //!
 //! Expiry is decided when a record is read, by comparing its time with the clock, so it holds
-//! from the next operation whether or not anything was deleted. Deleting is
+//! from the next operation whether or not anything was deleted, and a record hidden as expired
+//! is visible again if the clock goes back before a sweep removed it. Deleting is
 //! [`FjallAgents::sweep`], which walks `post_order` and `expiry` from their oldest entry and
 //! stops at the first one still alive or at its budget; changes run a small one after
 //! committing.
@@ -115,7 +120,7 @@ const META_STORE_VER: &[u8] = b"store_ver";
 /// `meta` key of the post counter.
 const META_POSTS: &[u8] = b"posts";
 
-/// `meta` key of the newest timestamp the store issued.
+/// `meta` key of the timestamp of the previous post.
 const META_LAST_TS: &[u8] = b"last_ts";
 
 /// Draws after which a new thread id is given up on. Ids are 30 random bits and a store holds a
@@ -127,8 +132,8 @@ const THREAD_ID_BYTES: usize = 4;
 
 /// Where the store takes the time from, in microseconds since the unix epoch.
 pub trait Clock: Send + Sync {
-    /// The current time. It may stand still or go back: the store never issues a timestamp that
-    /// is not later than the previous one, and judges expiry against this reading alone.
+    /// The current time. It may stand still or go back: expiry is judged against this reading
+    /// alone, and a message is stamped as [`rules::post_timestamp`] says.
     fn now_micros(&self) -> i64;
 }
 
@@ -200,12 +205,12 @@ pub(super) struct Keyspaces {
 struct Writer {
     /// Posts stored so far: the store-wide post order.
     posts: u64,
-    /// The newest timestamp issued.
+    /// The timestamp of the previous post.
     last_ts: i64,
     thread_ids: Box<dyn ThreadIds>,
     /// When an operation last ran its sweep.
     swept_at: i64,
-    /// When a clock behind the newest timestamp was last reported.
+    /// When a clock behind the previous timestamp was last reported.
     skew: SkewLog,
 }
 
@@ -232,8 +237,7 @@ struct Txn<'a> {
 }
 
 impl Txn<'_> {
-    /// Take the next timestamp and post position, and stage both counters. A timestamp is
-    /// always later than the one before it, so post order and time order agree; it is the
+    /// Take the next timestamp and post position, and stage both counters. The timestamp is the
     /// message's own and does not move the instant the change is judged at.
     fn stamp_post(&mut self, ks: &Keyspaces) -> (i64, u64) {
         let ts_micros = rules::post_timestamp(self.now, self.writer.last_ts);
@@ -384,12 +388,13 @@ impl FjallAgents {
             .commit()
             .map_err(|error| backend("write to the comms store", error))?;
         if let Some(ts_micros) = stamped {
+            let previous = writer.last_ts;
+            if let Some(behind_micros) = writer.skew.due(now, previous) {
+                skew::warn(behind_micros, "stamping a post");
+            }
             writer.posts += 1;
             writer.last_ts = ts_micros;
             self.arrivals.store(writer.posts, Ordering::Release);
-            if let Some(behind_micros) = writer.skew.due(now, ts_micros) {
-                skew::warn(behind_micros, "stamping a post");
-            }
         }
         drop(reader);
         self.sweep_after_change(&mut writer, now);

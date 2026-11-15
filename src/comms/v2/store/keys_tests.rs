@@ -32,18 +32,32 @@ fn message_keys_of_one_thread_sort_by_sequence_number() {
 }
 
 #[test]
-fn order_entry_round_trips_with_a_negative_timestamp() {
+fn post_order_row_round_trips_with_a_negative_timestamp() {
     let id = thread_id(99);
+    let key = order(-5, 7);
 
     assert_eq!(
-        parse_order_entry(&order_entry(&id, 41, -5)),
+        parse_order_row(&key, &message(&id, 41)),
         Some(OrderEntry {
-            thread: id,
+            thread: id.clone(),
             seq: 41,
             ts_micros: -5,
         })
     );
-    assert_eq!(parse_order_entry(&[0; 19]), None);
+    assert_eq!(parse_order_row(&key[..15], &message(&id, 41)), None);
+    assert_eq!(parse_order_row(&key, &message(&id, 41)[..11]), None);
+}
+
+#[test]
+fn post_order_keys_sort_by_stamp_before_post_position() {
+    let mut keys = [order(10, 1), order(-3, 9), order(10, 0), order(1 << 40, 2), order(0, 8)];
+    keys.sort();
+
+    assert_eq!(
+        keys,
+        [order(-3, 9), order(0, 8), order(10, 0), order(10, 1), order(1 << 40, 2)],
+        "a later post stamped earlier sorts first, which is the order the two expire in"
+    );
 }
 
 #[test]

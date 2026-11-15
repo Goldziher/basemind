@@ -17,8 +17,8 @@ const U64_LEN: usize = 8;
 /// Bytes of a `messages` / `bodies` key.
 const MESSAGE_KEY_LEN: usize = THREAD_LEN + U64_LEN;
 
-/// Bytes of a `post_order` value.
-const ORDER_ENTRY_LEN: usize = THREAD_LEN + U64_LEN + U64_LEN;
+/// Bytes of a `post_order` key.
+const ORDER_KEY_LEN: usize = U64_LEN + U64_LEN;
 
 /// Flips the sign bit, which maps `i64` order onto unsigned byte order.
 const SIGN_BIT: u64 = 1 << 63;
@@ -42,7 +42,7 @@ const REPLAY_INBOX: u8 = 2;
 /// range ordered by time.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Expiry {
-    /// A thread, at the time of its newest message. Payload: the `threads` key.
+    /// A thread, at the timestamp of the last message posted to it. Payload: the `threads` key.
     Thread = 1,
     /// A replay entry, at the time it stops answering. Payload: the `replays` key.
     Replay = 2,
@@ -102,40 +102,37 @@ pub(super) fn parse_message_seq(key: &[u8]) -> Option<u64> {
     parse_u64(&key[THREAD_LEN..])
 }
 
-/// `post_order`: `order:u64`, the store-wide post position.
-pub(super) fn order(order: u64) -> [u8; U64_LEN] {
-    order.to_be_bytes()
+/// `post_order`: `ts:u64 ‖ order:u64`, a message's stamp and then its store-wide post position.
+/// The stamp leads because stamps do not follow post positions once a clock was corrected
+/// ([`post_timestamp`](crate::comms::v2::rules::post_timestamp)), and a sweep needs the messages
+/// in the order they expire; the post position only keeps two messages stamped alike apart.
+pub(super) fn order(ts_micros: i64, order: u64) -> [u8; ORDER_KEY_LEN] {
+    let mut key = [0; ORDER_KEY_LEN];
+    key[..U64_LEN].copy_from_slice(&timestamp(ts_micros));
+    key[U64_LEN..].copy_from_slice(&order.to_be_bytes());
+    key
 }
 
-/// What a `post_order` entry points at.
+/// What a `post_order` row says: a message, and when it was stamped.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct OrderEntry {
     /// The thread the message is in.
     pub thread: ThreadId,
     /// Its sequence number there.
     pub seq: u64,
-    /// When it was posted.
+    /// When it was stamped.
     pub ts_micros: i64,
 }
 
-/// Value of a `post_order` entry: `thread:u32 ‖ seq:u64 ‖ ts:u64`.
-pub(super) fn order_entry(thread_id: &ThreadId, seq: u64, ts_micros: i64) -> [u8; ORDER_ENTRY_LEN] {
-    let mut value = [0; ORDER_ENTRY_LEN];
-    value[..THREAD_LEN].copy_from_slice(&thread(thread_id));
-    value[THREAD_LEN..MESSAGE_KEY_LEN].copy_from_slice(&seq.to_be_bytes());
-    value[MESSAGE_KEY_LEN..].copy_from_slice(&timestamp(ts_micros));
-    value
-}
-
-/// Decode a `post_order` value.
-pub(super) fn parse_order_entry(value: &[u8]) -> Option<OrderEntry> {
-    if value.len() != ORDER_ENTRY_LEN {
+/// Decode a `post_order` row: its key, and its value, which is the message's `messages` key.
+pub(super) fn parse_order_row(key: &[u8], value: &[u8]) -> Option<OrderEntry> {
+    if key.len() != ORDER_KEY_LEN || value.len() != MESSAGE_KEY_LEN {
         return None;
     }
     Some(OrderEntry {
         thread: parse_thread(&value[..THREAD_LEN])?,
-        seq: parse_u64(&value[THREAD_LEN..MESSAGE_KEY_LEN])?,
-        ts_micros: parse_timestamp(&value[MESSAGE_KEY_LEN..])?,
+        seq: parse_u64(&value[THREAD_LEN..])?,
+        ts_micros: parse_timestamp(&key[..U64_LEN])?,
     })
 }
 
