@@ -229,6 +229,21 @@ fn only_reads_and_keyed_posts_are_replayable() {
     assert_eq!(state.drain_restart_errors().len(), 3);
 }
 
+/// A tool that is not listed as safe is not replayed, whatever else is true of it: the agent tools
+/// of the next release are not in the list, and a post sent twice is a message delivered twice.
+#[test]
+fn a_tool_without_a_replay_decision_is_not_replayed() {
+    let mut state = SessionState::default();
+    for (id, tool) in ["agent_post", "agent_inbox", "agent_threads", "a_tool_added_later"]
+        .into_iter()
+        .enumerate()
+    {
+        state.observe_client(&call_line(id as u64, tool, ""));
+    }
+    assert!(state.replay.is_empty(), "{:?}", state.replay.keys());
+    assert_eq!(state.drain_restart_errors().len(), 4);
+}
+
 /// An in-flight keyed post survives a backend restart: the replacement backend receives the
 /// identical line (same key) once, and the host sees only the real reply, no `backend_restarted`.
 #[tokio::test]

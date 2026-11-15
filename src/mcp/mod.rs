@@ -73,6 +73,7 @@ pub(crate) mod memory_ops;
 pub mod mode;
 mod notifications;
 mod prompts;
+pub mod replay;
 mod resources;
 mod router_cache;
 pub(crate) mod savings;

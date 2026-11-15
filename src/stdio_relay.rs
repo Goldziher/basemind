@@ -144,12 +144,10 @@ const REPLAYABLE_METHODS: &[&str] = &[
     "prompts/get",
     "completion/complete",
 ];
-/// Verb tools that write, and so must never be re-sent: every other verb tool is a read.
-const WRITING_TOOLS: &[&str] = &["memory_save", "index_rescan"];
-
-/// Whether `tool` is a read-only verb tool, safe to replay after a backend restart.
+/// Whether `tool` only reads, and is safe to replay after a backend restart. A tool is safe
+/// because it is listed as safe, never because it is not listed as writing.
 fn is_read_only_tool(tool: &str) -> bool {
-    basemind::mcp::params::VERB_TOOLS.contains(&tool) && !WRITING_TOOLS.contains(&tool)
+    basemind::mcp::replay::REPLAY_SAFE_TOOLS.contains(&tool)
 }
 /// `agents` modes that are reads or naturally idempotent (`post` is made so by a key).
 const REPLAYABLE_AGENTS_MODES: &[&str] = &[

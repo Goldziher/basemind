@@ -3388,3 +3388,39 @@ async fn layered_semantic_mcp_falls_back_after_standalone_mutation() {
     assert_eq!(shared_hits(), 1, "{}", trace());
     service.cancel().await.unwrap();
 }
+
+/// The stdio relay re-sends a request in flight when the daemon is replaced, but only for a tool
+/// someone decided is safe to run twice. A tool added to the server without that decision is
+/// failed on every restart if it reads and must never be listed by default if it writes, so
+/// advertising one fails here until it is put in one of the lists in `basemind::mcp::replay`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn every_advertised_tool_has_a_replay_decision() {
+    use basemind::mcp::replay::{NEVER_REPLAY_TOOLS, REPLAY_BY_MODE_TOOLS, REPLAY_SAFE_TOOLS, decisions};
+
+    let dir = build_repo();
+    let root = dir.path();
+    run_scan(root);
+    let server = spawn_serve(root, None).await;
+    let tools = server.list_all_tools().await.expect("list tools");
+    assert!(tools.len() >= REPLAY_SAFE_TOOLS.len(), "the server lists its tools");
+
+    for tool in &tools {
+        assert_eq!(
+            decisions(&tool.name),
+            1,
+            "`{}` is advertised and must be in exactly one of REPLAY_SAFE_TOOLS, NEVER_REPLAY_TOOLS and \
+             REPLAY_BY_MODE_TOOLS (src/mcp/replay.rs): decide whether the relay may send it twice",
+            tool.name
+        );
+    }
+    let advertised = |name: &&str| tools.iter().any(|tool| tool.name == **name);
+    for listed in REPLAY_SAFE_TOOLS.iter().chain(NEVER_REPLAY_TOOLS) {
+        assert!(advertised(listed), "`{listed}` has a replay decision and is not a tool");
+    }
+    if cfg!(feature = "comms") {
+        for listed in REPLAY_BY_MODE_TOOLS {
+            assert!(advertised(listed), "`{listed}` has a replay decision and is not a tool");
+        }
+    }
+    server.cancel().await.expect("shut down");
+}
