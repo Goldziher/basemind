@@ -22,12 +22,15 @@
 //! present the daemon's bearer token. Both live in [`http_auth`](super::http_auth), which documents
 //! why loopback alone was never an authentication boundary.
 //!
-//! ## Bind-as-lock + portfile
+//! ## Address + portfile
 //!
-//! The listener binds a fixed loopback address (default `127.0.0.1:51786`, override
-//! [`HTTP_ADDR_ENV`]). Binding IS the lock: only one daemon holds it. The actually-bound `host:port`
-//! and the process's bearer token are written to `<comms_dir>/http.addr` (mode 0600 on Unix) so
-//! tooling — `basemind daemon ensure` and any launcher — can discover both without guessing.
+//! The listener binds a loopback address: [`HTTP_ADDR_ENV`] when set, else `127.0.0.1:51786`. The
+//! default is a preference, not a lock. Daemons of two protocol generations run side by side, and
+//! the second one to start finds the default port taken; it binds a port the OS assigns instead.
+//! An address set through [`HTTP_ADDR_ENV`] is binding: if it is in use, the front-end does not
+//! start. The actually-bound `host:port` and the process's bearer token are written to
+//! `<comms_dir>/http.addr` (mode 0600 on Unix), in the daemon's own generation directory, so
+//! tooling — `basemind daemon ensure` and any launcher — discovers both without guessing the port.
 //!
 //! ## Idle lifecycle
 //!
@@ -70,9 +73,9 @@ pub use super::http_auth::{ALLOW_HTTP_ENV, http_enabled, portfile_path};
 
 /// Env var overriding the bound loopback address. `host:port`, e.g. `127.0.0.1:0` to let the OS pick
 /// a free port (the actual port is discoverable via the portfile). Empty/unset uses
-/// [`DEFAULT_HTTP_ADDR`].
+/// [`DEFAULT_HTTP_ADDR`], or an OS-assigned port when that is in use.
 pub const HTTP_ADDR_ENV: &str = "BASEMIND_HTTP_ADDR";
-/// Default fixed loopback address for the streamable-HTTP MCP transport.
+/// Preferred loopback address for the streamable-HTTP MCP transport.
 const DEFAULT_HTTP_ADDR: &str = "127.0.0.1:51786";
 /// The MCP JSON-RPC transport path. Anything else is a 404.
 const MCP_PATH: &str = "/mcp";
@@ -83,14 +86,45 @@ const HTTP_READY_POLL: Duration = Duration::from_millis(50);
 /// returns, so the router and the service agree.
 type HttpBody = BoxBody<Bytes, Infallible>;
 
+/// The address to bind and where it came from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct BindAddr {
+    addr: SocketAddr,
+    /// Set through [`HTTP_ADDR_ENV`], so it must be bound as given or not at all.
+    configured: bool,
+}
+
 /// Resolve the address to bind: [`HTTP_ADDR_ENV`] when set and non-blank, else [`DEFAULT_HTTP_ADDR`].
-fn resolve_addr() -> Result<SocketAddr> {
-    let raw = std::env::var(HTTP_ADDR_ENV)
+fn resolve_addr() -> Result<BindAddr> {
+    let configured = std::env::var(HTTP_ADDR_ENV)
         .ok()
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| DEFAULT_HTTP_ADDR.to_string());
-    raw.parse::<SocketAddr>()
-        .with_context(|| format!("parse {HTTP_ADDR_ENV}={raw:?} as a host:port socket address"))
+        .filter(|value| !value.trim().is_empty());
+    let raw = configured.as_deref().unwrap_or(DEFAULT_HTTP_ADDR);
+    let addr = raw
+        .parse::<SocketAddr>()
+        .with_context(|| format!("parse {HTTP_ADDR_ENV}={raw:?} as a host:port socket address"))?;
+    Ok(BindAddr {
+        addr,
+        configured: configured.is_some(),
+    })
+}
+
+/// Bind the HTTP listener. When the default address is in use — by the daemon of another protocol
+/// generation, or by anything else — bind a port the OS assigns on the same interface instead; the
+/// portfile carries the result. A configured address is never substituted.
+async fn bind_http_listener(bind: BindAddr) -> std::io::Result<TcpListener> {
+    match TcpListener::bind(bind.addr).await {
+        Err(error) if error.kind() == std::io::ErrorKind::AddrInUse && !bind.configured => {
+            let any_port = SocketAddr::new(bind.addr.ip(), 0);
+            tracing::warn!(
+                addr = %bind.addr,
+                "comms: the default streamable-HTTP address is in use (another basemind daemon?); \
+                 binding an OS-assigned port instead, published in http.addr"
+            );
+            TcpListener::bind(any_port).await
+        }
+        bound => bound,
+    }
 }
 
 /// Parse `root` (required) and `agent` (optional) from the request query. A blank `agent` is treated
@@ -432,8 +466,8 @@ impl Service<Request<Incoming>> for HyperSvc {
 ///
 /// Returns `Ok(())` immediately, binding nothing, unless the operator granted the front-end via
 /// [`ALLOW_HTTP_ENV`] — see [`http_auth`](super::http_auth) for why it is off by default. When it is
-/// granted, this mints the process's bearer token, binds the loopback listener (bind-as-lock),
-/// publishes address + token to the portfile, and serves each connection with a hyper auto (h1/h2)
+/// granted, this mints the process's bearer token, binds the loopback listener
+/// ([`bind_http_listener`]), publishes address + token to the portfile, and serves each connection with a hyper auto (h1/h2)
 /// server over the shared router. A bind failure is returned to the caller, which logs it and leaves
 /// the rest of the daemon (the UDS relay) running — HTTP is additive, never a precondition for comms.
 pub async fn serve_http(broker: Arc<Broker>, comms_dir: PathBuf, mut shutdown: watch::Receiver<bool>) -> Result<()> {
@@ -450,7 +484,8 @@ pub async fn serve_http(broker: Arc<Broker>, comms_dir: PathBuf, mut shutdown: w
         return Ok(());
     }
     let token = HttpToken::generate()?;
-    let addr = resolve_addr()?;
+    let bind = resolve_addr()?;
+    let addr = bind.addr;
     if !addr.ip().is_loopback() {
         tracing::warn!(
             %addr,
@@ -459,14 +494,13 @@ pub async fn serve_http(broker: Arc<Broker>, comms_dir: PathBuf, mut shutdown: w
              remote access you must configure allowed_hosts/origins for the real hostnames."
         );
     }
-    let listener = match TcpListener::bind(addr).await {
+    let listener = match bind_http_listener(bind).await {
         Ok(listener) => listener,
         Err(error) => {
-            // A stale portfile from a prior crashed daemon would otherwise misdirect
-            // `await_http_ready` / launchers / hard-coded manifests to whatever now holds the port.
-            // Clear it before bailing so discovery fails cleanly instead of pointing at a foreign
-            // process. (The portfile lives in this user's comms dir, so it can only be our own stale
-            // write — the per-user singleton lock means we never race another basemind daemon here.)
+            // A portfile left by an earlier daemon of this generation would otherwise misdirect
+            // `await_http_ready` / launchers / hard-coded manifests to whatever now holds that
+            // address. Clear it before bailing so discovery fails cleanly. The portfile is in this
+            // generation's directory, which only this generation's one daemon writes.
             http_auth::remove_portfile(&comms_dir);
             return Err(anyhow::Error::new(error)).with_context(|| {
                 format!("bind streamable-HTTP MCP listener on {addr} (is another process holding it?)")
@@ -599,13 +633,44 @@ mod tests {
         // Default when unset.
         // SAFETY: single-threaded test; no other thread reads the env concurrently.
         unsafe { std::env::remove_var(HTTP_ADDR_ENV) };
-        assert_eq!(resolve_addr().expect("default parses").to_string(), DEFAULT_HTTP_ADDR);
+        let default = resolve_addr().expect("default parses");
+        assert_eq!(default.addr.to_string(), DEFAULT_HTTP_ADDR);
+        assert!(!default.configured);
         unsafe { std::env::set_var(HTTP_ADDR_ENV, "127.0.0.1:0") };
         assert_eq!(
             resolve_addr().expect("env parses"),
-            "127.0.0.1:0".parse::<SocketAddr>().unwrap()
+            BindAddr {
+                addr: "127.0.0.1:0".parse::<SocketAddr>().unwrap(),
+                configured: true,
+            }
         );
         unsafe { std::env::remove_var(HTTP_ADDR_ENV) };
+    }
+
+    /// Two generations' daemons both prefer the default port. The second must still get a
+    /// listener, on a port of its own, while an address the operator chose is never swapped.
+    #[tokio::test]
+    async fn a_default_address_in_use_falls_back_to_a_free_port_and_a_configured_one_does_not() {
+        let holder = TcpListener::bind("127.0.0.1:0").await.expect("hold a port");
+        let taken = holder.local_addr().expect("held address");
+
+        let fallback = bind_http_listener(BindAddr {
+            addr: taken,
+            configured: false,
+        })
+        .await
+        .expect("the default address being in use must not cost the front-end");
+        let bound = fallback.local_addr().expect("fallback address");
+        assert_ne!(bound.port(), taken.port());
+        assert_eq!(bound.ip(), taken.ip(), "the fallback stays on the same interface");
+
+        let refused = bind_http_listener(BindAddr {
+            addr: taken,
+            configured: true,
+        })
+        .await
+        .expect_err("a configured address is bound as given or not at all");
+        assert_eq!(refused.kind(), std::io::ErrorKind::AddrInUse);
     }
 
     #[test]
