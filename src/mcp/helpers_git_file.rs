@@ -99,11 +99,7 @@ fn capped_hunks(hunks: Vec<crate::git::Hunk>) -> (Vec<HunkView>, bool) {
             if !views.is_empty() {
                 break;
             }
-            let mut cut = DIFF_TEXT_MAX;
-            while !hunk.text.is_char_boundary(cut) {
-                cut -= 1;
-            }
-            hunk.text.truncate(cut);
+            clip_to_whole_lines(&mut hunk.text, DIFF_TEXT_MAX);
             clipped = true;
         }
         text_bytes += hunk.text.len();
@@ -120,6 +116,19 @@ fn capped_hunks(hunks: Vec<crate::git::Hunk>) -> (Vec<HunkView>, bool) {
         }
     }
     (views, clipped)
+}
+
+/// Cut `text` to at most `cap` bytes, ending after its last whole line so a clipped hunk never
+/// ends in a line fragment. Text with no newline within the cap is cut at a character boundary.
+fn clip_to_whole_lines(text: &mut String, cap: usize) {
+    if text.len() <= cap {
+        return;
+    }
+    let cut = memchr::memrchr(b'\n', &text.as_bytes()[..cap]).map_or_else(
+        || (0..=cap).rev().find(|&at| text.is_char_boundary(at)).unwrap_or(0),
+        |newline| newline + 1,
+    );
+    text.truncate(cut);
 }
 
 /// The working-tree bytes of an indexed file, when they are still the bytes that were indexed (the
@@ -559,4 +568,47 @@ pub(super) fn run_symbol_history(state: &ServerState, params: SymbolHistoryParam
         cursor_invalidated: false,
         elapsed_us: elapsed_us(started),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn hunk(text: String) -> crate::git::Hunk {
+        crate::git::Hunk {
+            kind: crate::git::HunkKind::Added,
+            old_line_start: 0,
+            old_line_count: 0,
+            new_line_start: 1,
+            new_line_count: 1,
+            text,
+        }
+    }
+
+    #[test]
+    fn an_oversized_hunk_is_clipped_after_its_last_whole_line() {
+        let line = "+short line\n";
+        assert_ne!(DIFF_TEXT_MAX % line.len(), 0, "the cap must fall inside a line");
+        let (views, clipped) = capped_hunks(vec![hunk(line.repeat(DIFF_TEXT_MAX / line.len() + 10))]);
+        assert!(clipped);
+        let text = &views[0].text;
+        assert!(
+            text.ends_with('\n'),
+            "ends in a fragment: {:?}",
+            &text[text.len() - 20..]
+        );
+        assert_eq!(text.len(), DIFF_TEXT_MAX - DIFF_TEXT_MAX % line.len());
+    }
+
+    #[test]
+    fn an_oversized_hunk_with_no_newline_is_clipped_at_a_character_boundary() {
+        let (views, clipped) = capped_hunks(vec![hunk(format!("+{}", "é".repeat(DIFF_TEXT_MAX)))]);
+        assert!(clipped);
+        assert_eq!(views[0].text.len(), DIFF_TEXT_MAX - 1, "the cap is mid-character");
+        assert!(views[0].text.ends_with('é'));
+
+        let (whole, clipped) = capped_hunks(vec![hunk("+a\n".to_string())]);
+        assert!(!clipped);
+        assert_eq!(whole[0].text, "+a\n");
+    }
 }
