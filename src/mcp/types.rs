@@ -468,6 +468,10 @@ pub(super) struct StatusResponse {
     /// unscanned (no-blobs) view.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
+    /// `true` when the code index cannot answer until a scan rebuilds it: an older basemind wrote
+    /// it, or a rebuild was interrupted. `note` says how to fix it. Absent (false) otherwise.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub rescan_needed: bool,
     /// `true` when a writer (a running `scan`/`rescan`/`watch`) currently holds the store
     /// lock, so this report was served *without* blocking on the in-progress rebuild. The
     /// index counts (`file_count`, `languages`) reflect the pre-rebuild state or are omitted;

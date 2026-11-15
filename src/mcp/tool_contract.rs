@@ -171,32 +171,18 @@ struct IndexFacts {
     empty: bool,
     /// The path is an indexed document.
     is_document: bool,
-    /// The path is in the file map, yet its extraction blob could not be served.
-    blob: Option<UnservedBlob>,
-}
-
-/// Why the blob of a file the map lists could not be served.
-#[derive(PartialEq, Eq)]
-enum UnservedBlob {
-    /// Written under another blob schema, by another basemind version.
-    OtherVersion,
-    /// Absent, or damaged.
-    Lost,
+    /// The path is in the file map, yet its extraction blob is absent or cannot be read.
+    blob_lost: bool,
 }
 
 fn index_facts(store: &crate::store::Store, path: &RelPath) -> IndexFacts {
-    use crate::store::StoreError;
-    let blob = store
+    let blob_lost = store
         .lookup(path)
-        .and_then(|entry| match store.read_l1_by_hex(&entry.hash_hex) {
-            Ok(Some(_)) => None,
-            Err(StoreError::SchemaMismatch { .. } | StoreError::NewerSchema { .. }) => Some(UnservedBlob::OtherVersion),
-            Ok(None) | Err(_) => Some(UnservedBlob::Lost),
-        });
+        .is_some_and(|entry| !matches!(store.read_l1_by_hex(&entry.hash_hex), Ok(Some(_))));
     IndexFacts {
         empty: store.index.files.is_empty() && store.index.doc_files.is_empty(),
         is_document: store.lookup_doc(path).is_some(),
-        blob,
+        blob_lost,
     }
 }
 
@@ -211,12 +197,7 @@ fn not_indexed_because(root: &std::path::Path, tool: &str, path: &RelPath, facts
             "`{tool}`: `{path}` is a document, not code, so it has no outline or symbols. Search it with \
              `docs_search`, or read a line span with `code_read`."
         )
-    } else if facts.blob == Some(UnservedBlob::OtherVersion) {
-        format!(
-            "`{tool}`: `{path}` is indexed, but its cache entry was written by a different basemind version \
-             that this one cannot read. Run `index_rescan {{\"full\":true}}` to index it with this version."
-        )
-    } else if facts.blob == Some(UnservedBlob::Lost) {
+    } else if facts.blob_lost {
         format!(
             "`{tool}`: `{path}` is indexed, but its cache entry is missing or damaged. Run \
              `index_rescan {{\"paths\":[\"{path}\"]}}` to rebuild it and retry."

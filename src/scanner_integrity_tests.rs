@@ -304,10 +304,11 @@ fn a_rebuild_interrupted_after_the_emptied_file_map_is_finished_by_an_incrementa
         .expect("read")
         .expect("file map");
     assert!(!on_disk.rebuild_pending, "the finished rebuild is recorded on disk");
+    assert!(on_disk.rebuild_pins.is_empty(), "and its pins are released");
 }
 
-/// The purge of a deleted file used to drop its file-map entry and discard the result of the index
-/// commit, so a failed commit left rows no later scan would ever revisit.
+/// A deleted file leaves the file map only once its index rows are gone: dropped over rows that
+/// stayed, no later scan would revisit it.
 #[test]
 fn a_deleted_file_stays_in_the_file_map_when_its_index_rows_could_not_be_removed() {
     init_isolated_cache();
@@ -333,4 +334,125 @@ fn a_deleted_file_stays_in_the_file_map_when_its_index_rows_could_not_be_removed
     assert_eq!(report.stats.removed, 1, "the next scan purges it");
     assert!(store.lookup("alpha.rs").is_none());
     assert!(store.index_view().expect("index").symbols_index_is_empty());
+}
+
+fn stale_entries_on_disk(store: &Store) -> Vec<String> {
+    let map = crate::store::read_index(&store.view_dir)
+        .expect("read")
+        .expect("file map");
+    let mut stale: Vec<String> = ["alpha.rs", "beta.rs"]
+        .into_iter()
+        .filter(|rel| map.files.contains_key(bstr::BStr::new(rel.as_bytes())))
+        .map(str::to_string)
+        .collect();
+    stale.sort();
+    stale
+}
+
+/// One file whose purge fails must not stop the pass before the others are purged and the file map
+/// is written: the map on disk then lists the failed file and not the purged one, and the scan
+/// still fails.
+#[test]
+fn a_failed_purge_does_not_keep_the_other_removals_out_of_the_file_map() {
+    init_isolated_cache();
+    let dir = one_file_repo();
+    let root = dir.path();
+    std::fs::write(root.join("beta.rs"), b"pub fn beta() -> u32 { 2 }\n").expect("write");
+    std::fs::write(root.join("kept.rs"), b"pub fn kept() -> u32 { 3 }\n").expect("write");
+    let mut store = Store::open(root, VIEW_WORKING).expect("open");
+    full_scan(root, &mut store);
+    assert_eq!(stale_entries_on_disk(&store).len(), 2);
+    std::fs::remove_file(root.join("alpha.rs")).expect("delete");
+    std::fs::remove_file(root.join("beta.rs")).expect("delete");
+    store.index_db.as_ref().expect("index").fault.inject_commit_failures(1);
+
+    let failed = scan(
+        root,
+        &mut store,
+        &ConfigV1::with_defaults(),
+        ScanSource::WorkingTree,
+        EmbedMode::Deferred,
+    );
+
+    assert!(failed.is_err(), "the failed purge still fails the scan");
+    assert_eq!(
+        stale_entries_on_disk(&store).len(),
+        1,
+        "the file map was written with the purged file gone and the failed one kept"
+    );
+
+    assert_eq!(
+        full_scan(root, &mut store).stats.removed,
+        1,
+        "the next scan purges the other"
+    );
+    assert!(stale_entries_on_disk(&store).is_empty());
+}
+
+/// The same for an incremental scan of the deleted paths.
+#[test]
+fn a_failed_purge_in_an_incremental_scan_still_writes_the_file_map() {
+    init_isolated_cache();
+    let dir = one_file_repo();
+    let root = dir.path();
+    std::fs::write(root.join("beta.rs"), b"pub fn beta() -> u32 { 2 }\n").expect("write");
+    let mut store = Store::open(root, VIEW_WORKING).expect("open");
+    full_scan(root, &mut store);
+    let gone = [root.join("alpha.rs"), root.join("beta.rs")];
+    for path in &gone {
+        std::fs::remove_file(path).expect("delete");
+    }
+    store.index_db.as_ref().expect("index").fault.inject_commit_failures(1);
+
+    let failed = crate::scanner::scan_paths(root, &mut store, &ConfigV1::with_defaults(), &gone, EmbedMode::Deferred);
+
+    assert!(failed.is_err(), "the failed purge still fails the scan");
+    assert_eq!(stale_entries_on_disk(&store).len(), 1);
+}
+
+/// A chunk sidecar is not trusted for existing: every pass that chunks reads its header, which
+/// states the payload's length, so one cut short by a power loss is chunked again by the next pass
+/// with no marker needed.
+#[cfg(feature = "code-search")]
+#[test]
+fn a_torn_chunk_sidecar_is_rebuilt_by_the_next_pass() {
+    init_isolated_cache();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    std::fs::write(root.join("torn.rs"), b"pub fn torn_chunk_fixture() -> u32 { 9 }\n").expect("write");
+    let mut config = ConfigV1::with_defaults();
+    config.code_search.enabled = true;
+    config.code_search.embed = false;
+    let pass =
+        |store: &mut Store| scan(root, store, &config, ScanSource::WorkingTree, EmbedMode::Deferred).expect("scan");
+    let mut store = Store::open(root, VIEW_WORKING).expect("open");
+    assert_eq!(pass(&mut store).stats.updated, 1);
+    assert_eq!(pass(&mut store).stats.skipped_unchanged, 1);
+    let hash_hex = store.lookup("torn.rs").expect("entry").hash_hex.clone();
+    let sidecar = store.blob_path_chunk_hex(&hash_hex);
+    let whole = std::fs::read(&sidecar).expect("the scan wrote a chunk sidecar");
+    std::fs::write(&sidecar, &whole[..whole.len() - 1]).expect("tear the sidecar");
+    assert!(store.peek_chunk_state(&hash_hex).is_err());
+
+    assert_eq!(pass(&mut store).stats.updated, 1, "the file is chunked again");
+
+    assert!(matches!(store.peek_chunk_state(&hash_hex), Ok(Some(_))));
+}
+
+/// A workspace whose blobs are to be verified is scanned in full even when only some paths were
+/// asked for: an incremental pass looks at those paths alone.
+#[test]
+fn a_workspace_awaiting_verification_needs_a_full_scan() {
+    init_isolated_cache();
+    let dir = one_file_repo();
+    let mut store = Store::open(dir.path(), VIEW_WORKING).expect("open");
+    full_scan(dir.path(), &mut store);
+    assert!(!store.needs_full_scan());
+
+    std::mem::forget(crate::scan_evidence::ScanBreadcrumb::begin_in(&store.basemind_dir, dir.path()).expect("crumb"));
+    crate::scan_evidence::clear(&store.basemind_dir);
+    assert!(store.needs_full_scan(), "the marker asks for a full, verifying pass");
+
+    full_scan(dir.path(), &mut store);
+    assert!(!store.needs_full_scan(), "the pass that verified withdraws the request");
 }

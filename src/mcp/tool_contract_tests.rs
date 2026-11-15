@@ -139,18 +139,17 @@ async fn a_file_that_is_not_indexed_says_what_to_do_about_it() {
     assert!(text_of(&unread).contains("find_files"));
 }
 
-/// A file the map lists whose blob another basemind version wrote is indexed, by a build this one
-/// cannot read. That is a different answer, with a different fix, from "not indexed".
+/// A file the map lists whose blob cannot be read is indexed, over a cache entry that is lost. That
+/// is a different answer from "not indexed", and the rescan it names must be the one that fixes it.
 #[tokio::test]
-async fn a_blob_from_another_basemind_version_is_not_reported_as_not_indexed() {
+async fn an_indexed_file_whose_blob_is_unreadable_says_so_and_the_rescan_it_names_rebuilds_it() {
     let tmp = tempfile::tempdir().expect("tempdir");
-    let source = "pub fn other_version_blob_fixture() {}\n";
-    std::fs::write(tmp.path().join("a.rs"), source).expect("a.rs");
+    std::fs::write(tmp.path().join("a.rs"), "pub fn unreadable_blob_fixture() {}\n").expect("a.rs");
     std::fs::write(tmp.path().join("b.rs"), "pub fn beta() {}\n").expect("b.rs");
+    let config = ConfigV1::with_defaults();
+    crate::store::init_isolated_cache();
     {
-        crate::store::init_isolated_cache();
         let mut store = Store::open(tmp.path(), VIEW_WORKING).expect("open rw");
-        let config = ConfigV1::with_defaults();
         scan(
             tmp.path(),
             &mut store,
@@ -160,21 +159,30 @@ async fn a_blob_from_another_basemind_version_is_not_reported_as_not_indexed() {
         )
         .expect("scan");
         let hash_hex = store.lookup("a.rs").expect("entry").hash_hex.clone();
-        let mut foreign = store.read_l1_by_hex(&hash_hex).expect("read").expect("blob");
-        foreign.schema_ver = crate::extract::SCHEMA_VER + 1;
-        store.overwrite_filemap_hex(&hash_hex, &foreign, None).expect("plant");
+        let blob = store.blob_path_fm_hex(&hash_hex);
+        let whole = std::fs::read(&blob).expect("read blob");
+        std::fs::write(&blob, &whole[..whole.len() / 2]).expect("tear the blob");
     }
     let store = Store::open_read_only(tmp.path(), VIEW_WORKING).expect("open ro");
     let git_cache = Arc::new(GitCache::open(&store.basemind_dir, 16, false).expect("git cache"));
-    let config = Arc::new(ConfigV1::with_defaults());
-    let server = BasemindServer::new_oneshot(store, tmp.path().to_path_buf(), config, None, git_cache);
+    let server = BasemindServer::new_oneshot(store, tmp.path().to_path_buf(), Arc::new(config), None, git_cache);
 
     let refused = into_tool_result(server.code_outline_call(outline("a.rs")).await);
 
     assert_eq!(refused.is_error, Some(true));
     let text = text_of(&refused);
-    assert!(text.contains("written by a different basemind version"), "{text}");
+    assert!(text.contains("missing or damaged"), "{text}");
+    assert!(text.contains(r#"index_rescan {"paths":["a.rs"]}"#), "{text}");
     assert!(!text.contains("is not indexed"), "{text}");
+
+    // What `index_rescan {"paths":["a.rs"]}` runs.
+    let named = Some(vec![tmp.path().join("a.rs")]);
+    super::helpers::scan_and_refresh(Arc::clone(&server.state), named, EmbedMode::Deferred)
+        .await
+        .expect("rescan the named path");
+    let served = into_tool_result(server.code_outline_call(outline("a.rs")).await);
+    assert_ne!(served.is_error, Some(true), "{}", text_of(&served));
+    assert!(text_of(&served).contains("unreadable_blob_fixture"));
 }
 
 /// The three tools that report a symbol's position must agree on it: an outline span is what

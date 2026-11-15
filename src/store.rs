@@ -16,6 +16,7 @@ use crate::store_hash_refs::HashRefs;
 mod base_open;
 #[path = "store_durability.rs"]
 mod durability;
+pub use durability::RESCAN_OWED;
 
 /// Cache layout: where the global cache root is, how a worktree root maps to a workspace cache
 /// dir, and the `workspace.json` marker recording that mapping. Lives in its own module (like

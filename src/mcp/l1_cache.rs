@@ -302,40 +302,53 @@ impl L1Cache {
                 .fallback
                 .as_ref()
                 .and_then(|dir| crate::store_blob::read_l1_blob_in(dir, hash_hex).ok().flatten()),
-            Err(error) => {
-                self.note_unreadable(hash_hex, &error);
-                None
-            }
+            Err(error) => self.recover_unreadable(hash_hex, &error),
         }
     }
 
-    /// Log why a blob the file map names could not be served. The caller's refusal says the same
-    /// to the agent (see `tool_contract::not_indexed`).
-    fn note_unreadable(&self, hash_hex: &str, error: &crate::store::StoreError) {
+    /// Log why a blob the file map names could not be served, and remove a damaged one. The
+    /// caller's refusal says the same to the agent (see `tool_contract::not_indexed`). Returns the
+    /// blob when a writer replaced the damaged file with a good one in the meantime.
+    fn recover_unreadable(&self, hash_hex: &str, error: &crate::store::StoreError) -> Option<FileMapL1> {
         use crate::store::StoreError;
-        if matches!(
+        // The global store's directory is this binary's own schema namespace, so a blob there
+        // that claims another schema is not one any basemind wrote: it is damaged like a torn one.
+        let damaged = matches!(
             error,
-            StoreError::SchemaMismatch { .. } | StoreError::NewerSchema { .. }
-        ) {
-            tracing::warn!(
-                hash = hash_hex,
-                %error,
-                "blob was written by a different basemind version; run `basemind scan` with this one"
-            );
-        } else if matches!(
-            error,
-            StoreError::CorruptBlob { .. } | StoreError::Decode(_) | StoreError::Decompression { .. }
-        ) && self.blobs_dir == crate::store::global_blobs_dir()
-        {
+            StoreError::CorruptBlob { .. }
+                | StoreError::Decode(_)
+                | StoreError::Decompression { .. }
+                | StoreError::SchemaMismatch { .. }
+                | StoreError::NewerSchema { .. }
+        );
+        if damaged && self.blobs_dir == crate::store::global_blobs_dir() {
             // A damaged blob (torn by a power loss: blobs are not fsynced) would be trusted for
             // existing by every later scan. With the blob gone the next scan of the file finds
             // nothing for its hash and extracts it again. Only the global store is repaired this
             // way; a published base generation is immutable.
+            //
+            // A scan may rename a good blob over the damaged one at any moment, and an unlink by
+            // path would take that one. So the file is identified, read once more, and removed
+            // only if it is still the file that failed.
             let path = self.blobs_dir.join(format!("{hash_hex}.fm.msgpack"));
-            let dropped = std::fs::remove_file(&path).is_ok();
+            let failed = BlobIdentity::of(&path);
+            if let Ok(replaced) = crate::store_blob::read_l1_blob_in(&self.blobs_dir, hash_hex) {
+                return replaced;
+            }
+            let dropped = remove_if_still(&path, failed);
+            self.forget(hash_hex);
             tracing::warn!(hash = hash_hex, %error, dropped, "damaged blob for an indexed file; rescan to rebuild it");
         } else {
             tracing::warn!(hash = hash_hex, %error, "blob for an indexed file could not be read");
+        }
+        None
+    }
+
+    /// Drop the cached value of `hash_hex`, if any.
+    fn forget(&self, hash_hex: &str) {
+        let mut guard = self.lock();
+        if let Some(previous) = guard.lru.pop(hash_hex) {
+            guard.charged = guard.charged.saturating_sub(l1_heap_bytes(&previous));
         }
     }
 
@@ -374,6 +387,36 @@ impl L1Cache {
         // A poisoned cache costs at most a re-read: every value is reconstructible from its blob.
         self.inner.lock().unwrap_or_else(PoisonError::into_inner)
     }
+}
+
+/// What tells one file at a path from another renamed over it: its inode where there is one, and
+/// its length and modification time.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct BlobIdentity {
+    inode: u64,
+    len: u64,
+    modified: Option<std::time::SystemTime>,
+}
+
+impl BlobIdentity {
+    fn of(path: &std::path::Path) -> Option<Self> {
+        let meta = std::fs::metadata(path).ok()?;
+        #[cfg(unix)]
+        let inode = std::os::unix::fs::MetadataExt::ino(&meta);
+        #[cfg(not(unix))]
+        let inode = 0;
+        Some(Self {
+            inode,
+            len: meta.len(),
+            modified: meta.modified().ok(),
+        })
+    }
+}
+
+/// Remove the file at `path` if it is still the file `expected` identified. Returns whether it
+/// was removed.
+fn remove_if_still(path: &std::path::Path, expected: Option<BlobIdentity>) -> bool {
+    expected.is_some() && BlobIdentity::of(path) == expected && std::fs::remove_file(path).is_ok()
 }
 
 /// Stream `(path, l1)` for every file in `view`, in path order, calling `f` until it returns
@@ -526,6 +569,32 @@ mod tests {
 
         assert!(cache.load(&hash).is_none());
         assert!(!path.exists(), "the damaged blob must be removed");
+    }
+
+    /// A scan can rename a good blob over the damaged one between the failed read and the unlink.
+    /// The unlink is for the file that failed, not for whatever is at its path by then.
+    #[test]
+    fn a_blob_renamed_into_place_after_the_failed_read_is_not_removed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("blob.fm.msgpack");
+        std::fs::write(&path, b"torn").unwrap();
+        let failed = BlobIdentity::of(&path);
+        let fresh = dir.path().join("blob.fm.msgpack.tmp");
+        std::fs::write(&fresh, b"a good blob").unwrap();
+        std::fs::rename(&fresh, &path).unwrap();
+
+        assert!(!remove_if_still(&path, failed), "another file is at the path now");
+        assert_eq!(std::fs::read(&path).unwrap(), b"a good blob");
+
+        assert!(
+            remove_if_still(&path, BlobIdentity::of(&path)),
+            "the same file is removed"
+        );
+        assert!(!path.exists());
+        assert!(
+            !remove_if_still(&path, None),
+            "a file that could not be identified is left alone"
+        );
     }
 
     /// `0` disables eviction entirely — the documented "unbounded" sentinel the equivalence test

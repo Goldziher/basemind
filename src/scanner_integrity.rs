@@ -32,10 +32,29 @@ pub(crate) fn needs_full_rebuild(store: &Store) -> Result<bool, ScanError> {
     Ok(store.index_is_behind_file_map()? || store.index.rebuild_pending || store.index_rebuild_needed)
 }
 
+/// [`purge_file`] for every path of `rels`, carrying on past a failure: one path whose rows could
+/// not be removed must not keep the others, or the file map, from being written. Returns the paths
+/// purged and the first failure; the caller flushes the file map, which still lists the failed
+/// paths, and then returns that failure.
+pub(crate) fn purge_files<'a>(store: &mut Store, rels: &'a [String]) -> (Vec<&'a String>, Option<ScanError>) {
+    let mut purged = Vec::with_capacity(rels.len());
+    let mut failure = None;
+    for rel in rels {
+        match purge_file(store, rel) {
+            Ok(()) => purged.push(rel),
+            Err(error) => {
+                tracing::warn!(%rel, %error, "could not purge a removed file; it stays in the file map");
+                failure.get_or_insert(error);
+            }
+        }
+    }
+    (purged, failure)
+}
+
 /// Drop a file that is gone: its index rows first, then its file-map entry. A failed commit is
-/// returned with the entry still in place. The other order dropped the file from the map over rows
-/// that stayed, and no later scan revisits a path the map does not list.
-pub(crate) fn purge_file(store: &mut Store, rel: &str) -> Result<(), ScanError> {
+/// returned with the entry still in place: a file dropped from the map over rows that stayed would
+/// never be revisited, because no scan looks at a path the map does not list.
+fn purge_file(store: &mut Store, rel: &str) -> Result<(), ScanError> {
     if let Some(idx) = store.index_db.as_ref() {
         let path = crate::path::RelPath::from(rel);
         let mut writer = idx.writer();

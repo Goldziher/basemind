@@ -54,14 +54,43 @@ pub(super) fn open_index_for_writer(
     let index_rebuild_needed = !index.files.is_empty()
         && (index_db.wiped_on_open() || (never_sealed && index_db.view().symbols_index_is_empty()));
     if index_rebuild_needed {
-        index.files.clear();
-        index.rebuild_pending = true;
+        index.empty_for_rebuild();
     }
     // An earlier process emptied the file map and died before its rebuild scan finished. ~keep
     Ok((index_db, index_rebuild_needed || index.rebuild_pending))
 }
 
+/// What a reader is told when [`Store::rescan_owed`]: one line, naming the command that fixes it.
+pub const RESCAN_OWED: &str = "the code index of this workspace must be rebuilt (an older basemind wrote it, or a \
+     rebuild was interrupted): run `basemind scan` (MCP: `index_rescan`). Until then symbol, reference and call \
+     queries answer from cached blobs or come back empty";
+
+impl Index {
+    /// Forget every file so a full scan re-indexes them, and record that it must. The hashes the
+    /// files held stay pinned for the blob sweep: the rebuild reads those blobs, and an emptied
+    /// map would otherwise leave them unreferenced for as long as the rebuild takes.
+    pub(super) fn empty_for_rebuild(&mut self) {
+        self.rebuild_pins
+            .extend(self.files.drain().map(|(_, entry)| entry.hash_hex));
+        self.rebuild_pins.sort_unstable();
+        self.rebuild_pins.dedup();
+        self.rebuild_pending = true;
+    }
+
+    /// A full pass re-indexed every file: the rebuild is done and its pins are released.
+    pub(crate) fn rebuild_done(&mut self) {
+        self.rebuild_pending = false;
+        self.rebuild_pins = Vec::new();
+    }
+}
+
 impl Store {
+    /// Whether the index cannot answer until a scan rebuilds it: this open found an index it must
+    /// not serve, or the file map records a rebuild that never finished.
+    pub fn rescan_owed(&self) -> bool {
+        self.index_rebuild_needed || self.index.rebuild_pending
+    }
+
     /// Write the file map [`open_index_for_writer`] emptied, before any scan can die over the full
     /// one (see the module docs). [`Store::index_rebuild_needed`] stays set for the scan that follows.
     pub(super) fn persist_file_map_emptied_on_open(&mut self) -> Result<(), StoreError> {
@@ -71,8 +100,8 @@ impl Store {
         Ok(())
     }
 
-    /// Whether an incremental scan would be wrong for this store: a rebuild is pending, or the file
-    /// map lists nothing. The pending rebuild is read from the file map itself
+    /// Whether an incremental scan would be wrong for this store: a rebuild is pending, the file
+    /// map lists nothing, or its blobs are to be verified, which only a full pass does. The pending rebuild is read from the file map itself
     /// ([`Index::rebuild_pending`]), so it outlives a process that died between writing the emptied
     /// map and finishing the rebuild scan, whatever else the map still lists: the rebuild empties
     /// `files` only, and a store with documents would otherwise pass for scanned.
@@ -80,14 +109,22 @@ impl Store {
         self.index_rebuild_needed
             || self.index.rebuild_pending
             || (self.index.files.is_empty() && self.index.doc_files.is_empty())
+            || crate::scan_evidence::blobs_need_verifying(&self.basemind_dir)
     }
 
     /// Open, for the scan about to write into this store, the index a read-only open left alone
     /// for being of an older schema. This is where that index is replaced: the same recovery a
     /// writer open takes, file map emptied and written at once. A no-op for every other store.
+    ///
+    /// The recovery wipes and rewrites, so it runs under the workspace lock a writer open holds.
+    /// A store opened read-only has none: it is taken here and kept, and the scan is refused with
+    /// [`StoreError::Locked`] while another process holds it.
     pub(crate) fn open_index_owed_to_scan(&mut self) -> Result<(), StoreError> {
         if self.index_db.is_some() || !self.index_rebuild_needed || self.layered_read.is_some() {
             return Ok(());
+        }
+        if self._lock.is_none() {
+            self._lock = Some(super::acquire_lock_as(&self.basemind_dir, super::LockHolder::Rescan)?);
         }
         let (index_db, _) = open_index_for_writer(&self.root, &self.view, &self.view_dir, &mut self.index)?;
         self.hash_refs = HashRefs::of(&self.index.files);
@@ -123,8 +160,7 @@ impl Store {
         if let Some(db) = self.index_db.as_ref() {
             db.clear_for_rebuild()?;
         }
-        self.index.files.clear();
-        self.index.rebuild_pending = true;
+        self.index.empty_for_rebuild();
         self.hash_refs = HashRefs::of(&self.index.files);
         self.index.generation = 0;
         self.flush()?;

@@ -70,6 +70,10 @@ pub fn build_server_for(
     } else {
         Store::open_read_only(root, view).context("open store (read-only)")?
     };
+    // A query or a hook would otherwise answer empty with nothing to say why.
+    if intent != Intent::Rescan && store.rescan_owed() {
+        eprintln!("basemind: {}", crate::store::RESCAN_OWED);
+    }
     let basemind_dir = store.basemind_dir.clone();
     let cfg = Arc::new(load_config(root, documents)?);
     if intent != Intent::Rescan

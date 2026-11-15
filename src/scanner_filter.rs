@@ -588,6 +588,12 @@ impl IndexFilter {
         &self.filters
     }
 
+    /// Make the pass validate the blob of a file it would skip as unchanged, instead of trusting
+    /// the blob for existing.
+    pub(crate) fn verify_blobs(&mut self) {
+        self.filters.verify_blobs = true;
+    }
+
     /// Repo-relative, forward-slash path for `abs`, or `None` when `abs` is outside the root.
     fn rel_of(&self, abs: &Path) -> Option<String> {
         let rel = abs.strip_prefix(&self.root).ok()?;

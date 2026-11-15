@@ -13,7 +13,7 @@ use rmcp::model::CallToolResult;
 
 use super::ServerState;
 use super::helpers::{elapsed_us, json_result, scan_and_refresh};
-use super::tools::{blob_divergence_note, count_fm_blobs};
+use super::tools::{count_fm_blobs, index_note};
 use super::types::StatusResponse;
 use super::types_tools::IndexRescanParams;
 
@@ -78,6 +78,7 @@ async fn run_status(state: &ServerState) -> Result<CallToolResult, McpError> {
                      lock); index counts are unavailable until it completes"
                         .to_string(),
                 ),
+                rescan_needed: false,
                 rebuild_in_progress: true,
                 partial: false,
                 degraded: None,
@@ -121,12 +122,14 @@ async fn run_status(state: &ServerState) -> Result<CallToolResult, McpError> {
         .unwrap_or_default();
     let file_count = store.index.files.len();
     let blob_count = count_fm_blobs();
-    let note = blob_divergence_note(file_count, blob_count);
+    let rescan_needed = store.rescan_owed();
+    let note = index_note(rescan_needed, file_count, blob_count);
     let last_scan = crate::store::read_status_sidecar(&store.basemind_dir);
     json_result(&StatusResponse {
         file_count,
         blob_count,
         note,
+        rescan_needed,
         rebuild_in_progress: false,
         partial: last_scan.as_ref().is_some_and(|status| status.partial),
         degraded: last_scan

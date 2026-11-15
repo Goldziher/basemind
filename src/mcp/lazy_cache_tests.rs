@@ -180,3 +180,42 @@ async fn corpus_tool_builds_the_map_on_demand_and_sees_every_file() {
         "the corpus tool built the map on demand"
     );
 }
+
+/// A store whose index a scan must rebuild says so in `index_status`: a flag, and a note naming the
+/// command. Without it every symbol query comes back empty with nothing to say why.
+#[tokio::test]
+async fn index_status_says_when_a_rescan_is_owed() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    crate::store::init_isolated_cache();
+    std::fs::write(tmp.path().join("a.rs"), b"pub fn alpha_marker() {}\n").expect("a.rs");
+    {
+        let mut store = Store::open(tmp.path(), VIEW_WORKING).expect("open rw");
+        let config = ConfigV1::with_defaults();
+        scan(
+            tmp.path(),
+            &mut store,
+            &config,
+            ScanSource::WorkingTree,
+            EmbedMode::Inline,
+        )
+        .expect("scan");
+        // The state a writer leaves when it emptied the file map for a rebuild and died before it.
+        store.index.rebuild_pending = true;
+        store.flush().expect("flush");
+    }
+    let store = Store::open_read_only(tmp.path(), VIEW_WORKING).expect("open ro");
+    assert!(store.rescan_owed());
+    let git_cache = Arc::new(GitCache::open(&store.basemind_dir, 16, false).expect("git cache"));
+    let config = Arc::new(ConfigV1::with_defaults());
+    let server = BasemindServer::new_oneshot(store, tmp.path().to_path_buf(), config, None, git_cache);
+
+    let result = server
+        .index_status_call(IndexStatusParams {})
+        .await
+        .expect("index_status");
+    let payload = json_of(&result);
+
+    assert_eq!(payload["rescan_needed"], true, "{payload}");
+    let note = payload["note"].as_str().expect("a note says what to run");
+    assert!(note.contains("basemind scan"), "{note}");
+}

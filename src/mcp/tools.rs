@@ -288,11 +288,21 @@ pub(super) fn count_fm_blobs() -> usize {
     crate::store::count_fm_blobs(&crate::store::global_blobs_dir())
 }
 
-/// Build the `status` divergence note (bug #10): when the current view's index is empty
+/// The `status` note: that a rescan is owed (see [`crate::store::Store::rescan_owed`]), else the
+/// divergence note below.
+///
+/// The divergence note (bug #10): when the current view's index is empty
 /// but content-addressed blobs are present on disk, the index was lost/wiped over live
 /// blobs and a rescan would rebuild it. A legitimately unscanned repo (no blobs either)
 /// gets no note.
-pub(super) fn blob_divergence_note(file_count: usize, blob_count: usize) -> Option<String> {
+pub(super) fn index_note(rescan_owed: bool, file_count: usize, blob_count: usize) -> Option<String> {
+    if rescan_owed {
+        return Some(crate::store::RESCAN_OWED.to_string());
+    }
+    blob_divergence_note(file_count, blob_count)
+}
+
+fn blob_divergence_note(file_count: usize, blob_count: usize) -> Option<String> {
     if file_count == 0 && blob_count > 0 {
         Some(format!(
             "index for this view is empty but {blob_count} blob file(s) exist on disk; \
@@ -348,6 +358,17 @@ mod tests {
             None,
             "empty index with no blobs is a legitimately unscanned repo, not a lost index"
         );
+    }
+
+    #[test]
+    fn status_note_says_a_rescan_is_owed_before_anything_else() {
+        let note = index_note(true, 0, 7).expect("an owed rescan always has a note");
+        assert!(
+            note.contains("basemind scan") && note.contains("index_rescan"),
+            "{note}"
+        );
+        assert_eq!(index_note(false, 42, 100), None);
+        assert!(index_note(false, 0, 7).is_some_and(|note| note.contains("7 blob file")));
     }
 
     #[test]

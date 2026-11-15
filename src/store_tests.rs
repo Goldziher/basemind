@@ -308,8 +308,8 @@ fn flush_without_an_index_handle_keeps_the_file_map_generation() {
     assert_eq!(on_disk.generation, sealed);
 }
 
-/// A file map with files over an index with no symbol rows used to read as a lost index, so a
-/// repository whose files define nothing was emptied and fully rescanned on every writer open.
+/// An index a scan sealed holds what its file map says, even with no symbol rows: a repository whose
+/// files define nothing is not emptied and rescanned by every writer open.
 #[test]
 fn a_sealed_index_without_symbols_is_not_rebuilt_on_every_open() {
     use crate::index::view::IndexView;
@@ -359,8 +359,8 @@ fn damage_tables(index_dir: &std::path::Path) -> usize {
     damaged
 }
 
-/// A damaged index database used to fail every open until the cache was cleared by hand. The writer
-/// open replaces it and orders a rebuild; a read-only open never discards anything.
+/// A damaged index database is rebuildable cache. The writer open replaces it and orders a
+/// rebuild; a read-only open never discards anything.
 #[test]
 fn a_writer_open_rebuilds_a_damaged_index_and_a_read_only_open_leaves_it() {
     init_isolated_cache();
@@ -401,9 +401,41 @@ fn a_writer_open_rebuilds_a_damaged_index_and_a_read_only_open_leaves_it() {
     assert!(store.index.files.is_empty());
 }
 
-/// A read-only open used to run the writer's open: it wiped an index of an older schema and
-/// stamped the new one. It now changes nothing and says a rescan is owed; the scan that follows,
-/// into the same store, is what replaces the index.
+/// Scan `root` once and return its working view directory.
+fn scanned_view(root: &Path) -> std::path::PathBuf {
+    std::fs::write(root.join("a.rs"), b"pub fn older_index_fixture() {}\n").expect("write");
+    let mut store = Store::open(root, VIEW_WORKING).expect("open");
+    rescan(root, &mut store).expect("scan");
+    store.view_dir.clone()
+}
+
+fn rescan(root: &Path, store: &mut Store) -> Result<crate::scanner::ScanReport, crate::scanner::ScanError> {
+    crate::scanner::scan(
+        root,
+        store,
+        &crate::config::ConfigV1::with_defaults(),
+        crate::scanner::ScanSource::WorkingTree,
+        crate::scanner::EmbedMode::Deferred,
+    )
+}
+
+/// The schema stamp of the raw index under `view_dir`, after writing `write` to it if given.
+fn index_stamp(view_dir: &Path, write: Option<u32>) -> Option<Vec<u8>> {
+    let db = fjall::Database::builder(view_dir.join(crate::index::INDEX_DIR))
+        .open()
+        .expect("open raw index");
+    let meta = db
+        .keyspace("meta", fjall::KeyspaceCreateOptions::default)
+        .expect("meta keyspace");
+    if let Some(ver) = write {
+        meta.insert(b"schema_ver", ver.to_be_bytes()).expect("stamp");
+        db.persist(fjall::PersistMode::SyncAll).expect("persist");
+    }
+    meta.get(b"schema_ver").expect("read stamp").map(|bytes| bytes.to_vec())
+}
+
+/// A read-only open changes nothing in an index of an older schema and says a rescan is owed; the
+/// scan that follows, into the same store, is what replaces the index.
 #[test]
 fn a_read_only_open_leaves_an_older_index_for_the_scan_to_replace() {
     use crate::index::view::IndexView;
@@ -411,51 +443,59 @@ fn a_read_only_open_leaves_an_older_index_for_the_scan_to_replace() {
     init_isolated_cache();
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path();
-    std::fs::write(root.join("a.rs"), b"pub fn older_index_fixture() {}\n").expect("write");
-    let config = crate::config::ConfigV1::with_defaults();
-    let scan = |store: &mut Store| {
-        crate::scanner::scan(
-            root,
-            store,
-            &config,
-            crate::scanner::ScanSource::WorkingTree,
-            crate::scanner::EmbedMode::Deferred,
-        )
-        .expect("scan");
-    };
-    let view_dir = {
-        let mut store = Store::open(root, VIEW_WORKING).expect("open");
-        scan(&mut store);
-        store.view_dir.clone()
-    };
+    let view_dir = scanned_view(root);
     let older = crate::index::INDEX_SCHEMA_VER - 1;
-    let stamp = |write: Option<u32>| -> Option<Vec<u8>> {
-        let db = fjall::Database::builder(view_dir.join(crate::index::INDEX_DIR))
-            .open()
-            .expect("open raw index");
-        let meta = db
-            .keyspace("meta", fjall::KeyspaceCreateOptions::default)
-            .expect("meta keyspace");
-        if let Some(ver) = write {
-            meta.insert(b"schema_ver", ver.to_be_bytes()).expect("stamp");
-            db.persist(fjall::PersistMode::SyncAll).expect("persist");
-        }
-        meta.get(b"schema_ver").expect("read stamp").map(|bytes| bytes.to_vec())
-    };
-    stamp(Some(older));
+    index_stamp(&view_dir, Some(older));
 
     let mut store = Store::open_read_only(root, VIEW_WORKING).expect("read-only open");
     assert!(store.index_db.is_none(), "an older index is not opened");
     assert!(store.index_rebuild_needed, "and the caller is told a rescan is owed");
     assert_eq!(store.index.files.len(), 1, "the file map is untouched");
     assert_eq!(
-        stamp(None),
+        index_stamp(&view_dir, None),
         Some(older.to_be_bytes().to_vec()),
         "nothing was wiped or stamped"
     );
 
-    scan(&mut store);
+    rescan(root, &mut store).expect("scan");
     assert!(!store.index_rebuild_needed);
     let view = store.index_view().expect("the scan opened the index");
     assert_eq!(view.symbols_by_name_lookup("older_index_fixture", 4).len(), 1);
+}
+
+/// Replacing the index is a writer's act. A store opened read-only holds no workspace lock, so the
+/// scan that would replace the index takes it first, and is refused while another process has it.
+#[test]
+fn the_scan_that_replaces_an_older_index_takes_the_workspace_lock() {
+    init_isolated_cache();
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path();
+    let view_dir = scanned_view(root);
+    let older = crate::index::INDEX_SCHEMA_VER - 1;
+    index_stamp(&view_dir, Some(older));
+    let mut store = Store::open_read_only(root, VIEW_WORKING).expect("read-only open");
+    assert!(store.index_rebuild_needed);
+
+    let other_writer = acquire_lock_as(&store.basemind_dir, LockHolder::Scan).expect("another writer");
+    let refused = rescan(root, &mut store);
+    assert!(
+        matches!(
+            refused,
+            Err(crate::scanner::ScanError::Store(StoreError::Locked { .. }))
+        ),
+        "{refused:?}"
+    );
+    assert_eq!(
+        index_stamp(&view_dir, None),
+        Some(older.to_be_bytes().to_vec()),
+        "the index another writer may be using was not touched"
+    );
+    assert_eq!(store.index.files.len(), 1, "nor the file map");
+
+    drop(other_writer);
+    rescan(root, &mut store).expect("the scan runs once the lock is free");
+    assert!(
+        writer_lock_is_held(&store.basemind_dir),
+        "and holds the lock it took for as long as the store lives"
+    );
 }

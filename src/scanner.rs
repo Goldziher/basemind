@@ -556,8 +556,8 @@ pub fn scan_with_observer(
         ..
     } = driven;
 
-    for k in &stale {
-        crate::scanner_integrity::purge_file(store, k)?;
+    let (purged, purge_failure) = crate::scanner_integrity::purge_files(store, &stale);
+    for k in purged {
         observer.on_file(FileResult::bare(k.clone(), FileStatus::Removed));
         report.stats.removed += 1;
     }
@@ -580,9 +580,16 @@ pub fn scan_with_observer(
 
     advance(&mut breadcrumb, &phase_peaks, PHASE_FLUSH, None);
     // A whole pass re-indexed every file: the rebuild the emptied file map asked for is done. ~keep
-    store.index.rebuild_pending = false;
+    store.index.rebuild_done();
     store.index_rebuild_needed = false;
-    flush_code_map(store, &ScanHealth::resolving())?;
+    let health = match &purge_failure {
+        Some(error) => ScanHealth::partial(format!("purge failed: {error}"), seen_count, total_candidates),
+        None => ScanHealth::resolving(),
+    };
+    flush_code_map(store, &health)?;
+    if let Some(error) = purge_failure {
+        return Err(error);
+    }
 
     // A token tripped after the last per-file check still stops the pass here, once the code map ~keep
     // is durable but before the resolve pass (which can run for minutes on a large repo). The ~keep
@@ -739,7 +746,11 @@ pub fn scan_paths_with_observer(
     if crate::scanner_integrity::needs_full_rebuild(store)? {
         return scan_with_observer(root, store, config, source, embed, cancel, observer);
     }
-    let filter = IndexFilter::new(root, config)?;
+    // The paths were named because something is thought to be wrong or new about them: a named
+    // file that reads as unchanged has its blob validated, which is what makes "rescan this path"
+    // the fix for a damaged blob. Only such files pay the one blob read.
+    let mut filter = IndexFilter::new(root, config)?;
+    filter.verify_blobs();
 
     let mut rels: Vec<String> = Vec::with_capacity(paths.len());
     let mut removed: Vec<String> = Vec::new();
@@ -864,9 +875,13 @@ pub fn scan_paths_with_observer(
         doc_removed.dedup();
     }
 
-    for rel in &removed {
-        retired.extend(store.lookup(rel).map(|entry| entry.hash_hex.clone()));
-        crate::scanner_integrity::purge_file(store, rel)?;
+    retired.extend(
+        removed
+            .iter()
+            .filter_map(|rel| Some(store.lookup(rel)?.hash_hex.clone())),
+    );
+    let (purged, purge_failure) = crate::scanner_integrity::purge_files(store, &removed);
+    for rel in purged {
         observer.on_file(FileResult::bare(rel.clone(), FileStatus::Removed));
         report.stats.removed += 1;
     }
@@ -883,6 +898,9 @@ pub fn scan_paths_with_observer(
 
     store.flush()?;
     store.write_status_sidecar();
+    if let Some(error) = purge_failure {
+        return Err(error);
+    }
 
     // Cancelled: the removals above already ran (path-existence-derived, safe on a partial pass) ~keep
     // and the code map is durable; skip the resolve pass and the removal lanes. The batch flushes ~keep
