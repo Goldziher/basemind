@@ -1,6 +1,8 @@
-//! Posts, reads that mark, thread creation, leaving and the sweep, all at once on one store.
+//! Posts, reads that mark, reads that do not, thread creation, leaving and the sweep, all at
+//! once on one store.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::atomic::AtomicBool;
 
 use super::records::MessageMeta;
 use super::*;
@@ -11,6 +13,11 @@ const LEAVERS: usize = 3;
 const READS_BEFORE_LEAVING: usize = 5;
 const CREATORS: usize = 2;
 const THREADS_EACH: usize = 8;
+/// Agents that only make reads which move nothing, and have made no call when the others start.
+const OBSERVERS: usize = 3;
+/// Threads reading as each observer at once, so its first call is raced with itself.
+const THREADS_PER_OBSERVER: usize = 2;
+const OBSERVER_ROUNDS: usize = 25;
 /// Threads that have expired when the others start. Their messages alone are more than the one
 /// small sweep the first change runs can remove, so the sweeping thread has every thread row
 /// left to remove while the others run.
@@ -18,6 +25,16 @@ const EXPIRED_THREADS: usize = 40;
 
 /// Records one concurrent sweep removes at most, small enough that sweeping takes many rounds.
 const SWEEP_STEP: usize = 5;
+
+/// Clears the flag when dropped, so the thread that moves the clock ends when the readers are
+/// joined and also when one of them panicked.
+struct StopOnDrop<'a>(&'a AtomicBool);
+
+impl Drop for StopOnDrop<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
 
 /// Every message row of the store by thread, as `(seq, row)` in key order.
 fn stored_messages(store: &FjallAgents) -> BTreeMap<ThreadId, Vec<(u64, MessageMeta)>> {
@@ -80,6 +97,52 @@ fn assert_nothing_was_stepped_over(
     }
 }
 
+/// Reads that move nothing, as `name`, while the others write: a peek, the history of `shared`,
+/// its description and a listing. Each runs on a snapshot taken without the writer lock, so each
+/// must see `shared` whole as of one instant, and never older than the read before it.
+fn observe(harness: &Harness, name: &str, shared: &ThreadId) {
+    let observer = caller(name);
+    let seqs_of = |reply: &InboxReply| -> Vec<u64> {
+        assert!(reply.read_to.is_empty(), "{name} moved a position without marking");
+        reply
+            .messages
+            .iter()
+            .inspect(|message| assert_eq!(message.id.thread(), shared, "{name} is in no other thread"))
+            .map(|message| message.id.seq())
+            .collect()
+    };
+    let mut last_head = 0;
+    for _ in 0..OBSERVER_ROUNDS {
+        let peeked = seqs_of(&harness.inbox(&observer, peek()).expect("peek"));
+        assert_eq!(
+            peeked,
+            (1..=peeked.len() as u64).collect::<Vec<u64>>(),
+            "{name} peeked a gap"
+        );
+        let whole = InboxBody {
+            select: InboxSelect::Thread(shared.clone()),
+            limit: Some(100),
+            ..history()
+        };
+        let read = seqs_of(&harness.inbox(&observer, whole).expect("history"));
+        assert_eq!(read, (1..=read.len() as u64).collect::<Vec<u64>>(), "{name} read a gap");
+        assert!(read.len() as u64 >= last_head, "{name} read an older store");
+        let described = harness
+            .threads_query(&observer, ThreadQuery::Describe(shared.clone()))
+            .expect("describe");
+        let head = described.threads[0].head;
+        assert!(head >= read.len() as u64, "{name} was described an older thread");
+        assert_eq!(
+            described.threads[0].unread, head,
+            "{name} read nothing and posted nothing"
+        );
+        let listed = harness.threads_query(&observer, ThreadQuery::default()).expect("list");
+        assert_eq!(listed.threads.len(), 1, "{name} is in one thread");
+        assert!(listed.threads[0].head >= head, "{name} was listed an older thread");
+        last_head = listed.threads[0].head;
+    }
+}
+
 #[test]
 fn concurrent_posts_reads_creations_leaves_and_sweeps_lose_and_skip_nothing() {
     let harness = Harness::new();
@@ -90,13 +153,31 @@ fn concurrent_posts_reads_creations_leaves_and_sweeps_lose_and_skip_nothing() {
     harness.clock.advance(MESSAGE_TTL + Duration::from_secs(1));
     let posters: Vec<String> = (0..POSTERS).map(|n| format!("p{n}")).collect();
     let leavers: Vec<String> = (0..LEAVERS).map(|n| format!("l{n}")).collect();
-    let everyone: Vec<&str> = posters.iter().chain(&leavers).map(String::as_str).collect();
+    let observers: Vec<String> = (0..OBSERVERS).map(|n| format!("o{n}")).collect();
+    let everyone: Vec<&str> = posters
+        .iter()
+        .chain(&leavers)
+        .chain(&observers)
+        .map(String::as_str)
+        .collect();
     let shared = start(&harness, "a", "shared", &everyone);
+    for name in &observers {
+        assert_eq!(harness.store().recorded_seen(name), None, "{name} has made no call yet");
+    }
     let other = start(&harness, "a", "other", &everyone[..POSTERS]);
     let before = harness.arrivals();
+    let running = AtomicBool::new(true);
 
     let mut reads: Vec<(&str, Vec<InboxReply>)> = std::thread::scope(|scope| {
-        let (harness, shared, other) = (&harness, &shared.thread, &other.thread);
+        let (harness, shared, other, running) = (&harness, &shared.thread, &other.thread, &running);
+        // ~keep The clock moves while the others run, so two writes of one record made at two
+        // instants leave two index entries unless the second replaces the first.
+        scope.spawn(move || {
+            while running.load(Ordering::Acquire) {
+                harness.clock.advance(Duration::from_micros(1));
+                std::thread::yield_now();
+            }
+        });
         let marking_read = move |name: &str| harness.inbox(&caller(name), InboxBody::default()).expect("inbox");
         scope.spawn(move || {
             let mut threads = 0;
@@ -109,6 +190,12 @@ fn concurrent_posts_reads_creations_leaves_and_sweeps_lose_and_skip_nothing() {
             }
             assert_eq!(threads, EXPIRED_THREADS, "the sweep ran beside the other threads");
         });
+        for name in observers
+            .iter()
+            .flat_map(|name| std::iter::repeat_n(name, THREADS_PER_OBSERVER))
+        {
+            scope.spawn(move || observe(harness, name, shared));
+        }
         for creator in 0..CREATORS {
             scope.spawn(move || {
                 for _ in 0..THREADS_EACH {
@@ -143,6 +230,7 @@ fn concurrent_posts_reads_creations_leaves_and_sweeps_lose_and_skip_nothing() {
                 })
             }))
             .collect();
+        let _stop_the_clock = StopOnDrop(running);
         readers
             .into_iter()
             .map(|reader| reader.join().expect("a reader panicked"))
@@ -208,4 +296,14 @@ fn concurrent_posts_reads_creations_leaves_and_sweeps_lose_and_skip_nothing() {
         assert_eq!(harness.position(&shared.thread, &caller(name).actor), None);
     }
     assert!(!reader.thread(&shared.thread).expect("read").expect("thread").archived);
+
+    let rows = store.stored_rows();
+    let callers = ["old", "a"].len() + POSTERS + LEAVERS + CREATORS + OBSERVERS;
+    assert_eq!(rows[8], callers, "one seen record for each agent that made a call");
+    assert_eq!(rows[0], stored.len(), "a thread row for each thread with messages");
+    assert_eq!(
+        rows[9],
+        rows[0] + rows[8] + rows[7],
+        "one expiry entry for each thread, seen record and replay entry"
+    );
 }
