@@ -305,3 +305,32 @@ fn a_rebuild_interrupted_after_the_emptied_file_map_is_finished_by_an_incrementa
         .expect("file map");
     assert!(!on_disk.rebuild_pending, "the finished rebuild is recorded on disk");
 }
+
+/// The purge of a deleted file used to drop its file-map entry and discard the result of the index
+/// commit, so a failed commit left rows no later scan would ever revisit.
+#[test]
+fn a_deleted_file_stays_in_the_file_map_when_its_index_rows_could_not_be_removed() {
+    init_isolated_cache();
+    let dir = one_file_repo();
+    let root = dir.path();
+    let mut store = Store::open(root, VIEW_WORKING).expect("open");
+    full_scan(root, &mut store);
+    std::fs::remove_file(root.join("alpha.rs")).expect("delete");
+    store.index_db.as_ref().expect("index").fault.inject_commit_failures(1);
+
+    let failed = scan(
+        root,
+        &mut store,
+        &ConfigV1::with_defaults(),
+        ScanSource::WorkingTree,
+        EmbedMode::Deferred,
+    );
+
+    assert!(failed.is_err(), "the failed purge commit must fail the scan");
+    assert!(store.lookup("alpha.rs").is_some(), "the entry stays while its rows do");
+
+    let report = full_scan(root, &mut store);
+    assert_eq!(report.stats.removed, 1, "the next scan purges it");
+    assert!(store.lookup("alpha.rs").is_none());
+    assert!(store.index_view().expect("index").symbols_index_is_empty());
+}

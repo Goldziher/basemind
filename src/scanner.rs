@@ -7,7 +7,6 @@ use tracing::debug;
 
 use crate::config::Config;
 use crate::git::{GitError, Repo};
-use crate::path::RelPath;
 use crate::scan_evidence::{
     PHASE_CANDIDATES, PHASE_EXTRACT, PHASE_FLUSH, PHASE_LANES, PHASE_PURGE, PHASE_RESOLVE, ScanBreadcrumb,
 };
@@ -549,15 +548,7 @@ pub fn scan_with_observer(
     } = driven;
 
     for k in &stale {
-        store.remove(k);
-        if let Some(idx) = store.index_db.as_ref() {
-            let mut w = idx.writer();
-            let rel = RelPath::from(k.as_str());
-            let res = w.remove_file(&rel).and_then(|()| w.remove_resolved_file(&rel));
-            #[cfg(feature = "code-search")]
-            let res = res.and_then(|()| w.remove_bm25_file(&rel));
-            let _ = res.and_then(|()| w.commit());
-        }
+        crate::scanner_integrity::purge_file(store, k)?;
         observer.on_file(FileResult::bare(k.clone(), FileStatus::Removed));
         report.stats.removed += 1;
     }
@@ -865,15 +856,7 @@ pub fn scan_paths_with_observer(
 
     for rel in &removed {
         retired.extend(store.lookup(rel).map(|entry| entry.hash_hex.clone()));
-        store.remove(rel);
-        if let Some(idx) = store.index_db.as_ref() {
-            let mut w = idx.writer();
-            let rel = RelPath::from(rel.as_str());
-            let res = w.remove_file(&rel).and_then(|()| w.remove_resolved_file(&rel));
-            #[cfg(feature = "code-search")]
-            let res = res.and_then(|()| w.remove_bm25_file(&rel));
-            let _ = res.and_then(|()| w.commit());
-        }
+        crate::scanner_integrity::purge_file(store, rel)?;
         observer.on_file(FileResult::bare(rel.clone(), FileStatus::Removed));
         report.stats.removed += 1;
     }

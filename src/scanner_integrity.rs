@@ -31,6 +31,26 @@ pub(crate) fn needs_full_rebuild(store: &Store) -> Result<bool, ScanError> {
     Ok(store.index_is_behind_file_map()? || store.index.rebuild_pending)
 }
 
+/// Drop a file that is gone: its index rows first, then its file-map entry. A failed commit is
+/// returned with the entry still in place. The other order dropped the file from the map over rows
+/// that stayed, and no later scan revisits a path the map does not list.
+pub(crate) fn purge_file(store: &mut Store, rel: &str) -> Result<(), ScanError> {
+    if let Some(idx) = store.index_db.as_ref() {
+        let path = crate::path::RelPath::from(rel);
+        let mut writer = idx.writer();
+        let staged = writer
+            .remove_file(&path)
+            .and_then(|()| writer.remove_resolved_file(&path));
+        #[cfg(feature = "code-search")]
+        let staged = staged.and_then(|()| writer.remove_bm25_file(&path));
+        staged
+            .and_then(|()| writer.commit())
+            .map_err(crate::store::StoreError::from)?;
+    }
+    store.remove(rel);
+    Ok(())
+}
+
 /// The free-space check alone, for the resolve pass: the file map is already durable by then, so a
 /// refusal costs only the resolve tier.
 pub(crate) fn ensure_space(store: &Store) -> Result<(), ScanError> {
