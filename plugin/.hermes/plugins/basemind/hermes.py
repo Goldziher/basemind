@@ -1,6 +1,6 @@
 # AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-# Content-Hash: blake3:1d5bb7eccafd88d8dda62243a05cd36bc4d34d957a90a4b06ca30094e4a364a8
-# Source-Hash: blake3:61c3cc3336814057f9f3f504f4c447200806568f8e8e32a331a19bd3694a87a4
+# Content-Hash: blake3:030710c35c08d9ee7ed1930d6384a15203a5056909e06ccd159042ada890b95d
+# Source-Hash: blake3:db4a7e096e7668a5cc182a8dd415d3c817b788e6f726a212c104355e2894faf2
 # Schema-Version: v1
 
 """Hermes Agent plugin registration for basemind.
@@ -318,7 +318,6 @@ TOOL_NAMES = [
     "index_status",
     "index_rescan",
     "agents",
-    "workspace",
 ]
 DISCOVERY_TOOL = "list_tools"
 REQUEST_TIMEOUT_SECONDS = 300

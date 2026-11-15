@@ -259,8 +259,8 @@ The daemon manages the global cache; individual repos hold no `.basemind/` direc
 `basemind serve` exposes a stdio MCP server with **one tool per job** (ADR-0018): `code_outline`,
 `code_symbols`, `code_read`, `code_grep`, `code_search`, `code_refs`, `find_files`, `docs_search`,
 `git_log`, `git_blame`, `git_diff`, `memory_save`, `memory_search`, `index_status` and
-`index_rescan`. None takes a `mode`. `comms` builds add `agents` and `workspace`, which still
-dispatch on a required `mode`. Every tool definition carries `_meta["anthropic/alwaysLoad"]: true`,
+`index_rescan`. None takes a `mode`. `comms` builds add `agents`, which still
+dispatches on a required `mode`. Every tool definition carries `_meta["anthropic/alwaysLoad"]: true`,
 so the tools are always loaded; `tools/list` for the fifteen tools is about 17 KB (about 4.1k
 tokens), held under 20,000 bytes by a test. All paths are byte-precise repo-relative (`RelPath`).
 
@@ -287,7 +287,7 @@ The background daemon (singleton per user) manages agent communication and share
 
 - **Threads**: per-repo, per-workspace, or global scope; agents join explicitly via the `agents` tool's `join` mode
 - **Messages**: front-matter stored in `messages_by_thread`, bodies in `message_body` (fetched on demand for efficiency)
-- **Registry**: tracks active workspaces, worktrees, and advisory branch claims for collision detection
+- **Registry**: tracks the workspaces, worktrees and branches the daemon has seen; listed by `basemind workspace`
 - **Memory**: namespaced by `(scope, visibility, owner)` — group memory is shared, individual memory is private to one agent
 - **Vectors**: LanceDB stores embeddings for memory + document search
 

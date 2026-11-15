@@ -16,8 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   tools are replaced by 15 tools with exact schemas (ADR-0018, superseding ADR-0011): `code_outline`,
   `code_symbols`, `code_read`, `code_grep`, `code_search`, `code_refs`, `find_files`, `docs_search`,
   `git_log`, `git_blame`, `git_diff`, `memory_save`, `memory_search`, `index_status` and `index_rescan`.
-  There are no aliases: the old tool names and the `mode` argument are gone. `agents` and `workspace` are
-  unchanged. The plugin's skills, commands, hooks and rules are updated in the same release.
+  There are no aliases: the old tool names and the `mode` argument are gone. `agents` is unchanged. The plugin's skills, commands, hooks and rules are updated in the same release.
   [`docs/UPGRADING.md`](docs/UPGRADING.md) lists the renamed arguments and CLI flags.
 
   <!-- markdownlint-disable MD013 -->
@@ -65,7 +64,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Contract changes:
 
   - The 15 tools are always loaded (`_meta["anthropic/alwaysLoad"]: true`), so a host that defers MCP
-    tools needs no tool-search round trip; `agents` and `workspace` are not marked and stay deferred
+    tools needs no tool-search round trip; `agents` is not marked and stays deferred
     (ADR-0020). `tools/list` for the 15 is about 18 KB (about 4.5k tokens), down from about 25 KB (about
     6.3k tokens) for the four tools they replace; a test enforces a 20,000-byte ceiling. No tool declares
     an output schema.
@@ -155,6 +154,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
+- **BREAKING: the `workspace` MCP tool and worktree claims.** Advisory worktree claims enforced nothing
+  and nothing read them, so they are gone everywhere: the `workspace` tool (all five modes), the
+  `basemind workspace claim` and `basemind workspace release` commands, the `claimed_by` field of a
+  worktree row, the daemon's `worktree_claim` / `worktree_release` requests, and the
+  `worktree-coordination` capability of `basemind init`. The read-only listings stay as CLI commands
+  with no MCP tool: `basemind workspace workspaces`, `worktrees <repo-id>` and `branches <repo-id>`.
+  The comms protocol version is unchanged: a client older than this release that still sends a claim
+  has that one call fail with a closed connection, then reconnects. An existing registry snapshot
+  loads as before; the claim it carried is dropped.
 - **The token-saving text tools.** The `admin` modes `compress`, `delta`, `checkpoint` and `waste` are gone
   from the MCP tool, together with their CLI commands `basemind admin compress`, `basemind compress-output`,
   `basemind delta`, `basemind checkpoint` and `basemind detect-waste`. The plugin no longer ships the

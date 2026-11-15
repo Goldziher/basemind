@@ -212,24 +212,19 @@ basemind agents status [--agent-ttl-hours --as-agent]
 
 ## `workspace` — machine-wide repo/worktree registry
 
-Requires `--features comms`. Worktree claims are advisory: they record intent in the registry but
-enforce nothing.
+Requires `--features comms`. Read-only listings of the daemon's registry; they have no MCP tool.
 
 ```bash
 basemind workspace workspaces [--as-agent]
 basemind workspace worktrees <repo-id> [--as-agent]
 basemind workspace branches <repo-id> [--as-agent]
-basemind workspace claim <repo-id> <name> [--as-agent]
-basemind workspace release <repo-id> <name> [--as-agent]
 ```
 
 | Command | Purpose |
 |---|---|
 | `workspaces [--as-agent]` | Every repository the machine daemon has indexed. |
-| `worktrees <repo-id> [--as-agent]` | Git worktrees of a registered repo, with their branches and claims. |
+| `worktrees <repo-id> [--as-agent]` | Git worktrees of a registered repo, with their branches. |
 | `branches <repo-id> [--as-agent]` | Branches known to a registered repo. |
-| `claim <repo-id> <name> [--as-agent]` | Take ownership of a worktree so another session does not edit it. |
-| `release <repo-id> <name> [--as-agent]` | Give up a worktree claim this session holds. |
 
 ## `comms` — broker daemon lifecycle
 

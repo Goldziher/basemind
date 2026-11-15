@@ -16,8 +16,8 @@ You rewrite basemind's documentation against the verb-tool surface (ADR-0018): t
 `code`, `git`, `memory` and `admin` tools are gone, replaced by fifteen tools with exact schemas
 and no `mode` argument — `code_outline`, `code_symbols`, `code_read`, `code_grep`, `code_search`,
 `code_refs`, `find_files`, `docs_search`, `git_log`, `git_blame`, `git_diff`, `memory_save`,
-`memory_search`, `index_status`, `index_rescan`. `agents` and `workspace` are unchanged and still
-take `mode`. Every doc that names an old tool, a mode of one, or a removed argument is now wrong.
+`memory_search`, `index_status`, `index_rescan`. `agents` is unchanged and still
+takes `mode`. Every doc that names an old tool, a mode of one, or a removed argument is now wrong.
 
 ## Know what is generated before you edit anything
 
@@ -63,7 +63,7 @@ The ten public skills, including `basemind-multi-agent-room`, are authored under
 1. Read `src/mcp/types_tools.rs` (every tool and argument), the `#[tool]` descriptions in
    `src/mcp/tools*.rs` (one example call each) and the server instructions in
    `src/mcp/server_handler.rs` before writing. Never infer a tool or argument name from a doc —
-   the code is the source of truth. `src/mcp/mode.rs` holds only the `agents` / `workspace` modes.
+   the code is the source of truth. `src/mcp/mode.rs` holds only the `agents` modes.
 2. Inventory the old names: every `code` / `git` / `memory` / `admin` tool reference, every mode
    name, and every removed argument (`path_contains`, `rev_old`, `trait_name`, `l2`,
    `format: "toon"`) that survives in prose or a table is a stale reference.

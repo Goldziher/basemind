@@ -111,7 +111,7 @@ By default, all commands return **human-readable text**. For machine consumption
 basemind code symbols "parseQuery" --json
 ```
 
-This prints the same JSON the MCP tool returns (`agents` and `workspace` included). Human output
+This prints the same JSON the MCP tool returns (`agents` included). Human output
 never shortens source bodies or diffs; the timing footer is written to stderr. Page long lists with
 `--limit` plus `--cursor <next_cursor>` and bound them with `--max-tokens`.
 

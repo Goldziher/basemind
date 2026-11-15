@@ -313,7 +313,6 @@ TOOL_NAMES = [
     "index_status",
     "index_rescan",
     "agents",
-    "workspace",
 ]
 DISCOVERY_TOOL = "list_tools"
 REQUEST_TIMEOUT_SECONDS = 300

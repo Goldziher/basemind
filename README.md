@@ -49,14 +49,13 @@ about your code costs a small fraction of the tokens it takes to read the source
 | **Memory & documents** | A per-repo memory agents write to and search by meaning — clones of the same repo share it, unrelated repos stay separate — plus semantic search over PDFs, Office files, HTML, email, and images (OCR included in the published binaries, no extra setup; a source build needs the `documents-ocr` Cargo feature). | `memory_save` · `memory_search` · `docs_search` |
 | **Agent comms** | Threads addressed by subject, path-glob, and members; scope discovery; inbox delivery; lifecycle status; and dry-run/apply retention cleanup. | `agents` (`register` · `list` · `thread_start` · `thread_list` · `join` · `leave` · `members` · `add_member` · `remove_member` · `archive` · `post` · `history` · `message` · `inbox` · `ack` · `wait` · `cleanup` · `status`) |
 | **Index** | Check index health and repo identity, and refresh the index after edits. Telemetry and cache maintenance are CLI commands (`basemind admin telemetry`, `basemind cache stats\|gc\|clear`). | `index_status` · `index_rescan` |
-| **Machine registry** | Machine-wide repo/worktree/branch coordination, backed by the daemon's always-on registry. Advisory claims let agent sessions avoid colliding on the same worktree. | `workspace` (`workspaces` · `worktrees` · `branches` · `claim` · `release`) |
 
 <!-- markdownlint-enable MD013 -->
 
 The code, git, memory, document and index rows are 15 tools, one per job, each with its own exact
 schema; there is no `mode` argument. They are always loaded (`_meta["anthropic/alwaysLoad"]`), so a host that defers MCP tools
 needs no tool-search round trip: call them directly. Their `tools/list` entry is about 18 KB (about
-4.5k tokens). `agents` and `workspace` (`comms` builds) still take a `mode` and are not always loaded. An unknown argument is
+4.5k tokens). `agents` (`comms` builds) still takes a `mode` and is not always loaded. An unknown argument is
 rejected with a did-you-mean suggestion, every line number is 1-based, and a failure the caller can
 fix comes back as an `isError` result that names the fix. Arguments, examples and the mapping from
 the previous `code` / `git` / `memory` / `admin` tools: the
@@ -373,7 +372,7 @@ commands — from the repo root. It's re-runnable and safe to call again later:
 - Lets you pick which capabilities to advertise (interactive prompt in a TTY, or non-interactive
   with `--yes`, `--with <capability>`, `--without <capability>`). Capability slugs:
   `code-search-navigation`, `code-mapping-architecture`, `git-history`, `file-finding`, `agent-comms`,
-  `worktree-coordination`, `documents-rag`, `semantic-search`.
+  `documents-rag`, `semantic-search`.
 - Injects a "prefer basemind over grep/read/git" rules block. By default it never writes a committed
   file unasked: with `.ai-rulez/config.toml` present it writes the gitignored
   `.ai-rulez/local/rules/basemind-usage.md`; otherwise a terminal run asks, defaulting to the
@@ -565,9 +564,8 @@ sessions on the same repo — or on different worktrees of it — share one read
 and all read and write concurrently instead of a second session silently falling back to a stale,
 read-only view. The daemon holds the single-writer index, so `code_refs` lookups (call sites,
 callers, implementations) run inside it and return complete results with no per-session copy. The daemon
-also keeps a cheap, always-on registry of repos, worktrees, and branches (`workspace` modes
-`workspaces` / `worktrees` / `branches`), and modes `claim` / `release` give agent sessions an
-advisory way to avoid colliding on the same worktree.
+also keeps a cheap, always-on registry of repos, worktrees, and branches, listed by the CLI
+(`basemind workspace workspaces` / `worktrees` / `branches`).
 
 `basemind statusline` queries the daemon for the workspaces currently active and prints a compact
 line for your shell prompt; it prints nothing when no daemon is running.
@@ -1099,8 +1097,7 @@ files that became eligible from the cached blobs, without re-embedding.
 
 Every MCP tool has a CLI command (enforced by `tests/cli_parity/`); the CLI also keeps shorthands
 and administrative commands that have no MCP tool. Add `--json` for
-machine-readable output (the same response types the MCP tools return, including `agents` and
-`workspace`). Human output prints source bodies, diffs and exports in full; only table cells are cut
+machine-readable output (the same response types the MCP tools return, including `agents`). Human output prints source bodies, diffs and exports in full; only table cells are cut
 (to 200 characters, with a note on stderr), and the timing line goes to stderr. List commands take
 `--limit`, `--cursor` (resume from a previous `next_cursor`) and `--max-tokens`. Line and column
 arguments are 1-based.
@@ -1209,8 +1206,7 @@ after handling it so each thread's inbox cursor advances independently.
 
 | Command | Purpose |
 |---|---|
-| `workspaces` / `worktrees <repo-id>` / `branches <repo-id>` | List registered workspaces / a repo's worktrees / its local branches. |
-| `claim <repo-id> <name>` / `release <repo-id> <name>` | Take or give up an advisory claim on a worktree (a coordination hint; enforces nothing). |
+| `workspaces` / `worktrees <repo-id>` / `branches <repo-id>` | List registered workspaces / a repo's worktrees / its local branches. CLI only: there is no MCP tool. |
 
 **Other commands (`scan`, `serve`, `watch`, …)**
 

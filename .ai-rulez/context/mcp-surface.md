@@ -15,8 +15,8 @@ x-ai-rulez:
 The surface is **one tool per job** (ADR-0018): fifteen verb tools, each with its own exact
 schema and no `mode` argument. `src/mcp/types_tools.rs` is the authoritative list of tools
 (`VERB_TOOLS`) and of every argument; read it before writing about a tool, never infer an argument
-from prose. A `comms` build adds two tools that are still mode-dispatched, `agents` and
-`workspace`, until their own redesign.
+from prose. A `comms` build adds one tool that is still mode-dispatched, `agents`,
+until its own redesign.
 
 ## Verb tools
 
@@ -80,8 +80,8 @@ Off the MCP surface and reachable only from the CLI: `git churn`, `git by-path <
 - **Inline results.** A server-side Task is used only for a call still running after the threshold
   (`tasks::SLOW_CALLS`: `index_rescan`, `code_search`, `docs_search`).
 - **Always loaded.** `finalize_router` stamps `_meta["anthropic/alwaysLoad"]: true` on the verb
-  tools, so a host that defers MCP tools still loads their schemas at session start. `agents` and
-  `workspace` are not marked and stay deferred (ADR-0020).
+  tools, so a host that defers MCP tools still loads their schemas at session start. `agents` is
+  not marked and stays deferred (ADR-0020).
 - **Descriptions.** Each opens with "Use …", states the contract, and ends with one
   `Example: {…}` call. Field docs are one clause each.
 - **Annotations are exact per tool.** Everything is read-only except `memory_save` and
@@ -108,11 +108,10 @@ Off the MCP surface and reachable only from the CLI: `git churn`, `git by-path <
   (`tests/cli_parity/` enforces it; the mapping is injective, and the CLI may keep shorthands and
   CLI-only administrative commands, each a row in `tests/cli_parity/capabilities.rs`).
 
-## Mode-dispatched tools (`--features comms`)
+## Mode-dispatched tool (`--features comms`)
 
-`agents` and `workspace` each dispatch on a required `mode`. Their vocabulary lives in
-`src/mcp/mode.rs` (`define_mode!`), with per-mode fields as optional siblings validated by
-`reject_unsupported`.
+`agents` dispatches on a required `mode`. Its vocabulary lives in `src/mcp/mode.rs`
+(`define_mode!`), with per-mode fields as optional siblings validated by `reject_unsupported`.
 
 ### `agents`
 
@@ -124,7 +123,7 @@ from / id), `message` (read one body by id — the only path to a body), `ack` (
 messages), `wait` (block until a peer posts or the timeout elapses), `cleanup` (preview or apply
 stale-record retention), `status` (active and stale agent counts).
 
-### `workspace`
+### Machine registry (CLI only)
 
-`workspaces` / `worktrees` / `branches` (the daemon's machine-wide registry), `claim` / `release`
-(advisory worktree claims so sessions don't collide).
+`basemind workspace workspaces` / `worktrees` / `branches` list the daemon's machine-wide
+registry. There is no `workspace` MCP tool and there are no worktree claims.

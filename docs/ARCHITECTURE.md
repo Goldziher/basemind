@@ -161,8 +161,8 @@ src/
 │   ├── layered.rs          — merge_layers (Mcp > Cli > Env > File > Default)
 │   └── source.rs           — ConfigSource + ProvenanceMap ledger
 ├── mcp/                    — MCP server: 15 tools, one per job, each with its own exact
-│                             schema (ADR-0018), plus the mode-dispatched `agents` and
-│                             `workspace` tools in `comms` builds — see "MCP surface" below
+│                             schema (ADR-0018), plus the mode-dispatched `agents` tool
+│                             in `comms` builds — see "MCP surface" below
 │   ├── mod.rs, state.rs    — server bootstrap; shared ServerState
 │   ├── types_tools.rs      — wire arguments: one deny_unknown_fields struct per tool, and
 │   │                         VERB_TOOLS, the tool names in declaration order
@@ -174,14 +174,13 @@ src/
 │   │                         the default max_tokens budget, the alwaysLoad meta and schema
 │   │                         compaction applied to every advertised definition
 │   ├── mode.rs             — define_mode!: the `mode` vocabulary and per-mode field
-│   │                         validator of `agents` and `workspace` only
+│   │                         validator of `agents` only
 │   ├── tools.rs            — #[tool] shims of code_outline, code_symbols, code_read,
 │   │                         code_grep, code_search, code_refs, find_files (thin wrappers;
 │   │                         1000-line cap)
 │   ├── tools_<area>.rs     — the remaining shims: git (git_log, git_blame, git_diff),
 │   │                         memory (docs_search, memory_save, memory_search), admin
-│   │                         (index_status, index_rescan), comms (→ `agents`), registry
-│   │                         (→ `workspace`)
+│   │                         (index_status, index_rescan), comms (→ `agents`)
 │   ├── tasks.rs            — Tasks extension: results are inline; index_rescan, code_search
 │   │                         and docs_search become a task only if still running after 3 s
 │   ├── term_index.rs       — resident term index (symbol names + import strings) behind
@@ -229,9 +228,9 @@ src/
 ├── lance/                  — LanceDB schema + open/write helpers (feature intelligence)
 ├── search/                 — BM25 / exact / RRF keyword search over code chunks
 │                             (feature code-search)
-├── registry/                — daemon-side worktree/branch claim registry
+├── registry/                — daemon-side workspace/worktree/branch registry
 ├── cli/                     — CLI subcommand groups: admin, agents (daemon-agent verbs),
-│                             code, git, memory, registry (the `workspace` group). Every
+│                             code, git, memory, registry (the CLI-only `workspace` listings). Every
 │                             MCP tool has a command; shorthands and administrative
 │                             commands have no tool;
 │                             comms_daemon.rs is `basemind comms` — daemon lifecycle only
@@ -571,14 +570,13 @@ The surface is **one tool per job**, each with its own exact schema
 | Memory | `memory_save`, `memory_search` | always¹ |
 | Index | `index_status`, `index_rescan` | always |
 | Agents | `agents` (mode-dispatched: register, list, thread_start, thread_list, join, leave, members, add_member, remove_member, archive, post, history, message, inbox, ack, wait, cleanup, status) | `comms` |
-| Registry | `workspace` (mode-dispatched: workspaces, worktrees, branches, claim, release) | `comms` |
 
 ¹ Advertised always, body-gated on the `memory` / `documents` features: a build without the feature
 answers with an `isError` result naming it.
 ² Body-gated on `code-search` the same way.
 
-`agents` and `workspace` keep the ADR-0011 domain shape until their own redesign; `src/mcp/mode.rs`
-holds their `mode` vocabulary and nothing else. Churn, changed-path regex search, chunk fetch, memory
+`agents` keeps the ADR-0011 domain shape until its own redesign; `src/mcp/mode.rs`
+holds its `mode` vocabulary and nothing else. Churn, changed-path regex search, chunk fetch, memory
 deletion, cache maintenance and telemetry are CLI commands with no tool.
 
 Contract of the 15 tools (`src/mcp/tool_contract.rs`, `src/mcp/strict.rs`):
@@ -607,7 +605,7 @@ Contract of the 15 tools (`src/mcp/tool_contract.rs`, `src/mcp/strict.rs`):
   answer is an ordinary `tools/call` result.
 - **Always loaded.** Every verb-tool definition carries `_meta["anthropic/alwaysLoad"]: true`, so a
   host that defers MCP tools loads the schemas at session start and no tool-search round trip is
-  needed. `agents` and `workspace` are not marked and stay deferred
+  needed. `agents` is not marked and stays deferred
   ([ADR-0020](adr/0020-verb-tool-contract-amendments.md)).
 - **Cursors.** A `next_cursor` is bound to the query that issued it (`src/mcp/cursor_bind.rs`): the
   tool name and the arguments that select the list, hashed. Passed to another query, or used after
@@ -997,6 +995,7 @@ schema-mismatch wipe. A seeded worktree view therefore carries no memory after i
 
 ### Worktree registry
 
-The daemon maintains an advisory registry of active worktrees and branches per workspace. Agents can
-claim a worktree+branch via `workspace` mode `claim` and release via mode `release`. Claims are
-advisory (no locking); the registry helps avoid collisions and is read-only to serving sessions.
+The daemon maintains a registry of the workspaces it has seen and each repo's worktrees and local
+branches, populated from git plumbing as sessions connect. It is read-only to serving sessions and
+listed by `basemind workspace workspaces` / `worktrees` / `branches`; it has no MCP tool and holds
+no claims.

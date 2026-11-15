@@ -11,7 +11,7 @@ is cleaned up.
 The release after 0.33 replaces the mode-dispatched MCP tools `code`, `git`, `memory` and `admin`
 with 15 tools, one per job ([ADR-0018](adr/0018-mcp-verb-tools.md)). The change is breaking and has
 no aliases: a call to an old tool name fails, and no tool takes a `mode` argument any more. `agents`
-and `workspace` are unchanged. The plugin's skills, commands, hooks and rules ship in the same
+is unchanged; the `workspace` tool is removed (see below). The plugin's skills, commands, hooks and rules ship in the same
 release and the plugin downloads the matching binary, so update both together.
 
 The tools are always loaded (`_meta["anthropic/alwaysLoad"]: true`): a host that defers MCP tools
@@ -57,6 +57,8 @@ needs no tool-search round trip, so call them directly. `tools/list` for them is
 | `admin` `rescan` | `index_rescan {paths?, full?}` |
 | `admin` `cache_stats` / `gc` / `cache_clear` | CLI only: `basemind cache stats\|gc\|clear` |
 | `admin` `telemetry` | CLI only: `basemind admin telemetry` |
+| `workspace` `workspaces` / `worktrees` / `branches` | CLI only: `basemind workspace workspaces\|worktrees\|branches` |
+| `workspace` `claim` / `release` | Removed, with the CLI commands: worktree claims enforced nothing and nothing read them |
 
 ### Renamed arguments
 

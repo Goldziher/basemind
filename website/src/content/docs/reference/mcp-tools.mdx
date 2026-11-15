@@ -7,8 +7,7 @@ import { Aside, Badge } from '@astrojs/starlight/components';
 
 basemind exposes **one tool per job** over stdio MCP: fifteen tools for code, documents, git history,
 memory and the index. Each has its own exact schema; none takes a `mode` argument. Builds with the
-`comms` feature add two coordination tools, `agents` and `workspace`, which still dispatch on a
-required `mode`.
+`comms` feature add one coordination tool, `agents`, which still dispatches on a required `mode`.
 
 Every tool definition carries `_meta["anthropic/alwaysLoad"]: true`, so a host that defers MCP tools
 loads the schemas at session start: the tools are always loaded and are called directly, with no
@@ -179,22 +178,6 @@ with a recency-filtered inbox. Requires `--features comms`.
 
 See [Agent Comms](/concepts/agent-comms/) for orchestration examples.
 
-## `workspace` — machine registry
-
-Coordinate across every repo and worktree the daemon knows about on this machine. The registry is
-daemon-managed; claims are advisory (no locking) but help avoid collisions. Requires
-`--features comms`.
-
-| Mode | Purpose |
-|---|---|
-| `workspaces` | Every repository the machine daemon has indexed. |
-| `worktrees` | Git worktrees of this repository, with their branches and claims. |
-| `branches` | Branches known to this repository. |
-| `claim` | Take ownership of a worktree so another session does not edit it. |
-| `release` | Give up a worktree claim this session holds. |
-
-See CLI: `basemind workspace` (worktree/branch listing), `basemind statusline` (current status).
-
 ## Tool titles and annotations
 
 Each tool carries a human-readable title and MCP annotation hints, so a client can show a readable
@@ -219,8 +202,8 @@ can allow `index_status` and `git_log` without allowing `index_rescan`.
 | `index_status` | Index status | yes | no | yes | no |
 | `index_rescan` | Re-index | no | no | yes | no |
 
-`agents` (title "Agent comms") and `workspace` ("Workspace registry") advertise the union of their
-modes. Their `mode` parameter is a flat string enum in the tool schema, so a client sees every valid
+`agents` (title "Agent comms") advertises the union of its
+modes. Its `mode` parameter is a flat string enum in the tool schema, so a client sees every valid
 mode and an invalid one is rejected with the accepted list. The server emits no MCP logging
 notifications; use `daemon.log` and `RUST_LOG` for diagnostics.
 

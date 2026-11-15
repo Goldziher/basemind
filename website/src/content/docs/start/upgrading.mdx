@@ -14,7 +14,7 @@ shared by every workspace. The next scan migrates what changed and cleans up wha
 
 The mode-dispatched MCP tools `code`, `git`, `memory` and `admin` are replaced by one tool per job.
 This is a breaking change with no aliases: a call to an old tool name fails. No tool below takes a
-`mode` argument. `agents` and `workspace` are unchanged. The plugin's skills, commands, hooks and
+`mode` argument. `agents` is unchanged; the `workspace` tool is removed. The plugin's skills, commands, hooks and
 rules ship in the same release, and the plugin downloads the version-matched binary; update any MCP
 calls, permission allow-lists and scripts of your own. The tools are always loaded
 (`_meta["anthropic/alwaysLoad"]: true`), so an agent calls them directly, with no tool-search round
@@ -59,6 +59,8 @@ trip. See the [MCP tools reference](/reference/mcp-tools/) for every argument.
 | `admin` `rescan` | `index_rescan {paths?, full?}` |
 | `admin` `cache_stats` / `gc` / `cache_clear` | CLI only: `basemind cache stats\|gc\|clear` |
 | `admin` `telemetry` | CLI only: `basemind admin telemetry` |
+| `workspace` `workspaces` / `worktrees` / `branches` | CLI only: `basemind workspace workspaces\|worktrees\|branches` |
+| `workspace` `claim` / `release` | Removed, with the CLI commands: worktree claims enforced nothing and nothing read them |
 
 ### Renamed arguments
 

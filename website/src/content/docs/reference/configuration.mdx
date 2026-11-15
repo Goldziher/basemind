@@ -485,7 +485,7 @@ ONNX Runtime). Opt into the rest:
 | `documents-ocr-paddle` | `documents-ocr` plus PaddleOCR as an optional fallback stage. Source builds only; not in the published binaries. | no |
 | `memory` | LanceDB-backed shared memory (`memory_save`, `memory_search`). | yes |
 | `code-search` | Hybrid code search — vector + BM25 + exact-symbol lanes (`code_search`). | yes |
-| `comms` | Agent-to-agent comms — threads, per-agent inbox, DMs (`agents` + `workspace` tools; Unix domain sockets + Windows named pipes). | yes |
+| `comms` | Agent-to-agent comms — threads, per-agent inbox, DMs (the `agents` tool and the `workspace` CLI listings; Unix domain sockets + Windows named pipes). | yes |
 | `code-intel` | Scope- and import-resolved JS/TS `code_refs` resolution (oxc). | yes |
 | `full` | `documents` + `documents-ocr` + `documents-ner` + `memory` + `code-search` + `comms` + `code-intel`. | — |
 

@@ -37,12 +37,12 @@ if [ "${STATUS_RC}" -eq 0 ] && [ -n "${STATUS_JSON}" ] && command -v jq >/dev/nu
   SCHEMA_VER="$(printf '%s' "${STATUS_JSON}" | jq -r '.schema_version | numbers' 2>/dev/null || true)"
 fi
 
-# The MCP tools this plugin's server advertises: the verb tools, plus the two coordination tools a
+# The MCP tools this plugin's server advertises: the verb tools, plus the coordination tool a
 # `comms` build adds. Every definition carries `_meta["anthropic/alwaysLoad"]`, so a host that defers
 # MCP tools still loads these at session start and no tool search is needed. Claude Code namespaces
 # plugin MCP tools as mcp__plugin_<plugin>_<server>__<tool>.
 TOOL_PREFIX="mcp__plugin_basemind_basemind__"
-TOOL_NAMES="code_outline code_symbols code_read code_grep code_search code_refs find_files docs_search git_log git_blame git_diff memory_save memory_search index_status index_rescan agents workspace"
+TOOL_NAMES="code_outline code_symbols code_read code_grep code_search code_refs find_files docs_search git_log git_blame git_diff memory_save memory_search index_status index_rescan agents"
 TOOL_LIST=""
 for t in ${TOOL_NAMES}; do
   TOOL_LIST="${TOOL_LIST:+${TOOL_LIST}, }${t}"
@@ -68,7 +68,7 @@ else
   STATUS_LINE="basemind verified: ${FILE_COUNT} files indexed (schema ${SCHEMA_VER:-unknown}).${CALL_TOOLS}"
 fi
 
-ROUTING="Use basemind before shell rg, grep, find and git, and before reading whole files. What a file contains: code_outline {\"path\":\"src/store.rs\"}, then code_read {\"path\":\"src/store.rs\",\"symbol\":\"open\"} for the one body you need. Where a name is defined: code_symbols {\"name\":\"open_store\"}. What calls, implements or imports it: code_refs {\"name\":\"open_store\"}. A string or comment in indexed code: code_grep {\"pattern\":\"cache_root(\"} (literal text; add \"regex\":true for a regex). Code by what it does: code_search {\"query\":\"retry a failed upload\"}. A file by name: find_files {\"query\":\"readme\"}. History: git_log {} for recent commits (add path, query, author, symbol or rev), git_blame {\"path\":\"src/store.rs\"}, git_diff {} for the working-tree status (add path, from, to). Documents, which the code tools do not cover (markdown, config, PDFs, Jupyter notebooks): docs_search {\"query\":\"how releases are versioned\"}. Notes shared across sessions: memory_save {\"key\":\"decision/x\",\"value\":\"…\"} and memory_search {\"query\":\"…\"}. Lines are 1-based, an unknown argument is rejected, and a failure is a tool result that names the fix. For exact literals or regex outside the code map, search the files directly; a semantic miss does not establish absence. Fall back to ordinary tools when basemind cannot cover the task, and run index_rescan {} after editing indexed files. Use workspace for worktree and claim coordination and agents for thread communication when those tools are available."
+ROUTING="Use basemind before shell rg, grep, find and git, and before reading whole files. What a file contains: code_outline {\"path\":\"src/store.rs\"}, then code_read {\"path\":\"src/store.rs\",\"symbol\":\"open\"} for the one body you need. Where a name is defined: code_symbols {\"name\":\"open_store\"}. What calls, implements or imports it: code_refs {\"name\":\"open_store\"}. A string or comment in indexed code: code_grep {\"pattern\":\"cache_root(\"} (literal text; add \"regex\":true for a regex). Code by what it does: code_search {\"query\":\"retry a failed upload\"}. A file by name: find_files {\"query\":\"readme\"}. History: git_log {} for recent commits (add path, query, author, symbol or rev), git_blame {\"path\":\"src/store.rs\"}, git_diff {} for the working-tree status (add path, from, to). Documents, which the code tools do not cover (markdown, config, PDFs, Jupyter notebooks): docs_search {\"query\":\"how releases are versioned\"}. Notes shared across sessions: memory_save {\"key\":\"decision/x\",\"value\":\"…\"} and memory_search {\"query\":\"…\"}. Lines are 1-based, an unknown argument is rejected, and a failure is a tool result that names the fix. For exact literals or regex outside the code map, search the files directly; a semantic miss does not establish absence. Fall back to ordinary tools when basemind cannot cover the task, and run index_rescan {} after editing indexed files. Use agents for thread communication when that tool is available."
 CONTEXT="${STATUS_LINE} ${ROUTING}"
 
 # 2. Append the status-line nudge only when a basemind status line isn't wired yet.

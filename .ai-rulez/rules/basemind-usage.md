@@ -28,7 +28,6 @@ The Basemind tools are always loaded: call them directly, there is no tool searc
 | Working-tree status, or a file's diff | `git_diff {}` / `git_diff {"path":"src/store.rs"}` |
 | Find a file by a fragment of its name or path | `find_files {"query":"readme"}` |
 | Check the inbox, discover threads, or post to other agents | `agents {"mode":"inbox"}` / `{"mode":"thread_list"}` / `{"mode":"post", …}` |
-| Inspect worktrees and advisory claims before editing | `workspace {"mode":"worktrees"}` / `{"mode":"claim", …}` |
 | Search documents (PDFs, Office, markdown, config and data files; the code tools cover code only) | `docs_search {"query":"how releases are versioned"}` |
 | Find code by what it does, then read the hit | `code_search {"query":"retry a failed upload with backoff"}` |
 

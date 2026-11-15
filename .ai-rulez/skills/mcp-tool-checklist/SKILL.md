@@ -20,7 +20,7 @@ a **new tool** (a question no existing tool asks). A new tool ships only if the 
 (`src/eval/`, `basemind admin eval`) shows it beats the `rg`/`git` baseline on correctness or
 tokens, because every tool is always loaded and costs bytes in every session.
 
-`agents` and `workspace` (`--features comms`) are still mode-dispatched until their own redesign;
+`agents` (`--features comms`) is still mode-dispatched until its own redesign;
 see the last section.
 
 Every file stays under the **1000-line cap** enforced by `tests/max_lines.rs` — split a helper into
@@ -135,10 +135,10 @@ of `rg`/`grep`", "where is X defined", "who last changed this"), states the cont
 regex, exact vs substring, name-only vs resolved, what is cut or capped), and ends with exactly one `Example: {…}`
 call that is valid for the schema. Keep it to a few sentences: the byte ceiling is shared.
 
-## Adding a mode to `agents` or `workspace`
+## Adding a mode to `agents`
 
 Add the variant to the tool's `define_mode!` block in `src/mcp/mode.rs`, any new parameter as an
-optional sibling field on its flat params struct (`types_comms.rs` / `types_registry.rs`), the
+optional sibling field on its flat params struct (`types_comms.rs`), the
 dispatch arm plus the `reject_unsupported` field list in the helper, the CLI subcommand, and a
 `pair(tool, mode, cli)` row in `tests/cli_parity/capabilities.rs`. Never
 `#[derive(JsonSchema)]` on a doc-commented enum: it emits `oneOf`.

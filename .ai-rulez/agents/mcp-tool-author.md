@@ -24,7 +24,7 @@ question an existing tool answers, add an argument there instead. If it is a new
 the eval harness (`basemind admin eval`) must show against the `rg`/`git` baseline; do not grow the
 surface on intuition.
 
-`agents` and `workspace` are still mode-dispatched (`src/mcp/mode.rs`) until their own redesign.
+`agents` is still mode-dispatched (`src/mcp/mode.rs`) until its own redesign.
 A new mode there follows the last section of the `mcp-tool-checklist` skill.
 
 ## Before you write

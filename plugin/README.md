@@ -87,8 +87,8 @@ Load the `basemind` skill in your agent and call a tool directly, such as
 Each job is its own tool with an exact schema: `code_outline`, `code_symbols`, `code_read`,
 `code_grep`, `code_search`, `code_refs`, `find_files`, `docs_search`, `git_log`, `git_blame`,
 `git_diff`, `memory_save`, `memory_search`, `index_status` and `index_rescan`. The tools are always
-loaded, an unknown argument is rejected, and line numbers are 1-based. `agents` and `workspace`
-still dispatch through a required `mode`. Optional capabilities depend on the installed binary's
+loaded, an unknown argument is rejected, and line numbers are 1-based. `agents` still
+dispatches through a required `mode`. Optional capabilities depend on the installed binary's
 features. See the [MCP reference](../README.md) for arguments and error handling.
 
 Install only the public skills with `npx skills add Goldziher/basemind`. Root `skills/` mirrors the

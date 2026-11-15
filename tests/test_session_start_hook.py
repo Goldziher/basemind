@@ -30,7 +30,7 @@ VERB_TOOLS = (
     "index_rescan",
 )
 # Still mode-dispatched, and advertised only by a build with agent coordination.
-COORDINATION_TOOLS = ("agents", "workspace")
+COORDINATION_TOOLS = ("agents",)
 # A routed call: a tool name followed by its JSON arguments.
 ROUTED_CALL = re.compile(r"\b([a-z]+_[a-z]+) (\{[^{}]*\})")
 # The surface ADR-0018 removed: the mode-dispatched `code` / `git` / `memory` / `admin` tools.
