@@ -197,3 +197,24 @@ fn a_memory_hit_carries_the_stamp_of_the_write_it_was_embedded_from() {
     assert_eq!(hits.len(), 1);
     assert_eq!((hits[0].key.as_str(), hits[0].updated_at), ("k", 7));
 }
+
+/// The stamps say which write of each note the table holds a vector for, one namespace at a time.
+#[test]
+fn memory_stamps_list_one_namespace() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = LanceStore::open(dir.path(), 4, "test").unwrap();
+    assert!(
+        store.memory_stamps("s", "group", "").unwrap().is_empty(),
+        "a new table holds no rows"
+    );
+    store.upsert_memory(memory_row("a", "one", 3)).unwrap();
+    store.upsert_memory(memory_row("b", "two", 4)).unwrap();
+    let mut other = memory_row("c", "three", 5);
+    other.scope = "other".into();
+    store.upsert_memory(other).unwrap();
+
+    let stamps = store.memory_stamps("s", "group", "").unwrap();
+
+    assert_eq!(stamps.len(), 2);
+    assert_eq!((stamps["a"], stamps["b"]), (3, 4));
+}

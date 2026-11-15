@@ -54,6 +54,45 @@ impl LanceStore {
         })
     }
 
+    /// `key -> updated_at` of every row in one `(scope, visibility, agent_id)` namespace: which
+    /// write of each note the table holds a vector for.
+    pub fn memory_stamps(&self, scope: &str, visibility: &str, agent_id: &str) -> Result<ahash::AHashMap<String, i64>> {
+        use lancedb::arrow::arrow_array::TimestampMicrosecondArray;
+        use lancedb::query::Select;
+
+        self.inner.rt().block_on(async {
+            let table = self
+                .inner
+                .connection
+                .open_table(MEMORY_TABLE)
+                .execute()
+                .await
+                .with_context(|| format!("open {MEMORY_TABLE} table"))?;
+            let mut stream = table
+                .query()
+                .only_if(memory_namespace_predicate(scope, visibility, agent_id))
+                .select(Select::columns(&["key", "updated_at"]))
+                .execute()
+                .await
+                .context("list memory rows")?;
+            let mut stamps = ahash::AHashMap::new();
+            while let Some(batch) = stream.try_next().await.context("stream next batch")? {
+                let key = batch
+                    .column_by_name("key")
+                    .and_then(|c| c.as_any().downcast_ref::<StringArray>())
+                    .ok_or_else(|| anyhow!("`key` column missing"))?;
+                let updated = batch
+                    .column_by_name("updated_at")
+                    .and_then(|c| c.as_any().downcast_ref::<TimestampMicrosecondArray>())
+                    .ok_or_else(|| anyhow!("`updated_at` column missing"))?;
+                for i in 0..batch.num_rows() {
+                    stamps.insert(key.value(i).to_string(), updated.value(i));
+                }
+            }
+            anyhow::Ok(stamps)
+        })
+    }
+
     /// KNN over the memory table for one `(scope, visibility, agent_id)` namespace.
     ///
     /// The `visibility` + `agent_id` predicate is mandatory so an individual search never

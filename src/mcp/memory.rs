@@ -18,46 +18,15 @@ use super::types::{DocumentSearchHit, SearchDocumentsParams, SearchDocumentsResp
 #[cfg(feature = "memory")]
 use super::types_memory::{
     MemoryDeleteParams, MemoryDeleteResponse, MemoryEntry, MemoryGetParams, MemoryListParams, MemoryListResponse,
-    MemoryPutParams, MemoryPutResponse, MemorySearchHit, MemorySearchParams, MemorySearchResponse, Visibility,
+    MemoryPutParams, MemoryPutResponse, MemorySearchParams, MemorySearchResponse, Visibility,
 };
 #[cfg(feature = "documents")]
 use crate::extract::doc::{DocEntity, DocKeyword, DocSummary};
 
+/// The shared embedding engine, loaded on first use. Loading reads the model from disk (or
+/// downloads it), so it runs on a blocking thread and never stalls the async runtime.
 #[cfg(feature = "intelligence")]
-pub(super) async fn embed_query(state: &ServerState, text: &str) -> Result<Vec<f32>, McpError> {
-    let preset = state.shared.config.documents.embedding_preset.clone();
-    let max_embed_threads = state
-        .shared
-        .config
-        .resources
-        .effective_embed_threads(state.shared.config.documents.embed_max_threads);
-    let embed_batch_size = state.shared.config.resources.embed_batch_size;
-    let provider = state.shared.config.resources.onnx_provider;
-    let embedder = state
-        .shared
-        .embedder
-        .get_or_try_init(|| async {
-            crate::embeddings::SharedEmbedder::load_with_provider(
-                &preset,
-                max_embed_threads,
-                embed_batch_size,
-                provider,
-            )
-            .map(Arc::new)
-            .map_err(|e| format!("load embedder: {e}"))
-        })
-        .await
-        .map_err(|e| McpError::internal_error(e.clone(), None))?;
-    let embedder = Arc::clone(embedder);
-    let text = text.to_string();
-    tokio::task::spawn_blocking(move || embedder.embed(&text))
-        .await
-        .map_err(|e| McpError::internal_error(format!("spawn_blocking: {e}"), None))?
-        .map_err(|e| McpError::internal_error(format!("embed: {e}"), None))
-}
-
-#[cfg(any(feature = "memory", feature = "documents", feature = "code-search"))]
-pub(super) async fn lance_store(state: &ServerState) -> Result<Arc<crate::lance::LanceStore>, McpError> {
+pub(super) async fn shared_embedder(state: &ServerState) -> Result<Arc<crate::embeddings::SharedEmbedder>, String> {
     let preset = state.shared.config.documents.embedding_preset.clone();
     let max_embed_threads = state
         .shared
@@ -68,25 +37,60 @@ pub(super) async fn lance_store(state: &ServerState) -> Result<Arc<crate::lance:
     let provider = state.shared.config.resources.onnx_provider;
     state
         .shared
+        .embedder
+        .get_or_try_init(|| async {
+            tokio::task::spawn_blocking(move || {
+                crate::embeddings::SharedEmbedder::load_with_provider(
+                    &preset,
+                    max_embed_threads,
+                    embed_batch_size,
+                    provider,
+                )
+            })
+            .await
+            .map_err(|e| format!("load embedder join: {e}"))?
+            .map(Arc::new)
+            .map_err(|e| format!("load embedder: {e}"))
+        })
+        .await
+        .cloned()
+}
+
+#[cfg(feature = "intelligence")]
+pub(super) async fn embed_query(state: &ServerState, text: &str) -> Result<Vec<f32>, McpError> {
+    let embedder = shared_embedder(state)
+        .await
+        .map_err(|e| McpError::internal_error(e, None))?;
+    let text = text.to_string();
+    tokio::task::spawn_blocking(move || embedder.embed(&text))
+        .await
+        .map_err(|e| McpError::internal_error(format!("spawn_blocking: {e}"), None))?
+        .map_err(|e| McpError::internal_error(format!("embed: {e}"), None))
+}
+
+/// Open the vector store at `dir` for `embedder`'s dimension and model, off the async runtime.
+#[cfg(feature = "intelligence")]
+async fn open_lance(
+    dir: std::path::PathBuf,
+    embedder: &crate::embeddings::SharedEmbedder,
+) -> Result<Arc<crate::lance::LanceStore>, String> {
+    let (dim, model) = (embedder.dim(), embedder.model().to_string());
+    tokio::task::spawn_blocking(move || crate::lance::LanceStore::open(&dir, dim, &model))
+        .await
+        .map_err(|e| format!("lance open join: {e}"))?
+        .map(Arc::new)
+        .map_err(|e| format!("open LanceStore: {e}"))
+}
+
+#[cfg(any(feature = "memory", feature = "documents", feature = "code-search"))]
+pub(super) async fn lance_store(state: &ServerState) -> Result<Arc<crate::lance::LanceStore>, McpError> {
+    state
+        .shared
         .lance
         .get_or_try_init(|| async {
-            let embedder = state
-                .shared
-                .embedder
-                .get_or_try_init(|| async {
-                    crate::embeddings::SharedEmbedder::load_with_provider(
-                        &preset,
-                        max_embed_threads,
-                        embed_batch_size,
-                        provider,
-                    )
-                    .map(Arc::new)
-                    .map_err(|e| format!("load embedder: {e}"))
-                })
+            let embedder = shared_embedder(state)
                 .await
                 .map_err(|e| format!("embedder init: {e}"))?;
-            let dim = embedder.dim();
-            let model = embedder.model().to_string();
             let lance_dir = state
                 .shared
                 .store
@@ -94,12 +98,29 @@ pub(super) async fn lance_store(state: &ServerState) -> Result<Arc<crate::lance:
                 .await
                 .basemind_dir
                 .join(crate::store::LANCE_DIR);
-            let model_for_open = model.clone();
-            tokio::task::spawn_blocking(move || crate::lance::LanceStore::open(&lance_dir, dim, &model_for_open))
+            open_lance(lance_dir, &embedder).await
+        })
+        .await
+        .cloned()
+        .map_err(|e| McpError::internal_error(e.clone(), None))
+}
+
+/// The repo group's memory vector store, shared by every worktree of the clone like the notes
+/// themselves (see [`super::memory_vectors::memory_lance_dir`]).
+#[cfg(feature = "memory")]
+pub(super) async fn memory_lance_store(state: &ServerState) -> Result<Arc<crate::lance::LanceStore>, McpError> {
+    state
+        .shared
+        .memory_lance
+        .get_or_try_init(|| async {
+            let embedder = shared_embedder(state)
                 .await
-                .map_err(|e| format!("lance open join: {e}"))?
-                .map(Arc::new)
-                .map_err(|e| format!("open LanceStore: {e}"))
+                .map_err(|e| format!("embedder init: {e}"))?;
+            let root = state.shared.root.clone();
+            let dir = tokio::task::spawn_blocking(move || super::memory_vectors::memory_lance_dir(&root))
+                .await
+                .map_err(|e| format!("memory lance dir join: {e}"))?;
+            open_lance(dir, &embedder).await
         })
         .await
         .cloned()
@@ -150,7 +171,7 @@ fn memory_put_lock(scope: &str, vis_byte: u8, owner: &str, key: &str) -> Arc<tok
 /// String form of a [`Visibility`] for the LanceDB `visibility` column. Matches the serde
 /// `rename_all = "lowercase"` discriminants so the column reads back as the same enum.
 #[cfg(feature = "memory")]
-fn lance_visibility(visibility: Visibility) -> &'static str {
+pub(super) fn lance_visibility(visibility: Visibility) -> &'static str {
     match visibility {
         Visibility::Group => "group",
         Visibility::Individual => "individual",
@@ -186,7 +207,7 @@ pub(super) async fn run_memory_put(state: &ServerState, params: MemoryPutParams)
         // The previous vector row still holds the OLD text; left in place, a search by meaning
         // would keep serving it for this key. The store is opened first because the embedder can
         // fail before anything in this process has touched it.
-        if outcome.is_err() && lance_store(state).await.is_ok() {
+        if outcome.is_err() && memory_lance_store(state).await.is_ok() {
             delete_vector_row(state, params.visibility, owner, &params.key).await;
         }
         Some(outcome)
@@ -216,7 +237,9 @@ async fn embed_note(
     let embedding = embed_query(state, &params.value)
         .await
         .map_err(|error| error.message.into_owned())?;
-    let lance = lance_store(state).await.map_err(|error| error.message.into_owned())?;
+    let lance = memory_lance_store(state)
+        .await
+        .map_err(|error| error.message.into_owned())?;
     let row = crate::lance::MemoryRow {
         scope: state.shared.scope.clone(),
         key: params.key.clone(),
@@ -255,7 +278,7 @@ fn embed_report(outcome: Option<Result<(), String>>) -> (bool, Option<String>) {
 /// that cannot be removed is logged, never an error.
 #[cfg(feature = "memory")]
 async fn delete_vector_row(state: &ServerState, visibility: Visibility, owner: &str, key: &str) {
-    let Some(lance) = state.shared.lance.get() else {
+    let Some(lance) = state.shared.memory_lance.get() else {
         return;
     };
     let lance = Arc::clone(lance);
@@ -341,7 +364,7 @@ pub(super) async fn run_memory_get(state: &ServerState, params: MemoryGetParams)
 
 /// Read one note from the Fjall truth, through the daemon when it owns the store.
 #[cfg(feature = "memory")]
-async fn memory_get_wire(
+pub(super) async fn memory_get_wire(
     state: &ServerState,
     vis_byte: u8,
     owner: &str,
@@ -404,6 +427,37 @@ pub(super) async fn run_memory_list(state: &ServerState, params: MemoryListParam
     let key_prefix_filter = params.prefix.clone().unwrap_or_default();
     let cursor_bytes = params.cursor.as_ref().map(|c| c.decode_fjall()).transpose()?;
 
+    let page = memory_list_page(
+        state,
+        vis_byte,
+        owner,
+        &key_prefix_filter,
+        params.tag.as_deref(),
+        limit,
+        cursor_bytes,
+    )
+    .await?;
+    json_result(&MemoryListResponse {
+        total: page.total as usize,
+        truncated: page.truncated,
+        entries: page.entries.into_iter().map(wire_to_entry).collect(),
+        next_cursor: page.next_cursor.as_deref().map(Cursor::encode_fjall),
+        elapsed_us: elapsed_us(__body),
+    })
+}
+
+/// One page of a namespace's notes from the Fjall truth, through the daemon when it owns the
+/// store. Values are preview-truncated, as `memory_list` returns them.
+#[cfg(feature = "memory")]
+pub(super) async fn memory_list_page(
+    state: &ServerState,
+    vis_byte: u8,
+    owner: &str,
+    prefix: &str,
+    tag: Option<&str>,
+    limit: usize,
+    cursor: Option<Vec<u8>>,
+) -> Result<super::memory_ops::ListResult, McpError> {
     #[cfg(all(feature = "comms", any(unix, windows)))]
     if state.shared.daemon_writer {
         use crate::comms::memory_proto::{MemoryOp, MemoryOutcome};
@@ -411,24 +465,22 @@ pub(super) async fn run_memory_list(state: &ServerState, params: MemoryListParam
         let op = MemoryOp::List {
             vis_byte,
             owner: owner.to_string(),
-            prefix: key_prefix_filter,
-            tag: params.tag.clone(),
+            prefix: prefix.to_string(),
+            tag: tag.map(str::to_string),
             limit: limit as u32,
-            cursor: cursor_bytes,
+            cursor,
         };
-        let outcome = super::helpers_comms::dispatch_memory_op(state, op).await?;
-        return match outcome {
+        return match super::helpers_comms::dispatch_memory_op(state, op).await? {
             MemoryOutcome::Listed {
                 entries,
                 total,
                 truncated,
                 next_cursor,
-            } => json_result(&MemoryListResponse {
-                total: total as usize,
+            } => Ok(super::memory_ops::ListResult {
+                entries,
+                total,
                 truncated,
-                entries: entries.into_iter().map(wire_to_entry).collect(),
-                next_cursor: next_cursor.as_deref().map(Cursor::encode_fjall),
-                elapsed_us: elapsed_us(__body),
+                next_cursor,
             }),
             other => Err(McpError::internal_error(
                 format!("memory_list: unexpected daemon outcome {other:?}"),
@@ -442,25 +494,18 @@ pub(super) async fn run_memory_list(state: &ServerState, params: MemoryListParam
         .index_db
         .as_ref()
         .ok_or_else(|| McpError::internal_error("memory_by_key index not available", None))?;
-    let result = super::memory_ops::list_core(
+    Ok(super::memory_ops::list_core(
         idx,
         &state.shared.scope,
         &super::memory_ops::ListQuery {
             vis_byte,
             owner,
-            key_prefix: &key_prefix_filter,
-            tag: params.tag.as_deref(),
+            key_prefix: prefix,
+            tag,
             limit,
-            cursor: cursor_bytes.as_deref(),
+            cursor: cursor.as_deref(),
         },
-    )?;
-    json_result(&MemoryListResponse {
-        total: result.total as usize,
-        truncated: result.truncated,
-        entries: result.entries.into_iter().map(wire_to_entry).collect(),
-        next_cursor: result.next_cursor.as_deref().map(Cursor::encode_fjall),
-        elapsed_us: elapsed_us(__body),
-    })
+    )?)
 }
 
 #[cfg(feature = "memory")]
@@ -474,7 +519,8 @@ pub(super) async fn run_memory_search(
     let visibility = lance_visibility(params.visibility).to_string();
     let agent_id = owner.to_string();
     let embedding = embed_query(state, &params.query).await?;
-    let lance = lance_store(state).await?;
+    let lance = memory_lance_store(state).await?;
+    super::memory_vectors::backfill_once(state, params.visibility, vis_byte, owner).await;
     let scope = state.shared.scope.clone();
     let tag = params.tag.clone();
     // Rows the join drops must not shrink the answer, so the vector search over-fetches.
