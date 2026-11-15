@@ -1,11 +1,12 @@
 ---
-status: accepted
+status: superseded
 date: 2026-11-14
+superseded-by: "0023"
 ---
 
 # ADR-0019: Library crate layering
 
-- **Status:** Accepted
+- **Status:** Superseded by ADR-0023 (2026-11-15)
 - **Date:** 2026-11-14
 - **Deciders:** basemind maintainers
 - **Related:** ADR-0014, ADR-0017, ADR-0018

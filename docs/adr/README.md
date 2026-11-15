@@ -102,7 +102,8 @@ them.
 | [0016](0016-shared-base-index-and-worktree-overlays.md) | Shared base index with per-worktree overlays | Accepted |
 | [0017](0017-surface-reduction.md) | Surface reduction — remove graph, web, shell, token-saving and review queue | Accepted (amended by ADR-0022) |
 | [0018](0018-mcp-verb-tools.md) | MCP surface — verb tools with exact schemas | Accepted (amended by ADR-0020, ADR-0022) |
-| [0019](0019-library-crate-layering.md) | Library crate layering | Accepted |
+| [0019](0019-library-crate-layering.md) | Library crate layering | Superseded by ADR-0023 |
 | [0020](0020-verb-tool-contract-amendments.md) | Verb-tool contract — no output schemas, always-load scope, kept domain tools | Accepted (amended by ADR-0022) |
 | [0021](0021-agent-comms-v2.md) | Agent comms v2 — stable identity, per-actor delivery, three deferred tools | Accepted |
 | [0022](0022-surface-adr-amendments.md) | Surface ADR amendments — as-built facts and a measurable value gate | Accepted |
+| [0023](0023-library-crate-layering-revised.md) | Library crate layering, revised | Accepted |
