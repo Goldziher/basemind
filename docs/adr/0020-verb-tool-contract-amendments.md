@@ -51,6 +51,11 @@ each case:
 - The CLI parity rules of ADR-0014 as amended by ADR-0018 are unchanged: the two domain tools keep
   their mode-to-subcommand bijection, the verb tools their injective mapping.
 - The comms redesign owns the removal of `mode.rs`, of `lenient.rs` and of the domain-tool ceiling.
+- `code_refs` pages as ADR-0018 says every list does, with one bound of its own: an exact scan
+  examines at most `SCAN_KEYS_EXAMINED_MAX` index keys per page, so a page can be empty and still
+  carry a `next_cursor`. An older client talking to a newer daemon does not follow that cursor: it
+  stops at the cap with `total_is_partial` set, which is accepted because client and daemon ship
+  together.
 
 ## Alternatives considered
 
