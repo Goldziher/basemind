@@ -257,17 +257,42 @@ class OtherVersionsTests(unittest.TestCase):
 
         self.assertLess(time.time() - marker.stat().st_mtime, MINUTE, "the launch refreshes the marker")
 
-    def test_the_cache_of_launchers_up_to_0_33_is_never_touched(self) -> None:
-        """Those launchers kill and delete whatever else sits in `bin/`; this one stays out of it."""
-        legacy = self.cache / "basemind/bin/0.33.0"
-        legacy.mkdir(parents=True)
-        (legacy / "basemind").write_text("old")
-        age(legacy, LONG_AGO)
+    def legacy_binary(self, version: str, *, installed_secs_ago: int) -> Path:
+        """A version a launcher up to 0.33 installed under `bin/`, which keeps no marker."""
+        directory = self.cache / "basemind/bin" / version
+        directory.mkdir(parents=True)
+        binary = directory / "basemind"
+        binary.symlink_to(shutil.which("sleep"))
+        age(directory, installed_secs_ago)
+        return binary
+
+    def test_nothing_is_installed_into_the_cache_of_launchers_up_to_0_33(self) -> None:
+        """Those launchers kill and delete whatever else sits in `bin/`; this one puts nothing there."""
+        recent = self.legacy_binary("0.33.0", installed_secs_ago=7 * DAY)
 
         self.launch()
 
-        self.assertTrue((legacy / "basemind").is_file(), "bin/ belongs to the older launchers")
+        self.assertTrue(recent.is_symlink(), "a version installed within the threshold may be in use")
         self.assertFalse((self.cache / "basemind/bin" / CURRENT).exists(), "nothing is installed under bin/")
+
+    def test_an_abandoned_version_of_a_launcher_up_to_0_33_is_removed(self) -> None:
+        abandoned = self.legacy_binary("0.33.0", installed_secs_ago=LONG_AGO).parent
+        installing = self.legacy_binary("0.32.0", installed_secs_ago=LONG_AGO).parent
+        (installing.parent / ".lock-0.32.0").mkdir()
+
+        self.launch()
+
+        self.assertFalse(abandoned.exists(), "an old version under bin/ that nothing runs from is reclaimed")
+        self.assertTrue(installing.is_dir(), "one whose install lock is held is left to its launcher")
+
+    def test_a_version_of_a_launcher_up_to_0_33_that_still_runs_is_kept(self) -> None:
+        binary = self.legacy_binary("0.33.0", installed_secs_ago=LONG_AGO)
+        daemon = self.daemon(binary)
+
+        self.launch()
+
+        self.assertTrue(binary.is_symlink(), "a 0.33 daemon still runs from it")
+        self.assertTrue(alive(daemon), "and is not stopped")
 
     def git_bash(self, *, processes: list[Path] | None, cygpath: bool = True) -> Path:
         """A directory to put first on PATH so the launcher finds itself under Git Bash.

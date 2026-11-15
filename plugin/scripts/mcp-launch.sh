@@ -58,9 +58,11 @@ fi
 
 # Cached versions live under versions/. Launchers up to 0.33 keep theirs under the sibling bin/, ~keep
 # where each of them stops every process started from another version's directory and deletes ~keep
-# that directory. Nothing here reads, writes or prunes bin/, so those launchers and this one never ~keep
-# see each other's versions. ~keep
+# that directory. Nothing here installs into or launches from bin/, so those launchers never see ~keep
+# this one's versions. While such a launcher is still in use it manages bin/ itself; this one only ~keep
+# removes what is left there once nothing has used it for PRUNE_AFTER_DAYS. ~keep
 PARENT="${XDG_CACHE_HOME:-$HOME/.cache}/basemind/versions"
+LEGACY_PARENT="${XDG_CACHE_HOME:-$HOME/.cache}/basemind/bin"
 CACHE_ROOT="$PARENT/$VERSION"
 MANAGED_BIN="$CACHE_ROOT/$BINARY_NAME"
 
@@ -153,26 +155,34 @@ unused_long_enough() {
   older_than_minutes "$marker" "$((PRUNE_AFTER_DAYS * 1440))"
 }
 
-# Remove cached version directories other than the current one, but only those nothing has ~keep
-# launched for PRUNE_AFTER_DAYS and no running process was started from (another install, or a ~keep
+# Remove the cached version directories under $1, except the one named $2, but only those nothing ~keep
+# has launched for PRUNE_AFTER_DAYS and no running process was started from (another install, or a ~keep
 # session opened before an update, whose daemon re-executes the binary), and never one an install ~keep
 # holds the lock for. Nothing here stops a process of another version; daemons of different ~keep
 # versions coexist, and each exits on its own once idle. ~keep
-prune_stale_versions() {
-  [ -d "$PARENT" ] || return 0
-  local entry base
-  for entry in "$PARENT"/*/; do
+prune_unused_under() {
+  local parent="$1" keep="$2" entry base
+  [ -d "$parent" ] || return 0
+  for entry in "$parent"/*/; do
     [ -d "$entry" ] || continue
     base="$(basename "$entry")"
-    [ "$base" = "$VERSION" ] && continue
+    [ "$base" = "$keep" ] && continue
     case "$base" in
     [0-9]*)
-      [ -e "$PARENT/.lock-$base" ] && continue
+      [ -e "$parent/.lock-$base" ] && continue
       unused_long_enough "$entry" || continue
       version_in_use "$entry" || rm -rf "$entry" 2>/dev/null || true
       ;;
     esac
   done
+}
+
+# Prune this launcher's cache, and the cache the launchers up to 0.33 left behind. A version there ~keep
+# has no marker, so it is judged by its directory's age: one installed long ago that nothing runs ~keep
+# from. If a 0.33 launcher is still in use after all, it downloads its version again. ~keep
+prune_stale_versions() {
+  prune_unused_under "$PARENT" "$VERSION"
+  prune_unused_under "$LEGACY_PARENT" ""
 }
 
 # Remove install lock and staging directories a crashed install left behind. Another version's ~keep

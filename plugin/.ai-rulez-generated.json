@@ -1,6 +1,6 @@
 {
   "schema_version": "v1",
-  "source_hash": "blake3:065925fe41ec30fb6764573d1e9df3c6e6e1125ce2db1042bea31792d4fe8521",
+  "source_hash": "blake3:1a5f6bf71c118322d1c7abd641e2a763e5540678550ba3a32e601d421075d89c",
   "outputs": {
     ".claude-plugin/plugin.json": {
       "content_hash": "blake3:36f4c5d42de76b97fcdd6b403dbf02672a487f20ded1da4874805a58e3a4d019",
@@ -679,7 +679,7 @@
       "mode": "0644"
     },
     "scripts/mcp-launch.sh": {
-      "content_hash": "blake3:7b657a21fd7915ba9b4cc986b31060f43089262f984e433f84ebe41a56910f93",
+      "content_hash": "blake3:aaec2cf7f9fb344a6f3915666bafc0c58f75da85e7b3a2c1ca8c8a99d4a85106",
       "mode": "0755"
     },
     "skills/basemind-cli/SKILL.md": {
