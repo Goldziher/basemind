@@ -6,7 +6,7 @@ name: bm-statusline
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
 Content-Hash: blake3:42f854544fb11421d5a299c650e29d3502b9f78141fae46017a712c0c6ebc9ed
-Source-Hash: blake3:396781d98442fd3fb0c81f7a7233876359763f6d872a2136aa218ed688e0767d
+Source-Hash: blake3:065925fe41ec30fb6764573d1e9df3c6e6e1125ce2db1042bea31792d4fe8521
 Schema-Version: v1
 -->
 

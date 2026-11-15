@@ -48,6 +48,11 @@ def wait_until_started_from(pid: int, binary: Path) -> None:
     raise AssertionError(f"process {pid} never showed {binary} as its command: {out.stdout!r}")
 
 
+def windows_path(path: Path) -> str:
+    """`path` as `ps -W` prints a Windows executable: on a drive, backslashes, in a case of its own."""
+    return ("C:" + str(path).replace("/", "\\")).upper()
+
+
 @unittest.skipIf(sys.platform == "win32", "the process scan is Unix-only")
 class OtherVersionsTests(unittest.TestCase):
     CACHE_NAME = "cache"
@@ -263,6 +268,63 @@ class OtherVersionsTests(unittest.TestCase):
 
         self.assertTrue((legacy / "basemind").is_file(), "bin/ belongs to the older launchers")
         self.assertFalse((self.cache / "basemind/bin" / CURRENT).exists(), "nothing is installed under bin/")
+
+    def git_bash(self, *, processes: list[Path] | None, cygpath: bool = True) -> Path:
+        """A directory to put first on PATH so the launcher finds itself under Git Bash.
+
+        `uname -s` names MSYS. `ps` refuses every POSIX option, as MSYS ps does, and for `-W` prints
+        `processes` the way it lists Windows executables, or fails when that is `None`. `cygpath -m`
+        maps a path to a drive, as the real one does.
+        """
+        tools = self.root / "git-bash"
+        tools.mkdir()
+        current = self.version_dir(CURRENT)
+        shutil.copy2(current / "basemind", current / "basemind.exe")
+        header = "      PID    PPID    PGID     WINPID   TTY         UID    STIME COMMAND"
+        rows = [
+            f"     {4000 + n}       1    {4000 + n}      {9000 + n}  ?         197609   Nov 15 {windows_path(path)}"
+            for n, path in enumerate(processes or [])
+        ]
+        rows.append("I    5000    4000    5000       9900  pty0      197609 10:22:33 /usr/bin/bash")
+        (tools / "ps-W.txt").write_text("\n".join([header, *rows]) + "\n")
+        listing = f'cat "{tools}/ps-W.txt"' if processes is not None else "exit 1"
+        scripts = {
+            "uname": f'#!/bin/sh\n[ "$1" = -s ] && echo MINGW64_NT-10.0-19045 && exit 0\nexec {shutil.which("uname")} "$@"\n',
+            "ps": f'#!/bin/sh\n[ "$1" = -W ] || exit 1\n{listing}\n',
+        }
+        if cygpath:
+            scripts["cygpath"] = '#!/bin/sh\n[ "$1" = -m ] || exit 1\nprintf \'C:%s\\n\' "$2"\n'
+        for name, body in scripts.items():
+            (tools / name).write_text(body)
+            (tools / name).chmod(0o755)
+        return tools
+
+    def test_git_bash_prunes_an_unused_version_and_keeps_one_a_process_runs_from(self) -> None:
+        """MSYS ps rejects `-A -ww -o args=`; without a listing of its own nothing would ever be pruned."""
+        in_use = self.other_version_binary(IN_USE)
+        unused = self.other_version_binary(UNUSED).parent
+        tools = self.git_bash(processes=[in_use.parent / "basemind.exe"])
+
+        self.launch(path_prefix=tools)
+
+        self.assertFalse(unused.exists(), "a version no Windows process runs from is removed")
+        self.assertTrue(in_use.is_symlink(), "one that `ps -W` shows a process running from is kept")
+
+    def test_git_bash_prunes_nothing_when_its_process_list_cannot_be_read(self) -> None:
+        unused = self.other_version_binary(UNUSED).parent
+        tools = self.git_bash(processes=None)
+
+        self.launch(path_prefix=tools)
+
+        self.assertTrue(unused.is_dir(), "without a process list every version counts as in use")
+
+    def test_git_bash_prunes_nothing_when_a_path_cannot_be_converted(self) -> None:
+        unused = self.other_version_binary(UNUSED).parent
+        tools = self.git_bash(processes=[], cygpath=False)
+
+        self.launch(path_prefix=tools)
+
+        self.assertTrue(unused.is_dir(), "a cache path with no Windows spelling cannot be matched")
 
     def test_another_installs_lock_and_staging_directory_survive_a_launch(self) -> None:
         """Launching one version must not pull the lock and staging area from under another's install."""

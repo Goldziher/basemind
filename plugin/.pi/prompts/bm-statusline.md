@@ -5,7 +5,7 @@ description: Enable the basemind status line in your Claude Code user settings (
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
 Content-Hash: blake3:070f34dd600fdd24509c590c6fe10771de84cca877432ec702a54618569ef688
-Source-Hash: blake3:396781d98442fd3fb0c81f7a7233876359763f6d872a2136aa218ed688e0767d
+Source-Hash: blake3:065925fe41ec30fb6764573d1e9df3c6e6e1125ce2db1042bea31792d4fe8521
 Schema-Version: v1
 -->
 

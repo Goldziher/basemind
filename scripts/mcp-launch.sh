@@ -23,8 +23,14 @@ if [ -z "$PLUGIN_ROOT" ]; then
 fi
 
 BINARY_NAME="basemind"
+# Set on Git Bash, MSYS2 and Cygwin, whose ps and paths differ from every Unix. ~keep
+MSYS_SHELL=""
 case "$(uname -s)" in
-MINGW* | MSYS* | CYGWIN* | Windows_NT) BINARY_NAME="basemind.exe" ;;
+MINGW* | MSYS* | CYGWIN*)
+  BINARY_NAME="basemind.exe"
+  MSYS_SHELL=1
+  ;;
+Windows_NT) BINARY_NAME="basemind.exe" ;;
 esac
 
 # BASEMIND_FORCE_VERSION pins the launcher to a specific version instead of the ~keep
@@ -69,21 +75,59 @@ STALE_INSTALL_MINUTES=10
 binary_version() { "$1" --version 2>/dev/null | awk '{print $2}'; }
 have() { command -v "$1" >/dev/null 2>&1; }
 
+# The running processes, one per line, each line starting with the path the process was started ~keep
+# from. Fails when the list cannot be read. On Unix a line is the whole argument string. The ps of ~keep
+# Git Bash, MSYS2 and Cygwin takes none of the POSIX output options; its -W lists every Windows ~keep
+# process with the executable's path as the last column, which is cut out from the first drive ~keep
+# letter or slash on, since the columns before it hold neither. ~keep
+process_list() {
+  have ps || return 1
+  if [ -n "$MSYS_SHELL" ]; then
+    ps -W 2>/dev/null | awk 'NR > 1 && match($0, /[A-Za-z]:[\\\/]|\//) { print substr($0, RSTART) }'
+  else
+    # -ww: BSD and macOS ps otherwise cut each line at the terminal width. ~keep
+    ps -A -ww -o args= 2>/dev/null
+  fi
+}
+
 # Whether a running process may have been started from the cached version directory $1 (trailing ~keep
-# slash included). Each process's whole argument string is matched by prefix, so a cache path with ~keep
-# spaces still matches, against the directory as given and as `pwd -P` resolves it. Answers yes ~keep
-# when the process list cannot be read: an unused directory costs disk, a deleted one in use costs ~keep
-# a session. ~keep
+# slash included). Each line of the process list is matched by prefix, so a cache path with spaces ~keep
+# still matches, against the directory as given and as `pwd -P` resolves it. Under an MSYS shell ~keep
+# the list holds Windows paths, so both spellings go through cygpath first and the comparison ~keep
+# ignores case and the direction of the slashes. Answers yes when the process list cannot be read ~keep
+# or a path cannot be converted: an unused directory costs disk, a deleted one in use costs a ~keep
+# session. ~keep
 version_in_use() {
   local dir="$1" physical listing
-  have ps || return 0
-  # -ww: BSD and macOS ps otherwise cut each line at the terminal width. ~keep
-  listing="$(ps -A -ww -o args= 2>/dev/null)" || return 0
+  listing="$(process_list)" || return 0
   [ -n "$listing" ] || return 0
   physical="$(cd "$dir" 2>/dev/null && pwd -P)" || physical=""
   [ -n "$physical" ] && physical="${physical%/}/"
-  printf '%s\n' "$listing" | awk -v dir="$dir" -v physical="$physical" '
-    index($0, dir) == 1 || (physical != "" && index($0, physical) == 1) { found = 1 }
+  if [ -n "$MSYS_SHELL" ]; then
+    have cygpath || return 0
+    dir="$(cygpath -m "$dir" 2>/dev/null)" || return 0
+    [ -n "$dir" ] || return 0
+    dir="${dir%/}/"
+    if [ -n "$physical" ]; then
+      physical="$(cygpath -m "$physical" 2>/dev/null)" || return 0
+      [ -n "$physical" ] && physical="${physical%/}/"
+    fi
+  fi
+  printf '%s\n' "$listing" | awk -v dir="$dir" -v physical="$physical" -v windows="$MSYS_SHELL" '
+    BEGIN {
+      if (windows != "") {
+        dir = tolower(dir)
+        physical = tolower(physical)
+      }
+    }
+    {
+      line = $0
+      if (windows != "") {
+        gsub(/\\/, "/", line)
+        line = tolower(line)
+      }
+      if (index(line, dir) == 1 || (physical != "" && index(line, physical) == 1)) found = 1
+    }
     END { exit !found }'
 }
 
