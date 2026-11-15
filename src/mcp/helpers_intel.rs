@@ -30,10 +30,18 @@ pub(super) async fn run_goto_definition(
     let started = std::time::Instant::now();
     // The index is consulted before the file is read, so a path that is not indexed cannot be
     // probed for existence or contents through the errors below.
-    if state.shared.store.read().await.lookup(&params.path).is_none() {
-        return Err(super::tool_contract::not_indexed(state, "code_refs", &params.path));
-    }
-    let file = super::tool_contract::indexed_file(state, "code_refs", &params.path)?;
+    let file = {
+        let store = state.shared.store.read().await;
+        if store.lookup(&params.path).is_none() {
+            return Err(super::tool_contract::not_indexed_in(
+                &store,
+                &state.shared.root,
+                "code_refs",
+                &params.path,
+            ));
+        }
+        super::tool_contract::indexed_file(state, &store, "code_refs", &params.path)?
+    };
     let source = std::fs::read(file)
         .map_err(|e| McpError::invalid_params(format!("`code_refs`: cannot read `{}`: {e}", params.path), None))?;
 

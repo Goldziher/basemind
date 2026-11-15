@@ -185,7 +185,7 @@ pub(super) async fn run_find_callers(
     store: &crate::store::Store,
     refs: RefsSource<'_>,
     route: &IndexRoute,
-    root: &std::path::Path,
+    files: super::tool_contract::IndexedFiles<'_>,
     cache: &super::MapCache,
     params: super::types::FindCallersParams,
     notice: impl FnOnce() -> Option<super::types::LifecycleNotice>,
@@ -198,8 +198,9 @@ pub(super) async fn run_find_callers(
     // read as "these are the callers of the definition in that file".
     let l1 = cache
         .get(&params.path)
-        .ok_or_else(|| super::tool_contract::not_indexed_in(store, root, "code_refs", &params.path))?;
-    let source = crate::path::contained_file(root, &params.path)
+        .ok_or_else(|| super::tool_contract::not_indexed_in(store, files.root, "code_refs", &params.path))?;
+    let source = files
+        .file(store, &params.path)
         .ok()
         .and_then(|file| std::fs::read(file).ok())
         .filter(|bytes| bytes.len() as u64 == l1.size_bytes);
@@ -240,7 +241,7 @@ pub(super) async fn run_find_callers(
                 store,
                 &refs,
                 route,
-                root,
+                files,
                 cache,
                 &params.path,
                 symbol,
@@ -348,7 +349,7 @@ async fn resolved_callers(
     store: &crate::store::Store,
     ref_source: &RefsSource<'_>,
     route: &IndexRoute,
-    root: &std::path::Path,
+    files: super::tool_contract::IndexedFiles<'_>,
     cache: &MapCache,
     def_path: &crate::path::RelPath,
     symbol: &crate::extract::Symbol,
@@ -357,12 +358,7 @@ async fn resolved_callers(
 ) -> Option<ResolvedCallers> {
     let entry = store.lookup(def_path)?;
     let refs = store.read_resolved_by_hex(&entry.hash_hex).ok().flatten()?;
-    let def_file = if def_path.is_external() {
-        def_path.to_path_buf()
-    } else {
-        crate::path::contained_file(root, def_path).ok()?
-    };
-    let def_source = std::fs::read(def_file).ok()?;
+    let def_source = std::fs::read(files.file(store, def_path).ok()?).ok()?;
 
     let mut def_starts: Vec<u32> = Vec::new();
     let push_candidate = |byte: u32, def_starts: &mut Vec<u32>| {
@@ -634,7 +630,7 @@ mod tests {
                     &store,
                     super::RefsSource::Local(&store),
                     &local_route(&store),
-                    root,
+                    crate::mcp::tool_contract::IndexedFiles::contained(root),
                     &cache,
                     FindCallersParams {
                         substring: false,
@@ -721,7 +717,7 @@ mod tests {
                     &store,
                     super::RefsSource::Local(&store),
                     &local_route(&store),
-                    root,
+                    crate::mcp::tool_contract::IndexedFiles::contained(root),
                     &cache,
                     FindCallersParams {
                         substring: false,
@@ -848,7 +844,7 @@ mod tests {
                     &store,
                     super::RefsSource::Local(&store),
                     &local_route(&store),
-                    root,
+                    crate::mcp::tool_contract::IndexedFiles::contained(root),
                     &cache,
                     FindCallersParams {
                         substring: false,

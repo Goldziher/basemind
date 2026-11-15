@@ -312,10 +312,18 @@ pub(super) async fn code_refs(state: &ServerState, p: CodeRefsParams) -> Result<
 /// The index is consulted before the file is read, so the two errors below cannot be used to probe
 /// a file that is not indexed.
 async fn column_of(state: &ServerState, path: &crate::path::RelPath, line: u32, name: &str) -> Result<u32, McpError> {
-    if state.shared.store.read().await.lookup(path).is_none() {
-        return Err(not_indexed(state, "code_refs", path));
-    }
-    let file = super::tool_contract::indexed_file(state, "code_refs", path)?;
+    let file = {
+        let store = state.shared.store.read().await;
+        if store.lookup(path).is_none() {
+            return Err(super::tool_contract::not_indexed_in(
+                &store,
+                &state.shared.root,
+                "code_refs",
+                path,
+            ));
+        }
+        super::tool_contract::indexed_file(state, &store, "code_refs", path)?
+    };
     let source = std::fs::read(file).map_err(|_| not_indexed(state, "code_refs", path))?;
     let text = source
         .split(|byte| *byte == b'\n')
@@ -371,7 +379,7 @@ async fn run_callers(
         &store,
         refs,
         &route,
-        &state.shared.root,
+        super::tool_contract::IndexedFiles::of(state),
         &cache,
         params,
         || state.lifecycle_notice(),
@@ -424,7 +432,11 @@ pub(super) async fn code_outline(state: &ServerState, p: CodeOutlineParams) -> R
     };
     let limit = p.limit.unwrap_or(OUTLINE_LIMIT_DEFAULT).min(SEARCH_LIMIT_MAX) as usize;
 
-    let source = std::fs::read(super::tool_contract::indexed_file(state, "code_outline", &p.path)?).ok();
+    // The outline is already in hand, so a file that can no longer be read (deleted, or replaced by
+    // a link out of the repository since the scan) costs only the derived `end_line`s: `stale`.
+    let source = super::tool_contract::indexed_file(state, &*state.shared.store.read().await, "code_outline", &p.path)
+        .ok()
+        .and_then(|file| std::fs::read(file).ok());
     let stale = source.as_ref().is_none_or(|bytes| bytes.len() as u64 != l1.size_bytes);
     let newlines: Vec<usize> = source
         .as_deref()

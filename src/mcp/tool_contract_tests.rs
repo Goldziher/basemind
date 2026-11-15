@@ -18,8 +18,11 @@ use crate::store::{Store, VIEW_WORKING};
 
 /// A one-shot server over `root`, scanned first when `scanned` is set.
 fn server(root: &std::path::Path, scanned: bool) -> BasemindServer {
+    server_with(root, scanned, ConfigV1::with_defaults())
+}
+
+fn server_with(root: &std::path::Path, scanned: bool, config: ConfigV1) -> BasemindServer {
     crate::store::init_isolated_cache();
-    let config = ConfigV1::with_defaults();
     {
         let mut store = Store::open(root, VIEW_WORKING).expect("open rw");
         if scanned {
@@ -230,4 +233,89 @@ async fn grep_is_literal_unless_regex_is_set() {
         parse_args(serde_json::json!({ "pattern": "cache_root", "path": "*.rs" })).expect("valid arguments");
     let not_a_glob = text_of(&into_tool_result(server.code_grep_call(glob).await));
     assert!(not_a_glob.contains("not a glob"), "{not_a_glob}");
+}
+
+const LINKED_RS: &str = "pub fn linked_needle() {}\n";
+
+/// A repository with `linked.rs` pointing at a file in a sibling directory, and that directory.
+#[cfg(unix)]
+fn repo_with_outside_link() -> (tempfile::TempDir, std::path::PathBuf) {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path().join("repo");
+    std::fs::create_dir_all(&root).expect("repo");
+    std::fs::create_dir_all(tmp.path().join("outside")).expect("outside");
+    std::fs::write(root.join("a.rs"), "pub fn alpha() {}\n").expect("a.rs");
+    std::fs::write(tmp.path().join("outside/linked.rs"), LINKED_RS).expect("linked.rs");
+    (tmp, root)
+}
+
+/// With `scan.follow_symlinks` the scan indexes a link whose target is outside the root, and
+/// `code_grep` reads it. The tools that read one indexed file used to refuse the same path, so a
+/// grep hit could not be opened.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_followed_symlink_the_scan_indexed_is_readable_by_every_tool() {
+    let (tmp, root) = repo_with_outside_link();
+    std::os::unix::fs::symlink(tmp.path().join("outside/linked.rs"), root.join("linked.rs")).expect("symlink");
+    let mut config = ConfigV1::with_defaults();
+    config.scan.follow_symlinks = true;
+    let server = server_with(&root, true, config);
+
+    let grep: CodeGrepParams = parse_args(serde_json::json!({ "pattern": "linked_needle" })).expect("valid arguments");
+    let hits = json_of(&server.code_grep_call(grep).await.expect("code_grep"));
+    assert_eq!(
+        hits["hits"][0]["path"], "linked.rs",
+        "the scan indexed the link: {hits}"
+    );
+
+    let read: CodeReadParams =
+        parse_args(serde_json::json!({ "path": "linked.rs", "symbol": "linked_needle" })).expect("valid arguments");
+    let body = json_of(&into_tool_result(server.code_read_call(read).await));
+    assert_eq!(body["body"], "pub fn linked_needle() {}", "{body}");
+
+    let span: CodeReadParams =
+        parse_args(serde_json::json!({ "path": "linked.rs", "line": 1 })).expect("valid arguments");
+    let line = json_of(&into_tool_result(server.code_read_call(span).await));
+    assert_eq!(line["body"], "pub fn linked_needle() {}", "{line}");
+
+    let outlined = json_of(&into_tool_result(server.code_outline_call(outline("linked.rs")).await));
+    assert_eq!(outlined["symbols"][0]["name"], "linked_needle", "{outlined}");
+    assert!(outlined.get("stale").is_none(), "the file was read: {outlined}");
+
+    // The grant covers what the scan indexed, not every link in the tree.
+    std::os::unix::fs::symlink(tmp.path().join("outside/linked.rs"), root.join("late.rs")).expect("symlink");
+    let unindexed: CodeReadParams =
+        parse_args(serde_json::json!({ "path": "late.rs", "line": 1 })).expect("valid arguments");
+    let refused = into_tool_result(server.code_read_call(unindexed).await);
+    assert_eq!(refused.is_error, Some(true));
+    assert!(!text_of(&refused).contains("linked_needle"), "{}", text_of(&refused));
+}
+
+/// Without the grant, an indexed file replaced by a link out of the repository is not read. Its
+/// outline is in the index all the same, so `code_outline` answers from it and flags the spans
+/// stale instead of failing.
+#[cfg(unix)]
+#[tokio::test]
+async fn an_indexed_file_replaced_by_an_outside_link_is_outlined_but_not_read() {
+    let (tmp, root) = repo_with_outside_link();
+    std::fs::write(root.join("linked.rs"), "pub fn indexed_before() {}\n").expect("linked.rs");
+    let server = server(&root, true);
+    std::fs::remove_file(root.join("linked.rs")).expect("remove");
+    std::os::unix::fs::symlink(tmp.path().join("outside/linked.rs"), root.join("linked.rs")).expect("symlink");
+
+    let outlined = json_of(&into_tool_result(server.code_outline_call(outline("linked.rs")).await));
+    assert_eq!(outlined["symbols"][0]["name"], "indexed_before", "{outlined}");
+    assert_eq!(outlined["stale"], true, "{outlined}");
+
+    for arguments in [
+        serde_json::json!({ "path": "linked.rs", "line": 1 }),
+        serde_json::json!({ "path": "linked.rs", "symbol": "indexed_before" }),
+    ] {
+        let read: CodeReadParams = parse_args(arguments).expect("valid arguments");
+        let refused = into_tool_result(server.code_read_call(read).await);
+        assert_eq!(refused.is_error, Some(true));
+        let text = text_of(&refused);
+        assert!(text.contains("outside this repository"), "{text}");
+        assert!(!text.contains("linked_needle"), "{text}");
+    }
 }

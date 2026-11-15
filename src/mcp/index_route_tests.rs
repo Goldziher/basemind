@@ -432,7 +432,7 @@ fn callers_scan_and_file_batches_are_identical_on_every_route() {
                     &fx.session,
                     RefsSource::Local(&fx.session),
                     route,
-                    &fx.root,
+                    super::tool_contract::IndexedFiles::contained(&fx.root),
                     &fx.cache,
                     FindCallersParams {
                         substring: true,

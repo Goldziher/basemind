@@ -39,6 +39,75 @@ async fn git_diff_refuses_a_symlink_that_leaves_the_repository() {
     assert!(message.contains("outside this repository"), "{message}");
 }
 
+/// Between two revisions only blobs are read, and a tracked symlink's blob is its target path. The
+/// working-tree containment check has nothing to protect there and used to refuse the diff.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn git_diff_between_revisions_reads_a_tracked_symlink_as_git_stores_it() {
+    let (dir, client) = started().await;
+    let root = dir.path();
+    let (outside, _relative) = outside_file(root);
+    std::os::unix::fs::symlink("src/outline.rs", root.join("link.txt")).unwrap();
+    super::git(root, &["add", "-A"]);
+    super::git(root, &["commit", "-qm", "link inside"]);
+    std::fs::remove_file(root.join("link.txt")).unwrap();
+    std::os::unix::fs::symlink(outside.path().join("secret.txt"), root.join("link.txt")).unwrap();
+    super::git(root, &["add", "-A"]);
+    super::git(root, &["commit", "-qm", "link outside"]);
+
+    let diff = call(
+        &client,
+        "git_diff",
+        json!({ "path": "link.txt", "from": "HEAD~1", "to": "HEAD" }),
+    )
+    .await;
+    let rendered = diff.to_string();
+    assert!(rendered.contains("src/outline.rs"), "the old target path: {diff}");
+    assert!(rendered.contains("secret.txt"), "the new target path: {diff}");
+    assert!(!rendered.contains("SECRETTOKEN"), "{diff}");
+
+    let worktree = call_err(&client, "git_diff", json!({ "path": "link.txt" })).await;
+    assert!(worktree.contains("outside this repository"), "{worktree}");
+    assert!(!worktree.contains("SECRETTOKEN"), "{worktree}");
+
+    let climbing = call_err(
+        &client,
+        "git_diff",
+        json!({ "path": "src/../../link.txt", "from": "HEAD~1", "to": "HEAD" }),
+    )
+    .await;
+    assert!(climbing.contains("outside this repository"), "{climbing}");
+}
+
+/// The link is an intermediate directory, so the path's last component is an ordinary file name.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_symlinked_directory_does_not_lead_out_of_the_repository() {
+    let (dir, client) = started().await;
+    let (outside, _relative) = outside_file(dir.path());
+    std::os::unix::fs::symlink(outside.path(), dir.path().join("linkdir")).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("linkdir/secret.txt")).unwrap(),
+        SECRET,
+        "the link resolves, so only the containment check stands between a caller and the file"
+    );
+
+    for (tool, arguments) in [
+        ("git_diff", json!({ "path": "linkdir/secret.txt" })),
+        ("code_read", json!({ "path": "linkdir/secret.txt", "line": 1 })),
+        ("code_read", json!({ "path": "linkdir/secret.txt", "symbol": "x" })),
+        ("code_outline", json!({ "path": "linkdir/secret.txt" })),
+        (
+            "code_refs",
+            json!({ "name": "SECRETTOKEN", "relation": "definition", "path": "linkdir/secret.txt", "line": 1 }),
+        ),
+    ] {
+        let message = call_err(&client, tool, arguments).await;
+        assert!(!message.contains("SECRETTOKEN"), "{tool}: {message}");
+        assert!(message.contains("outside this repository"), "{tool}: {message}");
+    }
+}
+
 /// Relation `definition` read the file before consulting the index, so its two different errors
 /// ("not on that line" / "exists but is not indexed") told a caller what a file outside the
 /// repository contained.

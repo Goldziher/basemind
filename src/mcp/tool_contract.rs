@@ -65,19 +65,79 @@ pub(super) fn outside_repository(tool: &str, path: &RelPath) -> McpError {
     )
 }
 
-/// The working-tree file a caller-supplied `path` names, for reading. A path that is absolute,
-/// climbs out with `..` or resolves through a symlink to somewhere else is refused, not read.
-pub(super) fn working_file(state: &ServerState, tool: &str, path: &RelPath) -> Result<std::path::PathBuf, McpError> {
-    crate::path::contained_file(&state.shared.root, path).map_err(|_| outside_repository(tool, path))
+/// Where the files of this workspace's index are read from.
+#[derive(Clone, Copy)]
+pub(super) struct IndexedFiles<'a> {
+    pub root: &'a std::path::Path,
+    /// `scan.follow_symlinks` as the scan applied it: the index then holds links whose targets are
+    /// outside the root, by the operator's grant.
+    follow_symlinks: bool,
 }
 
-/// [`working_file`] for a path the index already holds. A `scan.extra_roots` file is keyed by its
-/// absolute path and lives outside the repository by design, so its indexed key is read as is.
-pub(super) fn indexed_file(state: &ServerState, tool: &str, path: &RelPath) -> Result<std::path::PathBuf, McpError> {
-    if path.is_external() {
-        return Ok(path.to_path_buf());
+/// Why [`IndexedFiles::file`] did not name a file to read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Unreadable {
+    /// The index holds no such path, so nothing on disk is consulted for it.
+    NotIndexed,
+    /// The path leaves the repository.
+    Outside,
+}
+
+impl<'a> IndexedFiles<'a> {
+    pub(super) fn of(state: &'a ServerState) -> Self {
+        Self {
+            root: &state.shared.root,
+            follow_symlinks: state.shared.config.scan.follow_symlinks,
+        }
     }
-    working_file(state, tool, path)
+
+    /// A root whose scan did not follow symlinks.
+    #[cfg(test)]
+    pub(super) fn contained(root: &'a std::path::Path) -> Self {
+        Self {
+            root,
+            follow_symlinks: false,
+        }
+    }
+
+    /// The working-tree file behind `path`, for reading, when `store` indexes it.
+    ///
+    /// Membership is looked up here, not promised by the caller: the two relaxations below are
+    /// only sound for a path the scan itself admitted. A `scan.extra_roots` file is keyed by its
+    /// absolute path and lives outside the repository by design, so its key is read as is. Under
+    /// `scan.follow_symlinks` the scan indexed whatever a link resolved to, so only the lexical
+    /// check applies and the read follows the link as the scan (and `code_grep`) did. Otherwise
+    /// the path is resolved and must stay inside the root, which also covers an indexed file
+    /// replaced by a link since the scan.
+    pub(super) fn file(&self, store: &crate::store::Store, path: &RelPath) -> Result<std::path::PathBuf, Unreadable> {
+        if store.lookup(path).is_none() && store.lookup_doc(path).is_none() {
+            return Err(Unreadable::NotIndexed);
+        }
+        if path.is_external() {
+            return Ok(path.to_path_buf());
+        }
+        let file = if self.follow_symlinks {
+            crate::path::lexical_file(self.root, path)
+        } else {
+            crate::path::contained_file(self.root, path)
+        };
+        file.map_err(|_| Unreadable::Outside)
+    }
+}
+
+/// [`IndexedFiles::file`] with its refusal phrased for the caller of `tool`.
+pub(super) fn indexed_file(
+    state: &ServerState,
+    store: &crate::store::Store,
+    tool: &str,
+    path: &RelPath,
+) -> Result<std::path::PathBuf, McpError> {
+    IndexedFiles::of(state)
+        .file(store, path)
+        .map_err(|refusal| match refusal {
+            Unreadable::NotIndexed => not_indexed_in(store, &state.shared.root, tool, path),
+            Unreadable::Outside => outside_repository(tool, path),
+        })
 }
 
 /// Why `path` cannot be served from the code map, phrased as the next call to make.

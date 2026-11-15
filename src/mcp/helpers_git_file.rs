@@ -37,9 +37,10 @@ pub(super) fn run_diff(state: &ServerState, params: DiffFileParams) -> Result<Ca
     let started = std::time::Instant::now();
     let repo = require_git_repo(state)?;
     reject_external_path(&params.path)?;
-    // Checked for both forms: only the working-tree side reads the disk, but a path that leaves the
-    // repository names nothing in a revision either.
-    crate::path::contained_file(repo.workdir(), &params.path)
+    // Between two revisions only blobs are read, so the lexical check (`..`, absolute) is the whole
+    // of it: a tracked symlink is a blob holding its target path, wherever that points. The
+    // working-tree side reads the disk, and `diff_file_worktree` resolves the path before it does.
+    crate::path::lexical_file(repo.workdir(), &params.path)
         .map_err(|_| super::tool_contract::outside_repository("git_diff", &params.path))?;
     let resolve = |rev: &str| {
         repo.resolve_rev(rev)
@@ -105,7 +106,10 @@ pub(super) fn run_diff(state: &ServerState, params: DiffFileParams) -> Result<Ca
 /// The working-tree bytes of an indexed file, when they are still the bytes that were indexed (the
 /// outline's byte spans only line up with those).
 fn indexed_source(state: &ServerState, path: &crate::path::RelPath, indexed_size: u64) -> Option<Vec<u8>> {
-    let file = super::tool_contract::indexed_file(state, "git", path).ok()?;
+    let file = {
+        let store = state.shared.store.try_read().ok()?;
+        super::tool_contract::IndexedFiles::of(state).file(&store, path).ok()?
+    };
     std::fs::read(file)
         .ok()
         .filter(|bytes| bytes.len() as u64 == indexed_size)

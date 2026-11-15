@@ -6,7 +6,7 @@ use rmcp::model::CallToolResult;
 use super::ServerState;
 use super::helpers::{json_result, kind_to_str, parse_kind};
 use super::helpers_pick::pick_symbol;
-use super::tool_contract::{indexed_file, not_indexed};
+use super::tool_contract::{indexed_file, not_indexed, not_indexed_in};
 use super::types_code::{ExpandParams, ExpandResponse, ReadSpanResponse};
 use super::types_tools::CodeReadParams;
 use crate::query;
@@ -65,14 +65,7 @@ async fn read_span(
         ));
     }
     state.await_cache_ready().await;
-    let indexed = {
-        let store = state.shared.store.read().await;
-        store.lookup(path).is_some() || store.lookup_doc(path).is_some()
-    };
-    if !indexed {
-        return Err(not_indexed(state, "code_read", path));
-    }
-    let file = indexed_file(state, "code_read", path)?;
+    let file = indexed_file(state, &*state.shared.store.read().await, "code_read", path)?;
     let bytes = std::fs::read(file).map_err(|_| not_indexed(state, "code_read", path))?;
     let newlines: Vec<usize> = memchr::memchr_iter(b'\n', &bytes).collect();
     let total_lines = newlines.len() as u32 + u32::from(bytes.last().is_some_and(|byte| *byte != b'\n'));
@@ -118,12 +111,12 @@ async fn run_expand(state: &ServerState, params: ExpandParams) -> Result<CallToo
         .transpose()
         .map_err(|e| McpError::invalid_params(format!("`code_read`: invalid kind {:?}: {e}", params.kind), None))?;
 
-    let l1 = {
+    let (l1, file) = {
         let store = state.shared.store.read().await;
-        query::file_outline(&store, &params.path).map_err(|_| not_indexed(state, "code_read", &params.path))?
+        let l1 = query::file_outline(&store, &params.path)
+            .map_err(|_| not_indexed_in(&store, &state.shared.root, "code_read", &params.path))?;
+        (l1, indexed_file(state, &store, "code_read", &params.path)?)
     };
-
-    let file = indexed_file(state, "code_read", &params.path)?;
     let file_bytes = std::fs::read(file)
         .map_err(|e| McpError::invalid_params(format!("`code_read`: read {}: {e}", params.path), None))?;
     // Byte spans from the outline only line up with the bytes that were indexed.
