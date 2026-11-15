@@ -195,5 +195,46 @@ async fn git_blame_of_a_symbol_uses_its_span_at_the_blamed_revision() {
         json!({ "path": "src/outline.rs", "symbol": "not_at_that_revision", "rev": "HEAD~1" }),
     )
     .await;
-    assert!(absent.contains("no symbol `not_at_that_revision`"), "{absent}");
+    assert!(
+        absent.contains("no symbol `not_at_that_revision` in `src/outline.rs` at HEAD~1"),
+        "{absent}"
+    );
+
+    // A function that exists only in the working tree is not in HEAD's blob, and the error says
+    // which of the two was looked at.
+    std::fs::write(&path, format!("{source}\npub fn uncommitted() {{}}\n")).unwrap();
+    call(&client, "index_rescan", json!({ "paths": ["src/outline.rs"] })).await;
+    let uncommitted = call_err(
+        &client,
+        "git_blame",
+        json!({ "path": "src/outline.rs", "symbol": "uncommitted" }),
+    )
+    .await;
+    assert!(
+        uncommitted.contains("no symbol `uncommitted` in `src/outline.rs` at HEAD"),
+        "{uncommitted}"
+    );
+}
+
+/// A symbol blame parses the revision's blob. A blob over `scan.max_file_bytes`, which the scan
+/// would not have parsed either, is refused with the span form that needs no parse.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn git_blame_of_a_symbol_does_not_parse_a_blob_over_the_scan_limit() {
+    let big = format!("pub fn first() {{}}\n{}", "// filler to pass the limit\n".repeat(200));
+    let (_dir, client) = started_with(&[
+        (
+            "basemind.toml",
+            "\"$schema\" = \"v1\"\n\n[scan]\nmax_file_bytes = 4096\n",
+        ),
+        ("src/big.rs", big.as_str()),
+    ])
+    .await;
+
+    let refused = call_err(&client, "git_blame", json!({ "path": "src/big.rs", "symbol": "first" })).await;
+    assert!(
+        refused.contains("over `scan.max_file_bytes` (4096)") && refused.contains("`line` and `end_line`"),
+        "{refused}"
+    );
+    let span = call(&client, "git_blame", json!({ "path": "src/big.rs", "line": 1 })).await;
+    assert_eq!(span["hunks"][0]["summary"], "init", "{span}");
 }

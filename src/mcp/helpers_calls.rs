@@ -212,6 +212,7 @@ pub(super) async fn run_find_callers(
     let symbol = super::helpers_pick::pick_symbol(
         "code_refs",
         &params.path,
+        None,
         &l1.symbols,
         Some(&source),
         &params.name,

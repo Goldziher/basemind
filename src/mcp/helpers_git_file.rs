@@ -380,12 +380,26 @@ pub(super) fn run_blame_symbol(state: &ServerState, params: BlameSymbolParams) -
         .ok_or_else(|| {
             McpError::invalid_params(format!("`git_blame`: `{}` does not exist at {at}.", params.path), None)
         })?;
+    // The scan parses no file over `scan.max_file_bytes`; a revision's blob is held to the same.
+    let max_bytes = state.shared.config.scan.max_file_bytes;
+    if bytes.len() as u64 > max_bytes {
+        return Err(McpError::invalid_params(
+            format!(
+                "`git_blame`: `{}` is {} bytes at {at}, over `scan.max_file_bytes` ({max_bytes}), and is not \
+                 parsed for symbols. Blame a line span with `line` and `end_line` instead.",
+                params.path,
+                bytes.len()
+            ),
+            None,
+        ));
+    }
     let outline = outline_entry_for_blob(&state.shared.outline_cache, oid, lang, bytes).ok_or_else(|| {
         McpError::internal_error(format!("`git_blame`: could not parse `{}` at {at}", params.path), None)
     })?;
     let sym = pick_symbol(
         "git_blame",
         &params.path,
+        Some(at),
         &outline.map.symbols,
         Some(outline.source.as_slice()),
         &params.name,
@@ -470,6 +484,7 @@ pub(super) fn run_symbol_history(state: &ServerState, params: SymbolHistoryParam
             pick_symbol(
                 "git_log",
                 &params.path,
+                None,
                 &l1.symbols,
                 source.as_deref(),
                 &params.name,

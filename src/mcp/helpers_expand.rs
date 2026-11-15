@@ -216,6 +216,7 @@ async fn run_expand(state: &ServerState, params: ExpandParams) -> Result<CallToo
     let symbol = pick_symbol(
         "code_read",
         &params.path,
+        None,
         &l1.symbols,
         Some(&file_bytes),
         &params.name,

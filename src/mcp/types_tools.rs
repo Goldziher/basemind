@@ -298,7 +298,8 @@ pub struct GitLogParams {
 pub struct GitBlameParams {
     /// Repo-relative file path.
     pub path: RelPath,
-    /// First line of a span, 1-based. With `symbol`: a line inside the definition meant.
+    /// First line of a span, 1-based, as numbered at `rev`. With `symbol`: a line inside the
+    /// definition meant.
     #[serde(default)]
     pub line: Option<u32>,
     /// Last line of a span, inclusive (default: `line`). Needs `line`; not with `symbol`.

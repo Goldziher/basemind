@@ -54,11 +54,15 @@ fn bounded_list(items: impl ExactSizeIterator<Item = String>) -> String {
 
 /// Pick the definition of `name` in `symbols`, the outline of `path`.
 ///
-/// `source` is the file's current bytes when they could be read; it turns start rows into line
-/// spans. Errors name every candidate with its span, so the next call can pass a `line`.
+/// `source` is the bytes the outline describes, when they could be read; it turns start rows into
+/// line spans. `rev` is the revision the outline was taken at, for a tool that reads history: an
+/// error then says where the symbol was looked for, since the working tree may well define it.
+/// Errors name every candidate with its span, so the next call can pass a `line`.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn pick_symbol<'a>(
     tool: &str,
     path: &RelPath,
+    rev: Option<&str>,
     symbols: &'a [Symbol],
     source: Option<&[u8]>,
     name: &str,
@@ -78,6 +82,10 @@ pub(super) fn pick_symbol<'a>(
         )
     };
     let listed = || bounded_list(candidates.iter().map(|symbol| describe(symbol)));
+    let place = match rev {
+        Some(rev) => format!("`{path}` at {rev}"),
+        None => format!("`{path}`"),
+    };
 
     if candidates.is_empty() {
         let of_kind = kind
@@ -94,7 +102,7 @@ pub(super) fn pick_symbol<'a>(
             format!("it defines: {}", bounded_list(others.into_iter()))
         };
         return Err(McpError::invalid_params(
-            format!("`{tool}`: no symbol `{name}`{of_kind} in `{path}`; {available}"),
+            format!("`{tool}`: no symbol `{name}`{of_kind} in {place}; {available}"),
             None,
         ));
     }
@@ -108,7 +116,7 @@ pub(super) fn pick_symbol<'a>(
         }
         return Err(McpError::invalid_params(
             format!(
-                "`{tool}`: `{name}` names {} definitions in `{path}`: {}. Pass `line` (any line inside the one \
+                "`{tool}`: `{name}` names {} definitions in {place}: {}. Pass `line` (any line inside the one \
                  you mean).",
                 candidates.len(),
                 listed()
@@ -129,7 +137,7 @@ pub(super) fn pick_symbol<'a>(
         Some((occurrence, symbol)) => Ok(Picked { symbol, occurrence }),
         None => Err(McpError::invalid_params(
             format!(
-                "`{tool}`: `line` {line} is inside no definition of `{name}` in `{path}`: {}",
+                "`{tool}`: `line` {line} is inside no definition of `{name}` in {place}: {}",
                 listed()
             ),
             None,
@@ -175,7 +183,7 @@ mod tests {
     fn a_unique_name_needs_no_line() {
         let symbols = outline();
         let path = RelPath::from("a.rs");
-        let picked = pick_symbol("t", &path, &symbols, Some(SOURCE), "other", None, None).expect("unique");
+        let picked = pick_symbol("t", &path, None, &symbols, Some(SOURCE), "other", None, None).expect("unique");
         assert_eq!(picked.symbol.start_row, 6);
         assert_eq!(picked.occurrence, 0);
     }
@@ -184,7 +192,7 @@ mod tests {
     fn an_ambiguous_name_lists_every_candidate_with_its_span() {
         let symbols = outline();
         let path = RelPath::from("a.rs");
-        let text = message(pick_symbol("t", &path, &symbols, Some(SOURCE), "new", None, None));
+        let text = message(pick_symbol("t", &path, None, &symbols, Some(SOURCE), "new", None, None));
         assert!(text.contains("function new (lines 1-2)"), "{text}");
         assert!(text.contains("function new (lines 4-6)"), "{text}");
         assert!(text.contains("Pass `line`"), "{text}");
@@ -194,18 +202,49 @@ mod tests {
     fn a_line_inside_a_definition_picks_it_and_reports_its_occurrence() {
         let symbols = outline();
         let path = RelPath::from("a.rs");
-        let picked = pick_symbol("t", &path, &symbols, Some(SOURCE), "new", None, Some(5)).expect("second");
+        let picked = pick_symbol("t", &path, None, &symbols, Some(SOURCE), "new", None, Some(5)).expect("second");
         assert_eq!(picked.symbol.start_row, 3);
         assert_eq!(picked.occurrence, 1);
-        let text = message(pick_symbol("t", &path, &symbols, Some(SOURCE), "new", None, Some(7)));
+        let text = message(pick_symbol(
+            "t",
+            &path,
+            None,
+            &symbols,
+            Some(SOURCE),
+            "new",
+            None,
+            Some(7),
+        ));
         assert!(text.contains("inside no definition"), "{text}");
+    }
+
+    #[test]
+    fn an_error_about_a_revision_names_it() {
+        let symbols = outline();
+        let path = RelPath::from("a.rs");
+        let at = Some("HEAD~2");
+        let missing = message(pick_symbol("t", &path, at, &symbols, Some(SOURCE), "nope", None, None));
+        assert!(missing.contains("no symbol `nope` in `a.rs` at HEAD~2;"), "{missing}");
+        let ambiguous = message(pick_symbol("t", &path, at, &symbols, Some(SOURCE), "new", None, None));
+        assert!(ambiguous.contains("2 definitions in `a.rs` at HEAD~2:"), "{ambiguous}");
+        let outside = message(pick_symbol(
+            "t",
+            &path,
+            at,
+            &symbols,
+            Some(SOURCE),
+            "new",
+            None,
+            Some(7),
+        ));
+        assert!(outside.contains("of `new` in `a.rs` at HEAD~2:"), "{outside}");
     }
 
     #[test]
     fn a_missing_name_lists_a_bounded_set_of_what_the_file_defines() {
         let symbols: Vec<Symbol> = (0..30).map(|row| symbol(&format!("f{row}"), row, 0, 0)).collect();
         let path = RelPath::from("a.rs");
-        let text = message(pick_symbol("t", &path, &symbols, None, "nope", None, None));
+        let text = message(pick_symbol("t", &path, None, &symbols, None, "nope", None, None));
         assert!(text.contains("no symbol `nope` in `a.rs`"), "{text}");
         assert!(text.contains("f0 (line 1)") && text.contains("f19 (line 20)"), "{text}");
         assert!(!text.contains("f20 ("), "{text}");
