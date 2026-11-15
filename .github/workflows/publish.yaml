@@ -458,7 +458,7 @@ jobs:
       - name: Build release binary
         shell: bash
         run: |
-          cargo build --release --features "${{ matrix.features || 'full' }}" --bin basemind \
+          cargo build --release --features full --bin basemind \
             --target "${{ matrix.triple }}"
 
       - name: Package release
