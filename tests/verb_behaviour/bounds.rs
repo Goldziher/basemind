@@ -113,8 +113,8 @@ async fn git_diff_caps_a_huge_diff_and_says_so() {
     );
 }
 
-/// The byte cap bounds a single hunk too. A new file is one hunk holding the whole file, which used
-/// to be returned in full however large it was.
+/// The byte cap bounds a single hunk too: a new file is one hunk holding the whole file, however
+/// large it is.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn git_diff_clips_one_oversized_hunk_and_says_so() {
     let (dir, client) = started().await;
@@ -474,4 +474,48 @@ async fn code_read_cuts_an_oversized_read_at_a_line_and_reports_where() {
         small.get("truncated_reason").is_none() && small.get("omitted").is_none(),
         "{small}"
     );
+}
+
+const TWO_NEW_RS: &str = "\
+pub struct A;
+pub struct B;
+
+impl A {
+    pub fn new() -> Self {
+        A
+    }
+}
+
+impl B {
+    pub fn new() -> Self {
+        B
+    }
+}
+";
+
+/// `added` and `removed` name a symbol by name and kind, so `common` counts by the same identity:
+/// two `new` methods are one entry, not two.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn git_diff_structural_counts_a_repeated_symbol_once() {
+    let (_dir, client) = started_with(&[("src/two_new.rs", TWO_NEW_RS)]).await;
+
+    let outline = call(&client, "code_outline", json!({ "path": "src/two_new.rs" })).await;
+    let symbols = outline["symbols"].as_array().expect("symbols");
+    let distinct: std::collections::BTreeSet<(&str, &str)> = symbols
+        .iter()
+        .map(|symbol| (symbol["name"].as_str().unwrap(), symbol["kind"].as_str().unwrap()))
+        .collect();
+    assert!(
+        distinct.len() < symbols.len(),
+        "the fixture repeats a symbol: {outline}"
+    );
+
+    let diff = call(
+        &client,
+        "git_diff",
+        json!({ "path": "src/two_new.rs", "structural": true }),
+    )
+    .await;
+    assert_eq!(diff["common"].as_u64(), Some(distinct.len() as u64), "{diff}");
+    assert_eq!((&diff["added"], &diff["removed"]), (&json!([]), &json!([])), "{diff}");
 }

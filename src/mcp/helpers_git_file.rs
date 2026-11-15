@@ -246,7 +246,7 @@ pub(super) fn run_diff_outline(state: &ServerState, params: DiffOutlineParams) -
                     kind: k.to_string(),
                 })
                 .collect();
-            let common = h.iter().filter(|p| ts.contains(*p)).count();
+            let common = hs.intersection(&ts).count();
             (added, removed, common, None)
         }
         (Some(h), None) => (
