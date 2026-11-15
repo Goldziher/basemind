@@ -128,7 +128,8 @@ impl Machine {
 }
 
 /// A daemon that answers each request from a script and records what it was asked. `None` from the
-/// script closes the connection without a reply, which is what a wedged daemon looks like.
+/// script closes the connection without a reply, which is what a wedged daemon looks like. Once
+/// it has accepted a `Stop` it closes its listener, as a daemon that drains and exits does.
 struct Scripted {
     seen: Arc<Mutex<Vec<&'static str>>>,
     done: Arc<AtomicBool>,
@@ -168,11 +169,16 @@ impl Scripted {
                     CommsRequest::Ping => "ping",
                     _ => "other",
                 });
-                if let Some(response) = script(&request) {
+                let response = script(&request);
+                let leaving = request == CommsRequest::Stop && response == Some(CommsResponse::Ok);
+                if let Some(response) = response {
                     let reply = rmp_serde::to_vec_named(&CommsOut::Response(response)).expect("encode");
                     let len = u32::try_from(reply.len()).expect("len fits");
                     let _ = stream.write_all(&len.to_be_bytes());
                     let _ = stream.write_all(&reply);
+                }
+                if leaving {
+                    break;
                 }
             }
         });
@@ -514,13 +520,14 @@ fn comms_stop_terminates_a_silent_daemon_on_another_protocol_that_the_pidfile_na
     assert!(!stand_in.alive(), "the recorded, silent daemon is terminated");
 }
 
+/// A process answered the handshake, then went silent, and the pidfile names nobody alive. The
+/// command can neither call that "no daemon" nor signal on the registry's word.
 #[test]
-fn comms_stop_does_not_terminate_a_silent_process_the_pidfile_does_not_name() {
+fn comms_stop_fails_with_what_to_do_when_a_silent_daemon_cannot_be_identified() {
     let machine = Machine::new();
     let stand_in = StandIn::spawn();
     let holder = StandIn::spawn();
     machine.register_only(stand_in.0, holder.0);
-    // The pidfile's holder leaves by itself, so the command has nothing to wait out.
     holder.kill();
     let _daemon = Scripted::serve(&machine.socket(), |request| match request {
         CommsRequest::Hello { .. } => Some(proto_skew()),
@@ -529,13 +536,101 @@ fn comms_stop_does_not_terminate_a_silent_process_the_pidfile_does_not_name() {
 
     let out = machine.run(&["--json", "comms", "stop"], &[]);
 
-    assert!(out.status.success(), "{}", text(&out.stderr));
-    let report: serde_json::Value = serde_json::from_slice(&out.stdout).expect("stop --json prints JSON");
-    assert_eq!(report["force_terminated"], 0, "{report}");
+    assert!(
+        !out.status.success(),
+        "something is still listening, so this is not success: {}",
+        text(&out.stdout)
+    );
+    let stderr = text(&out.stderr);
+    assert!(stderr.contains("does not name a live comms daemon"), "{stderr}");
+    assert!(stderr.contains("lsof"), "it says how to find the process: {stderr}");
     assert!(
         stand_in.alive(),
         "a registry record alone does not license a signal when the pidfile names another process"
     );
+}
+
+/// The pidfile is what identifies the process to signal, and it is read when the signal is due,
+/// not when the command starts: the exit window is long enough for the holder to change.
+#[test]
+fn comms_stop_signals_the_process_the_pidfile_names_when_the_exit_window_ends() {
+    /// Well inside the stop command's exit window, well after anything it reads at the start.
+    const LATE_IN_THE_WINDOW: Duration = Duration::from_secs(7);
+    let machine = Machine::new();
+    let at_start = StandIn::spawn();
+    let at_the_end = StandIn::spawn();
+    machine.record_daemon(at_start.0);
+    let _daemon = Scripted::serve(&machine.socket(), |request| match request {
+        CommsRequest::Hello { .. } => Some(proto_skew()),
+        _ => None,
+    });
+    let (pidfile, successor) = (machine.generation.join("daemon.pid"), at_the_end.0);
+    let named_at_start = at_start.0;
+    let handover = std::thread::spawn(move || {
+        std::thread::sleep(LATE_IN_THE_WINDOW);
+        let named = std::fs::read_to_string(&pidfile)
+            .expect("read pidfile")
+            .replace(&format!("\"pid\":{named_at_start}"), &format!("\"pid\":{successor}"));
+        std::fs::write(&pidfile, named).expect("rewrite pidfile");
+    });
+
+    let out = machine.run(&["--json", "comms", "stop"], &[]);
+
+    handover.join().expect("handover thread");
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    let report: serde_json::Value = serde_json::from_slice(&out.stdout).expect("stop --json prints JSON");
+    assert_eq!(report["force_terminated"], 1, "{report}");
+    assert!(
+        at_start.alive(),
+        "the process the pidfile named when the command started is not the holder any more"
+    );
+    assert!(!at_the_end.alive(), "the process it names at the end is");
+}
+
+/// `stop --all` must give a daemon the stop command's patience. One that takes two seconds to
+/// answer is serving, not unreachable, and must not be killed by the pid in its registry record.
+#[test]
+fn comms_stop_all_waits_for_a_slow_daemon_instead_of_killing_it_by_its_registry_pid() {
+    const SLOWER_THAN_A_PROBE: Duration = Duration::from_secs(2);
+    let machine = Machine::new();
+    let stand_in = StandIn::spawn();
+    machine.record_daemon(stand_in.0);
+    let daemon = Scripted::serve(&machine.socket(), |request| match request {
+        CommsRequest::Stop => {
+            std::thread::sleep(SLOWER_THAN_A_PROBE);
+            Some(CommsResponse::Ok)
+        }
+        CommsRequest::Ping => Some(CommsResponse::Pong),
+        _ => None,
+    });
+
+    let out = machine.run(&["--json", "comms", "stop", "--all"], &[]);
+
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    let report: serde_json::Value = serde_json::from_slice(&out.stdout).expect("stop --all --json prints JSON");
+    assert_eq!(report["stopped"], 1, "{report}");
+    assert_eq!(report["force_terminated"], 0, "{report}");
+    assert_eq!(daemon.asked(), ["stop"], "its own answer is what stopped it");
+    assert!(stand_in.alive(), "a daemon that answered must not be signalled");
+}
+
+#[test]
+fn comms_stop_all_does_not_signal_a_daemon_that_ignores_stop_but_answers_ping() {
+    let machine = Machine::new();
+    let stand_in = StandIn::spawn();
+    machine.record_daemon(stand_in.0);
+    let _daemon = Scripted::serve(&machine.socket(), |request| match request {
+        CommsRequest::Ping => Some(CommsResponse::Pong),
+        _ => None,
+    });
+
+    let out = machine.run(&["--json", "comms", "stop", "--all"], &[]);
+
+    assert!(!out.status.success(), "the daemon was not stopped");
+    let report: serde_json::Value = serde_json::from_slice(&out.stdout).expect("stop --all --json prints JSON");
+    assert_eq!(report["force_terminated"], 0, "{report}");
+    assert_eq!(report["left_running"][0]["pid"], stand_in.0, "{report}");
+    assert!(stand_in.alive(), "a daemon that still answers must not be signalled");
 }
 
 /// `BASEMIND_NO_AUTOSPAWN` in the client's own environment: an older daemon is used as it is,

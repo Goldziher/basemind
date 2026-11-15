@@ -8,12 +8,12 @@ use std::time::{Duration, Instant};
 
 use super::super::protocol::StatusReport;
 use super::super::store::STORE_DIR;
-use super::probe::{StopOutcome, force_terminate, request_stop_classified};
+use super::probe::{StopOutcome, force_terminate, request_stop_classified, request_stop_within};
 use super::{
-    CommsPaths, NO_AUTOSPAWN_ENV, SPAWN_POLL_INTERVAL, SingletonError, SpawnPolicy, autospawn_disabled, daemon_status,
-    off_worker, probe_alive, version_is_older,
+    CommsPaths, ENDPOINT_TIMEOUT, NO_AUTOSPAWN_ENV, SPAWN_POLL_INTERVAL, SingletonError, SpawnPolicy,
+    autospawn_disabled, daemon_status, endpoint_accepts, off_worker, probe_alive, version_is_older,
 };
-use crate::daemon_lock::{self, DaemonKind};
+use crate::daemon_lock::{self, DaemonKind, LockState};
 
 /// The store error token: the one `Stop` refusal that reports a fault rather than a decision.
 const STORE_ERROR: &str = "store_error";
@@ -36,6 +36,55 @@ impl Timings {
         exit: Duration::from_secs(12),
         term_grace: Duration::from_secs(5),
     };
+
+    /// A takeover reclaims by the strictest rules: any answer at all spares the daemon.
+    fn reclaim(self) -> ReclaimRules {
+        ReclaimRules {
+            exit: self.exit,
+            term_grace: self.term_grace,
+            probe_timeout: ENDPOINT_TIMEOUT,
+            store_error_is_silence: false,
+        }
+    }
+}
+
+/// How a caller reclaims a generation from a daemon that has stopped answering.
+#[derive(Clone, Copy, Debug)]
+pub struct ReclaimRules {
+    /// How long the daemon has to leave by itself before anything else is tried.
+    pub exit: Duration,
+    /// How long it gets on SIGTERM before SIGKILL.
+    pub term_grace: Duration,
+    /// How long the `Stop` sent at the end of the exit window waits for an answer.
+    pub probe_timeout: Duration,
+    /// Whether a `store_error` answer to that `Stop` counts as no answer. It does for an operator's
+    /// explicit stop: a daemon that answers only to say its store is broken is the one they are
+    /// trying to get rid of. It never does for a takeover.
+    pub store_error_is_silence: bool,
+}
+
+/// How [`reclaim_holder`] left the generation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Reclaimed {
+    /// No daemon is there any more. `forced` says it took a signal.
+    Gone {
+        /// Whether the daemon had to be terminated by pid.
+        forced: bool,
+    },
+    /// The daemon answered at the end of the exit window and was left alone. `stop` is its answer
+    /// to `Stop`; [`StopOutcome::Unreachable`] there means it answered `Ping` only.
+    Answers {
+        /// What it answered to the end-of-window `Stop`.
+        stop: StopOutcome,
+    },
+    /// Something is still there and answers nothing, but `daemon.pid` does not name a live comms
+    /// daemon (or not the expected one), so nothing was signalled.
+    Unidentified,
+    /// The process `daemon.pid` names was signalled and is still alive.
+    Survived {
+        /// The pid that outlived SIGKILL.
+        pid: u32,
+    },
 }
 
 /// This binary's side of the comparison. A parameter rather than the crate constants so the tests
@@ -173,43 +222,60 @@ pub(super) async fn settle_existing(
     if !wait_until(timings.drain, || !off_worker(|| probe_alive(socket))).await {
         return Err(stale(report));
     }
-    reclaim_silent(paths, report, timings).await
+    match reclaim_holder(paths, Some(report.pid), timings.reclaim()).await {
+        Reclaimed::Gone { .. } => Ok(Existing::Spawn),
+        // Alive and answering, or alive and not the recorded holder: it may not be signalled, and
+        // a daemon spawned now would only exit on the lock that process may still hold.
+        Reclaimed::Answers { .. } | Reclaimed::Unidentified | Reclaimed::Survived { .. } => Err(stale(report)),
+    }
 }
 
-/// The socket has gone quiet. A daemon that closed its socket is usually on its way out — draining
-/// after this client's `Stop`, after another client's, or on its own idle exit — so it gets the
-/// whole exit window whether or not it answered this `Stop`. Only a process still there at the end
-/// of the window is signalled, and only if the endpoint is still silent then and this generation's
-/// pidfile, read at that moment, names the pid the daemon itself reported. A pid taken from the wire
-/// alone could be anything: an in-process test broker reports its host.
-async fn reclaim_silent(
-    paths: &CommsPaths,
-    report: StatusReport,
-    timings: Timings,
-) -> Result<Existing, SingletonError> {
-    let pid = report.pid;
-    if wait_until(timings.exit, || !daemon_lock::pid_is_live(pid)).await {
-        return Ok(Existing::Spawn);
+/// Reclaim a generation from a daemon that has stopped answering: the one path by which a daemon
+/// is ever signalled, shared by the takeover and by `basemind comms stop` (`--all` included).
+///
+/// A daemon that closed its socket is usually on its way out — draining after this caller's `Stop`,
+/// after another's, or on its own idle exit — so first it gets the whole `rules.exit` window. Gone
+/// means `reported_pid` no longer runs, or, when the caller has no pid from the daemon itself, that
+/// nothing holds `daemon.lock` and nothing accepts a connection at the endpoint. A daemon still
+/// there at the end of the window is asked again, `Stop` and then `Ping`, and is left alone if it
+/// answers either. Only one silent to both is signalled, and only the process this generation's
+/// `daemon.pid` names when read at that moment; given a `reported_pid`, the two must agree. A pid
+/// taken from the wire alone could be anything: an in-process test broker reports its host.
+pub async fn reclaim_holder(paths: &CommsPaths, reported_pid: Option<u32>, rules: ReclaimRules) -> Reclaimed {
+    let socket = paths.socket_path.as_path();
+    let gone = || match reported_pid {
+        Some(pid) => !daemon_lock::pid_is_live(pid),
+        None => daemon_lock::lock_state(&paths.comms_dir) != LockState::Held && !endpoint_accepts(socket),
+    };
+    if wait_until(rules.exit, &gone).await {
+        return Reclaimed::Gone { forced: false };
     }
-    if off_worker(|| probe_alive(&paths.socket_path)) {
-        return Err(stale(report));
+    let stop = off_worker(|| request_stop_within(socket, rules.probe_timeout));
+    let silent = match &stop {
+        StopOutcome::Unreachable => !off_worker(|| probe_alive(socket)),
+        StopOutcome::Refused { code, .. } => rules.store_error_is_silence && code == STORE_ERROR,
+        StopOutcome::Accepted => false,
+    };
+    if !silent {
+        return Reclaimed::Answers { stop };
     }
-    let named = daemon_lock::recorded_holder(&paths.comms_dir)
-        .is_some_and(|holder| holder.pid == pid && holder.kind == DaemonKind::Comms);
-    if !named {
-        // Alive, silent and not the recorded holder: it may not be signalled, and a daemon spawned
-        // now would only exit on the lock that process may still hold.
-        return Err(stale(report));
+    if gone() {
+        return Reclaimed::Gone { forced: false };
     }
+    let Some(holder) = daemon_lock::recorded_holder(&paths.comms_dir)
+        .filter(|holder| holder.kind == DaemonKind::Comms && reported_pid.is_none_or(|pid| holder.pid == pid))
+    else {
+        return Reclaimed::Unidentified;
+    };
     tracing::warn!(
-        daemon_version = %report.version,
-        daemon_pid = pid,
-        "comms: the previous daemon stopped answering without exiting; terminating it by pid"
+        daemon_version = %holder.version,
+        daemon_pid = holder.pid,
+        "comms: the daemon stopped answering without exiting; terminating it by pid"
     );
-    if off_worker(|| force_terminate(pid, timings.term_grace)) {
-        Ok(Existing::Spawn)
+    if off_worker(|| force_terminate(holder.pid, rules.term_grace)) {
+        Reclaimed::Gone { forced: true }
     } else {
-        Err(stale(report))
+        Reclaimed::Survived { pid: holder.pid }
     }
 }
 

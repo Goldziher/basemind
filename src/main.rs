@@ -13,6 +13,8 @@ use basemind::store::{LockHolder, Store};
 use basemind::watcher::{BatchKind, WatchBatch};
 
 mod comms_cli;
+#[cfg(all(feature = "comms", any(unix, windows)))]
+mod comms_stop;
 mod doctor_cli;
 mod lang_cli;
 #[cfg(all(feature = "comms", any(unix, windows)))]

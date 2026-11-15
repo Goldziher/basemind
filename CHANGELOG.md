@@ -279,6 +279,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   bring-up for good.
   "Older" and "newer" follow semantic-version precedence, pre-release included: the daemon of
   `0.34.0-rc.1` makes way for `0.34.0` and is never preferred to it.
+- `basemind comms stop` and `comms stop --all` reclaim a daemon by the takeover's own steps: wait
+  the exit window, ask once more (`Stop`, then `Ping`), and signal only a daemon silent to both, as
+  the process the generation's `daemon.pid` names at that moment. `stop` read the pidfile once and
+  signalled twelve seconds later without asking again; `stop --all` gave each daemon 800 ms to
+  answer `Stop` and then killed the pid in its registry record. A daemon that is still there (it
+  holds `daemon.lock`, or its socket still accepts) but that the pidfile does not identify now
+  fails the command with how to find it, where `stop` printed `no live comms daemon` and exited
+  0. `stop --all` stops the daemons in parallel, reports the ones it left running (`left_running`
+  with `--json`) and exits non-zero when there are any.
 - `basemind serve` no longer retries forever, silently, when it cannot get a daemon, and no longer
   exits before reading the host's `initialize` when it cannot get one at start. The first
   connection goes through the same path as a reconnect. A failure no retry can cure ends the

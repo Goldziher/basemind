@@ -240,6 +240,7 @@ src/
 │                             context.rs the one-shot server (daemon-forwarding when one is up)
 ├── doctor_cli.rs, lang_cli.rs, comms_cli.rs — `doctor`, `lang`, and `comms`/`daemon`/`statusline`
 │                             entry points in the binary crate
+├── comms_stop.rs           — `comms stop` and `comms stop --all`: ask, wait, reclaim
 ├── queries/<pack-name>.scm — hand-written extraction queries (override TSLP tags.scm)
 ├── render.rs, hashing.rs, watcher.rs                   — supporting modules
 
@@ -903,8 +904,9 @@ protocol have no daemon, and a `basemind serve` relay, at session start as after
 requests for ten seconds and then answers them with that error while it retries with a growing
 back-off. A daemon that closed its socket gets the whole exit window to
 leave. SIGTERM and SIGKILL are reserved for a process still there after it, silent to `Stop` and
-`Ping`, that the generation's `daemon.pid` names at that moment. The full table is the module doc
-of `src/comms/singleton.rs`.
+`Ping` when asked once more, that the generation's `daemon.pid` names at that moment. `comms stop`
+and `comms stop --all` reclaim a daemon by the same steps and the same function. The full table is
+the module doc of `src/comms/singleton.rs`.
 
 ### Daemon lifecycle and resource containment
 

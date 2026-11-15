@@ -46,9 +46,11 @@
 //!
 //! A daemon whose socket has gone quiet has the whole exit window to leave by itself, because it is
 //! usually draining for someone else: another client's `Stop`, or its own idle exit. If its process
-//! is still there afterwards and the socket is still silent, it gets SIGTERM then SIGKILL — but only
-//! when `daemon.pid` in this generation, read at that moment, names the pid it reported. Otherwise
-//! the call fails with `StalePredecessor`.
+//! is still there afterwards it is asked once more, `Stop` and then `Ping`; if it is silent to both
+//! it gets SIGTERM then SIGKILL — but only when `daemon.pid` in this generation, read at that
+//! moment, names the pid it reported. Otherwise the call fails with `StalePredecessor`.
+//! `basemind comms stop` and `comms stop --all` reclaim a daemon through the same steps
+//! ([`reclaim_holder`]), identifying it by `daemon.pid` alone.
 //!
 //! A daemon that does not answer `Status` at all is not classified: if it answers `Ping` it is
 //! used, and the handshake reports what is wrong with it; if it does not, one is spawned, and the
@@ -690,6 +692,7 @@ fn daemon_status(socket_path: &Path) -> Option<StatusReport> {
 #[path = "singleton_takeover.rs"]
 mod takeover;
 use takeover::Takeover;
+pub use takeover::{ReclaimRules, Reclaimed, reclaim_holder};
 
 /// Serviceability probing + forced reclaim. See [`singleton_probe`](probe) for why these are not
 /// the same question as [`probe_alive`].
@@ -773,6 +776,29 @@ fn bounded<T: Send + 'static>(limit: Duration, work: impl FnOnce() -> Option<T> 
         })
         .ok()?;
     result.recv_timeout(limit).ok().flatten()
+}
+
+/// Whether anything accepts a connection at the endpoint: a daemon that is serving, or one that
+/// has stopped answering but not yet closed its listener. Sends nothing.
+pub(crate) fn endpoint_accepts(socket_path: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        std::os::unix::net::UnixStream::connect(socket_path).is_ok()
+    }
+    #[cfg(windows)]
+    {
+        /// Every instance of the pipe is serving a client, which takes a server.
+        const ERROR_PIPE_BUSY: i32 = 231;
+        match std::fs::OpenOptions::new().read(true).write(true).open(socket_path) {
+            Ok(_) => true,
+            Err(error) => error.raw_os_error() == Some(ERROR_PIPE_BUSY),
+        }
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = socket_path;
+        false
+    }
 }
 
 /// Open the platform endpoint (Unix socket / Windows named pipe) with `timeout` on reads and writes.

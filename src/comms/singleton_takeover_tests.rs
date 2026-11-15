@@ -492,13 +492,15 @@ async fn the_pidfile_is_read_again_at_the_end_of_the_exit_window() {
         CommsRequest::Status => Some(status(pid, OLDER, OTHER_PROTO)),
         _ => None,
     });
+    // The handover comes late in the exit window: long after a read made when the window opened,
+    // which would still see the first holder and signal it at the end.
     let timings = Timings {
-        exit: Duration::from_secs(2),
+        exit: Duration::from_secs(3),
         ..FAST
     };
     let (comms_dir, successor_pid) = (dir.path().to_path_buf(), successor.0);
     let handover = std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_millis(100));
+        std::thread::sleep(Duration::from_millis(2000));
         record_holder(&comms_dir, successor_pid);
     });
 
@@ -617,4 +619,173 @@ async fn a_call_reports_whether_it_sent_stop() {
     .await;
     assert_eq!(settled.expect("nothing to settle"), Existing::Spawn);
     assert!(!stop_sent, "with no daemon there is nobody to ask");
+}
+
+/// The same window, seen from its other end: a daemon that was silent throughout and answers
+/// again when the window closes is alive and serving, whatever its pidfile says.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_daemon_silent_through_the_exit_window_that_answers_ping_at_its_end_is_not_signalled() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let stand_in = StandIn::spawn();
+    let paths = generation(dir.path(), Some(stand_in.0));
+    let pid = stand_in.0;
+    let awake = Arc::new(AtomicBool::new(false));
+    let answering = awake.clone();
+    let daemon = Scripted::serve(&paths.socket_path, move |request| match request {
+        CommsRequest::Status => Some(status(pid, OLDER, OTHER_PROTO)),
+        CommsRequest::Ping if answering.load(Ordering::SeqCst) => Some(CommsResponse::Pong),
+        _ => None,
+    });
+    let timings = Timings {
+        exit: Duration::from_secs(2),
+        ..FAST
+    };
+    let waking = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(1500));
+        awake.store(true, Ordering::SeqCst);
+    });
+
+    let error = settle_existing(&paths, SpawnPolicy::Explicit, Takeover::Ask, OURS, timings, &mut false)
+        .await
+        .expect_err("the daemon is answering again");
+
+    waking.join().expect("waking thread");
+    assert!(matches!(error, SingletonError::StalePredecessor { .. }), "{error}");
+    assert!(
+        stand_in.alive(),
+        "a daemon that answers at the end of the window must not be signalled"
+    );
+    assert_eq!(
+        daemon.asked(),
+        ["status", "stop", "stop"],
+        "it is asked once more before a signal is considered"
+    );
+}
+
+/// The rules `basemind comms stop` reclaims by, with the waits cut short.
+const QUICK: ReclaimRules = ReclaimRules {
+    exit: Duration::from_millis(200),
+    term_grace: Duration::from_secs(2),
+    probe_timeout: Duration::from_millis(300),
+    store_error_is_silence: false,
+};
+
+/// A pid no process has.
+const DEAD_PID: u32 = 0x7FFF_FFFE;
+
+/// Hold `dir`'s daemon lock, as a running daemon does.
+fn hold_lock(dir: &Path) -> std::fs::File {
+    use fs2::FileExt as _;
+    let lock = std::fs::File::create(dir.join("daemon.lock")).expect("create daemon.lock");
+    lock.try_lock_exclusive().expect("hold the daemon lock");
+    lock
+}
+
+/// `comms stop` has no pid from the daemon itself. Whether a daemon is still there is then read
+/// from the lock and the endpoint, never from the pidfile, which outlives a daemon that crashed.
+#[tokio::test(flavor = "multi_thread")]
+async fn with_no_reported_pid_a_free_lock_and_a_closed_endpoint_mean_the_daemon_is_gone() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let bystander = StandIn::spawn();
+    let paths = generation(dir.path(), Some(bystander.0));
+
+    assert_eq!(
+        reclaim_holder(&paths, None, QUICK).await,
+        Reclaimed::Gone { forced: false }
+    );
+    assert!(
+        bystander.alive(),
+        "a pidfile left behind names a process that is nobody's daemon now"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn with_no_reported_pid_a_silent_daemon_is_terminated_as_the_process_the_pidfile_names() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let stand_in = StandIn::spawn();
+    let paths = generation(dir.path(), Some(stand_in.0));
+    let daemon = Scripted::serve(&paths.socket_path, |_| None);
+
+    assert_eq!(
+        reclaim_holder(&paths, None, QUICK).await,
+        Reclaimed::Gone { forced: true }
+    );
+    assert!(!stand_in.alive(), "the recorded, silent daemon is terminated");
+    assert_eq!(daemon.asked(), ["stop"], "after it was asked once more");
+}
+
+/// Something is plainly still there — it holds the lock, or its socket still accepts — and the
+/// pidfile cannot say which process it is. That is neither "no daemon" nor a licence to signal.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_daemon_that_is_there_but_cannot_be_identified_is_reported_and_nothing_is_signalled() {
+    let listening = tempfile::tempdir().expect("tempdir");
+    let paths = generation(listening.path(), None);
+    let _daemon = Scripted::serve(&paths.socket_path, |_| None);
+    assert_eq!(
+        reclaim_holder(&paths, None, QUICK).await,
+        Reclaimed::Unidentified,
+        "no pidfile"
+    );
+
+    let locked = tempfile::tempdir().expect("tempdir");
+    let paths = generation(locked.path(), Some(DEAD_PID));
+    let _lock = hold_lock(locked.path());
+    assert_eq!(
+        reclaim_holder(&paths, None, QUICK).await,
+        Reclaimed::Unidentified,
+        "a pidfile naming a process that is gone, under a lock that is still held"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_daemon_that_answers_the_stop_sent_at_the_end_of_the_window_is_left_alone() {
+    for answer in [busy(), CommsResponse::Ok] {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let stand_in = StandIn::spawn();
+        let paths = generation(dir.path(), Some(stand_in.0));
+        let reply = answer.clone();
+        let _daemon = Scripted::serve(&paths.socket_path, move |request| match request {
+            CommsRequest::Stop => Some(reply.clone()),
+            _ => None,
+        });
+
+        let reclaimed = reclaim_holder(&paths, None, QUICK).await;
+
+        assert!(
+            matches!(&reclaimed, Reclaimed::Answers { stop } if *stop != StopOutcome::Unreachable),
+            "{answer:?}: {reclaimed:?}"
+        );
+        assert!(
+            stand_in.alive(),
+            "{answer:?}: a daemon that answers must not be signalled"
+        );
+    }
+}
+
+/// A daemon that answers only to say its store is broken is spared by a takeover and reclaimed
+/// by an operator's `comms stop`, which exists for exactly that daemon.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_store_error_spares_the_daemon_unless_the_caller_counts_it_as_silence() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let stand_in = StandIn::spawn();
+    let paths = generation(dir.path(), Some(stand_in.0));
+    let _daemon = Scripted::serve(&paths.socket_path, |request| match request {
+        CommsRequest::Stop => Some(store_error()),
+        CommsRequest::Ping => Some(CommsResponse::Pong),
+        _ => None,
+    });
+
+    let spared = reclaim_holder(&paths, None, QUICK).await;
+    assert!(matches!(spared, Reclaimed::Answers { .. }), "{spared:?}");
+    assert!(stand_in.alive());
+
+    let operator = ReclaimRules {
+        store_error_is_silence: true,
+        ..QUICK
+    };
+    assert_eq!(
+        reclaim_holder(&paths, None, operator).await,
+        Reclaimed::Gone { forced: true }
+    );
+    assert!(!stand_in.alive());
 }
