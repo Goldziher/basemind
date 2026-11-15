@@ -1,0 +1,243 @@
+//! Key encodings of the comms v2 store.
+//!
+//! The conventions are those of `crate::index::keys`: a variable-length component that is followed
+//! by another one is `u16`-big-endian length-prefixed, so one value is never a prefix of a longer
+//! one, and every number is big-endian, so byte order is numeric order. Two things keep the keys
+//! short: a thread id is its 30 bits as a `u32`, fixed-width and therefore never prefixed, and a
+//! variable-length component in last position is written bare.
+
+use crate::comms::v2::api::{Actor, ReplayKey, RepoKey, ThreadId};
+
+/// Bytes of an encoded thread id.
+const THREAD_LEN: usize = 4;
+
+/// Bytes of an encoded sequence number, post position or timestamp.
+const U64_LEN: usize = 8;
+
+/// Bytes of a `messages` / `bodies` key.
+const MESSAGE_KEY_LEN: usize = THREAD_LEN + U64_LEN;
+
+/// Bytes of a `post_order` value.
+const ORDER_ENTRY_LEN: usize = THREAD_LEN + U64_LEN + U64_LEN;
+
+/// Flips the sign bit, which maps `i64` order onto unsigned byte order.
+const SIGN_BIT: u64 = 1 << 63;
+
+/// `repo_threads` state byte of an active thread.
+const STATE_ACTIVE: u8 = 0;
+
+/// `repo_threads` state byte of an archived thread.
+const STATE_ARCHIVED: u8 = 1;
+
+/// `replays` tag of a post that created a thread: scoped to the agent.
+const REPLAY_NEW_THREAD: u8 = 0;
+
+/// `replays` tag of a post into a thread: scoped to the agent and the thread.
+const REPLAY_POST: u8 = 1;
+
+/// `replays` tag of an inbox read: scoped to the agent.
+const REPLAY_INBOX: u8 = 2;
+
+/// Which records an `expiry` entry is for. The tag leads the key, so each kind is one contiguous
+/// range ordered by time.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Expiry {
+    /// A thread, at the time of its newest message. Payload: the `threads` key.
+    Thread = 1,
+    /// A replay entry, at the time it stops answering. Payload: the `replays` key.
+    Replay = 2,
+    /// A seen record, at the time of the agent's last call. Payload: the `seen` key.
+    Seen = 3,
+}
+
+fn timestamp(ts_micros: i64) -> [u8; U64_LEN] {
+    ((ts_micros as u64) ^ SIGN_BIT).to_be_bytes()
+}
+
+fn parse_timestamp(bytes: &[u8]) -> Option<i64> {
+    let bytes: [u8; U64_LEN] = bytes.try_into().ok()?;
+    Some((u64::from_be_bytes(bytes) ^ SIGN_BIT) as i64)
+}
+
+fn parse_u64(bytes: &[u8]) -> Option<u64> {
+    Some(u64::from_be_bytes(bytes.try_into().ok()?))
+}
+
+/// `u16:len ‖ bytes`. Agent ids are at most 128 bytes and repository keys at most 4096, so the
+/// length always fits.
+fn write_len_prefixed(out: &mut Vec<u8>, bytes: &[u8]) {
+    debug_assert!(
+        bytes.len() <= usize::from(u16::MAX),
+        "comms key component over the u16 ceiling"
+    );
+    out.extend_from_slice(&(bytes.len() as u16).to_be_bytes());
+    out.extend_from_slice(bytes);
+}
+
+/// `threads`: `thread:u32`.
+pub(super) fn thread(id: &ThreadId) -> [u8; THREAD_LEN] {
+    id.bits().to_be_bytes()
+}
+
+/// The thread id a `threads` key, or the thread component of another key, encodes.
+pub(super) fn parse_thread(bytes: &[u8]) -> Option<ThreadId> {
+    let bits = u32::from_be_bytes(bytes.try_into().ok()?);
+    (bits < ThreadId::SPACE).then(|| ThreadId::from_bits(bits))
+}
+
+/// `messages` and `bodies`: `thread:u32 ‖ seq:u64`. A range over one thread walks its messages
+/// oldest first.
+pub(super) fn message(thread_id: &ThreadId, seq: u64) -> [u8; MESSAGE_KEY_LEN] {
+    let mut key = [0; MESSAGE_KEY_LEN];
+    key[..THREAD_LEN].copy_from_slice(&thread(thread_id));
+    key[THREAD_LEN..].copy_from_slice(&seq.to_be_bytes());
+    key
+}
+
+/// The sequence number of a `messages` key.
+pub(super) fn parse_message_seq(key: &[u8]) -> Option<u64> {
+    if key.len() != MESSAGE_KEY_LEN {
+        return None;
+    }
+    parse_u64(&key[THREAD_LEN..])
+}
+
+/// `post_order`: `order:u64`, the store-wide post position.
+pub(super) fn order(order: u64) -> [u8; U64_LEN] {
+    order.to_be_bytes()
+}
+
+/// What a `post_order` entry points at.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct OrderEntry {
+    /// The thread the message is in.
+    pub thread: ThreadId,
+    /// Its sequence number there.
+    pub seq: u64,
+    /// When it was posted.
+    pub ts_micros: i64,
+}
+
+/// Value of a `post_order` entry: `thread:u32 ‖ seq:u64 ‖ ts:u64`.
+pub(super) fn order_entry(thread_id: &ThreadId, seq: u64, ts_micros: i64) -> [u8; ORDER_ENTRY_LEN] {
+    let mut value = [0; ORDER_ENTRY_LEN];
+    value[..THREAD_LEN].copy_from_slice(&thread(thread_id));
+    value[THREAD_LEN..MESSAGE_KEY_LEN].copy_from_slice(&seq.to_be_bytes());
+    value[MESSAGE_KEY_LEN..].copy_from_slice(&timestamp(ts_micros));
+    value
+}
+
+/// Decode a `post_order` value.
+pub(super) fn parse_order_entry(value: &[u8]) -> Option<OrderEntry> {
+    if value.len() != ORDER_ENTRY_LEN {
+        return None;
+    }
+    Some(OrderEntry {
+        thread: parse_thread(&value[..THREAD_LEN])?,
+        seq: parse_u64(&value[THREAD_LEN..MESSAGE_KEY_LEN])?,
+        ts_micros: parse_timestamp(&value[MESSAGE_KEY_LEN..])?,
+    })
+}
+
+/// `members`: `thread:u32 ‖ agent`. The thread's prefix is [`thread`].
+pub(super) fn member(thread_id: &ThreadId, actor: &Actor) -> Vec<u8> {
+    let mut key = Vec::with_capacity(THREAD_LEN + actor.as_str().len());
+    key.extend_from_slice(&thread(thread_id));
+    key.extend_from_slice(actor.as_str().as_bytes());
+    key
+}
+
+/// The agent of a `members` key.
+pub(super) fn parse_member(key: &[u8]) -> Option<Actor> {
+    let agent = std::str::from_utf8(key.get(THREAD_LEN..)?).ok()?;
+    Actor::parse(agent).ok()
+}
+
+/// Prefix of every `member_threads` key of `actor`: `u16:len ‖ agent`.
+pub(super) fn member_threads_prefix(actor: &Actor) -> Vec<u8> {
+    let mut key = Vec::with_capacity(2 + actor.as_str().len() + THREAD_LEN);
+    write_len_prefixed(&mut key, actor.as_str().as_bytes());
+    key
+}
+
+/// `member_threads`: `u16:len ‖ agent ‖ thread:u32`.
+pub(super) fn member_thread(actor: &Actor, thread_id: &ThreadId) -> Vec<u8> {
+    let mut key = member_threads_prefix(actor);
+    key.extend_from_slice(&thread(thread_id));
+    key
+}
+
+/// Prefix of the `repo_threads` keys of `repo` in one state: `u16:len ‖ repo ‖ state:u8`.
+pub(super) fn repo_threads_prefix(repo: &RepoKey, archived: bool) -> Vec<u8> {
+    let mut key = Vec::with_capacity(2 + repo.as_str().len() + 1 + THREAD_LEN);
+    write_len_prefixed(&mut key, repo.as_str().as_bytes());
+    key.push(if archived { STATE_ARCHIVED } else { STATE_ACTIVE });
+    key
+}
+
+/// `repo_threads`: `u16:len ‖ repo ‖ state:u8 ‖ thread:u32`.
+pub(super) fn repo_thread(repo: &RepoKey, archived: bool, thread_id: &ThreadId) -> Vec<u8> {
+    let mut key = repo_threads_prefix(repo, archived);
+    key.extend_from_slice(&thread(thread_id));
+    key
+}
+
+/// The thread of a `member_threads` or `repo_threads` key: its last four bytes.
+pub(super) fn parse_trailing_thread(key: &[u8]) -> Option<ThreadId> {
+    parse_thread(key.get(key.len().checked_sub(THREAD_LEN)?..)?)
+}
+
+fn replay(tag: u8, actor: &Actor, thread_id: Option<&ThreadId>, key: &ReplayKey) -> Vec<u8> {
+    let mut out = Vec::with_capacity(1 + 2 + actor.as_str().len() + THREAD_LEN + key.as_str().len());
+    out.push(tag);
+    write_len_prefixed(&mut out, actor.as_str().as_bytes());
+    if let Some(thread_id) = thread_id {
+        out.extend_from_slice(&thread(thread_id));
+    }
+    out.extend_from_slice(key.as_str().as_bytes());
+    out
+}
+
+/// `replays`, for a post that creates a thread: `0 ‖ u16:len ‖ agent ‖ key`.
+pub(super) fn replay_new_thread(actor: &Actor, key: &ReplayKey) -> Vec<u8> {
+    replay(REPLAY_NEW_THREAD, actor, None, key)
+}
+
+/// `replays`, for a post into a thread: `1 ‖ u16:len ‖ agent ‖ thread:u32 ‖ key`.
+pub(super) fn replay_post(actor: &Actor, thread_id: &ThreadId, key: &ReplayKey) -> Vec<u8> {
+    replay(REPLAY_POST, actor, Some(thread_id), key)
+}
+
+/// `replays`, for an inbox read: `2 ‖ u16:len ‖ agent ‖ key`.
+pub(super) fn replay_inbox(actor: &Actor, key: &ReplayKey) -> Vec<u8> {
+    replay(REPLAY_INBOX, actor, None, key)
+}
+
+/// `seen`: the agent id.
+pub(super) fn seen(actor: &Actor) -> &[u8] {
+    actor.as_str().as_bytes()
+}
+
+/// Prefix of every `expiry` key of one kind.
+pub(super) fn expiry_prefix(kind: Expiry) -> [u8; 1] {
+    [kind as u8]
+}
+
+/// `expiry`: `kind:u8 ‖ ts:u64 ‖ payload`, the payload being the key of the record that expires.
+pub(super) fn expiry(kind: Expiry, ts_micros: i64, payload: &[u8]) -> Vec<u8> {
+    let mut key = Vec::with_capacity(1 + U64_LEN + payload.len());
+    key.push(kind as u8);
+    key.extend_from_slice(&timestamp(ts_micros));
+    key.extend_from_slice(payload);
+    key
+}
+
+/// The time and the payload of an `expiry` key.
+pub(super) fn parse_expiry(key: &[u8]) -> Option<(i64, &[u8])> {
+    let ts_micros = parse_timestamp(key.get(1..1 + U64_LEN)?)?;
+    Some((ts_micros, &key[1 + U64_LEN..]))
+}
+
+#[cfg(test)]
+#[path = "keys_tests.rs"]
+mod tests;

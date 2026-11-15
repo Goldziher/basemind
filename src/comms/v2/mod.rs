@@ -8,8 +8,8 @@
 //! share no state.
 //!
 //! The contract compiles without the `comms` feature, because it depends on no store and no
-//! transport. [`rules`] holds the decisions every implementation shares; the store-backed
-//! implementation that replaces v1 will be gated like the rest.
+//! transport. [`rules`] holds the decisions every implementation shares, and `store`, gated
+//! like the rest of the daemon, is the Fjall-backed implementation that replaces v1.
 
 pub mod api;
 /// The ADR's rules as scenarios, for any [`AgentOps`] implementation to be run against.
@@ -25,6 +25,9 @@ pub mod identity;
 pub mod ids;
 /// The rules every [`AgentOps`] implementation shares, as pure functions.
 pub mod rules;
+/// The Fjall-backed [`AgentOps`]: the store the daemon will serve from.
+#[cfg(all(feature = "comms", any(unix, windows)))]
+pub mod store;
 
 pub use api::{
     Actor, AgentOps, Caller, CommsError, Cursor, IdKind, InboxBody, InboxCall, InboxFields, InboxMessage, InboxReply,

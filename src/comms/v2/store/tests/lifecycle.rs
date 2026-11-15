@@ -1,0 +1,426 @@
+//! What survives a reopen, how layout versions are handled, and the legacy store.
+
+use std::fs;
+
+use fjall::OwnedWriteBatch;
+
+use super::*;
+
+const MARKER: &[u8] = b"migrated_by";
+
+fn first_step(ks: &Keyspaces, batch: &mut OwnedWriteBatch) -> Result<(), CommsError> {
+    batch.insert(&ks.meta, MARKER, b"first");
+    Ok(())
+}
+
+fn second_step(ks: &Keyspaces, batch: &mut OwnedWriteBatch) -> Result<(), CommsError> {
+    let seen_first = ks
+        .meta
+        .get(MARKER)
+        .expect("read")
+        .is_some_and(|value| &*value == b"first");
+    batch.insert(
+        &ks.meta,
+        MARKER,
+        if seen_first {
+            &b"first,second"[..]
+        } else {
+            &b"second"[..]
+        },
+    );
+    Ok(())
+}
+
+fn failing_step(ks: &Keyspaces, batch: &mut OwnedWriteBatch) -> Result<(), CommsError> {
+    batch.insert(&ks.meta, MARKER, b"half");
+    Err(CommsError::Backend {
+        detail: "step failed".to_string(),
+    })
+}
+
+fn marker(harness: &Harness) -> Option<Vec<u8>> {
+    harness
+        .store()
+        .ks
+        .meta
+        .get(MARKER)
+        .expect("read")
+        .map(|value| value.to_vec())
+}
+
+#[test]
+fn fresh_directory_is_created_at_the_current_version() {
+    let harness = Harness::new();
+
+    assert_eq!(harness.store().store_version(), COMMS_STORE_VER);
+    assert!(harness.dir.path().join(STORE_DIR).is_dir());
+    assert_eq!(harness.arrivals(), 0);
+}
+
+#[test]
+fn reopening_a_dropped_handle_keeps_messages_positions_counters_and_replays() {
+    let mut harness = Harness::new();
+    let created = start(&harness, "a", "topic", &["b", "c"]);
+    let relayed = harness
+        .post(&keyed("a", "relay-1"), into(&created.thread, "second"))
+        .expect("post");
+    let delivered = harness
+        .inbox(&keyed("b", "relay-2"), InboxBody::default())
+        .expect("inbox");
+    harness
+        .inbox(
+            &caller("c"),
+            InboxBody {
+                mark: Mark::Notify,
+                limit: Some(1),
+                ..InboxBody::default()
+            },
+        )
+        .expect("inbox");
+    let arrivals = harness.arrivals();
+
+    harness.reopen();
+
+    assert_eq!(harness.arrivals(), arrivals);
+    assert_eq!(harness.position(&created.thread, &caller("b").actor), Some((2, 2)));
+    assert_eq!(harness.position(&created.thread, &caller("c").actor), Some((0, 1)));
+    assert_eq!(
+        harness.post(&keyed("a", "relay-1"), into(&created.thread, "second")),
+        Ok(relayed)
+    );
+    assert_eq!(
+        harness.inbox(&keyed("b", "relay-2"), InboxBody::default()),
+        Ok(delivered)
+    );
+    assert_eq!(harness.arrivals(), arrivals, "a replay stores nothing");
+
+    let third = say(&harness, "a", &created.thread, "third");
+    assert_eq!(third.id.seq(), 3);
+    assert_eq!(harness.arrivals(), arrivals + 1);
+    let whole = harness.inbox(&caller("c"), history()).expect("inbox");
+    assert_eq!(bodies(&whole), ["first", "second", "third"]);
+    assert!(whole.messages[1].ts_micros < whole.messages[2].ts_micros);
+    assert_eq!(start(&harness, "a", "again", &["b", "d"]).pending, [caller("d").actor]);
+}
+
+#[test]
+fn flush_succeeds_and_what_was_flushed_is_read_after_a_reopen() {
+    let mut harness = Harness::new();
+    let created = start(&harness, "a", "topic", &["b"]);
+
+    harness.store().flush().expect("flush");
+    harness.reopen();
+
+    assert_eq!(
+        bodies(&harness.inbox(&caller("b"), InboxBody::default()).expect("inbox")),
+        ["first"]
+    );
+    assert_eq!(harness.position(&created.thread, &caller("b").actor), Some((1, 1)));
+}
+
+#[test]
+fn replay_and_seen_expiry_follow_the_clock_across_a_reopen() {
+    let mut harness = Harness::new();
+    let created = start(&harness, "a", "topic", &["b"]);
+    let first = harness
+        .post(&keyed("a", "relay-1"), into(&created.thread, "second"))
+        .expect("post");
+    harness.inbox(&caller("b"), InboxBody::default()).expect("inbox");
+
+    harness.reopen();
+    harness.clock.advance(REPLAY_TTL + Duration::from_secs(1));
+    let again = harness
+        .post(&keyed("a", "relay-1"), into(&created.thread, "second"))
+        .expect("post");
+    assert_eq!(again.id.seq(), first.id.seq() + 1);
+
+    harness.reopen();
+    harness.clock.advance(SEEN_TTL - REPLAY_TTL);
+    assert_eq!(start(&harness, "a", "late", &["b"]).pending, [caller("b").actor]);
+}
+
+#[test]
+fn older_store_is_migrated_step_by_step_and_keeps_its_data() {
+    let mut harness = Harness::new();
+    let created = start(&harness, "a", "topic", &["b"]);
+    harness.store().force_store_version(COMMS_STORE_VER - 2);
+    let steps = [
+        Migration {
+            from: COMMS_STORE_VER - 1,
+            to: COMMS_STORE_VER,
+            run: second_step,
+        },
+        Migration {
+            from: COMMS_STORE_VER - 2,
+            to: COMMS_STORE_VER - 1,
+            run: first_step,
+        },
+    ];
+
+    harness.reopen_migrating(&steps).expect("migrated");
+
+    assert_eq!(harness.store().store_version(), COMMS_STORE_VER);
+    assert_eq!(marker(&harness).as_deref(), Some(&b"first,second"[..]));
+    assert_eq!(
+        bodies(&harness.inbox(&caller("b"), InboxBody::default()).expect("inbox")),
+        ["first"]
+    );
+    say(&harness, "a", &created.thread, "after the migration");
+
+    harness.reopen_migrating(&steps).expect("nothing left to migrate");
+    assert_eq!(marker(&harness).as_deref(), Some(&b"first,second"[..]));
+}
+
+#[test]
+fn failed_step_leaves_the_store_at_the_version_it_reached() {
+    let mut harness = Harness::new();
+    start(&harness, "a", "topic", &["b"]);
+    harness.store().force_store_version(COMMS_STORE_VER - 2);
+    let steps = [
+        Migration {
+            from: COMMS_STORE_VER - 2,
+            to: COMMS_STORE_VER - 1,
+            run: first_step,
+        },
+        Migration {
+            from: COMMS_STORE_VER - 1,
+            to: COMMS_STORE_VER,
+            run: failing_step,
+        },
+    ];
+
+    let refused = harness.reopen_migrating(&steps).expect_err("the second step fails");
+    assert!(refused.to_string().contains("step failed"), "{refused}");
+
+    let resumed = [Migration {
+        from: COMMS_STORE_VER - 1,
+        to: COMMS_STORE_VER,
+        run: second_step,
+    }];
+    harness
+        .reopen_migrating(&resumed)
+        .expect("only the step that failed runs again");
+    assert_eq!(marker(&harness).as_deref(), Some(&b"first,second"[..]));
+}
+
+#[test]
+fn older_store_without_a_migration_path_is_refused_and_left_as_it_was() {
+    let mut harness = Harness::new();
+    start(&harness, "a", "topic", &["b"]);
+    harness.store().force_store_version(COMMS_STORE_VER - 1);
+
+    let refused = harness.reopen_migrating(&[]).expect_err("no step from this version");
+
+    assert!(matches!(refused, CommsError::Backend { .. }), "{refused:?}");
+    assert!(refused.to_string().contains("no migration"), "{refused}");
+    let step = [Migration {
+        from: COMMS_STORE_VER - 1,
+        to: COMMS_STORE_VER,
+        run: first_step,
+    }];
+    harness.reopen_migrating(&step).expect("the store was not touched");
+    assert_eq!(
+        bodies(&harness.inbox(&caller("b"), InboxBody::default()).expect("inbox")),
+        ["first"]
+    );
+}
+
+#[test]
+fn newer_store_opens_for_reading_refuses_writes_and_is_never_changed() {
+    let mut harness = Harness::new();
+    let created = start(&harness, "a", "topic", &["b"]);
+    harness.store().force_store_version(COMMS_STORE_VER + 3);
+    harness.reopen();
+    let rows = harness.store().stored_rows();
+    let newer = CommsError::StoreNewer {
+        store: COMMS_STORE_VER + 3,
+        binary: COMMS_STORE_VER,
+    };
+
+    assert_eq!(harness.store().store_version(), COMMS_STORE_VER + 3);
+    assert_eq!(
+        harness.post(&caller("a"), into(&created.thread, "late")),
+        Err(newer.clone())
+    );
+    assert_eq!(harness.inbox(&caller("b"), InboxBody::default()), Err(newer.clone()));
+    assert_eq!(
+        harness.threads_update(
+            &caller("b"),
+            ThreadUpdate {
+                thread: created.thread.clone(),
+                action: ThreadAction::Leave,
+            }
+        ),
+        Err(newer.clone())
+    );
+    assert_eq!(harness.store().sweep(), Err(newer));
+    assert_eq!(bodies(&harness.inbox(&caller("b"), peek()).expect("inbox")), ["first"]);
+    assert_eq!(
+        bodies(&harness.inbox(&caller("b"), history()).expect("inbox")),
+        ["first"]
+    );
+    assert_eq!(
+        harness
+            .threads_query(&caller("b"), ThreadQuery::default())
+            .expect("threads")
+            .threads
+            .len(),
+        1
+    );
+
+    harness.clock.advance(MESSAGE_TTL + Duration::from_secs(1));
+    assert_eq!(harness.inbox(&caller("b"), peek()).expect("inbox").messages, Vec::new());
+    harness.reopen();
+    assert_eq!(harness.store().store_version(), COMMS_STORE_VER + 3);
+    assert_eq!(harness.store().stored_rows(), rows, "not even expired rows are removed");
+}
+
+#[test]
+fn store_that_cannot_be_opened_is_a_backend_error_and_is_left_in_place() {
+    let dir = tempfile::tempdir().expect("temporary directory");
+    let blocked = dir.path().join(STORE_DIR);
+    fs::write(&blocked, b"not a store").expect("write");
+
+    let refused = FjallAgents::open(dir.path()).err().expect("a file is not a store");
+
+    assert!(matches!(refused, CommsError::Backend { .. }), "{refused:?}");
+    assert!(refused.to_string().contains("left untouched"), "{refused}");
+    assert_eq!(fs::read(&blocked).expect("read"), b"not a store");
+}
+
+#[test]
+fn store_with_rows_but_no_version_is_refused_and_left_in_place() {
+    let mut harness = Harness::new();
+    start(&harness, "a", "topic", &["b"]);
+    harness.store().ks.meta.remove(META_STORE_VER).expect("remove");
+    let rows = harness.store().stored_rows();
+
+    let refused = harness.reopen_migrating(&[]).expect_err("no version");
+    assert!(refused.to_string().contains("no layout version"), "{refused}");
+
+    let reopened = FjallAgents::open_with(harness.dir.path(), options(&harness.clock, Vec::new()));
+    assert!(reopened.is_err(), "a second attempt does not adopt the store either");
+    drop(reopened);
+    let db = fjall::Database::builder(harness.dir.path().join(STORE_DIR))
+        .open()
+        .expect("the directory still holds the database");
+    let threads = db
+        .keyspace("threads", fjall::KeyspaceCreateOptions::default)
+        .expect("keyspace");
+    assert_eq!(threads.len().expect("count"), rows[0]);
+}
+
+#[test]
+fn legacy_store_is_renamed_with_the_date_and_its_contents() {
+    let dir = tempfile::tempdir().expect("temporary directory");
+    let legacy = dir.path().join(LEGACY_STORE_DIR);
+    fs::create_dir(&legacy).expect("create");
+    fs::write(legacy.join("journal"), b"v1 data").expect("write");
+
+    let retired = retire_legacy_store(dir.path(), START_MICROS).expect("retire");
+
+    let expected = dir.path().join("store.legacy-2026-01-01");
+    assert_eq!(retired.as_deref(), Some(expected.as_path()));
+    assert!(!legacy.exists());
+    assert_eq!(fs::read(expected.join("journal")).expect("read"), b"v1 data");
+}
+
+#[test]
+fn retiring_twice_does_nothing_the_second_time() {
+    let dir = tempfile::tempdir().expect("temporary directory");
+    fs::create_dir(dir.path().join(LEGACY_STORE_DIR)).expect("create");
+
+    assert!(retire_legacy_store(dir.path(), START_MICROS).expect("retire").is_some());
+    assert_eq!(retire_legacy_store(dir.path(), START_MICROS), Ok(None));
+    assert_eq!(fs::read_dir(dir.path()).expect("list").count(), 1);
+}
+
+#[test]
+fn retiring_into_a_taken_name_picks_the_next_one_and_overwrites_nothing() {
+    let dir = tempfile::tempdir().expect("temporary directory");
+    let legacy = dir.path().join(LEGACY_STORE_DIR);
+    for generation in ["one", "two", "three"] {
+        fs::create_dir(&legacy).expect("create");
+        fs::write(legacy.join("generation"), generation).expect("write");
+        retire_legacy_store(dir.path(), START_MICROS).expect("retire");
+    }
+
+    let read = |name: &str| fs::read_to_string(dir.path().join(name).join("generation")).expect("read");
+    assert_eq!(read("store.legacy-2026-01-01"), "one");
+    assert_eq!(read("store.legacy-2026-01-01-2"), "two");
+    assert_eq!(read("store.legacy-2026-01-01-3"), "three");
+}
+
+#[test]
+fn retiring_leaves_the_v2_store_alone() {
+    let harness = Harness::new();
+    start(&harness, "a", "topic", &["b"]);
+
+    assert_eq!(retire_legacy_store(harness.dir.path(), START_MICROS), Ok(None));
+    assert_eq!(
+        bodies(&harness.inbox(&caller("b"), InboxBody::default()).expect("inbox")),
+        ["first"]
+    );
+}
+
+#[test]
+fn legacy_date_is_the_utc_calendar_date() {
+    let dir = tempfile::tempdir().expect("temporary directory");
+    let day = 24 * 60 * 60 * 1_000_000_i64;
+    let cases = [
+        (0, "store.legacy-1970-01-01"),
+        (day - 1, "store.legacy-1970-01-01-2"),
+        (59 * day, "store.legacy-1970-03-01"),
+        (START_MICROS + 58 * day, "store.legacy-2026-02-28"),
+        (START_MICROS + (365 + 365 + 59) * day, "store.legacy-2028-02-29"),
+        (START_MICROS + 365 * day - 1, "store.legacy-2026-12-31"),
+    ];
+
+    for (now_micros, expected) in cases {
+        fs::create_dir(dir.path().join(LEGACY_STORE_DIR)).expect("create");
+        let retired = retire_legacy_store(dir.path(), now_micros)
+            .expect("retire")
+            .expect("renamed");
+        assert_eq!(retired.file_name().and_then(|name| name.to_str()), Some(expected));
+    }
+}
+
+#[test]
+fn newer_store_without_a_keyspace_of_this_layout_is_refused_and_gains_none() {
+    let dir = tempfile::tempdir().expect("temporary directory");
+    let path = dir.path().join(STORE_DIR);
+    {
+        let db = fjall::Database::builder(&path).open().expect("create");
+        let meta = db
+            .keyspace("meta", fjall::KeyspaceCreateOptions::default)
+            .expect("keyspace");
+        meta.insert(META_STORE_VER, (COMMS_STORE_VER + 1).to_be_bytes())
+            .expect("write");
+        meta.insert(META_POSTS, b"another encoding").expect("write");
+    }
+
+    let refused = FjallAgents::open(dir.path())
+        .err()
+        .expect("a layout this binary cannot read");
+
+    assert!(refused.to_string().contains("keyspace"), "{refused}");
+    let db = fjall::Database::builder(&path).open().expect("reopen");
+    assert_eq!(db.keyspace_count(), 1, "no keyspace was created in the newer store");
+}
+
+#[test]
+fn newer_store_with_counters_in_another_encoding_still_opens_for_reading() {
+    let mut harness = Harness::new();
+    start(&harness, "a", "topic", &["b"]);
+    harness.store().force_store_version(COMMS_STORE_VER + 1);
+    harness
+        .store()
+        .ks
+        .meta
+        .insert(META_POSTS, b"another encoding")
+        .expect("write");
+
+    harness.reopen();
+
+    assert_eq!(bodies(&harness.inbox(&caller("b"), peek()).expect("inbox")), ["first"]);
+}
