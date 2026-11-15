@@ -107,3 +107,4 @@ them.
 | [0021](0021-agent-comms-v2.md) | Agent comms v2 — stable identity, per-actor delivery, three deferred tools | Accepted |
 | [0022](0022-surface-adr-amendments.md) | Surface ADR amendments — as-built facts and a measurable value gate | Accepted |
 | [0023](0023-library-crate-layering-revised.md) | Library crate layering, revised | Accepted |
+| [0024](0024-daemon-and-process-model.md) | Daemon and process model — rendezvous scoped by protocol generation | Accepted |
