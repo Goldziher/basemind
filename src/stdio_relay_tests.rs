@@ -724,15 +724,20 @@ async fn an_initialize_in_flight_is_answered_by_the_replacement_backend_as_a_who
 }
 
 #[test]
-fn stop_is_asked_on_the_first_attempt_and_then_once_per_interval() {
+fn stop_may_be_asked_until_one_is_sent_and_then_once_per_interval() {
     let mut pacing = StopPacing::default();
     let start = std::time::Instant::now();
 
-    assert!(pacing.may_ask_at(start), "the first attempt asks");
-    assert!(!pacing.may_ask_at(start + Duration::from_secs(1)));
-    assert!(!pacing.may_ask_at(start + STOP_REQUEST_INTERVAL - Duration::from_millis(1)));
-    assert!(pacing.may_ask_at(start + STOP_REQUEST_INTERVAL));
-    assert!(!pacing.may_ask_at(start + STOP_REQUEST_INTERVAL + Duration::from_secs(1)));
+    assert!(pacing.may_ask_at(start), "the first attempt may ask");
+    assert!(
+        pacing.may_ask_at(start + Duration::from_secs(1)),
+        "an attempt that sent no Stop does not use up the interval"
+    );
+    pacing.asked_at(start + Duration::from_secs(1));
+    assert!(!pacing.may_ask_at(start + Duration::from_secs(2)));
+    let due = start + Duration::from_secs(1) + STOP_REQUEST_INTERVAL;
+    assert!(!pacing.may_ask_at(due - Duration::from_millis(1)));
+    assert!(pacing.may_ask_at(due));
 }
 
 #[test]

@@ -212,7 +212,7 @@ fn generation(dir: &Path, recorded_pid: Option<u32>) -> CommsPaths {
 }
 
 async fn settle(paths: &CommsPaths) -> Result<Existing, SingletonError> {
-    settle_existing(paths, SpawnPolicy::Explicit, Takeover::Ask, OURS, FAST).await
+    settle_existing(paths, SpawnPolicy::Explicit, Takeover::Ask, OURS, FAST, &mut false).await
 }
 
 /// An exit window long enough that a stand-in leaving by itself is seen to leave within it.
@@ -443,7 +443,7 @@ async fn a_daemon_that_accepts_stop_and_exits_is_not_signalled() {
     });
     let leaving = create_after(&release, LEAVES_AFTER);
 
-    let settled = settle_existing(&paths, SpawnPolicy::Explicit, Takeover::Ask, OURS, PATIENT).await;
+    let settled = settle_existing(&paths, SpawnPolicy::Explicit, Takeover::Ask, OURS, PATIENT, &mut false).await;
 
     leaving.join().expect("release thread");
     assert_eq!(settled.expect("it left"), Existing::Spawn);
@@ -470,7 +470,7 @@ async fn a_daemon_draining_for_another_client_gets_the_exit_window_before_any_si
     });
     let leaving = create_after(&release, LEAVES_AFTER);
 
-    let settled = settle_existing(&paths, SpawnPolicy::Explicit, Takeover::Ask, OURS, PATIENT).await;
+    let settled = settle_existing(&paths, SpawnPolicy::Explicit, Takeover::Ask, OURS, PATIENT, &mut false).await;
 
     leaving.join().expect("release thread");
     assert_eq!(settled.expect("it left by itself"), Existing::Spawn);
@@ -502,7 +502,7 @@ async fn the_pidfile_is_read_again_at_the_end_of_the_exit_window() {
         record_holder(&comms_dir, successor_pid);
     });
 
-    let error = settle_existing(&paths, SpawnPolicy::Explicit, Takeover::Ask, OURS, timings)
+    let error = settle_existing(&paths, SpawnPolicy::Explicit, Takeover::Ask, OURS, timings, &mut false)
         .await
         .expect_err("the reported pid no longer holds this generation");
 
@@ -564,7 +564,7 @@ async fn a_caller_that_already_asked_does_not_send_stop_again() {
             _ => Some(CommsResponse::Ok),
         });
 
-        let settled = settle_existing(&paths, SpawnPolicy::Explicit, Takeover::Wait, OURS, FAST).await;
+        let settled = settle_existing(&paths, SpawnPolicy::Explicit, Takeover::Wait, OURS, FAST, &mut false).await;
 
         if usable {
             assert_eq!(settled.expect("an older daemon on our protocol is used"), Existing::Use);
@@ -575,4 +575,46 @@ async fn a_caller_that_already_asked_does_not_send_stop_again() {
         assert_eq!(daemon.asked(), ["status"], "nothing but Status may be sent");
         assert!(stand_in.alive());
     }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_call_reports_whether_it_sent_stop() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let stand_in = StandIn::spawn();
+    let paths = generation(dir.path(), Some(stand_in.0));
+    let pid = stand_in.0;
+    for (version, expect_stop) in [(NEWER, false), (OLDER, true)] {
+        let socket = dir.path().join(format!("{version}.sock"));
+        let paths = CommsPaths {
+            socket_path: socket.clone(),
+            ..paths.clone()
+        };
+        let _daemon = Scripted::serve(&socket, move |request| match request {
+            CommsRequest::Status => Some(status(pid, version, PROTO_VER)),
+            CommsRequest::Stop => Some(busy()),
+            _ => Some(CommsResponse::Pong),
+        });
+        let mut stop_sent = false;
+
+        let settled = settle_existing(&paths, SpawnPolicy::Explicit, Takeover::Ask, OURS, FAST, &mut stop_sent).await;
+
+        assert_eq!(settled.expect("usable either way"), Existing::Use);
+        assert_eq!(stop_sent, expect_stop, "daemon {version}");
+    }
+    let mut stop_sent = false;
+    let nothing = CommsPaths {
+        socket_path: dir.path().join("nothing.sock"),
+        ..paths
+    };
+    let settled = settle_existing(
+        &nothing,
+        SpawnPolicy::Explicit,
+        Takeover::Ask,
+        OURS,
+        FAST,
+        &mut stop_sent,
+    )
+    .await;
+    assert_eq!(settled.expect("nothing to settle"), Existing::Spawn);
+    assert!(!stop_sent, "with no daemon there is nobody to ask");
 }

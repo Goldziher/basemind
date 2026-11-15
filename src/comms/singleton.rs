@@ -579,23 +579,34 @@ pub async fn ensure_daemon_explicit(paths: &CommsPaths) -> Result<(), SingletonE
     ensure_daemon_with_spawn_policy(paths, SpawnPolicy::Explicit).await
 }
 
-/// [`ensure_daemon`] for a caller retrying after an older daemon would not make way: the daemon is
-/// not sent another `Stop`. It is used if it speaks this binary's protocol and reported as
-/// [`SingletonError::StalePredecessor`] otherwise; once it has gone, this spawns as usual.
-pub async fn ensure_daemon_without_stop(paths: &CommsPaths) -> Result<(), SingletonError> {
-    ensure_daemon_as(paths, SpawnPolicy::Auto, Takeover::Wait).await
+/// [`ensure_daemon`] for a caller that retries and must not send an older daemon `Stop` on every
+/// attempt. With `may_ask_stop` false the daemon is not asked: it is used if it speaks this
+/// binary's protocol and reported as [`SingletonError::StalePredecessor`] otherwise; once it has
+/// gone, this spawns as usual. Returns the outcome and whether this call sent a `Stop`, which is
+/// what the caller paces on: most calls find nothing to ask.
+pub async fn ensure_daemon_paced(paths: &CommsPaths, may_ask_stop: bool) -> (Result<(), SingletonError>, bool) {
+    let takeover = if may_ask_stop { Takeover::Ask } else { Takeover::Wait };
+    let mut stop_sent = false;
+    let ensured = ensure_daemon_as(paths, SpawnPolicy::Auto, takeover, &mut stop_sent).await;
+    (ensured, stop_sent)
 }
 
 async fn ensure_daemon_with_spawn_policy(paths: &CommsPaths, policy: SpawnPolicy) -> Result<(), SingletonError> {
-    ensure_daemon_as(paths, policy, Takeover::Ask).await
+    ensure_daemon_as(paths, policy, Takeover::Ask, &mut false).await
 }
 
-async fn ensure_daemon_as(paths: &CommsPaths, policy: SpawnPolicy, takeover: Takeover) -> Result<(), SingletonError> {
+async fn ensure_daemon_as(
+    paths: &CommsPaths,
+    policy: SpawnPolicy,
+    takeover: Takeover,
+    stop_sent: &mut bool,
+) -> Result<(), SingletonError> {
     let ours = takeover::Ours {
         version: env!("CARGO_PKG_VERSION"),
         proto_ver: PROTO_VER,
     };
-    let settled = takeover::settle_existing(paths, policy, takeover, ours, takeover::Timings::PRODUCTION).await?;
+    let settled =
+        takeover::settle_existing(paths, policy, takeover, ours, takeover::Timings::PRODUCTION, stop_sent).await?;
     if settled == takeover::Existing::Use {
         return Ok(());
     }

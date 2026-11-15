@@ -2,6 +2,7 @@
 //! opened again whenever the daemon is replaced.
 
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use anyhow::{Context, Result};
 use basemind::comms::ids::AgentId;
@@ -24,7 +25,7 @@ pub(crate) fn try_serve_relay(root: &Path, view: &str) -> Result<()> {
         let agent = identity::mcp_session_agent_id(root);
         let canonical_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
         let view = view.to_owned();
-        let mut stop_pacing = StopPacing::default();
+        let pacing = Arc::new(Mutex::new(StopPacing::default()));
         tracing::info!(
             pid = std::process::id(),
             view = %view,
@@ -32,8 +33,7 @@ pub(crate) fn try_serve_relay(root: &Path, view: &str) -> Result<()> {
             "basemind serve: persistent relay starting"
         );
         stdio_relay::run(tokio::io::stdin(), tokio::io::stdout(), move || {
-            let ask = stop_pacing.may_ask();
-            open_relay_connection(canonical_root.clone(), view.clone(), agent.clone(), ask)
+            open_relay_connection(canonical_root.clone(), view.clone(), agent.clone(), Arc::clone(&pacing))
         })
         .await
         .context("run persistent daemon relay")
@@ -50,16 +50,21 @@ type RelayStream = tokio::net::UnixStream;
 #[cfg(windows)]
 type RelayStream = tokio::net::windows::named_pipe::NamedPipeClient;
 
-/// Connect a relay to the daemon, bringing one up if needed. `ask_stop` says whether this attempt
-/// may ask an older daemon to make way (see [`StopPacing`]).
-async fn open_relay_connection(root: PathBuf, view: String, agent: AgentId, ask_stop: bool) -> Result<RelayStream> {
+/// Connect a relay to the daemon, bringing one up if needed. `pacing` decides whether this attempt
+/// may ask an older daemon to make way, and is told when it did.
+async fn open_relay_connection(
+    root: PathBuf,
+    view: String,
+    agent: AgentId,
+    pacing: Arc<Mutex<StopPacing>>,
+) -> Result<RelayStream> {
     let paths = singleton::resolve_paths().context("resolve comms paths")?;
-    if ask_stop {
-        singleton::ensure_daemon(&paths).await
-    } else {
-        singleton::ensure_daemon_without_stop(&paths).await
+    let may_ask = pacing.lock().unwrap_or_else(PoisonError::into_inner).may_ask();
+    let (ensured, stop_sent) = singleton::ensure_daemon_paced(&paths, may_ask).await;
+    if stop_sent {
+        pacing.lock().unwrap_or_else(PoisonError::into_inner).asked();
     }
-    .context("ensure daemon")?;
+    ensured.context("ensure daemon")?;
     let mut stream = relay_connect_stream(&paths.socket_path)
         .await
         .context("connect to daemon socket")?;

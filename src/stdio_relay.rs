@@ -131,27 +131,33 @@ impl ReconnectError for anyhow::Error {
     }
 }
 
-/// Decides which reconnect attempts may ask an older daemon to stop: the first, and then one per
-/// [`STOP_REQUEST_INTERVAL`], so a daemon that declined is not sent `Stop` on every retry.
+/// Decides which reconnect attempts may ask an older daemon to stop: any until one has sent
+/// `Stop`, and then one per [`STOP_REQUEST_INTERVAL`], so a daemon that declined is not sent `Stop`
+/// on every retry. Only a `Stop` that was sent counts; an attempt that found nothing to ask does
+/// not use up the interval.
 #[derive(Debug, Default)]
 pub(crate) struct StopPacing {
     last_asked: Option<std::time::Instant>,
 }
 
 impl StopPacing {
-    /// Whether the attempt starting now may ask; an attempt that may is recorded as having asked.
-    pub(crate) fn may_ask(&mut self) -> bool {
+    /// Whether the attempt starting now may ask.
+    pub(crate) fn may_ask(&self) -> bool {
         self.may_ask_at(std::time::Instant::now())
     }
 
-    fn may_ask_at(&mut self, now: std::time::Instant) -> bool {
-        let due = self
-            .last_asked
-            .is_none_or(|asked| now.duration_since(asked) >= STOP_REQUEST_INTERVAL);
-        if due {
-            self.last_asked = Some(now);
-        }
-        due
+    /// Record that an attempt sent `Stop` just now.
+    pub(crate) fn asked(&mut self) {
+        self.asked_at(std::time::Instant::now());
+    }
+
+    fn may_ask_at(&self, now: std::time::Instant) -> bool {
+        self.last_asked
+            .is_none_or(|asked| now.duration_since(asked) >= STOP_REQUEST_INTERVAL)
+    }
+
+    fn asked_at(&mut self, now: std::time::Instant) {
+        self.last_asked = Some(now);
     }
 }
 const REPLAY_TIMEOUT: Duration = Duration::from_secs(5);

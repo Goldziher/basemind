@@ -91,13 +91,15 @@ fn classify(report: &StatusReport, ours: Ours) -> Verdict {
     }
 }
 
-/// Apply the decision table to whatever is running at `paths`.
+/// Apply the decision table to whatever is running at `paths`. `stop_sent` is set once a `Stop`
+/// has been sent, whatever came of it.
 pub(super) async fn settle_existing(
     paths: &CommsPaths,
     policy: SpawnPolicy,
     takeover: Takeover,
     ours: Ours,
     timings: Timings,
+    stop_sent: &mut bool,
 ) -> Result<Existing, SingletonError> {
     let socket = paths.socket_path.as_path();
     let Some(report) = off_worker(|| daemon_status(socket)) else {
@@ -138,6 +140,7 @@ pub(super) async fn settle_existing(
         ours = ours.version,
         "comms: a daemon from another build holds the socket; asking it to stop"
     );
+    *stop_sent = true;
     match off_worker(|| request_stop_classified(socket)) {
         StopOutcome::Refused { code, message } if code == STORE_ERROR => {
             return Err(SingletonError::FailingPredecessor {
