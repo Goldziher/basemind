@@ -13,7 +13,8 @@ use super::{run_inbox, run_post, run_threads};
 use crate::cli::exit::exit_code_for;
 use crate::comms::v2::conformance::{Repo, default_caller};
 use crate::comms::v2::fake::{FAKE_EPOCH_MICROS, FakeAgents};
-use crate::comms::v2::{Caller, CommsError, InboxBody, InboxReply};
+use crate::comms::v2::front::Session;
+use crate::comms::v2::{Caller, CommsError, InboxBody, InboxReply, Principal, RepoKey};
 
 /// Ninety seconds past the fake's clock, which a post does not move: every age reads `1m`.
 const NOW_MICROS: i64 = FAKE_EPOCH_MICROS + 90 * 1_000_000;
@@ -47,6 +48,32 @@ pub fn caller(name: &str) -> Caller {
     default_caller(name, Repo::Home)
 }
 
+/// What the binary resolved about the session of one agent: its principal and its repository.
+pub struct Owner {
+    principal: Principal,
+    repo: RepoKey,
+}
+
+impl Owner {
+    /// The session, with no replay key (a CLI call has none) and no notices of its own.
+    pub fn session(&self) -> Session<'_> {
+        Session {
+            principal: &self.principal,
+            repo: &self.repo,
+            replay_key: None,
+            notices: &[],
+        }
+    }
+}
+
+/// The principal `name` in the conformance suite's home repository.
+pub fn owner(name: &str) -> Owner {
+    Owner {
+        principal: Principal::parse(name).expect("a valid principal"),
+        repo: caller(name).repo,
+    }
+}
+
 /// What `run` wrote.
 pub fn capture(run: impl FnOnce(&mut dyn Write) -> anyhow::Result<()>) -> anyhow::Result<String> {
     let mut buffer = Vec::new();
@@ -62,7 +89,8 @@ fn run(fake: &FakeAgents, who: &str, opts: &Render, args: &[&str]) -> anyhow::Re
             detail: "this test injected no wait".to_string(),
         })
     };
-    let acting = caller(who);
+    let owner = owner(who);
+    let acting = owner.session();
     let cmd = parse(args).expect("the command line parses");
     capture(|out| match cmd {
         AgentCmd::Post(args) => run_post(fake, &acting, args, opts, out),

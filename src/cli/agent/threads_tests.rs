@@ -40,7 +40,7 @@ fn request(flags: &[&str]) -> Result<ThreadsCall, CommsError> {
     let mut line = vec!["threads"];
     line.extend_from_slice(flags);
     match parse(&line).expect("the command line parses") {
-        AgentCmd::Threads(args) => threads_request(&caller("a"), args).map(|(_, call)| call),
+        AgentCmd::Threads(args) => threads_request(args),
         other => panic!("not a threads call: {other:?}"),
     }
 }
@@ -201,7 +201,7 @@ fn threads_json_is_the_reply() {
 }
 
 #[test]
-fn threads_as_a_sub_identity_lists_its_own_threads() {
+fn threads_as_a_sub_identity_lists_its_principals_threads_with_its_own_unread_count() {
     let fake = FakeAgents::new();
     text(
         &fake,
@@ -209,10 +209,47 @@ fn threads_as_a_sub_identity_lists_its_own_threads() {
         &["post", "--subject", "topic", "--body", "hello", "--as", "helper"],
     );
 
-    assert_eq!(text(&fake, "a", &["threads"]), "(no threads)\n");
     assert_eq!(
-        text(&fake, "a", &["threads", "--as", "helper"]),
-        "t-aaaaaa\ttopic\topen\tmember\tunread 0\t1m\t-\n"
+        text(&fake, "a", &["threads"]),
+        "t-aaaaaa\ttopic\topen\tmember\tunread 1\t1m\t-\n"
+    );
+    assert_eq!(text(&fake, "a", &["threads", "--as", "helper"]), OPEN_FOR_CREATOR);
+}
+
+#[test]
+fn threads_archived_is_read_by_naming_it_and_closed_to_posts_joins_and_invitations() {
+    let fake = FakeAgents::new();
+    open(&fake);
+    text(&fake, "b", &["threads", "--thread", "t-aaaaaa", "--join"]);
+    text(&fake, "a", &["post", "--thread", "t-aaaaaa", "--body", "second"]);
+    text(&fake, "a", &["threads", "--thread", "t-aaaaaa", "--archive"]);
+    let archived = format!("agent threads: {}", CommsError::ThreadArchived { thread: thread() });
+
+    assert_eq!(text(&fake, "b", &["inbox"]), "(no messages)\n");
+    assert_eq!(
+        text(&fake, "b", &["inbox", "--thread", "t-aaaaaa"]),
+        "t-aaaaaa.2\ta\ttopic\t1m\nsecond\n\n"
+    );
+    assert_eq!(
+        refusal(&fake, "b", &["post", "--thread", "t-aaaaaa", "--body", "too late"]),
+        (
+            ERROR,
+            "agent post: thread t-aaaaaa is archived: read it with agent_inbox `thread`, or start a new thread by \
+             posting with `subject`"
+                .to_string()
+        )
+    );
+    assert_eq!(
+        refusal(&fake, "c", &["threads", "--thread", "t-aaaaaa", "--join"]),
+        (ERROR, archived.clone())
+    );
+    assert_eq!(
+        refusal(&fake, "b", &["threads", "--thread", "t-aaaaaa", "--invite", "c"]),
+        (ERROR, archived)
+    );
+    assert_eq!(
+        text(&fake, "b", &["threads", "--thread", "t-aaaaaa", "--leave"]),
+        "left t-aaaaaa\nt-aaaaaa\ttopic\topen,archived\tnot-member\tunread 0\t1m\ta\n"
     );
 }
 

@@ -2,14 +2,17 @@
 //! and what is refused.
 
 use std::cell::RefCell;
+use std::time::Duration;
 
 use super::*;
 use crate::cli::agent::args::AgentCmd;
-use crate::cli::agent::test_support::{TEXT, caller, capture, json, parse, refusal, text};
+use crate::cli::agent::test_support::{TEXT, caller, capture, json, owner, parse, refusal, text};
 use crate::cli::exit::{ERROR, USAGE, exit_code_for};
 use crate::comms::v2::api::{MAX_INLINE_BODY_BYTES, MAX_WAIT_SECS};
-use crate::comms::v2::fake::FakeAgents;
-use crate::comms::v2::{IdKind, InvalidId, Mark, ReadKind, ThreadId, WaitOutcome};
+use crate::comms::v2::conformance::ConformanceHarness;
+use crate::comms::v2::fake::{FAKE_EPOCH_MICROS, FakeAgents};
+use crate::comms::v2::front::Session;
+use crate::comms::v2::{Caller, IdKind, InboxBody, InboxReply, InvalidId, Mark, ReadKind, ThreadId, WaitOutcome};
 
 const FIRST: &str = "t-aaaaaa.1\ta\ttopic\t1m\nhello\n\n";
 const SECOND: &str = "t-aaaaaa.2\ta\ttopic\t1m\nsecond\n\n";
@@ -43,7 +46,7 @@ fn args(flags: &[&str]) -> InboxArgs {
 
 /// The call the flags after `inbox` make, as agent `b`.
 fn request(flags: &[&str]) -> Result<InboxCall, CommsError> {
-    inbox_request(&caller("b"), args(flags)).map(|(_, call)| call)
+    inbox_request(args(flags))
 }
 
 fn refused_with(flags: &[&str]) -> CommsError {
@@ -173,18 +176,107 @@ fn inbox_json_is_the_reply() {
 }
 
 #[test]
-fn inbox_as_a_sub_identity_reads_its_own_messages() {
+fn inbox_as_a_sibling_reads_the_principals_mail_at_its_own_position() {
     let fake = FakeAgents::new();
-    text(
-        &fake,
-        "b",
-        &["post", "--subject", "topic", "--to", "a.helper", "--body", "hello"],
+    start_with_three(&fake);
+
+    assert_eq!(
+        text(&fake, "b", &["inbox", "--limit", "1"]),
+        format!("{FIRST}more: call again for the next unread messages\n")
+    );
+    assert_eq!(
+        text(&fake, "b", &["inbox", "--as", "helper"]),
+        format!("{SECOND}{THIRD}"),
+        "a sibling is a member through its principal and starts where the principal has read to"
+    );
+    assert_eq!(text(&fake, "b", &["inbox", "--as", "helper"]), "(no messages)\n");
+    assert_eq!(
+        text(&fake, "b", &["inbox"]),
+        format!("{SECOND}{THIRD}"),
+        "the sibling's read did not move the principal's position"
+    );
+}
+
+#[test]
+fn inbox_announce_lists_front_matter_once_and_marks_nothing_read() {
+    let fake = FakeAgents::new();
+    start_with_three(&fake);
+    let marks = || fake.position(&ThreadId::parse("t-aaaaaa").expect("thread id"), &caller("b").actor);
+
+    assert_eq!(
+        text(&fake, "b", &["inbox", "--announce", "--limit", "2"]),
+        "t-aaaaaa.1\ta\ttopic\t1m\n(5 bytes, not read yet)\n\n\
+         t-aaaaaa.2\ta\ttopic\t1m\n(6 bytes, not read yet)\n\n\
+         more: call again for the next unread messages\n"
+    );
+    assert_eq!(marks(), Some((0, 2)), "only the announcement mark moved");
+
+    let rest = json(&fake, "b", &["inbox", "--announce"]);
+    assert_eq!(
+        rest["messages"],
+        serde_json::json!([{
+            "id": "t-aaaaaa.3",
+            "subject": "topic",
+            "from": "a",
+            "ts_micros": FAKE_EPOCH_MICROS + 2,
+            "reply_to": null,
+            "body": "",
+            "body_bytes": 5,
+            "truncated": false,
+        }])
+    );
+    assert_eq!(rest["read_to"], serde_json::json!([]));
+    assert_eq!(rest["more"], false);
+    assert_eq!(text(&fake, "b", &["inbox", "--announce"]), "(no messages)\n");
+    assert_eq!(marks(), Some((0, 3)));
+
+    assert_eq!(text(&fake, "b", &["inbox"]), format!("{FIRST}{SECOND}{THIRD}"));
+    assert_eq!(marks(), Some((3, 3)));
+}
+
+#[test]
+fn inbox_refuses_announce_beside_a_flag_that_asks_for_another_read() {
+    for (extra, field) in [
+        (&["--id", "t-aaaaaa.1"][..], "id"),
+        (&["--peek"][..], "peek"),
+        (&["--unread", "false"][..], "unread"),
+        (&["--wait-secs", "5"][..], "wait_secs"),
+    ] {
+        let flags = [&["--announce"][..], extra].concat();
+
+        assert_eq!(refused_with(&flags), CommsError::not_applicable(field, "announce"));
+    }
+    assert_eq!(
+        refused_with(&["--announce", "--cursor", "abc"]),
+        CommsError::CursorNotApplicable
     );
 
-    assert_eq!(text(&fake, "a", &["inbox"]), "(no messages)\n");
+    let announcing = request(&["--announce", "--thread", "t-aaaaaa", "--unread", "true"]).expect("accepted");
+    assert_eq!(announcing.body.kind(), Ok(ReadKind::Announcing));
+    assert!(announcing.wait.is_zero());
+}
+
+#[test]
+fn inbox_prints_the_sessions_notices_after_the_replys() {
+    let fake = FakeAgents::new();
+    start(&fake);
+    let own = ["2 live sessions share the identity b".to_string()];
+    let owner = owner("b");
+    let session = Session {
+        notices: &own,
+        ..owner.session()
+    };
+    let wait = |caller: &Caller, body: InboxBody, _: Duration| -> Result<InboxReply, CommsError> {
+        let mut reply = fake.inbox(caller, body)?;
+        reply.notices.push("from the daemon".to_string());
+        Ok(reply)
+    };
+
+    let output = capture(|out| run_inbox(&fake, &session, args(&["--wait-secs", "1"]), &wait, &TEXT, out));
+
     assert_eq!(
-        text(&fake, "a", &["inbox", "--as", "helper"]),
-        "t-aaaaaa.1\tb\ttopic\t1m\nhello\n\n"
+        output.expect("read"),
+        format!("{FIRST}notice: from the daemon\nnotice: {}\n", own[0])
     );
 }
 
@@ -293,7 +385,7 @@ fn inbox_without_a_wait_never_calls_the_waiting_read() {
     };
 
     for flags in [&["--peek"][..], &["--peek", "--wait-secs", "0"][..]] {
-        let output = capture(|out| run_inbox(&fake, &caller("b"), args(flags), &wait, &TEXT, out));
+        let output = capture(|out| run_inbox(&fake, &owner("b").session(), args(flags), &wait, &TEXT, out));
 
         assert_eq!(output.expect("read"), FIRST);
     }
@@ -315,7 +407,7 @@ fn inbox_with_a_wait_hands_the_whole_read_to_the_waiting_read() {
     let output = capture(|out| {
         run_inbox(
             &fake,
-            &caller("b"),
+            &owner("b").session(),
             args(&["--wait-secs", "5", "--as", "helper", "--peek"]),
             &wait,
             &TEXT,
@@ -323,7 +415,7 @@ fn inbox_with_a_wait_hands_the_whole_read_to_the_waiting_read() {
         )
     });
 
-    assert_eq!(output.expect("read"), "(no messages)\n");
+    assert_eq!(output.expect("read"), FIRST);
     let peek = InboxBody {
         mark: Mark::Peek,
         ..InboxBody::default()
@@ -341,7 +433,16 @@ fn inbox_reports_a_wait_that_timed_out() {
         Ok(empty_reply(WaitOutcome::TimedOut))
     };
 
-    let output = capture(|out| run_inbox(&fake, &caller("b"), args(&["--wait-secs", "40"]), &wait, &TEXT, out));
+    let output = capture(|out| {
+        run_inbox(
+            &fake,
+            &owner("b").session(),
+            args(&["--wait-secs", "40"]),
+            &wait,
+            &TEXT,
+            out,
+        )
+    });
 
     assert_eq!(output.expect("read"), "(no messages; the wait timed out)\n");
 }
@@ -355,8 +456,17 @@ fn inbox_wait_out_of_range_is_refused_before_anything_waits() {
         Ok(empty_reply(WaitOutcome::TimedOut))
     };
 
-    let error = capture(|out| run_inbox(&fake, &caller("b"), args(&["--wait-secs", "41"]), &wait, &TEXT, out))
-        .expect_err("refused");
+    let error = capture(|out| {
+        run_inbox(
+            &fake,
+            &owner("b").session(),
+            args(&["--wait-secs", "41"]),
+            &wait,
+            &TEXT,
+            out,
+        )
+    })
+    .expect_err("refused");
 
     assert_eq!(exit_code_for(&error), USAGE);
     assert_eq!(

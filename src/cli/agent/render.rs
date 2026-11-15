@@ -1,7 +1,7 @@
 //! Output of the `basemind agent` commands.
 //!
-//! `--json` prints the reply as the tool of the same name returns it. The text form is meant to
-//! be read and to stay stable: tab-separated header lines, one message per block, one thread per
+//! `--json` prints the reply as the store returned it, with every field written. The text form is
+//! meant to be read and to stay stable: tab-separated header lines, one message per block, one thread per
 //! line.
 
 use std::fmt::Display;
@@ -106,7 +106,8 @@ pub fn post(reply: &PostReply, opts: &Render, out: &mut dyn Write) -> Result<()>
     write_notices(&reply.notices, out)
 }
 
-/// One message: id, sender, subject and age on a line, then the body, then a blank line.
+/// One message: id, sender, subject and age on a line, then the body, then a blank line. A
+/// message without a body, which is what an announcing read returns, shows the body's size.
 fn write_message(message: &InboxMessage, now_micros: i64, out: &mut dyn Write) -> Result<()> {
     writeln!(
         out,
@@ -119,7 +120,11 @@ fn write_message(message: &InboxMessage, now_micros: i64, out: &mut dyn Write) -
     if let Some(reply_to) = &message.reply_to {
         writeln!(out, "reply_to: {reply_to}")?;
     }
-    writeln!(out, "{}", message.body.trim_end_matches('\n'))?;
+    if message.body.is_empty() {
+        writeln!(out, "({} bytes, not read yet)", message.body_bytes)?;
+    } else {
+        writeln!(out, "{}", message.body.trim_end_matches('\n'))?;
+    }
     if message.truncated {
         writeln!(
             out,

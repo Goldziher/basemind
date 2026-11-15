@@ -2,20 +2,20 @@
 
 use super::*;
 use crate::cli::agent::args::AgentCmd;
-use crate::cli::agent::test_support::{caller, json, parse, refusal, text};
+use crate::cli::agent::test_support::{TEXT, caller, capture, json, owner, parse, refusal, text};
 use crate::cli::exit::{ERROR, USAGE};
-use crate::comms::v2::api::{MAX_RECIPIENTS, MAX_SUBJECT_BYTES};
+use crate::comms::v2::api::{MAX_ACTIVE_THREADS_PER_REPO, MAX_RECIPIENTS, MAX_SUBJECT_BYTES, cap_archive_notice};
 use crate::comms::v2::fake::FakeAgents;
-use crate::comms::v2::{IdKind, InboxBody, InvalidId, MessageId, ThreadId, ThreadQuery};
+use crate::comms::v2::{IdKind, InboxBody, InvalidId, MessageId, PostTarget, ThreadId, ThreadQuery};
 
 const START: [&str; 7] = ["post", "--subject", "topic", "--to", "b", "--body", "hello"];
 
 /// The request the flags after `post` make, as agent `a`.
-fn request(flags: &[&str]) -> Result<(Caller, PostBody), CommsError> {
+fn request(flags: &[&str]) -> Result<PostBody, CommsError> {
     let mut args = vec!["post"];
     args.extend_from_slice(flags);
     match parse(&args).expect("the command line parses") {
-        AgentCmd::Post(args) => post_request(&caller("a"), args),
+        AgentCmd::Post(args) => post_request(args),
         other => panic!("not a post: {other:?}"),
     }
 }
@@ -173,7 +173,7 @@ fn post_refuses_more_recipients_than_the_cap() {
 
 #[test]
 fn post_reads_an_empty_optional_flag_as_left_out() {
-    let (_, body) = request(&["--body", "hello", "--thread", "", "--subject", "topic"]).expect("accepted");
+    let body = request(&["--body", "hello", "--thread", "", "--subject", "topic"]).expect("accepted");
 
     assert_eq!(
         body.target,
@@ -216,7 +216,7 @@ fn post_refused_by_the_store_is_a_runtime_error_with_its_fix() {
 }
 
 #[test]
-fn post_as_a_sub_identity_is_a_distinct_actor() {
+fn post_as_a_sub_identity_is_a_distinct_actor_of_the_same_member() {
     let fake = FakeAgents::new();
     text(
         &fake,
@@ -237,13 +237,71 @@ fn post_as_a_sub_identity_is_a_distinct_actor() {
     let unread = fake.inbox(&caller("b"), InboxBody::default()).expect("inbox");
     assert_eq!(unread.messages[0].from.as_str(), "a.helper");
     let own = fake.threads_query(&caller("a"), ThreadQuery::default()).expect("list");
-    assert!(own.threads.is_empty(), "the principal is not a member: {own:?}");
+    assert_eq!(own.threads.len(), 1, "the principal is the member: {own:?}");
+    assert_eq!(own.threads[0].unread, 1, "a sibling's post is unread for the principal");
+    assert_eq!(
+        text(
+            &fake,
+            "a",
+            &["post", "--thread", "t-aaaaaa", "--body", "as the principal"]
+        ),
+        "t-aaaaaa.2\tposted\n"
+    );
 }
 
 #[test]
-fn post_refuses_a_malformed_sub_identity() {
+fn post_at_the_thread_cap_prints_the_stores_notice_then_the_sessions() {
+    let fake = FakeAgents::new();
+    for n in 0..MAX_ACTIVE_THREADS_PER_REPO {
+        let subject = format!("topic {n}");
+        let filled = text(&fake, "a", &["post", "--subject", subject.as_str(), "--body", "hello"]);
+        assert!(!filled.contains("notice:"), "{filled}");
+    }
+    let own = ["the configured agent id is not used".to_string()];
+    let owner = owner("a");
+    let session = Session {
+        notices: &own,
+        ..owner.session()
+    };
+    let args = match parse(&["post", "--subject", "one more", "--body", "hello"]).expect("parses") {
+        AgentCmd::Post(args) => args,
+        other => panic!("not a post: {other:?}"),
+    };
+
+    let output = capture(|out| run_post(&fake, &session, args, &TEXT, out)).expect("the post at the cap succeeds");
+
+    let created = ThreadId::from_bits(MAX_ACTIVE_THREADS_PER_REPO as u32);
     assert_eq!(
-        refused_with(&["--body", "hello", "--subject", "topic", "--as", "Bad Name"]),
-        CommsError::InvalidId(InvalidId::new(IdKind::Sub, "Bad Name"))
+        output,
+        format!(
+            "{created}.1\tcreated\nnotice: {}\nnotice: {}\n",
+            cap_archive_notice(&thread()),
+            own[0]
+        )
     );
+    let (code, message) = refusal(&fake, "a", &["post", "--thread", "t-aaaaaa", "--body", "still here?"]);
+    assert_eq!(code, ERROR);
+    assert_eq!(
+        message,
+        "agent post: thread t-aaaaaa is archived: read it with agent_inbox `thread`, or start a new thread by \
+         posting with `subject`"
+    );
+}
+
+#[test]
+fn post_refuses_a_malformed_sub_identity_and_stores_nothing() {
+    let fake = FakeAgents::new();
+
+    let (code, message) = refusal(
+        &fake,
+        "a",
+        &["post", "--body", "hello", "--subject", "topic", "--as", "Bad Name"],
+    );
+
+    assert_eq!(code, USAGE);
+    assert!(
+        message.starts_with("agent post: `as`: invalid sub-identity name \"Bad Name\""),
+        "{message}"
+    );
+    assert_eq!(fake.arrivals(), 0);
 }

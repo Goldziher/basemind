@@ -6,19 +6,18 @@ use anyhow::Result;
 
 use super::args::ThreadsArgs;
 use super::render::{self, Render, ThreadsView};
-use super::{acting_as, failed, refused};
-use crate::comms::v2::{AgentOps, Caller, CommsError, ThreadAction, ThreadQuery, ThreadsCall, ThreadsFields};
+use super::{caller, failed, refused};
+use crate::comms::v2::front::Session;
+use crate::comms::v2::{AgentOps, CommsError, ThreadAction, ThreadQuery, ThreadsCall, ThreadsFields};
 
 /// The command's name in an error message.
 const COMMAND: &str = "agent threads";
 
-/// The query or change `args` ask for and the caller making it. Refuses what `agent_threads`
-/// refuses: several changes, a change without `--thread`, a listing flag beside a change or a
-/// thread to describe.
-pub fn threads_request(caller: &Caller, args: ThreadsArgs) -> Result<(Caller, ThreadsCall), CommsError> {
-    let caller = acting_as(caller, args.as_name.as_deref())?;
+/// The query or change `args` ask for. Refuses what `agent_threads` refuses: several changes, a
+/// change without `--thread`, a listing flag beside a change or a thread to describe.
+pub fn threads_request(args: ThreadsArgs) -> Result<ThreadsCall, CommsError> {
     let invite = (!args.invite.is_empty()).then_some(args.invite);
-    let call = ThreadsCall::from_fields(ThreadsFields {
+    ThreadsCall::from_fields(ThreadsFields {
         query: args.query,
         path: args.path,
         thread: args.thread,
@@ -29,8 +28,7 @@ pub fn threads_request(caller: &Caller, args: ThreadsArgs) -> Result<(Caller, Th
         archived: args.archived,
         limit: args.limit,
         cursor: args.cursor,
-    })?;
-    Ok((caller, call))
+    })
 }
 
 /// What a change is reported as, before the id of the thread it changed.
@@ -46,12 +44,13 @@ fn change_label(action: &ThreadAction) -> &'static str {
 /// List, discover or describe threads, or change one, and print the threads concerned.
 pub fn run_threads(
     ops: &dyn AgentOps,
-    caller: &Caller,
-    args: ThreadsArgs,
+    session: &Session<'_>,
+    mut args: ThreadsArgs,
     opts: &Render,
     out: &mut dyn Write,
 ) -> Result<()> {
-    let (caller, call) = threads_request(caller, args).map_err(|error| refused(COMMAND, &error))?;
+    let caller = caller(session, COMMAND, args.as_name.take().as_deref())?;
+    let call = threads_request(args).map_err(|error| refused(COMMAND, &error))?;
     let (view, reply) = match call {
         ThreadsCall::Query(query) => {
             let view = match &query {
@@ -65,7 +64,8 @@ pub fn run_threads(
             (view, ops.threads_update(&caller, update))
         }
     };
-    let reply = reply.map_err(|error| failed(COMMAND, &error))?;
+    let mut reply = reply.map_err(|error| failed(COMMAND, &error))?;
+    reply.notices = session.notices(std::mem::take(&mut reply.notices));
     render::threads(&reply, view, opts, out)
 }
 

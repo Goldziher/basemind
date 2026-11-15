@@ -11,7 +11,8 @@ use clap::{Args, Subcommand};
 pub enum AgentCmd {
     /// Post a message: into a thread, as a reply, or as the first message of a new thread.
     Post(PostArgs),
-    /// Read messages, bodies inline. Marks what it returns as read unless `--peek` is set.
+    /// Read messages, bodies inline. Marks what it returns as read unless `--peek` or
+    /// `--announce` is set.
     Inbox(InboxArgs),
     /// List, discover or describe threads, or make one change to a thread.
     Threads(ThreadsArgs),
@@ -62,6 +63,10 @@ pub struct InboxArgs {
     /// Return unread messages without marking them as read.
     #[arg(long)]
     pub peek: bool,
+    /// The hooks' read: list unread messages not announced yet, without bodies, and record them
+    /// as announced. Marks nothing as read.
+    #[arg(long)]
+    pub announce: bool,
     /// Wait up to this many seconds (0-40) for a message when nothing is unread.
     #[arg(long, value_name = "SECONDS")]
     pub wait_secs: Option<u32>,

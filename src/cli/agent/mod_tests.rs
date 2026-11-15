@@ -1,62 +1,67 @@
 //! Who a command acts as, and how a refusal becomes an exit code.
 
-use super::test_support::{JSON, TEXT, caller, capture};
+use super::test_support::{JSON, TEXT, capture, owner};
 use super::*;
 use crate::cli::exit::{ERROR, USAGE, exit_code_for};
-use crate::comms::v2::{Actor, IdKind, InvalidId, ReplayKey, RepoKey};
+use crate::comms::v2::ReplayKey;
 
 /// Longest principal the id grammar allows: any sub-identity of it is over the id length limit.
 const LONGEST_PRINCIPAL_LEN: usize = 128;
 
 #[test]
-fn acting_as_nobody_is_the_caller() {
-    let base = caller("a");
+fn a_command_without_as_acts_as_the_sessions_principal() {
+    let owner = owner("a");
 
-    assert_eq!(acting_as(&base, None), Ok(base.clone()));
-    assert_eq!(acting_as(&base, Some("")), Ok(base));
+    for as_name in [None, Some("")] {
+        let acting = caller(&owner.session(), "agent post", as_name).expect("the principal");
+
+        assert_eq!(acting.actor.as_str(), "a");
+        assert_eq!(acting.repo.as_str(), "github.com/acme/app");
+        assert_eq!(acting.replay_key, None);
+    }
 }
 
 #[test]
-fn acting_as_a_name_keeps_the_repository_and_the_replay_key() {
-    let base = caller("a").with_replay_key(ReplayKey::parse("relay-1").expect("replay key"));
+fn as_names_a_sub_identity_and_keeps_the_repository_and_the_replay_key() {
+    let owner = owner("a");
+    let key = ReplayKey::parse("relay-1").expect("replay key");
+    let session = Session {
+        replay_key: Some(&key),
+        ..owner.session()
+    };
 
-    let acting = acting_as(&base, Some("helper")).expect("composed");
+    let acting = caller(&session, "agent post", Some("helper")).expect("composed");
 
     assert_eq!(acting.actor.as_str(), "a.helper");
     assert_eq!(acting.actor.principal(), "a");
-    assert_eq!(acting.repo, base.repo);
-    assert_eq!(acting.replay_key, base.replay_key);
+    assert_eq!(acting.repo.as_str(), "github.com/acme/app");
+    assert_eq!(acting.replay_key, Some(key));
 }
 
 #[test]
-fn acting_as_a_name_from_a_sub_identity_stays_under_the_principal() {
-    let base = caller("a.helper");
+fn a_malformed_as_is_a_usage_error_that_names_the_flag() {
+    let error = caller(&owner("a").session(), "agent inbox", Some("Bad Name")).expect_err("refused");
 
-    let acting = acting_as(&base, Some("other")).expect("composed");
-
-    assert_eq!(acting.actor.as_str(), "a.other");
-}
-
-#[test]
-fn acting_as_a_malformed_name_is_refused() {
+    assert_eq!(exit_code_for(&error), USAGE);
     assert_eq!(
-        acting_as(&caller("a"), Some("Bad Name")),
-        Err(CommsError::InvalidId(InvalidId::new(IdKind::Sub, "Bad Name")))
+        error.to_string(),
+        "agent inbox: `as`: invalid sub-identity name \"Bad Name\": expected 1 to 32 characters of a-z, 0-9, `_` \
+         or `-`"
     );
 }
 
 #[test]
-fn acting_as_a_name_that_makes_the_id_too_long_is_refused() {
-    let principal = "p".repeat(LONGEST_PRINCIPAL_LEN);
-    let base = Caller::new(
-        Actor::parse(principal).expect("a principal at the length limit"),
-        RepoKey::parse("github.com/acme/app").expect("repository key"),
-    );
+fn an_as_that_makes_the_id_too_long_is_refused() {
+    let longest = owner(&"p".repeat(LONGEST_PRINCIPAL_LEN));
 
-    assert!(matches!(
-        acting_as(&base, Some("helper")),
-        Err(CommsError::InvalidId(_))
-    ));
+    assert!(caller(&longest.session(), "agent post", None).is_ok());
+    let error = caller(&longest.session(), "agent post", Some("helper")).expect_err("refused");
+
+    assert_eq!(exit_code_for(&error), USAGE);
+    assert!(
+        error.to_string().starts_with("agent post: `as`: invalid agent id "),
+        "{error}"
+    );
 }
 
 #[test]

@@ -6,7 +6,9 @@
 //! renders the reply. Nothing here opens a store or reaches a daemon, so the commands run against
 //! any implementation, the in-memory one included.
 //!
-//! Not wired into the binary yet: `src/main.rs` still dispatches the v1 `agents` group.
+//! Who is calling is the [`Session`](crate::comms::v2::front::Session) the binary resolved; a
+//! command chooses only `--as`. Not wired into the binary yet: `src/main.rs` still dispatches the
+//! v1 `agents` group.
 //!
 //! Layout:
 //! - `args.rs` — the clap grammar.
@@ -28,40 +30,33 @@ use anyhow::Result;
 use serde::Serialize;
 
 use crate::cli::exit::CliExit;
-use crate::comms::v2::identity::compose;
-use crate::comms::v2::{Caller, CommsError, Principal};
+use crate::comms::v2::front::{self, Session};
+use crate::comms::v2::{Caller, CommsError};
 
+pub use crate::comms::v2::front::WaitingRead;
 pub use args::{AgentCmd, InboxArgs, PostArgs, ThreadsArgs};
-pub use inbox::{WaitingRead, inbox_request, run_inbox};
+pub use inbox::{inbox_request, run_inbox};
 pub use post::{post_request, run_post};
 pub use render::Render;
 pub use threads::{run_threads, threads_request};
 
-/// The caller a command acts as: `caller` itself, or the sub-identity `as_name` of its principal.
-///
-/// An empty `as_name` is the flag left out. The sub-identity is composed from the principal part
-/// of `caller`, so a caller that already is a sub-identity moves to a sibling and never nests.
-pub fn acting_as(caller: &Caller, as_name: Option<&str>) -> Result<Caller, CommsError> {
-    let Some(name) = as_name.filter(|name| !name.is_empty()) else {
-        return Ok(caller.clone());
-    };
-    let principal = Principal::parse(caller.actor.principal())?;
-    Ok(Caller {
-        actor: compose(&principal, Some(name))?,
-        repo: caller.repo.clone(),
-        replay_key: caller.replay_key.clone(),
-    })
+/// The caller a command acts as: the session's principal, or its sub-identity `--as`. A refused
+/// name is a usage error (exit `2`).
+fn caller(session: &Session<'_>, command: &str, as_name: Option<&str>) -> Result<Caller> {
+    session
+        .caller(as_name)
+        .map_err(|error| CliExit::usage(front::as_refusal(command, &error).message))
 }
 
 /// A refusal of the flags themselves, before any operation ran: a usage error (exit `2`).
 pub fn refused(command: &str, error: &CommsError) -> anyhow::Error {
-    CliExit::usage(format!("{command}: {error}"))
+    CliExit::usage(front::refusal(command, error).message)
 }
 
 /// A refusal by the operation: a runtime error (exit `1`). The message is the refusal's own, which
 /// already says what to do next.
 pub fn failed(command: &str, error: &CommsError) -> anyhow::Error {
-    anyhow::anyhow!("{command}: {error}")
+    anyhow::anyhow!(front::refusal(command, error).message)
 }
 
 /// Render the report of a command that has no MCP tool (`status`, `cleanup`). The operation
