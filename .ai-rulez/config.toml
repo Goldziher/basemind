@@ -30,6 +30,8 @@ project_doc_max_bytes = 65536
 # The generator honours per-preset `<preset>_model` agent frontmatter, but AR303 does not know it.
 [lint]
 allowed_keys = ["gemini_model", "opencode_model"]
+# The local adr-immutability rule replaces the builtin one: ADRs here live flat in docs/adr/.
+allow_overrides = ["adr-immutability"]
 
 [lint.load_budgets]
 "codex-agents-chain" = 65536
