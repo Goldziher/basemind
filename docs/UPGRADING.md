@@ -174,8 +174,11 @@ directory, so its name changes too.
   top of the comms directory until `basemind comms cleanup` removes them. That command removes the
   pre-generation files, and any other generation's directory, only when no daemon holds the
   rendezvous's `daemon.lock` and its newest file is more than 30 days old (`--older-than <days>`
-  changes the age, `--dry-run` lists what would go with sizes). It contacts and signals nothing and
-  never touches the generation of the binary that runs it. Nothing runs it automatically.
+  changes the age, `--dry-run` lists what would go with sizes). `--older-than 0` drops the age
+  test, so the old message store goes as soon as no daemon of that release is running. A directory
+  without a `daemon.lock` is not taken for a rendezvous and is left as it is, and so is one whose
+  lock cannot be opened. It contacts and signals nothing and never touches the generation of the
+  binary that runs it. Nothing runs it automatically.
 - `basemind comms stop --all` and `basemind comms doctor` (with or without `--probe`) now cover the
   daemons of their own generation only. To stop or inspect a 0.33 daemon, use the 0.33 binary.
   `doctor` says how many daemons of other generations it counted; all of them count toward the

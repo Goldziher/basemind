@@ -328,7 +328,9 @@ fn cmd_comms_start() -> Result<()> {
 
 /// `basemind comms cleanup`: remove the rendezvous of other protocol generations, and of releases
 /// up to 0.33, that no daemon holds and nothing has used for `older_than_days`. Reads locks and
-/// file ages only; this generation's directory is never a candidate.
+/// file ages only; this generation's directory is never a candidate. With `older_than_days` zero
+/// the age test is off, so the previous release's message store goes as soon as none of its
+/// daemons is running.
 #[cfg(all(feature = "comms", any(unix, windows)))]
 fn cmd_comms_cleanup(json: bool, dry_run: bool, older_than_days: u64) -> Result<()> {
     use basemind::comms::generation_cleanup::{self, Rendezvous, Verdict};
@@ -346,6 +348,7 @@ fn cmd_comms_cleanup(json: bool, dry_run: bool, older_than_days: u64) -> Result<
         let name = match &finding.rendezvous {
             Rendezvous::Generation(name) => base.join(name).display().to_string(),
             Rendezvous::PreGeneration => format!("{} (files of releases up to 0.33)", base.display()),
+            Rendezvous::Leftover(name) => format!("{} (left by an interrupted cleanup)", base.join(name).display()),
         };
         let outcome = match finding.verdict {
             Verdict::Removed if dry_run => "would remove",

@@ -239,3 +239,125 @@ fn a_lock_that_cannot_be_opened_counts_as_held() {
     assert!(base.path().join("store.fjall/data").exists());
     assert!(base.path().join("comms.sock").exists());
 }
+
+/// A pid no process has.
+const DEAD_PID: u32 = 0x7FFF_FFFE;
+
+fn removing(name: &str, pid: u32) -> String {
+    format!("{name}{REMOVING_INFIX}{pid}")
+}
+
+/// Put a directory inside `dir` that cannot be emptied, so deleting `dir` fails part-way.
+/// Returns it, for the test to make deletable again.
+#[cfg(unix)]
+fn undeletable_inside(dir: &Path) -> PathBuf {
+    let stuck = dir.join("stuck");
+    std::fs::create_dir_all(&stuck).expect("mkdir");
+    std::fs::write(stuck.join("file"), b"12345").expect("write");
+    set_mode(&stuck, 0o500);
+    stuck
+}
+
+/// A daemon of that generation starting while the sweep deletes must find its directory either
+/// whole or absent. So the name has to be free from the first step, even when deleting then fails.
+#[cfg(unix)]
+#[test]
+fn a_generation_leaves_its_name_in_one_step_and_a_failed_deletion_is_finished_by_the_next_sweep() {
+    let base = tempfile::tempdir().expect("tempdir");
+    let old = generation(base.path(), &other());
+    let stuck = undeletable_inside(&old.join("store.fjall"));
+    if std::fs::write(stuck.join("probe"), b"").is_ok() {
+        return;
+    }
+
+    let findings = sweep(base.path(), DEFAULT_MAX_AGE, false, later());
+
+    let aside = base.path().join(removing(&other(), std::process::id()));
+    assert_eq!(findings.len(), 1, "{findings:?}");
+    assert_eq!(findings[0].verdict, Verdict::Failed);
+    assert!(
+        !old.exists(),
+        "the generation's name is free although its files are not all gone"
+    );
+    assert!(
+        aside.join("store.fjall/stuck/file").exists(),
+        "what is left sits under the aside name"
+    );
+
+    set_mode(&aside.join("store.fjall/stuck"), 0o700);
+    let findings = sweep(base.path(), DEFAULT_MAX_AGE, false, SystemTime::now());
+
+    assert_eq!(findings.len(), 1, "{findings:?}");
+    assert_eq!(
+        findings[0].rendezvous,
+        Rendezvous::Leftover(removing(&other(), std::process::id()))
+    );
+    assert_eq!(findings[0].verdict, Verdict::Removed, "whatever its age");
+    assert_eq!(left_in(base.path()), Vec::<String>::new());
+}
+
+#[cfg(unix)]
+#[test]
+fn the_pre_generation_store_is_moved_aside_before_anything_is_deleted() {
+    let base = tempfile::tempdir().expect("tempdir");
+    pre_generation(base.path());
+    let stuck = undeletable_inside(&base.path().join("store.fjall"));
+    if std::fs::write(stuck.join("probe"), b"").is_ok() {
+        return;
+    }
+
+    let findings = sweep(base.path(), DEFAULT_MAX_AGE, false, later());
+
+    let aside = removing("store.fjall", std::process::id());
+    assert_eq!(findings.len(), 1, "{findings:?}");
+    assert_eq!(findings[0].verdict, Verdict::Failed);
+    assert_eq!(
+        left_in(base.path()),
+        [aside.clone()],
+        "the store is not left half-deleted under its own name, and the lock is gone with the rest"
+    );
+    set_mode(&base.path().join(aside).join("stuck"), 0o700);
+}
+
+#[test]
+fn what_a_dead_sweep_left_aside_is_removed_and_a_running_sweeps_is_not() {
+    let base = tempfile::tempdir().expect("tempdir");
+    let dead_generation = removing(&other(), DEAD_PID);
+    let dead_store = removing("store.fjall", DEAD_PID);
+    // The test runner's parent is some other process that is certainly running.
+    #[cfg(unix)]
+    let running = removing(&other(), std::os::unix::process::parent_id());
+    #[cfg(not(unix))]
+    let running = removing(&other(), DEAD_PID - 1);
+    let unrelated = removing("notes", DEAD_PID);
+    for name in [&dead_generation, &dead_store, &running, &unrelated] {
+        std::fs::create_dir_all(base.path().join(name)).expect("mkdir");
+        std::fs::write(base.path().join(name).join("data"), b"12345").expect("write");
+    }
+
+    let dry = sweep(base.path(), DEFAULT_MAX_AGE, true, SystemTime::now());
+    assert!(
+        base.path().join(&dead_generation).join("data").exists(),
+        "a dry run deletes nothing"
+    );
+    let findings = sweep(base.path(), DEFAULT_MAX_AGE, false, SystemTime::now());
+
+    assert_eq!(findings, dry, "a dry run reports what a real run does");
+    #[cfg(unix)]
+    {
+        assert_eq!(findings.len(), 2, "{findings:?}");
+        assert!(
+            base.path().join(&running).join("data").exists(),
+            "another sweep is deleting that one"
+        );
+    }
+    assert_eq!(findings[0].rendezvous, Rendezvous::Leftover(dead_generation.clone()));
+    assert_eq!(findings[0].bytes, 5);
+    assert!(findings.iter().all(|f| f.verdict == Verdict::Removed), "{findings:?}");
+    assert!(!base.path().join(&dead_generation).exists());
+    assert!(!base.path().join(&dead_store).exists());
+    assert!(
+        base.path().join(&unrelated).join("data").exists(),
+        "only names a sweep makes"
+    );
+}

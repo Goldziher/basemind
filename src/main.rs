@@ -192,7 +192,8 @@ enum CommsLifecycleCmd {
         /// List what would be removed, with sizes, and remove nothing.
         #[arg(long)]
         dry_run: bool,
-        /// Idle days after which an unlocked rendezvous is removed.
+        /// Idle days after which an unlocked rendezvous is removed. With 0, the comms store of
+        /// another release, messages included, is removed as soon as no daemon of it is running.
         #[arg(long, value_name = "DAYS", default_value_t = 30)]
         older_than: u64,
     },

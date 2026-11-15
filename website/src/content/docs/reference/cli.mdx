@@ -250,7 +250,7 @@ basemind comms cleanup [--dry-run --older-than <days>]
 | `stop [--all]` | Ask the running daemon to drain and stop. `--all` stops every live daemon of this version's protocol generation on this machine, not just the current one; a 0.33 daemon is stopped with the 0.33 binary. |
 | `status` | Report the daemon's pid / version / uptime / room + subscriber counts. |
 | `doctor [--probe --clear-fatal]` | List every live daemon of this version's protocol generation on this machine (pid / comms dir / version / uptime), flag a pile-up over the ceiling, and prune dead registry entries. Reports process liveness only unless `--probe` is given, which also asks each daemon whether it can serve. `--clear-fatal` acknowledges and deletes the recorded fatal store error for this comms dir. |
-| `cleanup [--dry-run --older-than <days>]` | Remove rendezvous files no daemon uses: other protocol generations' directories and the files releases up to 0.33 left in the comms directory, when their daemon lock is free and nothing in them changed for 30 days. Never touches this version's generation and contacts no daemon. |
+| `cleanup [--dry-run --older-than <days>]` | Remove rendezvous files no daemon uses: other protocol generations' directories and the files releases up to 0.33 left in the comms directory, when this command can take their `daemon.lock` and nothing in them changed for 30 days. `--older-than 0` drops the age test, so another release's message store goes as soon as none of its daemons runs. An entry without a `daemon.lock` is skipped. Never touches this version's generation and contacts no daemon. |
 
 ## Other commands
 

@@ -235,10 +235,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `basemind comms cleanup [--dry-run] [--older-than <days>]` removes the rendezvous files no daemon
   uses any more: the directories of other protocol generations under the comms directory, and the
   files releases up to 0.33 keep directly in it (`comms.sock`, `daemon.lock`, `daemon.pid`,
-  `store.fjall/`, `daemon.log`, `http.addr`, `last-fatal.json`). A rendezvous goes only when its
-  `daemon.lock` can be taken and its newest file is older than 30 days. The command reads locks and
-  file ages only, never contacts or signals a daemon, and never touches the generation of the
-  binary that runs it (ADR-0024 rule 7).
+  `store.fjall/`, `daemon.log`, `daemon.log.1`, `http.addr`, `last-fatal.json`). A rendezvous goes
+  only when it has a `daemon.lock` the command can take and its newest file is older than 30 days;
+  one without a `daemon.lock`, or with one that cannot be opened, is left alone. `--older-than 0`
+  drops the age test, so the previous release's message store goes as soon as none of its daemons
+  is running. A directory is renamed aside under the lock before it is deleted, so a daemon
+  starting meanwhile finds its generation whole or absent. The command reads locks and file ages
+  only, never contacts or signals a daemon, and never touches the generation of the binary that
+  runs it (ADR-0024 rule 7).
 
 ### Fixed
 
