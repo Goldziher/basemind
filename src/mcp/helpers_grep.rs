@@ -61,7 +61,8 @@ pub(super) async fn run_workspace_grep(
                         total_files_matched: 0,
                         total_matches: 0,
                         truncated: false,
-                        truncation_reason: None,
+                        truncated_reason: None,
+                        omitted: 0,
                         budgeted: false,
                         hits: Vec::new(),
                         next_cursor: None,
@@ -174,7 +175,7 @@ pub(super) async fn run_workspace_grep(
     });
     annotate_symbols(&cache, &mut hits);
 
-    let (truncated, truncation_reason, next_cursor) = match (limit_resume, byte_budget_hit) {
+    let (truncated, truncated_reason, next_cursor) = match (limit_resume, byte_budget_hit) {
         (Some(offset), _) => (
             true,
             Some(GrepTruncation::Limit),
@@ -209,7 +210,12 @@ pub(super) async fn run_workspace_grep(
             total_files_matched,
             total_matches,
             truncated,
-            truncation_reason,
+            truncated_reason,
+            omitted: if limit_resume.is_some() || budgeted {
+                (total_matches as usize).saturating_sub(hits.len())
+            } else {
+                0
+            },
             budgeted,
             hits,
             next_cursor,

@@ -184,3 +184,41 @@ fn code_grep_says_when_its_filters_match_only_documents() {
         let _ = client.cancel().await;
     });
 }
+
+/// A cut page names what cut it and how many matches it left out, in the words every tool uses:
+/// `truncated` + `truncated_reason` for a hard bound, `budgeted` for the token budget, `omitted`
+/// for the count.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn code_grep_names_what_cut_a_page_and_how_much_it_left_out() {
+    let (_dir, client) = started().await;
+
+    let whole = call(&client, "code_grep", json!({ "pattern": "file_outline" })).await;
+    let total = whole["total_matches"].as_u64().expect("total_matches");
+    assert!(total > 3, "{whole}");
+    assert_eq!(whole["truncated"], false, "{whole}");
+    assert!(
+        whole.get("truncated_reason").is_none() && whole.get("omitted").is_none(),
+        "{whole}"
+    );
+
+    let limited = call(&client, "code_grep", json!({ "pattern": "file_outline", "limit": 2 })).await;
+    assert_eq!(limited["truncated"], true, "{limited}");
+    assert_eq!(limited["truncated_reason"], "limit", "{limited}");
+    assert_eq!(limited["omitted"].as_u64(), Some(total - 2), "{limited}");
+    assert!(limited["next_cursor"].is_string(), "{limited}");
+    assert!(limited.get("truncation_reason").is_none(), "{limited}");
+
+    let budgeted = call(
+        &client,
+        "code_grep",
+        json!({ "pattern": "file_outline", "max_tokens": 1 }),
+    )
+    .await;
+    assert_eq!(budgeted["budgeted"], true, "{budgeted}");
+    assert_eq!(
+        budgeted["truncated"], false,
+        "the budget is not a hard bound: {budgeted}"
+    );
+    assert_eq!(budgeted["omitted"].as_u64(), Some(total - 1), "{budgeted}");
+    assert!(budgeted["next_cursor"].is_string(), "{budgeted}");
+}

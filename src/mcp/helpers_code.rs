@@ -435,6 +435,12 @@ pub(super) async fn code_outline(state: &ServerState, p: CodeOutlineParams) -> R
         Vec::new()
     };
 
+    let imports_omitted = if skip == 0 {
+        l1.imports.len().saturating_sub(OUTLINE_IMPORTS_MAX)
+    } else {
+        0
+    };
+
     json_result(&OutlineResponse {
         path: p.path,
         language: l1.language.clone(),
@@ -444,7 +450,9 @@ pub(super) async fn code_outline(state: &ServerState, p: CodeOutlineParams) -> R
         budgeted: budgeted.budgeted,
         stale,
         symbols,
-        imports_truncated: skip == 0 && l1.imports.len() > OUTLINE_IMPORTS_MAX,
+        truncated: imports_omitted > 0,
+        truncated_reason: (imports_omitted > 0).then_some("imports"),
+        omitted: imports_omitted,
         imports,
         next_cursor: (next < total).then(|| super::cursor::Cursor::encode_in_memory(next as u64, generation)),
         notice: state.lifecycle_notice(),

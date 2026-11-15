@@ -96,7 +96,8 @@ pub(super) fn run_show(state: &ServerState, sha: &str, max_tokens: Option<u32>) 
     let files = apply_budget(files, max_tokens).items;
     json_result(&GitShowResponse {
         commit: commit_to_hit(info, usize::MAX),
-        files_omitted: total - files.len(),
+        budgeted: files.len() < total,
+        omitted: total - files.len(),
         files,
         elapsed_us: elapsed_us(started),
     })

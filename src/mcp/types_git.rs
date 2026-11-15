@@ -247,9 +247,12 @@ pub(in crate::mcp) struct GitCommitHit {
 pub(in crate::mcp) struct GitShowResponse {
     pub commit: GitCommitHit,
     pub files: Vec<CommitFileView>,
-    /// Changed files left out of `files` to fit `max_tokens`; raise it to list them.
+    /// True when `max_tokens` dropped trailing `files`; raise it to list them.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub budgeted: bool,
+    /// Changed files left out of `files` when `budgeted`.
     #[serde(skip_serializing_if = "super::types::is_zero")]
-    pub files_omitted: usize,
+    pub omitted: usize,
     /// Server-side handler latency in microseconds. See [`crate::mcp::helpers::timing`].
     #[serde(default)]
     pub elapsed_us: u64,
@@ -287,7 +290,17 @@ pub(in crate::mcp) struct WorkingTreeStatusView {
     pub staged_deleted: Vec<RelPath>,
     pub modified: Vec<RelPath>,
     pub untracked: Vec<RelPath>,
-    /// Paths left out because a list above was cut at its cap, over all five lists.
+    /// The directory the status was narrowed to, when `path` named one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<RelPath>,
+    /// True when a list above was cut at its cap of 200 paths. Narrow with a directory `path`
+    /// (one ending in `/`).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub truncated: bool,
+    /// `path_cap` whenever `truncated` is true.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub truncated_reason: Option<&'static str>,
+    /// Paths left out, over all five lists.
     #[serde(skip_serializing_if = "super::types::is_zero")]
     pub omitted: usize,
     pub is_clean: bool,
@@ -539,11 +552,15 @@ pub(in crate::mcp) struct DiffFileResponse {
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub too_large: bool,
     /// True when `hunks` was cut at the hunk or byte cap, or the one hunk returned had its text
-    /// clipped to the byte cap; `total_hunks` is the full count.
+    /// clipped to the byte cap. A diff has no cursor: narrow it with a closer `from` / `to`.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub truncated: bool,
+    /// `hunk_cap` (200 hunks) or `byte_cap` (128 KiB of hunk text), whenever `truncated` is true.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub total_hunks: Option<usize>,
+    pub truncated_reason: Option<&'static str>,
+    /// Hunks left out of `hunks`.
+    #[serde(skip_serializing_if = "super::types::is_zero")]
+    pub omitted: usize,
     pub hunks: Vec<HunkView>,
     /// Server-side handler latency in microseconds — the tool body's own execution (git walk /
     /// index lookup + response construction), excluding MCP transport, argument deserialization,

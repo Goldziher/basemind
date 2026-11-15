@@ -837,7 +837,7 @@ async fn mcp_server_exercises_representative_tools() {
     assert_eq!(hits_with_limit.len(), 1, "limit=1 should return exactly 1 hit");
     assert!(truncated, "limit=1 with multiple matches should set truncated=true");
     assert_eq!(
-        body.get("truncation_reason").and_then(Value::as_str),
+        body.get("truncated_reason").and_then(Value::as_str),
         Some("limit"),
         "a truncated grep must name the bound that cut it: {body}"
     );

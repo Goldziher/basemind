@@ -20,6 +20,9 @@ use crate::query;
 /// against generated code or minified JS.
 const EXPAND_BODY_CAP: usize = 128 * 1024;
 
+/// `truncated_reason` of a body cut at [`EXPAND_BODY_CAP`].
+const SIZE_CAP: &str = "size_cap";
+
 /// The argument shapes `code_read` accepts, quoted in every shape error.
 const READ_SHAPES: &str = "pass {path, symbol} (a symbol's body; add `line`, any line inside it, or `kind` when \
      several share the name) or {path, line, end_line} (a 1-based inclusive line span)";
@@ -83,9 +86,11 @@ async fn read_span(
         line,
         end_line: last,
         total_lines,
+        omitted: span.bytes.saturating_sub(body.len()),
         body,
         bytes: span.bytes,
         truncated,
+        truncated_reason: truncated.then_some(SIZE_CAP),
     })
 }
 
@@ -232,9 +237,11 @@ async fn run_expand(state: &ServerState, params: ExpandParams) -> Result<CallToo
         kind: kind_to_str(symbol.kind).to_string(),
         line: symbol.start_row + 1,
         end_line,
+        omitted: full_bytes.saturating_sub(body.len()),
         body,
         bytes: full_bytes,
         truncated,
+        truncated_reason: truncated.then_some(SIZE_CAP),
         stale,
     };
 

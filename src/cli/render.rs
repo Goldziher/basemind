@@ -285,7 +285,7 @@ fn render_grep_truncation(tool_name: &str, map: &serde_json::Map<String, Value>,
     }
     let shown = map.get("hits").and_then(Value::as_array).map_or(0, Vec::len);
     let total = map.get("total_matches").and_then(Value::as_u64).unwrap_or(0);
-    match map.get("truncation_reason").and_then(Value::as_str) {
+    match map.get("truncated_reason").and_then(Value::as_str) {
         Some("byte_budget") => writeln!(
             out,
             "\nwarning: TRUNCATED — the corpus exceeds what one grep may read, so files were left \
@@ -459,7 +459,7 @@ mod tests {
             "pattern": "OptimizationStatus",
             "total_matches": 101,
             "truncated": true,
-            "truncation_reason": "limit",
+            "truncated_reason": "limit",
             "hits": [{"path": "a.rs", "line": 1, "column": 1, "text": "OptimizationStatus"}],
         }));
         assert!(

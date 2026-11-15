@@ -99,12 +99,18 @@ async fn git_diff_caps_a_huge_diff_and_says_so() {
 
     let diff = call(&client, "git_diff", json!({ "path": "src/wide_diff.rs" })).await;
     let hunks = diff["hunks"].as_array().expect("hunks");
-    assert_eq!(diff["truncated"], true, "{}", diff["total_hunks"]);
-    assert_eq!(diff["total_hunks"], 1_000, "one hunk per changed line");
     assert_eq!(hunks.len(), 200, "the first 200 hunks are returned");
+    assert_eq!(diff["truncated"], true, "{}", diff["omitted"]);
+    assert_eq!(diff["truncated_reason"], "hunk_cap");
+    assert_eq!(diff["omitted"], 800, "one hunk per changed line, 1000 in all");
+    assert!(diff.get("total_hunks").is_none(), "one name for what was left out");
 
     let small = call(&client, "git_diff", json!({ "path": "src/outline.rs" })).await;
     assert!(small.get("truncated").is_none(), "{small}");
+    assert!(
+        small.get("truncated_reason").is_none() && small.get("omitted").is_none(),
+        "{small}"
+    );
 }
 
 /// The byte cap bounds a single hunk too. A new file is one hunk holding the whole file, which used
@@ -130,7 +136,12 @@ async fn git_diff_clips_one_oversized_hunk_and_says_so() {
         text.len()
     );
     assert_eq!(diff["truncated"], true, "a clipped hunk is a truncated diff");
-    assert_eq!(diff["total_hunks"], 1);
+    assert_eq!(diff["truncated_reason"], "byte_cap");
+    assert!(
+        diff.get("omitted").is_none(),
+        "the one hunk is there, clipped: {}",
+        diff["omitted"]
+    );
 }
 
 /// A file over the per-side ceiling is not diffed at all, and the response says why it has no hunks.
@@ -278,16 +289,18 @@ async fn git_log_of_a_rev_holds_its_file_list_to_max_tokens() {
     let shown = call(&client, "git_log", json!({ "rev": "HEAD", "max_tokens": 200 })).await;
     let files = shown["files"].as_array().expect("files").len();
     assert!((1..100).contains(&files), "200 tokens of file rows, not {files}");
+    assert_eq!(shown["budgeted"], true, "a token-budget cut, like every other list's");
     assert_eq!(
-        shown["files_omitted"].as_u64(),
+        shown["omitted"].as_u64(),
         Some(600 - files as u64),
         "the rest are counted"
     );
+    assert!(shown.get("files_omitted").is_none() && shown.get("truncated").is_none());
     assert_eq!(shown["commit"]["summary"], "six hundred files");
 
     let whole = call(&client, "git_log", json!({ "rev": "HEAD", "max_tokens": 100000 })).await;
     assert_eq!(whole["files"].as_array().expect("files").len(), 600);
-    assert!(whole.get("files_omitted").is_none());
+    assert!(whole.get("omitted").is_none() && whole.get("budgeted").is_none());
 }
 
 /// `max_tokens` bounds a symbol's history like every other `git_log` list.
@@ -358,13 +371,40 @@ async fn git_status_lists_are_bounded_with_a_count_of_the_rest() {
     let listed = status["untracked"].as_array().expect("untracked").len();
     assert_eq!(listed, 200, "{}", status["omitted"]);
     assert_eq!(status["omitted"], 400, "600 untracked files in all");
+    assert_eq!(status["truncated"], true, "{}", status["omitted"]);
+    assert_eq!(status["truncated_reason"], "path_cap");
     assert_eq!(status["is_clean"], false);
+
+    // A cut list names the way to see past it: the status under one directory.
+    for name in ["a.txt", "b.txt"] {
+        std::fs::write(root.join("src").join(name), "x\n").unwrap();
+    }
+    let narrowed = call(&client, "git_diff", json!({ "path": "src/" })).await;
+    assert_eq!(narrowed["untracked"], json!(["src/a.txt", "src/b.txt"]), "{narrowed}");
+    assert_eq!(narrowed["path"], "src/");
+    assert!(
+        narrowed.get("truncated").is_none() && narrowed.get("omitted").is_none(),
+        "{narrowed}"
+    );
+    let elsewhere = call(&client, "git_diff", json!({ "path": "docs/" })).await;
+    assert_eq!(elsewhere["is_clean"], true, "nothing changed under it: {elsewhere}");
+    let refused = call_err(&client, "git_diff", json!({ "path": "src/", "from": "HEAD" })).await;
+    assert!(
+        refused.contains("a directory `path` narrows the working-tree status"),
+        "{refused}"
+    );
+    for name in ["a.txt", "b.txt"] {
+        std::fs::remove_file(root.join("src").join(name)).unwrap();
+    }
 
     for index in 0..600 {
         std::fs::remove_file(root.join(format!("untracked_{index:03}.txt"))).unwrap();
     }
     let clean = call(&client, "git_diff", json!({})).await;
-    assert!(clean.get("omitted").is_none(), "{clean}");
+    assert!(
+        clean.get("omitted").is_none() && clean.get("truncated").is_none(),
+        "{clean}"
+    );
     assert_eq!(clean["is_clean"], true, "{clean}");
 }
 
@@ -385,6 +425,7 @@ async fn code_read_cuts_an_oversized_read_at_a_line_and_reports_where() {
     ] {
         let read = call(&client, "code_read", arguments).await;
         assert_eq!(read["truncated"], true, "{}", read["bytes"]);
+        assert_eq!(read["truncated_reason"], "size_cap");
         assert_eq!(
             read["bytes"].as_u64(),
             Some(big.len() as u64 - 1),
@@ -402,6 +443,21 @@ async fn code_read_cuts_an_oversized_read_at_a_line_and_reports_where() {
             Some(returned.len() as u64),
             "the last line returned, not the last line asked for"
         );
+        assert_eq!(
+            read["omitted"].as_u64(),
+            Some((big.len() - 1 - body.len()) as u64),
+            "the bytes left out"
+        );
+
+        // The cut names where to go on: the line after `end_line`.
+        let rest = call(
+            &client,
+            "code_read",
+            json!({ "path": "src/big.rs", "line": returned.len() + 1, "end_line": 4002 }),
+        )
+        .await;
+        let resumed: Vec<&str> = rest["body"].as_str().expect("body").lines().collect();
+        assert_eq!(resumed[0], lines[returned.len()], "no line lost or repeated at the cut");
     }
 
     let small = call(
@@ -413,8 +469,9 @@ async fn code_read_cuts_an_oversized_read_at_a_line_and_reports_where() {
     assert_eq!(small["body"], format!("{}\n}}", lines[4000]), "{small}");
     assert_eq!(small["end_line"], 4002, "{small}");
     assert_eq!(small["total_lines"], 4002, "{small}");
+    assert_eq!(small["truncated"], false, "{small}");
     assert!(
-        small.get("truncated").is_none() || small["truncated"] == false,
+        small.get("truncated_reason").is_none() && small.get("omitted").is_none(),
         "{small}"
     );
 }

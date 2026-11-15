@@ -70,7 +70,13 @@ pub(super) fn run_diff(state: &ServerState, params: DiffFileParams) -> Result<Ca
     });
     let total_hunks = diff.hunks.len();
     let (hunks, clipped) = capped_hunks(diff.hunks);
-    let truncated = clipped || hunks.len() < total_hunks;
+    let truncated_reason = if hunks.len() == DIFF_HUNKS_MAX && total_hunks > DIFF_HUNKS_MAX {
+        Some("hunk_cap")
+    } else if clipped || hunks.len() < total_hunks {
+        Some("byte_cap")
+    } else {
+        None
+    };
     json_result(&DiffFileResponse {
         path: params.path,
         from: old_sha,
@@ -79,8 +85,9 @@ pub(super) fn run_diff(state: &ServerState, params: DiffFileParams) -> Result<Ca
         present_at_to: diff.new_exists,
         binary: diff.binary,
         too_large: diff.too_large,
-        truncated,
-        total_hunks: truncated.then_some(total_hunks),
+        truncated: truncated_reason.is_some(),
+        truncated_reason,
+        omitted: total_hunks - hunks.len(),
         hunks,
         elapsed_us: elapsed_us(started),
     })

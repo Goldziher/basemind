@@ -208,8 +208,14 @@ pub(super) struct ExpandResponse {
     pub body: String,
     /// Byte length of the returned body (before any truncation).
     pub bytes: usize,
-    /// `true` when the body was truncated to the `EXPAND_BODY_CAP`.
+    /// `true` when the body was cut at the 128 KiB size cap, after its last whole line that fits.
     pub truncated: bool,
+    /// `size_cap` whenever `truncated` is true.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub truncated_reason: Option<&'static str>,
+    /// Bytes of the symbol left out of `body`. Read on with a line span from `end_line + 1`.
+    #[serde(skip_serializing_if = "super::types::is_zero")]
+    pub omitted: usize,
     /// The file changed since it was indexed, so the symbol was located by parsing the working-tree
     /// file; the other tools describe the indexed content until `index_rescan`.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
@@ -228,6 +234,13 @@ pub(super) struct ReadSpanResponse {
     pub body: String,
     /// Byte length of the span before any truncation.
     pub bytes: usize,
-    /// `true` when the body was cut at the size cap.
+    /// `true` when the body was cut at the 128 KiB size cap, after its last whole line that fits.
     pub truncated: bool,
+    /// `size_cap` whenever `truncated` is true.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub truncated_reason: Option<&'static str>,
+    /// Bytes of the span left out of `body`. Read on from `end_line + 1`; one line longer than the
+    /// cap cannot be read past it.
+    #[serde(skip_serializing_if = "super::types::is_zero")]
+    pub omitted: usize,
 }

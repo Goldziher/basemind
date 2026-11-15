@@ -198,9 +198,10 @@ pub(super) fn git_blame(state: &ServerState, p: GitBlameParams) -> Result<CallTo
 }
 
 /// The argument shapes `git_diff` accepts, quoted in every shape error.
-const DIFF_SHAPES: &str = "accepted shapes: {} (working-tree status), {path} (that file's working-tree diff against \
-     HEAD), {path, from?, to?} (text diff; `from` defaults to HEAD, `to` to the working tree), \
-     {path, structural:true} with optional `from` (symbols added / removed since `from`, default HEAD)";
+const DIFF_SHAPES: &str = "accepted shapes: {} (working-tree status), {path} ending in `/` (the status under that \
+     directory), {path} (that file's working-tree diff against HEAD), {path, from?, to?} (text diff; `from` \
+     defaults to HEAD, `to` to the working tree), {path, structural:true} with optional `from` (symbols added / \
+     removed since `from`, default HEAD)";
 
 /// `git_diff`: the working-tree status, a file's text diff, or its symbol-level diff.
 pub(super) async fn git_diff(state: &ServerState, p: GitDiffParams) -> Result<CallToolResult, McpError> {
@@ -210,8 +211,16 @@ pub(super) async fn git_diff(state: &ServerState, p: GitDiffParams) -> Result<Ca
         if p.from.is_some() || p.to.is_some() || structural {
             return Err(shape_error("a diff needs the `path` of one file"));
         }
-        return blocking(|| run_status(state));
+        return blocking(|| run_status(state, None));
     };
+    if path.as_bytes().ends_with(b"/") {
+        if p.from.is_some() || p.to.is_some() || structural {
+            return Err(shape_error(
+                "a directory `path` narrows the working-tree status and takes no `from`, `to` or `structural`",
+            ));
+        }
+        return blocking(|| run_status(state, Some(path)));
+    }
     if structural {
         if p.to.is_some() {
             return Err(shape_error(
@@ -253,30 +262,33 @@ pub(super) fn reject_external_path(path: &RelPath) -> Result<(), McpError> {
 /// thousands of untracked files, and the status is asked for to see what changed, not to list them.
 const STATUS_PATHS_MAX: usize = 200;
 
-/// The `status` operation: the working tree's staged / unstaged / untracked buckets.
-fn run_status(state: &ServerState) -> Result<CallToolResult, McpError> {
+/// The `status` operation: the working tree's staged / unstaged / untracked buckets, for the whole
+/// tree or for the paths under the directory `within`.
+fn run_status(state: &ServerState, within: Option<RelPath>) -> Result<CallToolResult, McpError> {
     let started = std::time::Instant::now();
     let repo = require_git_repo(state)?;
     let s = repo
         .status_porcelain()
         .map_err(|e| McpError::internal_error(format!("git status: {e}"), None))?;
-    let is_clean = s.staged_added.is_empty()
-        && s.staged_modified.is_empty()
-        && s.staged_deleted.is_empty()
-        && s.modified.is_empty()
-        && s.untracked.is_empty();
     let mut omitted = 0;
-    let mut capped = |mut paths: Vec<RelPath>| {
+    let mut any = false;
+    let mut bucket = |mut paths: Vec<RelPath>| {
+        if let Some(directory) = within.as_ref() {
+            paths.retain(|path| path.as_bytes().starts_with(directory.as_bytes()));
+        }
+        any |= !paths.is_empty();
+        // In path order, so the paths that survive the cap are the same on every call.
+        paths.sort_unstable();
         omitted += paths.len().saturating_sub(STATUS_PATHS_MAX);
         paths.truncate(STATUS_PATHS_MAX);
         paths
     };
     let (staged_added, staged_modified, staged_deleted, modified, untracked) = (
-        capped(s.staged_added),
-        capped(s.staged_modified),
-        capped(s.staged_deleted),
-        capped(s.modified),
-        capped(s.untracked),
+        bucket(s.staged_added),
+        bucket(s.staged_modified),
+        bucket(s.staged_deleted),
+        bucket(s.modified),
+        bucket(s.untracked),
     );
     json_result(&WorkingTreeStatusView {
         staged_added,
@@ -284,8 +296,11 @@ fn run_status(state: &ServerState) -> Result<CallToolResult, McpError> {
         staged_deleted,
         modified,
         untracked,
+        path: within,
+        truncated: omitted > 0,
+        truncated_reason: (omitted > 0).then_some("path_cap"),
         omitted,
-        is_clean,
+        is_clean: !any,
         elapsed_us: elapsed_us(started),
     })
 }
