@@ -102,16 +102,32 @@ pub(super) fn git_log(state: &ServerState, p: GitLogParams) -> Result<CallToolRe
         );
     }
     match p.path {
-        Some(path) if path.as_bytes().ends_with(b"/") => run_by_path(
-            state,
-            FindCommitsByPathParams {
-                pattern: format!("^{}", regex::escape(&path.to_str_lossy())),
-                window: None,
-                limit: Some(p.limit.unwrap_or(LOG_LIMIT_DEFAULT)),
-                cursor: p.cursor,
-                max_tokens,
-            },
-        ),
+        Some(path) if path.as_bytes().ends_with(b"/") => {
+            let first_page = p.cursor.is_none();
+            let result = run_by_path(
+                state,
+                FindCommitsByPathParams {
+                    pattern: format!("^{}", regex::escape(&path.to_str_lossy())),
+                    window: None,
+                    limit: Some(p.limit.unwrap_or(LOG_LIMIT_DEFAULT)),
+                    cursor: p.cursor,
+                    max_tokens,
+                },
+            )?;
+            // A directory is held to what a file is: no commit in the whole history and nothing on
+            // disk means the path is wrong. A window that was used up has not seen the whole history.
+            let whole_and_empty = result
+                .structured_content
+                .as_ref()
+                .is_some_and(|body| body["commits"].as_array().is_some_and(Vec::is_empty) && body["truncated"] != true);
+            if first_page && whole_and_empty {
+                let repo = require_git_repo(state)?;
+                if !repo.is_shallow() && !on_disk(repo, &path) {
+                    return Err(no_such_path(&path));
+                }
+            }
+            Ok(result)
+        }
         Some(path) => run_touching(
             state,
             CommitsTouchingParams {
@@ -305,6 +321,43 @@ fn run_status(state: &ServerState, within: Option<RelPath>) -> Result<CallToolRe
     })
 }
 
+/// The commits an indexed lookup returned, or the live walk's when it returned none.
+///
+/// The git-history index answers with an empty list both when no commit matches and when the
+/// lookup failed (a forward to the daemon that did not come back). An empty answer is therefore
+/// checked against the repository itself before anything is concluded from it.
+fn indexed_or_live(
+    indexed: Option<Vec<CommitInfo>>,
+    live: impl FnOnce() -> Result<Vec<CommitInfo>, McpError>,
+) -> Result<Vec<CommitInfo>, McpError> {
+    match indexed {
+        Some(commits) if !commits.is_empty() => Ok(commits),
+        _ => live(),
+    }
+}
+
+/// The refusal for a `path` that no commit reachable from HEAD touches and that is not on disk
+/// either. An empty history would not say the path is wrong.
+fn no_such_path(path: &RelPath) -> McpError {
+    let kind = if path.as_bytes().ends_with(b"/") {
+        "directory"
+    } else {
+        "file"
+    };
+    McpError::invalid_params(
+        format!(
+            "`git_log`: no commit reachable from HEAD touches `{path}` and no such {kind} exists. `path` is a \
+             repo-relative file path, or a directory when it ends with `/`; locate it with `find_files`."
+        ),
+        None,
+    )
+}
+
+/// Whether `path` names something in the working tree.
+fn on_disk(repo: &crate::git::Repo, path: &RelPath) -> bool {
+    crate::path::contained_file(repo.workdir(), path).is_ok_and(|file| file.exists())
+}
+
 /// The `recent` operation: a bounded recency window over HEAD's ancestry, newest first.
 fn run_recent(state: &ServerState, params: RecentChangesParams) -> Result<CallToolResult, McpError> {
     let started = std::time::Instant::now();
@@ -333,16 +386,18 @@ fn run_recent(state: &ServerState, params: RecentChangesParams) -> Result<CallTo
     };
 
     let walk_depth = (skip.saturating_add(limit).saturating_add(1)).min(LOG_WALK_MAX) as u32;
-    let commits: Vec<CommitInfo> = match git_history_if_fresh(state, &head) {
-        Some(index) => index.recent_commits(0, walk_depth as usize, params.include_files),
-        None => state
-            .shared
-            .git_cache
-            .log(repo, &head, None, walk_depth, params.include_files)
-            .map_err(|e| McpError::internal_error(format!("log: {e}"), None))?
-            .as_ref()
-            .clone(),
-    };
+    let commits = indexed_or_live(
+        git_history_if_fresh(state, &head)
+            .map(|index| index.recent_commits(0, walk_depth as usize, params.include_files)),
+        || {
+            let walked = state
+                .shared
+                .git_cache
+                .log(repo, &head, None, walk_depth, params.include_files)
+                .map_err(|e| McpError::internal_error(format!("log: {e}"), None))?;
+            Ok(walked.as_ref().clone())
+        },
+    )?;
     let page: Vec<CommitView> = commits
         .iter()
         .skip(skip)
@@ -395,29 +450,19 @@ fn run_touching(state: &ServerState, params: CommitsTouchingParams) -> Result<Ca
     };
 
     let walk_depth = (skip.saturating_add(limit).saturating_add(1)).min(LOG_WALK_MAX) as u32;
-    let commits: Vec<CommitInfo> = match git_history_if_fresh(state, &head) {
-        Some(index) => index.commits_touching(&params.path, 0, walk_depth as usize),
-        None => state
-            .shared
-            .git_cache
-            .log(repo, &head, Some(&params.path), walk_depth, false)
-            .map_err(|e| McpError::internal_error(format!("log: {e}"), None))?
-            .as_ref()
-            .clone(),
-    };
-    // No commit and no file: the path is wrong, which an empty history would not say.
-    if commits.is_empty()
-        && !repo.is_shallow()
-        && !crate::path::contained_file(repo.workdir(), &params.path).is_ok_and(|file| file.exists())
-    {
-        return Err(McpError::invalid_params(
-            format!(
-                "`git_log`: no commit touches `{0}` and no such file exists. `path` is a repo-relative file \
-                 path, or a directory when it ends with `/`; locate it with `find_files`.",
-                params.path
-            ),
-            None,
-        ));
+    let commits = indexed_or_live(
+        git_history_if_fresh(state, &head).map(|index| index.commits_touching(&params.path, 0, walk_depth as usize)),
+        || {
+            let walked = state
+                .shared
+                .git_cache
+                .log(repo, &head, Some(&params.path), walk_depth, false)
+                .map_err(|e| McpError::internal_error(format!("log: {e}"), None))?;
+            Ok(walked.as_ref().clone())
+        },
+    )?;
+    if commits.is_empty() && !repo.is_shallow() && !on_disk(repo, &params.path) {
+        return Err(no_such_path(&params.path));
     }
     let page: Vec<CommitView> = commits
         .iter()
@@ -479,16 +524,17 @@ pub(super) fn run_by_path(state: &ServerState, params: FindCommitsByPathParams) 
 
     // One commit past the window is asked for, only to learn whether history continues beyond it.
     let probe = window.saturating_add(1);
-    let mut commits: Vec<CommitInfo> = match git_history_if_fresh(state, &head) {
-        Some(index) => index.window_commits(probe as usize),
-        None => state
-            .shared
-            .git_cache
-            .log(repo, &head, None, probe, true)
-            .map_err(|e| McpError::internal_error(format!("log: {e}"), None))?
-            .as_ref()
-            .clone(),
-    };
+    let mut commits = indexed_or_live(
+        git_history_if_fresh(state, &head).map(|index| index.window_commits(probe as usize)),
+        || {
+            let walked = state
+                .shared
+                .git_cache
+                .log(repo, &head, None, probe, true)
+                .map_err(|e| McpError::internal_error(format!("log: {e}"), None))?;
+            Ok(walked.as_ref().clone())
+        },
+    )?;
     // History older than the window was never inspected: "no more commits" then only describes the
     // window, and the response has to say so. A history that ends exactly at the window is whole.
     let window_exhausted = commits.len() > window as usize;
@@ -743,6 +789,22 @@ mod tests {
 
     fn fetch_from(history: &[CommitInfo]) -> impl FnMut(usize, usize) -> Vec<CommitInfo> + '_ {
         |offset, count| history.iter().skip(offset).take(count).cloned().collect()
+    }
+
+    #[test]
+    fn an_empty_indexed_answer_is_checked_against_the_live_walk() {
+        let walked = || Ok(vec![commit(1, "alice")]);
+        let indexed = indexed_or_live(Some(vec![commit(7, "bob")]), walked).expect("indexed");
+        assert_eq!(indexed[0].author, "bob", "a non-empty indexed answer is used as is");
+        let failed_forward = indexed_or_live(Some(Vec::new()), walked).expect("live");
+        assert_eq!(
+            failed_forward[0].author, "alice",
+            "an empty one may be a lookup that failed"
+        );
+        let no_index = indexed_or_live(None, walked).expect("live");
+        assert_eq!(no_index[0].author, "alice");
+        let truly_empty = indexed_or_live(Some(Vec::new()), || Ok(Vec::new())).expect("live");
+        assert!(truly_empty.is_empty());
     }
 
     #[test]

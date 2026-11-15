@@ -291,7 +291,27 @@ async fn a_filter_that_selects_no_file_is_refused_with_what_would_match() {
     assert_eq!(unmatched["total"], 0, "{unmatched}");
 
     let never = call_err(&client, "git_log", json!({ "path": "src/never_existed.rs" })).await;
-    assert!(never.contains("no commit touches `src/never_existed.rs`"), "{never}");
+    assert!(
+        never.contains("no commit reachable from HEAD touches `src/never_existed.rs` and no such file exists"),
+        "{never}"
+    );
+    let never_a_directory = call_err(&client, "git_log", json!({ "path": "nowhere/" })).await;
+    assert!(
+        never_a_directory.contains("no commit reachable from HEAD touches `nowhere/` and no such directory exists"),
+        "the directory form is held to the same test: {never_a_directory}"
+    );
+    let tracked_directory = call(&client, "git_log", json!({ "path": "src/" })).await;
+    assert_eq!(
+        tracked_directory["commits"][0]["summary"], "init",
+        "{tracked_directory}"
+    );
+    std::fs::create_dir(dir.path().join("empty_dir")).unwrap();
+    let new_directory = call(&client, "git_log", json!({ "path": "empty_dir/" })).await;
+    assert_eq!(
+        new_directory["commits"],
+        json!([]),
+        "a directory with no history yet: {new_directory}"
+    );
     std::fs::write(dir.path().join("src/brand_new.rs"), "pub fn fresh() {}\n").unwrap();
     let uncommitted = call(&client, "git_log", json!({ "path": "src/brand_new.rs" })).await;
     assert_eq!(
