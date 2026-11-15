@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
-use super::{Client, call, started, started_with};
+use super::{Client, call, call_err, started, started_with};
 
 /// Commit everything as `name <email>`.
 fn commit_as(root: &Path, name: &str, email: &str, message: &str) {
@@ -137,4 +137,63 @@ async fn git_log_of_a_symbol_does_not_call_the_edge_of_its_window_an_introductio
     .await;
     assert_eq!(churn["history"][0]["change"], "modified", "{churn}");
     assert_eq!(churn["history"][0]["summary"], "round 15", "{churn}");
+}
+
+/// `git_blame {symbol}` blames the lines the symbol has in the blamed revision. The span used to
+/// come from the working-tree outline, which is a different set of lines as soon as the file has
+/// changed above the symbol.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn git_blame_of_a_symbol_uses_its_span_at_the_blamed_revision() {
+    let (dir, client) = started().await;
+    let root = dir.path();
+    let path = root.join("src/outline.rs");
+    let source = std::fs::read_to_string(&path).unwrap();
+    std::fs::write(&path, format!("{}{source}", "// padding\n".repeat(20))).unwrap();
+    call(&client, "index_rescan", json!({ "paths": ["src/outline.rs"] })).await;
+
+    let at_head = call(
+        &client,
+        "git_blame",
+        json!({ "path": "src/outline.rs", "symbol": "file_outline_l2" }),
+    )
+    .await;
+    assert_eq!(
+        (at_head["line"].as_u64(), at_head["end_line"].as_u64()),
+        (Some(7), Some(9)),
+        "HEAD does not have the uncommitted padding: {at_head}"
+    );
+    assert_eq!(at_head["hunks"][0]["line"], 7, "{at_head}");
+    assert_eq!(at_head["hunks"][0]["summary"], "init", "{at_head}");
+
+    super::git(root, &["commit", "-qam", "pad"]);
+    let padded = call(
+        &client,
+        "git_blame",
+        json!({ "path": "src/outline.rs", "symbol": "file_outline_l2" }),
+    )
+    .await;
+    assert_eq!(
+        (padded["line"].as_u64(), padded["end_line"].as_u64()),
+        (Some(27), Some(29)),
+        "{padded}"
+    );
+    let before = call(
+        &client,
+        "git_blame",
+        json!({ "path": "src/outline.rs", "symbol": "file_outline_l2", "rev": "HEAD~1" }),
+    )
+    .await;
+    assert_eq!(
+        (before["line"].as_u64(), before["end_line"].as_u64()),
+        (Some(7), Some(9)),
+        "{before}"
+    );
+
+    let absent = call_err(
+        &client,
+        "git_blame",
+        json!({ "path": "src/outline.rs", "symbol": "not_at_that_revision", "rev": "HEAD~1" }),
+    )
+    .await;
+    assert!(absent.contains("no symbol `not_at_that_revision`"), "{absent}");
 }

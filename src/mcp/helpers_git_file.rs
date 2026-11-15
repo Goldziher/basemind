@@ -12,7 +12,7 @@ use super::ServerState;
 use super::helpers::{
     HashMode, LOG_WALK_MAX, blame_resume_after, blame_symbol_too_large_response, blame_too_large_response, elapsed_us,
     git_history_if_fresh, head_sha, head_snapshot_id, json_result, kind_to_str, outline_entry_for_blob,
-    paginate_blame_hunks, parse_hash_mode, parse_kind, require_git_repo, symbol_fingerprint, symbol_line_range,
+    paginate_blame_hunks, parse_hash_mode, parse_kind, require_git_repo, symbol_fingerprint,
 };
 use super::helpers_git::reject_external_path;
 use super::helpers_pick::pick_symbol;
@@ -351,8 +351,10 @@ pub(super) fn run_blame(state: &ServerState, params: BlameFileParams) -> Result<
     })
 }
 
-/// The `blame_symbol` operation: blame clamped to one symbol's line span, resolved through
-/// the cached L1 outline of the served view.
+/// The `blame_symbol` operation: blame clamped to one symbol's line span.
+///
+/// The span is the symbol's in the blamed revision's own blob. The working-tree outline describes
+/// other lines as soon as the file differs from that revision above the symbol.
 pub(super) async fn run_blame_symbol(
     state: &ServerState,
     params: BlameSymbolParams,
@@ -361,29 +363,43 @@ pub(super) async fn run_blame_symbol(
     let repo = require_git_repo(state)?;
     reject_external_path(&params.path)?;
     let kind = params.kind.as_deref().map(parse_kind).transpose()?;
-    state.await_cache_ready().await;
-    let cache = state.shared.cache.load_full();
-    let l1 = cache
-        .get(&params.path)
-        .ok_or_else(|| super::tool_contract::not_indexed(state, "git_blame", &params.path))?;
-    let source = indexed_source(state, &params.path);
-    let sym = pick_symbol(
-        "git_blame",
-        &params.path,
-        &l1.symbols,
-        source.as_deref(),
-        &params.name,
-        kind,
-        params.line,
-    )?
-    .symbol;
-    let (line_start, line_end) = symbol_line_range(repo, &params.path, sym);
     let suspect_sha = match params.rev.as_deref() {
         Some(r) => repo
             .resolve_rev(r)
             .map_err(|e| McpError::invalid_params(format!("resolve_rev({r}): {e}"), None))?,
         None => head_sha(repo)?,
     };
+    let at = params.rev.as_deref().unwrap_or("HEAD");
+    let lang = detect_lang(state, &params.path).ok_or_else(|| {
+        McpError::invalid_params(
+            format!(
+                "`git_blame`: `{}` is not in a language with symbols; blame a line span with `line` and \
+                 `end_line` instead.",
+                params.path
+            ),
+            None,
+        )
+    })?;
+    let (bytes, oid) = repo
+        .read_blob_at_rev_with_oid(&suspect_sha, &params.path)
+        .map_err(|e| McpError::internal_error(format!("blob: {e}"), None))?
+        .ok_or_else(|| {
+            McpError::invalid_params(format!("`git_blame`: `{}` does not exist at {at}.", params.path), None)
+        })?;
+    let outline = outline_entry_for_blob(&state.shared.outline_cache, oid, lang, bytes).ok_or_else(|| {
+        McpError::internal_error(format!("`git_blame`: could not parse `{}` at {at}", params.path), None)
+    })?;
+    let sym = pick_symbol(
+        "git_blame",
+        &params.path,
+        &outline.map.symbols,
+        Some(outline.source.as_slice()),
+        &params.name,
+        kind,
+        params.line,
+    )?
+    .symbol;
+    let (line_start, line_end) = super::helpers_pick::line_span(sym, Some(outline.source.as_slice()));
     let snapshot = head_snapshot_id(&suspect_sha);
     let resume_after = blame_resume_after(params.cursor.as_ref(), snapshot)?;
     let result = match state
