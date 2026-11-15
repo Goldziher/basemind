@@ -82,12 +82,17 @@ pub(super) async fn run_workspace_grep(
     } else {
         params.pattern.clone()
     };
-    let re = Regex::new(&source).map_err(|e| {
-        McpError::invalid_params(
-            format!("invalid regex: {e}. Drop `regex` to search for the pattern as literal text."),
-            None,
-        )
-    })?;
+    // Line-anchored like every grep: without `multi_line`, `^`/`$` match at the file's ends only.
+    let re = regex::RegexBuilder::new(&source)
+        .multi_line(true)
+        .crlf(true)
+        .build()
+        .map_err(|e| {
+            McpError::invalid_params(
+                format!("invalid regex: {e}. Drop `regex` to search for the pattern as literal text."),
+                None,
+            )
+        })?;
 
     let literal = (params.literal || regex::escape(&params.pattern) == params.pattern)
         .then(|| Finder::new(params.pattern.as_bytes()).into_owned());
