@@ -14,6 +14,7 @@ use super::cursor::Cursor;
 use super::helpers::SEARCH_LIMIT_MAX;
 use super::helpers_calls_scan::{CallRef, CallScanPage, calls_in_file_fjall, scan_calls_by_name};
 use super::helpers_impls::{ImplScanPage, scan_impls_fjall};
+pub(crate) use super::helpers_refs_match::Matching;
 use super::types::ReferenceHit;
 use super::types_impls::ImplementationHit;
 use crate::comms::index_read_proto::{
@@ -32,11 +33,17 @@ pub(crate) fn index_read_against(store: &Store, query: &IndexReadQuery) -> Resul
     let view = store.read_index_view().ok_or_else(|| NO_INDEX.to_string())?;
     let idx: &dyn IndexView = &*view;
     match query {
-        IndexReadQuery::CallScan { name, limit, cursor } => call_scan(idx, name, *limit, cursor.as_deref()),
+        IndexReadQuery::CallScan {
+            name,
+            exact,
+            limit,
+            cursor,
+        } => call_scan(idx, name, Matching::from_substring(!exact), *limit, cursor.as_deref()),
         IndexReadQuery::CallsInFiles { paths } => calls_in_files(idx, paths),
         IndexReadQuery::GrepBloom { pattern, entries } => grep_skip(idx, &store.root, pattern, entries),
         IndexReadQuery::ImplScan {
             trait_name,
+            exact,
             language,
             limit,
             cursor,
@@ -44,6 +51,7 @@ pub(crate) fn index_read_against(store: &Store, query: &IndexReadQuery) -> Resul
             let page = scan_impls_fjall(
                 idx,
                 trait_name,
+                Matching::from_substring(!exact),
                 language.as_deref(),
                 clamp_limit(*limit),
                 cursor.as_deref(),
@@ -67,10 +75,12 @@ pub(crate) fn index_read_against(store: &Store, query: &IndexReadQuery) -> Resul
 pub(crate) fn call_scan(
     idx: &dyn IndexView,
     name: &str,
+    matching: Matching,
     limit: u32,
     cursor: Option<&[u8]>,
 ) -> Result<IndexReadResult, String> {
-    let page = scan_calls_by_name(idx, name, clamp_limit(limit), cursor).map_err(|error| error.message.to_string())?;
+    let page = scan_calls_by_name(idx, name, matching, clamp_limit(limit), cursor)
+        .map_err(|error| error.message.to_string())?;
     Ok(IndexReadResult::CallScan(call_page_to_wire(page)))
 }
 

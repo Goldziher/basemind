@@ -25,6 +25,16 @@ macro_rules! tool_args {
 
         /// Every verb tool's MCP name, in declaration order.
         pub const VERB_TOOLS: &[&str] = &[$($tool),+];
+
+        /// Run `tool`'s own argument parse on `arguments`: `Some(Err(message))` is the rejection an
+        /// agent would be shown, `None` a name that is not a verb tool.
+        #[cfg(feature = "test-support")]
+        pub fn check_arguments(tool: &str, arguments: serde_json::Value) -> Option<Result<(), String>> {
+            match tool {
+                $($tool => Some(super::strict::parse::<$params>(arguments).map(drop)),)+
+                _ => None,
+            }
+        }
     };
 }
 
@@ -92,16 +102,16 @@ pub struct CodeSymbolsParams {
 pub struct CodeReadParams {
     /// Repo-relative file path.
     pub path: RelPath,
-    /// Symbol whose body to return (exact name). Alternative to `line`.
+    /// Symbol whose body to return (exact name).
     #[serde(default)]
     pub symbol: Option<String>,
-    /// Disambiguates `symbol` when several share the name.
+    /// With `symbol`: its kind, when several share the name.
     #[serde(default)]
     pub kind: Option<String>,
-    /// First line, 1-based. Alternative to `symbol`.
+    /// First line of a span, 1-based. With `symbol`: a line inside the definition meant.
     #[serde(default)]
     pub line: Option<u32>,
-    /// Last line, inclusive (default: `line`).
+    /// Last line of a span, inclusive (default: `line`). Not with `symbol`.
     #[serde(default)]
     pub end_line: Option<u32>,
 }
@@ -110,12 +120,12 @@ pub struct CodeReadParams {
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CodeGrepParams {
-    /// Text to find; a literal unless `regex` is true.
+    /// Text to find, not empty; a literal unless `regex` is true.
     pub pattern: String,
     /// Treat `pattern` as a Rust regex.
     #[serde(default)]
     pub regex: Option<bool>,
-    /// Substring of the repo-relative path (not a glob).
+    /// Literal substring of the repo-relative path, e.g. `src/mcp/`; not a glob.
     #[serde(default)]
     pub path: Option<String>,
     /// Language filter, e.g. `rust`.
@@ -160,32 +170,34 @@ pub struct CodeSearchParams {
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CodeRefsParams {
-    /// Function, type, trait or module name.
+    /// Function, type, trait or module name; for `importers`, whole segments of the import path.
     pub name: String,
     /// What to list (default `callers`).
     #[serde(default)]
     #[schemars(extend("enum" = ["callers", "implementations", "importers", "definition"]))]
     pub relation: Option<String>,
-    /// File defining `name` (pins one definition); for `definition`, the file holding the reference.
+    /// `callers`: file defining `name`, pinning that definition. `definition`: file holding the
+    /// reference (required). Not with `implementations` or `importers`.
     #[serde(default)]
     pub path: Option<RelPath>,
-    /// `definition` only: 1-based line of the reference.
+    /// Needs `path`. `callers`: 1-based line inside the definition meant, when several share the
+    /// name. `definition`: line of the reference (required).
     #[serde(default)]
     pub line: Option<u32>,
     /// `definition` only: 1-based column (default: where `name` occurs on the line).
     #[serde(default)]
     pub column: Option<u32>,
-    /// Name matching (default `exact`).
+    /// Name matching (default `exact`). Not with `importers` or `definition`.
     #[serde(default, rename = "match")]
     #[schemars(extend("enum" = ["exact", "substring"]))]
     pub match_mode: Option<String>,
-    /// Max hits (default 100).
+    /// Max hits (default 100). Not with `definition`.
     #[serde(default)]
     pub limit: Option<u32>,
-    /// `next_cursor` of the previous page.
+    /// `next_cursor` of the previous page. Not with `definition`.
     #[serde(default)]
     pub cursor: Option<Cursor>,
-    /// Token budget for the list (default 6000).
+    /// Token budget for the list (default 6000). Not with `definition`.
     #[serde(default)]
     pub max_tokens: Option<u32>,
 }
@@ -247,19 +259,23 @@ pub struct DocsSearchParams {
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct GitLogParams {
-    /// Only commits touching this file.
+    /// Only commits touching this file; a trailing `/` means a directory (last 200 commits). Not
+    /// with `query` or `author`.
     #[serde(default)]
     pub path: Option<RelPath>,
-    /// Full-text search of commit messages.
+    /// Words the commit message must all contain. Combines with `author` only.
     #[serde(default)]
     pub query: Option<String>,
-    /// Search author names and emails.
+    /// Words the author name or email must all contain. Combines with `query` only.
     #[serde(default)]
     pub author: Option<String>,
-    /// History of this symbol's body (needs `path`).
+    /// History of this symbol's body; needs `path`, combines with nothing else but `line`.
     #[serde(default)]
     pub symbol: Option<String>,
-    /// Show this one commit in full.
+    /// With `symbol`: 1-based line inside the definition meant, when several share the name.
+    #[serde(default)]
+    pub line: Option<u32>,
+    /// Show this one commit in full. Combines with nothing.
     #[serde(default)]
     pub rev: Option<String>,
     /// Max commits (default 20).
@@ -279,10 +295,10 @@ pub struct GitLogParams {
 pub struct GitBlameParams {
     /// Repo-relative file path.
     pub path: RelPath,
-    /// First line, 1-based (needs `end_line`).
+    /// First line of a span, 1-based. With `symbol`: a line inside the definition meant.
     #[serde(default)]
     pub line: Option<u32>,
-    /// Last line, inclusive.
+    /// Last line of a span, inclusive (default: `line`). Needs `line`; not with `symbol`.
     #[serde(default)]
     pub end_line: Option<u32>,
     /// Blame this symbol's lines instead of a span.
@@ -291,28 +307,31 @@ pub struct GitBlameParams {
     /// Revision to blame at (default HEAD).
     #[serde(default)]
     pub rev: Option<String>,
-    /// Max hunks.
+    /// Max hunks (default 100).
     #[serde(default)]
     pub limit: Option<u32>,
     /// `next_cursor` of the previous page.
     #[serde(default)]
     pub cursor: Option<Cursor>,
+    /// Token budget for the list (default 6000).
+    #[serde(default)]
+    pub max_tokens: Option<u32>,
 }
 
 /// Arguments of `git_diff`.
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct GitDiffParams {
-    /// File to diff; omit (with no revisions) for the working-tree status.
+    /// File to diff; omit every argument for the working-tree status.
     #[serde(default)]
     pub path: Option<RelPath>,
-    /// Old revision (default HEAD).
+    /// Old revision (default HEAD). Needs `path`.
     #[serde(default)]
     pub from: Option<String>,
-    /// New revision (default: the working tree).
+    /// New revision (default: the working tree). Needs `path`; not with `structural`.
     #[serde(default)]
     pub to: Option<String>,
-    /// Symbol-level diff instead of text hunks.
+    /// Symbol-level diff of `from` against the indexed working tree, instead of text hunks.
     #[serde(default)]
     pub structural: Option<bool>,
 }
@@ -336,24 +355,24 @@ pub struct MemorySaveParams {
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct MemorySearchToolParams {
-    /// Search notes by meaning.
+    /// Search notes by meaning. At most one of `query`, `key`, `prefix`; none lists every note.
     #[serde(default)]
     pub query: Option<String>,
     /// Read one note by exact key.
     #[serde(default)]
     pub key: Option<String>,
-    /// List notes whose key starts with this (`""` lists all).
+    /// List notes whose key starts with this.
     #[serde(default)]
     pub prefix: Option<String>,
-    /// Only notes carrying this tag.
+    /// Only notes carrying this tag. Not with `key`.
     #[serde(default)]
     pub tag: Option<String>,
     #[serde(default)]
     pub visibility: Option<Visibility>,
-    /// Max notes.
+    /// Max notes (default 10 for `query`, 100 for a listing). Not with `key`.
     #[serde(default)]
     pub limit: Option<u32>,
-    /// `next_cursor` of the previous page.
+    /// `next_cursor` of the previous listing page. Not with `query` or `key`.
     #[serde(default)]
     pub cursor: Option<Cursor>,
 }

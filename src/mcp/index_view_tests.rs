@@ -4,6 +4,7 @@
 
 use super::helpers_calls_scan::{calls_in_file_fjall, scan_calls_by_name};
 use super::helpers_impls::scan_impls_fjall;
+use super::helpers_refs_match::Matching;
 use super::index_route::IndexRoute;
 use crate::config::ConfigV1;
 use crate::index::grep_bloom::{GrepEntry, Needle};
@@ -84,8 +85,8 @@ fn call_and_implementation_scans_read_through_the_view() {
     let db = store.index_db.clone().expect("index");
     let (view, log) = recording(&store);
 
-    let direct = scan_calls_by_name(&db.view(), "shared_helper", 50, None).expect("direct scan");
-    let routed = scan_calls_by_name(&view, "shared_helper", 50, None).expect("routed scan");
+    let direct = scan_calls_by_name(&db.view(), "shared_helper", Matching::Substring, 50, None).expect("direct scan");
+    let routed = scan_calls_by_name(&view, "shared_helper", Matching::Substring, 50, None).expect("routed scan");
     assert_eq!(routed.total, 2 * FILES as u32, "two call sites per file");
     assert_eq!((routed.total, &routed.hit_keys), (direct.total, &direct.hit_keys));
     assert_eq!(log.entries(), name_scan_reads(), "name scan");
@@ -96,7 +97,17 @@ fn call_and_implementation_scans_read_through_the_view() {
     assert_eq!(log.entries(), ["range:calls_by_path"], "per-file calls");
 
     log.clear();
-    let impls = scan_impls_fjall(&view, "Tr", None, 50, None, |_, _| true, |_, _| (0, 0)).expect("impls");
+    let impls = scan_impls_fjall(
+        &view,
+        "Tr",
+        Matching::Substring,
+        None,
+        50,
+        None,
+        |_, _| true,
+        |_, _| (0, 0),
+    )
+    .expect("impls");
     assert_eq!(impls.total, FILES);
     assert_eq!(log.entries(), ["trait_keys_matching"], "implementations");
 }
@@ -169,7 +180,10 @@ async fn the_local_route_answers_every_read_from_its_view() {
     let (view, log) = recording(&store);
     let route = IndexRoute::Local(Box::new(view));
 
-    let page = route.scan_calls(&cache, "shared_helper", 50, None).await.expect("scan");
+    let page = route
+        .scan_calls(&cache, "shared_helper", Matching::Substring, 50, None)
+        .await
+        .expect("scan");
     assert_eq!(page.total, 2 * FILES as u32);
     assert_eq!(log.entries(), name_scan_reads(), "references/callers");
 
@@ -180,7 +194,10 @@ async fn the_local_route_answers_every_read_from_its_view() {
     assert_eq!(log.entries(), ["range:calls_by_path"], "resolved callers");
 
     log.clear();
-    let impls = route.scan_impls(&cache, "Tr", None, 50, None).await.expect("impls");
+    let impls = route
+        .scan_impls(&cache, "Tr", Matching::Substring, None, 50, None)
+        .await
+        .expect("impls");
     assert_eq!(impls.total, FILES);
     assert_eq!(log.entries(), ["trait_keys_matching"], "implementations");
 

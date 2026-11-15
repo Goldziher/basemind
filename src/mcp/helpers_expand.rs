@@ -5,7 +5,8 @@ use rmcp::model::CallToolResult;
 
 use super::ServerState;
 use super::helpers::{json_result, kind_to_str, parse_kind};
-use super::tool_contract::not_indexed;
+use super::helpers_pick::pick_symbol;
+use super::tool_contract::{indexed_file, not_indexed};
 use super::types_code::{ExpandParams, ExpandResponse, ReadSpanResponse};
 use super::types_tools::CodeReadParams;
 use crate::query;
@@ -18,16 +19,15 @@ use crate::query;
 const EXPAND_BODY_CAP: usize = 128 * 1024;
 
 /// The argument shapes `code_read` accepts, quoted in every shape error.
-const READ_SHAPES: &str = "pass exactly one of {path, symbol} (a symbol's body; add `kind` to disambiguate) or \
-     {path, line, end_line} (a 1-based inclusive line span)";
+const READ_SHAPES: &str = "pass {path, symbol} (a symbol's body; add `line`, any line inside it, or `kind` when \
+     several share the name) or {path, line, end_line} (a 1-based inclusive line span)";
 
 /// `code_read`: a symbol's source body, or a 1-based inclusive line span of an indexed file.
 pub(super) async fn code_read(state: &ServerState, p: CodeReadParams) -> Result<CallToolResult, McpError> {
     let shape_error = |problem: &str| McpError::invalid_params(format!("`code_read`: {problem}; {READ_SHAPES}"), None);
     match (p.symbol, p.line) {
-        (Some(_), Some(_)) => Err(shape_error("`symbol` and `line` are alternatives")),
         (None, None) => Err(shape_error("neither `symbol` nor `line` was given")),
-        (Some(name), None) => {
+        (Some(name), line) => {
             if p.end_line.is_some() {
                 return Err(shape_error("`end_line` applies only to a line span"));
             }
@@ -37,6 +37,7 @@ pub(super) async fn code_read(state: &ServerState, p: CodeReadParams) -> Result<
                     path: p.path,
                     name,
                     kind: p.kind,
+                    line,
                 },
             )
             .await
@@ -71,8 +72,8 @@ async fn read_span(
     if !indexed {
         return Err(not_indexed(state, "code_read", path));
     }
-    let bytes =
-        std::fs::read(state.shared.root.join(path.to_path_buf())).map_err(|_| not_indexed(state, "code_read", path))?;
+    let file = indexed_file(state, "code_read", path)?;
+    let bytes = std::fs::read(file).map_err(|_| not_indexed(state, "code_read", path))?;
     let newlines: Vec<usize> = memchr::memchr_iter(b'\n', &bytes).collect();
     let total_lines = newlines.len() as u32 + u32::from(bytes.last().is_some_and(|byte| *byte != b'\n'));
     if line > total_lines.max(1) {
@@ -104,14 +105,11 @@ fn cap_body(raw: &[u8]) -> (String, bool) {
     (String::from_utf8_lossy(kept).into_owned(), truncated)
 }
 
-/// Resolve one symbol by `(path, name[, kind])` from the L1 outline, then read
-/// `file_bytes[start_byte..end_byte]` and return the raw source body.
+/// Resolve one symbol by `(path, name[, kind][, line])` from the L1 outline, then return
+/// `file_bytes[start_byte..end_byte]`, the raw source body.
 ///
-/// Multi-match policy: when `name` alone matches more than one symbol (e.g. an
-/// overloaded method), the tool returns [`McpError::invalid_params`] that lists
-/// the matching `(kind, name)` pairs. The caller disambiguates by re-calling with
-/// `kind` set. This is cleaner than silently picking the first match, which would
-/// silently return the wrong overload with no indication of ambiguity.
+/// A name that several definitions share is an error listing each with its line span (see
+/// [`pick_symbol`]), never a silent first match.
 async fn run_expand(state: &ServerState, params: ExpandParams) -> Result<CallToolResult, McpError> {
     let kind_filter = params
         .kind
@@ -125,53 +123,21 @@ async fn run_expand(state: &ServerState, params: ExpandParams) -> Result<CallToo
         query::file_outline(&store, &params.path).map_err(|_| not_indexed(state, "code_read", &params.path))?
     };
 
-    let candidates: Vec<&crate::extract::Symbol> = l1
-        .symbols
-        .iter()
-        .filter(|s| s.name == params.name)
-        .filter(|s| kind_filter.is_none_or(|k| s.kind == k))
-        .collect();
-
-    let symbol = match candidates.len() {
-        0 => {
-            let all_names: Vec<String> = l1
-                .symbols
-                .iter()
-                .filter(|s| kind_filter.is_none_or(|k| s.kind == k))
-                .map(|s| format!("[{}] {}", kind_to_str(s.kind), s.name))
-                .collect();
-            return Err(McpError::invalid_params(
-                format!(
-                    "`code_read`: symbol {:?} not found in {} (available: {})",
-                    params.name,
-                    params.path,
-                    all_names.join(", ")
-                ),
-                None,
-            ));
-        }
-        1 => candidates[0],
-        _ => {
-            let matches: Vec<String> = candidates
-                .iter()
-                .map(|s| format!("[{}] {}", kind_to_str(s.kind), s.name))
-                .collect();
-            return Err(McpError::invalid_params(
-                format!(
-                    "`code_read`: {:?} matches {} symbols in {}; supply `kind` to disambiguate: {}",
-                    params.name,
-                    candidates.len(),
-                    params.path,
-                    matches.join(", ")
-                ),
-                None,
-            ));
-        }
-    };
-
-    let abs = state.shared.root.join(params.path.to_path_buf());
-    let file_bytes = std::fs::read(&abs)
+    let file = indexed_file(state, "code_read", &params.path)?;
+    let file_bytes = std::fs::read(file)
         .map_err(|e| McpError::invalid_params(format!("`code_read`: read {}: {e}", params.path), None))?;
+    // Byte spans from the outline only line up with the bytes that were indexed.
+    let source = (file_bytes.len() as u64 == l1.size_bytes).then_some(file_bytes.as_slice());
+    let symbol = pick_symbol(
+        "code_read",
+        &params.path,
+        &l1.symbols,
+        source,
+        &params.name,
+        kind_filter,
+        params.line,
+    )?
+    .symbol;
 
     let start = symbol.start_byte as usize;
     let end = (symbol.end_byte as usize).min(file_bytes.len());

@@ -2,8 +2,8 @@ use std::path::{Path, PathBuf};
 
 use super::Import;
 
-/// Find files whose import list mentions `module` either as the exact module path
-/// or as a substring of the raw import text.
+/// Find files whose import list names `module`: as the whole module path, or as whole segments
+/// of it or of the raw import text (`os` matches `import os.path`, not `import posixpath`).
 ///
 /// Accepts a slice of `(path, imports)` rather than a HashMap so callers can pass
 /// pre-sorted vectors (the MCP server preloads one) without paying for HashMap
@@ -20,8 +20,8 @@ pub fn dependents_of<P: AsRef<Path>>(module: &str, index: &[(P, Vec<Import>)]) -
     out
 }
 
-/// Whether one file's import list mentions `module` — the per-file predicate behind
-/// [`dependents_of`].
+/// Whether one file's import list names `module` on identifier boundaries — the per-file
+/// predicate behind [`dependents_of`]. See [`crate::textmatch::find_whole`].
 ///
 /// Exposed separately so a caller that STREAMS the corpus (the MCP `dependents` mode, which reads
 /// outlines one bounded chunk at a time) can apply the identical match without first materialising
@@ -32,7 +32,7 @@ pub fn imports_mention(module: &str, module_finder: &memchr::memmem::Finder<'_>,
         let module_match = imp
             .module
             .as_deref()
-            .is_some_and(|m| m == module || module_finder.find(m.as_bytes()).is_some());
-        module_match || module_finder.find(imp.raw.as_bytes()).is_some()
+            .is_some_and(|m| m == module || crate::textmatch::find_whole(m.as_bytes(), module_finder).is_some());
+        module_match || crate::textmatch::find_whole(imp.raw.as_bytes(), module_finder).is_some()
     })
 }

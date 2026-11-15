@@ -199,19 +199,39 @@ async fn the_advertised_tools_are_exactly_the_verb_tools() {
 }
 
 /// A host that defers MCP tools loads only their names until a tool-search round trip; this marker
-/// keeps the schema loaded from the start of the session.
+/// keeps the schema loaded from the start of the session. It is spent on the verb tools only: the
+/// two mode-dispatched domain tools stay deferred, so their 11 KB is not paid on every session.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn every_tool_is_marked_always_load() {
+async fn only_the_verb_tools_are_marked_always_load() {
     let (_dir, tools, _) = list_tools().await;
-    assert!(!tools.is_empty());
+    let verbs = verb_tools(&tools);
+    assert_eq!(verbs.len(), REQUIRED.len(), "every verb tool is advertised");
     for tool in &tools {
         let wire = serde_json::to_value(tool).expect("serialize tool");
+        let marker = wire.pointer("/_meta/anthropic~1alwaysLoad");
+        if DOMAIN_TOOLS.contains(&tool.name.as_ref()) {
+            assert_eq!(
+                marker,
+                None,
+                "`{}` is a domain tool and must stay deferred, got {}",
+                tool.name,
+                wire.get("_meta").cloned().unwrap_or_default(),
+            );
+        } else {
+            assert_eq!(
+                marker,
+                Some(&serde_json::Value::Bool(true)),
+                "`{}` must serialize `_meta[\"anthropic/alwaysLoad\"]: true`, got {}",
+                tool.name,
+                wire.get("_meta").cloned().unwrap_or_default(),
+            );
+        }
+    }
+    if cfg!(feature = "comms") {
         assert_eq!(
-            wire.pointer("/_meta/anthropic~1alwaysLoad"),
-            Some(&serde_json::Value::Bool(true)),
-            "`{}` must serialize `_meta[\"anthropic/alwaysLoad\"]: true`, got {}",
-            tool.name,
-            wire.get("_meta").cloned().unwrap_or_default(),
+            tools.len() - verbs.len(),
+            DOMAIN_TOOLS.len(),
+            "a comms build advertises both domain tools, so the deferred branch above ran"
         );
     }
 }
@@ -281,8 +301,9 @@ async fn required_fields_are_required_in_the_schema() {
     }
 }
 
-/// Each description opens with when to use the tool and carries one complete example call whose
-/// arguments the tool's own schema accepts.
+/// Each description opens with when to use the tool and carries one complete example call that the
+/// tool's own argument parse accepts. Comparing the example's keys with the schema is not enough: a
+/// value of the wrong type or outside a field's vocabulary has the right keys.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn every_verb_tool_description_carries_a_valid_example() {
     let (_dir, tools, _) = list_tools().await;
@@ -325,7 +346,25 @@ async fn every_verb_tool_description_carries_a_valid_example() {
                 tool.name
             );
         }
+        let parsed =
+            basemind::mcp::params::check_arguments(tool.name.as_ref(), serde_json::Value::Object(arguments.clone()))
+                .unwrap_or_else(|| panic!("`{}` is not a verb tool", tool.name));
+        assert_eq!(parsed, Ok(()), "`{}` rejects its own example {example}", tool.name);
     }
+}
+
+/// The check above runs the real parse: an example with the right keys and a wrong value is refused.
+#[test]
+fn the_example_check_rejects_a_wrongly_typed_value() {
+    let wrong_type = basemind::mcp::params::check_arguments("code_grep", serde_json::json!({ "pattern": 7 }));
+    assert!(matches!(wrong_type, Some(Err(_))), "{wrong_type:?}");
+    let wrong_word =
+        basemind::mcp::params::check_arguments("code_refs", serde_json::json!({ "name": "x", "relation": "users" }));
+    assert!(matches!(wrong_word, Some(Err(_))), "{wrong_word:?}");
+    assert_eq!(
+        basemind::mcp::params::check_arguments("no_such_tool", serde_json::json!({})),
+        None
+    );
 }
 
 /// Annotations are exact per tool, so a host that gates on read-only can allow `index_status` and
@@ -349,6 +388,18 @@ async fn verb_tool_annotations_are_exact() {
             annotations.destructive_hint,
             Some(false),
             "`{}` destructive_hint",
+            tool.name
+        );
+        assert_eq!(
+            annotations.idempotent_hint,
+            Some(true),
+            "`{}` idempotent_hint: a repeated call changes nothing further",
+            tool.name
+        );
+        assert_eq!(
+            annotations.open_world_hint,
+            Some(false),
+            "`{}` open_world_hint: every verb tool works on this machine's index only",
             tool.name
         );
         assert!(

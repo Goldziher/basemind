@@ -13,6 +13,19 @@ use tempfile::TempDir;
 
 type Client = rmcp::service::RunningService<rmcp::RoleClient, ()>;
 
+#[path = "verb_behaviour/args.rs"]
+mod args;
+#[path = "verb_behaviour/bounds.rs"]
+mod bounds;
+#[path = "verb_behaviour/cursors.rs"]
+mod cursors;
+#[path = "verb_behaviour/history.rs"]
+mod history;
+#[path = "verb_behaviour/refs.rs"]
+mod refs;
+#[path = "verb_behaviour/safety.rs"]
+mod safety;
+
 fn git(repo: &Path, args: &[&str]) {
     let status = Command::new("git")
         .args(args)
@@ -78,7 +91,8 @@ def run(value):
     return total
 ";
 
-fn fixture() -> TempDir {
+/// The base fixture plus `extra` files (repo-relative path, contents), all in the first commit.
+fn fixture_with(extra: &[(&str, &str)]) -> TempDir {
     basemind::store::init_isolated_cache();
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
@@ -89,6 +103,11 @@ fn fixture() -> TempDir {
     std::fs::write(root.join("src/callers.rs"), CALLERS_RS).unwrap();
     std::fs::write(root.join("worker.rb"), WORKER_RB).unwrap();
     std::fs::write(root.join("tools.py"), TOOLS_PY).unwrap();
+    for (path, contents) in extra {
+        let file = root.join(path);
+        std::fs::create_dir_all(file.parent().expect("parent")).unwrap();
+        std::fs::write(file, contents).unwrap();
+    }
     git(root, &["add", "-A"]);
     git(root, &["commit", "-qm", "init"]);
     dir
@@ -120,7 +139,11 @@ async fn serve(root: &Path) -> Client {
 }
 
 async fn started() -> (TempDir, Client) {
-    let dir = fixture();
+    started_with(&[]).await
+}
+
+async fn started_with(extra: &[(&str, &str)]) -> (TempDir, Client) {
+    let dir = fixture_with(extra);
     scan(dir.path());
     let client = serve(dir.path()).await;
     (dir, client)
@@ -147,6 +170,21 @@ async fn call(client: &Client, tool: &'static str, arguments: Value) -> Value {
     serde_json::from_str(&text).unwrap_or_else(|error| panic!("{tool}: non-JSON payload ({error}): {text}"))
 }
 
+/// The message of a call that must come back as an `isError` tool result (never a protocol error).
+async fn call_err(client: &Client, tool: &'static str, arguments: Value) -> String {
+    let result = client
+        .call_tool(CallToolRequestParams::new(tool).with_arguments(arguments.as_object().cloned().expect("object")))
+        .await
+        .unwrap_or_else(|error| panic!("{tool}: protocol error instead of a tool result: {error}"));
+    let text = text_of(&result);
+    assert_eq!(
+        result.is_error,
+        Some(true),
+        "{tool} {arguments} must be refused: {text}"
+    );
+    text
+}
+
 fn names(rows: &Value) -> Vec<String> {
     rows.as_array()
         .expect("array")
@@ -157,14 +195,25 @@ fn names(rows: &Value) -> Vec<String> {
 
 /// The exact name comes first, then names it prefixes, then names that merely contain it. The old
 /// substring sweep returned them in file order, so the definition asked for was not the first row.
+///
+/// The three names are declared in the REVERSE of rank order, one per file, with the files sorting
+/// substring, prefix, exact: any order derived from paths or declaration order fails this test.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn code_symbols_ranks_exact_then_prefix_then_substring() {
-    let (_dir, client) = started().await;
+    let (_dir, client) = started_with(&[
+        ("src/a_substring.rs", "pub fn pre_rank_target_post() {}\n"),
+        ("src/b_prefix.rs", "pub fn rank_target_more() {}\n"),
+        (
+            "src/c_exact.rs",
+            "// the definition asked for\n\npub fn rank_target() {}\n",
+        ),
+    ])
+    .await;
 
-    let body = call(&client, "code_symbols", json!({ "name": "file_outline" })).await;
+    let body = call(&client, "code_symbols", json!({ "name": "rank_target" })).await;
     assert_eq!(
         names(&body["results"]),
-        ["file_outline", "file_outline_l2", "outline_file_outline_cached"],
+        ["rank_target", "rank_target_more", "pre_rank_target_post"],
         "{body}"
     );
     let matches: Vec<&str> = body["results"]
@@ -174,29 +223,39 @@ async fn code_symbols_ranks_exact_then_prefix_then_substring() {
         .map(|row| row["match"].as_str().unwrap_or_default())
         .collect();
     assert_eq!(matches, ["exact", "prefix", "substring"], "{body}");
+    let paths: Vec<&str> = body["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| row["path"].as_str().unwrap_or_default())
+        .collect();
+    assert_eq!(
+        paths,
+        ["src/c_exact.rs", "src/b_prefix.rs", "src/a_substring.rs"],
+        "rank order is the reverse of path order here: {body}"
+    );
     assert_eq!(body["total"], 3, "{body}");
 
     let exact = &body["results"][0];
-    assert_eq!(exact["path"], "src/outline.rs");
     assert_eq!(exact["line"], 3, "rows carry a 1-based `line`: {exact}");
     assert!(
         exact.get("start_row").is_none(),
         "the 0-based row must be gone: {exact}"
     );
 
-    let second_page = call(&client, "code_symbols", json!({ "name": "file_outline", "limit": 1 })).await;
-    assert_eq!(names(&second_page["results"]), ["file_outline"]);
-    let cursor = second_page["next_cursor"].clone();
-    assert!(cursor.is_string(), "{second_page}");
+    let first_page = call(&client, "code_symbols", json!({ "name": "rank_target", "limit": 1 })).await;
+    assert_eq!(names(&first_page["results"]), ["rank_target"]);
+    let cursor = first_page["next_cursor"].clone();
+    assert!(cursor.is_string(), "{first_page}");
     let rest = call(
         &client,
         "code_symbols",
-        json!({ "name": "file_outline", "limit": 5, "cursor": cursor }),
+        json!({ "name": "rank_target", "limit": 5, "cursor": cursor }),
     )
     .await;
     assert_eq!(
         names(&rest["results"]),
-        ["file_outline_l2", "outline_file_outline_cached"],
+        ["rank_target_more", "pre_rank_target_post"],
         "the cursor continues in rank order: {rest}"
     );
 }
@@ -324,23 +383,37 @@ async fn code_refs_with_a_path_pins_the_definition_and_is_exact_too() {
 }
 
 /// Where a language has no scope / import resolution, `resolved_total: 0` used to read as "nothing
-/// binds to this definition". The response now says resolution did not run.
+/// binds to this definition". The response says resolution did not run, and tells a language with
+/// no resolution engine (rust) from a file of a supported one that bound nothing (the ruby fixture):
+/// the scan writes resolution facts only for a file that has some, so their absence alone does not
+/// say which.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn code_refs_says_when_a_language_has_no_resolution() {
+async fn code_refs_says_why_no_hit_is_marked_resolved() {
     let (_dir, client) = started().await;
 
+    let rust = call(
+        &client,
+        "code_refs",
+        json!({ "name": "file_outline", "path": "src/outline.rs" }),
+    )
+    .await;
+    assert_eq!(rust["resolution"], "unsupported for rust", "{rust}");
+
     let ruby = call(&client, "code_refs", json!({ "name": "helper", "path": "worker.rb" })).await;
-    assert_eq!(ruby["resolution"], "unsupported for ruby", "{ruby}");
-    assert!(
-        ruby.get("resolved_total").is_none(),
-        "a count that was never computed must not be reported as 0: {ruby}"
-    );
-    assert!(
-        ruby["hits"]
-            .as_array()
-            .is_some_and(|hits| hits.iter().all(|hit| hit.get("resolved").is_none())),
-        "{ruby}"
-    );
+    assert_eq!(ruby["resolution"], "no resolution facts for this file", "{ruby}");
+
+    for body in [&rust, &ruby] {
+        assert!(
+            body.get("resolved_total").is_none(),
+            "a count that was never computed must not be reported as 0: {body}"
+        );
+        assert!(
+            body["hits"]
+                .as_array()
+                .is_some_and(|hits| hits.iter().all(|hit| hit.get("resolved").is_none())),
+            "{body}"
+        );
+    }
 }
 
 /// The line `code_outline` reports for a symbol is the line `code_read` and `git_blame` use for it.
@@ -515,7 +588,7 @@ async fn index_status_reports_basemind_s_cache_directory() {
 #[cfg(feature = "documents")]
 #[test]
 fn find_files_returns_a_markdown_file() {
-    let dir = fixture();
+    let dir = fixture_with(&[]);
     let root = dir.path();
     std::fs::write(
         root.join("ATTRIBUTIONS.md"),
@@ -549,6 +622,81 @@ fn find_files_returns_a_markdown_file() {
         assert_eq!(found["files"][0]["language"], "markdown", "{found}");
         let listed = call(&client, "find_files", json!({ "language": "markdown" })).await;
         assert_eq!(listed["files"][0]["path"], "ATTRIBUTIONS.md", "{listed}");
+        let _ = client.cancel().await;
+    });
+}
+
+/// `[documents.output] format = "toon"` used to switch the first `docs_search` page to TOON, which
+/// has no structured form to cut a page from: the page came back whole, unbudgeted and with no
+/// `next_cursor`. The verb tools answer in JSON whatever that setting says.
+#[cfg(feature = "documents")]
+#[test]
+fn docs_search_pages_as_json_when_the_config_asks_for_toon() {
+    let dir = fixture_with(&[]);
+    let root = dir.path();
+    for (name, topic) in [
+        ("alpha", "harbour"),
+        ("beta", "harbour pilots"),
+        ("gamma", "harbour tides"),
+    ] {
+        std::fs::write(
+            root.join(format!("{name}.md")),
+            format!("# {topic}\n\nNotes about the {topic} and how the {topic} is run, long enough to index.\n"),
+        )
+        .unwrap();
+    }
+    std::fs::write(
+        root.join("basemind.toml"),
+        "\"$schema\" = \"v1\"\n\n[documents]\nenabled = true\n\n[documents.output]\nformat = \"toon\"\n",
+    )
+    .unwrap();
+    let mut cfg = basemind::config::default_for_root(root);
+    cfg.documents.enabled = true;
+    let _ = basemind::lang::ensure_grammars().expect("grammar bootstrap");
+    {
+        let mut store = basemind::store::Store::open(root, basemind::store::VIEW_WORKING).expect("open store");
+        basemind::scanner::scan(
+            root,
+            &mut store,
+            &cfg,
+            basemind::scanner::ScanSource::WorkingTree,
+            basemind::scanner::EmbedMode::Inline,
+        )
+        .expect("scan");
+    }
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .expect("runtime");
+    runtime.block_on(async {
+        let client = serve(root).await;
+        let result = client
+            .call_tool(
+                CallToolRequestParams::new("docs_search")
+                    .with_arguments(json!({ "query": "harbour", "limit": 1 }).as_object().cloned().unwrap()),
+            )
+            .await
+            .expect("docs_search");
+        let text = text_of(&result);
+        if result.is_error == Some(true) {
+            eprintln!("SKIP: docs_search could not run here (no embedding model?): {text}");
+            let _ = client.cancel().await;
+            return;
+        }
+        let body: Value = serde_json::from_str(&text)
+            .unwrap_or_else(|error| panic!("the page must be JSON, not TOON ({error}): {text}"));
+        let hits = body["hits"].as_array().expect("hits");
+        if hits.is_empty() {
+            eprintln!("SKIP: no document vectors in this environment: {body}");
+            let _ = client.cancel().await;
+            return;
+        }
+        assert_eq!(hits.len(), 1, "`limit` is honoured on the first page: {body}");
+        assert!(
+            body["next_cursor"].is_string(),
+            "three documents match, so a page follows: {body}"
+        );
         let _ = client.cancel().await;
     });
 }

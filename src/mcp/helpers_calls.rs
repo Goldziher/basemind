@@ -12,7 +12,7 @@ use super::cursor::Cursor;
 use super::helpers::{SEARCH_LIMIT_DEFAULT, SEARCH_LIMIT_MAX, json_result, kind_to_str, parse_kind};
 pub(crate) use super::helpers_calls_scan::InRamCallIndex;
 use super::helpers_calls_scan::{CallRef, CallScanPage, budget_call_page};
-use super::helpers_refs_match::{Matching, scan_calls};
+use super::helpers_refs_match::Matching;
 use super::index_route::IndexRoute;
 use super::types::ReferenceHit;
 use crate::index::view::Part;
@@ -132,7 +132,9 @@ pub(super) async fn run_find_references(
     let limit = params.limit.unwrap_or(SEARCH_LIMIT_DEFAULT).min(SEARCH_LIMIT_MAX) as usize;
     let cursor_bytes = params.cursor.as_ref().map(|c| c.decode_fjall()).transpose()?;
     let matching = Matching::from_substring(params.substring);
-    let scan = scan_calls(route, cache, &params.name, matching, limit, cursor_bytes.as_deref()).await?;
+    let scan = route
+        .scan_calls(cache, &params.name, matching, limit, cursor_bytes.as_deref())
+        .await?;
     let total = scan.total;
     let total_is_partial = scan.total_is_partial;
     let budgeted = budget_call_page(scan, params.max_tokens);
@@ -192,47 +194,71 @@ pub(super) async fn run_find_callers(
     use super::types::{DefinitionView, FindCallersResponse};
     let limit = params.limit.unwrap_or(SEARCH_LIMIT_DEFAULT).min(SEARCH_LIMIT_MAX) as usize;
     let kind_filter = params.kind.as_deref().map(parse_kind).transpose()?;
-    let symbol = cache.get(&params.path).and_then(|l1| {
-        l1.symbols
-            .iter()
-            .find(|s| s.name == params.name && kind_filter.is_none_or(|k| s.kind == k))
-            .cloned()
-    });
-    let definition: Option<DefinitionView> = symbol.as_ref().map(|sym| DefinitionView {
+    // A pinned call that cannot be pinned is an error: answering with the unpinned name scan would
+    // read as "these are the callers of the definition in that file".
+    let l1 = cache
+        .get(&params.path)
+        .ok_or_else(|| super::tool_contract::not_indexed_in(store, root, "code_refs", &params.path))?;
+    let source = crate::path::contained_file(root, &params.path)
+        .ok()
+        .and_then(|file| std::fs::read(file).ok())
+        .filter(|bytes| bytes.len() as u64 == l1.size_bytes);
+    let symbol = super::helpers_pick::pick_symbol(
+        "code_refs",
+        &params.path,
+        &l1.symbols,
+        source.as_deref(),
+        &params.name,
+        kind_filter,
+        params.line,
+    )?
+    .symbol;
+    let definition = DefinitionView {
         path: params.path.clone(),
-        name: sym.name.clone(),
-        kind: kind_to_str(sym.kind),
-        line: sym.start_row + 1,
-        column: sym.start_col + 1,
-    });
+        name: symbol.name.clone(),
+        kind: kind_to_str(symbol.kind),
+        line: symbol.start_row + 1,
+        column: symbol.start_col + 1,
+    };
 
     let cursor_bytes = params.cursor.as_ref().map(|c| c.decode_fjall()).transpose()?;
     let matching = Matching::from_substring(params.substring);
-    let scan = scan_calls(route, cache, &params.name, matching, limit, cursor_bytes.as_deref()).await?;
+    let scan = route
+        .scan_calls(cache, &params.name, matching, limit, cursor_bytes.as_deref())
+        .await?;
 
-    // Resolution facts are a per-file blob the scan writes for languages it can resolve. No blob
-    // means resolution never ran for this file, which is a different answer from "ran and proved
-    // nothing": it is reported as such instead of as `resolved_total: 0`.
-    let resolution_ran = symbol.is_some()
-        && store
-            .lookup(&params.path)
-            .and_then(|entry| store.read_resolved_by_hex(&entry.hash_hex).ok().flatten())
-            .is_some();
-    let resolved = match symbol.as_ref() {
-        Some(sym) if resolution_ran => Some(
-            resolved_callers(store, &refs, route, root, cache, &params.path, sym, &params.name, limit)
-                .await
-                .unwrap_or_default(),
-        ),
-        _ => None,
+    // Resolution facts are a per-file blob the scan writes only for a file that produced some. No
+    // blob is not `resolved_total: 0`: either the language has no resolution engine or this file
+    // bound nothing, and `resolution` says which (see `helpers_intel::resolution_gap`).
+    let resolution_ran = store
+        .lookup(&params.path)
+        .and_then(|entry| store.read_resolved_by_hex(&entry.hash_hex).ok().flatten())
+        .is_some();
+    let resolved = if resolution_ran {
+        Some(
+            resolved_callers(
+                store,
+                &refs,
+                route,
+                root,
+                cache,
+                &params.path,
+                symbol,
+                &params.name,
+                limit,
+            )
+            .await
+            .unwrap_or_default(),
+        )
+    } else {
+        None
     };
     let resolved_total = resolved.as_ref().map(|r| r.total);
-    let resolution = (symbol.is_some() && !resolution_ran).then(|| {
-        format!(
-            "unsupported for {}",
-            cache.language_of(&params.path).unwrap_or("this language")
-        )
-    });
+    let resolution = if resolution_ran {
+        None
+    } else {
+        super::helpers_intel::resolution_gap(cache.language_of(&params.path))
+    };
 
     let page = merge_resolved(scan, resolved, limit, cursor_bytes.as_deref());
     let total = page.total;
@@ -331,7 +357,12 @@ async fn resolved_callers(
 ) -> Option<ResolvedCallers> {
     let entry = store.lookup(def_path)?;
     let refs = store.read_resolved_by_hex(&entry.hash_hex).ok().flatten()?;
-    let def_source = std::fs::read(root.join(def_path.to_path_buf())).ok()?;
+    let def_file = if def_path.is_external() {
+        def_path.to_path_buf()
+    } else {
+        crate::path::contained_file(root, def_path).ok()?
+    };
+    let def_source = std::fs::read(def_file).ok()?;
 
     let mut def_starts: Vec<u32> = Vec::new();
     let push_candidate = |byte: u32, def_starts: &mut Vec<u32>| {
@@ -610,6 +641,7 @@ mod tests {
                         path: RelPath::from("pkg/mod.py".as_bytes()),
                         name: "target".to_string(),
                         kind: None,
+                        line: None,
                         limit: Some(500),
                         max_tokens: None,
                         cursor: None,
@@ -696,6 +728,7 @@ mod tests {
                         path: RelPath::from("util.ts".as_bytes()),
                         name: "target".to_string(),
                         kind: None,
+                        line: None,
                         limit: Some(500),
                         max_tokens: None,
                         cursor: None,
@@ -751,7 +784,7 @@ mod tests {
         .expect("scan");
 
         let cache = crate::mcp::MapCache::build(&store, 0);
-        let page = scan_calls_in_ram(cache.calls_projection(), "alpha", 100, None);
+        let page = scan_calls_in_ram(cache.calls_projection(), "alpha", super::Matching::Substring, 100, None);
         assert_eq!(page.total, 2, "two alpha() call sites in b.rs");
         assert_eq!(page.hits.len(), 2);
         assert!(page.hits.iter().all(|h| h.callee == "alpha"));
@@ -822,6 +855,7 @@ mod tests {
                         path: def_path.clone(),
                         name: "target".to_string(),
                         kind: None,
+                        line: None,
                         limit: Some(100),
                         max_tokens: None,
                         cursor: None,

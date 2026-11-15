@@ -64,7 +64,7 @@ pub enum CodeCmd {
         /// Kind filter to disambiguate `--symbol`.
         #[arg(long)]
         kind: Option<String>,
-        /// First line, 1-based.
+        /// First line, 1-based. With `--symbol`: a line inside the definition meant.
         #[arg(long)]
         line: Option<u32>,
         /// Last line, inclusive (default: `--line`).
@@ -122,7 +122,8 @@ pub enum CodeCmd {
         /// reference.
         #[arg(long)]
         path: Option<String>,
-        /// `definition` only: 1-based line of the reference.
+        /// With `--path`: a 1-based line inside the definition meant, when several share the name.
+        /// For `definition`: the line of the reference.
         #[arg(long)]
         line: Option<u32>,
         /// `definition` only: 1-based column (default: where the name occurs on the line).
@@ -144,6 +145,12 @@ pub enum CodeCmd {
     Callers {
         path: String,
         name: String,
+        /// A 1-based line inside the definition meant, when several in the file share the name.
+        #[arg(long)]
+        line: Option<u32>,
+        /// Name matching (default exact).
+        #[arg(long = "match", value_enum)]
+        match_mode: Option<RefsMatch>,
         #[arg(long)]
         limit: Option<u32>,
         /// Resume token: pass the previous page's `next_cursor`.
@@ -157,6 +164,9 @@ pub enum CodeCmd {
     /// `refs <name> --relation implementations`.
     Implementations {
         name: String,
+        /// Name matching (default exact).
+        #[arg(long = "match", value_enum)]
+        match_mode: Option<RefsMatch>,
         #[arg(long)]
         limit: Option<u32>,
         /// Resume token: pass the previous page's `next_cursor`.
@@ -174,6 +184,9 @@ pub enum CodeCmd {
         /// Resume token: pass the previous page's `next_cursor`.
         #[arg(long)]
         cursor: Option<String>,
+        /// Token budget for the returned list; overflow is dropped and flagged `budgeted`.
+        #[arg(long)]
+        max_tokens: Option<u32>,
     },
     /// The definition the reference `name` at `path`:`line` binds to. Shorthand for
     /// `refs <name> --relation definition --path <path> --line <line>`.
@@ -359,12 +372,16 @@ pub async fn run(server: &BasemindServer, cmd: CodeCmd, opts: &Emit, out: &mut i
         CodeCmd::Callers {
             path,
             name,
+            line,
+            match_mode,
             limit,
             cursor,
             max_tokens,
         } => {
             let refs = CodeRefsParams {
                 path: Some(resolve_path(server, &path)),
+                line,
+                match_mode: match_mode.map(|matching| matching.as_str().to_string()),
                 limit,
                 cursor: cursor.map(Cursor),
                 max_tokens,
@@ -374,6 +391,22 @@ pub async fn run(server: &BasemindServer, cmd: CodeCmd, opts: &Emit, out: &mut i
         }
         CodeCmd::Implementations {
             name,
+            match_mode,
+            limit,
+            cursor,
+            max_tokens,
+        } => {
+            let refs = CodeRefsParams {
+                match_mode: match_mode.map(|matching| matching.as_str().to_string()),
+                limit,
+                cursor: cursor.map(Cursor),
+                max_tokens,
+                ..refs(name, RefsRelation::Implementations)
+            };
+            ("code_refs", server.code_refs_call(refs).await)
+        }
+        CodeCmd::Dependents {
+            module,
             limit,
             cursor,
             max_tokens,
@@ -382,14 +415,6 @@ pub async fn run(server: &BasemindServer, cmd: CodeCmd, opts: &Emit, out: &mut i
                 limit,
                 cursor: cursor.map(Cursor),
                 max_tokens,
-                ..refs(name, RefsRelation::Implementations)
-            };
-            ("code_refs", server.code_refs_call(refs).await)
-        }
-        CodeCmd::Dependents { module, limit, cursor } => {
-            let refs = CodeRefsParams {
-                limit,
-                cursor: cursor.map(Cursor),
                 ..refs(module, RefsRelation::Importers)
             };
             ("code_refs", server.code_refs_call(refs).await)

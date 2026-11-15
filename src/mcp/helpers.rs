@@ -35,6 +35,8 @@ pub(super) const LOG_WALK_MAX: usize = 10_000;
 /// keeping the response under ~32 KiB. Opt-in: blame tools only paginate when `limit` is
 /// explicitly set.
 pub(super) const BLAME_LIMIT_MAX: u32 = 1000;
+/// Blame hunks per page when the caller passes no `limit`.
+pub(super) const BLAME_LIMIT_DEFAULT: u32 = 100;
 
 /// Wrap a tool-shim body with telemetry instrumentation.
 ///
@@ -365,42 +367,64 @@ pub(super) fn blame_hunk_view(h: &crate::git::BlameHunk) -> BlameHunkView {
     }
 }
 
-/// Page a slice of blame hunks. Skips any hunk whose `start_line <= resume_after` (so the
-/// cursor encodes the *last returned* `start_line` — the next page picks up strictly
-/// after it). When `limit` is `None` returns every remaining hunk with no cursor (the
-/// legacy un-paginated shape). When the page fills exactly at the limit and more hunks
-/// follow, returns a cursor with `snapshot_id = 0`.
+/// One page of blame hunks.
+pub(super) struct BlamePage {
+    pub hunks: Vec<BlameHunkView>,
+    pub next_cursor: Option<super::cursor::Cursor>,
+    /// The token budget, not `limit`, ended the page.
+    pub budgeted: bool,
+}
+
+/// Page a run of blame hunks. Skips any hunk whose `start_line <= resume_after` (the cursor encodes
+/// the *last returned* `start_line`, so the next page picks up strictly after it), keeps at most
+/// `limit` hunks (default [`BLAME_LIMIT_DEFAULT`], max [`BLAME_LIMIT_MAX`]) and trims them to
+/// `max_tokens`. `snapshot` is stamped into the cursor so a page of another revision refuses it.
 pub(super) fn paginate_blame_hunks<'a, I>(
     iter: I,
     resume_after: u32,
     limit: Option<u32>,
-) -> (Vec<BlameHunkView>, Option<super::cursor::Cursor>)
+    max_tokens: Option<u32>,
+    snapshot: u32,
+) -> BlamePage
 where
     I: IntoIterator<Item = &'a crate::git::BlameHunk>,
 {
-    let cap = limit.map(|n| n.min(BLAME_LIMIT_MAX) as usize);
+    let cap = limit.unwrap_or(BLAME_LIMIT_DEFAULT).min(BLAME_LIMIT_MAX) as usize;
     let mut out: Vec<BlameHunkView> = Vec::new();
-    let mut last_line: u32 = 0;
     let mut has_more = false;
     for h in iter {
         if h.start_line <= resume_after {
             continue;
         }
-        if let Some(c) = cap
-            && out.len() >= c
-        {
+        if out.len() >= cap {
             has_more = true;
             break;
         }
-        last_line = h.start_line;
         out.push(blame_hunk_view(h));
     }
-    let next_cursor = if has_more {
-        Some(super::cursor::Cursor::encode_in_memory(last_line as u64, 0))
-    } else {
-        None
+    let budget = super::budget::apply_budget(out, max_tokens);
+    let next_cursor = (has_more || budget.budgeted)
+        .then(|| budget.items.last().map(|hunk| hunk.start_line))
+        .flatten()
+        .map(|last_line| super::cursor::Cursor::encode_in_memory(u64::from(last_line), snapshot));
+    BlamePage {
+        hunks: budget.items,
+        next_cursor,
+        budgeted: budget.budgeted,
+    }
+}
+
+/// Where a blame page resumes: the `start_line` its cursor carries, or an error when the cursor was
+/// issued for another revision of the file.
+pub(super) fn blame_resume_after(cursor: Option<&super::cursor::Cursor>, snapshot: u32) -> Result<u32, McpError> {
+    let Some(cursor) = cursor else {
+        return Ok(0);
     };
-    (out, next_cursor)
+    let (offset, issued_for) = cursor.decode_in_memory()?;
+    if issued_for != snapshot {
+        return Err(super::cursor_bind::stale_cursor("git_blame"));
+    }
+    Ok(offset.min(u64::from(u32::MAX)) as u32)
 }
 
 /// Translate a tree-sitter symbol's byte range into a 1-based inclusive
@@ -431,7 +455,11 @@ pub(super) fn symbol_line_range(
         .as_str()
         .and_then(|s| repo.read_blob_at_rev("HEAD", s).ok().flatten())
         .or_else(|| path.as_str().and_then(|s| repo.read_blob_staged(s).ok().flatten()))
-        .or_else(|| std::fs::read(repo.workdir().join(path.to_path_buf())).ok())
+        .or_else(|| {
+            crate::path::contained_file(repo.workdir(), path)
+                .ok()
+                .and_then(|file| std::fs::read(file).ok())
+        })
         .unwrap_or_default();
     line_range_in_blob(sym, &bytes)
 }
@@ -453,6 +481,7 @@ pub(super) fn blame_too_large_response(
             path: path.clone(),
             suspect_sha: suspect_sha.to_string(),
             hunks: Vec::new(),
+            budgeted: false,
             truncated: true,
             truncated_reason: Some("too_large"),
             next_cursor: None,
@@ -485,6 +514,7 @@ pub(super) fn blame_symbol_too_large_response(
             line_start,
             line_end,
             hunks: Vec::new(),
+            budgeted: false,
             truncated: true,
             truncated_reason: Some("too_large"),
             next_cursor: None,
@@ -723,7 +753,7 @@ mod tests {
             .parse()
             .expect("synthetic oid");
         let entry = outline_entry_for_blob(&cache, oid, lang, source.to_vec()).expect("outline entry");
-        symbol_fingerprint(&entry, "alpha", None, lang, mode).expect("fingerprint")
+        symbol_fingerprint(&entry, "alpha", None, 0, lang, mode).expect("fingerprint")
     }
 
     #[test]

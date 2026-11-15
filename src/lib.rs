@@ -71,6 +71,7 @@ mod store_lock;
 mod store_migration;
 mod store_seed;
 pub mod sysres;
+pub mod textmatch;
 pub mod version;
 pub mod watcher;
 

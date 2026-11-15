@@ -8,6 +8,7 @@ use rmcp::model::CallToolResult;
 use rmcp::tool;
 
 use super::BasemindServer;
+use super::cursor_bind::bound;
 use super::helpers_git;
 use super::strict::Strict;
 use super::types::{FindCommitsByPathParams, HotFilesParams};
@@ -60,7 +61,7 @@ impl BasemindServer {
         description = "Use instead of `git status`/`git diff`. No arguments returns the working-tree \
         status (staged, modified, untracked); `path` alone diffs that file's working tree against \
         HEAD; `from`/`to` pick revisions; `structural` lists the symbols added and removed instead \
-        of text hunks. \
+        of text hunks. A diff over 200 hunks is cut and flagged `truncated`. \
         Example: {\"path\":\"src/store.rs\",\"from\":\"HEAD~1\",\"to\":\"HEAD\"}",
         annotations(
             read_only_hint = true,
@@ -80,7 +81,12 @@ impl BasemindServer {
 impl BasemindServer {
     /// Body of `git_log`, shared with `basemind git log`.
     pub(crate) async fn git_log_call(&self, p: GitLogParams) -> Result<CallToolResult, McpError> {
-        crate::instrument_tool!(&self.state, "git_log", p, helpers_git::git_log(&self.state, p))
+        crate::instrument_tool!(
+            &self.state,
+            "git_log",
+            p,
+            bound(p, |p| async { helpers_git::git_log(&self.state, p) }).await
+        )
     }
 
     /// Body of `git_blame`, shared with `basemind git blame`.
@@ -89,7 +95,7 @@ impl BasemindServer {
             &self.state,
             "git_blame",
             p,
-            helpers_git::git_blame(&self.state, p).await
+            bound(p, |p| helpers_git::git_blame(&self.state, p)).await
         )
     }
 

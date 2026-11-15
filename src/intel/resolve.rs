@@ -20,6 +20,24 @@ fn is_js_ts(lang: LangId) -> bool {
     matches!(lang, "javascript" | "typescript" | "tsx")
 }
 
+/// Whether [`resolve_file`] has an engine for `language` (a TSLP pack name): oxc, a stack-graphs
+/// ruleset, or a tree-sitter `locals` query. A file of a supported language can still yield no
+/// facts, in which case the scan writes no blob for it, so "no blob" does not mean "unsupported".
+pub fn supports(language: &str) -> bool {
+    let Some(lang) = crate::lang::intern(language) else {
+        return false;
+    };
+    #[cfg(feature = "code-intel-js")]
+    if is_js_ts(lang) {
+        return true;
+    }
+    #[cfg(feature = "code-intel-stack")]
+    if crate::intel::stackgraph::has_tsg_ruleset(lang) {
+        return true;
+    }
+    matches!(crate::extract::locals::locals_query(lang), Ok(Some(_)))
+}
+
 /// Compute a file's resolution facts. Never fails — a parse error or unsupported language yields
 /// empty facts (the caller simply writes no resolved edges for that file).
 ///
@@ -191,5 +209,23 @@ mod tests {
             refs.imports.is_empty() && refs.exports.is_empty(),
             "precise=false must skip oxc, so no import/export edges are produced: {refs:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod support_tests {
+    use super::supports;
+
+    #[test]
+    fn support_is_a_property_of_the_language_not_of_a_file() {
+        let _ = crate::lang::ensure_grammars().expect("grammar bootstrap");
+        assert!(supports("python"), "python has a vendored locals query");
+        assert!(supports("go"), "go has a vendored locals query");
+        assert!(supports("ruby"), "ruby ships an upstream locals query");
+        assert!(
+            !supports("rust"),
+            "rust has neither a precise engine nor a locals query"
+        );
+        assert!(!supports("not-a-language"));
     }
 }

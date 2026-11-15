@@ -284,6 +284,41 @@ pub(crate) fn is_external_key(key: &[u8]) -> bool {
     }
 }
 
+/// A caller-supplied path that does not name a file inside the repository.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OutsideRoot;
+
+/// The file `rel` names under `root`, for reading.
+///
+/// `RelPath` deserialisation does not normalise, so a path taken from a tool call can be absolute,
+/// climb out with `..`, or name a symlink whose target is elsewhere. All three are refused: the
+/// first two lexically, the third by canonicalising both sides. A path that does not exist yet is
+/// returned as joined (there is nothing to read through it).
+pub fn contained_file(root: &Path, rel: &RelPath) -> Result<PathBuf, OutsideRoot> {
+    use std::path::Component;
+
+    let relative = Path::new(rel.as_os_str());
+    if rel.is_empty() || rel.is_external() || relative.is_absolute() {
+        return Err(OutsideRoot);
+    }
+    if relative
+        .components()
+        .any(|component| !matches!(component, Component::Normal(_) | Component::CurDir))
+    {
+        return Err(OutsideRoot);
+    }
+    let joined = root.join(relative);
+    let Ok(target) = joined.canonicalize() else {
+        return Ok(joined);
+    };
+    let root = root.canonicalize().map_err(|_| OutsideRoot)?;
+    if target.starts_with(&root) {
+        Ok(target)
+    } else {
+        Err(OutsideRoot)
+    }
+}
+
 impl Serialize for RelPath {
     fn serialize<S: Serializer>(&self, ser: S) -> Result<S::Ok, S::Error> {
         match std::str::from_utf8(self.0.as_slice()) {
@@ -501,6 +536,49 @@ mod tests {
         let root = std::path::Path::new("/abs/repo");
         assert_eq!(normalize_query_path("/abs/repo", root), None);
         assert_eq!(normalize_query_path(".", root), None);
+    }
+
+    #[test]
+    fn contained_file_accepts_a_file_inside_the_root() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("src")).unwrap();
+        std::fs::write(dir.path().join("src/a.rs"), b"x").unwrap();
+        let resolved = contained_file(dir.path(), &RelPath::from("src/a.rs")).expect("inside");
+        assert_eq!(std::fs::read(resolved).unwrap(), b"x");
+        assert!(contained_file(dir.path(), &RelPath::from("src/missing.rs")).is_ok());
+    }
+
+    #[test]
+    fn contained_file_refuses_parent_and_absolute_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("repo");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(dir.path().join("secret"), b"s").unwrap();
+        assert_eq!(contained_file(&root, &RelPath::from("../secret")), Err(OutsideRoot));
+        assert_eq!(
+            contained_file(&root, &RelPath::from("src/../../secret")),
+            Err(OutsideRoot)
+        );
+        assert_eq!(contained_file(&root, &RelPath::from("")), Err(OutsideRoot));
+        let absolute = dir.path().join("secret");
+        assert_eq!(
+            contained_file(&root, &RelPath::from(absolute.as_path())),
+            Err(OutsideRoot)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn contained_file_refuses_a_symlink_leaving_the_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("repo");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(dir.path().join("secret"), b"s").unwrap();
+        std::fs::write(root.join("real"), b"r").unwrap();
+        std::os::unix::fs::symlink(dir.path().join("secret"), root.join("escape")).unwrap();
+        std::os::unix::fs::symlink(root.join("real"), root.join("inside")).unwrap();
+        assert_eq!(contained_file(&root, &RelPath::from("escape")), Err(OutsideRoot));
+        assert!(contained_file(&root, &RelPath::from("inside")).is_ok());
     }
 
     #[test]

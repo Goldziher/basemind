@@ -11,6 +11,7 @@ use rmcp::model::CallToolResult;
 use rmcp::tool;
 
 use super::BasemindServer;
+use super::cursor_bind::bound;
 use super::helpers_memory;
 use super::strict::Strict;
 use super::types_memory::MemoryDeleteParams;
@@ -84,7 +85,7 @@ impl BasemindServer {
             &self.state,
             "docs_search",
             p,
-            helpers_memory::docs_search(&self.state, p).await
+            bound(p, |p| helpers_memory::docs_search(&self.state, p)).await
         )
     }
 
@@ -104,7 +105,7 @@ impl BasemindServer {
             &self.state,
             "memory_search",
             p,
-            helpers_memory::memory_search(&self.state, p).await
+            bound(p, |p| helpers_memory::memory_search(&self.state, p)).await
         )
     }
 

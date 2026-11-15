@@ -1370,6 +1370,7 @@ async fn daemon_backed_references_and_implementations_equal_the_writer_session()
             repo.clone(),
             IndexReadQuery::CallScan {
                 name: "get_arg".to_string(),
+                exact: false,
                 limit: 1000,
                 cursor: None,
             },

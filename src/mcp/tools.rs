@@ -17,6 +17,7 @@ use rmcp::model::CallToolResult;
 use rmcp::tool;
 
 use super::BasemindServer;
+use super::cursor_bind::bound;
 use super::helpers::{LIST_LIMIT_DEFAULT, LIST_LIMIT_MAX};
 use super::strict::Strict;
 use super::types_tools::{
@@ -49,9 +50,10 @@ impl BasemindServer {
 
     #[tool(
         title = "Find a definition",
-        description = "Use for \"where is X defined\": finds functions, types, constants and other \
-        symbols by name across the repository and returns path, line and signature. Ranked: the \
-        exact name first, then prefix, then substring, then (with `fuzzy`) fuzzy matches. \
+        description = "Use for \"where is X defined\" when you know (part of) the name: finds \
+        functions, types, constants and other symbols by name across the repository and returns \
+        path, line and signature. Ranked: the exact name first, then prefix, then substring, then \
+        (with `fuzzy`) fuzzy matches. Definitions only: for any text use `code_grep`. \
         Example: {\"name\":\"parse_config\",\"kind\":\"function\"}",
         annotations(
             read_only_hint = true,
@@ -70,8 +72,8 @@ impl BasemindServer {
     #[tool(
         title = "Read a symbol or line span",
         description = "Use to read the source of one function or type, or an exact line span, \
-        instead of the whole file. Pass `symbol`, or `line` with `end_line`; not both. Bodies over \
-        128 KiB are cut and flagged `truncated`. \
+        instead of the whole file. Pass `symbol` (plus `line` when several share the name), or a \
+        `line`..`end_line` span. Bodies over 128 KiB are cut and flagged `truncated`. \
         Example: {\"path\":\"src/store.rs\",\"symbol\":\"open\"}",
         annotations(
             read_only_hint = true,
@@ -89,9 +91,10 @@ impl BasemindServer {
 
     #[tool(
         title = "Search code text",
-        description = "Use instead of `rg`/`grep` to find a string, identifier or comment in the \
-        indexed code. `pattern` is literal text unless `regex` is true. Each hit is the full line \
-        plus the symbol it sits in. Code files only: search documents with `docs_search`. \
+        description = "Use instead of `rg`/`grep` to find exact text (a string, identifier or \
+        comment) anywhere in the indexed code. `pattern` is literal unless `regex` is true. Each \
+        hit is its line plus the symbol it sits in. Code files only: search documents with \
+        `docs_search`. \
         Example: {\"pattern\":\"cache_root(\",\"path\":\"src/\"}",
         annotations(
             read_only_hint = true,
@@ -109,8 +112,9 @@ impl BasemindServer {
 
     #[tool(
         title = "Search code by meaning",
-        description = "Use when you know what the code does but not what it is called: searches \
-        code chunks by meaning and returns pointers (path, `line`/`end_line`, symbol), not bodies. \
+        description = "Use when you know what the code does but not a name or string in it: \
+        searches code chunks by meaning and returns pointers (path, `line`/`end_line`, symbol), \
+        not bodies. \
         `lanes_unavailable` says when a lane could not run. Read a hit with `code_read`. \
         Example: {\"query\":\"retry a failed upload with backoff\"}",
         annotations(
@@ -175,7 +179,7 @@ impl BasemindServer {
             &self.state,
             "code_outline",
             p,
-            helpers_code::code_outline(&self.state, p).await
+            bound(p, |p| helpers_code::code_outline(&self.state, p)).await
         )
     }
 
@@ -185,7 +189,7 @@ impl BasemindServer {
             &self.state,
             "code_symbols",
             p,
-            helpers_code::code_symbols(&self.state, p).await
+            bound(p, |p| helpers_code::code_symbols(&self.state, p)).await
         )
     }
 
@@ -205,7 +209,7 @@ impl BasemindServer {
             &self.state,
             "code_grep",
             p,
-            helpers_code::code_grep(&self.state, p).await
+            bound(p, |p| helpers_code::code_grep(&self.state, p)).await
         )
     }
 
@@ -215,7 +219,7 @@ impl BasemindServer {
             &self.state,
             "code_search",
             p,
-            helpers_code::code_search(&self.state, p).await
+            bound(p, |p| helpers_code::code_search(&self.state, p)).await
         )
     }
 
@@ -225,7 +229,7 @@ impl BasemindServer {
             &self.state,
             "code_refs",
             p,
-            helpers_code::code_refs(&self.state, p).await
+            bound(p, |p| helpers_code::code_refs(&self.state, p)).await
         )
     }
 
@@ -235,7 +239,7 @@ impl BasemindServer {
             &self.state,
             "find_files",
             p,
-            helpers_code::find_files(&self.state, p).await
+            bound(p, |p| helpers_code::find_files(&self.state, p)).await
         )
     }
 

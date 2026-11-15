@@ -54,6 +54,32 @@ impl BasemindServer {
     }
 }
 
+/// The error for a caller-supplied path that leaves the repository.
+pub(super) fn outside_repository(tool: &str, path: &RelPath) -> McpError {
+    McpError::invalid_params(
+        format!(
+            "`{tool}`: `{path}` is outside this repository. Pass a repo-relative path with no `..`; locate one \
+             with `find_files {{\"query\":\"…\"}}`."
+        ),
+        None,
+    )
+}
+
+/// The working-tree file a caller-supplied `path` names, for reading. A path that is absolute,
+/// climbs out with `..` or resolves through a symlink to somewhere else is refused, not read.
+pub(super) fn working_file(state: &ServerState, tool: &str, path: &RelPath) -> Result<std::path::PathBuf, McpError> {
+    crate::path::contained_file(&state.shared.root, path).map_err(|_| outside_repository(tool, path))
+}
+
+/// [`working_file`] for a path the index already holds. A `scan.extra_roots` file is keyed by its
+/// absolute path and lives outside the repository by design, so its indexed key is read as is.
+pub(super) fn indexed_file(state: &ServerState, tool: &str, path: &RelPath) -> Result<std::path::PathBuf, McpError> {
+    if path.is_external() {
+        return Ok(path.to_path_buf());
+    }
+    working_file(state, tool, path)
+}
+
 /// Why `path` cannot be served from the code map, phrased as the next call to make.
 ///
 /// "Not indexed" has three different fixes, and an agent that is only told the first word guesses:
@@ -62,20 +88,43 @@ impl BasemindServer {
 pub(super) fn not_indexed(state: &ServerState, tool: &str, path: &RelPath) -> McpError {
     // Judged on the store's file map: the in-RAM map is also empty before a lazy build.
     let (empty, is_document) = match state.shared.store.try_read() {
-        Ok(store) => (
-            store.index.files.is_empty() && store.index.doc_files.is_empty(),
-            store.lookup_doc(path).is_some(),
-        ),
+        Ok(store) => index_facts(&store, path),
         Err(_) => (false, false),
     };
+    not_indexed_because(&state.shared.root, tool, path, empty, is_document)
+}
+
+/// [`not_indexed`] for a body that already holds the store.
+pub(super) fn not_indexed_in(
+    store: &crate::store::Store,
+    root: &std::path::Path,
+    tool: &str,
+    path: &RelPath,
+) -> McpError {
+    let (empty, is_document) = index_facts(store, path);
+    not_indexed_because(root, tool, path, empty, is_document)
+}
+
+/// `(the index holds no file at all, path is an indexed document)`.
+fn index_facts(store: &crate::store::Store, path: &RelPath) -> (bool, bool) {
+    (
+        store.index.files.is_empty() && store.index.doc_files.is_empty(),
+        store.lookup_doc(path).is_some(),
+    )
+}
+
+fn not_indexed_because(root: &std::path::Path, tool: &str, path: &RelPath, empty: bool, is_document: bool) -> McpError {
+    let on_disk = crate::path::contained_file(root, path);
     let message = if empty {
         format!("`{tool}`: {EMPTY_INDEX_FIX}")
+    } else if on_disk.is_err() {
+        return outside_repository(tool, path);
     } else if is_document {
         format!(
             "`{tool}`: `{path}` is a document, not code, so it has no outline or symbols. Search it with \
              `docs_search`, or read a line span with `code_read`."
         )
-    } else if state.shared.root.join(path.to_path_buf()).is_file() {
+    } else if on_disk.is_ok_and(|file| file.is_file()) {
         format!(
             "`{tool}`: `{path}` exists but is not indexed. Run `index_rescan {{\"paths\":[\"{path}\"]}}` and retry; \
              if it is still missing the file is ignored or not a supported language."
@@ -105,16 +154,21 @@ pub(super) fn feature_missing(tool: &str, feature: &str) -> McpError {
 pub(crate) const EMPTY_INDEX_FIX: &str = "the index is empty: nothing has been scanned for this workspace. Run \
      `index_rescan {\"full\":true}` (or `basemind scan` in a shell) and retry.";
 
-/// Finish the assembled router: mark every tool always-loaded and strip schema keywords that cost
-/// bytes on every session without telling a model anything.
+/// Finish the assembled router: mark every verb tool always-loaded and strip schema keywords that
+/// cost bytes on every session without telling a model anything.
 ///
-/// Applied to the router rather than per `#[tool(meta = …)]` so a tool added later cannot forget
-/// the marker; `tests/mcp_schema_wire.rs` asserts it on every advertised tool.
+/// The marker goes on the verb tools only. `agents` and `workspace` are still mode-dispatched
+/// domain tools (11 KB between them) and stay deferred, so a session that never coordinates with
+/// another agent does not pay for them. Applied to the router rather than per
+/// `#[tool(meta = …)]` so a verb tool added later cannot forget the marker;
+/// `tests/mcp_schema_wire.rs` asserts both halves.
 pub(super) fn finalize_router(mut router: ToolRouter<BasemindServer>) -> ToolRouter<BasemindServer> {
     for route in router.map.values_mut() {
-        let mut meta = route.attr.meta.take().unwrap_or_else(MetaObject::new);
-        meta.0.insert(ALWAYS_LOAD_META_KEY.to_string(), Value::Bool(true));
-        route.attr.meta = Some(meta);
+        if super::types_tools::VERB_TOOLS.contains(&route.attr.name.as_ref()) {
+            let mut meta = route.attr.meta.take().unwrap_or_else(MetaObject::new);
+            meta.0.insert(ALWAYS_LOAD_META_KEY.to_string(), Value::Bool(true));
+            route.attr.meta = Some(meta);
+        }
 
         let mut schema = Value::Object((*route.attr.input_schema).clone());
         compact_schema(&mut schema, true);

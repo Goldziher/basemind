@@ -13,6 +13,7 @@ mod background;
 mod budget;
 mod completions;
 pub(crate) mod cursor;
+mod cursor_bind;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 mod daemon_forward;
 mod helpers;
@@ -21,6 +22,8 @@ mod helpers_calls;
 mod helpers_calls_scan;
 #[cfg(test)]
 pub(crate) use helpers_calls_scan::scan_calls_by_name;
+#[cfg(test)]
+pub(crate) use helpers_refs_match::Matching;
 mod helpers_code;
 #[cfg(feature = "code-search")]
 mod helpers_code_search;
@@ -35,11 +38,13 @@ mod helpers_git;
 mod helpers_git_file;
 mod helpers_git_show;
 mod helpers_grep;
+mod helpers_grep_text;
 mod helpers_impls;
 mod helpers_intel;
 mod helpers_memory;
 #[cfg(any(feature = "code-search", feature = "documents", test))]
 mod helpers_page;
+mod helpers_pick;
 mod helpers_refs_match;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 mod helpers_registry;
@@ -148,6 +153,8 @@ pub mod params {
     pub use super::types::{FindCommitsByPathParams, HotFilesParams, TelemetrySummaryParams};
     pub use super::types_code::GetChunkParams;
     pub use super::types_memory::{MemoryDeleteParams, Visibility};
+    #[cfg(feature = "test-support")]
+    pub use super::types_tools::check_arguments;
     pub use super::types_tools::{
         CodeGrepParams, CodeOutlineParams, CodeReadParams, CodeRefsParams, CodeSearchParams, CodeSymbolsParams,
         DocsSearchParams, FindFilesToolParams, GitBlameParams, GitDiffParams, GitLogParams, IndexRescanParams,
@@ -193,7 +200,7 @@ pub struct BasemindServer {
     /// Reusable prompt templates (`prompts/list` + `prompts/get`). Built by the
     /// `#[prompt_router]` macro in [`prompts`]; `list_prompts` / `get_prompt` delegate here.
     prompt_router: PromptRouter<Self>,
-    /// SEP-2663 Tasks extension executor. Slow tools (see [`tasks::SLOW_TOOLS`]) offload their work
+    /// SEP-2663 Tasks extension executor. Slow tools (see [`tasks::SLOW_CALLS`]) offload their work
     /// here for task-capable clients; cheaply cloneable and shared across every clone of the server.
     tasks: TaskManager,
     /// Bounds allocation-heavy calls while allowing control/comms traffic to bypass the queue.

@@ -4,7 +4,7 @@
 //! Both lanes are answered from fjall — BM25 postings for the keyword lane, `symbols_by_name` for
 //! the exact lane — and fjall's directory lock is exclusive, so a reader session opens the store
 //! without an `IndexDb` and cannot run either. Before this forward that was a SILENT degradation:
-//! `code` mode `semantic` returned an empty hit list in microseconds, indistinguishable from "no
+//! `code_search` returned an empty hit list in microseconds, indistinguishable from "no
 //! matches", even though `[code_search] enabled` defaults to true and the config documents the
 //! keyword lane as working without embeddings.
 //!

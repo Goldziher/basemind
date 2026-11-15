@@ -439,6 +439,7 @@ fn callers_scan_and_file_batches_are_identical_on_every_route() {
                         path: def.clone(),
                         name: "driver_0".to_string(),
                         kind: None,
+                        line: None,
                         limit: Some(1),
                         max_tokens: None,
                         cursor: cursor.map(|c| super::cursor::Cursor(c.to_string())),

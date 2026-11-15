@@ -232,6 +232,7 @@ async fn read_only_queries_agree_between_mcp_and_cli() {
     let session = mcp_surface::Session::start().await;
     let rows = capabilities::table();
     let mut failures = Vec::new();
+    let (mut answered, mut refused) = (0usize, 0usize);
     let cases = behaviour::cases();
     for case in &cases {
         let label = format!("{} {} (basemind {})", case.tool, case.mcp, case.cli);
@@ -245,19 +246,28 @@ async fn read_only_queries_agree_between_mcp_and_cli() {
         let cli = behaviour::run_cli(session.repo.path(), case.cli, case.cli_operands);
         match (mcp, cli) {
             (Ok(mut m), Ok(mut c)) => {
-                behaviour::normalize(&mut m);
-                behaviour::normalize(&mut c);
+                behaviour::normalize(&mut m, case.volatile);
+                behaviour::normalize(&mut c, case.volatile);
                 if m != c {
                     failures.push(format!("{label}: payloads differ\n    mcp: {m}\n    cli: {c}"));
                 }
+                answered += 1;
             }
+            // Both sides refuse (a tool whose feature is not in this build): parity is the CLI
+            // printing the message the tool returned.
+            (Err(m), Err(c)) if c.contains(&m) && m.contains("Cargo feature") => refused += 1,
             (m, c) => failures.push(format!("{label}: mcp={m:?} cli={c:?}")),
         }
     }
     assert!(
-        cases.len() >= 12,
+        cases.len() >= 27,
         "the behaviour layer lost its cases ({} left)",
         cases.len()
+    );
+    println!("behavioural parity: {answered} answered on both sides, {refused} refused on both sides");
+    assert!(
+        answered >= 22,
+        "only {answered} cases compared payloads; the rest merely agreed to refuse"
     );
     assert!(
         failures.is_empty(),

@@ -31,25 +31,38 @@ const OUTLINE_LIMIT_DEFAULT: u32 = 500;
 /// Imports listed on the first `code_outline` page.
 const OUTLINE_IMPORTS_MAX: usize = 200;
 
-/// Characters that make a path filter a glob. `code_grep`'s `path` is a substring, and a glob
-/// passed to it would match nothing, which reads as "no hits" instead of "wrong filter".
-const GLOB_METACHARACTERS: [char; 4] = ['*', '?', '[', '{'];
+/// Wildcards that suggest a `path` filter was meant as a glob. `[` and `{` are not in the list:
+/// they occur in real paths (`app/[id]/page.tsx`).
+const GLOB_WILDCARDS: [char; 2] = ['*', '?'];
 
 /// `code_grep`: content search over every indexed code file.
 pub(super) async fn code_grep(state: &ServerState, p: CodeGrepParams) -> Result<CallToolResult, McpError> {
-    if let Some(path) = p.path.as_deref()
-        && path.contains(GLOB_METACHARACTERS)
-    {
+    if p.pattern.is_empty() {
         return Err(McpError::invalid_params(
-            format!(
-                "`code_grep`: `path` is a substring of the repo-relative path, not a glob (got `{path}`). \
-                 Pass a fragment such as `src/mcp/` or `.rs`; use `language` to filter by language."
-            ),
+            "`code_grep`: `pattern` is empty; pass the text to find.".to_string(),
             None,
         ));
     }
     let started = std::time::Instant::now();
     state.await_cache_ready().await;
+    // `path` is always a literal substring. Only a filter that looks like a glob AND matches no
+    // indexed path gets the hint, since an empty result would otherwise read as "no hits".
+    if let Some(path) = p.path.as_deref()
+        && path.contains(GLOB_WILDCARDS)
+    {
+        let finder = memchr::memmem::Finder::new(path.as_bytes());
+        let cache = state.shared.cache.load_full();
+        if !cache.paths().any(|indexed| finder.find(indexed.as_bytes()).is_some()) {
+            return Err(McpError::invalid_params(
+                format!(
+                    "`code_grep`: `path` is a substring of the repo-relative path, not a glob, and no indexed \
+                     path contains `{path}`. Pass a fragment such as `src/mcp/` or `.rs`; use `language` to \
+                     filter by language."
+                ),
+                None,
+            ));
+        }
+    }
     run_workspace_grep(
         state,
         WorkspaceGrepParams {
@@ -99,8 +112,9 @@ pub(super) async fn code_search(state: &ServerState, p: CodeSearchParams) -> Res
             query: p.query,
             limit: Some(fetch_limit(offset, limit)),
             max_tokens: None,
-            // A later page is cut out of the structured response, which only the JSON encoding has.
-            format: (offset > 0).then(|| "json".to_string()),
+            // The page is cut out of the structured response, which only the JSON encoding has, so
+            // `[documents.output] format = "toon"` does not apply to this tool.
+            format: Some("json".to_string()),
             mode: p.lane,
             reranker_enabled: None,
             reranker_preset: None,
@@ -181,8 +195,9 @@ impl Relation {
 
 /// The argument shapes `code_refs` accepts, quoted in every shape error.
 const REFS_SHAPES: &str = "accepted shapes: {name} (call sites of a name), {name, path} (callers of the definition in \
-     that file), {name, relation:\"implementations\"}, {name, relation:\"importers\"}, \
-     {name, relation:\"definition\", path, line} (the definition a reference binds to)";
+     that file; add `line` when several there share the name), {name, relation:\"implementations\"}, \
+     {name, relation:\"importers\"}, {name, relation:\"definition\", path, line} (the definition a reference \
+     binds to)";
 
 /// `code_refs`: usages of a name: call sites, implementations, importers, or the definition a
 /// reference binds to.
@@ -192,8 +207,14 @@ pub(super) async fn code_refs(state: &ServerState, p: CodeRefsParams) -> Result<
         == super::helpers_refs_match::Matching::Substring;
     let started = std::time::Instant::now();
     let shape_error = |problem: &str| McpError::invalid_params(format!("`code_refs`: {problem}; {REFS_SHAPES}"), None);
-    if relation != Relation::Definition && (p.line.is_some() || p.column.is_some()) {
-        return Err(shape_error("`line` and `column` apply only to relation `definition`"));
+    if relation != Relation::Definition && p.column.is_some() {
+        return Err(shape_error("`column` applies only to relation `definition`"));
+    }
+    if p.line.is_some() && (matches!(relation, Relation::Implementations | Relation::Importers) || p.path.is_none()) {
+        return Err(shape_error(
+            "`line` needs `path`: it picks one of several same-named definitions, or locates the reference \
+             for relation `definition`",
+        ));
     }
     match relation {
         Relation::Callers => match p.path {
@@ -203,6 +224,7 @@ pub(super) async fn code_refs(state: &ServerState, p: CodeRefsParams) -> Result<
                     name: p.name,
                     substring,
                     kind: None,
+                    line: p.line,
                     limit: p.limit,
                     max_tokens: budget(p.max_tokens),
                     cursor: p.cursor,
@@ -277,22 +299,30 @@ pub(super) async fn code_refs(state: &ServerState, p: CodeRefsParams) -> Result<
             let column = match p.column {
                 Some(0) => return Err(shape_error("`column` is 1-based")),
                 Some(column) => column - 1,
-                None => column_of(state, &path, line, &p.name)?,
+                None => column_of(state, &path, line, &p.name).await?,
             };
             super::helpers_intel::run_goto_definition(state, GotoDefinitionParams { path, line, column }).await
         }
     }
 }
 
-/// The 0-based byte column where `name` first occurs on `line` of `path`.
-fn column_of(state: &ServerState, path: &crate::path::RelPath, line: u32, name: &str) -> Result<u32, McpError> {
-    let source =
-        std::fs::read(state.shared.root.join(path.to_path_buf())).map_err(|_| not_indexed(state, "code_refs", path))?;
+/// The 0-based byte column where `name` first occurs as a whole identifier on `line` of `path`
+/// (`get` in `budget.pop(get)` is the argument, not the tail of `budget`).
+///
+/// The index is consulted before the file is read, so the two errors below cannot be used to probe
+/// a file that is not indexed.
+async fn column_of(state: &ServerState, path: &crate::path::RelPath, line: u32, name: &str) -> Result<u32, McpError> {
+    if state.shared.store.read().await.lookup(path).is_none() {
+        return Err(not_indexed(state, "code_refs", path));
+    }
+    let file = super::tool_contract::indexed_file(state, "code_refs", path)?;
+    let source = std::fs::read(file).map_err(|_| not_indexed(state, "code_refs", path))?;
     let text = source
         .split(|byte| *byte == b'\n')
         .nth(line.saturating_sub(1) as usize)
         .ok_or_else(|| McpError::invalid_params(format!("`code_refs`: `{path}` has no line {line}"), None))?;
-    memchr::memmem::find(text, name.as_bytes())
+    let finder = memchr::memmem::Finder::new(name.as_bytes());
+    crate::textmatch::find_whole(text, &finder)
         .map(|column| column as u32)
         .ok_or_else(|| {
             McpError::invalid_params(
@@ -394,7 +424,7 @@ pub(super) async fn code_outline(state: &ServerState, p: CodeOutlineParams) -> R
     };
     let limit = p.limit.unwrap_or(OUTLINE_LIMIT_DEFAULT).min(SEARCH_LIMIT_MAX) as usize;
 
-    let source = std::fs::read(state.shared.root.join(p.path.to_path_buf())).ok();
+    let source = std::fs::read(super::tool_contract::indexed_file(state, "code_outline", &p.path)?).ok();
     let stale = source.as_ref().is_none_or(|bytes| bytes.len() as u64 != l1.size_bytes);
     let newlines: Vec<usize> = source
         .as_deref()
@@ -484,6 +514,12 @@ async fn run_dependents(
         None => 0,
     };
     let limit = limit.unwrap_or(SEARCH_LIMIT_DEFAULT).min(SEARCH_LIMIT_MAX) as usize;
+    if module.is_empty() {
+        return Err(McpError::invalid_params(
+            "`code_refs`: `name` is empty; pass the module or import path to look for.".to_string(),
+            None,
+        ));
+    }
     let finder = memchr::memmem::Finder::new(module.as_bytes());
     let mut paths: Vec<crate::path::RelPath> = Vec::new();
     let cache = state.shared.cache.load_full();

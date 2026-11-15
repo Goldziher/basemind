@@ -3,7 +3,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use rmcp::model::{ErrorCode, ErrorData};
+use rmcp::model::{CallToolResult, ContentBlock, ErrorCode, ErrorData};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 const DEFAULT_HEAVY_CONCURRENCY: usize = 2;
@@ -62,6 +62,7 @@ impl HeavyAdmission {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ServerBusy;
 
+/// The protocol-level form, for requests that have no tool result to carry it (a resource read).
 impl From<ServerBusy> for ErrorData {
     fn from(_: ServerBusy) -> Self {
         ErrorData::new(
@@ -75,6 +76,24 @@ impl From<ServerBusy> for ErrorData {
     }
 }
 
+impl ServerBusy {
+    /// The rejection as an `isError` tool result. Overload is something the calling agent fixes by
+    /// retrying, so it is answered like every other fixable failure; a JSON-RPC error would reach
+    /// the host, not the model.
+    pub(crate) fn into_tool_result(self) -> CallToolResult {
+        let mut result = CallToolResult::error(vec![ContentBlock::text(format!(
+            "server_busy: basemind is running as many heavy calls as it allows and this one was not started. \
+             Nothing was changed. Retry the same call in about {DEFAULT_RETRY_AFTER_MS} ms."
+        ))]);
+        result.structured_content = Some(serde_json::json!({
+            "error": "server_busy",
+            "retryable": true,
+            "retry_after_ms": DEFAULT_RETRY_AFTER_MS
+        }));
+        result
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -85,16 +104,26 @@ mod tests {
         let first = admission.admit(WorkClass::Heavy).await.expect("first heavy permit");
         let second = admission.admit(WorkClass::Heavy).await.expect("second heavy permit");
 
-        let error = match admission.admit(WorkClass::Heavy).await {
+        let result = match admission.admit(WorkClass::Heavy).await {
             Ok(_) => panic!("third heavy request must not be admitted"),
-            Err(error) => ErrorData::from(error),
+            Err(busy) => busy.into_tool_result(),
         };
 
-        assert_eq!(error.code, ErrorCode(SERVER_BUSY_CODE));
-        assert_eq!(error.message, "server_busy");
         assert_eq!(
-            error.data,
+            result.is_error,
+            Some(true),
+            "a tool result the agent reads, not a protocol error"
+        );
+        let text = match result.content.first() {
+            Some(ContentBlock::Text(text)) => text.text.clone(),
+            other => panic!("expected text content, got {other:?}"),
+        };
+        assert!(text.starts_with("server_busy"), "{text}");
+        assert!(text.contains("Retry the same call"), "{text}");
+        assert_eq!(
+            result.structured_content,
             Some(serde_json::json!({
+                "error": "server_busy",
                 "retryable": true,
                 "retry_after_ms": DEFAULT_RETRY_AFTER_MS
             }))

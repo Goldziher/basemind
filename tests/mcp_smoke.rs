@@ -125,6 +125,15 @@ fn decode_text(result: &CallToolResult) -> Value {
     serde_json::from_str(&raw).unwrap_or(Value::Null)
 }
 
+/// `forged` in place of the tool's own cursor inside `real`, a `next_cursor` the server issued. The
+/// result is still bound to the query that issued `real`, so the tool body sees `forged`.
+fn rebound(real: &str, forged: &str) -> String {
+    let (binding, _) = real
+        .split_once('.')
+        .expect("a cursor the server issued is bound to its query");
+    format!("{binding}.{forged}")
+}
+
 /// The message of a verb-tool failure. A verb tool reports every failure as an `isError` result
 /// whose first text block is the plain message, never as a JSON-RPC error.
 fn error_text(result: &CallToolResult) -> String {
@@ -326,14 +335,25 @@ async fn mcp_server_exercises_representative_tools() {
     );
     let body = decode_text(
         &service
-            .call_tool(call_params("git_log", json!({ "query": "tweak", "author": "alpha" })))
+            .call_tool(call_params("git_log", json!({ "query": "tweak", "author": "t" })))
             .await
             .expect("git_log search AND same-commit"),
     );
     assert_eq!(
         body.get("commits").and_then(Value::as_array).map(Vec::len),
         Some(1),
-        "'tweak' AND 'alpha' both in the 'tweak alpha' commit"
+        "the 'tweak alpha' commit was written by `t`"
+    );
+    let body = decode_text(
+        &service
+            .call_tool(call_params("git_log", json!({ "query": "tweak", "author": "alpha" })))
+            .await
+            .expect("git_log search, author term only in the message"),
+    );
+    assert_eq!(
+        body.get("commits").and_then(Value::as_array).map(Vec::len),
+        Some(0),
+        "'alpha' is in the message of that commit, not in its author"
     );
     let body = decode_text(
         &service
@@ -652,18 +672,14 @@ async fn mcp_server_exercises_representative_tools() {
         .call_tool(call_params("index_rescan", json!({})))
         .await
         .expect("rescan");
-    let stale_response = decode_text(
-        &service
-            .call_tool(call_params(
-                "code_symbols",
-                json!({ "name": "a", "limit": 1, "cursor": stale_cursor }),
-            ))
-            .await
-            .expect("code_symbols with stale cursor"),
-    );
-    assert_eq!(
-        stale_response.get("cursor_invalidated"),
-        Some(&Value::Bool(true)),
+    let stale_response = refused(
+        &service,
+        "code_symbols",
+        json!({ "name": "a", "limit": 1, "cursor": stale_cursor }),
+    )
+    .await;
+    assert!(
+        stale_response.contains("changed since this cursor was issued"),
         "rescan must invalidate in-memory code_symbols cursors: {stale_response}"
     );
 
@@ -682,15 +698,9 @@ async fn mcp_server_exercises_representative_tools() {
         .call_tool(call_params("index_rescan", json!({})))
         .await
         .expect("rescan");
-    let stale_response = decode_text(
-        &service
-            .call_tool(call_params("find_files", json!({ "limit": 1, "cursor": stale_cursor })))
-            .await
-            .expect("find_files with stale cursor"),
-    );
-    assert_eq!(
-        stale_response.get("cursor_invalidated"),
-        Some(&Value::Bool(true)),
+    let stale_response = refused(&service, "find_files", json!({ "limit": 1, "cursor": stale_cursor })).await;
+    assert!(
+        stale_response.contains("changed since this cursor was issued"),
         "rescan must invalidate in-memory find_files cursors: {stale_response}"
     );
 
@@ -932,7 +942,7 @@ async fn mcp_server_exercises_representative_tools() {
             .expect("code_search(bogus lane)");
         let message = error_text(&bad_lane);
         assert!(
-            message.contains("unknown lane"),
+            message.contains("`lane` must be one of `hybrid`, `semantic`, `keyword`") && message.contains("bogus"),
             "code_search must reject an unknown lane: {message}"
         );
     }
@@ -955,9 +965,10 @@ async fn mcp_server_exercises_representative_tools() {
     #[cfg(feature = "memory")]
     {
         for i in 0..3 {
-            // The note is durable before `memory_save` embeds it, so the listing below holds even
-            // where no embedding model is available and the save itself answers isError.
-            let _ = service
+            // The note is durable before `memory_save` embeds it. Where no embedding model is
+            // available the save still succeeds and says the note is not embedded: an error here
+            // would report a write that happened as one that did not.
+            let saved = service
                 .call_tool(call_params(
                     "memory_save",
                     json!({ "key": format!("paging_key_{i}"),
@@ -966,6 +977,19 @@ async fn mcp_server_exercises_representative_tools() {
                 ))
                 .await
                 .expect("memory_save");
+            assert_ne!(saved.is_error, Some(true), "a saved note is a success: {saved:?}");
+            let saved = decode_text(&saved);
+            match saved.get("embedded").and_then(Value::as_bool) {
+                Some(true) => assert!(saved.get("notice").is_none(), "{saved}"),
+                Some(false) => assert!(
+                    saved
+                        .get("notice")
+                        .and_then(Value::as_str)
+                        .is_some_and(|notice| notice.contains("the note is saved")),
+                    "a note that could not be embedded says so: {saved}"
+                ),
+                None => panic!("memory_save must report `embedded`: {saved}"),
+            }
         }
         let page1 = decode_text(
             &service
@@ -1249,7 +1273,7 @@ async fn mcp_server_exercises_representative_tools() {
         .expect("code_read(unknown symbol)");
     let message = error_text(&missing);
     assert!(
-        message.contains("\"nonexistent_symbol_xyz\" not found in a.rs") && message.contains("alpha"),
+        message.contains("no symbol `nonexistent_symbol_xyz` in `a.rs`") && message.contains("alpha (line 1)"),
         "an unknown symbol must be refused naming the symbols the file does have: {message}"
     );
 
@@ -1345,7 +1369,7 @@ async fn git_recent_paginates_with_stable_cursor() {
         .to_string();
     let page2 = decode_text(
         &service
-            .call_tool(call_params("git_log", json!({ "limit": 2, "cursor": cursor1 })))
+            .call_tool(call_params("git_log", json!({ "limit": 2, "cursor": &cursor1 })))
             .await
             .expect("git_log page2"),
     );
@@ -1355,17 +1379,11 @@ async fn git_recent_paginates_with_stable_cursor() {
         p2_shas.iter().all(|s| !p1_shas.contains(s)),
         "git_log pages must not overlap: {p1_shas:?} vs {p2_shas:?}"
     );
-    let bogus = basemind::testing::encode_in_memory_cursor(0, 0xDEAD_BEEF);
-    let stale = decode_text(
-        &service
-            .call_tool(call_params("git_log", json!({ "limit": 2, "cursor": bogus })))
-            .await
-            .expect("git_log stale"),
-    );
-    assert_eq!(
-        stale.get("cursor_invalidated"),
-        Some(&Value::Bool(true)),
-        "bogus snapshot must surface cursor_invalidated: {stale}"
+    let bogus = rebound(&cursor1, &basemind::testing::encode_in_memory_cursor(0, 0xDEAD_BEEF));
+    let stale = refused(&service, "git_log", json!({ "limit": 2, "cursor": bogus })).await;
+    assert!(
+        stale.contains("changed since this cursor was issued"),
+        "a cursor from another HEAD is an error, not an empty page: {stale}"
     );
     let _ = service.cancel().await;
 }
@@ -1390,7 +1408,7 @@ async fn git_touching_paginates_with_stable_cursor() {
         &service
             .call_tool(call_params(
                 "git_log",
-                json!({ "path": "paged.rs", "limit": 2, "cursor": cursor1 }),
+                json!({ "path": "paged.rs", "limit": 2, "cursor": &cursor1 }),
             ))
             .await
             .expect("git_log path page2"),
@@ -1401,20 +1419,16 @@ async fn git_touching_paginates_with_stable_cursor() {
         p2_shas.iter().all(|s| !p1_shas.contains(s)),
         "git_log path pages must not overlap: {p1_shas:?} vs {p2_shas:?}"
     );
-    let bogus = basemind::testing::encode_in_memory_cursor(0, 0xDEAD_BEEF);
-    let stale = decode_text(
-        &service
-            .call_tool(call_params(
-                "git_log",
-                json!({ "path": "paged.rs", "limit": 2, "cursor": bogus }),
-            ))
-            .await
-            .expect("git_log path stale"),
-    );
-    assert_eq!(
-        stale.get("cursor_invalidated"),
-        Some(&Value::Bool(true)),
-        "bogus snapshot must surface cursor_invalidated: {stale}"
+    let bogus = rebound(&cursor1, &basemind::testing::encode_in_memory_cursor(0, 0xDEAD_BEEF));
+    let stale = refused(
+        &service,
+        "git_log",
+        json!({ "path": "paged.rs", "limit": 2, "cursor": bogus }),
+    )
+    .await;
+    assert!(
+        stale.contains("changed since this cursor was issued"),
+        "a cursor from another HEAD is an error, not an empty page: {stale}"
     );
     let _ = service.cancel().await;
 }
@@ -1456,7 +1470,7 @@ async fn git_symbol_history_paginates_with_stable_cursor() {
                     "path": "paged.rs",
                     "symbol": "paged",
                     "limit": 2,
-                    "cursor": cursor1,
+                    "cursor": &cursor1,
                 }),
             ))
             .await
@@ -1468,25 +1482,21 @@ async fn git_symbol_history_paginates_with_stable_cursor() {
         p2_shas.iter().all(|s| !p1_shas.contains(s)),
         "git_log symbol pages must not overlap: {p1_shas:?} vs {p2_shas:?}"
     );
-    let bogus = basemind::testing::encode_in_memory_cursor(0, 0xDEAD_BEEF);
-    let stale = decode_text(
-        &service
-            .call_tool(call_params(
-                "git_log",
-                json!({
-                    "path": "paged.rs",
-                    "symbol": "paged",
-                    "limit": 2,
-                    "cursor": bogus,
-                }),
-            ))
-            .await
-            .expect("git_log symbol stale"),
-    );
-    assert_eq!(
-        stale.get("cursor_invalidated"),
-        Some(&Value::Bool(true)),
-        "bogus snapshot must surface cursor_invalidated: {stale}"
+    let bogus = rebound(&cursor1, &basemind::testing::encode_in_memory_cursor(0, 0xDEAD_BEEF));
+    let stale = refused(
+        &service,
+        "git_log",
+        json!({
+            "path": "paged.rs",
+            "symbol": "paged",
+            "limit": 2,
+            "cursor": bogus,
+        }),
+    )
+    .await;
+    assert!(
+        stale.contains("changed since this cursor was issued"),
+        "a cursor from another HEAD is an error, not an empty page: {stale}"
     );
     let _ = service.cancel().await;
 }
@@ -1531,7 +1541,7 @@ async fn git_blame_paginates_by_start_line() {
         &service
             .call_tool(call_params(
                 "git_blame",
-                json!({ "path": "paged.rs", "limit": 1, "cursor": cursor1 }),
+                json!({ "path": "paged.rs", "limit": 1, "cursor": &cursor1 }),
             ))
             .await
             .expect("git_blame page2"),
@@ -1558,6 +1568,39 @@ async fn git_blame_paginates_by_start_line() {
     assert!(
         p2_start.iter().all(|s| !p1_start.contains(s)),
         "git_blame pages must not overlap by line: {p1_start:?} vs {p2_start:?}"
+    );
+
+    let suspect = page1.get("suspect_sha").and_then(Value::as_str).expect("suspect_sha");
+    let revision = u32::from_str_radix(&suspect[..8], 16).expect("hex sha");
+    let past_the_end = rebound(&cursor1, &basemind::testing::encode_in_memory_cursor(9_999, revision));
+    let page_empty = decode_text(
+        &service
+            .call_tool(call_params(
+                "git_blame",
+                json!({ "path": "paged.rs", "limit": 1, "cursor": past_the_end }),
+            ))
+            .await
+            .expect("git_blame cursor past end"),
+    );
+    assert_eq!(
+        page_empty.get("hunks").and_then(Value::as_array).map(Vec::len),
+        Some(0),
+        "a cursor past the last hunk is an empty page: {page_empty}"
+    );
+    assert!(
+        page_empty.get("next_cursor").is_none(),
+        "an exhausted blame carries no next_cursor: {page_empty}"
+    );
+    let other_revision = rebound(&cursor1, &basemind::testing::encode_in_memory_cursor(1, revision ^ 1));
+    let stale = refused(
+        &service,
+        "git_blame",
+        json!({ "path": "paged.rs", "limit": 1, "cursor": other_revision }),
+    )
+    .await;
+    assert!(
+        stale.contains("changed since this cursor was issued"),
+        "a blame cursor from another revision is refused: {stale}"
     );
     let _ = service.cancel().await;
 }
@@ -1590,32 +1633,9 @@ async fn git_blame_symbol_paginates_by_start_line() {
         p1_start >= 1,
         "git_blame symbol start_line should be 1-based, got {p1_start}"
     );
-    let huge_cursor = basemind::testing::encode_in_memory_cursor(9_999, 0);
-    let page_empty = decode_text(
-        &service
-            .call_tool(call_params(
-                "git_blame",
-                json!({
-                    "path": "paged.rs",
-                    "symbol": "paged",
-                    "limit": 1,
-                    "cursor": huge_cursor,
-                }),
-            ))
-            .await
-            .expect("git_blame symbol cursor past end"),
-    );
-    let empty_hunks = page_empty
-        .get("hunks")
-        .and_then(Value::as_array)
-        .expect("git_blame symbol empty page hunks");
     assert!(
-        empty_hunks.is_empty(),
-        "git_blame symbol with cursor past end should be empty: {page_empty}"
-    );
-    assert!(
-        page_empty.get("next_cursor").is_none(),
-        "git_blame symbol exhausted page must NOT carry next_cursor"
+        page1.get("next_cursor").is_none(),
+        "the symbol's one hunk is the whole answer, so there is no next page: {page1}"
     );
     let _ = service.cancel().await;
 }
@@ -2207,7 +2227,7 @@ async fn serve_auto_scan_reports_index_build_ms_on_status() {
 /// The rest of what every verb-tool definition carries is asserted alongside: a description with a
 /// worked example, and annotations that tell a host which two tools write.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn tools_advertise_output_schema() {
+async fn no_tool_advertises_an_output_schema() {
     use basemind::mcp::params::VERB_TOOLS;
 
     const WRITING_TOOLS: [&str; 2] = ["memory_save", "index_rescan"];
@@ -2252,6 +2272,16 @@ async fn tools_advertise_output_schema() {
             annotations.read_only_hint,
             Some(!WRITING_TOOLS.contains(name)),
             "only {WRITING_TOOLS:?} write; `{name}` advertises the wrong read_only_hint"
+        );
+        assert_eq!(
+            annotations.idempotent_hint,
+            Some(true),
+            "repeating `{name}` with the same arguments changes nothing further"
+        );
+        assert_eq!(
+            annotations.open_world_hint,
+            Some(false),
+            "`{name}` reads and writes only this machine's index"
         );
     }
 
@@ -3233,29 +3263,33 @@ async fn code_and_index_tools_reject_inexact_arguments() {
 
     let message = refused(&service, "code_read", json!({ "path": "a.rs" })).await;
     assert!(
-        message.contains("neither `symbol` nor `line` was given") && message.contains("pass exactly one of"),
+        message.contains("neither `symbol` nor `line` was given") && message.contains("pass {path, symbol}"),
         "code_read with neither selector must name the accepted shapes: {message}"
     );
     let message = refused(
         &service,
         "code_read",
-        json!({ "path": "a.rs", "symbol": "alpha", "line": 1 }),
+        json!({ "path": "a.rs", "symbol": "alpha", "end_line": 2 }),
     )
     .await;
     assert!(
-        message.contains("`symbol` and `line` are alternatives") && message.contains("pass exactly one of"),
-        "code_read with both selectors must name the accepted shapes: {message}"
+        message.contains("`end_line` applies only to a line span") && message.contains("pass {path, symbol}"),
+        "code_read with a symbol and a span end must name the accepted shapes: {message}"
     );
 
     let message = refused(&service, "code_refs", json!({ "name": "alpha", "line": 3 })).await;
     assert!(
-        message.contains("`line` and `column` apply only to relation `definition`")
-            && message.contains("accepted shapes:"),
-        "code_refs must refuse a position outside relation `definition`: {message}"
+        message.contains("`line` needs `path`") && message.contains("accepted shapes:"),
+        "code_refs must refuse a line with no file to look in: {message}"
+    );
+    let message = refused(&service, "code_refs", json!({ "name": "alpha", "column": 3 })).await;
+    assert!(
+        message.contains("`column` applies only to relation `definition`") && message.contains("accepted shapes:"),
+        "code_refs must refuse a column outside relation `definition`: {message}"
     );
     let message = refused(&service, "code_refs", json!({ "name": "alpha", "relation": "users" })).await;
     assert!(
-        message.contains("unknown relation `users`") && message.contains("`importers`"),
+        message.contains("`relation` must be one of") && message.contains("`importers`") && message.contains("users"),
         "an unknown relation must list the accepted ones: {message}"
     );
 
@@ -3384,11 +3418,11 @@ async fn git_tools_reject_inexact_arguments() {
     let message = refused(
         &service,
         "git_blame",
-        json!({ "path": "a.rs", "symbol": "alpha", "line": 1 }),
+        json!({ "path": "a.rs", "symbol": "alpha", "end_line": 3 }),
     )
     .await;
     assert!(
-        message.contains("`symbol` and a line span are alternatives") && message.contains("accepted shapes:"),
+        message.contains("`end_line` applies only to a line span") && message.contains("accepted shapes:"),
         "git_blame must refuse a symbol combined with a span: {message}"
     );
 

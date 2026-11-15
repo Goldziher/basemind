@@ -231,6 +231,9 @@ pub struct FindCallersParams {
     /// Optional kind filter for resolving the definition (function/method/class/...).
     #[serde(default)]
     pub kind: Option<String>,
+    /// 1-based line inside the definition meant, when several in the file share the name.
+    #[serde(default)]
+    pub line: Option<u32>,
     /// Cap on results returned. Default 100, max 1000.
     #[serde(default)]
     pub limit: Option<u32>,
@@ -540,27 +543,37 @@ pub(super) struct StatusResponse {
     pub elapsed_us: u64,
 }
 
-/// Serialize a 0-based row or column as the 1-based position every tool reports.
-///
-/// The index stores tree-sitter's 0-based points; converting where a response is written keeps
-/// every internal consumer (the scan pages, the daemon wire types) on one convention.
-pub(crate) fn one_based<S: serde::Serializer>(value: &u32, serializer: S) -> Result<S::Ok, S::Error> {
-    serializer.serialize_u32(value.saturating_add(1))
-}
-
-#[derive(Debug, Serialize, schemars::JsonSchema)]
+#[derive(Debug, schemars::JsonSchema)]
 pub(crate) struct ReferenceHit {
     pub path: RelPath,
-    /// 1-based line of the call site.
+    /// 1-based line of the call site; `0` when the index holds no position for it.
     pub line: u32,
     /// Byte column of the call site: 0-based here, written 1-based.
-    #[serde(serialize_with = "one_based")]
     pub column: u32,
     pub callee: String,
     /// With a pinned definition: whether scope / import resolution proved this site binds to it.
     /// Absent when no definition was pinned or the language has no resolution.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolved: Option<bool>,
+}
+
+/// Written by hand so a call site with no recorded position omits `line` and `column` together. A
+/// derived form would emit `"line": 0`, which is not a line, beside a `column` of 1.
+impl Serialize for ReferenceHit {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+
+        let mut map = serializer.serialize_map(None)?;
+        map.serialize_entry("path", &self.path)?;
+        if self.line != 0 {
+            map.serialize_entry("line", &self.line)?;
+            map.serialize_entry("column", &self.column.saturating_add(1))?;
+        }
+        map.serialize_entry("callee", &self.callee)?;
+        if let Some(resolved) = self.resolved {
+            map.serialize_entry("resolved", &resolved)?;
+        }
+        map.end()
+    }
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
@@ -595,8 +608,8 @@ pub(super) struct FindReferencesResponse {
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct FindCallersResponse {
-    /// The definition the callers were pinned to; `null` when `path` defines no such symbol.
-    pub definition: Option<DefinitionView>,
+    /// The definition the callers were pinned to.
+    pub definition: DefinitionView,
     /// How `name` was matched against callee identifiers: `exact` or `substring`.
     #[serde(rename = "match")]
     pub matching: &'static str,
@@ -712,7 +725,8 @@ pub(super) struct GrepHit {
     pub line: u32,
     /// 1-based byte column of the match within the line.
     pub column: u32,
-    /// The whole matching line (cut at 400 bytes), so the hit can be read without opening the file.
+    /// The matching line, so the hit can be read without opening the file. A line over 400 bytes is
+    /// cut to a window around the match, `…` marking each cut side.
     pub text: String,
     /// The innermost symbol whose span holds the match; absent outside every symbol.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -726,6 +740,9 @@ pub(super) struct GrepHit {
     /// Byte offset of the match in the file; used to find `symbol`, not part of the response.
     #[serde(skip)]
     pub start_byte: u32,
+    /// Size of the file the hit was read from; `symbol` is set only when the index agrees.
+    #[serde(skip)]
+    pub source_len: u64,
 }
 
 /// The symbol a grep hit sits in.

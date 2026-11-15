@@ -88,6 +88,11 @@ pub(super) struct MemoryPutResponse {
     pub key: String,
     pub created_at: i64,
     pub updated_at: i64,
+    /// Whether the note has a vector row, i.e. whether `memory_search` by `query` can find it.
+    pub embedded: bool,
+    /// Why a saved note is not `embedded`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub notice: Option<String>,
 }
 
 #[cfg(feature = "memory")]

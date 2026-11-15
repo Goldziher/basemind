@@ -127,8 +127,9 @@ pub(super) async fn docs_search(state: &ServerState, p: DocsSearchParams) -> Res
             query: p.query,
             limit: Some(fetch_limit(offset, limit)),
             max_tokens: None,
-            // A later page is cut out of the structured response, which only the JSON encoding has.
-            format: (offset > 0).then(|| "json".to_string()),
+            // The page is cut out of the structured response, which only the JSON encoding has, so
+            // `[documents.output] format = "toon"` does not apply to this tool.
+            format: Some("json".to_string()),
             mime_type: p.mime_type,
             scope: p.scope,
             entity_category: p.entity,

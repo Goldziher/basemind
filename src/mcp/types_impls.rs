@@ -64,15 +64,91 @@ pub struct FindImplementationsResponse {
     pub elapsed_us: u64,
 }
 
-#[derive(Debug, Serialize, schemars::JsonSchema)]
+#[derive(Debug, schemars::JsonSchema)]
 pub struct ImplementationHit {
     pub path: RelPath,
     pub trait_name: String,
     pub impl_type: String,
-    /// 1-based row of the `impl`/`class`/`extends` declaration, written as `line`.
-    #[serde(rename = "line")]
+    /// 1-based row of the `impl`/`class`/`extends` declaration, written as `line`; `0` when the
+    /// outline holds no record of it.
     pub start_row: u32,
     /// Byte column from the start of the line: 0-based here, written as the 1-based `column`.
-    #[serde(rename = "column", serialize_with = "super::types::one_based")]
     pub start_col: u32,
+}
+
+/// Written by hand so an implementation with no recorded position omits `line` and `column`
+/// together instead of reporting line 0.
+impl Serialize for ImplementationHit {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+
+        let mut map = serializer.serialize_map(None)?;
+        map.serialize_entry("path", &self.path)?;
+        map.serialize_entry("trait_name", &self.trait_name)?;
+        map.serialize_entry("impl_type", &self.impl_type)?;
+        if self.start_row != 0 {
+            map.serialize_entry("line", &self.start_row)?;
+            map.serialize_entry("column", &self.start_col.saturating_add(1))?;
+        }
+        map.end()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mcp::types::ReferenceHit;
+    use serde_json::json;
+
+    #[test]
+    fn a_hit_with_a_position_writes_it_one_based() {
+        let implementation = ImplementationHit {
+            path: "a.rs".into(),
+            trait_name: "T".to_string(),
+            impl_type: "S".to_string(),
+            start_row: 4,
+            start_col: 0,
+        };
+        assert_eq!(
+            serde_json::to_value(&implementation).unwrap(),
+            json!({ "path": "a.rs", "trait_name": "T", "impl_type": "S", "line": 4, "column": 1 })
+        );
+        let call = ReferenceHit {
+            path: "a.rs".into(),
+            line: 9,
+            column: 2,
+            callee: "f".to_string(),
+            resolved: Some(false),
+        };
+        assert_eq!(
+            serde_json::to_value(&call).unwrap(),
+            json!({ "path": "a.rs", "line": 9, "column": 3, "callee": "f", "resolved": false })
+        );
+    }
+
+    #[test]
+    fn a_hit_without_a_position_omits_it_rather_than_reporting_line_zero() {
+        let implementation = ImplementationHit {
+            path: "a.rs".into(),
+            trait_name: "T".to_string(),
+            impl_type: "S".to_string(),
+            start_row: 0,
+            start_col: 0,
+        };
+        assert_eq!(
+            serde_json::to_value(&implementation).unwrap(),
+            json!({ "path": "a.rs", "trait_name": "T", "impl_type": "S" })
+        );
+        let call = ReferenceHit {
+            path: "a.rs".into(),
+            line: 0,
+            column: 0,
+            callee: "f".to_string(),
+            resolved: None,
+        };
+        assert_eq!(
+            serde_json::to_value(&call).unwrap(),
+            json!({ "path": "a.rs", "callee": "f" })
+        );
+    }
 }

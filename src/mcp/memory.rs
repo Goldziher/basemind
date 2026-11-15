@@ -178,31 +178,104 @@ pub(super) async fn run_memory_put(state: &ServerState, params: MemoryPutParams)
 
     let (created_at, updated_at) = memory_put_fjall(state, vis_byte, owner, &params.key, &params.value, &tags).await?;
 
-    if params.embed {
-        let embedding = embed_query(state, &params.value).await?;
-        let lance = lance_store(state).await?;
-        let row = crate::lance::MemoryRow {
-            scope: state.shared.scope.clone(),
-            key: params.key.clone(),
-            value: params.value.clone(),
-            tags,
-            visibility: lance_visibility(params.visibility).to_string(),
-            agent_id: owner.to_string(),
-            embedding,
-            created_at,
-            updated_at,
-        };
-        let lance_clone = Arc::clone(&lance);
-        tokio::task::spawn_blocking(move || lance_clone.upsert_memory(row))
-            .await
-            .map_err(|e| McpError::internal_error(format!("spawn_blocking: {e}"), None))?
-            .map_err(|e| McpError::internal_error(format!("upsert_memory: {e}"), None))?;
-    }
+    // The note is durable from here on. A failure to embed it is reported on a successful result,
+    // never as an error: an error would read as "not saved" and invite a retry of a write that
+    // already happened.
+    let embedded = if params.embed {
+        let outcome = embed_note(state, &params, owner, tags, created_at, updated_at).await;
+        // The previous vector row still holds the OLD text; left in place, a search by meaning
+        // would keep serving it for this key. The store is opened first because the embedder can
+        // fail before anything in this process has touched it.
+        if outcome.is_err() && lance_store(state).await.is_ok() {
+            delete_vector_row(state, params.visibility, owner, &params.key).await;
+        }
+        Some(outcome)
+    } else {
+        None
+    };
+    let (embedded, notice) = embed_report(embedded);
     json_result(&MemoryPutResponse {
         key: params.key,
         created_at,
         updated_at,
+        embedded,
+        notice,
     })
+}
+
+/// Embed a saved note and upsert its vector row.
+#[cfg(feature = "memory")]
+async fn embed_note(
+    state: &ServerState,
+    params: &MemoryPutParams,
+    owner: &str,
+    tags: Vec<String>,
+    created_at: i64,
+    updated_at: i64,
+) -> Result<(), String> {
+    let embedding = embed_query(state, &params.value)
+        .await
+        .map_err(|error| error.message.into_owned())?;
+    let lance = lance_store(state).await.map_err(|error| error.message.into_owned())?;
+    let row = crate::lance::MemoryRow {
+        scope: state.shared.scope.clone(),
+        key: params.key.clone(),
+        value: params.value.clone(),
+        tags,
+        visibility: lance_visibility(params.visibility).to_string(),
+        agent_id: owner.to_string(),
+        embedding,
+        created_at,
+        updated_at,
+    };
+    tokio::task::spawn_blocking(move || lance.upsert_memory(row))
+        .await
+        .map_err(|error| format!("spawn_blocking: {error}"))?
+        .map_err(|error| format!("upsert_memory: {error}"))
+}
+
+/// What `memory_save` says about the vector row of a note that is already saved:
+/// `(embedded, notice)`. `None` means embedding was not asked for.
+#[cfg(feature = "memory")]
+fn embed_report(outcome: Option<Result<(), String>>) -> (bool, Option<String>) {
+    match outcome {
+        Some(Ok(())) => (true, None),
+        Some(Err(error)) => (
+            false,
+            Some(format!(
+                "the note is saved and can be read by `key` or listed by `prefix`, but it could not be embedded \
+                 ({error}), so `memory_search` with `query` will not find it until it is saved again"
+            )),
+        ),
+        None => (false, None),
+    }
+}
+
+/// Best-effort removal of one note's vector row. The fjall record is the source of truth; a row
+/// that cannot be removed is logged, never an error.
+#[cfg(feature = "memory")]
+async fn delete_vector_row(state: &ServerState, visibility: Visibility, owner: &str, key: &str) {
+    let Some(lance) = state.shared.lance.get() else {
+        return;
+    };
+    let lance = Arc::clone(lance);
+    let scope = state.shared.scope.clone();
+    let row_key = key.to_string();
+    let visibility = lance_visibility(visibility).to_string();
+    let agent_id = owner.to_string();
+    match tokio::task::spawn_blocking(move || lance.delete_memory(&scope, &visibility, &agent_id, &row_key)).await {
+        Ok(Ok(_rows_deleted)) => {}
+        Ok(Err(error)) => {
+            tracing::warn!(%key, ?error, "lance delete_memory failed; embedding may be stale relative to Fjall");
+        }
+        Err(join_error) => {
+            tracing::warn!(
+                %key,
+                ?join_error,
+                "lance delete_memory task panicked; embedding may be stale relative to Fjall"
+            );
+        }
+    }
 }
 
 /// Run the fjall half of `memory_put`, returning the resolved `(created_at, updated_at)`.
@@ -421,30 +494,7 @@ pub(super) async fn run_memory_delete(
 ) -> Result<CallToolResult, McpError> {
     let (vis_byte, owner) = namespace(state, params.visibility);
     let deleted_fjall = memory_delete_fjall(state, vis_byte, owner, &params.key).await?;
-    if let Some(lance) = state.shared.lance.get() {
-        let lance = Arc::clone(lance);
-        let scope = state.shared.scope.clone();
-        let key = params.key.clone();
-        let visibility = lance_visibility(params.visibility).to_string();
-        let agent_id = owner.to_string();
-        match tokio::task::spawn_blocking(move || lance.delete_memory(&scope, &visibility, &agent_id, &key)).await {
-            Ok(Ok(_rows_deleted)) => {}
-            Ok(Err(error)) => {
-                tracing::warn!(
-                    key = %params.key,
-                    ?error,
-                    "lance delete_memory failed; embedding may be stale relative to Fjall"
-                );
-            }
-            Err(join_error) => {
-                tracing::warn!(
-                    key = %params.key,
-                    ?join_error,
-                    "lance delete_memory task panicked; embedding may be stale relative to Fjall"
-                );
-            }
-        }
-    }
+    delete_vector_row(state, params.visibility, owner, &params.key).await;
     json_result(&MemoryDeleteResponse { deleted: deleted_fjall })
 }
 
@@ -762,6 +812,27 @@ async fn attach_doc_metadata(
         true
     });
     Ok(())
+}
+
+#[cfg(all(test, feature = "memory"))]
+mod embed_report_tests {
+    use super::embed_report;
+
+    #[test]
+    fn an_embedded_note_carries_no_notice() {
+        assert_eq!(embed_report(Some(Ok(()))), (true, None));
+        assert_eq!(embed_report(None), (false, None));
+    }
+
+    #[test]
+    fn a_failed_embedding_is_a_notice_on_a_saved_note() {
+        let (embedded, notice) = embed_report(Some(Err("load embedder: offline".to_string())));
+        assert!(!embedded);
+        let notice = notice.expect("notice");
+        assert!(notice.contains("the note is saved"), "{notice}");
+        assert!(notice.contains("load embedder: offline"), "{notice}");
+        assert!(notice.contains("`query`"), "{notice}");
+    }
 }
 
 #[cfg(all(test, feature = "documents"))]

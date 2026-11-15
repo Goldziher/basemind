@@ -40,6 +40,10 @@ pub struct SearchGitHistoryParams {
     /// Cap on each hit's commit body, in characters. Default 1000; 0 omits the body.
     #[serde(default)]
     pub body_chars: Option<u32>,
+    /// Terms every hit's author name or email must also contain. `pattern` is matched against its
+    /// own `field`; these are matched against the author only, never the message.
+    #[serde(default)]
+    pub author: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
@@ -97,14 +101,16 @@ pub struct BlameFileParams {
     pub line_end: Option<u32>,
     #[serde(default)]
     pub rev: Option<String>,
-    /// Cap on hunks returned per page. Default 100, max 1000. When omitted, all hunks are
-    /// returned (existing behaviour) and `next_cursor` is never set.
+    /// Cap on hunks returned per page. Default 100, max 1000.
     #[serde(default)]
     pub limit: Option<u32>,
     /// Resume token returned by the previous call's `next_cursor`. Encodes the last-returned
     /// hunk's `start_line`; on resume the helper skips hunks whose `start_line <= offset`.
     #[serde(default)]
     pub cursor: Option<Cursor>,
+    /// Token budget for the returned hunks; overflow is dropped and flagged `budgeted`.
+    #[serde(default)]
+    pub max_tokens: Option<u32>,
 }
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
@@ -152,6 +158,9 @@ pub struct SymbolHistoryParams {
     pub name: String,
     #[serde(default)]
     pub kind: Option<String>,
+    /// 1-based line inside the definition meant, when several in the file share the name.
+    #[serde(default)]
+    pub line: Option<u32>,
     #[serde(default)]
     pub limit: Option<u32>,
     /// Fingerprint strategy for detecting body changes between commits. One of
@@ -174,16 +183,21 @@ pub struct BlameSymbolParams {
     pub name: String,
     #[serde(default)]
     pub kind: Option<String>,
+    /// 1-based line inside the definition meant, when several in the file share the name.
+    #[serde(default)]
+    pub line: Option<u32>,
     #[serde(default)]
     pub rev: Option<String>,
-    /// Cap on hunks returned per page. Default 100, max 1000. When omitted, all hunks are
-    /// returned (existing behaviour) and `next_cursor` is never set.
+    /// Cap on hunks returned per page. Default 100, max 1000.
     #[serde(default)]
     pub limit: Option<u32>,
     /// Resume token returned by the previous call's `next_cursor`. Encodes the last-returned
     /// hunk's `start_line`; on resume the helper skips hunks whose `start_line <= offset`.
     #[serde(default)]
     pub cursor: Option<Cursor>,
+    /// Token budget for the returned hunks; overflow is dropped and flagged `budgeted`.
+    #[serde(default)]
+    pub max_tokens: Option<u32>,
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
@@ -382,6 +396,9 @@ pub(in crate::mcp) struct BlameResponse {
     pub path: RelPath,
     pub suspect_sha: String,
     pub hunks: Vec<BlameHunkView>,
+    /// True when the token budget dropped trailing hunks; `next_cursor` resumes at the first one.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub budgeted: bool,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub truncated: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -412,6 +429,9 @@ pub(in crate::mcp) struct BlameSymbolResponse {
     #[serde(rename = "end_line")]
     pub line_end: u32,
     pub hunks: Vec<BlameHunkView>,
+    /// True when the token budget dropped trailing hunks; `next_cursor` resumes at the first one.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub budgeted: bool,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub truncated: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -433,6 +453,11 @@ pub(in crate::mcp) struct BlameSymbolResponse {
 pub(in crate::mcp) struct FindCommitsByPathResponse {
     pub pattern: String,
     pub window_inspected: u32,
+    /// True when the whole window was used up, so older commits were not inspected.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub truncated: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub truncated_reason: Option<&'static str>,
     pub commits: Vec<CommitView>,
     /// Opaque cursor to pass back on the next call when more matches are available.
     /// True when `max_tokens` (or the default budget) dropped trailing commits; `next_cursor`
@@ -496,6 +521,14 @@ pub(in crate::mcp) struct DiffFileResponse {
     pub to: String,
     pub present_at_from: bool,
     pub present_at_to: bool,
+    /// True for a binary file, which has no text hunks.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub binary: bool,
+    /// True when `hunks` was cut at the hunk or byte cap; `total_hunks` is the full count.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub truncated: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total_hunks: Option<usize>,
     pub hunks: Vec<HunkView>,
     /// Server-side handler latency in microseconds — the tool body's own execution (git walk /
     /// index lookup + response construction), excluding MCP transport, argument deserialization,

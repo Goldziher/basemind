@@ -100,9 +100,11 @@ impl FileTerms {
         (0..self.name_ends.len()).map(|idx| (idx, self.name(idx), self.kinds[idx]))
     }
 
-    /// Whether any import's module or raw text contains the needle.
+    /// Whether any import's module or raw text names the needle on identifier boundaries. The
+    /// separator between entries is not an identifier byte, so one pass over the buffer applies the
+    /// same test [`crate::extract::l3::imports_mention`] applies per import.
     pub(crate) fn mentions_import(&self, finder: &memchr::memmem::Finder<'_>) -> bool {
-        !self.imports.is_empty() && finder.find(&self.imports).is_some()
+        !self.imports.is_empty() && crate::textmatch::find_whole(&self.imports, finder).is_some()
     }
 }
 

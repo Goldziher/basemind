@@ -10,6 +10,7 @@ use rmcp::ErrorData as McpError;
 
 use super::cursor::Cursor;
 use super::helpers_calls::resolve_call_line_col;
+use super::helpers_refs_match::Matching;
 use super::types::ReferenceHit;
 use crate::index::view::Part;
 
@@ -24,6 +25,25 @@ pub(crate) struct CallScanPage {
     /// Parallel to `hits`: each hit's call-site start byte. `find_callers` probes it against the
     /// resolved call-site set to annotate `ReferenceHit::resolved` without re-deriving the offset.
     pub hit_starts: Vec<u32>,
+}
+
+impl CallScanPage {
+    /// Drop the hits `keep` rejects, with their parallel entries. `total` shrinks by the same count,
+    /// so it stays a lower bound when the rejected hits were only this page's share.
+    #[cfg(all(feature = "comms", any(unix, windows)))]
+    pub(super) fn retain(&mut self, keep: impl Fn(&ReferenceHit) -> bool) {
+        let mut index = 0;
+        while index < self.hits.len() {
+            if keep(&self.hits[index]) {
+                index += 1;
+                continue;
+            }
+            self.hits.remove(index);
+            self.hit_keys.remove(index);
+            self.hit_starts.remove(index);
+            self.total = self.total.saturating_sub(1);
+        }
+    }
 }
 
 /// Result of applying a `max_tokens` budget to a call-scan page.
@@ -68,12 +88,18 @@ pub(super) fn budget_call_page(page: CallScanPage, max_tokens: Option<u32>) -> B
 /// Materializes up to `limit` hits and caps at `scan_cap = limit * 8` matching entries
 /// to bound work on extremely common names.
 ///
+/// `matching` is applied here, on the key, before a hit's position is resolved and before it counts
+/// toward `scan_cap`: under [`Matching::Exact`] a callee that merely contains `name` costs one
+/// suffix test, so a common fragment (`get` inside `get_or_insert`) cannot use up the cap and hide
+/// the exact call sites that sort after it.
+///
 /// When `cursor_after` is `Some`, the scan resumes from the key immediately following
 /// the cursor (exclusive). The cursor returned in [`CallScanPage::next_cursor`] is the
 /// last key emitted on this page — pass it back on the next call to advance.
 pub(crate) fn scan_calls_by_name(
     idx: &dyn crate::index::view::IndexView,
     name: &str,
+    matching: Matching,
     limit: usize,
     cursor_after: Option<&[u8]>,
 ) -> Result<CallScanPage, McpError> {
@@ -96,7 +122,7 @@ pub(crate) fn scan_calls_by_name(
         let Some((callee, rel, start)) = crate::index::keys::parse_call_by_callee(&k) else {
             continue;
         };
-        if finder.find(callee.as_bytes()).is_none() {
+        if finder.find(callee.as_bytes()).is_none() || !matching.accepts_callee(&callee, name) {
             continue;
         }
         total += 1;
@@ -163,12 +189,13 @@ pub(crate) fn calls_in_file_fjall(
 }
 
 /// In-RAM `scan_calls_by_name` twin over [`InRamCallIndex`]. Same case-sensitive
-/// `memmem` substring filter, same `limit` / `scan_cap` / cursor semantics — the
+/// `memmem` substring filter, same `matching` / `limit` / `scan_cap` / cursor semantics — the
 /// entries carry the exact Fjall key the writer would persist, so cursors and
 /// scan order round-trip identically between the two paths.
 pub(super) fn scan_calls_in_ram(
     index: &InRamCallIndex,
     name: &str,
+    matching: Matching,
     limit: usize,
     cursor_after: Option<&[u8]>,
 ) -> CallScanPage {
@@ -186,7 +213,7 @@ pub(super) fn scan_calls_in_ram(
     let mut has_more = false;
     let mut matched: usize = 0;
     for entry in &index.entries[start..] {
-        if finder.find(entry.callee.as_bytes()).is_none() {
+        if finder.find(entry.callee.as_bytes()).is_none() || !matching.accepts_callee(&entry.callee, name) {
             continue;
         }
         total += 1;

@@ -186,6 +186,9 @@ pub struct ExpandParams {
     /// (e.g. `"function"`, `"method"`, `"struct"`, …). Same values as `search_symbols`.
     #[serde(default)]
     pub kind: Option<String>,
+    /// 1-based line inside the definition meant, when several in the file share the name.
+    #[serde(default)]
+    pub line: Option<u32>,
 }
 
 /// Response from the `expand` MCP tool.

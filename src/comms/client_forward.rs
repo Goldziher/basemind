@@ -105,7 +105,7 @@ impl CommsClient {
 
     /// Forward the code-search keyword (BM25) + exact (symbol-name) lanes to the daemon — the sole
     /// fjall writer, and therefore the only process that can read the BM25 postings and
-    /// `symbols_by_name`. Backs `code` mode `semantic` on a reader session, where both lanes would
+    /// `symbols_by_name`. Backs `code_search` on a reader session, where both lanes would
     /// otherwise return nothing. A pure read, so the transparent reconnect-and-retry is replay-safe.
     pub async fn code_search_lanes(
         &mut self,

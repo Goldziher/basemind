@@ -28,12 +28,15 @@ pub enum GitCmd {
         /// Full-text search of commit messages.
         #[arg(long)]
         query: Option<String>,
-        /// Search author names and emails.
+        /// Only commits whose author name or email holds every one of these terms.
         #[arg(long)]
         author: Option<String>,
         /// History of this symbol's body (needs `--path`).
         #[arg(long)]
         symbol: Option<String>,
+        /// With `--symbol`: a 1-based line inside the definition meant, when several share the name.
+        #[arg(long)]
+        line: Option<u32>,
         /// Show this one commit in full.
         #[arg(long)]
         rev: Option<String>,
@@ -49,7 +52,7 @@ pub enum GitCmd {
     /// Who last changed each line of a file, a 1-based line span, or one symbol.
     Blame {
         path: String,
-        /// First line, 1-based.
+        /// First line, 1-based. With `--symbol`: a line inside the definition meant.
         #[arg(long)]
         line: Option<u32>,
         /// Last line, inclusive (default: `--line`).
@@ -65,6 +68,9 @@ pub enum GitCmd {
         /// Resume token: pass the previous page's `next_cursor`.
         #[arg(long)]
         cursor: Option<String>,
+        /// Token budget for the returned list; overflow is dropped and flagged `budgeted`.
+        #[arg(long)]
+        max_tokens: Option<u32>,
     },
     /// The working-tree status (no path), a file's text diff, or its symbol-level diff.
     Diff {
@@ -107,7 +113,8 @@ pub enum GitCmd {
     /// Full-text search over commit messages. Shorthand for `log --query <query>`.
     Search {
         query: String,
-        /// Also require these author terms.
+        /// Only commits whose author name or email holds every one of these terms. Matched against
+        /// the author alone, never the message.
         #[arg(long)]
         author: Option<String>,
         #[arg(long)]
@@ -125,6 +132,9 @@ pub enum GitCmd {
     SymbolHistory {
         path: String,
         name: String,
+        /// A 1-based line inside the definition meant, when several share the name.
+        #[arg(long)]
+        line: Option<u32>,
         #[arg(long)]
         limit: Option<u32>,
         /// Resume token: pass the previous page's `next_cursor`.
@@ -135,6 +145,9 @@ pub enum GitCmd {
     BlameSymbol {
         path: String,
         name: String,
+        /// A 1-based line inside the definition meant, when several share the name.
+        #[arg(long)]
+        line: Option<u32>,
         #[arg(long)]
         rev: Option<String>,
         #[arg(long)]
@@ -142,6 +155,9 @@ pub enum GitCmd {
         /// Resume token: pass the previous page's `next_cursor`.
         #[arg(long)]
         cursor: Option<String>,
+        /// Token budget for the returned list; overflow is dropped and flagged `budgeted`.
+        #[arg(long)]
+        max_tokens: Option<u32>,
     },
     /// Symbols a file gained or lost since a revision. Shorthand for
     /// `diff <path> --structural --from <rev>`.
@@ -180,6 +196,7 @@ fn log() -> GitLogParams {
         query: None,
         author: None,
         symbol: None,
+        line: None,
         rev: None,
         limit: None,
         cursor: None,
@@ -195,6 +212,7 @@ pub async fn run(server: &BasemindServer, cmd: GitCmd, opts: &Emit, out: &mut im
             query,
             author,
             symbol,
+            line,
             rev,
             limit,
             cursor,
@@ -205,6 +223,7 @@ pub async fn run(server: &BasemindServer, cmd: GitCmd, opts: &Emit, out: &mut im
                 query,
                 author,
                 symbol,
+                line,
                 rev,
                 limit,
                 cursor: cursor.map(Cursor),
@@ -267,12 +286,14 @@ pub async fn run(server: &BasemindServer, cmd: GitCmd, opts: &Emit, out: &mut im
         GitCmd::SymbolHistory {
             path,
             name,
+            line,
             limit,
             cursor,
         } => {
             let p = GitLogParams {
                 path: Some(resolve_path(server, &path)),
                 symbol: Some(name),
+                line,
                 limit,
                 cursor: cursor.map(Cursor),
                 ..log()
@@ -287,6 +308,7 @@ pub async fn run(server: &BasemindServer, cmd: GitCmd, opts: &Emit, out: &mut im
             rev,
             limit,
             cursor,
+            max_tokens,
         } => {
             let p = GitBlameParams {
                 path: resolve_path(server, &path),
@@ -296,24 +318,28 @@ pub async fn run(server: &BasemindServer, cmd: GitCmd, opts: &Emit, out: &mut im
                 rev,
                 limit,
                 cursor: cursor.map(Cursor),
+                max_tokens,
             };
             ("git_blame", server.git_blame_call(p).await)
         }
         GitCmd::BlameSymbol {
             path,
             name,
+            line,
             rev,
             limit,
             cursor,
+            max_tokens,
         } => {
             let p = GitBlameParams {
                 path: resolve_path(server, &path),
-                line: None,
+                line,
                 end_line: None,
                 symbol: Some(name),
                 rev,
                 limit,
                 cursor: cursor.map(Cursor),
+                max_tokens,
             };
             ("git_blame", server.git_blame_call(p).await)
         }

@@ -30,7 +30,8 @@ use crate::path::RelPath;
 /// The argument shapes `git_log` accepts, quoted in every shape error.
 const LOG_SHAPES: &str = "accepted shapes: {} (recent commits), {path} (commits touching a file, or a directory when \
      it ends with `/`), {query} and/or {author} (search messages / authors), {path, symbol} (when a symbol's body \
-     changed), {rev} (one commit in full); `limit`, `cursor` and `max_tokens` page every list";
+     changed; add `line` when several there share the name), {rev} (one commit in full); `limit`, `cursor` and \
+     `max_tokens` page every list";
 
 /// `git_log`: recent commits, a path's history, a commit search, a symbol's history, or one commit.
 pub(super) fn git_log(state: &ServerState, p: GitLogParams) -> Result<CallToolResult, McpError> {
@@ -38,7 +39,7 @@ pub(super) fn git_log(state: &ServerState, p: GitLogParams) -> Result<CallToolRe
     let max_tokens = budget(p.max_tokens);
 
     if let Some(rev) = p.rev {
-        if p.path.is_some() || p.query.is_some() || p.author.is_some() || p.symbol.is_some() {
+        if p.path.is_some() || p.query.is_some() || p.author.is_some() || p.symbol.is_some() || p.line.is_some() {
             return Err(shape_error("`rev` shows one commit and combines with no other filter"));
         }
         if p.limit.is_some() || p.cursor.is_some() {
@@ -61,11 +62,15 @@ pub(super) fn git_log(state: &ServerState, p: GitLogParams) -> Result<CallToolRe
                 path,
                 name: symbol,
                 kind: None,
+                line: p.line,
                 limit: p.limit,
                 hash_mode: None,
                 cursor: p.cursor,
             },
         );
+    }
+    if p.line.is_some() {
+        return Err(shape_error("`line` picks one definition of `symbol` and needs it"));
     }
     if p.query.is_some() || p.author.is_some() {
         if p.path.is_some() {
@@ -73,10 +78,12 @@ pub(super) fn git_log(state: &ServerState, p: GitLogParams) -> Result<CallToolRe
                 "`query` / `author` search the whole history and do not combine with `path`",
             ));
         }
-        let (pattern, field) = match (p.query, p.author) {
-            (Some(query), Some(author)) => (format!("{query} {author}"), "all"),
-            (Some(query), None) => (query, "message"),
-            (None, Some(author)) => (author, "author"),
+        // `query` is matched against the message and `author` against the author, each on its own
+        // field: joined into one all-field search, `author: "alice"` matched a commit by bob that
+        // mentioned alice.
+        let (pattern, field, author) = match (p.query, p.author) {
+            (Some(query), author) => (query, "message", author),
+            (None, Some(author)) => (author, "author", None),
             (None, None) => unreachable!("guarded by the enclosing `if`"),
         };
         return run_search(
@@ -88,6 +95,7 @@ pub(super) fn git_log(state: &ServerState, p: GitLogParams) -> Result<CallToolRe
                 cursor: p.cursor,
                 max_tokens,
                 body_chars: None,
+                author,
             },
         );
     }
@@ -97,7 +105,7 @@ pub(super) fn git_log(state: &ServerState, p: GitLogParams) -> Result<CallToolRe
             FindCommitsByPathParams {
                 pattern: format!("^{}", regex::escape(&path.to_str_lossy())),
                 window: None,
-                limit: p.limit,
+                limit: Some(p.limit.unwrap_or(LOG_LIMIT_DEFAULT)),
                 cursor: p.cursor,
                 max_tokens,
             },
@@ -129,15 +137,25 @@ pub(super) async fn git_blame(state: &ServerState, p: GitBlameParams) -> Result<
         McpError::invalid_params(
             format!(
                 "`git_blame`: {problem}; accepted shapes: {{path}} (whole file), {{path, line, end_line}} (a 1-based \
-                 inclusive span), {{path, symbol}} (one symbol's lines); `rev` picks the revision"
+                 inclusive span; `end_line` defaults to `line`), {{path, symbol}} (one symbol's lines; add `line` \
+                 when several share the name); `rev` picks the revision"
             ),
             None,
         )
     };
+    if p.limit == Some(0) {
+        return Err(shape_error("`limit` must be at least 1"));
+    }
+    if p.line == Some(0) || p.end_line == Some(0) {
+        return Err(shape_error("lines are 1-based"));
+    }
+    let max_tokens = budget(p.max_tokens);
     match p.symbol {
         Some(symbol) => {
-            if p.line.is_some() || p.end_line.is_some() {
-                return Err(shape_error("`symbol` and a line span are alternatives"));
+            if p.end_line.is_some() {
+                return Err(shape_error(
+                    "`end_line` applies only to a line span; with `symbol`, `line` picks the definition",
+                ));
             }
             super::helpers_git_file::run_blame_symbol(
                 state,
@@ -145,15 +163,22 @@ pub(super) async fn git_blame(state: &ServerState, p: GitBlameParams) -> Result<
                     path: p.path,
                     name: symbol,
                     kind: None,
+                    line: p.line,
                     rev: p.rev,
                     limit: p.limit,
                     cursor: p.cursor,
+                    max_tokens,
                 },
             )
             .await
         }
         None => {
             let (line_start, line_end) = match (p.line, p.end_line) {
+                (Some(line), Some(end)) if end < line => {
+                    return Err(shape_error(&format!(
+                        "`end_line` must be >= `line` (got {line}..{end})"
+                    )));
+                }
                 (Some(line), end) => (Some(line), Some(end.unwrap_or(line))),
                 (None, Some(_)) => return Err(shape_error("`end_line` needs `line`")),
                 (None, None) => (None, None),
@@ -167,6 +192,7 @@ pub(super) async fn git_blame(state: &ServerState, p: GitBlameParams) -> Result<
                     rev: p.rev,
                     limit: p.limit,
                     cursor: p.cursor,
+                    max_tokens,
                 },
             )
         }
@@ -389,6 +415,8 @@ pub(super) fn run_by_path(state: &ServerState, params: FindCommitsByPathParams) 
                 return json_result(&FindCommitsByPathResponse {
                     pattern: params.pattern,
                     window_inspected: window,
+                    truncated: false,
+                    truncated_reason: None,
                     commits: Vec::new(),
                     next_cursor: None,
                     budgeted: false,
@@ -433,9 +461,14 @@ pub(super) fn run_by_path(state: &ServerState, params: FindCommitsByPathParams) 
     let (hits, budgeted) = budget_commits(hits, params.max_tokens);
     let has_more = has_more || budgeted;
     let next_cursor = has_more.then(|| super::cursor::Cursor::encode_in_memory((skip + hits.len()) as u64, snapshot));
+    // A full window means history older than it was never inspected: "no more commits" then only
+    // describes the window, and the response has to say so.
+    let window_exhausted = commits.len() >= window as usize;
     json_result(&FindCommitsByPathResponse {
         pattern: params.pattern,
         window_inspected: window,
+        truncated: window_exhausted,
+        truncated_reason: window_exhausted.then_some("window"),
         commits: hits,
         budgeted,
         next_cursor,
@@ -496,6 +529,47 @@ pub(super) fn run_churn(state: &ServerState, params: HotFilesParams) -> Result<C
     })
 }
 
+/// Commits one indexed search round fetches while filtering by author.
+const AUTHOR_FILTER_CHUNK: usize = 500;
+/// Commits an author-filtered search inspects before it reports itself partial.
+const AUTHOR_FILTER_SCAN_MAX: usize = 20_000;
+
+/// Page `[skip, skip + take)` of the commits `fetch(offset, count)` yields whose AUTHOR also holds
+/// every one of `author_terms`. `fetch` is the message search, newest first; filtering its pages
+/// here keeps the two fields apart without a second index query shape. Returns the page and
+/// whether the scan stopped at [`AUTHOR_FILTER_SCAN_MAX`] before the search was exhausted.
+fn by_author(
+    mut fetch: impl FnMut(usize, usize) -> Vec<CommitInfo>,
+    author_terms: &ahash::AHashSet<String>,
+    skip: usize,
+    take: usize,
+) -> (Vec<CommitInfo>, bool) {
+    let mut page = Vec::new();
+    let mut matched = 0usize;
+    let mut offset = 0usize;
+    while offset < AUTHOR_FILTER_SCAN_MAX {
+        let chunk = fetch(offset, AUTHOR_FILTER_CHUNK);
+        let fetched = chunk.len();
+        for commit in chunk {
+            if !fts::commit_matches_terms(&commit, author_terms, FtsScope::Author) {
+                continue;
+            }
+            matched += 1;
+            if matched > skip {
+                page.push(commit);
+                if page.len() == take {
+                    return (page, false);
+                }
+            }
+        }
+        if fetched < AUTHOR_FILTER_CHUNK {
+            return (page, false);
+        }
+        offset += fetched;
+    }
+    (page, true)
+}
+
 /// The `search` operation: full-text search over git history. Uses the git-history inverted
 /// index when it is fresh (`last_indexed_head == HEAD`), searching author name + email + summary +
 /// full body; otherwise degrades to a bounded live walk over the recent window, flagged `partial`
@@ -527,8 +601,21 @@ fn run_search(state: &ServerState, params: SearchGitHistoryParams) -> Result<Cal
     };
 
     let want = limit.saturating_add(1);
+    let author_terms = params.author.as_deref().map(|author| {
+        let mut terms = ahash::AHashSet::new();
+        fts::tokenize(author, &mut terms);
+        terms
+    });
     let (mut hits, partial) = match git_history_if_fresh(state, &head) {
-        Some(index) => (index.search_commits(&params.pattern, scope, skip, want), false),
+        Some(index) => match author_terms.as_ref() {
+            None => (index.search_commits(&params.pattern, scope, skip, want), false),
+            Some(author_terms) => by_author(
+                |offset, chunk| index.search_commits(&params.pattern, scope, offset, chunk),
+                author_terms,
+                skip,
+                want,
+            ),
+        },
         None => {
             let mut query_terms = ahash::AHashSet::new();
             fts::tokenize(&params.pattern, &mut query_terms);
@@ -541,6 +628,11 @@ fn run_search(state: &ServerState, params: SearchGitHistoryParams) -> Result<Cal
             let matched: Vec<CommitInfo> = live
                 .iter()
                 .filter(|c| fts::commit_matches_terms(c, &query_terms, scope))
+                .filter(|c| {
+                    author_terms
+                        .as_ref()
+                        .is_none_or(|terms| fts::commit_matches_terms(c, terms, FtsScope::Author))
+                })
                 .skip(skip)
                 .take(want)
                 .cloned()
@@ -566,4 +658,72 @@ fn run_search(state: &ServerState, params: SearchGitHistoryParams) -> Result<Cal
         cursor_invalidated: false,
         elapsed_us: elapsed_us(started),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn commit(ordinal: usize, author: &str) -> CommitInfo {
+        CommitInfo {
+            sha: format!("{ordinal:040x}"),
+            short_sha: format!("{ordinal:07x}"),
+            summary: format!("commit {ordinal} mentions alice"),
+            author: author.to_string(),
+            author_email: format!("{author}@e.x"),
+            author_time_unix: 0,
+            body: String::new(),
+            files: Vec::new(),
+        }
+    }
+
+    fn terms(text: &str) -> ahash::AHashSet<String> {
+        let mut terms = ahash::AHashSet::new();
+        fts::tokenize(text, &mut terms);
+        terms
+    }
+
+    /// Every third commit is by alice; all of them mention her in the message.
+    fn history(len: usize) -> Vec<CommitInfo> {
+        (0..len)
+            .map(|ordinal| commit(ordinal, if ordinal % 3 == 0 { "alice" } else { "bob" }))
+            .collect()
+    }
+
+    fn fetch_from(history: &[CommitInfo]) -> impl FnMut(usize, usize) -> Vec<CommitInfo> + '_ {
+        |offset, count| history.iter().skip(offset).take(count).cloned().collect()
+    }
+
+    #[test]
+    fn author_terms_are_matched_against_the_author_not_the_message() {
+        let history = history(30);
+        let (page, capped) = by_author(fetch_from(&history), &terms("alice"), 0, 100);
+        assert!(!capped);
+        assert_eq!(page.len(), 10, "ten of thirty commits are by alice");
+        assert!(page.iter().all(|commit| commit.author == "alice"));
+        let (none, _) = by_author(fetch_from(&history), &terms("carol"), 0, 100);
+        assert!(none.is_empty());
+    }
+
+    #[test]
+    fn an_author_filtered_page_skips_and_takes_matches_across_fetch_chunks() {
+        let history = history(AUTHOR_FILTER_CHUNK * 3);
+        let all = by_author(fetch_from(&history), &terms("alice"), 0, usize::MAX).0;
+        let (page, capped) = by_author(fetch_from(&history), &terms("alice"), 200, 5);
+        assert!(!capped);
+        let shas: Vec<&str> = page.iter().map(|commit| commit.sha.as_str()).collect();
+        let expected: Vec<&str> = all[200..205].iter().map(|commit| commit.sha.as_str()).collect();
+        assert_eq!(shas, expected, "the page spans the first and second fetch");
+    }
+
+    #[test]
+    fn a_search_that_outruns_the_scan_cap_says_so() {
+        let history = history(AUTHOR_FILTER_SCAN_MAX + AUTHOR_FILTER_CHUNK);
+        let (page, capped) = by_author(fetch_from(&history), &terms("carol"), 0, 1);
+        assert!(page.is_empty());
+        assert!(
+            capped,
+            "the walk stopped at the cap, so an empty page is not a complete answer"
+        );
+    }
 }

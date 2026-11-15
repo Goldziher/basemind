@@ -23,6 +23,7 @@ use rmcp::ErrorData as McpError;
 use super::MapCache;
 use super::helpers_calls_scan::{CallRef, CallScanPage, calls_in_file_fjall, scan_calls_by_name, scan_calls_in_ram};
 use super::helpers_impls::{ImplScanPage, scan_impls_in_ram, scan_impls_session};
+use super::helpers_refs_match::Matching;
 use crate::index::grep_bloom::GrepEntry;
 use crate::index::view::{IndexView, StandaloneView};
 use crate::path::RelPath;
@@ -185,22 +186,29 @@ impl IndexRoute {
         &self,
         cache: &MapCache,
         name: &str,
+        matching: Matching,
         limit: usize,
         cursor_after: Option<&[u8]>,
     ) -> Result<CallScanPage, McpError> {
         if let Self::Local(idx) = self {
-            return scan_calls_by_name(&**idx, name, limit, cursor_after);
+            return scan_calls_by_name(&**idx, name, matching, limit, cursor_after);
         }
         #[cfg(all(feature = "comms", any(unix, windows)))]
         match self
             .forward(IndexReadQuery::CallScan {
                 name: name.to_owned(),
+                exact: matching == Matching::Exact,
                 limit: u32::try_from(limit).unwrap_or(u32::MAX),
                 cursor: cursor_after.map(<[u8]>::to_vec),
             })
             .await
         {
-            Some(Ok(IndexReadResult::CallScan(page))) => return Ok(super::index_read::call_page_from_wire(page)),
+            Some(Ok(IndexReadResult::CallScan(page))) => {
+                let mut page = super::index_read::call_page_from_wire(page);
+                // A daemon that predates `exact` ignores it and answers with substring hits.
+                page.retain(|hit| matching.accepts_callee(&hit.callee, name));
+                return Ok(page);
+            }
             Some(Ok(_)) => {
                 tracing::warn!("daemon answered a call scan with the wrong reply; using the in-RAM projection")
             }
@@ -208,7 +216,7 @@ impl IndexRoute {
             None => {}
         }
         Ok(blocking(|| {
-            scan_calls_in_ram(cache.calls_projection(), name, limit, cursor_after)
+            scan_calls_in_ram(cache.calls_projection(), name, matching, limit, cursor_after)
         }))
     }
 
@@ -249,24 +257,30 @@ impl IndexRoute {
         &self,
         cache: &MapCache,
         trait_name: &str,
+        matching: Matching,
         language: Option<&str>,
         limit: usize,
         cursor_after: Option<&[u8]>,
     ) -> Result<ImplScanPage, McpError> {
         if let Self::Local(idx) = self {
-            return scan_impls_session(&**idx, cache, trait_name, language, limit, cursor_after);
+            return scan_impls_session(&**idx, cache, trait_name, matching, language, limit, cursor_after);
         }
         #[cfg(all(feature = "comms", any(unix, windows)))]
         match self
             .forward(IndexReadQuery::ImplScan {
                 trait_name: trait_name.to_owned(),
+                exact: matching == Matching::Exact,
                 language: language.map(str::to_owned),
                 limit: u32::try_from(limit).unwrap_or(u32::MAX),
                 cursor: cursor_after.map(<[u8]>::to_vec),
             })
             .await
         {
-            Some(Ok(IndexReadResult::ImplScan(page))) => return Ok(super::index_read::impl_page_from_wire(page)),
+            Some(Ok(IndexReadResult::ImplScan(page))) => {
+                let mut page = super::index_read::impl_page_from_wire(page);
+                page.retain(|hit| matching.accepts_trait(&hit.trait_name, trait_name));
+                return Ok(page);
+            }
             Some(Ok(_)) => {
                 tracing::warn!("daemon answered an impl scan with the wrong reply; using the in-RAM projection")
             }
@@ -278,6 +292,7 @@ impl IndexRoute {
                 cache.impls_projection(),
                 cache,
                 trait_name,
+                matching,
                 language,
                 limit,
                 cursor_after,
@@ -355,7 +370,7 @@ async fn prepared_clean_base_answers_calls_and_dirty_worktree_uses_standalone() 
     let state = super::ServerState::for_connection(Arc::new(shared), "test".into());
     let expected = IndexRoute::resolve_with_layering(&state, false)
         .await
-        .scan_calls(&cache, "target", 10, None)
+        .scan_calls(&cache, "target", Matching::Substring, 10, None)
         .await
         .unwrap();
     assert_eq!(expected.total, 1);
@@ -366,7 +381,7 @@ async fn prepared_clean_base_answers_calls_and_dirty_worktree_uses_standalone() 
     writer.commit().unwrap();
     let base = IndexRoute::resolve_with_layering(&state, true)
         .await
-        .scan_calls(&cache, "target", 10, None)
+        .scan_calls(&cache, "target", Matching::Substring, 10, None)
         .await
         .unwrap();
     assert_eq!(
@@ -392,7 +407,7 @@ async fn prepared_clean_base_answers_calls_and_dirty_worktree_uses_standalone() 
         writer.commit().unwrap();
         let dirty = IndexRoute::resolve_with_layering(&state, true)
             .await
-            .scan_calls(&cache, "changed", 10, None)
+            .scan_calls(&cache, "changed", Matching::Substring, 10, None)
             .await
             .unwrap();
         assert_eq!(dirty.total, 1);
@@ -400,7 +415,7 @@ async fn prepared_clean_base_answers_calls_and_dirty_worktree_uses_standalone() 
     fs::write(root.join("policy.toml"), "").unwrap();
     let fallback = IndexRoute::resolve_with_layering(&state, true)
         .await
-        .scan_calls(&cache, "target", 10, None)
+        .scan_calls(&cache, "target", Matching::Substring, 10, None)
         .await
         .unwrap();
     assert_eq!(fallback.total, 0);

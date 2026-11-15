@@ -34,6 +34,10 @@ pub enum IndexReadQuery {
     CallScan {
         /// Case-sensitive substring of the callee identifier.
         name: String,
+        /// Keep only callees whose identifier IS `name` (bare or as the last path segments).
+        /// Defaulted so a client that predates it still decodes; the frames are named maps.
+        #[serde(default)]
+        exact: bool,
         /// Page size, already clamped by the caller; clamped again daemon-side.
         limit: u32,
         /// Raw key of the last hit of the previous page (exclusive lower bound).
@@ -58,6 +62,9 @@ pub enum IndexReadQuery {
     ImplScan {
         /// Case-sensitive substring of the trait name.
         trait_name: String,
+        /// Keep only implementations of the trait named exactly `trait_name`.
+        #[serde(default)]
+        exact: bool,
         /// Only implementations in files of this language.
         language: Option<String>,
         /// Page size, already clamped by the caller; clamped again daemon-side.

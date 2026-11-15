@@ -15,6 +15,7 @@ use rmcp::model::CallToolResult;
 use super::ServerState;
 use super::cursor::Cursor;
 use super::helpers::{SEARCH_LIMIT_DEFAULT, SEARCH_LIMIT_MAX};
+use super::helpers_grep_text::{annotate_symbols, clip_line, line_text};
 use super::types::{GrepHit, GrepTruncation, WorkspaceGrepParams, WorkspaceGrepResponse};
 use crate::index::grep_bloom::GrepEntry;
 use crate::path::RelPath;
@@ -405,16 +406,10 @@ fn collect_hits(
         let line_idx = line_starts.partition_point(|&ls| ls <= match_start).saturating_sub(1);
         let line_start_byte = line_starts[line_idx];
 
-        let context_before = if include_context && line_idx > 0 {
-            Some(extract_line(source, &line_starts, line_idx - 1))
-        } else {
-            None
-        };
-        let context_after = if include_context && line_idx + 1 < line_starts.len() {
-            Some(extract_line(source, &line_starts, line_idx + 1))
-        } else {
-            None
-        };
+        let context_before =
+            (include_context && line_idx > 0).then(|| clip_line(line_text(source, &line_starts, line_idx - 1), 0, 0));
+        let context_after = (include_context && line_idx + 1 < line_starts.len())
+            .then(|| clip_line(line_text(source, &line_starts, line_idx + 1), 0, 0));
 
         out.push((
             pack_cursor(global_file_idx, ordinal as u32),
@@ -422,63 +417,20 @@ fn collect_hits(
                 path: path.clone(),
                 line: (line_idx as u32) + 1,
                 column: (match_start - line_start_byte) as u32 + 1,
-                text: clip_line(extract_line(source, &line_starts, line_idx)),
+                text: clip_line(
+                    line_text(source, &line_starts, line_idx),
+                    match_start - line_start_byte,
+                    mat.len(),
+                ),
                 symbol: None,
                 context_before,
                 context_after,
                 start_byte: match_start as u32,
+                source_len: source.len() as u64,
             },
         ));
     }
     out
-}
-
-/// Extract the content of line `line_idx` from `source`, stripping the trailing
-/// `\n` / `\r\n`. Returns an empty string when the line is empty or the index is
-/// out of range.
-/// Longest line text a hit carries. A hit in a minified bundle would otherwise ship the bundle.
-const LINE_TEXT_MAX: usize = 400;
-
-/// `line`, cut at [`LINE_TEXT_MAX`] bytes on a character boundary.
-fn clip_line(mut line: String) -> String {
-    if line.len() > LINE_TEXT_MAX {
-        let mut cut = LINE_TEXT_MAX;
-        while !line.is_char_boundary(cut) {
-            cut -= 1;
-        }
-        line.truncate(cut);
-        line.push('…');
-    }
-    line
-}
-
-/// Name the innermost symbol holding each hit. One outline read per file with hits on the page.
-fn annotate_symbols(cache: &super::MapCache, hits: &mut [GrepHit]) {
-    let mut current: Option<(RelPath, Option<std::sync::Arc<crate::extract::FileMapL1>>)> = None;
-    for hit in hits {
-        if current.as_ref().is_none_or(|(path, _)| *path != hit.path) {
-            current = Some((hit.path.clone(), cache.get(&hit.path)));
-        }
-        let Some((_, Some(l1))) = current.as_ref() else {
-            continue;
-        };
-        hit.symbol = l1
-            .symbols
-            .iter()
-            .filter(|symbol| symbol.start_byte <= hit.start_byte && hit.start_byte < symbol.end_byte)
-            .min_by_key(|symbol| symbol.end_byte - symbol.start_byte)
-            .map(|symbol| super::types::GrepSymbol {
-                name: symbol.name.clone(),
-                kind: super::helpers::kind_to_str(symbol.kind),
-            });
-    }
-}
-
-fn extract_line(source: &str, line_starts: &[usize], line_idx: usize) -> String {
-    let start = line_starts[line_idx];
-    let end = line_starts.get(line_idx + 1).copied().unwrap_or(source.len());
-    let raw = &source[start..end];
-    raw.trim_end_matches('\n').trim_end_matches('\r').to_owned()
 }
 
 #[cfg(test)]

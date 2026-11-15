@@ -5,10 +5,12 @@
 //! without rewriting half of the codebase.
 
 mod commit;
+mod diff;
 mod export;
 mod remote;
 mod worktree;
-use commit::{build_commit_info, commit_files, commit_touches_path, compute_hunks, decode_path};
+use commit::{build_commit_info, commit_files, commit_touches_path, decode_path};
+pub use diff::FileDiff;
 pub use remote::{normalize_remote_url, scope_key};
 pub use worktree::{BranchInfo, WorktreeInfo};
 
@@ -34,6 +36,9 @@ pub enum GitError {
         bytes: u64,
         lines: u64,
     },
+    /// A working-tree read was asked for a path that leaves the repository.
+    #[error("{0} is outside this repository")]
+    OutsideRepo(crate::path::RelPath),
     #[error("git error: {0}")]
     Other(String),
 }
@@ -782,48 +787,33 @@ impl Repo {
         })
     }
 
-    /// Content-level hunks for `path` between `rev_old` and `rev_new`. Returns the bytes for
-    /// either side and the unified-diff hunks. The output is empty (an empty Vec, not an
-    /// error) when the file exists at both revs but the bytes are identical, and `None` when
-    /// the path is absent at both sides.
+    /// Content-level hunks for `path` between `rev_old` and `rev_new`. `None` when the path is
+    /// absent at both sides; an identical or binary file yields no hunks.
     pub fn diff_file(
         &self,
         rev_old: &str,
         rev_new: &str,
         path: impl AsRef<Path>,
-    ) -> Result<Option<(Vec<Hunk>, bool, bool)>, GitError> {
+    ) -> Result<Option<FileDiff>, GitError> {
         let path_ref = path.as_ref();
         let old_bytes = self.read_blob_at_rev(rev_old, path_ref)?;
         let new_bytes = self.read_blob_at_rev(rev_new, path_ref)?;
-        if old_bytes.is_none() && new_bytes.is_none() {
-            return Ok(None);
-        }
-        let old_exists = old_bytes.is_some();
-        let new_exists = new_bytes.is_some();
-        let old_buf = old_bytes.unwrap_or_default();
-        let new_buf = new_bytes.unwrap_or_default();
-        let hunks = compute_hunks(&old_buf, &new_buf);
-        Ok(Some((hunks, old_exists, new_exists)))
+        Ok(FileDiff::between(old_bytes, new_bytes))
     }
 
     /// Content-level hunks for `path` between `rev_old` and the file as it is in the working tree
-    /// (staged or not). Same return shape as [`diff_file`](Self::diff_file): `None` when the path is
-    /// absent on both sides.
-    pub fn diff_file_worktree(
-        &self,
-        rev_old: &str,
-        path: impl AsRef<Path>,
-    ) -> Result<Option<(Vec<Hunk>, bool, bool)>, GitError> {
+    /// (staged or not). Same return shape as [`diff_file`](Self::diff_file).
+    ///
+    /// The working-tree side is read from disk, so a path that leaves the repository (absolute,
+    /// `..`, or a symlink pointing outside) is [`GitError::OutsideRepo`], never read.
+    pub fn diff_file_worktree(&self, rev_old: &str, path: impl AsRef<Path>) -> Result<Option<FileDiff>, GitError> {
         let path_ref = path.as_ref();
+        let rel = crate::path::RelPath::from(path_ref);
+        let on_disk =
+            crate::path::contained_file(self.workdir(), &rel).map_err(|_| GitError::OutsideRepo(rel.clone()))?;
         let old_bytes = self.read_blob_at_rev(rev_old, path_ref)?;
-        let new_bytes = std::fs::read(self.workdir().join(path_ref)).ok();
-        if old_bytes.is_none() && new_bytes.is_none() {
-            return Ok(None);
-        }
-        let old_exists = old_bytes.is_some();
-        let new_exists = new_bytes.is_some();
-        let hunks = compute_hunks(&old_bytes.unwrap_or_default(), &new_bytes.unwrap_or_default());
-        Ok(Some((hunks, old_exists, new_exists)))
+        let new_bytes = std::fs::read(on_disk).ok();
+        Ok(FileDiff::between(old_bytes, new_bytes))
     }
 
     /// Diff the commit at `commit_sha` against its first parent. Returns the per-file

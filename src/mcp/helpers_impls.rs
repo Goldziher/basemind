@@ -13,6 +13,7 @@ use rmcp::model::CallToolResult;
 
 use super::cursor::Cursor;
 use super::helpers::{SEARCH_LIMIT_DEFAULT, SEARCH_LIMIT_MAX, elapsed_us, json_result};
+use super::helpers_refs_match::Matching;
 use super::index_route::IndexRoute;
 use super::types_impls::{FindImplementationsParams, FindImplementationsResponse, ImplementationHit};
 use crate::path::RelPath;
@@ -28,6 +29,23 @@ pub(crate) struct ImplScanPage {
     pub has_more: bool,
 }
 
+impl ImplScanPage {
+    /// Drop the hits `keep` rejects, with their keys; `total` shrinks by the same count.
+    #[cfg(all(feature = "comms", any(unix, windows)))]
+    pub(super) fn retain(&mut self, keep: impl Fn(&ImplementationHit) -> bool) {
+        let mut index = 0;
+        while index < self.hits.len() {
+            if keep(&self.hits[index]) {
+                index += 1;
+                continue;
+            }
+            self.hits.remove(index);
+            self.hit_keys.remove(index);
+            self.total = self.total.saturating_sub(1);
+        }
+    }
+}
+
 /// Body of the `code` tool's `implementations` mode. Scans `implementations_by_trait` with a
 /// case-sensitive substring filter on `trait_name`, returning up to `limit` hits with optional
 /// language filtering, then applies the token budget.
@@ -40,17 +58,17 @@ pub(super) async fn run_find_implementations(
 ) -> Result<CallToolResult, McpError> {
     let limit = params.limit.unwrap_or(SEARCH_LIMIT_DEFAULT).min(SEARCH_LIMIT_MAX) as usize;
     let cursor_bytes = params.cursor.as_ref().map(|c| c.decode_fjall()).transpose()?;
-    let matching = super::helpers_refs_match::Matching::from_substring(params.substring);
-    let page = super::helpers_refs_match::scan_impls(
-        route,
-        cache,
-        &params.trait_name,
-        matching,
-        params.language.as_deref(),
-        limit,
-        cursor_bytes.as_deref(),
-    )
-    .await?;
+    let matching = Matching::from_substring(params.substring);
+    let page = route
+        .scan_impls(
+            cache,
+            &params.trait_name,
+            matching,
+            params.language.as_deref(),
+            limit,
+            cursor_bytes.as_deref(),
+        )
+        .await?;
     let ImplScanPage {
         total,
         total_is_partial,
@@ -89,9 +107,14 @@ pub(super) async fn run_find_implementations(
 /// is of the requested language, and a hit's `(row, col)` — are injected, because the session
 /// answers them from its in-RAM map while the daemon answers them from its store, and both must
 /// run this exact loop.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one scan loop shared by the session and the daemon, which differ in the two injected lookups"
+)]
 pub(crate) fn scan_impls_fjall(
     idx: &dyn crate::index::view::IndexView,
     trait_name: &str,
+    matching: Matching,
     language: Option<&str>,
     limit: usize,
     cursor_after: Option<&[u8]>,
@@ -111,6 +134,7 @@ pub(crate) fn scan_impls_fjall(
     let mut has_more = false;
     let mut matched: usize = 0;
 
+    let wanted = trait_name;
     for guard in idx.trait_keys_matching(trait_name, cursor_after, lower) {
         let (k, _) = guard.map_err(|e| McpError::internal_error(format!("impl index iter: {e}"), None))?;
 
@@ -118,7 +142,7 @@ pub(crate) fn scan_impls_fjall(
             continue;
         };
 
-        if finder.find(trait_name.as_bytes()).is_none() {
+        if finder.find(trait_name.as_bytes()).is_none() || !matching.accepts_trait(&trait_name, wanted) {
             continue;
         }
 
@@ -165,6 +189,7 @@ pub(crate) fn scan_impls_session(
     idx: &dyn crate::index::view::IndexView,
     cache: &super::MapCache,
     trait_name: &str,
+    matching: Matching,
     language: Option<&str>,
     limit: usize,
     cursor_after: Option<&[u8]>,
@@ -172,6 +197,7 @@ pub(crate) fn scan_impls_session(
     scan_impls_fjall(
         idx,
         trait_name,
+        matching,
         language,
         limit,
         cursor_after,
@@ -206,6 +232,7 @@ pub(crate) fn scan_impls_in_ram(
     index: &InRamImplIndex,
     cache: &super::MapCache,
     trait_name: &str,
+    matching: Matching,
     language: Option<&str>,
     limit: usize,
     cursor_after: Option<&[u8]>,
@@ -223,7 +250,8 @@ pub(crate) fn scan_impls_in_ram(
     let mut has_more = false;
     let mut matched: usize = 0;
     for entry in &index.entries[start..] {
-        if finder.find(entry.trait_name.as_bytes()).is_none() {
+        if finder.find(entry.trait_name.as_bytes()).is_none() || !matching.accepts_trait(&entry.trait_name, trait_name)
+        {
             continue;
         }
         if let Some(lang) = language

@@ -69,11 +69,10 @@ impl ServerHandler for BasemindServer {
             } else {
                 super::admission::WorkClass::Control
             };
-            let _admission = self
-                .heavy_admission
-                .admit(work_class)
-                .await
-                .map_err(rmcp::ErrorData::from)?;
+            let _admission = match self.heavy_admission.admit(work_class).await {
+                Ok(admission) => admission,
+                Err(busy) => return Ok(rmcp::model::CallToolResponse::Complete(busy.into_tool_result())),
+            };
             return lean::lean_call_tool(self, &self.tool_router, request, context).await;
         }
         let work_class = if tasks::is_slow_tool(&request.name, request.arguments.as_ref()) {
@@ -81,11 +80,10 @@ impl ServerHandler for BasemindServer {
         } else {
             super::admission::WorkClass::Control
         };
-        let admission = self
-            .heavy_admission
-            .admit(work_class)
-            .await
-            .map_err(rmcp::ErrorData::from)?;
+        let admission = match self.heavy_admission.admit(work_class).await {
+            Ok(admission) => admission,
+            Err(busy) => return Ok(rmcp::model::CallToolResponse::Complete(busy.into_tool_result())),
+        };
         let client_supports_tasks = context.client_capabilities().is_some_and(|caps| caps.supports_tasks());
         if client_supports_tasks && tasks::is_slow_tool(&request.name, request.arguments.as_ref()) {
             return tasks::run_slow_tool(self, request, context, admission, self.task_threshold()).await;
@@ -139,7 +137,7 @@ impl ServerHandler for BasemindServer {
     }
 
     /// SEP-2663 `tasks/cancel`: cooperative cancellation. Acks immediately; the running tool observes
-    /// the request at its next await point (see [`tasks::spawn_slow_tool`]) and settles the task.
+    /// the request at its next await point (see [`tasks::run_slow_tool`]) and settles the task.
     async fn cancel_task(
         &self,
         request: rmcp::model::CancelTaskParams,

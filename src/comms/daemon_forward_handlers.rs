@@ -172,12 +172,19 @@ pub(crate) fn index_read_via_pool(
     query: &crate::comms::index_read_proto::IndexReadQuery,
 ) -> Result<crate::comms::index_read_proto::IndexReadResult, String> {
     use crate::comms::index_read_proto::IndexReadQuery;
-    if let IndexReadQuery::CallScan { name, limit, cursor } = query {
+    if let IndexReadQuery::CallScan {
+        name,
+        exact,
+        limit,
+        cursor,
+    } = query
+    {
         let idx = pool
             .with_workspace(root, |store| store.read_index_view())
             .map_err(|error| error.to_string())?
             .ok_or_else(|| "the daemon holds this workspace without a fjall index".to_string())?;
-        return crate::mcp::index_read::call_scan(&*idx, name, *limit, cursor.as_deref());
+        let matching = crate::mcp::index_read::Matching::from_substring(!exact);
+        return crate::mcp::index_read::call_scan(&*idx, name, matching, *limit, cursor.as_deref());
     }
     if let IndexReadQuery::GrepBloom { pattern, entries } = query {
         let (idx, store_root) = pool

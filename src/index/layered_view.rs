@@ -283,7 +283,7 @@ fn pinned_overlay_reads_match_standalone_and_ignore_later_writes() {
     reference.calls_by_callee.remove(&charlie).unwrap();
     assert_eq!(view.bm25_stats(), Some((3, 23)));
     let scan = |view: &dyn IndexView, after: Option<&[u8]>| {
-        let page = crate::mcp::scan_calls_by_name(view, "run", 1, after).unwrap();
+        let page = crate::mcp::scan_calls_by_name(view, "run", crate::mcp::Matching::Substring, 1, after).unwrap();
         (
             page.hit_keys,
             page.total,
@@ -332,7 +332,9 @@ fn scanned_caller_pages_match_after_generated_worktree_edits() {
         let mut output = Vec::new();
         let mut after = None;
         loop {
-            let page = crate::mcp::scan_calls_by_name(view, "target", 2, after.as_deref()).unwrap();
+            let page =
+                crate::mcp::scan_calls_by_name(view, "target", crate::mcp::Matching::Substring, 2, after.as_deref())
+                    .unwrap();
             after = page.hit_keys.last().cloned();
             let cursor = page.next_cursor.map(|cursor| cursor.0);
             let done = cursor.is_none();

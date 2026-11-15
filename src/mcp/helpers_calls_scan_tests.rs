@@ -9,6 +9,7 @@ use crate::path::RelPath;
 
 use super::scan_calls_by_name;
 use crate::mcp::helpers_impls::scan_impls_fjall;
+use crate::mcp::helpers_refs_match::Matching;
 
 /// Deterministic xorshift, so a failure reproduces.
 struct Rng(u64);
@@ -143,7 +144,7 @@ fn write_file(db: &IndexDb, rng: &mut Rng, vocab: &[String], i: usize) {
 type CallPage = (u32, bool, Vec<Vec<u8>>, Vec<(String, u32, u32)>, bool);
 
 fn call_page(db: &IndexDb, needle: &str, limit: usize, cursor: Option<&[u8]>) -> CallPage {
-    let page = scan_calls_by_name(&db.view(), needle, limit, cursor).unwrap();
+    let page = scan_calls_by_name(&db.view(), needle, Matching::Substring, limit, cursor).unwrap();
     let hits = page.hits.iter().map(|h| (h.callee.clone(), h.line, h.column)).collect();
     (
         page.total,
@@ -160,6 +161,7 @@ fn impl_page(db: &IndexDb, needle: &str, language: Option<&str>, limit: usize, c
     let page = scan_impls_fjall(
         &db.view(),
         needle,
+        Matching::Substring,
         language,
         limit,
         cursor,
@@ -260,7 +262,7 @@ fn dictionary_scans_match_the_full_walk() {
     assert_equivalent(&db, "after build");
 
     // The corpus must exercise the cap, or the partial-total path is untested.
-    let capped = scan_calls_by_name(&db.view(), "run", 1, None).unwrap();
+    let capped = scan_calls_by_name(&db.view(), "run", Matching::Substring, 1, None).unwrap();
     assert!(capped.total_is_partial, "hot name must hit scan_cap");
 
     // Rescan: rewrite some files (names change, old keys are removed), drop others, add new files
@@ -302,7 +304,7 @@ fn names_recorded_before_the_build_completes_are_not_lost() {
     // Written while no snapshot exists (as during a background build): recorded, not yet folded.
     write_file(&db, &mut rng, &["late_arrival".to_string()], 99);
     build_dicts(&db);
-    let page = scan_calls_by_name(&db.view(), "late_arrival", 10, None).unwrap();
+    let page = scan_calls_by_name(&db.view(), "late_arrival", Matching::Substring, 10, None).unwrap();
     assert!(page.total > 0);
     assert_equivalent(&db, "late arrival");
 }
@@ -390,4 +392,70 @@ fn time_name_scans() {
             dict[2]
         );
     }
+}
+
+/// Exact matching is applied on the key, before a hit counts toward the scan cap. Applied after the
+/// scan instead, the 17,000 calls to `zapx` (which sort before the qualified `ns::zap`) used up the
+/// cap of every round and the exact call sites were never reached.
+#[test]
+fn an_exact_call_scan_is_not_starved_by_substring_only_callees() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = IndexDb::open(dir.path()).unwrap();
+    let mut calls: Vec<Call> = (0..17_000).map(|k| call("zapx", k)).collect();
+    calls.extend((0..3).map(|k| call("ns::zap", 20_000 + k)));
+    let mut writer = db.writer();
+    writer.upsert_file(&path(0), &l1(&[]), Some(&l2(calls))).unwrap();
+    writer.commit().unwrap();
+
+    for stage in ["walk", "dictionary"] {
+        let exact = scan_calls_by_name(&db.view(), "zap", Matching::Exact, 10, None).unwrap();
+        let callees: Vec<&str> = exact.hits.iter().map(|hit| hit.callee.as_str()).collect();
+        assert_eq!(callees, ["ns::zap"; 3], "{stage}");
+        assert_eq!(exact.total, 3, "{stage}");
+        assert!(!exact.total_is_partial, "{stage}: the exact scan reached the end");
+        assert!(exact.next_cursor.is_none(), "{stage}");
+
+        let substring = scan_calls_by_name(&db.view(), "zap", Matching::Substring, 10, None).unwrap();
+        assert!(
+            substring.total_is_partial,
+            "{stage}: the substring scan still stops at its cap"
+        );
+        assert!(substring.hits.iter().all(|hit| hit.callee == "zapx"), "{stage}");
+        build_dicts(&db);
+    }
+}
+
+#[test]
+fn an_exact_impl_scan_is_not_starved_by_substring_only_traits() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = IndexDb::open(dir.path()).unwrap();
+    let mut impls: Vec<(String, String)> = (0..17_000)
+        .map(|k| ("IteratorExt".to_string(), format!("Ty{k}")))
+        .collect();
+    impls.extend((0..2).map(|k| ("std::iter::Iterator<Item = u8>".to_string(), format!("Exact{k}"))));
+    let mut writer = db.writer();
+    writer
+        .upsert_file(&path(0), &l1(&impls), Some(&l2(Vec::new())))
+        .unwrap();
+    writer.commit().unwrap();
+
+    let scan = |matching| {
+        scan_impls_fjall(
+            &db.view(),
+            "Iterator",
+            matching,
+            None,
+            10,
+            None,
+            |_, _| true,
+            |_, _| (0, 0),
+        )
+        .unwrap()
+    };
+    let exact = scan(Matching::Exact);
+    let types: Vec<&str> = exact.hits.iter().map(|hit| hit.impl_type.as_str()).collect();
+    assert_eq!(types, ["Exact0", "Exact1"]);
+    assert_eq!(exact.total, 2);
+    assert!(!exact.total_is_partial && !exact.has_more);
+    assert!(scan(Matching::Substring).total_is_partial);
 }

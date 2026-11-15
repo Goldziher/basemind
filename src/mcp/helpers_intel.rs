@@ -28,8 +28,13 @@ pub(super) async fn run_goto_definition(
     params: GotoDefinitionParams,
 ) -> Result<CallToolResult, McpError> {
     let started = std::time::Instant::now();
-    let abs = state.shared.root.join(params.path.to_path_buf());
-    let source = std::fs::read(&abs)
+    // The index is consulted before the file is read, so a path that is not indexed cannot be
+    // probed for existence or contents through the errors below.
+    if state.shared.store.read().await.lookup(&params.path).is_none() {
+        return Err(super::tool_contract::not_indexed(state, "code_refs", &params.path));
+    }
+    let file = super::tool_contract::indexed_file(state, "code_refs", &params.path)?;
+    let source = std::fs::read(file)
         .map_err(|e| McpError::invalid_params(format!("`code_refs`: cannot read `{}`: {e}", params.path), None))?;
 
     let pos = line_col_to_offset(&source, params.line, params.column).ok_or_else(|| {
@@ -45,11 +50,13 @@ pub(super) async fn run_goto_definition(
     })?;
 
     let resolution_ran;
+    let language: Option<String>;
     let resolved: Option<(RelPath, u32)> = {
         let store = state.shared.store.read().await;
         let Some(entry) = store.lookup(&params.path) else {
             return Err(super::tool_contract::not_indexed(state, "code_refs", &params.path));
         };
+        language = Some(entry.language.clone());
         let refs = store.read_resolved_by_hex(&entry.hash_hex).unwrap_or_else(|error| {
             tracing::debug!(path = %params.path, %error, "goto_definition: resolution blob unreadable — treating as no in-file edge");
             None
@@ -73,10 +80,11 @@ pub(super) async fn run_goto_definition(
         .and_then(|(def_path, def_start)| definition_location(state, &params.path, &source, def_path, def_start));
 
     let (line, column) = offset_to_line_col(&source, pos);
-    let resolution = (definition.is_none() && !resolution_ran).then(|| {
-        let language = state.shared.cache.load().language_of(&params.path).map(str::to_owned);
-        format!("unsupported for {}", language.as_deref().unwrap_or("this language"))
-    });
+    let resolution = if definition.is_none() && !resolution_ran {
+        resolution_gap(language.as_deref())
+    } else {
+        None
+    };
     json_result(&GotoDefinitionResponse {
         path: params.path,
         line,
@@ -86,6 +94,20 @@ pub(super) async fn run_goto_definition(
         elapsed_us: super::helpers::elapsed_us(started),
     })
 }
+
+/// What to report when a file has no resolution blob. The scan writes one only for a file that
+/// produced facts, so its absence means either that the language has no resolution engine or that
+/// this file bound nothing; the two are different answers and are told apart by the language.
+pub(super) fn resolution_gap(language: Option<&str>) -> Option<String> {
+    match language {
+        Some(language) if crate::intel::resolve::supports(language) => Some(NO_RESOLUTION_FACTS.to_string()),
+        Some(language) => Some(format!("unsupported for {language}")),
+        None => Some("unsupported for this language".to_string()),
+    }
+}
+
+/// `resolution` value for a file of a supported language that produced no resolution facts.
+pub(super) const NO_RESOLUTION_FACTS: &str = "no resolution facts for this file";
 
 /// The definition the use at `(use_path, use_start)` binds to. A `daemon_writer` serve has no open
 /// index, so the cross-file hop (`refs_by_path`) forwards to the machine daemon — the sole fjall
