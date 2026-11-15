@@ -169,3 +169,31 @@ fn newer_schema_ver_on_disk_is_refused_without_wiping() {
     assert!(keep.exists(), "a newer store must not be wiped");
     assert!(meta_path.exists(), "a newer store keeps its meta.json");
 }
+
+fn memory_row(key: &str, value: &str, updated_at: i64) -> MemoryRow {
+    MemoryRow {
+        scope: "s".into(),
+        key: key.into(),
+        value: value.into(),
+        tags: Vec::new(),
+        visibility: "group".into(),
+        agent_id: String::new(),
+        embedding: vec![0.0; 4],
+        created_at: 1,
+        updated_at,
+    }
+}
+
+/// A hit names the write it was embedded from, so the caller can tell a row a newer write left
+/// behind from a current one.
+#[test]
+fn a_memory_hit_carries_the_stamp_of_the_write_it_was_embedded_from() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = LanceStore::open(dir.path(), 4, "test").unwrap();
+    store.upsert_memory(memory_row("k", "old text", 7)).unwrap();
+
+    let hits = store.search_memory("s", "group", "", vec![0.0; 4], 10, None).unwrap();
+
+    assert_eq!(hits.len(), 1);
+    assert_eq!((hits[0].key.as_str(), hits[0].updated_at), ("k", 7));
+}

@@ -335,6 +335,18 @@ async fn memory_put_fjall(
 pub(super) async fn run_memory_get(state: &ServerState, params: MemoryGetParams) -> Result<CallToolResult, McpError> {
     let (vis_byte, owner) = namespace(state, params.visibility);
 
+    let entry = memory_get_wire(state, vis_byte, owner, &params.key).await?;
+    json_result(&entry.map(wire_to_entry))
+}
+
+/// Read one note from the Fjall truth, through the daemon when it owns the store.
+#[cfg(feature = "memory")]
+async fn memory_get_wire(
+    state: &ServerState,
+    vis_byte: u8,
+    owner: &str,
+    key: &str,
+) -> Result<Option<super::memory_ops::WireMemoryEntry>, McpError> {
     #[cfg(all(feature = "comms", any(unix, windows)))]
     if state.shared.daemon_writer {
         use crate::comms::memory_proto::{MemoryOp, MemoryOutcome};
@@ -342,19 +354,15 @@ pub(super) async fn run_memory_get(state: &ServerState, params: MemoryGetParams)
         let op = MemoryOp::Get {
             vis_byte,
             owner: owner.to_string(),
-            key: params.key.clone(),
+            key: key.to_string(),
         };
-        let outcome = super::helpers_comms::dispatch_memory_op(state, op).await?;
-        let entry = match outcome {
-            MemoryOutcome::Got(entry) => entry.map(wire_to_entry),
-            other => {
-                return Err(McpError::internal_error(
-                    format!("memory_get: unexpected daemon outcome {other:?}"),
-                    None,
-                ));
-            }
+        return match super::helpers_comms::dispatch_memory_op(state, op).await? {
+            MemoryOutcome::Got(entry) => Ok(entry),
+            other => Err(McpError::internal_error(
+                format!("memory_get: unexpected daemon outcome {other:?}"),
+                None,
+            )),
         };
-        return json_result(&entry);
     }
 
     let store = state.shared.store.read().await;
@@ -362,9 +370,13 @@ pub(super) async fn run_memory_get(state: &ServerState, params: MemoryGetParams)
         .index_db
         .as_ref()
         .ok_or_else(|| McpError::internal_error("memory_by_key index not available", None))?;
-    let entry: Option<MemoryEntry> =
-        super::memory_ops::get_core(idx, &state.shared.scope, vis_byte, owner, &params.key)?.map(wire_to_entry);
-    json_result(&entry)
+    Ok(super::memory_ops::get_core(
+        idx,
+        &state.shared.scope,
+        vis_byte,
+        owner,
+        key,
+    )?)
 }
 
 /// Map a wire memory entry onto the MCP [`MemoryEntry`] response shape.
@@ -458,28 +470,26 @@ pub(super) async fn run_memory_search(
 ) -> Result<CallToolResult, McpError> {
     let __body = std::time::Instant::now();
     let limit = params.limit.unwrap_or(10).min(100) as usize;
-    let (_, owner) = namespace(state, params.visibility);
+    let (vis_byte, owner) = namespace(state, params.visibility);
     let visibility = lance_visibility(params.visibility).to_string();
     let agent_id = owner.to_string();
     let embedding = embed_query(state, &params.query).await?;
     let lance = lance_store(state).await?;
     let scope = state.shared.scope.clone();
     let tag = params.tag.clone();
+    // Rows the join drops must not shrink the answer, so the vector search over-fetches.
+    let fetch = limit.saturating_mul(2);
     let hits_raw = tokio::task::spawn_blocking(move || {
-        lance.search_memory(&scope, &visibility, &agent_id, embedding, limit, tag.as_deref())
+        lance.search_memory(&scope, &visibility, &agent_id, embedding, fetch, tag.as_deref())
     })
     .await
     .map_err(|e| McpError::internal_error(format!("spawn_blocking: {e}"), None))?
     .map_err(|e| McpError::internal_error(format!("search_memory: {e}"), None))?;
-    let hits = hits_raw
-        .into_iter()
-        .map(|h| MemorySearchHit {
-            key: h.key,
-            value: h.value,
-            tags: h.tags,
-            distance: h.distance,
-        })
-        .collect();
+    let mut notes = Vec::with_capacity(hits_raw.len());
+    for hit in &hits_raw {
+        notes.push(memory_get_wire(state, vis_byte, owner, &hit.key).await?);
+    }
+    let hits = super::memory_vectors::truth_join(hits_raw, notes, limit);
     json_result(&MemorySearchResponse {
         query: params.query,
         hits,

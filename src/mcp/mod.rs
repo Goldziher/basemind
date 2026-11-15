@@ -70,6 +70,7 @@ mod map_fingerprint;
 mod memory;
 #[cfg(feature = "memory")]
 pub(crate) mod memory_ops;
+mod memory_vectors;
 pub mod mode;
 mod notifications;
 pub mod offline;
