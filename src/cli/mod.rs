@@ -12,6 +12,7 @@
 //! - `code.rs` / `git.rs` / `memory.rs` / `admin.rs` — subcommand groups.
 
 pub mod admin;
+pub mod agent;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 pub mod agents;
 pub mod choices;
