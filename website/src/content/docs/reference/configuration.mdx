@@ -57,7 +57,7 @@ All tunables live under a named section — there are no bare top-level options.
 | `[code_search]` | Semantic/keyword code search chunking + embedding (needs `--features code-search`). |
 | `[memory]` | Shared-memory scope and default visibility (needs `--features memory`). |
 | `[comms]` | Agent comms identity + retention (needs `--features comms`). |
-| `[llm]` | Shared LLM settings for reranking, NER, and summarization. |
+| `[llm]` | Deprecated: still accepted, and ignored. |
 | `[languages.<grammar>]` | Per-grammar toggles and extension/file-name mappings. |
 
 ### `[scan]` Section
@@ -147,7 +147,8 @@ transport = "stdio"
 ### `[documents]` Section
 
 Document indexing (PDFs, Office, HTML, etc.) and full-text + semantic search. Requires
-`--features documents`. The document tier also holds the prose, data and config files the code map
+`--features documents`; OCR needs `documents-ocr` and named-entity recognition needs `documents-ner`
+(see [Cargo Features](#cargo-features)). The document tier also holds the prose, data and config files the code map
 no longer indexes (Markdown, reStructuredText, AsciiDoc, JSON, YAML, TOML, XML, CSV, INI, `.env`,
 diffs and the like), so `include` / `exclude` and `mime_allowlist` decide which of those are
 searchable. A build without the `documents` feature keeps them in the code map.
@@ -170,8 +171,8 @@ max_chunks_per_document = 2000
 | `max_abandoned_extractions` | integer | Cap (default 4, range 1 to 64) on timed-out extractions still running. A timed-out extraction cannot be cancelled and keeps a core busy until it finishes; at the cap, further documents are deferred (`docs_deferred`) instead of spawning another thread. The live count shows as `abandoned_extractions` in the scan summary. A soft bound: extractions already in flight may still time out past it. |
 | `markdown_chunk_max_bytes` / `plain_text_chunk_max_bytes` | integer | Size cutovers (bytes, minimum 1024; defaults 1048576 and 4194304) above which a text-like document (markdown; plain `text/plain` for the second key) is chunked by a linear fixed-size chunker instead of xberg's quadratic markdown splitter. Structured data (json, yaml, xml, svg, csv/tsv) is always chunked linearly, whatever its size. Counted as `docs_degraded` in the scan summary; PDFs and Office files are never affected. The same linear path is used when xberg rejects a text-like file outright (a Helm template named `.yaml`, a CSV past the table-cell limit, an SVG with an oversized entity): it is re-read as `text/plain` and counted as `docs_degraded` and `docs_text_fallback`. |
 | `max_characters` / `overlap` | integer | Chunk size (default 1000, minimum 64) and overlap (default 200); `overlap` must stay below `max_characters`. |
-| `extract_archives` | bool | Extract the files inside archives (`.zip`, `.tar`, `.jar`, ...). Default `false`; true binaries are always rejected. In the daemon this also needs an operator grant (see [Trust boundary](#trust-boundary)). |
-| `max_archive_bytes` / `max_archive_entries` | integer | With `extract_archives = true`: cap on total uncompressed bytes (default 64 MiB) and entries (default 1000) unpacked from one archive. An archive past either cap fails extraction instead of being unpacked into memory. |
+| `extract_archives` | bool | Deprecated: still accepted, and ignored. Archive extraction was removed, so archives (`.zip`, `.tar`, `.jar`, ...) are always skipped; `true` logs a one-time warning. |
+| `max_archive_bytes` / `max_archive_entries` | integer | Cap on total uncompressed bytes (default 64 MiB) and entries (default 1000) unpacked from one zip container, which is what an Office file (docx, pptx, xlsx, odt) is. A file past either cap fails extraction instead of being unpacked into memory. |
 | `mime_allowlist` | array of strings | Restrict extraction to specific MIME types (empty = accept all supported types). |
 | `extension_denylist` | array of strings | File extensions never routed to extraction (archives and binaries are denied by default). |
 | `include` | array of globs | Allow-list selecting which non-code files are indexed as documents. Empty (default) = every non-code file that passes `[scan]`. `exclude` wins. |
@@ -181,7 +182,12 @@ max_chunks_per_document = 2000
 
 The `[documents]` tree also carries sub-tables for reranking, keywords, NER, summarization, and OCR
 (`[documents.reranker]`, `[documents.keywords]`, and so on). `[documents.ocr] backend` / `languages`
-and `[documents.language] preferred_languages` are reserved: they parse but have no effect yet. See the
+and `[documents.language] preferred_languages` are reserved: they parse but have no effect yet.
+`[documents.ner]` needs a build with the `documents-ner` feature: without it `enabled = true` has no
+effect and logs a warning naming the key and the feature. Two values are deprecated, still accepted
+and logged once: `[documents.summarization] strategy = "abstractive"` falls back to extractive
+(TextRank) summaries, and `[documents.ner] backend = "llm"` extracts no entities. OCR needs
+no configuration: a build with `documents-ocr` runs it on raster images and on PDFs with no text layer. See the
 [JSON Schema](https://github.com/Goldziher/basemind/blob/main/schema/basemind-config-v1.schema.json)
 for the exhaustive field set.
 
@@ -209,8 +215,8 @@ document_models = "code_only"
 | `max_concurrent_documents` | integer | `0` | Upper bound on documents extracted concurrently. `0` (auto) leaves dispatch unbounded. Documents beyond the bound wait for a free slot before they are read, so a burst of large files cannot all be held in memory at once. The daemon clamps the value (see `BASEMIND_DAEMON_MAX_CONCURRENT_DOCUMENTS`). |
 | `max_footprint_mb` | integer, `"auto"` or `"off"` | `0` | Advisory memory ceiling in mebibytes. A positive integer is an explicit ceiling; `0` or `"auto"` derives one (75% of an enforced cgroup limit, else 50% of machine RAM, floored at 512 MiB); `"off"` disables it. Workers park at the document-extraction and code-chunk embedding admit points while the process is over the ceiling. Document extraction then runs one document at a time (an otherwise idle process is admitted immediately), and a document whose own estimated working set exceeds the ceiling is skipped, counted as too large, with a warning naming the estimate and the limit. The ceiling shapes peak memory rather than enforcing a hard limit. The daemon clamps it (see `BASEMIND_DAEMON_MAX_FOOTPRINT_MB`). |
 | `max_map_cache_mb` | integer | `256` | Byte budget in MiB for the MCP read stack's decoded-outline cache, per workspace; `0` is unbounded. A miss costs one blob read and never changes an answer. `references`, `callers` and `implementations` from a daemon-backed session are forwarded to the daemon and hold no projection in the session, so this budget only bounds the last-resort in-RAM call/implementation projection used when no daemon is reachable (the `projections_capped` notice appears only then). The daemon clamps it (see `BASEMIND_DAEMON_MAX_MAP_CACHE_MB`). |
-| `document_models` | enum | `full` | Which model families run during document extraction. `full` runs every configured post-processor. `code_only` keeps embeddings but forces keyword extraction, NER, and summarization off and disables OCR. `none` also drops embeddings — documents are still extracted for text + metadata (keyword search) but never routed to any model. `[documents].enabled = false` remains the zero-cost total short-circuit. |
-| `onnx_provider` | enum | `cpu` | ONNX Runtime execution provider for every model basemind loads (embeddings, reranker, layout detection, NER): `cpu`, `auto`, `coreml`, `cuda` or `tensorrt`. The default is `cpu` because the platform default on macOS (CoreML) compiled a graph per input shape and measured 7.6 GB resident for one tiny document against 0.8 GB on CPU (and 3x slower), which let a document-heavy scan reach tens of GB. `auto` restores the platform default (CoreML on macOS, CUDA on a GPU-enabled Linux build). |
+| `document_models` | enum | `full` | Which model families run during document extraction. `full` runs every configured post-processor the build has (OCR needs the `documents-ocr` feature, NER needs `documents-ner`). `code_only` keeps embeddings but forces keyword extraction, NER, and summarization off and disables OCR. `none` also drops embeddings — documents are still extracted for text + metadata (keyword search) but never routed to any model. `[documents].enabled = false` remains the zero-cost total short-circuit. |
+| `onnx_provider` | enum | `cpu` | ONNX Runtime execution provider for every model basemind loads (embeddings, reranker, NER): `cpu`, `auto`, `coreml`, `cuda` or `tensorrt`. The default is `cpu` because the platform default on macOS (CoreML) compiled a graph per input shape and measured 7.6 GB resident for one tiny document against 0.8 GB on CPU (and 3x slower), which let a document-heavy scan reach tens of GB. `auto` restores the platform default (CoreML on macOS, CUDA on a GPU-enabled Linux build). |
 
 ### `[code_search]` Section
 
@@ -289,25 +295,12 @@ effect (see [Reserved keys](#reserved-keys)).
 
 ### `[llm]` Section
 
-Optional language-model settings shared by reranking, NER, and summarization. The stack stays
-dormant unless both `model` and `api_key` are supplied, so it imposes no config burden by default.
-
-```toml
-[llm]
-model = "..."
-api_key = { env = "OPENAI_API_KEY" }   # or a literal string (discouraged); BASEMIND_LLM_API_KEY also works
-base_url = "https://api.openai.com/v1"
-```
-
-| Key | Type | Notes |
-|---|---|---|
-| `model` | string | `provider/model` ID (`openai/gpt-4o`). LLM-backed features are a no-op until this and `api_key` are both set. |
-| `api_key` | string or `{ env = "NAME" }` | API key, or the name of the environment variable holding it. Also read from `BASEMIND_LLM_API_KEY`. In the repository's own file an env reference is honoured only for the chosen provider's standard variable or `BASEMIND_LLM_API_KEY` (see [Trust boundary](#trust-boundary)). |
-| `base_url` | string | Override the provider endpoint URL. Ignored from the repository's own file without `BASEMIND_ALLOW_REPO_LLM`; a CLI flag or env override is always honoured. |
-| `temperature` | float | Sampling temperature. |
-| `timeout_secs` | integer | Per-request timeout. |
-| `max_retries` | integer | Retry budget on transient failures. |
-| `max_tokens` | integer | Cap on generated tokens. |
+Deprecated and ignored. basemind no longer calls a language model: LLM-backed (abstractive)
+summarization and the LLM NER backend were removed, and the reranker is a local ONNX cross-encoder.
+The table and its keys (`model`, `api_key`, `base_url`, `temperature`, `timeout_secs`, `max_retries`,
+`max_tokens`) are still accepted so an older `basemind.toml` keeps loading; a table with content logs
+one warning. The `--llm-*` flags on `basemind scan` and the `BASEMIND_LLM_*` environment variables
+are accepted and ignored too, and `BASEMIND_ALLOW_REPO_LLM` has nothing left to grant.
 
 ### `[languages.<grammar>]` Section
 
@@ -338,15 +331,14 @@ detection; already-indexed files of a disabled or remapped language are updated 
 ## Environment Variables
 
 Settings map to environment variables by prefixing `BASEMIND_`, uppercasing, and joining the
-section and key with an underscore. Only the `documents.*` and `llm.*` keys have CLI-flag and
-environment overrides (the flags are `--documents-*` and `--llm-*` on `basemind scan`); every other
-setting is file-only.
+section and key with an underscore. Only the `documents.*` keys have CLI-flag and
+environment overrides (the flags are `--documents-*` on `basemind scan`); every other
+setting is file-only. The `--llm-*` flags and `BASEMIND_LLM_*` variables are deprecated: still
+accepted, and ignored.
 
 ```bash
 BASEMIND_DOCUMENTS_ENABLED=true
 BASEMIND_DOCUMENTS_OVERLAP=100
-BASEMIND_LLM_MODEL="openai/gpt-4o"
-BASEMIND_LLM_API_KEY="sk-..."
 ```
 
 <Aside type="tip">
@@ -363,12 +355,9 @@ Grant variables accept `1`, `true` or `yes` (case-insensitive).
 
 | Setting in the repo's file | Honoured only when |
 |---|---|
-| `[llm] base_url` | `BASEMIND_ALLOW_REPO_LLM=1`; otherwise ignored with a warning (a clone could aim it at a host that collects your API key and document text). Pass it with `--llm-base-url` / `BASEMIND_LLM_BASE_URL` instead. |
-| `[llm] api_key = { env = "NAME" }` | `NAME` is the chosen provider's standard variable (`OPENAI_API_KEY` for `openai/...`, `ANTHROPIC_API_KEY` for `anthropic/...`, ...) or `BASEMIND_LLM_API_KEY`, or `BASEMIND_ALLOW_REPO_LLM=1`; otherwise the key is treated as unset with a warning. |
 | `[scan] follow_symlinks = true` | `BASEMIND_ALLOW_FOLLOW_SYMLINKS=1`; otherwise reset to `false` with a warning. |
 | `[scan] floor_allow` (a credential entry) | `BASEMIND_ALLOW_REPO_CREDENTIALS=1`; otherwise the entry is ignored with a warning and the secret stays excluded. Build-artifact entries need no grant. |
 | `[scan] extra_roots` | `BASEMIND_ALLOW_EXTRA_ROOTS` set to `1` / `true` / `yes` (every workspace the process scans), or to a list of absolute workspace roots separated by `:` (`;` on Windows) that grants only those workspaces and their descendants. A relative entry, or another word such as `on`, is ignored with a warning. Prefer the list form for a daemon, which serves many repositories: the bare `1` also opens `extra_roots` for any workspace it serves later. |
-| `[documents] extract_archives = true` | Daemon only: `BASEMIND_DAEMON_ALLOW_EXTRACT_ARCHIVES=1` in the daemon's environment; otherwise reset to `false` with a warning. |
 
 A `basemind.toml` that is a symlink leaving the workspace is not followed, so a parse error cannot
 quote a file the repository does not own.
@@ -430,12 +419,17 @@ These parse but nothing reads them yet; setting one to a non-default value logs 
 `languages`, and `[documents.language] preferred_languages`. (`[mcp] transport` is also unread, but
 `stdio` is its only value.)
 
+Deprecated keys are still accepted and ignored: the `[llm]` table,
+`[documents] extract_archives`, `[documents.summarization] strategy = "abstractive"` and
+`[documents.ner] backend = "llm"`. `BASEMIND_ALLOW_REPO_LLM` and
+`BASEMIND_DAEMON_ALLOW_EXTRACT_ARCHIVES` no longer have any effect.
+
 ### Config changes
 
 Changes take effect on the next scan. Cached chunks and documents carry a fingerprint of the settings
 that shape them (`[code_search]` `max_characters` / `overlap` / `max_chunks_per_file`; `[documents]`
-chunk size, page cap, language detection, keywords, NER, summarization, `extract_archives`,
-`[resources] document_models` and `[llm] model`), so changing one re-chunks or re-extracts only the
+chunk size, page cap, language detection, keywords, NER, summarization and
+`[resources] document_models`), so changing one re-chunks or re-extracts only the
 affected files. Embedding scope (`embed`, `embed_include`, `embed_exclude`, and the `enabled`
 switches) is reconciled as well: the first scan after a change deletes the vector rows of files that
 are no longer eligible (and, when `[code_search] enabled = false`, their keyword postings) and rebuilds
@@ -470,12 +464,11 @@ Daemon-side knobs that are not config keys (`BASEMIND_WARM_READ_STACKS`, `BASEMI
 
 ## Per-Request Overrides
 
-The `documents.*` and `llm.*` overrides are CLI flags and environment variables only; the MCP tools
-do not accept them (they used to inflate every session's tool schema, and `llm_api_key` would have
-put a secret in tool arguments). Set those keys in `basemind.toml`. The per-call knobs MCP does
-expose are the ones that change a single query: `memory` mode `documents` takes `format`,
-`max_tokens`, `mime_type`, `scope`, `entity_category` and `keywords_contains`, and `code` mode
-`semantic` takes `lane`, `rerank`, `rerank_preset` and `rerank_top_k`.
+The `documents.*` overrides are CLI flags and environment variables only; the MCP tools
+do not accept them (they used to inflate every session's tool schema). Set those keys in
+`basemind.toml`. The per-call knobs MCP does expose are the ones that change a single query:
+`memory` mode `documents` takes `format`, `max_tokens`, `mime_type`, `scope`, `entity_category`
+(needs the `documents-ner` feature) and `keywords_contains`, and `code` mode `semantic` takes `lane`, `rerank`, `rerank_preset` and `rerank_top_k`.
 
 ## Cargo Features
 
@@ -486,18 +479,31 @@ ONNX Runtime). Opt into the rest:
 
 | Feature | Includes | In `full` |
 |---|---|---|
-| `documents` | PDF/Office/HTML/email/image extraction, OCR, and the RAG stack (xberg). | yes |
+| `documents` | Document search over local files (xberg): PDF (text layer), Office formats, spreadsheets, email, HTML, XML (SVG text is read as XML), Markdown/MDX and Jupyter notebooks, with chunking, language detection, quality scoring, keywords (YAKE/RAKE), extractive (TextRank) summaries, the cross-encoder reranker and embeddings. No OCR, no NER. | yes |
+| `documents-ocr` | `documents` plus Tesseract OCR: raster images and scanned PDFs (no text layer). Runs implicitly, no configuration. | yes |
+| `documents-ner` | `documents` plus ONNX named-entity recognition (GLiNER): `[documents.ner]` and the `entity_category` document-search filter. | yes |
+| `documents-ocr-paddle` | `documents-ocr` plus PaddleOCR as an optional fallback stage. Source builds only; not in the published binaries. | no |
 | `memory` | LanceDB-backed shared memory (`memory` tool). | yes |
 | `code-search` | Hybrid code search — vector + BM25 + exact-symbol lanes (`code` tool modes `semantic`, `chunk`). | yes |
 | `comms` | Agent-to-agent comms — threads, per-agent inbox, DMs (`agents` + `workspace` tools; Unix domain sockets + Windows named pipes). | yes |
 | `code-intel` | Scope- and import-resolved JS/TS `code` tool modes `references` / `definition` (oxc). | yes |
-| `full` | `documents` + `memory` + `comms` + `code-intel` + `code-search`. | — |
+| `full` | `documents` + `documents-ocr` + `documents-ner` + `tokenizer` + `memory` + `code-search` + `comms` + `code-intel`. | — |
+
+`--features documents` alone no longer includes OCR or NER. A source build that wants both uses
+`--features "documents documents-ocr documents-ner"` (or `full`). Without `documents-ocr`, raster
+images are not indexed as documents and a PDF with no text layer is reported as a failed extraction
+("no text extracted (OCR not compiled in)"). Without `documents-ner`, a document search with
+`entity_category` returns an error naming the feature. Archive extraction, LLM-backed summarization
+and HEIC/HEIF, SQLite, WordPerfect, HWP/HWPX and Apple iWork extraction are not in any build.
 
 ### Installation Examples
 
 ```bash
-# Everything (documents, memory, code-search, comms)
+# Everything (documents with OCR and NER, memory, code-search, comms)
 cargo install basemind --features full --locked
+
+# Document search without OCR or NER
+cargo install basemind --features documents --locked
 
 # Code + git only (smallest build)
 cargo install basemind --locked
@@ -511,7 +517,8 @@ pnpm add -g basemind
 pip install basemind
 ```
 
-Prebuilt downloads (GitHub releases, Homebrew, npm, pip) include the full feature set by default.
+Prebuilt downloads (GitHub releases, Homebrew, npm, pip) are built with `full`, so they include OCR
+and NER but not PaddleOCR.
 
 ## Schema Versioning
 

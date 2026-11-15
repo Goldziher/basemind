@@ -31,8 +31,8 @@ without you reading whole files.
   YAML, TOML, XML, CSV, INI and similar files are documents, searched with `memory` mode `documents`.
 - **Full-text + symbol search** — `code` modes `grep` and `symbols`.
 - **Git intelligence** — history, blame, and structural diffs at symbol resolution, plus churn.
-- **Document RAG over 90+ file formats** — PDFs, Office, HTML, email, images (OCR), markdown and
-  config/data files → semantic search with cross-encoder reranking (`memory` mode `documents`).
+- **Document RAG** — PDFs, Office, HTML, email, images (OCR, when the build has `documents-ocr`),
+  markdown and config/data files → semantic search with cross-encoder reranking (`memory` mode `documents`).
 - **Shared memory** — per-repo, scope-keyed key-value + semantic memory across sessions.
 
 ## Dedicated per-capability skills

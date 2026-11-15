@@ -122,6 +122,8 @@ src/
 │   │                         (the grammar-native fallback for the code-intel tier)
 │   ├── doc.rs              — xberg integration; FileMapDoc (+ keywords,
 │   │                         entities, summary on the documents path)
+│   ├── doc_tiers.rs        — the optional document tiers (documents-ocr, documents-ner) and what a
+│   │                         build without them reports
 │   └── doc_cost.rs         — header-derived peak-memory estimate of one document (skip if it
 │                             alone exceeds the footprint ceiling)
 ├── intel/                  — code-intelligence tier: scope/import-resolved navigation
@@ -287,6 +289,16 @@ Key invariants:
   next full or incremental scan: the stale code-map rows are purged, and the stale blobs are reclaimed
   by the tier-aware sweep (see [Blob store and GC](#blob-store-and-gc)). A build without the
   `documents` feature keeps the grammars, since there is no other tier for those files to go to.
+- **Document feature tiers** — `documents` extracts text from PDFs (text layer), Office formats,
+  spreadsheets, email, HTML, XML, Markdown/MDX and Jupyter notebooks, with keywords, extractive
+  summaries, the reranker and embeddings. `documents-ocr` adds Tesseract OCR (raster images, PDFs
+  with no text layer), `documents-ner` adds ONNX named-entity recognition (`[documents.ner]`, the
+  `entity_category` filter), and `documents-ocr-paddle` adds PaddleOCR as a fallback stage for source
+  builds. `full` enables the first three. Without `documents-ocr` a raster image is skipped like a
+  binary and a PDF with no text layer is a failed extraction; without `documents-ner` an
+  `entity_category` search is an error and `[documents.ner] enabled = true` logs a warning. Archive
+  extraction and the LLM-backed summarization and NER backends are not compiled into any build.
+  Source: `src/extract/doc_tiers.rs`.
 - **Bounded scan** — per-file results are streamed to the index in chunks (`scanner_drive.rs`), never
   accumulated; the footprint gate pauses the drive between chunks and shrinks it when it cannot
   hold the ceiling (see [Resource governance](#resource-governance)).
@@ -619,8 +631,8 @@ basemind's footprint on a constrained machine:
 | `embed_threads` | `0` (auto: `max(2, logical_cpus / 4)`) | Cap on the ONNX embedding pool. |
 | `embed_batch_size` | `32` | Chunks submitted to ONNX per batch. |
 | `max_concurrent_documents` | `0` (unbounded) | Cap on concurrent document extraction, enforced by a counting semaphore (`src/backpressure.rs`). Document extraction then passes `FootprintGate::admit_exclusive`: over `max_footprint_mb` only one document runs at a time, and a document whose header-derived estimate (`src/extract/doc_cost.rs`) exceeds the whole ceiling is skipped as too large. Distinct from `max_footprint_mb`, which reacts to memory already allocated: an extraction's spike lands faster than the 50 ms sampler sees it, so this bounds how many spikes may overlap before the first one starts. |
-| `document_models` | `full` | Model families document extraction runs: `full` \| `code_only` (embeddings only, no keywords/NER/summarization/OCR) \| `none` (metadata + keyword search only). |
-| `onnx_provider` | `cpu` | ONNX execution provider for embeddings, reranker, layout and NER: `cpu` \| `auto` \| `coreml` \| `cuda` \| `tensorrt`. `auto` on macOS means CoreML, which compiles per input shape and measured 7.6 GB for one tiny document vs 0.8 GB on CPU. |
+| `document_models` | `full` | Model families document extraction runs: `full` (every configured post-processor the build has; OCR needs `documents-ocr`, NER needs `documents-ner`) \| `code_only` (embeddings only, no keywords/NER/summarization/OCR) \| `none` (metadata + keyword search only). |
+| `onnx_provider` | `cpu` | ONNX execution provider for embeddings, reranker and NER: `cpu` \| `auto` \| `coreml` \| `cuda` \| `tensorrt`. `auto` on macOS means CoreML, which compiles per input shape and measured 7.6 GB for one tiny document vs 0.8 GB on CPU. |
 | `max_footprint_mb` | `0` (auto) | Ceiling on process memory footprint. A positive integer is an explicit mebibyte ceiling; `0` or `"auto"` derives one from the environment (75% of an enforced cgroup limit, else 25% of machine RAM, floored at 2048 MiB); `"off"` disables the gate. |
 | `max_map_cache_mb` | `256` | Byte budget for the MCP read stack's decoded-outline cache (`src/mcp/l1_cache.rs`), per workspace. `0` = unbounded. A miss costs one blob read and never changes an answer. A read-only session's projected call / implementation indexes are charged against it. |
 

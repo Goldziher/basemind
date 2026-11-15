@@ -10,6 +10,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **The `documents` cargo feature is split into tiers.** `documents` is now document search over local
+  files without OCR or named-entity recognition: PDF (text layer), Office formats, spreadsheets, email,
+  HTML, XML (SVG text is read as XML), Markdown/MDX and Jupyter notebooks, with chunking, language
+  detection, quality scoring, keywords, extractive summaries, the cross-encoder reranker and embeddings.
+  `documents-ocr` adds Tesseract OCR for raster images and PDFs with no text layer, `documents-ner` adds
+  ONNX named-entity recognition (`[documents.ner]` and the `entity_category` filter), and
+  `documents-ocr-paddle` adds PaddleOCR as an optional fallback stage. `full` is now `documents`,
+  `documents-ocr`, `documents-ner`, `tokenizer`, `memory`, `code-search`, `comms` and `code-intel`, so the
+  published binaries keep OCR and NER. A source build that used `--features documents` needs
+  `--features "documents documents-ocr documents-ner"` (or `full`) to keep both. Without `documents-ocr`,
+  raster images are not indexed as documents and a PDF with no text layer is reported as a failed
+  extraction ("no text extracted (OCR not compiled in)") instead of an empty success. Without
+  `documents-ner`, `[documents.ner] enabled = true` logs a warning and has no effect, and a document
+  search with `entity_category` returns an error naming the feature instead of an empty result. `memory`
+  no longer compiles keyword extraction or NER code, which it never used.
+  The `full` build drops 67 locked packages (1204 to 1137) and 76 compiled crates (990 to 914); on
+  aarch64-apple-darwin the release binary goes from 315.2 MB to 290.2 MB, its `__text` section from
+  129.3 MB to 122.0 MB, and it no longer links `libheif` dynamically.
+
 ### Removed
 
 - **The token-saving text tools.** The `admin` modes `compress`, `delta`, `checkpoint` and `waste` are gone
@@ -50,6 +71,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `doc_links.lance` table an older version wrote is never opened again and is reclaimed with the rest of a
   workspace's cache. Inline rationale notes (`WHY:`, `NOTE:`, ADR citations) are still extracted into each
   outline blob so the blob format stays unchanged until the next schema bump, but nothing surfaces them.
+- **Archive extraction.** The contents of archives (zip, tar, 7z, gz) are no longer extracted in any build;
+  archives are always skipped. `[documents] extract_archives` is still accepted and ignored, `true` logs a
+  one-time warning, and `BASEMIND_DAEMON_ALLOW_EXTRACT_ARCHIVES` has no effect. `max_archive_bytes` and
+  `max_archive_entries` still apply: they bound the zip containers that Office files (docx, pptx, xlsx,
+  odt) are.
+- **LLM summarization and the `[llm]` table.** LLM-backed (abstractive) summarization and the LLM NER
+  backend are gone. `[documents.summarization] strategy = "abstractive"` is still accepted, logs a one-time
+  deprecation warning and produces extractive (TextRank) summaries. `[documents.ner] backend = "llm"` is
+  still accepted, logs a warning and extracts no entities; that backend was never compiled in, and the
+  earlier warning that claimed an ONNX fallback was wrong. Nothing else read `[llm]` (the reranker is a
+  local ONNX cross-encoder), so the table (`model`, `api_key`, `base_url`, `temperature`, `timeout_secs`,
+  `max_retries`, `max_tokens`), the `--llm-*` flags on `basemind scan` and the `BASEMIND_LLM_*` variables
+  are accepted and ignored, with a one-time warning when `[llm]` has content. `BASEMIND_ALLOW_REPO_LLM` has
+  nothing left to grant.
+- **Document formats and unused xberg capabilities.** HEIC/HEIF images, SQLite databases, WordPerfect,
+  HWP/HWPX and Apple iWork (Pages, Numbers, Keynote) files are no longer extracted, and SVG is no longer
+  rasterised or mined for diagrams (its text is still read as XML). Model-based layout detection, PII
+  redaction, QR-code decoding and document diffing are no longer compiled in, and auto-rotate only comes
+  with `documents-ocr-paddle`; none of them was reachable from basemind's config or tools.
+- **PaddleOCR in the published binaries.** PaddleOCR is now the opt-in `documents-ocr-paddle` feature,
+  which `full` does not include, so the Homebrew, npm, pip and GitHub release binaries no longer contain
+  it. Tesseract OCR is unchanged.
 
 ### Fixed
 

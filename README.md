@@ -10,7 +10,7 @@ so agents answer from **structure and search** instead of burning their context 
 file reads — and gives a team of agents a **shared channel to coordinate** while they work. One
 server does both.
 
-Code map across **300+ languages** · documents in **90+ formats** · semantic + full-text search ·
+Code map across **300+ languages** · PDF, Office, HTML, email and image documents · semantic + full-text search ·
 git history & blame · shared memory · agent-to-agent comms
 
 [![Docs](https://img.shields.io/badge/docs-basemind.ai-965aff?style=flat-square)](https://basemind.ai)
@@ -46,7 +46,7 @@ about your code costs a small fraction of the tokens it takes to read the source
 |---|---|---|
 | **Code intelligence** | Read the code map instead of opening files: a file's structure (`outline`), find a definition by name (`symbols`), regex content search (`grep`), enumerate or fuzzy-find files (`files` · `find`, documents included), resolve a reference position to the definition it binds to (`definition` — **scope- and import-aware**, JS/TS via oxc, Python & Java via in-tree [stack-graphs](#how-it-works)), every call site of a name (`references`, name-only) or of one specific definition (`callers`), implementors of a trait / interface / base class (`implementations`), the reverse import lookup (`dependents`), one symbol's raw body (`expand`), and search by meaning over indexed chunks (`semantic` → `chunk`, needs `--features code-search`). Layered over [300+ languages](#how-it-works). | `code` (`outline` · `symbols` · `grep` · `files` · `find` · `definition` · `references` · `callers` · `implementations` · `dependents` · `expand` · `semantic` · `chunk`) |
 | **Git intelligence** | Ask what changed recently, who last touched a function or a line, where the churn is, when a symbol's body actually changed, how a file's structure differs across commits, and full-text search commit authors + messages at full branch depth. | `git` (`status` · `recent` · `touching` · `by_path` · `churn` · `diff` · `diff_outline` · `blame` · `blame_symbol` · `symbol_history` · `search` · `show`) |
-| **Memory & documents** | A per-repo memory agents write to and search by meaning — clones of the same repo share it, unrelated repos stay separate — plus semantic search over PDFs, Office files, HTML, email, and images (OCR included, no extra setup). | `memory` (`put` · `get` · `list` · `search` · `delete` · `documents`) |
+| **Memory & documents** | A per-repo memory agents write to and search by meaning — clones of the same repo share it, unrelated repos stay separate — plus semantic search over PDFs, Office files, HTML, email, and images (OCR included in the published binaries, no extra setup; a source build needs the `documents-ocr` Cargo feature). | `memory` (`put` · `get` · `list` · `search` · `delete` · `documents`) |
 | **Agent comms** | Threads addressed by subject, path-glob, and members; scope discovery; inbox delivery; lifecycle status; and dry-run/apply retention cleanup. | `agents` (`register` · `list` · `thread_start` · `thread_list` · `join` · `leave` · `members` · `add_member` · `remove_member` · `archive` · `post` · `history` · `message` · `inbox` · `ack` · `wait` · `cleanup` · `status`) |
 | **Admin** | Refresh the index after edits, check index health and repo identity, see what's been queried and how many tokens were saved, and inspect or clean the on-disk cache. | `admin` (`status` · `repo` · `rescan` · `cache_stats` · `gc` · `cache_clear` · `telemetry`) |
 | **Machine registry** | Machine-wide repo/worktree/branch coordination, backed by the daemon's always-on registry. Advisory claims let agent sessions avoid colliding on the same worktree. | `workspace` (`workspaces` · `worktrees` · `branches` · `claim` · `release`) |
@@ -318,10 +318,30 @@ The MCP and CLI paths need `basemind` available on your system. (The plugin does
 
 <!-- markdownlint-enable MD013 -->
 
-The Homebrew / npm / pip / GitHub downloads include the full feature set — documents, OCR, search,
-shared memory, and agent comms — so the first run downloads the models it
+The Homebrew / npm / pip / GitHub downloads are built with `full` — documents, OCR, named-entity
+recognition, search, shared memory, and agent comms — so the first run downloads the models it
 needs. The plain `cargo install` builds the code-map and git tools only: the one-shot CLI works, but
 `basemind serve` relays to the daemon and so needs the `comms` feature (`--features full` has it).
+
+A source build picks its document tiers by Cargo feature:
+
+<!-- markdownlint-disable MD013 -->
+
+| Feature | Adds | In `full` |
+|---|---|---|
+| `documents` | Document search over local files: PDF (text layer), Office formats, spreadsheets, email, HTML, XML (SVG text is read as XML), Markdown/MDX and Jupyter notebooks, with chunking, language detection, quality scoring, keywords, extractive summaries, the cross-encoder reranker and embeddings. No OCR, no NER. | yes |
+| `documents-ocr` | `documents` plus Tesseract OCR: raster images and scanned PDFs (no text layer). Runs implicitly, no configuration. | yes |
+| `documents-ner` | `documents` plus ONNX named-entity recognition (GLiNER): `[documents.ner]` and the `entity_category` search filter. | yes |
+| `documents-ocr-paddle` | `documents-ocr` plus PaddleOCR as an optional fallback stage. Source builds only. | no |
+
+<!-- markdownlint-enable MD013 -->
+
+`--features documents` alone no longer includes OCR or NER; use
+`--features "documents documents-ocr documents-ner"` (or `full`) to keep both. Without
+`documents-ocr`, raster images are not indexed as documents and a PDF with no text layer is reported
+as a failed extraction ("no text extracted (OCR not compiled in)"). Without `documents-ner`,
+`[documents.ner] enabled = true` has no effect and logs a warning, and a document search with
+`entity_category` returns an error naming the feature.
 
 ### Get started
 
@@ -378,7 +398,7 @@ activity by type, then tokens saved, then unread messages. Adjust with
 <p align="center"><em>The same engine from the CLI — <code>scan</code>, then symbol / reference / blame queries.</em></p>
 
 <p align="center"><img src="docs/media/semantic-demo.gif" alt="Semantic search over the documents store" width="820"></p>
-<p align="center"><em>Searching documents by meaning, not keywords, across 90+ formats.</em></p>
+<p align="center"><em>Searching documents by meaning, not keywords, across PDFs, Office files, HTML and email.</em></p>
 
 <p align="center"><img src="docs/demos/code-review-panel.gif" alt="Three named reviewer agents posting findings to a shared repo-scoped thread, replying to each other, and an orchestrator synthesizing a verdict over the comms CLI" width="820"></p>
 <p align="center"><em>Multi-agent code-review panel: named reviewers coordinate in a repo-scoped thread (post, reply, synthesize) — entirely over <code>basemind agents</code>.</em></p>
@@ -897,9 +917,8 @@ extension_denylist = []
 # deletes the vector rows of documents that stop being eligible on the next scan.
 embed_include = []
 embed_exclude = []
-# Route archives (.zip/.tar/.jar/…) into the recursive extractor. Off by default so one archive
-# can't explode into thousands of embeds; true binaries are always skipped.
-extract_archives = false
+# `extract_archives` is still accepted and ignored: archive extraction was removed, so archives
+# (.zip/.tar/.jar/…) are always skipped, and `true` logs a warning.
 
 [code_search]
 enabled = true
@@ -930,16 +949,17 @@ max_footprint_mb = "auto"
 # Byte budget (MiB) for the MCP read stack's decoded-outline cache, per workspace. 0 = unbounded.
 # A miss costs one blob read and never changes an answer.
 max_map_cache_mb = 256
-# ONNX Runtime execution provider for embeddings, reranking, layout detection and NER: cpu (default)
+# ONNX Runtime execution provider for embeddings, reranking and NER: cpu (default)
 # | auto | coreml | cuda | tensorrt. `auto` restores the platform default (CoreML on macOS), which
 # measured 7.6 GB resident for one tiny document against 0.8 GB on cpu.
 onnx_provider = "cpu"
 ```
 
-**Overrides.** Only the `documents.*` and `llm.*` keys can be overridden, by a CLI flag or its
+**Overrides.** Only the `documents.*` keys can be overridden, by a CLI flag or its
 environment variable (each flag's name is in `--help`; the variable is the flag upper-cased with a
-`BASEMIND_` prefix and underscores, e.g. `--llm-model` is `BASEMIND_LLM_MODEL`, `--documents-overlap`
-is `BASEMIND_DOCUMENTS_OVERLAP`). Every other setting is file-only. Overrides apply to the CLI
+`BASEMIND_` prefix and underscores, e.g. `--documents-overlap` is `BASEMIND_DOCUMENTS_OVERLAP`).
+The `--llm-*` flags and `BASEMIND_LLM_*` variables are still accepted and ignored (see Deprecated
+keys below). Every other setting is file-only. Overrides apply to the CLI
 command they are passed to (the MCP tools do not accept them); a daemon-hosted scan or read
 stack loads only the file (plus the daemon caps below), so set those keys in `basemind.toml` for
 daemon workloads. Overrides are validated after merging, so an override cannot smuggle in a value
@@ -951,12 +971,9 @@ reach outside the process are gated on the operator's environment:
 
 | Setting in the repo's file | Honoured only when |
 |---|---|
-| `[llm] base_url` | `BASEMIND_ALLOW_REPO_LLM=1`; otherwise ignored with a warning (a clone could aim it at a host that collects your API key and document text). Pass it by `--llm-base-url` / `BASEMIND_LLM_BASE_URL` instead. |
-| `[llm] api_key = { env = "NAME" }` | `NAME` is the chosen provider's standard variable (`OPENAI_API_KEY` for `openai/...`, `ANTHROPIC_API_KEY` for `anthropic/...`, ...) or `BASEMIND_LLM_API_KEY`, or `BASEMIND_ALLOW_REPO_LLM=1`. |
 | `[scan] follow_symlinks = true` | `BASEMIND_ALLOW_FOLLOW_SYMLINKS=1`; otherwise reset to `false` with a warning (a tracked link can point at `~/.ssh`). |
 | `[scan] floor_allow` (a credential entry: `.env`, `*.pem`, `id_rsa`, ...) | `BASEMIND_ALLOW_REPO_CREDENTIALS=1`; otherwise the entry is ignored with a warning and the secret stays excluded (a clone could otherwise un-exclude your untracked `.env` and have every agent query it). Entries for build artifacts (`build`, `vendor`) need no grant. |
 | `[scan] extra_roots` | `BASEMIND_ALLOW_EXTRA_ROOTS=1` (every workspace this process scans) or a list of absolute workspace roots separated by `:` (`;` on Windows), which grants only those workspaces and their descendants. A relative entry is ignored with a warning, as is any other non-truthy word (`on`). A daemon is one long-lived process serving many repositories, so prefer the list form there: the bare `1` also opens `extra_roots` for any workspace it serves later. Credential directories (`.ssh`, `.aws`, `.gnupg`, `/etc`) and filesystem roots are refused even with the grant. |
-| `[documents] extract_archives = true` | In the daemon only: `BASEMIND_DAEMON_ALLOW_EXTRACT_ARCHIVES=1` in the daemon's environment; otherwise reset to `false` with a warning. |
 
 Grant variables accept `1`, `true` or `yes` (case-insensitive). They are read from the process
 environment; the env and CLI override layers are operator-supplied and never gated.
@@ -1018,6 +1035,20 @@ logs a warning: `[watch] live_l2`, `[cache] file_map_lru`, `[mcp] transport`, `[
 `max_messages_per_room` / `retention_secs` / `max_rooms` / `workspace_root`,
 `[documents.ocr] backend` / `languages`, and `[documents.language] preferred_languages`.
 
+**Deprecated keys.** These are still accepted so an older `basemind.toml` keeps loading, and are
+ignored with a one-time warning:
+
+- The `[llm]` table (`model`, `api_key`, `base_url`, `temperature`, `timeout_secs`, `max_retries`,
+  `max_tokens`), the `--llm-*` flags on `basemind scan` and the `BASEMIND_LLM_*` variables. Nothing
+  calls a language model any more (the reranker is a local ONNX cross-encoder), so
+  `BASEMIND_ALLOW_REPO_LLM` has nothing to grant.
+- `[documents] extract_archives`: archive extraction was removed and archives are always skipped;
+  `BASEMIND_DAEMON_ALLOW_EXTRACT_ARCHIVES` has no effect. `max_archive_bytes` /
+  `max_archive_entries` still apply: they bound the zip containers that Office files (docx, pptx,
+  xlsx, odt) are.
+- `[documents.summarization] strategy = "abstractive"`: extractive (TextRank) summaries are used.
+- `[documents.ner] backend = "llm"`: no entities are extracted.
+
 **Removed sections.** `[crawl]` configured web crawling and `[shells]` configured agent shells; both
 were removed. The tables are still accepted so an older `basemind.toml` keeps loading (`basemind
 init` used to write an empty `[crawl]`); their contents are not validated or read, and a table with
@@ -1025,8 +1056,8 @@ keys in it logs one warning.
 
 **Config changes take effect on the next scan.** Cached chunks and documents carry a fingerprint of
 the settings that shape them (`[code_search]` `max_characters` / `overlap` / `max_chunks_per_file`;
-`[documents]` chunk size, page cap, language detection, keywords, NER, summarization, `extract_archives`,
-`[resources] document_models` and `[llm] model`), so changing one re-chunks or re-extracts only the
+`[documents]` chunk size, page cap, language detection, keywords, NER, summarization and
+`[resources] document_models`), so changing one re-chunks or re-extracts only the
 affected files. Embedding scope (`embed`, `embed_include`, `embed_exclude`, and the `enabled` switches)
 is reconciled too: the first scan after a change deletes the vector rows of files that are no longer
 eligible (and, when `[code_search] enabled = false`, their keyword postings) and rebuilds the rows of

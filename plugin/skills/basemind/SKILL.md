@@ -9,8 +9,8 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:42ab98274eaa707242ee3ddb3452665f8b24e3813e0a8f0708258bcce9f7d2f5
-Source-Hash: blake3:ab6d245011e4f10e9bfc8132b1e23982de2b960c8785fb46e7a09f139139c603
+Content-Hash: blake3:28e9b102ec74e237da494e02b4b06d4d4879f454cc42473924045aef4c7ceec2
+Source-Hash: blake3:9daf6b8d0c9dc6113cc1da15a5fdf01cd6d78d41040e50a2762db8705229dd12
 Schema-Version: v1
 -->
 
@@ -28,8 +28,8 @@ without you reading whole files.
   YAML, TOML, XML, CSV, INI and similar files are documents, searched with `memory` mode `documents`.
 - **Full-text + symbol search** — `code` modes `grep` and `symbols`.
 - **Git intelligence** — history, blame, and structural diffs at symbol resolution, plus churn.
-- **Document RAG over 90+ file formats** — PDFs, Office, HTML, email, images (OCR), markdown and
-  config/data files → semantic search with cross-encoder reranking (`memory` mode `documents`).
+- **Document RAG** — PDFs, Office, HTML, email, images (OCR, when the build has `documents-ocr`),
+  markdown and config/data files → semantic search with cross-encoder reranking (`memory` mode `documents`).
 - **Shared memory** — per-repo, scope-keyed key-value + semantic memory across sessions.
 
 ## Dedicated per-capability skills

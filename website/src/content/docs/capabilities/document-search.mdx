@@ -5,10 +5,12 @@ description: Semantic and full-text search over PDFs, Office files, HTML, email,
 
 import { Aside, Badge, Card, CardGrid } from '@astrojs/starlight/components';
 
-basemind extracts 90+ file formats (PDF, Office, HTML, email, images via OCR) into a
+basemind extracts PDFs, Office files, spreadsheets, email, HTML, XML, Markdown and Jupyter
+notebooks (and, with OCR, raster images and scanned PDFs) into a
 LanceDB vector store and answers meaning-based queries with optional cross-encoder reranking.
 
-<Badge text="--features documents" /> or `--features full`
+<Badge text="--features documents" /> or `--features full`; OCR needs the `documents-ocr`
+feature and entity filtering needs `documents-ner` (both in `full`)
 
 ## Requirements
 
@@ -16,6 +18,13 @@ LanceDB vector store and answers meaning-based queries with optional cross-encod
   `full`). The other `memory` modes (`put`, `get`, `list`, `search`, `delete`) are
   gated on the separate `--features memory` (also in `full`). Without the relevant feature
   the tool is advertised but the mode's body returns an error.
+- OCR and named-entity recognition are separate Cargo features, `documents-ocr` and
+  `documents-ner`. The published binaries (Homebrew, npm, pip, GitHub releases) are built with
+  `full` and have both. A source build with `--features documents` alone has neither: raster
+  images are not indexed as documents, a PDF with no text layer is reported as a failed extraction
+  ("no text extracted (OCR not compiled in)"), `[documents.ner] enabled = true` logs a warning
+  and has no effect, and a search with `entity_category` returns an error naming `documents-ner`.
+- Archives (`.zip`, `.tar`, `.7z`, `.gz`) are never extracted.
 - Documents must be scanned first: `basemind scan` with the documents feature extracts
   and embeds them into the global cache.
 
@@ -41,7 +50,8 @@ at scan time — cross-encoder rerank score, named entities, and document summar
 Filter results by:
 
 - **`entity_category`** — narrow to documents mentioning entities like `PERSON`, `LOCATION`,
-  `ORGANIZATION` (NER-extracted at scan time).
+  `ORGANIZATION` (NER-extracted at scan time). Needs a build with `documents-ner`; without it
+  the call returns an error instead of an empty result.
 - **`keywords_contains`** — narrow to documents with a matching keyword (extracted at scan
   time).
 - **`mime_type`** — filter by file type, e.g. `"application/pdf"` or `"text/html"`.

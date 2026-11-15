@@ -38,7 +38,7 @@ different version there shares the same cache. Examples below write `basemind` f
   similar files are documents (`basemind memory documents`), not in the code map.
 - **Full-text + symbol search** — indexed regex over code content and substring symbol lookup.
 - **Git intelligence** — history, blame, and structural diffs at symbol resolution, plus churn.
-- **Document RAG over 90+ file formats** — PDFs, Office, HTML, email, images (OCR), markdown and config/data files → semantic search.
+- **Document RAG** — PDFs, Office, HTML, email, images (OCR, when the build has `documents-ocr`), markdown and config/data files → semantic search.
 - **Shared memory** — per-repo, scope-keyed key-value + semantic memory across sessions.
 - **Cache management** — stats, garbage collection, selective and full clears.
 

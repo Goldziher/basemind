@@ -9,8 +9,8 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:abbb1944b636a7a7f71bc514d82096742ad638df4fd186e2cadaba03bf1947fc
-Source-Hash: blake3:ab6d245011e4f10e9bfc8132b1e23982de2b960c8785fb46e7a09f139139c603
+Content-Hash: blake3:5140b69fea55f497600b3f999e29adfcf50740d44bf03f470ac79d4410f65d46
+Source-Hash: blake3:9daf6b8d0c9dc6113cc1da15a5fdf01cd6d78d41040e50a2762db8705229dd12
 Schema-Version: v1
 -->
 
@@ -36,7 +36,7 @@ different version there shares the same cache. Examples below write `basemind` f
   similar files are documents (`basemind memory documents`), not in the code map.
 - **Full-text + symbol search** — indexed regex over code content and substring symbol lookup.
 - **Git intelligence** — history, blame, and structural diffs at symbol resolution, plus churn.
-- **Document RAG over 90+ file formats** — PDFs, Office, HTML, email, images (OCR), markdown and config/data files → semantic search.
+- **Document RAG** — PDFs, Office, HTML, email, images (OCR, when the build has `documents-ocr`), markdown and config/data files → semantic search.
 - **Shared memory** — per-repo, scope-keyed key-value + semantic memory across sessions.
 - **Cache management** — stats, garbage collection, selective and full clears.
 

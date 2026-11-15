@@ -48,7 +48,7 @@ ONNX Runtime's platform default on macOS is CoreML, which compiles a new graph f
 Embedding a single 2 KB SVG measured 7.6 GB resident under CoreML against 0.8 GB on the CPU
 provider, which was also about three times faster end to end on that machine. A scan of a repository
 with images and office documents grew to 33 GB. `onnx_provider = "cpu"` is therefore the default for
-the embedder, reranker, layout detection and NER. Set `"auto"` to restore the platform default, or
+the embedder, reranker and NER. Set `"auto"` to restore the platform default, or
 pin `"coreml"`, `"cuda"` or `"tensorrt"`.
 
 Every process also runs ONNX Runtime with no memory-pattern planning and no retained CPU arena, so

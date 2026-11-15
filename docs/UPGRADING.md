@@ -60,6 +60,29 @@ resource and the daemon's `/ui` page; they have no replacement. `code` modes `ca
 who-calls-what questions. The daemon's HTTP front-end now serves `/mcp` only and takes the bearer
 token in the `Authorization` header only: `?token=` is refused.
 
+The `documents` cargo feature was split into tiers. `documents` is document search without OCR or
+named-entity recognition; `documents-ocr` adds Tesseract OCR (raster images and PDFs with no text
+layer) and `documents-ner` adds ONNX named-entity recognition (`[documents.ner]` and the
+`entity_category` filter). `full` includes all three, so the published binaries are unchanged except
+that they no longer contain PaddleOCR, which is the source-only `documents-ocr-paddle` feature. A
+source build that used `--features documents` needs
+`--features "documents documents-ocr documents-ner"` (or `full`) to keep OCR and NER. Without
+`documents-ocr`, raster images are not indexed as documents and a PDF with no text layer is a failed
+extraction ("no text extracted (OCR not compiled in)"); without `documents-ner`,
+`[documents.ner] enabled = true` logs a warning and has no effect, and a search with
+`entity_category` returns an error.
+
+Archive extraction, LLM-backed (abstractive) summarization and the LLM NER backend were removed, with
+HEIC/HEIF, SQLite, WordPerfect, HWP/HWPX and Apple iWork extraction and SVG rasterisation (SVG text
+is still read as XML); they have no replacement. These settings are still accepted and ignored, each
+with a one-time warning: `[documents] extract_archives = true` (archives are always skipped, and
+`BASEMIND_DAEMON_ALLOW_EXTRACT_ARCHIVES` has no effect),
+`[documents.summarization] strategy = "abstractive"` (extractive summaries are used),
+`[documents.ner] backend = "llm"` (no entities are extracted) and a non-empty `[llm]` table. The
+`--llm-*` flags on `basemind scan` and the `BASEMIND_LLM_*` variables are accepted and ignored too.
+`max_archive_bytes` and `max_archive_entries` still apply, to the zip containers that Office files
+are.
+
 Also check scripts for these behaviour changes:
 
 - Exit codes are `0` ok, `1` error, `2` usage, `3` writer lock held, `4` daemon unreachable, `130`

@@ -161,7 +161,8 @@ outlined as symbols, gated by `[documents] include` / `exclude` and the MIME all
 changes tier is purged from the old one on the next scan.
 
 - Reads PDFs, Office files, HTML, images, email, and the prose, data and config files above
-- Extracts text (with OCR for images)
+- Extracts text (OCR for images and scanned PDFs needs the `documents-ocr` Cargo feature, which the
+  published binaries include)
 - Chunks and embeds via LanceDB
 - Indexed by `memory` mode `documents`
 
