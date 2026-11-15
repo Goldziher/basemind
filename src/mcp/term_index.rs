@@ -104,7 +104,7 @@ impl FileTerms {
     /// separator between entries is not an identifier byte, so one pass over the buffer applies the
     /// same test [`crate::extract::l3::imports_mention`] applies per import.
     pub(crate) fn mentions_import(&self, finder: &memchr::memmem::Finder<'_>) -> bool {
-        !self.imports.is_empty() && crate::textmatch::find_whole(&self.imports, finder).is_some()
+        !self.imports.is_empty() && crate::textmatch::find_whole_segment(&self.imports, finder).is_some()
     }
 }
 

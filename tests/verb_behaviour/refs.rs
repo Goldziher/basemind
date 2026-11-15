@@ -246,3 +246,35 @@ async fn an_index_whose_resolve_pass_did_not_finish_says_so() {
         "a language without an engine: {rust}"
     );
 }
+
+const APP_TSX: &str = "import React from 'react';\nexport const app = React;\n";
+const DOM_TSX: &str = "import { render } from 'react-dom';\nexport const dom = render;\n";
+const RUNTIME_TSX: &str = "import { jsx } from 'react/jsx-runtime';\nexport const runtime = jsx;\n";
+
+/// A hyphen continues a package name: `react-dom` is another package, `react/jsx-runtime` is a
+/// path inside `react`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn code_refs_importers_treat_a_hyphenated_package_as_another_package() {
+    let (_dir, client) = started_with(&[
+        ("web/app.tsx", APP_TSX),
+        ("web/dom.tsx", DOM_TSX),
+        ("web/runtime.tsx", RUNTIME_TSX),
+    ])
+    .await;
+
+    let react = call(
+        &client,
+        "code_refs",
+        json!({ "name": "react", "relation": "importers" }),
+    )
+    .await;
+    assert_eq!(react["paths"], json!(["web/app.tsx", "web/runtime.tsx"]), "{react}");
+
+    let dom = call(
+        &client,
+        "code_refs",
+        json!({ "name": "react-dom", "relation": "importers" }),
+    )
+    .await;
+    assert_eq!(dom["paths"], json!(["web/dom.tsx"]), "{dom}");
+}

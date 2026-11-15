@@ -21,7 +21,7 @@ pub fn dependents_of<P: AsRef<Path>>(module: &str, index: &[(P, Vec<Import>)]) -
 }
 
 /// Whether one file's import list names `module` on identifier boundaries — the per-file
-/// predicate behind [`dependents_of`]. See [`crate::textmatch::find_whole`].
+/// predicate behind [`dependents_of`]. See [`crate::textmatch::find_whole_segment`].
 ///
 /// Exposed separately so a caller that STREAMS the corpus (the MCP `dependents` mode, which reads
 /// outlines one bounded chunk at a time) can apply the identical match without first materialising
@@ -29,10 +29,9 @@ pub fn dependents_of<P: AsRef<Path>>(module: &str, index: &[(P, Vec<Import>)]) -
 /// substring automaton is compiled once per query, not once per file.
 pub fn imports_mention(module: &str, module_finder: &memchr::memmem::Finder<'_>, imports: &[Import]) -> bool {
     imports.iter().any(|imp| {
-        let module_match = imp
-            .module
-            .as_deref()
-            .is_some_and(|m| m == module || crate::textmatch::find_whole(m.as_bytes(), module_finder).is_some());
-        module_match || crate::textmatch::find_whole(imp.raw.as_bytes(), module_finder).is_some()
+        let module_match = imp.module.as_deref().is_some_and(|m| {
+            m == module || crate::textmatch::find_whole_segment(m.as_bytes(), module_finder).is_some()
+        });
+        module_match || crate::textmatch::find_whole_segment(imp.raw.as_bytes(), module_finder).is_some()
     })
 }
