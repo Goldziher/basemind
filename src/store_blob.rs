@@ -508,6 +508,19 @@ impl Store {
         self.blobs_dir.join(format!("{hash_hex}.fm.msgpack"))
     }
 
+    /// Whether the combined-filemap blob for `hash_hex` decodes as a current one. Reads and decodes
+    /// the blob, so it is for the pass after an unclean shutdown, where existing proves nothing
+    /// (see [`crate::scan_evidence::blobs_need_verifying`]); every other pass asks only `exists()`.
+    pub fn filemap_blob_is_intact(&self, hash_hex: &str) -> bool {
+        is_current_filemap_blob(&self.blob_path_fm_hex(hash_hex))
+    }
+
+    /// [`Self::filemap_blob_is_intact`] for a document blob.
+    #[cfg(feature = "documents")]
+    pub fn doc_blob_is_intact(&self, hash_hex: &str) -> bool {
+        is_current_single_blob(&self.blob_path_doc_hex(hash_hex))
+    }
+
     #[cfg(feature = "documents")]
     pub fn blob_path_doc(&self, hash: &Hash) -> PathBuf {
         let buf = hashing::hex_buf(hash);

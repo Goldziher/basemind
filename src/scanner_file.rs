@@ -124,8 +124,14 @@ pub(crate) fn run_candidates(
 /// True when the extraction blobs required to classify a file as `Unchanged` are present on disk for
 /// `hash_hex`: the combined-filemap blob always, plus the code-chunk sidecar when code-search
 /// chunking is enabled (so toggling the feature on re-chunks rather than being skipped as unchanged).
-fn extraction_sidecars_present(store: &Store, config: &Config, hash_hex: &str) -> bool {
-    let filemap_exists = store.blob_path_fm_hex(hash_hex).exists();
+fn extraction_sidecars_present(store: &Store, config: &Config, filters: &Filters, hash_hex: &str) -> bool {
+    // After an unclean shutdown a blob the fsynced file map names may be torn or empty, and a file
+    // skipped over it as unchanged would stay unreadable for good. ~keep
+    let filemap_exists = if filters.verify_blobs {
+        store.filemap_blob_is_intact(hash_hex)
+    } else {
+        store.blob_path_fm_hex(hash_hex).exists()
+    };
     #[cfg(feature = "code-search")]
     {
         filemap_exists && (!crate::scanner_code::should_chunk(config) || store.blob_path_chunk_hex(hash_hex).exists())
@@ -257,7 +263,7 @@ fn process_file(
         let mtime = mtime_nanos(&meta);
         if meta.len() == existing.size_bytes
             && mtime == existing.mtime
-            && extraction_sidecars_present(store, config, &existing.hash_hex)
+            && extraction_sidecars_present(store, config, filters, &existing.hash_hex)
             && embed_state_satisfied(store, config, filters, rel, &existing.hash_hex, embed)
         {
             // Bytes were not read, so a missing grep bloom (an index that predates it) is backfilled
@@ -309,7 +315,7 @@ fn process_file(
     let hex_buf = hashing::hex_buf(&hash);
     let hash_hex_str = hashing::hex_str(&hex_buf);
 
-    let sidecars_present = extraction_sidecars_present(store, config, hash_hex_str);
+    let sidecars_present = extraction_sidecars_present(store, config, filters, hash_hex_str);
     if let Some(existing) = store.lookup(rel)
         && existing.hash_hex == hash_hex_str
         && existing.language == lang
@@ -516,7 +522,11 @@ fn process_doc(
             &filters.doc_digest,
             filters.reflush_embeds,
         )
-        && store.blob_path_doc_hex(hash_hex).exists()
+        && if filters.verify_blobs {
+            store.doc_blob_is_intact(hash_hex)
+        } else {
+            store.blob_path_doc_hex(hash_hex).exists()
+        }
     {
         return FileResult::bare(rel.to_string(), FileStatus::DocUnchanged);
     }

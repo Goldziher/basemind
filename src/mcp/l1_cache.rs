@@ -322,6 +322,18 @@ impl L1Cache {
                 %error,
                 "blob was written by a different basemind version; run `basemind scan` with this one"
             );
+        } else if matches!(
+            error,
+            StoreError::CorruptBlob { .. } | StoreError::Decode(_) | StoreError::Decompression { .. }
+        ) && self.blobs_dir == crate::store::global_blobs_dir()
+        {
+            // A damaged blob (torn by a power loss: blobs are not fsynced) would be trusted for
+            // existing by every later scan. With the blob gone the next scan of the file finds
+            // nothing for its hash and extracts it again. Only the global store is repaired this
+            // way; a published base generation is immutable.
+            let path = self.blobs_dir.join(format!("{hash_hex}.fm.msgpack"));
+            let dropped = std::fs::remove_file(&path).is_ok();
+            tracing::warn!(hash = hash_hex, %error, dropped, "damaged blob for an indexed file; rescan to rebuild it");
         } else {
             tracing::warn!(hash = hash_hex, %error, "blob for an indexed file could not be read");
         }
@@ -497,6 +509,23 @@ mod tests {
         let huge = Arc::new(l1_with("huge", 1_000_000));
         cache.admit("ff", &huge);
         assert!(cache.load("ff").is_some(), "the newest entry is never evicted");
+    }
+
+    /// A damaged blob must not stay where every later scan would trust it for existing.
+    #[test]
+    fn a_damaged_blob_is_dropped_so_the_next_scan_rebuilds_it() {
+        crate::store::init_isolated_cache();
+        let blobs = crate::store::global_blobs_dir();
+        std::fs::create_dir_all(&blobs).unwrap();
+        let hash = "d".repeat(64);
+        let path = blobs.join(format!("{hash}.fm.msgpack"));
+        let mut torn = crate::store_blob::frame_filemap(&l1_with("a", 64), None).unwrap();
+        torn.truncate(torn.len() / 2);
+        std::fs::write(&path, torn).unwrap();
+        let cache = L1Cache::new(blobs, 0);
+
+        assert!(cache.load(&hash).is_none());
+        assert!(!path.exists(), "the damaged blob must be removed");
     }
 
     /// `0` disables eviction entirely — the documented "unbounded" sentinel the equivalence test

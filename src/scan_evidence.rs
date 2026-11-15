@@ -61,7 +61,33 @@ pub fn read(cache_dir: &Path) -> Option<ScanInflight> {
 
 /// Remove the breadcrumb in a workspace cache dir. Returns whether one was actually removed.
 pub fn clear(cache_dir: &Path) -> bool {
+    note_unclean_scan(cache_dir);
     std::fs::remove_file(inflight_path(cache_dir)).is_ok()
+}
+
+/// Marker in a workspace cache dir: a scan of it never finished, so blobs the file map names may
+/// be torn. Blobs are written without an fsync while the file map is fsynced, so after a power
+/// loss the map can name a blob whose bytes never reached the disk.
+const VERIFY_BLOBS_FILE: &str = "verify-blobs";
+
+/// Turn a breadcrumb found in `cache_dir` into the durable request to verify blobs. Called wherever
+/// a breadcrumb is about to be replaced or removed by anything but the scan that wrote it, since a
+/// breadcrumb nobody retracted is the only trace an unclean shutdown leaves.
+fn note_unclean_scan(cache_dir: &Path) {
+    if inflight_path(cache_dir).exists() {
+        let _ = std::fs::write(cache_dir.join(VERIFY_BLOBS_FILE), b"");
+    }
+}
+
+/// Whether the next full scan of this workspace must validate each blob it would otherwise trust
+/// for merely existing.
+pub fn blobs_need_verifying(cache_dir: &Path) -> bool {
+    cache_dir.join(VERIFY_BLOBS_FILE).exists()
+}
+
+/// A full scan validated every blob it kept: withdraw the request.
+pub fn blobs_verified(cache_dir: &Path) {
+    let _ = std::fs::remove_file(cache_dir.join(VERIFY_BLOBS_FILE));
 }
 
 /// A live scan's breadcrumb. Hold it for the duration of the pass; dropping it retracts the claim.
@@ -84,6 +110,7 @@ impl ScanBreadcrumb {
     /// [`begin`](Self::begin) against an explicit cache dir, so tests need no global cache root.
     pub fn begin_in(cache_dir: &Path, root: &Path) -> Option<Self> {
         std::fs::create_dir_all(cache_dir).ok()?;
+        note_unclean_scan(cache_dir);
         let record = ScanInflight {
             started_unix: now_unix(),
             pid: std::process::id(),

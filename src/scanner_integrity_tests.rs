@@ -227,3 +227,34 @@ fn a_scan_never_overwrites_a_blob_another_basemind_version_wrote() {
     );
     assert!(store.read_l1_by_hex(&hash_hex).expect("read own blob").is_some());
 }
+
+/// Blobs are written without an fsync and the file map with one, so after a power loss the map can
+/// name a blob whose bytes never reached the disk. The breadcrumb a scan leaves when it never
+/// finished makes the next full pass validate blobs instead of trusting them for existing.
+#[test]
+fn the_pass_after_an_unclean_shutdown_rebuilds_a_torn_blob() {
+    init_isolated_cache();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    std::fs::write(root.join("torn.rs"), b"pub fn torn_blob_fixture() -> u32 { 7 }\n").expect("write");
+    let mut store = Store::open(root, VIEW_WORKING).expect("open");
+    assert_eq!(full_scan(root, &mut store).stats.updated, 1);
+    let hash_hex = store.lookup("torn.rs").expect("entry").hash_hex.clone();
+    let blob = store.blob_path_fm_hex(&hash_hex);
+
+    std::fs::write(&blob, b"").expect("tear the blob");
+    assert_eq!(
+        full_scan(root, &mut store).stats.skipped_unchanged,
+        1,
+        "an ordinary pass trusts the blob for existing: the hot path reads no blob"
+    );
+
+    // A scan that died without running a destructor leaves its breadcrumb behind.
+    std::mem::forget(crate::scan_evidence::ScanBreadcrumb::begin_in(&store.basemind_dir, root).expect("crumb"));
+    let report = full_scan(root, &mut store);
+
+    assert_eq!(report.stats.updated, 1, "the torn blob is rebuilt");
+    assert!(store.read_l1_by_hex(&hash_hex).expect("read").is_some());
+    assert!(!crate::scan_evidence::blobs_need_verifying(&store.basemind_dir));
+    assert_eq!(full_scan(root, &mut store).stats.skipped_unchanged, 1);
+}

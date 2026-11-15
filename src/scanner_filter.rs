@@ -254,6 +254,9 @@ pub(crate) struct Filters {
     /// since the last scan: unchanged files must then be re-flushed so their vector rows are rebuilt.
     #[cfg_attr(not(any(feature = "code-search", feature = "documents")), allow(dead_code))]
     pub(crate) reflush_embeds: bool,
+    /// Validate each blob the pass would otherwise trust for existing, because a scan of this
+    /// workspace never finished (see [`crate::scan_evidence::blobs_need_verifying`]).
+    pub(crate) verify_blobs: bool,
 }
 
 impl Filters {
@@ -311,6 +314,7 @@ impl Filters {
             code_embed: Gate::build(&config.code_search.embed_include, &config.code_search.embed_exclude)?,
             extra_prefixes,
             reflush_embeds: false,
+            verify_blobs: false,
         })
     }
 

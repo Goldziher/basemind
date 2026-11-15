@@ -465,6 +465,7 @@ pub fn scan_with_observer(
         .then(|| crate::scanner_policy::detect(store, config))
         .filter(|p| matches!(embed, EmbedMode::Inline) && p.changed);
     filters.reflush_embeds = policy.as_ref().is_some_and(|p| p.reflush);
+    filters.verify_blobs = crate::scan_evidence::blobs_need_verifying(&store.basemind_dir);
     advance(&mut breadcrumb, &phase_peaks, PHASE_CANDIDATES, None);
     let candidates = candidates_for_source(root, config, &filters, &source, cancel)?;
     debug!(count = candidates.len(), kind = source.label(), "scan candidates");
@@ -624,6 +625,10 @@ pub fn scan_with_observer(
         tracing::debug!(%error, "shared Lance snapshot publication failed");
     }
     crate::scanner_integrity::finish_index_writes(store);
+    // A whole working-tree pass has now validated every blob it kept. ~keep
+    if filters.verify_blobs && matches!(source, ScanSource::WorkingTree) {
+        crate::scan_evidence::blobs_verified(&store.basemind_dir);
+    }
     phase_peaks.sample_now();
     report.phase_peaks = phase_peaks.snapshot();
     Ok(report)
