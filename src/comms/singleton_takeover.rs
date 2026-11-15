@@ -77,8 +77,10 @@ pub enum Reclaimed {
         /// What it answered to the end-of-window `Stop`.
         stop: StopOutcome,
     },
-    /// Something is still there and answers nothing, but `daemon.pid` does not name a live comms
-    /// daemon (or not the expected one), so nothing was signalled.
+    /// Something is still there and answers nothing, but it cannot be tied to this generation's
+    /// daemon: `daemon.pid` does not name a live comms daemon (or not the expected one), or
+    /// `daemon.lock` is free, so whoever the pidfile names does not hold the generation. Nothing
+    /// was signalled.
     Unidentified,
     /// The process `daemon.pid` names was signalled and is still alive.
     Survived {
@@ -238,9 +240,12 @@ pub(super) async fn settle_existing(
 /// means `reported_pid` no longer runs, or, when the caller has no pid from the daemon itself, that
 /// nothing holds `daemon.lock` and nothing accepts a connection at the endpoint. A daemon still
 /// there at the end of the window is asked again, `Stop` and then `Ping`, and is left alone if it
-/// answers either. Only one silent to both is signalled, and only the process this generation's
-/// `daemon.pid` names when read at that moment; given a `reported_pid`, the two must agree. A pid
-/// taken from the wire alone could be anything: an in-process test broker reports its host.
+/// answers either. Only one silent to both is signalled, only while `daemon.lock` still reads held
+/// at that moment, and only the process this generation's `daemon.pid` names then; given a
+/// `reported_pid`, the two must agree. A pid taken from the wire alone could be anything: an
+/// in-process test broker reports its host. And a pid, reported or recorded, outlives its process:
+/// a daemon that died inside the exit window leaves both naming a number the system may have given
+/// to something else, whereas its lock went with it.
 pub async fn reclaim_holder(paths: &CommsPaths, reported_pid: Option<u32>, rules: ReclaimRules) -> Reclaimed {
     let socket = paths.socket_path.as_path();
     let gone = || match reported_pid {
@@ -261,6 +266,14 @@ pub async fn reclaim_holder(paths: &CommsPaths, reported_pid: Option<u32>, rules
     }
     if gone() {
         return Reclaimed::Gone { forced: false };
+    }
+    if daemon_lock::lock_state(&paths.comms_dir) != LockState::Held {
+        // No daemon holds this generation. Whatever the pids name now is not it.
+        return if endpoint_accepts(socket) {
+            Reclaimed::Unidentified
+        } else {
+            Reclaimed::Gone { forced: false }
+        };
     }
     let Some(holder) = daemon_lock::recorded_holder(&paths.comms_dir)
         .filter(|holder| holder.kind == DaemonKind::Comms && reported_pid.is_none_or(|pid| holder.pid == pid))

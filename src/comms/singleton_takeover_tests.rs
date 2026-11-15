@@ -369,6 +369,7 @@ async fn a_silent_daemon_is_signalled_when_this_generations_pidfile_names_it() {
     let dir = tempfile::tempdir().expect("tempdir");
     let stand_in = StandIn::spawn();
     let paths = generation(dir.path(), Some(stand_in.0));
+    let _lock = hold_lock(dir.path());
     let pid = stand_in.0;
     let _daemon = Scripted::serve(&paths.socket_path, move |request| match request {
         CommsRequest::Status => Some(status(pid, OLDER, OTHER_PROTO)),
@@ -704,6 +705,7 @@ async fn with_no_reported_pid_a_silent_daemon_is_terminated_as_the_process_the_p
     let dir = tempfile::tempdir().expect("tempdir");
     let stand_in = StandIn::spawn();
     let paths = generation(dir.path(), Some(stand_in.0));
+    let _lock = hold_lock(dir.path());
     let daemon = Scripted::serve(&paths.socket_path, |_| None);
 
     assert_eq!(
@@ -712,6 +714,38 @@ async fn with_no_reported_pid_a_silent_daemon_is_terminated_as_the_process_the_p
     );
     assert!(!stand_in.alive(), "the recorded, silent daemon is terminated");
     assert_eq!(daemon.asked(), ["stop"], "after it was asked once more");
+}
+
+/// The daemon died inside the exit window and its pid went to another process: the status reply
+/// and the pidfile both still name that number, and it is live. The lock is what the dead daemon
+/// could not keep, so a lock that reads free means there is nobody to signal, whoever the caller
+/// thinks it is addressing.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_live_process_under_the_daemons_old_pid_is_not_signalled_once_the_lock_is_free() {
+    for reported in [true, false] {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let reused = StandIn::spawn();
+        let paths = generation(dir.path(), Some(reused.0));
+        drop(hold_lock(dir.path()));
+        let silent = Scripted::serve(&paths.socket_path, |_| None);
+
+        let listening = reclaim_holder(&paths, reported.then_some(reused.0), QUICK).await;
+        assert_eq!(
+            listening,
+            Reclaimed::Unidentified,
+            "reported pid {reported}: a socket that still accepts is somebody, but not the lock's holder"
+        );
+        assert!(reused.alive(), "reported pid {reported}: nothing is signalled");
+
+        drop(silent);
+        let gone = reclaim_holder(&paths, reported.then_some(reused.0), QUICK).await;
+        assert_eq!(
+            gone,
+            Reclaimed::Gone { forced: false },
+            "reported pid {reported}: a free lock and a closed socket are a daemon that is gone"
+        );
+        assert!(reused.alive(), "reported pid {reported}: nothing is signalled");
+    }
 }
 
 /// Something is plainly still there — it holds the lock, or its socket still accepts — and the
@@ -769,6 +803,7 @@ async fn a_store_error_spares_the_daemon_unless_the_caller_counts_it_as_silence(
     let dir = tempfile::tempdir().expect("tempdir");
     let stand_in = StandIn::spawn();
     let paths = generation(dir.path(), Some(stand_in.0));
+    let _lock = hold_lock(dir.path());
     let _daemon = Scripted::serve(&paths.socket_path, |request| match request {
         CommsRequest::Stop => Some(store_error()),
         CommsRequest::Ping => Some(CommsResponse::Pong),

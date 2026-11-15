@@ -103,6 +103,14 @@ impl Machine {
         std::fs::write(registry.join("comms-scripted.pid"), &record).expect("write registry record");
     }
 
+    /// Hold this generation's daemon lock, as the daemon `record_daemon` names does while it runs.
+    fn hold_daemon_lock(&self) -> std::fs::File {
+        use fs2::FileExt as _;
+        let lock = std::fs::File::create(self.generation.join("daemon.lock")).expect("create daemon.lock");
+        lock.try_lock_exclusive().expect("hold the daemon lock");
+        lock
+    }
+
     /// Record `pid` in the machine registry only, leaving the pidfile to name someone else.
     fn register_only(&self, pid: u32, pidfile_pid: u32) {
         self.record_daemon(pid);
@@ -507,6 +515,7 @@ fn comms_stop_terminates_a_silent_daemon_on_another_protocol_that_the_pidfile_na
     let machine = Machine::new();
     let stand_in = StandIn::spawn();
     machine.record_daemon(stand_in.0);
+    let _lock = machine.hold_daemon_lock();
     let _daemon = Scripted::serve(&machine.socket(), |request| match request {
         CommsRequest::Hello { .. } => Some(proto_skew()),
         _ => None,
@@ -560,6 +569,7 @@ fn comms_stop_signals_the_process_the_pidfile_names_when_the_exit_window_ends() 
     let at_start = StandIn::spawn();
     let at_the_end = StandIn::spawn();
     machine.record_daemon(at_start.0);
+    let _lock = machine.hold_daemon_lock();
     let _daemon = Scripted::serve(&machine.socket(), |request| match request {
         CommsRequest::Hello { .. } => Some(proto_skew()),
         _ => None,
