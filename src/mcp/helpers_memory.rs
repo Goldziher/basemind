@@ -117,7 +117,7 @@ pub(super) async fn memory_delete(_state: &ServerState, _p: MemoryDeleteParams) 
 /// `docs_search`: semantic search over indexed documents.
 #[cfg(feature = "documents")]
 pub(super) async fn docs_search(state: &ServerState, p: DocsSearchParams) -> Result<CallToolResult, McpError> {
-    use super::helpers_page::{RANKED_LIMIT_DEFAULT, fetch_limit, page_ranked, ranked_offset};
+    use super::helpers_page::{RANKED_DEPTH, RANKED_LIMIT_DEFAULT, page_ranked, ranked_offset};
 
     let offset = ranked_offset(p.cursor.as_ref())?;
     let limit = p.limit.unwrap_or(RANKED_LIMIT_DEFAULT);
@@ -125,7 +125,7 @@ pub(super) async fn docs_search(state: &ServerState, p: DocsSearchParams) -> Res
         state,
         super::types::SearchDocumentsParams {
             query: p.query,
-            limit: Some(fetch_limit(offset, limit)),
+            limit: Some(RANKED_DEPTH),
             max_tokens: None,
             // The page is cut out of the structured response, which only the JSON encoding has, so
             // `[documents.output] format = "toon"` does not apply to this tool.

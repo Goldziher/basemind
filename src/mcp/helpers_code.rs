@@ -117,13 +117,13 @@ pub(super) async fn code_symbols(state: &ServerState, p: CodeSymbolsParams) -> R
 pub(super) async fn code_search(state: &ServerState, p: CodeSearchParams) -> Result<CallToolResult, McpError> {
     #[cfg(feature = "code-search")]
     {
-        use super::helpers_page::{RANKED_LIMIT_DEFAULT, fetch_limit, page_ranked, ranked_offset};
+        use super::helpers_page::{RANKED_DEPTH, RANKED_LIMIT_DEFAULT, page_ranked, ranked_offset};
 
         let offset = ranked_offset(p.cursor.as_ref())?;
         let limit = p.limit.unwrap_or(RANKED_LIMIT_DEFAULT);
         let search = super::types_code::SearchCodeParams {
             query: p.query,
-            limit: Some(fetch_limit(offset, limit)),
+            limit: Some(RANKED_DEPTH),
             max_tokens: None,
             // The page is cut out of the structured response, which only the JSON encoding has, so
             // `[documents.output] format = "toon"` does not apply to this tool.

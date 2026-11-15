@@ -1,8 +1,12 @@
 //! Offset paging for the ranked-search tools (`code_search`, `docs_search`).
 //!
 //! A ranked retrieval has no natural resume key: page two is "the next best hits". The retrieval
-//! bodies return a top-k, so a page is cut out of a larger top-k here, on the tool's own response,
+//! bodies return a top-k, so a page is cut out of one top-k here, on the tool's own response,
 //! instead of teaching every retrieval pipeline about cursors.
+//!
+//! That top-k has the same depth for every page of a query. Fusion and rerank depth follow the
+//! retrieval size, so a retrieval sized to the page ranked the same hits differently on page two
+//! than on page one, and a hit could be repeated or skipped between them.
 
 use rmcp::ErrorData as McpError;
 use rmcp::model::CallToolResult;
@@ -19,8 +23,8 @@ use super::cursor::Cursor;
     )
 )]
 pub(super) const RANKED_LIMIT_DEFAULT: u32 = 10;
-/// Deepest rank a ranked tool retrieves; paging stops here.
-pub(super) const RANKED_DEPTH_MAX: u32 = 100;
+/// How many hits a ranked tool retrieves, whatever page is asked for; paging stops here.
+pub(super) const RANKED_DEPTH: u32 = 100;
 /// Snapshot id carried by ranked cursors. A ranked page is recomputed from the query, so there is
 /// no index generation to pin; the constant only tells these cursors apart from the others.
 const RANKED_SNAPSHOT: u32 = 0x7261_6e6b;
@@ -37,16 +41,11 @@ pub(super) fn ranked_offset(cursor: Option<&Cursor>) -> Result<u32, McpError> {
             None,
         ));
     }
-    Ok(u32::try_from(offset).unwrap_or(RANKED_DEPTH_MAX))
+    Ok(u32::try_from(offset).unwrap_or(RANKED_DEPTH))
 }
 
-/// How many hits to retrieve so the page at `offset` can be cut out of them.
-pub(super) fn fetch_limit(offset: u32, limit: u32) -> u32 {
-    offset.saturating_add(limit).min(RANKED_DEPTH_MAX)
-}
-
-/// Cut the page `[offset, offset + limit)` out of the ranked list at `list_key`, apply the token
-/// budget, and attach `next_cursor` when deeper ranks may exist.
+/// Cut the page `[offset, offset + limit)` out of the ranked list at `list_key` (a retrieval of
+/// [`RANKED_DEPTH`]), apply the token budget, and attach `next_cursor` when the list goes on.
 ///
 /// A response with no structured content (a TOON-encoded one) is returned untouched: it is page
 /// one and carries no cursor.
@@ -67,8 +66,7 @@ pub(super) fn page_ranked(
     let page: Vec<Value> = hits.into_iter().skip(offset as usize).take(limit as usize).collect();
     let budgeted = super::budget::apply_budget(page, max_tokens);
     let next = offset + budgeted.items.len() as u32;
-    let retrieval_was_full = fetched >= fetch_limit(offset, limit);
-    let more = !budgeted.items.is_empty() && next < RANKED_DEPTH_MAX && (next < fetched || retrieval_was_full);
+    let more = !budgeted.items.is_empty() && next < fetched.min(RANKED_DEPTH);
     body.insert(list_key.to_string(), Value::Array(budgeted.items));
     if budgeted.budgeted {
         body.insert("budgeted".to_string(), Value::Bool(true));
@@ -98,26 +96,35 @@ mod tests {
     }
 
     #[test]
-    fn first_page_of_a_full_retrieval_offers_a_cursor() {
-        let page = page_ranked(ranked(10), "hits", 0, 10, None).expect("page");
+    fn a_page_with_ranks_left_in_the_retrieval_offers_a_cursor() {
+        let page = page_ranked(ranked(25), "hits", 0, 10, None).expect("page");
         assert_eq!(body(&page)["hits"].as_array().expect("hits").len(), 10);
         assert!(body(&page).get("next_cursor").is_some());
     }
 
+    /// The retrieval has the same depth for every page, so a page that uses it up is the last
+    /// one. Sized to the page, a retrieval that came back full only meant "ask again, deeper".
     #[test]
-    fn a_short_retrieval_is_the_last_page() {
-        let page = page_ranked(ranked(4), "hits", 0, 10, None).expect("page");
-        assert_eq!(body(&page)["hits"].as_array().expect("hits").len(), 4);
-        assert!(body(&page).get("next_cursor").is_none());
+    fn a_page_that_uses_up_the_retrieval_is_the_last_page() {
+        let exact = page_ranked(ranked(10), "hits", 0, 10, None).expect("page");
+        assert_eq!(body(&exact)["hits"].as_array().expect("hits").len(), 10);
+        assert!(body(&exact).get("next_cursor").is_none());
+
+        let short = page_ranked(ranked(4), "hits", 0, 10, None).expect("page");
+        assert_eq!(body(&short)["hits"].as_array().expect("hits").len(), 4);
+        assert!(body(&short).get("next_cursor").is_none());
+
+        let deepest = page_ranked(ranked(RANKED_DEPTH as usize), "hits", RANKED_DEPTH - 10, 10, None).expect("page");
+        assert_eq!(body(&deepest)["hits"].as_array().expect("hits").len(), 10);
+        assert!(body(&deepest).get("next_cursor").is_none());
     }
 
     #[test]
     fn the_second_page_starts_where_the_first_stopped() {
-        let first = page_ranked(ranked(10), "hits", 0, 10, None).expect("first");
+        let first = page_ranked(ranked(13), "hits", 0, 10, None).expect("first");
         let cursor: Cursor = serde_json::from_value(body(&first)["next_cursor"].clone()).expect("cursor");
         let offset = ranked_offset(Some(&cursor)).expect("offset");
         assert_eq!(offset, 10);
-        assert_eq!(fetch_limit(offset, 10), 20);
         let second = page_ranked(ranked(13), "hits", offset, 10, None).expect("second");
         let ranks: Vec<u64> = body(&second)["hits"]
             .as_array()
