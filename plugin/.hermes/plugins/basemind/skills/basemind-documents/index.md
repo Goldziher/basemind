@@ -1,10 +1,10 @@
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:fe1d8647ad773c099177f582f6446223487c93de0844cb37cfd1c359bcc72abc
-Source-Hash: blake3:db4a7e096e7668a5cc182a8dd415d3c817b788e6f726a212c104355e2894faf2
+Content-Hash: blake3:81b60cd52d7a1824903a3223b59a19a8699e8d53b93e0500187b5c4d9a93369a
+Source-Hash: blake3:391e73b6e51c82d5f31f582604618cbac88d6172ab69deb554fb9583d0150163
 Schema-Version: v1
 -->
 
 # Concepts
 
-- [Basemind Documents](SKILL.md) - Semantic search over documents and the web via basemind's RAG store — PDFs, Office, HTML, email, Jupyter notebooks, images (OCR), and web pages, with cross-encoder reranking, keyword and named-entity (NER) filters, and per-document summaries. Reach for it whenever the user asks to "search the docs / PDFs", "find where a topic is discussed", "pull this URL into context", or "what does the documentation say about X".
+- [Basemind Documents](SKILL.md) - Semantic search over documents via basemind's RAG store — PDFs, Office, HTML, email, Jupyter notebooks, and images (OCR), with cross-encoder reranking, keyword and named-entity (NER) filters, and per-document summaries. Reach for it whenever the user asks to "search the docs / PDFs", "find where a topic is discussed", or "what does the documentation say about X".
