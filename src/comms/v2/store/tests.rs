@@ -15,6 +15,7 @@ use crate::comms::v2::api::{
 };
 use crate::comms::v2::conformance::{ConformanceHarness, Repo, default_caller};
 
+mod concurrency;
 mod lifecycle;
 mod retention;
 mod seen;
@@ -321,70 +322,6 @@ fn timestamps_never_go_back_when_the_clock_does() {
 
     let times: Vec<i64> = reply.messages.iter().map(|message| message.ts_micros).collect();
     assert_eq!(times, [START_MICROS, START_MICROS + 1, START_MICROS + 2]);
-}
-
-#[test]
-fn concurrent_posts_lose_nothing_and_number_each_thread_densely() {
-    const POSTERS: usize = 8;
-    const POSTS_EACH: usize = 40;
-    let harness = Harness::new();
-    let names: Vec<String> = (0..POSTERS).map(|n| format!("p{n}")).collect();
-    let recipients: Vec<&str> = names.iter().map(String::as_str).collect();
-    let shared = start(&harness, "a", "shared", &recipients);
-    let other = start(&harness, "a", "other", &recipients);
-    let before = harness.arrivals();
-
-    std::thread::scope(|scope| {
-        for name in &names {
-            let (harness, shared, other) = (&harness, &shared.thread, &other.thread);
-            scope.spawn(move || {
-                for n in 0..POSTS_EACH {
-                    let thread = if n % 2 == 0 { shared } else { other };
-                    harness
-                        .post(&caller(name), into(thread, &format!("{name} {n}")))
-                        .expect("post");
-                    harness.inbox(&caller(name), peek()).expect("inbox");
-                }
-            });
-        }
-    });
-
-    let posted = (POSTERS * POSTS_EACH) as u64;
-    assert_eq!(harness.arrivals(), before + posted);
-    let whole = InboxBody {
-        limit: Some(100),
-        ..history()
-    };
-    for thread in [&shared.thread, &other.thread] {
-        let mut seqs = Vec::new();
-        let mut cursor = None;
-        loop {
-            let page = harness
-                .inbox(
-                    &caller("a"),
-                    InboxBody {
-                        select: InboxSelect::Thread(thread.clone()),
-                        cursor: cursor.take(),
-                        ..whole.clone()
-                    },
-                )
-                .expect("inbox");
-            seqs.extend(page.messages.iter().map(|message| message.id.seq()));
-            cursor = page.next_cursor;
-            if cursor.is_none() {
-                break;
-            }
-        }
-        let expected: Vec<u64> = (1..=posted / 2 + 1).collect();
-        assert_eq!(seqs, expected, "sequence numbers of {thread} are dense");
-    }
-    let listed = harness
-        .threads_query(&caller("a"), ThreadQuery::default())
-        .expect("threads");
-    assert_eq!(
-        listed.threads.iter().map(|summary| summary.head).sum::<u64>(),
-        posted + 2
-    );
 }
 
 #[test]
