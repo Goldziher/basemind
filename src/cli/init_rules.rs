@@ -24,7 +24,7 @@ pub enum Capability {
     GitHistory,
     /// `find_files` — fuzzy fzf/fd-style filename / path search.
     FileFinding,
-    /// `agents` modes `post` / `inbox` — multi-agent thread coordination.
+    /// `agent_post` / `agent_inbox` / `agent_threads` — messaging other agents.
     AgentComms,
     /// `docs_search` — RAG over PDFs / Office / HTML / markdown / config.
     DocumentsRag,
@@ -117,8 +117,8 @@ impl Capability {
                 r#"`find_files {"query":"readme"}`"#,
             )],
             Capability::AgentComms => &[(
-                "Check the inbox, discover threads, or post to other agents",
-                r#"`agents {"mode":"inbox"}` / `{"mode":"thread_list"}` / `{"mode":"post", …}`"#,
+                "Read messages from other agents, find threads, or post to them",
+                r#"`agent_inbox {}` / `agent_threads {"query":"…"}` / `agent_post {"subject":"…","body":"…"}`"#,
             )],
             Capability::DocumentsRag => &[(
                 "Search documents (PDFs, Office, markdown, config and data files; the code tools cover code only)",
@@ -166,7 +166,8 @@ fn render_usage_rules(out: &mut String, caps: &[Capability]) {
     );
     out.push_str(
         "The Basemind tools are always loaded: call them directly, there is no tool search to run \
-         first. Arguments are exact (an unknown argument is rejected, not ignored), paths are \
+         first. The agent tools `agent_post`, `agent_inbox` and `agent_threads` are the exception: \
+         they are deferred, so find them by tool search. Arguments are exact (an unknown argument is rejected, not ignored), paths are \
          repository-relative, and `line` / `end_line` are 1-based.\n\n",
     );
     out.push_str("| Task | First call |\n|---|---|\n");
@@ -315,6 +316,9 @@ mod tests {
             "`admin` mode",
             "`workspace`",
             "blame_symbol",
+            "agents {",
+            "thread_list",
+            "mode\":",
         ] {
             assert!(!body.contains(retired), "the block still names `{retired}`");
         }
