@@ -165,8 +165,9 @@ pub(crate) fn terminate(child: &mut Child) {
     let _ = child.wait();
 }
 
-/// Ends a harness whose work is done without cutting off a write it has in flight. Close its
-/// stdin before calling this.
+/// Ends a harness whose work is done without cutting off a write it has in flight.
+/// `reading` says whether its stdin was closed with every frame delivered: only then can it
+/// see the end of its input and exit by itself, so only then does it get [`EXIT_GRACE`].
 ///
 /// Claude Code rotates its OAuth refresh token on every refresh and saves the new one through
 /// a helper process. Killing the group in that window loses the token and signs the account
@@ -175,12 +176,17 @@ pub(crate) fn terminate(child: &mut Child) {
 ///
 /// The two waits ([`EXIT_GRACE`], then [`TERM_GRACE`]) together take at most `budget`, and
 /// both end as soon as `kill_now` is set (the session was dropped).
-pub(crate) fn retire(child: &mut Child, budget: Duration, kill_now: &AtomicBool) {
+pub(crate) fn retire(child: &mut Child, budget: Duration, kill_now: &AtomicBool, reading: bool) {
     #[cfg(unix)]
     {
         let pid = child.id();
         let started = Instant::now();
-        let mut state = settle(pid, EXIT_GRACE.min(budget), kill_now);
+        let exit_grace = if reading {
+            EXIT_GRACE.min(budget)
+        } else {
+            Duration::ZERO
+        };
+        let mut state = settle(pid, exit_grace, kill_now);
         if state == Leader::Running && !kill_now.load(Ordering::SeqCst) {
             // The leader is unreaped, so the id is ours.
             signal(pid as libc::pid_t, libc::SIGTERM);
@@ -192,7 +198,7 @@ pub(crate) fn retire(child: &mut Child, budget: Duration, kill_now: &AtomicBool)
         }
     }
     #[cfg(not(unix))]
-    let _ = (budget, kill_now);
+    let _ = (budget, kill_now, reading);
     terminate(child);
 }
 
@@ -303,7 +309,7 @@ mod tests {
         ));
         drop(child.stdin.take());
         let started = Instant::now();
-        retire(&mut child, EXIT_GRACE + TERM_GRACE, &AtomicBool::new(false));
+        retire(&mut child, EXIT_GRACE + TERM_GRACE, &AtomicBool::new(false), true);
         assert!(started.elapsed() < EXIT_GRACE);
         assert_eq!(std::fs::read_to_string(&marker).unwrap().trim(), "saved");
     }
@@ -314,7 +320,7 @@ mod tests {
         let pid = child.id();
         drop(child.stdin.take());
         let started = Instant::now();
-        retire(&mut child, EXIT_GRACE + TERM_GRACE, &AtomicBool::new(false));
+        retire(&mut child, EXIT_GRACE + TERM_GRACE, &AtomicBool::new(false), true);
         assert!(started.elapsed() >= EXIT_GRACE + TERM_GRACE - Duration::from_millis(100));
         wait_for_group_exit(pid);
         assert!(!group_alive(pid));
@@ -398,7 +404,7 @@ mod reaped_elsewhere {
                 pid as libc::pid_t
             );
             if retiring {
-                retire(&mut child, EXIT_GRACE + TERM_GRACE, &AtomicBool::new(false));
+                retire(&mut child, EXIT_GRACE + TERM_GRACE, &AtomicBool::new(false), true);
             } else {
                 terminate(&mut child);
             }

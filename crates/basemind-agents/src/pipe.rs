@@ -18,11 +18,23 @@ fn abandoned() -> io::Error {
     io::Error::new(io::ErrorKind::BrokenPipe, "the session abandoned the pipe")
 }
 
-/// Waits until `fd` is ready for `events`, or the flag is set (`false`).
+/// The harness's stdin as the session sees it once the adapter is done with it.
+#[derive(Debug, Default)]
+pub(crate) struct Stdin {
+    /// Set when the adapter is done: a write still waiting for room gives up.
+    pub close: AtomicBool,
+    /// Set when a write gave up because of `close`: the harness was not reading, so it will
+    /// not see the end of its input either.
+    pub cut: AtomicBool,
+    /// Set once the writer is dropped and the pipe end closed.
+    pub closed: AtomicBool,
+}
+
+/// Waits until `fd` is ready for `events`, or `give_up` says so (`false`).
 #[cfg(unix)]
-fn ready(fd: std::os::fd::RawFd, events: libc::c_short, abandon: &AtomicBool) -> io::Result<bool> {
+fn ready(fd: std::os::fd::RawFd, events: libc::c_short, give_up: &dyn Fn() -> bool) -> io::Result<bool> {
     loop {
-        if abandon.load(Ordering::SeqCst) {
+        if give_up() {
             return Ok(false);
         }
         let mut poll = libc::pollfd { fd, events, revents: 0 };
@@ -57,7 +69,9 @@ impl<R> Reader<R> {
 impl<R: Read + std::os::fd::AsRawFd> Read for Reader<R> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         // Readable means data or end-of-file, so the read below does not block.
-        if !ready(self.inner.as_raw_fd(), libc::POLLIN, &self.abandon)? {
+        if !ready(self.inner.as_raw_fd(), libc::POLLIN, &|| {
+            self.abandon.load(Ordering::SeqCst)
+        })? {
             return Err(abandoned());
         }
         self.inner.read(buf)
@@ -74,12 +88,30 @@ impl<R: Read> Read for Reader<R> {
     }
 }
 
-/// A pipe end written to the harness, given up when the flag is set. On Unix the descriptor
-/// is switched to non-blocking, so a write into a full pipe returns and is retried after a
-/// wait instead of blocking.
+/// A pipe end written to the harness, given up when the flag is set or, for the harness's
+/// stdin, once the adapter is done with it. On Unix the descriptor is switched to
+/// non-blocking, so a write into a full pipe returns and is retried after a wait instead of
+/// blocking.
 pub(crate) struct Writer<W> {
     inner: W,
     abandon: Arc<AtomicBool>,
+    stdin: Option<Arc<Stdin>>,
+}
+
+impl<W> Writer<W> {
+    /// The same writer reporting to `stdin`, and giving up when it is closed.
+    pub fn for_stdin(mut self, stdin: Arc<Stdin>) -> Self {
+        self.stdin = Some(stdin);
+        self
+    }
+}
+
+impl<W> Drop for Writer<W> {
+    fn drop(&mut self) {
+        if let Some(stdin) = &self.stdin {
+            stdin.closed.store(true, Ordering::SeqCst);
+        }
+    }
 }
 
 #[cfg(unix)]
@@ -93,14 +125,22 @@ impl<W: Write + std::os::fd::AsRawFd> Writer<W> {
                 return Err(io::Error::last_os_error());
             }
         }
-        Ok(Self { inner, abandon })
+        Ok(Self {
+            inner,
+            abandon,
+            stdin: None,
+        })
     }
 }
 
 #[cfg(not(unix))]
 impl<W: Write> Writer<W> {
     pub fn new(inner: W, abandon: Arc<AtomicBool>) -> io::Result<Self> {
-        Ok(Self { inner, abandon })
+        Ok(Self {
+            inner,
+            abandon,
+            stdin: None,
+        })
     }
 }
 
@@ -110,7 +150,16 @@ impl<W: Write + std::os::fd::AsRawFd> Write for Writer<W> {
         loop {
             match self.inner.write(buf) {
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                    if !ready(self.inner.as_raw_fd(), libc::POLLOUT, &self.abandon)? {
+                    let closing = || {
+                        self.stdin
+                            .as_ref()
+                            .is_some_and(|stdin| stdin.close.load(Ordering::SeqCst))
+                    };
+                    let give_up = || self.abandon.load(Ordering::SeqCst) || closing();
+                    if !ready(self.inner.as_raw_fd(), libc::POLLOUT, &give_up)? {
+                        if let Some(stdin) = self.stdin.as_ref().filter(|_| closing()) {
+                            stdin.cut.store(true, Ordering::SeqCst);
+                        }
                         return Err(abandoned());
                     }
                 }

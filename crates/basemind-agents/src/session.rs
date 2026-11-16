@@ -68,6 +68,8 @@ pub(crate) struct ChildIo {
     pub stdin: ChildStdin,
     pub stdout: ChildStdout,
     pub abandon: Arc<AtomicBool>,
+    /// What became of stdin once the adapter was done; the writer reports here.
+    pub stdin_state: Arc<pipe::Stdin>,
 }
 
 /// Why a control message did not reach the driver.
@@ -436,7 +438,9 @@ pub(crate) fn start(
     })?;
     let piped = "the child was spawned with piped stdio";
     let shared = Shared::new(child.id(), spec.limits, spec.approval_policy.clone(), control);
+    let stdin_state = Arc::new(pipe::Stdin::default());
     let io = ChildIo {
+        stdin_state: stdin_state.clone(),
         stdin: child.stdin.take().expect(piped),
         stdout: child.stdout.take().expect(piped),
         abandon: shared.abandon.clone(),
@@ -491,6 +495,7 @@ pub(crate) fn start(
             shared.events.drain();
             // From here on only this thread signals the group: the watchdog saw `finished`.
             if matches!(status, FinishStatus::Completed | FinishStatus::Stopped) {
+                let reading = stdin_closes(&stdin_state);
                 // A stopped harness gets what is left of its stop grace, not the full waits.
                 let budget = match status {
                     FinishStatus::Stopped => shared
@@ -499,7 +504,7 @@ pub(crate) fn start(
                         .map_or(Duration::ZERO, |at| at.saturating_duration_since(Instant::now())),
                     _ => process::EXIT_GRACE + process::TERM_GRACE,
                 };
-                process::retire(&mut child, budget, &shared.kill_now);
+                process::retire(&mut child, budget, &shared.kill_now, reading);
             } else {
                 process::terminate(&mut child);
             }
@@ -525,6 +530,22 @@ pub(crate) fn start(
         worker_done,
     })
 }
+
+/// Closes the harness's stdin now that the adapter is done with it, and whether the harness
+/// was still reading it: a write that has waited for room since gives up, and a harness
+/// that left it unread will not see the end of its input.
+fn stdin_closes(stdin: &pipe::Stdin) -> bool {
+    stdin.close.store(true, Ordering::SeqCst);
+    let deadline = Instant::now() + STDIN_CLOSE;
+    while !stdin.closed.load(Ordering::SeqCst) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    stdin.closed.load(Ordering::SeqCst) && !stdin.cut.load(Ordering::SeqCst)
+}
+
+/// How long the writer may take to give up a waiting write and close stdin: a few of its
+/// poll slices.
+const STDIN_CLOSE: Duration = Duration::from_millis(200);
 
 /// Spawns, retrying while the executable is still open for writing: a harness that was
 /// installed or updated a moment ago fails with ETXTBSY until its writer closes the file.

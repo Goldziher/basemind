@@ -196,7 +196,7 @@ impl<P: Protocol> LineDriver<P> {
 impl<P: Protocol> Driver for LineDriver<P> {
     fn run(self: Box<Self>, io: ChildIo, sink: EventSink) -> Result<(), LaunchError> {
         let Self { mut protocol, controls } = *self;
-        let mut out = QueuedWriter::start(pipe::Writer::new(io.stdin, io.abandon.clone())?);
+        let mut out = QueuedWriter::start(pipe::Writer::new(io.stdin, io.abandon.clone())?.for_stdin(io.stdin_state));
         let stdout = pipe::Reader::new(io.stdout, io.abandon);
         let (tx, lines) = mpsc::sync_channel(FRAME_QUEUE);
         std::thread::spawn(move || {

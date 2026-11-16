@@ -239,7 +239,7 @@ impl Driver for AcpDriver {
         let stdout = pipe::Reader::new(io.stdout, io.abandon.clone());
         std::thread::spawn(move || pump_lines(stdout, line_tx));
         let (out_tx, mut out_rx) = channel::<String>(OUTGOING_LINES);
-        let mut stdin = pipe::Writer::new(io.stdin, io.abandon)?;
+        let mut stdin = pipe::Writer::new(io.stdin, io.abandon)?.for_stdin(io.stdin_state);
         std::thread::spawn(move || {
             while let Some(line) = futures::executor::block_on(out_rx.next()) {
                 let written = stdin

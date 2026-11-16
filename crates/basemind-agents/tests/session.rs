@@ -671,3 +671,31 @@ while :; do sleep 1; done
     };
     assert!(error.contains("unread"), "{error}");
 }
+
+#[test]
+fn a_harness_that_stopped_reading_is_not_given_the_exit_grace() {
+    let dir = tempfile::tempdir().unwrap();
+    // Never reads the brief, which is larger than the pipe, so stdin cannot reach end of
+    // file; the harness would only exit on a signal.
+    let body = r#"read -r init
+printf '%s\n' '{"type":"control_response","response":{"request_id":"basemind-init"}}'
+sleep 0.3
+printf '%s\n' '{"type":"system","subtype":"init","permissionMode":"default","mcp_servers":[]}'
+printf '%s\n' '{"type":"result","result":"Done."}'
+while :; do sleep 0.05; done
+"#;
+    let mut spec = spec(HarnessKind::ClaudeCode, dir.path(), body);
+    spec.request.brief = "x".repeat(1024 * 1024);
+    let session = launch(&spec);
+    loop {
+        match session.recv_timeout(Duration::from_secs(10)) {
+            Ok(Event::TurnCompleted { .. }) => break,
+            Ok(_) => {}
+            Err(error) => panic!("no turn completed: {error:?}"),
+        }
+    }
+    let done = Instant::now();
+    assert_eq!(session.wait(), FinishStatus::Completed);
+    let took = done.elapsed();
+    assert!(took < Duration::from_millis(1200), "retiring took {took:?}");
+}
