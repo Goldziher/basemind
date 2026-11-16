@@ -1086,20 +1086,11 @@ async fn should_rescan_successfully_and_ignore_a_stale_legacy_in_repo_index() {
     daemon.stop();
 }
 
-/// A rescan in flight when `comms stop` is requested must resolve cleanly — either it finishes
-/// before the process actually goes away, or the connection breaks and the client surfaces a
-/// clean `Err` — never a panic and never a hang. A subsequent daemon restart on the same
-/// `comms_dir` reloads the registry snapshot intact, proving the stop did not corrupt durable
-/// state.
-///
-/// `CommsRequest::Stop` routes through `Broker::begin_drain` (`src/comms/daemon.rs`), which now
-/// fires the accept-loop shutdown signal the daemon entry point installed, so the process actually
-/// self-terminates (its dedicated regression is
-/// `comms_stop_terminates_the_daemon_without_an_external_kill`). This test pins the harder property
-/// under that shutdown: a rescan in flight when the stop lands still resolves cleanly — it finishes
-/// before the runtime tears down, or the link breaks and the client surfaces a clean `Err` — never
-/// a panic and never a hang. A fresh daemon on the same `comms_dir` then reloads the registry
-/// snapshot intact, proving the abrupt stop left no torn durable state.
+/// A `comms stop` that lands while a forwarded rescan is in flight is refused with `daemon_busy`
+/// (ADR-0024 rule 3: work in flight keeps the daemon), so the scan is never cancelled under its
+/// client: the rescan finishes with real work, and the stop asked again afterwards is accepted. A
+/// stop that lost the race to a scan already finished is simply accepted. A fresh daemon on the
+/// same `comms_dir` then reloads the registry snapshot intact.
 #[tokio::test(flavor = "multi_thread")]
 async fn should_drain_cleanly_with_an_in_flight_rescan_and_reload_registry_after_restart() {
     let tmp = tempfile::tempdir().expect("tempdir");
@@ -1129,11 +1120,14 @@ async fn should_drain_cleanly_with_an_in_flight_rescan_and_reload_registry_after
     .await
     .expect("join stop task")
     .expect("run the `comms stop` CLI invocation");
-    assert!(
-        stop_output.status.success(),
-        "the `comms stop` RPC must succeed even with a rescan in flight, stderr: {}",
-        String::from_utf8_lossy(&stop_output.stderr)
-    );
+    let stop_stderr = String::from_utf8_lossy(&stop_output.stderr).into_owned();
+    let refused = !stop_output.status.success();
+    if refused {
+        assert!(
+            stop_stderr.contains("daemon_busy") && stop_stderr.contains("work=1"),
+            "a stop refused mid-rescan must name the work in flight, stderr: {stop_stderr}"
+        );
+    }
 
     let rescan_outcome = tokio::time::timeout(Duration::from_secs(15), rescan_task)
         .await
@@ -1147,9 +1141,29 @@ async fn should_drain_cleanly_with_an_in_flight_rescan_and_reload_registry_after
             );
         }
         Ok(Err(client_error)) => {
-            let _ = client_error;
+            assert!(
+                !refused,
+                "a daemon that refused the stop must finish the rescan, got: {client_error}"
+            );
         }
         Err(join_error) => panic!("rescan task must not panic, got: {join_error}"),
+    }
+    if refused {
+        let comms_dir_for_stop = comms_dir.clone();
+        let again = tokio::task::spawn_blocking(move || {
+            Command::new(BIN)
+                .args(["comms", "stop"])
+                .env("BASEMIND_COMMS_DIR", &comms_dir_for_stop)
+                .output()
+        })
+        .await
+        .expect("join second stop task")
+        .expect("run the second `comms stop`");
+        assert!(
+            again.status.success(),
+            "the stop asked again after the rescan finished must be accepted, stderr: {}",
+            String::from_utf8_lossy(&again.stderr)
+        );
     }
     daemon.stop();
 
