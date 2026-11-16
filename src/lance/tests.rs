@@ -170,11 +170,10 @@ fn newer_schema_ver_on_disk_is_refused_without_wiping() {
     assert!(meta_path.exists(), "a newer store keeps its meta.json");
 }
 
-fn memory_row(key: &str, value: &str, updated_at: i64) -> MemoryRow {
+fn memory_row(key: &str, _text: &str, updated_at: i64) -> MemoryRow {
     MemoryRow {
         scope: "s".into(),
         key: key.into(),
-        value: value.into(),
         tags: Vec::new(),
         visibility: "group".into(),
         agent_id: String::new(),
@@ -427,4 +426,59 @@ fn a_new_store_records_its_meta_json_before_it_creates_a_table() {
         error.contains(META_FILE),
         "the first write of an open is the meta: {error}"
     );
+}
+
+/// A row embedded from an earlier write of a note must not take the place of the row of a later
+/// one: the writer embedded from a listing, and the note was saved again since.
+#[test]
+fn an_upsert_from_an_earlier_write_spares_the_row_of_a_later_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = LanceStore::open(dir.path(), 4, "test").unwrap();
+    store.upsert_memory(memory_row("k", "new text", 300)).unwrap();
+
+    store.upsert_memory_rows(&[memory_row("k", "old text", 100)]).unwrap();
+
+    let stamps: Vec<i64> = store
+        .search_memory("s", "group", "", vec![0.0; 4], 10, None)
+        .unwrap()
+        .into_iter()
+        .map(|hit| hit.updated_at)
+        .collect();
+    assert!(
+        stamps.contains(&300),
+        "the later write's row is still there: {stamps:?}"
+    );
+
+    store.upsert_memory(memory_row("k", "newest text", 400)).unwrap();
+    let found = store.memory_stamps("s", "group", "").unwrap();
+    assert_eq!(found.stamps["k"], 400);
+    assert!(found.duplicated.is_empty(), "a later write removes every earlier row");
+}
+
+/// The tag is part of the search, not a filter over its result: a tagged row further from the
+/// query than an untagged one is still found within the limit.
+#[test]
+fn a_memory_search_by_tag_is_filtered_in_the_store() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = LanceStore::open(dir.path(), 4, "test").unwrap();
+    let mut near = memory_row("near", "", 1);
+    near.embedding = vec![0.0; 4];
+    let mut far = memory_row("far", "", 2);
+    far.embedding = vec![1.0; 4];
+    far.tags = vec!["wanted".into(), "it's".into()];
+    store.upsert_memory_rows(&[near, far]).unwrap();
+
+    let keys = |tag: Option<&str>| -> Vec<String> {
+        store
+            .search_memory("s", "group", "", vec![0.0; 4], 1, tag)
+            .unwrap()
+            .into_iter()
+            .map(|hit| hit.key)
+            .collect()
+    };
+
+    assert_eq!(keys(None), ["near"]);
+    assert_eq!(keys(Some("wanted")), ["far"]);
+    assert_eq!(keys(Some("it's")), ["far"], "a quote in a tag is escaped");
+    assert!(keys(Some("absent")).is_empty());
 }

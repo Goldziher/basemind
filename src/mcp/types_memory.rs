@@ -75,6 +75,9 @@ pub struct MemoryPutParams {
     pub value: String,
     #[serde(default)]
     pub tags: Option<Vec<String>>,
+    /// Embed the note as part of the save. `false` leaves that to the next search by meaning,
+    /// which embeds every note without a current vector row: the note is findable by `key` and
+    /// `prefix` at once and by `query` from that search on.
     #[serde(default = "default_true")]
     pub embed: bool,
     /// Memory tier: `group` (shared, default) or `individual` (per-agent).

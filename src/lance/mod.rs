@@ -76,12 +76,12 @@ pub struct DocumentRow {
     pub embedding: Vec<f32>,
 }
 
-/// One row in the `memory` table.
+/// One row in the `memory` table. It carries the note's vector and tags, never its text: a row
+/// can outlive its note, and the text of a deleted note must not.
 #[derive(Debug, Clone)]
 pub struct MemoryRow {
     pub scope: String,
     pub key: String,
-    pub value: String,
     pub tags: Vec<String>,
     /// Memory tier: `"group"` (shared) or `"individual"` (per-agent).
     pub visibility: String,
@@ -107,12 +107,11 @@ pub struct DocumentHit {
     pub distance: f32,
 }
 
-/// A search hit from the `memory` table.
+/// A search hit from the `memory` table: which note, and which write of it. The note's text and
+/// tags are read from the note itself.
 #[derive(Debug, Clone)]
 pub struct MemoryHit {
     pub key: String,
-    pub value: String,
-    pub tags: Vec<String>,
     /// The `updated_at` of the note this row was embedded from. A row whose stamp differs from the
     /// note's own was left behind by a newer write and must not be served.
     pub updated_at: i64,

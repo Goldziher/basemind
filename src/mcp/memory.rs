@@ -180,17 +180,18 @@ pub(super) async fn run_memory_put(state: &ServerState, params: MemoryPutParams)
     // The note is durable from here on. A failure to embed it is reported on a successful result,
     // never as an error: an error would read as "not saved" and invite a retry of a write that
     // already happened.
-    let embedded = if params.embed {
-        let outcome = super::memory_vectors::embed_note(state, &params, owner, tags, created_at, updated_at).await;
-        // The previous vector row still holds the OLD text; the join refuses it, and removing it
-        // keeps it from taking a slot in every later search.
-        if outcome.is_err() {
-            super::memory_vectors::delete_vector_row(state, params.visibility, owner, &params.key).await;
-        }
-        Some(outcome)
+    let embedded = if params.embed && !params.value.is_empty() {
+        Some(super::memory_vectors::embed_note(state, &params, owner, tags, created_at, updated_at).await)
     } else {
         None
     };
+    if !matches!(embedded, Some(Ok(()))) {
+        // The note has no row of this write. One of an earlier write still holds the OLD text's
+        // vector; the join refuses it, and removing it keeps it from taking a slot in every later
+        // search. The namespace is no longer level: the next search by meaning embeds the note.
+        super::memory_vectors::delete_vector_row(state, params.visibility, owner, &params.key).await;
+        super::memory_vectors::not_level(state, vis_byte, owner);
+    }
     let (embedded, notice) = embed_report(embedded);
     json_result(&MemoryPutResponse {
         key: params.key,
@@ -211,7 +212,7 @@ fn embed_report(outcome: Option<Result<(), String>>) -> (bool, Option<String>) {
             false,
             Some(format!(
                 "the note is saved and can be read by `key` or listed by `prefix`, but it could not be embedded \
-                 ({error}), so `memory_search` with `query` will not find it until it is saved again"
+                 ({error}); `memory_search` with `query` will not find it until a later search embeds it"
             )),
         ),
         None => (false, None),
@@ -314,8 +315,9 @@ pub(super) async fn memory_get_wire(
     )?)
 }
 
-/// Read several notes of one namespace from the Fjall truth, one slot per key in order: one round
-/// trip to the daemon when it owns the store, however many keys.
+/// Read several notes of one namespace from the Fjall truth, one slot per key in order. However
+/// many keys, a request carries at most [`GET_MANY_MAX_KEYS`](super::memory_ops::GET_MANY_MAX_KEYS)
+/// of them: one round trip per chunk to the daemon when it owns the store.
 #[cfg(feature = "memory")]
 pub(super) async fn memory_get_many_wire(
     state: &ServerState,
@@ -323,9 +325,21 @@ pub(super) async fn memory_get_many_wire(
     owner: &str,
     keys: Vec<String>,
 ) -> Result<Vec<Option<super::memory_ops::WireMemoryEntry>>, McpError> {
-    if keys.is_empty() {
-        return Ok(Vec::new());
+    let mut entries = Vec::with_capacity(keys.len());
+    for chunk in keys.chunks(super::memory_ops::GET_MANY_MAX_KEYS) {
+        entries.extend(memory_get_chunk_wire(state, vis_byte, owner, chunk).await?);
     }
+    Ok(entries)
+}
+
+/// One request of [`memory_get_many_wire`].
+#[cfg(feature = "memory")]
+async fn memory_get_chunk_wire(
+    state: &ServerState,
+    vis_byte: u8,
+    owner: &str,
+    keys: &[String],
+) -> Result<Vec<Option<super::memory_ops::WireMemoryEntry>>, McpError> {
     #[cfg(all(feature = "comms", any(unix, windows)))]
     if state.shared.daemon_writer {
         use crate::comms::memory_proto::{MemoryOp, MemoryOutcome};
@@ -334,7 +348,7 @@ pub(super) async fn memory_get_many_wire(
         let op = MemoryOp::GetMany {
             vis_byte,
             owner: owner.to_string(),
-            keys,
+            keys: keys.to_vec(),
         };
         return match super::helpers_comms::dispatch_memory_op(state, op).await? {
             MemoryOutcome::GotMany(entries) if entries.len() == wanted => Ok(entries),
@@ -355,7 +369,7 @@ pub(super) async fn memory_get_many_wire(
         &state.shared.scope,
         vis_byte,
         owner,
-        &keys,
+        keys,
     )?)
 }
 

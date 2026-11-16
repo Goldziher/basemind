@@ -8,9 +8,13 @@
 //! note ([`truth_join`]).
 //!
 //! The rows are derived from the notes and rebuilt from them ([`backfill`]): a search embeds the
-//! notes whose row is missing or stale and removes the rows whose note is gone, a bounded amount
-//! per call, until the namespace is level. The table is empty after every release minor (its
-//! `schema_ver` follows the minor) and for every embedding preset opened for the first time.
+//! notes whose row is missing or stale and removes the rows whose note is gone or has no text, a
+//! bounded amount per call, until the namespace is level. Level is a belief of this process, and
+//! other processes save notes too, so it lapses after [`LEVEL_TTL`] and is dropped at once by a
+//! save here that wrote no row. The table is empty after every release minor (its `schema_ver`
+//! follows the minor) and for every embedding preset opened for the first time.
+//!
+//! A row holds a note's vector and tags, never its text.
 //!
 //! The store lives beside the notes, in the repo group directory, one directory per embedding model
 //! and dimension ([`memory_lance_dir`]): a note saved from one worktree is found from every other,
@@ -43,6 +47,9 @@ const BACKFILL_BATCH: usize = 32;
 pub(super) const BACKFILL_NOTES_PER_CALL: usize = if cfg!(test) { 5 } else { 256 };
 /// Once this much of a search has gone into embedding, no further batch starts.
 const BACKFILL_TIME_BUDGET: Duration = Duration::from_secs(3);
+/// How long a namespace found level is taken to be level. Another process may have saved a note
+/// whose embedding failed, or one saved with `embed: false`; after this long a search looks again.
+const LEVEL_TTL: Duration = Duration::from_secs(300);
 /// Rows fetched beyond twice the limit, and the most a search fetches while the join keeps
 /// dropping rows.
 const FETCH_SLACK: usize = 8;
@@ -58,14 +65,37 @@ const CATCHING_UP: &str = "the memory vector index is still catching up with the
 pub(crate) enum Backfill {
     /// A search is embedding the namespace's notes now.
     Running,
-    /// Every note has a current row and no row lacks a note.
-    Level,
+    /// Every note had a current row and no row lacked a note when last looked, which is believed
+    /// until this instant.
+    Level { until: Instant },
+}
+
+impl Backfill {
+    /// Level as of now.
+    pub(crate) fn level() -> Self {
+        Self::Level {
+            until: Instant::now() + LEVEL_TTL,
+        }
+    }
+}
+
+/// Forget that a namespace was found level: a note in it has no current row. A pass that is
+/// running keeps its mark, and finds out for itself ([`backfill`] re-reads what it embedded).
+pub(super) fn not_level(state: &ServerState, vis_byte: u8, owner: &str) {
+    let mut marks = backfill_marks(state);
+    let namespace = (vis_byte, owner.to_string());
+    if matches!(marks.get(&namespace), Some(Backfill::Level { .. })) {
+        marks.remove(&namespace);
+    }
 }
 
 /// The repo group's memory vector store for one embedding model:
-/// `<repo_group_dir>/memory.lance/<model>-<dim>/`, beside `memory.fjall`. Per group, not per
+/// `<repo_group_dir>/memory.lance/<model>-<dim>-<hash>/`, beside `memory.fjall`. Per group, not per
 /// workspace, because the notes are; per model and dimension, because a store holds vectors of
-/// one model and is wiped when opened for another. No garbage collector lists the group directory.
+/// one model and is wiped when opened for another. The readable part of the name maps several
+/// model names to one string (`a/b` and `a-b`), so the name ends in a hash of the model's own
+/// name: two models never share a directory and wipe each other's rows in turn. No garbage
+/// collector lists the group directory.
 pub(super) fn memory_lance_dir(root: &Path, model: &str, dim: u16) -> PathBuf {
     let slug: String = model
         .chars()
@@ -77,7 +107,8 @@ pub(super) fn memory_lance_dir(root: &Path, model: &str, dim: u16) -> PathBuf {
             }
         })
         .collect();
-    crate::store_layout::memory_vectors_dir(root).join(format!("{slug}-{dim}"))
+    let hash = crate::hashing::hex(&crate::hashing::hash_bytes(model.as_bytes()));
+    crate::store_layout::memory_vectors_dir(root).join(format!("{slug}-{dim}-{}", &hash[..8]))
 }
 
 /// Open the repo group's memory vector store for the configured embedder.
@@ -158,7 +189,6 @@ pub(super) async fn embed_note(
     let row = MemoryRow {
         scope: state.shared.scope.clone(),
         key: params.key.clone(),
-        value: params.value.clone(),
         tags,
         visibility: lance_visibility(params.visibility).to_string(),
         agent_id: owner.to_string(),
@@ -212,7 +242,7 @@ impl Drop for RunningMark<'_> {
     fn drop(&mut self) {
         let mut marks = backfill_marks(self.state);
         if self.level {
-            marks.insert(self.namespace.clone(), Backfill::Level);
+            marks.insert(self.namespace.clone(), Backfill::level());
         } else {
             marks.remove(&self.namespace);
         }
@@ -236,9 +266,9 @@ pub(super) async fn backfill_step(state: &ServerState, visibility: Visibility, v
     {
         let mut marks = backfill_marks(state);
         match marks.get(&namespace) {
-            Some(Backfill::Level) => return false,
+            Some(Backfill::Level { until }) if Instant::now() < *until => return false,
             Some(Backfill::Running) => return true,
-            None => marks.insert(namespace.clone(), Backfill::Running),
+            Some(Backfill::Level { .. }) | None => marks.insert(namespace.clone(), Backfill::Running),
         };
     }
     let mut mark = RunningMark {
@@ -271,8 +301,14 @@ struct Progress {
     level: bool,
 }
 
-/// One bounded pass: remove the rows whose note is gone, then embed notes that have no current
-/// row, at most [`BACKFILL_NOTES_PER_CALL`] and no new batch after [`BACKFILL_TIME_BUDGET`].
+/// One bounded pass: remove the rows whose note is gone or has no text, then embed notes that have
+/// no current row, at most [`BACKFILL_NOTES_PER_CALL`] and no new batch after
+/// [`BACKFILL_TIME_BUDGET`].
+///
+/// A note can be saved again while its batch is being embedded. The row written here is then of
+/// an earlier write: the upsert leaves the later write's row alone, the join never serves this
+/// one, and the pass reads the batch's notes once more after writing and does not call the
+/// namespace level when one of them moved.
 async fn backfill(
     state: &ServerState,
     visibility: Visibility,
@@ -295,7 +331,9 @@ async fn backfill(
     let mut cursor = None;
     loop {
         let page = memory_list_page(state, vis_byte, owner, "", None, BACKFILL_PAGE, cursor).await?;
-        live.extend(page.entries.iter().map(|note| note.key.clone()));
+        // A note without text has no row to have: one left from when it had text is an orphan.
+        let with_text = page.entries.iter().filter(|note| !note.value.is_empty());
+        live.extend(with_text.map(|note| note.key.clone()));
         behind.extend(notes_behind(page.entries, &rows));
         cursor = page.next_cursor;
         if cursor.is_none() {
@@ -327,13 +365,14 @@ async fn backfill(
         }
         let notes = whole_notes(state, vis_byte, owner, batch).await?;
         let wanted = notes.len();
+        #[cfg(test)]
+        test_hooks::while_embedding(state).await;
         let rows: Vec<MemoryRow> = embed_notes(state, notes)
             .await
             .into_iter()
             .map(|(note, embedding)| MemoryRow {
                 scope: scope.clone(),
                 key: note.key,
-                value: note.value,
                 tags: note.tags,
                 visibility: lance_vis.to_string(),
                 agent_id: owner.to_string(),
@@ -345,16 +384,65 @@ async fn backfill(
         // A note that could not be embedded has no row yet: the namespace is not level.
         level &= rows.len() == wanted;
         embedded += rows.len();
+        let written: Vec<(String, i64)> = rows.iter().map(|row| (row.key.clone(), row.updated_at)).collect();
         on_store(&lance, "upsert_memory_rows", move |lance| {
             lance.upsert_memory_rows(&rows)
         })
         .await?;
+        level &= still_current(state, vis_byte, owner, written).await?;
     }
     Ok(Progress {
         embedded,
         pruned,
         level,
     })
+}
+
+/// Whether every note of `written` (key and the `updated_at` its row was embedded from) is still
+/// that write. A note saved again or deleted since has a row here that is behind it.
+async fn still_current(
+    state: &ServerState,
+    vis_byte: u8,
+    owner: &str,
+    written: Vec<(String, i64)>,
+) -> Result<bool, McpError> {
+    let keys: Vec<String> = written.iter().map(|(key, _)| key.clone()).collect();
+    let now = memory_get_many_wire(state, vis_byte, owner, keys).await?;
+    Ok(written
+        .iter()
+        .zip(&now)
+        .all(|((_, embedded_from), note)| note.as_ref().is_some_and(|note| note.updated_at == *embedded_from)))
+}
+
+/// A seam inside a backfill pass, between reading a batch's notes and embedding them, where a
+/// test saves one of them again.
+#[cfg(test)]
+pub(super) mod test_hooks {
+    use std::future::Future;
+    use std::pin::Pin;
+    use std::sync::Mutex;
+
+    use super::ServerState;
+
+    pub(crate) type Hook =
+        Box<dyn for<'a> FnOnce(&'a ServerState) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> + Send + Sync>;
+
+    static WHILE_EMBEDDING: Mutex<Option<(String, Hook)>> = Mutex::new(None);
+
+    /// Run `hook` once, in the next backfill pass of the server whose scope is `scope`.
+    pub(crate) fn once_while_embedding(scope: &str, hook: Hook) {
+        *WHILE_EMBEDDING.lock().unwrap() = Some((scope.to_string(), hook));
+    }
+
+    pub(super) async fn while_embedding(state: &ServerState) {
+        let hook = WHILE_EMBEDDING
+            .lock()
+            .unwrap()
+            .take_if(|(scope, _)| *scope == state.shared.scope);
+        if let Some((_, hook)) = hook {
+            hook(state).await;
+        }
+    }
 }
 
 /// The notes of `listed` with their whole text. A listing truncates a long value to a preview;
@@ -483,8 +571,9 @@ pub(super) async fn search(state: &ServerState, params: MemorySearchParams) -> R
     let mut notes: AHashMap<String, Option<WireMemoryEntry>> = AHashMap::new();
     let joined = loop {
         let (scope, agent_id, query) = (state.shared.scope.clone(), owner.to_string(), embedding.clone());
+        let tag = params.tag.clone();
         let raw = on_store(&lance, "search_memory", move |lance| {
-            lance.search_memory(&scope, lance_vis, &agent_id, query, fetch, None)
+            lance.search_memory(&scope, lance_vis, &agent_id, query, fetch, tag.as_deref())
         })
         .await?;
         let exhausted = raw.len() < fetch;
@@ -504,10 +593,7 @@ pub(super) async fn search(state: &ServerState, params: MemorySearchParams) -> R
     };
     if joined.dropped > 0 {
         // Rows without a current note are in the table: the next search reconciles again.
-        let mut marks = backfill_marks(state);
-        if marks.get(&(vis_byte, owner.to_string())) == Some(&Backfill::Level) {
-            marks.remove(&(vis_byte, owner.to_string()));
-        }
+        not_level(state, vis_byte, owner);
     }
     json_result(&MemorySearchResponse {
         query: params.query,

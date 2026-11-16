@@ -12,11 +12,9 @@ fn vis() -> u8 {
     Visibility::Group.vis_byte()
 }
 
-fn hit(key: &str, value: &str, updated_at: i64) -> MemoryHit {
+fn hit(key: &str, _row_text: &str, updated_at: i64) -> MemoryHit {
     MemoryHit {
         key: key.into(),
-        value: value.into(),
-        tags: vec!["row".into()],
         updated_at,
         distance: 0.5,
     }
@@ -128,7 +126,6 @@ fn row(state: &ServerState, key: &str, value: &str, updated_at: i64) -> MemoryRo
     MemoryRow {
         scope: state.shared.scope.clone(),
         key: key.into(),
-        value: value.into(),
         tags: Vec::new(),
         visibility: "group".into(),
         agent_id: String::new(),
@@ -182,7 +179,13 @@ fn the_store_is_per_repo_group_and_per_model() {
     let root = tempfile::tempdir().unwrap();
     let dir = memory_lance_dir(root.path(), "Balanced/v2", 384);
 
-    assert_eq!(dir.file_name().unwrap(), "balanced-v2-384");
+    let name = dir.file_name().unwrap().to_str().unwrap();
+    assert!(name.starts_with("balanced-v2-384-"), "{name}");
+    assert_ne!(
+        dir,
+        memory_lance_dir(root.path(), "balanced-v2", 384),
+        "two model names that read alike do not share a store"
+    );
     assert_eq!(
         dir.parent().unwrap().parent(),
         crate::store::memory_store_dir(root.path()).parent(),
@@ -540,4 +543,192 @@ fn blocking_work_does_not_hold_the_only_worker_of_a_multi_thread_runtime() {
         .unwrap()
     });
     assert!(ran_beside, "a task beside the blocking call never ran");
+}
+
+fn put_params(key: &str, value: &str, embed: bool) -> crate::mcp::types_memory::MemoryPutParams {
+    crate::mcp::types_memory::MemoryPutParams {
+        key: key.into(),
+        value: value.into(),
+        tags: None,
+        embed,
+        visibility: Visibility::Group,
+    }
+}
+
+async fn put(state: &ServerState, key: &str, value: &str, embed: bool) -> serde_json::Value {
+    crate::mcp::memory::run_memory_put(state, put_params(key, value, embed))
+        .await
+        .unwrap()
+        .structured_content
+        .unwrap()
+}
+
+fn mark_of(state: &ServerState) -> Option<Backfill> {
+    backfill_marks(state).get(&(vis(), String::new())).copied()
+}
+
+/// A note is saved again while the backfill is embedding the text it listed. The row the backfill
+/// then writes is of the earlier write: it must not replace the row the save wrote, and the pass
+/// must not call the namespace level over it.
+#[tokio::test]
+async fn a_note_saved_again_while_its_backfill_embeds_keeps_its_new_row_and_is_not_called_level() {
+    let root = tempfile::tempdir().unwrap();
+    let state = server(root.path(), "fake");
+    save(&state, "k", "the old text").await;
+    test_hooks::once_while_embedding(
+        &state.shared.scope,
+        Box::new(|state| {
+            Box::pin(async move {
+                let saved = put(state, "k", "the new text", true).await;
+                assert_eq!(saved["embedded"], true, "{saved}");
+            })
+        }),
+    );
+
+    let during = search_json(&state, "the new text", 10).await;
+
+    let hit = during["hits"].as_array().unwrap().first().expect("the note is found");
+    assert_eq!(
+        (hit["key"].as_str(), hit["value"].as_str()),
+        (Some("k"), Some("the new text")),
+        "the save's row answers, with the note's text: {during}"
+    );
+    assert!(
+        during.get("notice").is_some(),
+        "the pass wrote a row that is behind its note, so the rows are not level: {during}"
+    );
+    assert_eq!(mark_of(&state), None);
+
+    let after = search_json(&state, "the new text", 10).await;
+    assert_eq!(hit_keys(&after), ["k"]);
+    assert!(after.get("notice").is_none(), "{after}");
+    let rows = rows_of(&state).await;
+    assert!(rows.duplicated.is_empty(), "the row of the earlier write is gone");
+    let note = crate::mcp::memory::memory_get_wire(&state, vis(), "", "k")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(rows.stamps["k"], note.updated_at);
+}
+
+/// Level is what this process last saw. Another process may have saved a note with no row since,
+/// so the belief lapses and a search looks again.
+#[tokio::test]
+async fn a_level_mark_lapses_and_the_next_search_reconciles_again() {
+    let root = tempfile::tempdir().unwrap();
+    let state = server(root.path(), "fake");
+    save(&state, "first", "a note").await;
+    search_json(&state, "a note", 10).await;
+    assert!(matches!(mark_of(&state), Some(Backfill::Level { .. })));
+    // Saved outside this process's save path, as by another process whose embedding failed.
+    save(&state, "second", "a note too").await;
+
+    assert_eq!(
+        hit_keys(&search_json(&state, "a note", 10).await),
+        ["first"],
+        "believed level: no listing, so the rowless note is not seen"
+    );
+    backfill_marks(&state).insert((vis(), String::new()), Backfill::Level { until: Instant::now() });
+
+    assert_eq!(hit_keys(&search_json(&state, "a note", 10).await), ["first", "second"]);
+}
+
+/// A save that wrote no row leaves a note the rows are behind: the embedding failed, or the save
+/// asked for none. Either ends the belief that the namespace is level, and the next search by
+/// meaning embeds the note.
+#[tokio::test]
+async fn a_save_that_wrote_no_row_ends_level_and_the_next_search_embeds_the_note() {
+    let root = tempfile::tempdir().unwrap();
+    let state = server(root.path(), "fake");
+    put(&state, "seed", "a seed note", true).await;
+    search_json(&state, "a note", 10).await;
+    assert!(matches!(mark_of(&state), Some(Backfill::Level { .. })));
+
+    let deferred = put(&state, "later", "a note for later", false).await;
+    assert_eq!(deferred["embedded"], false);
+    assert_eq!(mark_of(&state), None, "a save without a row ends level");
+    assert_eq!(hit_keys(&search_json(&state, "a note", 10).await), ["later", "seed"]);
+    assert!(matches!(mark_of(&state), Some(Backfill::Level { .. })));
+
+    let failed = put(&state, "refused", "unembeddable text", true).await;
+    assert_eq!(failed["embedded"], false, "{failed}");
+    assert!(
+        failed["notice"]
+            .as_str()
+            .is_some_and(|notice| notice.contains("is saved"))
+    );
+    assert_eq!(mark_of(&state), None, "a failed embedding ends level");
+}
+
+/// A note rewritten to no text keeps no row: the save removes it, and a row left by a save made
+/// elsewhere is pruned by the backfill instead of being refused by every search that meets it.
+#[tokio::test]
+async fn the_row_of_a_note_emptied_of_its_text_is_removed() {
+    let root = tempfile::tempdir().unwrap();
+    let state = server(root.path(), "fake");
+    put(&state, "here", "some text", true).await;
+    put(&state, "elsewhere", "some text", true).await;
+    assert_eq!(rows_of(&state).await.stamps.len(), 2);
+
+    put(&state, "here", "", false).await;
+    assert_eq!(
+        rows_of(&state).await.stamps.keys().collect::<Vec<_>>(),
+        ["elsewhere"],
+        "the save that emptied the note removed its row"
+    );
+
+    save(&state, "elsewhere", "").await;
+    backfill_marks(&state).clear();
+    search_json(&state, "some text", 10).await;
+    assert!(rows_of(&state).await.stamps.is_empty(), "the backfill prunes it");
+    assert!(matches!(mark_of(&state), Some(Backfill::Level { .. })), "and is level");
+}
+
+/// A join over more notes than one request may carry is read in several requests.
+#[tokio::test]
+async fn notes_beyond_one_request_are_read_in_chunks() {
+    use crate::mcp::memory_ops::GET_MANY_MAX_KEYS;
+
+    let root = tempfile::tempdir().unwrap();
+    let state = server(root.path(), "fake");
+    save(&state, "present", "a note").await;
+    let mut keys: Vec<String> = (0..GET_MANY_MAX_KEYS * 2 + 3)
+        .map(|index| format!("absent-{index}"))
+        .collect();
+    keys.push("present".to_string());
+
+    let read = memory_get_many_wire(&state, vis(), "", keys.clone()).await.unwrap();
+
+    assert_eq!(read.len(), keys.len(), "one slot per key, in order");
+    assert_eq!(
+        read.last().unwrap().as_ref().map(|note| note.key.as_str()),
+        Some("present")
+    );
+    assert!(read[..keys.len() - 1].iter().all(Option::is_none));
+}
+
+/// A save and a delete end in an fsync, which must not run on the reactor: both go through
+/// `blocking`. On this current-thread runtime that runs inline, on this thread.
+#[tokio::test]
+async fn a_save_and_a_delete_fsync_through_blocking() {
+    use crate::mcp::index_route::blocking_calls;
+
+    let root = tempfile::tempdir().unwrap();
+    let state = server(root.path(), "fake");
+
+    let before = blocking_calls();
+    put(&state, "k", "a note", false).await;
+    let after_save = blocking_calls();
+    assert_eq!(
+        after_save,
+        before + 1,
+        "the save's write and fsync run inside `blocking`"
+    );
+
+    let params = MemoryDeleteParams {
+        key: "k".into(),
+        visibility: Visibility::Group,
+    };
+    run_memory_delete(&state, params).await.unwrap();
+    assert_eq!(blocking_calls(), after_save + 1, "and so do the delete's");
 }

@@ -44,6 +44,12 @@ pub struct WireMemoryEntry {
 /// ellipsis. Mirrors the constant the MCP `memory_list` tool used before the extraction.
 pub(crate) const MEMORY_PREVIEW_CHARS: usize = 200;
 
+/// The most keys one batched read may name. The reply carries every note whole, and a frame to
+/// or from the daemon is bounded: an unbounded batch of long notes would exceed it and fail the
+/// search that asked. The serving side refuses a larger request; a caller with more keys splits
+/// them (`memory_get_many_wire`).
+pub(crate) const GET_MANY_MAX_KEYS: usize = 256;
+
 /// A fjall-side memory operation failed. Kept small and stringly so it maps cleanly to both an
 /// [`McpError`](rmcp::ErrorData) on the local path and a `CommsResponse::Error` on the daemon path.
 #[derive(Debug, thiserror::Error)]
@@ -69,6 +75,15 @@ pub(crate) enum MemoryOpError {
         stored: u32,
         /// The version this binary writes.
         current: u32,
+    },
+    /// One batched read named more keys than a request may carry.
+    #[error(
+        "a batched memory read carries at most {GET_MANY_MAX_KEYS} keys, and this one has {asked}; \
+         split it into several requests"
+    )]
+    TooManyKeys {
+        /// How many keys the request named.
+        asked: usize,
     },
     /// A fjall get / insert / remove failed.
     #[error("fjall {op}: {source}")]
@@ -222,6 +237,9 @@ pub(crate) fn get_many_core(
     owner: &str,
     keys: &[String],
 ) -> Result<Vec<Option<WireMemoryEntry>>, MemoryOpError> {
+    if keys.len() > GET_MANY_MAX_KEYS {
+        return Err(MemoryOpError::TooManyKeys { asked: keys.len() });
+    }
     keys.iter()
         .map(|key| get_core(idx, scope, vis_byte, owner, key))
         .collect()
@@ -477,6 +495,49 @@ mod tests {
         };
         assert_eq!(read.len(), 2);
         assert!(read[0].as_ref().is_some_and(|note| note.value == "one") && read[1].is_none());
+    }
+
+    /// A batched read is bounded where it is served: the reply carries every note whole, and a
+    /// frame to the daemon's client has a size limit.
+    #[test]
+    fn a_batched_read_over_the_cap_is_refused_and_one_at_the_cap_is_served() {
+        let dir = tempfile::tempdir().unwrap();
+        let idx = IndexDb::open(dir.path()).unwrap();
+        put_core(&idx, "scope", 0, "", "k", "v", &[]).unwrap();
+        let keys = |count: usize| -> Vec<String> {
+            std::iter::once("k".to_string())
+                .chain((1..count).map(|index| format!("absent-{index}")))
+                .collect()
+        };
+
+        let served = get_many_core(&idx, "scope", 0, "", &keys(GET_MANY_MAX_KEYS)).unwrap();
+        assert_eq!(served.len(), GET_MANY_MAX_KEYS);
+        assert_eq!(served[0].as_ref().map(|note| note.value.as_str()), Some("v"));
+
+        let refused = get_many_core(&idx, "scope", 0, "", &keys(GET_MANY_MAX_KEYS + 1)).unwrap_err();
+        let message = refused.to_string();
+        assert!(
+            message.contains("at most 256 keys") && message.contains("has 257"),
+            "{message}"
+        );
+    }
+
+    /// The daemon serves a forwarded batch through the same bound.
+    #[cfg(all(feature = "comms", any(unix, windows)))]
+    #[test]
+    fn the_daemon_refuses_a_forwarded_batch_over_the_cap() {
+        use crate::comms::memory_proto::MemoryOp;
+
+        let dir = tempfile::tempdir().unwrap();
+        let idx = IndexDb::open(dir.path()).unwrap();
+        let op = MemoryOp::GetMany {
+            vis_byte: 0,
+            owner: String::new(),
+            keys: (0..=GET_MANY_MAX_KEYS).map(|index| format!("k{index}")).collect(),
+        };
+
+        let refused = run_memory_op(&idx, "scope", &op).unwrap_err();
+        assert!(matches!(refused, MemoryOpError::TooManyKeys { asked } if asked == GET_MANY_MAX_KEYS + 1));
     }
 
     /// The notes of a newer basemind are refused by name, for a read and for a write.

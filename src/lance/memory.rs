@@ -10,7 +10,7 @@ use futures::TryStreamExt;
 use lancedb::arrow::arrow_array::builder::{
     FixedSizeListBuilder, Float32Builder, ListBuilder, StringBuilder, TimestampMicrosecondBuilder,
 };
-use lancedb::arrow::arrow_array::{Array, RecordBatch, StringArray};
+use lancedb::arrow::arrow_array::{RecordBatch, StringArray};
 use lancedb::query::{ExecutableQuery, QueryBase};
 
 use super::schema::{MEMORY_TABLE, memory_schema};
@@ -43,9 +43,11 @@ impl LanceStore {
         self.upsert_memory_rows(std::slice::from_ref(&row))
     }
 
-    /// Upsert the rows of ONE `(scope, visibility, agent_id)` namespace: one delete of every row
-    /// their keys already have, then one insert. Run again with the same rows it leaves the same
-    /// table, and it removes duplicates of those keys that two writers racing each other left.
+    /// Upsert the rows of ONE `(scope, visibility, agent_id)` namespace: one delete, then one
+    /// insert. For each key the delete takes the rows embedded from the same write or an earlier
+    /// one, so it removes the duplicates two racing writers left, and run again with the same rows
+    /// it leaves the same table. A row embedded from a LATER write stays: a caller that embedded
+    /// from a listing may be behind a save made since, and must not remove that save's row.
     pub fn upsert_memory_rows(&self, rows: &[MemoryRow]) -> Result<()> {
         let Some(first) = rows.first() else {
             return Ok(());
@@ -56,8 +58,21 @@ impl LanceStore {
         {
             return Err(anyhow!("memory rows of more than one namespace in one upsert"));
         }
-        let keys: Vec<&str> = rows.iter().map(|r| r.key.as_str()).collect();
-        let predicate = memory_keys_predicate(&first.scope, &first.visibility, &first.agent_id, &keys);
+        let superseded = rows
+            .iter()
+            .map(|row| {
+                format!(
+                    "(key = '{}' AND updated_at <= to_timestamp_micros({}))",
+                    escape_sql_literal(&row.key),
+                    row.updated_at
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(" OR ");
+        let predicate = format!(
+            "{} AND ({superseded})",
+            memory_namespace_predicate(&first.scope, &first.visibility, &first.agent_id)
+        );
         let batch = build_memory_batch(self.inner.dim, rows)?;
         self.inner.rt().block_on(async {
             let table = self.memory_table().await?;
@@ -158,10 +173,13 @@ impl LanceStore {
         })
     }
 
-    /// KNN over the memory table for one `(scope, visibility, agent_id)` namespace.
+    /// KNN over the memory table for one `(scope, visibility, agent_id)` namespace, optionally
+    /// only rows carrying `tag`.
     ///
     /// The `visibility` + `agent_id` predicate is mandatory so an individual search never
-    /// returns another agent's rows and a group search only sees group rows.
+    /// returns another agent's rows and a group search only sees group rows. A row's tags are the
+    /// note's as of the write the row was embedded from, so the `tag` filter is exact for every
+    /// row the caller's join against the notes keeps.
     pub fn search_memory(
         &self,
         scope: &str,
@@ -169,8 +187,10 @@ impl LanceStore {
         agent_id: &str,
         query: Vec<f32>,
         limit: usize,
-        tag_filter: Option<&str>,
+        tag: Option<&str>,
     ) -> Result<Vec<MemoryHit>> {
+        use lancedb::query::Select;
+
         if query.len() != usize::from(self.inner.dim) {
             return Err(anyhow!(
                 "query vector dim {} does not match store dim {}",
@@ -178,22 +198,24 @@ impl LanceStore {
                 self.inner.dim
             ));
         }
+        let mut predicate = memory_namespace_predicate(scope, visibility, agent_id);
+        if let Some(tag) = tag {
+            predicate.push_str(&format!(" AND array_has(tags, '{}')", escape_sql_literal(tag)));
+        }
         self.inner.rt().block_on(async {
             let table = self.memory_table().await?;
-            let mut q = table
+            let mut stream = table
                 .vector_search(query)
                 .context("build memory vector search")?
-                .limit(limit);
-            let namespace_clause = memory_namespace_predicate(scope, visibility, agent_id);
-            let _ = tag_filter;
-            q = q.only_if(namespace_clause);
-            let mut stream = q.execute().await.context("run memory search")?;
+                .limit(limit)
+                .only_if(predicate)
+                .select(Select::columns(&["key", "updated_at", "_distance"]))
+                .execute()
+                .await
+                .context("run memory search")?;
             let mut hits = Vec::new();
             while let Some(batch) = stream.try_next().await.context("stream next batch")? {
                 decode_memory_hits(&batch, &mut hits)?;
-            }
-            if let Some(tag) = tag_filter {
-                hits.retain(|h| h.tags.iter().any(|t| t == tag));
             }
             anyhow::Ok(hits)
         })
@@ -221,7 +243,8 @@ fn build_memory_batch(dim: u16, rows: &[MemoryRow]) -> Result<RecordBatch> {
         }
         scope.append_value(&r.scope);
         key.append_value(&r.key);
-        value.append_value(&r.value);
+        // The column stays for stores created with it; the text is never written to it.
+        value.append_value("");
         for t in &r.tags {
             tags.values().append_value(t);
         }
@@ -255,18 +278,11 @@ fn build_memory_batch(dim: u16, rows: &[MemoryRow]) -> Result<RecordBatch> {
 }
 
 fn decode_memory_hits(batch: &RecordBatch, out: &mut Vec<MemoryHit>) -> Result<()> {
-    use lancedb::arrow::arrow_array::{Float32Array, ListArray, TimestampMicrosecondArray};
+    use lancedb::arrow::arrow_array::{Float32Array, TimestampMicrosecondArray};
     let key = batch
         .column_by_name("key")
         .and_then(|c| c.as_any().downcast_ref::<StringArray>())
         .ok_or_else(|| anyhow!("`key` column missing"))?;
-    let value = batch
-        .column_by_name("value")
-        .and_then(|c| c.as_any().downcast_ref::<StringArray>())
-        .ok_or_else(|| anyhow!("`value` column missing"))?;
-    let tags = batch
-        .column_by_name("tags")
-        .and_then(|c| c.as_any().downcast_ref::<ListArray>());
     let updated = batch
         .column_by_name("updated_at")
         .and_then(|c| c.as_any().downcast_ref::<TimestampMicrosecondArray>())
@@ -276,21 +292,8 @@ fn decode_memory_hits(batch: &RecordBatch, out: &mut Vec<MemoryHit>) -> Result<(
         .and_then(|c| c.as_any().downcast_ref::<Float32Array>());
 
     for i in 0..batch.num_rows() {
-        let tag_list: Vec<String> = match tags {
-            Some(list) if list.is_valid(i) => {
-                let inner = list.value(i);
-                let s = inner
-                    .as_any()
-                    .downcast_ref::<StringArray>()
-                    .ok_or_else(|| anyhow!("tags inner type unexpected"))?;
-                (0..s.len()).map(|j| s.value(j).to_string()).collect()
-            }
-            _ => Vec::new(),
-        };
         out.push(MemoryHit {
             key: key.value(i).to_string(),
-            value: value.value(i).to_string(),
-            tags: tag_list,
             updated_at: updated.value(i),
             distance: distance.map(|d| d.value(i)).unwrap_or(0.0),
         });
