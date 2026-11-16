@@ -45,5 +45,5 @@ class LegacyExportsTests(unittest.TestCase):
         files = EXPORTS.expected_files(ROOT)
         self.assertEqual(files["scripts/mcp-launch.sh"], ROOT / "plugin/.ai-rulez/scripts/mcp-launch.sh")
         for tree in (".codex-plugin", ".cursor-plugin"):
-            for name in ("session-start", "inbox-notify", "run-hook.cmd"):
+            for name in ("session-start", "inbox-notify", "agent-as", "run-hook.cmd"):
                 self.assertIn(f"{tree}/hooks/{name}", files)

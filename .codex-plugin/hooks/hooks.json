@@ -12,6 +12,18 @@
         ]
       }
     ],
+    "PreToolUse": [
+      {
+        "matcher": "mcp__.*basemind.*__agent_(post|inbox|threads)",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CODEX_PLUGIN_ROOT:-.}/hooks/run-hook.cmd\" agent-as",
+            "async": false
+          }
+        ]
+      }
+    ],
     "UserPromptSubmit": [
       {
         "hooks": [

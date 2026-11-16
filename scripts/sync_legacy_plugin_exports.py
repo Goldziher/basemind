@@ -53,7 +53,7 @@ def expected_files(root: Path) -> dict[str, Path]:
     files["scripts/mcp-launch.sh"] = root / "plugin/.ai-rulez/scripts/mcp-launch.sh"
     files["opencode-plugin/.pi/extensions/basemind.ts"] = root / ".pi/extensions/basemind.ts"
     for tree in TREES[:2]:
-        for name in ("session-start", "inbox-notify", "run-hook.cmd"):
+        for name in ("session-start", "inbox-notify", "agent-as", "run-hook.cmd"):
             files[f"{tree}/hooks/{name}"] = root / "plugin/.ai-rulez/hooks" / name
     return files
 
