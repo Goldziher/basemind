@@ -151,6 +151,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The `full` build drops 67 locked packages (1204 to 1137) and 76 compiled crates (990 to 914); on
   aarch64-apple-darwin the release binary goes from 315.2 MB to 290.2 MB, its `__text` section from
   129.3 MB to 122.0 MB, and it no longer links `libheif` dynamically.
+- `xberg` 1.4.0 is now consumed from crates.io instead of a git revision. The lockfile package
+  count is unchanged (1137); `xberg` was the last git dependency in the manifest.
 
 ### Removed
 

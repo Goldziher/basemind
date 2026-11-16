@@ -12440,7 +12440,8 @@ dependencies = [
 [[package]]
 name = "xberg"
 version = "1.4.0"
-source = "git+https://github.com/xberg-io/xberg.git?rev=7510f9d01d6535fa8f30b618be16c5d656c9d888#7510f9d01d6535fa8f30b618be16c5d656c9d888"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b910feabe35c37d08f05000c72ae5f3456f3d38b7a8012193f1ce692bcecb974"
 dependencies = [
  "ahash",
  "aho-corasick",
@@ -12544,7 +12545,8 @@ dependencies = [
 [[package]]
 name = "xberg-gliner"
 version = "1.4.0"
-source = "git+https://github.com/xberg-io/xberg.git?rev=7510f9d01d6535fa8f30b618be16c5d656c9d888#7510f9d01d6535fa8f30b618be16c5d656c9d888"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "239f05bc5902fc7827a7d34c92cbb9e02afefd2dda5f79a595d22057ecfab51f"
 dependencies = [
  "getrandom 0.2.17",
  "getrandom 0.3.4",
@@ -12559,7 +12561,8 @@ dependencies = [
 [[package]]
 name = "xberg-native-pdf"
 version = "1.4.0"
-source = "git+https://github.com/xberg-io/xberg.git?rev=7510f9d01d6535fa8f30b618be16c5d656c9d888#7510f9d01d6535fa8f30b618be16c5d656c9d888"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1fe457811b651780ecd171a2312be34d6265f70f1b423cf3ba5d984e7b6f2ad6"
 dependencies = [
  "aes",
  "base64 0.23.1",
@@ -12605,7 +12608,8 @@ dependencies = [
 [[package]]
 name = "xberg-paddle-ocr"
 version = "1.4.0"
-source = "git+https://github.com/xberg-io/xberg.git?rev=7510f9d01d6535fa8f30b618be16c5d656c9d888#7510f9d01d6535fa8f30b618be16c5d656c9d888"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "959d30978be4b8543267c89a586b63f9ed0dce287f6923d089efbad8376d8cfd"
 dependencies = [
  "geo-clipper",
  "geo-types",
@@ -12621,7 +12625,8 @@ dependencies = [
 [[package]]
 name = "xberg-tesseract"
 version = "1.4.0"
-source = "git+https://github.com/xberg-io/xberg.git?rev=7510f9d01d6535fa8f30b618be16c5d656c9d888#7510f9d01d6535fa8f30b618be16c5d656c9d888"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "002111c148f9c7456c6fba402acb8a37da2544b401da8b4e9e8ecc0a613bfaf2"
 dependencies = [
  "cc",
  "cmake",
