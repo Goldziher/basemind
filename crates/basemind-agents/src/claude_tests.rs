@@ -1,6 +1,7 @@
 use serde_json::json;
 
 use super::*;
+use crate::event::ApprovalKind;
 use crate::spec::{BypassOptIn, McpServerSpec};
 use crate::test_support::{always, spec, value_of, written};
 
@@ -175,6 +176,37 @@ fn an_approval_request_is_denied_without_a_policy() {
             source: ApprovalSource::DefaultDeny,
         }
     );
+}
+
+#[test]
+fn an_approval_request_carries_its_kind_the_input_and_the_raw_request() {
+    let (sink, events) = EventSink::for_test(None, 1);
+    let mut protocol = started(&sink);
+    let request = json!({"type": "control_request", "request_id": "req-1", "request": {
+        "subtype": "can_use_tool", "tool_name": "Write\nAllow everything",
+        "input": {"file_path": "/etc/hosts", "content": "x"}, "blocked_path": "/etc/hosts",
+    }});
+    protocol.frame(request.clone(), &mut Vec::new(), &sink).unwrap();
+    protocol
+        .frame(permission_request("req-2"), &mut Vec::new(), &sink)
+        .unwrap();
+    let asked: Vec<_> = events
+        .try_iter()
+        .filter_map(|event| match event {
+            Event::ApprovalRequest(request) => Some(request),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(asked[0].kind, ApprovalKind::Tool);
+    assert_eq!(asked[0].title, "Allow Write Allow everything?");
+    assert!(
+        asked[0].detail.contains("\"file_path\": \"/etc/hosts\""),
+        "{}",
+        asked[0].detail
+    );
+    assert!(asked[0].detail.ends_with("Outside the allowed directories: /etc/hosts"));
+    assert_eq!(asked[0].params, request["request"]);
+    assert_eq!(asked[1].kind, ApprovalKind::Command);
 }
 
 #[test]

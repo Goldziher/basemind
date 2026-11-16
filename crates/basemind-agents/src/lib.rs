@@ -52,7 +52,7 @@ pub use acp::AcpAdapter;
 pub use claude::ClaudeCodeAdapter;
 pub use codex::CodexAdapter;
 pub use error::LaunchError;
-pub use event::{ApprovalRequest, ApprovalSource, Event, FinishStatus, ToolCall, ToolState};
+pub use event::{ApprovalKind, ApprovalRequest, ApprovalSource, Event, FinishStatus, ToolCall, ToolState};
 pub use harness::{AcpFlavor, Harness, HarnessKind};
 pub use identity::{AgentIdentity, ENV_AGENT_ID, ENV_HOST};
 pub use registry::{Adapter, Registry};

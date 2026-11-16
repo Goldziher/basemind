@@ -234,7 +234,19 @@ fn a_permission_request_is_rejected_without_a_policy() {
         agent.reply(&prompt, &json!({"stopReason": "end_turn"}));
     });
     run.result.unwrap();
-    assert!(matches!(&run.events[1], Event::ApprovalRequest(request) if request.title == "Allow this command?"));
+    let Event::ApprovalRequest(request) = &run.events[1] else {
+        panic!("unexpected event {:?}", run.events[1]);
+    };
+    // The agent-written title "Run the tests" is part of the grant, not the question.
+    assert_eq!(request.title, "Allow this command?");
+    assert_eq!(request.kind, crate::event::ApprovalKind::Command);
+    assert!(
+        request.detail.contains("\"title\": \"Run the tests\""),
+        "{}",
+        request.detail
+    );
+    assert_eq!(request.params["toolCall"]["toolCallId"], "t1");
+    assert_eq!(request.params["options"].as_array().unwrap().len(), 3);
     assert_eq!(
         run.events[2],
         Event::ApprovalResolved {

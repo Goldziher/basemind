@@ -8,7 +8,9 @@ use std::time::Duration;
 use serde_json::{Value, json};
 
 use crate::error::LaunchError;
-use crate::event::{ApprovalRequest, ApprovalSource, Event, ToolCall, ToolState};
+use crate::event::{
+    ApprovalKind, ApprovalRequest, ApprovalSource, Event, ToolCall, ToolState, approval_detail, one_line,
+};
 use crate::harness::HarnessKind;
 use crate::line::{LineDriver, Protocol, Step, TextStream, write_json};
 use crate::registry::Adapter;
@@ -97,6 +99,29 @@ fn is_turn_result(frame: &Value) -> bool {
 
 fn request_id(wire: &Value) -> String {
     wire.as_str().map_or_else(|| wire.to_string(), str::to_owned)
+}
+
+/// The request for a `can_use_tool` control request. An allow answers with the request's own
+/// `input`, so that input, and the path Claude Code flagged, are the grant shown.
+fn approval_request(id: String, request: &Value) -> ApprovalRequest {
+    let tool = request["tool_name"].as_str().unwrap_or("tool");
+    let kind = match tool {
+        "Bash" => ApprovalKind::Command,
+        "Edit" | "MultiEdit" | "Write" | "NotebookEdit" => ApprovalKind::FileChange,
+        _ if tool.starts_with("mcp__") => ApprovalKind::McpTool,
+        _ => ApprovalKind::Tool,
+    };
+    let mut grant = serde_json::to_string_pretty(&request["input"]).unwrap_or_default();
+    if let Some(path) = request["blocked_path"].as_str() {
+        grant.push_str(&format!("\nOutside the allowed directories: {path}"));
+    }
+    ApprovalRequest {
+        id,
+        kind,
+        title: format!("Allow {}?", one_line(tool)),
+        detail: approval_detail(&grant, None),
+        params: request.clone(),
+    }
 }
 
 pub(crate) struct ClaudeProtocol {
@@ -271,11 +296,7 @@ impl ClaudeProtocol {
             );
         }
         let id = request_id(wire);
-        let verdict = sink.request_approval(ApprovalRequest {
-            id: id.clone(),
-            title: format!("Allow {}?", request["tool_name"].as_str().unwrap_or("tool")),
-            detail: serde_json::to_string_pretty(&request["input"]).unwrap_or_default(),
-        });
+        let verdict = sink.request_approval(approval_request(id.clone(), request));
         match verdict {
             ApprovalVerdict::Ask => {
                 self.approvals.insert(id, (wire.clone(), request.clone()));

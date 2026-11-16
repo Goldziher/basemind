@@ -59,16 +59,56 @@ impl ToolCall {
     }
 }
 
+/// What an approval request would let the harness do.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ApprovalKind {
+    /// Run a shell command.
+    Command,
+    /// Create, edit, move or delete files.
+    FileChange,
+    /// Grant the harness further permissions, such as network access or writable paths.
+    Permissions,
+    /// Call a tool of an MCP server.
+    McpTool,
+    /// Call another tool of the harness.
+    Tool,
+}
+
 /// A request by the harness to do something its permission mode does not cover.
+///
+/// `title` and `detail` are rendered from the grant itself: the command, the file changes,
+/// the permissions or the tool input that an allow would approve. A reason the agent gave is
+/// only appended to `detail`, marked as the agent's, and never stands in for the grant.
+/// A policy that decides by content should read `kind` and `params`.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct ApprovalRequest {
     /// The id to pass to [`Session::approve`](crate::Session::approve) or
     /// [`Session::deny`](crate::Session::deny).
     pub id: String,
+    /// What the request would allow.
+    pub kind: ApprovalKind,
     /// A one-line question, such as `Allow Bash?`.
     pub title: String,
-    /// What exactly is asked: the command, the tool input, the paths.
+    /// The grant in readable form, followed by the agent's reason when it gave one.
     pub detail: String,
+    /// The harness's request as it arrived on the wire: Claude Code's `can_use_tool` request,
+    /// the params of a Codex approval request, or the ACP `session/request_permission` params.
+    pub params: serde_json::Value,
+}
+
+/// The `detail` of a request: the grant, then the agent's own reason, labelled as such.
+pub(crate) fn approval_detail(grant: &str, reason: Option<&str>) -> String {
+    match reason.filter(|reason| !reason.trim().is_empty()) {
+        Some(reason) => format!("{grant}\n\nReason given by the agent (unverified): {reason}"),
+        None => grant.to_owned(),
+    }
+}
+
+/// `text` on one line, with control characters replaced, for an approval title.
+pub(crate) fn one_line(text: &str) -> String {
+    text.chars().map(|c| if c.is_control() { ' ' } else { c }).collect()
 }
 
 /// Who settled an approval request.

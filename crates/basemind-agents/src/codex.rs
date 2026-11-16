@@ -9,7 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde_json::{Value, json};
 
 use crate::error::LaunchError;
-use crate::event::{ApprovalRequest, Event, ToolCall, ToolState};
+use crate::event::{ApprovalKind, ApprovalRequest, Event, ToolCall, ToolState, approval_detail};
 use crate::harness::HarnessKind;
 use crate::line::{LineDriver, Protocol, Step, TextStream, write_json};
 use crate::registry::Adapter;
@@ -119,6 +119,8 @@ pub(crate) struct CodexProtocol {
     tools: HashMap<String, ToolCall>,
     /// Pending approvals: the wire id, the request method and its params, by event id.
     approvals: HashMap<String, (Value, String, Value)>,
+    /// The number of approval requests seen, which names the next one.
+    approval_sequence: u64,
 }
 
 impl CodexProtocol {
@@ -135,6 +137,7 @@ impl CodexProtocol {
             text: TextStream::default(),
             tools: HashMap::new(),
             approvals: HashMap::new(),
+            approval_sequence: 0,
         }
     }
 
@@ -177,32 +180,9 @@ impl CodexProtocol {
         out: &mut dyn Write,
         sink: &EventSink,
     ) -> Result<(), LaunchError> {
-        let title = if method.contains("fileChange") || method == "applyPatchApproval" {
-            "Allow file changes?"
-        } else if method.contains("permissions") {
-            "Allow additional permissions?"
-        } else {
-            "Allow this command?"
-        };
-        let known = params["itemId"].as_str().and_then(|id| self.tools.get(id));
-        let mut detail = params["command"]
-            .as_str()
-            .or(params["reason"].as_str())
-            .map(str::to_owned)
-            .or_else(|| known.map(|tool| tool.input.clone()))
-            .unwrap_or_default();
-        if detail.is_empty() {
-            detail = params
-                .get("permissions")
-                .and_then(|permissions| serde_json::to_string_pretty(permissions).ok())
-                .unwrap_or_else(|| "The agent is requesting permission to continue.".to_owned());
-        }
-        let id = wire.to_string();
-        let verdict = sink.request_approval(ApprovalRequest {
-            id: id.clone(),
-            title: title.to_owned(),
-            detail,
-        });
+        self.approval_sequence += 1;
+        let id = format!("codex-{}", self.approval_sequence);
+        let verdict = sink.request_approval(self.approval_request(id.clone(), method, params));
         match verdict {
             ApprovalVerdict::Ask => {
                 self.approvals
@@ -210,6 +190,47 @@ impl CodexProtocol {
                 Ok(())
             }
             verdict => self.respond(wire, method, params, verdict == ApprovalVerdict::Allow, out),
+        }
+    }
+
+    /// Renders what an allow would approve. The command and the permissions are in the
+    /// request; the file changes are in the item the harness announced before asking.
+    fn approval_request(&self, id: String, method: &str, params: &Value) -> ApprovalRequest {
+        let pretty = |value: &Value| serde_json::to_string_pretty(value).unwrap_or_default();
+        let known = params["itemId"].as_str().and_then(|item| self.tools.get(item));
+        let (kind, title, mut grant) = if method.contains("fileChange") || method == "applyPatchApproval" {
+            let changes = match (&params["fileChanges"], known) {
+                (changes, _) if !changes.is_null() => pretty(changes),
+                (_, Some(tool)) => format!("{}\n{}", tool.input, tool.output),
+                (_, None) => "The harness did not say which files would change.".to_owned(),
+            };
+            (ApprovalKind::FileChange, "Allow file changes?", changes)
+        } else if method.contains("permissions") {
+            let permissions = pretty(&params["permissions"]);
+            (ApprovalKind::Permissions, "Allow additional permissions?", permissions)
+        } else if method.contains("commandExecution") || method == "execCommandApproval" {
+            let command = match (&params["command"], known) {
+                (Value::String(command), _) => command.clone(),
+                (command, _) if !command.is_null() => pretty(command),
+                (_, Some(tool)) => tool.input.clone(),
+                (_, None) => "The harness did not say which command.".to_owned(),
+            };
+            (ApprovalKind::Command, "Allow this command?", command)
+        } else {
+            (ApprovalKind::Tool, "Allow this request?", pretty(params))
+        };
+        if let Some(cwd) = params["cwd"].as_str() {
+            grant.push_str(&format!("\nIn: {cwd}"));
+        }
+        if let Some(root) = params["grantRoot"].as_str() {
+            grant.push_str(&format!("\nAlso requests write access under: {root}"));
+        }
+        ApprovalRequest {
+            id,
+            kind,
+            title: title.to_owned(),
+            detail: approval_detail(&grant, params["reason"].as_str()),
+            params: params.clone(),
         }
     }
 

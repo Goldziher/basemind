@@ -23,7 +23,9 @@ use futures::channel::mpsc::{UnboundedReceiver, unbounded};
 use futures::{FutureExt, Sink, SinkExt, Stream, StreamExt};
 
 use crate::error::LaunchError;
-use crate::event::{ApprovalRequest, ApprovalSource, Control, Event, ToolCall, ToolState};
+use crate::event::{
+    ApprovalKind, ApprovalRequest, ApprovalSource, Control, Event, ToolCall, ToolState, approval_detail,
+};
 use crate::harness::{AcpFlavor, HarnessKind};
 use crate::registry::Adapter;
 use crate::session::{self, ChildIo, CommandPlan, ControlTx, Driver, EventSink, Session};
@@ -235,17 +237,23 @@ fn outcome(request: &RequestPermissionRequest, allow: bool) -> RequestPermission
         })
 }
 
+/// The request for a `session/request_permission`. The grant is the tool call the agent
+/// described, so the title follows its kind and never its agent-written title.
 fn approval_request(id: String, request: &RequestPermissionRequest) -> ApprovalRequest {
-    let fields = &request.tool_call.fields;
-    let title = match fields.kind {
-        Some(ToolKind::Edit | ToolKind::Delete | ToolKind::Move) => "Allow file changes?".to_owned(),
-        Some(ToolKind::Execute) => "Allow this command?".to_owned(),
-        _ => format!("Allow {}?", fields.title.as_deref().unwrap_or("this tool")),
+    let (kind, title) = match request.tool_call.fields.kind {
+        Some(ToolKind::Edit | ToolKind::Delete | ToolKind::Move) => (ApprovalKind::FileChange, "Allow file changes?"),
+        Some(ToolKind::Execute) => (ApprovalKind::Command, "Allow this command?"),
+        _ => (ApprovalKind::Tool, "Allow this tool call?"),
     };
     ApprovalRequest {
         id,
-        title,
-        detail: serde_json::to_string_pretty(&request.tool_call).unwrap_or_default(),
+        kind,
+        title: title.to_owned(),
+        detail: approval_detail(
+            &serde_json::to_string_pretty(&request.tool_call).unwrap_or_default(),
+            None,
+        ),
+        params: serde_json::to_value(request).unwrap_or_default(),
     }
 }
 
