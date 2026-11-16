@@ -269,6 +269,10 @@ pub struct Store {
     /// vanilla code-only scan doesn't pay the LanceDB startup cost.
     #[cfg(feature = "intelligence")]
     pub lance: Option<LanceStore>,
+    /// Why the vector store could not be opened in this scan pass. The pass's later opens fail at
+    /// once instead of each waiting out another holder of the store's open lock again.
+    #[cfg(feature = "intelligence")]
+    pub(crate) lance_unavailable: Option<String>,
     /// True when this open discarded a view index written under another schema (a release-minor
     /// bump): every blob that index referenced is now unreferenced, so the first scan of the
     /// rebuilt view should be followed by a blob sweep (see `Store::displaced_blobs_pending`).
@@ -526,6 +530,8 @@ impl Store {
             index_db: Some(index_db),
             #[cfg(feature = "intelligence")]
             lance: None,
+            #[cfg(feature = "intelligence")]
+            lance_unavailable: None,
             reset_stale_schema,
             index_rebuild_needed,
             pending_vectors,
@@ -642,6 +648,8 @@ impl Store {
             index_db,
             #[cfg(feature = "intelligence")]
             lance: None,
+            #[cfg(feature = "intelligence")]
+            lance_unavailable: None,
             reset_stale_schema: false,
             index_rebuild_needed,
             pending_vectors,
@@ -655,15 +663,30 @@ impl Store {
     /// A mismatch between the stored `(dim, embedding_model)` and the values
     /// passed here wipes the whole `.basemind/lance/` directory and rebuilds —
     /// the standard schema-bump migration story for the vector store.
+    ///
+    /// An open that fails is not tried again until [`Self::retry_vector_store`]: the error is
+    /// remembered and returned at once.
     #[cfg(feature = "intelligence")]
     pub fn lance_or_open(&mut self, dim: u16, embedding_model: &str) -> Result<&LanceStore, anyhow::Error> {
         if self.lance.is_none() {
+            if let Some(reason) = &self.lance_unavailable {
+                return Err(anyhow::anyhow!("{reason} (in an earlier open of this scan pass)"));
+            }
             let dir = self.basemind_dir.join(LANCE_DIR);
-            let store = LanceStore::open(&dir, dim, embedding_model)?;
+            let store = LanceStore::open(&dir, dim, embedding_model)
+                .inspect_err(|error| self.lance_unavailable = Some(format!("{error:#}")))?;
             self.lance = Some(store);
         }
         // SAFETY of unwrap: we just populated it on the line above when None.
         Ok(self.lance.as_ref().expect("lance store just populated"))
+    }
+
+    /// Begin a scan pass: a vector store an earlier pass could not open is tried again.
+    pub fn retry_vector_store(&mut self) {
+        #[cfg(feature = "intelligence")]
+        {
+            self.lance_unavailable = None;
+        }
     }
 
     /// Whether the LanceDB vector-store directory already exists on disk. Lets callers avoid

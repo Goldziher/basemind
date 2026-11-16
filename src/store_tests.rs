@@ -605,3 +605,36 @@ fn a_file_map_from_before_the_blob_namespaces_reads_as_a_rescan_owed() {
         Err(StoreError::StaleBlobLayout { found: 0, .. })
     ));
 }
+
+/// A vector store that will not open (here a file in its place; in the field another open holding
+/// its lock past the wait) is opened once per scan pass: the pass's later opens fail at once
+/// instead of each waiting again, and the next pass tries again.
+#[cfg(feature = "intelligence")]
+#[test]
+fn a_vector_store_that_would_not_open_is_tried_once_per_scan_pass() {
+    init_isolated_cache();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    std::fs::write(root.join("a.rs"), b"pub fn vector_store_fixture() {}\n").expect("write");
+    let mut store = Store::open(root, VIEW_WORKING).expect("open");
+    let lance_dir = store.basemind_dir.join(LANCE_DIR);
+    std::fs::write(&lance_dir, b"not a directory").expect("block the store");
+    assert!(store.lance_or_open(4, "model").is_err());
+
+    std::fs::remove_file(&lance_dir).expect("unblock the store");
+    assert!(
+        store.lance_or_open(4, "model").is_err(),
+        "the failure stands for the rest of the pass"
+    );
+    assert!(!lance_dir.exists(), "and nothing was opened");
+
+    crate::scanner::scan(
+        root,
+        &mut store,
+        &crate::config::Config::with_defaults(),
+        crate::scanner::ScanSource::WorkingTree,
+        crate::scanner::EmbedMode::Deferred,
+    )
+    .expect("scan");
+    assert!(store.lance_or_open(4, "model").is_ok(), "the next pass opens it");
+}

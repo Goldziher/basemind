@@ -16,6 +16,7 @@ use crate::store::{ScanHealth, Store};
 /// index.
 pub(crate) fn preflight(store: &mut Store) -> Result<(), ScanError> {
     crate::scan_evidence::settle_dead_hosts();
+    store.retry_vector_store();
     absorb_owed_rows(store);
     if let Some(db) = store.index_db.as_ref() {
         db.clear_recoverable_fault();

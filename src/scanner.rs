@@ -742,6 +742,7 @@ fn scan_paths_inner(
     if crate::scanner_integrity::needs_full_rebuild(store)? {
         return scan_with_observer(root, store, config, source, embed, cancel, observer);
     }
+    store.retry_vector_store();
     crate::scanner_integrity::absorb_owed_rows(store);
     let mut filter = IndexFilter::new(root, config)?;
     if verify_named {

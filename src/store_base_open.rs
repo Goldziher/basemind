@@ -22,6 +22,8 @@ impl Store {
             index_db,
             #[cfg(feature = "intelligence")]
             lance: None,
+            #[cfg(feature = "intelligence")]
+            lance_unavailable: None,
             reset_stale_schema: false,
             index_rebuild_needed: false,
             pending_vectors: crate::store_pending::PendingVectors::default(),

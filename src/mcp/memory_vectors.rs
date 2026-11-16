@@ -222,7 +222,7 @@ pub(super) async fn memory_lance_store(state: &ServerState) -> Result<Arc<LanceS
     state
         .shared
         .memory_lance
-        .get_or_try_init(|| async {
+        .get_or_open(|| async {
             let embedder = shared_embedder(state)
                 .await
                 .map_err(|e| format!("embedder init: {e}"))?;
@@ -237,8 +237,6 @@ pub(super) async fn memory_lance_store(state: &ServerState) -> Result<Arc<LanceS
             .map_err(|e| format!("open LanceStore: {e}"))
         })
         .await
-        .cloned()
-        .map_err(|e| McpError::internal_error(e.clone(), None))
 }
 
 /// The store, when a row could be in it: already open in this process, or present on disk. A

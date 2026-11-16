@@ -87,7 +87,7 @@ pub(super) async fn lance_store(state: &ServerState) -> Result<Arc<crate::lance:
     state
         .shared
         .lance
-        .get_or_try_init(|| async {
+        .get_or_open(|| async {
             let embedder = shared_embedder(state)
                 .await
                 .map_err(|e| format!("embedder init: {e}"))?;
@@ -101,8 +101,6 @@ pub(super) async fn lance_store(state: &ServerState) -> Result<Arc<crate::lance:
             open_lance(lance_dir, &embedder).await
         })
         .await
-        .cloned()
-        .map_err(|e| McpError::internal_error(e.clone(), None))
 }
 
 /// Per-`(scope, key)` write serialization for `memory_put`.

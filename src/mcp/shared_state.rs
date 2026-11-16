@@ -89,10 +89,10 @@ pub(crate) struct SharedReadStack {
     pub(crate) scope: String,
     /// LanceDB vector store. Lazy-init on first memory/document/code-search call.
     #[cfg(any(feature = "memory", feature = "documents", feature = "code-search"))]
-    pub(crate) lance: tokio::sync::OnceCell<Arc<crate::lance::LanceStore>>,
+    pub(crate) lance: super::lance_cell::LanceCell,
     /// The repo group's memory vector store (see `memory_vectors`). Lazy-init on first use.
     #[cfg(feature = "memory")]
-    pub(crate) memory_lance: tokio::sync::OnceCell<Arc<crate::lance::LanceStore>>,
+    pub(crate) memory_lance: super::lance_cell::LanceCell,
     /// Memory namespaces `(vis_byte, owner)` whose vector rows a search in this process is bringing
     /// up to date with the notes, or has.
     #[cfg(feature = "memory")]
@@ -254,11 +254,11 @@ impl SharedReadStack {
             ranked: Default::default(),
             scope,
             #[cfg(any(feature = "memory", feature = "documents", feature = "code-search"))]
-            lance: tokio::sync::OnceCell::new(),
+            lance: Default::default(),
             #[cfg(any(feature = "memory", feature = "documents", feature = "code-search"))]
             embedder: tokio::sync::OnceCell::new(),
             #[cfg(feature = "memory")]
-            memory_lance: tokio::sync::OnceCell::new(),
+            memory_lance: Default::default(),
             #[cfg(feature = "memory")]
             memory_backfill: std::sync::Mutex::new(ahash::AHashMap::new()),
             initial_scan_active: AtomicBool::new(false),

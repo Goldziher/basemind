@@ -545,8 +545,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - The vector store's `meta.json` is written atomically, before any table, and removed last in a
     wipe; one written by a newer basemind is refused even when this version cannot parse it. Two
     processes opening a new store at once no longer share a temp file or remove each other's
-    tables. An open that waits more than 30 s for another open of the store fails, and the next
-    search or scan tries again, instead of opening beside one that may be wiping the store.
+    tables. An open that waits more than 30 s for another open of the store fails instead of
+    opening beside one that may be wiping the store. The rest of that scan pass, and the tool calls
+    of the next minute, take the store as unavailable at once instead of each waiting again
+    (`code_search` runs its other lanes and names the vector lane in `lanes_unavailable`).
 - `memory_save` refuses a key longer than 1024 bytes and a note whose text and tags pass 4 MiB,
   with an invalid-params error naming the limit: a longer one could be saved locally but not
   carried in one daemon frame, by its save or by any later read. Reads of several notes or stamps
