@@ -2,9 +2,9 @@
 # Refresh it with `ai-rulez lock`; `ai-rulez generate --locked` fails when it is stale.
 
 version = 1
-ai_rulez_version = '5.13.3'
+ai_rulez_version = '5.13.4'
 scope = 'all'
-tree = 'sha256:fa97fdda33498aaad269651dfff45a946b34df3b62dcd5ebfb4bbb86a785213c'
+tree = 'sha256:3eb8796997a7d3900c0c001b906af70422965f9a06d1d4cc4b408445265083ea'
 
 [[item]]
 kind = 'command'
@@ -82,7 +82,7 @@ digest = 'sha256:d9f773eef9a46fd46dd4b0aece66ee07af6fea92a1c1776eb05302ec972bdae
 kind = 'skill'
 id = 'basemind-git-history'
 path = 'skills/basemind-git-history'
-digest = 'sha256:d620afdb7d9b638b5fe66d48837cde81476a939bb538d4276fa4073b6888788a'
+digest = 'sha256:c2f13e364bc8953c2fe1087fe6e158826dfd2d5afb8423fa6fefcd1788013f3e'
 
 [[item]]
 kind = 'skill'

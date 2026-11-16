@@ -9,8 +9,8 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:c1d34eae66099fe2e036e064799480353812f5f2c07a329d5b25e8b4f19aa213
-Source-Hash: blake3:f910f1bfcad5a31b3b213dbc7b8ab0d1f9f48e0c449d98b0bca2d2ee3b391990
+Content-Hash: blake3:8eec70ca41681fc176f9cc3f123ab15208ffd7b998fa8f13ed711ad3f9499076
+Source-Hash: blake3:5c9a7a84bc7d5d91812d9aa832afd8e95df87f67b1651aea3081635bac0df8b6
 Schema-Version: v1
 -->
 
@@ -86,8 +86,8 @@ git_diff {"path":"src/mcp/tools.rs","from":"HEAD~5","structural":true}
   an empty page with `truncated_reason: "window"` and a `next_cursor` is not the end of the
   history, and `unmatched` says when nothing has touched the directory so far and it is not on
   disk.
-- A directory's or symbol's cursor is refused when the git-history index came up (or stopped
-  answering) since it was issued: the two order commits differently. Restart without `cursor`.
+- A `git_log` cursor is refused when the git-history index came up (or stopped answering) since
+  it was issued: the two order commits differently. Restart without `cursor`.
 - `git_log` with `rev` holds the commit's file list to `max_tokens` and then sets `budgeted`, with
   `omitted` counting the files left out.
 - `git_blame`: `line` and `end_line` are 1-based and inclusive, and `end_line` defaults to `line`.
