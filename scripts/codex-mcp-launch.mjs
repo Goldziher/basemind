@@ -33,8 +33,11 @@ async function resolveLatestVersion() {
   }
 }
 
-function launchEnvironment(version) {
-  const environment = { ...process.env, BASEMIND_HOST: process.env.BASEMIND_HOST || "codex" };
+// Codex gives its MCP servers no CLAUDECODE; Claude Code does, when it runs this repository's own
+// development config.
+export function launchEnvironment(version) {
+  const host = process.env.BASEMIND_HOST || (process.env.CLAUDECODE ? "claude" : "codex");
+  const environment = { ...process.env, BASEMIND_HOST: host };
   return version ? { ...environment, BASEMIND_FORCE_VERSION: version } : environment;
 }
 

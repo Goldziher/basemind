@@ -527,5 +527,65 @@ class HostDetectionTests(unittest.TestCase):
         self.assertEqual(self.host(BASEMIND_HOST="mine", CLAUDECODE="1", CURSOR_PLUGIN_ROOT="/p"), "mine")
 
 
+@unittest.skipIf(sys.platform == "win32" or shutil.which("node") is None, "needs node and a Unix shell")
+class McpJsonFallbackTests(unittest.TestCase):
+    """The Codex config's fallback, used when no installed plugin holds codex-mcp-launch.mjs."""
+
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        server = json.loads((ROOT / ".mcp.json").read_text())["mcpServers"]["basemind"]
+        self.command = [shutil.which("node"), *server["args"]]
+        (self.root / "codex-home").mkdir()
+        self.bin = self.root / "bin"
+        self.bin.mkdir()
+        self.work = self.root / "work"
+        (self.work / "scripts").mkdir(parents=True)
+        report = '#!/bin/sh\nprintf "%s %s" "$(basename "$0")" "${BASEMIND_HOST-unset}"\n'
+        for stub in (self.work / "scripts/mcp-launch.sh", self.bin / "basemind"):
+            stub.write_text(report)
+            stub.chmod(0o755)
+
+    def host(self, *, launcher: bool, **harness: str) -> str:
+        if not launcher:
+            (self.work / "scripts/mcp-launch.sh").unlink()
+        env = {key: value for key, value in os.environ.items() if key not in HostDetectionTests.HARNESS_VARIABLES}
+        env.update(
+            CODEX_HOME=str(self.root / "codex-home"),
+            PATH=f"{self.bin}{os.pathsep}{os.environ['PATH']}",
+            **harness,
+        )
+        return subprocess.run(
+            self.command, cwd=self.work, env=env, capture_output=True, text=True, timeout=30, check=True
+        ).stdout
+
+    def test_codex_is_named_through_the_launcher(self) -> None:
+        self.assertEqual(self.host(launcher=True), "mcp-launch.sh codex")
+
+    def test_codex_is_named_for_a_bare_binary(self) -> None:
+        self.assertEqual(self.host(launcher=False), "basemind codex")
+
+    def test_claude_code_running_the_development_config_is_named_claude(self) -> None:
+        self.assertEqual(self.host(launcher=True, CLAUDECODE="1"), "mcp-launch.sh claude")
+
+    def test_an_explicit_host_wins(self) -> None:
+        self.assertEqual(self.host(launcher=False, BASEMIND_HOST="mine"), "basemind mine")
+
+    def test_the_installed_codex_launcher_names_the_same_host(self) -> None:
+        script = (ROOT / "scripts/codex-mcp-launch.mjs").as_uri()
+        probe = f'import("{script}").then(m => process.stdout.write(m.launchEnvironment().BASEMIND_HOST))'
+
+        def host(**harness: str) -> str:
+            env = {key: value for key, value in os.environ.items() if key not in HostDetectionTests.HARNESS_VARIABLES}
+            env.update(harness)
+            node = [shutil.which("node"), "-e", probe]
+            return subprocess.run(node, env=env, capture_output=True, text=True, timeout=30, check=True).stdout
+
+        self.assertEqual(host(), "codex")
+        self.assertEqual(host(CLAUDECODE="1"), "claude")
+        self.assertEqual(host(BASEMIND_HOST="mine", CLAUDECODE="1"), "mine")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -37,7 +37,9 @@ code follows this document. Where the document leaves a point open, the code doe
   together with `CLAUDE_PLUGIN_ROOT`: tested before `CLAUDECODE`, which a Codex started from Claude
   Code passes on to its hooks), `claude` (`CLAUDECODE`), `codex` (the launcher's parent process is
   `codex`), `claude` (`CLAUDE_PLUGIN_ROOT` alone), `gemini` (`GEMINI_CLI`); none otherwise.
-  `scripts/codex-mcp-launch.mjs` sets `codex` for the repository's own development config.
+  The Codex config `.mcp.json` starts `serve` through node, which sets `codex` (or `claude` when
+  `CLAUDECODE` is set: Claude Code reads the same file as this repository's development config)
+  before it runs `scripts/codex-mcp-launch.mjs`, the launcher or a bare `basemind`.
 
 ## Terms
 
