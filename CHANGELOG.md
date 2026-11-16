@@ -508,9 +508,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     taken for a live daemon and a clock step does not end a live one; then every workspace
     verifies, whichever process opens it next). A daemon killed while the machine stayed up tore
     nothing and asks for no verification. A worktree seeded from a workspace that must verify its
-    blobs must verify them too. A chunk sidecar's header, which states its length, is
-    read on every pass. Not covered: a power loss after a scan finished outside the daemon, the payload
-    of a chunk sidecar, and resolved-reference (`.rref`) blobs.
+    blobs, or whose last scan died and left its breadcrumb, must verify them too. A chunk
+    sidecar's header, which states its length, is read on every pass. Not covered: a power loss
+    after a scan finished outside the daemon, the payload of a chunk sidecar, and
+    resolved-reference (`.rref`) blobs.
   - `memory_search` by meaning answers from the note itself and never from a stale, orphaned or
     duplicated vector row. The rows are rebuilt from the notes after an upgrade or for a new
     embedding preset, a bounded number per call: while they are behind, the response carries a

@@ -151,8 +151,11 @@ pub(crate) fn seed_working_view(root: &Path, basemind_dir: &Path, view_dir: &Pat
         return None;
     };
     let cloned = clone_dir(&source_view, &tmp);
-    // Read under the sibling's lock, so it speaks for the map just cloned. ~keep
-    let blobs_unverified = crate::scan_evidence::blobs_need_verifying(&source_ws);
+    // Read under the sibling's lock, so it speaks for the map just cloned. A scan breadcrumb found
+    // while we hold that lock is a dead scan's, which becomes `verify-blobs` only when the sibling
+    // next scans. ~keep
+    let blobs_unverified = crate::scan_evidence::blobs_need_verifying(&source_ws)
+        || crate::scan_evidence::inflight_path(&source_ws).exists();
     drop(sibling_lock);
 
     let result = cloned
@@ -420,9 +423,25 @@ mod tests {
     /// takes a torn blob for an unchanged file's because the blob exists.
     #[test]
     fn a_seed_from_a_sibling_that_must_verify_its_blobs_verifies_them_too() {
+        seeds_verify_blobs_the_sibling_may_have_torn(|main_dir| {
+            std::fs::write(main_dir.join(crate::scan_evidence::VERIFY_BLOBS_FILE), b"").expect("request");
+        });
+    }
+
+    /// A CLI scan of the sibling died with the machine: its breadcrumb is the only trace, and it
+    /// becomes `verify-blobs` only when something next begins or clears a scan of the sibling.
+    #[test]
+    fn a_seed_from_a_sibling_whose_scan_died_verifies_its_blobs() {
+        seeds_verify_blobs_the_sibling_may_have_torn(|main_dir| {
+            std::fs::write(crate::scan_evidence::inflight_path(main_dir), b"{}").expect("breadcrumb");
+        });
+    }
+
+    /// Tear a blob of the sibling, leave `evidence` of it in the sibling's cache directory, and
+    /// check that the worktree seeded from it rebuilds the blob on its first scan.
+    fn seeds_verify_blobs_the_sibling_may_have_torn(evidence: impl FnOnce(&Path)) {
         let (_tmp, main, wt) = fixture();
         let main_dir = workspace_cache_dir(&main);
-        std::fs::write(main_dir.join(crate::scan_evidence::VERIFY_BLOBS_FILE), b"").expect("request");
         let torn = {
             let m = Store::open(&main, VIEW_WORKING).expect("open main");
             let hash = m.index.files[&crate::path::RelPath::from("a.rs")].hash_hex.clone();
@@ -430,6 +449,7 @@ mod tests {
             std::fs::write(&path, b"torn").expect("tear the blob");
             (path, hash)
         };
+        evidence(&main_dir);
 
         let mut store = Store::open(&wt, VIEW_WORKING).expect("open wt");
         assert_eq!(store.index.files.len(), 3, "the view was seeded");
