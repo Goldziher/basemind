@@ -38,7 +38,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   tools are replaced by 15 tools with exact schemas (ADR-0018, superseding ADR-0011): `code_outline`,
   `code_symbols`, `code_read`, `code_grep`, `code_search`, `code_refs`, `find_files`, `docs_search`,
   `git_log`, `git_blame`, `git_diff`, `memory_save`, `memory_search`, `index_status` and `index_rescan`.
-  There are no aliases: the old tool names and the `mode` argument are gone. `agents` is unchanged. The plugin's skills, commands, hooks and rules are updated in the same release.
+  There are no aliases: the old tool names and the `mode` argument are gone. `agents` is unchanged.
+  The plugin's skills, commands, hooks and rules are updated in the same release.
   [`docs/UPGRADING.md`](docs/UPGRADING.md) lists the renamed arguments and CLI flags.
 
   <!-- markdownlint-disable MD013 -->

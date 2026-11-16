@@ -54,7 +54,8 @@ enum HostFate {
 /// Judge a marker. `same_process` says whether the process now at the marker's pid is the host
 /// ([`crate::boot_identity::is_recorded_process`], never so across two boot ids), and `same_boot`
 /// whether the marker is of this boot; `None` where it cannot be told. The host's own process still
-/// running is `Live` whatever the boot times say: a boot time that moved is not a restart. With the boot unknown and the host gone, the worse case is read.
+/// running is `Live` whatever the boot times say: a boot time that moved is not a restart. With the
+/// boot unknown and the host gone, the worse case is read.
 fn host_fate(pid_live: bool, same_process: Option<bool>, same_boot: Option<bool>) -> HostFate {
     if pid_live && same_process == Some(true) {
         return HostFate::Live;
