@@ -12,16 +12,36 @@
 //!
 //! # Safety defaults
 //!
+//! What the crate enforces, against a hostile spec and a hostile child alike:
+//!
 //! - **Approvals are denied.** Every approval request of the harness is answered `deny`
-//!   unless the spec carries an [`ApprovalPolicy`].
-//! - **No permission bypass.** [`PermissionMode::Bypass`], and any extra argument that would
-//!   switch a harness's permission checks off, is refused unless the spec carries a
-//!   [`BypassOptIn`] naming that harness and its mode.
-//! - **Confined working directory.** It has to resolve inside [`LaunchSpec::root`].
-//! - **Limits.** At the wall-time limit, or when the harness starts more turns than
-//!   [`Limits::max_turns`], the whole process group is killed.
+//!   unless the spec carries an [`ApprovalPolicy`]. A request shows the grant itself (the
+//!   command, the file changes, the permissions, the tool input) as an [`ApprovalKind`] and the
+//!   raw wire params; an agent's stated reason is only appended. An ACP allow takes the
+//!   `allow_once` option only. At most 64 requests wait for the caller; a further one is denied.
+//! - **No permission bypass.** [`PermissionMode::Bypass`] is refused unless the spec carries
+//!   a [`BypassOptIn`] naming that harness and its mode.
+//! - **Allow-listed arguments.** [`Harness::args`] may carry only model and effort selection,
+//!   per harness; every other flag and every positional is refused, opt-in or not.
+//! - **No project configuration.** Claude Code runs with no setting sources, hooks disabled
+//!   and only the MCP server the spec names. Codex, Gemini, Cursor and OpenCode are not
+//!   launched over a project file of theirs (`.codex`, `.gemini`, ...) in the working
+//!   directory or above it. Only MCP tools the spec names are pre-approved, and only Claude
+//!   Code can pre-approve.
+//! - **Working directory.** It has to resolve inside [`LaunchSpec::root`], and is checked
+//!   again in the child after it changes into it. The agent is not sandboxed to the root.
 //! - **Allow-listed environment.** The child receives [`ENV_ALLOWLIST`], the spec's additions
-//!   and the identity. Credentials in the launcher's environment do not reach it.
+//!   and the identity. An addition must be a provider credential or endpoint
+//!   (`*_API_KEY`, `*_TOKEN`, `*_BASE_URL`, ...) and may not redirect configuration, code
+//!   loading or basemind. Credentials in the launcher's environment do not reach the child.
+//! - **Limits.** At the wall-time limit, or when the harness starts more turns than
+//!   [`Limits::max_turns`], the process group is killed. A stop gets [`Limits::stop_grace`].
+//! - **Bounded resources.** A frame is at most 16 MiB, the event queue holds at most 1024
+//!   events, and every channel and table is bounded. Dropping or stopping a session never
+//!   blocks for long, even when a descendant holds the harness's pipes.
+//!
+//! What it does not do: a descendant that leaves the harness's process group survives the
+//! session (the session still ends on time), and nothing is launched off Unix.
 //!
 //! # Harnesses
 //!

@@ -18,12 +18,15 @@ use crate::session::CommandPlan;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum PermissionMode {
-    /// The harness asks before it writes or runs anything; each request goes to the policy.
+    /// The harness's own default mode: it asks before whatever its rules treat as needing
+    /// approval (writes and commands, for most), and each request goes to the policy. What
+    /// it does unasked, such as reading files, is up to the harness.
     #[default]
     Supervised,
-    /// The harness plans and reads only.
+    /// The harness's planning or read-only mode, where it has one; refused where it has none.
     ReadOnly,
-    /// File edits inside the working directory proceed without a request.
+    /// The harness's accept-edits mode: file edits proceed without a request. Refused where
+    /// the harness has no such mode.
     AcceptEdits,
     /// The harness skips its permission checks. Refused without a matching [`BypassOptIn`].
     Bypass,
@@ -74,7 +77,8 @@ pub struct Limits {
     /// How many prompts (the brief and each follow-up) the session runs. A turn the harness
     /// starts beyond that count kills the process group.
     pub max_turns: u32,
-    /// How long a stopped harness may take to wind down before its process group is killed.
+    /// How long a harness told to [`Session::stop`](crate::Session::stop) may take to wind
+    /// down, in all, before its process group is killed.
     pub stop_grace: Duration,
 }
 
@@ -132,7 +136,10 @@ impl McpServerSpec {
 pub struct LaunchSpec {
     /// The harness to start.
     pub harness: Harness,
-    /// The directory the agent is confined to.
+    /// The directory the working directory has to resolve inside. Only the starting
+    /// directory is checked (at the plan and again in the child after it changes into it);
+    /// the agent is not sandboxed to it, and a harness that is sent the path in its protocol
+    /// (Codex, ACP) resolves it again itself.
     pub root: PathBuf,
     /// The agent's working directory, inside `root`. `None` means `root`.
     pub working_dir: Option<PathBuf>,

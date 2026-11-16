@@ -1,6 +1,8 @@
 // Adapted from https://github.com/hardbeat920/monocode (crates/monocode-core/src/process.rs) at 09d04436babb39ad72198cdf22f735067027fc04, MIT.
 //! Process-group handling: a harness is started as the leader of its own group, so ending the
-//! session ends every helper it spawned and leaves no orphan behind.
+//! session ends every helper that stayed in that group. A descendant that leaves the group
+//! (a daemonizing helper, a job started under job control) is not reached and survives the
+//! session; containing it needs a cgroup or a Job Object, which this crate does not set up.
 
 use std::process::{Child, Command};
 use std::time::Duration;

@@ -42,30 +42,48 @@ id that fails the grammar stops the launch.
 3. **Lifted from monocode, because no maintained crate exists:** the Claude Code `stream-json`
    state machine, the Codex `app-server` state machine, process-group handling (spawn as a group
    leader, retire without cutting off a credential write, terminate the group) and the event and
-   approval types. Each derived file names its source and commit; `ATTRIBUTIONS.md` records what
-   was dropped and changed. monocode's hand-written ACP client is not taken.
+   approval types, and the per-agent ACP dialect (Grok's arguments, the `yoloMode` `_meta`, the
+   Hermes and OpenCode mode names). Each derived file names its source and commit;
+   `ATTRIBUTIONS.md` records what was dropped and changed. monocode's hand-written ACP client is
+   not taken.
 4. **Identity bridge.** The launcher exports `BASEMIND_AGENT_ID` (the principal) and
    `BASEMIND_HOST` (the harness) to the launched agent, and injects `basemind serve` as an MCP
-   stdio server in the harness's own form: Claude Code `--mcp-config` and `--allowedTools`, Codex
-   `-c mcp_servers.<name>.*`, ACP `mcpServers` in `session/new`. `BASEMIND_DATA_HOME` and
+   stdio server in the harness's own form: Claude Code `--mcp-config` under `--strict-mcp-config`,
+   Codex `-c mcp_servers.<name>.*`, ACP `mcpServers` in `session/new`. No tool of it is
+   pre-approved unless the spec names it, and only Claude Code can pre-approve single tools. `BASEMIND_DATA_HOME` and
    `BASEMIND_COMMS_DIR` pass through, so both sides reach the same daemon.
    **An id that fails the grammar fails the launch.** ADR-0021 rule 1 would fall through to a
    derived id, and the agent would then post as someone its launcher did not announce.
-5. **Safety model.** The crate enforces the first five; the engine and the configuration add the
-   rest.
+5. **Safety model.** The crate enforces the first group against a hostile spec and a hostile
+   child; the second belongs to the engine and the configuration, which do not exist yet.
+
+   Enforced by `basemind-agents`:
+   - **Approvals are denied by default.** A request is allowed only by a policy the caller
+     supplies. It carries its kind and the raw request, and its text is rendered from the grant
+     (command, file changes, permissions, tool input), never from the agent's reason alone. An ACP
+     allow selects `allow_once` only. At most 64 requests wait for the caller.
+   - **No permission bypass** (Claude `bypassPermissions`, Codex `danger-full-access`, ACP yolo
+     modes) without an opt-in naming that harness and mode.
+   - **Allow-listed arguments.** Caller-supplied arguments are limited to model and effort
+     selection per harness; anything else, positionals included, fails the launch, opt-in or not.
+   - **No project configuration.** Claude Code runs with no setting sources, hooks disabled and
+     only the injected MCP server. Codex, Gemini, Cursor and OpenCode are not launched over a
+     project file of theirs in the working directory or above it.
+   - **Working directory.** It resolves inside the given root, checked at the plan and again in
+     the child. The agent is not sandboxed to the root.
+   - **Environment.** An allow-list plus additions that must be provider credentials or
+     endpoints, so the launcher's credentials do not leak and an addition cannot redirect
+     configuration, code loading or the basemind daemon.
+   - **Limits.** Wall time and turns per session, enforced by killing the process group; a stop
+     gets its grace. Frames, events, channels and tables are bounded, and dropping a session
+     does not block.
+
+   Left to the engine and the configuration:
    - **Off by default.** Launching is disabled until `[agents.launch] enabled = true`.
    - **Allow-list of harnesses** in the same table; a harness not named there cannot be started.
-   - **Approvals are denied by default.** A request is allowed only by a policy the caller
-     supplies.
-   - **No permission bypass** (Claude `bypassPermissions`, Codex `danger-full-access`, ACP yolo
-     modes) without an opt-in naming that harness and mode. The same guard refuses bypass flags
-     among caller-supplied arguments.
-   - **Confinement.** The working directory resolves inside the given root. The child's
-     environment is an allow-list plus explicit additions, so the launcher's credentials do not
-     leak into it.
-   - **Limits.** Wall time and turns per session, enforced by killing the process group. Depth (a
-     launched agent launching another), fan-out (live sessions per principal) and budget (tokens or
-     cost) are enforced by the engine.
+     The crate starts whatever executable the spec names.
+   - **Depth, fan-out and budget**: a launched agent launching another, live sessions per
+     principal, tokens or cost.
    - **Audit log.** Every launch, approval decision, limit expiry and stop is appended with the
      launcher's principal, the launched principal and the exact command (`CommandPlan`).
    - **Stop.** A launcher, and a human through the CLI, can stop any session it started.
@@ -93,9 +111,17 @@ call that started it.
 - Flags for Gemini CLI and OpenCode, and the session-mode names for Gemini and Hermes, were taken
   from documentation and monocode's nearest equivalent, not verified against a live agent.
 - A follow-up starts a new turn; mid-turn steering, which monocode supports, is not offered.
-- Process groups are Unix-first. On Windows the tree is ended with `taskkill /T`, untested here.
+- Launching is Unix-only: the crate refuses to start a harness on Windows until its process tree
+  is contained by a Job Object, which is not implemented.
 - A descendant that leaves the process group (a helper that daemonizes) survives the session. The
-  session still ends on time; containing such a process needs a cgroup or a job object.
+  session still ends on time and stops reading its pipes; containing such a process needs a cgroup
+  or a job object.
+- Claude Code runs with an empty `--setting-sources`, which drops the user's own settings too, and
+  Codex, Gemini, Cursor and OpenCode refuse to launch in a repository carrying their project
+  configuration (this repository has a `.codex/`). The empty source list was not run against a
+  live CLI; if a version rejects it, the launch fails rather than loading project rules.
+- The project files of Grok, Hermes and a generic ACP agent are not known, so they are not
+  checked.
 - The environment allow-list means a harness that reads an API key from the environment gets it
   only when the configuration names it. Harnesses that sign in through a keychain or a config file
   in `HOME` work unchanged.
@@ -127,9 +153,10 @@ call that started it.
 4. **Budget.** The harnesses report token usage in three different shapes and the adapters
    currently drop it. Recommendation: ship wall time, turns, depth and fan-out first; add a token
    budget when the events carry usage.
-5. **Pre-approving basemind's own tools.** Injection sets Claude Code's `--allowedTools
-   mcp__basemind` and Codex's `default_tools_approval_mode = "approve"`; otherwise every comms call
-   is a request the default policy denies. Recommendation: keep it, but narrow it to the `agent_*`
-   tools once the tool names are final.
-6. **Windows.** Recommendation: gate `agent_launch` to Unix until the process-tree handling has a
-   test there.
+5. **Pre-approving basemind's own tools.** Nothing is pre-approved by default, so every comms call
+   is a request the default policy denies. The spec can name single tools, which Claude Code
+   pre-approves; Codex and ACP agents cannot, and refuse a non-empty list. Recommendation: the
+   engine names the `agent_*` tools once they are final, and its policy approves them by
+   `ApprovalKind::McpTool` and tool name for the other harnesses.
+6. **Windows.** The crate refuses to launch there. Recommendation: keep `agent_launch` Unix-only
+   until a Job Object contains the tree and has a test.

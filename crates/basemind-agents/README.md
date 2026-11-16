@@ -35,19 +35,34 @@ for event in session.events() {
 
 ## Safety defaults
 
-- Every approval request is denied unless the spec carries an `ApprovalPolicy`.
-- A permission-bypass mode is never produced, and a bypass flag among the extra arguments is
-  refused, unless the spec carries a `BypassOptIn` naming that harness and its mode.
-- The working directory has to resolve inside the spec's root.
-- At the wall-time limit, or when the harness starts more turns than allowed, the whole process
-  group is killed. It is also gone before `Event::Finished` is reported in every other case.
-- The child's environment is `ENV_ALLOWLIST`, the spec's additions and the agent identity.
-  Credentials in the launcher's environment do not reach it.
+- Every approval request is denied unless the spec carries an `ApprovalPolicy`. A request shows
+  the grant itself (command, file changes, permissions, tool input) with an `ApprovalKind` and the
+  raw wire params; an agent's reason is only appended. An ACP allow takes `allow_once` only. At
+  most 64 requests wait for the caller.
+- A permission-bypass mode is never produced unless the spec carries a `BypassOptIn` naming that
+  harness and its mode.
+- Extra arguments are limited to model and effort selection per harness; any other flag and any
+  positional fails the launch, with or without an opt-in.
+- Claude Code runs with no setting sources, hooks disabled and only the spec's MCP server. Codex,
+  Gemini, Cursor and OpenCode are not launched over one of their project files in the working
+  directory or above it. Only the MCP tools the spec names are pre-approved (Claude Code only).
+- The working directory has to resolve inside the spec's root, and is checked again in the child.
+  The agent is not sandboxed to the root.
+- The child's environment is `ENV_ALLOWLIST`, the spec's additions and the agent identity. An
+  addition must be a provider credential or endpoint and may not redirect configuration, code
+  loading or basemind. Credentials in the launcher's environment do not reach the child.
+- At the wall-time limit, or when the harness starts more turns than allowed, the process group is
+  killed; a stop gets the stop grace. The group is gone before `Event::Finished` is reported.
+- Frames, the event queue, channels and tables are bounded; dropping a session never blocks for
+  long.
+
+Limits: a descendant that leaves the process group survives the session, and nothing is launched
+off Unix.
 
 ## Provenance
 
-The Claude Code and Codex adapters, the process-group handling and the event types are adapted from
-[monocode](https://github.com/hardbeat920/monocode) (MIT). See `ATTRIBUTIONS.md` and
+The Claude Code and Codex adapters, the process-group handling, the event types and parts of the
+ACP dialects are adapted from [monocode](https://github.com/hardbeat920/monocode) (MIT). See `ATTRIBUTIONS.md` and
 `LICENSE-monocode`. ACP agents are driven through the
 [`agent-client-protocol`](https://crates.io/crates/agent-client-protocol) crate (Apache-2.0).
 

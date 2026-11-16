@@ -202,7 +202,11 @@ impl EventSink {
 /// A running agent in another harness.
 ///
 /// Events arrive in order and end with [`Event::Finished`]. Dropping the session kills the
-/// harness's process group.
+/// harness's process group at once.
+///
+/// The launcher must not ignore SIGCHLD or set `SA_NOCLDWAIT`: the group is signalled while
+/// its leader is known to be unreaped, which an automatic reap breaks. A launch is refused
+/// in that state.
 pub struct Session {
     shared: Arc<Shared>,
     worker: Option<JoinHandle<()>>,
@@ -220,6 +224,9 @@ impl std::fmt::Debug for Session {
 
 impl Session {
     /// The process id of the harness, which is also its process group id.
+    ///
+    /// Valid only until [`Event::Finished`]: the session reaps the process then, and the id
+    /// may be reused by an unrelated process. Do not signal it after that.
     #[must_use]
     pub fn pid(&self) -> u32 {
         self.shared.pid
