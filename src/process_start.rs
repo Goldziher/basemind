@@ -51,7 +51,7 @@ mod imp {
             .ok()?;
         // SAFETY: `sysconf` reads a constant of the running system.
         let per_second = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
-        (per_second > 0).then(|| boot + ticks / i64::from(per_second))
+        (per_second > 0).then(|| boot + ticks / per_second)
     }
 
     /// Field 22 of `/proc/<pid>/stat`: the start time in clock ticks since boot. The command in
