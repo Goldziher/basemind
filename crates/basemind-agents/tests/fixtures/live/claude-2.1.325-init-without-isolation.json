@@ -1,125 +1,118 @@
 {
- "type": "system",
- "subtype": "init",
- "cwd": "/tmp/probe/repo",
- "session_id": "<uuid>",
- "tools": [
-  "Task",
-  "AskUserQuestion",
-  "Bash",
-  "CronCreate",
-  "CronDelete",
-  "CronList",
-  "DesignSync",
-  "Edit",
-  "EnterPlanMode",
-  "EnterWorktree",
-  "ExitPlanMode",
-  "ExitWorktree",
-  "ListAgents",
-  "ListMcpResourcesTool",
-  "Monitor",
-  "NotebookEdit",
-  "PushNotification",
-  "Read",
-  "ReadMcpResourceDirTool",
-  "ReadMcpResourceTool",
-  "RemoteTrigger",
-  "ReportFindings",
-  "ScheduleWakeup",
-  "SendMessage",
-  "SendToProject",
-  "SendToProjectContext",
-  "Skill",
-  "TaskStop",
-  "ToolSearch",
-  "WebFetch",
-  "WebSearch",
-  "Workflow",
-  "Write",
-  "mcp__plugin_example_example__lookup",
-  "mcp__claude_ai_Example__read",
-  "mcp__projstub__ping"
- ],
- "mcp_servers": [
-  {
-   "name": "plugin:example:example",
-   "status": "connected",
-   "source": "plugin"
-  },
-  {
-   "name": "projstub",
-   "status": "connected",
-   "source": "project"
-  },
-  {
-   "name": "claude.ai Example",
-   "status": "connected",
-   "source": "claudeai"
-  }
- ],
- "model": "claude-haiku-5-5",
- "permissionMode": "default",
- "apiKeySource": "<redacted>",
- "claude_code_version": "2.1.325",
- "agents": [
-  "claude",
-  "Explore",
-  "general-purpose",
-  "Plan",
-  "probe-agent-def",
-  "statusline-setup"
- ],
- "skills": [
-  "probe-skill",
-  "deep-research",
-  "design",
-  "design-sync",
-  "dataviz",
-  "update-config",
-  "verify",
-  "debug",
-  "code-review",
-  "simplify",
-  "batch",
-  "fewer-permission-prompts",
-  "doctor",
-  "loop",
-  "schedule",
-  "send-to-project",
-  "claude-api",
-  "workflow-authoring",
-  "run",
-  "run-skill-generator",
-  "plugin-authoring",
-  "example:example-skill"
- ],
- "plugins": [
-  {
-   "name": "example",
-   "path": "/home/user/.claude/plugins/cache/example/example/1.0.0",
-   "source": "example@example",
-   "version": "1.0.0"
-  },
-  {
-   "name": "cc-plugin-agents-md",
-   "path": "builtin",
-   "source": "cc-plugin-agents-md@builtin"
-  },
-  {
-   "name": "cc-plugin-telemetry",
-   "path": "builtin",
-   "source": "cc-plugin-telemetry@builtin"
-  },
-  {
-   "name": "cc-plugin-privacy",
-   "path": "builtin",
-   "source": "cc-plugin-privacy@builtin"
-  },
-  {
-   "name": "cc-plugin-plugin-authoring",
-   "path": "builtin",
-   "source": "cc-plugin-plugin-authoring@builtin"
-  }
- ]
+  "type": "system",
+  "subtype": "init",
+  "cwd": "/tmp/probe/repo",
+  "session_id": "<uuid>",
+  "tools": [
+    "Task",
+    "AskUserQuestion",
+    "Bash",
+    "CronCreate",
+    "CronDelete",
+    "CronList",
+    "DesignSync",
+    "Edit",
+    "EnterPlanMode",
+    "EnterWorktree",
+    "ExitPlanMode",
+    "ExitWorktree",
+    "ListAgents",
+    "ListMcpResourcesTool",
+    "Monitor",
+    "NotebookEdit",
+    "PushNotification",
+    "Read",
+    "ReadMcpResourceDirTool",
+    "ReadMcpResourceTool",
+    "RemoteTrigger",
+    "ReportFindings",
+    "ScheduleWakeup",
+    "SendMessage",
+    "SendToProject",
+    "SendToProjectContext",
+    "Skill",
+    "TaskStop",
+    "ToolSearch",
+    "WebFetch",
+    "WebSearch",
+    "Workflow",
+    "Write",
+    "mcp__plugin_example_example__lookup",
+    "mcp__claude_ai_Example__read",
+    "mcp__projstub__ping"
+  ],
+  "mcp_servers": [
+    {
+      "name": "plugin:example:example",
+      "status": "connected",
+      "source": "plugin"
+    },
+    {
+      "name": "projstub",
+      "status": "connected",
+      "source": "project"
+    },
+    {
+      "name": "claude.ai Example",
+      "status": "connected",
+      "source": "claudeai"
+    }
+  ],
+  "model": "claude-haiku-5-5",
+  "permissionMode": "default",
+  "apiKeySource": "<redacted>",
+  "claude_code_version": "2.1.325",
+  "agents": ["claude", "Explore", "general-purpose", "Plan", "probe-agent-def", "statusline-setup"],
+  "skills": [
+    "probe-skill",
+    "deep-research",
+    "design",
+    "design-sync",
+    "dataviz",
+    "update-config",
+    "verify",
+    "debug",
+    "code-review",
+    "simplify",
+    "batch",
+    "fewer-permission-prompts",
+    "doctor",
+    "loop",
+    "schedule",
+    "send-to-project",
+    "claude-api",
+    "workflow-authoring",
+    "run",
+    "run-skill-generator",
+    "plugin-authoring",
+    "example:example-skill"
+  ],
+  "plugins": [
+    {
+      "name": "example",
+      "path": "/home/user/.claude/plugins/cache/example/example/1.0.0",
+      "source": "example@example",
+      "version": "1.0.0"
+    },
+    {
+      "name": "cc-plugin-agents-md",
+      "path": "builtin",
+      "source": "cc-plugin-agents-md@builtin"
+    },
+    {
+      "name": "cc-plugin-telemetry",
+      "path": "builtin",
+      "source": "cc-plugin-telemetry@builtin"
+    },
+    {
+      "name": "cc-plugin-privacy",
+      "path": "builtin",
+      "source": "cc-plugin-privacy@builtin"
+    },
+    {
+      "name": "cc-plugin-plugin-authoring",
+      "path": "builtin",
+      "source": "cc-plugin-plugin-authoring@builtin"
+    }
+  ]
 }

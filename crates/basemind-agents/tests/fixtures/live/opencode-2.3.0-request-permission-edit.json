@@ -1,49 +1,49 @@
 {
- "jsonrpc": "2.0",
- "id": 0,
- "method": "session/request_permission",
- "params": {
-  "sessionId": "ses_e1b0d63e5ffe03YIzLSohpFZHV",
-  "toolCall": {
-   "toolCallId": "chatcmpl-tool-9bb201a3905e25c9",
-   "name": "write",
-   "title": "probe.txt",
-   "kind": "edit",
-   "status": "pending",
-   "locations": [
-    {
-     "path": "/tmp/probe/ocrepo/probe.txt"
-    }
-   ],
-   "rawInput": {
-    "path": "probe.txt",
-    "content": "hi"
-   },
-   "content": [
-    {
-     "type": "diff",
-     "path": "/tmp/probe/ocrepo/probe.txt",
-     "oldText": null,
-     "newText": "hi"
-    }
-   ]
-  },
-  "options": [
-   {
-    "optionId": "once",
-    "kind": "allow_once",
-    "name": "Allow once"
-   },
-   {
-    "optionId": "always",
-    "kind": "allow_always",
-    "name": "Always allow"
-   },
-   {
-    "optionId": "reject",
-    "kind": "reject_once",
-    "name": "Reject"
-   }
-  ]
- }
+  "jsonrpc": "2.0",
+  "id": 0,
+  "method": "session/request_permission",
+  "params": {
+    "sessionId": "ses_e1b0d63e5ffe03YIzLSohpFZHV",
+    "toolCall": {
+      "toolCallId": "chatcmpl-tool-9bb201a3905e25c9",
+      "name": "write",
+      "title": "probe.txt",
+      "kind": "edit",
+      "status": "pending",
+      "locations": [
+        {
+          "path": "/tmp/probe/ocrepo/probe.txt"
+        }
+      ],
+      "rawInput": {
+        "path": "probe.txt",
+        "content": "hi"
+      },
+      "content": [
+        {
+          "type": "diff",
+          "path": "/tmp/probe/ocrepo/probe.txt",
+          "oldText": null,
+          "newText": "hi"
+        }
+      ]
+    },
+    "options": [
+      {
+        "optionId": "once",
+        "kind": "allow_once",
+        "name": "Allow once"
+      },
+      {
+        "optionId": "always",
+        "kind": "allow_always",
+        "name": "Always allow"
+      },
+      {
+        "optionId": "reject",
+        "kind": "reject_once",
+        "name": "Reject"
+      }
+    ]
+  }
 }

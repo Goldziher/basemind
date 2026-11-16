@@ -1,106 +1,100 @@
 {
- "type": "system",
- "subtype": "init",
- "cwd": "/tmp/probe/repo",
- "session_id": "<uuid>",
- "tools": [
-  "Task",
-  "AskUserQuestion",
-  "Bash",
-  "CronCreate",
-  "CronDelete",
-  "CronList",
-  "DesignSync",
-  "Edit",
-  "EnterPlanMode",
-  "EnterWorktree",
-  "ExitPlanMode",
-  "ExitWorktree",
-  "ListAgents",
-  "Monitor",
-  "NotebookEdit",
-  "PushNotification",
-  "Read",
-  "RemoteTrigger",
-  "ReportFindings",
-  "ScheduleWakeup",
-  "SendMessage",
-  "SendToProject",
-  "SendToProjectContext",
-  "Skill",
-  "TaskStop",
-  "ToolSearch",
-  "WebFetch",
-  "WebSearch",
-  "Workflow",
-  "Write",
-  "mcp__stub__ping"
- ],
- "mcp_servers": [
-  {
-   "name": "stub",
-   "status": "connected",
-   "source": "dynamic"
-  }
- ],
- "model": "claude-haiku-5-5",
- "permissionMode": "default",
- "apiKeySource": "<redacted>",
- "claude_code_version": "2.1.325",
- "agents": [
-  "claude",
-  "Explore",
-  "general-purpose",
-  "Plan",
-  "statusline-setup"
- ],
- "skills": [
-  "deep-research",
-  "design",
-  "design-sync",
-  "dataviz",
-  "update-config",
-  "verify",
-  "debug",
-  "code-review",
-  "simplify",
-  "batch",
-  "fewer-permission-prompts",
-  "doctor",
-  "loop",
-  "schedule",
-  "send-to-project",
-  "claude-api",
-  "workflow-authoring",
-  "run",
-  "run-skill-generator",
-  "plugin-authoring"
- ],
- "plugins": [
-  {
-   "name": "cc-plugin-agents-md",
-   "path": "builtin",
-   "source": "cc-plugin-agents-md@builtin"
-  },
-  {
-   "name": "cc-plugin-telemetry",
-   "path": "builtin",
-   "source": "cc-plugin-telemetry@builtin"
-  },
-  {
-   "name": "cc-plugin-privacy",
-   "path": "builtin",
-   "source": "cc-plugin-privacy@builtin"
-  },
-  {
-   "name": "cc-plugin-plugin-authoring",
-   "path": "builtin",
-   "source": "cc-plugin-plugin-authoring@builtin"
-  },
-  {
-   "name": "cc-plugin-easel",
-   "path": "builtin",
-   "source": "cc-plugin-easel@builtin"
-  }
- ]
+  "type": "system",
+  "subtype": "init",
+  "cwd": "/tmp/probe/repo",
+  "session_id": "<uuid>",
+  "tools": [
+    "Task",
+    "AskUserQuestion",
+    "Bash",
+    "CronCreate",
+    "CronDelete",
+    "CronList",
+    "DesignSync",
+    "Edit",
+    "EnterPlanMode",
+    "EnterWorktree",
+    "ExitPlanMode",
+    "ExitWorktree",
+    "ListAgents",
+    "Monitor",
+    "NotebookEdit",
+    "PushNotification",
+    "Read",
+    "RemoteTrigger",
+    "ReportFindings",
+    "ScheduleWakeup",
+    "SendMessage",
+    "SendToProject",
+    "SendToProjectContext",
+    "Skill",
+    "TaskStop",
+    "ToolSearch",
+    "WebFetch",
+    "WebSearch",
+    "Workflow",
+    "Write",
+    "mcp__stub__ping"
+  ],
+  "mcp_servers": [
+    {
+      "name": "stub",
+      "status": "connected",
+      "source": "dynamic"
+    }
+  ],
+  "model": "claude-haiku-5-5",
+  "permissionMode": "default",
+  "apiKeySource": "<redacted>",
+  "claude_code_version": "2.1.325",
+  "agents": ["claude", "Explore", "general-purpose", "Plan", "statusline-setup"],
+  "skills": [
+    "deep-research",
+    "design",
+    "design-sync",
+    "dataviz",
+    "update-config",
+    "verify",
+    "debug",
+    "code-review",
+    "simplify",
+    "batch",
+    "fewer-permission-prompts",
+    "doctor",
+    "loop",
+    "schedule",
+    "send-to-project",
+    "claude-api",
+    "workflow-authoring",
+    "run",
+    "run-skill-generator",
+    "plugin-authoring"
+  ],
+  "plugins": [
+    {
+      "name": "cc-plugin-agents-md",
+      "path": "builtin",
+      "source": "cc-plugin-agents-md@builtin"
+    },
+    {
+      "name": "cc-plugin-telemetry",
+      "path": "builtin",
+      "source": "cc-plugin-telemetry@builtin"
+    },
+    {
+      "name": "cc-plugin-privacy",
+      "path": "builtin",
+      "source": "cc-plugin-privacy@builtin"
+    },
+    {
+      "name": "cc-plugin-plugin-authoring",
+      "path": "builtin",
+      "source": "cc-plugin-plugin-authoring@builtin"
+    },
+    {
+      "name": "cc-plugin-easel",
+      "path": "builtin",
+      "source": "cc-plugin-easel@builtin"
+    }
+  ]
 }
