@@ -335,6 +335,11 @@ required-features = ["documents"]
 name = "lance_bench"
 required-features = ["documents"]
 
+[[example]]
+name = "retrieval_bench"
+path = "examples/retrieval_bench/main.rs"
+required-features = ["documents"]
+
 [[bench]]
 name = "extract"
 harness = false
