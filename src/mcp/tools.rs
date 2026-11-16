@@ -120,7 +120,8 @@ impl BasemindServer {
         description = "Use when you know what the code does but not a name or string in it: \
         searches code chunks by meaning and returns pointers (path, `line`/`end_line`, symbol), \
         not bodies. `lanes_unavailable` says when a lane could not run; `truncated` that the \
-        ranking goes on past the 100 hits that can be paged. Read a hit with `code_read`. \
+        ranking was cut: past the 100 hits that can be paged (`depth`) or by the reranker's \
+        `top_k` (`rerank_top_k`). Read a hit with `code_read`. \
         Example: {\"query\":\"retry a failed upload with backoff\"}",
         annotations(
             read_only_hint = true,
