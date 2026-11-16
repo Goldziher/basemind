@@ -24,7 +24,8 @@ use crate::scanner_code::PendingCodeBatch;
 use crate::scanner_filter::Filters;
 use crate::store::Store;
 
-/// A failure of the retrieval side, as text: the scan only logs it.
+/// A failure of the retrieval side, as text: the scan only logs it. Built from an `anyhow` error
+/// with `{:#}`, so the text carries the whole cause chain; log it with `%`.
 #[derive(Debug, thiserror::Error)]
 #[error("{0}")]
 pub struct RetrievalError(pub String);

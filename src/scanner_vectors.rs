@@ -23,7 +23,7 @@ impl VectorStore for LanceVectors {
         let preset = &config.documents.embedding_preset;
         SharedEmbedder::load(preset, 0, config.resources.embed_batch_size)
             .and_then(|embedder| store.lance_or_open(embedder.dim(), preset).map(|_| ()))
-            .map_err(|error| RetrievalError(error.to_string()))
+            .map_err(|error| RetrievalError(format!("{error:#}")))
     }
 
     fn store_id_at(&self, dir: &Path) -> Option<String> {
@@ -54,7 +54,7 @@ impl VectorStore for LanceVectors {
             return Ok(());
         }
         crate::lance::shared_snapshot::publish_scan(store, config, scope)
-            .map_err(|error| RetrievalError(error.to_string()))
+            .map_err(|error| RetrievalError(format!("{error:#}")))
     }
 
     #[cfg(feature = "code-search")]

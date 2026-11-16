@@ -217,7 +217,7 @@ pub(crate) fn chunk_and_embed(
         Err(error) => {
             tracing::warn!(
                 rel,
-                ?error,
+                %error,
                 "load code-search embedder failed; indexing BM25 keyword lane only"
             );
             let chunks = match cached {
@@ -292,7 +292,7 @@ pub(crate) fn chunk_and_embed(
             return Ok(bm25_batch_from_chunks(rel, hash_hex, &chunks, cfg));
         }
         Err(error) => {
-            tracing::warn!(rel, ?error, "embed code chunks failed; indexing BM25 keyword lane only");
+            tracing::warn!(rel, %error, "embed code chunks failed; indexing BM25 keyword lane only");
             return Ok(bm25_batch_from_chunks(rel, hash_hex, &chunks, cfg));
         }
     };
