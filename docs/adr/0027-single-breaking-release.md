@@ -2,14 +2,14 @@
 status: accepted
 date: 2026-11-16
 supersedes: "0026"
-amends: ["0021", "0023"]
+amends: ["0021", "0022", "0023"]
 ---
 
 # ADR-0027: Release and branch policy — trunk-based, one breaking release
 
 - **Deciders:** the repository owner, on 2026-11-16
-- **Related:** supersedes ADR-0026; amends ADR-0021 and ADR-0023 (the release each names);
-  ADR-0015, ADR-0016, ADR-0018, ADR-0020, ADR-0022, ADR-0024, ADR-0025
+- **Related:** supersedes ADR-0026; amends ADR-0021, ADR-0022 and ADR-0023 (the release each
+  names); ADR-0015, ADR-0016, ADR-0018, ADR-0020, ADR-0024, ADR-0025
 
 ## Context
 
@@ -51,9 +51,11 @@ Retained from ADR-0026, restated here because that record is superseded as a who
 3. **Breaking changes go in a minor release; every minor release rescans.** Patch releases stay
    compatible in tools, protocol and formats. A tool that ADR-0022's gate removes goes in the next
    minor release, not in a patch.
-4. **Plugin content ships with its binary.** New plugin content (hooks, skills, commands or
-   manifests under the plugin trees) that names a tool, mode or command the pinned binary lacks
-   reaches `main` only when the release carrying that binary change is cut within one working day.
+4. **Plugin content lands with the binary change it names.** Plugin content (hooks, skills,
+   commands or manifests under the plugin trees) that names a tool, mode or command reaches `main`
+   in the same branch as, or after, the code that serves it, so content and code agree at every
+   commit of `main`. The manifests keep pinning the last release until 0.34.0 is cut; the skew
+   check of rule 5 runs against the binary built from the same commit, not the pinned one.
 5. **Release gates.** 0.34.0 is cut only when all of these pass: the plugin skew check (ADR-0026
    rule 6: every name in `TOOL_NAMES` of `plugin/hooks/session-start` is advertised by the binary
    started through the plugin launcher, and each tool's example call succeeds), the
@@ -70,7 +72,8 @@ Retained from ADR-0026, restated here because that record is superseded as a who
   0.34.0, an older client is refused by a newer daemon (ADR-0021).
 - The live plugin skew lasts longer than ADR-0026 intended. Plugin content on `main` already names
   the verb tools while the manifests pin 0.33.0, a binary without them. ADR-0026 cut 0.34 early to
-  end that; now it ends only when the whole of 0.34.0 ships. Rule 4 keeps it from growing.
+  end that; now it ends only when the whole of 0.34.0 ships, and it grows as comms v2 content
+  lands. An installed plugin tracking `main` is mismatched for that whole period.
 - A larger release is harder to bisect and to blame for a regression. What limits that: every
   branch lands on `main` on its own with CI green, so `main` bisects by branch, and the gates of
   rule 5 run on the result.
@@ -80,7 +83,7 @@ Retained from ADR-0026, restated here because that record is superseded as a who
   no release. The skew check was not on `main` when ADR-0026 was written; whether it is now is not
   verified here, and it must exist before the release.
 - ADR-0022 sets "release 0.35" as the point from which a tool without a task kind counts as
-  failing. That deadline is not moved here; it now names the release after this one.
+  failing its value gate. Read 0.34.0 there too: the gate is evaluated before this release.
 
 ## Alternatives considered
 
