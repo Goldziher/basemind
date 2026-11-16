@@ -595,10 +595,13 @@ mod tests {
 
     /// A lock released by closing its file alone stays held while a child another thread forked
     /// still has a copy of the descriptor, before it execs. The guard unlocks, so the lock is free
-    /// the moment it drops, however many processes are being spawned around it.
+    /// the moment it drops, however many processes are being spawned around it. The children are
+    /// forked and exec'd: a plain spawn may use `posix_spawn` (always on macOS), which leaves no
+    /// moment in which a child holds the descriptor, and the test could not fail.
     #[cfg(unix)]
     #[test]
     fn a_dropped_lock_is_free_at_once_while_other_threads_spawn_processes() {
+        use std::os::unix::process::CommandExt;
         use std::sync::atomic::{AtomicBool, Ordering};
 
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -608,7 +611,13 @@ mod tests {
                 let stop = std::sync::Arc::clone(&stop);
                 std::thread::spawn(move || {
                     while !stop.load(Ordering::Relaxed) {
-                        let _ = std::process::Command::new("/usr/bin/true").status();
+                        let mut child = std::process::Command::new("/usr/bin/true");
+                        // SAFETY: the hook does nothing, so it is async-signal-safe; it is there
+                        // only because std forks and execs a command that has one.
+                        unsafe {
+                            child.pre_exec(|| Ok(()));
+                        }
+                        let _ = child.status();
                     }
                 })
             })
