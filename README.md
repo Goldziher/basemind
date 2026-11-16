@@ -1116,12 +1116,12 @@ arguments are 1-based.
 | `0` | Success. |
 | `1` | Runtime error. |
 | `2` | Usage error: bad flag or argument (including an invalid `rescan` path, or a destructive command without `--yes`). |
-| `3` | Busy: another process holds the workspace writer lock. Retry later, or use `basemind rescan`, which the daemon serves. |
+| `3` | Busy: another process holds the workspace writer lock, or the daemon a scan was forwarded to is stopping. Retry later. |
 | `4` | A required daemon is unreachable. |
 | `130` | Interrupted by Ctrl-C; completed work is committed and the index stays consistent. |
 
 With a comms daemon running, the one-shot CLI forwards memory operations, reference/caller reads,
-the grep prefilter and rescans to it (the daemon is the sole index writer) instead of failing or
+the grep prefilter, scans and rescans to it (the daemon is the sole index writer) instead of failing or
 degrading to a truncated in-memory view.
 
 **Code (`basemind code`)**
@@ -1218,7 +1218,7 @@ after handling it so each thread's inbox cursor advances independently.
 
 | Command | Purpose |
 |---|---|
-| `scan [--staged \| --rev <REV>] [--no-git-history] [--rebuild-git-history]` | Full scan, or index the git index / one revision. Ctrl-C stops it cleanly. |
+| `scan [--staged \| --rev <REV>] [--no-git-history] [--rebuild-git-history]` | Full scan, or index the git index / one revision. Ctrl-C stops it cleanly. With a daemon running, a working-tree scan is forwarded to it; a flag it cannot apply (`--rebuild-git-history`, `--verify-shared-base`, a `--documents-*` / `--llm-*` override) is refused with exit 2, and `--staged` / `--rev` exit 3 while the daemon holds the workspace. A scan starts no daemon. |
 | `rescan [<path>…] [--no-git-history] [--rebuild-git-history]` | Update the given paths, or with none the whole tree. Routed through the daemon when one runs. |
 | `status` | Index health for this workspace: file counts, languages, scan age. |
 | `doctor` | Check root, config, index, grammars, pre-commit hook and daemon; exits 1 on a failed check. |

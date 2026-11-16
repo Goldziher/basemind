@@ -19,27 +19,8 @@ pub(super) fn cmd_rescan(
     // ~keep unlocked-by-it writer. Never fall through to a local scan after a daemon failure.
     #[cfg(all(feature = "comms", any(unix, windows)))]
     if basemind::cli::rescan::daemon_is_up() {
-        use std::io::Write as _;
         let report = basemind::cli::rescan::rescan_via_daemon(root, (!full).then_some(abs), full)?;
-        let _ = writeln!(
-            out,
-            "rescan via daemon: {} scanned, {} updated, {} docs indexed, {} removed ({} ms)",
-            report.scanned, report.updated, report.docs_indexed, report.removed, report.elapsed_ms
-        );
-        if report.docs_degraded > 0 || report.doc_timeouts > 0 {
-            let _ = writeln!(
-                out,
-                "docs_degraded {}  doc_timeouts {} (see [documents] markdown_chunk_max_bytes)",
-                report.docs_degraded, report.doc_timeouts
-            );
-        }
-        if report.docs_text_fallback > 0 {
-            let _ = writeln!(
-                out,
-                "docs_text_fallback {} (of docs_degraded: read as plain text after a structured-extraction failure)",
-                report.docs_text_fallback
-            );
-        }
+        print_forwarded(&mut out, "rescan", &report);
         return Ok(());
     }
     let cancel = basemind::cli::interrupt::install();
@@ -109,4 +90,28 @@ pub(super) fn cmd_rescan(
     reclaim_after_scan(&mut out, &report.stats, std::mem::take(&mut store.reset_stale_schema));
     sync_git_history_after_scan(root, !args.no_git_history, args.rebuild_git_history, &mut out);
     Ok(())
+}
+
+/// Print the counts a daemon reported for a forwarded `scan` or `rescan` (`what`).
+#[cfg(all(feature = "comms", any(unix, windows)))]
+pub(super) fn print_forwarded(out: &mut impl std::io::Write, what: &str, report: &basemind::cli::rescan::RescanReport) {
+    let _ = writeln!(
+        out,
+        "{what} via daemon: {} scanned, {} updated, {} docs indexed, {} removed ({} ms)",
+        report.scanned, report.updated, report.docs_indexed, report.removed, report.elapsed_ms
+    );
+    if report.docs_degraded > 0 || report.doc_timeouts > 0 {
+        let _ = writeln!(
+            out,
+            "docs_degraded {}  doc_timeouts {} (see [documents] markdown_chunk_max_bytes)",
+            report.docs_degraded, report.doc_timeouts
+        );
+    }
+    if report.docs_text_fallback > 0 {
+        let _ = writeln!(
+            out,
+            "docs_text_fallback {} (of docs_degraded: read as plain text after a structured-extraction failure)",
+            report.docs_text_fallback
+        );
+    }
 }

@@ -1,10 +1,12 @@
 mod main_rescan;
+#[cfg(all(feature = "comms", any(unix, windows)))]
+mod main_scan_forward;
 use main_rescan::cmd_rescan;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
-use clap::{CommandFactory, Parser, Subcommand};
+use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
 
 use basemind::config::overrides::DocumentsCliOverrides;
@@ -72,7 +74,8 @@ enum Cmd {
     /// Initialize (or refresh) basemind onboarding: write basemind.toml, gitignore the cache, and
     /// inject a "prefer basemind over grep/read/git" rules block. Re-runnable and idempotent.
     Init(basemind::cli::init::InitArgs),
-    /// Run a one-shot scan over the repository and write the code map.
+    /// Run a one-shot scan over the repository and write the code map. With a basemind daemon
+    /// running, a working-tree scan is forwarded to it, the workspace's writer.
     Scan(ScanArgs),
     /// Re-index the working tree (full) or only the given paths (incremental). Use after
     /// edits, or to rebuild a stale/empty index without starting the server.
@@ -292,7 +295,9 @@ fn main() -> std::process::ExitCode {
 fn run() -> Result<()> {
     basemind::alloc_tag::retag_heap_pages();
     let process_started = std::time::Instant::now();
-    let cli = Cli::parse();
+    // ~keep Parsed by hand so `scan` can tell a flag the user typed from a default or env value.
+    let matches = Cli::command().get_matches();
+    let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|error| error.exit());
     let verbosity = Verbosity::from_flags(cli.quiet, cli.verbose);
 
     tracing_subscriber::fmt()
@@ -346,7 +351,10 @@ fn run() -> Result<()> {
     };
     match cli.cmd {
         Cmd::Init(args) => basemind::cli::init::run(&basemind::config::init_root(&start), &args),
-        Cmd::Scan(args) => cmd_scan(&root, &args, verbosity, no_color),
+        Cmd::Scan(args) => {
+            let scan_matches = matches.subcommand_matches("scan").unwrap_or(&matches);
+            cmd_scan(&root, &args, scan_matches, verbosity, no_color)
+        }
         Cmd::Rescan(args) => cmd_rescan(&root, &args, verbosity, no_color),
         Cmd::Watch => cmd_watch(&root, verbosity, no_color),
         Cmd::Code(c) => {
@@ -587,14 +595,35 @@ fn interrupted(
     )))
 }
 
-fn cmd_scan(root: &std::path::Path, args: &ScanArgs, verbosity: Verbosity, no_color: bool) -> Result<()> {
+fn cmd_scan(
+    root: &std::path::Path,
+    args: &ScanArgs,
+    matches: &clap::ArgMatches,
+    verbosity: Verbosity,
+    no_color: bool,
+) -> Result<()> {
     // ~keep Installed first: from here on Ctrl-C asks the scan to stop cleanly instead of killing the process.
     let cancel = basemind::cli::interrupt::install();
     let root = &guard_workspace_root(root)?;
+    let mut out = render::stdout(no_color);
+    #[cfg(all(feature = "comms", any(unix, windows)))]
+    {
+        let view_flag = if args.staged {
+            Some("--staged")
+        } else {
+            args.rev.as_ref().map(|_| "--rev")
+        };
+        match view_flag {
+            Some(flag) => main_scan_forward::refuse_view_scan_under_daemon(root, flag)?,
+            None if main_scan_forward::forward_scan(root, args, matches, &cancel, &mut out)? => return Ok(()),
+            None => {}
+        }
+    }
+    #[cfg(not(all(feature = "comms", any(unix, windows))))]
+    let _ = matches;
     bootstrap_grammars(verbosity, no_color)?;
     let config = load_or_default_with(root, Some(args.documents.clone()))?;
 
-    let mut out = render::stdout(no_color);
     if args.staged {
         let repo = basemind::git::Repo::discover(root).context("`--staged` requires being inside a git repository")?;
         let mut store = open_store_for_write(root, basemind::store::VIEW_STAGED, "staged", LockHolder::Scan)?;
