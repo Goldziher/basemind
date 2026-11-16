@@ -159,8 +159,11 @@ class GeneratorTests(unittest.TestCase):
     def test_grep_gold_equals_git_grep_with_the_same_filters(self) -> None:
         tasks = self.run_gen("grep", "--language", "python")
         self.assertTrue(tasks)
+        self.assertEqual({t["meta"]["variant"] for t in tasks}, {"literal", "regex"})
         for t in tasks:
-            self.assertIs(t["args"]["regex"], True)
+            regex = t["meta"]["variant"] == "regex"
+            self.assertEqual(t["args"].get("regex"), True if regex else None)
+            self.assertEqual(t["baseline"]["items"], "grep_lines")
             self.assertNotIn("path_contains", t["args"])
             out = subprocess.run(
                 [
@@ -169,7 +172,7 @@ class GeneratorTests(unittest.TestCase):
                     str(self.repo),
                     "grep",
                     "-n",
-                    "-E",
+                    "-E" if regex else "-F",
                     t["args"]["pattern"],
                     "HEAD",
                     "--",
@@ -204,6 +207,13 @@ class GeneratorTests(unittest.TestCase):
         for t in tasks:
             self.assertEqual(t["scoring"], "ranked")
             self.assertIn(t["gold"][0], tracked)
+            # Every variant has a scored baseline whose listing contains the gold path.
+            self.assertEqual(t["baseline"]["items"], "paths")
+            listing = subprocess.run(
+                ["sh", "-c", t["baseline"]["grep"]], cwd=self.repo, capture_output=True, text=True, check=False
+            ).stdout.split()
+            if t["meta"]["variant"] != "typo":
+                self.assertIn(t["gold"][0], listing, t["baseline"]["grep"])
         basename = next(t for t in tasks if t["id"].endswith("0000"))
         self.assertEqual(basename["args"]["query"], basename["gold"][0].rsplit("/", 1)[-1])
 

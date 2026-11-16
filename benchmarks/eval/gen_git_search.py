@@ -103,7 +103,9 @@ def main() -> None:
                 "k": 10,
                 "meta": {"origin": sha, "subject": subject, "files": sorted(files)},
                 "baseline": {
-                    "grep": "git log --oneline -i --all-match " + " ".join("--grep=" + c.shell_quote(t) for t in chosen)
+                    "grep": "git log --oneline -i --all-match "
+                    + " ".join("--grep=" + c.shell_quote(t) for t in chosen),
+                    "items": "shas",
                 },
             }
         )

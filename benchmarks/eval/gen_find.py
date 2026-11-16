@@ -9,6 +9,11 @@ unique in the repo and queries it in one of three mutated forms:
 
 Gold is the single source path; scoring is `ranked` (hit@1/@5, MRR, nDCG).
 
+Baseline (`fd` is not installed here and not pinned, so `git ls-files` stands in for it): the
+basename is a fixed-string filter, `git ls-files | grep -i -F NAME`; a typo or skeleton is what fzf
+would do with it, a case-insensitive subsequence regex over the listing. Both are scored against the
+same gold by their output order (`git ls-files` is sorted), so a match buried past `k` is a miss.
+
 `find` covers every path basemind indexes (code map plus document tier), and what is indexed depends
 on the repo's `[scan]` / `[documents]` config: a tracked `.yaml` that no tier accepts is unreachable,
 not a miss. Pass `--indexed FILE` (one repo-relative path per line, e.g. the paths
@@ -16,6 +21,7 @@ not a miss. Pass `--indexed FILE` (one repo-relative path per line, e.g. the pat
 """
 
 import argparse
+import re
 
 import _common as c
 
@@ -79,7 +85,11 @@ def main() -> None:
             "k": a.k,
         }
         if kind == "basename":
-            task["baseline"] = {"grep": "git ls-files | grep -i -F " + c.shell_quote(query)}
+            cmd = "git ls-files | grep -i -F " + c.shell_quote(query)
+        else:
+            cmd = "git ls-files | grep -i -E " + c.shell_quote(".*".join(re.escape(ch) for ch in query))
+        task["meta"] = {"variant": kind}
+        task["baseline"] = {"grep": cmd, "items": "paths"}
         tasks.append(task)
     c.emit(tasks, a.out)
 
