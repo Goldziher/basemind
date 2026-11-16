@@ -633,10 +633,49 @@ async fn a_level_mark_lapses_and_the_next_search_reconciles_again() {
         Backfill::Level {
             until: Instant::now(),
             ttl: LEVEL_TTL,
+            owed: rows_owed(root.path()),
         },
     );
 
     assert_eq!(hit_keys(&search_json(&state, "a note", 10).await), ["first", "second"]);
+}
+
+/// Another process saved a note it could not embed, or one saved with `embed: false`, while this
+/// one believes the namespace level. Its save says so in the group's stamp, and the next search
+/// here embeds the note without waiting for the belief to lapse.
+#[tokio::test]
+async fn a_rowless_save_in_another_process_ends_level_here() {
+    let root = tempfile::tempdir().unwrap();
+    let state = server(root.path(), "fake");
+    save(&state, "first", "a note").await;
+    search_json(&state, "a note", 10).await;
+    assert!(matches!(mark_of(&state), Some(Backfill::Level { .. })));
+
+    // What another process's save does when it writes no row: the note, then the stamp.
+    save(&state, "second", "a note too").await;
+    owe_rows(root.path());
+
+    assert_eq!(hit_keys(&search_json(&state, "a note", 10).await), ["first", "second"]);
+    assert!(
+        matches!(mark_of(&state), Some(Backfill::Level { owed, .. }) if owed == rows_owed(root.path())),
+        "level again, as of the stamp it read"
+    );
+}
+
+/// The stamp other processes read changes with every save that wrote no row, and only with those.
+#[tokio::test]
+async fn a_save_without_a_row_rewrites_the_group_stamp() {
+    let root = tempfile::tempdir().unwrap();
+    let state = server(root.path(), "fake");
+    let untouched = rows_owed(root.path());
+    put(&state, "embedded", "a note", true).await;
+    assert_eq!(rows_owed(root.path()), untouched, "a save with its row owes nothing");
+
+    put(&state, "deferred", "a note", false).await;
+    let once = rows_owed(root.path());
+    assert_ne!(once, untouched);
+    put(&state, "refused", "unembeddable text", true).await;
+    assert_ne!(rows_owed(root.path()), once, "every rowless save is a new stamp");
 }
 
 /// A save that wrote no row leaves a note the rows are behind: the embedding failed, or the save
@@ -820,6 +859,7 @@ async fn a_lapsed_look_that_finds_nothing_doubles_the_wait() {
         Backfill::Level {
             until: Instant::now(),
             ttl: LEVEL_TTL,
+            owed: rows_owed(root.path()),
         },
     );
 

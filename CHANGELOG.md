@@ -490,7 +490,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     worktrees with different presets no longer wipe each other's. `memory_save` is fsynced before
     it returns. A note saved again while its vector is being rebuilt keeps the row of the later
     save, and a note whose embedding failed is embedded by a later search instead of staying
-    unfindable until it is saved again. A vector row no longer holds the note's text.
+    unfindable until it is saved again, in whichever process the note was saved. A vector row no longer holds the note's text.
   - The memory-notes store has its own version. A store written by a newer basemind is refused
     for memory operations ("written by a newer basemind") and never wiped; the code index of the
     workspace opens and serves as usual.

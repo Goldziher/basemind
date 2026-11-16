@@ -11,7 +11,9 @@
 //! notes whose row is missing or stale and removes the rows whose note is gone or has no text, a
 //! bounded amount per call, until the namespace is level. Level is a belief of this process, and
 //! other processes save notes too, so it lapses after [`LEVEL_TTL`], longer each time a look finds
-//! nothing to do up to [`LEVEL_TTL_MAX`], and is dropped at once by a save here that wrote no row.
+//! nothing to do up to [`LEVEL_TTL_MAX`], and is dropped at once by a save here that wrote no row
+//! and by a save in any process that wrote none, which says so in a file of the repo group
+//! ([`owe_rows`]).
 //! The table is empty after every release minor (its `schema_ver` follows the minor) and for every
 //! embedding preset opened for the first time.
 //!
@@ -71,17 +73,57 @@ pub(crate) enum Backfill {
     /// A search is embedding the namespace's notes now.
     Running,
     /// Every note had a current row and no row lacked a note when last looked, which is believed
-    /// until this instant, `ttl` after the look.
-    Level { until: Instant, ttl: Duration },
+    /// until this instant, `ttl` after the look, and while the group's [`rows_owed`] reads `owed`.
+    Level { until: Instant, ttl: Duration, owed: u64 },
 }
 
 impl Backfill {
-    /// Level as of now, for `ttl`.
-    pub(crate) fn level(ttl: Duration) -> Self {
+    /// Level as of now, for `ttl`, with the group's [`rows_owed`] read before the look as `owed`.
+    pub(crate) fn level(ttl: Duration, owed: u64) -> Self {
         Self::Level {
             until: Instant::now() + ttl,
             ttl,
+            owed,
         }
+    }
+}
+
+/// File in the repo group directory that a save rewrites when it leaves a note without a row of
+/// its write: the embedding failed or was not asked for. Every process with the notes open reads
+/// it before it trusts a namespace to be level, so a note saved elsewhere is not hidden from
+/// search until the belief lapses.
+const ROWS_OWED_FILE: &str = "memory-rows-owed";
+
+fn rows_owed_path(root: &Path) -> PathBuf {
+    crate::store_layout::repo_group_dir(root).join(ROWS_OWED_FILE)
+}
+
+/// The group's rows-owed stamp: `0` while no save has owed a row, and another value after each.
+pub(super) fn rows_owed(root: &Path) -> u64 {
+    std::fs::read(rows_owed_path(root)).map_or(0, |bytes| {
+        let hash = crate::hashing::hash_bytes(&bytes);
+        u64::from_le_bytes([hash[0], hash[1], hash[2], hash[3], hash[4], hash[5], hash[6], hash[7]]) | 1
+    })
+}
+
+/// Tell every process with the group's notes open that a note has no row of its latest write.
+/// Best effort: a stamp that cannot be written leaves other processes to find the note when their
+/// belief lapses.
+pub(super) fn owe_rows(root: &Path) {
+    static SAVES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let path = rows_owed_path(root);
+    let stamp = format!(
+        "{} {} {}",
+        crate::lance::now_micros(),
+        std::process::id(),
+        SAVES.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    );
+    let written = path
+        .parent()
+        .map_or(Ok(()), std::fs::create_dir_all)
+        .and_then(|()| std::fs::write(&path, stamp));
+    if let Err(error) = written {
+        tracing::debug!(%error, path = %path.display(), "the memory rows-owed stamp was not written");
     }
 }
 
@@ -252,13 +294,15 @@ struct RunningMark<'a> {
     namespace: (u8, String),
     /// How long the namespace is level for, once the pass found it level.
     level: Option<Duration>,
+    /// The group's [`rows_owed`] read before the pass looked.
+    owed: u64,
 }
 
 impl Drop for RunningMark<'_> {
     fn drop(&mut self) {
         let mut marks = backfill_marks(self.state);
         if let Some(ttl) = self.level {
-            marks.insert(self.namespace.clone(), Backfill::level(ttl));
+            marks.insert(self.namespace.clone(), Backfill::level(ttl, self.owed));
         } else {
             marks.remove(&self.namespace);
         }
@@ -279,13 +323,18 @@ fn backfill_marks(state: &ServerState) -> std::sync::MutexGuard<'_, AHashMap<(u8
 /// whatever rows exist.
 pub(super) async fn backfill_step(state: &ServerState, visibility: Visibility, vis_byte: u8, owner: &str) -> bool {
     let namespace = (vis_byte, owner.to_string());
+    // Read before the look: a save that owes a row after this has its note listed by the look or
+    // its stamp read by the next search. ~keep
+    let owed = rows_owed(&state.shared.root);
     let lapsed = {
         let mut marks = backfill_marks(state);
         let lapsed = match marks.get(&namespace) {
-            Some(Backfill::Level { until, .. }) if Instant::now() < *until => return false,
+            Some(Backfill::Level { until, owed: seen, .. }) if *seen == owed && Instant::now() < *until => {
+                return false;
+            }
             Some(Backfill::Running) => return true,
-            Some(Backfill::Level { ttl, .. }) => Some(*ttl),
-            None => None,
+            Some(Backfill::Level { ttl, owed: seen, .. }) if *seen == owed => Some(*ttl),
+            Some(Backfill::Level { .. }) | None => None,
         };
         marks.insert(namespace.clone(), Backfill::Running);
         lapsed
@@ -294,6 +343,7 @@ pub(super) async fn backfill_step(state: &ServerState, visibility: Visibility, v
         state,
         namespace,
         level: None,
+        owed,
     };
     match backfill(state, visibility, vis_byte, owner).await {
         Ok(progress) => {
