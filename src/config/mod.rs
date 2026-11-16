@@ -28,7 +28,7 @@ pub use layered::{ConfigLayers, LoadedConfig, defaults_only, merge_layers};
 pub use overrides::DocumentsCliOverrides;
 pub use resources::{DocumentModelProfile, FootprintKeyword, MaxFootprint, OnnxProvider, ResourcesConfig};
 pub use source::{ConfigSource, ProvenanceMap};
-pub use v1::{CodeIntelConfig, ConfigV1, DeprecatedSection, LanguageConfig};
+pub use v1::{CodeIntelConfig, ConfigV1, DeprecatedSection, LanguageConfig, Visibility};
 
 pub type Config = ConfigV1;
 

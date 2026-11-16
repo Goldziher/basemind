@@ -132,7 +132,6 @@ const FORBIDDEN_CRATES: &[(Layer, &[&str])] = &[
 const KNOWN_VIOLATIONS: &[&str] = &[
     "src/config/layered.rs -> config::overrides",
     "src/config/mod.rs -> config::overrides",
-    "src/config/v1.rs -> mcp::params",
     "src/config/validate.rs -> extern jsonschema",
     "src/git_history/mod.rs -> comms::ids",
     "src/git_history/mod.rs -> git_history::remote",

@@ -365,6 +365,56 @@ impl Default for LanguageConfig {
     }
 }
 
+/// Memory tier selector. `group` (the default) is the shared, cross-agent tier — today's
+/// behavior, with an empty owner segment. `individual` scopes the entry to the calling
+/// agent (owner = its `AgentId`), so two agents can keep private same-key entries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Visibility {
+    /// Shared, cross-agent memory (owner segment is empty). The default.
+    #[default]
+    Group,
+    /// Per-agent memory (owner segment is the caller's `AgentId`).
+    Individual,
+}
+
+impl JsonSchema for Visibility {
+    /// Inlined, not `$ref`'d into `$defs` — see [`crate::path::RelPath`]'s impl and GH #50.
+    fn inline_schema() -> bool {
+        true
+    }
+
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "Visibility".into()
+    }
+
+    /// A flat string enum, written by hand rather than derived.
+    ///
+    /// The derive turns per-variant doc comments into `oneOf: [{const, description}, …]`, and
+    /// `oneOf` is outside the Anthropic `input_schema` subset — which silently drops the server's
+    /// entire tool registry (GH #50). The variant docs live in the description instead, so the
+    /// meaning survives without the rejected construct.
+    fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({
+            "type": "string",
+            "enum": ["group", "individual"],
+            "description": "Memory tier: `group` (default) is shared across agents; `individual` \
+                            scopes the entry to the calling agent."
+        })
+    }
+}
+
+impl Visibility {
+    /// Stable, append-only on-disk ordinal for this tier — matches the `vis_byte`
+    /// encoded by [`crate::index::keys::memory_by_key`].
+    pub fn vis_byte(self) -> u8 {
+        match self {
+            Visibility::Group => crate::index::keys::MEMORY_VIS_GROUP,
+            Visibility::Individual => crate::index::keys::MEMORY_VIS_INDIVIDUAL,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct MemoryConfig {
@@ -380,7 +430,7 @@ pub struct MemoryConfig {
     /// non-default value). Would set the default memory tier when a `memory_*` call omits
     /// `visibility`.
     #[serde(default)]
-    pub default_visibility: crate::mcp::params::Visibility,
+    pub default_visibility: Visibility,
 }
 
 impl MemoryConfig {
@@ -394,7 +444,7 @@ impl Default for MemoryConfig {
         Self {
             enabled: Self::default_enabled(),
             scope_strategy: MemoryScopeStrategy::default(),
-            default_visibility: crate::mcp::params::Visibility::default(),
+            default_visibility: Visibility::default(),
         }
     }
 }
