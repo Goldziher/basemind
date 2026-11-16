@@ -1,7 +1,7 @@
 // Adapted from https://github.com/hardbeat920/monocode (crates/monocode-core/src/{provider.rs,provider/lifecycle.rs,agent.rs,mono/bridge.rs}) at 09d04436babb39ad72198cdf22f735067027fc04, MIT.
 //! Codex over `codex app-server`: JSON-RPC without the `jsonrpc` member, one message per line.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::Write;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -19,6 +19,8 @@ const INITIALIZE_ID: u64 = 1;
 const THREAD_ID: u64 = 2;
 const TURN_ID_PREFIX: &str = "basemind-turn-";
 const INTERRUPT_ID: &str = "basemind-interrupt";
+/// How many file-change items keep their full changes for an approval request.
+const FILE_CHANGE_ITEMS: usize = 16;
 /// How often growing command output is reported.
 const OUTPUT_REPORT_INTERVAL: Duration = Duration::from_millis(100);
 
@@ -158,6 +160,9 @@ pub(crate) struct CodexProtocol {
     approvals: HashMap<String, (Value, String, Value)>,
     /// The number of approval requests seen, which names the next one.
     approval_sequence: u64,
+    /// The full `changes` of the latest file-change items, by item id; `None` when they were
+    /// too large to show in a request.
+    file_changes: VecDeque<(String, Option<Value>)>,
 }
 
 impl CodexProtocol {
@@ -177,6 +182,7 @@ impl CodexProtocol {
             reported_at: Instant::now(),
             approvals: HashMap::new(),
             approval_sequence: 0,
+            file_changes: VecDeque::new(),
         }
     }
 
@@ -221,7 +227,14 @@ impl CodexProtocol {
     ) -> Result<(), LaunchError> {
         self.approval_sequence += 1;
         let id = format!("codex-{}", self.approval_sequence);
-        let verdict = sink.request_approval(self.approval_request(id.clone(), method, params), self.approvals.len());
+        let (request, shown) = self.approval_request(id.clone(), method, params);
+        if !shown {
+            // An allow would approve changes nobody was shown: denied unasked.
+            sink.emit(Event::ApprovalRequest(request));
+            sink.resolved(id, false, ApprovalSource::GrantUnknown);
+            return self.respond(wire, method, params, false, out);
+        }
+        let verdict = sink.request_approval(request, self.approvals.len());
         match verdict {
             ApprovalVerdict::Ask => {
                 self.approvals
@@ -232,18 +245,45 @@ impl CodexProtocol {
         }
     }
 
+    /// The full changes an allow of a file-change request would approve: the request's own
+    /// `fileChanges` (the older protocol), else the `changes` of the item it names. `None`
+    /// when neither is known, or they are too large to hold for the caller.
+    fn requested_changes(&self, params: &Value) -> Option<Value> {
+        let changes = match &params["fileChanges"] {
+            Value::Null => {
+                let item = params["itemId"].as_str()?;
+                let (_, changes) = self.file_changes.iter().find(|(id, _)| id == item)?;
+                changes.clone()?
+            }
+            changes => changes.clone(),
+        };
+        (crate::session::json_len(&changes) <= crate::session::MAX_PENDING_BYTES).then_some(changes)
+    }
+
     /// Renders what an allow would approve. The command and the permissions are in the
-    /// request; the file changes are in the item the harness announced before asking.
-    fn approval_request(&self, id: String, method: &str, params: &Value) -> ApprovalRequest {
+    /// request; the file changes are in the item the harness announced before asking, and
+    /// are added to `params` as `item.changes` in full. The flag is `false` for a file-change
+    /// request whose changes are unknown or too large: it can only be denied.
+    fn approval_request(&self, id: String, method: &str, params: &Value) -> (ApprovalRequest, bool) {
         let pretty = |value: &Value| serde_json::to_string_pretty(value).unwrap_or_default();
         let known = params["itemId"].as_str().and_then(|item| self.tools.get(item));
+        let mut params = params.clone();
         let (kind, title, mut grant) = if method.contains("fileChange") || method == "applyPatchApproval" {
-            let changes = match (&params["fileChanges"], known) {
-                (changes, _) if !changes.is_null() => pretty(changes),
-                (_, Some(tool)) => format!("{}\n{}", tool.input, tool.output),
-                (_, None) => "The harness did not say which files would change.".to_owned(),
+            let Some(changes) = self.requested_changes(&params) else {
+                let detail = "The harness did not say in full which files would change, or the changes are \
+                              too large to show, so the request is denied.";
+                let request = ApprovalRequest {
+                    id,
+                    kind: ApprovalKind::FileChange,
+                    title: "Allow file changes?".to_owned(),
+                    detail: detail.to_owned(),
+                    params,
+                };
+                return (request, false);
             };
-            (ApprovalKind::FileChange, "Allow file changes?", changes)
+            let grant = pretty(&changes);
+            params["item"] = json!({"id": params["itemId"], "changes": changes});
+            (ApprovalKind::FileChange, "Allow file changes?", grant)
         } else if method.contains("permissions") {
             let permissions = pretty(&params["permissions"]);
             (ApprovalKind::Permissions, "Allow additional permissions?", permissions)
@@ -256,7 +296,7 @@ impl CodexProtocol {
             };
             (ApprovalKind::Command, "Allow this command?", command)
         } else {
-            (ApprovalKind::Tool, "Allow this request?", pretty(params))
+            (ApprovalKind::Tool, "Allow this request?", pretty(&params))
         };
         if let Some(cwd) = params["cwd"].as_str() {
             grant.push_str(&format!("\nIn: {cwd}"));
@@ -264,13 +304,14 @@ impl CodexProtocol {
         if let Some(root) = params["grantRoot"].as_str() {
             grant.push_str(&format!("\nAlso requests write access under: {root}"));
         }
-        ApprovalRequest {
+        let request = ApprovalRequest {
             id,
             kind,
             title: title.to_owned(),
             detail: approval_detail(&grant, params["reason"].as_str()),
-            params: params.clone(),
-        }
+            params,
+        };
+        (request, true)
     }
 
     /// Whether a notification belongs to our thread. One without a `threadId` is taken as
@@ -311,6 +352,18 @@ impl CodexProtocol {
         }
     }
 
+    /// Keeps a file-change item's full `changes` for a later approval request, forgetting the
+    /// oldest item beyond [`FILE_CHANGE_ITEMS`] and the changes of one too large to show.
+    fn record_changes(&mut self, id: &str, changes: &Value) {
+        self.file_changes.retain(|(known, _)| known != id);
+        if self.file_changes.len() >= FILE_CHANGE_ITEMS {
+            self.file_changes.pop_front();
+        }
+        let shown = (!changes.is_null() && crate::session::json_len(changes) <= crate::session::MAX_PENDING_BYTES)
+            .then(|| changes.clone());
+        self.file_changes.push_back((id.to_owned(), shown));
+    }
+
     fn tool(&mut self, item: &Value, completed: bool, sink: &EventSink) {
         let kind = item["type"].as_str().unwrap_or("");
         if !matches!(
@@ -321,6 +374,9 @@ impl CodexProtocol {
         }
         let id = item["id"].as_str().unwrap_or("");
         self.unreported.remove(id);
+        if kind == "fileChange" {
+            self.record_changes(id, &item["changes"]);
+        }
         let tool = self.tools.get_or_insert(id, || ToolCall::new(id, kind));
         tool.name = item["tool"].as_str().unwrap_or(kind).to_owned();
         if kind == "mcpToolCall" {

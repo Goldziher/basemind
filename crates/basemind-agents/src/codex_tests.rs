@@ -223,13 +223,17 @@ fn a_policy_decides_and_a_deferred_request_waits_for_the_caller() {
     let (sink, _events) = EventSink::for_test(always(ApprovalVerdict::Allow), 1);
     let mut protocol = in_turn(&sink);
     let mut out = Vec::new();
-    let request = json!({"id": 42, "method": "applyPatchApproval", "params": {"reason": "edit src/lib.rs"}});
+    let request = json!({"id": 42, "method": "applyPatchApproval", "params": {
+        "reason": "edit src/lib.rs", "fileChanges": {"src/lib.rs": {"update": {"unified_diff": "+x"}}},
+    }});
     protocol.frame(request, &mut out, &sink).unwrap();
     assert_eq!(written(&out), [json!({"id": 42, "result": {"decision": "approved"}})]);
 
     let (sink, events) = EventSink::for_test(always(ApprovalVerdict::Ask), 1);
     let mut protocol = in_turn(&sink);
     let mut out = Vec::new();
+    let item = json!({"method": "item/started", "params": {"item": {"type": "fileChange", "id": "f1", "changes": []}}});
+    protocol.frame(item, &mut out, &sink).unwrap();
     let request = json!({"id": 7, "method": "item/fileChange/requestApproval", "params": {"itemId": "f1"}});
     protocol.frame(request, &mut out, &sink).unwrap();
     assert!(out.is_empty(), "a deferred request was answered");
@@ -283,12 +287,12 @@ fn an_approval_shows_the_grant_and_labels_the_agents_reason() {
 
     assert_eq!(files.id, "codex-1");
     assert_eq!(files.kind, ApprovalKind::FileChange);
-    assert!(
-        files.detail.starts_with("{\"paths\":[\"/etc/sudoers\"]}"),
-        "{}",
-        files.detail
-    );
+    assert!(files.detail.contains("\"path\": \"/etc/sudoers\""), "{}", files.detail);
     assert!(files.detail.contains("NOPASSWD"), "{}", files.detail);
+    assert_eq!(
+        files.params["item"],
+        json!({"id": "f1", "changes": [{"path": "/etc/sudoers", "diff": "+ALL ALL=(ALL) NOPASSWD: ALL"}]})
+    );
     assert!(files.detail.contains("write access under: /"), "{}", files.detail);
     assert!(
         files
@@ -619,4 +623,59 @@ fn turns_of_another_thread_neither_count_nor_end_ours() {
     assert_eq!(sink.turns(), 1);
     let ours = json!({"method": "turn/completed", "params": {"threadId": "thread-1", "turn": {"id": "turn-1", "status": "completed"}}});
     assert_eq!(protocol.frame(ours, &mut out, &sink).unwrap(), Step::TurnDone);
+}
+
+#[test]
+fn a_file_change_request_carries_every_change_or_is_denied_unasked() {
+    let (sink, events) = EventSink::for_test(always(ApprovalVerdict::Allow), 1);
+    let mut protocol = in_turn(&sink);
+    let mut out = Vec::new();
+    // Past the 64 KiB a tool call's output keeps, so the tool table alone would cut it.
+    let tail = "+the line an approver must see";
+    let diff = format!("{}{tail}", "+padding\n".repeat(16 * 1024));
+    let changes = json!([{"path": "src/lib.rs", "diff": diff}]);
+    let item =
+        json!({"method": "item/started", "params": {"item": {"type": "fileChange", "id": "f1", "changes": changes}}});
+    protocol.frame(item, &mut out, &sink).unwrap();
+    let request = json!({"id": 1, "method": "item/fileChange/requestApproval", "params": {"itemId": "f1"}});
+    protocol.frame(request, &mut out, &sink).unwrap();
+    let asked = asked(&events);
+    assert_eq!(asked[0].params["item"]["changes"], changes);
+    assert!(asked[0].detail.contains(tail));
+    assert_eq!(written(&out), [json!({"id": 1, "result": {"decision": "accept"}})]);
+
+    // Changes never announced, or too large to show, are denied whatever the policy says.
+    let big = json!([{"path": "a", "diff": "x".repeat(crate::session::MAX_PENDING_BYTES)}]);
+    let item =
+        json!({"method": "item/started", "params": {"item": {"type": "fileChange", "id": "f2", "changes": big}}});
+    protocol.frame(item, &mut out, &sink).unwrap();
+    out.clear();
+    for (wire, item) in [(2, "unknown"), (3, "f2")] {
+        let request = json!({"id": wire, "method": "item/fileChange/requestApproval", "params": {"itemId": item}});
+        protocol.frame(request, &mut out, &sink).unwrap();
+    }
+    let legacy = json!({"id": 4, "method": "applyPatchApproval", "params": {"reason": "trust me"}});
+    protocol.frame(legacy, &mut out, &sink).unwrap();
+    assert_eq!(
+        written(&out),
+        [
+            json!({"id": 2, "result": {"decision": "decline"}}),
+            json!({"id": 3, "result": {"decision": "decline"}}),
+            json!({"id": 4, "result": {"decision": "denied"}}),
+        ]
+    );
+    let unknown = events
+        .try_iter()
+        .filter(|event| {
+            matches!(
+                event,
+                Event::ApprovalResolved {
+                    allowed: false,
+                    source: ApprovalSource::GrantUnknown,
+                    ..
+                }
+            )
+        })
+        .count();
+    assert_eq!(unknown, 3);
 }

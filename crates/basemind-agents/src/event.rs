@@ -199,6 +199,9 @@ pub enum ApprovalSource {
     /// The policy deferred it while the most requests a session holds (64) were already
     /// pending, or it was too large (over 1 MiB) to hold, so it was denied.
     TooManyPending,
+    /// What an allow would grant could not be shown in full (a Codex file change whose
+    /// changes were not announced, or are over 1 MiB), so it was denied without asking.
+    GrantUnknown,
 }
 
 /// How a session ended.
