@@ -335,6 +335,11 @@ pub fn parse_timed(parser: &mut Parser, source: &[u8], timeout: Duration) -> Par
     };
     let opts = ParseOptions::new().progress_callback(&mut progress);
     let tree = parser.parse_with_options(&mut input, None, Some(opts));
+    if tree.is_none() {
+        // A cancelled parser keeps its partial state and resumes it on the next `parse`, grafting
+        // the abandoned input onto whatever the pooled parser is handed next.
+        parser.reset();
+    }
     match (tree, timed_out) {
         (Some(t), _) => ParseOutcome::Ok(t),
         (None, true) => ParseOutcome::TimedOut,
@@ -929,6 +934,29 @@ mod tests {
         Query::new(&ts_lang, &sym).expect("adapted symbols query compiles");
         Query::new(&ts_lang, &calls).expect("adapted calls query compiles");
         Query::new(&ts_lang, &impls).expect("adapted implementations query compiles");
+    }
+
+    #[test]
+    fn a_timed_out_parse_does_not_leak_into_the_next_parse() {
+        let big: String = (0..20_000).map(|i| format!("fn f{i}() {{ let x = {i}; }}\n")).collect();
+        let small = b"struct Small;\n";
+        let fresh = with_parser("rust", |p| match parse_timed(p, small, Duration::from_secs(30)) {
+            ParseOutcome::Ok(t) => t.root_node().to_sexp(),
+            other => panic!("fresh parse failed: {other:?}"),
+        })
+        .unwrap();
+        let after = with_parser("rust", |p| {
+            assert!(matches!(
+                parse_timed(p, big.as_bytes(), Duration::ZERO),
+                ParseOutcome::TimedOut
+            ));
+            match parse_timed(p, small, Duration::from_secs(30)) {
+                ParseOutcome::Ok(t) => (t.root_node().to_sexp(), t.root_node().end_byte()),
+                other => panic!("parse after a timeout failed: {other:?}"),
+            }
+        })
+        .unwrap();
+        assert_eq!(after, (fresh, small.len()), "the abandoned parse must not be resumed");
     }
 
     #[test]
