@@ -305,6 +305,7 @@ impl GitHistoryIndex {
     }
 
     /// The forwarder of a daemon-backed handle, `None` for a local one.
+    #[cfg(all(feature = "comms", any(unix, windows)))]
     pub(crate) fn forwarder(&self) -> Option<&std::sync::Arc<dyn HistoryForwarder>> {
         match &self.backend {
             Backend::Remote(forwarder) => Some(forwarder),
