@@ -541,6 +541,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   "scan_cap"` when it drops that daemon's substring hits: no cap was hit. `total` is then an upper bound.
 - `code_grep` with a regex that names a carriage return through an escape (`\x0D`, `\x{0D}`, `\u000D`,
   `[\x0d]`) matches a lone `\r` again; only a literal `\r` or the `\r` escape was recognised.
+- A `code_search` or `docs_search` ranking that finishes after a rescan no longer evicts the rankings of the
+  newer index generation.
 - `code_refs` leaves `resolved` absent when nothing was checked, instead of `false`.
 - `code_grep` and `code_refs` definition no longer read through a file swapped for a link out of the
   repository, and `code_grep` no longer counts matches through a directory swapped for one: the count

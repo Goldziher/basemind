@@ -81,6 +81,11 @@ impl RankedCache {
         let Ok(mut entries) = self.entries.lock() else {
             return;
         };
+        // A retrieval that started before a rescan finishes after it: keeping its ranking would
+        // evict the newer generation's, and the ranking would never be served.
+        if entries.iter().any(|entry| entry.generation > generation) {
+            return;
+        }
         entries.retain(|entry| entry.generation == generation && entry.key != key);
         if bytes > BYTES_MAX {
             return;
@@ -146,6 +151,19 @@ mod tests {
         cache.put(key("upload"), 5, &ranking("d.rs"));
         assert_eq!(cache.held().0, 1, "a put at a newer generation drops the older ones");
         assert_eq!(cache.get(&key("upload"), 5), Some(ranking("d.rs")));
+    }
+
+    #[test]
+    fn a_ranking_of_an_older_generation_evicts_nothing() {
+        let cache = RankedCache::default();
+        cache.put(key("retry"), 5, &ranking("new.rs"));
+        cache.put(key("upload"), 4, &ranking("old.rs"));
+        assert_eq!(
+            cache.get(&key("retry"), 5),
+            Some(ranking("new.rs")),
+            "a put that finished after the rescan keeps the newer ranking"
+        );
+        assert_eq!(cache.held().0, 1, "and the older one is not kept");
     }
 
     #[test]
