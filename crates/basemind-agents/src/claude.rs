@@ -313,6 +313,14 @@ impl ClaudeProtocol {
             );
         }
         let id = request_id(wire);
+        if self.approvals.contains_key(&id) {
+            // A second request under a pending id would take the caller's answer to the
+            // first one: it is denied unseen.
+            sink.emit(Event::Status(format!(
+                "Denied an approval request reusing the pending id {id:?}"
+            )));
+            return self.respond(wire, request, false, out);
+        }
         let verdict = sink.request_approval(approval_request(id.clone(), request), self.approvals.len());
         match verdict {
             ApprovalVerdict::Ask => {
