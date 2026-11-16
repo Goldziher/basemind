@@ -9,6 +9,37 @@ pub(crate) const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
 
 const CHUNK_BYTES: usize = 64 * 1024;
 
+/// The most JSON values a frame may hold, counted as the `[`, `{` and `,` outside strings.
+/// Parsed, each value takes tens of bytes (more with `preserve_order`), so a 16 MiB line of
+/// `[0,0,0,...]` would grow to hundreds of MiB; this keeps a parsed frame to tens of MiB.
+/// Real frames hold a few thousand at most.
+pub(crate) const MAX_FRAME_VALUES: usize = 256 * 1024;
+
+/// Whether `frame` holds more than [`MAX_FRAME_VALUES`] JSON values, found without parsing.
+fn too_many_values(frame: &[u8]) -> bool {
+    let (mut values, mut in_string, mut escaped) = (0_usize, false, false);
+    for &byte in frame {
+        if in_string {
+            match (escaped, byte) {
+                (true, _) => escaped = false,
+                (false, b'\\') => escaped = true,
+                (false, b'"') => in_string = false,
+                _ => {}
+            }
+        } else {
+            match byte {
+                b'"' => in_string = true,
+                b'[' | b'{' | b',' => values += 1,
+                _ => {}
+            }
+            if values > MAX_FRAME_VALUES {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// Splits a byte stream into frames at `\n`, refusing any frame longer than its limit.
 pub(crate) struct FrameReader<R> {
     inner: R,
@@ -47,13 +78,16 @@ impl<R: Read> FrameReader<R> {
                 let mut frame: Vec<u8> = self.buf.drain(..=end).collect();
                 frame.pop();
                 self.scanned = 0;
-                return Ok(Some(frame));
+                return Self::bounded(frame).map(Some);
             }
             self.scanned = self.buf.len();
             self.check(self.buf.len())?;
             if self.eof {
                 self.scanned = 0;
-                return Ok((!self.buf.is_empty()).then(|| std::mem::take(&mut self.buf)));
+                if self.buf.is_empty() {
+                    return Ok(None);
+                }
+                return Self::bounded(std::mem::take(&mut self.buf)).map(Some);
             }
             let start = self.buf.len();
             self.buf.resize(start + CHUNK_BYTES, 0);
@@ -73,6 +107,17 @@ impl<R: Read> FrameReader<R> {
             self.buf.truncate(start + read);
             self.eof = read == 0;
         }
+    }
+
+    /// `frame`, or an [`io::ErrorKind::InvalidData`] error when it holds too many values.
+    fn bounded(frame: Vec<u8>) -> io::Result<Vec<u8>> {
+        if too_many_values(&frame) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("the harness sent a frame of more than {MAX_FRAME_VALUES} JSON values"),
+            ));
+        }
+        Ok(frame)
     }
 
     fn check(&self, len: usize) -> io::Result<()> {
@@ -134,6 +179,24 @@ mod tests {
             frames(b"1234567890\n", 10)[0].as_ref().unwrap().as_deref(),
             Some(&b"1234567890"[..])
         );
+    }
+
+    #[test]
+    fn a_frame_of_too_many_values_is_refused_before_it_is_parsed() {
+        let at_cap = format!("[{}0]\n", "0,".repeat(MAX_FRAME_VALUES - 1));
+        assert!(frames(at_cap.as_bytes(), MAX_FRAME_BYTES)[0].is_ok());
+        let over = format!("[{}0]\n", "0,".repeat(MAX_FRAME_VALUES));
+        let error = frames(over.as_bytes(), MAX_FRAME_BYTES)[0].as_ref().unwrap_err().kind();
+        assert_eq!(error, io::ErrorKind::InvalidData);
+        // Commas, brackets and escaped quotes inside a string are text, not values.
+        let text = format!("{{\"text\":\"\\\"{}\"}}\n", ",[{".repeat(MAX_FRAME_VALUES));
+        assert!(frames(text.as_bytes(), MAX_FRAME_BYTES)[0].is_ok());
+        // Without its newline, at the end of the stream, too.
+        let error = frames(over.trim_end().as_bytes(), MAX_FRAME_BYTES)[0]
+            .as_ref()
+            .unwrap_err()
+            .kind();
+        assert_eq!(error, io::ErrorKind::InvalidData);
     }
 
     #[test]
