@@ -310,18 +310,7 @@ impl L1Cache {
     /// caller's refusal says the same to the agent (see `tool_contract::not_indexed`). Returns the
     /// blob when a writer replaced the damaged file with a good one in the meantime.
     fn recover_unreadable(&self, hash_hex: &str, error: &crate::store::StoreError) -> Option<FileMapL1> {
-        use crate::store::StoreError;
-        // The global store's directory is this binary's own schema namespace, so a blob there
-        // that claims another schema is not one any basemind wrote: it is damaged like a torn one.
-        let damaged = matches!(
-            error,
-            StoreError::CorruptBlob { .. }
-                | StoreError::Decode(_)
-                | StoreError::Decompression { .. }
-                | StoreError::SchemaMismatch { .. }
-                | StoreError::NewerSchema { .. }
-        );
-        if damaged && self.blobs_dir == crate::store::global_blobs_dir() {
+        if is_damage(error) && self.blobs_dir == crate::store::global_blobs_dir() {
             // A damaged blob (torn by a power loss: blobs are not fsynced) would be trusted for
             // existing by every later scan. With the blob gone the next scan of the file finds
             // nothing for its hash and extracts it again. Only the global store is repaired this
@@ -329,15 +318,22 @@ impl L1Cache {
             //
             // A scan may rename a good blob over the damaged one at any moment, and an unlink by
             // path would take that one. So the file is identified, read once more, and removed
-            // only if it is still the file that failed.
+            // only if that read finds damage too and it is still the file that was read.
             let path = self.blobs_dir.join(format!("{hash_hex}.fm.msgpack"));
             let failed = BlobIdentity::of(&path);
-            if let Ok(replaced) = crate::store_blob::read_l1_blob_in(&self.blobs_dir, hash_hex) {
-                return replaced;
+            match crate::store_blob::read_l1_blob_in(&self.blobs_dir, hash_hex) {
+                Ok(replaced) => return replaced,
+                Err(again) if is_damage(&again) => {
+                    let dropped = remove_if_still(&path, failed);
+                    self.forget(hash_hex);
+                    tracing::warn!(hash = hash_hex, %error, dropped, "damaged blob for an indexed file; rescan to rebuild it");
+                }
+                // The file identified may be a good one a scan has just put there, and a read
+                // that failed for another reason says nothing against it.
+                Err(again) => {
+                    tracing::warn!(hash = hash_hex, error = %again, "blob for an indexed file could not be read");
+                }
             }
-            let dropped = remove_if_still(&path, failed);
-            self.forget(hash_hex);
-            tracing::warn!(hash = hash_hex, %error, dropped, "damaged blob for an indexed file; rescan to rebuild it");
         } else {
             tracing::warn!(hash = hash_hex, %error, "blob for an indexed file could not be read");
         }
@@ -501,6 +497,21 @@ pub(crate) fn budget_bytes_from(resources: &crate::config::ResourcesConfig) -> u
     (resources.max_map_cache_mb as u64).saturating_mul(1024 * 1024)
 }
 
+/// Whether `error` says the blob's bytes are bad, as opposed to the read having failed. The
+/// global store's directory is this binary's own schema namespace, so a blob there that claims
+/// another schema is not one any basemind wrote: it is damaged like a torn one.
+fn is_damage(error: &crate::store::StoreError) -> bool {
+    use crate::store::StoreError;
+    matches!(
+        error,
+        StoreError::CorruptBlob { .. }
+            | StoreError::Decode(_)
+            | StoreError::Decompression { .. }
+            | StoreError::SchemaMismatch { .. }
+            | StoreError::NewerSchema { .. }
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -607,5 +618,20 @@ mod tests {
             cache.admit(&format!("{i:064x}"), &value);
         }
         assert!(cache.charged_bytes() > 32 * 4096);
+    }
+
+    /// Only bad bytes condemn a blob. A read that failed for another reason (the disk, a
+    /// permission) says nothing about the file, which may be a good one a scan has just written.
+    #[test]
+    fn a_read_that_failed_is_not_a_damaged_blob() {
+        use crate::store::StoreError;
+
+        let path = std::path::PathBuf::from("blob.fm.msgpack");
+        assert!(is_damage(&StoreError::CorruptBlob { path: path.clone() }));
+        assert!(is_damage(&StoreError::SchemaMismatch { found: 1, expected: 2 }));
+        assert!(!is_damage(&StoreError::Io {
+            path,
+            source: std::io::Error::from(std::io::ErrorKind::Interrupted),
+        }));
     }
 }
