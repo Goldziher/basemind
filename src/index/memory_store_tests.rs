@@ -382,14 +382,23 @@ fn a_view_holding_old_memory_rows_is_not_wiped_while_the_store_is_newer() {
     );
 }
 
-/// A read-only open holds a store to its version by looking: it stamps nothing, creates no
-/// keyspace and syncs nothing. The writer that opens the store stamps it.
+/// A read-only open holds a store to its version by looking: it stamps nothing and creates no
+/// keyspace for a version. An absent store it does create, empty, with its notes keyspace. The
+/// writer that opens the store stamps it.
 #[test]
 fn a_reader_never_stamps_the_store_and_the_writer_that_joins_it_does() {
     let tmp = tempfile::tempdir().unwrap();
     let memory_dir = tmp.path().join("repos/g/memory.fjall");
 
     drop(open_shared(&memory_dir, Version::Check).expect("reader"));
+    {
+        let db = Database::builder(&memory_dir).open().expect("open store");
+        assert!(
+            !db.keyspace_exists(STORE_META),
+            "a reader made no keyspace for a version"
+        );
+        assert!(db.keyspace_exists(MEMORY_BY_KEY), "the empty notes keyspace is there");
+    }
     assert_eq!(stored_version(&memory_dir), None, "a reader wrote no version");
 
     let reader = open_shared(&memory_dir, Version::Check).expect("reader");

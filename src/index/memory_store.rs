@@ -33,7 +33,8 @@ const MEMORY_BY_KEY: &str = "memory_by_key";
 pub(crate) enum Version {
     /// A writer: refuse a newer store, stamp one that carries no version.
     Stamp,
-    /// A reader: refuse a newer store and write nothing.
+    /// A reader: refuse a newer store and write no version. An absent store is still created,
+    /// empty, with its notes keyspace.
     Check,
 }
 
@@ -111,7 +112,7 @@ const STORE_VER_KEY: &[u8] = b"store_ver";
 
 /// Hold the store to its version. A newer one is refused untouched. A store with none was written
 /// before the version existed and has the layout of version 1: a writer stamps it, a reader takes
-/// it as it is and writes nothing, not even the keyspace the version lives in.
+/// it as it is and writes no version, not even the keyspace the version lives in.
 fn check_version(db: &Database, version: Version) -> Result<(), IndexError> {
     if version == Version::Check && !db.keyspace_exists(STORE_META) {
         return Ok(());
