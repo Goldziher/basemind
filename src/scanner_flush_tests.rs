@@ -4,6 +4,7 @@ use super::*;
 use crate::config::Config;
 use crate::extract::doc::{DocChunk, FileMapDoc};
 use crate::scanner::{EmbedMode, ScanSource, scan, scan_paths};
+use crate::scanner_flush::{REQUEUE_PER_INCREMENTAL, flush_vector_lanes};
 use crate::store::{DocEntry, VIEW_WORKING};
 use crate::store_pending::{PENDING_FILE, PendingVectors};
 
@@ -282,7 +283,7 @@ fn a_batch_whose_blob_holds_other_vectors_is_settled_not_written() {
     let config = config();
     owe_doc(&mut store, "docs/good.txt", Some(&doc(2, DIM)));
     owe_doc(&mut store, "docs/other-dim.txt", Some(&doc(2, 384)));
-    let batch = |rel: &str| crate::scanner_docs::PendingDocBatch {
+    let batch = |rel: &str| crate::scan_retrieval::PendingDocBatch {
         rel_path: rel.to_string(),
         blob_hash: crate::hashing::hex(&crate::hashing::hash_bytes(rel.as_bytes())),
         doc_scope: SCOPE.to_string(),

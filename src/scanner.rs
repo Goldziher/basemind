@@ -10,11 +10,11 @@ use crate::git::{GitError, Repo};
 use crate::scan_evidence::{
     PHASE_CANDIDATES, PHASE_EXTRACT, PHASE_FLUSH, PHASE_LANES, PHASE_PURGE, PHASE_RESOLVE, ScanBreadcrumb,
 };
+#[cfg(feature = "documents")]
+use crate::scan_retrieval::PendingDocBatch;
 use crate::scanner_candidates::walk_candidates;
 #[cfg(feature = "code-search")]
 use crate::scanner_code::PendingCodeBatch;
-#[cfg(feature = "documents")]
-use crate::scanner_docs::PendingDocBatch;
 use crate::scanner_drive::{DriveOutcome, ScanDrive, drive_scan};
 use crate::scanner_file::scanner_pool;
 use crate::scanner_filter::{Filters, IndexFilter};
@@ -622,18 +622,17 @@ pub fn scan_with_observer(
     advance(&mut breadcrumb, &phase_peaks, PHASE_LANES, None);
     flush_vector_lanes(store, config, &filters, &scope, doc_batches, code_batches, usize::MAX)?;
     run_optional_lane(LANE_CODE_REMOVALS, || {
-        flush_code_removals_if_any(store, config, &scope, &stale);
+        flush_code_removals_if_any(store, config, &filters, &scope, &stale);
     });
     #[cfg(feature = "documents")]
-    crate::scanner_integrity::remove_docs_and_flush(store, config, &scope, &doc_stale)?;
+    crate::scanner_integrity::remove_docs_and_flush(store, config, &filters, &scope, &doc_stale)?;
     run_optional_lane(LANE_BM25_STATS, || finalize_bm25_stats_if_any(store, config, true));
     run_optional_lane(crate::scanner_lanes::LANE_LANCE_MAINTENANCE, || {
-        maintain_lance_if_open(store)
+        maintain_lance_if_open(store, &filters)
     });
     #[cfg(any(feature = "documents", feature = "code-search"))]
     if matches!(source, ScanSource::WorkingTree)
-        && crate::lance::shared_snapshot::enabled()
-        && let Err(error) = crate::lance::shared_snapshot::publish_scan(store, config, &scope)
+        && let Err(error) = filters.retrieval.vectors.publish_snapshot(store, config, &scope)
     {
         tracing::debug!(%error, "shared Lance snapshot publication failed");
     }
@@ -943,13 +942,13 @@ fn scan_paths_inner(
         REQUEUE_PER_INCREMENTAL,
     )?;
     run_optional_lane(LANE_CODE_REMOVALS, || {
-        flush_code_removals_if_any(store, config, &scope, &removed);
+        flush_code_removals_if_any(store, config, filter.filters(), &scope, &removed);
     });
     #[cfg(feature = "documents")]
-    crate::scanner_integrity::remove_docs_and_flush(store, config, &scope, &doc_removed)?;
+    crate::scanner_integrity::remove_docs_and_flush(store, config, filter.filters(), &scope, &doc_removed)?;
     run_optional_lane(LANE_BM25_STATS, || finalize_bm25_stats_if_any(store, config, false));
     run_optional_lane(crate::scanner_lanes::LANE_LANCE_MAINTENANCE, || {
-        maintain_lance_if_open(store)
+        maintain_lance_if_open(store, filter.filters())
     });
     crate::scanner_integrity::finish_index_writes(store);
     Ok(report)

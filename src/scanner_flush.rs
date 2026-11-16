@@ -5,8 +5,6 @@
 use std::path::Path;
 
 use crate::config::Config;
-#[cfg(feature = "documents")]
-use crate::scanner_docs::flush_document_batches;
 use crate::scanner_drive::{PendingCodeBatchOpt, PendingDocBatchOpt};
 use crate::scanner_filter::Filters;
 use crate::scanner_lanes::{LANE_CODE_BATCHES, LANE_DOC_BATCHES, run_optional_lane};
@@ -14,15 +12,11 @@ use crate::store::Store;
 
 /// Compact fragments and prune old table versions of the LanceDB store once this scan's writes are
 /// done (#76). No-op when the scan never opened the store or wrote nothing.
-pub(crate) fn maintain_lance_if_open(store: &Store) {
+pub(crate) fn maintain_lance_if_open(store: &Store, filters: &Filters) {
     #[cfg(any(feature = "documents", feature = "code-search"))]
-    if let Some(lance) = store.lance.as_ref()
-        && let Err(error) = lance.maintain(crate::lance::SCAN_RETENTION)
-    {
-        tracing::warn!(?error, "lance post-scan maintenance failed; old table versions kept");
-    }
+    filters.retrieval.vectors.maintain(store);
     #[cfg(not(any(feature = "documents", feature = "code-search")))]
-    let _ = store;
+    let _ = (store, filters);
 }
 
 /// How many owed paths an incremental scan re-queues. A watcher batch that embeds one file must not
@@ -44,18 +38,18 @@ pub(crate) fn flush_vector_lanes(
     requeue: usize,
 ) -> Result<(), crate::store::StoreError> {
     owe_rows_that_may_be_lost(store, filters)?;
-    if owes_beyond(store, &doc_batches, &code_batches) && vector_store_opens(store, config) {
+    if owes_beyond(store, &doc_batches, &code_batches) && vector_store_opens(store, config, filters) {
         let mut budget = requeue;
         requeue_pending_docs(store, config, filters, scope, &mut doc_batches, &mut budget);
         requeue_pending_code(store, config, filters, &mut code_batches, &mut budget);
     }
     run_optional_lane(LANE_DOC_BATCHES, || {
-        flush_doc_batches_if_any(store, config, doc_batches);
+        flush_doc_batches_if_any(store, config, filters, doc_batches);
     });
     run_optional_lane(LANE_CODE_BATCHES, || {
-        flush_code_batches_if_any(store, config, scope, code_batches);
+        flush_code_batches_if_any(store, config, filters, scope, code_batches);
     });
-    record_vector_store(store);
+    record_vector_store(store, filters);
     store.pending_vectors.persist(&store.view_dir)
 }
 
@@ -73,8 +67,9 @@ fn owe_rows_that_may_be_lost(store: &mut Store, filters: &Filters) -> Result<(),
     // A view an earlier build last scanned records no store, so only the verifying pass can
     // tell that its rows were lost.
     let lance_dir = store.basemind_dir.join(crate::store::LANCE_DIR);
-    let lost = crate::store_pending::recorded_store(&store.view_dir)
-        .is_some_and(|recorded| crate::lance::store_id(&lance_dir).as_deref() != Some(recorded.as_str()));
+    let lost = crate::store_pending::recorded_store(&store.view_dir).is_some_and(|recorded| {
+        filters.retrieval.vectors.store_id_at(&lance_dir).as_deref() != Some(recorded.as_str())
+    });
     if !lost && !filters.vector_rows_unsure {
         return Ok(());
     }
@@ -84,7 +79,7 @@ fn owe_rows_that_may_be_lost(store: &mut Store, filters: &Filters) -> Result<(),
             "the vector store this view's rows were written to is gone; rewriting them from the cached blobs"
         );
         // A handle kept from an earlier scan is on the store that went.
-        store.lance = None;
+        filters.retrieval.vectors.close(store);
     }
     #[cfg(feature = "documents")]
     for rel in store.index.doc_files.keys() {
@@ -108,18 +103,14 @@ fn owe_rows_that_may_be_lost(_store: &mut Store, _filters: &Filters) -> Result<(
 
 /// Record, beside the file map, which vector store this scan had open: the one its rows went to.
 #[cfg(any(feature = "documents", feature = "code-search"))]
-fn record_vector_store(store: &Store) {
-    if let Some(id) = store
-        .lance
-        .as_ref()
-        .and_then(|lance| crate::lance::store_id(lance.dir()))
-    {
+fn record_vector_store(store: &Store, filters: &Filters) {
+    if let Some(id) = filters.retrieval.vectors.open_store_id(store) {
         crate::store_pending::record_store(&store.view_dir, &id);
     }
 }
 
 #[cfg(not(any(feature = "documents", feature = "code-search")))]
-fn record_vector_store(_store: &Store) {}
+fn record_vector_store(_store: &Store, _filters: &Filters) {}
 
 /// Whether an earlier scan left a path owing rows that this scan has no batch for.
 fn owes_beyond(store: &Store, doc_batches: &[PendingDocBatchOpt], code_batches: &[PendingCodeBatchOpt]) -> bool {
@@ -150,10 +141,8 @@ fn owes_beyond(store: &Store, doc_batches: &[PendingDocBatchOpt], code_batches: 
 /// Open the vector store before any owed path is looked at: when it cannot be opened nothing can
 /// be written, and re-reading a blob per owed path would be repeated by every scan until it can.
 #[cfg(any(feature = "documents", feature = "code-search"))]
-fn vector_store_opens(store: &mut Store, config: &Config) -> bool {
-    let preset = &config.documents.embedding_preset;
-    let opened = crate::embeddings::SharedEmbedder::load(preset, 0, config.resources.embed_batch_size)
-        .and_then(|embedder| store.lance_or_open(embedder.dim(), preset).map(|_| ()));
+fn vector_store_opens(store: &mut Store, config: &Config, filters: &Filters) -> bool {
+    let opened = filters.retrieval.vectors.open(store, config);
     if let Err(error) = &opened {
         tracing::warn!(%error, owed = store.pending_vectors.len(), "vector store unavailable; owed rows stay owed");
     }
@@ -161,15 +150,12 @@ fn vector_store_opens(store: &mut Store, config: &Config) -> bool {
 }
 
 #[cfg(not(any(feature = "documents", feature = "code-search")))]
-fn vector_store_opens(_store: &mut Store, _config: &Config) -> bool {
+fn vector_store_opens(_store: &mut Store, _config: &Config, _filters: &Filters) -> bool {
     false
 }
 
 /// Queue a batch for documents an earlier scan left owing rows and this scan did not process, at
-/// most `budget` of them. The rows are rebuilt from the cached blob, so a path owes nothing, and
-/// leaves the set, when no rows can come of it: it is no longer indexed, the embed policy or the
-/// chunk cap now excludes it, its entry or its blob was embedded under another preset, or the blob
-/// is gone or does not decode. Only a blob that could not be read from disk stays owed.
+/// most `budget` of them. See [`crate::scan_retrieval::DocumentSink::requeue`].
 #[cfg(feature = "documents")]
 fn requeue_pending_docs(
     store: &mut Store,
@@ -179,60 +165,10 @@ fn requeue_pending_docs(
     batches: &mut Vec<PendingDocBatchOpt>,
     budget: &mut usize,
 ) {
-    use crate::store::StoreError;
-
-    if store.pending_vectors.docs().is_empty() {
-        return;
-    }
-    let cfg = &config.documents;
-    let preset = &cfg.embedding_preset;
-    let queued: ahash::AHashSet<&str> = batches.iter().map(|batch| batch.rel_path.as_str()).collect();
-    let mut requeued = Vec::new();
-    let mut settled = Vec::new();
-    for rel in store.pending_vectors.docs() {
-        let rel_path = rel.to_str_lossy();
-        if queued.contains(rel_path.as_ref()) {
-            continue;
-        }
-        if *budget == 0 {
-            break;
-        }
-        let wanted = cfg.enabled && cfg.embed && filters.doc_embed_allowed(&rel_path);
-        let entry = store
-            .lookup_doc(rel)
-            .filter(|entry| wanted && entry.embedding_preset == *preset);
-        let Some(entry) = entry else {
-            settled.push(rel_path.into_owned());
-            continue;
-        };
-        match store.read_doc_by_hex(&entry.hash_hex) {
-            Ok(Some(doc)) if crate::scanner_docs::doc_has_vectors_of(&doc, preset) => {
-                let doc_scope = crate::scanner_docs::doc_scope_for(&rel_path, scope, config);
-                let batch = crate::scanner_docs::pending_from_doc(
-                    &doc,
-                    &rel_path,
-                    &entry.hash_hex,
-                    &doc_scope,
-                    cfg,
-                    true,
-                    true,
-                );
-                if batch.emit_rows {
-                    *budget -= 1;
-                    requeued.push(batch);
-                } else {
-                    settled.push(rel_path.into_owned());
-                }
-            }
-            Err(StoreError::Io { source, .. }) => {
-                tracing::warn!(rel = %rel_path, error = %source, "doc blob unreadable; its vector rows stay owed");
-            }
-            Ok(_) | Err(_) => settled.push(rel_path.into_owned()),
-        }
-    }
-    drop(queued);
-    store.pending_vectors.settle_docs(&settled);
-    batches.extend(requeued);
+    filters
+        .retrieval
+        .documents
+        .requeue(store, config, filters, scope, batches, budget);
 }
 
 #[cfg(not(feature = "documents"))]
@@ -320,44 +256,88 @@ fn requeue_pending_code(
 
 /// Push the buffered document batches into LanceDB. No-op without the `documents` feature.
 #[cfg(feature = "documents")]
-fn flush_doc_batches_if_any(store: &mut Store, config: &Config, batches: Vec<PendingDocBatchOpt>) {
+fn flush_doc_batches_if_any(store: &mut Store, config: &Config, filters: &Filters, batches: Vec<PendingDocBatchOpt>) {
     if batches.is_empty() {
         return;
     }
-    let _ = flush_document_batches(store, batches, &config.documents.embedding_preset);
+    let _ = filters
+        .retrieval
+        .documents
+        .flush(store, batches, &config.documents.embedding_preset);
 }
 
 #[cfg(not(feature = "documents"))]
-fn flush_doc_batches_if_any(_store: &mut Store, _config: &Config, _batches: Vec<PendingDocBatchOpt>) {}
+fn flush_doc_batches_if_any(
+    _store: &mut Store,
+    _config: &Config,
+    _filters: &Filters,
+    _batches: Vec<PendingDocBatchOpt>,
+) {
+}
 
 /// Purge `documents` LanceDB rows + `doc_files` entries for docs removed since the last scan. Called
 /// after the batch flush so it reuses an already-open LanceStore. Only referenced under `documents`.
 #[cfg(feature = "documents")]
-pub(crate) fn flush_doc_removals_if_any(store: &mut Store, config: &Config, scope: &str, stale: &[String]) {
-    crate::scanner_docs::delete_stale_documents(store, config, scope, stale);
+pub(crate) fn flush_doc_removals_if_any(
+    store: &mut Store,
+    config: &Config,
+    filters: &Filters,
+    scope: &str,
+    stale: &[String],
+) {
+    filters.retrieval.documents.remove(store, config, scope, stale);
 }
 
 /// Push the buffered code-chunk batches into LanceDB. No-op without the `code-search` feature.
 #[cfg(feature = "code-search")]
-fn flush_code_batches_if_any(store: &mut Store, config: &Config, scope: &str, batches: Vec<PendingCodeBatchOpt>) {
+fn flush_code_batches_if_any(
+    store: &mut Store,
+    config: &Config,
+    filters: &Filters,
+    scope: &str,
+    batches: Vec<PendingCodeBatchOpt>,
+) {
     if batches.is_empty() {
         return;
     }
-    let _ = crate::scanner_code::flush_code_batches(store, scope, batches, &config.documents.embedding_preset);
+    let _ = filters
+        .retrieval
+        .vectors
+        .write_code_rows(store, scope, batches, &config.documents.embedding_preset);
 }
 
 #[cfg(not(feature = "code-search"))]
-fn flush_code_batches_if_any(_store: &mut Store, _config: &Config, _scope: &str, _batches: Vec<PendingCodeBatchOpt>) {}
+fn flush_code_batches_if_any(
+    _store: &mut Store,
+    _config: &Config,
+    _filters: &Filters,
+    _scope: &str,
+    _batches: Vec<PendingCodeBatchOpt>,
+) {
+}
 
 /// Purge `code_chunks` rows for files removed since the last scan. No-op without `code-search`.
 /// Called after the batch flush so it reuses an already-open LanceStore.
 #[cfg(feature = "code-search")]
-pub(crate) fn flush_code_removals_if_any(store: &mut Store, config: &Config, scope: &str, stale: &[String]) {
-    crate::scanner_code::delete_stale_code_chunks(store, config, scope, stale);
+pub(crate) fn flush_code_removals_if_any(
+    store: &mut Store,
+    config: &Config,
+    filters: &Filters,
+    scope: &str,
+    stale: &[String],
+) {
+    crate::scanner_code::delete_stale_code_chunks(store, config, filters.retrieval.vectors, scope, stale);
 }
 
 #[cfg(not(feature = "code-search"))]
-pub(crate) fn flush_code_removals_if_any(_store: &mut Store, _config: &Config, _scope: &str, _stale: &[String]) {}
+pub(crate) fn flush_code_removals_if_any(
+    _store: &mut Store,
+    _config: &Config,
+    _filters: &Filters,
+    _scope: &str,
+    _stale: &[String],
+) {
+}
 
 /// Retire unreferenced postings and recompute BM25 stats after per-file commits, so the
 /// keyword lane's `N` / `avgdl` reflect this scan. Single-threaded; no-op without `code-search` or
@@ -417,7 +397,3 @@ pub(crate) fn derive_scope(root: &Path, source: &crate::scanner::ScanSource<'_>)
         },
     }
 }
-
-#[cfg(all(test, feature = "documents"))]
-#[path = "scanner_flush_tests.rs"]
-mod tests;

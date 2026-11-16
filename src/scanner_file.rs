@@ -26,8 +26,6 @@ use crate::hashing;
 use crate::index::IndexDb;
 use crate::path::RelPath;
 use crate::scanner::{EmbedMode, FileResult, FileStatus, ScanCancel, ScanSource};
-#[cfg(feature = "documents")]
-use crate::scanner_docs::{extract_and_persist_doc, should_extract_document};
 use crate::scanner_filter::Filters;
 use crate::scanner_index_batch::WorkerIndexBatch;
 use crate::store::{FileEntry, Store};
@@ -241,7 +239,10 @@ fn process_file(
             #[cfg(feature = "documents")]
             {
                 if matches!(source, ScanSource::WorkingTree) {
-                    return process_doc(root, rel, filters, store, config, scope, embed);
+                    return filters
+                        .retrieval
+                        .documents
+                        .process(root, rel, filters, store, config, scope, embed);
                 }
             }
             return FileResult::bare(rel.to_string(), FileStatus::SkippedNoLang);
@@ -484,175 +485,6 @@ fn process_file(
     }
 }
 
-/// Document-tier branch: file had no tree-sitter language; check `[documents]` config and
-/// route through xberg. Always returns a `FileResult` — falls back to `SkippedNoLang`
-/// when documents are disabled or the MIME type is filtered out.
-#[cfg(feature = "documents")]
-fn process_doc(
-    root: &Path,
-    rel: &str,
-    filters: &Filters,
-    store: &Store,
-    config: &Config,
-    scope: &str,
-    embed: EmbedMode,
-) -> FileResult {
-    let abs = root.join(rel);
-    let effective_scope = crate::scanner_docs::doc_scope_for(rel, scope, config);
-    let scope = effective_scope.as_ref();
-    if !filters.doc_allowed(rel) {
-        return FileResult::bare(rel.to_string(), FileStatus::SkippedNoLang);
-    }
-    let Some(mime_type) = should_extract_document(&abs, &config.documents) else {
-        return FileResult::bare(rel.to_string(), FileStatus::SkippedNoLang);
-    };
-    let (bytes, size_bytes, mtime) =
-        match read_working_tree(root, rel, filters.doc_max_file_bytes, config.scan.follow_symlinks) {
-            Ok(triple) => triple,
-            Err(status) => return FileResult::bare(rel.to_string(), status),
-        };
-    let hash = hashing::hash_bytes(&bytes);
-    let hex_buf = hashing::hex_buf(&hash);
-    let hash_hex = hashing::hex_str(&hex_buf);
-
-    if let Some(existing) = store.lookup_doc(rel)
-        && crate::scanner_docs::doc_entry_settled(
-            existing,
-            hash_hex,
-            &config.documents.embedding_preset,
-            crate::scanner_docs::doc_embed_requested(rel, &config.documents, embed, filters),
-            &filters.doc_digest,
-            filters.reflush_embeds,
-        )
-        && if filters.verify_blobs {
-            store.doc_blob_is_intact(hash_hex)
-        } else {
-            store.blob_path_doc_hex(hash_hex).exists()
-        }
-    {
-        return FileResult::bare(rel.to_string(), FileStatus::DocUnchanged);
-    }
-
-    // Timed out before on this exact content under these exact limits: a retry would only burn another
-    // timeout (and strand another thread). Editing the file or changing a limit gets past this.
-    if store.doc_tombstoned(rel, hash_hex, &filters.doc_guard_digest) {
-        tracing::debug!(
-            path = rel,
-            "skipping document: it timed out before and nothing relevant changed"
-        );
-        return FileResult::bare(rel.to_string(), FileStatus::DocTombstoned);
-    }
-
-    // A document whose own estimated working set exceeds the whole ceiling can never fit: waiting ~keep
-    // frees nothing and admitting it anyway is how the ceiling stopped meaning anything (a 7 MB ~keep
-    // docx measured 12 GB). Skip it with a logged reason; this is a verdict on the file, not a ~keep
-    // retry, and costs one header read. ~keep
-    let gate = crate::backpressure::FootprintGate::new(config.resources.max_footprint_mb);
-    let estimated = crate::extract::doc_cost::estimate_peak_bytes(&bytes, &mime_type);
-    if gate.exceeds_budget(estimated) {
-        tracing::warn!(
-            path = rel,
-            estimated_mb = estimated / (1024 * 1024),
-            limit_mb = gate.limit_mb(),
-            "skipping document: estimated extraction memory exceeds [resources] max_footprint_mb"
-        );
-        return FileResult::bare(rel.to_string(), FileStatus::SkippedTooLarge { size: size_bytes });
-    }
-
-    // Both bounds, in the order that makes them complementary: take a concurrency slot first so at ~keep
-    // most `max_concurrent_documents` extractions can ever overlap, then serialise through the ~keep
-    // footprint gate: over the ceiling only one document is admitted at a time (see ~keep
-    // `FootprintGate::admit_exclusive`), so an overshoot is one document, not one per worker. ~keep
-    let _doc_slot = crate::backpressure::acquire_doc_slot(config.resources.max_concurrent_documents);
-    let admission = gate.admit_exclusive();
-    tracing::debug!(path = rel, estimated_mb = estimated / (1024 * 1024), admitted = ?admission.outcome(), "extracting document");
-
-    let doc_started = std::time::Instant::now();
-    match extract_and_persist_doc(
-        store,
-        rel,
-        &abs,
-        &hash,
-        &mime_type,
-        &config.documents,
-        &config.resources,
-        filters,
-        scope,
-        embed,
-    ) {
-        Ok(Some(batch)) => {
-            let status = FileStatus::DocIndexed {
-                chunk_count: batch.chunk_count,
-                embedding_dim: batch.embedding_dim,
-                reused: batch.reused,
-                degraded: batch.degraded,
-                text_fallback: batch.text_fallback,
-                elapsed_ms: u64::try_from(doc_started.elapsed().as_millis()).unwrap_or(u64::MAX),
-            };
-            let doc_entry = crate::store::DocEntry {
-                hash_hex: hash_hex.to_string(),
-                embedding_preset: config.documents.embedding_preset.clone(),
-                size_bytes,
-                mtime,
-                embedded: batch.embedded,
-                embed_attempted: batch.embed_attempted,
-                config_digest: filters.doc_digest.clone(),
-            };
-            let doc_upsert = match embed {
-                EmbedMode::Inline => Some(doc_entry),
-                EmbedMode::Deferred => None,
-            };
-            FileResult {
-                path: rel.to_string(),
-                status,
-                upsert: None,
-                doc_batch: Some(batch),
-                doc_upsert,
-                doc_tombstone: None,
-                #[cfg(feature = "code-search")]
-                code_batch: None,
-            }
-        }
-        Ok(None) => FileResult::bare(rel.to_string(), FileStatus::SkippedNoLang),
-        Err(error) => {
-            match error.downcast_ref::<crate::extract::ExtractError>() {
-                Some(crate::extract::ExtractError::DocTimeout(budget)) => {
-                    tracing::warn!(path = rel, "skipping document: {error:#}");
-                    return FileResult {
-                        doc_tombstone: Some(crate::store_doc_tombstone::DocTombstone {
-                            hash_hex: hash_hex.to_string(),
-                            guard_digest: filters.doc_guard_digest.clone(),
-                            timeout_secs: budget.as_secs(),
-                        }),
-                        ..FileResult::bare(rel.to_string(), FileStatus::DocTimedOut)
-                    };
-                }
-                Some(crate::extract::ExtractError::DocDeferred(_)) => {
-                    tracing::debug!(path = rel, "deferring document: {error:#}");
-                    return FileResult::bare(rel.to_string(), FileStatus::DocDeferred);
-                }
-                _ => {}
-            }
-            let msg = format!("document extract: {error:#}");
-            if is_unsupported_format_error(&msg) {
-                tracing::debug!(path = rel, reason = %msg, "skipping file: not an extractable document");
-                FileResult::bare(rel.to_string(), FileStatus::SkippedNoLang)
-            } else {
-                tracing::debug!(path = rel, error = %msg, "document extraction failed");
-                FileResult::bare(rel.to_string(), FileStatus::ExtractFailed { msg })
-            }
-        }
-    }
-}
-
-/// True when a document-extraction error means the file's format simply has no xberg
-/// extractor (xberg's `UnsupportedFormat` → "Unsupported format: <mime>"), as opposed to a
-/// genuine extraction failure on a real document. Such files are skipped, not failed.
-#[cfg(feature = "documents")]
-fn is_unsupported_format_error(msg: &str) -> bool {
-    msg.to_ascii_lowercase().contains("unsupported format")
-}
-
 /// File mtime as nanoseconds since the Unix epoch (0 when unavailable). Nanosecond resolution — not
 /// seconds — so the mtime+size fast-path in `process_file` is effectively race-free: a same-size edit
 /// would have to reproduce the exact nanosecond mtime to be missed. The value is only ever compared
@@ -692,7 +524,7 @@ pub(crate) fn settled_mtime(mtime_ns: i64, now_ns: i64) -> i64 {
     }
 }
 
-fn read_working_tree(
+pub(crate) fn read_working_tree(
     root: &Path,
     rel: &str,
     max_file_bytes: u64,
@@ -854,21 +686,6 @@ mod tests {
         assert!(matches!(
             read_working_tree(repo.path(), "big.txt", 1024, false),
             Err(FileStatus::SkippedTooLarge { .. })
-        ));
-    }
-
-    #[cfg(feature = "documents")]
-    #[test]
-    fn unsupported_format_error_is_a_skip_not_a_failure() {
-        assert!(is_unsupported_format_error(
-            "document extract: Unsupported format: application/x-wais-source"
-        ));
-        assert!(is_unsupported_format_error("Unsupported Format: text/x-foo"));
-        assert!(!is_unsupported_format_error(
-            "document extract: failed to parse PDF: corrupt xref table"
-        ));
-        assert!(!is_unsupported_format_error(
-            "document extract: OCR engine returned no text"
         ));
     }
 

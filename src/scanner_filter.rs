@@ -201,6 +201,10 @@ impl Gate {
 }
 
 pub(crate) struct Filters {
+    /// The document and vector stack this scan hands chunks and documents to, bound once here so
+    /// no file pays for resolving it.
+    #[cfg(any(feature = "documents", feature = "code-search"))]
+    pub(crate) retrieval: crate::scan_retrieval::Retrieval,
     include: globset::GlobSet,
     exclude: globset::GlobSet,
     /// Directory-level view of `exclude`: every `P/**` pattern also present as bare `P`, so a
@@ -295,11 +299,15 @@ impl Filters {
                     .map(|s| format!("{}/", s.replace('\\', "/").trim_end_matches('/')))
             })
             .collect();
+        #[cfg(any(feature = "documents", feature = "code-search"))]
+        let retrieval = crate::retrieval_wiring::backend();
         #[cfg(feature = "documents")]
-        crate::extract::doc_tiers::warn_unavailable_settings(&config.documents);
+        retrieval.documents.warn_unavailable_settings(&config.documents);
         let doc_digest = crate::config::rules::doc_digest(&config.documents, &config.resources);
         let doc_guard_digest = crate::config::rules::doc_guard_digest(&config.documents, &doc_digest);
         Ok(Self {
+            #[cfg(any(feature = "documents", feature = "code-search"))]
+            retrieval,
             include,
             exclude,
             dir_exclude: Arc::new(dir_exclude),

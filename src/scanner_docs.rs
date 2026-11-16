@@ -35,60 +35,10 @@ use crate::extract::doc::{DocConfig, FileMapDoc, extract_doc};
 use crate::extract::doc_guard::ChunkCutovers;
 use crate::hashing::{self, Hash};
 use crate::lance::{DocumentRow, PendingBatch};
+use crate::scan_retrieval::PendingDocBatch;
 use crate::scanner::EmbedMode;
 use crate::scanner_filter::Filters;
 use crate::store::Store;
-
-/// Per-file deferred-LanceDB-write descriptor. Constructed inside `process_file`'s parallel
-/// worker; consumed in the single-threaded apply pass via [`flush_document_batches`].
-///
-/// Deliberately **metadata only** — it carries the content hash needed to re-read the persisted
-/// `.doc.msgpack` blob at flush time, NOT the chunk text or the embedding vectors. Accumulating the
-/// vectors here (one `Vec<f32>` per chunk, hundreds of chunks per document) across an entire corpus
-/// was the memory leak this shape fixes: the flush now rebuilds one file's rows at a time.
-#[derive(Debug, Clone)]
-pub(crate) struct PendingDocBatch {
-    /// Repository-relative path, forward-slash separated. Becomes the `path`
-    /// column in LanceDB.
-    pub rel_path: String,
-    /// Content hash (hex) of the source document — the key under which the `.doc.msgpack` blob is
-    /// content-addressed. The flush re-reads that blob to rebuild rows on demand.
-    pub blob_hash: String,
-    /// LanceDB scope for this file's rows (the repo scope, or `path:<extra_root>` for an
-    /// external-root document). Both the delete predicate and the inserted rows use it, so
-    /// re-flushing an external-root document replaces its rows instead of leaving stale duplicates.
-    pub doc_scope: String,
-    /// Number of chunks indexed (zero is valid — xberg may yield no chunks
-    /// when the file body is empty or below the chunk threshold).
-    pub chunk_count: usize,
-    /// Length of each chunk's embedding vector. Zero when embeddings are off.
-    pub embedding_dim: u16,
-    /// Whether this file should emit LanceDB rows at flush time. False for the no-embed, empty, and
-    /// over-`max_chunks_per_document` cases — the blob is still tracked, but nothing lands in LanceDB
-    /// (mirrors the old rows-empty batch). Decided at construction, where the document is in hand.
-    pub emit_rows: bool,
-    /// Whether the doc leaves this pass with its embedding requirement satisfied — persisted onto
-    /// the [`crate::store::DocEntry`] so the next pass's unchanged fast path can tell a fully
-    /// embedded doc from a tracked-but-vectorless one (issue #44). True when the pass didn't ask to
-    /// embed, when vectors are present, or when the doc has no chunks to embed.
-    pub embedded: bool,
-    /// Whether this pass actually ran an embedding attempt on the doc (embedding requested, freshly
-    /// extracted) — even if xberg returned no vectors. Persisted onto
-    /// [`crate::store::DocEntry::embed_attempted`] so the unchanged fast path stops re-extracting and
-    /// re-embedding a deterministically-unembeddable doc on every scan (issue #44 follow-up). See that
-    /// field for the full healing contract.
-    pub embed_attempted: bool,
-    /// True when this batch came from the cached-blob reuse branch of `extract_and_persist_doc`
-    /// rather than a fresh xberg extraction. Drives the `reused_doc_extraction` scan counter — the
-    /// observable proof that churn (renames, rewrites) does not re-run extraction or embedding.
-    pub reused: bool,
-    /// True when the document was chunked by the linear fallback instead of xberg's markdown splitter
-    /// (large text-like file; structured data is linear by design and does not count). Drives the `docs_degraded` scan counter.
-    pub degraded: bool,
-    /// True when structured extraction failed and the file was re-read as `text/plain` (implies
-    /// `degraded`). Drives the `docs_text_fallback` scan counter.
-    pub text_fallback: bool,
-}
 
 /// Look the configured embedding preset up in xberg's preset table and
 /// return its vector dimension as a `u16` (LanceDB's `FixedSizeList<Float32, N>`

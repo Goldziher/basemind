@@ -127,6 +127,44 @@ pub fn embed_pool(max_threads: usize) -> &'static rayon::ThreadPool {
 #[cfg(test)]
 pub(crate) type FakeEmbed = fn(&str) -> Result<Vec<f32>>;
 
+/// Vector length of `preset`, or the error [`SharedEmbedder::load`] gives for it: the preset table
+/// lookup alone, with no model or config built.
+fn preset_dimension(preset: &str) -> Result<u16> {
+    let meta = EMBEDDING_PRESETS.iter().find(|p| p.name == preset).ok_or_else(|| {
+        anyhow!(
+            "unknown embedding preset '{preset}'; \
+                 available: fast, balanced, quality, multilingual"
+        )
+    })?;
+    u16::try_from(meta.dimensions)
+        .with_context(|| format!("preset '{preset}' dimension {} exceeds u16", meta.dimensions))
+}
+
+/// The scan's [`Embedder`](crate::scan_retrieval::Embedder). `dim` reads the preset table;
+/// `embed_batch` loads a [`SharedEmbedder`] and embeds through it.
+#[cfg(feature = "code-search")]
+pub(crate) struct ScanEmbedder;
+
+#[cfg(feature = "code-search")]
+impl crate::scan_retrieval::Embedder for ScanEmbedder {
+    fn dim(
+        &self,
+        spec: &crate::scan_retrieval::EmbedderSpec<'_>,
+    ) -> Result<u16, crate::scan_retrieval::RetrievalError> {
+        preset_dimension(spec.preset).map_err(|error| crate::scan_retrieval::RetrievalError(format!("{error:#}")))
+    }
+
+    fn embed_batch(
+        &self,
+        spec: &crate::scan_retrieval::EmbedderSpec<'_>,
+        texts: &[&str],
+    ) -> Result<Vec<Vec<f32>>, crate::scan_retrieval::RetrievalError> {
+        SharedEmbedder::load_with_provider(spec.preset, spec.max_threads, spec.batch_size, spec.provider)
+            .and_then(|embedder| embedder.embed_batch(texts))
+            .map_err(|error| crate::scan_retrieval::RetrievalError(format!("{error:#}")))
+    }
+}
+
 /// Loaded, ready-to-query embedding engine. `Clone` is cheap (config is stack-only).
 #[derive(Clone)]
 pub struct SharedEmbedder {
@@ -172,14 +210,7 @@ impl SharedEmbedder {
         batch_size: usize,
         provider: OnnxProvider,
     ) -> Result<Self> {
-        let meta = EMBEDDING_PRESETS.iter().find(|p| p.name == preset).ok_or_else(|| {
-            anyhow!(
-                "unknown embedding preset '{preset}'; \
-                     available: fast, balanced, quality, multilingual"
-            )
-        })?;
-        let dim = u16::try_from(meta.dimensions)
-            .with_context(|| format!("preset '{preset}' dimension {} exceeds u16", meta.dimensions))?;
+        let dim = preset_dimension(preset)?;
         let config = EmbeddingConfig {
             model: EmbeddingModelType::Preset {
                 name: preset.to_string(),

@@ -38,15 +38,19 @@ pub mod process_start;
 pub mod query;
 pub mod registry;
 pub mod render;
+pub(crate) mod retrieval_wiring;
 pub mod scan_evidence;
 mod scan_evidence_hosts;
 pub mod scan_phase_peaks;
+pub(crate) mod scan_retrieval;
 pub mod scanner;
 pub(crate) mod scanner_candidates;
 #[cfg(feature = "code-search")]
 pub mod scanner_code;
 #[cfg(feature = "documents")]
 pub mod scanner_docs;
+#[cfg(feature = "documents")]
+pub(crate) mod scanner_docs_lane;
 pub(crate) mod scanner_drive;
 pub mod scanner_file;
 pub(crate) mod scanner_filter;
@@ -55,6 +59,7 @@ pub(crate) mod scanner_index_batch;
 pub(crate) mod scanner_integrity;
 pub mod scanner_lanes;
 pub(crate) mod scanner_policy;
+pub(crate) mod scanner_vectors;
 pub mod search;
 pub mod store;
 pub mod store_base;

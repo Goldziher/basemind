@@ -33,11 +33,11 @@ enum Layer {
     Root,
 }
 
-use Layer::{Core, Retrieval, Root};
+use Layer::{Core, Engine, Retrieval, Root};
 
 /// Module path prefix -> future crate. The longest matching prefix wins, so a module listed here
 /// carries its submodules (and the `*_tests.rs` files it declares) unless a deeper entry overrides.
-/// No entry names `basemind-engine` yet: the `Engine` API it holds does not exist.
+/// `retrieval_wiring` is the first engine module: it binds the scan to the retrieval stack.
 const LAYERS: &[(&str, Layer)] = &[
     ("alloc_tag", Core),
     ("backpressure", Core),
@@ -74,13 +74,16 @@ const LAYERS: &[(&str, Layer)] = &[
     ("query", Core),
     ("registry", Core),
     ("render", Root),
+    ("retrieval_wiring", Engine),
     ("scan_evidence", Core),
     ("scan_evidence_hosts", Core),
     ("scan_phase_peaks", Core),
+    ("scan_retrieval", Core),
     ("scanner", Core),
     ("scanner_candidates", Core),
     ("scanner_code", Core),
     ("scanner_docs", Retrieval),
+    ("scanner_docs_lane", Retrieval),
     ("scanner_drive", Core),
     ("scanner_file", Core),
     ("scanner_filter", Core),
@@ -89,6 +92,7 @@ const LAYERS: &[(&str, Layer)] = &[
     ("scanner_integrity", Core),
     ("scanner_lanes", Core),
     ("scanner_policy", Core),
+    ("scanner_vectors", Retrieval),
     ("search", Core),
     ("store", Core),
     ("store_base", Core),
@@ -124,7 +128,7 @@ const FORBIDDEN_CRATES: &[(Layer, &[&str])] = &[
         &["tokio", "tokio_util", "rmcp", "clap", "jsonschema", "xberg", "lancedb"],
     ),
     (Retrieval, &["rmcp", "clap"]),
-    (Layer::Engine, &["rmcp", "clap"]),
+    (Engine, &["rmcp", "clap"]),
 ];
 
 /// Edges not yet cut, as `"<file> -> <target>"`, with ` [test]` when the reference sits in test
@@ -132,23 +136,7 @@ const FORBIDDEN_CRATES: &[(Layer, &[&str])] = &[
 const KNOWN_VIOLATIONS: &[&str] = &[
     "src/config/mod.rs -> config::overrides",
     "src/config/validate.rs -> extern jsonschema",
-    "src/scanner.rs -> lance::shared_snapshot",
-    "src/scanner.rs -> scanner_docs",
-    "src/scanner_code.rs -> embeddings",
-    "src/scanner_code.rs -> lance",
-    "src/scanner_code.rs -> lance [test]",
-    "src/scanner_drive.rs -> extract::doc_guard",
-    "src/scanner_drive.rs -> scanner_docs",
-    "src/scanner_file.rs -> extract::doc_cost",
-    "src/scanner_file.rs -> scanner_docs",
-    "src/scanner_filter.rs -> extract::doc_tiers",
-    "src/scanner_flush.rs -> embeddings",
-    "src/scanner_flush.rs -> lance",
-    "src/scanner_flush.rs -> scanner_docs",
-    "src/scanner_flush_tests.rs -> extract::doc [test]",
-    "src/scanner_flush_tests.rs -> lance [test]",
-    "src/scanner_flush_tests.rs -> scanner_docs [test]",
-    "src/scanner_policy.rs -> scanner_docs",
+    "src/scanner_filter.rs -> retrieval_wiring",
     "src/store.rs -> lance",
     "src/store_blob.rs -> extract::doc",
     "src/store_blob_tests.rs -> extract::doc [test]",

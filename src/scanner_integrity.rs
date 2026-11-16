@@ -148,6 +148,7 @@ pub(crate) fn flush_code_map(store: &mut Store, health: &ScanHealth) -> Result<(
 pub(crate) fn remove_docs_and_flush(
     store: &mut Store,
     config: &crate::config::Config,
+    filters: &crate::scanner_filter::Filters,
     scope: &str,
     removed: &[String],
 ) -> Result<(), ScanError> {
@@ -155,7 +156,7 @@ pub(crate) fn remove_docs_and_flush(
         return Ok(());
     }
     crate::scanner_lanes::run_optional_lane(crate::scanner_lanes::LANE_DOC_REMOVALS, || {
-        crate::scanner_flush::flush_doc_removals_if_any(store, config, scope, removed);
+        crate::scanner_flush::flush_doc_removals_if_any(store, config, filters, scope, removed);
     });
     store.flush()?;
     Ok(())

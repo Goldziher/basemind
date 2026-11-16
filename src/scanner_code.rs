@@ -5,7 +5,7 @@
 //! bytes (no re-parse), embeds each chunk's `searchable_text`, persists a content-addressed
 //! `.chunk.msgpack` sidecar (the embedding cache), and hands back a [`PendingCodeBatch`] carrying
 //! only lightweight metadata (path + blob hash + embedding dim) — never the LanceDB rows. The
-//! single-threaded apply pass drains those descriptors and [`flush_code_batches`] re-reads each
+//! single-threaded apply pass drains those descriptors and [`VectorStore::write_code_rows`] re-reads each
 //! file's sidecar to rebuild + write its rows one file at a time.
 //!
 //! The embed compute runs in the parallel per-file worker; the LanceDB write is deferred + serial
@@ -18,16 +18,15 @@ use anyhow::Result;
 
 use crate::chunk::{ChunkOptions, CodeChunkBlob, chunk_file};
 use crate::config::{CodeSearchConfig, Config};
-use crate::embeddings::SharedEmbedder;
 use crate::extract::{FileMapL1, FileMapL2, SCHEMA_VER};
-use crate::lance::{CodeRow, PendingBatch};
+use crate::scan_retrieval::{EmbedderSpec, VectorStore};
 use crate::scanner::EmbedMode;
 use crate::scanner_filter::Filters;
 use crate::search::bm25::{ChunkPosting, build_chunk_postings};
 use crate::store::Store;
 
 /// Per-file deferred-LanceDB-write descriptor for the code-search tier. Built inside the parallel
-/// worker; consumed by [`flush_code_batches`] in the single-threaded apply pass.
+/// worker; consumed by [`VectorStore::write_code_rows`] in the single-threaded apply pass.
 ///
 /// Metadata only: it carries the content hash needed to re-read the persisted `.chunk.msgpack`
 /// sidecar at flush time, NOT the `CodeRow`s or their embedding vectors. Holding the vectors here
@@ -204,15 +203,17 @@ pub(crate) fn chunk_and_embed(
         }));
     }
 
-    let embedder = match SharedEmbedder::load_with_provider(
-        &config.documents.embedding_preset,
-        config
+    let spec = EmbedderSpec {
+        preset: &config.documents.embedding_preset,
+        max_threads: config
             .resources
             .effective_embed_threads(config.documents.embed_max_threads),
-        config.resources.embed_batch_size,
-        config.resources.onnx_provider,
-    ) {
-        Ok(embedder) => embedder,
+        batch_size: config.resources.embed_batch_size,
+        provider: config.resources.onnx_provider,
+    };
+    let embedder = filters.retrieval.embedder;
+    let dim = match embedder.dim(&spec) {
+        Ok(dim) => dim,
         Err(error) => {
             tracing::warn!(
                 rel,
@@ -226,7 +227,6 @@ pub(crate) fn chunk_and_embed(
             return Ok(bm25_batch_from_chunks(rel, hash_hex, &chunks, cfg));
         }
     };
-    let dim = embedder.dim();
 
     if let Some(blob) = &cached
         && code_cache_is_reusable(blob, dim, &config.documents.embedding_preset)
@@ -280,7 +280,7 @@ pub(crate) fn chunk_and_embed(
     }
     let texts: Vec<&str> = chunks.iter().map(|c| c.searchable_text.as_str()).collect();
     crate::backpressure::FootprintGate::new(config.resources.max_footprint_mb).admit();
-    let embeddings = match embedder.embed_batch(&texts) {
+    let embeddings = match embedder.embed_batch(&spec, &texts) {
         Ok(embeddings) if embeddings.len() == chunks.len() => embeddings,
         Ok(embeddings) => {
             tracing::warn!(
@@ -316,84 +316,21 @@ pub(crate) fn chunk_and_embed(
     }))
 }
 
-/// Assemble the LanceDB rows for a file's chunks + embeddings (parallel arrays), **consuming** both
-/// so the chunk text and embedding vectors move into the rows instead of being cloned. Called at
-/// flush time with the owned sidecar blob; `scope` is stamped directly (no second pass needed).
-fn build_rows_owned(
-    rel: &str,
-    scope: &str,
-    chunks: Vec<crate::chunk::CodeChunk>,
-    embeddings: Vec<Vec<f32>>,
-) -> Vec<CodeRow> {
-    chunks
-        .into_iter()
-        .zip(embeddings)
-        .map(|(c, emb)| CodeRow {
-            scope: scope.to_string(),
-            path: rel.to_string(),
-            chunk_id: c.chunk_id,
-            symbol: c.symbol.unwrap_or_default(),
-            kind: c.kind.unwrap_or_default(),
-            lang: c.lang,
-            line_start: c.line_start,
-            line_end: c.line_end,
-            byte_start: c.byte_start,
-            byte_end: c.byte_end,
-            text: c.text,
-            embedding: emb,
-        })
-        .collect()
-}
-
 /// Delete the `code_chunks` rows of files that no longer exist (or are no longer allowed). Runs in
 /// the serial apply pass after the batch flush, so it reuses an already-open LanceStore when the
 /// same scan wrote chunks. Best-effort: never opens (i.e. never *creates*) the vector store when it
 /// does not already exist, and logs — never propagates — a delete failure.
-pub(crate) fn delete_stale_code_chunks(store: &mut Store, config: &Config, scope: &str, stale: &[String]) {
+pub(crate) fn delete_stale_code_chunks(
+    store: &mut Store,
+    config: &Config,
+    vectors: &dyn VectorStore,
+    scope: &str,
+    stale: &[String],
+) {
     if !should_chunk(config) {
         return;
     }
-    delete_code_rows(store, config, scope, stale);
-}
-
-/// Delete the `code_chunks` rows of `paths`, whether they left the scan set or stopped being
-/// embed-eligible. Shared tail of the stale purge and the embed-policy purge; same best-effort,
-/// never-create contract as [`delete_stale_code_chunks`].
-///
-/// Returns `false` only when rows that exist could not be deleted (unknown preset, store open or
-/// delete error); "nothing to delete" and "no vector store" are both `true`.
-pub(crate) fn delete_code_rows(store: &mut Store, config: &Config, scope: &str, paths: &[String]) -> bool {
-    let stale = paths;
-    if stale.is_empty() {
-        return true;
-    }
-    if store.lance.is_none() && !store.lance_dir_exists() {
-        return true;
-    }
-    let model = &config.documents.embedding_preset;
-    let dim = match SharedEmbedder::load(model, 0, config.resources.embed_batch_size) {
-        Ok(embedder) => embedder.dim(),
-        Err(error) => {
-            tracing::warn!(?error, preset = %model, "code-chunk stale purge: unknown embedding preset; skipping");
-            return false;
-        }
-    };
-    let lance = match store.lance_or_open(dim, model) {
-        Ok(lance) => lance.clone(),
-        Err(error) => {
-            tracing::warn!(?error, "code-chunk stale purge: open LanceStore failed; skipping");
-            return false;
-        }
-    };
-    if let Err(error) = lance.delete_code_chunks_for_paths(scope, stale) {
-        tracing::warn!(
-            paths = stale.len(),
-            ?error,
-            "code-chunk purge failed; search_code may return a removed or no-longer-embedded path"
-        );
-        return false;
-    }
-    true
+    vectors.delete_code_rows(store, config, scope, stale);
 }
 
 /// Drop the derived rows of every indexed source file that is no longer eligible under the current
@@ -416,7 +353,7 @@ pub(crate) fn purge_unembedded_code(store: &mut Store, config: &Config, filters:
     if paths.is_empty() {
         return true;
     }
-    let rows = delete_code_rows(store, config, scope, &paths);
+    let rows = filters.retrieval.vectors.delete_code_rows(store, config, scope, &paths);
     let postings = cfg.enabled || drop_keyword_postings(store, &paths);
     rows && postings
 }
@@ -444,116 +381,6 @@ fn drop_keyword_postings(store: &Store, paths: &[String]) -> bool {
         return false;
     }
     true
-}
-
-/// Stream every pending code batch into the `code_chunks` LanceDB table, one file at a time. Opens
-/// the store lazily — if no batch carries vectors (embeddings off) no LanceDB connection is made.
-///
-/// For each embedded file this re-reads the file's already-persisted `.chunk.msgpack` sidecar,
-/// rebuilds its rows, writes them, and drops them before the next file — so peak embed-write RAM is
-/// one file's rows plus one Arrow batch, independent of corpus size. (The sidecar is guaranteed on
-/// disk here: every `embedding_dim > 0` batch either wrote it in `chunk_and_embed` or reused an
-/// existing one, both before this post-barrier lane runs.)
-///
-/// Errors are logged and skipped per file so one malformed embedding never aborts the scan. Returns
-/// the number of files for which rows were written.
-pub(crate) fn flush_code_batches(
-    store: &mut Store,
-    scope: &str,
-    batches: Vec<PendingCodeBatch>,
-    embedding_model: &str,
-) -> usize {
-    let Some(dim) = batches.iter().find(|b| b.embedding_dim > 0).map(|b| b.embedding_dim) else {
-        return 0;
-    };
-    match SharedEmbedder::load(
-        embedding_model,
-        0,
-        crate::config::ResourcesConfig::default().embed_batch_size,
-    ) {
-        Ok(embedder) if embedder.dim() != dim => {
-            tracing::error!(
-                preset = %embedding_model,
-                expected = embedder.dim(),
-                actual = dim,
-                "preset/runtime dim mismatch — refusing to write code_chunks batch"
-            );
-            return 0;
-        }
-        Ok(_) => {}
-        Err(error) => {
-            tracing::error!(?error, preset = %embedding_model, "unknown embedding preset — refusing to write code_chunks batch");
-            return 0;
-        }
-    }
-
-    let lance = match store.lance_or_open(dim, embedding_model) {
-        Ok(s) => s.clone(),
-        Err(error) => {
-            tracing::error!(?error, "open LanceStore for code_chunks batch failed");
-            return 0;
-        }
-    };
-
-    let mut inserted = 0usize;
-    let mut pending: PendingBatch<CodeRow> = PendingBatch::default();
-    // Paths this call leaves owing nothing: rows written, or no rows to write. A path whose sidecar
-    // could not be read or whose write failed stays owed for the next scan.
-    let mut settled: Vec<String> = Vec::new();
-    let write = |pending: &mut PendingBatch<CodeRow>, inserted: &mut usize, settled: &mut Vec<String>| {
-        let items = pending.take();
-        let files = items.len();
-        let paths: Vec<String> = items.iter().map(|(_, path, _)| path.clone()).collect();
-        match lance.replace_code_chunks_many(items) {
-            Ok(()) => {
-                *inserted += files;
-                settled.extend(paths);
-            }
-            Err(error) => {
-                tracing::warn!(
-                    files,
-                    ?error,
-                    "lance replace_code_chunks_many failed; the files stay queued for the next scan"
-                );
-            }
-        }
-    };
-    for batch in batches {
-        if batch.embedding_dim == 0 {
-            continue;
-        }
-        let blob = match store.read_chunks_by_hex(&batch.blob_hash) {
-            Ok(Some(blob)) if blob.embedding_dim == dim && blob.embeddings.len() == blob.chunks.len() => blob,
-            Ok(Some(_)) => {
-                settled.push(batch.rel_path);
-                continue;
-            }
-            // No sidecar, no rows to build: the file's next chunking queues it again.
-            Ok(None) => {
-                tracing::warn!(rel = %batch.rel_path, "chunk sidecar missing at flush; no vector rows to write");
-                settled.push(batch.rel_path);
-                continue;
-            }
-            Err(error) => {
-                tracing::warn!(rel = %batch.rel_path, ?error, "re-read chunk sidecar failed; skipping vector rows");
-                continue;
-            }
-        };
-        if blob.chunks.is_empty() {
-            settled.push(batch.rel_path);
-            continue;
-        }
-        let rows = build_rows_owned(&batch.rel_path, scope, blob.chunks, blob.embeddings);
-        pending.push(scope, &batch.rel_path, rows);
-        if pending.is_full() {
-            write(&mut pending, &mut inserted, &mut settled);
-        }
-    }
-    if !pending.is_empty() {
-        write(&mut pending, &mut inserted, &mut settled);
-    }
-    store.pending_vectors.settle_code(&settled);
-    inserted
 }
 
 #[cfg(test)]
@@ -696,103 +523,6 @@ mod tests {
             CodeSearchConfig::default().max_chunks_per_file,
             crate::config::DocumentsConfig::default().max_chunks_per_document
         );
-    }
-
-    fn seeded_code_lance(store: &mut Store, paths: &[&str]) -> crate::lance::LanceStore {
-        let lance = store.lance_or_open(768, "balanced").expect("open lance").clone();
-        for path in paths {
-            let row = CodeRow {
-                scope: "repo:s".to_string(),
-                path: (*path).to_string(),
-                chunk_id: format!("{path}:0"),
-                symbol: "sym".to_string(),
-                kind: "function".to_string(),
-                lang: "rust".to_string(),
-                line_start: 1,
-                line_end: 1,
-                byte_start: 0,
-                byte_end: 4,
-                text: "body".to_string(),
-                embedding: vec![0.25; 768],
-            };
-            lance.replace_code_chunks("repo:s", path, vec![row]).expect("seed row");
-            store.upsert(
-                *path,
-                crate::store::FileEntry {
-                    hash_hex: "h".to_string(),
-                    language: "rust".to_string(),
-                    size_bytes: 1,
-                    mtime: 0,
-                    extract_epoch: crate::extract::EXTRACT_EPOCH,
-                },
-            );
-        }
-        lance
-    }
-
-    fn code_rows(lance: &crate::lance::LanceStore) -> Vec<String> {
-        let mut paths: Vec<String> = lance
-            .search_code_chunks("repo:s", vec![0.25; 768], 50)
-            .expect("search")
-            .into_iter()
-            .map(|hit| hit.path)
-            .collect();
-        paths.sort();
-        paths
-    }
-
-    #[test]
-    fn embed_policy_purge_deletes_vectors_of_newly_ineligible_files_only() {
-        crate::store::init_isolated_cache();
-        let tmp = tempfile::tempdir().unwrap();
-        let mut store = Store::open(tmp.path(), crate::store::VIEW_WORKING).unwrap();
-        let lance = seeded_code_lance(&mut store, &["src/a.rs", "src/generated/b.rs", "lib/c.rs"]);
-        assert_eq!(code_rows(&lance).len(), 3);
-
-        let mut config = crate::config::default_for_root(std::path::Path::new("."));
-        config.code_search.embed = true;
-        config.code_search.embed_exclude = vec!["**/generated/**".to_string()];
-        let filters = Filters::build(&config, Vec::new()).unwrap();
-        purge_unembedded_code(&mut store, &config, &filters, "repo:s");
-        assert_eq!(code_rows(&lance), vec!["lib/c.rs".to_string(), "src/a.rs".to_string()]);
-
-        config.code_search.embed_include = vec!["src/**".to_string()];
-        let filters = Filters::build(&config, Vec::new()).unwrap();
-        purge_unembedded_code(&mut store, &config, &filters, "repo:s");
-        assert_eq!(
-            code_rows(&lance),
-            vec!["src/a.rs".to_string()],
-            "embed_include narrows retroactively"
-        );
-
-        config.code_search.embed = false;
-        let filters = Filters::build(&config, Vec::new()).unwrap();
-        purge_unembedded_code(&mut store, &config, &filters, "repo:s");
-        assert!(code_rows(&lance).is_empty(), "embed = false removes every vector row");
-        assert!(store.lookup("src/a.rs").is_some(), "files stay indexed");
-    }
-
-    #[test]
-    fn a_purge_that_cannot_delete_reports_failure_and_leaves_the_rows() {
-        crate::store::init_isolated_cache();
-        let tmp = tempfile::tempdir().unwrap();
-        let mut store = Store::open(tmp.path(), crate::store::VIEW_WORKING).unwrap();
-        let lance = seeded_code_lance(&mut store, &["src/a.rs"]);
-
-        let mut config = crate::config::default_for_root(std::path::Path::new("."));
-        config.code_search.embed = false;
-        let filters = Filters::build(&config, Vec::new()).unwrap();
-
-        config.documents.embedding_preset = "no-such-preset".to_string();
-        assert!(
-            !purge_unembedded_code(&mut store, &config, &filters, "repo:s"),
-            "an unknown preset means the delete never ran: not applied"
-        );
-        assert_eq!(code_rows(&lance), vec!["src/a.rs".to_string()], "nothing was deleted");
-
-        config.documents.embedding_preset = "balanced".to_string();
-        assert!(purge_unembedded_code(&mut store, &config, &filters, "repo:s"));
-        assert!(code_rows(&lance).is_empty(), "the retry removes the row");
     }
 
     #[test]

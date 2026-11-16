@@ -44,7 +44,7 @@ use crate::store::Store;
 /// Alias that's `PendingDocBatch` under the `documents` feature and `()` otherwise. Lets the drive
 /// loop keep one signature while still carrying real values when the feature is on.
 #[cfg(feature = "documents")]
-pub(crate) type PendingDocBatchOpt = crate::scanner_docs::PendingDocBatch;
+pub(crate) type PendingDocBatchOpt = crate::scan_retrieval::PendingDocBatch;
 #[cfg(not(feature = "documents"))]
 pub(crate) type PendingDocBatchOpt = ();
 
@@ -350,7 +350,7 @@ pub(crate) fn drive_scan(
 
     #[cfg(feature = "documents")]
     {
-        ctx.stats.abandoned_extractions = crate::extract::doc_guard::abandoned_extractions();
+        ctx.stats.abandoned_extractions = drive.filters.retrieval.documents.abandoned_extractions();
         if ctx.stats.abandoned_extractions > 0 {
             tracing::warn!(
                 abandoned_live = ctx.stats.abandoned_extractions,
