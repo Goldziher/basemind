@@ -4,7 +4,7 @@
 version = 1
 ai_rulez_version = '5.13.4'
 scope = 'all'
-tree = 'sha256:3eb8796997a7d3900c0c001b906af70422965f9a06d1d4cc4b408445265083ea'
+tree = 'sha256:194f6f3d5b9bd0e306ffb77d605f83bc818bcbceec036c13a9f9bfbfe726cfc0'
 
 [[item]]
 kind = 'command'
@@ -58,7 +58,7 @@ digest = 'sha256:fafbad4904d8c98e26b34d8fadb40b4aba406bb2a2549daa0680a7e4d049f87
 kind = 'skill'
 id = 'basemind-code-search'
 path = 'skills/basemind-code-search'
-digest = 'sha256:5f6edc6538630cbdf67ece7ce59dca2a51695327c3e34e351a82e85dcca391dd'
+digest = 'sha256:373bad85c75fc4dfa4355d2f045c95e1ba9af3c80ecaa849e358f2233873930e'
 
 [[item]]
 kind = 'skill'
@@ -82,7 +82,7 @@ digest = 'sha256:d9f773eef9a46fd46dd4b0aece66ee07af6fea92a1c1776eb05302ec972bdae
 kind = 'skill'
 id = 'basemind-git-history'
 path = 'skills/basemind-git-history'
-digest = 'sha256:c2f13e364bc8953c2fe1087fe6e158826dfd2d5afb8423fa6fefcd1788013f3e'
+digest = 'sha256:b1570bec351fb1577f8e2f9b15f13620382dde3c5ef99ad2ddd7dc22c9d8c8bb'
 
 [[item]]
 kind = 'skill'
