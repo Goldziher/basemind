@@ -37,9 +37,18 @@ pub enum LaunchError {
         /// The mode name the opt-in has to carry.
         mode: String,
     },
-    /// An argument would enable a permission bypass and no opt-in covers it.
+    /// An argument the adapter built would enable a permission bypass the launch does not run in.
     #[error("argument {0:?} enables a permission bypass and no opt-in covers it")]
     BypassArgument(String),
+    /// An extra argument is not on the harness's allow-list, is a positional, repeats an
+    /// allowed flag or carries a value outside its grammar.
+    #[error("argument {argument:?} is not allowed for {harness}")]
+    ArgumentNotAllowed {
+        /// The harness the launch targets.
+        harness: &'static str,
+        /// The offending argument.
+        argument: String,
+    },
     /// The harness has no equivalent of the requested feature.
     #[error("{harness} does not support {feature}")]
     Unsupported {

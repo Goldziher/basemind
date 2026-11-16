@@ -354,28 +354,44 @@ fn bypass_needs_an_opt_in_naming_claude_and_its_mode() {
 }
 
 #[test]
-fn a_bypass_flag_among_the_extra_arguments_is_refused_without_an_opt_in() {
+fn extra_arguments_are_limited_to_model_and_effort_even_with_an_opt_in() {
     let root = tempfile::tempdir().unwrap();
     for extra in [
         vec!["--dangerously-skip-permissions"],
         vec!["--permission-mode", "bypassPermissions"],
         vec!["--permission-mode=bypassPermissions"],
+        vec!["--allowedTools", "Bash"],
+        vec!["--model", "sonnet", "review this"],
     ] {
         let mut spec = spec(HarnessKind::ClaudeCode, root.path());
         spec.harness = spec.harness.with_args(extra.clone());
         assert!(
-            matches!(ClaudeCodeAdapter.plan(&spec), Err(LaunchError::BypassArgument(_))),
+            matches!(
+                ClaudeCodeAdapter.plan(&spec),
+                Err(LaunchError::ArgumentNotAllowed { .. })
+            ),
             "{extra:?} was accepted"
         );
+        spec.permission_mode = PermissionMode::Bypass;
         spec.bypass = Some(BypassOptIn {
             harness: HarnessKind::ClaudeCode,
             mode: "bypassPermissions".to_owned(),
         });
         assert!(
-            ClaudeCodeAdapter.plan(&spec).is_ok(),
-            "{extra:?} was refused despite the opt-in"
+            matches!(
+                ClaudeCodeAdapter.plan(&spec),
+                Err(LaunchError::ArgumentNotAllowed { .. })
+            ),
+            "{extra:?} was accepted under the opt-in"
         );
     }
+    let mut spec = spec(HarnessKind::ClaudeCode, root.path());
+    spec.harness = spec.harness.with_args(["--model", "sonnet", "--effort", "high"]);
+    let plan = ClaudeCodeAdapter.plan(&spec).unwrap();
+    assert_eq!(
+        plan.args[plan.args.len() - 4..],
+        ["--model", "sonnet", "--effort", "high"]
+    );
 }
 
 #[test]

@@ -108,7 +108,13 @@ fn a_launch_cannot_ask_for_bypass_without_naming_codex() {
 
     let mut spec = crate::test_support::spec(HarnessKind::Codex, root.path());
     spec.harness = spec.harness.with_args(["-c", "sandbox_mode=\"danger-full-access\""]);
-    assert!(matches!(CodexAdapter.plan(&spec), Err(LaunchError::BypassArgument(_))));
+    assert!(matches!(
+        CodexAdapter.plan(&spec),
+        Err(LaunchError::ArgumentNotAllowed { harness: "codex", .. })
+    ));
+    spec.harness.args = vec!["-c".to_owned(), "model=\"gpt-5.1-codex\"".to_owned()];
+    let plan = CodexAdapter.plan(&spec).unwrap();
+    assert_eq!(plan.args[plan.args.len() - 2..], ["-c", "model=\"gpt-5.1-codex\""]);
 }
 
 #[test]

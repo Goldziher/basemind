@@ -65,6 +65,7 @@ impl Adapter for ClaudeCodeAdapter {
         if prepared.bypass(spec) {
             args.push("--allow-dangerously-skip-permissions".to_owned());
         }
+        args.extend(prepared.extra_args.iter().cloned());
         spec.plan(&prepared, args, &[])
     }
 

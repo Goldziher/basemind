@@ -123,26 +123,24 @@ fn zero_limits_are_refused() {
 }
 
 #[test]
-fn the_guard_finds_a_bypass_in_any_spelling_and_passes_ordinary_arguments() {
-    let args = |list: &[&str]| list.iter().map(|arg| (*arg).to_owned()).collect::<Vec<_>>();
-    for refused in [
-        args(&["--dangerously-skip-permissions"]),
-        args(&["--allow-dangerously-skip-permissions"]),
-        args(&["--permission-mode", "bypassPermissions"]),
-        args(&["--dangerously-bypass-approvals-and-sandbox"]),
-        args(&["--sandbox", "danger-full-access"]),
-        args(&["-c", "sandbox_mode=\"danger-full-access\""]),
-        args(&["--yolo"]),
-        args(&["agent", "--always-approve", "stdio"]),
-    ] {
+fn a_bypass_opt_in_never_admits_an_extra_argument() {
+    let root = tempfile::tempdir().unwrap();
+    let mut spec = spec(HarnessKind::ClaudeCode, root.path());
+    spec.bypass = Some(BypassOptIn {
+        harness: HarnessKind::ClaudeCode,
+        mode: "bypassPermissions".to_owned(),
+    });
+    spec.harness = spec.harness.with_args(["--dangerously-skip-permissions"]);
+    for mode in [PermissionMode::Supervised, PermissionMode::Bypass] {
+        spec.permission_mode = mode;
         assert!(
-            guard_arguments(&refused, false).is_err(),
-            "{refused:?} passed the guard"
+            matches!(
+                spec.prepare(),
+                Err(LaunchError::ArgumentNotAllowed { harness: "claude", .. })
+            ),
+            "{mode:?} admitted the flag"
         );
-        assert!(guard_arguments(&refused, true).is_ok());
     }
-    let ordinary = args(&["--model", "sonnet", "--permission-mode", "plan", "acp", "--verbose"]);
-    assert!(guard_arguments(&ordinary, false).is_ok());
 }
 
 #[test]

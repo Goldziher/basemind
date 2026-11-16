@@ -48,6 +48,7 @@ impl Adapter for CodexAdapter {
                 args.extend(["-c".to_owned(), format!("mcp_servers.{}.{key}={value}", server.name)]);
             }
         }
+        args.extend(prepared.extra_args.iter().cloned());
         spec.plan(&prepared, args, &[])
     }
 

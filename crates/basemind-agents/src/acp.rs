@@ -72,7 +72,9 @@ impl Adapter for AcpAdapter {
         let prepared = spec.prepare()?;
         session_mode(spec, &prepared, flavor)?;
         let mut env = Vec::new();
+        let extra = prepared.extra_args.iter().map(String::as_str);
         let args: Vec<&str> = match flavor {
+            // The allow-list leaves these flavors no extra arguments.
             AcpFlavor::Cursor | AcpFlavor::Hermes | AcpFlavor::OpenCode => vec!["acp"],
             AcpFlavor::Gemini => vec!["--experimental-acp"],
             AcpFlavor::Generic => Vec::new(),
@@ -83,6 +85,8 @@ impl Adapter for AcpAdapter {
                     args.extend(["--permission-mode", "plan"]);
                 }
                 args.extend(["agent", "--no-leader"]);
+                // Grok's model and effort are options of `agent`, so they precede `stdio`.
+                args.extend(extra);
                 if prepared.bypass(spec) {
                     args.push("--always-approve");
                 }

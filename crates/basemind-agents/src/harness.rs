@@ -17,7 +17,8 @@ pub enum AcpFlavor {
     Hermes,
     /// OpenCode's `opencode acp`.
     OpenCode,
-    /// Any other ACP agent: the caller supplies every argument in [`Harness::args`].
+    /// Any other ACP agent, started from its executable without arguments: one that needs
+    /// some is launched through a wrapper executable.
     Generic,
 }
 
@@ -88,7 +89,12 @@ pub struct Harness {
     pub kind: HarnessKind,
     /// The executable to run. A bare name is looked up on the `PATH` the child receives.
     pub executable: PathBuf,
-    /// Arguments appended after the ones the adapter builds. They pass the same bypass guard.
+    /// Extra arguments, limited to the harness's allow-list: `--model` and `--effort` for
+    /// Claude Code, `-c model="..."` and `-c model_reasoning_effort="..."` for Codex,
+    /// `--model` and `--reasoning-effort` for Grok, nothing for the other ACP agents. Each
+    /// flag may appear once; positionals and every other flag fail the launch with
+    /// [`LaunchError::ArgumentNotAllowed`](crate::LaunchError::ArgumentNotAllowed), with or
+    /// without a bypass opt-in.
     pub args: Vec<String>,
 }
 
@@ -110,7 +116,7 @@ impl Harness {
         self
     }
 
-    /// The same harness with `args` appended to the adapter's own.
+    /// The same harness with `args` added to its extra arguments.
     #[must_use]
     pub fn with_args(mut self, args: impl IntoIterator<Item = impl Into<String>>) -> Self {
         self.args.extend(args.into_iter().map(Into::into));

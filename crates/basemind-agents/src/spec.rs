@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use crate::error::LaunchError;
 use crate::event::ApprovalRequest;
+use crate::guard::{check_extra_args, guard_bypass};
 use crate::harness::{AcpFlavor, Harness, HarnessKind};
 use crate::identity::AgentIdentity;
 use crate::session::CommandPlan;
@@ -220,9 +221,11 @@ impl LaunchSpec {
                 mode: kind.bypass_mode().unwrap_or("<the session mode id>").to_owned(),
             });
         }
+        check_extra_args(kind, &self.harness.args)?;
         Ok(Prepared {
             cwd: confine(&self.root, self.working_dir.as_deref())?,
             bypass_mode: authorized,
+            extra_args: self.harness.args.clone(),
         })
     }
 
@@ -245,15 +248,15 @@ impl LaunchSpec {
         }
     }
 
-    /// The plan for `args` followed by the caller's extra arguments, after the bypass guard.
+    /// The plan for the adapter's final `args`, which include the checked extra arguments
+    /// where that harness takes them, after the bypass guard.
     pub(crate) fn plan(
         &self,
         prepared: &Prepared,
-        mut args: Vec<String>,
+        args: Vec<String>,
         extra_env: &[(&str, &str)],
     ) -> Result<CommandPlan, LaunchError> {
-        args.extend(self.harness.args.iter().cloned());
-        guard_arguments(&args, prepared.bypass_mode.is_some())?;
+        guard_bypass(&args, prepared.bypass(self))?;
         let mut env = self.child_env(std::env::vars_os());
         for (name, value) in extra_env {
             env.entry((*name).to_owned()).or_insert_with(|| value.into());
@@ -311,6 +314,8 @@ pub(crate) struct Prepared {
     pub cwd: PathBuf,
     /// The authorized bypass mode, when the spec carries a valid opt-in.
     pub bypass_mode: Option<String>,
+    /// The caller's extra arguments, checked against the harness's allow-list.
+    pub extra_args: Vec<String>,
 }
 
 impl Prepared {
@@ -372,34 +377,6 @@ fn confine(root: &Path, working_dir: Option<&Path>) -> Result<PathBuf, LaunchErr
         return Err(LaunchError::WorkingDirOutsideRoot { dir, root });
     }
     Ok(dir)
-}
-
-/// Fragments that switch a harness's permission checks off, wherever they appear in an
-/// argument: as a flag, as the value of `--permission-mode`, or inside a `-c key=value`.
-const BYPASS_FRAGMENTS: &[&str] = &[
-    "dangerously-skip-permissions",
-    "dangerously-bypass-approvals-and-sandbox",
-    "bypassPermissions",
-    "danger-full-access",
-    "dangerFullAccess",
-    "--always-approve",
-    "--yolo",
-    "yoloMode",
-];
-
-/// Refuses an argument list that would bypass permissions without consent. Adapters run it
-/// on the final list, so it covers their own output and the caller's extra arguments alike.
-pub(crate) fn guard_arguments(args: &[String], bypass: bool) -> Result<(), LaunchError> {
-    if bypass {
-        return Ok(());
-    }
-    match args
-        .iter()
-        .find(|arg| BYPASS_FRAGMENTS.iter().any(|fragment| arg.contains(fragment)))
-    {
-        Some(arg) => Err(LaunchError::BypassArgument(arg.clone())),
-        None => Ok(()),
-    }
 }
 
 #[cfg(test)]

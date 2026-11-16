@@ -415,7 +415,29 @@ fn launch_arguments_follow_the_flavor_and_unsupported_modes_are_refused() {
 
     let mut yolo = acp_spec(AcpFlavor::Gemini, root.path());
     yolo.harness = yolo.harness.with_args(["--yolo"]);
-    assert!(matches!(AcpAdapter.plan(&yolo), Err(LaunchError::BypassArgument(_))));
+    assert!(matches!(
+        AcpAdapter.plan(&yolo),
+        Err(LaunchError::ArgumentNotAllowed { harness: "gemini", .. })
+    ));
+
+    let mut grok = acp_spec(AcpFlavor::Grok, root.path());
+    grok.harness = grok
+        .harness
+        .with_args(["--model", "grok-4", "--reasoning-effort", "high"]);
+    let plan = AcpAdapter.plan(&grok).unwrap();
+    assert_eq!(
+        plan.args,
+        [
+            "--no-auto-update",
+            "agent",
+            "--no-leader",
+            "--model",
+            "grok-4",
+            "--reasoning-effort",
+            "high",
+            "stdio"
+        ]
+    );
 }
 
 #[test]
