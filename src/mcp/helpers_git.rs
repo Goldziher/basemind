@@ -106,6 +106,7 @@ pub(super) fn git_log(state: &ServerState, p: GitLogParams) -> Result<CallToolRe
         Some(path) if path.as_bytes().ends_with(b"/") => {
             let mut page = by_path(
                 state,
+                "git_log",
                 FindCommitsByPathParams {
                     pattern: format!("^{}", regex::escape(&path.to_str_lossy())),
                     window: None,
@@ -375,7 +376,7 @@ fn run_status(state: &ServerState, within: Option<RelPath>) -> Result<CallToolRe
 /// The git-history index answers with an empty list both when no commit matches and when the
 /// lookup failed (a forward to the daemon that did not come back). An empty answer is therefore
 /// checked against the repository itself before anything is concluded from it.
-pub(super) fn indexed_or_live(
+fn indexed_or_live(
     indexed: Option<Vec<CommitInfo>>,
     live: impl FnOnce() -> Result<Vec<CommitInfo>, McpError>,
 ) -> Result<Vec<CommitInfo>, McpError> {

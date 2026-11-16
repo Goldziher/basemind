@@ -15,7 +15,7 @@ use super::helpers::{
     paginate_blame_hunks, parse_hash_mode, parse_kind, require_git_repo, symbol_fingerprint,
 };
 use super::helpers_git::reject_external_path;
-use super::helpers_git_by_path::MATCHED_EARLIER;
+use super::helpers_git_by_path::{LIVE_WALK, MATCHED_EARLIER};
 use super::helpers_pick::pick_symbol;
 use super::types::{
     BlameFileParams, BlameResponse, BlameSymbolParams, BlameSymbolResponse, DiffFileParams, DiffFileResponse,
@@ -440,9 +440,6 @@ pub(super) fn run_blame_symbol(state: &ServerState, params: BlameSymbolParams) -
     })
 }
 
-/// Set in a symbol-history cursor's snapshot when its offset counts in the live walk's list.
-const LIVE_WALK: u32 = 1;
-
 /// The `symbol_history` operation: tree-sitter × git — the commits where a named symbol's
 /// body fingerprint actually changed (or where it was introduced / removed).
 ///
@@ -562,7 +559,7 @@ pub(super) fn run_symbol_history(state: &ServerState, params: SymbolHistoryParam
         .filter(|commits| !commits.is_empty());
     let snapshot = snapshot_of(indexed.is_none());
     if cursor_snapshot.is_some_and(|issued| issued != snapshot) {
-        return invalidated(params);
+        return Err(super::cursor_bind::walk_switched("git_log"));
     }
     let mut commits: Vec<CommitInfo> = match indexed {
         Some(commits) => commits,

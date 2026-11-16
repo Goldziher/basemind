@@ -529,6 +529,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   depth was used up). The metadata was looked up in the code file map, where no document lives.
 - A same-size edit is detected as stale: the content hash decides when the size and timestamp do not.
 - Symbol history no longer reports the edge of its window as `introduced`.
+- A page of `git_log` with a directory `path`, answered before the git-history index is ready, walks to its
+  window without listing the files of the commits before it and stores nothing in the git cache. Each page
+  walked from HEAD listing every commit's files and wrote a larger log to disk.
+- A `git_log` cursor for a directory's or a symbol's history is refused when the git-history index came up
+  (or stopped answering) since it was issued, and the error says to restart without `cursor`: the index and
+  the live walk order the commits a sync appended differently, so the offset could skip or repeat commits.
+- `basemind git by-path` refuses `--window 0` and `--limit 0`, which returned the same `next_cursor`
+  forever.
 - `code_refs` leaves `resolved` absent when nothing was checked, instead of `false`.
 - `code_grep` and `code_refs` definition no longer read through a file swapped for a link out of the
   repository, and `code_grep` no longer counts matches through a directory swapped for one: the count

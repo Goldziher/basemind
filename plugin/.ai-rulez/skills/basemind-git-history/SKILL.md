@@ -89,6 +89,8 @@ git_diff {"path":"src/mcp/tools.rs","from":"HEAD~5","structural":true}
   an empty page with `truncated_reason: "window"` and a `next_cursor` is not the end of the
   history, and `unmatched` says when nothing has touched the directory so far and it is not on
   disk.
+- A directory's or symbol's cursor is refused when the git-history index came up (or stopped
+  answering) since it was issued: the two order commits differently. Restart without `cursor`.
 - `git_log` with `rev` holds the commit's file list to `max_tokens` and then sets `budgeted`, with
   `omitted` counting the files left out.
 - `git_blame`: `line` and `end_line` are 1-based and inclusive, and `end_line` defaults to `line`.

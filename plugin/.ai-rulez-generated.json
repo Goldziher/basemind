@@ -1,6 +1,6 @@
 {
   "schema_version": "v1",
-  "source_hash": "blake3:5c3dcc2d1488dc1cc6734f63dd1a849c60ad82080a8f217667773b4cc43b2572",
+  "source_hash": "blake3:add818225206f405864ea408285f734e46df222824f78c3b4001e3f027b42f5c",
   "outputs": {
     ".claude-plugin/plugin.json": {
       "content_hash": "blake3:36f4c5d42de76b97fcdd6b403dbf02672a487f20ded1da4874805a58e3a4d019",
@@ -83,7 +83,7 @@
       "mode": "0644"
     },
     ".cursor-plugin/skills/basemind-git-history/SKILL.md": {
-      "content_hash": "blake3:6ae680aebad5e89ae32f4009d9198c654a4d08bf57c4b839e09baa9fb80ecd29",
+      "content_hash": "blake3:c1d34eae66099fe2e036e064799480353812f5f2c07a329d5b25e8b4f19aa213",
       "mode": "0644"
     },
     ".cursor-plugin/skills/basemind-git-history/index.md": {
@@ -207,7 +207,7 @@
       "mode": "0644"
     },
     ".hermes/package/src/basemind_hermes_plugin/skills/basemind-git-history/SKILL.md": {
-      "content_hash": "blake3:6ae680aebad5e89ae32f4009d9198c654a4d08bf57c4b839e09baa9fb80ecd29",
+      "content_hash": "blake3:c1d34eae66099fe2e036e064799480353812f5f2c07a329d5b25e8b4f19aa213",
       "mode": "0644"
     },
     ".hermes/package/src/basemind_hermes_plugin/skills/basemind-git-history/index.md": {
@@ -323,7 +323,7 @@
       "mode": "0644"
     },
     ".hermes/plugins/basemind/skills/basemind-git-history/SKILL.md": {
-      "content_hash": "blake3:6ae680aebad5e89ae32f4009d9198c654a4d08bf57c4b839e09baa9fb80ecd29",
+      "content_hash": "blake3:c1d34eae66099fe2e036e064799480353812f5f2c07a329d5b25e8b4f19aa213",
       "mode": "0644"
     },
     ".hermes/plugins/basemind/skills/basemind-git-history/index.md": {
@@ -443,7 +443,7 @@
       "mode": "0644"
     },
     ".opencode/skills/basemind-git-history/SKILL.md": {
-      "content_hash": "blake3:6ae680aebad5e89ae32f4009d9198c654a4d08bf57c4b839e09baa9fb80ecd29",
+      "content_hash": "blake3:c1d34eae66099fe2e036e064799480353812f5f2c07a329d5b25e8b4f19aa213",
       "mode": "0644"
     },
     ".opencode/skills/basemind-git-history/index.md": {
@@ -547,7 +547,7 @@
       "mode": "0644"
     },
     ".pi/skills/basemind-git-history/SKILL.md": {
-      "content_hash": "blake3:6ae680aebad5e89ae32f4009d9198c654a4d08bf57c4b839e09baa9fb80ecd29",
+      "content_hash": "blake3:c1d34eae66099fe2e036e064799480353812f5f2c07a329d5b25e8b4f19aa213",
       "mode": "0644"
     },
     ".pi/skills/basemind-git-history/index.md": {
@@ -723,7 +723,7 @@
       "mode": "0644"
     },
     "skills/basemind-git-history/SKILL.md": {
-      "content_hash": "blake3:6ae680aebad5e89ae32f4009d9198c654a4d08bf57c4b839e09baa9fb80ecd29",
+      "content_hash": "blake3:c1d34eae66099fe2e036e064799480353812f5f2c07a329d5b25e8b4f19aa213",
       "mode": "0644"
     },
     "skills/basemind-git-history/index.md": {

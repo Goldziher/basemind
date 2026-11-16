@@ -5,6 +5,8 @@
 //! without rewriting half of the codebase.
 
 mod commit;
+#[cfg(test)]
+pub(crate) use commit::FILE_LISTINGS;
 mod diff;
 mod export;
 mod remote;

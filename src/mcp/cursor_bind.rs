@@ -82,6 +82,20 @@ pub(super) fn stale_cursor(tool: &str) -> McpError {
     )
 }
 
+/// The refusal for a cursor of a paged git walk issued on the other source of commits: the live walk
+/// before the git-history index came up, or the index before it fell back to the live walk. The two
+/// order commits that a sync appended differently, so the offset may skip or repeat commits.
+pub(super) fn walk_switched(tool: &str) -> McpError {
+    McpError::invalid_params(
+        format!(
+            "`{tool}`: the git-history index came up (or stopped answering) since this cursor was issued, and \
+             it orders commits differently from the live walk, so the cursor no longer points into the list. \
+             Restart the walk: call again without `cursor`."
+        ),
+        None,
+    )
+}
+
 fn foreign_cursor(tool: &str) -> McpError {
     McpError::invalid_params(
         format!(

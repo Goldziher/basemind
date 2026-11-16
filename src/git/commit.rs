@@ -8,7 +8,18 @@
 
 use super::*;
 
+#[cfg(test)]
+thread_local! {
+    /// Commits whose changed files [`build_commit_info`] listed on this thread, so a test can tell a
+    /// walk that lists files only where it must from one that lists them for every commit it passes.
+    pub(crate) static FILE_LISTINGS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 pub(super) fn build_commit_info(local: &gix::Repository, id: gix::ObjectId, include_files: bool) -> Option<CommitInfo> {
+    #[cfg(test)]
+    if include_files {
+        FILE_LISTINGS.with(|listed| listed.set(listed.get() + 1));
+    }
     let commit = local.find_commit(id).ok()?;
     let sha = id.to_string();
     let short_sha = sha[..7.min(sha.len())].to_string();
@@ -271,6 +282,39 @@ impl Repo {
                 msg: e.to_string(),
             })?;
         Ok(walk.filter_map(|i| i.ok()).map(|i| i.id.to_string()).collect())
+    }
+
+    /// The commits at `skip..skip + take` of [`Repo::log_paths`]' list for `head`, with their
+    /// changed files. The `skip` commits before them are walked without listing files, so a page
+    /// deep in the history costs one walk to it and a file listing per commit on the page.
+    pub fn log_window(&self, head: &str, skip: usize, take: usize) -> Result<Vec<CommitInfo>, GitError> {
+        let local = self.local();
+        let Some(head) = Self::resolve_oid(&local, head) else {
+            return Err(GitError::RevParse {
+                rev: head.to_string(),
+                msg: "does not resolve to a commit".to_string(),
+            });
+        };
+        let walk = local
+            .rev_walk([head])
+            .sorting(gix::revision::walk::Sorting::ByCommitTime(
+                gix::traverse::commit::simple::CommitTimeOrder::NewestFirst,
+            ))
+            .all()
+            .map_err(|e| GitError::Read {
+                what: "rev walk".to_string(),
+                msg: e.to_string(),
+            })?;
+        // Offsets count the commits `log_paths` lists: one that does not decode is skipped there,
+        // so it is not counted here either.
+        let listed = walk
+            .filter_map(Result::ok)
+            .filter(|info| build_commit_info(&local, info.id, false).is_some());
+        Ok(listed
+            .skip(skip)
+            .take(take)
+            .filter_map(|info| build_commit_info(&local, info.id, true))
+            .collect())
     }
 
     /// Commit shas reachable from HEAD but **not** from `hidden` (the previously-indexed head),
