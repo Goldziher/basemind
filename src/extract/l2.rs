@@ -1,5 +1,5 @@
 use streaming_iterator::StreamingIterator;
-use tree_sitter::{Query, QueryMatch};
+use tree_sitter::{Node, Query, QueryMatch};
 
 use super::{Call, DocComment, ExtractError, FileMapL2, SCHEMA_VER, capture_name};
 use crate::lang::{LangId, ParseOutcome, QueryKind, parse_with_default_timeout, try_get_query, with_parser};
@@ -75,6 +75,7 @@ fn run_docs(lang: LangId, root: tree_sitter::Node, source: &[u8]) -> Result<Vec<
 fn build_call(q: &Query, m: &QueryMatch, source: &[u8]) -> Option<Call> {
     let mut callee: Option<String> = None;
     let mut range_node = None;
+    let mut lexical: (Option<Node>, Option<Node>) = (None, None);
     for cap in m.captures() {
         let cname = capture_name(q, cap.index);
         match cname {
@@ -82,8 +83,13 @@ fn build_call(q: &Query, m: &QueryMatch, source: &[u8]) -> Option<Call> {
                 callee = cap.node.utf8_text(source).ok().map(|s| s.to_string());
             }
             "call.range" => range_node = Some(cap.node),
+            "call.lexical_callee" => lexical.0 = Some(cap.node),
+            "call.lexical_args" => lexical.1 = Some(cap.node),
             _ => {}
         }
+    }
+    if let (Some(name), Some(args)) = lexical {
+        return lexical_macro_call(name, args, source);
     }
     let node = range_node?;
     let pos = node.start_position();
@@ -91,6 +97,40 @@ fn build_call(q: &Query, m: &QueryMatch, source: &[u8]) -> Option<Call> {
         callee: callee?,
         start_byte: node.start_byte() as u32,
         end_byte: node.end_byte() as u32,
+        start_row: pos.row as u32,
+        start_col: pos.column as u32,
+    })
+}
+
+/// Token kinds that, directly before `name(`, make it a definition rather than a call.
+const DEFINITION_KEYWORDS: &[&str] = &["fn", "struct", "enum", "union"];
+
+/// A call inside a macro's unparsed token tree: `name` immediately followed by a `(`-delimited
+/// `args` tree (no `!` between, which would make it a nested macro), not preceded by a definition
+/// keyword, and inside a `macro_invocation` (a `macro_rules!` body is a template, not a call site).
+/// Like every other call it is name-only; the range spans `name(..)`.
+fn lexical_macro_call(name: Node, args: Node, source: &[u8]) -> Option<Call> {
+    if name.next_sibling() != Some(args) || source.get(args.start_byte()) != Some(&b'(') {
+        return None;
+    }
+    if name
+        .prev_sibling()
+        .is_some_and(|p| DEFINITION_KEYWORDS.contains(&p.kind()))
+    {
+        return None;
+    }
+    let mut owner = name.parent();
+    while let Some(n) = owner.filter(|n| n.kind() == "token_tree") {
+        owner = n.parent();
+    }
+    if owner?.kind() != "macro_invocation" {
+        return None;
+    }
+    let pos = name.start_position();
+    Some(Call {
+        callee: name.utf8_text(source).ok()?.to_string(),
+        start_byte: name.start_byte() as u32,
+        end_byte: args.end_byte() as u32,
         start_row: pos.row as u32,
         start_col: pos.column as u32,
     })

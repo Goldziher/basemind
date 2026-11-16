@@ -50,6 +50,14 @@
     function: (scoped_identifier name: (identifier) @call.callee))) @call.range
 (macro_invocation macro: (identifier) @call.callee) @call.range
 
+;; Macro arguments stay an unparsed `token_tree`, so a call there is recognised lexically: an
+;; identifier directly followed by a parenthesised token tree. `l2::build_call` keeps only those
+;; inside a `macro_invocation` and drops definitions (`fn name(`, `struct Name(`).
+(token_tree
+  (identifier) @call.lexical_callee
+  .
+  (token_tree) @call.lexical_args)
+
 ;; section: implementations
 ;;
 ;; Captures `impl Trait for Type` (trait impls) and `impl Type { … }` (inherent impls).

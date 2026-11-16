@@ -639,6 +639,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `impl crate::scanner::ScanObserver for RescanPaths`) are implementations, keyed by the trait's last
   path segment. Only bare trait names were matched before.
 - Rust turbofish calls (`s.parse::<u32>()`, `collect::<Vec<_>>()`, `a::b::make::<T>()`) are call sites.
+- Calls inside Rust macro arguments (`assert!(is_ok(x))`) are call sites. tree-sitter leaves a macro
+  body unparsed, so they are recognised lexically: an identifier directly followed by `(` inside a
+  macro invocation, excluding `fn`/`struct`/`enum`/`union` definitions, nested macro names and
+  `macro_rules!` bodies. Like every call they match by name only.
 
 ## [0.33.0] - 2026-11-14
 
