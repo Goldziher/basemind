@@ -324,7 +324,7 @@ fn a_turn_the_harness_starts_beyond_the_limit_is_refused() {
 fn a_supervised_plan_carries_the_stream_flags_and_no_bypass() {
     let root = tempfile::tempdir().unwrap();
     let plan = ClaudeCodeAdapter
-        .plan(&spec(HarnessKind::ClaudeCode, root.path()))
+        .plan_spec(&spec(HarnessKind::ClaudeCode, root.path()))
         .unwrap();
     assert_eq!(plan.program, std::path::PathBuf::from("claude"));
     assert_eq!(value_of(&plan.args, "--input-format"), Some("stream-json"));
@@ -344,7 +344,7 @@ fn a_supervised_plan_carries_the_stream_flags_and_no_bypass() {
 fn settings_hooks_and_mcp_servers_come_only_from_the_adapter() {
     let root = tempfile::tempdir().unwrap();
     let plan = ClaudeCodeAdapter
-        .plan(&spec(HarnessKind::ClaudeCode, root.path()))
+        .plan_spec(&spec(HarnessKind::ClaudeCode, root.path()))
         .unwrap();
     let sources: Vec<_> = plan
         .args
@@ -365,7 +365,7 @@ fn bypass_needs_an_opt_in_naming_claude_and_its_mode() {
     let mut spec = spec(HarnessKind::ClaudeCode, root.path());
     spec.permission_mode = PermissionMode::Bypass;
     assert!(matches!(
-        ClaudeCodeAdapter.plan(&spec),
+        ClaudeCodeAdapter.plan_spec(&spec),
         Err(LaunchError::BypassNotAuthorized { harness: "claude", .. })
     ));
 
@@ -380,7 +380,7 @@ fn bypass_needs_an_opt_in_naming_claude_and_its_mode() {
         });
         assert!(
             matches!(
-                ClaudeCodeAdapter.plan(&spec),
+                ClaudeCodeAdapter.plan_spec(&spec),
                 Err(LaunchError::BypassNotAuthorized { .. })
             ),
             "an opt-in for {harness} / {mode:?} unlocked Claude Code"
@@ -391,7 +391,7 @@ fn bypass_needs_an_opt_in_naming_claude_and_its_mode() {
         harness: HarnessKind::ClaudeCode,
         mode: "bypassPermissions".to_owned(),
     });
-    let plan = ClaudeCodeAdapter.plan(&spec).unwrap();
+    let plan = ClaudeCodeAdapter.plan_spec(&spec).unwrap();
     assert_eq!(value_of(&plan.args, "--permission-mode"), Some("bypassPermissions"));
     assert!(
         plan.args
@@ -401,40 +401,17 @@ fn bypass_needs_an_opt_in_naming_claude_and_its_mode() {
 }
 
 #[test]
-fn extra_arguments_are_limited_to_model_and_effort_even_with_an_opt_in() {
+fn a_model_and_effort_are_the_only_request_values_on_the_command_line() {
     let root = tempfile::tempdir().unwrap();
-    for extra in [
-        vec!["--dangerously-skip-permissions"],
-        vec!["--permission-mode", "bypassPermissions"],
-        vec!["--permission-mode=bypassPermissions"],
-        vec!["--allowedTools", "Bash"],
-        vec!["--model", "sonnet", "review this"],
-    ] {
-        let mut spec = spec(HarnessKind::ClaudeCode, root.path());
-        spec.harness = spec.harness.with_args(extra.clone());
-        assert!(
-            matches!(
-                ClaudeCodeAdapter.plan(&spec),
-                Err(LaunchError::ArgumentNotAllowed { .. })
-            ),
-            "{extra:?} was accepted"
-        );
-        spec.permission_mode = PermissionMode::Bypass;
-        spec.bypass = Some(BypassOptIn {
-            harness: HarnessKind::ClaudeCode,
-            mode: "bypassPermissions".to_owned(),
-        });
-        assert!(
-            matches!(
-                ClaudeCodeAdapter.plan(&spec),
-                Err(LaunchError::ArgumentNotAllowed { .. })
-            ),
-            "{extra:?} was accepted under the opt-in"
-        );
-    }
     let mut spec = spec(HarnessKind::ClaudeCode, root.path());
-    spec.harness = spec.harness.with_args(["--model", "sonnet", "--effort", "high"]);
-    let plan = ClaudeCodeAdapter.plan(&spec).unwrap();
+    spec.model = Some("--dangerously-skip-permissions".to_owned());
+    assert!(matches!(
+        ClaudeCodeAdapter.plan_spec(&spec),
+        Err(LaunchError::ArgumentNotAllowed { .. })
+    ));
+    spec.model = Some("sonnet".to_owned());
+    spec.effort = Some("high".to_owned());
+    let plan = ClaudeCodeAdapter.plan_spec(&spec).unwrap();
     assert_eq!(
         plan.args[plan.args.len() - 4..],
         ["--model", "sonnet", "--effort", "high"]
@@ -446,7 +423,7 @@ fn an_mcp_server_becomes_mcp_config_and_only_named_tools_are_pre_approved() {
     let root = tempfile::tempdir().unwrap();
     let mut spec = spec(HarnessKind::ClaudeCode, root.path());
     spec.mcp_server = Some(McpServerSpec::basemind_serve("/opt/basemind/bin/basemind"));
-    let plan = ClaudeCodeAdapter.plan(&spec).unwrap();
+    let plan = ClaudeCodeAdapter.plan_spec(&spec).unwrap();
     let config: Value = serde_json::from_str(value_of(&plan.args, "--mcp-config").unwrap()).unwrap();
     assert_eq!(
         config,
@@ -457,14 +434,14 @@ fn an_mcp_server_becomes_mcp_config_and_only_named_tools_are_pre_approved() {
     assert_eq!(value_of(&plan.args, "--allowedTools"), None);
 
     spec.mcp_server.as_mut().unwrap().allow_tools = vec!["agent_post".to_owned(), "agent_inbox".to_owned()];
-    let plan = ClaudeCodeAdapter.plan(&spec).unwrap();
+    let plan = ClaudeCodeAdapter.plan_spec(&spec).unwrap();
     assert_eq!(
         value_of(&plan.args, "--allowedTools"),
         Some("mcp__basemind__agent_post,mcp__basemind__agent_inbox")
     );
     spec.mcp_server.as_mut().unwrap().allow_tools = vec!["agent_post,Bash".to_owned()];
     assert!(matches!(
-        ClaudeCodeAdapter.plan(&spec),
+        ClaudeCodeAdapter.plan_spec(&spec),
         Err(LaunchError::InvalidMcpToolName(_))
     ));
 }

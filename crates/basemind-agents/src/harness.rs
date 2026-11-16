@@ -1,4 +1,4 @@
-// The bypass mode names and Grok's `--model` and `--reasoning-effort` flags are taken from https://github.com/hardbeat920/monocode (crates/monocode-core/src/{agent.rs,provider/acp.rs}) at 09d04436babb39ad72198cdf22f735067027fc04, MIT.
+// The bypass mode names are taken from https://github.com/hardbeat920/monocode (crates/monocode-core/src/{agent.rs,provider/acp.rs}) at 09d04436babb39ad72198cdf22f735067027fc04, MIT.
 //! Which harness to start and how to find it.
 
 use std::path::PathBuf;
@@ -83,20 +83,13 @@ impl std::fmt::Display for HarnessKind {
     }
 }
 
-/// One harness installation: its kind, the executable and extra arguments.
+/// One harness installation: its kind and its executable.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Harness {
     /// The harness family.
     pub kind: HarnessKind,
     /// The executable to run. A bare name is looked up on the `PATH` the child receives.
     pub executable: PathBuf,
-    /// Extra arguments, limited to the harness's allow-list: `--model` and `--effort` for
-    /// Claude Code, `-c model="..."` and `-c model_reasoning_effort="..."` for Codex,
-    /// `--model` and `--reasoning-effort` for Grok, nothing for the other ACP agents. Each
-    /// flag may appear once; positionals and every other flag fail the launch with
-    /// [`LaunchError::ArgumentNotAllowed`](crate::LaunchError::ArgumentNotAllowed), with or
-    /// without a bypass opt-in.
-    pub args: Vec<String>,
 }
 
 impl Harness {
@@ -106,7 +99,6 @@ impl Harness {
         Self {
             kind,
             executable: PathBuf::from(kind.default_executable()),
-            args: Vec::new(),
         }
     }
 
@@ -114,13 +106,6 @@ impl Harness {
     #[must_use]
     pub fn with_executable(mut self, executable: impl Into<PathBuf>) -> Self {
         self.executable = executable.into();
-        self
-    }
-
-    /// The same harness with `args` added to its extra arguments.
-    #[must_use]
-    pub fn with_args(mut self, args: impl IntoIterator<Item = impl Into<String>>) -> Self {
-        self.args.extend(args.into_iter().map(Into::into));
         self
     }
 }

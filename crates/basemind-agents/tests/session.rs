@@ -8,8 +8,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use basemind_agents::{
-    AgentIdentity, ApprovalRequest, ApprovalVerdict, Event, FinishStatus, Harness, HarnessKind, LaunchError,
-    LaunchSpec, Registry, Session,
+    AgentIdentity, ApprovalRequest, ApprovalVerdict, Event, FinishStatus, Harness, HarnessKind, LaunchConfig,
+    LaunchError, LaunchRequest, Registry, Session,
 };
 
 const HANDSHAKE: &str = r#"read -r init
@@ -27,22 +27,30 @@ fn stand_in(dir: &Path, body: &str) -> PathBuf {
     path
 }
 
-fn spec(kind: HarnessKind, dir: &Path, body: &str) -> LaunchSpec {
+/// A config and a request, as the engine would pair them.
+struct Launch {
+    config: LaunchConfig,
+    request: LaunchRequest,
+}
+
+fn spec(kind: HarnessKind, dir: &Path, body: &str) -> Launch {
     let root = dir.join("root");
     std::fs::create_dir_all(&root).unwrap();
-    let mut spec = LaunchSpec::new(
+    let mut config = LaunchConfig::new(
         Harness::new(kind).with_executable(stand_in(dir, body)),
         root,
-        "Summarize the README.",
         AgentIdentity::new("launched-agent").unwrap(),
     );
     // A stand-in that is never told to finish shows up as a wrong status, not as a hang.
-    spec.limits.wall_time = Duration::from_secs(20);
-    spec
+    config.limits.wall_time = Duration::from_secs(20);
+    Launch {
+        config,
+        request: LaunchRequest::new("Summarize the README."),
+    }
 }
 
-fn launch(spec: &LaunchSpec) -> Session {
-    Registry::with_defaults().launch(spec).unwrap()
+fn launch(spec: &Launch) -> Session {
+    Registry::with_defaults().launch(&spec.config, &spec.request).unwrap()
 }
 
 fn alive(pid: &str) -> bool {
@@ -107,7 +115,7 @@ cat > /dev/null
         dir = dir.path().display()
     );
     let mut spec = spec(HarnessKind::ClaudeCode, dir.path(), &body);
-    spec.env.insert("EXTRA_API_KEY".to_owned(), "yes".to_owned());
+    spec.config.env.insert("EXTRA_API_KEY".to_owned(), "yes".to_owned());
     assert!(
         std::env::var_os("CARGO_MANIFEST_DIR").is_some(),
         "the launcher has no variable outside the allow-list, so the check below proves nothing"
@@ -203,7 +211,7 @@ fn the_wall_time_limit_kills_the_whole_process_group() {
     let pidfile = dir.path().join("grandchild");
     let body = format!("{}{HANDSHAKE}cat > /dev/null\n", spawn_grandchild(&pidfile));
     let mut spec = spec(HarnessKind::ClaudeCode, dir.path(), &body);
-    spec.limits.wall_time = Duration::from_secs(3);
+    spec.config.limits.wall_time = Duration::from_secs(3);
 
     let started = Instant::now();
     let session = launch(&spec);
@@ -229,7 +237,7 @@ fn the_wall_time_limit_ends_the_session_even_when_a_descendant_keeps_the_pipes()
         pidfile.display()
     );
     let mut spec = spec(HarnessKind::ClaudeCode, dir.path(), &body);
-    spec.limits.wall_time = Duration::from_secs(3);
+    spec.config.limits.wall_time = Duration::from_secs(3);
     let started = Instant::now();
     let session = launch(&spec);
     let escaped = grandchild(&pidfile);
@@ -333,7 +341,7 @@ cat > /dev/null
     );
     let mut spec = spec(HarnessKind::ClaudeCode, dir.path(), &body);
     let policy = |_: &ApprovalRequest| -> ApprovalVerdict { panic!("the policy is broken") };
-    spec.approval_policy = Some(Arc::new(policy));
+    spec.config.approval_policy = Some(Arc::new(policy));
     let session = launch(&spec);
     let leader = session.pid().to_string();
     let events: Vec<_> = session.events().collect();
@@ -487,7 +495,7 @@ cat > /dev/null
         dir = dir.path().display()
     );
     let mut spec = spec(HarnessKind::ClaudeCode, dir.path(), &body);
-    spec.limits.max_turns = 2;
+    spec.config.limits.max_turns = 2;
     let session = launch(&spec);
     session.send_follow_up("Now fix it.").unwrap();
     assert!(matches!(
@@ -514,14 +522,14 @@ cat > /dev/null
 fn launch_errors_are_typed() {
     let dir = tempfile::tempdir().unwrap();
     let mut missing = spec(HarnessKind::ClaudeCode, dir.path(), "");
-    missing.harness.executable = dir.path().join("no-such-harness");
+    missing.config.harness.executable = dir.path().join("no-such-harness");
     assert!(matches!(
-        Registry::with_defaults().launch(&missing),
+        Registry::with_defaults().launch(&missing.config, &missing.request),
         Err(LaunchError::Spawn { .. })
     ));
     let known = spec(HarnessKind::Codex, dir.path(), "");
     assert!(matches!(
-        Registry::new().launch(&known),
+        Registry::new().launch(&known.config, &known.request),
         Err(LaunchError::UnknownHarness("codex"))
     ));
     assert!(Registry::with_defaults().adapter(HarnessKind::Codex).is_some());
@@ -544,7 +552,7 @@ while :; do sleep 1; done
         pidfile.display()
     );
     let mut spec = spec(HarnessKind::Codex, dir.path(), &body);
-    spec.brief = "x".repeat(4 * 1024 * 1024);
+    spec.request.brief = "x".repeat(4 * 1024 * 1024);
     let session = launch(&spec);
     let escaped = grandchild(&pidfile);
     let leader = session.pid().to_string();
@@ -570,7 +578,7 @@ fn a_stopped_harness_gets_only_the_stop_grace() {
         dir.path().display()
     );
     let mut spec = spec(HarnessKind::ClaudeCode, dir.path(), &body);
-    spec.limits.stop_grace = Duration::from_millis(200);
+    spec.config.limits.stop_grace = Duration::from_millis(200);
     let session = launch(&spec);
     let ready = dir.path().join("ready");
     let deadline = Instant::now() + Duration::from_secs(5);

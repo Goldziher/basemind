@@ -15,7 +15,7 @@ use crate::harness::HarnessKind;
 use crate::line::{LineDriver, Protocol, Step, TextStream, write_json};
 use crate::registry::Adapter;
 use crate::session::{self, CommandPlan, EventSink, Session};
-use crate::spec::{ApprovalVerdict, LaunchSpec, PermissionMode, utf8};
+use crate::spec::{ApprovalVerdict, LaunchConfig, LaunchRequest, LaunchSpec, PermissionMode, utf8};
 
 const INIT_REQUEST: &str = "basemind-init";
 /// The most partial tool input collected for one content block.
@@ -35,7 +35,17 @@ impl Adapter for ClaudeCodeAdapter {
         kind == HarnessKind::ClaudeCode
     }
 
-    fn plan(&self, spec: &LaunchSpec) -> Result<CommandPlan, LaunchError> {
+    fn plan(&self, config: &LaunchConfig, request: &LaunchRequest) -> Result<CommandPlan, LaunchError> {
+        self.plan_spec(&LaunchSpec::new(config, request)?)
+    }
+
+    fn launch(&self, config: &LaunchConfig, request: &LaunchRequest) -> Result<Session, LaunchError> {
+        self.launch_spec(&LaunchSpec::new(config, request)?)
+    }
+}
+
+impl ClaudeCodeAdapter {
+    pub(crate) fn plan_spec(&self, spec: &LaunchSpec) -> Result<CommandPlan, LaunchError> {
         let prepared = spec.prepare()?;
         let mode = match spec.permission_mode {
             PermissionMode::Supervised => "default",
@@ -85,12 +95,12 @@ impl Adapter for ClaudeCodeAdapter {
         if prepared.bypass(spec) {
             args.push("--allow-dangerously-skip-permissions".to_owned());
         }
-        args.extend(prepared.extra_args.iter().cloned());
+        args.extend(prepared.model_args.iter().cloned());
         spec.plan(&prepared, args, &[])
     }
 
-    fn launch(&self, spec: &LaunchSpec) -> Result<Session, LaunchError> {
-        let plan = self.plan(spec)?;
+    fn launch_spec(&self, spec: &LaunchSpec) -> Result<Session, LaunchError> {
+        let plan = self.plan_spec(spec)?;
         let (driver, control) = LineDriver::boxed(ClaudeProtocol::new(spec.brief.clone()));
         session::start(&plan, spec, driver, control)
     }

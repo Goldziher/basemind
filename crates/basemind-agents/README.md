@@ -9,19 +9,26 @@ CLI and no daemon wiring; those belong to the layers above it.
 
 ## Use
 
+A launch has two halves. The `LaunchConfig` is trusted and comes from the operator's
+configuration: the harness executable, the root, the MCP server, environment values, opt-ins and the
+caps on wall time and turns. The `LaunchRequest` is what a model may choose: the brief, a working
+directory inside the root, the model and effort, and limits within the caps.
+
 ```rust,no_run
-use basemind_agents::{AgentIdentity, Event, Harness, HarnessKind, LaunchSpec, McpServerSpec, Registry};
+use basemind_agents::{
+    AgentIdentity, Event, Harness, HarnessKind, LaunchConfig, LaunchRequest, McpServerSpec, Registry,
+};
 
 # fn main() -> Result<(), basemind_agents::LaunchError> {
-let mut spec = LaunchSpec::new(
+let mut config = LaunchConfig::new(
     Harness::new(HarnessKind::Codex),
     "/work/repo",
-    "Review the diff on this branch and post your findings to the review thread.",
     AgentIdentity::new("codex-reviewer")?,
 );
-spec.mcp_server = Some(McpServerSpec::basemind_serve("basemind"));
+config.mcp_server = Some(McpServerSpec::basemind_serve("basemind"));
+let request = LaunchRequest::new("Review the diff on this branch and post your findings to the review thread.");
 
-let session = Registry::with_defaults().launch(&spec)?;
+let session = Registry::with_defaults().launch(&config, &request)?;
 for event in session.events() {
     match event {
         Event::Text(text) => print!("{text}"),
@@ -35,20 +42,20 @@ for event in session.events() {
 
 ## Safety defaults
 
-- Every approval request is denied unless the spec carries an `ApprovalPolicy`. A request shows
+- Every approval request is denied unless the config carries an `ApprovalPolicy`. A request shows
   the grant itself (command, file changes, permissions, tool input) with an `ApprovalKind` and the
   raw wire params; an agent's reason is only appended. An ACP allow takes `allow_once` only. At
   most 64 requests wait for the caller.
-- A permission-bypass mode is never produced unless the spec carries a `BypassOptIn` naming that
+- A permission-bypass mode is never produced unless the config carries a `BypassOptIn` naming that
   harness and its mode.
-- Extra arguments are limited to model and effort selection per harness; any other flag and any
-  positional fails the launch, with or without an opt-in.
-- Claude Code is asked for no setting sources, hooks disabled and only the spec's MCP server. Codex,
+- Of a request, only the model and the effort reach the command line, as the harness's own flags
+  after a grammar check; its wall time and turns are clamped to the config's caps.
+- Claude Code is asked for no setting sources, hooks disabled and only the config's MCP server. Codex,
   Gemini, Cursor and OpenCode are not launched over one of their project files in the working
-  directory or above it. Only the MCP tools the spec names are pre-approved (Claude Code only).
-- The working directory has to resolve inside the spec's root, and is checked again in the child.
+  directory or above it. Only the MCP tools the config names are pre-approved (Claude Code only).
+- The working directory is relative and has to resolve inside the config's root, and is checked again in the child.
   The agent is not sandboxed to the root.
-- The child's environment is `ENV_ALLOWLIST`, the spec's additions and the agent identity. An
+- The child's environment is `ENV_ALLOWLIST`, the config's additions and the agent identity. An
   addition must be a provider credential or endpoint and may not redirect configuration, code
   loading or basemind. Credentials in the launcher's environment do not reach the child.
 - At the wall-time limit, or when the harness starts more turns than allowed, the process group is
@@ -58,7 +65,8 @@ for event in session.events() {
 
 Limits:
 
-- The spec's executable and its MCP server's command run as given; the caller must restrict them.
+- The config's executable and its MCP server's command run as given; the configuration must
+  restrict them.
 - A descendant that leaves the process group survives the session.
 - A project file written during a session is only seen by the next launch.
 - That an empty `--setting-sources` loads nothing was not run against a live Claude Code.

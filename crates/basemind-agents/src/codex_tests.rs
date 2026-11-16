@@ -92,28 +92,28 @@ fn a_launch_cannot_ask_for_bypass_without_naming_codex() {
     let mut spec = spec(HarnessKind::Codex, root.path());
     spec.permission_mode = PermissionMode::Bypass;
     assert!(matches!(
-        CodexAdapter.plan(&spec),
+        CodexAdapter.plan_spec(&spec),
         Err(LaunchError::BypassNotAuthorized { harness: "codex", .. })
     ));
     spec.bypass = Some(BypassOptIn {
         harness: HarnessKind::ClaudeCode,
         mode: "danger-full-access".to_owned(),
     });
-    assert!(CodexAdapter.plan(&spec).is_err());
+    assert!(CodexAdapter.plan_spec(&spec).is_err());
     spec.bypass = Some(BypassOptIn {
         harness: HarnessKind::Codex,
         mode: "danger-full-access".to_owned(),
     });
-    assert!(CodexAdapter.plan(&spec).is_ok());
+    assert!(CodexAdapter.plan_spec(&spec).is_ok());
 
     let mut spec = crate::test_support::spec(HarnessKind::Codex, root.path());
-    spec.harness = spec.harness.with_args(["-c", "sandbox_mode=\"danger-full-access\""]);
+    spec.model = Some("x\"\nsandbox_mode=\"danger-full-access".to_owned());
     assert!(matches!(
-        CodexAdapter.plan(&spec),
+        CodexAdapter.plan_spec(&spec),
         Err(LaunchError::ArgumentNotAllowed { harness: "codex", .. })
     ));
-    spec.harness.args = vec!["-c".to_owned(), "model=\"gpt-5.1-codex\"".to_owned()];
-    let plan = CodexAdapter.plan(&spec).unwrap();
+    spec.model = Some("gpt-5.1-codex".to_owned());
+    let plan = CodexAdapter.plan_spec(&spec).unwrap();
     assert_eq!(plan.args[plan.args.len() - 2..], ["-c", "model=\"gpt-5.1-codex\""]);
 }
 
@@ -446,7 +446,7 @@ fn an_mcp_server_becomes_config_overrides_that_forward_the_identity() {
     let mut server = McpServerSpec::basemind_serve("/opt/basemind/bin/basemind");
     server.env.insert("SEARCH_API_KEY".to_owned(), "key".to_owned());
     spec.mcp_server = Some(server);
-    let plan = CodexAdapter.plan(&spec).unwrap();
+    let plan = CodexAdapter.plan_spec(&spec).unwrap();
     assert_eq!(plan.args[0], "app-server");
     let overrides: Vec<_> = plan.args[1..]
         .chunks(2)
@@ -475,12 +475,15 @@ fn an_mcp_server_becomes_config_overrides_that_forward_the_identity() {
 
     assert!(!plan.args.iter().any(|arg| arg.contains("approval")));
     spec.mcp_server.as_mut().unwrap().allow_tools = vec!["agent_post".to_owned()];
-    assert!(matches!(CodexAdapter.plan(&spec), Err(LaunchError::Unsupported { .. })));
+    assert!(matches!(
+        CodexAdapter.plan_spec(&spec),
+        Err(LaunchError::Unsupported { .. })
+    ));
     spec.mcp_server.as_mut().unwrap().allow_tools.clear();
 
     spec.mcp_server.as_mut().unwrap().name = "bad.name".to_owned();
     assert!(matches!(
-        CodexAdapter.plan(&spec),
+        CodexAdapter.plan_spec(&spec),
         Err(LaunchError::InvalidMcpServerName(_))
     ));
 }
@@ -593,7 +596,7 @@ fn config_values_are_written_as_toml_strings() {
     let mut server = McpServerSpec::basemind_serve("/opt/basemind");
     server.args = vec!["se\u{7f}rve".to_owned()];
     spec.mcp_server = Some(server);
-    let plan = CodexAdapter.plan(&spec).unwrap();
+    let plan = CodexAdapter.plan_spec(&spec).unwrap();
     assert!(
         plan.args
             .contains(&"mcp_servers.basemind.args=[\"se\\u007Frve\"]".to_owned()),

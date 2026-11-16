@@ -1,16 +1,16 @@
-// The allowed flag names (Claude Code `--model`/`--effort`, Grok `--model`/`--reasoning-effort`) are taken from https://github.com/hardbeat920/monocode (crates/monocode-core/src/{provider.rs,provider/acp.rs}) at 09d04436babb39ad72198cdf22f735067027fc04, MIT.
-//! The checks a launch spec's free-form parts pass before any adapter uses them: the caller's
-//! extra arguments, the environment additions and the arguments the adapter itself built.
+// The model and effort flag names (Claude Code `--model`/`--effort`, Grok `--model`/`--reasoning-effort`) are taken from https://github.com/hardbeat920/monocode (crates/monocode-core/src/{provider.rs,provider/acp.rs}) at 09d04436babb39ad72198cdf22f735067027fc04, MIT.
+//! The checks a launch's free-form parts pass before any adapter uses them: the request's
+//! model and effort, the environment additions and the arguments the adapter itself built.
 
 use std::path::Path;
 
 use crate::error::LaunchError;
 use crate::harness::{AcpFlavor, HarnessKind};
 
-/// The longest value an allow-listed flag may carry.
+/// The longest model or effort value, and the longest environment variable name.
 const MAX_VALUE_BYTES: usize = 128;
 
-/// What an allow-listed flag's value has to look like.
+/// What a model or effort value has to look like.
 #[derive(Clone, Copy)]
 enum Value {
     /// A model name: `[A-Za-z0-9._:/[]-]`, not starting with `-`.
@@ -31,77 +31,62 @@ impl Value {
     }
 }
 
-/// The flags a caller may pass to `kind`, with their values' grammar. Everything else is
-/// refused: a harness's flags can widen its permissions, add MCP servers or settings, or name
-/// directories, and no list of dangerous flags stays complete as the harnesses evolve.
-fn allowed_flags(kind: HarnessKind) -> &'static [(&'static str, Value)] {
-    match kind {
-        // `--model` and `--effort`: monocode `provider.rs` passes both to Claude Code.
-        HarnessKind::ClaudeCode => &[("--model", Value::Model), ("--effort", Value::Effort)],
+/// How `kind` is told a model and an effort at launch, or `None` where this crate knows no
+/// way. The adapter builds these arguments itself; nothing of the request reaches the
+/// command line but the checked value.
+fn model_flags(kind: HarnessKind, value: Value) -> Option<fn(&str) -> Vec<String>> {
+    match (kind, value) {
+        // monocode `provider.rs` passes both to Claude Code.
+        (HarnessKind::ClaudeCode, Value::Model) => Some(|model| vec!["--model".to_owned(), model.to_owned()]),
+        (HarnessKind::ClaudeCode, Value::Effort) => Some(|effort| vec!["--effort".to_owned(), effort.to_owned()]),
+        // The grammar admits no `"`, so the TOML string needs no escaping.
+        (HarnessKind::Codex, Value::Model) => Some(|model| vec!["-c".to_owned(), format!("model=\"{model}\"")]),
+        (HarnessKind::Codex, Value::Effort) => {
+            Some(|effort| vec!["-c".to_owned(), format!("model_reasoning_effort=\"{effort}\"")])
+        }
         // monocode `provider/acp.rs` passes these to Grok's `agent` subcommand.
-        HarnessKind::Acp(AcpFlavor::Grok) => &[("--model", Value::Model), ("--reasoning-effort", Value::Effort)],
-        // Codex takes its model through `-c`, checked by `codex_config`.
-        HarnessKind::Codex => &[],
+        (HarnessKind::Acp(AcpFlavor::Grok), Value::Model) => Some(|model| vec!["--model".to_owned(), model.to_owned()]),
+        (HarnessKind::Acp(AcpFlavor::Grok), Value::Effort) => {
+            Some(|effort| vec!["--reasoning-effort".to_owned(), effort.to_owned()])
+        }
         // The other ACP agents select a model through the protocol, which this crate does not
         // drive, and a generic agent's flags are unknown.
-        HarnessKind::Acp(_) => &[],
+        (HarnessKind::Acp(_), _) => None,
     }
 }
 
-/// The Codex configuration keys a caller may set with `-c key="value"`.
-const CODEX_KEYS: &[(&str, Value)] = &[("model", Value::Model), ("model_reasoning_effort", Value::Effort)];
-
-/// Checks the caller's extra arguments for `kind` against its allow-list. Each allowed flag
-/// may appear once, as `--flag value` or `--flag=value`; positionals and any other flag are
-/// refused. A bypass opt-in does not widen the list.
-pub(crate) fn check_extra_args(kind: HarnessKind, args: &[String]) -> Result<(), LaunchError> {
-    let refuse = |argument: &str| LaunchError::ArgumentNotAllowed {
-        harness: kind.id(),
-        argument: argument.to_owned(),
-    };
-    let mut seen: Vec<&str> = Vec::new();
-    let mut args = args.iter();
-    while let Some(arg) = args.next() {
-        let (flag, inline) = match arg.split_once('=') {
-            Some((flag, value)) if flag.starts_with("--") => (flag, Some(value)),
-            _ => (arg.as_str(), None),
-        };
-        let mut take_value = || match inline {
-            Some(value) => Some(value),
-            None => args.next().map(String::as_str),
-        };
-        if kind == HarnessKind::Codex && matches!(flag, "-c" | "--config") {
-            let value = take_value().ok_or_else(|| refuse(arg))?;
-            let key = codex_config(value).ok_or_else(|| refuse(value))?;
-            if seen.contains(&key) {
-                return Err(refuse(value));
-            }
-            seen.push(key);
-            continue;
+/// The arguments that select `model` and `effort` for `kind`. A value outside its grammar is
+/// refused with [`LaunchError::ArgumentNotAllowed`], and a value for a harness that takes
+/// none with [`LaunchError::Unsupported`].
+pub(crate) fn model_args(
+    kind: HarnessKind,
+    model: Option<&str>,
+    effort: Option<&str>,
+) -> Result<Vec<String>, LaunchError> {
+    let mut args = Vec::new();
+    for (value, grammar, feature) in [
+        (model, Value::Model, "choosing a model at launch"),
+        (effort, Value::Effort, "choosing a reasoning effort at launch"),
+    ] {
+        let Some(value) = value else { continue };
+        let flags = model_flags(kind, grammar).ok_or(LaunchError::Unsupported {
+            harness: kind.id(),
+            feature,
+        })?;
+        if !grammar.accepts(value) {
+            return Err(LaunchError::ArgumentNotAllowed {
+                harness: kind.id(),
+                argument: value.to_owned(),
+            });
         }
-        let Some((name, grammar)) = allowed_flags(kind).iter().find(|(name, _)| *name == flag) else {
-            return Err(refuse(arg));
-        };
-        let value = take_value().ok_or_else(|| refuse(arg))?;
-        if seen.contains(name) || !grammar.accepts(value) {
-            return Err(refuse(arg));
-        }
-        seen.push(name);
+        args.extend(flags(value));
     }
-    Ok(())
-}
-
-/// The key of an allowed Codex `-c key="value"` override, or `None` when it is not one.
-fn codex_config(setting: &str) -> Option<&'static str> {
-    let (key, value) = setting.split_once('=')?;
-    let (key, grammar) = CODEX_KEYS.iter().find(|(name, _)| *name == key)?;
-    let value = value.strip_prefix('"')?.strip_suffix('"')?;
-    grammar.accepts(value).then_some(*key)
+    Ok(args)
 }
 
 /// Fragments that switch a harness's permission checks off. Checked on the adapter's own
-/// argument list as a second line of defence: the caller's arguments never get this far
-/// unless the allow-list accepted them.
+/// argument list as a second line of defence: a request's model and effort cannot carry
+/// one, as their grammar admits no leading `-` and the flag is the adapter's.
 const BYPASS_FRAGMENTS: &[&str] = &[
     "dangerously-skip-permissions",
     "dangerously-bypass-approvals-and-sandbox",

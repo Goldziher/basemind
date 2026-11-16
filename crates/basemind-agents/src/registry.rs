@@ -6,19 +6,20 @@ use crate::codex::CodexAdapter;
 use crate::error::LaunchError;
 use crate::harness::HarnessKind;
 use crate::session::{CommandPlan, Session};
-use crate::spec::LaunchSpec;
+use crate::spec::{LaunchConfig, LaunchRequest};
 
-/// Turns a [`LaunchSpec`] into a running [`Session`] for the harnesses it supports.
+/// Turns a [`LaunchConfig`] and a [`LaunchRequest`] into a running [`Session`] for the
+/// harnesses it supports.
 pub trait Adapter: Send + Sync {
     /// Whether this adapter drives harnesses of `kind`.
     fn supports(&self, kind: HarnessKind) -> bool;
 
-    /// The process a launch of `spec` would start, without starting it.
+    /// The process a launch of `request` under `config` would start, without starting it.
     ///
     /// # Errors
     ///
-    /// Whatever makes the spec unsafe or impossible to launch: see [`LaunchError`].
-    fn plan(&self, spec: &LaunchSpec) -> Result<CommandPlan, LaunchError>;
+    /// Whatever makes the launch unsafe or impossible: see [`LaunchError`].
+    fn plan(&self, config: &LaunchConfig, request: &LaunchRequest) -> Result<CommandPlan, LaunchError>;
 
     /// Starts the harness and hands it the brief.
     ///
@@ -26,7 +27,7 @@ pub trait Adapter: Send + Sync {
     ///
     /// The errors of [`Adapter::plan`], and [`LaunchError::Spawn`] when the executable does
     /// not start.
-    fn launch(&self, spec: &LaunchSpec) -> Result<Session, LaunchError>;
+    fn launch(&self, config: &LaunchConfig, request: &LaunchRequest) -> Result<Session, LaunchError>;
 }
 
 /// A set of adapters. A later registration wins over an earlier one for the same kind.
@@ -75,28 +76,28 @@ impl Registry {
             .map(AsRef::as_ref)
     }
 
-    /// The process a launch of `spec` would start.
+    /// The process a launch of `request` under `config` would start.
     ///
     /// # Errors
     ///
-    /// [`LaunchError::UnknownHarness`] without an adapter for the spec's harness, else the
+    /// [`LaunchError::UnknownHarness`] without an adapter for the config's harness, else the
     /// errors of [`Adapter::plan`].
-    pub fn plan(&self, spec: &LaunchSpec) -> Result<CommandPlan, LaunchError> {
-        self.require(spec)?.plan(spec)
+    pub fn plan(&self, config: &LaunchConfig, request: &LaunchRequest) -> Result<CommandPlan, LaunchError> {
+        self.require(config)?.plan(config, request)
     }
 
-    /// Launches `spec` with the adapter for its harness.
+    /// Launches `request` under `config` with the adapter for the config's harness.
     ///
     /// # Errors
     ///
-    /// [`LaunchError::UnknownHarness`] without an adapter for the spec's harness, else the
+    /// [`LaunchError::UnknownHarness`] without an adapter for the config's harness, else the
     /// errors of [`Adapter::launch`].
-    pub fn launch(&self, spec: &LaunchSpec) -> Result<Session, LaunchError> {
-        self.require(spec)?.launch(spec)
+    pub fn launch(&self, config: &LaunchConfig, request: &LaunchRequest) -> Result<Session, LaunchError> {
+        self.require(config)?.launch(config, request)
     }
 
-    fn require(&self, spec: &LaunchSpec) -> Result<&dyn Adapter, LaunchError> {
-        let kind = spec.harness.kind;
+    fn require(&self, config: &LaunchConfig) -> Result<&dyn Adapter, LaunchError> {
+        let kind = config.harness.kind;
         self.adapter(kind).ok_or(LaunchError::UnknownHarness(kind.id()))
     }
 }

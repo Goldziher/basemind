@@ -100,7 +100,7 @@ fn converse_with(
     controls: Vec<Control>,
     script: impl FnOnce(&mut FakeAgent) + Send + 'static,
 ) -> Run {
-    let plan = AcpAdapter.plan(spec).unwrap();
+    let plan = AcpAdapter.plan_spec(spec).unwrap();
     let config = Config::new(spec, &plan).unwrap();
     let (sink, events) = EventSink::for_test(spec.approval_policy.clone(), spec.limits.max_turns);
     let (to_client, incoming) = unbounded();
@@ -220,7 +220,10 @@ fn the_mcp_server_is_passed_in_session_new_with_the_identity_by_value() {
     run.result.unwrap();
 
     spec.mcp_server.as_mut().unwrap().allow_tools = vec!["agent_post".to_owned()];
-    assert!(matches!(AcpAdapter.plan(&spec), Err(LaunchError::Unsupported { .. })));
+    assert!(matches!(
+        AcpAdapter.plan_spec(&spec),
+        Err(LaunchError::Unsupported { .. })
+    ));
 }
 
 #[test]
@@ -328,7 +331,7 @@ fn a_deferred_request_is_answered_by_the_caller() {
 fn grok_gets_its_bypass_switches_only_with_an_opt_in() {
     let root = tempfile::tempdir().unwrap();
     let mut spec = acp_spec(AcpFlavor::Grok, root.path());
-    let plan = AcpAdapter.plan(&spec).unwrap();
+    let plan = AcpAdapter.plan_spec(&spec).unwrap();
     assert_eq!(plan.args, ["--no-auto-update", "agent", "--no-leader", "stdio"]);
     assert_eq!(plan.env["GROK_NO_AUTO_UPDATE"], "1");
     let run = converse_with(&spec, Vec::new(), |agent| {
@@ -341,14 +344,14 @@ fn grok_gets_its_bypass_switches_only_with_an_opt_in() {
 
     spec.permission_mode = PermissionMode::Bypass;
     assert!(matches!(
-        AcpAdapter.plan(&spec),
+        AcpAdapter.plan_spec(&spec),
         Err(LaunchError::BypassNotAuthorized { harness: "grok", .. })
     ));
     spec.bypass = Some(BypassOptIn {
         harness: HarnessKind::Acp(AcpFlavor::Grok),
         mode: "yoloMode".to_owned(),
     });
-    let plan = AcpAdapter.plan(&spec).unwrap();
+    let plan = AcpAdapter.plan_spec(&spec).unwrap();
     assert_eq!(
         plan.args,
         ["--no-auto-update", "agent", "--no-leader", "--always-approve", "stdio"]
@@ -372,7 +375,7 @@ fn a_session_mode_is_set_only_for_an_authorized_bypass() {
         mode: "yolo".to_owned(),
     });
     assert!(matches!(
-        AcpAdapter.plan(&spec),
+        AcpAdapter.plan_spec(&spec),
         Err(LaunchError::BypassNotAuthorized { .. })
     ));
     spec.bypass.as_mut().unwrap().mode = "dont_ask".to_owned();
@@ -392,7 +395,7 @@ fn a_session_mode_is_set_only_for_an_authorized_bypass() {
         harness: HarnessKind::Acp(AcpFlavor::Generic),
         mode: "full-auto".to_owned(),
     });
-    let plan = AcpAdapter.plan(&generic).unwrap();
+    let plan = AcpAdapter.plan_spec(&generic).unwrap();
     assert_eq!(Config::new(&generic, &plan).unwrap().mode.as_deref(), Some("full-auto"));
 
     let mut cursor = acp_spec(AcpFlavor::Cursor, root.path());
@@ -400,7 +403,10 @@ fn a_session_mode_is_set_only_for_an_authorized_bypass() {
         harness: HarnessKind::Acp(AcpFlavor::Cursor),
         mode: "yolo".to_owned(),
     });
-    assert!(matches!(AcpAdapter.plan(&cursor), Err(LaunchError::Unsupported { .. })));
+    assert!(matches!(
+        AcpAdapter.plan_spec(&cursor),
+        Err(LaunchError::Unsupported { .. })
+    ));
 }
 
 #[test]
@@ -413,33 +419,38 @@ fn launch_arguments_follow_the_flavor_and_unsupported_modes_are_refused() {
         (AcpFlavor::Gemini, "gemini", vec!["--experimental-acp"]),
         (AcpFlavor::Generic, "acp", vec![]),
     ] {
-        let plan = AcpAdapter.plan(&acp_spec(flavor, root.path())).unwrap();
+        let plan = AcpAdapter.plan_spec(&acp_spec(flavor, root.path())).unwrap();
         assert_eq!(plan.program, PathBuf::from(program));
         assert_eq!(plan.args, args);
     }
     let mut read_only = acp_spec(AcpFlavor::Grok, root.path());
     read_only.permission_mode = PermissionMode::ReadOnly;
-    let plan = AcpAdapter.plan(&read_only).unwrap();
+    let plan = AcpAdapter.plan_spec(&read_only).unwrap();
     assert_eq!(plan.args[..3], ["--no-auto-update", "--permission-mode", "plan"]);
 
     let mut cursor = acp_spec(AcpFlavor::Cursor, root.path());
     cursor.permission_mode = PermissionMode::ReadOnly;
-    assert!(matches!(AcpAdapter.plan(&cursor), Err(LaunchError::Unsupported { .. })));
-    cursor.permission_mode = PermissionMode::AcceptEdits;
-    assert!(matches!(AcpAdapter.plan(&cursor), Err(LaunchError::Unsupported { .. })));
-
-    let mut yolo = acp_spec(AcpFlavor::Gemini, root.path());
-    yolo.harness = yolo.harness.with_args(["--yolo"]);
     assert!(matches!(
-        AcpAdapter.plan(&yolo),
-        Err(LaunchError::ArgumentNotAllowed { harness: "gemini", .. })
+        AcpAdapter.plan_spec(&cursor),
+        Err(LaunchError::Unsupported { .. })
+    ));
+    cursor.permission_mode = PermissionMode::AcceptEdits;
+    assert!(matches!(
+        AcpAdapter.plan_spec(&cursor),
+        Err(LaunchError::Unsupported { .. })
+    ));
+
+    let mut gemini = acp_spec(AcpFlavor::Gemini, root.path());
+    gemini.model = Some("gemini-2.5-pro".to_owned());
+    assert!(matches!(
+        AcpAdapter.plan_spec(&gemini),
+        Err(LaunchError::Unsupported { harness: "gemini", .. })
     ));
 
     let mut grok = acp_spec(AcpFlavor::Grok, root.path());
-    grok.harness = grok
-        .harness
-        .with_args(["--model", "grok-4", "--reasoning-effort", "high"]);
-    let plan = AcpAdapter.plan(&grok).unwrap();
+    grok.model = Some("grok-4".to_owned());
+    grok.effort = Some("high".to_owned());
+    let plan = AcpAdapter.plan_spec(&grok).unwrap();
     assert_eq!(
         plan.args,
         [

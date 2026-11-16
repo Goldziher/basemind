@@ -13,7 +13,7 @@ use crate::harness::HarnessKind;
 use crate::line::{LineDriver, Protocol, Step, TextStream, write_json};
 use crate::registry::Adapter;
 use crate::session::{self, CommandPlan, EventSink, Session};
-use crate::spec::{ApprovalVerdict, LaunchSpec, PermissionMode, utf8};
+use crate::spec::{ApprovalVerdict, LaunchConfig, LaunchRequest, LaunchSpec, PermissionMode, utf8};
 
 const INITIALIZE_ID: u64 = 1;
 const THREAD_ID: u64 = 2;
@@ -31,7 +31,17 @@ impl Adapter for CodexAdapter {
         kind == HarnessKind::Codex
     }
 
-    fn plan(&self, spec: &LaunchSpec) -> Result<CommandPlan, LaunchError> {
+    fn plan(&self, config: &LaunchConfig, request: &LaunchRequest) -> Result<CommandPlan, LaunchError> {
+        self.plan_spec(&LaunchSpec::new(config, request)?)
+    }
+
+    fn launch(&self, config: &LaunchConfig, request: &LaunchRequest) -> Result<Session, LaunchError> {
+        self.launch_spec(&LaunchSpec::new(config, request)?)
+    }
+}
+
+impl CodexAdapter {
+    pub(crate) fn plan_spec(&self, spec: &LaunchSpec) -> Result<CommandPlan, LaunchError> {
         let prepared = spec.prepare()?;
         let mut args = vec!["app-server".to_owned()];
         if let Some(server) = &spec.mcp_server {
@@ -52,12 +62,12 @@ impl Adapter for CodexAdapter {
                 args.extend(["-c".to_owned(), format!("mcp_servers.{}.{key}={value}", server.name)]);
             }
         }
-        args.extend(prepared.extra_args.iter().cloned());
+        args.extend(prepared.model_args.iter().cloned());
         spec.plan(&prepared, args, &[])
     }
 
-    fn launch(&self, spec: &LaunchSpec) -> Result<Session, LaunchError> {
-        let plan = self.plan(spec)?;
+    fn launch_spec(&self, spec: &LaunchSpec) -> Result<Session, LaunchError> {
+        let plan = self.plan_spec(spec)?;
         let prepared = spec.prepare()?;
         let access = Access::new(spec.permission_mode, prepared.bypass(spec));
         let protocol = CodexProtocol::new(spec.brief.clone(), utf8(&plan.cwd)?.to_owned(), access);

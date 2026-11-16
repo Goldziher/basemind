@@ -33,7 +33,7 @@ use crate::harness::{AcpFlavor, HarnessKind};
 use crate::pipe;
 use crate::registry::Adapter;
 use crate::session::{self, CONTROL_QUEUE, ChildIo, CommandPlan, ControlTx, Driver, EventSink, Session, Undelivered};
-use crate::spec::{ApprovalVerdict, LaunchSpec, PermissionMode, Prepared};
+use crate::spec::{ApprovalVerdict, LaunchConfig, LaunchRequest, LaunchSpec, PermissionMode, Prepared};
 
 /// Drives every [`HarnessKind::Acp`] harness.
 ///
@@ -73,7 +73,17 @@ impl Adapter for AcpAdapter {
         matches!(kind, HarnessKind::Acp(_))
     }
 
-    fn plan(&self, spec: &LaunchSpec) -> Result<CommandPlan, LaunchError> {
+    fn plan(&self, config: &LaunchConfig, request: &LaunchRequest) -> Result<CommandPlan, LaunchError> {
+        self.plan_spec(&LaunchSpec::new(config, request)?)
+    }
+
+    fn launch(&self, config: &LaunchConfig, request: &LaunchRequest) -> Result<Session, LaunchError> {
+        self.launch_spec(&LaunchSpec::new(config, request)?)
+    }
+}
+
+impl AcpAdapter {
+    pub(crate) fn plan_spec(&self, spec: &LaunchSpec) -> Result<CommandPlan, LaunchError> {
         let flavor = flavor(spec)?;
         let prepared = spec.prepare()?;
         session_mode(spec, &prepared, flavor)?;
@@ -88,9 +98,9 @@ impl Adapter for AcpAdapter {
             });
         }
         let mut env = Vec::new();
-        let extra = prepared.extra_args.iter().map(String::as_str);
+        let extra = prepared.model_args.iter().map(String::as_str);
         let args: Vec<&str> = match flavor {
-            // The allow-list leaves these flavors no extra arguments.
+            // `model_args` refuses a model or effort for these flavors.
             AcpFlavor::Cursor | AcpFlavor::Hermes | AcpFlavor::OpenCode => vec!["acp"],
             AcpFlavor::Gemini => vec!["--experimental-acp"],
             AcpFlavor::Generic => Vec::new(),
@@ -113,8 +123,8 @@ impl Adapter for AcpAdapter {
         spec.plan(&prepared, args.into_iter().map(str::to_owned).collect(), &env)
     }
 
-    fn launch(&self, spec: &LaunchSpec) -> Result<Session, LaunchError> {
-        let plan = self.plan(spec)?;
+    fn launch_spec(&self, spec: &LaunchSpec) -> Result<Session, LaunchError> {
+        let plan = self.plan_spec(spec)?;
         let config = Config::new(spec, &plan)?;
         let (tx, controls) = channel(CONTROL_QUEUE);
         let driver = Box::new(AcpDriver { config, controls });

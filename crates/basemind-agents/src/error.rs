@@ -23,6 +23,9 @@ pub enum LaunchError {
         /// The canonical root it had to stay inside.
         root: PathBuf,
     },
+    /// The request's working directory is absolute; it has to be relative to the root.
+    #[error("working directory {0} is not relative to the root")]
+    WorkingDirNotRelative(PathBuf),
     /// A path the harness has to receive in its protocol is not valid UTF-8.
     #[error("path {0:?} is not valid UTF-8")]
     NonUtf8Path(PathBuf),
@@ -50,13 +53,12 @@ pub enum LaunchError {
     /// An argument the adapter built would enable a permission bypass the launch does not run in.
     #[error("argument {0:?} enables a permission bypass and no opt-in covers it")]
     BypassArgument(String),
-    /// An extra argument is not on the harness's allow-list, is a positional, repeats an
-    /// allowed flag or carries a value outside its grammar.
+    /// The request's model or effort is outside its grammar.
     #[error("argument {argument:?} is not allowed for {harness}")]
     ArgumentNotAllowed {
         /// The harness the launch targets.
         harness: &'static str,
-        /// The offending argument.
+        /// The offending value.
         argument: String,
     },
     /// The harness has no equivalent of the requested feature.
@@ -73,9 +75,9 @@ pub enum LaunchError {
     /// A pre-approved MCP tool name is not `[A-Za-z0-9_-]{1,64}`.
     #[error("MCP tool name {0:?} does not match [A-Za-z0-9_-]{{1,64}}")]
     InvalidMcpToolName(String),
-    /// An environment addition, of the spec or of its MCP server, has a name a launch spec
-    /// may not set: see [`LaunchSpec::env`](crate::LaunchSpec::env).
-    #[error("environment variable {0:?} may not be set by a launch spec")]
+    /// An environment addition, of the config or of its MCP server, has a name a launch config
+    /// may not set: see [`LaunchConfig::env`](crate::LaunchConfig::env).
+    #[error("environment variable {0:?} may not be set by a launch config")]
     EnvNotAllowed(String),
     /// The working directory or an ancestor of it holds a project file through which the
     /// harness would load permissions, hooks or MCP servers the launch does not control.
@@ -86,7 +88,7 @@ pub enum LaunchError {
         /// The file or directory found.
         path: PathBuf,
     },
-    /// A limit is zero.
+    /// A limit is zero or too long to schedule.
     #[error("invalid limits: {0}")]
     InvalidLimits(&'static str),
     /// No adapter is registered for the harness kind.

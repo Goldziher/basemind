@@ -1,5 +1,5 @@
 use super::*;
-use crate::test_support::spec;
+use crate::test_support::{config, spec};
 
 fn os(pairs: &[(&str, &str)]) -> Vec<(OsString, OsString)> {
     pairs.iter().map(|(name, value)| (name.into(), value.into())).collect()
@@ -157,23 +157,98 @@ fn zero_limits_are_refused() {
 }
 
 #[test]
-fn a_bypass_opt_in_never_admits_an_extra_argument() {
+fn a_request_cannot_raise_the_caps_or_leave_the_root_by_an_absolute_path() {
     let root = tempfile::tempdir().unwrap();
-    let mut spec = spec(HarnessKind::ClaudeCode, root.path());
-    spec.bypass = Some(BypassOptIn {
-        harness: HarnessKind::ClaudeCode,
-        mode: "bypassPermissions".to_owned(),
-    });
-    spec.harness = spec.harness.with_args(["--dangerously-skip-permissions"]);
-    for mode in [PermissionMode::Supervised, PermissionMode::Bypass] {
-        spec.permission_mode = mode;
-        assert!(
-            matches!(
-                spec.prepare(),
-                Err(LaunchError::ArgumentNotAllowed { harness: "claude", .. })
-            ),
-            "{mode:?} admitted the flag"
-        );
+    let mut config = config(HarnessKind::Codex, root.path());
+    config.limits = Limits {
+        wall_time: Duration::from_secs(60),
+        max_turns: 3,
+        stop_grace: Duration::from_secs(2),
+    };
+    let mut request = LaunchRequest::new("Review the diff.");
+    assert_eq!(LaunchSpec::new(&config, &request).unwrap().limits, config.limits);
+
+    request.max_turns = Some(1000);
+    request.wall_time = Some(Duration::from_secs(24 * 3600));
+    assert_eq!(LaunchSpec::new(&config, &request).unwrap().limits, config.limits);
+
+    request.max_turns = Some(2);
+    request.wall_time = Some(Duration::from_secs(5));
+    let limits = LaunchSpec::new(&config, &request).unwrap().limits;
+    assert_eq!((limits.max_turns, limits.wall_time), (2, Duration::from_secs(5)));
+    assert_eq!(limits.stop_grace, config.limits.stop_grace);
+
+    for (turns, wall_time) in [(Some(0), None), (None, Some(Duration::ZERO))] {
+        let request = LaunchRequest {
+            max_turns: turns,
+            wall_time,
+            ..LaunchRequest::new("x")
+        };
+        assert!(matches!(
+            LaunchSpec::new(&config, &request),
+            Err(LaunchError::InvalidLimits(_))
+        ));
+    }
+
+    let inside = root.path().join("sub");
+    std::fs::create_dir(&inside).unwrap();
+    let request = LaunchRequest {
+        working_dir: Some(inside.clone()),
+        ..LaunchRequest::new("x")
+    };
+    assert!(matches!(
+        LaunchSpec::new(&config, &request),
+        Err(LaunchError::WorkingDirNotRelative(dir)) if dir == inside
+    ));
+}
+
+#[test]
+fn a_model_and_an_effort_become_the_harnesses_own_flags() {
+    let root = tempfile::tempdir().unwrap();
+    let with = |kind, model: Option<&str>, effort: Option<&str>| {
+        let mut spec = spec(kind, root.path());
+        spec.model = model.map(str::to_owned);
+        spec.effort = effort.map(str::to_owned);
+        spec.prepare().map(|prepared| prepared.model_args)
+    };
+    assert_eq!(
+        with(HarnessKind::ClaudeCode, Some("claude-opus-4-6[1m]"), Some("high")).unwrap(),
+        ["--model", "claude-opus-4-6[1m]", "--effort", "high"]
+    );
+    assert_eq!(
+        with(HarnessKind::Codex, Some("gpt-5.1-codex"), Some("high")).unwrap(),
+        ["-c", "model=\"gpt-5.1-codex\"", "-c", "model_reasoning_effort=\"high\""]
+    );
+    assert_eq!(
+        with(HarnessKind::Acp(AcpFlavor::Grok), Some("grok-4"), None).unwrap(),
+        ["--model", "grok-4"]
+    );
+    assert!(
+        with(HarnessKind::Acp(AcpFlavor::Cursor), None, None)
+            .unwrap()
+            .is_empty()
+    );
+    for flavor in [AcpFlavor::Cursor, AcpFlavor::Gemini, AcpFlavor::Generic] {
+        assert!(matches!(
+            with(HarnessKind::Acp(flavor), Some("model"), None),
+            Err(LaunchError::Unsupported { .. })
+        ));
+    }
+    for (model, effort) in [
+        (Some("--dangerously-skip-permissions"), None),
+        (Some("sonnet --allowedTools Bash"), None),
+        (Some("x\"\nsandbox_mode=\"danger-full-access"), None),
+        (Some(""), None),
+        (Some(&"m".repeat(129)[..]), None),
+        (None, Some("HIGH")),
+        (None, Some("high max")),
+    ] {
+        for kind in [HarnessKind::ClaudeCode, HarnessKind::Codex] {
+            assert!(
+                matches!(with(kind, model, effort), Err(LaunchError::ArgumentNotAllowed { .. })),
+                "{kind} accepted {model:?} / {effort:?}"
+            );
+        }
     }
 }
 
@@ -210,11 +285,11 @@ fn paths_that_are_not_utf8_are_refused_rather_than_serialized() {
         HarnessKind::Codex,
         HarnessKind::Acp(crate::harness::AcpFlavor::Cursor),
     ] {
-        let mut spec = spec(kind, outer.path());
-        spec.mcp_server = Some(McpServerSpec::basemind_serve(Path::new(odd)));
+        let mut config = config(kind, outer.path());
+        config.mcp_server = Some(McpServerSpec::basemind_serve(Path::new(odd)));
         assert!(
             matches!(
-                crate::Registry::with_defaults().plan(&spec),
+                crate::Registry::with_defaults().plan(&config, &LaunchRequest::new("x")),
                 Err(LaunchError::NonUtf8Path(_))
             ),
             "{kind} accepted the path"

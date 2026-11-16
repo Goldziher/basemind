@@ -1,5 +1,6 @@
 // `PermissionMode` is adapted from https://github.com/hardbeat920/monocode (crates/monocode-core/src/agent.rs, `AccessMode`) at 09d04436babb39ad72198cdf22f735067027fc04, MIT.
-//! What to launch: the spec a caller builds and the checks every adapter runs on it first.
+//! What to launch: the trusted [`LaunchConfig`], the model-facing [`LaunchRequest`], and the
+//! checks every adapter runs on the two before it builds a command.
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -9,7 +10,7 @@ use std::time::Duration;
 
 use crate::error::LaunchError;
 use crate::event::ApprovalRequest;
-use crate::guard::{check_env_name, check_extra_args, check_project_config, guard_bypass};
+use crate::guard::{check_env_name, check_project_config, guard_bypass, model_args};
 use crate::harness::{AcpFlavor, Harness, HarnessKind};
 use crate::identity::AgentIdentity;
 use crate::session::CommandPlan;
@@ -69,7 +70,8 @@ where
     }
 }
 
-/// When a session is ended from outside.
+/// When a session is ended from outside. In a [`LaunchConfig`] these are the caps: a
+/// [`LaunchRequest`] may ask for less wall time or fewer turns, never more.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Limits {
     /// The longest the harness process may live. Its process group is killed at the deadline.
@@ -130,10 +132,14 @@ impl McpServerSpec {
     }
 }
 
-/// Everything one launch needs.
+/// The trusted half of a launch: what the operator's configuration, or the engine acting on
+/// it, decides. Nothing here may come from a model, a brief or another agent: the executable
+/// and the MCP server's command are run, the environment values pick the account the
+/// harness works under, and the opt-ins switch safety checks off. A model-chosen part of a
+/// launch goes in a [`LaunchRequest`], which cannot express any of these.
 #[derive(Clone)]
 #[non_exhaustive]
-pub struct LaunchSpec {
+pub struct LaunchConfig {
     /// The harness to start.
     pub harness: Harness,
     /// The directory the working directory has to resolve inside. Only the starting
@@ -141,10 +147,6 @@ pub struct LaunchSpec {
     /// the agent is not sandboxed to it, and a harness that is sent the path in its protocol
     /// (Codex, ACP) resolves it again itself.
     pub root: PathBuf,
-    /// The agent's working directory, inside `root`. `None` means `root`.
-    pub working_dir: Option<PathBuf>,
-    /// The brief: the first prompt the agent receives.
-    pub brief: String,
     /// The identity exported to the agent.
     pub identity: AgentIdentity,
     /// Variables added to the allow-listed environment. Nothing else of the parent's
@@ -156,26 +158,27 @@ pub struct LaunchSpec {
     /// [`ENV_ALLOWLIST`], `BASEMIND_*`, loader and runtime switches (`LD_*`, `DYLD_*`,
     /// `NODE_*`, `PYTHON*`, ...) and the harnesses' configuration directories are refused
     /// with [`LaunchError::EnvNotAllowed`], so an addition cannot redirect the child's
-    /// configuration, code loading, executable search or basemind daemon.
+    /// configuration, code loading, executable search or basemind daemon. The values are
+    /// trusted: a credential and the project and region names choose which account the
+    /// harness bills and where its requests go.
     pub env: BTreeMap<String, String>,
     /// The MCP server to inject, if any.
     pub mcp_server: Option<McpServerSpec>,
-    /// Wall-time and turn limits.
+    /// The caps on wall time and turns, and the stop grace.
     pub limits: Limits,
     /// How much the agent may do unasked.
     pub permission_mode: PermissionMode,
-    /// Consent for [`PermissionMode::Bypass`] and for bypass arguments in [`Harness::args`].
+    /// Consent for [`PermissionMode::Bypass`].
     pub bypass: Option<BypassOptIn>,
     /// Who answers approval requests. `None` denies all of them.
     pub approval_policy: Option<Arc<dyn ApprovalPolicy>>,
 }
 
-impl std::fmt::Debug for LaunchSpec {
+impl std::fmt::Debug for LaunchConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("LaunchSpec")
+        f.debug_struct("LaunchConfig")
             .field("harness", &self.harness)
             .field("root", &self.root)
-            .field("working_dir", &self.working_dir)
             .field("identity", &self.identity)
             .field("env_names", &self.env.keys().collect::<Vec<_>>())
             .field("mcp_server", &self.mcp_server.as_ref().map(|server| &server.name))
@@ -187,15 +190,14 @@ impl std::fmt::Debug for LaunchSpec {
     }
 }
 
-impl LaunchSpec {
-    /// A supervised single-turn launch of `harness` in `root` with every default.
+impl LaunchConfig {
+    /// A supervised launch of `harness` in `root` with the default limits as caps, no
+    /// environment additions, no MCP server and no approval policy.
     #[must_use]
-    pub fn new(harness: Harness, root: impl Into<PathBuf>, brief: impl Into<String>, identity: AgentIdentity) -> Self {
+    pub fn new(harness: Harness, root: impl Into<PathBuf>, identity: AgentIdentity) -> Self {
         Self {
             harness,
             root: root.into(),
-            working_dir: None,
-            brief: brief.into(),
             identity,
             env: BTreeMap::new(),
             mcp_server: None,
@@ -205,9 +207,109 @@ impl LaunchSpec {
             approval_policy: None,
         }
     }
+}
+
+/// The half of a launch a model may choose: what to do, where in the root, with which model,
+/// for how long. Every field is checked against the [`LaunchConfig`] it is launched under.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct LaunchRequest {
+    /// The brief: the first prompt the agent receives.
+    pub brief: String,
+    /// The working directory, relative to the config's root; `None` means the root. An
+    /// absolute path is refused with [`LaunchError::WorkingDirNotRelative`], and one that
+    /// resolves outside the root with [`LaunchError::WorkingDirOutsideRoot`].
+    pub working_dir: Option<PathBuf>,
+    /// The model, for a harness that takes one at launch (Claude Code, Codex, Grok):
+    /// `[A-Za-z0-9._:/[]-]{1,128}`, not starting with `-`. Any other harness refuses it with
+    /// [`LaunchError::Unsupported`].
+    pub model: Option<String>,
+    /// The reasoning effort, `[a-z]{1,128}`, for the same harnesses as `model`.
+    pub effort: Option<String>,
+    /// How many prompts the session may run, at most the config's [`Limits::max_turns`];
+    /// a larger number is lowered to it. `None` takes the cap.
+    pub max_turns: Option<u32>,
+    /// How long the harness may run, at most the config's [`Limits::wall_time`]; a longer
+    /// time is lowered to it. `None` takes the cap.
+    pub wall_time: Option<Duration>,
+}
+
+impl LaunchRequest {
+    /// A request for `brief` in the root, with the config's caps as its limits.
+    #[must_use]
+    pub fn new(brief: impl Into<String>) -> Self {
+        Self {
+            brief: brief.into(),
+            ..Self::default()
+        }
+    }
+}
+
+/// One launch: a config and a request, merged after the request's limits were clamped to
+/// the config's caps. Adapters build on this and never on the request alone.
+#[derive(Clone)]
+pub(crate) struct LaunchSpec {
+    pub harness: Harness,
+    pub root: PathBuf,
+    pub working_dir: Option<PathBuf>,
+    pub brief: String,
+    pub identity: AgentIdentity,
+    pub env: BTreeMap<String, String>,
+    pub mcp_server: Option<McpServerSpec>,
+    pub limits: Limits,
+    pub permission_mode: PermissionMode,
+    pub bypass: Option<BypassOptIn>,
+    pub approval_policy: Option<Arc<dyn ApprovalPolicy>>,
+    pub model: Option<String>,
+    pub effort: Option<String>,
+}
+
+impl LaunchSpec {
+    /// Merges `request` into `config`: its limits are clamped to the config's caps, and a
+    /// zero limit or an absolute working directory is refused.
+    pub fn new(config: &LaunchConfig, request: &LaunchRequest) -> Result<Self, LaunchError> {
+        if request.max_turns == Some(0) {
+            return Err(LaunchError::InvalidLimits("max_turns is zero"));
+        }
+        if request.wall_time.is_some_and(|wall_time| wall_time.is_zero()) {
+            return Err(LaunchError::InvalidLimits("wall_time is zero"));
+        }
+        if let Some(dir) = request
+            .working_dir
+            .as_ref()
+            .filter(|dir| dir.is_absolute() || dir.has_root())
+        {
+            return Err(LaunchError::WorkingDirNotRelative(dir.clone()));
+        }
+        let caps = config.limits;
+        let limits = Limits {
+            wall_time: request
+                .wall_time
+                .map_or(caps.wall_time, |asked| asked.min(caps.wall_time)),
+            max_turns: request
+                .max_turns
+                .map_or(caps.max_turns, |asked| asked.min(caps.max_turns)),
+            stop_grace: caps.stop_grace,
+        };
+        Ok(Self {
+            harness: config.harness.clone(),
+            root: config.root.clone(),
+            working_dir: request.working_dir.clone(),
+            brief: request.brief.clone(),
+            identity: config.identity.clone(),
+            env: config.env.clone(),
+            mcp_server: config.mcp_server.clone(),
+            limits,
+            permission_mode: config.permission_mode,
+            bypass: config.bypass.clone(),
+            approval_policy: config.approval_policy.clone(),
+            model: request.model.clone(),
+            effort: request.effort.clone(),
+        })
+    }
 
     /// Checks the spec and resolves what the adapters need from it.
-    pub(crate) fn prepare(&self) -> Result<Prepared, LaunchError> {
+    pub fn prepare(&self) -> Result<Prepared, LaunchError> {
         if self.limits.wall_time.is_zero() {
             return Err(LaunchError::InvalidLimits("wall_time is zero"));
         }
@@ -248,7 +350,7 @@ impl LaunchSpec {
                 mode: kind.bypass_mode().unwrap_or("<the session mode id>").to_owned(),
             });
         }
-        check_extra_args(kind, &self.harness.args)?;
+        let model_args = model_args(kind, self.model.as_deref(), self.effort.as_deref())?;
         let cwd = confine(&self.root, self.working_dir.as_deref())?;
         check_project_config(kind, &cwd, std::env::var_os("HOME").as_deref().map(Path::new))?;
         // Every harness receives these paths inside JSON or TOML, which carry UTF-8 only.
@@ -259,7 +361,7 @@ impl LaunchSpec {
         Ok(Prepared {
             cwd,
             bypass_mode: authorized,
-            extra_args: self.harness.args.clone(),
+            model_args,
         })
     }
 
@@ -282,9 +384,9 @@ impl LaunchSpec {
         }
     }
 
-    /// The plan for the adapter's final `args`, which include the checked extra arguments
-    /// where that harness takes them, after the bypass guard.
-    pub(crate) fn plan(
+    /// The plan for the adapter's final `args`, which include the model arguments where that
+    /// harness takes them, after the bypass guard.
+    pub fn plan(
         &self,
         prepared: &Prepared,
         args: Vec<String>,
@@ -305,7 +407,7 @@ impl LaunchSpec {
 
     /// The names of the variables an injected MCP server must see: the identity, the server's
     /// own, and the store and comms locations when the child has them.
-    pub(crate) fn mcp_env_names(&self) -> Vec<String> {
+    pub fn mcp_env_names(&self) -> Vec<String> {
         let server_env = self.mcp_server.iter().flat_map(|server| server.env.keys());
         let wanted: Vec<&str> = [crate::identity::ENV_AGENT_ID, crate::identity::ENV_HOST]
             .into_iter()
@@ -320,10 +422,7 @@ impl LaunchSpec {
 
     /// The environment of the child: the allow-listed part of `parent`, then the additions,
     /// then the MCP server's variables, then the identity.
-    pub(crate) fn child_env(
-        &self,
-        parent: impl IntoIterator<Item = (OsString, OsString)>,
-    ) -> BTreeMap<String, OsString> {
+    pub fn child_env(&self, parent: impl IntoIterator<Item = (OsString, OsString)>) -> BTreeMap<String, OsString> {
         let mut env = BTreeMap::new();
         for (name, value) in parent {
             if let Some(name) = name.to_str().filter(|name| ENV_ALLOWLIST.contains(name)) {
@@ -348,8 +447,8 @@ pub(crate) struct Prepared {
     pub cwd: PathBuf,
     /// The authorized bypass mode, when the spec carries a valid opt-in.
     pub bypass_mode: Option<String>,
-    /// The caller's extra arguments, checked against the harness's allow-list.
-    pub extra_args: Vec<String>,
+    /// The harness's arguments for the request's model and effort.
+    pub model_args: Vec<String>,
 }
 
 impl Prepared {
