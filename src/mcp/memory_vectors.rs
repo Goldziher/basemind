@@ -121,9 +121,12 @@ pub(super) fn rows_owed(root: &Path, table: &str) -> u64 {
     u64::from_le_bytes([hash[0], hash[1], hash[2], hash[3], hash[4], hash[5], hash[6], hash[7]]) | 1
 }
 
-/// [`rows_owed`] of the table this process searches.
+/// [`rows_owed`] of the table this process searches, read on a blocking thread.
 pub(super) async fn rows_owed_here(state: &ServerState) -> u64 {
-    rows_owed(&state.shared.root, &table_name(state).await.unwrap_or_default())
+    let (root, table) = (state.shared.root.clone(), table_name(state).await.unwrap_or_default());
+    tokio::task::spawn_blocking(move || rows_owed(&root, &table))
+        .await
+        .unwrap_or_default()
 }
 
 /// The directory name of the table this process's embedder writes, or `None` without an embedder.
@@ -147,19 +150,22 @@ pub(super) async fn owe_rows_elsewhere(state: &ServerState) {
     let Some(own) = table_name(state).await else {
         return;
     };
-    let root = &state.shared.root;
-    let Ok(tables) = std::fs::read_dir(crate::store_layout::memory_vectors_dir(root)) else {
-        return;
-    };
-    for table in tables.flatten() {
-        let name = table.file_name();
-        let Some(name) = name.to_str() else {
-            continue;
+    let root = state.shared.root.clone();
+    let _ = tokio::task::spawn_blocking(move || {
+        let Ok(tables) = std::fs::read_dir(crate::store_layout::memory_vectors_dir(&root)) else {
+            return;
         };
-        if name != own && table.file_type().is_ok_and(|kind| kind.is_dir()) {
-            write_owed_stamp(&table_owed_path(root, name));
+        for table in tables.flatten() {
+            let name = table.file_name();
+            let Some(name) = name.to_str() else {
+                continue;
+            };
+            if name != own && table.file_type().is_ok_and(|kind| kind.is_dir()) {
+                write_owed_stamp(&table_owed_path(&root, name));
+            }
         }
-    }
+    })
+    .await;
 }
 
 /// Rewrite the rows-owed stamp at `path` with a value no earlier write of it held. Written aside

@@ -194,7 +194,8 @@ pub(super) async fn run_memory_put(state: &ServerState, params: MemoryPutParams)
         // search. The namespace is no longer level: the next search by meaning embeds the note.
         super::memory_vectors::delete_vector_row(state, params.visibility, owner, &params.key).await;
         super::memory_vectors::not_level(state, vis_byte, owner);
-        super::memory_vectors::owe_rows(&state.shared.root);
+        let root = state.shared.root.clone();
+        let _ = tokio::task::spawn_blocking(move || super::memory_vectors::owe_rows(&root)).await;
     }
     let (embedded, notice) = embed_report(embedded);
     json_result(&MemoryPutResponse {
