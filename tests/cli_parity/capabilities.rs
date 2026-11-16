@@ -3,8 +3,8 @@
 //!
 //! # Keying
 //!
-//! Every row is one line keyed by plain strings: the MCP tool name (plus its `mode`, for the one
-//! domain tool that is still mode-dispatched) and the CLI command path as typed after `basemind`.
+//! Every row is one line keyed by plain strings: the MCP tool name and the CLI command path as typed
+//! after `basemind`. Every tool is a verb tool now, so no row names a `mode`.
 //! Renaming or moving a CLI command is a one-line edit to the `cli` string of its row; adding a
 //! command or tool means adding one row. The coverage test (`main.rs`) fails with the exact row to
 //! add or delete.
@@ -103,15 +103,6 @@ const fn tool(tool: &'static str, cli: &'static str) -> Row {
     }
 }
 
-/// One mode of a mode-dispatched domain tool and its CLI command.
-#[cfg(all(feature = "comms", any(unix, windows)))]
-const fn pair(tool: &'static str, mode: &'static str, cli: &'static str) -> Row {
-    Row::Pair {
-        mcp: McpOp { tool, mode },
-        cli,
-    }
-}
-
 const fn shorthand(tool: &'static str, cli: &'static str, reason: &'static str) -> Row {
     Row::Shorthand {
         mcp: McpOp { tool, mode: "" },
@@ -136,7 +127,9 @@ const fn mcp_only(tool: &'static str, mode: &'static str, reason: &'static str) 
 const LIFECYCLE: &str = "process/index lifecycle, not a query an agent issues over MCP";
 const CACHE_ADMIN: &str = "machine-global cache administration; kept off the agent surface (ADR-0018) and run offline";
 #[cfg(all(feature = "comms", any(unix, windows)))]
-const BROKER: &str = "comms-broker daemon lifecycle; the MCP surface reaches the broker through `agents`";
+const BROKER: &str = "comms-broker daemon lifecycle; the MCP surface reaches the broker through the agent tools";
+#[cfg(all(feature = "comms", any(unix, windows)))]
+const HOOK: &str = "answers a plugin hook event on stdin; the hooks' entry, not an agent's";
 #[cfg(all(feature = "comms", any(unix, windows)))]
 const REGISTRY: &str = "read-only listing of the daemon's machine registry; the registry has no MCP tool";
 
@@ -257,24 +250,19 @@ pub fn table() -> Vec<Row> {
     ];
     #[cfg(all(feature = "comms", any(unix, windows)))]
     rows.extend([
-        pair("agents", "register", "agents register"),
-        pair("agents", "list", "agents list"),
-        pair("agents", "thread_start", "agents thread-start"),
-        pair("agents", "thread_list", "agents thread-list"),
-        pair("agents", "join", "agents join"),
-        pair("agents", "leave", "agents leave"),
-        pair("agents", "members", "agents members"),
-        pair("agents", "add_member", "agents add-member"),
-        pair("agents", "remove_member", "agents remove-member"),
-        pair("agents", "archive", "agents archive"),
-        pair("agents", "post", "agents post"),
-        pair("agents", "history", "agents history"),
-        pair("agents", "message", "agents message"),
-        pair("agents", "inbox", "agents inbox"),
-        pair("agents", "ack", "agents ack"),
-        pair("agents", "wait", "agents wait"),
-        pair("agents", "cleanup", "agents cleanup"),
-        pair("agents", "status", "agents status"),
+        tool("agent_post", "agent post"),
+        tool("agent_inbox", "agent inbox"),
+        tool("agent_threads", "agent threads"),
+        cli_only(
+            "agent status",
+            "reports who this checkout acts as and the daemon's agent store; an MCP session already knows",
+        ),
+        cli_only(
+            "agent cleanup",
+            "operator maintenance: archives any thread and sweeps retention, which no agent may do (ADR-0021)",
+        ),
+        cli_only("agent hook pre-tool-use", HOOK),
+        cli_only("agent hook name", HOOK),
         cli_only("workspace workspaces", REGISTRY),
         cli_only("workspace worktrees", REGISTRY),
         cli_only("workspace branches", REGISTRY),

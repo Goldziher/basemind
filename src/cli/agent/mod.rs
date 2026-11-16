@@ -7,18 +7,22 @@
 //! any implementation, the in-memory one included.
 //!
 //! Who is calling is the [`Session`](crate::comms::v2::front::Session) the binary resolved; a
-//! command chooses only `--as`. Not wired into the binary yet: `src/main.rs` still dispatches the
-//! v1 `agents` group.
+//! command chooses only `--as`. [`run`] resolves it, connects to the daemon and dispatches.
 //!
 //! Layout:
 //! - `args.rs` — the clap grammar.
 //! - `post.rs` / `inbox.rs` / `threads.rs` — one command each.
 //! - `render.rs` — text and JSON output.
+//! - `hook.rs` — `basemind agent hook`, what the plugin hooks ask of the binary.
+//! - `run.rs` — the binary's entry: identity, daemon link, dispatch.
 
 pub mod args;
+pub mod hook;
 pub mod inbox;
 pub mod post;
 pub mod render;
+#[cfg(all(feature = "comms", any(unix, windows)))]
+mod run;
 pub mod threads;
 
 #[cfg(test)]
@@ -34,10 +38,12 @@ use crate::comms::v2::front::{self, Session};
 use crate::comms::v2::{Caller, CommsError};
 
 pub use crate::comms::v2::front::WaitingRead;
-pub use args::{AgentCmd, InboxArgs, PostArgs, ThreadsArgs};
+pub use args::{AgentCmd, CleanupArgs, InboxArgs, PostArgs, ThreadsArgs};
 pub use inbox::{inbox_request, run_inbox};
 pub use post::{post_request, run_post};
 pub use render::Render;
+#[cfg(all(feature = "comms", any(unix, windows)))]
+pub use run::run;
 pub use threads::{run_threads, threads_request};
 
 /// The caller a command acts as: the session's principal, or its sub-identity `--as`. A refused

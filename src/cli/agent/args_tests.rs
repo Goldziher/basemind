@@ -210,11 +210,37 @@ fn threads_without_flags_leaves_every_field_out() {
 }
 
 #[test]
-fn status_and_cleanup_take_no_flags() {
+fn status_takes_no_flags_and_cleanup_names_threads_to_archive() {
     assert_eq!(parse(&["status"]).expect("parses"), AgentCmd::Status);
-    assert_eq!(parse(&["cleanup"]).expect("parses"), AgentCmd::Cleanup);
+    assert_eq!(
+        parse(&["cleanup"]).expect("parses"),
+        AgentCmd::Cleanup(CleanupArgs::default())
+    );
+    assert_eq!(
+        parse(&["cleanup", "--archive", "t-aaaaaa", "--archive", "t-bbbbbb"]).expect("parses"),
+        AgentCmd::Cleanup(CleanupArgs {
+            archive: vec!["t-aaaaaa".to_string(), "t-bbbbbb".to_string()],
+        })
+    );
     assert!(parse(&["status", "--as", "helper"]).is_err());
     assert!(parse(&["cleanup", "--apply"]).is_err());
+}
+
+#[test]
+fn hook_names_its_event() {
+    assert_eq!(
+        parse(&["hook", "pre-tool-use"]).expect("parses"),
+        AgentCmd::Hook {
+            event: super::super::hook::HookEvent::PreToolUse
+        }
+    );
+    assert_eq!(
+        parse(&["hook", "name"]).expect("parses"),
+        AgentCmd::Hook {
+            event: super::super::hook::HookEvent::Name
+        }
+    );
+    assert!(parse(&["hook"]).is_err());
 }
 
 #[test]

@@ -96,7 +96,9 @@ fn run(fake: &FakeAgents, who: &str, opts: &Render, args: &[&str]) -> anyhow::Re
         AgentCmd::Post(args) => run_post(fake, &acting, args, opts, out),
         AgentCmd::Inbox(args) => run_inbox(fake, &acting, args, &no_wait, opts, out),
         AgentCmd::Threads(args) => run_threads(fake, &acting, args, opts, out),
-        AgentCmd::Status | AgentCmd::Cleanup => panic!("status and cleanup run no AgentOps operation"),
+        AgentCmd::Status | AgentCmd::Cleanup(_) | AgentCmd::Hook { .. } => {
+            panic!("status, cleanup and hook run no AgentOps operation")
+        }
     })
 }
 

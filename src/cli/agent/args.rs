@@ -16,10 +16,24 @@ pub enum AgentCmd {
     Inbox(InboxArgs),
     /// List, discover or describe threads, or make one change to a thread.
     Threads(ThreadsArgs),
-    /// Report the state of the comms store (CLI only).
+    /// Report who this checkout acts as and the state of the daemon's agent store (CLI only).
     Status,
-    /// Remove what retention no longer keeps (CLI only).
-    Cleanup,
+    /// Archive threads whoever created them, then run one retention sweep (CLI only).
+    Cleanup(CleanupArgs),
+    /// Answer a plugin hook event read on stdin (CLI only; for the hooks).
+    Hook {
+        /// The event.
+        #[command(subcommand)]
+        event: super::hook::HookEvent,
+    },
+}
+
+/// `basemind agent cleanup`'s flags.
+#[derive(Args, Debug, Clone, Default, PartialEq, Eq)]
+pub struct CleanupArgs {
+    /// Archive this thread, whoever created it (repeatable).
+    #[arg(long, value_name = "THREAD")]
+    pub archive: Vec<String>,
 }
 
 /// `agent_post`'s fields.

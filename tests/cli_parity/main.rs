@@ -5,9 +5,8 @@
 //! a bijection: the CLI may also carry shorthands for one shape of a tool and administrative
 //! commands with no MCP tool. The guard enforces it:
 //!
-//! 1. **Coverage** (`capabilities.rs`): one checked-in table maps each MCP tool (and, for the one
-//!    domain tool that is still mode-dispatched, each `mode`) to the one CLI command that is its
-//!    counterpart, and classifies every other CLI command as a `shorthand` of a tool or as
+//! 1. **Coverage** (`capabilities.rs`): one checked-in table maps each MCP tool to the one CLI
+//!    command that is its counterpart, and classifies every other CLI command as a `shorthand` of a tool or as
 //!    `cli_only` with a required reason. The test enumerates the live MCP surface (tool schemas)
 //!    and the live command tree (the built binary's `-h` output) and fails on any uncovered tool or
 //!    command, stale row, empty reason or duplicate mapping, with the exact row to add or delete.
@@ -107,15 +106,22 @@ fn every_mcp_tool_is_covered() {
     let domains = mcp_surface::domains();
     let live = live_mcp_ops(&domains);
 
-    let compiled: BTreeSet<(String, String)> = basemind::mcp::params::VERB_TOOLS
+    #[allow(unused_mut)] // ~keep only a `comms` build adds the agent tools
+    let mut compiled: BTreeSet<(String, String)> = basemind::mcp::params::VERB_TOOLS
         .iter()
         .map(|tool| (tool.to_string(), String::new()))
         .collect();
+    #[cfg(all(feature = "comms", any(unix, windows)))]
+    compiled.extend(
+        basemind::mcp::agent_tools::AGENT_TOOLS
+            .iter()
+            .map(|tool| (tool.to_string(), String::new())),
+    );
     let from_schema: BTreeSet<(String, String)> =
         live.iter().map(|o| (o.tool.to_string(), o.mode.to_string())).collect();
     assert_eq!(
         from_schema, compiled,
-        "the advertised tool schemas disagree with VERB_TOOLS"
+        "the advertised tool schemas disagree with VERB_TOOLS + AGENT_TOOLS"
     );
 
     let rows = capabilities::table();

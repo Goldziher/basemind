@@ -51,7 +51,7 @@ struct Cli {
 
     /// Emit machine-readable JSON instead of the human-readable rendering. Applies to the tool
     /// subcommands (code / git / memory / admin / status / cache), the
-    /// coordination groups (agents / workspace / comms / daemon) and doctor. It is ignored, with a
+    /// coordination groups (agent / workspace / comms / daemon) and doctor. It is ignored, with a
     /// warning, on init / scan / rescan / watch / hook / lang / completions / man / statusline /
     /// serve.
     #[arg(long, global = true)]
@@ -128,6 +128,14 @@ enum Cmd {
     Comms {
         #[command(subcommand)]
         action: CommsLifecycleCmd,
+    },
+    /// Agent messaging: post, read and manage threads with the other agents of this repository
+    /// (needs `--features comms`). Mirrors the `agent_post`, `agent_inbox` and `agent_threads` MCP
+    /// tools, plus `status`, `cleanup` and the hooks' `hook`.
+    #[cfg(all(feature = "comms", any(unix, windows)))]
+    Agent {
+        #[command(subcommand)]
+        action: basemind::cli::agent::AgentCmd,
     },
     /// Machine-registry listings: workspaces / worktrees / branches (needs `--features comms`).
     /// Talks to the broker daemon directly, like `comms`.
@@ -376,6 +384,8 @@ fn run() -> Result<()> {
         #[cfg(all(feature = "comms", any(unix, windows)))]
         Cmd::Comms { action } => comms_cli::cmd_comms(action, json),
         #[cfg(all(feature = "comms", any(unix, windows)))]
+        Cmd::Agent { action } => basemind::cli::agent::run(&root, json, action),
+        #[cfg(all(feature = "comms", any(unix, windows)))]
         Cmd::Workspace { action } => basemind::cli::registry::run(json, action),
         #[cfg(all(feature = "comms", any(unix, windows)))]
         Cmd::Daemon { action } => comms_cli::cmd_daemon(action, json),
@@ -392,7 +402,11 @@ fn warn_ignored_global_flags(cmd: &Cmd, json: bool, view: &str) {
         Cmd::Code(_) | Cmd::Git(_) | Cmd::Memory(_) | Cmd::Admin(_) | Cmd::Cache(_) | Cmd::Status | Cmd::Doctor
     );
     #[cfg(all(feature = "comms", any(unix, windows)))]
-    let consumes_json = consumes_json || matches!(cmd, Cmd::Comms { .. } | Cmd::Workspace { .. } | Cmd::Daemon { .. });
+    let consumes_json = consumes_json
+        || matches!(
+            cmd,
+            Cmd::Comms { .. } | Cmd::Agent { .. } | Cmd::Workspace { .. } | Cmd::Daemon { .. }
+        );
     let consumes_view = consumes_json || matches!(cmd, Cmd::Serve);
 
     if json && !consumes_json {
