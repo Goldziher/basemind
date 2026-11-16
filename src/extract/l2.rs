@@ -187,8 +187,9 @@ fn is_attribute_body(tt: Node, source: &[u8]) -> bool {
             .is_some_and(|p| source[p.start_byte()..p.end_byte()].ends_with(b"#"))
 }
 
-/// Whether byte `at` inside `tt`, the argument list of a [`PATTERN_MACROS`] macro, falls in its
-/// pattern: after the first top-level comma and before an `if` guard.
+/// Whether byte `at` inside `tt` is not code: anywhere in the predicate of `cfg!(any(unix, ..))`, or
+/// in the pattern of a [`PATTERN_MACROS`] macro, after the first top-level comma and before an `if`
+/// guard.
 fn in_pattern(tt: Node, at: usize, source: &[u8]) -> bool {
     let text = |n: Node| &source[n.start_byte()..n.end_byte()];
     let name = match tt.parent().filter(|p| p.kind() == "macro_invocation") {
@@ -203,8 +204,10 @@ fn in_pattern(tt: Node, at: usize, source: &[u8]) -> bool {
             .filter(|n| n.kind() == "identifier")
             .map(text),
     };
-    if !name.is_some_and(|n| PATTERN_MACROS.contains(&n)) {
-        return false;
+    match name {
+        Some(b"cfg") => return true,
+        Some(n) if PATTERN_MACROS.contains(&n) => {}
+        _ => return false,
     }
     let mut cursor = tt.walk();
     let mut after_comma = false;

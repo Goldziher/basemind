@@ -332,14 +332,15 @@ fn t() {
     assert!(matches!(r, Some(Ok(_)) if guard(r)));
     takes!(Box<dyn FnMut(u8)>, Fn(u8), FnOnce());
     run!(if let Ok(v) = parse_it(s) { use_it(v) });
+    assert!(cfg!(any(unix, not(windows))) || std::env::var(key(1)).is_ok());
 }
 ";
     let calls = callees(src);
-    for want in ["g", "f", "guard", "parse_it", "use_it"] {
+    for want in ["g", "f", "guard", "parse_it", "use_it", "key"] {
         assert_eq!(count(&calls, want), 1, "{want} once in {calls:?}");
     }
     for bad in [
-        "cfg", "all", "not", "allow", "a", "b", "v", "Some", "Ok", "FnMut", "Fn", "FnOnce",
+        "cfg", "all", "any", "not", "allow", "a", "b", "v", "Some", "Ok", "FnMut", "Fn", "FnOnce",
     ] {
         assert_eq!(count(&calls, bad), 0, "{bad} must not be a call: {calls:?}");
     }
