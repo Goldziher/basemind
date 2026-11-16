@@ -415,7 +415,7 @@ pub fn config_reloader(root: &Path) -> impl FnMut() -> Option<Arc<Config>> + use
             return None;
         }
         stamp = now;
-        match crate::config::load_with_overrides(&root, None, None) {
+        match crate::config::overrides::load_with_overrides(&root, None, None) {
             Ok(loaded) => Some(Arc::new(loaded.config)),
             Err(error) => {
                 warn!(%error, "config changed but does not load; keeping the previous config");

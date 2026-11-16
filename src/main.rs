@@ -7,7 +7,8 @@ use anyhow::{Context, Result};
 use clap::{CommandFactory, Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
 
-use basemind::config::{self, Config, DocumentsCliOverrides};
+use basemind::config::overrides::DocumentsCliOverrides;
+use basemind::config::{self, Config};
 use basemind::render::{self, Verbosity};
 use basemind::store::{LockHolder, Store};
 use basemind::watcher::{BatchKind, WatchBatch};
@@ -445,7 +446,7 @@ fn guard_workspace_root(root: &std::path::Path) -> Result<PathBuf> {
 /// the layered merger. Used by `scan` / `serve` to flow `#[command(flatten)]`
 /// flags down to the resolved config.
 fn load_or_default_with(root: &std::path::Path, cli: Option<DocumentsCliOverrides>) -> Result<Config> {
-    match config::load_with_overrides(root, None, cli) {
+    match config::overrides::load_with_overrides(root, None, cli) {
         Ok(loaded) => Ok(loaded.config),
         Err(config::ConfigError::NotFound(_)) => {
             tracing::info!("no basemind.toml; using defaults");

@@ -4,7 +4,7 @@ pub mod daemon;
 mod documents;
 mod documents_validate;
 pub(crate) mod layered;
-mod overrides;
+pub mod overrides;
 mod resources;
 pub mod root_guard;
 pub mod rules;
@@ -25,7 +25,6 @@ pub use documents::{
     SummarizationStrategy,
 };
 pub use layered::{ConfigLayers, LoadedConfig, NoOverrides, OverrideLayer, defaults_only, merge_layers};
-pub use overrides::{DocumentsCliOverrides, load_with_overrides};
 pub use resources::{DocumentModelProfile, FootprintKeyword, MaxFootprint, OnnxProvider, ResourcesConfig};
 pub use source::{ConfigSource, ProvenanceMap};
 pub use v1::{CodeIntelConfig, ConfigV1, DeprecatedSection, LanguageConfig, Visibility};
@@ -68,7 +67,7 @@ pub enum ConfigError {
 }
 
 /// Load the TOML config (no overrides). Existing call sites use this — the
-/// layered merger is reached via [`load_with_overrides`] when CLI flags or
+/// layered merger is reached via [`overrides::load_with_overrides`] when CLI flags or
 /// env vars are involved.
 pub fn load(root: &Path) -> Result<Config, ConfigError> {
     let path = resolve_config_path(root);

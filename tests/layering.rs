@@ -134,7 +134,6 @@ const FORBIDDEN_CRATES: &[(Layer, &[&str])] = &[
 /// Edges not yet cut, as `"<file> -> <target>"`, with ` [test]` when the reference sits in test
 /// code. `<target>` is the module named (or `extern <crate>`). Remove an entry when its edge is cut.
 const KNOWN_VIOLATIONS: &[&str] = &[
-    "src/config/mod.rs -> config::overrides",
     "src/config/validate.rs -> extern jsonschema",
     "src/scanner_filter.rs -> retrieval_wiring",
     "src/store.rs -> lance",

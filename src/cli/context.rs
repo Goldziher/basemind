@@ -17,7 +17,8 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 
-use crate::config::{self, Config, DocumentsCliOverrides};
+use crate::config::overrides::DocumentsCliOverrides;
+use crate::config::{self, Config};
 use crate::git::Repo;
 use crate::git_cache::GitCache;
 use crate::mcp::BasemindServer;
@@ -113,7 +114,7 @@ pub fn build_server_for(
 /// Load the resolved config, applying the document CLI override layer. Falls back
 /// to defaults when no `basemind.toml` exists.
 fn load_config(root: &Path, documents: DocumentsCliOverrides) -> Result<Config> {
-    match config::load_with_overrides(root, None, Some(documents)) {
+    match config::overrides::load_with_overrides(root, None, Some(documents)) {
         Ok(loaded) => Ok(loaded.config),
         Err(config::ConfigError::NotFound(_)) => Ok(config::default_for_root(root)),
         Err(e) => Err(anyhow::anyhow!(e)),

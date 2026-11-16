@@ -8,7 +8,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use basemind::cli::context::build_server;
-use basemind::config::DocumentsCliOverrides;
+use basemind::config::overrides::DocumentsCliOverrides;
 use basemind::store::VIEW_WORKING;
 use rmcp::ServiceExt;
 use rmcp::model::{CallToolRequestParams, ContentBlock};

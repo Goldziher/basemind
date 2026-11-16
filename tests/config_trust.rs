@@ -38,7 +38,7 @@ fn every_loader_strips_what_the_repo_was_not_granted() {
 
     assert_stripped(&config::load(root).expect("load"), "load");
     assert_stripped(&config::daemon::load_daemon(root).expect("load_daemon"), "load_daemon");
-    let loaded = config::load_with_overrides(root, None, None).expect("load_with_overrides");
+    let loaded = config::overrides::load_with_overrides(root, None, None).expect("load_with_overrides");
     assert_stripped(&loaded.config, "load_with_overrides");
 }
 

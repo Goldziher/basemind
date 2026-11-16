@@ -85,7 +85,7 @@ fn check_root(root: &Path) -> Check {
 }
 
 fn check_config(root: &Path) -> Check {
-    match basemind::config::load_with_overrides(root, None, None) {
+    match basemind::config::overrides::load_with_overrides(root, None, None) {
         Ok(_) => Check::new("config", Level::Ok, "basemind.toml loaded"),
         Err(basemind::config::ConfigError::NotFound(_)) => Check::new(
             "config",

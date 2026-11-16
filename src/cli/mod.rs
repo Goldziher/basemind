@@ -45,7 +45,7 @@ use rmcp::ErrorData as McpError;
 use rmcp::model::CallToolResult;
 
 use crate::cli::render::Emit;
-use crate::config::DocumentsCliOverrides;
+use crate::config::overrides::DocumentsCliOverrides;
 
 /// Tool subcommand groups dispatched through the in-process server.
 #[derive(Subcommand, Debug)]

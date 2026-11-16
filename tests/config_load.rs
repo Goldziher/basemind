@@ -4,7 +4,8 @@
 
 use std::fs;
 
-use basemind::config::{self, ApiKey, DocumentsCliOverrides, DocumentsConfig};
+use basemind::config::overrides::{DocumentsCliOverrides, load_with_overrides};
+use basemind::config::{self, ApiKey, DocumentsConfig};
 use tempfile::TempDir;
 
 fn repo_with(toml: &str) -> TempDir {
@@ -42,7 +43,7 @@ embed_include = ["docs/public"]
 embed_include = ["src"]
 "#,
     );
-    let cfg = config::load_with_overrides(dir.path(), None, None)
+    let cfg = load_with_overrides(dir.path(), None, None)
         .expect("new keys must pass schema validation")
         .config;
     assert_eq!(cfg.scan.floor_allow, ["build"]);
@@ -63,21 +64,21 @@ embed_include = ["src"]
 #[test]
 fn documents_max_file_bytes_below_the_schema_minimum_is_rejected() {
     let dir = repo_with("[documents]\nmax_file_bytes = 1023\n");
-    let err = config::load_with_overrides(dir.path(), None, None).expect_err("below minimum");
+    let err = load_with_overrides(dir.path(), None, None).expect_err("below minimum");
     assert!(err.to_string().contains("max_file_bytes"), "{err}");
 }
 
 #[test]
 fn documents_chunk_cutovers_default_and_reject_values_below_the_minimum() {
     let dir = repo_with("[documents]\nenabled = true\n");
-    let cfg = config::load_with_overrides(dir.path(), None, None)
+    let cfg = load_with_overrides(dir.path(), None, None)
         .expect("defaults load")
         .config;
     assert_eq!(cfg.documents.markdown_chunk_max_bytes, 1024 * 1024);
     assert_eq!(cfg.documents.plain_text_chunk_max_bytes, 4 * 1024 * 1024);
     for key in ["markdown_chunk_max_bytes", "plain_text_chunk_max_bytes"] {
         let dir = repo_with(&format!("[documents]\n{key} = 1023\n"));
-        let err = config::load_with_overrides(dir.path(), None, None).expect_err("below minimum");
+        let err = load_with_overrides(dir.path(), None, None).expect_err("below minimum");
         assert!(err.to_string().contains(key), "{err}");
     }
 }
@@ -85,7 +86,7 @@ fn documents_chunk_cutovers_default_and_reject_values_below_the_minimum() {
 #[test]
 fn invalid_glob_in_the_repo_file_is_rejected_by_the_override_loader() {
     let dir = repo_with("[documents]\nexclude = [\"docs/[\"]\n");
-    let err = config::load_with_overrides(dir.path(), None, None).expect_err("bad glob");
+    let err = load_with_overrides(dir.path(), None, None).expect_err("bad glob");
     assert!(err.to_string().contains("exclude"), "{err}");
 }
 
@@ -112,7 +113,7 @@ fn assert_llm_kept_and_deprecated(cfg: &config::Config) {
 fn every_loader_keeps_a_repo_llm_table_and_lists_it_as_deprecated() {
     let dir = repo_with(REPO_LLM);
     assert_llm_kept_and_deprecated(&config::load(dir.path()).unwrap());
-    assert_llm_kept_and_deprecated(&config::load_with_overrides(dir.path(), None, None).unwrap().config);
+    assert_llm_kept_and_deprecated(&load_with_overrides(dir.path(), None, None).unwrap().config);
     assert_llm_kept_and_deprecated(&config::daemon::load_daemon(dir.path()).unwrap());
 }
 
@@ -124,7 +125,7 @@ fn override_layers_win_over_the_repo_file() {
         llm_base_url: Some("http://localhost:9000".into()),
         ..DocumentsCliOverrides::default()
     };
-    let loaded = config::load_with_overrides(dir.path(), None, Some(cli)).unwrap();
+    let loaded = load_with_overrides(dir.path(), None, Some(cli)).unwrap();
     assert!(!loaded.config.documents.embed);
     assert_eq!(loaded.config.llm.base_url.as_deref(), Some("http://localhost:9000"));
 }
@@ -146,7 +147,7 @@ extension_denylist = ["psd"]
 embed = false
 "#,
     );
-    let cfg = config::load_with_overrides(dir.path(), None, None)
+    let cfg = load_with_overrides(dir.path(), None, None)
         .expect("legacy file loads")
         .config;
     assert!(cfg.scan.floor_allow.is_empty());
@@ -160,7 +161,7 @@ embed = false
 fn assert_loads_everywhere(toml: &str) -> config::Config {
     let dir = repo_with(toml);
     config::daemon::load_daemon(dir.path()).expect("load_daemon");
-    config::load_with_overrides(dir.path(), None, None).expect("load_with_overrides");
+    load_with_overrides(dir.path(), None, None).expect("load_with_overrides");
     config::load(dir.path()).expect("load")
 }
 
@@ -207,7 +208,7 @@ fn an_unknown_table_is_still_rejected() {
         .expect_err("unknown top-level table")
         .to_string();
     assert!(err.contains("crawler"), "{err}");
-    config::load_with_overrides(dir.path(), None, None).expect_err("unknown top-level table");
+    load_with_overrides(dir.path(), None, None).expect_err("unknown top-level table");
     config::daemon::load_daemon(dir.path()).expect_err("unknown top-level table");
 }
 
@@ -250,6 +251,6 @@ fn an_llm_override_flag_is_accepted_and_listed_as_deprecated() {
         llm_model: Some("openai/gpt-4o".to_string()),
         ..DocumentsCliOverrides::default()
     };
-    let loaded = config::load_with_overrides(dir.path(), None, Some(overrides)).expect("load");
+    let loaded = load_with_overrides(dir.path(), None, Some(overrides)).expect("load");
     assert_eq!(config::trust::deprecated_settings_set(&loaded.config), vec!["llm"]);
 }
