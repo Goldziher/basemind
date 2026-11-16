@@ -1,7 +1,7 @@
 // Adapted from https://github.com/hardbeat920/monocode (crates/monocode-core/src/{provider.rs,provider/lifecycle.rs,agent.rs,mono/bridge.rs}) at 09d04436babb39ad72198cdf22f735067027fc04, MIT.
 //! Codex over `codex app-server`: JSON-RPC without the `jsonrpc` member, one message per line.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -141,7 +141,7 @@ pub(crate) struct CodexProtocol {
     text: TextStream,
     tools: Tools,
     /// Calls whose output grew since they were last reported.
-    unreported: Vec<String>,
+    unreported: HashSet<String>,
     /// When output increments were last reported.
     reported_at: Instant,
     /// Pending approvals: the wire id, the request method and its params, by event id.
@@ -163,7 +163,7 @@ impl CodexProtocol {
             turn_requests: 0,
             text: TextStream::default(),
             tools: Tools::default(),
-            unreported: Vec::new(),
+            unreported: HashSet::new(),
             reported_at: Instant::now(),
             approvals: HashMap::new(),
             approval_sequence: 0,
@@ -310,7 +310,7 @@ impl CodexProtocol {
             return;
         }
         let id = item["id"].as_str().unwrap_or("");
-        self.unreported.retain(|known| known != id);
+        self.unreported.remove(id);
         let tool = self.tools.get_or_insert(id, || ToolCall::new(id, kind));
         tool.name = item["tool"].as_str().unwrap_or(kind).to_owned();
         if kind == "mcpToolCall" {
@@ -456,8 +456,8 @@ impl CodexProtocol {
                 let id = params["itemId"].as_str().unwrap_or("");
                 let tool = self.tools.get_or_insert(id, || ToolCall::new(id, "commandExecution"));
                 tool.append_output(params["delta"].as_str().unwrap_or(""));
-                if !self.unreported.iter().any(|known| known == id) {
-                    self.unreported.push(id.to_owned());
+                if !self.unreported.contains(id) {
+                    self.unreported.insert(id.to_owned());
                 }
                 self.report_output(false, sink);
             }
