@@ -1,0 +1,6 @@
+# The value-gate corpus (ADR-0022): repositories at pinned commits. `fetch_corpus.sh` clones each,
+# checks out the commit and verifies the checksum, so the task files under `tasks/` are reproducible.
+# Columns (tab-separated): name, clone URL, commit, sha256 of `git ls-tree -r --full-tree HEAD`,
+# tracked file count. basemind is pinned at v0.33.0 and tokio at tokio-1.54.1.
+basemind	https://github.com/Goldziher/basemind.git	a144ebbf1108dfec8b98d81ac22d0984696a8a77	935daac23ae842424c4427a73c8959b788aca97694f8f86e3e48e4f2f1eb8c3b	1137
+tokio	https://github.com/tokio-rs/tokio.git	b53b2001ed2ccfd9b87e32a0c6da1a1eebdc80b8	ec7499086605a349073ebe7b73ec06f70cfdd5a1ff12bc4b6ffcdd8dd0006bea	886
