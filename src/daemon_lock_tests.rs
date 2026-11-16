@@ -150,9 +150,10 @@ fn the_ceiling_counts_each_kind_separately() {
     );
 }
 
-/// A registry record as a release up to 0.33 writes it.
+/// A registry record as a release up to 0.33 writes it. Serialized, not formatted: a Windows `dir`
+/// holds backslashes, which JSON must escape.
 fn comms_record(pid: u32, dir: &str) -> String {
-    format!(r#"{{"pid":{pid},"kind":"comms","dir":"{dir}","version":"0.33.0","started_unix":1}}"#)
+    serde_json::json!({"pid": pid, "kind": "comms", "dir": dir, "version": "0.33.0", "started_unix": 1}).to_string()
 }
 
 /// What a release up to 0.33 sees of the registry: the `*.pid` files directly in its root.
