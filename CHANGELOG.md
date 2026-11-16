@@ -331,9 +331,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   such a relay session with `workspace_locked` and the holder (the version of the daemon that
   holds it, or the command the lock records), where it answered `host_build_failed` and
   `basemind serve` exited on `initialize`. The session comes up, answers tool calls with `another
-  basemind holds this workspace's index (...). Close that version's sessions; its daemon exits
-  when idle, and this session then connects by itself`, and connects once the lock is free. A
-  refusal with a token this build does not know is retried the same way, never fatal. See
+  basemind holds this workspace's index (...). This session connects by itself once that process
+  lets go: ...`, and connects once the lock is free. A workspace the daemon's own scan holds is
+  declined with `workspace_busy` and retried within seconds; an index written by a newer basemind
+  with `index_newer`, which ends the session with the reason, since no retry changes it. Both
+  were `host_build_failed`, retried once a minute. A refusal with a token this build does not
+  know is retried the same way, never fatal. See
   [`docs/UPGRADING.md`](docs/UPGRADING.md#running-two-basemind-versions-side-by-side).
 - With `BASEMIND_ALLOW_HTTP`, a daemon that finds the default port `51786` in use (by the daemon of
   another protocol generation, for one) binds an OS-assigned port and records it in `http.addr`

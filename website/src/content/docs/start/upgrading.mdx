@@ -162,9 +162,10 @@ directory, so its name changes too.
   Its `initialize` waits ten seconds for the index to come free and is then answered by
   `basemind serve` itself, so the host shows the server as connected and lists its tools. Each
   tool call is answered with the retryable error `backend_unavailable: another basemind holds
-  this workspace's index (the basemind v0.33.0 daemon, pid 4242). Close that version's sessions;
-  its daemon exits when idle, and this session then connects by itself` (JSON-RPC code `-32003`);
-  so are requests for resources and prompts. The parentheses name the lock's holder: a daemon by
+  this workspace's index (the basemind v0.33.0 daemon, pid 4242). This session connects by itself
+  once that process lets go: a daemon of another basemind version exits when its sessions are
+  closed and it is idle, a command when it finishes` (JSON-RPC code `-32003`); so are requests
+  for resources and prompts. The parentheses name the lock's holder: a daemon by
   the version it registered under, any other process by its command
   (`` `basemind scan`, pid 4242 ``), and they are left out when the lock records nobody. Closing
   the old version's sessions fixes it: that daemon exits ten minutes after its last client, or at

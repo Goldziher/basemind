@@ -37,13 +37,15 @@ pub(crate) enum RelayRefusal {
 }
 
 /// The text a declined session gives the host. A locked workspace is spelled out, because the
-/// person reading it has to act: the usual holder is the daemon of another basemind version that
-/// still has a session open in the same repository.
+/// person reading it may have to act. The usual holder is the daemon of another basemind version
+/// that still has a session open in the same repository, but a command of this version holds the
+/// same lock, so the advice covers both.
 fn declined_message(code: &str, detail: Option<&str>) -> String {
     match (code, detail) {
         (decline::WORKSPACE_LOCKED, holder) => format!(
-            "another basemind holds this workspace's index{}. Close that version's sessions; its daemon exits \
-             when idle, and this session then connects by itself",
+            "another basemind holds this workspace's index{}. This session connects by itself once that \
+             process lets go: a daemon of another basemind version exits when its sessions are closed and it is \
+             idle, a command when it finishes",
             holder.map(|holder| format!(" ({holder})")).unwrap_or_default()
         ),
         (decline::DAEMON_DRAINING, _) => "the basemind daemon is stopping; reconnecting to its successor".to_string(),
@@ -63,9 +65,11 @@ impl RelayRefusal {
             Self::ProtoMismatch { .. } => ReconnectFailure::Blocked,
             Self::Declined { code, .. } => match code.as_str() {
                 // The daemon judged what this session asked for, which a retry repeats unchanged.
-                decline::VIEW_UNSUPPORTED | decline::ROOT_REFUSED => ReconnectFailure::Fatal,
-                // The daemon is on its way out and the next attempt starts its successor.
-                decline::DAEMON_DRAINING => ReconnectFailure::Transient,
+                // So does an index only a newer basemind can read.
+                decline::VIEW_UNSUPPORTED | decline::ROOT_REFUSED | decline::INDEX_NEWER => ReconnectFailure::Fatal,
+                // The daemon is on its way out and the next attempt starts its successor, or its
+                // own scan holds the workspace for a moment.
+                decline::DAEMON_DRAINING | decline::WORKSPACE_BUSY => ReconnectFailure::Transient,
                 _ => ReconnectFailure::Blocked,
             },
         }
@@ -107,24 +111,43 @@ mod tests {
             ReconnectFailure::Blocked
         );
         assert_eq!(
+            declined(decline::WORKSPACE_BUSY, None).failure(),
+            ReconnectFailure::Transient,
+            "the daemon's own scan is over in moments"
+        );
+        assert_eq!(
+            declined(decline::INDEX_NEWER, None).failure(),
+            ReconnectFailure::Fatal,
+            "an index from a newer basemind stays one"
+        );
+        assert_eq!(
             declined("a_token_from_a_later_daemon", None).failure(),
             ReconnectFailure::Blocked,
             "an unknown token is never fatal"
         );
     }
 
+    /// The holder is not always another version's daemon: a `basemind scan` of this version holds
+    /// the same lock. The advice has to be true for both.
     #[test]
-    fn a_locked_workspace_says_who_holds_it_and_what_to_do() {
-        let named = declined(decline::WORKSPACE_LOCKED, Some("the basemind v0.33.0 daemon, pid 4242")).to_string();
+    fn a_locked_workspace_says_who_holds_it_and_what_ends_the_wait() {
+        const ADVICE: &str = "This session connects by itself once that process lets go: a daemon of another \
+                              basemind version exits when its sessions are closed and it is idle, a command when \
+                              it finishes";
+        let daemon = declined(decline::WORKSPACE_LOCKED, Some("the basemind v0.33.0 daemon, pid 4242")).to_string();
         assert_eq!(
-            named,
-            "another basemind holds this workspace's index (the basemind v0.33.0 daemon, pid 4242). Close that \
-             version's sessions; its daemon exits when idle, and this session then connects by itself"
+            daemon,
+            format!("another basemind holds this workspace's index (the basemind v0.33.0 daemon, pid 4242). {ADVICE}")
+        );
+        let scan = declined(decline::WORKSPACE_LOCKED, Some("`basemind scan`, pid 77")).to_string();
+        assert!(
+            scan.contains("(`basemind scan`, pid 77)") && !scan.contains("Close that version's sessions"),
+            "{scan}"
         );
         let unnamed = declined(decline::WORKSPACE_LOCKED, None).to_string();
-        assert!(
-            unnamed.starts_with("another basemind holds this workspace's index. Close that version's sessions"),
-            "{unnamed}"
+        assert_eq!(
+            unnamed,
+            format!("another basemind holds this workspace's index. {ADVICE}")
         );
     }
 

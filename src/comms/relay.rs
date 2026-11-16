@@ -1,7 +1,7 @@
 //! Wire types for the stdio↔daemon MCP relay handshake.
 //!
-//! A relay client (an `rmcp` stdio front-end) can forward its JSON-RPC session to the broker
-//! daemon instead of serving in-process. Because a single daemon socket already carries the
+//! A relay client (an `rmcp` stdio front-end) forwards its JSON-RPC session to the broker
+//! daemon; `basemind serve` has no in-process server. Because a single daemon socket already carries the
 //! legacy msgpack comms protocol ([`super::protocol`]), the relay client announces itself with a
 //! fixed [`RELAY_MAGIC`] preamble so the daemon's accept loop can `MSG_PEEK` the first bytes and
 //! route a relay connection apart from a legacy comms link.
@@ -25,8 +25,7 @@ use super::ids::AgentId;
 /// length prefix, and this preamble's first four bytes (`b"BMRE"` = `0x424D5245`, ~1.1 GB)
 /// vastly exceed [`MAX_FRAME_BYTES`](super::transport::MAX_FRAME_BYTES) (16 MiB). An OLDER daemon
 /// that has never heard of the relay therefore reads the preamble as an over-long frame length,
-/// rejects it, and closes the link — a clean auto-fallback signal telling the client to serve
-/// in-process. A legacy [`Hello`](super::protocol::CommsRequest::Hello) frame begins with a small
+/// rejects it, and closes the link, which the client sees as a failed handshake. A legacy [`Hello`](super::protocol::CommsRequest::Hello) frame begins with a small
 /// length whose high byte is `0x00`, so it can never collide with the `0x42` first byte here.
 pub const RELAY_MAGIC: [u8; 8] = *b"BMRELAY1";
 
@@ -60,7 +59,8 @@ pub struct RelayHello {
 /// The daemon's reply to a [`RelayHello`].
 ///
 /// When `accepted` is `false`, `code` carries a stable machine token (e.g. `"relay_proto_skew"`)
-/// telling the client to fall back to in-process `serve` rather than relaying to this daemon.
+/// from which the client decides whether to retry, and how soon. There is no in-process `serve`
+/// to fall back to.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RelayWelcome {
     /// The relay-handshake protocol version the daemon speaks.
@@ -91,6 +91,11 @@ pub mod decline {
     pub const DAEMON_DRAINING: &str = "daemon_draining";
     /// Another basemind process holds the workspace's index lock. Clears when that process lets go.
     pub const WORKSPACE_LOCKED: &str = "workspace_locked";
+    /// The daemon's own scan of the workspace holds its store. Clears within moments.
+    pub const WORKSPACE_BUSY: &str = "workspace_busy";
+    /// The workspace's index was written by a newer basemind than this daemon. The same on every
+    /// retry, until this basemind is updated.
+    pub const INDEX_NEWER: &str = "index_newer";
     /// The daemon could not set the workspace up for a reason it has no token for.
     pub const HOST_BUILD_FAILED: &str = "host_build_failed";
 }
@@ -162,7 +167,7 @@ async fn read_frame<R: AsyncRead + Unpin>(reader: &mut R) -> std::io::Result<Vec
 /// the daemon's [`RelayWelcome`]. Leaves the stream positioned at the first post-handshake byte so
 /// the caller can immediately hand it to rmcp when `welcome.accepted`. Any I/O or decode failure
 /// (including an older daemon that rejected the preamble as an over-long frame) surfaces as an
-/// `io::Error`, on which the caller falls back to an in-process serve.
+/// `io::Error`, which the caller retries as a failed connection.
 pub async fn client_handshake<S: AsyncRead + AsyncWrite + Unpin>(
     stream: &mut S,
     hello: &RelayHello,
