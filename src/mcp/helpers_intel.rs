@@ -27,9 +27,13 @@ use crate::path::RelPath;
 /// Resolution edges are byte offsets into the content that was indexed, so the file is read once,
 /// bounded, and must still be that content; the same holds for the file a cross-file edge lands in.
 ///
-/// The store is read-locked for the whole call: the stamp each file is judged against, the
-/// resolution blob and the cross-file edge then come from one scan, never from either side of a
-/// rescan that landed in between.
+/// The store is read-locked for the whole call, file reads included: the stamp each file is judged
+/// against, the resolution blob and a locally read cross-file edge then come from one scan, never
+/// from either side of a rescan that landed in between. A rescan waits for the reads, which are
+/// bounded by `scan.max_file_bytes`. A cross-file edge the daemon answers (a `daemon_writer` serve, or
+/// a session the daemon hosts) comes from the daemon's index, outside this guard. The file it lands in
+/// is still read against this store's stamp, which catches a file changed since that stamp, but not an
+/// edge the daemon's resolve pass has yet to rewrite after a rescan this store already reflects.
 pub(super) async fn run_goto_definition(
     state: &ServerState,
     params: GotoDefinitionParams,
