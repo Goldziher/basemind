@@ -756,11 +756,14 @@ async fn notes_beyond_one_request_are_read_in_chunks() {
 /// at the first key the one before left unanswered.
 #[tokio::test]
 async fn notes_beyond_one_reply_are_read_in_several() {
-    use crate::mcp::memory_ops::GET_MANY_MAX_BYTES;
+    use crate::mcp::memory_ops::{GET_MANY_MAX_BYTES, NOTE_MAX_BYTES};
 
     let root = tempfile::tempdir().unwrap();
     let state = server(root.path(), "fake");
-    let long = "x".repeat(GET_MANY_MAX_BYTES / 2 + 1);
+    // The longest note a save takes, with its one-byte tag: two of them, with their keys and
+    // framing, pass one reply. ~keep
+    let long = "x".repeat(NOTE_MAX_BYTES - 1);
+    assert!(2 * NOTE_MAX_BYTES >= GET_MANY_MAX_BYTES);
     let keys: Vec<String> = ["a", "b", "c"].map(String::from).to_vec();
     for key in &keys {
         save(&state, key, &long).await;

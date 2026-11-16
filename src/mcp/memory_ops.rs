@@ -56,6 +56,60 @@ pub(crate) const GET_MANY_MAX_BYTES: usize = 8 * 1024 * 1024;
 /// The most keys one read of stamps may name. A stamp is one number, so the reply stays small.
 pub(crate) const STAMPS_MAX_KEYS: usize = 4096;
 
+/// The longest key a note saved now may have, in bytes.
+pub(crate) const KEY_MAX_BYTES: usize = 1024;
+
+/// The most bytes of text and tags a note saved now may have. A note crosses the daemon's 16 MiB
+/// frame whole, in the save and in every read of it.
+pub(crate) const NOTE_MAX_BYTES: usize = 4 * 1024 * 1024;
+
+/// The most bytes of keys one request may carry, well inside the daemon's 16 MiB frame. Keys saved
+/// before [`KEY_MAX_BYTES`] can be longer, so a batch is cut by bytes as well as by count.
+pub(crate) const REQUEST_KEY_MAX_BYTES: usize = 4 * 1024 * 1024;
+
+/// Refuse a note too long to save: its key past [`KEY_MAX_BYTES`], or its text and tags past
+/// [`NOTE_MAX_BYTES`].
+pub(crate) fn check_note(key: &str, value: &str, tags: &[String]) -> Result<(), MemoryOpError> {
+    if key.len() > KEY_MAX_BYTES {
+        return Err(MemoryOpError::TooLong {
+            what: "key",
+            bytes: key.len(),
+            most: KEY_MAX_BYTES,
+        });
+    }
+    let note = value.len() + tags.iter().map(String::len).sum::<usize>();
+    if note > NOTE_MAX_BYTES {
+        return Err(MemoryOpError::TooLong {
+            what: "value with its tags",
+            bytes: note,
+            most: NOTE_MAX_BYTES,
+        });
+    }
+    Ok(())
+}
+
+/// The leading keys of `keys` one request may carry: at most `most` of them and
+/// [`REQUEST_KEY_MAX_BYTES`] of them, and always the first, unless it alone is longer than that.
+pub(crate) fn request_chunk(keys: &[String], most: usize) -> Result<&[String], MemoryOpError> {
+    let mut bytes = 0_usize;
+    let mut taken = 0;
+    for key in keys.iter().take(most) {
+        bytes = bytes.saturating_add(key.len());
+        if bytes > REQUEST_KEY_MAX_BYTES {
+            break;
+        }
+        taken += 1;
+    }
+    match keys.first() {
+        Some(first) if taken == 0 => Err(MemoryOpError::TooLong {
+            what: "key",
+            bytes: first.len(),
+            most: REQUEST_KEY_MAX_BYTES,
+        }),
+        _ => Ok(&keys[..taken]),
+    }
+}
+
 /// A fjall-side memory operation failed. Kept small and stringly so it maps cleanly to both an
 /// [`McpError`](rmcp::ErrorData) on the local path and a `CommsResponse::Error` on the daemon path.
 #[derive(Debug, thiserror::Error)]
@@ -93,6 +147,16 @@ pub(crate) enum MemoryOpError {
         /// How many it may name.
         most: usize,
     },
+    /// A key or a note longer than a save or a request may carry.
+    #[error("a memory {what} carries at most {most} bytes, and this one has {bytes}")]
+    TooLong {
+        /// What was too long.
+        what: &'static str,
+        /// How long it was.
+        bytes: usize,
+        /// How long it may be.
+        most: usize,
+    },
     /// A fjall get / insert / remove failed.
     #[error("fjall {op}: {source}")]
     Fjall {
@@ -111,7 +175,10 @@ pub(crate) enum MemoryOpError {
 
 impl From<MemoryOpError> for rmcp::ErrorData {
     fn from(error: MemoryOpError) -> Self {
-        rmcp::ErrorData::internal_error(error.to_string(), None)
+        match error {
+            MemoryOpError::TooLong { .. } => rmcp::ErrorData::invalid_params(error.to_string(), None),
+            _ => rmcp::ErrorData::internal_error(error.to_string(), None),
+        }
     }
 }
 
@@ -201,6 +268,7 @@ pub(crate) fn put_core(
     value: &str,
     tags: &[String],
 ) -> Result<(i64, i64), MemoryOpError> {
+    check_note(key, value, tags)?;
     require_memory(idx)?;
     let now = now_micros();
     let existing = read_record(idx, scope, vis_byte, owner, key)?;
@@ -682,5 +750,53 @@ mod tests {
                 "{message}"
             );
         }
+    }
+
+    /// A note too long for the daemon's frame is refused at the save, wherever it is served, with
+    /// what was too long; one at the limits is saved.
+    #[test]
+    fn a_note_past_the_limits_is_refused_and_one_at_them_is_saved() {
+        let dir = tempfile::tempdir().unwrap();
+        let idx = IndexDb::open(dir.path()).unwrap();
+        let key = "k".repeat(KEY_MAX_BYTES);
+        let value = "v".repeat(NOTE_MAX_BYTES - 3);
+        put_core(&idx, "scope", 0, "", &key, &value, &["tag".to_string()]).expect("at the limits");
+
+        let long_key = put_core(&idx, "scope", 0, "", &format!("{key}k"), "v", &[]).unwrap_err();
+        assert!(
+            long_key.to_string().contains("key carries at most 1024 bytes"),
+            "{long_key}"
+        );
+        let long_note = put_core(&idx, "scope", 0, "", "k", &value, &["tags".to_string()]).unwrap_err();
+        assert!(
+            matches!(
+                long_note,
+                MemoryOpError::TooLong {
+                    most: NOTE_MAX_BYTES,
+                    ..
+                }
+            ),
+            "{long_note}"
+        );
+        assert_eq!(
+            rmcp::ErrorData::from(long_note).code,
+            rmcp::model::ErrorCode::INVALID_PARAMS
+        );
+    }
+
+    /// Keys are cut into requests by bytes as well as by count, so long keys saved before the key
+    /// limit cannot make a request larger than a frame.
+    #[test]
+    fn a_request_carries_keys_up_to_its_byte_budget() {
+        let long = "k".repeat(REQUEST_KEY_MAX_BYTES / 3);
+        let keys = vec![long.clone(), long.clone(), long.clone(), long.clone()];
+        assert_eq!(request_chunk(&keys, STAMPS_MAX_KEYS).unwrap().len(), 3);
+        assert_eq!(request_chunk(&keys, 2).unwrap().len(), 2, "and by count");
+        assert!(request_chunk(&[], 2).unwrap().is_empty());
+        let too_long = vec!["k".repeat(REQUEST_KEY_MAX_BYTES + 1)];
+        assert!(matches!(
+            request_chunk(&too_long, 2),
+            Err(MemoryOpError::TooLong { what: "key", .. })
+        ));
     }
 }

@@ -174,6 +174,7 @@ pub(super) fn memory_namespace(state: &ServerState, visibility: Visibility) -> (
 pub(super) async fn run_memory_put(state: &ServerState, params: MemoryPutParams) -> Result<CallToolResult, McpError> {
     let (vis_byte, owner) = memory_namespace(state, params.visibility);
     let tags = params.tags.clone().unwrap_or_default();
+    super::memory_ops::check_note(&params.key, &params.value, &tags)?;
 
     let (created_at, updated_at) = memory_put_fjall(state, vis_byte, owner, &params.key, &params.value, &tags).await?;
 
@@ -330,8 +331,7 @@ pub(super) async fn memory_get_many_wire(
 ) -> Result<Vec<Option<super::memory_ops::WireMemoryEntry>>, McpError> {
     let mut entries = Vec::with_capacity(keys.len());
     while entries.len() < keys.len() {
-        let rest = &keys[entries.len()..];
-        let chunk = &rest[..rest.len().min(super::memory_ops::GET_MANY_MAX_KEYS)];
+        let chunk = super::memory_ops::request_chunk(&keys[entries.len()..], super::memory_ops::GET_MANY_MAX_KEYS)?;
         entries.extend(memory_get_chunk_wire(state, vis_byte, owner, chunk).await?);
     }
     Ok(entries)
@@ -388,7 +388,8 @@ pub(super) async fn memory_stamps_wire(
     keys: &[String],
 ) -> Result<Vec<Option<i64>>, McpError> {
     let mut stamps = Vec::with_capacity(keys.len());
-    for chunk in keys.chunks(super::memory_ops::STAMPS_MAX_KEYS) {
+    while stamps.len() < keys.len() {
+        let chunk = super::memory_ops::request_chunk(&keys[stamps.len()..], super::memory_ops::STAMPS_MAX_KEYS)?;
         #[cfg(all(feature = "comms", any(unix, windows)))]
         if state.shared.daemon_writer {
             use crate::comms::memory_proto::{MemoryOp, MemoryOutcome};
