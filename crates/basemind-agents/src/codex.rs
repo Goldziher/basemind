@@ -4,12 +4,12 @@
 use std::collections::HashMap;
 use std::io::Write;
 use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
 
 use crate::error::LaunchError;
-use crate::event::{ApprovalKind, ApprovalRequest, ApprovalSource, Event, ToolCall, ToolState, approval_detail};
+use crate::event::{ApprovalKind, ApprovalRequest, ApprovalSource, Event, ToolCall, ToolState, Tools, approval_detail};
 use crate::harness::HarnessKind;
 use crate::line::{LineDriver, Protocol, Step, TextStream, write_json};
 use crate::registry::Adapter;
@@ -20,6 +20,8 @@ const INITIALIZE_ID: u64 = 1;
 const THREAD_ID: u64 = 2;
 const TURN_ID_PREFIX: &str = "basemind-turn-";
 const INTERRUPT_ID: &str = "basemind-interrupt";
+/// How often growing command output is reported.
+const OUTPUT_REPORT_INTERVAL: Duration = Duration::from_millis(100);
 
 /// Drives Codex.
 #[derive(Clone, Copy, Debug, Default)]
@@ -116,7 +118,11 @@ pub(crate) struct CodexProtocol {
     awaiting_turn: bool,
     turn_requests: u32,
     text: TextStream,
-    tools: HashMap<String, ToolCall>,
+    tools: Tools,
+    /// Calls whose output grew since they were last reported.
+    unreported: Vec<String>,
+    /// When output increments were last reported.
+    reported_at: Instant,
     /// Pending approvals: the wire id, the request method and its params, by event id.
     approvals: HashMap<String, (Value, String, Value)>,
     /// The number of approval requests seen, which names the next one.
@@ -135,7 +141,9 @@ impl CodexProtocol {
             awaiting_turn: false,
             turn_requests: 0,
             text: TextStream::default(),
-            tools: HashMap::new(),
+            tools: Tools::default(),
+            unreported: Vec::new(),
+            reported_at: Instant::now(),
             approvals: HashMap::new(),
             approval_sequence: 0,
         }
@@ -234,6 +242,21 @@ impl CodexProtocol {
         }
     }
 
+    /// Reports the calls whose output grew, at most every [`OUTPUT_REPORT_INTERVAL`] unless
+    /// `now`: a report copies up to 64 KiB, so one per one-byte increment would be quadratic.
+    fn report_output(&mut self, now: bool, sink: &EventSink) {
+        if self.unreported.is_empty() || !(now || self.reported_at.elapsed() >= OUTPUT_REPORT_INTERVAL) {
+            return;
+        }
+        self.reported_at = Instant::now();
+        for id in std::mem::take(&mut self.unreported) {
+            if let Some(tool) = self.tools.get_mut(&id) {
+                tool.bound_output();
+                sink.emit(Event::ToolCall(tool.clone()));
+            }
+        }
+    }
+
     /// Drops the pending requests whose wire id `which` selects, reporting them withdrawn.
     fn withdraw(&mut self, which: impl Fn(&Value) -> bool, sink: &EventSink) {
         let ids: Vec<String> = self
@@ -257,10 +280,8 @@ impl CodexProtocol {
             return;
         }
         let id = item["id"].as_str().unwrap_or("");
-        let tool = self
-            .tools
-            .entry(id.to_owned())
-            .or_insert_with(|| ToolCall::new(id, kind));
+        self.unreported.retain(|known| known != id);
+        let tool = self.tools.get_or_insert(id, || ToolCall::new(id, kind));
         tool.name = item["tool"].as_str().unwrap_or(kind).to_owned();
         if kind == "mcpToolCall" {
             tool.name = format!("{}:{}", item["server"].as_str().unwrap_or("mcp"), tool.name);
@@ -294,6 +315,7 @@ impl CodexProtocol {
             tool.output = serde_json::to_string_pretty(result).unwrap_or_default();
         }
         tool.bound_output();
+        tool.bound_input();
         let fallback = if completed { "completed" } else { "inProgress" };
         tool.state = match item["status"].as_str().unwrap_or(fallback) {
             "completed" => ToolState::Completed,
@@ -348,6 +370,7 @@ impl CodexProtocol {
     }
 
     fn turn_ended(&mut self, method: &str, params: &Value, sink: &EventSink) -> Result<Step, LaunchError> {
+        self.report_output(true, sink);
         let turn = &params["turn"];
         let status = turn["status"].as_str().unwrap_or("completed");
         if status == "failed" {
@@ -398,12 +421,12 @@ impl CodexProtocol {
             "item/started" | "item/completed" => self.tool(&params["item"], method == "item/completed", sink),
             "item/commandExecution/outputDelta" => {
                 let id = params["itemId"].as_str().unwrap_or("");
-                let tool = self
-                    .tools
-                    .entry(id.to_owned())
-                    .or_insert_with(|| ToolCall::new(id, "commandExecution"));
+                let tool = self.tools.get_or_insert(id, || ToolCall::new(id, "commandExecution"));
                 tool.append_output(params["delta"].as_str().unwrap_or(""));
-                sink.emit(Event::ToolCall(tool.clone()));
+                if !self.unreported.iter().any(|known| known == id) {
+                    self.unreported.push(id.to_owned());
+                }
+                self.report_output(false, sink);
             }
             "turn/completed" | "turn/aborted" => return self.turn_ended(method, params, sink),
             "serverRequest/resolved" => {
@@ -505,6 +528,11 @@ impl Protocol for CodexProtocol {
                 "approvalsReviewer": "user",
             }}),
         )
+    }
+
+    fn tick(&mut self, _elapsed: Duration, _out: &mut dyn Write, sink: &EventSink) -> Result<(), LaunchError> {
+        self.report_output(false, sink);
+        Ok(())
     }
 
     fn interrupt(&mut self, out: &mut dyn Write) -> Result<(), LaunchError> {

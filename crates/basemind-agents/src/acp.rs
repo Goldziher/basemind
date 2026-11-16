@@ -24,7 +24,7 @@ use futures::{FutureExt, Sink, SinkExt, Stream, StreamExt};
 
 use crate::error::LaunchError;
 use crate::event::{
-    ApprovalKind, ApprovalRequest, ApprovalSource, Control, Event, ToolCall, ToolState, approval_detail,
+    ApprovalKind, ApprovalRequest, ApprovalSource, Control, Event, ToolCall, ToolState, Tools, approval_detail,
 };
 use crate::frames::FrameReader;
 use crate::harness::{AcpFlavor, HarnessKind};
@@ -306,7 +306,7 @@ fn approval_request(id: String, request: &RequestPermissionRequest) -> ApprovalR
 
 /// The tool calls seen so far, so an update can be reported as the whole call.
 #[derive(Clone, Default)]
-struct Updates(Arc<Mutex<HashMap<String, ToolCall>>>);
+struct Updates(Arc<Mutex<Tools>>);
 
 impl Updates {
     fn apply(&self, update: SessionUpdate, sink: &EventSink) {
@@ -337,12 +337,13 @@ impl Updates {
 
     fn merge(&self, id: &str, fields: ToolCallUpdateFields, sink: &EventSink) {
         let mut tools = self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        let tool = tools.entry(id.to_owned()).or_insert_with(|| ToolCall::new(id, "tool"));
+        let tool = tools.get_or_insert(id, || ToolCall::new(id, "tool"));
         if let Some(name) = fields.name.or(fields.title) {
             tool.name = name;
         }
         if let Some(input) = fields.raw_input {
             tool.input = input.to_string();
+            tool.bound_input();
         }
         if let Some(output) = fields.raw_output {
             tool.output = output.as_str().map_or_else(|| output.to_string(), str::to_owned);

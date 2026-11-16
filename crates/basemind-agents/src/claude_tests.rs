@@ -111,7 +111,7 @@ fn a_replayed_task_notification_result_does_not_end_the_turn() {
 }
 
 #[test]
-fn tool_input_is_reported_once_it_parses_and_a_failed_result_marks_the_call() {
+fn tool_input_is_reported_once_its_block_ends_and_a_failed_result_marks_the_call() {
     let (sink, events) = EventSink::for_test(None, 1);
     let mut protocol = started(&sink);
     let mut out = Vec::new();
@@ -128,6 +128,7 @@ fn tool_input_is_reported_once_it_parses_and_a_failed_result_marks_the_call() {
         }}),
         partial("{\"command\":"),
         partial("\"ls\"}"),
+        json!({"type": "stream_event", "event": {"type": "content_block_stop", "index": 1}}),
         json!({"type": "user", "message": {"content": [
             {"type": "tool_result", "tool_use_id": "toolu_1", "is_error": true, "content": [{"type": "text", "text": "denied"}]},
         ]}}),
@@ -506,4 +507,43 @@ fn deferred_requests_are_capped_and_a_finished_turn_withdraws_them() {
         .count();
     assert_eq!(withdrawn, crate::session::MAX_PENDING_APPROVALS);
     assert!(!protocol.answer("req-0", true, &mut out).unwrap());
+}
+
+#[test]
+fn partial_tool_input_is_parsed_once_per_block_and_capped() {
+    let (sink, events) = EventSink::for_test(None, 1);
+    let mut protocol = started(&sink);
+    let mut out = Vec::new();
+    let start = json!({"type": "stream_event", "event": {
+        "type": "content_block_start", "index": 0,
+        "content_block": {"type": "tool_use", "id": "toolu_1", "name": "Write"},
+    }});
+    protocol.frame(start, &mut out, &sink).unwrap();
+    let delta = |json: &str| {
+        json!({"type": "stream_event", "event": {
+            "type": "content_block_delta", "index": 0, "delta": {"type": "input_json_delta", "partial_json": json},
+        }})
+    };
+    // Every prefix of an object that closes early parses; none may be reported mid-block.
+    protocol.frame(delta("{}"), &mut out, &sink).unwrap();
+    for _ in 0..1000 {
+        protocol.frame(delta(" "), &mut out, &sink).unwrap();
+    }
+    let reports = events
+        .try_iter()
+        .filter(|event| matches!(event, Event::ToolCall(_)))
+        .count();
+    assert_eq!(reports, 1, "the input was reported before its block ended");
+
+    // An input over the cap is dropped rather than collected.
+    let big = "x".repeat(PARTIAL_INPUT_BYTES);
+    protocol.frame(delta(&big), &mut out, &sink).unwrap();
+    protocol
+        .frame(
+            json!({"type": "stream_event", "event": {"type": "content_block_stop", "index": 0}}),
+            &mut out,
+            &sink,
+        )
+        .unwrap();
+    assert!(!events.try_iter().any(|event| matches!(event, Event::ToolCall(_))));
 }

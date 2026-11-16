@@ -173,11 +173,6 @@ fn a_command_is_tracked_from_start_through_output_to_a_failing_exit() {
             ("commandExecution".to_owned(), String::new(), ToolState::Running),
             (
                 "commandExecution".to_owned(),
-                "running 3 tests\n".to_owned(),
-                ToolState::Running
-            ),
-            (
-                "commandExecution".to_owned(),
                 "running 3 tests\nFAILED".to_owned(),
                 ToolState::Failed
             ),
@@ -536,4 +531,53 @@ fn deferred_requests_are_capped_and_withdrawn_when_resolved_elsewhere_or_the_tur
         .count();
     assert_eq!(withdrawn, crate::session::MAX_PENDING_APPROVALS - 1);
     assert!(!protocol.answer("codex-2", true, &mut out).unwrap());
+}
+
+#[test]
+fn command_output_increments_are_reported_at_an_interval() {
+    let (sink, events) = EventSink::for_test(None, 1);
+    let mut protocol = in_turn(&sink);
+    let mut out = Vec::new();
+    let delta = json!({"method": "item/commandExecution/outputDelta", "params": {"itemId": "c1", "delta": "x"}});
+    for _ in 0..20_000 {
+        protocol.frame(delta.clone(), &mut out, &sink).unwrap();
+    }
+    let reports: Vec<_> = events
+        .try_iter()
+        .filter_map(|event| match event {
+            Event::ToolCall(call) => Some(call),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        reports.len() < 100,
+        "{} reports for 20000 one-byte increments",
+        reports.len()
+    );
+
+    std::thread::sleep(OUTPUT_REPORT_INTERVAL);
+    protocol.tick(Duration::ZERO, &mut out, &sink).unwrap();
+    let last = events
+        .try_iter()
+        .filter_map(|event| match event {
+            Event::ToolCall(call) => Some(call),
+            _ => None,
+        })
+        .last()
+        .expect("the tick reported the output");
+    assert_eq!(last.output, "x".repeat(20_000));
+}
+
+#[test]
+fn the_tool_table_forgets_the_oldest_calls() {
+    let (sink, _events) = EventSink::for_test(None, 1);
+    let mut protocol = in_turn(&sink);
+    let mut out = Vec::new();
+    for n in 0..1000 {
+        let item = json!({"method": "item/started", "params": {"item": {"type": "commandExecution", "id": format!("c{n}"), "command": "ls"}}});
+        protocol.frame(item, &mut out, &sink).unwrap();
+    }
+    assert_eq!(protocol.tools.len(), crate::event::MAX_TRACKED_TOOLS);
+    assert!(protocol.tools.get("c999").is_some());
+    assert!(protocol.tools.get("c0").is_none());
 }

@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 
 use crate::error::LaunchError;
 use crate::event::{
-    ApprovalKind, ApprovalRequest, ApprovalSource, Event, ToolCall, ToolState, approval_detail, one_line,
+    ApprovalKind, ApprovalRequest, ApprovalSource, Event, ToolCall, ToolState, Tools, approval_detail, one_line,
 };
 use crate::harness::HarnessKind;
 use crate::line::{LineDriver, Protocol, Step, TextStream, write_json};
@@ -18,6 +18,8 @@ use crate::session::{self, CommandPlan, EventSink, Session};
 use crate::spec::{ApprovalVerdict, LaunchSpec, PermissionMode};
 
 const INIT_REQUEST: &str = "basemind-init";
+/// The most partial tool input collected for one content block.
+const PARTIAL_INPUT_BYTES: usize = 4 * 1024 * 1024;
 /// Older CLIs never acknowledge the initialize request; the prompt goes out regardless.
 const INIT_PATIENCE: Duration = Duration::from_secs(8);
 
@@ -133,9 +135,10 @@ pub(crate) struct ClaudeProtocol {
     message: usize,
     /// Whether the turn in progress has produced assistant text.
     begun: bool,
-    tools: HashMap<String, ToolCall>,
-    /// Streaming tool id and its partial input JSON, by content block index.
-    partial_tools: HashMap<u64, (String, String)>,
+    tools: Tools,
+    /// Streaming tool id and its partial input JSON, by content block index; `None` once
+    /// the input passed [`PARTIAL_INPUT_BYTES`].
+    partial_tools: HashMap<u64, (String, Option<String>)>,
     /// Pending approvals: the wire id and the request, by event id.
     approvals: HashMap<String, (Value, Value)>,
 }
@@ -149,7 +152,7 @@ impl ClaudeProtocol {
             text: TextStream::default(),
             message: 0,
             begun: false,
-            tools: HashMap::new(),
+            tools: Tools::default(),
             partial_tools: HashMap::new(),
             approvals: HashMap::new(),
         }
@@ -193,19 +196,29 @@ impl ClaudeProtocol {
                 let block = &event["content_block"];
                 let id = block["id"].as_str().unwrap_or("");
                 let tool = ToolCall::new(id, block["name"].as_str().unwrap_or("Tool"));
-                self.partial_tools.insert(index, (id.to_owned(), String::new()));
-                self.tools.insert(id.to_owned(), tool.clone());
-                sink.emit(Event::ToolCall(tool));
+                self.partial_tools.insert(index, (id.to_owned(), Some(String::new())));
+                sink.emit(Event::ToolCall(self.tools.insert(tool).clone()));
             }
             ("content_block_delta", "input_json_delta") => {
-                // Keep the last input that parses; a half-streamed object is not reported.
-                if let Some((id, partial)) = self.partial_tools.get_mut(&index) {
-                    partial.push_str(event["delta"]["partial_json"].as_str().unwrap_or(""));
-                    let parsed = serde_json::from_str::<Value>(partial).is_ok_and(|value| value.is_object());
-                    if let Some(tool) = self.tools.get_mut(id.as_str()).filter(|_| parsed) {
-                        tool.input.clone_from(partial);
-                        sink.emit(Event::ToolCall(tool.clone()));
+                // Collected and parsed once, when the block ends: parsing on every delta is
+                // quadratic. Beyond the cap it is dropped; the assistant frame repeats it.
+                if let Some((_, slot)) = self.partial_tools.get_mut(&index) {
+                    let delta = event["delta"]["partial_json"].as_str().unwrap_or("");
+                    match slot {
+                        Some(partial) if partial.len() + delta.len() <= PARTIAL_INPUT_BYTES => partial.push_str(delta),
+                        _ => *slot = None,
                     }
+                }
+            }
+            ("content_block_stop", _) => {
+                let Some((id, Some(partial))) = self.partial_tools.remove(&index) else {
+                    return;
+                };
+                let parsed = serde_json::from_str::<Value>(&partial).is_ok_and(|value| value.is_object());
+                if let Some(tool) = self.tools.get_mut(&id).filter(|_| parsed) {
+                    tool.input = partial;
+                    tool.bound_input();
+                    sink.emit(Event::ToolCall(tool.clone()));
                 }
             }
             ("content_block_delta", "thinking_delta") => {
@@ -229,9 +242,9 @@ impl ClaudeProtocol {
             let id = block["id"].as_str().unwrap_or("");
             let tool = self
                 .tools
-                .entry(id.to_owned())
-                .or_insert_with(|| ToolCall::new(id, block["name"].as_str().unwrap_or("Tool")));
+                .get_or_insert(id, || ToolCall::new(id, block["name"].as_str().unwrap_or("Tool")));
             tool.input = serde_json::to_string_pretty(&block["input"]).unwrap_or_default();
+            tool.bound_input();
             sink.emit(Event::ToolCall(tool.clone()));
         }
         let text: String = blocks()

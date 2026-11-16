@@ -3,7 +3,7 @@
 //! per-harness state machines implement [`Protocol`] and never touch a process, so they are
 //! tested on recorded frames alone.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 use std::io::Write;
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::{Duration, Instant};
@@ -50,37 +50,75 @@ pub(crate) fn write_json(out: &mut dyn Write, value: &Value) -> Result<(), Launc
     Ok(())
 }
 
-/// The part of `snapshot` not yet emitted, given what was `already` streamed.
-fn snapshot_remainder<'a>(already: &str, snapshot: &'a str) -> &'a str {
-    if let Some(suffix) = snapshot.strip_prefix(already) {
-        suffix
-    } else if already.starts_with(snapshot) {
-        ""
-    } else {
-        snapshot
+/// How many messages a [`TextStream`] remembers; older ones are complete by then.
+const TEXT_MESSAGES: usize = 8;
+/// How much of one message's text a [`TextStream`] keeps to compare snapshots against.
+const TEXT_KEPT_BYTES: usize = 1024 * 1024;
+
+/// What was emitted for one message: its first bytes, and how long it is in all.
+#[derive(Default)]
+struct Emitted {
+    kept: String,
+    len: usize,
+}
+
+impl Emitted {
+    /// The part of `snapshot` not yet emitted.
+    fn remainder<'a>(&self, snapshot: &'a str) -> &'a str {
+        if snapshot.starts_with(&self.kept) {
+            if snapshot.len() >= self.len && snapshot.is_char_boundary(self.len) {
+                &snapshot[self.len..]
+            } else {
+                // A snapshot no longer than what was streamed brings nothing new.
+                ""
+            }
+        } else if self.kept.starts_with(snapshot) {
+            ""
+        } else {
+            snapshot
+        }
+    }
+
+    fn record(&mut self, text: &str) {
+        if self.kept.len() == self.len {
+            let mut room = TEXT_KEPT_BYTES.saturating_sub(self.kept.len()).min(text.len());
+            while !text.is_char_boundary(room) {
+                room -= 1;
+            }
+            self.kept.push_str(&text[..room]);
+        }
+        self.len += text.len();
     }
 }
 
 /// Assistant text arrives twice from both harnesses: as deltas, then as a completed snapshot.
-/// This emits each piece once, keyed by the message it belongs to.
+/// This emits each piece once, keyed by the message it belongs to. It remembers the last
+/// [`TEXT_MESSAGES`] messages and the first [`TEXT_KEPT_BYTES`] of each, so its memory is
+/// bounded however long the session runs.
 #[derive(Default)]
 pub(crate) struct TextStream {
-    emitted: HashMap<String, String>,
+    emitted: VecDeque<(String, Emitted)>,
 }
 
 impl TextStream {
     /// Emits the new part of `text` for message `key`; returns whether anything was emitted.
     pub fn push(&mut self, key: &str, text: &str, snapshot: bool, sink: &EventSink) -> bool {
-        let already = self.emitted.entry(key.to_owned()).or_default();
-        let text = if snapshot {
-            snapshot_remainder(already, text)
-        } else {
-            text
+        let at = match self.emitted.iter().position(|(known, _)| known == key) {
+            Some(at) => at,
+            None => {
+                if self.emitted.len() >= TEXT_MESSAGES {
+                    self.emitted.pop_front();
+                }
+                self.emitted.push_back((key.to_owned(), Emitted::default()));
+                self.emitted.len() - 1
+            }
         };
+        let already = &mut self.emitted[at].1;
+        let text = if snapshot { already.remainder(text) } else { text };
         if text.is_empty() {
             return false;
         }
-        already.push_str(text);
+        already.record(text);
         sink.emit(Event::Text(text.to_owned()));
         true
     }
@@ -226,6 +264,28 @@ mod tests {
     fn a_complete_frame_parses() {
         let frame = parse_line(b"{\"type\":\"result\"}\n").unwrap().unwrap();
         assert_eq!(frame["type"], "result");
+    }
+
+    #[test]
+    fn the_text_stream_remembers_a_bounded_amount() {
+        let (sink, events) = EventSink::for_test(None, 1);
+        let mut text = TextStream::default();
+        for n in 0..100 {
+            text.push(&n.to_string(), "hello", false, &sink);
+        }
+        assert_eq!(text.emitted.len(), TEXT_MESSAGES);
+        let long = "y".repeat(3 * TEXT_KEPT_BYTES);
+        for chunk in long.as_bytes().chunks(4096) {
+            text.push("long", std::str::from_utf8(chunk).unwrap(), false, &sink);
+        }
+        let kept = &text.emitted.back().unwrap().1;
+        assert_eq!(kept.kept.len(), TEXT_KEPT_BYTES);
+        assert_eq!(kept.len, long.len());
+        let _ = events.try_iter().count();
+        // The completed snapshot still yields only what was not streamed.
+        assert!(text.push("long", &format!("{long}!"), true, &sink));
+        assert!(!text.push("long", &long, true, &sink));
+        assert_eq!(events.try_iter().collect::<Vec<_>>(), [Event::Text("!".to_owned())]);
     }
 
     #[test]

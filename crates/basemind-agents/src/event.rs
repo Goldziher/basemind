@@ -42,20 +42,91 @@ impl ToolCall {
         }
     }
 
+    /// Appends to the output. Trimming is amortized: the output may grow to twice the limit
+    /// before it is cut, so a stream of tiny increments does not copy 64 KiB each time.
     pub(crate) fn append_output(&mut self, text: &str) {
         self.output.push_str(text);
-        self.bound_output();
+        if self.output.len() > 2 * OUTPUT_LIMIT {
+            self.bound_output();
+        }
     }
 
+    /// Cuts the output to its last 64 KiB.
     pub(crate) fn bound_output(&mut self) {
-        const LIMIT: usize = 64 * 1024;
-        if self.output.len() > LIMIT {
-            let mut at = self.output.len() - LIMIT;
+        if self.output.len() > OUTPUT_LIMIT {
+            let mut at = self.output.len() - OUTPUT_LIMIT;
             while !self.output.is_char_boundary(at) {
                 at += 1;
             }
-            self.output = format!("… earlier output omitted …\n{}", &self.output[at..]);
+            self.output = format!("{OMITTED}{}", &self.output[at..]);
         }
+    }
+
+    /// Cuts the input to its first 64 KiB.
+    pub(crate) fn bound_input(&mut self) {
+        if self.input.len() > OUTPUT_LIMIT {
+            let mut at = OUTPUT_LIMIT;
+            while !self.input.is_char_boundary(at) {
+                at -= 1;
+            }
+            self.input.truncate(at);
+            self.input.push_str("\n… later input omitted …");
+        }
+    }
+}
+
+const OUTPUT_LIMIT: usize = 64 * 1024;
+const OMITTED: &str = "… earlier output omitted …\n";
+
+/// The tool calls an adapter tracks, at most [`MAX_TRACKED_TOOLS`] of them: the oldest is
+/// forgotten first, so a session with endless tool calls holds a bounded table.
+#[derive(Default)]
+pub(crate) struct Tools {
+    calls: std::collections::HashMap<String, ToolCall>,
+    order: std::collections::VecDeque<String>,
+}
+
+/// How many tool calls an adapter remembers.
+pub(crate) const MAX_TRACKED_TOOLS: usize = 256;
+
+impl Tools {
+    /// The call `id`, created by `new` when it is not tracked.
+    pub fn get_or_insert(&mut self, id: &str, new: impl FnOnce() -> ToolCall) -> &mut ToolCall {
+        if !self.calls.contains_key(id) {
+            if self.order.len() >= MAX_TRACKED_TOOLS
+                && let Some(oldest) = self.order.pop_front()
+            {
+                self.calls.remove(&oldest);
+            }
+            self.order.push_back(id.to_owned());
+            self.calls.insert(id.to_owned(), new());
+        }
+        self.calls.get_mut(id).expect("the call was just inserted")
+    }
+
+    /// Tracks `call`, replacing a call with the same id.
+    pub fn insert(&mut self, call: ToolCall) -> &mut ToolCall {
+        let id = call.id.clone();
+        let slot = self.get_or_insert(&id, || call.clone());
+        *slot = call;
+        slot
+    }
+
+    pub fn get(&self, id: &str) -> Option<&ToolCall> {
+        self.calls.get(id)
+    }
+
+    pub fn get_mut(&mut self, id: &str) -> Option<&mut ToolCall> {
+        self.calls.get_mut(id)
+    }
+
+    pub fn values_mut(&mut self) -> impl Iterator<Item = &mut ToolCall> {
+        self.calls.values_mut()
+    }
+
+    #[cfg(test)]
+    pub fn len(&self) -> usize {
+        self.calls.len()
     }
 }
 
