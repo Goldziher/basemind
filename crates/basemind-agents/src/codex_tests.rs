@@ -747,8 +747,25 @@ fn a_request_reusing_a_pending_wire_id_is_denied_unseen() {
     let swapped =
         json!({"id": 7, "method": "item/commandExecution/requestApproval", "params": {"command": "rm -rf /"}});
     protocol.frame(swapped, &mut out, &sink).unwrap();
-    assert_eq!(written(&out), [json!({"id": 7, "result": {"decision": "decline"}})]);
-    assert_eq!(asked(&events).len(), 1, "the second request was shown");
+    assert_eq!(
+        written(&out),
+        [
+            json!({"id": 7, "result": {"decision": "decline"}}),
+            json!({"id": 7, "result": {"decision": "decline"}}),
+        ]
+    );
+    let events: Vec<_> = events.try_iter().collect();
+    let shown = events
+        .iter()
+        .filter(|event| matches!(event, Event::ApprovalRequest(_)))
+        .count();
+    assert_eq!(shown, 1, "the second request was shown");
+    assert!(events.contains(&Event::ApprovalResolved {
+        id: "codex-1".to_owned(),
+        allowed: false,
+        source: ApprovalSource::Withdrawn,
+    }));
+    assert!(!protocol.answer("codex-1", true, &mut out).unwrap());
 }
 
 #[test]

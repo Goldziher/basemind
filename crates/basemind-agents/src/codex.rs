@@ -245,12 +245,17 @@ impl CodexProtocol {
         out: &mut dyn Write,
         sink: &EventSink,
     ) -> Result<(), LaunchError> {
-        if self.approvals.values().any(|(pending, _, _)| pending == wire) {
-            // The harness's answer to this wire id could not tell the two apart: the second
-            // request is denied unseen.
+        let reused = self.approvals.iter().find(|(_, (pending, _, _))| pending == wire);
+        if let Some(id) = reused.map(|(id, _)| id.clone()) {
+            // An answer by this wire id could not tell the two apart: both are denied, the
+            // pending one reported withdrawn and the second unseen.
             sink.emit(Event::Status(format!(
-                "Denied an approval request reusing the pending id {wire}"
+                "Denied two approval requests sharing the id {wire}"
             )));
+            if let Some((pending, earlier_method, earlier)) = self.approvals.remove(&id) {
+                self.respond(&pending, &earlier_method, &earlier, false, out)?;
+                sink.resolved(id, false, ApprovalSource::Withdrawn);
+            }
             return self.respond(wire, method, params, false, out);
         }
         self.approval_sequence += 1;

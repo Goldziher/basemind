@@ -390,12 +390,17 @@ impl ClaudeProtocol {
                 }}),
             );
         }
-        if self.approvals.values().any(|(pending, _)| pending == wire) {
-            // A cancel or an answer by this wire id could not tell the two apart: the second
-            // request is denied unseen.
+        let reused = self.approvals.iter().find(|(_, (pending, _))| pending == wire);
+        if let Some(id) = reused.map(|(id, _)| id.clone()) {
+            // A cancel or an answer by this wire id could not tell the two apart: both are
+            // denied, the pending one reported withdrawn and the second unseen.
             sink.emit(Event::Status(format!(
-                "Denied an approval request reusing the pending id {wire}"
+                "Denied two approval requests sharing the id {wire}"
             )));
+            if let Some((pending, earlier)) = self.approvals.remove(&id) {
+                self.respond(&pending, &earlier, false, out)?;
+                sink.resolved(id, false, ApprovalSource::Withdrawn);
+            }
             return self.respond(wire, request, false, out);
         }
         self.approval_sequence += 1;
