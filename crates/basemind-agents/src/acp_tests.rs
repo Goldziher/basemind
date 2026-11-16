@@ -516,6 +516,8 @@ fn stop_cancels_the_turn_through_the_protocol() {
         agent.controls.unbounded_send(Control::Stop).unwrap();
         let cancel = agent.expect("session/cancel");
         assert_eq!(cancel["params"]["sessionId"], "sess-1");
+        // Stay connected until the client hangs up, as a real agent's pipe would.
+        while futures::executor::block_on(agent.from_client.next()).is_some() {}
     });
     run.result.unwrap();
     assert!(!run.events.contains(&Event::TurnCompleted { turn: 1 }));
@@ -733,7 +735,8 @@ fn a_stop_ends_a_session_whose_agent_never_answers_initialize() {
         vec![Control::Stop],
         |agent| {
             agent.expect("initialize");
-            // No answer: the agent hangs while the session opens.
+            // No answer: the agent hangs while the session opens, until the client hangs up.
+            while futures::executor::block_on(agent.from_client.next()).is_some() {}
         },
     );
     run.result.unwrap();
